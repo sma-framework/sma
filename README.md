@@ -80,11 +80,11 @@ flowchart LR
     P --> B["3 · Build<br>/sma-execute-phase"]
     B --> V["4 · Verify<br>/sma-verify-work"]
     V --> S["5 · Ship<br>push ritual"]
-    M(["Memory corpus<br>+ predictions + reflexes"]) -.reads.-> D
-    M -.reads.-> P
-    M -.reads.-> B
-    B -.writes lessons.-> M
-    V -.writes lessons.-> M
+    M(["Memory corpus<br>+ predictions + reflexes"]) -.->|reads| D
+    M -.->|reads| P
+    M -.->|reads| B
+    B -.->|writes lessons| M
+    V -.->|writes lessons| M
     S -.->|calibration scored| M
 ```
 
@@ -126,10 +126,8 @@ sequenceDiagram
     FS-->>B: ⚠ scope held by A — warned BEFORE the edit
     A->>FS: next-slot migration → 0007
     B->>FS: next-slot migration → 0008
-    Note over FS: shared counters never collide;<br>the journal records who did what
+    Note over FS: shared counters never collide<br>the journal records who did what
 ```
-
-## Install
 
 ## Install
 
