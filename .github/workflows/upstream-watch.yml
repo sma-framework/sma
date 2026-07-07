@@ -1,0 +1,126 @@
+# upstream-watch — the DAILY upstream cadence of D-49.1-03 (49.1-07 T3).
+#
+# Runs in the product repo's CI ONLY — never as a daemon on a local checkout
+# (the no-daemons V1 lock holds). Compares the UPSTREAM.json anchor against the
+# latest @opengsd/gsd-core release via `sma upstream-check`:
+#
+#   status=new + clean bucket NON-EMPTY -> the review-gated auto-port PR:
+#     the clean set is pre-applied on an Action-created branch
+#     (upstream/<version>, same applyCleanSet path as the local --apply door),
+#     the PR body is the three-way integration report. MERGE STAYS A HUMAN
+#     ACTION — this workflow contains NO merge step of any kind (T-49.1-12).
+#   status=new + clean bucket EMPTY (all-conflict release) -> one GitHub issue
+#     per release version carrying the report (create-or-update, no duplicates).
+#
+# Conflicts NEVER auto-apply on any path. No secrets beyond GITHUB_TOKEN.
+
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: '0 6 * * *' # daily, 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Upstream check (three-way report through rename-map)
+        id: check
+        run: |
+          node scripts/sma/cli.mjs upstream-check --json > /tmp/upstream-check.json || true
+          cat /tmp/upstream-check.json
+          node -e '
+            const fs = require("fs");
+            let j = {};
+            try { j = JSON.parse(fs.readFileSync("/tmp/upstream-check.json", "utf8")); } catch {}
+            const lines = [
+              "status=" + (j.status || "unknown"),
+              "latest=" + (j.latest || ""),
+              "clean=" + (j.report ? j.report.clean : 0),
+              "conflict=" + (j.report ? j.report.conflict : 0),
+            ].join("\n") + "\n";
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, lines);
+          '
+
+      # ── Path A: clean bucket NON-EMPTY → review-gated auto-port PR ──────────
+      # Pre-applies the clean set (same applyCleanSet path as the local --apply
+      # door: clean files + UPSTREAM.json anchor + vendor snapshot refresh +
+      # the report file) on the workspace; the next step turns the workspace
+      # delta into ONE PR per release version (branch upstream/<version>,
+      # created-or-updated, never duplicated). Merging that PR is a HUMAN
+      # action — there is deliberately no merge automation here (T-49.1-12).
+      - name: Apply clean set (review-gated auto-port)
+        if: steps.check.outputs.status == 'new' && steps.check.outputs.clean != '0'
+        run: node scripts/sma/cli.mjs upstream-check --apply
+
+      - name: Read integration report for the PR body
+        id: report
+        if: steps.check.outputs.status == 'new' && steps.check.outputs.clean != '0'
+        run: |
+          {
+            echo 'body<<SMA_REPORT_EOF'
+            cat "docs/upstream-reports/${{ steps.check.outputs.latest }}.md"
+            echo 'SMA_REPORT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open the upstream port pull request (merge = human action)
+        if: steps.check.outputs.status == 'new' && steps.check.outputs.clean != '0'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: upstream/${{ steps.check.outputs.latest }}
+          title: 'upstream: gsd-core ${{ steps.check.outputs.latest }} — clean set pre-applied (review-gated)'
+          body: ${{ steps.report.outputs.body }}
+          commit-message: 'upstream: port clean set of gsd-core ${{ steps.check.outputs.latest }} (report: docs/upstream-reports/${{ steps.check.outputs.latest }}.md)'
+          delete-branch: false
+
+      # ── Path B: clean bucket EMPTY (all-conflict release) → issue ───────────
+      - name: Create or update the integration issue (all-conflict release)
+        if: steps.check.outputs.status == 'new' && steps.check.outputs.clean == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const version = '${{ steps.check.outputs.latest }}';
+            const title = `upstream gsd-core ${version} released — integration report`;
+            let body = 'Integration report was not generated — see the workflow run log.';
+            try {
+              body = fs.readFileSync(`docs/upstream-reports/${version}.md`, 'utf8');
+            } catch {}
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find((i) => i.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }

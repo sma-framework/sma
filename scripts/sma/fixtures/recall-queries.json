@@ -1,0 +1,181 @@
+{
+  "_comment": "Standing recall benchmark (Phase 49.1 Plan 14, B3/B8). Self-contained: the test ships THIS mini-corpus + these pinned queries and never reads a machine's private .claude/memory corpus. Reconstructed from the V1 recall protocol (49-01 / 49-16 runs, 17/18) generalized to fixture-corpus form. Each query resolves through resolvePeriphery; a query hits when its expectedNoteId lands in CORE (importance >= 9) or the tag-matched periphery. The single knownMiss mirrors the V1 Q2 tag-only ceiling: a note tagged in one area is missed by a query naming another.",
+  "tagsRegistry": {
+    "area": [
+      "phi",
+      "design",
+      "payload",
+      "railway",
+      "workflow",
+      "release",
+      "testing",
+      "crm",
+      "memory",
+      "security",
+      "messaging",
+      "content",
+      "tech",
+      "governance"
+    ],
+    "kind": [
+      "procedural-rule",
+      "bug-lesson",
+      "reference",
+      "status",
+      "decision",
+      "episodic"
+    ]
+  },
+  "corpus": [
+    {
+      "file": "core_phi_deferred.md",
+      "description": "All PHI work is deferred until the founder explicitly says start PHI and it never blocks a push",
+      "kind": "procedural-rule",
+      "tags": ["phi"],
+      "importance": 9,
+      "body": "A load-bearing standing rule that lives in CORE and is always surfaced.\n"
+    },
+    {
+      "file": "core_design_prompt_first.md",
+      "description": "Any front-facing work needs a design prompt marked New in the design source of truth before code-complete",
+      "kind": "procedural-rule",
+      "tags": ["design"],
+      "importance": 9,
+      "body": "A load-bearing standing rule that lives in CORE and is always surfaced.\n"
+    },
+    {
+      "file": "lesson_migration_rename_prompt.md",
+      "description": "A migration that adds and removes columns in one window makes Drizzle prompt is-this-a-rename and hangs prod",
+      "kind": "bug-lesson",
+      "tags": ["payload", "railway"],
+      "importance": 8,
+      "body": "**Why:** the rename prompt has no TTY on Railway. **How to apply:** split add and drop across migrations.\n"
+    },
+    {
+      "file": "lesson_seed_prod_migrations.md",
+      "description": "Running a getPayload seed script against prod applies pending local migrations to the production database",
+      "kind": "bug-lesson",
+      "tags": ["railway"],
+      "importance": 8,
+      "body": "**Why:** the script boots Payload which runs migrations. **How to apply:** never run seed scripts against prod.\n"
+    },
+    {
+      "file": "lesson_worktree_teleport.md",
+      "description": "Claude Code shell can teleport into a worktree mid-Bash session during parallel execute-phase runs",
+      "kind": "bug-lesson",
+      "tags": ["workflow"],
+      "importance": 8,
+      "body": "**Why:** the harness switches cwd. **How to apply:** cd to project root before each git command.\n"
+    },
+    {
+      "file": "rule_full_suite_before_push.md",
+      "description": "Run the full test suite and the type check green before every push to main not just your changed slice",
+      "kind": "procedural-rule",
+      "tags": ["release", "testing"],
+      "importance": 8,
+      "body": "**Why:** a change ripples into tests you never opened. **How to apply:** run pnpm test whole before pushing.\n"
+    },
+    {
+      "file": "rule_crm_nav_config.md",
+      "description": "The live CRM sidebar is driven by the foundation nav-config file not the CrmNav component so wire routes there",
+      "kind": "procedural-rule",
+      "tags": ["crm", "design"],
+      "importance": 8,
+      "body": "**Why:** the rail reads nav-config. **How to apply:** register new crm routes in nav-config or no button appears.\n"
+    },
+    {
+      "file": "ref_release_versions.md",
+      "description": "The versioned release series V1.N increments by one on every push to main starting from V1.1",
+      "kind": "reference",
+      "tags": ["release"],
+      "importance": 6,
+      "body": "Read the last-used number before every push and bump it after.\n"
+    },
+    {
+      "file": "ref_sma_protocol.md",
+      "description": "The SMA protocol for agents covers how to read memory coordinate terminals and pick migration slots",
+      "kind": "reference",
+      "tags": ["memory"],
+      "importance": 6,
+      "body": "Load CORE automatically and pull periphery by tag on demand.\n"
+    },
+    {
+      "file": "status_phase_ticketing.md",
+      "description": "The ticketing and customer-profiling enhancement phase is code-complete across its five sub-plans awaiting live smoke",
+      "kind": "status",
+      "tags": ["crm"],
+      "importance": 7,
+      "body": "Engineering shipped, human live-verify gate pending.\n"
+    },
+    {
+      "file": "lesson_payload_local_api.md",
+      "description": "Payload v3 Local API defaults to overrideAccess true so RBAC predicates do not apply unless the caller attaches a user",
+      "kind": "bug-lesson",
+      "tags": ["payload", "security"],
+      "importance": 8,
+      "body": "**Why:** getPayload bypasses access control by default. **How to apply:** pass req or user on protected reads.\n"
+    },
+    {
+      "file": "lesson_whatsapp_channel.md",
+      "description": "Channel routing prefers Telegram for Russia because WhatsApp is blocked there then falls back to continuity",
+      "kind": "bug-lesson",
+      "tags": ["messaging"],
+      "importance": 8,
+      "body": "**Why:** WhatsApp is blocked in Russia. **How to apply:** resolve preferred channel by country in the dispatcher.\n"
+    },
+    {
+      "file": "rule_ru_content_style.md",
+      "description": "Customer-facing Russian text uses formal capitalized Vy no em-dashes in prose and no first-person institutional voice",
+      "kind": "procedural-rule",
+      "tags": ["content"],
+      "importance": 8,
+      "body": "**Why:** the institutional voice is the brand. **How to apply:** never use em-dashes in Russian institutional copy.\n"
+    },
+    {
+      "file": "lesson_tailwind_backslash.md",
+      "description": "Tailwind v4 oxide scans markdown files and crashes on Windows backslash paths that form a six-char hex CSS escape",
+      "kind": "bug-lesson",
+      "tags": ["design", "testing"],
+      "importance": 8,
+      "body": "**Why:** the suffix parses as a CSS escape. **How to apply:** use forward slashes in absolute paths inside docs.\n"
+    },
+    {
+      "file": "ref_stack.md",
+      "description": "The technology stack is Next.js sixteen with React nineteen Payload three and Postgres sixteen on Railway",
+      "kind": "reference",
+      "tags": ["tech"],
+      "importance": 6,
+      "body": "Full rationale lives in the stack research document.\n"
+    },
+    {
+      "file": "lesson_next_build_routes.md",
+      "description": "The type check and vitest do not catch Next.js route export violations so run next build before pushing route changes",
+      "kind": "bug-lesson",
+      "tags": ["railway", "workflow"],
+      "importance": 8,
+      "body": "**Why:** route-export rules are a build-time check. **How to apply:** run next build for phases that add route files.\n"
+    }
+  ],
+  "queries": [
+    { "id": "Q1", "query": "when is PHI work allowed to start", "tags": ["phi"], "expectedNoteId": "core_phi_deferred.md" },
+    { "id": "Q2", "query": "does a new front-facing surface need a design prompt", "tags": ["design"], "expectedNoteId": "core_design_prompt_first.md" },
+    { "id": "Q3", "query": "migration rename prompt footgun on Railway", "tags": ["payload"], "expectedNoteId": "lesson_migration_rename_prompt.md" },
+    { "id": "Q4", "query": "a Railway deploy hang caused by a migration", "tags": ["railway"], "expectedNoteId": "lesson_migration_rename_prompt.md" },
+    { "id": "Q5", "query": "shell teleporting into a worktree during parallel work", "tags": ["workflow"], "expectedNoteId": "lesson_worktree_teleport.md" },
+    { "id": "Q6", "query": "what gate runs before a push to main", "tags": ["release"], "expectedNoteId": "rule_full_suite_before_push.md" },
+    { "id": "Q7", "query": "where do new CRM sidebar routes get wired", "tags": ["crm"], "expectedNoteId": "rule_crm_nav_config.md" },
+    { "id": "Q8", "query": "how the release version number is chosen", "tags": ["release", "reference"], "expectedNoteId": "ref_release_versions.md" },
+    { "id": "Q9", "query": "the SMA memory and coordination protocol", "tags": ["memory"], "expectedNoteId": "ref_sma_protocol.md" },
+    { "id": "Q10", "query": "current status of the ticketing phase", "tags": ["crm", "status"], "expectedNoteId": "status_phase_ticketing.md" },
+    { "id": "Q11", "query": "Payload local API overrideAccess default and RBAC", "tags": ["payload"], "expectedNoteId": "lesson_payload_local_api.md" },
+    { "id": "Q12", "query": "channel routing for Russia and WhatsApp", "tags": ["messaging"], "expectedNoteId": "lesson_whatsapp_channel.md" },
+    { "id": "Q13", "query": "Russian customer-facing copy style rules", "tags": ["content"], "expectedNoteId": "rule_ru_content_style.md" },
+    { "id": "Q14", "query": "Tailwind crashing on Windows backslash paths", "tags": ["design"], "expectedNoteId": "lesson_tailwind_backslash.md" },
+    { "id": "Q15", "query": "what is the technology stack", "tags": ["tech"], "expectedNoteId": "ref_stack.md" },
+    { "id": "Q16", "query": "why run next build before pushing route changes", "tags": ["railway"], "expectedNoteId": "lesson_next_build_routes.md" },
+    { "id": "Q17", "query": "a Payload bug-lesson about access control", "tags": ["payload", "bug-lesson"], "expectedNoteId": "lesson_payload_local_api.md" },
+    { "id": "Q18", "query": "a security lesson at a trust boundary read", "tags": ["security"], "expectedNoteId": "lesson_payload_local_api.md" },
+    { "id": "Q19", "query": "a testing lesson about the build tool", "tags": ["testing"], "expectedNoteId": "lesson_tailwind_backslash.md" },
+    { "id": "Q20", "query": "the seed-script-applies-migrations lesson looked up as a migration topic", "tags": ["payload"], "expectedNoteId": "lesson_seed_prod_migrations.md", "knownMiss": true, "note": "B8 tag-only ceiling: the note is tagged railway (the deploy surface) not payload, so a migration-topic query on the payload facet misses it. It stays reachable via the railway facet (Q4-style). RESOLVED by the 49.1-15 MemPalace обкатка: the semantic cache finds this note at rank 1 for this query, so the hybrid (deterministic tags first, semantic second) closes it. knownMiss stays true as the DETERMINISTIC tag-only marker (what resolvePeriphery tests still misses on the payload facet); see reference_mempalace_verdict.md." }
+  ]
+}

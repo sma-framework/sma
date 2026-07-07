@@ -1,0 +1,33 @@
+{
+  "name": "sma-framework",
+  "version": "2.0.0-alpha.0",
+  "private": true,
+  "description": "SMA — layered memory + multi-terminal coordination framework for AI coding agents. Private until the 49.1-27 founder flip.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "sma-framework": "bin/init.mjs",
+    "sma-init": "bin/init.mjs",
+    "sma-tools": "sma-core/bin/sma-tools.cjs",
+    "sma_run": "sma-core/bin/sma_run"
+  },
+  "files": [
+    "sma-core",
+    "scripts/sma",
+    "bin",
+    "docs",
+    "README.md",
+    "README.ru.md",
+    "LICENSE",
+    "THIRD-PARTY-LICENSES.md",
+    "UPSTREAM.json",
+    "rename-map.json"
+  ],
+  "scripts": {
+    "test": "vitest run && node tools/verify-rebrand.mjs",
+    "sma": "node scripts/sma/cli.mjs"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.4"
+  }
+}
