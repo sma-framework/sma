@@ -335,6 +335,8 @@ describe('Task 2 — CLI surface', () => {
     expect(res.stdout.trim().split('\n').pop()).toBe('0')
   })
 
+  // 30s timeout: this test spawns 8 REAL node processes by design; under multi-terminal
+  // machine load the default 5s trips on cold-boot variance alone (seen 5.7s on 2026-07-08).
   it('Test 14 (bench percentile plumbing): pre-bench --runs prints a stats table and a bare p95 last line', () => {
     const res = runCli(['pre-bench', '--runs', '8'], '', { SMA_ROOT_OVERRIDE: join(tmp, '.sma') })
     expect(res.code).toBe(0)
@@ -342,5 +344,5 @@ describe('Task 2 — CLI surface', () => {
     const last = lines[lines.length - 1]
     expect(last).toMatch(/^\d+$/) // bare integer p95 last line (the scorer contract)
     expect(res.stdout).toMatch(/p95/i) // human stats table present
-  })
+  }, 30000)
 })
