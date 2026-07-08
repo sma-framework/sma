@@ -369,6 +369,102 @@ describe('PRED lint family (49.1-09 task 1)', () => {
   })
 })
 
+// ── 49.2-08 Task 2: CONS lint family (the consequences block is law) ─────────
+
+const CONS_ENTRY =
+  '  - id: CONS-1\n' +
+  '    trigger: "class-A miss on P1"\n' +
+  '    blocks: "sma ship for the product repo"\n' +
+  '    until: "founder disposition recorded"\n'
+
+/** A PLAN.md carrying the given predictions + consequences raw YAML blocks. */
+function planWith({ predictions, consequences }: { predictions?: string; consequences?: string }): string {
+  let fm = '---\nphase: test\nplan: 01\n'
+  if (predictions) fm += `predictions:\n${predictions}`
+  if (consequences) fm += `consequences:\n${consequences}`
+  return fm + '---\n\n<objective>x</objective>\n'
+}
+
+describe('CONS lint family (49.2-08 task 2)', () => {
+  it('Test 1 (CONS-SCHEMA): entry missing `until` → CRITICAL naming the field; valid → silent', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-schema-'))
+    try {
+      const missingUntil = '  - id: CONS-1\n    trigger: "t"\n    blocks: "b"\n'
+      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ consequences: missingUntil }))
+      const res = runPredLint(tmp)
+      const f = findingsOf(res, 'CONS-SCHEMA')
+      expect(f.length).toBeGreaterThanOrEqual(1)
+      expect(f.every((x) => x.tier === 'critical')).toBe(true)
+      expect(f.some((x) => x.message.includes('until'))).toBe(true)
+      // A fully valid block raises nothing.
+      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ consequences: CONS_ENTRY }))
+      expect(findingsOf(runPredLint(tmp), 'CONS-SCHEMA')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 2 (CONS-POSTEDIT): block edited after first commit → CRITICAL; no execGit → info degrade', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-postedit-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const edited = join(tmp, '49.2-08-PLAN.md')
+      writeFileSync(edited, planWith({ consequences: CONS_ENTRY }))
+      gitCommit(tmp, 'first commit locks the consequences')
+      // Renegotiate the law AFTER the first commit.
+      writeFileSync(edited, planWith({ consequences: CONS_ENTRY.replace('founder disposition recorded', 'anyone can clear it') }))
+      const res = runPredLint(tmp, { execGit })
+      const f = findingsOf(res, 'CONS-POSTEDIT')
+      expect(f.some((x) => x.tier === 'critical' && x.file.includes('49.2-08-PLAN.md'))).toBe(true)
+
+      // No execGit injected → single info-degrade finding (PRED-POSTEDIT parity).
+      const degraded = runPredLint(tmp)
+      const info = findingsOf(degraded, 'CONS-POSTEDIT')
+      expect(info.length).toBeGreaterThanOrEqual(1)
+      expect(info.every((x) => x.tier === 'info')).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 3 (CONS-POSTEDIT): an unrelated frontmatter edit with UNCHANGED block → no finding', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-postedit2-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const p = join(tmp, '49.2-08-PLAN.md')
+      writeFileSync(p, planWith({ consequences: CONS_ENTRY }))
+      gitCommit(tmp, 'lock the law')
+      // Only the `plan:` line changes; the consequences block is byte-unchanged.
+      writeFileSync(p, planWith({ consequences: CONS_ENTRY }).replace('plan: 01', 'plan: 02'))
+      const res = runPredLint(tmp, { execGit })
+      expect(findingsOf(res, 'CONS-POSTEDIT').filter((x) => x.tier === 'critical')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 4 (CONS-NOBLOCK): predictions but no consequences → WARN; both → silent; neither → silent', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-noblock-'))
+    try {
+      // predictions only → warn.
+      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ predictions: GOOD_ENTRY }))
+      const warnRes = findingsOf(runPredLint(tmp), 'CONS-NOBLOCK')
+      expect(warnRes.length).toBeGreaterThanOrEqual(1)
+      expect(warnRes.every((x) => x.tier === 'warn')).toBe(true)
+
+      // both → silent.
+      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
+      expect(findingsOf(runPredLint(tmp), 'CONS-NOBLOCK')).toHaveLength(0)
+
+      // neither → silent (V2 corpus stays green, fail-open law).
+      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({}))
+      expect(findingsOf(runPredLint(tmp), 'CONS-NOBLOCK')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
 // ── 49.1-13 Task 1: FI-9/FI-11 size lints (budgets are law) ──────────────────
 
 import { CORE_BUDGET, NOTE_BUDGET, ALWAYS_LOAD_BUDGET, STATE_BUDGET } from '../lib/constants.mjs'

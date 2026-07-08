@@ -30,6 +30,9 @@ import { createHash } from 'node:crypto'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { parsePredictions, validatePrediction } from './predict.mjs'
+// 49.2-08 (D-49.2-12): the CONS lint family delegates field validation to the
+// consequences lib — one boundary, never duplicated (same posture as PRED → predict.mjs).
+import { parseConsequences, validateConsequence } from './consequences.mjs'
 // The ONE contradiction implementation (49.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
@@ -187,18 +190,20 @@ function listPlanFiles(plansDir) {
 }
 
 /**
- * Extract the RAW `predictions:` block text from a PLAN.md's frontmatter
- * ('' when absent). PRED-POSTEDIT hashes THIS block only — not the whole file —
- * so unrelated frontmatter edits never false-positive (Pitfall 3).
+ * Extract the RAW `<key>:` dash-list block text from a PLAN.md's frontmatter
+ * ('' when absent). POSTEDIT lints hash THIS block only — not the whole file —
+ * so unrelated frontmatter edits never false-positive (Pitfall 3). The key is
+ * parameterized (49.2-08) so PRED-POSTEDIT and CONS-POSTEDIT share one extractor.
  */
-function extractPredictionsBlock(text) {
+function extractFrontmatterBlock(text, key) {
   const t = String(text).replace(/\r\n/g, '\n')
   if (!t.startsWith('---\n')) return ''
   const closeIdx = t.indexOf('\n---\n', 3)
   if (closeIdx === -1) return ''
   const lines = t.slice(4, closeIdx + 1).split('\n')
+  const keyRe = new RegExp(`^${key}:`)
   let i = 0
-  while (i < lines.length && !/^predictions:/.test(lines[i])) i++
+  while (i < lines.length && !keyRe.test(lines[i])) i++
   if (i >= lines.length) return ''
   const block = [lines[i]]
   i++
@@ -209,6 +214,11 @@ function extractPredictionsBlock(text) {
   // Trailing blank lines belong to the NEXT key, not the block hash.
   while (block.length && block[block.length - 1].trim() === '') block.pop()
   return block.join('\n')
+}
+
+/** Predictions-block extractor — a thin wrapper so PRED-POSTEDIT is byte-identical. */
+function extractPredictionsBlock(text) {
+  return extractFrontmatterBlock(text, 'predictions')
 }
 
 /**
@@ -868,6 +878,88 @@ const PRED_DUPDOD = {
   },
 }
 
+// ── 49.2-08: CONS family — the consequences block is LAW after first commit ──
+
+const CONS_SCHEMA = {
+  id: 'CONS-SCHEMA',
+  title: 'Consequences entries carry the full {id, trigger, blocks, until} contract (D-49.2-12)',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    for (const plan of ctx.plans) {
+      // Field validation is DELEGATED to consequences.mjs's validateConsequence —
+      // one boundary, never duplicated (same lock as PRED-NOMETRIC → validatePrediction).
+      const { consequences } = parseConsequences(plan.path, { readFn: () => plan.text })
+      for (const entry of consequences) {
+        const v = validateConsequence(entry)
+        if (v.valid) continue
+        const parts = []
+        if (v.missing.length) parts.push(`missing ${v.missing.join(', ')}`)
+        if (v.errors.length) parts.push(v.errors.join('; '))
+        out.push(finding('CONS-SCHEMA', 'critical', basename(plan.path), `consequence "${entry.id ?? '<no id>'}" in ${basename(plan.path)}: ${parts.join('; ')} — a consequence without {id, trigger, blocks, until} cannot gate the ship ritual`))
+      }
+    }
+    return out
+  },
+}
+
+const CONS_POSTEDIT = {
+  id: 'CONS-POSTEDIT',
+  title: 'Consequences are immutable after the plan\'s first commit (the law cannot be renegotiated)',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    if (!ctx.plans.length) return out
+    const execGit = ctx.execGit
+    if (typeof execGit !== 'function') {
+      // Degrade exactly like PRED-POSTEDIT: without a git runner the hash-compare cannot run.
+      const withBlocks = ctx.plans.some((p) => extractFrontmatterBlock(p.text, 'consequences') !== '')
+      if (withBlocks) {
+        out.push(finding('CONS-POSTEDIT', 'info', '', 'git runner unavailable — consequences post-edit hash-compare skipped (inject execGit to enforce)'))
+      }
+      return out
+    }
+    for (const plan of ctx.plans) {
+      const nowBlock = extractFrontmatterBlock(plan.text, 'consequences')
+      let firstText
+      try {
+        const cwd = dirname(plan.path)
+        const name = basename(plan.path)
+        const log = String(execGit(['log', '--follow', '--diff-filter=A', '--format=%H', '--', name], { cwd })).trim()
+        const hashes = log.split('\n').filter(Boolean)
+        if (!hashes.length) continue // never committed — the law is not locked yet
+        const first = hashes[hashes.length - 1]
+        firstText = String(execGit(['show', `${first}:./${name}`], { cwd }))
+      } catch {
+        continue // fail-soft: outside a repo / git error → no verdict on this plan
+      }
+      const firstBlock = extractFrontmatterBlock(firstText, 'consequences')
+      if (nowBlock === '' && firstBlock === '') continue
+      if (sha256(nowBlock) !== sha256(firstBlock)) {
+        out.push(finding('CONS-POSTEDIT', 'critical', basename(plan.path), `consequences block in ${basename(plan.path)} differs from the plan's first commit — consequences are immutable after the plan's first commit (the law cannot be renegotiated after the bet is placed); revert the block, new terms go in a NEW plan`))
+      }
+    }
+    return out
+  },
+}
+
+const CONS_NOBLOCK = {
+  id: 'CONS-NOBLOCK',
+  title: 'A plan with predictions must declare what a class-A miss blocks (D-49.2-15)',
+  tier: 'warn',
+  run(ctx) {
+    const out = []
+    for (const plan of ctx.plans) {
+      const hasPredictions = extractFrontmatterBlock(plan.text, 'predictions') !== ''
+      const hasConsequences = extractFrontmatterBlock(plan.text, 'consequences') !== ''
+      if (hasPredictions && !hasConsequences) {
+        out.push(finding('CONS-NOBLOCK', 'warn', basename(plan.path), `${basename(plan.path)} carries a predictions block but no consequences block — a prediction without a consequence is a diary entry; declare what a class-A miss blocks (D-49.2-15)`))
+      }
+    }
+    return out
+  },
+}
+
 // ── 49.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
@@ -1127,6 +1219,9 @@ export const LINT_CHECKS = [
   PRED_NOMETRIC,
   PRED_POSTEDIT,
   PRED_DUPDOD,
+  CONS_SCHEMA,
+  CONS_POSTEDIT,
+  CONS_NOBLOCK,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────
