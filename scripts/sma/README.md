@@ -53,6 +53,36 @@ ALWAYS exit 0 (fail-open, see below); direct-CLI subcommands return meaningful c
 | `build-index` | (re)generate MEMORY.md | `--write` (DRY by default) |
 | `load` | resolve a tag set into CORE + periphery notes | `--tags <csv> [--json]` |
 | `snapshot` | push a bounded, allowlisted state view to the CRM cockpit | `--json` |
+| `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (49.2-03) | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--json` |
+| `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block) | `<command> [--hash-stdout] [--cwd <path>]` |
+| `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
+| `chain-verify` | verify the tamper-evident journal chain; list breaks | `--count breaks` \| `--json` |
+
+### Tamper-evident journal + release-tag pin (D-49.2-07)
+
+Every `.sma/journal` line is hash-chained: `prev` = sha256 of the previous raw
+line (`genesis` for the first). The whole V2 history is a legacy prev-less
+PREFIX that is never retro-broken; tamper-evidence starts the moment the first
+chained line lands. `chain-verify` reports any edit, deletion, or post-chain
+insertion (a break is NEVER auto-repaired — append a new chain-start on top,
+preserving the break).
+
+`chain-tip` emits a deterministic merged tip; the **sma-ship release ritual
+pins `SMA-Journal-Tip: <tip>`** as the final line of the annotated `V1.N` tag
+(product releases follow the same convention). To audit a past release:
+`git tag -n99 V1.N`, read the pinned tip, and recompute `chain-tip` against the
+journal state at that commit — a mismatch is evidence of a local edit.
+
+### Structural receipts (D-49.2-06)
+
+A SUMMARY may carry a `receipts:` frontmatter block — machine-checkable claims
+`{id, assertion, check_command, expected_sha256}` (plus optional `expected_exit`,
+`hash_stdout`, `coverage_id`) layered over the V2 `coverage:` block. `reverify`
+re-runs each `check_command` across the SAME `isSafeCommand` boundary as
+predictions; `--fresh-clone` runs on a `git clone --no-hardlinks` so only
+COMMITTED evidence counts. The RECEIPT-PROSE lint fails any 49.2+ SUMMARY whose
+machine-verifiable coverage item (`human_judgment: false`) carries no receipt —
+a prose-only «done» cannot pass lint.
 
 ### Memory (pillar 1)
 
