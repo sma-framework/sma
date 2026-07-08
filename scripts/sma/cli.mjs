@@ -64,6 +64,7 @@ function dirsFrom(root) {
     gatesDir: join(root, 'gates'), // 49.1-17 (D-49.1-13) — soft-deny evidence markers + override tokens
     execDir: join(root, 'exec'), // 49.1-20 (B14) — per-plan execution progress journal
     stallDir: join(root, 'stall'), // 49.1-21 (B16) — per-session rolling PostToolUse window
+    benchDir: join(root, 'bench'), // 49.2-01 (D-49.2-02) — bench markers: ttc/, exam/, selfcost.json
   }
 }
 
@@ -1316,6 +1317,32 @@ async function cmdStallCheck({ dirs }) {
     const stall = await import('./lib/stall.mjs')
     const events = stall.recordEvent(evt, { stallDir: dirs.stallDir, sessionToken })
     const detection = stall.detect(events)
+
+    // ttc first-edit recorder (49.2-01, S5 instrument). Additive, fail-open: on the
+    // FIRST Edit|Write of a session write ONE ttc marker so bench can measure
+    // session-start -> first-Edit. A bench bug here must NEVER break stall-check, so
+    // the whole call is wrapped (T-49.2-03). Plan 02's `sma pre` multiplexer will
+    // absorb this like every other consumer.
+    try {
+      const toolName = typeof evt.tool_name === 'string' ? evt.tool_name : ''
+      if (toolName === 'Edit' || toolName === 'Write') {
+        // registeredAt = this session's registry acquireTime (the ttc window start).
+        let registeredAt = null
+        try {
+          const registry = await import('./lib/registry.mjs')
+          const { readJsonSafe } = await import('./lib/fs-atomics.mjs')
+          const identity = registry.resolveTerminalIdentity({ sessionToken })
+          const sess = readJsonSafe(join(dirs.sessionsDir, `${identity.terminalId}.json`))
+          if (sess && typeof sess.acquireTime === 'string') registeredAt = sess.acquireTime
+        } catch {
+          /* fail-open — recordFirstEdit falls back to now */
+        }
+        const bench = await import('./lib/bench.mjs')
+        bench.recordFirstEdit({ toolName, sessionToken, dirs, registeredAt })
+      }
+    } catch {
+      /* fail-open — the ttc recorder never wedges stall-check (T-49.2-03) */
+    }
 
     if (detection) {
       // Per-pattern per-session dedup — reuse the reflex seen-store (session-

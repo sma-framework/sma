@@ -625,5 +625,336 @@ function readJson(path, readFile) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Task 2 — the harness: A/B throwaway-clone replay + hook timing (S7), the
+// compaction exam (S3), and the ttc first-edit recorder (S5 instrument).
+// ════════════════════════════════════════════════════════════════════════════
+
+import { mkdtempSync, appendFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { atomicWriteJson, atomicWriteRaw } from './fs-atomics.mjs'
+
+/** The wired hook set the A/B replay drives (from .claude/settings.json). */
+export const PRE_TOOL_HOOKS = ['collision-check', 'reflex-check', 'gates-check']
+export const POST_TOOL_HOOKS = ['stall-check']
+
+/** SLO budget (D-49.2-04): a hook whose p95 exceeds this HURTS. */
+export const HOOK_BUDGET_MS = 300
+
+/** A stdout that looks like an advisory WARN on the neutral fixture = a hurt. */
+function looksLikeWarn(stdout) {
+  const s = String(stdout ?? '')
+  return /additionalContext|SMA-гейт|SMA-стоп-сигнал|"warn"/i.test(s)
+}
+
+function percentile(samples, p) {
+  if (!samples.length) return 0
+  const s = [...samples].sort((a, b) => a - b)
+  const idx = Math.min(s.length - 1, Math.max(0, Math.ceil((p / 100) * s.length) - 1))
+  return s[idx]
+}
+
+/**
+ * abRun(opts) -> the A/B delta report. Creates TWO throwaway clones
+ * (`git clone --local <src> <mkdtemp>/with|without`), replays the fixture hook
+ * script spawning each hook in the `with` clone and SKIPPING it in `without`
+ * (the delta IS the SMA layer), and records wall-ms per event. The report carries
+ * per-hook p50/p95, spawns-per-tool-call, total overhead ms, AND a `hurts` array —
+ * negative results are FIRST-CLASS output (the honest-bench clause): any hook whose
+ * p95 exceeds HOOK_BUDGET_MS, or that emits an unexpected WARN on the neutral
+ * fixture, lands in `hurts`.
+ *
+ * SECURITY (T-49.2-02): the source repo receives ONLY the read-class clone call;
+ * every hook spawn runs with cwd under a mkdtemp clone, never the source root. The
+ * injected exec records every invocation so tests can assert this.
+ *
+ * @param {{srcRoot:string, fixturePath?:string, fixture?:object[], exec:Function,
+ *          hrtime:Function, mkdtempFn?:Function, cliPath?:string, readFile?:Function}} opts
+ */
+export function abRun(opts = {}) {
+  const exec = opts.exec
+  const hrtime = typeof opts.hrtime === 'function' ? opts.hrtime : () => 0
+  if (typeof exec !== 'function') throw new Error('abRun requires an injected exec')
+  const mk = opts.mkdtempFn ?? (() => mkdtempSync(join(tmpdir(), 'sma-ab-')))
+  const cliPath = opts.cliPath ?? 'scripts/sma/cli.mjs'
+  const events = loadFixture(opts)
+
+  const withDir = mk('with')
+  const withoutDir = mk('without')
+  // read-class clone of the source into each throwaway root (never mutate src)
+  exec('git', ['clone', '--local', opts.srcRoot, withDir], {})
+  exec('git', ['clone', '--local', opts.srcRoot, withoutDir], {})
+
+  const timings = {} // hook -> [ms]
+  const warned = new Set()
+  const toolHookSet = new Set([...PRE_TOOL_HOOKS, ...POST_TOOL_HOOKS])
+  let toolHookSpawns = 0 // per-tool-call hooks only (session-start excluded)
+  let toolCalls = 0
+
+  for (const ev of events) {
+    const hook = ev && ev.hook
+    if (!hook) continue
+    if (POST_TOOL_HOOKS.includes(hook)) toolCalls += 1
+    // `without` skips the SMA hook entirely — the delta is the SMA layer.
+    const before = hrtime()
+    const res = exec(process.execPath ?? 'node', [cliPath, hook], {
+      cwd: withDir,
+      input: JSON.stringify(ev.stdinPayload ?? {}),
+    })
+    const after = hrtime()
+    const elapsed = Math.max(0, after - before)
+    ;(timings[hook] ??= []).push(elapsed)
+    if (toolHookSet.has(hook)) toolHookSpawns += 1
+    if (looksLikeWarn(res && res.stdout)) warned.add(hook)
+  }
+
+  const perHook = {}
+  const hurts = []
+  for (const [hook, samples] of Object.entries(timings)) {
+    const p50 = percentile(samples, 50)
+    const p95 = percentile(samples, 95)
+    perHook[hook] = { p50, p95, count: samples.length }
+    if (p95 > HOOK_BUDGET_MS) hurts.push({ hook, reason: 'p95-over-budget', p95 })
+    if (warned.has(hook)) hurts.push({ hook, reason: 'unexpected-warn-on-neutral-fixture' })
+  }
+
+  const totalOverheadMs = Object.values(timings)
+    .flat()
+    .reduce((a, b) => a + b, 0)
+  return {
+    perHook,
+    spawnsPerToolCall: toolCalls > 0 ? round2(toolHookSpawns / toolCalls) : toolHookSpawns,
+    totalOverheadMs,
+    toolCalls,
+    clones: { withDir, withoutDir },
+    hurts,
+  }
+}
+
+/** Load the fixture events from an injected array or a JSONL fixture path. */
+function loadFixture(opts) {
+  if (Array.isArray(opts.fixture)) return opts.fixture
+  const raw = opts.fixturePath ? readText(opts.fixturePath, opts.readFile) : null
+  if (!raw) return []
+  const out = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    try {
+      out.push(JSON.parse(t))
+    } catch {
+      /* fail-open — skip corrupt fixture line */
+    }
+  }
+  return out
+}
+
+/**
+ * measureSelfCost(opts) -> S7 base. Replays the wired hook set over the fixture
+ * (injected exec + hrtime) and aggregates the per-tool-call combined node cost:
+ * the 3 PreToolUse + 1 PostToolUse spawns. Deterministic, zero-LLM. Persists
+ * `.sma/bench/selfcost.json` so readSelfCostBase can surface it in `bench --json`.
+ *
+ * @param {{exec:Function, hrtime:Function, fixturePath?:string, fixture?:object[],
+ *          dirs?:object, cliPath?:string, readFile?:Function, persist?:boolean, writeFn?:Function}} opts
+ */
+export function measureSelfCost(opts = {}) {
+  const exec = opts.exec
+  const hrtime = typeof opts.hrtime === 'function' ? opts.hrtime : () => 0
+  const cliPath = opts.cliPath ?? 'scripts/sma/cli.mjs'
+  const events = loadFixture(opts)
+  const hookSet = new Set([...PRE_TOOL_HOOKS, ...POST_TOOL_HOOKS])
+
+  let totalMs = 0
+  let toolCalls = 0
+  let spawns = 0
+  for (const ev of events) {
+    const hook = ev && ev.hook
+    if (!hookSet.has(hook)) continue
+    if (POST_TOOL_HOOKS.includes(hook)) toolCalls += 1
+    const before = hrtime()
+    if (typeof exec === 'function') exec(process.execPath ?? 'node', [cliPath, hook], { input: JSON.stringify(ev.stdinPayload ?? {}) })
+    const after = hrtime()
+    totalMs += Math.max(0, after - before)
+    spawns += 1
+  }
+
+  const msPerToolCall = toolCalls > 0 ? round2(totalMs / toolCalls) : 0
+  const n = toolCalls
+  if (opts.persist !== false && opts.dirs && opts.dirs.benchDir) {
+    try {
+      const write = opts.writeFn ?? atomicWriteJson
+      write(join(opts.dirs.benchDir, 'selfcost.json'), { msPerToolCall, n, spawnsPerToolCall: toolCalls > 0 ? round2(spawns / toolCalls) : spawns, capturedAt: new Date(opts.now ?? Date.now()).toISOString() })
+    } catch {
+      /* persistence is best-effort — the measure still returns */
+    }
+  }
+  return result('self-cost', {
+    value: msPerToolCall,
+    unit: 'ms-per-tool-call',
+    n,
+    method: 'hook wall-time proxy; spend-share instrument arrives plan 09',
+    status: n > 0 ? 'measured' : 'insufficient-data',
+  })
+}
+
+// ── S3 compaction exam: deterministic extraction + normalized-keyword grading ─
+
+/** The 10 exam question ids, in order (mirror fixtures/bench/compaction-exam.md). */
+export const EXAM_QUESTIONS = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10']
+
+/**
+ * buildAnswerKey(state) -> [{ q, prompt, answer, keywords }]. DETERMINISTIC
+ * extraction: the SAME state yields the SAME key on every run (no LLM, no clock).
+ * Each question's required-keyword list is derived from its extracted answer —
+ * grading is normalized keyword matching against these, never judgment.
+ *
+ * @param {object} state  { activePlan, nextTask, filesModified, claims, journalTail,
+ *                          gates, nextMigration, phaseWave, lockedDecisions, predictions }
+ */
+export function buildAnswerKey(state = {}) {
+  const s = state
+  const kw = (v) => tokenizeKeywords(v)
+  const rows = [
+    { q: 'Q1', prompt: 'active plan id', answer: str(s.activePlan) },
+    { q: 'Q2', prompt: 'next undone task', answer: str(s.nextTask) },
+    { q: 'Q3', prompt: 'current plan files_modified', answer: joinList(s.filesModified) },
+    { q: 'Q4', prompt: 'active claims + holders', answer: joinList(s.claims) },
+    { q: 'Q5', prompt: 'last 3 journal events', answer: joinList(s.journalTail) },
+    { q: 'Q6', prompt: 'open gates / soft-denies', answer: joinList(s.gates) },
+    { q: 'Q7', prompt: 'next free migration slot', answer: str(s.nextMigration) },
+    { q: 'Q8', prompt: 'current phase + wave', answer: str(s.phaseWave) },
+    { q: 'Q9', prompt: 'locked D-XX ids constraining the active task', answer: joinList(s.lockedDecisions) },
+    { q: 'Q10', prompt: "active plan's prediction ids + thresholds", answer: joinList(s.predictions) },
+  ]
+  return rows.map((r) => ({ ...r, keywords: kw(r.answer) }))
+}
+
+/**
+ * examNew(opts) -> { key, path }. Builds the deterministic answer key from the
+ * injected state and writes it to `.sma/bench/exam/<ts>-key.json`. Repeated runs
+ * with the same state + ts produce a byte-identical key (test 4 determinism).
+ *
+ * @param {{dirs?:object, state:object, now?:number|string, writeFn?:Function}} opts
+ */
+export function examNew(opts = {}) {
+  const key = buildAnswerKey(opts.state)
+  const ts = typeof opts.now === 'string' ? opts.now : new Date(opts.now ?? Date.now()).toISOString()
+  const stamp = ts.replace(/[:.]/g, '-')
+  const payload = { ts, questions: key }
+  let path = null
+  if (opts.dirs && opts.dirs.benchDir) {
+    path = join(opts.dirs.benchDir, 'exam', `${stamp}-key.json`)
+    const write = opts.writeFn ?? atomicWriteJson
+    write(path, payload)
+  }
+  return { key: payload, path }
+}
+
+/**
+ * examGrade(opts) -> { score, perQuestion }. Normalized keyword matching (casefold,
+ * trim) of the operator's answers against each question's required-keyword list from
+ * the key; a question passes when ALL its required keywords appear in the answer.
+ * Appends ONE JSONL result line to `.sma/bench/exam/results.jsonl` (fs-atomics), so
+ * measureCompactionExam (S3) reads it. Zero LLM.
+ *
+ * @param {{key:object, answers:object, dirs?:object, now?:number, readFile?:Function, appendFn?:Function}} opts
+ */
+export function examGrade(opts = {}) {
+  const questions = (opts.key && Array.isArray(opts.key.questions) ? opts.key.questions : []).filter(Boolean)
+  const answers = opts.answers && typeof opts.answers === 'object' ? opts.answers : {}
+  const perQuestion = []
+  let passed = 0
+  for (const q of questions) {
+    const given = normalizeText(answers[q.q])
+    const required = Array.isArray(q.keywords) ? q.keywords : []
+    const ok = required.length > 0 && required.every((k) => given.includes(k))
+    if (ok) passed += 1
+    perQuestion.push({ q: q.q, ok, required })
+  }
+  const score = questions.length ? Math.round((passed / questions.length) * 100) : 0
+
+  // append one JSONL result line (via fs-atomics read-modify-write).
+  if (opts.dirs && opts.dirs.benchDir) {
+    try {
+      const file = join(opts.dirs.benchDir, 'exam', 'results.jsonl')
+      const line = JSON.stringify({ ts: new Date(opts.now ?? Date.now()).toISOString(), score, n: questions.length, keyTs: opts.key && opts.key.ts }) + '\n'
+      if (typeof opts.appendFn === 'function') {
+        opts.appendFn(file, line)
+      } else {
+        const prior = readText(file, opts.readFile) ?? ''
+        atomicWriteRaw(file, prior + line)
+      }
+    } catch {
+      /* best-effort append — grading result still returned */
+    }
+  }
+  return { score, perQuestion }
+}
+
+// ── S5 instrument: ttc first-edit recorder (rides the stall-check path) ───────
+
+/**
+ * recordFirstEdit(opts) -> { written:boolean, path?:string }. On the FIRST Edit|Write
+ * of a session, writes ONE marker { sessionToken, registeredAt, firstEditAt } to
+ * `.sma/bench/ttc/<session>.json`; a second Edit is a no-op (marker exists -> early
+ * return, no rewrite). Fully tolerant (never throws) — the caller wraps it in a
+ * try/catch on the hook path so a bench bug can never break stall-check (T-49.2-03).
+ *
+ * @param {{toolName:string, sessionToken:string, dirs?:object, now?:number,
+ *          registeredAtFor?:Function, existsFn?:Function, writeFn?:Function}} opts
+ */
+export function recordFirstEdit(opts = {}) {
+  try {
+    const toolName = opts.toolName
+    if (toolName !== 'Edit' && toolName !== 'Write') return { written: false }
+    if (!opts.dirs || !opts.dirs.benchDir) return { written: false }
+    const stem = String(opts.sessionToken || 'unknown').replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80) || 'unknown'
+    const file = join(opts.dirs.benchDir, 'ttc', `${stem}.json`)
+    const existsFn = opts.existsFn ?? existsSync
+    if (existsFn(file)) return { written: false, path: file } // no-op: first edit already recorded
+
+    const nowIso = new Date(opts.now ?? Date.now()).toISOString()
+    let registeredAt = nowIso
+    if (typeof opts.registeredAt === 'string' && opts.registeredAt.trim()) {
+      registeredAt = opts.registeredAt.trim()
+    } else {
+      try {
+        if (typeof opts.registeredAtFor === 'function') {
+          const r = opts.registeredAtFor(opts.sessionToken)
+          if (typeof r === 'string' && r.trim()) registeredAt = r.trim()
+        }
+      } catch {
+        /* fail-open — fall back to now */
+      }
+    }
+    const write = opts.writeFn ?? atomicWriteJson
+    write(file, { sessionToken: String(opts.sessionToken || 'unknown'), registeredAt, firstEditAt: nowIso })
+    return { written: true, path: file }
+  } catch {
+    return { written: false } // fail-open — a recorder bug NEVER breaks the hook
+  }
+}
+
+// ── exam text normalization helpers ──────────────────────────────────────────
+
+function str(v) {
+  return v == null ? '' : String(v)
+}
+function joinList(v) {
+  if (Array.isArray(v)) return v.map(str).join(' ')
+  return str(v)
+}
+function normalizeText(v) {
+  return str(v).toLowerCase().replace(/\s+/g, ' ').trim()
+}
+function tokenizeKeywords(v) {
+  const norm = normalizeText(v)
+  if (!norm) return []
+  // required keywords = distinct meaningful tokens (>=2 chars), bounded set
+  const toks = norm.split(/[^a-z0-9.\-/]+/).filter((t) => t.length >= 2)
+  return [...new Set(toks)].slice(0, 8)
+}
+
 // helper re-exported so the CLI can resolve the default S1 plan set from disk
 export { readText as _readText, existsSync as _existsSync, readdirSync as _readdirSync }
