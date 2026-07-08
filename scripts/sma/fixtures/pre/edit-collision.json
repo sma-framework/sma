@@ -1,0 +1,9 @@
+{
+  "session_id": "pre-fixture-window-1",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "scripts/sma/lib/collision.mjs",
+    "old_string": "a",
+    "new_string": "b"
+  }
+}
