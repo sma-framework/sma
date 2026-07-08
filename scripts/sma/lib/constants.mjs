@@ -49,3 +49,18 @@ export const BUDGET_WARN_FRACTION = 0.8 //  WARN threshold as a fraction of each
 // baseline harness, not the lint. Phase compare splits on '.' and numeric-compares
 // each segment ('49.10' > '49.2'), NEVER a float compare.
 export const RECEIPTS_ENFORCED_FROM = '49.2'
+
+// ── 49.2-05 (D-49.2-08): the git airbag gate ─────────────────────────────────
+// Recovery points are pinned under one hierarchical ref namespace so a single
+// `for-each-ref` enumerates snapshot GROUPS by the <id> segment. These live only
+// in the LOCAL object store (outside default push refspecs — never pushed, T-49.2-05-06).
+export const AIRBAG_REF_PREFIX = 'refs/sma/airbag/'
+// Untracked-capture caps (the cap-explosion guard, T-49.2-05-03): a snapshot pins
+// at most this many untracked files / total bytes; the rest are recorded by NAME
+// only and the receipt carries untrackedTruncated:true. Ignored files (a `clean -x`
+// blast) are NEVER enumerated — ignoredNotCaptured:true instead.
+export const AIRBAG_UNTRACKED_MAX_FILES = 200
+export const AIRBAG_UNTRACKED_MAX_BYTES = 10 * 1024 * 1024 // 10 MB
+// Prune retention: keep the newest N snapshot groups, drop groups older than the age.
+export const AIRBAG_KEEP = 20
+export const AIRBAG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days

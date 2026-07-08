@@ -242,6 +242,59 @@ function truthy(v) {
 }
 
 /**
+ * consumeOverrideToken(gateId, {gatesDir, journalDir, terminalId}) -> boolean.
+ * The one-shot override-token escape (force-clear-style provenance, D-49-09),
+ * exported so any gate — including the 49.2-05 airbag (GATE-AIRBAG) — reuses the
+ * SAME machinery instead of forking its own. Present → read who/why, unlink
+ * (consume so it cannot be replayed), journal a 'gate-override' event with
+ * provenance (T-49.1-35), and return true. Absent/error → false. Never throws.
+ * @param {string} gateId
+ * @param {{gatesDir?:string, journalDir?:string, terminalId?:string}} [opts]
+ * @returns {boolean}
+ */
+export function consumeOverrideToken(gateId, opts = {}) {
+  try {
+    const { gatesDir, journalDir, terminalId } = opts
+    if (!gatesDir) return false
+    const tokenPath = join(gatesDir, `override-${gateId}.json`)
+    if (!existsSync(tokenPath)) return false
+    let reason = ''
+    let tokTerminal = ''
+    try {
+      const t = JSON.parse(readFileSync(tokenPath, 'utf8'))
+      reason = typeof t.reason === 'string' ? t.reason : ''
+      tokTerminal = typeof t.terminal === 'string' ? t.terminal : ''
+    } catch {
+      /* an unreadable token is still a present escape — consume it */
+    }
+    try {
+      unlinkSync(tokenPath) // one-shot: consume so it cannot be replayed
+    } catch {
+      /* consumption failure is non-fatal — still allow this one */
+    }
+    // journal the override use with who/why (repudiation mitigation, T-49.1-35).
+    if (journalDir && terminalId) {
+      try {
+        appendEvent(
+          {
+            type: 'gate-override',
+            actors: [terminalId],
+            scope: gateId,
+            detail: { gateId, terminal: tokTerminal || terminalId, reason },
+          },
+          { terminalId, journalDir },
+        )
+      } catch {
+        /* a journal failure never blocks the override */
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * evaluateSoftDeny(gate, opts) → { deny:boolean } — the D-49.1-13 soft-deny decision
  * for a gate that carries `softDeny`. DORMANT by default: returns {deny:false} unless
  * the gate's arm env is set. When armed, the operation is allowed if EITHER a fresh
@@ -271,39 +324,9 @@ function evaluateSoftDeny(gate, opts = {}) {
       }
     }
     // 2) one-shot override token escape (force-clear-style provenance, consumed once).
+    //    Shared machinery (consumeOverrideToken) so the airbag (GATE-AIRBAG) reuses it.
     if (opts.gatesDir) {
-      const tokenPath = join(opts.gatesDir, `override-${gate.id}.json`)
-      if (existsSync(tokenPath)) {
-        let reason = ''
-        let tokTerminal = ''
-        try {
-          const t = JSON.parse(readFileSync(tokenPath, 'utf8'))
-          reason = typeof t.reason === 'string' ? t.reason : ''
-          tokTerminal = typeof t.terminal === 'string' ? t.terminal : ''
-        } catch {
-          /* an unreadable token is still a present escape — consume it */
-        }
-        try {
-          unlinkSync(tokenPath) // one-shot: consume so it cannot be replayed
-        } catch {
-          /* consumption failure is non-fatal — still allow this one */
-        }
-        // journal the override use with who/why (repudiation mitigation, T-49.1-35).
-        if (opts.journalDir && opts.terminalId) {
-          try {
-            appendEvent(
-              {
-                type: 'gate-override',
-                actors: [opts.terminalId],
-                scope: gate.id,
-                detail: { gateId: gate.id, terminal: tokTerminal || opts.terminalId, reason },
-              },
-              { terminalId: opts.terminalId, journalDir: opts.journalDir },
-            )
-          } catch {
-            /* a journal failure never blocks the override */
-          }
-        }
+      if (consumeOverrideToken(gate.id, { gatesDir: opts.gatesDir, journalDir: opts.journalDir, terminalId: opts.terminalId })) {
         return { deny: false }
       }
     }
