@@ -13,8 +13,11 @@
  *     concatenation so THIS source never carries the adjacent two-word phrase.
  *   - Test 4: force-clear <claim> WITHOUT --yes → prints the holder block and
  *     refuses (exit 1, nothing removed).
- *   - Test 5: force-clear <claim> --yes → the claim dir is removed and the
+ *   - Test 5: force-clear <claim> --yes + evidence (--reason + --checked, the
+ *     D-49.2-11 burden-of-proof gate) → the claim dir is removed and the
  *     journal gains a 'steal' event with full provenance (D-49-09).
+ *   - Test 6: force-clear <claim> --yes WITHOUT evidence → refuses (exit 1,
+ *     «требует доказательства», claim survives) — the D-49.2-11 gate.
  *
  * Every test spawns the real CLI (execFileSync node cli.mjs) against a per-test
  * temp .sma root via the SMA_ROOT_OVERRIDE env hook — no network, no shared state.
@@ -182,7 +185,7 @@ describe('cli.mjs force-clear (D-49-09 terraform force-unlock)', () => {
     expect(existsSync(join(smaRoot, 'claims', 'push-in-progress'))).toBe(true)
   })
 
-  it('Test 5: WITH --yes → claim removed + journal gains a steal event with provenance', () => {
+  it('Test 5: WITH --yes + evidence → claim removed + journal gains a steal event with provenance', () => {
     seedClaim('push-in-progress', {
       by: 'Фабрика',
       pid: 31240,
@@ -192,7 +195,11 @@ describe('cli.mjs force-clear (D-49-09 terraform force-unlock)', () => {
       reason: 'push-in-progress:V1.48',
     })
 
-    const { stdout, status } = runCli(['force-clear', 'push-in-progress', '--yes'], { terminalName: 'Мозг' })
+    // D-49.2-11 evidence gate: a foreign-claim clear now needs --reason + --checked ON TOP of --yes.
+    const { stdout, status } = runCli(
+      ['force-clear', 'push-in-progress', '--yes', '--reason', 'test cleanup', '--checked', 'holder inspected'],
+      { terminalName: 'Мозг' },
+    )
 
     expect(status).toBe(0)
     expect(stdout).toContain('Фабрика') // former holder still printed
@@ -216,6 +223,25 @@ describe('cli.mjs force-clear (D-49-09 terraform force-unlock)', () => {
     expect(steal.detail.target).toBe('push-in-progress')
     expect(typeof steal.detail.at).toBe('string')
   })
+
+  it('Test 6: WITH --yes but WITHOUT evidence → refuses (exit 1, «требует доказательства», claim survives) (D-49.2-11)', () => {
+    seedClaim('push-in-progress', {
+      by: 'Фабрика',
+      pid: 31240,
+      session: null,
+      at: iso(Date.now() - 30000),
+      expectedPrev: null,
+      reason: 'push-in-progress:V1.48',
+    })
+
+    // --yes alone no longer suffices for a foreign clear — the burden-of-proof gate blocks it.
+    const { stdout, status } = runCli(['force-clear', 'push-in-progress', '--yes'], { terminalName: 'Мозг' })
+
+    expect(status).toBe(1)
+    expect(stdout).toContain('требует доказательства')
+    // Nothing removed — the claim dir survives.
+    expect(existsSync(join(smaRoot, 'claims', 'push-in-progress'))).toBe(true)
+  })
 })
 
 describe('cli.mjs claim + force-clear round-trip (WR-02)', () => {
@@ -230,8 +256,12 @@ describe('cli.mjs claim + force-clear round-trip (WR-02)', () => {
     expect(claim.stdout).toContain('force-clear my-scope')
     expect(existsSync(join(smaRoot, 'claims', 'my-scope'))).toBe(true)
 
-    // A DIFFERENT terminal force-clears it (the D-49-09 foreign-removal path).
-    const fc = runCli(['force-clear', 'my-scope', '--yes'], { terminalName: 'Мозг' })
+    // A DIFFERENT terminal force-clears it (the D-49-09 foreign-removal path) — with the
+    // D-49.2-11 burden-of-proof evidence (--reason + --checked) on top of --yes.
+    const fc = runCli(
+      ['force-clear', 'my-scope', '--yes', '--reason', 'test cleanup', '--checked', 'holder inspected'],
+      { terminalName: 'Мозг' },
+    )
     expect(fc.status).toBe(0)
     expect(fc.stdout).toContain('Фабрика') // former holder printed
     expect(existsSync(join(smaRoot, 'claims', 'my-scope'))).toBe(false)
