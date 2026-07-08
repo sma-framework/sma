@@ -287,6 +287,61 @@ construction. Only a `mayDeny:true` stream (today: `gates`) can surface a `deny`
 `deny` returned by any other stream is downgraded to a warn line (posture protection).
 `pre-bench --metric parity` re-verifies merged-vs-single-stream parity after any change.
 
+## Pre-compaction flight recorder (49.2-06, D-49.2-09)
+
+Auto-compaction silently deletes a session's working state. The flight recorder makes
+that moment survivable with **pure file assembly** — zero LLM, zero network, zero
+child_process anywhere in the path (PreCompact fires at the worst possible moment to
+spend tokens). It generalizes the V2 per-executor exec-journal to ALL sessions.
+
+- **`precompact-capsule`** (the NEW `PreCompact` hook): deterministically assembles a
+  capsule from the journal tail + claims + exec-journal + STATE slices and writes
+  `.sma/flight/intent.md` + `.sma/flight/capsules/<terminalId>.md` BEFORE compaction.
+- **Restore reflex**: the EXISTING `session-start` hook detects stdin `source: "compact"`
+  and re-injects the capsule as the FIRST `additionalContext` part — the session resumes
+  knowing its task, constraints, and recent decisions. NO new hook spawn for restore.
+- **`resume` / `handoff`**: `pnpm sma resume` assembles a continuation brief from the
+  flight recorder alone (works after a terminal death, not only after compaction);
+  `pnpm sma handoff` writes a teammate brief (`.sma/flight/handoff-<terminalId>.md`) with
+  claim-transfer steps.
+- **Flight marks**: every PostToolUse appends one mark via the EXISTING `stall-check`
+  spawn (zero new per-tool-call process) to `.sma/flight/marks/<terminalId>.jsonl`.
+
+**Wire it — add ONE new hook event** (`session-start` already carries the restore branch):
+
+```json
+"PreCompact": [
+  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs precompact-capsule", "timeout": 10 } ] }
+]
+```
+
+**gitignore stanza (DEC-49.2-06-01):** capsules + briefs are git-TRACKED (vendor-proof
+durability) after an unconditional secret-scan; the high-churn per-tool-call marks stay
+local runtime. After the existing `.sma/*` + `!.sma/README.md` lines add:
+
+```gitignore
+!.sma/flight/
+.sma/flight/marks/
+```
+
+**Secret scan (unconditional, T-49.2-06A):** `writeCapsule` and `writeHandoff` route
+every line through `scanForSecrets` before touching a tracked path — an AWS key, a
+`-----BEGIN … PRIVATE KEY-----` header, a `Bearer …`/`sk-…` token, or a `secret=`/
+`password=` assignment is redacted to `[redacted:<rule>]`, even under kill-switch or probe
+stand-down. Bash marks record a command SLUG only, never the full arg line.
+
+**Kill-switch / probe:**
+
+| Env var | Effect |
+|---|---|
+| `SMA_FLIGHT_DISABLE=1` | instant no-op — no capsule write, no restore injection, no mark append. **Compensating control (D-49.2-14):** the V2 exec-journal resume ritual still reconstructs the resume point from `.sma/exec/*.jsonl`. |
+| `SMA_FLIGHT_NATIVE=1` | the capability probe reports native — the whole bridge STANDS DOWN (writeCapsule → `{skipped:'native'}`). This is the D-49.2-05 demolition-clause seam: the day the vendor ships a sufficient native pre-compaction preservation mechanism, this stream retires. |
+
+**Bridge posture (D-49.2-05):** the flight recorder is a BRIDGE, not a headline. It is
+probe-gated, registers a falsifiable prediction of its own removal (P49.2-06-03), and is
+never positioned as a defensible feature — the accountability layer is the core, this is
+a bridge that retires when a sufficient native equivalent arrives.
+
 ## Fail-open contract (P3 / P4 / P5)
 
 - **P3 — foreign claims are never auto-cleared.** A stale foreign claim is flagged
