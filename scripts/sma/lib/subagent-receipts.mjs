@@ -234,7 +234,11 @@ function verifyOne(c, { repoRoot, spawnedAt, runGit, statFile }) {
  * Never throws.
  */
 export function verifyWrites(claims, opts = {}) {
-  const repoRoot = opts.repoRoot ?? process.cwd()
+  // Normalize repoRoot to the OS-native form (resolve() output uses OS separators):
+  // in production repoRoot arrives forward-slashed (registry.smaRoot normalizes to '/'),
+  // but resolve(repoRoot, path) yields backslashes on Windows — comparing the two raw
+  // would score EVERY claim 'unverifiable' on Windows. Resolving both sides fixes it.
+  const repoRoot = resolve(opts.repoRoot ?? process.cwd())
   const ctx = { repoRoot, spawnedAt: opts.spawnedAt, runGit: opts.runGit, statFile: opts.statFile }
   return (Array.isArray(claims) ? claims : []).map((c) => verifyOne(c, ctx))
 }

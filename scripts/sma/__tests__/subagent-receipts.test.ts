@@ -162,6 +162,21 @@ describe('Task 2 — verifyWrites verdict matrix', () => {
   })
 })
 
+describe('Task 2 — verifyWrites repoRoot normalization (Windows regression)', () => {
+  it('normalizes a forward-slashed repoRoot so paths inside it are not falsely unverifiable', () => {
+    // production repoRoot arrives forward-slashed (registry.smaRoot normalizes to '/');
+    // resolve(path) yields OS separators. verifyWrites must resolve both sides.
+    const fwd = resolve('/repo').replace(/\\/g, '/') // e.g. 'C:/repo' on Windows
+    const out = verifyWrites([{ path: 'inside.mjs', tier: 'tool-call', toolResultOk: true }], {
+      repoRoot: fwd,
+      spawnedAt: '2026-07-08T00:00:00Z',
+      runGit: (cmd: string) => (cmd === 'status' ? ' M inside.mjs' : ''),
+      statFile: () => true,
+    })
+    expect(out[0].verdict).toBe('verified') // NOT 'unverifiable'
+  })
+})
+
 describe('Task 2 — receipt + stats', () => {
   it('Test 5: writeReceipt appends EXACTLY ONE subagent-receipt event with counts + spawn correlation; missing spawn → null', () => {
     const verdicts = [
