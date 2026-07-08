@@ -32,6 +32,7 @@ import { join } from 'node:path'
 
 import { normalizePath, relativizePath } from './collision.mjs'
 import { appendEvent } from './journal.mjs'
+import { hasFreshEvidence } from './evidence.mjs'
 
 // ── soft-deny tier (49.1-17, D-49.1-13) ─────────────────────────────────────────
 // Full-gate evidence marker TTL: a fullgate-<sha>.json older than this no longer
@@ -45,6 +46,7 @@ const ADD_VERB = ['add'].join('') //           the stage verb
 const CHECKOUT_VERB = ['checkout'].join('') //  the destructive-restore verb
 const RESTORE_VERB = ['restore'].join('') //    the destructive-restore verb (v2)
 const BUILD_VERB = ['build'].join('') //        the local-build verb
+const FORCE_VERB = ['force'].join('') //        the force-push flag literal (49.2-07)
 
 // ── matcher helpers ───────────────────────────────────────────────────────────
 
@@ -59,6 +61,26 @@ const reGitRestore = new RegExp('\\bgit\\s+' + RESTORE_VERB + '\\b')
 const reNextBuild = new RegExp(
   '(\\bnext\\s+' + BUILD_VERB + '\\b)|(\\b(pnpm|npm|yarn)\\s+(run\\s+)?' + BUILD_VERB + '\\b)',
 )
+// force-push flag: --force / --force-with-lease / a bare -f (49.2-07, GATE-FORCEPUSH).
+const reForceFlag = new RegExp('(--' + FORCE_VERB + '(-with-lease)?\\b)|(\\s-f\\b)')
+// the allowlist source file — any target ending with lib/predict.mjs (SAFE_COMMAND lives here).
+const reAllowlistFile = /(^|\/)lib\/predict\.mjs$/i
+
+/**
+ * forcePushTarget(command) — the non-flag destination tokens after `git push`
+ * (e.g. `git push --force origin main` -> "origin main"), or 'HEAD' when bare. The
+ * evidence record's target must match this so a fresh record satisfies the gate.
+ */
+function forcePushTarget(command) {
+  const m = new RegExp('\\bgit\\s+' + PUSH_VERB + '\\b(.*)$').exec(String(command ?? ''))
+  if (!m) return 'HEAD'
+  const rest = (m[1] || '')
+    .split(/\s+/)
+    .filter((t) => t && !t.startsWith('-'))
+    .join(' ')
+    .trim()
+  return rest || 'HEAD'
+}
 
 // NOTE: collision.normalizePath lowercases the relativized target, so these
 // path matchers carry the `i` flag (the literals stay readable in canonical case).
@@ -233,6 +255,69 @@ export const GATES = [
       'иначе правка потеряется при следующей записи. Используйте: pnpm sma state set-position | ' +
       'add-blocker | resolve-blocker | set-session.',
   },
+  {
+    // 49.2-07 (D-49.2-11): a git force-push is a RISKY OP — it carries a burden-of-proof
+    // evidence record (op force-push). Advisory WARN by default; the soft-deny tier is
+    // DORMANT behind SMA_GATE_FORCEPUSH_DENY and, when armed, is satisfied ONLY by a fresh
+    // evidence record (mirrors GATE-PUSH's evidence-closure shape). Hard-deny stays the
+    // security guard's alone (carried V1/V2 lock).
+    id: 'GATE-FORCEPUSH',
+    tools: ['Bash'],
+    killEnv: 'SMA_GATE_FORCEPUSH_OFF',
+    match: (ctx) => reGitPush.test(ctx.command) && reForceFlag.test(ctx.command),
+    warn:
+      'SMA-гейт [GATE-FORCEPUSH]: force-push — рискованная операция. Перед ней запишите ' +
+      'доказательство (что проверили и зачем): pnpm sma evidence force-push --target "<remote branch>" ' +
+      '--reason "<почему>" --checked "<проверка 1>" --checked "<проверка 2>". Никогда не перезаписывайте ' +
+      'чужую ветку.',
+    softDeny: {
+      armEnv: 'SMA_GATE_FORCEPUSH_DENY',
+      // fresh burden-of-proof evidence for this exact force-push target satisfies the gate.
+      evidence: ({ evidenceDir, ctx, now }) => {
+        try {
+          if (!evidenceDir) return false
+          return hasFreshEvidence({ op: 'force-push', target: forcePushTarget(ctx && ctx.command) }, { evidenceDir, now })
+        } catch {
+          return false
+        }
+      },
+      denyText:
+        'SMA-гейт [GATE-FORCEPUSH] DENY: force-push заблокирован — нет свежего доказательства ' +
+        '(burden of proof). Запишите его: pnpm sma evidence force-push --target "<remote branch>" ' +
+        '--reason "<почему>" --checked "<что проверили>". Kill-switch: SMA_GATE_FORCEPUSH_DENY=0.',
+    },
+  },
+  {
+    // 49.2-07 (D-49.2-11): editing the SAFE_COMMAND allowlist (predict.mjs) is a RISKY OP
+    // — the allowlist is the single execution boundary the blind verifier + receipts + the
+    // pre-push grill all ride on (T-49.2-07A: allowlist drift). Advisory WARN by default;
+    // killEnv SMA_GATE_ALLOWLIST_OFF; the DORMANT soft-deny behind SMA_GATE_ALLOWLIST_DENY
+    // requires a fresh 'allowlist-edit' evidence record.
+    id: 'GATE-ALLOWLIST',
+    tools: ['Edit', 'Write'],
+    killEnv: 'SMA_GATE_ALLOWLIST_OFF',
+    match: (ctx) => reAllowlistFile.test(ctx.target) && /SAFE_COMMAND/.test(ctx.content),
+    warn:
+      'SMA-гейт [GATE-ALLOWLIST]: правка allowlist команд (SAFE_COMMAND в lib/predict.mjs) — ' +
+      'рискованная операция: это единственная граница исполнения, на которой держатся рецепты, ' +
+      'слепой верификатор и pre-push grill. Запишите доказательство: pnpm sma evidence allowlist-edit ' +
+      '--target lib/predict.mjs --reason "<почему>" --checked "<что проверили>".',
+    softDeny: {
+      armEnv: 'SMA_GATE_ALLOWLIST_DENY',
+      evidence: ({ evidenceDir, ctx, now }) => {
+        try {
+          if (!evidenceDir) return false
+          return hasFreshEvidence({ op: 'allowlist-edit', target: ctx && ctx.target }, { evidenceDir, now })
+        } catch {
+          return false
+        }
+      },
+      denyText:
+        'SMA-гейт [GATE-ALLOWLIST] DENY: правка allowlist заблокирована — нет свежего доказательства. ' +
+        'Запишите его: pnpm sma evidence allowlist-edit --target lib/predict.mjs --reason "<почему>" ' +
+        '--checked "<что проверили>". Kill-switch: SMA_GATE_ALLOWLIST_DENY=0.',
+    },
+  },
 ]
 
 /** truthy env flag: set and not "0"/"false"/"". */
@@ -317,9 +402,10 @@ function evaluateSoftDeny(gate, opts = {}) {
   if (!truthy(env[sd.armEnv])) return { deny: false } // dormant unless explicitly armed
 
   try {
-    // 1) evidence escape (e.g. GATE-PUSH's fullgate marker). Absent for GATE-MEMEDIT.
+    // 1) evidence escape (GATE-PUSH's fullgate marker; the 49.2-07 risky-op gates'
+    //    burden-of-proof record via evidenceDir + ctx). Absent for GATE-MEMEDIT.
     if (typeof sd.evidence === 'function') {
-      if (sd.evidence({ gatesDir: opts.gatesDir, headSha: opts.headSha, now: opts.now }) === true) {
+      if (sd.evidence({ gatesDir: opts.gatesDir, headSha: opts.headSha, now: opts.now, evidenceDir: opts.evidenceDir, ctx: opts.ctx }) === true) {
         return { deny: false }
       }
     }
@@ -426,6 +512,8 @@ export function checkEvent(opts = {}) {
             now: opts.now,
             journalDir: opts.journalDir,
             terminalId: opts.terminalId,
+            evidenceDir: opts.evidenceDir, // 49.2-07 — burden-of-proof dir for the risky-op gates
+            ctx, // 49.2-07 — the relativized command/target the evidence must match
           })
           if (sd.deny) {
             out.deny = { gateId: gate.id, text: gate.softDeny.denyText || gate.warn }

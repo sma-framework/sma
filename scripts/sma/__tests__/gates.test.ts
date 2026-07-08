@@ -70,8 +70,8 @@ const DOD_AGENT_PASS = JSON.stringify({
 })
 
 describe('gates.mjs — the checkable HARD-RULE inventory', () => {
-  it('registers all 9 gates with the contract shape', () => {
-    expect(GATES).toHaveLength(9)
+  it('registers all 11 gates with the contract shape', () => {
+    expect(GATES).toHaveLength(11)
     const seen = new Set<string>()
     for (const g of GATES) {
       expect(typeof g.id).toBe('string')
@@ -94,6 +94,8 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
         'GATE-CHECKOUT',
         'GATE-MIGNUM',
         'GATE-STATEEDIT',
+        'GATE-FORCEPUSH',
+        'GATE-ALLOWLIST',
       ]),
     )
   })
@@ -281,16 +283,20 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
     const pushEvt = () => bash('git push origin main')
     const memEvt = () => edit('.claude/memory/MEMORY.md', { old_string: 'a', new_string: 'b' })
 
-    // Only GATE-PUSH and GATE-MEMEDIT may carry softDeny (D-49.1-13: 1-2 gates).
-    it('exactly GATE-PUSH and GATE-MEMEDIT carry a softDeny capability', () => {
+    // GATE-PUSH + GATE-MEMEDIT (49.1-17) plus the 49.2-07 risky-op gates carry softDeny.
+    it('exactly the softDeny-capable gates carry a softDeny capability', () => {
       const withSoft = GATES.filter((g: any) => g.softDeny)
-      expect(new Set(withSoft.map((g: any) => g.id))).toEqual(new Set(['GATE-PUSH', 'GATE-MEMEDIT']))
+      expect(new Set(withSoft.map((g: any) => g.id))).toEqual(
+        new Set(['GATE-PUSH', 'GATE-MEMEDIT', 'GATE-FORCEPUSH', 'GATE-ALLOWLIST']),
+      )
       for (const g of withSoft) {
         expect(typeof (g as any).softDeny.armEnv).toBe('string')
         expect(typeof (g as any).softDeny.denyText).toBe('string')
       }
       expect((GATES.find((g: any) => g.id === 'GATE-PUSH') as any).softDeny.armEnv).toBe('SMA_GATE_PUSH_DENY')
       expect((GATES.find((g: any) => g.id === 'GATE-MEMEDIT') as any).softDeny.armEnv).toBe('SMA_GATE_MEMEDIT_DENY')
+      expect((GATES.find((g: any) => g.id === 'GATE-FORCEPUSH') as any).softDeny.armEnv).toBe('SMA_GATE_FORCEPUSH_DENY')
+      expect((GATES.find((g: any) => g.id === 'GATE-ALLOWLIST') as any).softDeny.armEnv).toBe('SMA_GATE_ALLOWLIST_DENY')
     })
 
     // Test 1 — dormant default: arm env unset → WARN only (allow), even with no marker.
