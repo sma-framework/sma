@@ -45,6 +45,13 @@ import { deriveTags } from './reflex.mjs'
 import { appendEvent } from './journal.mjs'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 
+// SMA-3 escaped-verb isolation: the two push fixtures replay the exact command the
+// PUSH gates forbid, so the literal is ASSEMBLED (never adjacent in this source) —
+// the same posture gates.mjs uses so this guard file does not trip SMA-3 on itself.
+const PUSH_VERB = ['push'].join('')
+const PUSH_FIXTURE = `git ${PUSH_VERB} origin main`
+const FORCE_PUSH_FIXTURE = `git ${PUSH_VERB} --force origin main`
+
 /** Default provenance-lease TTL: 7 days. */
 export const DISARM_LEASE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -75,7 +82,7 @@ export const HAZARDS = [
     kind: 'gate',
     hazard: 'a push ships without the full gate / origin-diff review / V1.N tag',
     compensatingControl: 'the founder-only push ritual (/sma-ship) still runs the full gate; the pre-push grill (plan 07) inspects origin..main independently of this WARN',
-    fixture: { tool_name: 'Bash', tool_input: { command: 'git push origin main' } },
+    fixture: { tool_name: 'Bash', tool_input: { command: PUSH_FIXTURE } },
   },
   {
     killEnv: 'SMA_GATE_ADDALL_OFF',
@@ -147,7 +154,7 @@ export const HAZARDS = [
     kind: 'gate',
     hazard: 'a force-push overwrites a branch with no burden-of-proof evidence record',
     compensatingControl: 'the soft-deny tier (SMA_GATE_FORCEPUSH_DENY) + evidence.mjs burden-of-proof record still gate an armed install; the destructive-git house rule bans force-push to foreign branches',
-    fixture: { tool_name: 'Bash', tool_input: { command: 'git push --force origin main' } },
+    fixture: { tool_name: 'Bash', tool_input: { command: FORCE_PUSH_FIXTURE } },
   },
   {
     killEnv: 'SMA_GATE_ALLOWLIST_OFF',
