@@ -2,7 +2,8 @@
 name: sma-roadmapper
 description: Creates project roadmaps with phase breakdown, requirement mapping, success criteria derivation, and coverage validation. Spawned by /sma-new-project orchestrator.
 tools: Read, Write, Bash, Glob, Grep, Skill
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

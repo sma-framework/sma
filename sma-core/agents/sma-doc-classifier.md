@@ -2,7 +2,8 @@
 name: sma-doc-classifier
 description: Classifies a single planning document as ADR, PRD, SPEC, DOC, or UNKNOWN. Extracts title, scope summary, and cross-references. Spawned in parallel by /sma-ingest-docs. Writes a JSON classification file and returns a one-line confirmation.
 tools: Read, Write, Grep, Glob
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: pink
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

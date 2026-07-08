@@ -2,7 +2,8 @@
 name: sma-debug-session-manager
 description: Manages multi-cycle /sma-debug checkpoint and continuation loop in isolated context. Spawns sma-debugger agents, handles checkpoints via AskUserQuestion, dispatches specialist skills, applies fixes. Returns compact summary to main context. Spawned by /sma-debug command.
 tools: Read, Write, Edit, Bash, Grep, Glob, Agent, AskUserQuestion
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: red
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

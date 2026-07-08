@@ -2,9 +2,8 @@
 name: sma-executor
 description: Executes SMA plans with atomic commits, deviation handling, checkpoint protocols, and state management. Spawned by execute-phase orchestrator or execute-plan command.
 tools: Read, Write, Edit, Bash, Grep, Glob, Skill, mcp__context7__*
-# house palette: blue = #3B82F6 family (execution), cyan = #3CC0A0 family (research/verify).
-# Claude Code agent frontmatter accepts NAMED colors only — hex is not rendered (FI-7 fallback branch, 49.1-02).
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

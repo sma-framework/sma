@@ -2,7 +2,8 @@
 name: sma-doc-synthesizer
 description: Synthesizes classified planning docs into a single consolidated context. Applies precedence rules, detects cross-ref cycles, enforces LOCKED-vs-LOCKED hard-blocks, and writes INGEST-CONFLICTS.md with three buckets (auto-resolved, competing-variants, unresolved-blockers). Spawned by /sma-ingest-docs.
 tools: Read, Write, Grep, Glob, Bash
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: pink
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

@@ -2,7 +2,8 @@
 name: sma-doc-writer
 description: Writes and updates project documentation. Spawned with a doc_assignment block specifying doc type, mode (create/update/supplement), and project context.
 tools: Read, Bash, Grep, Glob, Write, Edit, Skill
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: pink
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write"

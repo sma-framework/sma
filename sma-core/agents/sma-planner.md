@@ -2,7 +2,8 @@
 name: sma-planner
 description: Creates executable phase plans with task breakdown, dependency analysis, and goal-backward verification. Spawned by /sma-plan-phase orchestrator.
 tools: Read, Write, Edit, Bash, Glob, Grep, Skill, WebFetch, mcp__context7__*
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

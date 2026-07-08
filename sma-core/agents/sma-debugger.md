@@ -2,7 +2,8 @@
 name: sma-debugger
 description: Investigates bugs using scientific method, manages debug sessions, handles checkpoints. Spawned by /sma-debug orchestrator.
 tools: Read, Write, Edit, Bash, Grep, Glob, Skill, WebSearch
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: red
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

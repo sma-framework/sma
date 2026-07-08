@@ -2,7 +2,8 @@
 name: sma-ai-researcher
 description: Researches a chosen AI framework's official docs to produce implementation-ready guidance — best practices, syntax, core patterns, and pitfalls distilled for the specific use case. Writes the Framework Quick Reference and Implementation Guidance sections of AI-SPEC.md. Spawned by /sma-ai-integration-phase orchestrator.
 tools: Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, mcp__context7__*
-color: cyan
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

@@ -2,7 +2,8 @@
 name: sma-research-synthesizer
 description: Synthesizes research outputs from parallel researcher agents into SUMMARY.md. Spawned by /sma-new-project after 4 researcher agents complete.
 tools: Read, Write, Bash, Skill
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

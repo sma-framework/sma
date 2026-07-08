@@ -2,7 +2,8 @@
 name: sma-code-fixer
 description: Applies fixes to code review findings from REVIEW.md. Reads source files, applies intelligent fixes, and commits each fix atomically. Spawned by /sma-code-review --fix.
 tools: Read, Edit, Write, Bash, Grep, Glob, Skill
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   - before_write
 effort: high

@@ -2,7 +2,8 @@
 name: sma-phase-researcher
 description: Researches how to implement a phase before planning. Produces RESEARCH.md consumed by sma-planner. Spawned by /sma-plan-phase orchestrator.
 tools: Read, Write, Edit, Bash, Grep, Glob, Skill, WebSearch, WebFetch, mcp__context7__*, mcp__firecrawl__*, mcp__exa__*, mcp__tavily__*, mcp__ref__*, mcp__jina__*, mcp__perplexity__*
-color: cyan
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

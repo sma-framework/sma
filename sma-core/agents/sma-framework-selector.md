@@ -2,7 +2,8 @@
 name: sma-framework-selector
 description: Presents an interactive decision matrix to surface the right AI/LLM framework for the user's specific use case. Produces a scored recommendation with rationale. Spawned by /sma-ai-integration-phase and /sma-select-framework orchestrators.
 tools: Read, Bash, Grep, Glob, WebSearch, AskUserQuestion
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 effort: xhigh
 ---
 

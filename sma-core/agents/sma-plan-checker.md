@@ -6,7 +6,8 @@ description: Verifies plans will achieve phase goal before execution. Goal-backw
 # NOTHING (the orchestrator persists any output). All write tools are omitted from the
 # allowlist AND explicitly denied. Bash is for read-only inspection commands only.
 tools: Read, Grep, Glob, Bash
-color: cyan
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 effort: low
 disallowedTools: Write, Edit, MultiEdit
 ---

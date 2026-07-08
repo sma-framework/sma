@@ -9,7 +9,8 @@ tools:
   - Glob
   - Grep
   - Skill
-color: cyan
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 effort: xhigh
 ---
 

@@ -3,7 +3,8 @@ name: sma-mempalace-curator
 description: Ship-time MemPalace curation — writes the session diary, proposes/creates cross-project tunnels, mirrors extract-learnings into the temporal KG, and runs wing-scoped drawer pruning. Spawned at ship:post by the mempalace capability.
 tools: Read, Bash, Grep, Glob
 model: sonnet
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: pink
 effort: low
 ---
 

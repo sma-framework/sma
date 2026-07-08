@@ -2,7 +2,8 @@
 name: sma-intel-updater
 description: Analyzes codebase and writes structured intel files to .planning/intel/.
 tools: Read, Write, Bash, Glob, Grep
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 effort: low
 ---

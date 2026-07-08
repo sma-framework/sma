@@ -7,7 +7,8 @@ description: Verifies phase goal achievement through goal-backward analysis. Che
 # verification commands (test runs, grep, git rev-parse/show) — never destructive git or
 # code edits. Write is retained SOLELY to emit the VERIFICATION.md report (its deliverable).
 tools: Read, Write, Bash, Grep, Glob
-color: cyan
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 # hooks:
 #   PostToolUse:
 #     - matcher: "Write|Edit"

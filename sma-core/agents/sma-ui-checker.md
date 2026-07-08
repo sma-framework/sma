@@ -2,7 +2,8 @@
 name: sma-ui-checker
 description: Validates UI-SPEC.md design contracts against 6 quality dimensions. Produces BLOCK/FLAG/PASS verdicts. Spawned by /sma-ui-phase orchestrator.
 tools: Read, Bash, Glob, Grep, Skill
-color: blue
+# SMA V3 identity (2026-07-08, founder): purple = the SMA family brand; pink = docs/knowledge; red = debug/alarm. Named colors only.
+color: purple
 effort: low
 disallowedTools: Write, Edit, MultiEdit
 ---
