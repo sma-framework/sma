@@ -29,6 +29,7 @@ import {
   blindVerify,
   compareToClaimed,
   divergenceStats,
+  isForbiddenBlindPath,
 } from '../lib/blind-verify.mjs'
 import { classifyEvent } from '../lib/consequences.mjs'
 import { readLedger } from '../lib/calibration.mjs'
@@ -172,6 +173,40 @@ describe('blind-verify.mjs — tree-only re-derivation + divergence-as-heaviest-
 
     // divergenceStats counts it.
     expect(divergenceStats({ calibrationDir: dirs.calibrationDir }).count).toBe(1)
+  })
+
+  it('Test 6 — INPUT BARRIER: a SUMMARY input path is structurally refused, nothing frozen, ledger untouched (D-49.2-11, gap 2)', () => {
+    // A SUMMARY-class input is refused by the predicate the CLI guards on.
+    const summaryInput = join(root, '49.2-03-SUMMARY.md')
+    writeFileSync(
+      summaryInput,
+      '---\nphase: 49.2-test\nreceipts:\n  - id: R1\n    check_command: "node scripts/sma/cli.mjs grill --stats --metric challenge-yield"\n    expected_sha256: deadbeef\n---\n# summary\n',
+      'utf8',
+    )
+    expect(isForbiddenBlindPath(summaryInput)).toBe(true)
+    expect(isForbiddenBlindPath(planPath)).toBe(false) // a -PLAN.md is allowed
+
+    // deriveChecks refuses BEFORE any read.
+    const reads: string[] = []
+    const readFn = (p: string) => {
+      reads.push(p)
+      return require('node:fs').readFileSync(p, 'utf8')
+    }
+    const derived = deriveChecks({ planPath: summaryInput, readFn })
+    expect(derived.refused).toBe(true)
+    expect(derived.checks).toEqual([])
+    expect(reads).toEqual([]) // the SUMMARY was never read
+
+    // blindVerify refuses: no verdicts, NOTHING frozen.
+    const res: any = blindVerify({ planPath: summaryInput, runCommand: () => '0', readFn, dirs })
+    expect(res.refused).toBe(true)
+    expect(res.verdicts).toEqual([])
+    expect(res.frozenPath).toBe(null)
+    expect(existsSync(join(dirs.blindDir, '49.2-03.json'))).toBe(false)
+
+    // the calibration ledger was NEVER touched (no divergence manufactured).
+    const { records } = readLedger({ calibrationDir: dirs.calibrationDir })
+    expect(records.length).toBe(0)
   })
 
   it('Test 5 — sequencing: compareToClaimed refuses until the frozen blind file exists', () => {

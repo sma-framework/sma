@@ -4596,6 +4596,13 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
     process.stderr.write('usage: pnpm sma blind-verify <plan-path> | blind-verify --stats --metric divergence-count\n')
     return 1
   }
+  // INPUT BARRIER (D-49.2-11): the blind pass accepts ONLY a -PLAN.md. A SUMMARY/exec-journal
+  // positional is refused HERE — before any freeze or ledger write — so an operator error can
+  // never diff a report against itself and manufacture false class-A divergences (gap 2).
+  if (blind.isForbiddenBlindPath(planPath)) {
+    process.stderr.write(`SMA blind-verify СТРУКТУРНО ОТКАЗАНО: вход «${planPath}» — это отчёт исполнителя (SUMMARY/exec-journal). Слепой проход выводит «done» из файла -PLAN.md и дерева кода, НИКОГДА из отчёта. Ничего не записано, реестр не тронут.\n`)
+    return 1
+  }
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const { execSync } = await import('node:child_process')
   const runCommand = (cmd) => {

@@ -46,6 +46,21 @@ function isForbiddenPath(p) {
   return BLIND_FORBIDDEN.test(String(p ?? ''))
 }
 
+/**
+ * Public alias of the barrier predicate so the CLI (and any programmatic caller) can
+ * refuse a forbidden INPUT path BEFORE any freeze / ledger write. The blind pass takes
+ * ONLY a -PLAN.md; a SUMMARY/exec-journal positional is an operator error that would
+ * otherwise diff a report against itself and poison the ledger (49.2-07, D-49.2-11).
+ */
+export function isForbiddenBlindPath(p) {
+  return isForbiddenPath(p)
+}
+
+/** The structural-refusal message for a forbidden blind-verify input path. */
+function blindRefusalReason(planPath) {
+  return `blind-verify СТРУКТУРНО ОТКАЗАНО: вход «${basename(String(planPath ?? ''))}» — это отчёт исполнителя (SUMMARY/exec-journal). Слепой проход выводит «done» из файла -PLAN.md и дерева кода, НИКОГДА из отчёта. Ничего не записано, реестр не тронут.`
+}
+
 /** Strip one layer of surrounding quotes (frontmatter unquote posture). */
 function unquote(v) {
   const t = String(v ?? '').trim()
@@ -115,6 +130,12 @@ export function deriveChecks({ planPath, readFn, rootDir } = {}) {
   const read = readFn ?? ((p) => p) // caller injects the real reader
   const root = rootDir ?? dirname(String(planPath ?? '.'))
   const checks = []
+
+  // INPUT BARRIER (D-49.2-11): a SUMMARY/exec-journal input is refused BEFORE any read —
+  // deriving checks from an executor report is exactly the contamination the barrier kills.
+  if (isForbiddenPath(planPath)) {
+    return { checks, refused: true, reason: blindRefusalReason(planPath) }
+  }
 
   let text = ''
   try {
@@ -238,6 +259,13 @@ function verifyCommand(check, runCommand) {
 export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, planId, now } = {}) {
   const pid = planId ?? planIdFromPath(planPath)
   const verdicts = []
+
+  // INPUT BARRIER (D-49.2-11): refuse a SUMMARY/exec-journal input path — nothing frozen,
+  // no ledger touched. The blind pass accepts ONLY a -PLAN.md.
+  if (isForbiddenPath(planPath)) {
+    return { planId: pid, verdicts, refused: true, reason: blindRefusalReason(planPath), frozenPath: null }
+  }
+
   try {
     const { checks } = deriveChecks({ planPath, readFn, rootDir })
     for (const check of checks) {
