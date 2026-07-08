@@ -69,6 +69,7 @@ function dirsFrom(root) {
     execDir: join(root, 'exec'), // 49.1-20 (B14) — per-plan execution progress journal
     stallDir: join(root, 'stall'), // 49.1-21 (B16) — per-session rolling PostToolUse window
     benchDir: join(root, 'bench'), // 49.2-01 (D-49.2-02) — bench markers: ttc/, exam/, selfcost.json
+    perfDir: join(root, 'perf'), // 49.2-02 (D-49.2-04) — `sma pre` per-stream timing samples (pre.jsonl)
   }
 }
 
@@ -1021,278 +1022,255 @@ async function cmdLoad({ flags, dirs }) {
 }
 
 /**
- * collision-check — the PreToolUse contract (RESEARCH Pattern 2). Reads the tool
- * event JSON from stdin, maps the tool's touched path (Edit/Write) or push
- * invocation (Bash) to a scope/push-claim collision, and emits a WARN-only
- * hookSpecificOutput (permissionDecision 'allow' — NEVER 'deny'). Also piggybacks
- * a throttled heartbeat (the honest cadence, OQ2). Hook-facing: exit 0 always.
+ * pre — the `sma pre` PreToolUse MULTIPLEXER (49.2-02, D-49.2-04). ONE node run per
+ * Edit/Write/Bash: reads the event once, builds the SHARED ctx (identity + heartbeat
+ * + seen loaded once), dispatches the ordered PRE_CHECKS pipeline (collision → reflex
+ * → gates, later + airbag + spend), merges output under the fail-open WARN / soft-deny
+ * posture, and appends a bounded per-stream timing sample so S7 stays measurable in
+ * the field. Replaces the 3 legacy spawns. Hook-facing: exit 0 always.
+ */
+async function cmdPre({ dirs }) {
+  const evt = readStdinJson()
+  const pre = await import('./lib/pre.mjs')
+  const ctx = await pre.buildCtx({ evt, dirs, env: process.env, now: () => Date.now() })
+  const { warns, deny, sample } = await pre.runPre(ctx)
+  const out = pre.mergeOutput({ warns, deny })
+  if (out) printJson(out)
+  // perf sample gets its OWN try/catch — a perf-store failure never blocks the hook.
+  try {
+    pre.appendPerfSample(sample, { perfDir: dirs.perfDir })
+  } catch {
+    /* fail-open */
+  }
+  return 0
+}
+
+/**
+ * runSingleStream(dirs, id) — the legacy single-stream delegation seam. Builds the
+ * SAME shared ctx via buildCtx and runs ONLY the stream with the given id from
+ * PRE_CHECKS (honoring its kill-switch), saving the shared seen once. Parity with
+ * the multiplexer is by CONSTRUCTION — collision-check / reflex-check / gates-check
+ * are now thin aliases over the same stream objects, not copied glue.
+ */
+async function runSingleStream(dirs, id) {
+  const pre = await import('./lib/pre.mjs')
+  const evt = readStdinJson()
+  const ctx = await pre.buildCtx({ evt, dirs, env: process.env, now: () => Date.now() })
+  const stream = pre.PRE_CHECKS.find((s) => s.id === id)
+  let warns = []
+  let deny = null
+  if (stream && stream.tools.includes(ctx.toolName)) {
+    const killed = stream.killSwitchEnv && (() => { const v = String(process.env[stream.killSwitchEnv] ?? '').trim().toLowerCase(); return !!v && v !== '0' && v !== 'false' })()
+    if (!killed) {
+      try {
+        const r = (await stream.run(ctx)) || { warns: [] }
+        warns = Array.isArray(r.warns) ? r.warns.filter((w) => typeof w === 'string' && w) : []
+        if (r.deny && r.deny.text && stream.mayDeny) deny = { text: String(r.deny.text) }
+      } catch {
+        /* fail-open */
+      }
+    }
+  }
+  // save the shared seen once (reflex/gates mutate it).
+  try {
+    const terminalId = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : 'unknown'
+    if (ctx.deps && ctx.deps.reflex) ctx.deps.reflex.saveSeen(ctx.seen, { reflexDir: dirs.reflexDir, terminalId })
+  } catch {
+    /* fail-open */
+  }
+  const merged = pre.mergeOutput({ warns, deny })
+  if (merged) printJson(merged)
+  return 0
+}
+
+/**
+ * collision-check — DEPRECATED single-stream alias (external wiring back-compat).
+ * Delegates to the collision stream in PRE_CHECKS; the canonical wiring is `pre`.
  */
 async function cmdCollisionCheck({ dirs }) {
-  const evt = readStdinJson()
-  const toolName = evt && typeof evt.tool_name === 'string' ? evt.tool_name : ''
-  const toolInput = (evt && evt.tool_input) || {}
-  // Stable window token (session_id) — constant across this window's every PreToolUse, so
-  // the piggybacked heartbeat renews ONE lease file instead of minting a new one per call
-  // (R7/D-49-01). This is the seam the whole gap lived at.
-  const sessionToken = windowTokenFrom(evt)
-
-  // (1) heartbeat piggyback — throttled renewal on every invocation (OQ2).
-  let identity = null
-  try {
-    const registry = await import('./lib/registry.mjs')
-    identity = registry.resolveTerminalIdentity({ sessionToken })
-    registry.heartbeat({ scope: { globs: [], description: '' }, status: 'working' }, { ...dirs, identity })
-  } catch {
-    /* fail-open */
-  }
-
-  const warnLines = []
-
-  // (2) scope-collision channel (Edit/Write touched path).
-  try {
-    const collision = await import('./lib/collision.mjs')
-    const registry = await import('./lib/registry.mjs')
-    const candidatePaths = []
-    if ((toolName === 'Edit' || toolName === 'Write') && typeof toolInput.file_path === 'string') {
-      candidatePaths.push(toolInput.file_path)
-    }
-    if (candidatePaths.length) {
-      const { sessions } = registry.readSessions(dirs)
-      // CR-01: pass the repo root so ABSOLUTE hook paths (`C:\...\repo\src\x.ts`)
-      // are relativized to repo-relative BEFORE matching the repo-relative globs +
-      // HOT_FILES. Without this the collision/hot-file channels never fire in prod.
-      const warns = collision.checkScopeCollision(candidatePaths, {
-        sessions,
-        selfTerminalId: identity ? identity.terminalId : null,
-        root: registry.smaRoot(),
-      })
-      for (const w of warns) warnLines.push(collision.buildWarnText(w))
-      // journal the collisions (tier:'warn' only; fail-open). FI-10: enrich the who
-      // column with NAMED identities «P<phase> <Name>» from the live leases — self's own
-      // label + each owner's label — so the journal is forensics-ready (no empty/anon who).
-      if (identity) {
-        const own = sessions.find((sess) => sess._file === `${identity.terminalId}.json`)
-        const selfDisplay = registry.displayIdentity({ holderIdentity: identity.holderIdentity, label: own && own.label })
-        const ownerLabel = new Map((sessions || []).map((sess) => [sess.holderIdentity, sess.label]))
-        for (const w of warns) {
-          w.whoDisplay = registry.displayIdentity({ holderIdentity: w.who, label: ownerLabel.get(w.who) })
-        }
-        collision.recordCollisions(warns, { terminalId: identity.terminalId, selfDisplay, journalDir: dirs.journalDir })
-      }
-    }
-  } catch {
-    /* fail-open */
-  }
-
-  // (3) push-claim channel (Bash git deploy invocation) — D-49-02 second channel.
-  // The two-word deploy invocation is detected with an ESCAPED regex so this
-  // source file never carries the adjacent literal (SMA-3 discipline).
-  try {
-    if (toolName === 'Bash' && typeof toolInput.command === 'string') {
-      const pushWord = ['push'].join('') // the deploy verb, isolated
-      const deployRe = new RegExp('git\\s+' + pushWord)
-      if (deployRe.test(toolInput.command)) {
-        const slots = await import('./lib/slots.mjs')
-        const pc = slots.checkPushClaim(dirs)
-        if (pc && pc.live && pc.warn) warnLines.push(pc.warn)
-      }
-    }
-  } catch {
-    /* fail-open */
-  }
-
-  // (4) emit WARN-only output — permissionDecision ALWAYS 'allow' (P4/D-49-02).
-  if (warnLines.length) {
-    printJson({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        additionalContext: warnLines.join('\n'),
-      },
-    })
-  }
-  return 0
+  return runSingleStream(dirs, 'collision')
 }
 
 /**
- * reflex-check — the P2 reflex consumer (49.1-10, B1/B2; RESEARCH Pattern:
- * cmdCollisionCheck's exact shape). Reads the tool event JSON from stdin,
- * derives tags from the touched path (Edit/Write) or command (Bash), matches
- * promoted bug-lessons via loader.resolvePeriphery, applies the launch-blocking
- * fatigue battery, journals each surviving fire, and emits a WARN-only
- * hookSpecificOutput — permissionDecision 'allow' ALWAYS, NEVER 'deny'
- * (D-49.1-12: advisory reflex; deny is 49.1-17's GATES soft-deny tier).
- * Hook-facing: exit 0 always.
+ * reflex-check — DEPRECATED single-stream alias. Delegates to the reflex stream.
  */
 async function cmdReflexCheck({ dirs }) {
-  const evt = readStdinJson()
-  const toolInput = (evt && evt.tool_input) || {}
-  const sessionToken = windowTokenFrom(evt)
-
-  let warns = []
-  try {
-    // Cheap early exit under the global kill-switch (applyFatigue re-checks it).
-    const disable = String(process.env.SMA_REFLEX_DISABLE ?? '').trim().toLowerCase()
-    if (disable && disable !== '0' && disable !== 'false') return 0
-
-    const reflex = await import('./lib/reflex.mjs')
-    // CR-01: relativize ABSOLUTE hook paths against the repo root BEFORE any
-    // matching — without this the reflex is a dead feature that unit-tests
-    // with relative fixtures would happily pass (RESEARCH Pitfall 1).
-    const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-    const { tags, target, targetClass } = reflex.deriveTags(toolInput, repoRoot)
-
-    if (tags.length) {
-      const loader = await import('./lib/loader.mjs')
-      const corpusDir = join(repoRoot, '.claude', 'memory')
-      const candidates = reflex.matchReflexes({
-        tags,
-        target,
-        corpusDir,
-        tagsPath: join(corpusDir, 'TAGS.md'),
-        loader,
-      })
-
-      if (candidates.length) {
-        let terminalId = 'unknown'
-        let whoDisplay = null
-        try {
-          const registry = await import('./lib/registry.mjs')
-          const identity = registry.resolveTerminalIdentity({ sessionToken })
-          if (identity && identity.terminalId) terminalId = identity.terminalId
-          // FI-10 — the WHO column carries the named identity, not the anon t-<hash>.
-          if (identity) whoDisplay = registry.displayIdentity({ holderIdentity: identity.holderIdentity })
-        } catch {
-          /* fail-open */
-        }
-
-        const seen = reflex.loadSeen({ reflexDir: dirs.reflexDir, terminalId, sessionToken })
-        const res = reflex.applyFatigue({ candidates, targetClass, sessionSeen: seen, env: process.env })
-        warns = res.warns
-        reflex.saveSeen(res.seen, { reflexDir: dirs.reflexDir, terminalId })
-
-        // Journal each surviving fire so 49.1-11's usage stats + 49.1-24's
-        // report can read firings (event kind 'reflex').
-        try {
-          const journal = await import('./lib/journal.mjs')
-          for (const w of warns) {
-            journal.appendEvent(
-              {
-                type: 'reflex',
-                actors: [whoDisplay ?? terminalId],
-                scope: target,
-                detail: { noteId: w.noteId, target, tier: w.tier },
-              },
-              { terminalId, journalDir: dirs.journalDir },
-            )
-          }
-        } catch {
-          /* fail-open — a journal failure never blocks the reflex */
-        }
-      }
-    }
-  } catch {
-    /* fail-open (C9) — a reflex failure can NEVER wedge a session */
-  }
-
-  // WARN-only output — permissionDecision ALWAYS 'allow' (D-49.1-12).
-  if (warns.length) {
-    printJson({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        additionalContext: warns.map((w) => w.text).join('\n'),
-      },
-    })
-  }
-  return 0
+  return runSingleStream(dirs, 'reflex')
 }
 
 /**
- * gates-check — the P4 enforcement consumer (49.1-16, B9/B10, D-49.1-12). Reads
- * the tool event JSON from stdin, evaluates the checkable HARD-RULE inventory
- * (gates.checkEvent), journals each surviving fire (type 'gate' — the D-49.1-13
- * promotion evidence), and emits a WARN-only hookSpecificOutput. Per posture:
- * permissionDecision is 'allow' ALWAYS, NEVER 'deny' in this plan (the soft-deny
- * tier is 49.1-17). Reuses the reflex per-session seen-store under a 'gate:' key
- * prefix so a repeated edit to one file does not re-nag. Hook-facing: exit 0.
+ * gates-check — DEPRECATED single-stream alias. Delegates to the gates stream (the
+ * only mayDeny stream — a soft-deny still surfaces permissionDecision 'deny').
  */
 async function cmdGatesCheck({ dirs }) {
-  const evt = readStdinJson()
-  const sessionToken = windowTokenFrom(evt)
+  return runSingleStream(dirs, 'gates')
+}
 
-  let warns = []
+/** Load the three committed golden hook-event fixtures (parity + bench corpus). */
+function loadPreFixtures() {
+  const dir = join(MODULE_DIR, 'fixtures', 'pre')
+  const out = []
+  for (const name of ['edit-collision.json', 'bash-git.json', 'write-plain.json']) {
+    try {
+      out.push({ name, evt: JSON.parse(readFileSync(join(dir, name), 'utf8')) })
+    } catch {
+      /* skip an unreadable fixture — bench still runs over the rest */
+    }
+  }
+  return out
+}
+
+/** Count the MAX scripts/sma command entries across PreToolUse matcher groups. */
+function spawnCountFromSettings(settingsPath) {
+  let parsed
   try {
-    // Cheap early exit under the global kill-switch (checkEvent re-checks it).
-    const disable = String(process.env.SMA_GATES_DISABLE ?? '').trim().toLowerCase()
-    if (disable && disable !== '0' && disable !== 'false') return 0
+    parsed = JSON.parse(readFileSync(settingsPath, 'utf8'))
+  } catch {
+    return null // missing/unparseable → honest failure (caller prints 0, exit 1)
+  }
+  const groups = parsed && parsed.hooks && Array.isArray(parsed.hooks.PreToolUse) ? parsed.hooks.PreToolUse : null
+  if (!groups) return null
+  let max = 0
+  for (const g of groups) {
+    const hooks = g && Array.isArray(g.hooks) ? g.hooks : []
+    const n = hooks.filter((h) => h && typeof h.command === 'string' && h.command.includes('scripts/sma/')).length
+    if (n > max) max = n
+  }
+  return max
+}
 
-    const gates = await import('./lib/gates.mjs')
-    const reflex = await import('./lib/reflex.mjs')
-    const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+/**
+ * pre-bench — the deterministic, re-runnable SLO instrument (49.2-02, D-49.2-04).
+ * NOT hook-facing (direct CLI; may exit 1). The V2 scorer parses the bare numeric
+ * LAST line, so every scorer-facing mode ends with one.
+ *
+ *   pre-bench [--runs N]              N (default 50) FULL child-spawns of `pre` over
+ *                                    the golden fixtures; prints a stats table then
+ *                                    the bare p95 integer (--json for an object)
+ *   pre-bench --metric spawn-count   MAX scripts/sma PreToolUse entries in
+ *                                    .claude/settings.json (or --settings <path>)
+ *   pre-bench --metric parity        in-process: mismatch count between the merged
+ *                                    runPre output and the union of single-stream runs
+ */
+async function cmdPreBench({ flags }) {
+  const pre = await import('./lib/pre.mjs')
+  const fixtures = loadPreFixtures()
 
-    let terminalId = 'unknown'
+  // ── --metric spawn-count ──────────────────────────────────────────────────
+  if (flags.metric === 'spawn-count') {
+    let repoRoot = process.cwd()
     try {
       const registry = await import('./lib/registry.mjs')
-      const identity = registry.resolveTerminalIdentity({ sessionToken })
-      if (identity && identity.terminalId) terminalId = identity.terminalId
+      repoRoot = registry.smaRoot()
     } catch {
-      /* fail-open */
+      /* fail-open to cwd */
     }
+    const settingsPath = typeof flags.settings === 'string' ? flags.settings : join(repoRoot, '.claude', 'settings.json')
+    const count = spawnCountFromSettings(settingsPath)
+    if (count == null) {
+      process.stdout.write('0\n')
+      return 1 // honest failure, not a fake pass
+    }
+    process.stdout.write(`${count}\n`)
+    return 0
+  }
 
-    // Soft-deny evidence context (D-49.1-13): HEAD sha (read-only git) + gates dir.
-    // Read-only, fail-open — an unresolvable sha just means "no evidence" for GATE-PUSH.
-    let headSha = null
+  // ── --metric parity ───────────────────────────────────────────────────────
+  if (flags.metric === 'parity') {
+    // in-process over the golden fixtures, in a throwaway SMA root so live .sma is
+    // untouched and no git shells out (headShaProbe → null).
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-parity-'))
+    const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
+    const noSha = async () => null
+    let mismatches = 0
     try {
-      const { execFileSync } = await import('node:child_process')
-      headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()
+      for (const fx of fixtures) {
+        const mergedCtx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
+        const merged = await pre.runPre(mergedCtx)
+
+        const unionWarns = []
+        let unionDeny = null
+        for (const stream of pre.PRE_CHECKS) {
+          if (!stream.tools.includes(mergedCtx.toolName)) continue
+          const ctx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
+          try {
+            const r = (await stream.run(ctx)) || { warns: [] }
+            for (const w of (Array.isArray(r.warns) ? r.warns : [])) if (typeof w === 'string' && w) unionWarns.push(w)
+            if (r.deny && r.deny.text && stream.mayDeny && !unionDeny) unionDeny = { text: String(r.deny.text) }
+          } catch {
+            /* a stream throw is a fail-open empty on both paths — no mismatch */
+          }
+        }
+        const sortEq = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
+        const denyEq = (merged.deny ? merged.deny.text : null) === (unionDeny ? unionDeny.text : null)
+        if (!sortEq(merged.warns, unionWarns) || !denyEq) mismatches += 1
+      }
+    } finally {
+      try {
+        rmSync(tmpRoot, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    process.stdout.write(`${mismatches}\n`)
+    return 0
+  }
+
+  // ── default / --runs N : FULL child-spawn wall-clock ──────────────────────
+  const runs = Number(flags.runs) > 0 ? Math.floor(Number(flags.runs)) : 50
+  if (!fixtures.length) {
+    process.stderr.write('SMA pre-bench: no golden fixtures found\n')
+    return 1
+  }
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const cliPath = join(MODULE_DIR, 'cli.mjs')
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-bench-'))
+  const durations = []
+  try {
+    for (let i = 0; i < runs; i++) {
+      const fx = fixtures[i % fixtures.length]
+      const input = JSON.stringify(fx.evt)
+      const t0 = process.hrtime.bigint()
+      try {
+        // fixed literal argv — no user-input interpolation (T-49.2-06); fresh temp
+        // .sma so bench runs never pollute the live journal/seen/perf stores.
+        execFileSync(process.execPath, [cliPath, 'pre'], {
+          input,
+          encoding: 'utf8',
+          env: { ...process.env, SMA_ROOT_OVERRIDE: join(tmpRoot, '.sma') },
+        })
+      } catch {
+        /* a non-zero exit still consumed spawn time — record it */
+      }
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6
+      durations.push(ms)
+    }
+  } finally {
+    try {
+      rmSync(tmpRoot, { recursive: true, force: true })
     } catch {
-      headSha = null
+      /* best-effort */
     }
-
-    // Reuse the reflex seen-store (session-scoped) under gate: keys.
-    const seen = reflex.loadSeen({ reflexDir: dirs.reflexDir, terminalId, sessionToken })
-    const res = gates.checkEvent({
-      evt,
-      root: repoRoot,
-      env: process.env,
-      seen,
-      journalDir: dirs.journalDir,
-      terminalId,
-      gatesDir: dirs.gatesDir,
-      headSha,
-      now: Date.now(),
-    })
-    warns = res.warns
-    reflex.saveSeen(res.seen, { reflexDir: dirs.reflexDir, terminalId })
-
-    // Soft-deny tier (D-49.1-13): if an armed gate denied, emit permissionDecision
-    // 'deny' with the gate's instruction text. Dormant gates never set res.deny, so
-    // the default posture stays WARN-only.
-    if (res.deny) {
-      printJson({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: res.deny.text,
-        },
-      })
-      return 0
-    }
-  } catch {
-    /* fail-open (C9) — a gate failure can NEVER wedge a session */
   }
 
-  // WARN-only output — permissionDecision 'allow' (default posture, D-49.1-12).
-  if (warns.length) {
-    printJson({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        additionalContext: warns.map((w) => w.text).join('\n'),
-      },
-    })
+  const p50 = Math.round(pre.computePercentile(durations, 50))
+  const p95 = Math.round(pre.computePercentile(durations, 95))
+  const p99 = Math.round(pre.computePercentile(durations, 99))
+  const max = Math.round(durations.reduce((a, b) => Math.max(a, b), 0))
+  if (wantsJson(flags)) {
+    printJson({ metric: 'pre_p95_ms', n: durations.length, p50, p95, p99, max, threshold: 300, pass: p95 <= 300 })
+    return 0
   }
+  process.stdout.write(
+    `SMA pre-bench — FULL child-spawn wall-clock (node boot included), n=${durations.length}\n` +
+      `  p50 ${p50} ms · p95 ${p95} ms · p99 ${p99} ms · max ${max} ms · SLO p95 <= 300 ms\n`,
+  )
+  // the bare numeric LAST line — what the V2 scorer parses (PRED-49.2-02-A).
+  process.stdout.write(`${p95}\n`)
   return 0
 }
 
@@ -2851,13 +2829,15 @@ ${rows}
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
-const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'stall-check'])
+const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'stall-check', 'pre'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
   status: cmdStatus,
   heartbeat: cmdHeartbeat,
   'session-start': cmdSessionStart,
+  pre: cmdPre,
+  'pre-bench': cmdPreBench,
   'collision-check': cmdCollisionCheck,
   'reflex-check': cmdReflexCheck,
   'gates-check': cmdGatesCheck,
@@ -2895,7 +2875,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench>\n',
     )
     return 0
   }
