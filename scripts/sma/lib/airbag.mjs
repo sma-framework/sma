@@ -49,15 +49,17 @@
  * (execFileSync-shaped) so unit tests never shell out; zero LLM, zero npm deps.
  */
 
-import { statSync } from 'node:fs'
-import { join } from 'node:path'
+import { statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 
-import { appendEvent } from './journal.mjs'
+import { appendEvent, readJournal } from './journal.mjs'
 import { consumeOverrideToken } from './gates.mjs'
 import {
   AIRBAG_REF_PREFIX,
   AIRBAG_UNTRACKED_MAX_FILES,
   AIRBAG_UNTRACKED_MAX_BYTES,
+  AIRBAG_KEEP,
+  AIRBAG_MAX_AGE_MS,
 } from './constants.mjs'
 
 // ── SMA-3 escaped sensitive verbs (assembled, never adjacent to their context) ──
@@ -539,5 +541,218 @@ function journalSafe(append, event, terminalId, journalDir) {
     append(event, { terminalId, journalDir })
   } catch {
     /* fail-open */
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Task 2 — the restore leg: `sma undo` one-action recovery + list/prune. `for-each-ref`
+// over refs/sma/airbag/ IS the snapshot index (git is the store; no pointer file).
+// The restore step, UNLIKE the check path, MAY write the working tree — it is an
+// explicit user action, never hook-triggered.
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * listSnapshots({runGit}) -> [{id, refs, refnames}] newest-first. `for-each-ref
+ * --sort=-refname refs/sma/airbag/` enumerates every pinned ref; entries are grouped
+ * by the <id> segment. Fail-open → []. Read-only.
+ */
+export function listSnapshots({ runGit } = {}) {
+  const groups = new Map()
+  try {
+    if (typeof runGit !== 'function') return []
+    const text = String(runGit(['for-each-ref', '--sort=-refname', AIRBAG_REF_PREFIX]) ?? '')
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      const tab = line.indexOf('\t')
+      if (tab < 0) continue
+      const sha = line.slice(0, tab).trim().split(/\s+/)[0]
+      const refname = line.slice(tab + 1).trim()
+      if (!refname.startsWith(AIRBAG_REF_PREFIX)) continue
+      const rest = refname.slice(AIRBAG_REF_PREFIX.length) // '<id>/<sub>'
+      const slash = rest.indexOf('/')
+      if (slash < 0) continue
+      const id = rest.slice(0, slash)
+      const sub = rest.slice(slash + 1)
+      if (!groups.has(id)) groups.set(id, { id, refs: {}, refnames: [] })
+      const g = groups.get(id)
+      g.refnames.push(refname)
+      if (sub === 'head') g.refs.head = refname
+      else if (sub === 'stash') g.refs.stash = refname
+      else if (sub === 'untracked') g.refs.untracked = refname
+      else if (sub === 'remote') g.refs.remote = refname
+      else if (sub.startsWith('branch-')) g.refs.branch = refname
+      g.refs[`_sha_${sub}`] = sha
+    }
+  } catch {
+    return []
+  }
+  // compact-stamp ids sort chronologically → desc == newest first.
+  return [...groups.values()].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+}
+
+/** Parse the ms epoch from a snapshotId (`YYYYMMDDTHHMMSSmmmZ-rand4`), or NaN. */
+function idToMs(id) {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z/.exec(String(id))
+  if (!m) return NaN
+  return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.${m[7]}Z`)
+}
+
+/** Read the index→path map for a snapshot from the journal ('airbag' receipt), or null. */
+function lookupIndexPathMap(id, { dirs = {}, readJournalFn } = {}) {
+  try {
+    const reader = typeof readJournalFn === 'function' ? readJournalFn : readJournal
+    const r = reader({ journalDir: dirs.journalDir })
+    const events = Array.isArray(r) ? r : (r && r.events) || []
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]
+      if (e && e.type === 'airbag' && e.detail && e.detail.snapshotId === id && e.detail.indexPathMap) {
+        return e.detail.indexPathMap
+      }
+    }
+  } catch {
+    /* fail-open */
+  }
+  return null
+}
+
+/**
+ * restoreSnapshot({snapshotId?, dryRun}, {runGit, dirs, repoRoot, ...}) -> result.
+ * ONE action back from a catastrophe:
+ *   (0) a FRESH self-snapshot FIRST — undo is itself destructive and gets its own airbag;
+ *   (1) reset --hard <id>/head;
+ *   (2) if <id>/stash, stash apply its sha (a stash-create commit applies directly);
+ *   (3) if <id>/untracked, ls-tree → cat-file blob each → write to the receipt's
+ *       index→path map paths (overwrite — this is a restore). If the journal map is
+ *       missing (pruned/corrupt), restore head+stash anyway + WARN (fail-open degradation).
+ * --dry-run prints the plan and performs ZERO writes (returns before the self-snapshot).
+ * Every runGit call is a FIXED argv array. Never throws.
+ *
+ * @param {{snapshotId?:string, dryRun?:boolean}} args
+ * @param {{runGit:Function, dirs?:object, repoRoot?:string, now?:Function,
+ *          writeFile?:Function, journalAppend?:Function, terminalId?:string, readJournalFn?:Function}} deps
+ */
+export function restoreSnapshot(args = {}, deps = {}) {
+  const { runGit, dirs = {}, repoRoot = '.', now, terminalId = 'unknown' } = deps
+  const warns = []
+  try {
+    if (typeof runGit !== 'function') return { ok: false, error: 'runGit required', warns }
+    const groups = listSnapshots({ runGit })
+    if (!groups.length) return { ok: false, error: 'нет снимков airbag', warns }
+    const target = args.snapshotId ? groups.find((g) => g.id === args.snapshotId) : groups[0]
+    if (!target) return { ok: false, error: `снимок не найден: ${args.snapshotId}`, warns }
+
+    const map = lookupIndexPathMap(target.id, { dirs, readJournalFn: deps.readJournalFn })
+    const plan = {
+      snapshotId: target.id,
+      head: !!target.refs.head,
+      stash: !!target.refs.stash,
+      untracked: !!target.refs.untracked,
+      untrackedMapKnown: !!map,
+    }
+    if (args.dryRun) return { ok: true, dryRun: true, plan, warns }
+
+    // (0) fresh self-snapshot FIRST (undo protects itself).
+    const pre = takeSnapshot({ cmdClass: 'undo', meta: {} }, { runGit, now, repoRoot })
+
+    // (1) reset --hard <id>/head.
+    if (!target.refs.head) return { ok: false, error: 'у снимка нет head-ref', preSnapshotId: pre.snapshotId, warns }
+    runGit([RESET_VERB, '--hard', target.refs.head])
+
+    // (2) re-apply dirty tracked state from the pinned stash-create commit.
+    if (target.refs.stash) {
+      try {
+        const sha = String(runGit(['rev-parse', target.refs.stash]) ?? '').trim()
+        if (sha) runGit([STASH_VERB, 'apply', sha])
+      } catch {
+        warns.push('stash apply не удался — грязное отслеживаемое состояние не восстановлено')
+      }
+    }
+
+    // (3) restore untracked blobs to their recorded paths.
+    let untrackedRestored = 0
+    if (target.refs.untracked) {
+      if (!map) {
+        warns.push('карта untracked недоступна (журнал отсутствует/подрезан) — имена не восстановимы')
+      } else {
+        try {
+          const tree = String(runGit(['ls-tree', target.refs.untracked]) ?? '')
+          const write = typeof deps.writeFile === 'function' ? deps.writeFile : defaultWriteFile(repoRoot)
+          for (const line of tree.split('\n')) {
+            if (!line.trim()) continue
+            const m = /^\S+\s+blob\s+(\S+)\t(.+)$/.exec(line)
+            if (!m) continue
+            const path = map[m[2]]
+            if (!path) continue
+            const buf = runGit(['cat-file', 'blob', m[1]], { buffer: true })
+            write(path, buf)
+            untrackedRestored += 1
+          }
+        } catch (e) {
+          warns.push('восстановление untracked прервано: ' + (e && e.message ? e.message : String(e)))
+        }
+      }
+    }
+
+    // (4) journal the undo (type 'undo') with source + pre-undo snapshot ids.
+    journalSafe(
+      typeof deps.journalAppend === 'function' ? deps.journalAppend : appendEvent,
+      { type: 'undo', actors: [terminalId], scope: target.id, detail: { source: target.id, preSnapshotId: pre.snapshotId, untrackedRestored, warns: warns.length } },
+      terminalId,
+      dirs.journalDir,
+    )
+    return { ok: true, snapshotId: target.id, preSnapshotId: pre.snapshotId, untrackedRestored, warns }
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e), warns }
+  }
+}
+
+/** Default untracked writer: writes (Buffer|string) under repoRoot, mkdir -p first. */
+function defaultWriteFile(repoRoot) {
+  return (p, content) => {
+    const abs = join(repoRoot, p)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, content)
+  }
+}
+
+/**
+ * pruneSnapshots({keep, maxAgeMs}, {runGit, dirs, now, journalAppend, terminalId}) ->
+ * {kept, removed}. Keeps the newest `keep` groups and drops any group older than
+ * `maxAgeMs`; each dropped ref is unpinned via `update-ref -d` (pinned objects become
+ * GC-eligible only after unpinning). Journals the prune. Fail-open per ref.
+ */
+export function pruneSnapshots(opts = {}, deps = {}) {
+  const keepN = Number.isFinite(opts.keep) ? opts.keep : AIRBAG_KEEP
+  const maxAge = Number.isFinite(opts.maxAgeMs) ? opts.maxAgeMs : AIRBAG_MAX_AGE_MS
+  const { runGit, dirs = {}, terminalId = 'unknown' } = deps
+  const nowMs = typeof deps.now === 'function' ? deps.now() : Date.now()
+  const removed = []
+  try {
+    const groups = listSnapshots({ runGit })
+    groups.forEach((g, i) => {
+      const ageMs = nowMs - idToMs(g.id)
+      const tooOld = Number.isFinite(ageMs) && ageMs > maxAge
+      if (i >= keepN || tooOld) {
+        for (const ref of g.refnames) {
+          try {
+            runGit(['update-ref', '-d', ref])
+          } catch {
+            /* a missing ref is already gone — skip */
+          }
+        }
+        removed.push(g.id)
+      }
+    })
+    if (removed.length) {
+      journalSafe(
+        typeof deps.journalAppend === 'function' ? deps.journalAppend : appendEvent,
+        { type: 'airbag', actors: [terminalId], scope: 'prune', detail: { prune: true, removed } },
+        terminalId,
+        dirs.journalDir,
+      )
+    }
+    return { kept: groups.length - removed.length, removed }
+  } catch {
+    return { kept: 0, removed }
   }
 }
