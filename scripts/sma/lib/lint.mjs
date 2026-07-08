@@ -37,6 +37,12 @@ import { parseConsequences, validateConsequence } from './consequences.mjs'
 // receipts lib (parseReceipts + parseCoverage + validateReceipt) — lint renders
 // findings, it NEVER re-implements a parser (same lock as PRED → predict.mjs).
 import { parseReceipts, parseCoverage, validateReceipt } from './receipts.mjs'
+// 49.2-10 (D-49.2-14): PRED-SKEPTIC delegates the countersign verdict to the
+// Goodhart guard (verifySkeptic) — lint renders the advisory, it never re-checks
+// the hash. goodhart.mjs imports extractPredictionsBlock BACK from this module
+// (one extraction truth); the cycle is safe because both sides use the imported
+// binding only inside functions, never at module-eval time.
+import { verifySkeptic } from './goodhart.mjs'
 // The ONE contradiction implementation (49.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
@@ -279,8 +285,13 @@ function extractFrontmatterBlock(text, key) {
   return block.join('\n')
 }
 
-/** Predictions-block extractor — a thin wrapper so PRED-POSTEDIT is byte-identical. */
-function extractPredictionsBlock(text) {
+/**
+ * Predictions-block extractor — a thin wrapper so PRED-POSTEDIT is byte-identical.
+ * EXPORTED (49.2-10): goodhart.mjs's skeptic countersign hashes THIS exact block
+ * so the countersign voids on any post-sign edit, mirroring PRED-POSTEDIT's
+ * immutability — one extraction truth, two consumers (never re-derived).
+ */
+export function extractPredictionsBlock(text) {
   return extractFrontmatterBlock(text, 'predictions')
 }
 
@@ -884,6 +895,47 @@ const PRED_POSTEDIT = {
   },
 }
 
+// ── 49.2-10 (D-49.2-14): PRED-SKEPTIC — predictions need an adversarial countersign ─
+
+const PRED_SKEPTIC = {
+  id: 'PRED-SKEPTIC',
+  title: 'A 49.2+ plan\'s predictions carry a valid skeptic countersign (Goodhart guard)',
+  tier: 'warn',
+  run(ctx) {
+    const out = []
+    for (const plan of ctx.plans) {
+      // Only plans that actually pre-register predictions are in scope.
+      if (extractPredictionsBlock(plan.text) === '') continue
+      // Cutover: enforce only from the trust-spine regime forward (49.2+). The
+      // whole V2 history and unrelated pre-49.2 plans are never retro-flagged.
+      const phase = summaryPhase(plan.path)
+      if (phase == null || comparePhase(phase, RECEIPTS_ENFORCED_FROM) < 0) continue
+
+      // Delegate the verdict to the ONE guard — never re-check the hash here.
+      const v = verifySkeptic({ planPath: plan.path, readFn: () => plan.text })
+      if (v && v.ok === false) {
+        const why =
+          v.reason === 'unsigned'
+            ? 'has no skeptic countersign — a skeptic distinct from the implementer must sign it (pnpm sma skeptic sign)'
+            : v.reason === 'hash-mismatch'
+              ? 'was edited after countersigning — the countersign is VOID; re-sign from a skeptic terminal'
+              : v.reason === 'self-sign'
+                ? 'was countersigned by the implementer terminal itself — a countersign must come from a DISTINCT skeptic'
+                : `countersign invalid (${v.reason})`
+        out.push(
+          finding(
+            'PRED-SKEPTIC',
+            'warn',
+            basename(plan.path),
+            `predictions block in ${basename(plan.path)} ${why}. Advisory here; the blocking gate is /sma-grill's unresolved-challenge check (D-49.2-11).`,
+          ),
+        )
+      }
+    }
+    return out
+  },
+}
+
 /** Normalize a command string for the duplication compare: collapse whitespace. */
 function normalizeCommand(s) {
   return String(s).replace(/\s+/g, ' ').trim()
@@ -1326,6 +1378,7 @@ export const LINT_CHECKS = [
   STATE_SIZE,
   PRED_NOMETRIC,
   PRED_POSTEDIT,
+  PRED_SKEPTIC,
   PRED_DUPDOD,
   CONS_SCHEMA,
   CONS_POSTEDIT,

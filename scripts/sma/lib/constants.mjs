@@ -33,6 +33,11 @@ export const SUBAGENTS_DIR = join(SMA_ROOT, 'subagents') // 49.2-04 (D-49.2-10) 
 export const FLIGHT_DIR = join(SMA_ROOT, 'flight') // 49.2-06 (D-49.2-09) — pre-compaction capsule + session flight marks
 export const SPEND_DIR = join(SMA_ROOT, 'spend') // 49.2-09 (D-49.2-13) — spend book incremental cache + window budget
 export const BREAKER_DIR = join(SMA_ROOT, 'breaker') // 49.2-09 (D-49.2-13) — loop-breaker markers (per-ruleId, disarm-path input for plan 10)
+// ── 49.2-10 (D-49.2-14) — integrity guards (Goodhart + STPA) ─────────────────
+export const SKEPTIC_DIR = join(SMA_ROOT, 'skeptic') // skeptic countersign files (<planId>.json)
+export const CANARY_DIR = join(SMA_ROOT, 'canary') // sealed canary ledger the blind verifier NEVER reads
+export const NEARMISS_DIR = join(SMA_ROOT, 'nearmiss') // scoring-immune near-miss channel (ASRS class)
+export const DISARM_DIR = join(SMA_ROOT, 'disarm') // per-gate kill-switch provenance leases (auto-re-arm)
 
 // ── FI-9 / FI-11 layer byte budgets (49.1-13) ────────────────────────────────
 // Machine-enforced hot-surface budgets, measured in UTF-8 BYTES (not chars).
