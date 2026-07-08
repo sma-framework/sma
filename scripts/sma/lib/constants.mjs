@@ -30,6 +30,7 @@ export const USAGE_DIR = join(SMA_ROOT, 'usage') // 49.1-11 (B4) — usage-citat
 export const EXEC_DIR = join(SMA_ROOT, 'exec') // 49.1-20 (B14) — per-plan execution progress journal
 export const STALL_DIR = join(SMA_ROOT, 'stall') // 49.1-21 (B16) — per-session rolling PostToolUse window
 export const SUBAGENTS_DIR = join(SMA_ROOT, 'subagents') // 49.2-04 (D-49.2-10) — spawn records + receipt stats
+export const FLIGHT_DIR = join(SMA_ROOT, 'flight') // 49.2-06 (D-49.2-09) — pre-compaction capsule + session flight marks
 
 // ── FI-9 / FI-11 layer byte budgets (49.1-13) ────────────────────────────────
 // Machine-enforced hot-surface budgets, measured in UTF-8 BYTES (not chars).
@@ -40,6 +41,8 @@ export const CORE_BUDGET = 6144 //          6 KB — the CORE section of MEMORY.
 export const NOTE_BUDGET = 8192 //          8 KB — each individual memory note
 export const ALWAYS_LOAD_BUDGET = 12288 // 12 KB — MEMORY.md whole (CORE + discovery block)
 export const STATE_BUDGET = 40960 //       40 KB — STATE.md snapshot (the house rule, FI-9)
+export const CAPSULE_BUDGET = 8192 //       8 KB — the pre-compaction flight capsule (49.2-06, D-49.2-09)
+export const RESTORE_BUDGET = 6144 //       6 KB — the post-compact restore injection cap (49.2-06)
 export const BUDGET_WARN_FRACTION = 0.8 //  WARN threshold as a fraction of each budget
 
 // ── 49.2-03 (D-49.2-06): structural-receipts cutover ─────────────────────────
