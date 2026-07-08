@@ -1701,6 +1701,186 @@ async function cmdForceClear({ positionals, flags, dirs }) {
 }
 
 /**
+ * preship — the consequences-law auto-block consumer the /sma-ship ritual runs
+ * (49.2-08, D-49.2-12, ICE 648). Reads the V2 calibration ledger and BLOCKS
+ * (exit 1) on ANY open class-A event (a prediction miss in a trust domain, or a
+ * claimed-pass / reproduced-fail divergence). NOT hook-facing — never spawned by
+ * PreToolUse; enforcement is the exit code the ship ritual consumes, never a
+ * hard deny (prohibition). Fail-open C9: a missing/empty ledger prints clean and
+ * exits 0 (an absent ledger cannot block ship — the block needs POSITIVE evidence).
+ *
+ *   preship             plain: print open blocks + class-B WARN lines; exit 1 iff blocks
+ *   preship --json      {blocks, warns, dispositions, corrupt}; exit 1 iff blocks
+ *   preship --count     print ONLY the open class-A count as the last line, exit 0
+ *   preship --selftest  plant 1 trust-miss + 1 divergence in a THROWAWAY ledger,
+ *                       print the detected block count (2), exit 0 — real .sma/ untouched
+ */
+async function cmdPreship({ flags, dirs }) {
+  const consequences = await import('./lib/consequences.mjs')
+
+  // --selftest: prove the engine cannot go blind silently (P49.2-08-2). The real
+  // ledger is NEVER read here — a throwaway mkdtemp dir with two synthetic events.
+  if (flags.selftest) {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-preship-selftest-'))
+    const selfDir = join(tmp, 'calibration')
+    try {
+      const { appendVerdict } = await import('./lib/calibration.mjs')
+      appendVerdict({ id: 'SELF-MISS', verdict: 'miss', domain: 'sma.receipts', scoredAt: 'selftest' }, { calibrationDir: selfDir })
+      appendVerdict({ id: 'SELF-DIV', verdict: 'divergence', domain: 'sma.verification', at: 'selftest' }, { calibrationDir: selfDir })
+      const res = consequences.openBlocks({ calibrationDir: selfDir })
+      if (wantsJson(flags)) printJson({ selftest: true, detected: res.blocks.length })
+      process.stdout.write(`${res.blocks.length}\n`) // scorer contract: numeric last line
+      return 0
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  }
+
+  const res = consequences.openBlocks({ calibrationDir: dirs.calibrationDir })
+
+  // --count: observe, never gate. Numeric last line for the scorer (exit 0 always).
+  if (flags.count) {
+    if (wantsJson(flags)) printJson({ open_class_a: res.blocks.length })
+    process.stdout.write(`${res.blocks.length}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson({ blocks: res.blocks, warns: res.warns, dispositions: res.dispositions, corrupt: res.corrupt })
+    return res.blocks.length ? 1 : 0
+  }
+
+  // Plain mode — the ship gate.
+  if (!res.blocks.length) {
+    process.stdout.write('SMA preship: чисто — открытых class-A событий нет. Ship может продолжаться.\n')
+    for (const w of res.warns) {
+      process.stdout.write(`  WARN class-B: ${w.eventKey} (${w.domain ?? '—'}) — ${w.claim ?? w.id ?? '—'}\n`)
+    }
+    return 0
+  }
+
+  // A block exists. For every open divergence carrying a 40-hex lastGoodSha, open a
+  // create-only rollback candidate branch (fail-soft when git is unavailable).
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const { execFileSync } = await import('node:child_process')
+  const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+  let identity = { holderIdentity: 'unknown', terminalId: 'unknown' }
+  try {
+    const registry = await import('./lib/registry.mjs')
+    identity = registry.resolveTerminalIdentity({})
+  } catch {
+    /* fail-open */
+  }
+  const journal = await import('./lib/journal.mjs')
+
+  process.stdout.write(`SMA preship: SHIP ЗАБЛОКИРОВАН — ${res.blocks.length} открытых class-A событий:\n`)
+  for (const b of res.blocks) {
+    const kind = b.verdict === 'divergence' ? 'divergence' : 'miss'
+    process.stdout.write(`  [class ${b.class}] ${b.eventKey} — ${kind} in ${b.domain ?? '—'}; ${b.claim ?? b.id ?? ''}\n`)
+    process.stdout.write(`    blocked until founder disposition: pnpm sma disposition ${b.eventKey} --verdict <accept|fix-forward|rollback> --reason "<...>" --yes\n`)
+    if (b.verdict === 'divergence' && typeof b.lastGoodSha === 'string' && /^[0-9a-f]{40}$/i.test(b.lastGoodSha)) {
+      const slug = String(b.eventKey).replace(/[^\w.-]/g, '_')
+      const rb = consequences.openRollbackCandidate({ slug, sha: b.lastGoodSha, execGit })
+      if (rb.created) {
+        process.stdout.write(`    rollback candidate: ${rb.ref} -> ${b.lastGoodSha.slice(0, 10)}\n`)
+        try {
+          journal.appendEvent(
+            {
+              type: 'rollback-candidate',
+              actors: [identity.holderIdentity].filter(Boolean),
+              scope: b.eventKey,
+              detail: { eventKey: b.eventKey, ref: rb.ref, sha: b.lastGoodSha, domain: b.domain },
+            },
+            { terminalId: identity.terminalId, journalDir: dirs.journalDir },
+          )
+        } catch {
+          /* journal fail-soft */
+        }
+      }
+    }
+  }
+  process.stdout.write('\nЕдинственный путь снятия блокировки — распоряжение основателя (sma disposition). Не редактируйте ledger, не обходите шаг.\n')
+  return 1
+}
+
+/**
+ * disposition <eventKey> --verdict <v> --reason <r> --yes — the founder gate and
+ * the ONLY unblock path (D-49.2-12). Mirrors force-clear's provenance posture
+ * EXACTLY: prints what is being dispositioned FIRST, refuses without BOTH an
+ * explicit --yes AND a --reason (an explicit flag IS the confirmation — no TTY
+ * prompts in this repo's automation), then appends an append-only disposition
+ * record to the ledger + journals the event with full provenance. Agents NEVER
+ * invoke this on their own — it is the founder gate by definition.
+ */
+async function cmdDisposition({ positionals, flags, dirs }) {
+  const eventKey = positionals[0]
+  if (!eventKey) {
+    process.stderr.write('usage: pnpm sma disposition <eventKey> --verdict <accept|fix-forward|rollback> --reason "<why>" --yes\n')
+    return 1
+  }
+  const ALLOWED = ['accept', 'fix-forward', 'rollback']
+  const verdict = typeof flags.verdict === 'string' ? flags.verdict.trim() : ''
+  if (!ALLOWED.includes(verdict)) {
+    process.stderr.write(`SMA disposition: --verdict должен быть одним из ${ALLOWED.join(', ')}\n`)
+    return 1
+  }
+  const reason = typeof flags.reason === 'string' ? flags.reason.trim() : ''
+
+  const registry = await import('./lib/registry.mjs')
+  let identity = { holderIdentity: 'unknown', terminalId: 'unknown' }
+  try {
+    identity = registry.resolveTerminalIdentity({})
+  } catch {
+    /* fail-open — provenance degrades to 'unknown', never blocks */
+  }
+
+  // Always print what is being dispositioned FIRST (force-clear posture).
+  process.stdout.write(
+    `Распоряжение по событию «${eventKey}»: verdict=${verdict}${reason ? `, причина: ${reason}` : ''}.\n`,
+  )
+
+  if (flags.yes !== true) {
+    process.stdout.write('Распоряжение основателя требует явного подтверждения: добавьте --yes. Ничего не записано.\n')
+    return 1
+  }
+  if (!reason) {
+    process.stdout.write('Распоряжение требует --reason "<почему>". Ничего не записано.\n')
+    return 1
+  }
+
+  const consequences = await import('./lib/consequences.mjs')
+  const journal = await import('./lib/journal.mjs')
+  const rec = consequences.recordDisposition(
+    { eventKey, disposition: verdict, reason, by: identity.holderIdentity },
+    { calibrationDir: dirs.calibrationDir },
+  )
+  try {
+    journal.appendEvent(
+      {
+        type: 'disposition',
+        actors: [identity.holderIdentity].filter(Boolean),
+        scope: eventKey,
+        detail: { eventKey, disposition: verdict, reason, terminal: identity.holderIdentity, at: rec.at },
+      },
+      { terminalId: identity.terminalId, journalDir: dirs.journalDir },
+    )
+  } catch {
+    /* journal fail-soft — the ledger record is the authoritative unblock */
+  }
+
+  if (wantsJson(flags)) {
+    printJson({ dispositioned: true, ...rec })
+    return 0
+  }
+  process.stdout.write(
+    `SMA: событие «${eventKey}» разблокировано распоряжением (verdict=${verdict}); запись добавлена в ledger + журнал.\n`,
+  )
+  return 0
+}
+
+/**
  * snapshot — the corpus snapshot lands with 49-13. Until then, degrade to a
  * clean RU 'недоступно' message (no stack trace). Hook paths → exit 0; direct
  * CLI → exit 1 (module genuinely absent).
@@ -2851,6 +3031,8 @@ const HANDLERS = {
   tia: cmdTia,
   consume: cmdConsume,
   'force-clear': cmdForceClear,
+  preship: cmdPreship,
+  disposition: cmdDisposition,
   lint: cmdLint,
   'build-index': cmdBuildIndex,
   load: cmdLoad,
@@ -2875,7 +3057,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench>\n',
     )
     return 0
   }

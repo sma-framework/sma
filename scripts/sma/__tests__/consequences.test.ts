@@ -179,6 +179,14 @@ describe('consequences.mjs — the law brain (49.2-08 task 1)', () => {
     expect(() => openBlocks({ calibrationDir })).not.toThrow()
   })
 
+  // Placeholder to keep the marker `openBlocks` referenced in this describe.
+  it('Test 5b: openBlocks on a missing ledger dir is honest-empty (fail-open C9)', () => {
+    const res = openBlocks({ calibrationDir: join(dir, 'does-not-exist') })
+    expect(res.blocks).toEqual([])
+    expect(res.warns).toEqual([])
+    expect(res.corrupt).toBe(0)
+  })
+
   it('Test 6: openRollbackCandidate is create-only, sha-validated, never throws', () => {
     const good = 'a'.repeat(40)
     const calls: string[][] = []
@@ -208,5 +216,95 @@ describe('consequences.mjs — the law brain (49.2-08 task 1)', () => {
     const existed = openRollbackCandidate({ slug: 's', sha: good, execGit: thrower })
     expect(existed.created).toBe(false)
     expect(existed.existed).toBe(true)
+  })
+})
+
+// ── Task 3: CLI surface — preship (auto-block) + disposition (founder gate) ──
+// These shell out to the real cli.mjs with a temp SMA root (harness posture).
+
+import { readJournal } from '../lib/journal.mjs'
+
+const CLI = join(__dirname, '..', 'cli.mjs')
+function runCli(args: string[], env: Record<string, string> = {}) {
+  try {
+    const stdout = execFileSync(process.execPath, [CLI, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    }) as string
+    return { code: 0, stdout }
+  } catch (e: any) {
+    return { code: e.status ?? 1, stdout: (e.stdout as string) || '' }
+  }
+}
+
+/** The last non-empty stdout line (the scorer/count contract). */
+function lastLine(stdout: string): string {
+  const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+  return lines[lines.length - 1] ?? ''
+}
+
+describe('preship + disposition CLI (49.2-08 task 3)', () => {
+  it('Test 1: preship exits 0 on empty ledger, 1 on an undispositioned divergence, 0 after disposition', () => {
+    const smaRoot = join(dir, '.sma')
+    const calibrationDir = join(smaRoot, 'calibration')
+    const env = { SMA_ROOT_OVERRIDE: smaRoot }
+
+    // Empty ledger → clean, exit 0.
+    expect(runCli(['preship'], env).code).toBe(0)
+
+    // Plant an undispositioned divergence → exit 1, block-list names key + class.
+    appendVerdict({ id: 'D-1', verdict: 'divergence', domain: 'sma.receipts', at: 'ts1' }, { calibrationDir })
+    const blocked = runCli(['preship'], env)
+    expect(blocked.code).toBe(1)
+    expect(blocked.stdout).toContain('D-1@ts1')
+    expect(blocked.stdout).toMatch(/class A/i)
+
+    // Founder disposition clears it → exit 0.
+    const disp = runCli(['disposition', 'D-1@ts1', '--verdict', 'accept', '--reason', 'known-issue', '--yes'], env)
+    expect(disp.code).toBe(0)
+    expect(runCli(['preship'], env).code).toBe(0)
+  })
+
+  it('Test 2: preship --count prints the open class-A count as the last line, exit 0', () => {
+    const smaRoot = join(dir, '.sma')
+    const calibrationDir = join(smaRoot, 'calibration')
+    const env = { SMA_ROOT_OVERRIDE: smaRoot }
+    appendVerdict({ id: 'D-1', verdict: 'divergence', domain: 'sma.receipts', at: 'ts1' }, { calibrationDir })
+    const res = runCli(['preship', '--count'], env)
+    expect(res.code).toBe(0)
+    expect(lastLine(res.stdout)).toBe('1')
+  })
+
+  it('Test 3: preship --selftest prints 2, exits 0, never touches the real ledger', () => {
+    const smaRoot = join(dir, '.sma')
+    const calibrationDir = join(smaRoot, 'calibration')
+    const env = { SMA_ROOT_OVERRIDE: smaRoot }
+    const res = runCli(['preship', '--selftest'], env)
+    expect(res.code).toBe(0)
+    expect(lastLine(res.stdout)).toBe('2')
+    // The real ledger dir was never created by the throwaway self-test.
+    expect(existsSync(calibrationDir)).toBe(false)
+  })
+
+  it('Test 4: disposition refuses (exit 1, zero writes) without --yes or --reason; writes with both', () => {
+    const smaRoot = join(dir, '.sma')
+    const calibrationDir = join(smaRoot, 'calibration')
+    const journalDir = join(smaRoot, 'journal')
+    const env = { SMA_ROOT_OVERRIDE: smaRoot }
+
+    // Without --yes → refuse, nothing written.
+    expect(runCli(['disposition', 'E@1', '--verdict', 'accept', '--reason', 'r'], env).code).toBe(1)
+    expect(existsSync(calibrationDir)).toBe(false)
+
+    // Without --reason → refuse, nothing written.
+    expect(runCli(['disposition', 'E@1', '--verdict', 'accept', '--yes'], env).code).toBe(1)
+    expect(existsSync(calibrationDir)).toBe(false)
+
+    // With both → one disposition line + one journal event.
+    expect(runCli(['disposition', 'E@1', '--verdict', 'accept', '--reason', 'r', '--yes'], env).code).toBe(0)
+    const led = readLedger({ calibrationDir })
+    expect(led.records.filter((r: any) => r.kind === 'disposition')).toHaveLength(1)
+    const jrn = readJournal({ journalDir })
+    expect(jrn.events.filter((e: any) => e.type === 'disposition')).toHaveLength(1)
   })
 })
