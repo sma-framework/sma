@@ -419,15 +419,17 @@ flowchart LR
     subgraph V3["V3 · the accountability layer"]
         R["Replayable receipts<br>every «done» carries a<br>re-runnable command, not prose"]
         B["Blind re-verification<br>a second agent re-derives «done»<br>from the tree alone"]
-        G["Git airbag<br>a recovery snapshot before<br>any destructive command"]
+        C["Consequences law<br>an unaddressed false «done»<br>blocks the next ship"]
         P["Calibration passport<br>a public badge with the<br>measured hit rate"]
     end
 ```
 
 - **Replayable receipts** — every accomplishment claim carries a command and an expected result hash, re-runnable by anyone. Prose-only claims fail a lint. "Done" becomes evidence, not assertion.
 - **Blind re-verification** — a separate agent re-derives each "done" purely from the code tree, without seeing the executor's report. Claimed-pass / reproduced-fail is the heaviest signal in the ledger.
-- **Git airbag** — a deterministic recovery point written *before* any destructive command runs, so a bad `git reset --hard` or force-push becomes a one-command undo instead of lost work.
+- **Consequences law** — a false "done" is not just recorded, it *acts*: an unaddressed claimed-pass / reproduced-fail divergence blocks the next ship until a human dispositions it. Verified claims that control behavior — the accountability that a self-grading vendor cannot ship.
 - **Calibration passport** — the per-area hit rate and recall score compile into a public README badge. The first honest trust metric for agentic work: memory that publishes its own accuracy.
+
+Alongside the core sit a few **bridges** — the git recovery airbag, the spend ledger, the compaction flight-capsule — each a stopgap for a gap the harness does not yet fill natively. They are deliberately *not* headlined: every bridge ships with a demolition clause and a registered prediction to retire itself the moment a sufficient native mechanism appears. The accountability core above is what SMA is; the bridges are scaffolding it expects to remove.
 
 Full design, scored and adversarially reviewed, lives with the project. This is the direction, not a promise of dates — it ships evidence-first, one falsifiable metric at a time.
 
