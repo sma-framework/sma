@@ -81,41 +81,46 @@ function scalarValue(raw) {
 }
 
 /**
- * parsePredictions(planPath, opts) -> {predictions, error?}.
+ * parseFrontmatterEntries(planPath, key, opts) -> {entries, error?}.
  *
- * Locates the leading `---` frontmatter fence, finds the top-level
- * `predictions:` key, and parses its dash-list-of-maps entries:
+ * The generalized dash-list-of-maps frontmatter reader: locates the leading
+ * `---` fence, finds the top-level `<key>:` line, and parses its entries:
  *   `  - key: value` starts an entry; `    key: value` continues it; the
  * first line outside that indentation closes the block. Missing file, no
- * fence, or no block -> honest empty array, never a throw (fail-open C9 —
- * scoring is an observer, not a gate).
+ * fence, or no block -> honest empty array, never a throw (fail-open C9 — the
+ * consumers are observers, not gates). Parameterizing the top-level key is the
+ * ONLY change vs the original parsePredictions inline scan (49.2-08 T1): the
+ * `predictions:` and `consequences:` blocks share one narrow extractor rather
+ * than two hand-rolled copies.
  *
  * @param {string} planPath
+ * @param {string} key  the top-level frontmatter key whose dash-list to parse
  * @param {{readFn?:Function}} [opts]
- * @returns {{predictions: object[], error?: string}}
+ * @returns {{entries: object[], error?: string}}
  */
-export function parsePredictions(planPath, opts = {}) {
+export function parseFrontmatterEntries(planPath, key, opts = {}) {
   const readFn = opts.readFn ?? readFileSync
   let text
   try {
     text = readFn(planPath, 'utf8')
   } catch (err) {
-    return { predictions: [], error: `cannot read ${planPath}: ${err && err.message}` }
+    return { entries: [], error: `cannot read ${planPath}: ${err && err.message}` }
   }
   // Normalize CRLF so the fence/indent scans see one shape.
   text = text.replace(/\r\n/g, '\n')
 
-  if (!text.startsWith('---\n')) return { predictions: [] }
+  if (!text.startsWith('---\n')) return { entries: [] }
   const closeIdx = text.indexOf('\n---\n', 3)
-  if (closeIdx === -1) return { predictions: [] }
+  if (closeIdx === -1) return { entries: [] }
 
   const lines = text.slice(4, closeIdx + 1).split('\n')
-  const predictions = []
+  const entries = []
   let i = 0
 
-  // Find the top-level `predictions:` key.
-  while (i < lines.length && !/^predictions:\s*$/.test(lines[i])) i++
-  if (i >= lines.length) return { predictions: [] }
+  // Find the top-level `<key>:` line.
+  const keyRe = new RegExp(`^${key}:\\s*$`)
+  while (i < lines.length && !keyRe.test(lines[i])) i++
+  if (i >= lines.length) return { entries: [] }
   i++
 
   let current = null
@@ -125,7 +130,7 @@ export function parsePredictions(planPath, opts = {}) {
     const entryCont = /^    ([A-Za-z_][\w-]*):\s?(.*)$/.exec(line)
     if (entryStart) {
       current = { [entryStart[1]]: scalarValue(entryStart[2]) }
-      predictions.push(current)
+      entries.push(current)
     } else if (entryCont && current) {
       current[entryCont[1]] = scalarValue(entryCont[2])
     } else if (line.trim() === '') {
@@ -136,7 +141,23 @@ export function parsePredictions(planPath, opts = {}) {
     i++
   }
 
-  return { predictions }
+  return { entries }
+}
+
+/**
+ * parsePredictions(planPath, opts) -> {predictions, error?}.
+ *
+ * Thin wrapper over parseFrontmatterEntries keyed to 'predictions'. Behavior
+ * is byte-identical to the pre-49.2-08 inline scan — predict.test.ts is the
+ * regression proof.
+ *
+ * @param {string} planPath
+ * @param {{readFn?:Function}} [opts]
+ * @returns {{predictions: object[], error?: string}}
+ */
+export function parsePredictions(planPath, opts = {}) {
+  const { entries, error } = parseFrontmatterEntries(planPath, 'predictions', opts)
+  return error ? { predictions: entries, error } : { predictions: entries }
 }
 
 /**
