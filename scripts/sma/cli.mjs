@@ -32,7 +32,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** This module's own dir (scripts/sma/) — resolves cli.mjs + fixtures regardless of cwd. */
@@ -74,6 +74,9 @@ function dirsFrom(root) {
     flightDir: join(root, 'flight'), // 49.2-06 (D-49.2-09) — pre-compaction capsule + session flight marks
     spendDir: join(root, 'spend'), // 49.2-09 (D-49.2-13) — spend book incremental cache + window budget
     breakerDir: join(root, 'breaker'), // 49.2-09 (D-49.2-13) — loop-breaker markers (per-ruleId)
+    grillDir: join(root, 'grill'), // 49.2-07 (D-49.2-11) — per-plan adversarial challenge ledger
+    blindDir: join(root, 'blind'), // 49.2-07 (D-49.2-11) — frozen blind-verify verdicts (info barrier)
+    evidenceDir: join(root, 'evidence'), // 49.2-07 (D-49.2-11) — burden-of-proof records for risky ops
   }
 }
 
@@ -2384,6 +2387,32 @@ async function cmdForceClear({ positionals, flags, dirs }) {
     return 1
   }
 
+  // 49.2-07 (D-49.2-11): a foreign-claim clear is a RISKY OP — it carries a burden-of-proof
+  // evidence record IN ADDITION to the D-49-09 --yes confirmation (this ADDS, replaces nothing).
+  const evidence = await import('./lib/evidence.mjs')
+  const inlineChecks = typeof flags.checked === 'string' ? flags.checked.split(';').map((s) => s.trim()).filter(Boolean) : []
+  let evidenceId = null
+  if (typeof flags.reason === 'string' && flags.reason.trim() && inlineChecks.length) {
+    const w = evidence.writeEvidence(
+      { op: 'foreign-claim-clear', target: name, reason: flags.reason, checks: inlineChecks, actor: identity.holderIdentity },
+      { evidenceDir: dirs.evidenceDir },
+    )
+    if (w.ok) evidenceId = w.id
+  } else if (
+    (typeof flags.evidence === 'string' && flags.evidence.trim()) &&
+    evidence.hasFreshEvidence({ op: 'foreign-claim-clear', target: name, maxAgeMs: 24 * 60 * 60 * 1000 }, { evidenceDir: dirs.evidenceDir })
+  ) {
+    evidenceId = String(flags.evidence).trim() // a pre-written, still-fresh record satisfies
+  }
+  if (!evidenceId) {
+    process.stdout.write(
+      'Принудительная очистка чужого claim — рискованная операция и требует доказательства (burden of proof).\n' +
+        `Запишите его в этом же вызове:\n  pnpm sma force-clear ${name} --yes --reason "<почему>" --checked "<что проверили>" [--checked "<ещё>"]\n` +
+        'или сошлитесь на заранее записанное свежее доказательство: --evidence <id>. Ничего не удалено.\n',
+    )
+    return 1
+  }
+
   const res = claims.releaseSlot(name, { by: identity.holderIdentity, force: true, claimsDir: dirs.claimsDir })
   if (!res.released) {
     process.stderr.write(`SMA: не удалось очистить claim «${name}» (${res.reason ?? 'ошибка'})\n`)
@@ -2397,6 +2426,17 @@ async function cmdForceClear({ positionals, flags, dirs }) {
       actors: [identity.holderIdentity, who].filter(Boolean),
       scope: name,
       detail: { by: identity.holderIdentity, target: name, formerHolder: who, at: new Date().toISOString() },
+    },
+    { terminalId: identity.terminalId, journalDir: dirs.journalDir },
+  )
+
+  // 49.2-07 (D-49.2-11): journal the risky-op with its evidenceId — the P49.2-07-C denominator.
+  journal.appendEvent(
+    {
+      type: 'risky-op',
+      actors: [identity.holderIdentity],
+      scope: 'foreign-claim-clear',
+      detail: { op: 'foreign-claim-clear', target: name, evidenceId },
     },
     { terminalId: identity.terminalId, journalDir: dirs.journalDir },
   )
@@ -4285,6 +4325,333 @@ async function cmdSubagentReceipts({ flags, dirs }) {
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
+// ── 49.2-07 (D-49.2-11): /sma-grill adversarial gate + blind verifier + evidence ───
+
+/** planId from a plan path: basename minus the -PLAN.md / -SUMMARY.md suffix. */
+function planIdFromPath(p) {
+  return basename(String(p ?? '')).replace(/-(PLAN|SUMMARY)\.md$/i, '').replace(/\.md$/i, '')
+}
+
+/** Recursively collect *-PLAN.md paths under a directory (bounded, fail-open). */
+function findPlanFiles(dir, out = []) {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    const full = join(dir, e.name)
+    if (e.isDirectory()) findPlanFiles(full, out)
+    else if (/-PLAN\.md$/i.test(e.name)) out.push(full)
+  }
+  return out
+}
+
+/**
+ * buildPlanIndex(repoRoot) -> [{planId, files, domains, order}]. Scans the
+ * .planning phases tree for every -PLAN.md, reading each frontmatter's
+ * files_modified globs + the predictions' domains — the files→domains edges
+ * prePushPlan maps changed files over.
+ * Order = a monotone recency key (phase.plan numeric). Pure read; fail-open.
+ */
+async function buildPlanIndex(repoRoot) {
+  const predict = await import('./lib/predict.mjs')
+  const planDir = join(repoRoot, '.planning', 'phases')
+  const index = []
+  for (const planPath of findPlanFiles(planDir)) {
+    let text = ''
+    try {
+      text = readFileSync(planPath, 'utf8')
+    } catch {
+      continue
+    }
+    const files = parseYamlListBlock(text, 'files_modified')
+    const { predictions } = predict.parsePredictions(planPath)
+    const domains = [...new Set(predictions.map((p) => p && p.domain).filter(Boolean))]
+    const planId = planIdFromPath(planPath)
+    const m = /(\d+(?:\.\d+)?)-(\d+)/.exec(planId)
+    const order = m ? Number(m[1]) * 1000 + Number(m[2]) : 0
+    index.push({ planId, files, domains, order })
+  }
+  return index
+}
+
+/** Parse a simple top-level `key:` block of `  - value` scalar list items. */
+function parseYamlListBlock(text, key) {
+  const norm = String(text ?? '').replace(/\r\n/g, '\n')
+  if (!norm.startsWith('---\n')) return []
+  const closeIdx = norm.indexOf('\n---\n', 3)
+  const fm = closeIdx === -1 ? norm.slice(4) : norm.slice(4, closeIdx + 1)
+  const lines = fm.split('\n')
+  const out = []
+  let i = 0
+  const keyRe = new RegExp(`^${key}:\\s*$`)
+  while (i < lines.length && !keyRe.test(lines[i])) i++
+  if (i >= lines.length) return []
+  i++
+  for (; i < lines.length; i++) {
+    const m = /^\s*-\s+(.+)$/.exec(lines[i])
+    if (m) {
+      let v = m[1].trim()
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+      out.push(v)
+    } else if (/^[A-Za-z_]/.test(lines[i]) || lines[i].trim() === '---') break
+    else if (/^  [A-Za-z_][\w-]*:/.test(lines[i])) break
+  }
+  return out
+}
+
+/**
+ * grill — the adversarial challenge gate CLI (D-49.2-11). Modes:
+ *   grill <plan> --challenge "promise::attack"        register a challenge
+ *   grill <plan> --resolve <CH-id> --as converted --prediction <P-id>
+ *   grill <plan> --resolve <CH-id> --as withdrawn|accepted-risk --reason|--disposition
+ *   grill <plan> --gate                                print allowed/blocked; exit 1 if blocked
+ *   grill <plan> --land <CH-id>                        tag a landed pre-push defect
+ *   grill --pre-push [--budget 3]                      budget-aware pre-push depth plan
+ *   grill --stats --metric challenge-yield             numeric last line (P49.2-07-A)
+ * NOT hook-facing — the caller decides on the exit code.
+ */
+async function cmdGrill({ positionals, flags, dirs }) {
+  const grill = await import('./lib/grill.mjs')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  // --stats --metric challenge-yield → numeric last line (the scorer contract).
+  if (flags.stats) {
+    const stats = grill.challengeStats({ grillDir: dirs.grillDir })
+    if (wantsJson(flags)) printJson(stats)
+    process.stdout.write(`${stats.yieldPct}\n`)
+    return 0
+  }
+
+  // --pre-push → the budget-aware depth plan over origin..main.
+  if (flags['pre-push']) {
+    const { execFileSync } = await import('node:child_process')
+    let changedFiles = []
+    try {
+      const out = execFileSync('git', ['diff', '--name-only', 'origin/main..main'], { cwd: repoRoot, encoding: 'utf8' })
+      changedFiles = out.split('\n').map((s) => s.trim()).filter(Boolean)
+    } catch {
+      changedFiles = []
+    }
+    const planIndex = await buildPlanIndex(repoRoot)
+    const calibration = await import('./lib/calibration.mjs')
+    const { records: ledger } = calibration.readLedger({ calibrationDir: dirs.calibrationDir })
+    const budget = Number.isFinite(Number(flags.budget)) ? Number(flags.budget) : 3
+    const plan = grill.prePushPlan({ changedFiles, planIndex, ledger, budget })
+    if (wantsJson(flags)) {
+      printJson(plan)
+      return 0
+    }
+    process.stdout.write(`SMA grill pre-push — ${changedFiles.length} changed files, budget ${budget} deep blind re-verifications:\n`)
+    process.stdout.write('  DEEP (spend depth here — ledger proves miscalibration or unproven):\n')
+    for (const d of plan.deep) {
+      const tier = ['proven-bad', 'unproven', 'proven-good'][d.tier]
+      process.stdout.write(`    [${tier}] ${d.domain}${d.plan ? ` → blind-verify ${d.plan}` : ''} (n=${d.n}${d.rate != null ? `, rate=${Math.round(d.rate * 100)}%` : ''})\n`)
+    }
+    if (plan.light.length) {
+      process.stdout.write('  LIGHT (skim):\n')
+      for (const d of plan.light) process.stdout.write(`    ${d.domain}\n`)
+    }
+    return 0
+  }
+
+  const planPath = positionals[0]
+  if (!planPath) {
+    process.stderr.write('usage: pnpm sma grill <plan-path> [--challenge "promise::attack" | --resolve <CH-id> --as <status> | --gate | --land <CH-id>]\n')
+    return 1
+  }
+  const planId = planIdFromPath(planPath)
+  const by = await resolveTerminalId().catch(() => 'unknown')
+
+  // --gate → the build gate verdict; exit 1 on blocked (caller decides).
+  if (flags.gate) {
+    const res = grill.grillGate({ planPath, planId, dirs })
+    if (wantsJson(flags)) printJson(res)
+    else if (!res.allowed) {
+      process.stdout.write(`SMA grill [${planId}]: BLOCKED — ${res.open.length} нерешённых вызова(ов):\n`)
+      for (const c of res.open) process.stdout.write(`  ${c.id}: «${c.promise}» ⟵ ${c.attack}\n`)
+      process.stdout.write('Каждый вызов ДОЛЖЕН стать зарегистрированным предсказанием (--resolve --as converted --prediction <P-id>), быть отозван (--as withdrawn) или принят основателем (--as accepted-risk). До этого билд не стартует (D-49.2-11).\n')
+    } else if (!res.grilled) {
+      process.stdout.write(`SMA grill [${planId}]: WARN — план не проходил grill (ungrilled). Билд продолжается (fail-open), но ритуал /sma-grill рекомендуется.\n`)
+    } else {
+      process.stdout.write(`SMA grill [${planId}]: allowed — все вызовы решены.\n`)
+    }
+    return res.allowed ? 0 : 1
+  }
+
+  // --challenge "promise::attack" → register.
+  if (typeof flags.challenge === 'string') {
+    const [promise, attack] = flags.challenge.split('::')
+    const rec = grill.registerChallenge(
+      { planId, promise: (promise ?? '').trim(), attack: (attack ?? '').trim(), raisedBy: by },
+      { grillDir: dirs.grillDir },
+    )
+    if (wantsJson(flags)) printJson(rec)
+    else process.stdout.write(`SMA grill [${planId}]: зарегистрирован вызов ${rec.id} (status open).\n`)
+    return 0
+  }
+
+  // --land <CH-id> → tag a landed pre-push defect.
+  if (typeof flags.land === 'string') {
+    const r = grill.resolveChallenge({ planPath, planId, challengeId: flags.land, status: 'landed', by }, { grillDir: dirs.grillDir })
+    if (wantsJson(flags)) printJson(r)
+    else process.stdout.write(r.ok ? `SMA grill [${planId}]: ${flags.land} помечен landed.\n` : `SMA grill: ${r.reason}\n`)
+    return r.ok ? 0 : 1
+  }
+
+  // --resolve <CH-id> --as <status> ...
+  if (typeof flags.resolve === 'string') {
+    const status = String(flags.as ?? '')
+    const r = grill.resolveChallenge(
+      {
+        planPath,
+        planId,
+        challengeId: flags.resolve,
+        status,
+        predictionId: typeof flags.prediction === 'string' ? flags.prediction : undefined,
+        disposition: typeof flags.disposition === 'string' ? flags.disposition : undefined,
+        reason: typeof flags.reason === 'string' ? flags.reason : undefined,
+        by,
+      },
+      { grillDir: dirs.grillDir },
+    )
+    if (wantsJson(flags)) printJson(r)
+    else if (r.ok) process.stdout.write(`SMA grill [${planId}]: ${flags.resolve} → ${status}.\n`)
+    else process.stdout.write(`SMA grill: вызов НЕ решён — ${r.reason}\n`)
+    return r.ok ? 0 : 1
+  }
+
+  process.stderr.write('SMA grill: укажите один из режимов: --challenge | --resolve | --gate | --land | --pre-push | --stats\n')
+  return 1
+}
+
+/**
+ * blind-verify — tree-only re-derivation with the information barrier (D-49.2-11).
+ *   blind-verify <plan>                        freeze blind verdicts, THEN compare claimed
+ *   blind-verify --stats --metric divergence-count   numeric last line (P49.2-07-B)
+ * The blind pass NEVER reads a SUMMARY; the CLI parses the claimed side ONLY after the
+ * freeze lands on disk. NOT hook-facing.
+ */
+async function cmdBlindVerify({ positionals, flags, dirs }) {
+  const blind = await import('./lib/blind-verify.mjs')
+
+  if (flags.stats) {
+    const stats = blind.divergenceStats({ calibrationDir: dirs.calibrationDir })
+    if (wantsJson(flags)) printJson(stats)
+    process.stdout.write(`${stats.count}\n`)
+    return 0
+  }
+
+  const planPath = positionals[0]
+  if (!planPath) {
+    process.stderr.write('usage: pnpm sma blind-verify <plan-path> | blind-verify --stats --metric divergence-count\n')
+    return 1
+  }
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const { execSync } = await import('node:child_process')
+  const runCommand = (cmd) => {
+    try {
+      return execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: repoRoot })
+    } catch (err) {
+      return (err && err.stdout) || ''
+    }
+  }
+  const readFn = (p, enc) => readFileSync(p, enc ?? 'utf8')
+
+  // 1. FREEZE the blind verdicts — before the claimed side is ever parsed.
+  const res = blind.blindVerify({ planPath, runCommand, readFn, dirs, rootDir: repoRoot })
+
+  // 2. NOW (and only now) parse the claimed side from the sibling SUMMARY, in the CLI layer.
+  const summaryPath = planPath.replace(/-PLAN\.md$/i, '-SUMMARY.md')
+  const claimed = parseClaimedFromSummary(summaryPath)
+  const cmp = blind.compareToClaimed({ claimed, planId: res.planId, dirs })
+
+  if (wantsJson(flags)) {
+    printJson({ blind: res.verdicts, frozen: res.frozenPath, compare: cmp })
+    return cmp.ok && cmp.divergences && cmp.divergences.length ? 1 : 0
+  }
+  process.stdout.write(`SMA blind-verify [${res.planId}] — ${res.verdicts.length} проверок из дерева (executor report НЕ читался):\n`)
+  for (const v of res.verdicts) process.stdout.write(`  [${v.verdict}] ${v.source}:${v.id}\n`)
+  if (cmp.ok && cmp.divergences && cmp.divergences.length) {
+    process.stdout.write(`\nРАСХОЖДЕНИЯ (claimed pass / blind fail) — тяжелейшее событие реестра, блокирует sma ship (CONS-49.2-07-A):\n`)
+    for (const d of cmp.divergences) process.stdout.write(`  ${d.checkId} (${d.domain})\n`)
+    return 1
+  }
+  if (!cmp.ok) process.stdout.write(`\n(claimed-side сравнение пропущено: ${cmp.reason})\n`)
+  else process.stdout.write('\nРасхождений нет.\n')
+  return 0
+}
+
+/**
+ * parseClaimedFromSummary(summaryPath) -> [{id, verdict}]. Reads the SUMMARY's coverage
+ * + receipts blocks (in the CLI layer, AFTER the blind freeze) and treats each declared
+ * item as a CLAIMED pass (a SUMMARY asserts «done»). Missing file → [] (nothing claimed).
+ */
+function parseClaimedFromSummary(summaryPath) {
+  let text
+  try {
+    text = readFileSync(summaryPath, 'utf8')
+  } catch {
+    return []
+  }
+  const ids = new Set()
+  // receipts: `  - id: R1` and predictions: `  - id: P...` and any artifact-ish id.
+  const idRe = /^\s+-?\s*id:\s*([A-Za-z0-9._-]+)\s*$/gm
+  let m
+  while ((m = idRe.exec(text))) ids.add(m[1])
+  return [...ids].map((id) => ({ id, verdict: 'pass' }))
+}
+
+/**
+ * evidence — write a burden-of-proof record for a risky op (D-49.2-11).
+ *   evidence <op> --target ... --reason ... --checked "a; b; c"
+ *   evidence --stats --metric coverage         numeric last line (P49.2-07-C)
+ * NOT hook-facing.
+ */
+async function cmdEvidence({ positionals, flags, dirs }) {
+  const evidence = await import('./lib/evidence.mjs')
+
+  if (flags.stats) {
+    const stats = evidence.evidenceStats({ evidenceDir: dirs.evidenceDir, journalDir: dirs.journalDir })
+    if (wantsJson(flags)) printJson(stats)
+    process.stdout.write(`${stats.coverage}\n`)
+    return 0
+  }
+
+  const op = positionals[0]
+  if (!op) {
+    process.stderr.write('usage: pnpm sma evidence <force-push|allowlist-edit|foreign-claim-clear> --target ... --reason ... --checked "a; b"\n')
+    return 1
+  }
+  const checks = typeof flags.checked === 'string' ? flags.checked.split(';').map((s) => s.trim()).filter(Boolean) : []
+  const actor = await resolveTerminalId().catch(() => 'unknown')
+  const res = evidence.writeEvidence(
+    { op, target: typeof flags.target === 'string' ? flags.target : '', reason: typeof flags.reason === 'string' ? flags.reason : '', checks, actor },
+    { evidenceDir: dirs.evidenceDir },
+  )
+  if (!res.ok) {
+    if (wantsJson(flags)) printJson(res)
+    process.stderr.write(`SMA evidence: запись отклонена — не хватает: ${res.missing.join(', ')}\n`)
+    return 1
+  }
+  // Journal the risky-op event referencing the evidenceId — the P49.2-07-C denominator.
+  try {
+    const journal = await import('./lib/journal.mjs')
+    const terminalId = await resolveTerminalId().catch(() => 'unknown')
+    journal.appendEvent(
+      { type: 'risky-op', actors: [actor], scope: op, detail: { op, target: res.record.target, evidenceId: res.id } },
+      { terminalId, journalDir: dirs.journalDir },
+    )
+  } catch {
+    /* a journal failure never blocks the evidence write */
+  }
+  if (wantsJson(flags)) printJson(res)
+  else process.stdout.write(`SMA evidence: записано доказательство ${res.id} для ${op} (${res.record.target}).\n`)
+  return 0
+}
+
 const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
@@ -4341,6 +4708,9 @@ const HANDLERS = {
   resume: cmdResume, // 49.2-06 — continuation brief from the flight recorder
   handoff: cmdHandoff, // 49.2-06 — teammate brief + claim-transfer steps
   flight: cmdFlight, // 49.2-06 — flight instruments (probe|determinism-check|tail)
+  grill: cmdGrill, // 49.2-07 (D-49.2-11) — adversarial challenge gate + budget-aware pre-push
+  'blind-verify': cmdBlindVerify, // 49.2-07 — tree-only re-derivation + divergence detection
+  evidence: cmdEvidence, // 49.2-07 — burden-of-proof records for risky ops
 }
 
 async function main() {
@@ -4350,7 +4720,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence>\n',
     )
     return 0
   }
