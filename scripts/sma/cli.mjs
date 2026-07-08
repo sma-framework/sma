@@ -71,6 +71,7 @@ function dirsFrom(root) {
     benchDir: join(root, 'bench'), // 49.2-01 (D-49.2-02) — bench markers: ttc/, exam/, selfcost.json
     perfDir: join(root, 'perf'), // 49.2-02 (D-49.2-04) — `sma pre` per-stream timing samples (pre.jsonl)
     subagentsDir: join(root, 'subagents'), // 49.2-04 (D-49.2-10) — spawn records + receipt stats
+    flightDir: join(root, 'flight'), // 49.2-06 (D-49.2-09) — pre-compaction capsule + session flight marks
   }
 }
 
@@ -154,6 +155,21 @@ function readStdinJson() {
 function windowTokenFrom(evt) {
   const t = evt && typeof evt.session_id === 'string' ? evt.session_id.trim() : ''
   return t || null
+}
+
+/**
+ * truncateRestore(body, maxBytes) — cap the restored capsule to maxBytes (UTF-8),
+ * appending a `pnpm sma resume` pointer line when it had to be cut. Byte-safe: the
+ * Buffer slice may drop a partial multibyte char at the boundary (rendered as the
+ * replacement char), never a torn sequence. 49.2-06 restore reflex.
+ */
+function truncateRestore(body, maxBytes) {
+  const text = String(body ?? '')
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  const pointer = '\n\nПолный бриф: `pnpm sma resume`'
+  const room = Math.max(0, maxBytes - Buffer.byteLength(pointer, 'utf8'))
+  const cut = Buffer.from(text, 'utf8').subarray(0, room).toString('utf8')
+  return cut + pointer
 }
 
 // ── shared read: sessions + collisions summary (status / session-start) ───────
@@ -329,8 +345,10 @@ async function cmdHeartbeat({ flags, dirs }) {
 async function cmdSessionStart({ dirs }) {
   // The SessionStart hook receives the same stdin JSON as every PreToolUse — read the
   // stable window token (session_id) so THIS terminal registers under the window-stable
-  // terminalId that later collision-check invocations will renew (R7/D-49-01).
-  const sessionToken = windowTokenFrom(readStdinJson())
+  // terminalId that later collision-check invocations will renew (R7/D-49-01). Keep the
+  // whole event: 49.2-06's restore reflex reads its `source` field (compact vs startup).
+  const evt = readStdinJson()
+  const sessionToken = windowTokenFrom(evt)
 
   // register/refresh this terminal (best-effort; never fatal). The own claimed
   // scope is captured BEFORE the registering beat (49.1-11: the beat writes an
@@ -426,8 +444,42 @@ async function cmdSessionStart({ dirs }) {
     namePrompt = 'Задайте имя окна: переменная SMA_TERMINAL_NAME (например «Tom»), чтобы журналы были читаемы.'
   }
 
-  // Only surface context when there is something worth surfacing (Pattern 1).
+  // 49.2-06 (D-49.2-09) — the post-compact RESTORE REFLEX. Claude Code re-fires
+  // SessionStart after a compaction with stdin `source: "compact"`; we re-inject the
+  // pre-written flight capsule as the FIRST additionalContext part so the session
+  // resumes knowing its current task, constraints, and recent decisions. NO new hook
+  // spawn — this rides the EXISTING session-start wiring. Fail-open: a missing/unreadable
+  // capsule degrades to no restore, never a throw. Kill-switch: SMA_FLIGHT_DISABLE=1.
+  let restore = ''
+  if (evt && evt.source === 'compact' && !isEnvOn(process.env.SMA_FLIGHT_DISABLE)) {
+    try {
+      const { RESTORE_BUDGET } = await import('./lib/flight.mjs')
+      const terminalId = identity ? identity.terminalId : null
+      let body = ''
+      if (terminalId) {
+        try {
+          body = readFileSync(join(dirs.flightDir, 'capsules', `${terminalId}.md`), 'utf8')
+        } catch {
+          /* fall through to intent.md */
+        }
+      }
+      if (!body) {
+        try {
+          body = readFileSync(join(dirs.flightDir, 'intent.md'), 'utf8')
+        } catch {
+          /* no capsule — no restore */
+        }
+      }
+      if (body) restore = truncateRestore(body, RESTORE_BUDGET)
+    } catch {
+      /* fail-open — the restore reflex never wedges session-start */
+    }
+  }
+
+  // Only surface context when there is something worth surfacing (Pattern 1) — OR when a
+  // post-compact restore must be injected (that is the whole point of the reflex).
   if (
+    restore ||
     s.activeSessions > 0 ||
     s.collisions > 0 ||
     (s.pushClaim && s.pushClaim.live) ||
@@ -440,6 +492,7 @@ async function cmdSessionStart({ dirs }) {
     if (preAct) parts.push(preAct)
     if (digest) parts.push(digest)
     if (namePrompt) parts.push(namePrompt)
+    if (restore) parts.unshift(restore) // the capsule body is the FIRST part after compaction
     printJson({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
@@ -1251,6 +1304,314 @@ async function cmdAirbag({ positionals, flags, dirs }) {
   return sub ? 1 : 0
 }
 
+// ── 49.2-06 (D-49.2-09): the flight recorder — capsule / restore / resume / handoff ─
+
+/**
+ * extractStateSlices(statePath) -> {position, blockers}. Reads STATE.md raw and pulls
+ * the `## Current Position` body (one line, `**` stripped) + the `## Open Blockers`
+ * bullet lines. Fence-agnostic (works whether or not the SMA-MANAGED fence is present).
+ * Fail-open: a missing/unreadable file -> honest empty slices.
+ */
+function extractStateSlices(statePath) {
+  let raw = ''
+  try {
+    raw = readFileSync(statePath, 'utf8')
+  } catch {
+    return { position: '', blockers: [] }
+  }
+  const sectionBody = (name) => {
+    const m = new RegExp('^##\\s+' + name + '[^\\n]*$', 'm').exec(raw)
+    if (!m) return ''
+    const rest = raw.slice(m.index + m[0].length)
+    const nm = /\n## /.exec(rest)
+    return rest.slice(0, nm ? nm.index : undefined)
+  }
+  const posBody = sectionBody('Current Position')
+  const position = posBody
+    .split('\n')
+    .map((l) => l.replace(/\*\*/g, '').trim())
+    .find((l) => l) || ''
+  const blockers = sectionBody('Open Blockers')
+    .split('\n')
+    .filter((l) => l.trimStart().startsWith('-'))
+    .map((l) => l.replace(/^\s*-\s*/, '').replace(/\*\*/g, '').trim())
+    .filter(Boolean)
+  return { position, blockers }
+}
+
+/**
+ * gatherExecState(dirs) -> {planId, nextUndone, complete} | null. Picks the
+ * most-recently-modified `.sma/exec/*.jsonl` (the active plan), reads it via
+ * exec-journal, and computes the resume point EXACTLY as the V2 resume ritual does
+ * (nextUndone over [1..maxCompleted+1]). Fail-open -> null.
+ */
+async function gatherExecState(dirs) {
+  let files
+  try {
+    files = readdirSync(dirs.execDir).filter((f) => f.endsWith('.jsonl'))
+  } catch {
+    return null
+  }
+  if (!files.length) return null
+  let best = null
+  let bestM = -1
+  for (const f of files) {
+    try {
+      const m = statSync(join(dirs.execDir, f)).mtimeMs
+      if (m > bestM) {
+        bestM = m
+        best = f
+      }
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  if (!best) return null
+  const planId = best.replace(/\.jsonl$/, '')
+  const [phase, plan] = planId.split(/-(?=[^-]*$)/) // split on the LAST dash: "49.2-06" -> ["49.2","06"]
+  try {
+    const ej = await import('./lib/exec-journal.mjs')
+    const { events } = ej.read({ phase, plan, execDir: dirs.execDir })
+    if (events.some((e) => e && e.event === 'plan_complete')) return { planId, nextUndone: null, complete: true }
+    let maxTask = 0
+    for (const e of events) {
+      if (e && e.event === 'task_complete' && e.task != null) maxTask = Math.max(maxTask, Number(e.task))
+    }
+    const nextUndone = ej.nextUndone({ planTasks: maxTask + 1, journal: events })
+    return { planId, nextUndone, complete: false }
+  } catch {
+    return { planId, nextUndone: null, complete: false }
+  }
+}
+
+/**
+ * gatherFlightInputs(dirs, {sessionToken, trigger, now}) — assemble every capsule/brief
+ * input, EACH source in its own try/catch (fail-open: a broken source degrades the
+ * capsule, never blocks it). Zero LLM, zero network, zero git-write.
+ */
+async function gatherFlightInputs(dirs, { sessionToken, trigger, now } = {}) {
+  const inputs = {
+    now: now ?? new Date().toISOString(),
+    trigger: trigger === 'manual' ? 'manual' : 'auto',
+    identity: {},
+    label: '',
+    statePosition: '',
+    stateBlockers: [],
+    ownClaim: null,
+    otherClaims: [],
+    pushClaim: null,
+    journalTail: [],
+    marksTail: [],
+    execState: null,
+    capsuleFresh: null,
+  }
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const statePath = join(repoRoot, '.planning', 'STATE.md')
+
+  let identity = null
+  try {
+    const registry = await import('./lib/registry.mjs')
+    identity = registry.resolveTerminalIdentity({ sessionToken })
+    inputs.identity = identity
+  } catch {
+    /* fail-open */
+  }
+  const terminalId = identity && identity.terminalId ? identity.terminalId : 'unknown'
+  const holder = identity && identity.holderIdentity ? identity.holderIdentity : null
+
+  try {
+    const { position, blockers } = extractStateSlices(statePath)
+    inputs.statePosition = position
+    inputs.stateBlockers = blockers
+  } catch {
+    /* fail-open */
+  }
+
+  try {
+    const claims = await import('./lib/claims.mjs')
+    for (const c of claims.readClaims({ claimsDir: dirs.claimsDir })) {
+      const prov = c.provenance || {}
+      const globs = prov.scope && Array.isArray(prov.scope.globs) ? prov.scope.globs : []
+      const description = prov.scope && prov.scope.description ? prov.scope.description : ''
+      if (holder && prov.by === holder) {
+        if (!inputs.ownClaim) inputs.ownClaim = { name: c.name, globs, description }
+      } else {
+        inputs.otherClaims.push({ by: prov.by || null, holderIdentity: prov.by || null, globs, name: c.name })
+      }
+    }
+  } catch {
+    /* fail-open */
+  }
+
+  // Work label: own claim description > STATE phase.
+  if (inputs.ownClaim && inputs.ownClaim.description) inputs.label = inputs.ownClaim.description
+  else if (inputs.statePosition) {
+    const m = /Phase:\s*([\d.]+)/.exec(inputs.statePosition)
+    if (m) inputs.label = `phase:${m[1]}`
+  }
+
+  try {
+    const slots = await import('./lib/slots.mjs')
+    if (typeof slots.checkPushClaim === 'function') {
+      const pc = slots.checkPushClaim(dirs)
+      if (pc && pc.live) inputs.pushClaim = pc
+    }
+  } catch {
+    /* fail-open */
+  }
+
+  try {
+    const journal = await import('./lib/journal.mjs')
+    inputs.journalTail = journal.journalTail(terminalId, 20, { journalDir: dirs.journalDir })
+  } catch {
+    /* fail-open */
+  }
+
+  try {
+    const flight = await import('./lib/flight.mjs')
+    inputs.marksTail = flight.readMarks({ flightDir: dirs.flightDir }).marks.slice(-30)
+  } catch {
+    /* fail-open */
+  }
+
+  try {
+    inputs.execState = await gatherExecState(dirs)
+  } catch {
+    /* fail-open */
+  }
+
+  try {
+    const p1 = join(dirs.flightDir, 'capsules', `${terminalId}.md`)
+    const p2 = join(dirs.flightDir, 'intent.md')
+    const path = existsSync(p1) ? p1 : existsSync(p2) ? p2 : null
+    if (path) inputs.capsuleFresh = new Date(statSync(path).mtimeMs).toISOString()
+  } catch {
+    /* fail-open */
+  }
+
+  return inputs
+}
+
+/** The exact next-step string for the resume --json object (mirrors flight.nextStepFrom). */
+function resumeNextStep(inputs) {
+  const exec = inputs.execState
+  if (exec && exec.nextUndone != null) return `продолжить план ${exec.planId ?? ''}`.trim() + ` с задачи ${exec.nextUndone}`
+  if (exec && exec.complete) return `план ${exec.planId ?? ''} завершён — см. pnpm sma status`.trim()
+  if (inputs.label) return `продолжить: ${inputs.label}`
+  return 'см. pnpm sma status'
+}
+
+/**
+ * precompact-capsule (HOOK_FACING) — the NEW PreCompact hook. Kill-switch/probe first,
+ * then GATHER (each source fail-open) -> buildCapsule -> writeCapsule. NO stdout on
+ * success (hooks stay silent). Exit 0 unconditionally (main() wraps HOOK_FACING). A
+ * capsule failure degrades to no-capsule, NEVER a blocked compaction (T-49.2-06B).
+ */
+async function cmdPrecompactCapsule({ dirs }) {
+  if (isEnvOn(process.env.SMA_FLIGHT_DISABLE)) return 0
+  const flight = await import('./lib/flight.mjs')
+  if (flight.nativeProbe({ env: process.env }).native) return 0 // bridge stands down (D-49.2-05)
+
+  const evt = readStdinJson()
+  const sessionToken = windowTokenFrom(evt)
+  const trigger = evt && evt.trigger === 'manual' ? 'manual' : 'auto'
+
+  const inputs = await gatherFlightInputs(dirs, { sessionToken, trigger, now: new Date().toISOString() })
+  const capsule = flight.buildCapsule(inputs)
+  const terminalId = inputs.identity && inputs.identity.terminalId ? inputs.identity.terminalId : 'unknown'
+  flight.writeCapsule({ capsule, terminalId }, { flightDir: dirs.flightDir, env: process.env })
+  return 0 // silent success — the capsule is data, not a message
+}
+
+/**
+ * resume [--json] — assemble a continuation brief from the flight recorder alone (works
+ * after a terminal death, not only after compaction). Direct-CLI. `--json` returns a
+ * single object {capsuleFresh, currentTask, nextStep} (+ the full brief).
+ */
+async function cmdResume({ flags, dirs }) {
+  const flight = await import('./lib/flight.mjs')
+  const inputs = await gatherFlightInputs(dirs, { now: new Date().toISOString() })
+  const brief = flight.buildResumeBrief(inputs)
+  if (wantsJson(flags)) {
+    printJson({
+      capsuleFresh: inputs.capsuleFresh,
+      currentTask: inputs.label || null,
+      nextStep: resumeNextStep(inputs),
+      brief,
+    })
+    return 0
+  }
+  process.stdout.write(brief.endsWith('\n') ? brief : brief + '\n')
+  return 0
+}
+
+/**
+ * handoff [--json] — a teammate brief: everything resume has PLUS claim-transfer steps.
+ * scanForSecrets runs before the write; the file lands at handoff-<terminalId>.md and
+ * its path is printed. Direct-CLI.
+ */
+async function cmdHandoff({ flags, dirs }) {
+  const flight = await import('./lib/flight.mjs')
+  const inputs = await gatherFlightInputs(dirs, { now: new Date().toISOString() })
+  const brief = flight.buildHandoffBrief(inputs)
+  const terminalId = inputs.identity && inputs.identity.terminalId ? inputs.identity.terminalId : 'unknown'
+  const res = flight.writeHandoff({ brief, terminalId }, { flightDir: dirs.flightDir })
+  const path = res.written[0]
+  if (wantsJson(flags)) {
+    printJson({ path, capsuleFresh: inputs.capsuleFresh, currentTask: inputs.label || null })
+    return 0
+  }
+  process.stdout.write(brief.endsWith('\n') ? brief : brief + '\n')
+  process.stdout.write(`${path}\n`) // the written path is the LAST line
+  return 0
+}
+
+/**
+ * flight <probe|determinism-check|tail [n]> — the bridge instruments. Direct-CLI.
+ *   probe             -> prints the digit 0|1 as the LAST line (P49.2-06-03 scorer).
+ *   determinism-check -> gathers inputs ONCE, buildCapsule twice with identical inputs
+ *                        (+ injected now), byte-compares, prints 1|0 last (P49.2-06-02).
+ *   tail [n]          -> prints the last n flight marks.
+ */
+async function cmdFlight({ positionals, flags, dirs }) {
+  const flight = await import('./lib/flight.mjs')
+  const sub = positionals[0]
+
+  if (sub === 'probe') {
+    const p = flight.nativeProbe({ env: process.env })
+    if (wantsJson(flags)) printJson(p)
+    else process.stdout.write(`SMA flight probe: native=${p.native} (${p.reason})\n`)
+    process.stdout.write(`${p.native ? 1 : 0}\n`) // numeric LAST line — the P49.2-06-03 scorer
+    return 0
+  }
+
+  if (sub === 'determinism-check') {
+    const inputs = await gatherFlightInputs(dirs, { now: '2026-01-01T00:00:00.000Z' })
+    const a = flight.buildCapsule(inputs)
+    const b = flight.buildCapsule(inputs)
+    const identical = Buffer.from(a, 'utf8').equals(Buffer.from(b, 'utf8')) ? 1 : 0
+    if (wantsJson(flags)) printJson({ deterministic: identical === 1, bytes: Buffer.byteLength(a, 'utf8') })
+    process.stdout.write(`${identical}\n`) // numeric LAST line — the P49.2-06-02 scorer
+    return 0
+  }
+
+  if (sub === 'tail') {
+    const n = Number.isFinite(Number(positionals[1])) ? Number(positionals[1]) : 20
+    const { marks } = flight.readMarks({ flightDir: dirs.flightDir })
+    const tail = marks.slice(-n)
+    if (wantsJson(flags)) {
+      printJson({ marks: tail, n: tail.length })
+      return 0
+    }
+    if (!tail.length) process.stdout.write('SMA flight: меток нет\n')
+    for (const m of tail) process.stdout.write(`  ${m.ts}  ${m.tool ?? '?'} ${m.target ?? ''}\n`)
+    return 0
+  }
+
+  process.stdout.write('usage: sma flight <probe|determinism-check|tail [n]> [--json]\n')
+  return sub ? 1 : 0
+}
+
 /** Load the three committed golden hook-event fixtures (parity + bench corpus). */
 function loadPreFixtures() {
   const dir = join(MODULE_DIR, 'fixtures', 'pre')
@@ -1513,6 +1874,40 @@ async function cmdStallCheck({ dirs }) {
     }
   } catch {
     /* fail-open (C9) — a stall-check failure can NEVER wedge a session */
+  }
+
+  // 49.2-06 (D-49.2-09) FLIGHT MARK SEAM — generalize the V2 exec-journal to ALL
+  // sessions: every PostToolUse appends ONE mark line via THIS existing stall-check
+  // spawn (ZERO new per-tool-call process, D-49.2-04). Best-effort, fail-open. `target`
+  // is a file path for Edit/Write/Read or a first-token command SLUG for Bash — NEVER
+  // the full command line (secrets ride in command args, T-49.2-06A). When plan 02's
+  // `sma pre` multiplexer absorbs stall-check, this seam rides along untouched.
+  try {
+    if (!isEnvOn(process.env.SMA_FLIGHT_DISABLE)) {
+      const toolName = typeof evt.tool_name === 'string' ? evt.tool_name : ''
+      if (toolName) {
+        const input = evt.tool_input && typeof evt.tool_input === 'object' ? evt.tool_input : {}
+        let target = ''
+        if (toolName === 'Edit' || toolName === 'Write' || toolName === 'Read') {
+          target = typeof input.file_path === 'string' ? input.file_path : ''
+        } else if (toolName === 'Bash') {
+          const cmd = typeof input.command === 'string' ? input.command : ''
+          target = cmd.trim().split(/\s+/)[0] || '' // first token only — a command slug, never args
+        }
+        let terminalId = 'unknown'
+        try {
+          const registry = await import('./lib/registry.mjs')
+          const id = registry.resolveTerminalIdentity({ sessionToken })
+          if (id && id.terminalId) terminalId = id.terminalId
+        } catch {
+          /* fail-open */
+        }
+        const flight = await import('./lib/flight.mjs')
+        flight.appendMark({ tool: toolName, target }, { terminalId, flightDir: dirs.flightDir })
+      }
+    }
+  } catch {
+    /* fail-open — a mark append never wedges stall-check (D-49.2-04 premise) */
   }
 
   // ADVISORY output only — a PostToolUse additionalContext nudge, never a block.
@@ -3725,7 +4120,7 @@ async function cmdSubagentReceipts({ flags, dirs }) {
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
-const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify'])
+const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
@@ -3774,6 +4169,10 @@ const HANDLERS = {
   'pretask-pack': cmdPretaskPack, // 49.2-04 (D-49.2-10) — PreToolUse(Task) pack injection
   'subagent-verify': cmdSubagentVerify, // 49.2-04 — SubagentStop tree-verified receipts
   'subagent-receipts': cmdSubagentReceipts, // 49.2-04 — receipt coverage/phantoms/pack-p95 report
+  'precompact-capsule': cmdPrecompactCapsule, // 49.2-06 (D-49.2-09) — PreCompact deterministic capsule
+  resume: cmdResume, // 49.2-06 — continuation brief from the flight recorder
+  handoff: cmdHandoff, // 49.2-06 — teammate brief + claim-transfer steps
+  flight: cmdFlight, // 49.2-06 — flight instruments (probe|determinism-check|tail)
 }
 
 async function main() {
@@ -3783,7 +4182,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight>\n',
     )
     return 0
   }
