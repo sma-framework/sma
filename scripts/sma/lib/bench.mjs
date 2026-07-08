@@ -441,11 +441,32 @@ export function parseSummaryClaims(text) {
       // stop at the next top-level key
       if (/^\S/.test(line) && !/^key-files:/.test(line)) inKeyFiles = false
       const fileM = /^\s*-\s*(.+?)\s*$/.exec(line)
-      if (fileM) files.push(unquoteScalar(fileM[1]))
+      if (fileM) {
+        // dogfood SUMMARYs annotate each file with a trailing ` (description)`; take
+        // the leading path TOKEN before any whitespace and strip trailing punctuation.
+        const token = unquoteScalar(fileM[1]).split(/\s+/)[0].replace(/[),.;]+$/, '')
+        // keep only CONCRETE file paths — reject globs / prose / labels so the S4
+        // denominator is honest (a `scripts/sma/**` glob or a "PRODUCT repo: ..."
+        // prose note is not a single verifiable committed file).
+        if (isConcretePath(token)) files.push(token)
+      }
     }
   }
-  const planId = phase != null && plan != null ? `${phase}-${plan}` : phase != null ? String(phase) : ''
+  // The commit convention tags the NUMERIC plan id (`feat(49.1-26): ...`), not the
+  // full phase dir name — derive `49.1` from `49.1-sma-v2-...` so the git grep hits.
+  const phaseNum = phase != null ? (/^(\d+(?:\.\d+)?)/.exec(String(phase)) || [])[1] ?? String(phase) : null
+  const planId = phaseNum != null && plan != null ? `${phaseNum}-${plan}` : phaseNum != null ? String(phaseNum) : ''
   return { planId, files }
+}
+
+/**
+ * True for a concrete committed-file path verifiable against THIS repo's git: has a
+ * slash; no space/glob/paren; and NOT a `../` cross-repo escape (a sibling-repo path
+ * cannot be graded against local git — excluding it keeps the S4 denominator honest
+ * rather than inflating phantoms with dual-repo-split artifacts).
+ */
+function isConcretePath(s) {
+  return typeof s === 'string' && /\//.test(s) && !/[\s*()]/.test(s) && !/^\.\.[\\/]/.test(s)
 }
 
 // ── S5: time-to-context ──────────────────────────────────────────────────────
@@ -560,7 +581,8 @@ export function measureCompactionExam(opts = {}) {
 export function readSelfCostBase(opts = {}) {
   const file = opts.dirs && opts.dirs.benchDir ? join(opts.dirs.benchDir, 'selfcost.json') : null
   const obj = file ? readJson(file, opts.readFile) : null
-  if (!obj || !Number.isFinite(obj.msPerToolCall)) {
+  // a real capture has n>0; an empty/zero capture is NOT a measurement (pending).
+  if (!obj || !Number.isFinite(obj.msPerToolCall) || !(Number(obj.n) > 0)) {
     return result('self-cost', {
       value: 0,
       unit: 'ms-per-tool-call',
@@ -954,6 +976,87 @@ function tokenizeKeywords(v) {
   // required keywords = distinct meaningful tokens (>=2 chars), bounded set
   const toks = norm.split(/[^a-z0-9.\-/]+/).filter((t) => t.length >= 2)
   return [...new Set(toks)].slice(0, 8)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Task 3 — aggregate runner, baseline capture, and freeze verification.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** The immutable baseline freeze date (D-49.2-02). W1+ plans gate on this. */
+export const FREEZE_DATE = '2026-07-21'
+
+/** The two DETERMINISTIC bases that must reproduce on a fresh clone (P49.2-01-C). */
+export const DETERMINISTIC_METRICS = ['false-done-rate', 'phantom-writes']
+
+/**
+ * runAllMetrics(ctx) -> [{id, scorecard, ...result}] for all 8 registry metrics.
+ * Each measure reads only what it needs from the shared ctx; a missing input
+ * yields an honest empty status, never a throw. This is the `bench --json` shape.
+ */
+export function runAllMetrics(ctx = {}) {
+  return SCORECARD_METRICS.map((m) => {
+    let r
+    try {
+      r = m.measure(ctx)
+    } catch {
+      r = result(m.id, { value: 0, unit: m.unit, n: 0, method: 'measure threw — reported as insufficient-data (fail-open)', status: 'insufficient-data' })
+    }
+    return { id: m.id, scorecard: m.scorecard, ...r }
+  })
+}
+
+/** coverageCount(metrics) -> count with a real base (measured OR registered) — P49.2-01-A. */
+export function coverageCount(metrics) {
+  return (Array.isArray(metrics) ? metrics : []).filter(
+    (m) => m.status === 'measured' || m.status === 'registered',
+  ).length
+}
+
+/**
+ * captureBaseline(ctx) -> { capturedAt, metrics }. Runs the full 8-metric suite for
+ * the baseline artifact. The CLL renders this into 49.2-BASELINE.md; on/after the
+ * freeze date it flips status to frozen with git anchors.
+ */
+export function captureBaseline(ctx = {}) {
+  return { capturedAt: new Date(ctx.now ?? Date.now()).toISOString(), metrics: runAllMetrics(ctx) }
+}
+
+/**
+ * verifyFreeze({ ctx, frozen }) -> { ok, checked }. Recomputes ONLY the deterministic
+ * bases (S1 false-done-rate over the frozen plan set, S4 phantom-writes over the frozen
+ * phase window) and compares them to the frozen values (exact equality). Timing metrics
+ * are excluded by design (P49.2-01-C). Returns ok=true only when every deterministic
+ * base reproduces exactly.
+ *
+ * @param {{ctx:object, frozen:Record<string,number>}} args
+ */
+export function verifyFreeze({ ctx = {}, frozen = {} } = {}) {
+  const checked = []
+  let ok = true
+  for (const id of DETERMINISTIC_METRICS) {
+    const entry = metricById(id)
+    if (!entry) continue
+    let value = null
+    try {
+      value = entry.measure(ctx).value
+    } catch {
+      value = null
+    }
+    const expected = frozen[id]
+    const match = expected != null && value === expected
+    if (!match) ok = false
+    checked.push({ id, expected: expected ?? null, actual: value, match })
+  }
+  return { ok, checked }
+}
+
+/**
+ * isFreezeAllowed(now) -> boolean. The `bench --freeze` date guard: refuses while
+ * now < FREEZE_DATE (the CLI honors SMA_BENCH_FORCE=1 to override for a dry run).
+ */
+export function isFreezeAllowed(now) {
+  const t = typeof now === 'number' ? now : Date.parse(String(now))
+  return Number.isFinite(t) && t >= Date.parse(`${FREEZE_DATE}T00:00:00Z`)
 }
 
 // helper re-exported so the CLI can resolve the default S1 plan set from disk

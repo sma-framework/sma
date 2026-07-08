@@ -31,8 +31,12 @@
  * Node built-ins only; zero npm deps.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/** This module's own dir (scripts/sma/) — resolves cli.mjs + fixtures regardless of cwd. */
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 
 // ── .sma root + dir resolution ───────────────────────────────────────────────
 // The lib modules all accept dependency-injectable dirs (sessionsDir/claimsDir/
@@ -2499,6 +2503,351 @@ async function cmdReport({ flags, dirs }) {
   return 0
 }
 
+/**
+ * bench — the W0 measurement harness surface (49.2-01, D-49.2-02). Runs the
+ * deterministic, zero-LLM 8-metric scorecard over the V2 journals + git history.
+ * NOT hook-facing (a direct CLI; --freeze may hard-refuse before the freeze date).
+ *
+ *   bench [--json]                       all 8 metrics with value/status/method/n
+ *   bench --metric <id> [--json]         one metric; ALWAYS prints value as last line
+ *   bench --coverage                     count of metrics with a real base (last line)
+ *   bench --timing                       total automated wall seconds (last line)
+ *   bench --freeze --out <path>          refuses before FREEZE_DATE unless SMA_BENCH_FORCE=1
+ *   bench --verify-freeze --against <p>  1 if deterministic bases reproduce, else 0
+ *   bench ab --fixture <path>            A/B throwaway-clone replay report
+ *   bench exam --new | --grade <ans> --key <key>
+ */
+async function cmdBench({ positionals, flags, dirs }) {
+  const bench = await import('./lib/bench.mjs')
+  const sub = positionals[0]
+
+  // resolve the main-checkout repo root (the dogfood user #1 data lives there)
+  let repoRoot = process.cwd()
+  try {
+    const registry = await import('./lib/registry.mjs')
+    repoRoot = registry.smaRoot()
+  } catch {
+    /* fail-open to cwd */
+  }
+
+  const ctx = await buildBenchContext({ dirs, repoRoot, flags })
+
+  // ── bench ab / exam surfaces (task 2 harness) ─────────────────────────────
+  if (sub === 'ab') {
+    const { execFileSync } = await import('node:child_process')
+    const exec = (bin, args, opts = {}) => {
+      try {
+        const stdout = execFileSync(bin, args, { cwd: opts.cwd, input: opts.input, encoding: 'utf8' })
+        return { stdout }
+      } catch (e) {
+        return { stdout: (e && e.stdout) || '' }
+      }
+    }
+    const fixturePath = typeof flags.fixture === 'string' ? flags.fixture : join(MODULE_DIR, 'fixtures/bench/ab-session.jsonl')
+    const now = () => Number(process.hrtime.bigint() / 1000000n)
+    const report = bench.abRun({ srcRoot: repoRoot, fixturePath, exec, hrtime: now, cliPath: join(MODULE_DIR, 'cli.mjs') })
+    printJson(report)
+    return 0
+  }
+  if (sub === 'exam') {
+    if (flags.new) {
+      const state = ctx.examState ?? {}
+      const res = bench.examNew({ dirs, state })
+      if (wantsJson(flags)) printJson({ ok: true, path: res.path, questions: res.key.questions.length })
+      else process.stdout.write(`SMA bench exam: answer key written -> ${res.path}\n`)
+      return 0
+    }
+    if (flags.grade) {
+      const { readJsonSafe } = await import('./lib/fs-atomics.mjs')
+      const key = readJsonSafe(String(flags.key || ''))
+      const answers = readJsonSafe(String(flags.grade || ''))
+      if (!key || !answers) {
+        process.stderr.write('SMA bench exam --grade: --key <keyfile> and --grade <answersfile> must both be readable JSON\n')
+        return 1
+      }
+      const graded = bench.examGrade({ key, answers, dirs })
+      if (wantsJson(flags)) printJson({ ok: true, score: graded.score, perQuestion: graded.perQuestion })
+      else process.stdout.write(`SMA bench exam: score\n${graded.score}\n`)
+      return 0
+    }
+    process.stderr.write('usage: pnpm sma bench exam --new | --grade <answers> --key <key>\n')
+    return 1
+  }
+
+  // ── --freeze (date-guarded capture) ───────────────────────────────────────
+  if (flags.freeze) {
+    const forced = String(process.env.SMA_BENCH_FORCE ?? '').trim() && process.env.SMA_BENCH_FORCE !== '0'
+    if (!bench.isFreezeAllowed(Date.now()) && !forced) {
+      process.stderr.write(
+        `SMA bench --freeze: отказ — окно сбора закрывается ${bench.FREEZE_DATE}. ` +
+          `Заморозка разрешена только на эту дату или позже. Разовый прогон: SMA_BENCH_FORCE=1.\n`,
+      )
+      return 1
+    }
+    const captured = bench.captureBaseline(ctx)
+    let anchor = 'unknown'
+    try {
+      const { execFileSync } = await import('node:child_process')
+      anchor = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()
+    } catch {
+      /* anchor stays unknown */
+    }
+    const md = renderFrozenBaseline(captured, anchor)
+    const out = typeof flags.out === 'string' ? flags.out : join(repoRoot, '.planning/phases/49.2-sma-v3-trust-spine/49.2-BASELINE.md')
+    writeFileSync(out, md)
+    process.stdout.write(`SMA bench: frozen baseline written -> ${out}\n`)
+    return 0
+  }
+
+  // ── --verify-freeze (deterministic reproduction) ──────────────────────────
+  if (flags['verify-freeze']) {
+    const against = typeof flags.against === 'string' ? flags.against : ''
+    const frozen = parseFrozenBases(readFileSafe(against))
+    const res = bench.verifyFreeze({ ctx, frozen })
+    if (wantsJson(flags)) {
+      printJson({ ok: res.ok, checked: res.checked })
+      return res.ok ? 0 : 1
+    }
+    // numeric last line for the scorer (1 reproduces, 0 diverges)
+    process.stdout.write(`${res.ok ? 1 : 0}\n`)
+    return res.ok ? 0 : 1
+  }
+
+  // ── --coverage (P49.2-01-A instrument) ────────────────────────────────────
+  if (flags.coverage) {
+    const metrics = bench.runAllMetrics(ctx)
+    process.stdout.write(`${bench.coverageCount(metrics)}\n`)
+    return 0
+  }
+
+  // ── --timing (P49.2-01-B instrument) ──────────────────────────────────────
+  if (flags.timing) {
+    const t0 = Number(process.hrtime.bigint())
+    bench.runAllMetrics(ctx)
+    const seconds = (Number(process.hrtime.bigint()) - t0) / 1e9
+    process.stdout.write(`${Math.round(seconds * 100) / 100}\n`)
+    return 0
+  }
+
+  // ── --metric <id> (single metric; numeric value as LAST line) ─────────────
+  if (typeof flags.metric === 'string') {
+    const entry = bench.metricById(flags.metric)
+    if (!entry) {
+      process.stderr.write(`SMA bench: неизвестная метрика «${flags.metric}»\n`)
+      return 1
+    }
+    // S7 self-cost: the base is a LIVE timing capture (spawn the wired hook set over
+    // the fixture). Run it on demand when no base is persisted yet, or on --capture,
+    // then read it back. The hooks are advisory/read-only (HOOK_FACING, exit 0).
+    if (entry.id === 'self-cost' && (flags.capture || bench.readSelfCostBase(ctx).status !== 'measured')) {
+      await captureSelfCost(bench, repoRoot, dirs, flags)
+    }
+    const r = entry.measure(ctx)
+    if (wantsJson(flags)) {
+      printJson({ id: entry.id, scorecard: entry.scorecard, ...r })
+    } else {
+      process.stdout.write(`${entry.scorecard} ${entry.id}: ${r.value} ${r.unit} (${r.status}, n=${r.n})\n`)
+      process.stdout.write(`  ${r.method}\n`)
+    }
+    // scorer contract: the numeric value is ALWAYS the last stdout line
+    process.stdout.write(`${r.value}\n`)
+    return 0
+  }
+
+  // ── default: all 8 metrics ────────────────────────────────────────────────
+  const metrics = bench.runAllMetrics(ctx)
+  if (wantsJson(flags)) {
+    printJson({ metrics, coverage: bench.coverageCount(metrics), freezeDate: bench.FREEZE_DATE })
+    return 0
+  }
+  for (const m of metrics) {
+    process.stdout.write(`${m.scorecard}  ${m.id.padEnd(24)} ${String(m.value).padStart(8)} ${m.unit.padEnd(16)} [${m.status}] n=${m.n}\n`)
+  }
+  process.stdout.write(`coverage: ${bench.coverageCount(metrics)}/8 metrics carry a base; freeze ${bench.FREEZE_DATE}\n`)
+  return 0
+}
+
+/**
+ * captureSelfCost(bench, repoRoot, dirs, flags) — the S7 LIVE timing capture. Replays
+ * the wired hook set over the fixture with a real execFile runner + hrtime clock and
+ * persists `.sma/bench/selfcost.json` so readSelfCostBase surfaces it as measured.
+ * The hooks are advisory/read-only and exit 0 (HOOK_FACING); a spawn failure just
+ * yields a slightly different wall time, never a crash (fail-open).
+ */
+async function captureSelfCost(bench, repoRoot, dirs, flags) {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const cliPath = join(MODULE_DIR, 'cli.mjs')
+    const fixturePath = typeof flags.fixture === 'string' ? flags.fixture : join(MODULE_DIR, 'fixtures/bench/ab-session.jsonl')
+    const exec = (bin, args, opts = {}) => {
+      try {
+        execFileSync(bin, args, { cwd: repoRoot, input: opts.input, stdio: ['pipe', 'ignore', 'ignore'] })
+      } catch {
+        /* a hook spawn error still consumed wall time — fail-open */
+      }
+    }
+    const hrtime = () => Number(process.hrtime.bigint() / 1000000n)
+    bench.measureSelfCost({ fixturePath, cliPath, exec, hrtime, dirs, persist: true })
+  } catch {
+    /* capture is best-effort — S7 stays pending-instrument if it fails */
+  }
+}
+
+/** Read a file utf8, or '' on any error (fail-open helper for the bench CLI). */
+function readFileSafe(path) {
+  try {
+    return path ? readFileSync(path, 'utf8') : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * buildBenchContext({dirs, repoRoot, flags}) — assemble the shared ctx the registry
+ * measures read: dirs, planPaths (default S1 10-plan set), summaryPaths (2 dogfood
+ * phases), runCommand (allowlisted execFile runner), gitLog, journalReader. Every
+ * resolver is fail-open — a missing input yields an honest empty status downstream.
+ */
+async function buildBenchContext({ dirs, repoRoot, flags }) {
+  const { execFileSync } = await import('node:child_process')
+  const journal = await import('./lib/journal.mjs')
+
+  // runCommand: OPT-IN (--run-verify). The blind re-verify's DETERMINISTIC, fresh-
+  // clone-reproducible base (P49.2-01-C) is the artifact contains-grep — pure file
+  // reads. Re-running each plan's `pnpm vitest`/`node` verify command is expensive,
+  // environment-sensitive (Windows cannot execFile `pnpm` directly), and therefore
+  // NON-reproducible — so it is NOT wired into the routine snapshot. When wired, the
+  // inner is ALREADY isSafeCommand-checked upstream (T-49.2-01); split on spaces (the
+  // allowlist guarantees a safe charset) and execFile — NO shell.
+  const runCommand =
+    flags && flags['run-verify']
+      ? (inner, opts = {}) => {
+          try {
+            const parts = String(inner).trim().split(/\s+/)
+            execFileSync(parts[0], parts.slice(1), { cwd: opts.cwd || repoRoot, stdio: 'ignore' })
+            return true
+          } catch {
+            return false
+          }
+        }
+      : null
+
+  // gitLog(planId) -> [{files:[...]}] from plan-id-grepped commits (--name-only).
+  const gitLog = (planId) => {
+    try {
+      if (!planId) return []
+      const out = execFileSync(
+        'git',
+        ['log', '--all', '--name-only', `--grep=${planId}`, '--pretty=format:%x00%H'],
+        { cwd: repoRoot, encoding: 'utf8' },
+      )
+      const commits = []
+      for (const block of out.split('\x00')) {
+        const lines = block.split('\n').filter(Boolean)
+        if (!lines.length) continue
+        commits.push({ hash: lines[0], files: lines.slice(1) })
+      }
+      return commits
+    } catch {
+      return []
+    }
+  }
+
+  const planPaths = resolveS1PlanSet(repoRoot)
+  const summaryPaths = resolveDogfoodSummaries(repoRoot)
+
+  return {
+    dirs,
+    repoRoot,
+    now: Date.now(),
+    planPaths,
+    summaryPaths,
+    ...(runCommand ? { runCommand } : {}),
+    gitLog,
+    summaryAccess: { exists: (p) => existsSyncSafe(p) },
+    journalReader: (o) => journal.readJournal({ journalDir: (o && o.journalDir) || dirs.journalDir }),
+    mode: flags && flags.share ? 'share' : 'count',
+  }
+}
+
+/** existsSync that never throws. */
+function existsSyncSafe(p) {
+  try {
+    return existsSync(p)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * resolveS1PlanSet(repoRoot) — the default frozen S1 sample: the last 10 completed
+ * 49.1 plans (sorted by plan number; completion = a sibling SUMMARY EXISTS). Blind:
+ * only EXISTENCE is consulted, never a SUMMARY body.
+ */
+function resolveS1PlanSet(repoRoot) {
+  try {
+    const dir = join(repoRoot, '.planning/phases/49.1-sma-v2-prediction-reflex-10x')
+    const files = readdirSync(dir)
+    const plans = files
+      .filter((f) => /^49\.1-\d+-PLAN\.md$/.test(f))
+      .map((f) => ({ f, n: Number(/49\.1-(\d+)-PLAN\.md/.exec(f)[1]) }))
+      .filter((p) => existsSync(join(dir, p.f.replace('-PLAN.md', '-SUMMARY.md'))))
+      .sort((a, b) => a.n - b.n)
+    return plans.slice(-10).map((p) => join(dir, p.f))
+  } catch {
+    return []
+  }
+}
+
+/** resolveDogfoodSummaries(repoRoot) — the 2 most recent 49.1 phase SUMMARYs (S4 window). */
+function resolveDogfoodSummaries(repoRoot) {
+  try {
+    const dir = join(repoRoot, '.planning/phases/49.1-sma-v2-prediction-reflex-10x')
+    const files = readdirSync(dir)
+      .filter((f) => /^49\.1-\d+-SUMMARY\.md$/.test(f))
+      .map((f) => ({ f, n: Number(/49\.1-(\d+)-SUMMARY\.md/.exec(f)[1]) }))
+      .sort((a, b) => a.n - b.n)
+    return files.slice(-2).map((p) => join(dir, p.f))
+  } catch {
+    return []
+  }
+}
+
+/** parseFrozenBases(md) -> {'false-done-rate':n, 'phantom-writes':n} from a baseline file. */
+function parseFrozenBases(md) {
+  const out = {}
+  for (const id of ['false-done-rate', 'phantom-writes']) {
+    const re = new RegExp(`${id}[^\\n]*?\\|\\s*([-\\d.]+)\\s*\\|`)
+    const m = re.exec(String(md))
+    if (m) out[id] = Number(m[1])
+  }
+  return out
+}
+
+/** renderFrozenBaseline(captured, anchor) — the status:frozen markdown emitter. */
+function renderFrozenBaseline(captured, anchor) {
+  const rows = captured.metrics
+    .map((m) => `| ${m.scorecard} | ${m.id} | ${m.value} | ${m.unit} | ${m.status} | ${m.n} | ${m.method} |`)
+    .join('\n')
+  return `---
+phase: 49.2-sma-v3-trust-spine
+plan: 01
+artifact: baseline
+status: frozen
+freeze_date: ${captured.capturedAt}
+window_anchor: ${anchor}
+---
+
+# 49.2 BASELINE (FROZEN)
+
+Frozen ${captured.capturedAt} at git ${anchor}. Immutable (PRED-POSTEDIT). A correction is a NEW dated addendum, never an edit.
+
+| # | metric | value | unit | status | n | method |
+|---|--------|-------|------|--------|---|--------|
+${rows}
+`
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
@@ -2536,6 +2885,7 @@ const HANDLERS = {
   'exec-journal': cmdExecJournal,
   metrics: cmdMetrics,
   report: cmdReport,
+  bench: cmdBench,
 }
 
 async function main() {
@@ -2545,7 +2895,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report>\n',
+      'pnpm sma <status|heartbeat|session-start|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench>\n',
     )
     return 0
   }
