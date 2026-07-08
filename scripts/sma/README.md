@@ -29,10 +29,10 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 
 ## CLI subcommands
 
-`pnpm sma <status|heartbeat|session-start|collision-check|claim|release|next-slot|force-clear|lint|build-index|load|snapshot>`
+`pnpm sma <status|heartbeat|session-start|pre|pre-bench|claim|release|next-slot|force-clear|lint|build-index|load|snapshot>`
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
-contract). Hook-facing subcommands (`session-start`, `collision-check`, `heartbeat`)
+contract). Hook-facing subcommands (`session-start`, `pre`, `heartbeat`)
 ALWAYS exit 0 (fail-open, see below); direct-CLI subcommands return meaningful codes.
 
 | Subcommand | Purpose | Key flags |
@@ -40,7 +40,11 @@ ALWAYS exit 0 (fail-open, see below); direct-CLI subcommands return meaningful c
 | `status` | statusline/hook JSON: active sessions, collisions, next slots | `--json` |
 | `heartbeat` | renew this session's lease (cadence: every 3 min) | — |
 | `session-start` | register this terminal's session lease | — |
-| `collision-check` | read-only scope-collision + hot-file advisory scan | `--json` |
+| `pre` | **the PreToolUse multiplexer (49.2-02) — ONE spawn per Edit/Write/Bash** dispatching collision → reflex → gates | — |
+| `pre-bench` | SLO instrument for `pre`: full-spawn p95, spawn-count, dispatch parity | `--runs N` \| `--metric spawn-count\|parity` |
+| `collision-check` | DEPRECATED single-stream alias (delegates to `pre`'s collision stream; kept for back-compat) | `--json` |
+| `reflex-check` | DEPRECATED single-stream alias (reflex stream) | — |
+| `gates-check` | DEPRECATED single-stream alias (gates stream) | — |
 | `claim` | claim a work scope | `<name> --globs "<glob>" --desc "<text>"` |
 | `release` | release your OWN claim | `<name>` |
 | `next-slot` | allocate the next migration number or release version | `migration` \| `release` |
@@ -214,6 +218,41 @@ isolatedContext. It becomes a slot candidate in v1.5+ if the slot list grows.
 corpus or escalate (same ethic as the security-regression guard).
 
 ---
+
+## Hook wiring (PreToolUse — the `sma pre` multiplexer, 49.2-02)
+
+The canonical PreToolUse wiring is **ONE** spawn per tool call — the `pre` multiplexer,
+which reads the hook event once and dispatches the ordered internal stream pipeline
+(collision → reflex → gates). Put this single entry in your `.claude/settings.json`:
+
+```json
+"PreToolUse": [
+  { "matcher": "Edit|Write|Bash",
+    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pre", "timeout": 5 } ] }
+]
+```
+
+`collision-check` / `reflex-check` / `gates-check` remain as DEPRECATED single-stream
+aliases (they delegate to the same stream objects `pre` uses, so behavior is identical)
+for any external wiring that still calls them — but new installs wire only `pre`.
+
+**Kill-switches (fail-open, carried forward):**
+
+| Env var | Effect |
+|---|---|
+| `SMA_PRE_DISABLE=1` | instant no-op — `pre` runs NO stream (global off switch) |
+| `SMA_REFLEX_DISABLE=1` | skip ONLY the reflex stream (collision + gates still run) |
+| `SMA_GATES_DISABLE=1` | skip ONLY the gates stream (also skips the HEAD-sha git probe) |
+| `SMA_PRE_BUDGET_MS=<n>` | soft time-budget (default 1500 ms); once a call exceeds it, remaining streams are SKIPPED, never overrun |
+
+**The `PRE_CHECKS` stream contract (for downstream stream authors — plans 05/09):**
+`lib/pre.mjs` exports an ordered array `PRE_CHECKS` of stream objects
+`{ id, tools, killSwitchEnv, mayDeny, run(ctx) -> { warns: string[], deny?: {text} } }`.
+To add a stream, append ONE object literal to that array — there is no dynamic
+registration API; consolidation is structural and the one-spawn guarantee holds by
+construction. Only a `mayDeny:true` stream (today: `gates`) can surface a `deny`; a
+`deny` returned by any other stream is downgraded to a warn line (posture protection).
+`pre-bench --metric parity` re-verifies merged-vs-single-stream parity after any change.
 
 ## Fail-open contract (P3 / P4 / P5)
 
