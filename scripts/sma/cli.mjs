@@ -31,7 +31,7 @@
  * Node built-ins only; zero npm deps.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -70,7 +70,14 @@ function dirsFrom(root) {
     stallDir: join(root, 'stall'), // 49.1-21 (B16) — per-session rolling PostToolUse window
     benchDir: join(root, 'bench'), // 49.2-01 (D-49.2-02) — bench markers: ttc/, exam/, selfcost.json
     perfDir: join(root, 'perf'), // 49.2-02 (D-49.2-04) — `sma pre` per-stream timing samples (pre.jsonl)
+    subagentsDir: join(root, 'subagents'), // 49.2-04 (D-49.2-10) — spawn records + receipt stats
   }
+}
+
+/** True for an env kill-switch that is set to anything truthy (not ''/0/false). */
+function isEnvOn(v) {
+  const s = String(v ?? '').trim().toLowerCase()
+  return !!s && s !== '0' && s !== 'false'
 }
 
 // ── tiny arg parser (gsd-tools style: flags + positionals) ───────────────────
@@ -3231,10 +3238,356 @@ ${rows}
 `
 }
 
+// ─────────────── 49.2-04 (D-49.2-10): subagent write-receipts + pack inheritance ───────
+
+/** Resolve the parent terminalId for a window token (fail-open to 'unknown'). */
+async function resolveTerminalId(sessionToken) {
+  try {
+    const registry = await import('./lib/registry.mjs')
+    const id = registry.resolveTerminalIdentity({ sessionToken })
+    return id && id.terminalId ? id.terminalId : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** Next spawn-record sequence for a window token (count of existing records + 1). */
+function nextSpawnSeq(subagentsDir, windowToken) {
+  try {
+    const n = readdirSync(subagentsDir).filter(
+      (f) => f.startsWith(`${windowToken}-`) && f.endsWith('.json'),
+    ).length
+    return n + 1
+  } catch {
+    return 1
+  }
+}
+
+/** Read every spawn record in .sma/subagents/ (fail-open to []). */
+async function readSpawnRecords(subagentsDir) {
+  const fsa = await import('./lib/fs-atomics.mjs')
+  let files
+  try {
+    files = readdirSync(subagentsDir).filter((f) => f.endsWith('.json') && !f.startsWith('.tmp-'))
+  } catch {
+    return []
+  }
+  const out = []
+  for (const f of files) {
+    const rec = fsa.readJsonSafe(join(subagentsDir, f))
+    if (rec && typeof rec === 'object') out.push({ ...rec, _file: f })
+  }
+  return out
+}
+
+/**
+ * buildPackSources — wire the real V2 read paths into assemblePack as SYNC closures
+ * (the modules are lazy-imported once here; the closures never re-import). Every
+ * source is individually fail-open — a missing corpus / claims dir degrades that
+ * layer, never the pack.
+ */
+async function buildPackSources({ dirs, repoRoot }) {
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+  const tagsPath = join(corpusDir, 'TAGS.md')
+  let loader, frontmatter, claimsMod, registry, execJournal
+  try { loader = await import('./lib/loader.mjs') } catch { /* no loader → no digest/lessons */ }
+  try { frontmatter = await import('./lib/frontmatter.mjs') } catch { /* no parser → no notes */ }
+  try { claimsMod = await import('./lib/claims.mjs') } catch { /* no claims */ }
+  try { registry = await import('./lib/registry.mjs') } catch { /* no sessions */ }
+  try { execJournal = await import('./lib/exec-journal.mjs') } catch { /* no exec tail */ }
+
+  const readNoteMeta = (file) => {
+    try {
+      const parsed = frontmatter.parseNote(readFileSync(join(corpusDir, file), 'utf8'), { file })
+      const fm = parsed.frontmatter || {}
+      return { title: String(file).replace(/\.md$/, ''), oneLiner: typeof fm.description === 'string' ? fm.description : '' }
+    } catch {
+      return null
+    }
+  }
+
+  let vocab = new Set()
+  try {
+    const reg = frontmatter.loadTagsRegistry(tagsPath)
+    for (const t of reg.area) vocab.add(String(t).toLowerCase())
+    for (const t of reg.kind) vocab.add(String(t).toLowerCase())
+  } catch {
+    /* no registry → empty vocab → CORE-only pack */
+  }
+
+  return {
+    vocab,
+    loadCore: () => {
+      try {
+        const res = loader.resolvePeriphery({ tags: [], corpusDir, tagsPath })
+        return (res.core || []).map(readNoteMeta).filter(Boolean)
+      } catch {
+        return []
+      }
+    },
+    loadPeriphery: (tags) => {
+      try {
+        const files = new Set()
+        for (const tag of tags || []) {
+          try {
+            const res = loader.resolvePeriphery({ tags: [tag], corpusDir, tagsPath })
+            for (const f of res.periphery) files.add(f)
+          } catch {
+            /* fail-open per tag */
+          }
+        }
+        return [...files].map(readNoteMeta).filter(Boolean)
+      } catch {
+        return []
+      }
+    },
+    readClaims: () => {
+      try {
+        return claimsMod.readClaims(dirs)
+      } catch {
+        return []
+      }
+    },
+    readSessions: () => {
+      try {
+        return registry.readSessions(dirs).sessions
+      } catch {
+        return []
+      }
+    },
+    execTail: () => {
+      try {
+        const files = readdirSync(dirs.execDir).filter((f) => f.endsWith('.jsonl'))
+        if (!files.length) return []
+        let newest = null
+        let newestMs = -1
+        for (const f of files) {
+          try {
+            const m = statSync(join(dirs.execDir, f)).mtimeMs
+            if (m > newestMs) {
+              newestMs = m
+              newest = f
+            }
+          } catch {
+            /* skip an unstatable file */
+          }
+        }
+        if (!newest) return []
+        const base = newest.replace(/\.jsonl$/, '')
+        const idx = base.lastIndexOf('-')
+        const phase = idx >= 0 ? base.slice(0, idx) : base
+        const plan = idx >= 0 ? base.slice(idx + 1) : ''
+        const res = execJournal.read({ phase, plan, execDir: dirs.execDir })
+        return (res.events || []).slice(-5)
+      } catch {
+        return []
+      }
+    },
+  }
+}
+
+/**
+ * pretask-pack — the PreToolUse(matcher "Task") hook (49.2-04, D-49.2-10). Injects
+ * the assembled context pack into every subagent spawn via `updatedInput` —
+ * inheritance by construction. Acts ONLY on Task; anything else is a silent
+ * pass-through. Kill-switch SMA_PACK_DISABLE=1 → no-op (compensating control:
+ * subagent-verify still receipts every stop). HOOK_FACING: exit 0 always, never a
+ * deny; every source fail-open. Measures durationMs, writes a spawn record, and
+ * journals a `subagent-pack` event so the p95 SLO stays measurable in the field.
+ */
+async function cmdPretaskPack({ dirs }) {
+  const evt = readStdinJson()
+  if (!evt || evt.tool_name !== 'Task') return 0 // non-Task → silent pass-through
+  if (isEnvOn(process.env.SMA_PACK_DISABLE)) return 0 // kill-switch → no-op
+
+  const taskInput = evt.tool_input && typeof evt.tool_input === 'object' ? evt.tool_input : {}
+  const windowToken = windowTokenFrom(evt) || 'unknown'
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  const packMod = await import('./lib/subagent-pack.mjs')
+  const sources = await buildPackSources({ dirs, repoRoot })
+
+  const t0 = Date.now()
+  const assembled = packMod.assemblePack({ taskInput, sources })
+  const durationMs = Date.now() - t0
+
+  // spawn record (own try/catch — a store failure never blocks the spawn).
+  try {
+    const fsa = await import('./lib/fs-atomics.mjs')
+    const seq = nextSpawnSeq(dirs.subagentsDir, windowToken)
+    fsa.atomicWriteJson(join(dirs.subagentsDir, `${windowToken}-${seq}.json`), {
+      at: new Date().toISOString(),
+      windowToken,
+      bytes: assembled.bytes,
+      layers: assembled.layers,
+      durationMs,
+      taskDescription: typeof taskInput.description === 'string' ? taskInput.description : '',
+      consumed: false,
+    })
+  } catch {
+    /* fail-open */
+  }
+
+  // journal a subagent-pack event (its OWN try/catch).
+  try {
+    const journal = await import('./lib/journal.mjs')
+    const terminalId = await resolveTerminalId(windowToken)
+    journal.appendEvent(
+      { type: 'subagent-pack', detail: { bytes: assembled.bytes, durationMs } },
+      { terminalId, journalDir: dirs.journalDir },
+    )
+  } catch {
+    /* fail-open */
+  }
+
+  // Capability-probe fallback lever: if a harness build ignores updatedInput, run with
+  // SMA_PACK_MODE=additionalContext — the pack lands as additionalContext instead and a
+  // `pack-degraded` event is journaled (degraded is never silent, never a deny).
+  if (String(process.env.SMA_PACK_MODE ?? '').trim() === 'additionalContext') {
+    try {
+      const journal = await import('./lib/journal.mjs')
+      const terminalId = await resolveTerminalId(windowToken)
+      journal.appendEvent({ type: 'pack-degraded', detail: { reason: 'additionalContext-mode' } }, { terminalId, journalDir: dirs.journalDir })
+    } catch {
+      /* fail-open */
+    }
+    printJson({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: assembled.pack } })
+    return 0
+  }
+
+  printJson(packMod.buildUpdatedInput(evt, assembled.pack))
+  return 0
+}
+
+/**
+ * subagent-verify — the SubagentStop hook (49.2-04, D-49.2-10). Extracts every
+ * claimed write from the stop's transcript and verifies each against the REAL git
+ * tree (existence + dirty-state + commits-since-spawn), landing ONE receipt in the
+ * shared journal with phantom writes flagged. Kill-switch SMA_RECEIPTS_DISABLE=1 →
+ * no-op (compensating control: the pre-push grill, plan 07, still blind-verifies).
+ * HOOK_FACING: exit 0 always, NEVER a block decision; every stage fail-open. git runs
+ * via execFileSync arg arrays with a literal `--` before every path (no shell string).
+ */
+async function cmdSubagentVerify({ dirs }) {
+  const evt = readStdinJson()
+  if (isEnvOn(process.env.SMA_RECEIPTS_DISABLE)) return 0 // kill-switch → no-op
+  const transcriptPath = evt && typeof evt.transcript_path === 'string' ? evt.transcript_path : null
+  if (!transcriptPath) return 0
+
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const receipts = await import('./lib/subagent-receipts.mjs')
+  const { claims, sha, firstTs } = receipts.extractClaimedWrites(transcriptPath)
+
+  // spawn correlation FIRST (its `at` seeds --since=<spawnedAt>).
+  const windowToken = windowTokenFrom(evt)
+  let spawn = null
+  try {
+    const records = await readSpawnRecords(dirs.subagentsDir)
+    spawn = receipts.correlateSpawn(records, { windowToken, at: new Date().toISOString() })
+  } catch {
+    /* fail-open */
+  }
+  const spawnedAt = (spawn && spawn.at) || firstTs || null
+  const spawnedAtSource = spawn && spawn.at ? 'spawn-record' : firstTs ? 'transcript-first' : 'none'
+
+  // git via execFileSync arg arrays — the `--` separator is enforced inside verifyWrites.
+  const { execFileSync } = await import('node:child_process')
+  const runGit = (cmd, args) => {
+    try {
+      return execFileSync('git', [cmd, ...args], { cwd: repoRoot, encoding: 'utf8' })
+    } catch {
+      return ''
+    }
+  }
+  const verdicts = receipts.verifyWrites(claims, {
+    repoRoot,
+    spawnedAt,
+    runGit,
+    statFile: (abs) => existsSync(abs),
+  })
+
+  // one receipt into the shared journal under the parent terminalId.
+  try {
+    const journal = await import('./lib/journal.mjs')
+    const terminalId = await resolveTerminalId(windowToken)
+    receipts.writeReceipt(
+      { verdicts, transcriptSha: sha, spawn, spawnedAtSource },
+      { appendEvent: journal.appendEvent, terminalId, journalDir: dirs.journalDir },
+    )
+  } catch {
+    /* fail-open — a receipt failure never blocks the stop */
+  }
+
+  // mark the correlated spawn record consumed (best-effort, keeps coverage honest).
+  if (spawn && spawn._file) {
+    try {
+      const fsa = await import('./lib/fs-atomics.mjs')
+      const { _file, ...rest } = spawn
+      fsa.atomicWriteJson(join(dirs.subagentsDir, _file), { ...rest, consumed: true })
+    } catch {
+      /* fail-open */
+    }
+  }
+
+  // WARN summary on any phantom/divergent verdict — human-visible, NEVER a block.
+  const bad = verdicts.filter(
+    (v) => v.verdict === 'phantom-missing' || v.verdict === 'phantom-unchanged' || v.verdict === 'divergent',
+  )
+  if (bad.length) {
+    process.stdout.write(
+      `SMA subagent-verify: ${bad.length} непроверенных заявок о записи (phantom/divergent) — ` +
+        `${bad.map((v) => v.path).join(', ')}\n`,
+    )
+  }
+  return 0
+}
+
+/**
+ * subagent-receipts [--json] [--stat coverage|phantoms|pack-p95] — the report
+ * (direct-CLI, may exit 1). Reads the shared journal via receiptStats. `--stat`
+ * prints the bare numeric as the LAST line (the predict.mjs scorer contract — these
+ * are this plan's three check_commands). Honest empty: zero spawns → coverage 100,
+ * phantoms 0, pack-p95 0, flagged "empty" in --json.
+ */
+async function cmdSubagentReceipts({ flags, dirs }) {
+  const receipts = await import('./lib/subagent-receipts.mjs')
+  const journal = await import('./lib/journal.mjs')
+  let events = []
+  try {
+    events = journal.readJournal(dirs).events
+  } catch {
+    events = []
+  }
+  const stats = receipts.receiptStats(events)
+
+  if (typeof flags.stat === 'string') {
+    const map = { coverage: stats.coverage, phantoms: stats.phantoms, 'pack-p95': stats.packP95 }
+    const key = flags.stat
+    if (!(key in map)) {
+      process.stderr.write(`SMA subagent-receipts: неизвестный --stat «${key}» (coverage|phantoms|pack-p95)\n`)
+      process.stdout.write('0\n')
+      return 1
+    }
+    process.stdout.write(`${map[key]}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(stats)
+    return 0
+  }
+
+  process.stdout.write(
+    `SMA subagent-receipts: покрытие ${stats.coverage}%, phantom(tool-call) ${stats.phantoms}, ` +
+      `phantom(asserted) ${stats.phantomsAsserted}, pack p95 ${stats.packP95} мс${stats.empty ? ' (пусто)' : ''}\n`,
+  )
+  return 0
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
-const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'stall-check', 'pre'])
+const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
@@ -3277,6 +3630,9 @@ const HANDLERS = {
   'receipt-hash': cmdReceiptHash, // 49.2-03 — the receipt emit path
   'chain-tip': cmdChainTip, // 49.2-03 (D-49.2-07) — merged journal chain tip (release-tag pin)
   'chain-verify': cmdChainVerify, // 49.2-03 — tamper detector over the journal chain
+  'pretask-pack': cmdPretaskPack, // 49.2-04 (D-49.2-10) — PreToolUse(Task) pack injection
+  'subagent-verify': cmdSubagentVerify, // 49.2-04 — SubagentStop tree-verified receipts
+  'subagent-receipts': cmdSubagentReceipts, // 49.2-04 — receipt coverage/phantoms/pack-p95 report
 }
 
 async function main() {
@@ -3286,7 +3642,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts>\n',
     )
     return 0
   }

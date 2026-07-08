@@ -29,6 +29,7 @@ export const REFLEX_DIR = join(SMA_ROOT, 'reflex') // 49.1-10 (B2) — per-sessi
 export const USAGE_DIR = join(SMA_ROOT, 'usage') // 49.1-11 (B4) — usage-citation ledger
 export const EXEC_DIR = join(SMA_ROOT, 'exec') // 49.1-20 (B14) — per-plan execution progress journal
 export const STALL_DIR = join(SMA_ROOT, 'stall') // 49.1-21 (B16) — per-session rolling PostToolUse window
+export const SUBAGENTS_DIR = join(SMA_ROOT, 'subagents') // 49.2-04 (D-49.2-10) — spawn records + receipt stats
 
 // ── FI-9 / FI-11 layer byte budgets (49.1-13) ────────────────────────────────
 // Machine-enforced hot-surface budgets, measured in UTF-8 BYTES (not chars).
