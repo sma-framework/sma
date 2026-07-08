@@ -1148,12 +1148,28 @@ async function cmdPre({ dirs }) {
 async function runSingleStream(dirs, id) {
   const pre = await import('./lib/pre.mjs')
   const evt = readStdinJson()
+  const { warns, deny } = await runStreamCollect(dirs, id, evt)
+  const merged = pre.mergeOutput({ warns, deny })
+  if (merged) printJson(merged)
+  return 0
+}
+
+/**
+ * runStreamCollect(dirs, id, evt) → {warns, deny}. Runs ONE PRE_CHECKS stream against an
+ * ALREADY-READ event (stdin is read once by the caller) and returns its collected output
+ * WITHOUT printing — the shared seam that lets a single hook process host a stream inline
+ * (gap C: fold the Task-cap spend stream into the one pretask-pack spawn). Honors the
+ * stream's tool scope, opt-in gate + kill-switch (the stream owns them), mayDeny, and the
+ * shared-seen save. Fail-open by construction — never throws.
+ */
+async function runStreamCollect(dirs, id, evt) {
+  const pre = await import('./lib/pre.mjs')
   const ctx = await pre.buildCtx({ evt, dirs, env: process.env, now: () => Date.now() })
   const stream = pre.PRE_CHECKS.find((s) => s.id === id)
   let warns = []
   let deny = null
   if (stream && stream.tools.includes(ctx.toolName)) {
-    const killed = stream.killSwitchEnv && (() => { const v = String(process.env[stream.killSwitchEnv] ?? '').trim().toLowerCase(); return !!v && v !== '0' && v !== 'false' })()
+    const killed = stream.killSwitchEnv && isEnvOn(process.env[stream.killSwitchEnv])
     if (!killed) {
       try {
         const r = (await stream.run(ctx)) || { warns: [] }
@@ -1171,9 +1187,7 @@ async function runSingleStream(dirs, id) {
   } catch {
     /* fail-open */
   }
-  const merged = pre.mergeOutput({ warns, deny })
-  if (merged) printJson(merged)
-  return 0
+  return { warns, deny }
 }
 
 /**
@@ -1230,12 +1244,12 @@ async function cmdAirbagCheck({ dirs }) {
 }
 
 /**
- * spend-check — the deterministic spend-ledger hook (49.2-09, D-49.2-13). The pre-less
- * FALLBACK for an install that has not adopted the `sma pre` multiplexer; the canonical
- * wiring is `pre` (the spend stream rides inside it). Delegates to the SAME spend stream
- * in PRE_CHECKS (a deny-capable stream that denies ONLY the Task tool past a configured
- * cap) — honoring its opt-in gate (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE).
- * HOOK_FACING: exit 0 always, wrapped fail-open.
+ * spend-check — the deterministic spend-ledger hook (49.2-09, D-49.2-13). A pre-less
+ * FALLBACK verb for an install that wires it standalone; the canonical wiring is NOT a
+ * separate spawn — the Task-cap spend stream rides inside `pretask-pack` (gap C, one Task
+ * spawn) and inside the `pre` multiplexer. Delegates to the SAME spend stream in PRE_CHECKS
+ * (a deny-capable stream that denies ONLY the Task tool past a configured cap) — honoring
+ * its opt-in gate (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE). HOOK_FACING: exit 0.
  */
 async function cmdSpendCheck({ dirs }) {
   return runSingleStream(dirs, 'spend')
@@ -4175,15 +4189,57 @@ async function buildPackSources({ dirs, repoRoot }) {
  * pretask-pack — the PreToolUse(matcher "Task") hook (49.2-04, D-49.2-10). Injects
  * the assembled context pack into every subagent spawn via `updatedInput` —
  * inheritance by construction. Acts ONLY on Task; anything else is a silent
- * pass-through. Kill-switch SMA_PACK_DISABLE=1 → no-op (compensating control:
- * subagent-verify still receipts every stop). HOOK_FACING: exit 0 always, never a
- * deny; every source fail-open. Measures durationMs, writes a spawn record, and
- * journals a `subagent-pack` event so the p95 SLO stays measurable in the field.
+ * pass-through. Kill-switch SMA_PACK_DISABLE=1 → no pack injection (compensating
+ * control: subagent-verify still receipts every stop). Measures durationMs, writes a
+ * spawn record, and journals a `subagent-pack` event so the p95 SLO stays measurable.
+ *
+ * gap C / PRED-49.2-02-B (D-49.2-04 one-spawn): this is the SOLE scripts/sma spawn on the
+ * Task matcher — the 49.2-09 Task-cap spend soft-deny stream rides INSIDE it (runStreamCollect
+ * over the one 'spend' PRE_CHECK), so there is never a second node process per Task PreToolUse.
+ * A spend soft-deny short-circuits (deny wins, no pack injection); spend warns merge into the
+ * pack output's additionalContext. Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE)
+ * are the stream's own and unchanged. HOOK_FACING: exit 0 always; every source fail-open.
  */
 async function cmdPretaskPack({ dirs }) {
   const evt = readStdinJson()
   if (!evt || evt.tool_name !== 'Task') return 0 // non-Task → silent pass-through
-  if (isEnvOn(process.env.SMA_PACK_DISABLE)) return 0 // kill-switch → no-op
+
+  // gap C / PRED-49.2-02-B (D-49.2-04 one-spawn): the Task-cap spend soft-deny stream rides
+  // INSIDE this single Task PreToolUse spawn — never a second scripts/sma process. Same
+  // consolidation seam as plan 02's `pre` multiplexer (runStreamCollect over the ONE stream).
+  // Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE) are unchanged — the stream owns
+  // them. Fail-open: a spend error never blocks the spawn. Runs FIRST so a soft-deny short-
+  // circuits before any pack work (and so it still fires when SMA_PACK_DISABLE is set).
+  let spendWarns = []
+  let spendDeny = null
+  try {
+    const r = await runStreamCollect(dirs, 'spend', evt)
+    spendWarns = Array.isArray(r.warns) ? r.warns : []
+    spendDeny = r.deny || null
+  } catch {
+    /* fail-open */
+  }
+  if (spendDeny && spendDeny.text) {
+    printJson({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: [spendDeny.text, ...spendWarns].join('\n'),
+      },
+    })
+    return 0
+  }
+
+  if (isEnvOn(process.env.SMA_PACK_DISABLE)) {
+    // kill-switch → no pack injection, but still surface any spend warns (parity with the
+    // former standalone spend-check spawn, which ran regardless of SMA_PACK_DISABLE).
+    if (spendWarns.length) {
+      printJson({
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: spendWarns.join('\n') },
+      })
+    }
+    return 0
+  }
 
   const taskInput = evt.tool_input && typeof evt.tool_input === 'object' ? evt.tool_input : {}
   const windowToken = windowTokenFrom(evt) || 'unknown'
@@ -4236,11 +4292,19 @@ async function cmdPretaskPack({ dirs }) {
     } catch {
       /* fail-open */
     }
-    printJson({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: assembled.pack } })
+    const ctxParts = [assembled.pack, ...(spendWarns.length ? [spendWarns.join('\n')] : [])].filter(Boolean)
+    printJson({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: ctxParts.join('\n') } })
     return 0
   }
 
-  printJson(packMod.buildUpdatedInput(evt, assembled.pack))
+  // updatedInput injection + any spend warns as additionalContext (both ride one hookSpecificOutput).
+  const out = packMod.buildUpdatedInput(evt, assembled.pack)
+  if (spendWarns.length && out && out.hookSpecificOutput) {
+    out.hookSpecificOutput.additionalContext = [out.hookSpecificOutput.additionalContext, spendWarns.join('\n')]
+      .filter(Boolean)
+      .join('\n')
+  }
+  printJson(out)
   return 0
 }
 
