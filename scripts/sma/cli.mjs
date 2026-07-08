@@ -1113,6 +1113,144 @@ async function cmdGatesCheck({ dirs }) {
   return runSingleStream(dirs, 'gates')
 }
 
+/**
+ * airbag-check — the git airbag hook (49.2-05, D-49.2-08). The pre-less FALLBACK for
+ * an install that has not adopted the `sma pre` multiplexer; the canonical wiring is
+ * `pre` (the airbag rides inside it). Delegates to the SAME airbag stream in PRE_CHECKS
+ * (the only extra deny-capable stream) — honoring its kill-switch (SMA_AIRBAG_DISABLE)
+ * and its opt-in gate (SMA_AIRBAG_ENABLE). HOOK_FACING: exit 0 always, wrapped fail-open.
+ */
+async function cmdAirbagCheck({ dirs }) {
+  return runSingleStream(dirs, 'airbag')
+}
+
+/** A real execFileSync-shaped git runner over the resolved repo root (buffer-aware). */
+async function makeRepoGitRunner() {
+  const { execFileSync } = await import('node:child_process')
+  let repoRoot = process.cwd()
+  try {
+    const registry = await import('./lib/registry.mjs')
+    repoRoot = registry.smaRoot()
+  } catch {
+    /* fail-open to cwd */
+  }
+  const runGit = (args, opts = {}) => {
+    try {
+      return execFileSync('git', args, { cwd: repoRoot, input: opts.input, encoding: opts.buffer ? 'buffer' : 'utf8' })
+    } catch {
+      return opts.buffer ? Buffer.alloc(0) : ''
+    }
+  }
+  return { runGit, repoRoot }
+}
+
+/**
+ * undo [--to <id>] [--dry-run] [--yes] [--json] — the one-action airbag restore
+ * (49.2-05). NOT hook-facing (writes the working tree — an explicit user action).
+ * Without --yes it PREVIEWS the restore plan (zero writes) + the --yes command;
+ * --dry-run always previews; --yes executes restoreSnapshot (which self-snapshots first).
+ */
+async function cmdUndo({ flags, dirs }) {
+  const airbag = await import('./lib/airbag.mjs')
+  const { runGit, repoRoot } = await makeRepoGitRunner()
+  const snapshotId = typeof flags.to === 'string' ? flags.to : undefined
+  const dryRun = flags['dry-run'] === true
+  const execute = flags.yes === true && !dryRun
+
+  if (!execute) {
+    const r = airbag.restoreSnapshot({ snapshotId, dryRun: true }, { runGit, dirs, repoRoot })
+    if (wantsJson(flags)) {
+      printJson(r)
+      return r.ok ? 0 : 1
+    }
+    if (!r.ok) {
+      process.stdout.write(`SMA undo: ${r.error}\n`)
+      return 1
+    }
+    process.stdout.write(
+      `SMA undo (превью): снимок ${r.plan.snapshotId} — head:${r.plan.head} stash:${r.plan.stash} untracked:${r.plan.untracked}` +
+        `${r.plan.untracked && !r.plan.untrackedMapKnown ? ' (карта имён недоступна — untracked не восстановится)' : ''}\n`,
+    )
+    if (!dryRun) process.stdout.write(`  выполните: pnpm sma undo${snapshotId ? ` --to ${snapshotId}` : ''} --yes\n`)
+    return 0
+  }
+
+  const terminalId = await resolveTerminalId()
+  const r = airbag.restoreSnapshot({ snapshotId }, { runGit, dirs, repoRoot, terminalId })
+  if (wantsJson(flags)) {
+    printJson(r)
+    return r.ok ? 0 : 1
+  }
+  if (!r.ok) {
+    process.stdout.write(`SMA undo: НЕ удалось — ${r.error}\n`)
+    return 1
+  }
+  process.stdout.write(
+    `SMA undo: восстановлен снимок ${r.snapshotId} (само-снимок ${r.preSnapshotId}, untracked ${r.untrackedRestored})` +
+      `${r.warns && r.warns.length ? ` ⚠ ${r.warns.join('; ')}` : ''}\n`,
+  )
+  return 0
+}
+
+/**
+ * airbag <list|prune|probe|stats> [--json] — snapshot admin + the S2 instruments.
+ * NOT hook-facing. probe prints 0/1 as the LAST line (P49.2-05-C scorer); stats +
+ * coverage/latency come from the ONE airbag.benchProviders path (no drift vs bench).
+ */
+async function cmdAirbag({ positionals, flags, dirs }) {
+  const airbag = await import('./lib/airbag.mjs')
+  const sub = positionals[0]
+
+  if (sub === 'probe') {
+    const p = airbag.nativeCheckpointProbe({ env: process.env })
+    if (wantsJson(flags)) printJson(p)
+    else process.stdout.write(`SMA airbag probe: native=${p.native} (probeVersion ${p.probeVersion})\n`)
+    process.stdout.write(`${p.native ? 1 : 0}\n`) // numeric LAST line — the P49.2-05-C scorer
+    return 0
+  }
+
+  const { runGit } = await makeRepoGitRunner()
+
+  if (sub === 'list') {
+    const groups = airbag.listSnapshots({ runGit })
+    const view = groups.map((g) => ({ id: g.id, refs: Object.keys(g.refs).filter((k) => !k.startsWith('_sha_')) }))
+    if (wantsJson(flags)) {
+      printJson({ snapshots: view, n: view.length })
+      return 0
+    }
+    if (!view.length) process.stdout.write('SMA airbag: снимков нет\n')
+    for (const g of view) process.stdout.write(`  ${g.id}  [${g.refs.join(',')}]\n`)
+    return 0
+  }
+
+  if (sub === 'prune') {
+    const keep = Number.isFinite(Number(flags.keep)) ? Number(flags.keep) : undefined
+    const maxAgeMs = Number.isFinite(Number(flags['max-age-days'])) ? Number(flags['max-age-days']) * 86400000 : undefined
+    const terminalId = await resolveTerminalId()
+    const res = airbag.pruneSnapshots({ keep, maxAgeMs }, { runGit, dirs, terminalId })
+    if (wantsJson(flags)) printJson(res)
+    else process.stdout.write(`SMA airbag prune: удалено ${res.removed.length}, осталось ${res.kept}\n`)
+    return 0
+  }
+
+  if (sub === 'stats') {
+    const { readJournal } = await import('./lib/journal.mjs')
+    const providers = airbag.benchProviders({ journalDir: dirs.journalDir, readJournalFn: (o) => readJournal(o) })
+    if (wantsJson(flags)) {
+      printJson({ coverage: providers.coverage, latency: providers.latency })
+      return 0
+    }
+    process.stdout.write(
+      `SMA airbag stats: покрытие ${providers.coverage.value}% (n=${providers.coverage.n}, ${providers.coverage.status}), ` +
+        `p95 задержки ${providers.latency.value} мс (n=${providers.latency.n})\n`,
+    )
+    return 0
+  }
+
+  process.stdout.write('usage: sma airbag <list|prune|probe|stats> [--json] [--keep N] [--max-age-days N]\n')
+  return sub ? 1 : 0
+}
+
 /** Load the three committed golden hook-event fixtures (parity + bench corpus). */
 function loadPreFixtures() {
   const dir = join(MODULE_DIR, 'fixtures', 'pre')
@@ -3587,7 +3725,7 @@ async function cmdSubagentReceipts({ flags, dirs }) {
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
-const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify'])
+const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
@@ -3599,6 +3737,9 @@ const HANDLERS = {
   'collision-check': cmdCollisionCheck,
   'reflex-check': cmdReflexCheck,
   'gates-check': cmdGatesCheck,
+  'airbag-check': cmdAirbagCheck, // 49.2-05 (D-49.2-08) — pre-less fallback for the airbag stream
+  undo: cmdUndo, // 49.2-05 — one-action airbag restore
+  airbag: cmdAirbag, // 49.2-05 — snapshot admin (list|prune|probe|stats)
   'stall-check': cmdStallCheck,
   'gates-report': cmdGatesReport,
   'gates-ack': cmdGatesAck,
@@ -3642,7 +3783,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts>\n',
     )
     return 0
   }

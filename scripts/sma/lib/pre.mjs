@@ -206,15 +206,62 @@ async function runGates(ctx) {
 }
 
 /**
+ * airbag stream — the git airbag GATE (49.2-05, D-49.2-08). Bash-only: matches a
+ * destructive git command and writes a ms-level recovery point (update-ref + stash
+ * create + batched hash-object/mktree) BEFORE it runs, journaling an 'airbag' receipt.
+ * mayDeny:true — an armed (SMA_AIRBAG_DENY) soft-deny on a dirty tree / foreign claim
+ * surfaces permissionDecision 'deny' unless a GATE-AIRBAG override token is present.
+ *
+ * OPT-IN (CONS-49.2-B): the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
+ * plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
+ * multiplexer re-measures under SLO. Protection stays UNCONDITIONAL once enabled
+ * (the snapshot is not posture-gated; only the deny tier is). Kill: SMA_AIRBAG_DISABLE.
+ */
+async function runAirbag(ctx) {
+  const warns = []
+  try {
+    // opt-in default-off until the multiplexer meets its SLO (CONS-49.2-B).
+    if (!envOn(ctx.env.SMA_AIRBAG_ENABLE)) return { warns }
+    if (ctx.toolName !== 'Bash') return { warns }
+    const { airbag, slots } = ctx.deps
+    if (!airbag) return { warns }
+    const { execFileSync } = await import('node:child_process')
+    // execFileSync-shaped runner over the repo root; buffer mode for blob bytes.
+    // A FIXED argv array only — no fragment of the tool command ever enters it.
+    const runGit = (args, opts = {}) =>
+      execFileSync('git', args, { cwd: ctx.repoRoot, input: opts.input, encoding: opts.buffer ? 'buffer' : 'utf8' })
+    const terminalId = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : 'unknown'
+    const res = airbag.checkAirbag(ctx.evt, {
+      dirs: ctx.dirs,
+      runGit,
+      env: ctx.env,
+      seen: ctx.seen, // shared — the stand-down note dedups under 'airbag:' keys
+      now: () => ctx.now(),
+      sessions: ctx.sessions,
+      selfTerminalId: terminalId,
+      slots,
+      terminalId,
+      repoRoot: ctx.repoRoot,
+    })
+    for (const w of res.warns) warns.push(w)
+    if (res.deny && res.deny.text) return { warns, deny: { text: res.deny.text } }
+  } catch {
+    /* fail-open (C9) — an airbag bug can NEVER wedge a session */
+  }
+  return { warns }
+}
+
+/**
  * PRE_CHECKS — the ordered internal dispatch pipeline (D-49.2-04). THE registration
  * point plans 05 (airbag) and 09 (spend) extend: each appends one stream object
- * literal here. Order is emit order for warns. collision is WARN-only; gates is the
- * sole deny-capable stream.
+ * literal here. Order is emit order for warns. collision is WARN-only; gates + airbag
+ * are the deny-capable streams (airbag is opt-in until the SLO is met).
  */
 export const PRE_CHECKS = [
   { id: 'collision', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: null, mayDeny: false, run: runCollision },
   { id: 'reflex', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_REFLEX_DISABLE', mayDeny: false, run: runReflex },
   { id: 'gates', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_GATES_DISABLE', mayDeny: true, run: runGates },
+  { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
 ]
 
 // ─────────────────────────── shared context ─────────────────────────────────
@@ -243,7 +290,7 @@ async function realGitHeadSha(repoRoot) {
 
 /** Lazy-load the real lib modules the streams depend on (overridable in tests). */
 async function loadDefaultDeps() {
-  const [collision, reflex, gates, loader, slots, journal, registry] = await Promise.all([
+  const [collision, reflex, gates, loader, slots, journal, registry, airbag] = await Promise.all([
     import('./collision.mjs'),
     import('./reflex.mjs'),
     import('./gates.mjs'),
@@ -251,8 +298,9 @@ async function loadDefaultDeps() {
     import('./slots.mjs'),
     import('./journal.mjs'),
     import('./registry.mjs'),
+    import('./airbag.mjs'),
   ])
-  return { collision, reflex, gates, loader, slots, journal, registry }
+  return { collision, reflex, gates, loader, slots, journal, registry, airbag }
 }
 
 /**

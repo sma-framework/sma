@@ -32,6 +32,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { isSafeCommand } from './predict.mjs'
+import { benchProviders as airbagBench } from './airbag.mjs'
 
 // ── the 8-metric registry contract ───────────────────────────────────────────
 //
@@ -107,9 +108,33 @@ export const SCORECARD_METRICS = [
   },
 ]
 
-/** Look up a registry entry by its contract id (used by the CLI + plans 02-10). */
+/**
+ * AUX_METRICS — non-scorecard metrics that resolve through `bench --metric` but are
+ * NOT part of the immutable 8-entry scorecard. `airbag-latency` (49.2-05, P49.2-05-B)
+ * is the ms-level airbag SLO instrument; the 8-entry contract stays exactly 8.
+ */
+export const AUX_METRICS = [
+  { id: 'airbag-latency', scorecard: 'P05-B', unit: 'ms', measure: (ctx = {}) => measureAirbagLatency(ctx) },
+]
+
+/** Look up a registry entry by its contract id (scorecard first, then aux). */
 export function metricById(id) {
-  return SCORECARD_METRICS.find((m) => m.id === id) ?? null
+  return SCORECARD_METRICS.find((m) => m.id === id) ?? AUX_METRICS.find((m) => m.id === id) ?? null
+}
+
+/**
+ * measureAirbagLatency(opts) -> P49.2-05-B base. p95 of airbag snapshot elapsedMs
+ * over ok receipts (49.2-05), computed by the ONE airbag.benchProviders path so it
+ * never drifts from `sma airbag stats`. Empty → 0.
+ */
+export function measureAirbagLatency(opts = {}) {
+  const lat = airbagBench({
+    journalDir: opts.dirs && opts.dirs.journalDir,
+    readJournalFn: opts.journalReader,
+    now: opts.now,
+    windowDays: opts.windowDays,
+  }).latency
+  return result('airbag-latency', { value: lat.value, unit: 'ms', n: lat.n, method: lat.method, status: lat.status })
 }
 
 // ── shared narrow readers (frontmatter.mjs posture: hand-rolled, no YAML lib) ──
@@ -324,6 +349,32 @@ export function measureGitLossRecoverability(opts = {}) {
   const windowDays = Number.isFinite(opts.windowDays) ? opts.windowDays : 30
   const now = Number.isFinite(opts.now) ? opts.now : Date.now()
   const cutoff = now - windowDays * 24 * 60 * 60 * 1000
+
+  // Airbag-RECEIPT primary (49.2-05, D-49.2-08): once airbag receipts exist they are
+  // the canonical per-firing log — coverage = ok receipts / all airbag firings, and a
+  // firing with ok:false counts AGAINST coverage (honest denominator). Only when NO
+  // airbag receipts exist yet (the whole pre-airbag window) do we fall through to the
+  // gate-firing proxy below — which is why the plan-01 base tests (which inject gate
+  // events with no airbag receipts) are unaffected.
+  try {
+    const cov = airbagBench({
+      journalDir: opts.dirs && opts.dirs.journalDir,
+      readJournalFn: opts.journalReader,
+      now: opts.now,
+      windowDays,
+    }).coverage
+    if (cov.n > 0) {
+      return result('airbag-coverage', {
+        value: cov.value,
+        unit: 'percent',
+        n: cov.n,
+        method: `ok airbag receipts / all airbag firings in the last ${windowDays}d (49.2-05 receipt-primary)`,
+        status: 'measured',
+      })
+    }
+  } catch {
+    /* fall through to the pre-airbag gate-firing proxy */
+  }
 
   let events = []
   try {

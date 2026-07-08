@@ -706,6 +706,65 @@ export function restoreSnapshot(args = {}, deps = {}) {
   }
 }
 
+/** Nearest-rank percentile (matches bench.mjs / pre.mjs). Empty → 0. */
+function percentile(values, p) {
+  const nums = (Array.isArray(values) ? values : []).filter((v) => Number.isFinite(v))
+  if (!nums.length) return 0
+  const s = [...nums].sort((a, b) => a - b)
+  const idx = Math.min(s.length - 1, Math.max(0, Math.ceil((p / 100) * s.length) - 1))
+  return s[idx]
+}
+
+/**
+ * benchProviders({journalDir, readJournalFn, now, windowDays}) -> {coverage, latency}.
+ * The S2 instrument computed from journal 'airbag' RECEIPTS (the honest denominator):
+ *   coverage = ok receipts (ok:true + a pinned head ref) / ALL airbag firings * 100 —
+ *              a firing with ok:false counts AGAINST coverage; no firings → 100
+ *              (vacuously covered, n exposes the vacuity).
+ *   latency  = p95 elapsedMs over ok receipts (empty → 0).
+ * Read-only, fail-open. Consumed by `sma airbag stats` AND (via bench.mjs) by
+ * `sma bench --metric airbag-coverage|airbag-latency` — ONE computation, no drift.
+ */
+export function benchProviders({ journalDir, readJournalFn, now, windowDays } = {}) {
+  let events = []
+  try {
+    const reader = typeof readJournalFn === 'function' ? readJournalFn : readJournal
+    const r = reader({ journalDir })
+    events = Array.isArray(r) ? r : (r && r.events) || []
+  } catch {
+    events = []
+  }
+  const wd = Number.isFinite(windowDays) ? windowDays : 30
+  const cutoff = (Number.isFinite(now) ? now : Date.now()) - wd * 24 * 60 * 60 * 1000
+  const receipts = events.filter((e) => {
+    if (!e || e.type !== 'airbag' || !e.detail || typeof e.detail.ok !== 'boolean' || !e.detail.snapshotId) return false
+    const ts = Date.parse(e.ts)
+    return !Number.isFinite(ts) || ts >= cutoff
+  })
+  const n = receipts.length
+  const okReceipts = receipts.filter((e) => e.detail.ok === true && e.detail.headRef === true)
+  const covValue = n > 0 ? Math.round((okReceipts.length / n) * 10000) / 100 : 100
+  const latencies = okReceipts.map((e) => Number(e.detail.elapsedMs)).filter((v) => Number.isFinite(v))
+  return {
+    coverage: {
+      metric: 'airbag-coverage',
+      value: covValue,
+      unit: 'percent',
+      n,
+      method: 'ok airbag receipts (ok:true + pinned head) / all airbag firings; no firings → 100 vacuous',
+      status: n > 0 ? 'measured' : 'registered',
+    },
+    latency: {
+      metric: 'airbag-latency',
+      value: percentile(latencies, 95),
+      unit: 'ms',
+      n: latencies.length,
+      method: 'p95 elapsedMs over ok airbag receipts',
+      status: latencies.length > 0 ? 'measured' : 'registered',
+    },
+  }
+}
+
 /** Default untracked writer: writes (Buffer|string) under repoRoot, mkdir -p first. */
 function defaultWriteFile(repoRoot) {
   return (p, content) => {

@@ -45,6 +45,9 @@ ALWAYS exit 0 (fail-open, see below); direct-CLI subcommands return meaningful c
 | `collision-check` | DEPRECATED single-stream alias (delegates to `pre`'s collision stream; kept for back-compat) | `--json` |
 | `reflex-check` | DEPRECATED single-stream alias (reflex stream) | — |
 | `gates-check` | DEPRECATED single-stream alias (gates stream) | — |
+| `airbag-check` | DEPRECATED single-stream alias (airbag stream; the canonical wiring is `pre`) | — |
+| `undo` | restore the newest airbag snapshot (HEAD + dirty tracked + untracked) in one action; self-snapshots first | `[--to <id>] [--dry-run] [--yes] [--json]` |
+| `airbag` | airbag snapshot admin | `list` \| `prune [--keep N] [--max-age-days N]` \| `probe` \| `stats` \| `--json` |
 | `claim` | claim a work scope | `<name> --globs "<glob>" --desc "<text>"` |
 | `release` | release your OWN claim | `<name>` |
 | `next-slot` | allocate the next migration number or release version | `migration` \| `release` |
