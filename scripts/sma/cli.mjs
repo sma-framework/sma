@@ -72,6 +72,8 @@ function dirsFrom(root) {
     perfDir: join(root, 'perf'), // 49.2-02 (D-49.2-04) — `sma pre` per-stream timing samples (pre.jsonl)
     subagentsDir: join(root, 'subagents'), // 49.2-04 (D-49.2-10) — spawn records + receipt stats
     flightDir: join(root, 'flight'), // 49.2-06 (D-49.2-09) — pre-compaction capsule + session flight marks
+    spendDir: join(root, 'spend'), // 49.2-09 (D-49.2-13) — spend book incremental cache + window budget
+    breakerDir: join(root, 'breaker'), // 49.2-09 (D-49.2-13) — loop-breaker markers (per-ruleId)
   }
 }
 
@@ -1302,6 +1304,119 @@ async function cmdAirbag({ positionals, flags, dirs }) {
 
   process.stdout.write('usage: sma airbag <list|prune|probe|stats> [--json] [--keep N] [--max-age-days N]\n')
   return sub ? 1 : 0
+}
+
+// ── 49.2-09 (D-49.2-13): the deterministic spend ledger ──────────────────────────
+
+/** Resolve the repo root for local-session-log discovery (fail-open → cwd). */
+async function resolveRepoRootForSpend() {
+  try {
+    const registry = await import('./lib/registry.mjs')
+    return registry.smaRoot()
+  } catch {
+    return process.cwd()
+  }
+}
+
+/**
+ * spend [--json] [--by session|model|agent|day] [--window <h>] [--stat <name>]
+ *   | spend set-cap <usd> [--window-hours <h>]
+ *
+ * The `sma spend` report — "where did the window go" from local files alone, in
+ * O(appended bytes) via the incremental cache. NOT hook-facing (the hot path is
+ * `spend-check`). `--stat <name>` prints EXACTLY ONE number as the final stdout line
+ * (the predict-score scorer contract, 49.1-08). `set-cap` writes the window budget
+ * with provenance. When probeNativeSpend().native, the report leads with the
+ * standing-down banner (D-49.2-05a). Fail-open — never wedges anything.
+ */
+async function cmdSpend({ positionals, flags, dirs }) {
+  const spend = await import('./lib/spend.mjs')
+  const adapter = await import('./lib/spend-adapter.mjs')
+  const sub = positionals[0]
+
+  // set-cap <usd> [--window-hours N] — the founder-set cap (a soft-deny needs one).
+  if (sub === 'set-cap') {
+    const usd = Number(positionals[1])
+    if (!Number.isFinite(usd) || usd <= 0) {
+      process.stdout.write('usage: sma spend set-cap <usd> [--window-hours N]\n')
+      return 1
+    }
+    const cur = spend.readBudget({ spendDir: dirs.spendDir })
+    const windowHours = Number.isFinite(Number(flags['window-hours'])) ? Number(flags['window-hours']) : cur.windowHours
+    const by = await resolveTerminalId()
+    const rec = spend.writeBudget({ capUsd: usd, windowHours }, { spendDir: dirs.spendDir, by })
+    if (wantsJson(flags)) printJson(rec)
+    else process.stdout.write(`SMA spend: лимит окна установлен — $${rec.capUsd} за ${rec.windowHours} ч (кем: ${rec.by})\n`)
+    return 0
+  }
+
+  const repoRoot = await resolveRepoRootForSpend()
+  const now = Date.now()
+  const book = spend.buildBook({ spendDir: dirs.spendDir, repoRoot, env: process.env, now })
+  const budget = spend.readBudget({ spendDir: dirs.spendDir })
+  const windowHours = Number.isFinite(Number(flags.window)) ? Number(flags.window) : budget.windowHours
+
+  // --stat <name> → EXACTLY one numeric last line (the scorer contract).
+  if (flags.stat) {
+    const name = String(flags.stat)
+    let value
+    if (name === 'bench-check-p95-ms') {
+      value = await spend.benchCheckP95({ spendDir: dirs.spendDir, repoRoot, env: process.env })
+    } else {
+      value = spend.spendStats(name, { book, spendDir: dirs.spendDir, now, windowHours, env: process.env })
+    }
+    process.stdout.write(`${value}\n`)
+    return 0
+  }
+
+  const probe = adapter.probeNativeSpend({ env: process.env })
+  const win = spend.windowSpend({ book, now, windowHours })
+  const pct = budget.capUsd ? Math.round((win.usd / budget.capUsd) * 1000) / 10 : null
+
+  if (wantsJson(flags)) {
+    printJson({
+      standDown: probe.native,
+      totals: book.totals,
+      window: { usd: win.usd, events: win.events, hours: windowHours, capUsd: budget.capUsd, pct },
+      bySession: book.bySession,
+      byModel: book.byModel,
+      byDay: book.byDay,
+      byAgent: book.byAgent,
+      counters: book.counters,
+      pricingVersion: book.pricingVersion,
+      adapterVersion: book.adapterVersion,
+      builtAt: book.builtAt,
+    })
+    return 0
+  }
+
+  // ── human table ──────────────────────────────────────────────────────────────
+  if (probe.native) {
+    process.stdout.write('SMA spend: обнаружен НАТИВНЫЙ локальный учёт затрат — мост отключается (bridge standing down).\n')
+  }
+  process.stdout.write(
+    `SMA spend: всего $${book.totals.usd} за ${book.totals.events} событий` +
+      ` (окно ${windowHours} ч: $${win.usd}` +
+      (budget.capUsd ? ` из $${budget.capUsd} = ${pct}%` : ' — лимит не задан, только отчёт') +
+      `). Тарифы: ${book.pricingVersion}\n`,
+  )
+  const by = typeof flags.by === 'string' ? flags.by : 'model'
+  const groupMap =
+    by === 'session' ? book.bySession : by === 'day' ? book.byDay : by === 'agent' ? null : book.byModel
+  if (by === 'agent') {
+    process.stdout.write(`  главный: $${book.byAgent.main.usd} (${book.byAgent.main.events}) · субагенты: $${book.byAgent.subagent.usd} (${book.byAgent.subagent.events})\n`)
+  } else {
+    const rows = Object.entries(groupMap || {})
+      .sort((a, b) => b[1].usd - a[1].usd)
+      .slice(0, 8)
+    for (const [k, v] of rows) process.stdout.write(`  ${k}: $${v.usd} (${v.events})\n`)
+  }
+  const c = book.counters
+  process.stdout.write(
+    `  распознано ${c.recognized} · не-usage ${c.nonUsage} · дубликаты ${c.duplicate} · ` +
+      `дрейф(unrecognized) ${c.unrecognized} · без цены(unpriced) ${c.unpriced} · повреждено ${c.corrupt}\n`,
+  )
+  return 0
 }
 
 // ── 49.2-06 (D-49.2-09): the flight recorder — capsule / restore / resume / handoff ─
@@ -4135,6 +4250,7 @@ const HANDLERS = {
   'airbag-check': cmdAirbagCheck, // 49.2-05 (D-49.2-08) — pre-less fallback for the airbag stream
   undo: cmdUndo, // 49.2-05 — one-action airbag restore
   airbag: cmdAirbag, // 49.2-05 — snapshot admin (list|prune|probe|stats)
+  spend: cmdSpend, // 49.2-09 (D-49.2-13) — deterministic spend ledger report + set-cap + --stat scorer
   'stall-check': cmdStallCheck,
   'gates-report': cmdGatesReport,
   'gates-ack': cmdGatesAck,
@@ -4182,7 +4298,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight>\n',
     )
     return 0
   }

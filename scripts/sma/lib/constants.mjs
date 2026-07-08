@@ -31,6 +31,8 @@ export const EXEC_DIR = join(SMA_ROOT, 'exec') // 49.1-20 (B14) — per-plan exe
 export const STALL_DIR = join(SMA_ROOT, 'stall') // 49.1-21 (B16) — per-session rolling PostToolUse window
 export const SUBAGENTS_DIR = join(SMA_ROOT, 'subagents') // 49.2-04 (D-49.2-10) — spawn records + receipt stats
 export const FLIGHT_DIR = join(SMA_ROOT, 'flight') // 49.2-06 (D-49.2-09) — pre-compaction capsule + session flight marks
+export const SPEND_DIR = join(SMA_ROOT, 'spend') // 49.2-09 (D-49.2-13) — spend book incremental cache + window budget
+export const BREAKER_DIR = join(SMA_ROOT, 'breaker') // 49.2-09 (D-49.2-13) — loop-breaker markers (per-ruleId, disarm-path input for plan 10)
 
 // ── FI-9 / FI-11 layer byte budgets (49.1-13) ────────────────────────────────
 // Machine-enforced hot-surface budgets, measured in UTF-8 BYTES (not chars).
