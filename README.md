@@ -329,6 +329,70 @@ The onboarding conversation explains the system, seeds your starter memory corpu
 
 The coordination CLI runs underneath (`node scripts/sma/cli.mjs` or `pnpm sma`): `status`, `claim`, `next-slot`, `load`, `lint`, and friends. Sessions and hooks call it for you; you can also call it directly.
 
+### See each command in action
+
+Every command is a terminal conversation. Expand any to watch what it does — each demo loops.
+
+<details open>
+<summary><b><code>/sma-start</code></b> — first-run onboarding: it explains the system, then configures it</summary>
+<br><img src="assets/demos/sma-start.svg" alt="/sma-start terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-discuss-phase</code></b> — lock the gray-area decisions with a human before any code</summary>
+<br><img src="assets/demos/sma-discuss-phase.svg" alt="/sma-discuss-phase terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-plan-phase</code></b> — research, plans, and a plan-check; every step carries a prediction</summary>
+<br><img src="assets/demos/sma-plan-phase.svg" alt="/sma-plan-phase terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-execute-phase</code></b> — build in dependency-aware waves; reflexes fire before the act</summary>
+<br><img src="assets/demos/sma-execute-phase.svg" alt="/sma-execute-phase terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-verify-work</code></b> — validate against acceptance criteria; a script re-runs each "done"</summary>
+<br><img src="assets/demos/sma-verify-work.svg" alt="/sma-verify-work terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-quick</code></b> — a small task with full guarantees (atomic commit, state tracked)</summary>
+<br><img src="assets/demos/sma-quick.svg" alt="/sma-quick terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-fast</code></b> — a trivial task, inline; no subagents, no planning</summary>
+<br><img src="assets/demos/sma-fast.svg" alt="/sma-fast terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-debug</code></b> — systematic debugging whose state survives a context reset</summary>
+<br><img src="assets/demos/sma-debug.svg" alt="/sma-debug terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-progress</code></b> — where things stand, and the next concrete step</summary>
+<br><img src="assets/demos/sma-progress.svg" alt="/sma-progress terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-resume-work</code></b> — restore full context from the flight recorder</summary>
+<br><img src="assets/demos/sma-resume-work.svg" alt="/sma-resume-work terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-pause-work</code></b> — write a handoff before you step away</summary>
+<br><img src="assets/demos/sma-pause-work.svg" alt="/sma-pause-work terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-help</code></b> — the whole <code>/sma-*</code> family at a glance</summary>
+<br><img src="assets/demos/sma-help.svg" alt="/sma-help terminal demo" width="760">
+</details>
+
 ## The six pillars
 
 - **Predictions** — every plan states, up front, what will measurably change and how to check it; a deterministic scorer compares promise to fact at plan close, and a calibration ledger tracks which areas keep being wrong.

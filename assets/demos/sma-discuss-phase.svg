@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 266" width="760" height="266" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" role="img" aria-label="Terminal demo of the /sma-discuss-phase command">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2E6FD9"/><stop offset=".35" stop-color="#1B7E9C"/>
+      <stop offset=".7" stop-color="#1FA0A6"/><stop offset="1" stop-color="#74DBA0"/>
+    </linearGradient>
+    <style>.ln{font-size:15px}.tt{font-size:12.5px;fill:#8b98a9;font-family:ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif}</style>
+  </defs>
+  <rect x="1" y="1" width="758" height="264" rx="13" fill="#0F131C" stroke="#232c3b"/>
+  <rect x="1" y="1" width="758" height="42" rx="13" fill="#141a25"/>
+  <rect x="1" y="30" width="758" height="12" fill="#141a25"/>
+  <circle cx="24" cy="21" r="6" fill="#ff5f57"/><circle cx="46" cy="21" r="6" fill="#febc2e"/><circle cx="68" cy="21" r="6" fill="#28c840"/>
+  <text x="380" y="26" text-anchor="middle" class="tt">your-project &#8212; /sma-discuss-phase</text>
+  <rect x="1" y="42" width="758" height="2" fill="url(#g)" opacity=".55"/>
+  <g opacity="0"><text x="22" y="68" class="ln"><tspan fill="#74DBA0" font-weight="700">$</tspan><tspan fill="#E6EDF5"> /sma-discuss-phase 12</tspan></text><animate attributeName="opacity" dur="6.12s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0;0.035;0.955;1" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;.4 0 1 1"/></g>
+  <g opacity="0"><text x="22" y="95" class="ln"><tspan fill="#1FA0A6" font-weight="700">&#9671;</tspan><tspan fill="#c3cede"> locking the gray-area decisions before any code</tspan></text><animate attributeName="opacity" dur="6.12s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.085;0.12;0.955;1" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;.4 0 1 1"/></g>
+  <g opacity="0"><text x="22" y="122" class="ln"><tspan fill="#8b98a9">  adaptive questions — only what is still unresolved</tspan></text><animate attributeName="opacity" dur="6.12s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.1699;0.2049;0.955;1" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;.4 0 1 1"/></g>
+  <g opacity="0"><text x="22" y="149" class="ln"><tspan fill="#3B82F6" font-weight="700">?</tspan><tspan fill="#c3cede"> two responsibles, or a second field?   › …</tspan></text><animate attributeName="opacity" dur="6.12s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.2549;0.2899;0.955;1" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;.4 0 1 1"/></g>
+  <g opacity="0"><text x="22" y="176" class="ln"><tspan fill="#74DBA0" font-weight="700">&#10003;</tspan><tspan fill="#bfe6cf"> D-12-01 … D-12-07 locked &#8594; 12-CONTEXT.md</tspan></text><animate attributeName="opacity" dur="6.12s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.3399;0.3749;0.955;1" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;.4 0 1 1"/></g>
+  <g opacity="0"><text x="22" y="203" class="ln"><tspan fill="#1FA0A6" font-weight="700">&#9670;</tspan><tspan fill="#c3cede"> grounded — the plan builds on facts, not guesses</tspan></text><animate attributeName="opacity" dur="6.12s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.4248;0.4598;0.955;1" calcMode="spline" keySplines="0 0 1 1;.2 .8 .2 1;0 0 1 1;.4 0 1 1"/></g>
+  <rect x="220.5" y="56" width="9" height="16" rx="1.5" fill="url(#g)"><animate attributeName="opacity" dur="1.05s" repeatCount="indefinite" values="1;1;0;0" keyTimes="0;.5;.5;1"/></rect>
+  <rect x="22" y="250" width="716" height="2.5" rx="1.25" fill="url(#g)" opacity=".22"/>
+</svg>

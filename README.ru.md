@@ -328,6 +328,70 @@ node ../sma-clone/bin/init.mjs --local
 
 Под капотом работает координационный CLI (`node scripts/sma/cli.mjs` или `pnpm sma`): `status`, `claim`, `next-slot`, `load`, `lint` и другие. Сессии и хуки вызывают его сами; при желании Вы можете вызывать его напрямую.
 
+### Каждая команда в действии
+
+Каждая команда это разговор в терминале. Разверните любую, чтобы увидеть, что она делает. Каждое демо повторяется по кругу (текст в терминале на английском).
+
+<details open>
+<summary><b><code>/sma-start</code></b> : первый запуск: система сначала объясняет себя, потом настраивается</summary>
+<br><img src="assets/demos/sma-start.svg" alt="/sma-start" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-discuss-phase</code></b> : зафиксировать спорные решения с человеком до кода</summary>
+<br><img src="assets/demos/sma-discuss-phase.svg" alt="/sma-discuss-phase" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-plan-phase</code></b> : исследование, планы и проверка плана; каждый шаг несёт предсказание</summary>
+<br><img src="assets/demos/sma-plan-phase.svg" alt="/sma-plan-phase" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-execute-phase</code></b> : сборка волнами с учётом зависимостей; рефлексы срабатывают до действия</summary>
+<br><img src="assets/demos/sma-execute-phase.svg" alt="/sma-execute-phase" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-verify-work</code></b> : сверка с критериями приёмки; скрипт заново прогоняет каждое «готово»</summary>
+<br><img src="assets/demos/sma-verify-work.svg" alt="/sma-verify-work" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-quick</code></b> : небольшая задача с полными гарантиями (атомарный коммит, учёт состояния)</summary>
+<br><img src="assets/demos/sma-quick.svg" alt="/sma-quick" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-fast</code></b> : тривиальная задача прямо в сессии; без субагентов и планирования</summary>
+<br><img src="assets/demos/sma-fast.svg" alt="/sma-fast" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-debug</code></b> : системная отладка, состояние переживает сброс контекста</summary>
+<br><img src="assets/demos/sma-debug.svg" alt="/sma-debug" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-progress</code></b> : где мы сейчас и следующий конкретный шаг</summary>
+<br><img src="assets/demos/sma-progress.svg" alt="/sma-progress" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-resume-work</code></b> : восстановить полный контекст из бортового самописца</summary>
+<br><img src="assets/demos/sma-resume-work.svg" alt="/sma-resume-work" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-pause-work</code></b> : подготовить передачу контекста перед паузой</summary>
+<br><img src="assets/demos/sma-pause-work.svg" alt="/sma-pause-work" width="760">
+</details>
+
+<details>
+<summary><b><code>/sma-help</code></b> : всё семейство <code>/sma-*</code> одним взглядом</summary>
+<br><img src="assets/demos/sma-help.svg" alt="/sma-help" width="760">
+</details>
+
 ## Шесть столпов
 
 - **Предсказания** — каждый план заранее заявляет, что измеримо изменится и как это проверить; детерминированный скоринг сверяет обещание с фактом при закрытии плана, а журнал калибровки показывает, в каких областях система ошибается чаще всего.
