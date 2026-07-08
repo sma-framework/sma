@@ -43,6 +43,12 @@ import { parseReceipts, parseCoverage, validateReceipt } from './receipts.mjs'
 // (one extraction truth); the cycle is safe because both sides use the imported
 // binding only inside functions, never at module-eval time.
 import { verifySkeptic } from './goodhart.mjs'
+// 49.2-10 (D-49.2-14): HAZARD-NOCONTROL is the ENV-INDEPENDENT git-side check that
+// every kill-switch cites a compensating control — it is itself the control cited
+// by SMA_STPA_OFF's HAZARDS row (the guard cannot silently kill the guard). No cycle:
+// stpa.mjs imports gates/journal/calibration, never lint.
+import { uncompensatedKillSwitches } from './stpa.mjs'
+import { GATES } from './gates.mjs'
 // The ONE contradiction implementation (49.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
@@ -1120,6 +1126,25 @@ const RECEIPT_PROSE = {
   },
 }
 
+// ── 49.2-10 (D-49.2-14): HAZARD-NOCONTROL — every kill-switch cites a control ──
+
+const HAZARD_NOCONTROL = {
+  id: 'HAZARD-NOCONTROL',
+  title: 'Every kill-switch cites a compensating control in the HAZARDS registry (STPA)',
+  tier: 'critical',
+  run() {
+    const orphans = uncompensatedKillSwitches({ gates: GATES })
+    return orphans.map((k) =>
+      finding(
+        'HAZARD-NOCONTROL',
+        'critical',
+        '',
+        `kill-switch ${k} has no compensating control in the HAZARDS registry (lib/stpa.mjs) — a switch that can silently disable a protection with no cited mitigation is an STPA violation (D-49.2-14); add a HAZARDS row with a non-empty compensatingControl + birth fixture`,
+      ),
+    )
+  },
+}
+
 // ── 49.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
@@ -1384,6 +1409,7 @@ export const LINT_CHECKS = [
   CONS_POSTEDIT,
   CONS_NOBLOCK,
   RECEIPT_PROSE,
+  HAZARD_NOCONTROL,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────

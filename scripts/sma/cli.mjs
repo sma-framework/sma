@@ -77,6 +77,10 @@ function dirsFrom(root) {
     grillDir: join(root, 'grill'), // 49.2-07 (D-49.2-11) — per-plan adversarial challenge ledger
     blindDir: join(root, 'blind'), // 49.2-07 (D-49.2-11) — frozen blind-verify verdicts (info barrier)
     evidenceDir: join(root, 'evidence'), // 49.2-07 (D-49.2-11) — burden-of-proof records for risky ops
+    skepticDir: join(root, 'skeptic'), // 49.2-10 (D-49.2-14) — skeptic countersign files
+    canaryDir: join(root, 'canary'), // 49.2-10 (D-49.2-14) — sealed canary ledger (blind verifier NEVER reads)
+    nearmissDir: join(root, 'nearmiss'), // 49.2-10 (D-49.2-14) — scoring-immune near-miss channel (ASRS)
+    disarmDir: join(root, 'disarm'), // 49.2-10 (D-49.2-14) — kill-switch provenance leases (auto-re-arm)
   }
 }
 
@@ -442,6 +446,28 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the digest is a briefing convenience, never a gate */
   }
 
+  // 49.2-10 (D-49.2-14) — the STPA disarm-path guard runs at session-start ONLY
+  // (never the per-tool-call hot path — plan 02 SLO). It shadow-runs each disarmed
+  // gate's birth fixture and computes auto-re-arm decisions; a one-line summary
+  // surfaces ONLY when a kill env is actually set. Bounded, try/catch, fail-open —
+  // a guard that wedged the hooks would be its own STPA violation (CONS-49.2-B).
+  let disarmLine = ''
+  try {
+    const stpa = await import('./lib/stpa.mjs')
+    const decisions = stpa.reArmDecisions({ env: process.env, dirs })
+    if (decisions.length) {
+      stpa.shadowRunFixtures({ env: process.env, dirs }) // journal the shadow-run findings
+      const reArmed = decisions.filter((d) => d.decision === 're-arm').map((d) => d.killEnv)
+      const honored = decisions.filter((d) => d.decision === 'honor').map((d) => d.killEnv)
+      const bits = []
+      if (reArmed.length) bits.push(`re-armed (WARN): ${reArmed.join(', ')}`)
+      if (honored.length) bits.push(`honored: ${honored.join(', ')}`)
+      disarmLine = `SMA STPA: ${decisions.length} kill-switch(es) set — ${bits.join('; ')}. Birth fixtures still trip; keep one off deliberately via \`sma integrity disarm-renew <gateId> --reason\`.`
+    }
+  } catch {
+    /* fail-open — the disarm guard never wedges session-start */
+  }
+
   // FI-10 — prompt ONCE for a human window name when this window is still anonymous, so
   // the journal + digest stop showing t-<hash> and become «P<phase> <Name>».
   let namePrompt = ''
@@ -491,11 +517,13 @@ async function cmdSessionStart({ dirs }) {
     s.needsHuman.length ||
     preAct ||
     digest ||
-    namePrompt
+    namePrompt ||
+    disarmLine
   ) {
     const parts = [lines.join(' ')]
     if (preAct) parts.push(preAct)
     if (digest) parts.push(digest)
+    if (disarmLine) parts.push(disarmLine)
     if (namePrompt) parts.push(namePrompt)
     if (restore) parts.unshift(restore) // the capsule body is the FIRST part after compaction
     printJson({
@@ -1168,6 +1196,25 @@ async function cmdReflexCheck({ dirs }) {
  * only mayDeny stream — a soft-deny still surfaces permissionDecision 'deny').
  */
 async function cmdGatesCheck({ dirs }) {
+  // 49.2-10 (D-49.2-14) — STPA auto-re-arm on the RARE path ONLY: consult the disarm
+  // leases solely when a gate's own kill env is actually set (zero extra IO otherwise —
+  // plan 02 SLO untouched). A 're-arm' decision scrubs that kill env from THIS one-shot
+  // process's env so the gate fires its advisory WARN again (WARN tier only; never a
+  // deny). gates.mjs + pre.mjs stay byte-untouched — the re-arm rides checkEvent's
+  // existing env surface. Fail-open: any error leaves the env as-is.
+  try {
+    const { GATES } = await import('./lib/gates.mjs')
+    const anyKill =
+      isEnvOn(process.env.SMA_GATES_DISABLE) || GATES.some((g) => g.killEnv && isEnvOn(process.env[g.killEnv]))
+    if (anyKill) {
+      const stpa = await import('./lib/stpa.mjs')
+      for (const d of stpa.reArmDecisions({ env: process.env, dirs })) {
+        if (d.decision === 're-arm' && d.killEnv) delete process.env[d.killEnv]
+      }
+    }
+  } catch {
+    /* fail-open — the re-arm never wedges the gate hook */
+  }
   return runSingleStream(dirs, 'gates')
 }
 
@@ -4652,6 +4699,217 @@ async function cmdEvidence({ positionals, flags, dirs }) {
   return 0
 }
 
+/**
+ * integrity <hazards|shadow|disarms|disarm-renew> — the STPA disarm-path guard
+ * admin (49.2-10, D-49.2-14). NOT hook-facing. Every --count-* flag prints a BARE
+ * integer as the LAST output line (the V2 scorer's numeric-last-line contract).
+ */
+async function cmdIntegrity({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  const stpa = await import('./lib/stpa.mjs')
+  const { GATES } = await import('./lib/gates.mjs')
+
+  if (sub === 'hazards') {
+    const uncompensated = stpa.uncompensatedKillSwitches({ gates: GATES })
+    if (flags['count-uncompensated']) {
+      if (wantsJson(flags)) printJson({ uncompensated: uncompensated.length, switches: uncompensated })
+      process.stdout.write(`${uncompensated.length}\n`) // scorer contract: numeric last line
+      return 0
+    }
+    if (wantsJson(flags)) {
+      printJson({ hazards: stpa.HAZARDS, uncompensated })
+      return 0
+    }
+    process.stdout.write(`SMA integrity: ${stpa.HAZARDS.length} kill-switches registered, ${uncompensated.length} uncompensated.\n`)
+    for (const h of stpa.HAZARDS) process.stdout.write(`  ${h.killEnv} (${h.kind}) — ${h.compensatingControl ? 'compensated' : 'UNCOMPENSATED'}\n`)
+    return uncompensated.length ? 1 : 0
+  }
+
+  if (sub === 'shadow') {
+    const report = stpa.shadowRunFixtures({ env: process.env, dirs })
+    if (wantsJson(flags)) {
+      printJson({ report })
+      return 0
+    }
+    const disarmed = report.filter((r) => r.disarmed)
+    process.stdout.write(`SMA integrity shadow: ${report.length} fixtures, ${disarmed.length} disarmed.\n`)
+    for (const r of disarmed) process.stdout.write(`  ${r.killEnv} DISARMED — birth fixture ${r.fixtureTrips ? 'still TRIPS' : 'does not trip'}\n`)
+    return 0
+  }
+
+  if (sub === 'disarms') {
+    if (flags['count-silent']) {
+      const n = stpa.countSilentDisarms({ env: process.env, dirs })
+      if (wantsJson(flags)) printJson({ silent_disarms: n })
+      process.stdout.write(`${n}\n`) // scorer contract: numeric last line
+      return 0
+    }
+    const decisions = stpa.reArmDecisions({ env: process.env, dirs })
+    if (wantsJson(flags)) {
+      printJson({ decisions })
+      return 0
+    }
+    process.stdout.write(`SMA integrity disarms: ${decisions.length} set kill-switch(es).\n`)
+    for (const d of decisions) process.stdout.write(`  ${d.killEnv} -> ${d.decision}${d.hasProvenance ? ' (provenance)' : ''}\n`)
+    return 0
+  }
+
+  if (sub === 'disarm-renew') {
+    const gateId = positionals[1]
+    if (!gateId) {
+      process.stderr.write('usage: pnpm sma integrity disarm-renew <gateId> --reason "<why>"\n')
+      return 1
+    }
+    let identity = { holderIdentity: 'unknown', terminalId: 'unknown' }
+    try {
+      const registry = await import('./lib/registry.mjs')
+      identity = registry.resolveTerminalIdentity({})
+    } catch {
+      /* fail-open */
+    }
+    const lease = stpa.renewDisarm({ gateId, reason: typeof flags.reason === 'string' ? flags.reason : '', identity, dirs })
+    if (wantsJson(flags)) printJson({ renewed: true, lease })
+    else process.stdout.write(`SMA integrity: kill-switch ${gateId} re-leased with provenance (${lease.provenance.reason ?? '—'}).\n`)
+    return 0
+  }
+
+  process.stderr.write('usage: pnpm sma integrity <hazards|shadow|disarms|disarm-renew> [--json|--count-uncompensated|--count-silent]\n')
+  return 1
+}
+
+/**
+ * skeptic <sign|verify> <plan-path> — the Goodhart skeptic countersign (49.2-10).
+ * `sign` MUST be run from a terminal DISTINCT from the plan's implementer (a
+ * self-sign is rejected at verify time). NOT hook-facing.
+ */
+async function cmdSkeptic({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  const planPath = positionals[1]
+  if (!planPath) {
+    process.stderr.write('usage: pnpm sma skeptic <sign|verify> <plan-path>\n')
+    return 1
+  }
+  const goodhart = await import('./lib/goodhart.mjs')
+
+  if (sub === 'sign') {
+    let identity = { holderIdentity: 'unknown', terminalId: 'unknown' }
+    try {
+      const registry = await import('./lib/registry.mjs')
+      identity = registry.resolveTerminalIdentity({})
+    } catch {
+      /* fail-open */
+    }
+    const rec = goodhart.signPredictions({ planPath, identity, dirs })
+    if (wantsJson(flags)) printJson(rec)
+    else process.stdout.write(`SMA skeptic: countersigned ${rec.planId} as ${rec.skeptic.terminalId ?? '—'} (hash ${rec.predictionsHash.slice(0, 10)}).\n`)
+    return 0
+  }
+
+  if (sub === 'verify') {
+    const v = goodhart.verifySkeptic({ planPath, dirs })
+    if (wantsJson(flags)) {
+      printJson(v)
+      return v.ok ? 0 : 1
+    }
+    process.stdout.write(v.ok ? `SMA skeptic: countersign valid${v.deferred ? ' (distinctness deferred — no exec journal yet)' : ''}.\n` : `SMA skeptic: INVALID — ${v.reason}.\n`)
+    return v.ok ? 0 : 1
+  }
+
+  process.stderr.write('usage: pnpm sma skeptic <sign|verify> <plan-path>\n')
+  return 1
+}
+
+/**
+ * canary <plant|score|sweep> — planted false-«done» canaries (49.2-10, S8). NOT
+ * hook-facing. `score --count-scored` prints the count of scored canaries as a
+ * bare integer last line (P49.2-10-03, honest 0 on an empty ledger).
+ */
+async function cmdCanary({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  const canary = await import('./lib/canary.mjs')
+
+  if (sub === 'plant') {
+    const claimsPath = positionals[1]
+    if (!claimsPath) {
+      process.stderr.write('usage: pnpm sma canary plant <claims-path>\n')
+      return 1
+    }
+    let identity = { terminalId: 'unknown' }
+    try {
+      const registry = await import('./lib/registry.mjs')
+      identity = registry.resolveTerminalIdentity({})
+    } catch {
+      /* fail-open */
+    }
+    const r = canary.plantCanary({ claimsPath, dirs, identity })
+    if (wantsJson(flags)) printJson({ planted: true, canaryId: r.canaryId })
+    else process.stdout.write(`SMA canary: planted ${r.canaryId} into ${claimsPath} (sealed to the ledger the verifier never reads).\n`)
+    return 0
+  }
+
+  if (sub === 'score') {
+    if (flags['count-scored']) {
+      const n = canary.countScored({ dirs })
+      if (wantsJson(flags)) printJson({ scored: n })
+      process.stdout.write(`${n}\n`) // scorer contract: numeric last line
+      return 0
+    }
+    // Gather real divergences from the calibration ledger (kind:'divergence') and score.
+    let divergences = []
+    try {
+      const calibration = await import('./lib/calibration.mjs')
+      const { records } = calibration.readLedger({ calibrationDir: dirs.calibrationDir })
+      divergences = records.filter((r) => r && r.kind === 'divergence')
+    } catch {
+      /* fail-open — no ledger -> honest empty scoring */
+    }
+    const res = canary.scoreCanaries({ divergences, dirs })
+    if (wantsJson(flags)) printJson(res)
+    else if (!res.ok) process.stdout.write(`SMA canary: НЕ scored — ${res.reason} (ledger tampered; a break IS the evidence).\n`)
+    else process.stdout.write(`SMA canary: scored ${res.n} (caught ${res.caught}, missed ${res.missed}, catch ${res.catchRatePct}%).\n`)
+    return 0
+  }
+
+  if (sub === 'sweep') {
+    const claimsPath = positionals[1]
+    if (!claimsPath) {
+      process.stderr.write('usage: pnpm sma canary sweep <claims-path>\n')
+      return 1
+    }
+    const r = canary.sweepCanaries({ claimsPath, dirs })
+    if (wantsJson(flags)) printJson(r)
+    else process.stdout.write(`SMA canary: swept ${r.swept.length} canary claim(s) from ${claimsPath} (ledger persists sweptAt).\n`)
+    return 0
+  }
+
+  process.stderr.write('usage: pnpm sma canary <plant <claims-path>|score [--count-scored]|sweep <claims-path>>\n')
+  return 1
+}
+
+/**
+ * nearmiss <text> — append a scoring-IMMUNE near-miss note (49.2-10, ASRS class).
+ * NO scoring path ever reads .sma/nearmiss/, so reporting is free. NOT hook-facing.
+ */
+async function cmdNearmiss({ positionals, flags, dirs }) {
+  const text = positionals.join(' ').trim()
+  if (!text) {
+    process.stderr.write('usage: pnpm sma nearmiss "<what nearly went wrong>"\n')
+    return 1
+  }
+  const goodhart = await import('./lib/goodhart.mjs')
+  let identity = { terminalId: 'unknown' }
+  try {
+    const registry = await import('./lib/registry.mjs')
+    identity = registry.resolveTerminalIdentity({})
+  } catch {
+    /* fail-open */
+  }
+  const rec = goodhart.recordNearMiss({ text, identity, dirs })
+  if (wantsJson(flags)) printJson({ recorded: true, at: rec.at })
+  else process.stdout.write('SMA near-miss: записано (immune from scoring — reporting never hurts a number).\n')
+  return 0
+}
+
 const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
@@ -4711,6 +4969,10 @@ const HANDLERS = {
   grill: cmdGrill, // 49.2-07 (D-49.2-11) — adversarial challenge gate + budget-aware pre-push
   'blind-verify': cmdBlindVerify, // 49.2-07 — tree-only re-derivation + divergence detection
   evidence: cmdEvidence, // 49.2-07 — burden-of-proof records for risky ops
+  integrity: cmdIntegrity, // 49.2-10 (D-49.2-14) — STPA disarm-path guard (hazards|shadow|disarms|disarm-renew)
+  skeptic: cmdSkeptic, // 49.2-10 — Goodhart skeptic countersign (sign|verify)
+  canary: cmdCanary, // 49.2-10 — planted false-done canaries (plant|score|sweep) — S8
+  nearmiss: cmdNearmiss, // 49.2-10 — scoring-immune near-miss channel (ASRS)
 }
 
 async function main() {
@@ -4720,7 +4982,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss>\n',
     )
     return 0
   }
