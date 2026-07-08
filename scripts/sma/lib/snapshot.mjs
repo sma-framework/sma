@@ -42,7 +42,8 @@ import { resolveTerminalIdentity, smaRoot } from './registry.mjs'
 import { readJsonSafe } from './fs-atomics.mjs'
 import { journalTail, appendEvent, readJournal } from './journal.mjs'
 import { readLedger, hitRate } from './calibration.mjs'
-import { SESSIONS_DIR, JOURNAL_DIR, CALIBRATION_DIR, JOURNAL_TAIL_FOR_SNAPSHOT } from './constants.mjs'
+import { buildBook, windowSpend, readBudget } from './spend.mjs'
+import { SESSIONS_DIR, JOURNAL_DIR, CALIBRATION_DIR, SPEND_DIR, JOURNAL_TAIL_FOR_SNAPSHOT } from './constants.mjs'
 
 /**
  * The EXPLICIT allowlist — the exact field set the receiving route (49-07,
@@ -73,6 +74,8 @@ const PAYLOAD_KEYS = [
   'reflexFires',
   'gates',
   'corpusHealth',
+  // ── 49.2-09 (D-49.2-13) — the deterministic spend ledger block ───────────────
+  'spend',
 ]
 
 /** v2 feed bound (per-feed item cap) + the overall payload byte cap. */
@@ -241,6 +244,40 @@ function gatherJournalFires(journalDir) {
 }
 
 /**
+ * gatherSpend({spendDir, repoRoot, now}) → the bounded spend block, or null. Reads the
+ * deterministic spend book (via the incremental cache) + the window budget and projects
+ * ONLY aggregates by the SAME explicit-pick discipline (P1): window usd vs cap, the top-5
+ * models, the drift/unpriced counters, and the pricing version. NO file paths, NO log
+ * lines, NO session ids beyond what the registry already mirrors. Fail-open → null (the
+ * cockpit renders a provisioning hint from null, never a fabricated zero).
+ */
+function gatherSpend({ spendDir, repoRoot, now } = {}) {
+  try {
+    if (!spendDir) return null
+    const book = buildBook({ spendDir, repoRoot, env: process.env, now, persist: true })
+    const budget = readBudget({ spendDir })
+    const win = windowSpend({ book, now, windowHours: budget.windowHours })
+    const pct = budget.capUsd ? Math.round((win.usd / budget.capUsd) * 1000) / 10 : null
+    const topModels = Object.entries(book.byModel || {})
+      .sort((a, b) => b[1].usd - a[1].usd)
+      .slice(0, 5)
+      .map(([model, v]) => ({ model: String(model).slice(0, 64), usd: v.usd }))
+    return {
+      windowUsd: win.usd,
+      capUsd: Number.isFinite(budget.capUsd) ? budget.capUsd : null,
+      pct,
+      windowHours: budget.windowHours,
+      topModels,
+      counters: { unrecognized: book.counters.unrecognized, unpriced: book.counters.unpriced },
+      pricingVersion: book.pricingVersion,
+      updatedAt: book.builtAt,
+    }
+  } catch {
+    return null // fail-open — a spend-read failure never wedges the reporter
+  }
+}
+
+/**
  * capPayloadSize(payload, cap) — enforce the byte cap by dropping the OLDEST item
  * from the largest newest-first feed until the serialized payload fits. Feeds are
  * already item-bounded to V2_FEED_CAP; this is the belt-and-braces size guard so a
@@ -336,6 +373,8 @@ export function buildSnapshotPayload(opts = {}) {
   // corpusHealth carries the same memory-health summary the report's corpus panel
   // shows (defaultLoadMemoryHealth) — null when the source is absent.
   payload.corpusHealth = memoryHealth
+  // ── 49.2-09 (D-49.2-13) — the deterministic spend ledger block (aggregates only) ──
+  payload.spend = gatherSpend({ spendDir: opts.spendDir ?? SPEND_DIR, repoRoot: opts.repoRoot, now: opts.now ?? Date.now() })
 
   // Defensive: strip any key that is not in the allowlist (belt + braces, P1).
   for (const k of Object.keys(payload)) {
@@ -456,8 +495,10 @@ export async function runSnapshot(flags = {}) {
     const sessionsDir = flags.sessionsDir ?? join(root, 'sessions')
     const journalDir = flags.journalDir ?? join(root, 'journal')
     const calibrationDir = flags.calibrationDir ?? join(root, 'calibration')
+    const spendDir = flags.spendDir ?? join(root, 'spend')
+    const repoRoot = smaRoot() // repo root for local-session-log discovery (D-49.2-13)
     const memoryHealth = await defaultLoadMemoryHealth({})
-    const payload = buildSnapshotPayload({ identity, sessionsDir, journalDir, calibrationDir, memoryHealth })
+    const payload = buildSnapshotPayload({ identity, sessionsDir, journalDir, calibrationDir, spendDir, repoRoot, memoryHealth })
     return await sendSnapshot({ payload, identity, sessionsDir, journalDir })
   } catch {
     return { sent: false, reason: 'run-failed' } // fail-open — the reporter never wedges a session

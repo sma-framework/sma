@@ -41,6 +41,8 @@ const ALLOWED_KEYS = [
   'reflexFires',
   'gates',
   'corpusHealth',
+  // 49.2-09 (D-49.2-13) — the deterministic spend ledger block.
+  'spend',
 ]
 
 const COLLISION_ITEM_KEYS = ['type', 'actors', 'scope', 'ts']
