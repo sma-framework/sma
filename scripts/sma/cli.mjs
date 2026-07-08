@@ -1179,6 +1179,18 @@ async function cmdAirbagCheck({ dirs }) {
   return runSingleStream(dirs, 'airbag')
 }
 
+/**
+ * spend-check — the deterministic spend-ledger hook (49.2-09, D-49.2-13). The pre-less
+ * FALLBACK for an install that has not adopted the `sma pre` multiplexer; the canonical
+ * wiring is `pre` (the spend stream rides inside it). Delegates to the SAME spend stream
+ * in PRE_CHECKS (a deny-capable stream that denies ONLY the Task tool past a configured
+ * cap) — honoring its opt-in gate (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE).
+ * HOOK_FACING: exit 0 always, wrapped fail-open.
+ */
+async function cmdSpendCheck({ dirs }) {
+  return runSingleStream(dirs, 'spend')
+}
+
 /** A real execFileSync-shaped git runner over the resolved repo root (buffer-aware). */
 async function makeRepoGitRunner() {
   const { execFileSync } = await import('node:child_process')
@@ -1416,6 +1428,44 @@ async function cmdSpend({ positionals, flags, dirs }) {
     `  распознано ${c.recognized} · не-usage ${c.nonUsage} · дубликаты ${c.duplicate} · ` +
       `дрейф(unrecognized) ${c.unrecognized} · без цены(unpriced) ${c.unpriced} · повреждено ${c.corrupt}\n`,
   )
+  return 0
+}
+
+/**
+ * breaker [list|re-arm <ruleId>] [--json] — the loop-breaker admin (49.2-09). NOT
+ * hook-facing. `list` shows every soft-disabled SMA rule + its compensating control;
+ * `re-arm <ruleId>` deletes the marker (re-enabling the rule) and journals the re-arm
+ * with provenance (the D-49-09 force-clear idiom). Markers are plan 10's disarm-path input.
+ */
+async function cmdBreaker({ positionals, flags, dirs }) {
+  const breaker = await import('./lib/breaker.mjs')
+  const sub = positionals[0]
+
+  if (sub === 're-arm' || sub === 'rearm') {
+    const ruleId = positionals[1]
+    if (!ruleId) {
+      process.stdout.write('usage: sma breaker re-arm <ruleId>\n')
+      return 1
+    }
+    const terminalId = await resolveTerminalId()
+    const r = breaker.reArm(ruleId, { breakerDir: dirs.breakerDir, journalDir: dirs.journalDir, by: terminalId, terminalId })
+    if (wantsJson(flags)) printJson(r)
+    else
+      process.stdout.write(
+        r.rearmed ? `SMA breaker: правило ${ruleId} снова активно (re-armed)\n` : `SMA breaker: маркер для ${ruleId} не найден\n`,
+      )
+    return r.rearmed ? 0 : 1
+  }
+
+  // list (default).
+  const markers = breaker.listMarkers({ breakerDir: dirs.breakerDir })
+  if (wantsJson(flags)) {
+    printJson({ markers, n: markers.length })
+    return 0
+  }
+  if (!markers.length) process.stdout.write('SMA breaker: активных маркеров нет\n')
+  for (const m of markers)
+    process.stdout.write(`  ${m.ruleId}  срабатываний ${m.tripCount}  [${m.compensatingControl}]  откл. ${m.disabledAt}\n`)
   return 0
 }
 
@@ -4235,7 +4285,7 @@ async function cmdSubagentReceipts({ flags, dirs }) {
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
-const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule'])
+const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
@@ -4251,6 +4301,8 @@ const HANDLERS = {
   undo: cmdUndo, // 49.2-05 — one-action airbag restore
   airbag: cmdAirbag, // 49.2-05 — snapshot admin (list|prune|probe|stats)
   spend: cmdSpend, // 49.2-09 (D-49.2-13) — deterministic spend ledger report + set-cap + --stat scorer
+  'spend-check': cmdSpendCheck, // 49.2-09 — pre-less fallback for the spend stream (budget reflexes + loop-breaker)
+  breaker: cmdBreaker, // 49.2-09 — loop-breaker admin (list|re-arm)
   'stall-check': cmdStallCheck,
   'gates-report': cmdGatesReport,
   'gates-ack': cmdGatesAck,

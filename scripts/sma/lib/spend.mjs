@@ -413,3 +413,132 @@ export function spendStats(name, opts = {}) {
       return 0
   }
 }
+
+// ═══════════════════════════ the hot-path spend-check ═══════════════════════════
+
+/** truthy env flag: set and not ''/0/false (mirrors the reflex/gates kill-switch). */
+function truthy(v) {
+  const s = String(v ?? '').trim().toLowerCase()
+  return !!s && s !== '0' && s !== 'false'
+}
+
+/** The 70/90-decile WARN text (self-sufficient: level, live number, cap, window). */
+function warnText(level, windowUsd, cap, windowHours) {
+  const pct = Math.round(level * 100)
+  return (
+    `SMA-spend [${pct}%]: за окно ${windowHours} ч потрачено $${round6(windowUsd)} из лимита $${cap} ` +
+    `(${Math.round((windowUsd / cap) * 100)}%). Пока это только предупреждение. Отключить: SMA_SPEND_DISABLE=1.`
+  )
+}
+
+/** The Task-only soft-deny reason (names cap + live number + BOTH overrides). */
+function denyReason(windowUsd, cap, windowHours) {
+  return (
+    `SMA-spend DENY: запуск нового субагента (Task) заблокирован — за окно ${windowHours} ч ` +
+    `потрачено $${round6(windowUsd)}, что достигло/превысило лимит $${cap}. Мягкий deny снимается ` +
+    `так: поднимите лимит (pnpm sma spend set-cap <usd>) или отключите проверку затрат (SMA_SPEND_DISABLE=1). ` +
+    `Deny применяется ТОЛЬКО к Task; любой другой инструмент — только предупреждение.`
+  )
+}
+
+/**
+ * checkSpend(ctx, opts) -> {warnings:[...], deny?:{reason}}. The hook-facing decision
+ * core, PURE over injected state. Applies the LOCKED 70/90 warn deciles with reflex-
+ * style seen-store dedup ('spend:' keys) and returns a deny ONLY when ALL of:
+ *   ctx.toolName === 'Task'  AND  a cap is configured (capUsd > 0)  AND  windowSpend >= cap.
+ * Kill-switch SMA_SPEND_DISABLE (checked first). Native-probe true → silent (bridge stood
+ * down). Whole body fail-open (C9): ANY internal throw → {warnings:[]} (allow) — a spend
+ * bug can NEVER wedge a session or falsely deny.
+ *
+ * @param {{toolName?:string, sessionId?:string}} ctx  the PreToolUse decision context
+ * @param {{spendDir?:string, budget?:object, book?:object, buildBook?:Function,
+ *          windowUsd?:number, seen?:object, now?:number, env?:object, repoRoot?:string,
+ *          probe?:Function}} opts
+ * @returns {{warnings:string[], deny?:{reason:string}}}
+ */
+export function checkSpend(ctx = {}, opts = {}) {
+  const out = { warnings: [] }
+  try {
+    const env = opts.env || {}
+    if (truthy(env.SMA_SPEND_DISABLE)) return out // kill-switch first
+
+    const probeFn = typeof opts.probe === 'function' ? opts.probe : probeNativeSpend
+    if (probeFn({ env }).native) return out // native surface detected → silent (D-49.2-05a)
+
+    const budget = opts.budget || readBudget({ spendDir: opts.spendDir })
+    const cap = budget.capUsd
+    // No cap → report-only, never a warn or deny (a soft-deny must never fire off an assumed number).
+    if (!Number.isFinite(cap) || cap <= 0) return out
+
+    // Window spend: injected number (tests / warm hot path) or computed from the book.
+    let windowUsd
+    if (Number.isFinite(opts.windowUsd)) {
+      windowUsd = opts.windowUsd
+    } else {
+      const now = Number.isFinite(opts.now) ? opts.now : Date.now()
+      const book =
+        opts.book ||
+        (typeof opts.buildBook === 'function'
+          ? opts.buildBook()
+          : buildBook({ spendDir: opts.spendDir, repoRoot: opts.repoRoot, env, now }))
+      windowUsd = windowSpend({ book, now, windowHours: budget.windowHours }).usd
+    }
+
+    const frac = windowUsd / cap
+    const seen = opts.seen && typeof opts.seen === 'object' ? opts.seen : { keys: {} }
+    if (!seen.keys || typeof seen.keys !== 'object') seen.keys = {}
+    const sessionKey = 'spend:' + (ctx.sessionId || 'default')
+
+    // Locked 70/90 deciles — each fires ONCE per session per decile (seen-store dedup).
+    const levels = Array.isArray(budget.warnAt) ? budget.warnAt : DEFAULT_BUDGET.warnAt
+    for (const level of levels) {
+      if (frac >= level) {
+        const key = `${sessionKey}:${level}`
+        if (!seen.keys[key]) {
+          seen.keys[key] = 1
+          out.warnings.push(warnText(level, windowUsd, cap, budget.windowHours))
+        } else {
+          seen.keys[key] += 1
+        }
+      }
+    }
+
+    // Soft-deny: ONLY the Task tool, ONLY at/over 100% of a configured cap.
+    if (ctx.toolName === 'Task' && frac >= 1) {
+      out.deny = { reason: denyReason(windowUsd, cap, budget.windowHours) }
+    }
+  } catch {
+    return { warnings: [] } // fail-open allow — a spend bug never wedges or falsely denies
+  }
+  return out
+}
+
+/**
+ * benchCheckP95(opts) -> number. Warm the incremental cache once, then run checkSpend
+ * 20x over the warm book and return the p95 wall-clock ms. This is the P49.2-09-2
+ * instrument (a warm spend-check must ride inside sma pre's 300 ms SLO). Deterministic
+ * inputs; the number is the last stdout line of `spend --stat bench-check-p95-ms`.
+ * @param {{spendDir?:string, repoRoot?:string, env?:object}} [opts]
+ * @returns {Promise<number>}
+ */
+export async function benchCheckP95(opts = {}) {
+  try {
+    const env = opts.env || process.env
+    const now = Date.now()
+    const book = buildBook({ spendDir: opts.spendDir, repoRoot: opts.repoRoot, env, now }) // warm
+    const budget = readBudget({ spendDir: opts.spendDir })
+    const seen = { keys: {} }
+    const clock = globalThis.performance && typeof globalThis.performance.now === 'function' ? globalThis.performance : Date
+    const times = []
+    for (let i = 0; i < 20; i++) {
+      const t0 = clock.now()
+      checkSpend({ toolName: 'Edit', sessionId: `bench-${i}` }, { spendDir: opts.spendDir, book, budget, now, seen, env })
+      times.push(Math.max(0, clock.now() - t0))
+    }
+    times.sort((a, b) => a - b)
+    const idx = Math.min(times.length - 1, Math.max(0, Math.ceil((95 / 100) * times.length) - 1))
+    return Math.round((times[idx] || 0) * 100) / 100
+  } catch {
+    return 0
+  }
+}

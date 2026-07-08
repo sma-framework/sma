@@ -252,16 +252,69 @@ async function runAirbag(ctx) {
 }
 
 /**
+ * spend stream — the deterministic spend ledger reflexes (49.2-09, D-49.2-13). Applies
+ * the locked 70/90 window-budget WARNs and the Task-ONLY soft-deny past a configured
+ * cap (checkSpend), and detects+trips a repeatedly-firing SMA rule in the journal
+ * (detectAndTrip). mayDeny:true — but checkSpend only ever denies the Task tool at
+ * >=100% of a FOUNDER-CONFIGURED cap; every other tool is WARN-only forever.
+ *
+ * OPT-IN (CONS-49.2-09-B / CONS-49.2-B): the stream is a NO-OP unless SMA_SPEND_OPTIN
+ * is set — plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
+ * multiplexer re-measures under SLO (and P49.2-09-2 scores the warm spend-check <=50ms).
+ * The mechanism ships complete + inert. Kill-switch: SMA_SPEND_DISABLE. Native probe true
+ * → silent (bridge stood down). Fully fail-open — a spend/breaker bug never wedges a session.
+ */
+async function runSpend(ctx) {
+  const warns = []
+  try {
+    // opt-in default-off until the multiplexer meets its SLO (CONS-49.2-09-B).
+    if (!envOn(ctx.env.SMA_SPEND_OPTIN)) return { warns }
+    const { spend, breaker } = ctx.deps
+    if (!spend) return { warns }
+    const terminalId = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : 'unknown'
+
+    // Budget reflexes (70/90 WARN + Task-only soft-deny). Shares ctx.seen ('spend:' keys).
+    const res = spend.checkSpend(
+      { toolName: ctx.toolName, sessionId: ctx.sessionToken },
+      { spendDir: ctx.dirs.spendDir, repoRoot: ctx.repoRoot, env: ctx.env, seen: ctx.seen, now: ctx.now() },
+    )
+    for (const w of res.warnings) warns.push(w)
+
+    // Loop-breaker: soft-disable a repeatedly-firing SMA rule (writes a reviewable marker
+    // consumed by plan 10's disarm-path guard). Best-effort — never blocks the tool call.
+    try {
+      if (breaker) {
+        breaker.detectAndTrip({
+          breakerDir: ctx.dirs.breakerDir,
+          journalDir: ctx.dirs.journalDir,
+          by: terminalId,
+          terminalId,
+          now: ctx.now(),
+        })
+      }
+    } catch {
+      /* fail-open */
+    }
+
+    if (res.deny && res.deny.reason) return { warns, deny: { text: res.deny.reason } }
+  } catch {
+    /* fail-open (C9) — a spend/breaker bug can NEVER wedge a session or falsely deny */
+  }
+  return { warns }
+}
+
+/**
  * PRE_CHECKS — the ordered internal dispatch pipeline (D-49.2-04). THE registration
  * point plans 05 (airbag) and 09 (spend) extend: each appends one stream object
  * literal here. Order is emit order for warns. collision is WARN-only; gates + airbag
- * are the deny-capable streams (airbag is opt-in until the SLO is met).
+ * + spend are the deny-capable streams (airbag + spend are opt-in until the SLO is met).
  */
 export const PRE_CHECKS = [
   { id: 'collision', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: null, mayDeny: false, run: runCollision },
   { id: 'reflex', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_REFLEX_DISABLE', mayDeny: false, run: runReflex },
   { id: 'gates', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_GATES_DISABLE', mayDeny: true, run: runGates },
   { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
+  { id: 'spend', tools: ['Edit', 'Write', 'Bash', 'Task'], killSwitchEnv: 'SMA_SPEND_DISABLE', mayDeny: true, run: runSpend },
 ]
 
 // ─────────────────────────── shared context ─────────────────────────────────
@@ -290,7 +343,7 @@ async function realGitHeadSha(repoRoot) {
 
 /** Lazy-load the real lib modules the streams depend on (overridable in tests). */
 async function loadDefaultDeps() {
-  const [collision, reflex, gates, loader, slots, journal, registry, airbag] = await Promise.all([
+  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker] = await Promise.all([
     import('./collision.mjs'),
     import('./reflex.mjs'),
     import('./gates.mjs'),
@@ -299,8 +352,10 @@ async function loadDefaultDeps() {
     import('./journal.mjs'),
     import('./registry.mjs'),
     import('./airbag.mjs'),
+    import('./spend.mjs'),
+    import('./breaker.mjs'),
   ])
-  return { collision, reflex, gates, loader, slots, journal, registry, airbag }
+  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker }
 }
 
 /**
