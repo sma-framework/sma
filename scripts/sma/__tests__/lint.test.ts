@@ -465,6 +465,95 @@ describe('CONS lint family (49.2-08 task 2)', () => {
   })
 })
 
+// ── 49.2-03 Task 3: RECEIPT-PROSE lint (a machine «done» needs a receipt) ─────
+
+const HEX64 = 'a'.repeat(64)
+
+/** A SUMMARY.md carrying the given coverage + receipts raw YAML blocks.
+ * `subsystem: sma…` marks it as an SMA-regime summary (RECEIPT-PROSE is SMA-only). */
+function summaryWith({ coverage, receipts }: { coverage?: string; receipts?: string }): string {
+  let fm = '---\nphase: test\nplan: 03\nsubsystem: sma.test\n'
+  if (coverage) fm += `coverage:\n${coverage}`
+  if (receipts) fm += `receipts:\n${receipts}`
+  return fm + '---\n\n# summary body\n'
+}
+
+describe('RECEIPT-PROSE lint (49.2-03 task 3)', () => {
+  it('Case 1: a 49.2 SUMMARY with a machine coverage item and no receipts → CRITICAL', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-1-'))
+    try {
+      const coverage = '  - id: cov-1\n    description: a machine claim\n    human_judgment: false\n'
+      writeFileSync(join(tmp, '49.2-03-SUMMARY.md'), summaryWith({ coverage }))
+      const f = findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')
+      expect(f.length).toBeGreaterThanOrEqual(1)
+      expect(f.every((x) => x.tier === 'critical')).toBe(true)
+      expect(f.some((x) => x.message.includes('cov-1'))).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Case 2: the same coverage item WITH a matching allowlisted receipt → clean', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-2-'))
+    try {
+      const coverage = '  - id: cov-1\n    human_judgment: false\n'
+      const receipts =
+        '  - id: R1\n    assertion: the chain verifies\n' +
+        '    check_command: pnpm sma chain-verify --count breaks\n' +
+        `    expected_sha256: ${HEX64}\n    coverage_id: cov-1\n`
+      writeFileSync(join(tmp, '49.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
+      expect(findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Case 3: a 49.1 (pre-cutover) SUMMARY with an uncovered machine item → NO finding', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-3-'))
+    try {
+      const coverage = '  - id: cov-1\n    human_judgment: false\n'
+      writeFileSync(join(tmp, '49.1-09-SUMMARY.md'), summaryWith({ coverage }))
+      expect(findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Case 4: a receipt with a non-allowlisted check_command → CRITICAL', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-4-'))
+    try {
+      const coverage = '  - id: cov-1\n    human_judgment: false\n'
+      const receipts =
+        '  - id: R1\n    assertion: evades the boundary\n' +
+        '    check_command: git push --force origin main\n' +
+        `    expected_sha256: ${HEX64}\n    coverage_id: cov-1\n`
+      writeFileSync(join(tmp, '49.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
+      const f = findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')
+      expect(f.length).toBeGreaterThanOrEqual(1)
+      expect(f.every((x) => x.tier === 'critical')).toBe(true)
+      expect(f.some((x) => x.message.includes('non-allowlisted'))).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Case 5 (regime gate): a non-SMA (49.2+) summary with an uncovered machine item → NO finding', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-5-'))
+    try {
+      // A GSD medical-phase summary (numerically >= 49.2 but subsystem is not sma…):
+      // the receipts law is SMA-only; the shared dogfood phase-number namespace must
+      // never retro-fail unrelated medical phases (49.2-03 Rule-3 deviation).
+      const fm =
+        '---\nphase: 53\nplan: 05\nsubsystem: operator-tools, remi-bridge\n' +
+        'coverage:\n  - id: T1\n    human_judgment: false\n---\n\n# summary body\n'
+      writeFileSync(join(tmp, '53-05-SUMMARY.md'), fm)
+      expect(findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
 // ── 49.1-13 Task 1: FI-9/FI-11 size lints (budgets are law) ──────────────────
 
 import { CORE_BUDGET, NOTE_BUDGET, ALWAYS_LOAD_BUDGET, STATE_BUDGET } from '../lib/constants.mjs'

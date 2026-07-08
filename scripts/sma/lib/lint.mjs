@@ -29,10 +29,14 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
-import { parsePredictions, validatePrediction } from './predict.mjs'
+import { parsePredictions, validatePrediction, isSafeCommand } from './predict.mjs'
 // 49.2-08 (D-49.2-12): the CONS lint family delegates field validation to the
 // consequences lib — one boundary, never duplicated (same posture as PRED → predict.mjs).
 import { parseConsequences, validateConsequence } from './consequences.mjs'
+// 49.2-03 (D-49.2-06): RECEIPT-PROSE delegates ALL parsing/validation to the
+// receipts lib (parseReceipts + parseCoverage + validateReceipt) — lint renders
+// findings, it NEVER re-implements a parser (same lock as PRED → predict.mjs).
+import { parseReceipts, parseCoverage, validateReceipt } from './receipts.mjs'
 // The ONE contradiction implementation (49.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
@@ -44,6 +48,7 @@ import {
   ALWAYS_LOAD_BUDGET,
   STATE_BUDGET,
   BUDGET_WARN_FRACTION,
+  RECEIPTS_ENFORCED_FROM,
 } from './constants.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -166,11 +171,12 @@ function parseIndexLinks(indexText) {
 }
 
 /**
- * Recursively list *-PLAN.md files under plansDir (sorted, fail-soft). The PRED
- * check family (49.1-09) lints plan frontmatter, not memory notes — plans live
- * in a separate tree that is injected via opts.plansDir.
+ * Recursively list files with a given suffix under plansDir (sorted, fail-soft).
+ * The PRED/CONS families (49.1-09 / 49.2-08) lint `-PLAN.md` frontmatter; the
+ * RECEIPT-PROSE check (49.2-03) lints `-SUMMARY.md` frontmatter. One walk,
+ * parameterized by suffix — never a duplicated tree walk.
  */
-function listPlanFiles(plansDir) {
+function listPlanFiles(plansDir, suffix = '-PLAN.md') {
   const out = []
   const walk = (dir) => {
     let entries
@@ -182,11 +188,68 @@ function listPlanFiles(plansDir) {
     for (const e of entries) {
       const p = join(dir, e.name)
       if (e.isDirectory()) walk(p)
-      else if (e.isFile() && /-PLAN\.md$/.test(e.name)) out.push(p)
+      else if (e.isFile() && e.name.endsWith(suffix)) out.push(p)
     }
   }
   walk(plansDir)
   return out.sort()
+}
+
+/** Read-once {path, text} loader for a file list (fail-soft per file). */
+function readOnce(paths) {
+  return paths.map((p) => {
+    let text = ''
+    try {
+      text = readFileSync(p, 'utf8')
+    } catch {
+      /* fail-soft — an unreadable file yields no finding */
+    }
+    return { path: p, text }
+  })
+}
+
+/**
+ * comparePhase(a, b) -> -1|0|1. Splits on '.' and numeric-compares each segment
+ * so '49.10' > '49.2' (NEVER a float compare). Used to honor the receipts
+ * cutover (RECEIPTS_ENFORCED_FROM): pre-cutover summaries are never retro-failed.
+ */
+function comparePhase(a, b) {
+  const pa = String(a).split('.').map((n) => Number(n) || 0)
+  const pb = String(b).split('.').map((n) => Number(n) || 0)
+  const n = Math.max(pa.length, pb.length)
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+/** The leading dotted-numeric phase token of a SUMMARY filename ('49.2-03-…' -> '49.2'). */
+function summaryPhase(summaryPath) {
+  const m = /^(\d+(?:\.\d+)*)-/.exec(basename(summaryPath))
+  return m ? m[1] : null
+}
+
+/** The raw frontmatter region of a file ('' when there is no leading fence). */
+function frontmatterText(text) {
+  const t = String(text).replace(/\r\n/g, '\n')
+  if (!t.startsWith('---\n')) return ''
+  const close = t.indexOf('\n---\n', 3)
+  return close === -1 ? '' : t.slice(4, close + 1)
+}
+
+/**
+ * True when a SUMMARY belongs to the SMA trust-spine regime (subsystem: sma…).
+ * The receipts regime is SMA-only: this lint ships in the SMA product repo but
+ * ALSO runs on the dogfood platform, whose .planning/phases shares the phase-
+ * NUMBER namespace with unrelated GSD medical phases (50-55+). A numeric phase
+ * cutover alone would retro-fail those medical summaries (which legitimately use
+ * prose coverage); gating on `subsystem: sma…` scopes enforcement to the SMA
+ * lineage without a magic upper bound. (49.2-03 deviation, Rule 3.)
+ */
+function isSmaRegimeSummary(text) {
+  return /^subsystem:\s*sma\b/m.test(frontmatterText(text))
 }
 
 /**
@@ -305,17 +368,10 @@ function buildContext(opts) {
     claudeMdPath: opts.claudeMdPath,
     // PRED family (49.1-09): plan files are read ONCE here, like the corpus.
     // execGit is an injected read-only git runner (args, {cwd}) => stdout.
-    plans: opts.plansDir
-      ? listPlanFiles(opts.plansDir).map((p) => {
-          let text = ''
-          try {
-            text = readFileSync(p, 'utf8')
-          } catch {
-            /* fail-soft — an unreadable plan yields no PRED verdict */
-          }
-          return { path: p, text }
-        })
-      : [],
+    plans: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-PLAN.md')) : [],
+    // RECEIPT-PROSE (49.2-03): SUMMARY files are read ONCE here, same posture as
+    // plans — no check re-reads the disk.
+    summaries: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-SUMMARY.md')) : [],
     execGit: opts.execGit,
   }
 }
@@ -960,6 +1016,58 @@ const CONS_NOBLOCK = {
   },
 }
 
+// ── 49.2-03: RECEIPT-PROSE — a machine «done» must carry a re-runnable receipt ─
+
+const RECEIPT_PROSE = {
+  id: 'RECEIPT-PROSE',
+  title: 'A machine-verifiable «done» carries a structural receipt, not prose (D-49.2-06)',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    for (const s of ctx.summaries ?? []) {
+      const phase = summaryPhase(s.path)
+      if (phase == null) continue
+      // Regime gate: the receipts law is SMA-only. On the dogfood platform the
+      // phase-number namespace is shared with unrelated GSD medical phases —
+      // enforce only on SMA-lineage summaries (subsystem: sma…).
+      if (!isSmaRegimeSummary(s.text)) continue
+      // Cutover: the whole V2 history (< 49.2) is NEVER retro-failed. The retro
+      // look at V2 false-dones is plan 01's baseline harness, not this lint.
+      if (comparePhase(phase, RECEIPTS_ENFORCED_FROM) < 0) continue
+
+      const readFn = () => s.text
+      // Delegation only — no local parser (parseReceipts + parseCoverage + validateReceipt).
+      const { receipts } = parseReceipts(s.path, { readFn })
+      const { coverage } = parseCoverage(s.path, { readFn })
+
+      // A malformed receipt, or one whose check_command evades the SAFE_COMMAND
+      // boundary, is its OWN critical finding — the lint cannot claim to enforce
+      // a boundary receipts routinely evade (CONS-49.2-03-B).
+      for (const r of receipts) {
+        const v = validateReceipt(r)
+        if (!v.valid) {
+          const why = [...v.missing.map((m) => `missing ${m}`), ...v.errors].join('; ')
+          out.push(finding('RECEIPT-PROSE', 'critical', basename(s.path), `receipt "${r.id ?? '<no id>'}" in ${basename(s.path)} is malformed: ${why} — a receipt that cannot be validated cannot re-verify a claim`))
+        } else if (!isSafeCommand(r.check_command)) {
+          out.push(finding('RECEIPT-PROSE', 'critical', basename(s.path), `receipt "${r.id}" in ${basename(s.path)} has a non-allowlisted check_command — it can never be re-verified across the SAFE_COMMAND boundary`))
+        }
+      }
+
+      // Every machine-verifiable coverage item (human_judgment: false) MUST bind
+      // a valid, allowlisted receipt by coverage_id — else it is prose, not proof.
+      const usable = receipts.filter((r) => validateReceipt(r).valid && isSafeCommand(r.check_command))
+      for (const item of coverage) {
+        if (item.human_judgment) continue
+        const bound = usable.some((r) => r.coverage_id === item.id)
+        if (!bound) {
+          out.push(finding('RECEIPT-PROSE', 'critical', basename(s.path), `coverage item "${item.id}" in ${basename(s.path)} is machine-verifiable (human_judgment: false) but carries no allowlisted receipt — a done without a re-runnable command is prose, not proof`))
+        }
+      }
+    }
+    return out
+  },
+}
+
 // ── 49.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
@@ -1222,6 +1330,7 @@ export const LINT_CHECKS = [
   CONS_SCHEMA,
   CONS_POSTEDIT,
   CONS_NOBLOCK,
+  RECEIPT_PROSE,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────

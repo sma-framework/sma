@@ -40,3 +40,11 @@ export const NOTE_BUDGET = 8192 //          8 KB — each individual memory note
 export const ALWAYS_LOAD_BUDGET = 12288 // 12 KB — MEMORY.md whole (CORE + discovery block)
 export const STATE_BUDGET = 40960 //       40 KB — STATE.md snapshot (the house rule, FI-9)
 export const BUDGET_WARN_FRACTION = 0.8 //  WARN threshold as a fraction of each budget
+
+// ── 49.2-03 (D-49.2-06): structural-receipts cutover ─────────────────────────
+// The phase from which RECEIPT-PROSE enforces a machine receipt on every
+// machine-verifiable coverage item. Pre-cutover summaries (the whole V2 history,
+// ~27 files) are NOT retro-failed — the retro look at V2 false-dones is plan 01's
+// baseline harness, not the lint. Phase compare splits on '.' and numeric-compares
+// each segment ('49.10' > '49.2'), NEVER a float compare.
+export const RECEIPTS_ENFORCED_FROM = '49.2'

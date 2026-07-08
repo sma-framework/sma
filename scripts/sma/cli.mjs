@@ -2130,6 +2130,231 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   return exitCode
 }
 
+// ── 49.2-03 (D-49.2-06/07): receipts reverify + journal chain CLI ─────────────
+
+/** Recursively list *-SUMMARY.md under a dir (sorted, fail-soft). */
+function walkSummaries(dir) {
+  const out = []
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) out.push(...walkSummaries(p))
+    else if (e.isFile() && e.name.endsWith('-SUMMARY.md')) out.push(p)
+  }
+  return out.sort()
+}
+
+/**
+ * reverify [--summary <path>] [--all] [--fresh-clone] [--count <verdict>] [--json]
+ *
+ * Re-runs every SUMMARY receipt across the SAFE_COMMAND boundary and diffs
+ * observed-vs-expected hashes. --all (default) walks .planning/phases and keeps
+ * summaries that carry a receipts block. --fresh-clone clones the repo (only
+ * COMMITTED evidence counts) and runs every command with cwd=clone. Every record
+ * is appended to the calibration ledger under domain 'sma.receipts', mapping the
+ * receipt verdict into the V2 ledger vocabulary (verified->hit, divergent->miss;
+ * skipped-unsafe/error pass through) while preserving receipt_verdict verbatim.
+ *
+ * --count <verdict>: print ONLY the integer count of that receipt verdict as the
+ * last line and ALWAYS exit 0 (the scorer measurement surface). Without --count,
+ * exit 1 when any divergent/error, else 0. NOT hook-facing.
+ */
+async function cmdReverify({ flags, dirs }) {
+  const receipts = await import('./lib/receipts.mjs')
+  const calibration = await import('./lib/calibration.mjs')
+  const { execSync, execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { relative, isAbsolute } = await import('node:path')
+
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  // Which summaries to reverify.
+  const summaryPaths = []
+  if (typeof flags.summary === 'string') {
+    summaryPaths.push(flags.summary)
+  } else {
+    const phasesDir = join(repoRoot, '.planning', 'phases')
+    for (const p of walkSummaries(phasesDir)) {
+      if (receipts.parseReceipts(p).receipts.length) summaryPaths.push(p)
+    }
+  }
+
+  // Fresh clone: committed evidence only.
+  let cwd = repoRoot
+  let cloneParent = null
+  let cloneRoot = null
+  const wantClone = flags['fresh-clone'] === true
+  if (wantClone) {
+    cloneParent = mkdtempSync(join(tmpdir(), 'sma-reverify-'))
+    cloneRoot = join(cloneParent, 'clone')
+    const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+    receipts.freshClone({ repoRoot, execGit, targetDir: cloneRoot })
+    cwd = cloneRoot
+  }
+
+  // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract).
+  const runCommand = (cmd, o = {}) => {
+    try {
+      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd })
+      return { stdout, exitCode: 0 }
+    } catch (err) {
+      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
+    }
+  }
+
+  const remap = (p) => {
+    if (!wantClone) return p
+    const abs = isAbsolute(p) ? p : join(repoRoot, p)
+    return join(cloneRoot, relative(repoRoot, abs))
+  }
+
+  const allRecords = []
+  try {
+    for (const sp of summaryPaths) {
+      const { records } = receipts.verifyReceipts({ summaryPath: remap(sp), runCommand, cwd })
+      for (const r of records) {
+        const mapped = r.verdict === 'verified' ? 'hit' : r.verdict === 'divergent' ? 'miss' : r.verdict
+        calibration.appendVerdict(
+          { ...r, verdict: mapped, receipt_verdict: r.verdict, domain: 'sma.receipts', summary: sp },
+          { calibrationDir: dirs.calibrationDir },
+        )
+        allRecords.push({ ...r, summary: sp })
+      }
+    }
+  } finally {
+    if (cloneParent) rmSync(cloneParent, { recursive: true, force: true, maxRetries: 3 })
+  }
+
+  // --count <verdict>: numeric last line, ALWAYS exit 0.
+  if (typeof flags.count === 'string') {
+    const n = allRecords.filter((r) => r.verdict === flags.count).length
+    if (wantsJson(flags)) printJson({ verdict: flags.count, count: n })
+    process.stdout.write(`${n}\n`)
+    return 0
+  }
+
+  const bad = allRecords.some((r) => r.verdict === 'divergent' || r.verdict === 'error')
+
+  if (wantsJson(flags)) {
+    printJson({ records: allRecords, appended: allRecords.length })
+    return bad ? 1 : 0
+  }
+
+  if (!allRecords.length) {
+    process.stdout.write('SMA reverify: рецептов в дереве нет — проверять нечего (честный пустой случай).\n')
+    return 0
+  }
+  process.stdout.write('SMA reverify — структурные рецепты (observed vs expected):\n')
+  const diverged = []
+  for (const r of allRecords) {
+    process.stdout.write(`  [${r.verdict}] ${r.id}${r.coverage_id ? ` (${r.coverage_id})` : ''}: ${r.assertion ?? ''}\n`)
+    if (r.verdict === 'divergent') diverged.push(r)
+  }
+  if (diverged.length) {
+    process.stdout.write('\nРасхождения (ожидалось / получено):\n')
+    for (const r of diverged) {
+      process.stdout.write(`  ${r.id}: expected ${String(r.expected_sha256).slice(0, 12)}… / observed ${String(r.observed_sha256).slice(0, 12)}…\n`)
+    }
+  }
+  return bad ? 1 : 0
+}
+
+/**
+ * receipt-hash <command> [--hash-stdout] [--cwd <path>] — the EMIT path. Gates on
+ * isSafeCommand (refuses anything else with exit 1 + a usage hint), runs the
+ * command, and prints the observation sha256 as the LAST line. Executors paste
+ * that hash into a SUMMARY receipts block; recordReceipt is the programmatic twin.
+ */
+async function cmdReceiptHash({ positionals, flags, dirs }) {
+  const command = positionals[0]
+  if (!command) {
+    process.stderr.write('usage: pnpm sma receipt-hash "<command>" [--hash-stdout] [--cwd <path>]\n')
+    return 1
+  }
+  const predict = await import('./lib/predict.mjs')
+  if (!predict.isSafeCommand(command)) {
+    process.stderr.write(
+      `SMA receipt-hash: «${command}» не на SAFE_COMMAND allowlist (node scripts/sma/… | pnpm vitest run … | pnpm sma …) — ничего не выполнено.\n`,
+    )
+    return 1
+  }
+  const receipts = await import('./lib/receipts.mjs')
+  const { execSync } = await import('node:child_process')
+  const cwd = typeof flags.cwd === 'string' ? flags.cwd : dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const hashStdout = flags['hash-stdout'] === true
+  const runCommand = (cmd, o = {}) => {
+    try {
+      return { stdout: execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd }), exitCode: 0 }
+    } catch (err) {
+      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
+    }
+  }
+  const rec = receipts.recordReceipt({
+    entry: { id: 'adhoc', assertion: '', check_command: command, hash_stdout: hashStdout },
+    runCommand,
+    cwd,
+  })
+  if (rec.error) {
+    process.stderr.write(`SMA receipt-hash: ${rec.error}\n`)
+    return 1
+  }
+  if (wantsJson(flags)) {
+    printJson({ command, expected_sha256: rec.receipt.expected_sha256, expected_exit: rec.receipt.expected_exit, hash_stdout: hashStdout })
+    return 0
+  }
+  process.stdout.write(`exit:${rec.receipt.expected_exit}${hashStdout ? ' (+stdout hashed)' : ''}\n`)
+  process.stdout.write(`${rec.receipt.expected_sha256}\n`) // sha256 as the LAST line
+  return 0
+}
+
+/** chain-tip [--json] — the deterministic merged journal chain tip (last line). */
+async function cmdChainTip({ flags, dirs }) {
+  const journal = await import('./lib/journal.mjs')
+  const res = journal.chainTip({ journalDir: dirs.journalDir })
+  if (wantsJson(flags)) {
+    printJson(res)
+    return 0
+  }
+  process.stdout.write(`${res.tip}\n`)
+  return 0
+}
+
+/**
+ * chain-verify [--count breaks] [--json] — the tamper detector over the live
+ * journal. --count breaks prints the integer last line and ALWAYS exits 0;
+ * without --count exit 1 on any break. NOT hook-facing.
+ */
+async function cmdChainVerify({ flags, dirs }) {
+  const journal = await import('./lib/journal.mjs')
+  const res = journal.verifyChain({ journalDir: dirs.journalDir })
+
+  if (flags.count) {
+    if (wantsJson(flags)) printJson({ breaks: res.breaks.length })
+    process.stdout.write(`${res.breaks.length}\n`)
+    return 0
+  }
+  if (wantsJson(flags)) {
+    printJson(res)
+    return res.ok ? 0 : 1
+  }
+  if (res.ok) {
+    process.stdout.write(`SMA chain-verify: цепочка журнала цела — 0 разрывов (legacy-префикс: ${res.legacyLines}).\n`)
+    return 0
+  }
+  process.stdout.write(`SMA chain-verify: НАЙДЕНЫ разрывы (${res.breaks.length}) — правка/удаление/вставка после начала цепочки:\n`)
+  for (const b of res.breaks) {
+    process.stdout.write(`  ${b.file} seq=${b.seq ?? '—'} index=${b.index}: ${b.reason}\n`)
+  }
+  process.stdout.write('Разрыв — это улика; НЕ «чинить» перезаписью строки. Единственный путь вперёд — новый chain-start поверх, с сохранённым разрывом.\n')
+  return 1
+}
+
 /**
  * calibration [--domain <d>] [--json] — the B20 answer surface: per-domain
  * hit-rate table + the low-calibration escalation list (hitRate < 0.6 при
@@ -3048,6 +3273,10 @@ const HANDLERS = {
   metrics: cmdMetrics,
   report: cmdReport,
   bench: cmdBench,
+  reverify: cmdReverify, // 49.2-03 (D-49.2-06) — re-verify structural receipts
+  'receipt-hash': cmdReceiptHash, // 49.2-03 — the receipt emit path
+  'chain-tip': cmdChainTip, // 49.2-03 (D-49.2-07) — merged journal chain tip (release-tag pin)
+  'chain-verify': cmdChainVerify, // 49.2-03 — tamper detector over the journal chain
 }
 
 async function main() {
@@ -3057,7 +3286,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench>\n',
+      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify>\n',
     )
     return 0
   }
