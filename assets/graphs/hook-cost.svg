@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 250" width="760" height="250" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-label="Hook overhead per tool call: V2 base 1268.6 ms with 3 to 4 spawns versus V3 p95 152 to 157 ms with one spawn">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2E6FD9"/><stop offset=".35" stop-color="#1B7E9C"/>
+      <stop offset=".7" stop-color="#1FA0A6"/><stop offset="1" stop-color="#74DBA0"/>
+    </linearGradient>
+    <style>
+      .ttl{font-size:15px;fill:#E6EDF5;font-weight:700}
+      .sub{font-size:12px;fill:#8b98a9}
+      .lbl{font-size:13px;fill:#c3cede}
+      .val{font-size:14px;fill:#E6EDF5;font-weight:700;font-family:ui-monospace,Consolas,monospace}
+      .cap{font-size:11.5px;fill:#8b98a9}
+    </style>
+  </defs>
+  <rect x="1" y="1" width="758" height="248" rx="13" fill="#0F131C" stroke="#232c3b"/>
+  <rect x="1" y="1" width="758" height="2" rx="1" fill="url(#g)" opacity=".55"/>
+  <text x="28" y="38" class="ttl">Hook overhead per tool call &#8212; one spawn, not four</text>
+  <text x="28" y="58" class="sub">measured, dogfood on the platform (SMA user #1), 2026-07-08 &#183; SLO p95 &#8804; 300 ms</text>
+
+  <!-- V2 base bar -->
+  <text x="28" y="104" class="lbl">V2 base</text>
+  <rect x="120" y="90" width="600" height="26" rx="5" fill="#141a25"/>
+  <rect x="120" y="90" width="600" height="26" rx="5" fill="#E7C07A" opacity=".85"/>
+  <text x="130" y="108" class="val" fill="#0B0F17">1268.6 ms</text>
+  <text x="632" y="108" class="cap" fill="#0B0F17" text-anchor="end">3&#8211;4 node spawns</text>
+
+  <!-- V3 bar (155/1268.6 * 600 = 73px) -->
+  <text x="28" y="164" class="lbl">V3 · sma pre</text>
+  <rect x="120" y="150" width="600" height="26" rx="5" fill="#141a25"/>
+  <rect x="120" y="150" width="73" height="26" rx="5" fill="url(#g)"/>
+  <text x="205" y="168" class="val">152&#8211;157 ms</text>
+  <text x="200" y="168" class="cap" opacity="0"> </text>
+
+  <!-- delta -->
+  <text x="120" y="210" class="cap">p50 measured alongside; spawn-count 1 &#183; merged-vs-single-stream parity: 0 mismatches</text>
+  <text x="732" y="210" class="val" fill="#74DBA0" text-anchor="end">&#8776; 8&#215; lighter</text>
+  <rect x="28" y="228" width="704" height="2.5" rx="1.25" fill="url(#g)" opacity=".22"/>
+</svg>
