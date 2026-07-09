@@ -29,11 +29,24 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 
 ## CLI subcommands
 
-`pnpm sma <status|heartbeat|session-start|pre|pre-bench|claim|release|next-slot|force-clear|lint|build-index|load|snapshot>`
+`pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|`
+`gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|`
+`gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|`
+`build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|`
+`state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|`
+`pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
+`grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss>`
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
-contract). Hook-facing subcommands (`session-start`, `pre`, `heartbeat`)
+contract). Hook-facing subcommands (`session-start`, `pre`, `heartbeat`, `pretask-pack`,
+`subagent-verify`, `precompact-capsule`, `airbag-check`, `spend-check`, `stall-check`)
 ALWAYS exit 0 (fail-open, see below); direct-CLI subcommands return meaningful codes.
+
+The V1/V2 coordination + memory core is documented in the tables below; the **V3
+trust-spine** verbs (`grill`, `blind-verify`, `preship`/`disposition`, `evidence`,
+`subagent-verify`/`subagent-receipts`/`pretask-pack`, `bench`, `spend`/`breaker`,
+`integrity`/`skeptic`/`canary`/`nearmiss`, `resume`/`handoff`/`flight`) get their own
+section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
@@ -86,6 +99,107 @@ predictions; `--fresh-clone` runs on a `git clone --no-hardlinks` so only
 COMMITTED evidence counts. The RECEIPT-PROSE lint fails any 49.2+ SUMMARY whose
 machine-verifiable coverage item (`human_judgment: false`) carries no receipt —
 a prose-only «done» cannot pass lint.
+
+---
+
+## V3 trust-spine subcommands
+
+The accountability layer (Phase 49.2). Every verb here is a deterministic script on
+the same files+git substrate — no LLM in the hot path. The narrative overview, with
+diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-by-process).
+
+### Verification + consequences
+
+| Subcommand | Purpose | Key flags / usage |
+|---|---|---|
+| `blind-verify` | Re-derive every «done» from the `-PLAN.md` + code tree ALONE; a SUMMARY/exec-journal on input is structurally refused (`BLIND_FORBIDDEN`). A claimed-pass / reproduced-fail divergence is the heaviest ledger event and blocks ship (D-49.2-11). | `<plan-path>` \| `--stats --metric divergence-count` \| `--json` |
+| `grill` | The adversarial pre-build gate. Register a challenge, resolve it (→ registered prediction, withdrawn, or founder-accepted), gate the build, or run the budget-aware pre-push grill over `origin..main`. | `<plan-path> --challenge "promise::attack"` \| `--resolve <CH-id> --as <converted\|withdrawn\|accepted-risk> [--prediction <P-id>]` \| `--gate` \| `--land <CH-id>` \| `--pre-push [--budget N] [--name-only]` \| `--stats` |
+| `preship` | The consequences gate the `sma ship` ritual calls: lists open class-A events (a class-A miss or a divergence) that BLOCK the ship. Read-only; never unblocks. | `[--count]` (numeric last line, scorer contract) \| `--selftest` \| `--json` |
+| `disposition` | The ONLY way to clear a `preship` block — the founder records an explicit verdict into the append-only ledger. The agent can never call this on its own behalf. | `<eventKey> --verdict <accept\|fix-forward\|rollback> --reason "<why>" --yes` |
+| `evidence` | Burden-of-proof record required before a risky op (extends the D-49-09 force-clear provenance pattern). | `<force-push\|allowlist-edit\|foreign-claim-clear> --target <…> --reason "<why>" --checked "a; b"` \| `--stats` |
+
+```bash
+# a plan promise → a registered prediction, else the build does not start
+pnpm sma grill .planning/phases/12-x/12-01-PLAN.md --challenge "rejects 101st::burst at t=0 slips through"
+pnpm sma grill .planning/phases/12-x/12-01-PLAN.md --resolve CH-1 --as converted --prediction PRED-03
+pnpm sma grill .planning/phases/12-x/12-01-PLAN.md --gate            # blocks while any challenge is open
+
+# blind pass — re-derives «done» from the tree; refuses the executor's own report
+pnpm sma blind-verify .planning/phases/12-x/12-01-PLAN.md
+
+# the ship gate + the founder's disposition
+pnpm sma preship
+pnpm sma disposition blind-divergence:sma.receipts:R-01 --verdict fix-forward --reason "regression fixed in <sha>" --yes
+```
+
+### Subagent honesty (D-49.2-10)
+
+| Subcommand | Purpose | Key flags |
+|---|---|---|
+| `pretask-pack` | **`PreToolUse(Task)` hook** — injects the assembled context pack (rules digest, task-scoped lessons, active claims, the parent task slice) into a subagent: inheritance by construction. Fail-open, exits 0. | — (hook-facing) |
+| `subagent-verify` | **`SubagentStop` hook** — verifies EVERY claimed file write against the real tree; a receipt lands in the shared journal, a phantom write (claimed, not on disk) is flagged deterministically. | `[--since <ts>]` \| `--json` |
+| `subagent-receipts` | Report: receipt coverage, phantom-write count, PreTask pack p95. | `[--stat <name>]` \| `--json` |
+
+**Wire the two new subagent hook events** in `.claude/settings.json`:
+
+```json
+"PreToolUse": [
+  { "matcher": "Task",
+    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pretask-pack", "timeout": 5 } ] }
+],
+"SubagentStop": [
+  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs subagent-verify", "timeout": 5 } ] }
+]
+```
+
+### Measurement — `bench` (D-49.2-01)
+
+The 8-metric scorecard harness that shipped BEFORE the spine (no measured base, no
+target). Each metric emits exactly one numeric last line (the scorer contract).
+
+| Usage | Purpose |
+|---|---|
+| `bench --metric <false-done-rate\|airbag-coverage\|compaction-exam\|phantom-writes\|time-to-context-ratio\|cross-machine-drill\|self-cost\|canary-catch>` | score one scorecard metric (S1…S8) |
+| `bench --freeze` / `bench --capture` | freeze / capture the V2 baseline (honored `SMA_BENCH_FORCE` for the 2026-07-08 force-freeze) |
+| `bench exam --new` \| `bench exam --grade <answers> --key <key>` | the 10-question post-compaction exam (S3) |
+| `bench ab …` \| `--timing` \| `--json` | A/B + timing helpers |
+
+```bash
+pnpm sma bench --metric self-cost      # S7 — measured ms-per-tool-call
+pnpm sma bench --metric canary-catch   # S8 — planted-canary catch rate
+```
+
+### Integrity guards (D-49.2-14)
+
+| Subcommand | Purpose | Usage |
+|---|---|---|
+| `skeptic` | Goodhart guard — a non-implementer countersigns a plan's predictions; `verify` checks the signature. | `skeptic <sign\|verify> <plan-path>` |
+| `canary` | Plant/score/sweep deliberate false-«done» canaries the blind verifier must catch (S8; below 90% catch, «zero divergence» means a lazy verifier). | `canary plant <claims-path>` \| `canary score [--count-scored]` \| `canary sweep <claims-path>` |
+| `integrity` | STPA disarm-path guard — every kill-switch must cite a compensating control; the birth-fixture shadow-runs while off and auto-re-arms. | `integrity <hazards\|shadow\|disarms\|disarm-renew>` \| `disarm-renew <gateId> --reason "<why>"` \| `--json` \| `--count-uncompensated` \| `--count-silent` |
+| `nearmiss` | Scoring-immune near-miss channel (ASRS-style) — report what nearly went wrong without it counting against calibration. | `nearmiss "<what nearly went wrong>"` |
+
+### Bridges — opt-in, never headlined (D-49.2-05)
+
+Each bridge sits behind a capability probe and registers a falsifiable self-removal
+prediction; it stands down the day a sufficient native equivalent ships. See the
+**Pre-compaction flight recorder** section below for the capsule bridge
+(`precompact-capsule` / `resume` / `handoff` / `flight`) and the **CLI subcommands**
+table above for the git airbag (`undo` / `airbag`).
+
+| Subcommand | Bridge | Key flags |
+|---|---|---|
+| `spend` | Deterministic spend ledger — per session/subagent/model book parsed from local logs via a versioned adapter; budget reflexes warn at 70/90%; soft-deny NEW subagents over cap; OTel/ccusage-compatible fields. | `[--by model\|session\|day\|agent]` \| `--window <hours>` \| `set-cap <usd> [--window-hours N]` \| `--stat <name>` \| `--json` |
+| `spend-check` | Pre-less fallback for the spend stream (budget reflexes + loop-breaker); the canonical wiring is the `pre` multiplexer. | — (hook-facing) |
+| `breaker` | Loop-breaker admin — a rule that fires runaway per the journal is disarmed until review. | `breaker <list\|re-arm <ruleId>>` |
+| `resume` | Continuation brief assembled from the flight recorder alone (works after a terminal death, not only after compaction). | `--json` |
+| `handoff` | Teammate brief + claim-transfer steps (`.sma/flight/handoff-<terminalId>.md`). | — |
+| `flight` | Flight instruments. | `flight <probe\|determinism-check\|tail [n]>` \| `--json` |
+
+```bash
+pnpm sma spend --by session            # window totals grouped by session
+pnpm sma spend set-cap 25 --window-hours 5   # a founder cap (a soft-deny needs one)
+pnpm sma spend --stat bench-check-p95-ms     # the S7 self-cost scorer line
+```
 
 ### Memory (pillar 1)
 
