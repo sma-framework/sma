@@ -33,6 +33,7 @@ const NORMALIZED_KEY_ORDER = [
   'superseded_by',
   'superseded_at',
   'predicted_from', // 49.1-09 (B19): back-link from a drafted bug-lesson to <planId>-<predId>
+  'excavated_from', // 49.3-03 (D-49.3-09): provenance back-link from an excavated bug-lesson to <repoLabel>@<sha7>
   'valid_from', // 49.1-12 (B5): bi-temporal — when a decision/status claim became true
   'valid_until', // 49.1-12 (B5): bi-temporal — when it stopped being true (supersession fix path)
 ]

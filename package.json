@@ -1,6 +1,6 @@
 {
   "name": "sma-framework",
-  "version": "2.0.0-alpha.0",
+  "version": "3.5.0",
   "private": true,
   "description": "SMA — layered memory + multi-terminal coordination framework for AI coding agents. Private until the 49.1-27 founder flip.",
   "license": "MIT",

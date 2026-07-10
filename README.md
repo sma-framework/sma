@@ -4,26 +4,83 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3CC0A0" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/V3-The%20Trust%20Spine-8B5CF6" alt="V3 — the trust spine">
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
-  <img src="https://img.shields.io/badge/daemons-none-1FA0A6" alt="no daemons">
-  <img src="https://img.shields.io/badge/databases-none-1FA0A6" alt="no databases">
+  <img src="https://img.shields.io/badge/LLM%20in%20the%20hot%20path-zero-1FA0A6" alt="zero LLM in the hot path">
+  <img src="https://img.shields.io/badge/daemons%20%C2%B7%20databases-none-1FA0A6" alt="no daemons, no databases">
   <img src="https://img.shields.io/badge/your%20source%20code-untouched-74DBA0" alt="your source code untouched">
 </p>
 
 # SMA — Shared Memory & Automation
 
-**Layered memory + multi-terminal coordination for AI coding agents — with a learning loop that is measured, not hoped for.**
+**The accountability layer for AI coding agents: layered memory that arrives on time, multi-terminal coordination without a server, and — new in V3 — verified claims that *control* behavior.**
 
 [Русская версия → README.ru.md](README.ru.md)
 
-> **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a learning loop whose every claim is settled by a script instead of the model's own word. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
+> **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and — as of V3 — a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
+
+---
+
+## What's new in V3.5 — Adoption & Trust Telemetry
+
+V3 built the trust spine. **V3.5 gets that spine into a stranger's repo on day one, and makes its honesty legible from the outside.** Fifteen surfaces, all the same bet — deterministic scripts on files + git, no LLM in the hot path:
+
+- **Deep `/sma-start` onboarding** — staged, in-conversation teaching of the accountable loop, plus a full infrastructure & working-style profile that every later command reads.
+- **Calibration passport + honest README badge** — `SMA-calibrated: N% hits, n=…`, rebuilt each release, reproducible on a fresh clone; the badge hides itself after a model change until enough new data exists.
+- **`sma excavate`** — mines a stranger's git history read-only and shows which reflexes would have fired before which push: concrete value in the first five minutes.
+- **`sma emit`** — compiles the corpus into `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `GEMINI.md` via managed blocks; re-emits are byte-identical, your text outside the block is never touched.
+- **Fragment catalog + `sma context`** — a deterministic one-line card per repo file and a budgeted, byte-deterministic task context pack (catalog before grep).
+- **Self-tuning enforcement ladder** — rules rise *and fall* only on journal evidence, always as a reviewable diff, so the rule set sharpens instead of only growing.
+- **Statusline segment + attention pulse** — live coordination state in the native status line (it composes with a pre-existing user statusline); the optional webhook is outbound-only.
+- **PR evidence manifest + CI** — the reviewer starts from predictions, receipts, and blind-verify verdicts, not diff archaeology.
+- **`sma explain` (18 topics) + `sma doc-audit` + manual v3.5** — the product teaches itself in plain language, and a script proves the docs stay complete, fresh, and honest.
+- **Already-built preflight** — a millisecond, zero-token check of a plan's claims against the real tree before any executor spawns, so nothing is rebuilt for pay.
+- **Benchmark arena harness** — deterministic 4-arm scoring over a fixed ticket set, with raw data and negative results published.
+- **`/sma-batch` lane** — the middle lane between an inline fix and a full phase: 2–4 backlog items, one executor, receipts and re-verification still mandatory.
+- **Live fingerprint + claim-trust** — a scope claim is honored only while its holder is verifiably live, so stale leases never haunt teammates.
+- **Per-terminal worktrees** — each parallel session gets its own working directory and branch; terminals physically cannot overwrite each other.
+- **Serialized merge gate** — `sma merge` integrates a worktree branch into main *locally*, under a merge slot, tests the merged result, and journals a receipt; push stays founder-ordered via `/sma-ship`.
+
+## What's new in V3 — The Trust Spine
+
+V1 taught the system to **remember**. V2 taught it to **predict, fire reflexes, and coordinate**. **V3 makes it stop trusting its own word.**
+
+> **The vendor cannot impartially grade its own agent's homework.** That is the one layer that survives platform absorption — the accountability that a model vendor structurally cannot ship neutrally. SMA is that layer, built from outside the model: **files + git only, deterministic, zero LLM in the hot path, fail-open with a kill-switch on every stream.**
+
+Everything below is a plain script on the V2 files+git substrate — no daemon, no database, no embeddings, no cloud. Here is the whole accountable loop, end to end:
+
+```mermaid
+flowchart LR
+    P["1 · Plan<br>/sma-plan-phase"] --> G["2 · Grill<br>/sma-grill"]
+    G -->|"challenge → registered<br>prediction, or no build"| B["3 · Build<br>/sma-execute-phase"]
+    B --> R["4 · Receipts<br>every done = a re-runnable check"]
+    R --> BV["5 · Blind verify<br>re-derive done from the tree alone"]
+    BV -->|"claimed-pass /<br>reproduced-fail = divergence"| C["6 · Consequences<br>a class-A miss auto-blocks ship"]
+    C --> S["7 · Ship<br>only after a founder disposition"]
+    C -.->|"a miss becomes a lesson"| M(["Calibration ledger<br>+ reflexes"])
+    M -.->|"fires before the next act"| B
+```
+
+| The V3 spine | What it gives you | Command |
+|---|---|---|
+| **Structural receipts** | every "done" carries machine-checkable claims `{assertion, check_command, expected hash}`, re-run on a fresh clone; prose-only "done" fails lint | `sma reverify` |
+| **Tamper-evident journal** | every journal line is hash-chained; the chain tip is pinned in the release tag, so editing history is detectable by anyone holding the tag | `sma chain-verify` |
+| **Blind verifier** | re-derives every "done" from the code tree alone; structurally refuses the executor's self-report as input | `sma blind-verify` |
+| **Consequences-as-LAW** | a trust-class miss or divergence auto-blocks shipping until the human owner records an explicit disposition — the agent cannot forgive itself | `sma preship` / `sma disposition` |
+| **`/sma-grill`** | every plan promise is cross-examined before the build; an unresolved challenge must become a registered prediction or the build does not start | `sma grill` |
+| **`sma pre` multiplexer** | ONE node spawn per tool call for all hook streams, replacing 3–4: measured p95 **152–157 ms** vs a **1268.6 ms** V2 base | `sma pre-bench` |
+| **Subagent write-receipts** | every claimed file write is verified against the real tree on SubagentStop; phantom writes flagged deterministically | `sma subagent-verify` |
+| **Integrity guards** | skeptic countersign, seeded 5% receipt audit, planted canary false-dones, STPA disarm-path guard — so the published numbers stay honest | `sma skeptic` / `sma canary` / `sma integrity` |
+| **`sma bench`** | the 8-metric scorecard, captured and frozen *before* the spine was built ("no measured base, no target") | `sma bench` |
+
+Each of these is explained, with its own diagram and — where you drive it — an animated demo, in **[The Trust Spine, process by process](#the-trust-spine-process-by-process)** below. This release ate its own cooking: **532/532 tests green, 49 files; hostile goal-backward verification 56/56 after a same-day fix round; the consequences law fired for real during that verification.** Journal chain tip at release: `b745d7d4…67db0161`, 0 breaks.
 
 ## Why SMA exists
 
 If you run Claude Code (or any coding agent) on a real project every day, you already know these four failures:
 
 1. **Rules get read, then dropped.** Your carefully written instructions file is acknowledged at session start and violated an hour later — the model's working attention is tiny, and a rule that isn't present *at the moment of the action* might as well not exist.
-2. **"Done" that isn't.** The agent reports tests green and files written; the tree says otherwise. Confident prose is not evidence.
+2. **"Done" that isn't.** The agent reports tests green and files written; the tree says otherwise. Confident prose is not evidence. **(This is the failure the V3 trust spine exists to kill — see below.)**
 3. **Lessons get re-learned, expensively.** The same mistake — the same footgun in your build, the same API quirk — burns you again next month, because nothing turned the first burn into a permanent avoidance.
 4. **Parallel sessions collide.** Two terminals on one checkout silently overwrite each other; session B "fixes" what session A finished an hour ago.
 
@@ -45,19 +102,22 @@ your-project/
 │  ├─ memory/      ← the memory corpus (markdown notes you can read & diff)
 │  ├─ agents/      ← the /sma-* workflow agents
 │  └─ settings.json← the hooks that wire SMA into your agent
-├─ .sma/           ← coordination state: sessions, claims, journal, reflexes
-└─ .planning/      ← phase plans, predictions, and the calibration ledger
+├─ .sma/           ← coordination + accountability state:
+│                    sessions · claims · hash-chained journal · reflexes ·
+│                    airbag snapshots · flight capsules · spend ledger
+└─ .planning/      ← phase plans, predictions, receipts, and the calibration ledger
 ```
 
 Because it is all files in git, adopting SMA is reversible in one commit, and everything it "learns" arrives as a diff you approve — not a black-box mutation of a cloud cache. Delete the folders and your project is exactly as it was.
 
 ## What SMA is
 
-Three subsystems on one substrate:
+Three subsystems on one substrate, now bound by a fourth — the accountability layer that makes their claims answerable:
 
 - **Memory that arrives on time.** Project knowledge lives as small, tagged notes. The always-loaded core stays tiny (a few KB); topic notes load only when the task touches that topic; and *reflexes* deliver the exact relevant lesson right before the tool call that needs it — because a rule named at the moment of the act is worth ten rules buried in a big instructions file.
 - **Coordination without a server.** Every open terminal registers itself, claims the files it is working on, and draws shared counters (migration numbers, release numbers) from one queue. Parallel sessions warn each other *before* the collision, and the journal records who did what.
-- **A learning loop with a score.** Plans state up front what will measurably change and how to check it (`predictions`). A deterministic scorer — a script, not a judge model — settles each prediction against reality. Misses become lessons; repeated lessons become reflexes; the calibration ledger tracks, per area, how often promises match facts. SMA's memory does not claim to work — it has a measured hit rate.
+- **A learning loop with a score.** Plans state up front what will measurably change and how to check it (`predictions`). A deterministic scorer — a script, not a judge model — settles each prediction against reality. Misses become lessons; repeated lessons become reflexes; the calibration ledger tracks, per area, how often promises match facts.
+- **An accountability spine (V3).** Every "done" carries a re-runnable receipt; a blind verifier re-derives it from the code tree alone; a false "done" blocks the next ship until a human dispositions it. SMA's memory does not claim to work — it publishes a measured hit rate, and its own release is gated by that measurement.
 
 ## The story in 10 slides
 
@@ -87,9 +147,10 @@ The whole point of SMA is the second column. Same agent, same model — a differ
 | | **Without SMA** | **With SMA** |
 |---|---|---|
 | **1 · A rule is dropped** | Your instructions say "every schema change needs a migration." Twenty edits later the agent adds a column and forgets. It ships; queries break on deploy. | The moment the agent touches the schema file, a reflex fires **into that tool call**: *"schema change → migration required (last time this broke prod)."* It cannot be skimmed past. |
-| **2 · "Done" that isn't** | *"All tests pass, feature complete."* You pull, run them, three are red. The confident summary was the only evidence, and it was wrong. | The plan pre-registered a check (`pnpm vitest run …`). At close, a **script** runs it and writes `hit` or `miss` to the ledger. "Done" is a re-runnable command, not a sentence. |
+| **2 · "Done" that isn't** | *"All tests pass, feature complete."* You pull, run them, three are red. The confident summary was the only evidence, and it was wrong. | The plan pre-registered a check. At close, a **script** re-runs it on a fresh clone and writes `hit` or `miss` to the ledger. "Done" is a re-runnable command, not a sentence — and a blind verifier re-derives it without ever reading the agent's report. |
 | **3 · A lesson re-learned** | The same build flag bites you a third month running. Each fix lived only in one closed chat; nothing carried it forward. | The first burn was written as a note with a trigger. Every later session — and every teammate's clone — gets the warning **before** repeating it. One burn, permanent avoidance. |
 | **4 · Two terminals collide** | Terminal B edits `src/api` while Terminal A is mid-refactor there. B's push silently reverts an hour of A's work; nobody notices until CI. | B registered a session and A had **claimed** `src/api`. When B goes to edit, it is warned *before* the keystroke — and both drew their migration numbers from one queue, so they never clash. |
+| **5 · A false "done" ships** | The report said the feature works. It didn't; the regression reaches `main` and the next release carries it. | A class-A divergence **auto-blocks `sma ship`** until the founder records an explicit disposition. The ledger is append-only; the agent cannot forgive itself. |
 
 ## How the loop runs
 
@@ -109,6 +170,158 @@ flowchart LR
 ```
 
 One burn, permanent avoidance — the model is a child who touches boiling water once. The miss is written down, the written lesson gets a trigger, and the trigger fires as a warning in front of the *next* matching action, in every terminal, forever. And because the scorer is a script, the loop cannot flatter itself.
+
+## The Trust Spine, process by process
+
+This is the V3 core — the class of capability a model vendor structurally cannot ship neutrally. Each stream is a deterministic script; each is explained here with a diagram, and the ones you drive have an animated demo in **[the command gallery](#see-each-command-in-action)**.
+
+### 1 · Structural receipts + `sma reverify`
+
+A "done" is no longer prose. Every plan summary may carry a `receipts:` block of machine-checkable claims — `{id, assertion, check_command, expected_sha256}` — layered over the V2 coverage block. `sma reverify` re-runs each `check_command` across the same safe-command boundary as predictions; `--fresh-clone` runs it on a throwaway `git clone` so **only committed evidence counts**. A `RECEIPT-PROSE` lint fails any machine-verifiable "done" that carries no receipt — a prose-only claim cannot pass.
+
+```mermaid
+flowchart LR
+    D["A plan step closes"] --> RC["receipts: block<br>id · assertion · check_command · expected_sha256"]
+    RC --> RH["sma receipt-hash<br>runs one allowlisted command, prints the sha256"]
+    RH --> RV["sma reverify --fresh-clone<br>re-runs every claim on a throwaway clone"]
+    RV -->|"observed = expected"| OK["verified — committed evidence only"]
+    RV -->|"prose-only done"| L["RECEIPT-PROSE lint FAILS"]
+```
+
+### 2 · Tamper-evident journal
+
+Published trust numbers are worthless if the local ledger is silently editable. So every `.sma/journal` line is **hash-chained**: each line's `prev` is the sha256 of the previous raw line. `sma chain-verify` reports any edit, deletion, or post-chain insertion, and a break is never auto-repaired. `sma chain-tip` emits a deterministic merged tip that the release ritual **pins into the annotated release tag** (`SMA-Journal-Tip: …`). Anyone holding the tag can recompute the tip and detect a local edit.
+
+```mermaid
+flowchart LR
+    L1["journal line n-1"] -->|"sha256 → prev"| L2["line n"]
+    L2 -->|"sha256 → prev"| L3["line n+1"]
+    L3 --> T["sma chain-tip"]
+    T --> TAG["pinned in the release tag<br>SMA-Journal-Tip: b745d7d…67db0161"]
+    TAG --> V["anyone with the tag recomputes it<br>a mismatch is evidence of a local edit"]
+```
+
+### 3 · Blind verifier — `sma blind-verify`
+
+The heaviest signal in the whole system. A separate pass re-derives every "done" **from the code tree alone**, and it **structurally refuses** the executor's own report as input: hand it a SUMMARY or exec-journal and it errors with `BLIND_FORBIDDEN`, writing nothing. A claimed-pass that the blind pass reproduces as a fail is a **divergence** — the heaviest calibration-ledger event there is, and it blocks the ship.
+
+```mermaid
+flowchart TD
+    IN["-PLAN.md + the code tree"] --> BV["sma blind-verify"]
+    SUM["an executor SUMMARY / self-report"] -->|"BLIND_FORBIDDEN — refused as input"| XX["nothing written · ledger untouched"]
+    BV --> DER["re-derive every done from the tree alone"]
+    DER -->|"claimed pass = reproduced pass"| OK["no divergence"]
+    DER -->|"claimed pass ≠ reproduced pass"| DIV["DIVERGENCE<br>heaviest ledger event → blocks ship"]
+```
+
+### 4 · Consequences-as-LAW — `sma preship` / `sma disposition`
+
+The single step from *recording* a false "done" to *acting* on it. An immutable `consequences:` block in plan frontmatter, fixed at plan time, defines what a class-A miss blocks. **Class A** = a miss that invalidates the trust claim itself (false-done rate, subagent honesty, blind-verifier quality). When one fires, `sma preship` **blocks the push ritual** until the founder records an explicit disposition (`accept` / `fix-forward` / `rollback`) in the **append-only** ledger; a divergence additionally opens a rollback candidate branch. The agent cannot forgive itself — **this fired for real during this very release's verification**, and its two false ledger events are visible in the ledger, dispositioned by the owner, exactly as designed.
+
+```mermaid
+flowchart LR
+    E["class-A miss OR<br>a claimed/reproduced divergence"] --> PS["sma preship"]
+    PS -->|"an open class-A event"| BLK["SHIP BLOCKED<br>the push ritual will not run"]
+    BLK --> DISP["sma disposition &lt;event&gt;<br>--verdict accept · fix-forward · rollback"]
+    DISP -->|"founder-only · append-only ledger"| CLR["ship may proceed"]
+    E -.->|"on divergence"| RB["rollback candidate branch opened"]
+```
+
+### 5 · `/sma-grill` — the adversarial pre-build gate
+
+The founder's own *grillme* ritual, absorbed into architecture instead of rhetoric. Every promise of a plan is cross-examined **before** the build. An unresolved challenge must become a registered falsifiable prediction, be withdrawn, or be founder-accepted — otherwise `--gate` **blocks the build**. Pre-push, a **budget-aware** grill inspects `origin..main` and spends review depth precisely where the calibration ledger proves the project has historically been miscalibrated.
+
+```mermaid
+flowchart TD
+    P["Every promise in a -PLAN.md"] --> CH["sma grill --challenge<br>«promise» ⟵ attack"]
+    CH --> Q{"resolved?"}
+    Q -->|"converted → registered prediction"| GO["build may start"]
+    Q -->|"withdrawn / founder-accepted"| GO
+    Q -->|"still open"| STOP["--gate BLOCKS the build (D-49.2-11)"]
+    GO --> PP["pre-push: budget-aware grill over origin..main<br>deeper where the ledger proves miscalibration"]
+```
+
+### 6 · `sma pre` — one spawn per tool call
+
+Everything above adds hook streams, and naive hooks tax every keystroke. The `sma pre` multiplexer reads the tool event **once** and dispatches the ordered stream pipeline (collision → reflex → gates → airbag → spend) in a **single node spawn**, replacing the 3–4 spawns V2 used. Honest numbers, measured on the platform dogfood (SMA user #1) on 2026-07-08:
+
+<p align="center">
+  <img src="assets/graphs/hook-cost.svg" alt="Hook overhead per tool call: V2 base 1268.6 ms with 3–4 spawns versus V3 p95 152–157 ms with one spawn" width="760">
+</p>
+
+```mermaid
+flowchart LR
+    TC["one Edit / Write / Bash"] --> PRE["sma pre — ONE node spawn"]
+    PRE --> S1["collision"]
+    PRE --> S2["reflex"]
+    PRE --> S3["gates"]
+    PRE --> S4["airbag"]
+    PRE --> S5["spend"]
+    S1 & S2 & S3 & S4 & S5 --> OUT["merged warns · one optional deny<br>p95 152–157 ms · SLO 300 · parity 0 mismatches"]
+```
+
+`sma pre-bench` re-measures the p95, the spawn count (must be 1), and merged-vs-single-stream parity after any change. Every stream has a kill-switch (`SMA_PRE_DISABLE`, `SMA_REFLEX_DISABLE`, …) and a soft time budget — a slow stream is skipped, never allowed to overrun.
+
+### 7 · Subagent write-receipts + PreTask pack
+
+Anthropic closed the context-inheritance request "not planned", so only an outer layer can fix it. A `PreToolUse(Task)` hook injects the assembled pack — rules digest, task-scoped lessons, active claims, the parent's task slice — giving the subagent **inheritance by construction**. On `SubagentStop`, `sma subagent-verify` checks **every claimed file write against the real tree**: a receipt lands in the shared journal, and a **phantom write** (claimed but not on disk) is flagged deterministically. The parent reads disk truth, not the subagent's self-report.
+
+```mermaid
+flowchart LR
+    PT["PreToolUse(Task)"] -->|"pretask-pack injects<br>rules · lessons · claims · parent slice"| SUB["subagent runs<br>inheritance by construction"]
+    SUB --> CLAIM["claims N file writes"]
+    CLAIM --> SS["SubagentStop → sma subagent-verify"]
+    SS --> TREE{"on disk?"}
+    TREE -->|"yes"| OK["receipt lands in the shared journal"]
+    TREE -->|"no"| PH["phantom write flagged deterministically"]
+```
+
+### 8 · Integrity guards — keeping the numbers honest
+
+The moment trust numbers are published, the incentive to game them exists — a scoreboard without a judge is not viable. So the spine ships with its own adversaries: predictions are **countersigned by a skeptic** (a non-implementer role); a **seeded 5% deep audit** re-checks receipts at random; **planted canary false-dones** the blind verifier must catch (below a 90% catch rate, "zero divergence" is evidence of a lazy verifier, not clean work — this is scorecard metric S8); and an **STPA disarm-path guard** where every kill-switch must cite a compensating control, with the birth-fixture shadow-running even while a rule is off and auto-re-arming it.
+
+```mermaid
+flowchart TD
+    G["Integrity guards keep the published numbers honest"] --> SK["skeptic countersign<br>predictions signed by a non-implementer"]
+    G --> AU["seeded 5% deep receipt audit"]
+    G --> CAN["planted canary false-dones<br>blind verifier must catch ≥ 90% (S8)"]
+    G --> STPA["STPA disarm-path guard<br>every kill-switch cites a compensating control"]
+    STPA --> SR["birth-fixture shadow-runs while off + auto-re-arms"]
+```
+
+### 9 · `sma bench` + the 8-metric scorecard
+
+The founding act: **the measurement harness shipped before the spine was built.** No measured base, no target. `sma bench` captured and froze the V2 baseline first; every target lives as an immutable, machine-scoreable prediction. Honest to a fault — two of the eight bases were forfeit when the founder shortened the measurement window on 2026-07-08, and they are frozen as `insufficient-data` rather than hidden.
+
+| # | Metric | V2 base | 10× target | Status |
+|---|--------|---------|------------|--------|
+| S1 | False-"done" rate | retro blind re-verify of the last 10 V2 plans | < 1%, 100% of claims carrying receipts | measured, registered |
+| S2 | Git-loss recoverability | 30-day journal of destructive-gate firings | 100% of firings preceded by a snapshot | measured, registered |
+| S3 | Compaction survival | 10-question exam *before* the capsule exists | ≥ 90% match against the capsule | **`insufficient-data`** (window forfeit) |
+| S4 | Subagent honesty | phantom-write share over 2 dogfood phases | 0 unverified write claims in `main` | measured, registered |
+| S5 | Time-to-context | median "session start → first Edit" | ≥ 3× reduction on same-risk tasks | **`insufficient-data`** (window forfeit) |
+| S6 | Cross-machine collisions | 0 (no mechanism yet) | ≥ 90% warns in a 2-machine drill, n=20 | registered, scored when the git bus ships (V3.1) |
+| S7 | V3 self-cost | today's 3–4 node runs per tool call | all V3 layers ≤ 10% of session spend; p95 ≤ 300 ms | measured, registered |
+| S8 | Blind-verifier quality | 0 (no verifier existed) | ≥ 90% catch of planted canary false-"dones" | measured, registered |
+
+> **We never claim a multiplier for S3 or S5.** Under the founder's 2026-07-08 force-freeze the measurement window was shortened; those two bases are recorded `insufficient-data`, on the record, rather than dressed up. That honesty *is* the product.
+
+### The bridges (opt-in, never headlined)
+
+Three conveniences ship behind capability probes, each with a **registered self-removal prediction** — they stand down the day a native equivalent suffices. They are deliberately not part of the headline; the accountability core above is what SMA *is*, and these are scaffolding it expects to remove.
+
+```mermaid
+flowchart LR
+    B["Three opt-in bridges<br>demolition clause registered (D-49.2-05)"] --> A1["git airbag + sma undo"]
+    B --> A2["flight capsule + sma resume / handoff"]
+    B --> A3["spend ledger + budget reflexes"]
+    A1 & A2 & A3 --> DC["each ships behind a capability probe<br>+ a falsifiable self-removal prediction"]
+    DC --> STAND["a sufficient native equivalent arrives → the bridge stands down"]
+```
+
+- **Git airbag** — a millisecond `git update-ref refs/sma/airbag` + `git stash create` snapshot before destructive git (explicitly **not** a slow `git bundle`, which would time out at exactly the catastrophe moment). `sma undo` restores HEAD + dirty tracked + untracked in one action. Stand-down probe: `SMA_AIRBAG_NATIVE`.
+- **Pre-compaction flight capsule** — a deterministic, zero-LLM `PreCompact` capsule (`.sma/flight/intent.md`) written *before* the context is cut; `sma resume` assembles a continuation brief, `sma handoff` a teammate one. Stand-down probe: `SMA_FLIGHT_NATIVE`.
+- **Deterministic spend ledger** — a versioned log-format adapter parses local session logs into a per-session/subagent/model book; `sma spend` reports it; budget reflexes warn at 70/90% and soft-deny new subagents over cap; a loop-breaker disarms a rule that fires runaway. Field-compatible with the OTel/ccusage schema.
 
 ## Watch it work — five real files
 
@@ -148,7 +361,15 @@ predictions:
     confidence: 0.8    # recorded for calibration — NEVER gates the result
 ```
 
-**3 · The scorer's verdict, settled by a script (zero LLM)** — appended to `.sma/journal/…`
+**3 · A structural receipt, settled by a script on a fresh clone (zero LLM)** — the `receipts:` block a "done" now carries
+
+```yaml
+receipts:
+  - id: R-01
+    assertion: "rate-limit suite is green on a clean clone"
+    check_command: "pnpm vitest run test/rate-limit.test.ts"
+    expected_sha256: "9f2c…a17b"   # observed == expected on `sma reverify --fresh-clone`
+```
 
 ```json
 {"type":"prediction-verdict","id":"PRED-01","domain":"api",
@@ -180,58 +401,61 @@ $ pnpm sma next-slot migration
 0007          # yours. A parallel terminal asking now gets 0008 — they never collide.
 ```
 
-Nothing here is a database row or an opaque embedding. It is five text files, and together they are the entire loop: burn → note → prediction → script-settled verdict → reflex that stops the next burn.
+Nothing here is a database row or an opaque embedding. It is a handful of text files, and together they are the entire loop: burn → note → prediction → script-settled receipt → reflex that stops the next burn.
 
 ## How it hooks into your agent
 
-SMA plugs into your agent through its harness's **hook points** — the moments the agent lets an outside script run. There is no wrapper around Claude and no fork of it; SMA simply registers small commands at four lifecycle events, and each is a one-line entry in `.claude/settings.json`. Every hook is **fail-open**: if it errors or times out, your work continues — a dead hook never wedges a session.
+SMA plugs into your agent through its harness's **hook points** — the moments the agent lets an outside script run. There is no wrapper around Claude and no fork of it; SMA registers small commands at a few lifecycle events, each a one-line entry in `.claude/settings.json`. Every hook is **fail-open**: if it errors or times out, your work continues — a dead hook never wedges a session.
 
 ```mermaid
 flowchart TD
-    S["Session starts"] -->|SessionStart hook| S1["session-start:<br>register terminal · load memory core ·<br>brief on what changed since last time"]
+    S["Session starts"] -->|SessionStart| S1["session-start: register terminal ·<br>load memory core · restore a flight capsule if we just compacted"]
     S1 --> W["You work with the agent"]
-    W -->|"PreToolUse (Edit / Write / Bash)"| P1["collision-check → warn if a file is claimed"]
-    P1 --> P2["reflex-check → inject the matching lesson"]
-    P2 --> P3["gates-check → flag a HARD-RULE about to be broken"]
-    P3 --> ACT["the tool call runs"]
-    ACT -->|PostToolUse| PO["stall-check → notice a stuck / looping run"]
+    W -->|"PreToolUse (Edit / Write / Bash)"| P1["sma pre — ONE spawn:<br>collision → reflex → gates → airbag → spend"]
+    P1 --> ACT["the tool call runs"]
+    W -->|"PreToolUse (Task)"| PT["pretask-pack — inject the context pack into a subagent"]
+    ACT -->|PostToolUse| PO["stall-check → notice a stuck / looping run + drop a flight mark"]
+    W -->|SubagentStop| SV["subagent-verify → check every claimed write against the tree"]
+    W -->|PreCompact| PC["precompact-capsule → write the flight capsule BEFORE context is cut"]
     PO --> W
-    W -->|"Stop (session ends)"| Z["hand-off + housekeeping"]
 ```
 
 | Hook point | SMA command | What it does at that instant |
 |---|---|---|
-| **SessionStart** | `session-start` | Registers this terminal, loads the tiny memory core, and briefs the session on what other terminals changed since it last ran. |
-| **PreToolUse** (Edit/Write/Bash) | `collision-check` | Is another live terminal holding this file? Warn **before** the edit, not after the overwrite. |
-| **PreToolUse** (Edit/Write/Bash) | `reflex-check` | Does a promoted lesson match this path or command? Inject it as context so the rule is present *at the act*. |
-| **PreToolUse** (Edit/Write/Bash) | `gates-check` | Is this action about to break a checkable HARD-RULE? Flag it (advisory first; blocking only for gates you opt into). |
-| **PostToolUse** | `stall-check` | Did the run just loop or stall? Surface it so an executor death becomes a five-minute resume. |
+| **SessionStart** | `session-start` | Registers this terminal, loads the tiny memory core, briefs on what other terminals changed — and, if the session just auto-compacted, re-injects the flight capsule as the first context. |
+| **PreToolUse** (Edit/Write/Bash) | `pre` | **One spawn** runs the ordered stream pipeline — collision → reflex → gates → airbag → spend — replacing V2's 3–4 spawns. |
+| **PreToolUse** (Task) | `pretask-pack` | Injects the assembled context pack into a subagent — inheritance by construction. |
+| **PostToolUse** | `stall-check` | Notices a stuck/looping run so an executor death becomes a five-minute resume; also appends one flight mark. |
+| **SubagentStop** | `subagent-verify` | Verifies every claimed file write against the real tree; phantom writes are flagged. |
+| **PreCompact** | `precompact-capsule` | Deterministically writes the flight capsule *before* compaction deletes the working state. |
 
-That is the entire integration surface. The hooks call the same CLI you can run by hand (`pnpm sma …`), so nothing happens that you cannot reproduce and inspect yourself.
+That is the entire integration surface. The hooks call the same CLI you can run by hand (`pnpm sma …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is now a **single** `pre` entry; the old per-stream commands remain as deprecated aliases for back-compat.
 
-## The lifecycle: discuss → plan → build → verify → ship
+## The lifecycle: discuss → plan → grill → build → verify → ship
 
 SMA is not only memory — it is a full working rhythm for shipping real changes with an agent. Each stage is a `/sma-*` command, and every stage reads from and writes back to the same file-based memory, so nothing is re-explained twice.
 
 ```mermaid
 flowchart LR
     D["1 · Discuss<br>/sma-discuss-phase"] --> P["2 · Plan<br>/sma-plan-phase"]
-    P --> B["3 · Build<br>/sma-execute-phase"]
-    B --> V["4 · Verify<br>/sma-verify-work"]
-    V --> S["5 · Ship<br>push ritual"]
-    M(["Memory corpus<br>+ predictions + reflexes"]) -.->|reads| D
+    P --> G["3 · Grill<br>/sma-grill"]
+    G --> B["4 · Build<br>/sma-execute-phase"]
+    B --> V["5 · Verify<br>/sma-verify-work"]
+    V --> S["6 · Ship<br>push ritual + preship gate"]
+    M(["Memory + predictions<br>+ receipts + reflexes"]) -.->|reads| D
     M -.->|reads| P
     M -.->|reads| B
-    B -.->|writes lessons| M
+    B -.->|writes receipts + lessons| M
     V -.->|writes lessons| M
     S -.->|calibration scored| M
 ```
 
 - **1 · Discuss** — lock the gray-area decisions with a human *before* any code, through adaptive questioning. The context is captured as files, so the plan that follows is grounded, not guessed.
-- **2 · Plan** — turn the decisions into an executable plan whose steps each carry a machine-checkable **prediction** (what will change, and the command that proves it). The plan is the contract.
-- **3 · Build** — execute the plan in dependency-aware waves. Reflexes fire before risky actions; progress is journaled so an interrupted run resumes in minutes, not from scratch.
-- **4 · Verify** — validate the built feature against its acceptance criteria in a conversational pass. Human sign-off gates stay human; the agent never self-certifies them.
-- **5 · Ship** — the release ritual runs the full gate, and the predictions written back in step 2 are **scored** against what actually happened. Misses become the next lessons. The loop closes.
+- **2 · Plan** — turn the decisions into an executable plan whose steps each carry a machine-checkable **prediction** and, at close, a re-runnable **receipt**. The plan is the contract.
+- **3 · Grill** — cross-examine every promise before a line is built; an unresolved challenge becomes a registered prediction or the build does not start.
+- **4 · Build** — execute the plan in dependency-aware waves. Reflexes fire before risky actions; progress is journaled so an interrupted run resumes in minutes, not from scratch; subagent writes are verified against the tree.
+- **5 · Verify** — validate the built feature against its acceptance criteria, and let the blind verifier re-derive each "done" from the tree alone. Human sign-off gates stay human; the agent never self-certifies.
+- **6 · Ship** — the release ritual runs the full gate *and the `preship` consequences check*; the predictions written in step 2 are **scored** against what actually happened. A class-A miss blocks the push until the founder dispositions it. The loop closes.
 
 ## Memory, in three layers
 
@@ -264,7 +488,7 @@ flowchart LR
     U -->|cold, superseded| DM["Demoted a layer<br>(smaller footprint, never deleted)"]
 ```
 
-Each note carries a `use-when` trigger — that single line is what lets SMA deliver it at exactly the right tool call instead of dumping the whole corpus into every prompt. Promotion is earned by evidence (a note that keeps mattering), never by a timer; demotion shrinks the hot budget without forgetting. *The system never forgets — it only changes how loudly it remembers.*
+Each note carries a `use-when` trigger — that single line is what lets SMA deliver it at exactly the right tool call instead of dumping the whole corpus into every prompt. Promotion is earned by evidence, never by a timer; demotion shrinks the hot budget without forgetting. *The system never forgets — it only changes how loudly it remembers.*
 
 ## Coordination without a server
 
@@ -312,11 +536,14 @@ The onboarding conversation explains the system, seeds your starter memory corpu
 
 ## Commands
 
+The `/sma-*` workflow family (run inside a Claude Code session):
+
 | Command | What it does |
 |---|---|
 | `/sma-start` | First-run onboarding: explains the system, seeds the memory corpus and the infra profile |
 | `/sma-discuss-phase` | Gather phase context through adaptive questioning before planning |
 | `/sma-plan-phase` | Create a detailed phase plan with a verification loop |
+| `/sma-grill` | Adversarially cross-examine every plan promise before the build |
 | `/sma-execute-phase` | Execute all plans in a phase with wave-based parallelization |
 | `/sma-verify-work` | Validate built features through conversational UAT |
 | `/sma-quick` | A quick task with SMA guarantees (atomic commits, state tracking), skipping optional agents |
@@ -327,7 +554,23 @@ The onboarding conversation explains the system, seeds your starter memory corpu
 | `/sma-pause-work` | Create a context handoff when pausing mid-phase |
 | `/sma-help` | Show available commands and the usage guide |
 
-The coordination CLI runs underneath (`node scripts/sma/cli.mjs` or `pnpm sma`): `status`, `claim`, `next-slot`, `load`, `lint`, and friends. Sessions and hooks call it for you; you can also call it directly.
+The coordination + accountability CLI runs underneath (`node scripts/sma/cli.mjs` or `pnpm sma`). Sessions and hooks call it for you; you can also call it directly. The V3 trust-spine verbs:
+
+| CLI verb | What it does |
+|---|---|
+| `sma reverify` | Re-run every structural receipt across the safe-command boundary; `--fresh-clone` counts only committed evidence |
+| `sma blind-verify` | Re-derive every "done" from the code tree alone; refuses executor self-reports (`BLIND_FORBIDDEN`) |
+| `sma preship` / `sma disposition` | Block the ship on an open class-A event; record the founder's append-only disposition |
+| `sma grill` | Register/resolve challenges; `--gate` blocks an ungrilled build; `--pre-push` grills `origin..main` |
+| `sma pre` / `sma pre-bench` | The one-spawn PreToolUse multiplexer and its SLO instrument (p95, spawn-count, parity) |
+| `sma subagent-verify` / `sma subagent-receipts` | Verify subagent writes against the tree; report coverage and phantoms |
+| `sma chain-tip` / `sma chain-verify` | Emit / verify the tamper-evident journal chain tip |
+| `sma bench` | The 8-metric scorecard harness |
+| `sma undo` · `sma resume` / `sma handoff` · `sma spend` | The three opt-in bridges (airbag · flight capsule · spend ledger) |
+| `sma skeptic` · `sma canary` · `sma integrity` | The Goodhart/STPA integrity guards |
+| `status` · `claim` · `next-slot` · `load` · `lint` · … | The V1/V2 coordination + memory core |
+
+The full CLI reference — every subcommand, flag, hook event, and kill-switch — lives in [scripts/sma/README.md](scripts/sma/README.md).
 
 ### See each command in action
 
@@ -393,45 +636,118 @@ Every command is a terminal conversation. Expand any to watch what it does — e
 <br><img src="assets/demos/sma-help.svg" alt="/sma-help terminal demo" width="760">
 </details>
 
-## The six pillars
+#### V3 — the trust spine in action
+
+<details open>
+<summary><b><code>sma reverify</code></b> — re-run every "done" on a fresh clone; prose-only "done" fails lint</summary>
+<br><img src="assets/demos/sma-reverify.svg" alt="sma reverify terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma blind-verify</code></b> — re-derive "done" from the tree alone; refuse the executor's report</summary>
+<br><img src="assets/demos/sma-blind-verify.svg" alt="sma blind-verify terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma preship</code></b> / <code>disposition</code> — a class-A miss blocks the ship until the founder unblocks it</summary>
+<br><img src="assets/demos/sma-preship.svg" alt="sma preship terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma grill</code></b> — a challenge becomes a registered prediction, or the build does not start</summary>
+<br><img src="assets/demos/sma-grill.svg" alt="sma grill terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma pre-bench</code></b> — one spawn per tool call: 1268.6 ms → p95 152–157 ms</summary>
+<br><img src="assets/demos/sma-pre-bench.svg" alt="sma pre-bench terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma undo</code></b> — the git airbag: one action back to safety <sub>(bridge · opt-in)</sub></summary>
+<br><img src="assets/demos/sma-undo.svg" alt="sma undo terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma resume</code></b> — rebuild the brief from the flight recorder after a compaction <sub>(bridge · opt-in)</sub></summary>
+<br><img src="assets/demos/sma-resume.svg" alt="sma resume terminal demo" width="760">
+</details>
+
+<details>
+<summary><b><code>sma spend</code></b> — the deterministic spend ledger + budget reflexes <sub>(bridge · opt-in)</sub></summary>
+<br><img src="assets/demos/sma-spend.svg" alt="sma spend terminal demo" width="760">
+</details>
+
+## The pillars
 
 - **Predictions** — every plan states, up front, what will measurably change and how to check it; a deterministic scorer compares promise to fact at plan close, and a calibration ledger tracks which areas keep being wrong.
-- **Reflexes** — a scored miss becomes a permanent rule that fires *before* the next matching tool call, as a warning injected into the session. Touch boiling water once, never again.
+- **Receipts + blind verification (V3)** — every "done" carries a re-runnable check with an expected hash; a blind verifier re-derives it from the tree alone, and a divergence is the heaviest event the system knows.
+- **Consequences (V3)** — a class-A miss does not just get logged, it *acts*: it blocks the next ship until a human dispositions it, from an append-only ledger the agent cannot edit.
+- **Reflexes** — a scored miss becomes a permanent rule that fires *before* the next matching tool call. Touch boiling water once, never again.
 - **Corpus health** — lint, contradiction detection, scheduled consolidation, and promotion counters keep the memory sharp at hundreds of notes instead of decaying into noise.
 - **Coordination** — session registry, file claims with pre-edit warnings, shared counters for anything two terminals could race on, and a live "someone is pushing" signal.
-- **Harness** — per-plan progress journals make an executor death a five-minute resume; stall detection and dependency-aware waves keep long runs honest and parallel.
-- **Report** — a cockpit view of sessions, predictions, reflex firings, collisions, and corpus health, so the state of the system is visible, not assumed.
+- **Harness** — per-plan progress journals make an executor death a five-minute resume; stall detection, dependency-aware waves, and the one-spawn `pre` multiplexer keep long runs honest, parallel, and cheap.
 
 ## What makes it different
 
-- **Accountable, not just helpful.** Every claim SMA makes about itself is a pre-registered prediction settled by a script. Memory frameworks usually promise recall; SMA publishes its hit rate.
-- **Deterministic first.** Retrieval is tag- and trigger-driven, enforcement is plain scripts, and the whole learning loop runs without a single LLM call in the hot path. Optional intelligence can sit on top; correctness never depends on it.
-- **Git-native and reversible.** Notes, ledgers, journals — all files in your repo. Self-improvement arrives as diffs you review; anything the system learns can be reverted with `git revert`.
-- **Fail-open by design.** A warning never blocks your work; a dead hook never wedges a session. Hard blocking is reserved for security gates you configure yourself.
+- **Accountable, not just helpful.** Every claim SMA makes about itself is a pre-registered prediction settled by a script and re-derived by a blind verifier. Memory frameworks promise recall; SMA publishes its hit rate and lets a false "done" block its own release.
+- **The layer a vendor cannot ship.** A model vendor cannot impartially grade its own agent's homework. SMA grades it from outside — deterministically, with no LLM in the hot path — which is exactly why it survives platform absorption.
+- **Deterministic first.** Retrieval is tag- and trigger-driven, enforcement is plain scripts, and the whole learning-and-verification loop runs without a single LLM call in the hot path. Optional intelligence can sit on top; correctness never depends on it.
+- **Git-native and reversible.** Notes, ledgers, journals, receipts — all files in your repo. Self-improvement arrives as diffs you review; anything the system learns can be reverted with `git revert`.
+- **Fail-open by design.** A warning never blocks your work; a dead hook never wedges a session; every stream has a kill-switch. Hard blocking is reserved for security gates you configure yourself and for the consequences law you opt into.
 - **Yours.** The corpus lives in your repository, travels with `git clone`, and is portable to other agents — it is knowledge you own, not a vendor cache.
 
-## Roadmap — what's next (V3)
+## Side by side — one task, four setups
 
-V1 gave agents memory. V2 gave them predictions, reflexes, and coordination. **V3 makes the agent stop trusting its own word** — the one thing a model vendor structurally cannot ship neutrally, because it cannot grade its own homework. Four load-bearing pieces, each a deterministic script on the substrate already here:
+The same model does the coding in bare Claude Code, in Superpowers, in GSD, and in SMA. What changes is the process around it — and, at the finish line, **whose word you take for "done."** Here is one ~30-minute task followed through its phases:
 
-```mermaid
-flowchart LR
-    subgraph V3["V3 · the accountability layer"]
-        R["Replayable receipts<br>every «done» carries a<br>re-runnable command, not prose"]
-        B["Blind re-verification<br>a second agent re-derives «done»<br>from the tree alone"]
-        C["Consequences law<br>an unaddressed false «done»<br>blocks the next ship"]
-        P["Calibration passport<br>a public badge with the<br>measured hit rate"]
-    end
-```
+| Phase | Bare Claude Code | Superpowers | GSD | **SMA** |
+|---|---|---|---|---|
+| **Plan** | In its head, ad-hoc | Brainstorm → plan skill | Written `PLAN.md`, checked by an agent | Plan, then **grilled** — every promise cross-examined before a line is written |
+| **Research** | From what it already knows | Research skill | Research subagents → `RESEARCH.md` | Reads its **own memory + receipts** first; catalog before grep |
+| **Execute** | Writes the code | Test-first skills | Executor subagents, atomic commits | Executes — the relevant rule **fires at the exact tool call**, not in a file skimmed once |
+| **Verify** | "Looks done" — its own word | Runs the tests | A verifier *agent* checks the goal | **Re-derives "done" from the code alone**, refuses the self-report; a false "done" blocks the release |
+| **Remember** | Nothing — next session starts blank | Nothing carries across sessions | Learnings saved to `.planning` (this project) | Lessons + calibration + coordination **persist and fire next time** — across sessions and terminals |
 
-- **Replayable receipts** — every accomplishment claim carries a command and an expected result hash, re-runnable by anyone. Prose-only claims fail a lint. "Done" becomes evidence, not assertion.
-- **Blind re-verification** — a separate agent re-derives each "done" purely from the code tree, without seeing the executor's report. Claimed-pass / reproduced-fail is the heaviest signal in the ledger.
-- **Consequences law** — a false "done" is not just recorded, it *acts*: an unaddressed claimed-pass / reproduced-fail divergence blocks the next ship until a human dispositions it. Verified claims that control behavior — the accountability that a self-grading vendor cannot ship.
-- **Calibration passport** — the per-area hit rate and recall score compile into a public README badge. The first honest trust metric for agentic work: memory that publishes its own accuracy.
+Every column but one ends on *the agent's own word* for "done." SMA is the layer that checks the homework the model cannot grade itself — and remembers, so you don't pay for the same mistake twice.
 
-Alongside the core sit a few **bridges** — the git recovery airbag, the spend ledger, the compaction flight-capsule — each a stopgap for a gap the harness does not yet fill natively. They are deliberately *not* headlined: every bridge ships with a demolition clause and a registered prediction to retire itself the moment a sufficient native mechanism appears. The accountability core above is what SMA is; the bridges are scaffolding it expects to remove.
+> **Honest caveat.** On a single task, SMA costs more — the checks and the memory are not free. Its bet is **cost per correct result across many tasks**, not the cheapest single run.
 
-Full design, scored and adversarially reviewed, lives with the project. This is the direction, not a promise of dates — it ships evidence-first, one falsifiable metric at a time.
+<!-- sma:positioning:start -->
+
+## How SMA compares
+
+A model vendor cannot neutrally grade its own agent's homework. That is the one thing SMA does that nobody selling the model can ship impartially: an accountability layer that settles "done" with a script, never with the model's own word. Memory, context and orchestration are crowded, well-served lanes; the neutral verification layer over an agent's own claims is the lane that is open, and it is exactly why SMA survives platform absorption.
+
+So the comparison is deliberately honest, including where each analog is better than SMA:
+
+| Tool | Stars | What it does better than SMA | What only SMA does |
+|------|-------|------------------------------|--------------------|
+| **claude-mem** | 86k★ | Category-leading memory mechanics, polished SQLite runtime | Scores whether the memory actually helped, and publishes the hit rate |
+| **Aider** repo-map | 47k★ | Deterministic context graph with years of production proof | Carries a memory corpus and a learning loop on top of the graph |
+| **Letta** / MemGPT | 24k★ | Rich memory-block architecture | No DB, no server, and the agent does not grade itself |
+| **ccusage** | 16.5k★ | Excellent local spend observability | The spend signal drives enforcement, not just observation |
+| **BMAD** | 50k★ | Rich orchestration templates | A verification layer, so a claim has to survive a script |
+
+**What SMA deliberately does not do:** no daemon, no database, no embeddings, no cloud, no LLM in the hot path. Everything is files and git (see `pnpm sma explain substrate`). Correctness never depends on a model call.
+
+Adoption is reported honestly, not asserted: the real hit rate and sample size live in the calibration badge and `PASSPORT.md`, rebuilt each release and reproducible on a fresh clone. The badge hides itself after a model change until enough new data exists, so it never quietly overstates.
+
+Three trust-spine features (the git airbag, the spend ledger, and the pre-compaction capsule) are bridges the wider ecosystem may well absorb, and that is fine; they are not the headline, the accountability layer is.
+
+<!-- sma:positioning:end -->
+
+## Planned for V4
+
+Directions, not dates — and each will arrive the way everything here arrives: as a deterministic script with a registered prediction.
+
+**Absorbing the managed-agents platform.** Anthropic's managed agents — lead/worker sessions, multi-agent sessions, the advisor tool — fit SMA's *plan big, execute small* shape: the strongest model plans and grills, cheaper workers execute under receipts. Each absorbed capability is classified up front as **CORE** (it strengthens the accountability layer a vendor cannot ship neutrally) or **BRIDGE** (vendor-absorbable; it ships with a self-removal prediction and is never headlined).
+
+**Adoption & off-ramp hygiene.**
+- `/sma-deleteme` — one-click uninstall: the framework leaves, your memory corpus stays. It is your knowledge, in your repo.
+- `npx` one-command install, replacing `git clone`.
+- A single version source: the release tag, `package.json`, the installer banner, and the passport all read one number.
+- The installer auto-embeds the rules block into `CLAUDE.md` at install time, via the same managed `emit` block.
 
 ## Star History
 
@@ -444,3 +760,9 @@ MIT — see [LICENSE](LICENSE).
 **Creator: Matvey Maslov.**
 
 The workflow engine inside SMA is derived from [gsd-core](https://github.com/open-gsd/gsd-core) (MIT). The pristine upstream snapshot, the rename map, and third-party notices are tracked in [UPSTREAM.json](UPSTREAM.json), [rename-map.json](rename-map.json), and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+
+<!-- sma:passport:begin -->
+**SMA calibration:** badge hidden — no Claude model recorded yet.
+
+<sub>derived from PASSPORT.md, rebuilt each release, reproducible via <code>sma passport --verify</code></sub>
+<!-- sma:passport:end -->

@@ -221,12 +221,74 @@ export function buildWarnText(warn) {
   if (!warn) return ''
   if (warn.tier === 'info') return warn.text ?? ''
   const since = formatSince(warn.since)
+  // BL-158 (D-49.3-22f): attention ≠ fully-active. A `fresh` owner reads «занято» (busy
+  // NOW). An `attention` owner (missed heartbeats — possibly idle, possibly still there)
+  // reads «внимание» so the reader knows it is NOT a hard busy and the raw tier is carried
+  // inline. The active COUNT split lives in countSessionTiers; this is the WARN-text split.
+  const attention = warn.staleness === 'attention'
+  const lead = attention ? 'внимание' : 'занято'
   const staleNote = warn.staleness && warn.staleness !== 'fresh' ? ` [${warn.staleness}]` : ''
+  // D-49.3-22: self-verifying evidence inline (live «правки N мин назад…» / stale «можно
+  // работать») when the caller attached it via verifyClaimEvidence.
+  const evidence = typeof warn.evidence === 'string' && warn.evidence ? ` — ${warn.evidence}` : ''
   return (
-    `занято терминалом ${warn.who} (pid ${warn.pid ?? '?'}), ` +
-    `операция ${warn.operation}, диапазон ${warn.scope}, с ${since}${staleNote} — ` +
+    `${lead} терминалом ${warn.who} (pid ${warn.pid ?? '?'}), ` +
+    `операция ${warn.operation}, диапазон ${warn.scope}, с ${since}${staleNote}${evidence} — ` +
     `очистить: ${warn.howToClear}`
   )
+}
+
+/**
+ * countSessionTiers(sessions, {now, classify}) — BL-158 (D-49.3-22f): count `fresh` and
+ * `attention` SEPARATELY instead of collapsing both into one "active" boolean. Liveness is
+ * renewTime-only (classifyStaleness — no pid). `active` (fresh+attention) is kept for the
+ * legacy count, but the two tiers are also individually visible so a caller can distinguish
+ * a hard-busy owner from one that may already be idle. Injectable classify for tests.
+ * @param {Array} sessions
+ * @param {{now?:number, classify?:Function}} [opts]
+ * @returns {{fresh:number, attention:number, active:number}}
+ */
+export function countSessionTiers(sessions, opts = {}) {
+  const now = opts.now ?? Date.now()
+  const classify = typeof opts.classify === 'function' ? opts.classify : classifyStaleness
+  let fresh = 0
+  let attention = 0
+  for (const s of Array.isArray(sessions) ? sessions : []) {
+    let st
+    try {
+      st = classify(s, { now }).state
+    } catch {
+      continue
+    }
+    if (st === 'fresh') fresh += 1
+    else if (st === 'attention') attention += 1
+  }
+  return { fresh, attention, active: fresh + attention }
+}
+
+/**
+ * verifyClaimEvidence({claim, scopeDirtyVsHead, commitInScopeAfterRenew, mtimeAgeMin, intent})
+ * — the self-verifying WARN banner (D-49.3-22). Every collision WARN carries its OWN
+ * evidence so the reader can trust it WITHOUT a manual check. A claim is STALE (safe to
+ * take) when the scope is CLEAN vs HEAD AND a commit landed in scope after the claim's
+ * renewTime — the «verify before holding» lesson mechanized. Otherwise it is LIVE (real
+ * busy). Deterministic over the INJECTED git facts; no git call here.
+ * @returns {{live:boolean, text:string}}
+ */
+export function verifyClaimEvidence(opts = {}) {
+  const dirty = !!opts.scopeDirtyVsHead
+  const commit = opts.commitInScopeAfterRenew || null
+  const stale = !dirty && !!commit // clean AND a post-renew in-scope commit landed
+  if (stale) {
+    const sha = String(commit).slice(0, 7)
+    return { live: false, text: `claim устарел (скоуп чист, коммит ${sha} уже в HEAD) — можно работать` }
+  }
+  const claim = opts.claim || {}
+  const who = claim.by || claim.holderIdentity || 'T-?'
+  const mins = Number.isFinite(opts.mtimeAgeMin) ? Math.round(opts.mtimeAgeMin) : '?'
+  const intent = claim.intent || opts.intent || ''
+  const intentPart = intent ? `, намерение: ${intent}` : ''
+  return { live: true, text: `занято ${who} (правки ${mins} мин назад${intentPart})` }
 }
 
 /** HH:MM local time from an ISO string, or the raw value if unparseable. */

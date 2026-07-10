@@ -18,10 +18,18 @@ The profile lives in TWO synchronized forms:
    infrastructure without opening the JSON. When the profile changes, both are updated
    in the same commit.
 
-## Schema (`.sma/profile.json`)
+## Schema v2 (`.sma/profile.json`)
+
+Schema v2 (D-49.3-04) keeps EVERY v1 field and v1 law intact and ADDS a fuller working
+profile — stack, test commands, parallel-terminal habits, risk posture, danger-command
+patterns, working style, machine lessons, and env-var NAMES. A v1 profile (no
+`profileVersion`) is upgraded to the v2 shape IN MEMORY by the reader (`normalizeProfile`)
+without rewriting the file. Every field is still optional; absent still means
+"ask-at-the-moment", never a hardcoded default.
 
 ```json
 {
+  "profileVersion": 2,
   "pushTarget": "github.com/acme/shop",
   "autoDeployBranch": "main",
   "deployHost": "the hosting service that redeploys on push, if any",
@@ -32,12 +40,37 @@ The profile lives in TWO synchronized forms:
     "fullGateCommand": "npm test && npx tsc --noEmit",
     "ciWatchCommand": "gh run watch --exit-status"
   },
+  "stack": {
+    "languages": ["typescript"],
+    "frameworks": ["next.js", "payload"],
+    "packageManager": "pnpm"
+  },
+  "testRunner": {
+    "name": "vitest",
+    "targetedCommand": "pnpm vitest run path/to/file.test.ts",
+    "fullSuiteCommand": "pnpm test",
+    "typeCheckCommand": "pnpm tsc --noEmit"
+  },
+  "parallelTerminals": {
+    "typicalCount": 3,
+    "splitHabit": "one terminal per phase"
+  },
+  "riskTolerance": "balanced",
+  "dangerCommands": ["git push --force", "rm -rf", "drop table"],
+  "workingStyle": {
+    "sessionRhythm": "many short sessions",
+    "tddPreference": "after",
+    "reviewHabit": "read every diff"
+  },
+  "machineLessons": ["Windows Defender holds a just-written file for a few ms"],
+  "envVarNames": ["STRIPE_SECRET_KEY", "DATABASE_URL"],
   "notes": "free text — anything else a release helper should know"
 }
 ```
 
 | Field | Meaning |
 |---|---|
+| `profileVersion` | Schema version. `2` for the v3.5 shape; absent = a v1 profile, upgraded in memory by the reader. |
 | `pushTarget` | Where code is pushed — the shared copy of the repository (host + repo path). |
 | `autoDeployBranch` | Branch whose push automatically goes live. Omit when nothing auto-deploys. |
 | `deployHost` | The service that serves the deployed code, if any. |
@@ -46,6 +79,14 @@ The profile lives in TWO synchronized forms:
 | `releaseRitual.tagPattern` | The version-label pattern stamped on each release commit (e.g. `v0.N` — N increments by one per release). |
 | `releaseRitual.fullGateCommand` | The command that must exit green BEFORE any push that ships (tests, type check — whatever "safe to ship" means in this project). |
 | `releaseRitual.ciWatchCommand` | The command that watches the automated post-push check run to completion, if CI exists. |
+| `stack` | `{languages[], frameworks[], packageManager}` — the technology the project is built on. Drives `sma emit` headers and planner context. |
+| `testRunner` | `{name, targetedCommand, fullSuiteCommand?, typeCheckCommand?}` — how tests run. The executor's targeted-test rule reads `targetedCommand`; the ship full gate reads `fullSuiteCommand`/`typeCheckCommand`. |
+| `parallelTerminals` | `{typicalCount, splitHabit}` — how many AI sessions run at once and how the user splits them. Drives the statusline segment and collision messaging. |
+| `riskTolerance` | `conservative` \| `balanced` \| `fast` — how loud the gates/reflexes are and how the self-tuning ladder is presented. |
+| `dangerCommands` | Match PATTERNS (strings) for commands the user never wants run without being asked first. Feed gates-check PreToolUse warnings. NEVER executed — patterns only. |
+| `workingStyle` | `{sessionRhythm, tddPreference, reviewHabit}` — the user's rhythm. Drives the context-compiler pack header. |
+| `machineLessons` | Short strings — gotchas of THIS machine. Seeded as memory notes so the reflex surface can raise them. |
+| `envVarNames` | Env-var NAMES only (never values) the ship preflight should check are set. |
 | `notes` | Free text for anything the fields above do not capture. |
 
 **Every field is optional.** An absent field is NOT an error and is NOT substituted with
@@ -56,13 +97,39 @@ the user AT THAT MOMENT and offers to save the answer back into the profile.
 
 | Consumer | What it reads | On a missing profile/field |
 |---|---|---|
-| `workflows/ship.md` | `releaseRitual` (tagPattern, fullGateCommand, ciWatchCommand), `autoDeployBranch`, `pushTarget` | Ask the user for the missing piece, offer to save it into `.sma/profile.json`. Never substitute another project's ritual. |
+| `workflows/ship.md` | `releaseRitual` (tagPattern, fullGateCommand, ciWatchCommand), `autoDeployBranch`, `pushTarget`, `envVarNames` (ship preflight) | Ask the user for the missing piece, offer to save it into `.sma/profile.json`. Never substitute another project's ritual. |
 | `next-slot` (`scripts/sma/lib/slots.mjs` via `pnpm sma next-slot`) | `sharedCounters` — which counters are coordination-worthy in this project | Counter not listed = no slot coordination claimed for it; ask before assuming a counter is shared. |
 | Push-safety gates (pre-push hooks, push-claim checks) | `autoDeployBranch` (a push to it is a deploy), `releaseRitual.fullGateCommand` | Ask; a gate never invents a command to run. |
+| `sma emit` headers + planner context (49.3-04/05) | `stack` (languages, frameworks, packageManager) | Omit the stack header; the planner asks when it matters. |
+| Executor targeted-test rule + ship full gate | `testRunner.targetedCommand` (per-edit), `testRunner.fullSuiteCommand` / `typeCheckCommand` (push gate) | Ask for the command; never invent a test invocation. |
+| Statusline segment + collision messaging (49.3-07) | `parallelTerminals` (typicalCount, splitHabit) | Segment renders a neutral count; no assumption about split habit. |
+| gates/reflex verbosity + self-tuning ladder | `riskTolerance` | Default to the balanced presentation; ask before assuming a posture. |
+| gates-check PreToolUse warn patterns | `dangerCommands` — match patterns only, NEVER executed | No extra warn patterns; the built-in safety invariants still fire. |
+| Context-compiler pack header (49.3-05) | `workingStyle` (sessionRhythm, tddPreference, reviewHabit) | Omit the working-style header. |
+| Reflex surface (seeded notes) | `machineLessons` — seeded as memory notes at onboarding | No machine-specific reflex; nothing assumed. |
 
 The one non-negotiable rule for all consumers: **fallback is ask-the-user, never a
 hardcoded default.** No consumer may assume a particular host, tag scheme, or gate
 command when the profile is silent.
+
+Every schema-v2 field above has at least one registered consumer in
+`PROFILE_CONSUMERS` (`scripts/sma/lib/profile.mjs`). A schema field with ZERO consumers is
+a lint failure (PROFILE-DEADFIELD) — a field nobody reads is the "700-line rules file"
+failure in miniature (adoption scorecard metric 5). This table and `PROFILE_CONSUMERS`
+must stay in agreement: adding a field here without a consumer entry there fails lint.
+
+## Privacy boundary (T-49.3-06)
+
+The profile stores **env-var NAMES and tool FACTS only — never a secret VALUE.** A name
+(`STRIPE_SECRET_KEY`, `DATABASE_URL`) is a fact about which variables the project uses; a
+value (`sk-live-…`) is a secret that must never enter a committed repo artifact other
+tools read. `validateProfile` (`scripts/sma/lib/profile.mjs`) deterministically REJECTS
+any secret-shaped value ANYWHERE in the profile BEFORE it is written — the check
+(`secretShaped`) flags `sk-`/`ghp_`/`gho_`/`AKIA`/`xox`-prefixed tokens, `-----BEGIN`
+key blocks, and long high-entropy opaque runs. `envVarNames` entries are validated as
+NAMES (uppercase-with-underscores allowed), so the literal name `STRIPE_SECRET_KEY`
+passes while a value never would. A secret-shaped value is a rejection (PROFILE-SECRET),
+not a warning; the onboarding workflow never echoes a value into the profile.
 
 ## Safety boundary (T-49.1-09)
 

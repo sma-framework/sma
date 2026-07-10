@@ -19,6 +19,7 @@ import { mkdirSync, rmSync, readdirSync, statSync, writeFileSync, readFileSync }
 import { join } from 'node:path'
 
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
+import { appendEvent } from './journal.mjs'
 import { CLAIMS_DIR, SLOT_COOLDOWN_MS, SLOT_CLAIM_TTL_MS } from './constants.mjs'
 
 function resolveClaimsDir(opts = {}) {
@@ -122,6 +123,31 @@ export function releaseSlot(name, opts = {}) {
     // fail-open — a missing cooldown marker just means no cooldown, never a throw
   }
   return { released: true }
+}
+
+/**
+ * cooldownText(name, opts) — 49.3-13 (D-49.3-22c): the rendered collision text for a slot
+ * in cooldown. A recently force-cleared / released scope reads «недавно освобождён», NEVER
+ * «занято» — the reader must know it is FREE-ish (in a short cooldown), not busy. Empty
+ * string when the slot is not cooling down. The cooldown marker / provenance / force-clear
+ * confirmation machinery (D-49-09) is UNCHANGED — only this copy is the fix.
+ * @param {string} name
+ * @param {{claimsDir?:string, now?:number}} [opts]
+ * @returns {string}
+ */
+export function cooldownText(name, opts = {}) {
+  if (!isCoolingDown(name, opts)) return ''
+  const base = resolveClaimsDir(opts)
+  const marker = join(base, `.cooldown-${name}`)
+  let ageMin = '?'
+  try {
+    const ts = Number(readFileSync(marker, 'utf8'))
+    const now = opts.now ?? Date.now()
+    if (Number.isFinite(ts)) ageMin = Math.max(0, Math.round((now - ts) / 60000))
+  } catch {
+    /* fail-open — no marker age */
+  }
+  return `недавно освобождён (${ageMin} мин назад) — можно занимать`
 }
 
 /**
@@ -241,4 +267,81 @@ export function scanProvenance(opts = {}) {
     }
   }
   return warnings
+}
+
+// ── 49.3-13 (D-49.3-22) — claim trust repair: the TWO auto-release triggers ──────────
+//
+// Claims become trustworthy by auto-releasing on EXACTLY two triggers — never an idle
+// timer (D-49.3-22a: an idle timer would reap a terminal that thinks/researches long
+// before editing). Trigger 1: a SessionEnd hook releases all of the session's claims.
+// Trigger 2: commit-evidence — the claimed scope is clean vs HEAD AND a commit landed in
+// scope after renewTime, so the work is provably DONE — release immediately, no TTL wait.
+
+/**
+ * sessionEnd({identity, claimsDir, journalDir, now}) — TRIGGER 1. Release ALL of THIS
+ * session's own claims (marked «сессия завершена» in the journal). Releases only the OWN
+ * session's claims (a foreign claim is left untouched); calling it twice is idempotent
+ * (the second call finds no own claims). Wired to a NEW SessionEnd hook — NEVER the Stop
+ * hook (Stop fires per turn; releasing every claim after every turn destroys the system).
+ * @param {{identity?:Object, by?:string, claimsDir?:string, journalDir?:string, now?:string}} opts
+ * @returns {{released:string[]}}
+ */
+export function sessionEnd(opts = {}) {
+  const identity = opts.identity || {}
+  const by = identity.holderIdentity || opts.by
+  const released = []
+  if (!by) return { released }
+  const terminalId = identity.terminalId || by
+  for (const { name, provenance } of readClaims(opts)) {
+    if (!provenance || provenance.by !== by) continue // OWN claims only (P3)
+    const r = releaseSlot(name, { by, claimsDir: opts.claimsDir })
+    if (!r.released) continue
+    released.push(name)
+    try {
+      appendEvent(
+        { type: 'release', actors: [by], scope: name, detail: { reason: 'session-ended' } },
+        { terminalId, journalDir: opts.journalDir, now: opts.now },
+      )
+    } catch {
+      /* fail-open — the journal note is best-effort */
+    }
+  }
+  return { released }
+}
+
+/**
+ * commitEvidenceRelease({claim, scopeDirtyVsHead, commitShaAfterRenew, ...}) — TRIGGER 2.
+ * Release the claim IMMEDIATELY (no TTL wait) IFF the scope is CLEAN vs HEAD AND a commit
+ * landed in scope after the claim's renewTime — the two conditions ANDed (the work is
+ * provably done). A DIRTY scope, or NO post-renew commit, means work is still in progress
+ * -> NOT released. Journals the git evidence. Deterministic over the injected facts.
+ * @param {{claim:Object, scopeDirtyVsHead:boolean, commitShaAfterRenew?:string,
+ *          claimsDir?:string, journalDir?:string, terminalId?:string, now?:string}} opts
+ * @returns {{released:boolean, reason?:string, commit?:string}}
+ */
+export function commitEvidenceRelease(opts = {}) {
+  const claim = opts.claim || {}
+  const dirty = !!opts.scopeDirtyVsHead
+  const commit = opts.commitShaAfterRenew || null
+  if (dirty) return { released: false, reason: 'dirty' } // work still in progress
+  if (!commit) return { released: false, reason: 'no-commit' } // no evidence the work landed
+
+  const name = claim.name
+  if (!name) return { released: false, reason: 'no-name' }
+  const by = claim.by || (claim.provenance && claim.provenance.by) || opts.by || '—'
+  // Evidence-based auto-release: the git facts justify removal, so force:true is used with
+  // a fully-journaled provenance (D-49-09 governs the interactive force-clear COMMAND, not
+  // this evidence trigger).
+  const r = releaseSlot(name, { by, force: true, claimsDir: opts.claimsDir })
+  if (!r.released) return { released: false, reason: r.reason }
+  const sha = String(commit).slice(0, 7)
+  try {
+    appendEvent(
+      { type: 'release', actors: [by], scope: name, detail: { reason: 'commit-evidence', commit: sha } },
+      { terminalId: opts.terminalId || by, journalDir: opts.journalDir, now: opts.now },
+    )
+  } catch {
+    /* fail-open */
+  }
+  return { released: true, commit: sha }
 }

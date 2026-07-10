@@ -81,7 +81,20 @@ function dirsFrom(root) {
     canaryDir: join(root, 'canary'), // 49.2-10 (D-49.2-14) — sealed canary ledger (blind verifier NEVER reads)
     nearmissDir: join(root, 'nearmiss'), // 49.2-10 (D-49.2-14) — scoring-immune near-miss channel (ASRS)
     disarmDir: join(root, 'disarm'), // 49.2-10 (D-49.2-14) — kill-switch provenance leases (auto-re-arm)
+    modelDir: join(root, 'model'), // 49.3-02 (D-49.3-10) — model-version sightings for the stale-priors badge guard
+    curriculumDir: join(root, 'curriculum'), // 49.3-06 (D-49.3-16) — weekly miss-curriculum: templates.jsonl + brief-*.md
+    catalogDir: join(root, 'catalog'), // 49.3-05 (D-49.3-06) — deterministic file catalog (cards.jsonl)
+    contextDir: join(root, 'context'), // 49.3-05 (D-49.3-07) — context packs + active.json + exam.jsonl
+    statuslineDir: join(root, 'statusline'), // 49.3-07 (D-49.3-13) — statusline TTL cache + webhook config + cooldown marker
+    manifestDir: join(root, 'manifest'), // 49.3-08 (D-49.3-11) — PR evidence passport pack (<headSha>.json + .md)
   }
+}
+
+/** The TRACKED tier registry path (repo root, NOT under gitignored .sma/ — 49.3-06). */
+async function ladderPathFrom(dirs) {
+  const { LADDER_FILE } = await import('./lib/constants.mjs')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  return join(repoRoot, LADDER_FILE)
 }
 
 /** True for an env kill-switch that is set to anything truthy (not ''/0/false). */
@@ -208,7 +221,10 @@ async function gatherSummary(dirs) {
   try {
     const registry = await import('./lib/registry.mjs')
     const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-    registry.reapStale({
+    // BL-158 (D-49.3-22f): reapStaleObservable journals a countable reap / reap-fail signal
+    // so a silently-broken reaper is no longer invisible (the prior bare reapStale swallowed
+    // every failure). Still fail-open — a reap bug NEVER wedges status/session-start.
+    registry.reapStaleObservable({
       ...dirs,
       scopeMtimeProbe: (s) => registry.probeScopeMtime(s, { root: repoRoot }),
     })
@@ -277,6 +293,70 @@ async function gatherSummary(dirs) {
  * yields zeros, never an error.
  */
 async function cmdStatus({ flags, dirs }) {
+  // ── 49.3-13 coordination-trust instruments (bare-numeric LAST line = scorer contract) ──
+  if (flags['stale-warn-share']) {
+    // P49.3-13-A: the deterministic stale share of SHOWN collision warns over 7d.
+    let pct = 0
+    try {
+      const fingerprint = await import('./lib/fingerprint.mjs')
+      const journal = await import('./lib/journal.mjs')
+      const { events } = journal.readJournal(dirs)
+      pct = fingerprint.staleWarnShare({ journal: events, windowDays: 7, now: Date.now() })
+    } catch {
+      /* fail-open -> 0 */
+    }
+    process.stdout.write(`${pct}\n`)
+    return 0
+  }
+  if (flags['stale-count']) {
+    // P49.3-13-C: how many dead/stale sessions SURVIVE (reap-clean | needs-human). 0 is clean.
+    let n = 0
+    try {
+      const registry = await import('./lib/registry.mjs')
+      const { sessions } = registry.readSessions(dirs)
+      for (const sess of sessions) {
+        const st = registry.classifyStaleness(sess, {}).state
+        if (st === 'reap-clean' || st === 'needs-human') n += 1
+      }
+    } catch {
+      /* fail-open -> 0 */
+    }
+    process.stdout.write(`${n}\n`)
+    return 0
+  }
+  if (flags['cleanup-stale']) {
+    // D-49.3-22d: the ONE-TIME cleanup — reap the accumulated dead sessions + reconcile the
+    // expired (unconsumed) claims via the existing provenance-kept paths. Prints the count.
+    let reaped = 0
+    let reconciled = 0
+    try {
+      const registry = await import('./lib/registry.mjs')
+      const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+      const r = registry.reapStaleObservable({
+        ...dirs,
+        scopeMtimeProbe: (sx) => registry.probeScopeMtime(sx, { root: repoRoot }),
+      })
+      reaped = Array.isArray(r.reaped) ? r.reaped.length : 0
+    } catch {
+      /* fail-open */
+    }
+    try {
+      const claims = await import('./lib/claims.mjs')
+      for (const { name } of claims.readClaims(dirs)) {
+        const rc = claims.reconcileExpiredClaim(name, dirs)
+        if (rc.reconciled) reconciled += 1
+      }
+    } catch {
+      /* fail-open */
+    }
+    if (wantsJson(flags)) {
+      printJson({ reaped, reconciled, cleaned: reaped + reconciled })
+      return 0
+    }
+    process.stdout.write(`SMA: очищено — устаревших сессий ${reaped}, claim-слотов ${reconciled}\n`)
+    return 0
+  }
+
   const s = await gatherSummary(dirs)
   if (wantsJson(flags)) {
     printJson({
@@ -389,6 +469,18 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open */
   }
 
+  // 49.3-02 (D-49.3-10) — record which Claude model produced this session so the
+  // calibration-passport badge can detect a model swap and hide its hit-rate claim
+  // until fresh priors accrue. Its OWN try/catch: a sighting bug must never dent the
+  // start summary (fail-open, substrate law C9 — proven by model-version test 7).
+  try {
+    const mv = await import('./lib/model-version.mjs')
+    const sighting = mv.resolveModelId({ stdinJson: evt, env: process.env })
+    if (sighting) mv.recordModelSighting({ ...sighting, modelDir: dirs.modelDir })
+  } catch {
+    /* fail-open — the model sighting never wedges session-start */
+  }
+
   const s = await gatherSummary(dirs)
   const lines = []
   lines.push(`SMA: активных сессий ${s.activeSessions}, открытых коллизий ${s.collisions}.`)
@@ -468,6 +560,18 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the disarm guard never wedges session-start */
   }
 
+  // 49.3-06 (D-49.3-16) — the weekly miss-curriculum staleness nudge. ONE bounded line
+  // at session-start (never the per-tool-call hot path) when the newest weak-spots brief
+  // is stale or missing. Try/catch, fail-open — a nudge bug never wedges session-start.
+  let curriculumLine = ''
+  try {
+    const curriculum = await import('./lib/curriculum.mjs')
+    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
+    if (latest.stale) curriculumLine = 'SMA: недельная miss-curriculum устарела — обновите: `pnpm sma curriculum`.'
+  } catch {
+    /* fail-open — the curriculum nudge never wedges session-start */
+  }
+
   // FI-10 — prompt ONCE for a human window name when this window is still anonymous, so
   // the journal + digest stop showing t-<hash> and become «P<phase> <Name>».
   let namePrompt = ''
@@ -518,12 +622,14 @@ async function cmdSessionStart({ dirs }) {
     preAct ||
     digest ||
     namePrompt ||
-    disarmLine
+    disarmLine ||
+    curriculumLine
   ) {
     const parts = [lines.join(' ')]
     if (preAct) parts.push(preAct)
     if (digest) parts.push(digest)
     if (disarmLine) parts.push(disarmLine)
+    if (curriculumLine) parts.push(curriculumLine)
     if (namePrompt) parts.push(namePrompt)
     if (restore) parts.unshift(restore) // the capsule body is the FIRST part after compaction
     printJson({
@@ -961,6 +1067,13 @@ async function cmdLint({ flags }) {
   const defaultState = join('.planning', 'STATE.md')
   const statePath = typeof flags.state === 'string' ? flags.state : existsSync(defaultState) ? defaultState : undefined
 
+  // PROFILE family (49.3-01): PROFILE-SCHEMA/PROFILE-SECRET run only when a
+  // profile.json exists (a missing profile is a valid state, fail-open);
+  // PROFILE-DEADFIELD is schema-level and always runs. --profile overrides; the
+  // default is .sma/profile.json when present.
+  const defaultProfile = join('.sma', 'profile.json')
+  const profilePath = typeof flags.profile === 'string' ? flags.profile : existsSync(defaultProfile) ? defaultProfile : undefined
+
   const opts = {
     corpusDir,
     tagsPath,
@@ -969,6 +1082,7 @@ async function cmdLint({ flags }) {
     generate,
     generateAreas,
     ...(statePath ? { statePath } : {}),
+    ...(profilePath ? { profilePath } : {}),
     ...(plansDir ? { plansDir, execGit } : {}),
   }
   const report = lint.runLint(opts)
@@ -981,6 +1095,218 @@ async function cmdLint({ flags }) {
     process.stdout.write(`  [${f.tier}] ${f.checkId} ${f.file ? `(${f.file}) ` : ''}${f.message}\n`)
   }
   return report.exitCode
+}
+
+/**
+ * profile [--json] | --lint [--json] | --coverage | --recap [--out <path>] [--check]
+ * — the deterministic profile surface (49.3-01, D-49.3-04). Reads .sma/profile.json
+ * through lib/profile.mjs (never re-parses it here). The numeric-last-line outputs
+ * (--lint / --coverage / --recap --check) are the P49.3-01-A/B/C scorer instruments.
+ * Direct-CLI (may exit 1 on a lint violation); never hook-facing.
+ */
+async function cmdProfile({ flags, dirs }) {
+  const prof = await import('./lib/profile.mjs')
+  const { readFileSync, existsSync } = await import('node:fs')
+  const profilePath = join(dirs.smaRoot, 'profile.json')
+  // The teaching source ships with the install (sma-core/references) — renderRecap
+  // reads its five Recap: lines so the copy lives once (onboarding-teaching.md).
+  const teachingPath = join(MODULE_DIR, '..', '..', 'sma-core', 'references', 'onboarding-teaching.md')
+  const seededFiles = [
+    '.planning/PROJECT.md',
+    '.planning/ROADMAP.md',
+    '.claude/memory/ (TAGS.md + starter CORE notes)',
+    '.sma/profile.json',
+  ]
+
+  // ── --lint: schema + secret + dead-field; total violation count as last line ──
+  if (flags.lint === true) {
+    const hasProfile = existsSync(profilePath)
+    const violations = []
+    for (const f of prof.deadFields()) {
+      violations.push({ rule: 'PROFILE-DEADFIELD', field: f, message: `schema field "${f}" has no registered consumer in PROFILE_CONSUMERS` })
+    }
+    if (hasProfile) {
+      const { profile } = prof.readProfile({ profilePath })
+      violations.push(...prof.validateProfile(prof.normalizeProfile(profile)).violations)
+    }
+    if (wantsJson(flags)) {
+      printJson({ ok: violations.length === 0, violations })
+      return violations.length ? 1 : 0
+    }
+    for (const v of violations) process.stdout.write(`  [${v.rule}] ${v.field}: ${v.message}\n`)
+    process.stdout.write(`${violations.length}\n`) // numeric last line (P49.3-01-A)
+    return violations.length ? 1 : 0
+  }
+
+  // ── --coverage: answered-field count as the last line (P49.3-01-C) ────────────
+  if (flags.coverage === true) {
+    const { profile } = prof.readProfile({ profilePath })
+    const answered = prof.answeredFields(prof.normalizeProfile(profile))
+    if (wantsJson(flags)) {
+      printJson({ answered: answered.length, fields: answered })
+      return 0
+    }
+    process.stdout.write(`${answered.length}\n`) // numeric last line
+    return 0
+  }
+
+  // ── --recap: render (default) or --check (double-render byte-compare) ─────────
+  if (flags.recap === true) {
+    let teachingSource = ''
+    try {
+      teachingSource = readFileSync(teachingPath, 'utf8')
+    } catch {
+      /* fail-open — the module recap section degrades to a placeholder */
+    }
+    const { profile } = prof.readProfile({ profilePath })
+    const outPath = typeof flags.out === 'string' ? flags.out : join(dirs.smaRoot, 'onboarding-recap.md')
+    const rendered = prof.renderRecap({ profile: prof.normalizeProfile(profile), teachingSource, seededFiles })
+
+    if (flags.check === true) {
+      const again = prof.renderRecap({ profile: prof.normalizeProfile(profile), teachingSource, seededFiles })
+      let ok = rendered === again
+      if (existsSync(outPath)) {
+        try {
+          ok = ok && readFileSync(outPath, 'utf8') === rendered
+        } catch {
+          ok = false
+        }
+      }
+      process.stdout.write(`${ok ? 1 : 0}\n`) // numeric last line (P49.3-01-B)
+      return ok ? 0 : 1
+    }
+
+    const { atomicWriteRaw } = await import('./lib/fs-atomics.mjs')
+    atomicWriteRaw(outPath, rendered)
+    if (wantsJson(flags)) {
+      printJson({ written: outPath })
+      return 0
+    }
+    process.stdout.write(`recap written to ${outPath}\n`)
+    return 0
+  }
+
+  // ── default: the profile table (or --json) with an honest empty state ─────────
+  const { profile, warnings } = prof.readProfile({ profilePath })
+  const normalized = prof.normalizeProfile(profile)
+  const hasProfile = existsSync(profilePath)
+  if (wantsJson(flags)) {
+    const fields = prof.PROFILE_SCHEMA.map((s) => ({
+      field: s.field,
+      value: normalized[s.field] ?? null,
+      consumers: prof.PROFILE_CONSUMERS[s.field] ?? [],
+    }))
+    printJson({ schema: prof.PROFILE_SCHEMA, fields, warnings })
+    return 0
+  }
+  if (!hasProfile) {
+    process.stdout.write('Профиль ещё не создан — запустите /sma-start, чтобы записать .sma/profile.json.\n')
+    return 0
+  }
+  process.stdout.write('SMA profile:\n')
+  for (const s of prof.PROFILE_SCHEMA) {
+    if (s.askStage === 'meta') continue
+    const value = normalized[s.field]
+    const shown = value == null || (typeof value === 'string' && value.trim() === '') ? '(not set)' : JSON.stringify(value)
+    const consumers = (prof.PROFILE_CONSUMERS[s.field] ?? []).join(', ')
+    process.stdout.write(`  ${s.field}: ${shown}  [→ ${consumers}]\n`)
+  }
+  for (const w of warnings) process.stdout.write(`  ! ${w}\n`)
+  return 0
+}
+
+/**
+ * explain [topic] [--list] [--coverage] [--count] [--lang en|ru] [--json] (49.3-09,
+ * D-49.3-15) — the in-product teaching surface. Prints a plain-language explainer for
+ * every concept and every CLI command (via COMMAND_TOPICS). An unknown topic lists the
+ * catalog and exits 0 (never punishes curiosity). `--coverage` prints the count of
+ * HANDLERS keys with no resolvable explainer as its LAST line — the P49.3-09-A scorer
+ * contract. Reads cli.mjs as TEXT (never imports it). NOT hook-facing.
+ */
+async function cmdExplain({ positionals, flags }) {
+  const explain = await import('./lib/explain.mjs')
+  const explainersDir = join(MODULE_DIR, 'explainers')
+  const cliPath = join(MODULE_DIR, 'cli.mjs')
+
+  // ── --coverage: uncovered command count as the bare last line (P49.3-09-A) ────
+  if (flags.coverage === true) {
+    let cliSource = ''
+    try {
+      cliSource = readFileSync(cliPath, 'utf8')
+    } catch {
+      /* fail-open — an unreadable cli.mjs yields no keys, count 0 */
+    }
+    const { uncovered, count } = explain.coverage({ cliSource, explainersDir })
+    if (wantsJson(flags)) {
+      printJson({ uncovered, count })
+      return 0
+    }
+    for (const u of uncovered) process.stdout.write(`  uncovered: ${u} (no resolvable explainer topic)\n`)
+    process.stdout.write(`${count}\n`) // numeric last line (scorer contract), exit 0 always
+    return 0
+  }
+
+  // ── --list (or no topic): the catalog ────────────────────────────────────────
+  const topic = positionals[0]
+  if (flags.list === true || !topic) {
+    const topics = explain.listTopics({ explainersDir })
+    if (wantsJson(flags)) {
+      printJson({ topics })
+      return 0
+    }
+    process.stdout.write('SMA explainers — pnpm sma explain <topic>:\n')
+    for (const t of topics) process.stdout.write(`  ${t.id.padEnd(15)}${t.summary}\n`)
+    return 0
+  }
+
+  // ── a specific topic (default lang en; --lang ru mirrors) ─────────────────────
+  const lang = flags.lang === 'ru' ? 'ru' : 'en'
+  const res = explain.renderTopic(topic, { explainersDir, lang })
+  if (wantsJson(flags)) {
+    printJson(res)
+    return 0
+  }
+  if (!res.found) {
+    process.stdout.write(`Unknown topic «${topic}». Available topics:\n`)
+    for (const t of res.catalog) process.stdout.write(`  ${t.id.padEnd(15)}${t.summary}\n`)
+    return 0 // teaching surface never punishes curiosity
+  }
+  process.stdout.write(`# ${res.title}\n\n${res.summary}\n\n${res.body}\n`)
+  return 0
+}
+
+/**
+ * doc-audit [--target manual|readme|all] [--count] [--json] (49.3-09, D-49.3-01/15) —
+ * the deterministic honesty audit over the manual (sma:v35 region) and README positioning
+ * (sma:positioning region). Zero-LLM, read-only. `--count` prints the bare total violation
+ * count as the LAST line and exits 0 (the P49.3-09-B/C scorer contract); `--json` prints
+ * the violation records (exit 0); human mode prints them readably and exits 1 when count>0
+ * (CI-friendly). NOT hook-facing.
+ */
+async function cmdDocAudit({ flags, dirs }) {
+  const da = await import('./lib/doc-audit.mjs')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const target = typeof flags.target === 'string' ? flags.target : 'all'
+  const readFile = (p) => readFileSync(p, 'utf8')
+  const { violations, count } = da.audit({ target, readFile, rootDir: repoRoot })
+
+  if (wantsJson(flags)) {
+    printJson({ target, violations, count })
+    return 0
+  }
+  if (flags.count === true) {
+    for (const v of violations) process.stdout.write(`  [${v.rule}] ${v.file}${v.detail ? ': ' + v.detail : ''}\n`)
+    process.stdout.write(`${count}\n`) // numeric last line (scorer contract), exit 0 always
+    return 0
+  }
+  // human mode
+  if (count === 0) {
+    process.stdout.write('doc-audit: all checks pass (0 violations).\n')
+    return 0
+  }
+  for (const v of violations) process.stdout.write(`  [${v.rule}] ${v.file}${v.detail ? ': ' + v.detail : ''}\n`)
+  process.stdout.write(`doc-audit: ${count} violation(s).\n`)
+  return 1
 }
 
 /**
@@ -1066,6 +1392,88 @@ async function cmdBuildIndex({ flags }) {
 }
 
 /**
+ * emit [--check] [--formats <csv>] [--target-dir <d>] [--budget <id>=<bytes>]
+ *      [--count <drift|over-budget|corrupt|missing>] [--json]
+ *
+ * One corpus, any agent (D-49.3-08): compile the learned memory corpus into
+ * CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md under per-format byte budgets,
+ * via managed export blocks — regenerable, never hand-edited in place. NOT
+ * hook-facing: emit never commits/pushes; the diff is the user's to review
+ * (T-49.3-03). commitHash + dateMap come from the same read-only execGit path
+ * cmdBuildIndex uses. --count implies --check and prints the bare number last.
+ */
+async function cmdEmit({ flags, dirs }) {
+  const emit = await import('./lib/emit.mjs')
+  const generator = await import('./lib/generator.mjs')
+
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
+  const tagsPath = join(corpusDir, 'TAGS.md')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const targetDir = typeof flags['target-dir'] === 'string' ? flags['target-dir'] : repoRoot
+  const profilePath = join(dirs.smaRoot, 'profile.json')
+
+  // Read-only git: full 40-hex hash + last-commit date map. Fail-open to epoch.
+  let dateMap = {}
+  let commitHash = '0'.repeat(40)
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const execGit = (args) => execFileSync('git', args, { encoding: 'utf8' })
+    dateMap = generator.computeDateMap({ execGit })
+    const full = execGit(['rev-parse', 'HEAD']).trim()
+    if (/^[0-9a-f]{40}$/.test(full)) commitHash = full
+  } catch {
+    /* fail-open — deterministic 40-zero anchor */
+  }
+
+  // --formats <csv of ids> narrows/orders the set; else emitAll consults the profile.
+  let formats
+  if (typeof flags.formats === 'string') {
+    const ids = flags.formats.split(',').map((s) => s.trim()).filter(Boolean)
+    formats = emit.EMIT_FORMATS.filter((f) => ids.includes(f.id))
+  }
+
+  // --budget <id>=<bytes> (comma-separated for multiple overrides).
+  const budgets = {}
+  if (typeof flags.budget === 'string') {
+    for (const pair of flags.budget.split(',')) {
+      const [id, bytes] = pair.split('=')
+      const n = Number(bytes)
+      if (id && Number.isFinite(n)) budgets[id.trim()] = n
+    }
+  }
+
+  const check = flags.check === true || typeof flags.count === 'string'
+  const result = emit.emitAll({ targetDir, corpusDir, tagsPath, commitHash, dateMap, budgets, formats, check, profilePath })
+
+  // --count <key>: bare number as the LAST line, exit 0 ALWAYS (scorer contract).
+  if (typeof flags.count === 'string') {
+    const map = { drift: result.counts.drift, 'over-budget': result.counts.overBudget, corrupt: result.counts.corrupt, missing: result.counts.missing }
+    const n = map[flags.count] ?? 0
+    if (wantsJson(flags)) printJson(result)
+    process.stdout.write(`${n}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(result)
+    return check ? 0 : result.results.some((r) => r.action === 'skipped-corrupt') ? 1 : 0
+  }
+
+  // Human table: file · action · block-bytes/budget · notes k/m.
+  for (const r of result.results) {
+    const size = r.bytes != null ? `${r.bytes}/${r.budget}b` : `-/${r.budget}b`
+    const notes = r.included != null ? `${r.included}/${r.totalEligible} notes` : ''
+    process.stdout.write(`  ${r.file.padEnd(14)} ${String(r.action).padEnd(15)} ${size.padEnd(14)} ${notes}\n`)
+  }
+  if (check) {
+    const c = result.counts
+    process.stdout.write(`  counts: drift ${c.drift} · over-budget ${c.overBudget} · corrupt ${c.corrupt} · missing ${c.missing}\n`)
+    return 0
+  }
+  return result.results.some((r) => r.action === 'skipped-corrupt') ? 1 : 0
+}
+
+/**
  * load --tags <csv> — resolve a task's tag set into CORE + periphery via the
  * loader. Prints the ordered file list. Zero matches → CORE only, exit 0.
  */
@@ -1111,6 +1519,307 @@ async function cmdLoad({ flags, dirs }) {
   for (const f of res.periphery) process.stdout.write(`  ${f}\n`)
   if (res.periphery.length === 0) process.stdout.write('  (совпадений по тегам нет — только ядро CORE)\n')
   for (const w of res.warnings) process.stdout.write(`  ⚠ ${w}\n`)
+  return 0
+}
+
+// ── 49.3-05 (D-49.3-06/07): fragment catalog + `sma context` compiler ─────────
+
+/** ONE read-only git-log pass → {gitStats:{path:{lastCommit,commits}}} (mirrors
+ * generator.computeDateMap posture: newest-first, first-seen date wins). A `%H|%cI`
+ * format (hex hash + ISO date — neither carries a pipe) keeps the parse unambiguous. */
+function collectGitStats(execGit) {
+  const gitStats = {}
+  let raw = ''
+  try {
+    raw = execGit(['log', '--format=%H|%cI', '--name-only'])
+  } catch {
+    return gitStats
+  }
+  let curDate = null
+  for (const line of String(raw).split('\n')) {
+    const t = line.replace(/\r$/, '')
+    if (/^[0-9a-f]{7,40}\|/.test(t)) {
+      curDate = t.split('|')[1] || null
+      continue
+    }
+    const path = t.trim()
+    if (!path || curDate == null) continue
+    if (!gitStats[path]) gitStats[path] = { lastCommit: curDate, commits: 0 }
+    gitStats[path].commits += 1
+  }
+  return gitStats
+}
+
+/**
+ * catalog refresh [--full] | find <query> [--limit N] | --check [--count]
+ * — the deterministic file catalog (49.3-05, D-49.3-06). cards.jsonl lives in the
+ * gitignored .sma/catalog/. `--check --count` prints the drift count (0 clean, -1 when
+ * no catalog is built — the honest not-built sentinel, P49.3-05-A's instrument).
+ * Direct-CLI, never hook-facing.
+ */
+async function cmdCatalog({ positionals, flags, dirs }) {
+  const catalog = await import('./lib/catalog.mjs')
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { execFileSync } = await import('node:child_process')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+  const readFile = (p) => readFileSync(join(repoRoot, p), 'utf8')
+  const sub = positionals[0]
+
+  // ── find <query> ────────────────────────────────────────────────────────────
+  if (sub === 'find') {
+    const query = positionals.slice(1).join(' ') || (typeof flags.query === 'string' ? flags.query : '')
+    const stored = catalog.readCatalog({ catalogDir: dirs.catalogDir, readFile: (p) => readFileSync(p, 'utf8') })
+    if (!stored || stored.built === false) {
+      if (wantsJson(flags)) printJson({ built: false, cards: [] })
+      else process.stdout.write('SMA catalog: не построен — запустите `sma catalog refresh --full`.\n')
+      return 0
+    }
+    const limit = Number.isFinite(Number(flags.limit)) ? Number(flags.limit) : 20
+    const hits = catalog.findCards({ catalog: stored, query, limit })
+    if (wantsJson(flags)) {
+      printJson({ query, cards: hits })
+      return 0
+    }
+    if (!hits.length) {
+      process.stdout.write(`SMA catalog: 0 карточек по «${query}» — шаг 2 правила поиска: grep только то, чего карточки не знают (символы/импорты/git-стат по замыслу).\n`)
+      return 0
+    }
+    for (const c of hits) {
+      const syms = (c.symbols || []).slice(0, 6).join(' ')
+      process.stdout.write(`  ${c.path}  [${c.class}] ${syms}\n`)
+    }
+    return 0
+  }
+
+  // ── --check [--count] ─────────────────────────────────────────────────────────
+  if (flags.check === true) {
+    const stored = catalog.readCatalog({ catalogDir: dirs.catalogDir, readFile: (p) => readFileSync(p, 'utf8') })
+    if (!stored || stored.built === false) {
+      if (wantsJson(flags)) printJson({ built: false, drift: -1 })
+      if (flags.count === true) process.stdout.write('-1\n') // honest not-built sentinel
+      else process.stdout.write('SMA catalog: не построен (drift -1)\n')
+      return 0
+    }
+    // MEM-REGEN posture: a moved HEAD is staleness, never drift. Only when the header
+    // commit is still HEAD do we regenerate from the working tree and byte-compare.
+    let headShort = ''
+    try {
+      headShort = execGit(['rev-parse', '--short', 'HEAD']).trim()
+    } catch {
+      /* fail-open */
+    }
+    let drift = 0
+    if (headShort && stored.commit && stored.commit === headShort) {
+      const gitStats = collectGitStats(execGit)
+      const res = catalog.checkCatalog({ catalog: stored, readFile, gitStatsAtCommit: gitStats })
+      drift = res.built ? res.drift : 0
+    }
+    if (wantsJson(flags)) printJson({ built: true, drift, commit: stored.commit, head: headShort })
+    if (flags.count === true) process.stdout.write(`${drift}\n`)
+    else process.stdout.write(`SMA catalog: drift ${drift} (commit ${stored.commit}${headShort && headShort !== stored.commit ? `, HEAD ${headShort} — устарел, обновите` : ''})\n`)
+    return 0
+  }
+
+  // ── refresh [--full] (default) ───────────────────────────────────────────────
+  let trackedFiles = []
+  try {
+    trackedFiles = execGit(['ls-files']).split('\n').map((s) => s.replace(/\r$/, '').trim()).filter(Boolean)
+  } catch {
+    /* fail-open — empty tree */
+  }
+  const gitStats = collectGitStats(execGit)
+  let commit = ''
+  try {
+    commit = execGit(['rev-parse', '--short', 'HEAD']).trim()
+  } catch {
+    /* fail-open */
+  }
+
+  const stored = catalog.readCatalog({ catalogDir: dirs.catalogDir, readFile: (p) => readFileSync(p, 'utf8') })
+  let built
+  let changedCount
+  if (flags.full === true || !stored || stored.built === false) {
+    built = catalog.buildCatalog({ trackedFiles, readFile, gitStats, commit })
+    changedCount = built.cardLines.length
+  } else if (stored.commit === commit) {
+    // already fresh at this commit — no work, no rewrite.
+    if (wantsJson(flags)) printJson({ files: stored.cardLines.length, changed: 0, commit })
+    else process.stdout.write(`SMA catalog: ${stored.cardLines.length} карточек (уже свежий на ${commit})\n`)
+    return 0
+  } else {
+    // incremental against the stored header commit.
+    let changed = []
+    let deleted = []
+    try {
+      const diff = execGit(['diff', '--name-status', stored.commit, 'HEAD'])
+      for (const line of diff.split('\n')) {
+        const t = line.replace(/\r$/, '')
+        if (!t.trim()) continue
+        const parts = t.split('\t')
+        const status = parts[0]
+        if (status.startsWith('D')) deleted.push(parts[1])
+        else if (status.startsWith('R')) { deleted.push(parts[1]); changed.push(parts[2]) }
+        else changed.push(parts[1])
+      }
+    } catch {
+      /* fail-open — fall back to full below */
+    }
+    if (!changed.length && !deleted.length) {
+      built = catalog.buildCatalog({ trackedFiles, readFile, gitStats, commit }) // safety: rebuild
+      changedCount = built.cardLines.length
+    } else {
+      built = catalog.refreshCatalog({ catalog: stored, changed, deleted, readFile, gitStats, commit })
+      changedCount = changed.length + deleted.length
+    }
+  }
+  catalog.writeCatalog({ catalog: built, catalogDir: dirs.catalogDir })
+  const fileCount = built.cardLines ? built.cardLines.length : 0
+  if (wantsJson(flags)) {
+    printJson({ files: fileCount, changed: changedCount, commit })
+    return 0
+  }
+  process.stdout.write(`SMA catalog: ${fileCount} карточек (изменено ${changedCount}) → commit ${commit}\n`)
+  return 0
+}
+
+/**
+ * context "<task>" [--budget N] | score [--count] | miss "<q>" --expected <path> |
+ *         exam [--count] | --selftest
+ * — the deterministic budgeted context compiler (49.3-05, D-49.3-07). The numeric-last-line
+ * instruments (`--selftest`, `score --count`, `exam --count`) are the P49.3-05-B/C scorers.
+ * Direct-CLI, never hook-facing.
+ */
+async function cmdContext({ positionals, flags, dirs }) {
+  const pack = await import('./lib/context-pack.mjs')
+  const { readFileSync, existsSync } = await import('node:fs')
+  const sub = positionals[0]
+
+  // ── --selftest: double-compile the committed fixture in-process, byte-compare ──
+  if (flags.selftest === true) {
+    let fixture
+    try {
+      fixture = JSON.parse(readFileSync(join(MODULE_DIR, 'fixtures', 'context', 'selftest-task.json'), 'utf8'))
+    } catch (err) {
+      process.stdout.write('0\n') // missing/corrupt fixture → not deterministic-provable
+      return 1
+    }
+    const cardLines = (fixture.cards || []).map((c) => JSON.stringify(c))
+    const catalog = { built: true, v: 1, commit: fixture.commit, cards: fixture.cards || [], cardLines }
+    const resolve = () => ({ core: fixture.core || [], periphery: fixture.periphery || [] })
+    const args = { taskText: fixture.task, commit: fixture.commit, catalog, profile: null, resolve }
+    const a = pack.compilePack(args)
+    const b = pack.compilePack(args)
+    const identical = a.packMd === b.packMd && a.manifestJson === b.manifestJson ? 1 : 0
+    if (wantsJson(flags)) printJson({ selftest: true, deterministic: identical === 1, packId: a.packId, bytes: a.manifest.bytes })
+    process.stdout.write(`${identical}\n`) // numeric last line (P49.3-05-B)
+    return identical === 1 ? 0 : 1
+  }
+
+  // resolve corpus/tags/dateMap + catalog + profile for the repo-facing subcommands.
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
+  const tagsPath = join(corpusDir, 'TAGS.md')
+  let dateMap = {}
+  try {
+    const generator = await import('./lib/generator.mjs')
+    const { execFileSync } = await import('node:child_process')
+    dateMap = generator.computeDateMap({ execGit: (a) => execFileSync('git', a, { encoding: 'utf8' }) })
+  } catch {
+    /* fail-open */
+  }
+  const catalogMod = await import('./lib/catalog.mjs')
+  const storedCatalog = catalogMod.readCatalog({ catalogDir: dirs.catalogDir, readFile: (p) => readFileSync(p, 'utf8') })
+  const catalog = storedCatalog && storedCatalog.built ? storedCatalog : null
+
+  let profile = null
+  try {
+    const prof = await import('./lib/profile.mjs')
+    const profilePath = join(dirs.smaRoot, 'profile.json')
+    if (existsSync(profilePath)) profile = prof.normalizeProfile(prof.readProfile({ profilePath }).profile)
+  } catch {
+    /* fail-open — no profile */
+  }
+
+  // ── score [--count]: purity THEN grow the exam (the miss→question loop) ────────
+  if (sub === 'score') {
+    const scored = pack.scorePurity({ contextDir: dirs.contextDir })
+    const grown = pack.growExam({ contextDir: dirs.contextDir })
+    if (wantsJson(flags)) printJson({ ...scored, examAdded: grown.added, examTotal: grown.total })
+    else if (flags.count !== true) process.stdout.write(`SMA context score: purity ${scored.purityPct}% · settled ${scored.settledPacks} · exam +${grown.added}\n`)
+    if (flags.count === true) process.stdout.write(`${scored.purityPct}\n`) // numeric last line (P49.3-05-C)
+    return 0
+  }
+
+  // ── miss "<query>" --expected <path> ──────────────────────────────────────────
+  if (sub === 'miss') {
+    const query = positionals.slice(1).join(' ')
+    const expected = typeof flags.expected === 'string' ? flags.expected : ''
+    if (!query || !expected) {
+      process.stderr.write('usage: sma context miss "<query>" --expected <path>\n')
+      return 1
+    }
+    const r = pack.appendMiss({ query, expected, contextDir: dirs.contextDir })
+    if (wantsJson(flags)) printJson(r)
+    else process.stdout.write(`SMA context miss: записано (${r.added})\n`)
+    return 0
+  }
+
+  // ── exam [--count]: replay every question through the compiler ────────────────
+  if (sub === 'exam') {
+    const compile = (query) =>
+      pack.compilePack({ taskText: query, commit: catalog ? catalog.commit : '', corpusDir, tagsPath, dateMap, catalog, profile }).manifest
+    const r = pack.runExam({ contextDir: dirs.contextDir, compile })
+    if (wantsJson(flags)) printJson(r)
+    else if (flags.count !== true) process.stdout.write(`SMA context exam: ${r.count} провалов из ${r.total}\n`)
+    if (flags.count === true) process.stdout.write(`${r.count}\n`) // numeric last line
+    return 0
+  }
+
+  // ── compile "<task text>" (default) ───────────────────────────────────────────
+  const taskText = positionals.join(' ') || (typeof flags.task === 'string' ? flags.task : '')
+  if (!taskText.trim()) {
+    process.stderr.write('usage: sma context "<task text>" [--budget N] [--json]\n')
+    return 1
+  }
+  let commit = ''
+  try {
+    const { execFileSync } = await import('node:child_process')
+    commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim()
+  } catch {
+    /* fail-open */
+  }
+
+  // citation wiring — packed notes + fragments ride the SAME usage journal (kind 'load').
+  let cite
+  try {
+    const citations = await import('./lib/citations.mjs')
+    const registry = await import('./lib/registry.mjs')
+    const identity = registry.resolveTerminalIdentity({})
+    cite = (id, kind) =>
+      citations.recordCitation({ noteId: id, kind: kind === 'fire' ? 'fire' : 'load', terminal: identity.terminalId, session: identity.sessionToken ?? null }, { usageDir: dirs.usageDir })
+  } catch {
+    /* fail-open — the pack still compiles uninstrumented */
+  }
+
+  const budget = Number.isFinite(Number(flags.budget)) && Number(flags.budget) > 0 ? Number(flags.budget) : undefined
+  const compiled = pack.compilePack({ taskText, commit, corpusDir, tagsPath, dateMap, catalog, profile, cite, ...(budget ? { budget } : {}) })
+
+  // persist the pack (artifacts) + active.json (STATE — the only wall-clock in the feature).
+  const { atomicWriteRaw, atomicWriteJson } = await import('./lib/fs-atomics.mjs')
+  const packDir = join(dirs.contextDir, 'packs', compiled.packId)
+  atomicWriteRaw(join(packDir, 'PACK.md'), compiled.packMd)
+  atomicWriteRaw(join(packDir, 'MANIFEST.json'), compiled.manifestJson)
+  atomicWriteJson(join(dirs.contextDir, 'active.json'), { packId: compiled.packId, activatedAt: Date.now() })
+
+  if (wantsJson(flags)) {
+    printJson(compiled.manifest)
+    return 0
+  }
+  process.stdout.write(`SMA context: pack ${compiled.packId} → ${join(packDir, 'PACK.md')}${catalog ? '' : ' (каталог не построен — 0 карточек; запустите `sma catalog refresh --full`)'}\n`)
+  for (const m of compiled.manifest.members) {
+    process.stdout.write(`  ${String(m.type).padEnd(9)} ${String(m.id ?? '').padEnd(28)} ${m.bytes}b\n`)
+  }
+  process.stdout.write(`  bytes ${compiled.manifest.bytes}/${compiled.manifest.budget}\n`)
   return 0
 }
 
@@ -1916,12 +2625,17 @@ async function cmdPreBench({ flags }) {
     // untouched and no git shells out (headShaProbe → null).
     const { mkdtempSync, rmSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')
-    const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-parity-'))
-    const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
     const noSha = async () => null
     let mismatches = 0
-    try {
-      for (const fx of fixtures) {
+    for (const fx of fixtures) {
+      // A FRESH throwaway .sma per fixture — each golden fixture is an INDEPENDENT single
+      // tool call (one window, one session). A shared root would let fixture N see fixture
+      // N-1's session lease, which never happens in a real tool call and would spuriously
+      // trip the always-on fingerprint stream's ambient digest (49.3-13). Per-fixture
+      // isolation is the faithful model of the consolidation the parity metric verifies.
+      const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-parity-'))
+      const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
+      try {
         const mergedCtx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
         const merged = await pre.runPre(mergedCtx)
 
@@ -1941,12 +2655,12 @@ async function cmdPreBench({ flags }) {
         const sortEq = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
         const denyEq = (merged.deny ? merged.deny.text : null) === (unionDeny ? unionDeny.text : null)
         if (!sortEq(merged.warns, unionWarns) || !denyEq) mismatches += 1
-      }
-    } finally {
-      try {
-        rmSync(tmpRoot, { recursive: true, force: true })
-      } catch {
-        /* best-effort cleanup */
+      } finally {
+        try {
+          rmSync(tmpRoot, { recursive: true, force: true })
+        } catch {
+          /* best-effort cleanup */
+        }
       }
     }
     process.stdout.write(`${mismatches}\n`)
@@ -2139,6 +2853,23 @@ async function cmdStallCheck({ dirs }) {
     /* fail-open — a mark append never wedges stall-check (D-49.2-04 premise) */
   }
 
+  // 49.3-07 (D-49.3-13) — the WORKING-PULSE piggyback. PostToolUse activity IS the working
+  // signal, so the pulse rides THIS existing stall-check spawn — ZERO new per-tool-call
+  // process (scorecard metric 6, the Track B cost envelope). setPulse writes the lease ONLY
+  // on a transition (prev != 'working'), so a steady working session adds no fs churn; a
+  // session returning FROM waiting-for-human flips back to working here. A working transition
+  // never fires the webhook (only waiting-for-human does). Fully fail-open.
+  try {
+    if (!isEnvOn(process.env.SMA_NOTIFY_DISABLE)) {
+      const notify = await import('./lib/notify.mjs')
+      const registry = await import('./lib/registry.mjs')
+      const identity = registry.resolveTerminalIdentity({ sessionToken })
+      await notify.setPulse('working', { dirs, identity, sessionToken, env: process.env })
+    }
+  } catch {
+    /* fail-open — the pulse never wedges stall-check (P4/C9) */
+  }
+
   // ADVISORY output only — a PostToolUse additionalContext nudge, never a block.
   if (nudge) {
     printJson({
@@ -2149,6 +2880,394 @@ async function cmdStallCheck({ dirs }) {
     })
   }
   return 0
+}
+
+// ── 49.3-07 (D-49.3-13) — native statusline segment + pulse CLI ────────────────
+
+/** The canonical statusLine command this repo installs, and its wrap variant. */
+const SMA_STATUSLINE_CMD = 'node scripts/sma/cli.mjs statusline'
+const SMA_STATUSLINE_WRAP_CMD = SMA_STATUSLINE_CMD + ' --wrap'
+
+/** True when a stored statusLine command already points into our own cli.mjs. */
+function isSmaStatuslineCmd(cmd) {
+  return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
+}
+
+/**
+ * statusline [--wrap] [--stat <name>] | statusline install|uninstall [--json] |
+ * statusline set-webhook <url> [--clear] — the segment render entrypoint + managed
+ * settings edit + webhook config. HOOK_FACING: ALWAYS exit 0 (main() wraps it); a
+ * catastrophic render failure prints an empty line so Claude Code renders nothing,
+ * never a stack trace on the trust surface.
+ */
+async function cmdStatusline({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  if (sub === 'install' || sub === 'uninstall') return statuslineInstallCmd(sub, { flags, dirs })
+  if (sub === 'set-webhook') return statuslineSetWebhook({ positionals, flags, dirs })
+  if (typeof flags.stat === 'string') return statuslineStat(flags.stat, { dirs })
+
+  // default: render the segment
+  try {
+    return await renderStatuslineEntry({ flags, dirs })
+  } catch {
+    process.stdout.write('\n') // fail-open — an empty line, never a throw
+    return 0
+  }
+}
+
+/** The segment render: read stdin (bounded, quarantined) -> gatherSummary + own lease ->
+ * readStatuslineState (cache-aware) -> derivePulse -> renderSegment. ALWAYS composes with a
+ * pre-existing user statusline when one resolves (wrapped-command.json config, else the
+ * USER-scope ~/.claude/settings.json auto-detect) — a project statusLine SHADOWS user scope
+ * in Claude Code, and installing our segment must not cost the adopter the statusline they
+ * already had. The user's own line prints FIRST; `--wrap` is accepted as a no-op alias. */
+async function renderStatuslineEntry({ flags, dirs }) {
+  const statusline = await import('./lib/statusline.mjs')
+  const registry = await import('./lib/registry.mjs')
+  const notify = await import('./lib/notify.mjs')
+  const { readJsonSafe } = await import('./lib/fs-atomics.mjs')
+
+  // bounded 64 KB stdin read -> the quarantined vendor-shape adapter (parsed defensively).
+  const raw = String(readStdin() || '').slice(0, 64 * 1024)
+  statusline.parseStatusStdin(raw) // reserved display extras; parsed to prove it never throws
+
+  const summary = await gatherSummary(dirs)
+  const identity = registry.resolveTerminalIdentity({})
+  const ownSession = readJsonSafe(join(dirs.sessionsDir, `${identity.terminalId}.json`))
+  const pulse = ownSession ? notify.derivePulse(ownSession, {}) : 'idle'
+
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const state = await statusline.readStatuslineState({ dirs: { ...dirs, repoRoot }, summary, ownSession, pulse })
+  const segment = statusline.renderSegment(state, { ansi: isEnvOn(process.env.SMA_STATUSLINE_ANSI) })
+
+  // Composition (segment-not-takeover): the user's own line first, then ' · ' + segment.
+  // Deliberately NOT TTL-cached — the wrapped call is user code whose output (context %)
+  // changes every turn; any failure/timeout/empty -> the segment renders alone (fail-open).
+  const userLine = await wrapUserStatusline({ dirs, stdin: raw })
+  process.stdout.write(statusline.composeStatusline(userLine, segment) + '\n')
+  return 0
+}
+
+/**
+ * wrapUserStatusline({dirs, stdin}) — resolve + run the user's OWN statusline command
+ * (wrapped-command.json config first, else the USER-scope settings.json auto-detect with
+ * the self-reference guard) and return its first stdout line, ANSI untouched. The child is
+ * the user's own command (no new authority), WRAPPED_TIMEOUT_MS timeout, bounded output.
+ * Any failure -> '' (the render then prints the segment alone — behavior test 9). Never throws.
+ */
+async function wrapUserStatusline({ dirs, stdin }) {
+  try {
+    const statusline = await import('./lib/statusline.mjs')
+    const wrapped = statusline.resolveWrappedCommand({ dirs })
+    if (!wrapped) return ''
+    return statusline.runWrappedCommand(wrapped.command, { stdin })
+  } catch {
+    return '' // fail-open — composition is a bonus, never a break
+  }
+}
+
+/**
+ * statuslineInstallCmd(sub, {flags, dirs}) — the managed settings.json edit. Strict JSON.parse
+ * or print-the-snippet-and-write-nothing; the statusLine key is the ONLY key mutated (every
+ * other key deep-equal survives, asserted before the write); a foreign command is preserved
+ * verbatim and wrapped; uninstall restores it verbatim (or removes the key when we added it).
+ */
+async function statuslineInstallCmd(sub, { flags, dirs }) {
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const settingsPath = join(repoRoot, '.claude', 'settings.json')
+  const res = await applyStatuslineInstall(sub, { settingsPath, dirs, by: 'sma statusline', now: Date.now() })
+  if (wantsJson(flags)) {
+    printJson(res)
+    return 0
+  }
+  const msg = {
+    installed: 'SMA: statusLine установлен (прямой сегмент).',
+    'installed-wrap': 'SMA: statusLine установлен (обёрнута ваша команда, ваша строка идёт первой).',
+    'noop-already': 'SMA: statusLine уже установлен — без изменений.',
+    uninstalled: 'SMA: statusLine удалён, ваша исходная команда восстановлена.',
+    'noop-absent': 'SMA: statusLine SMA не найден — нечего удалять.',
+    'parse-failed': 'SMA: .claude/settings.json не парсится — вставьте вручную:\n  "statusLine": { "type": "command", "command": "' + SMA_STATUSLINE_CMD + '" }',
+  }[res.status] || `SMA: statusline ${res.status}`
+  process.stdout.write(msg + '\n')
+  return 0
+}
+
+/**
+ * applyStatuslineInstall(sub, {settingsPath, dirs, by, now}) — the install/uninstall CORE,
+ * factored out so the CLI and the wrap-preserve selftest share ONE code path. Returns
+ * {status, wrote}. NEVER throws; on an unparseable file it writes NOTHING and returns
+ * 'parse-failed'.
+ */
+async function applyStatuslineInstall(sub, { settingsPath, dirs, by, now }) {
+  const { atomicWriteJson, readJsonSafe } = await import('./lib/fs-atomics.mjs')
+  let raw = ''
+  try {
+    raw = readFileSync(settingsPath, 'utf8')
+  } catch {
+    raw = '' // absent file -> treated as empty settings
+  }
+  let settings
+  let before
+  if (raw.trim()) {
+    try {
+      settings = JSON.parse(raw)
+      before = JSON.parse(raw) // independent copy for the deep-equal assertion
+    } catch {
+      return { status: 'parse-failed', wrote: false } // strict-parse-or-print-snippet: write NOTHING
+    }
+  } else {
+    settings = {}
+    before = {}
+  }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { status: 'parse-failed', wrote: false }
+
+  const existing = settings.statusLine
+  const existingCmd = existing && typeof existing === 'object' ? existing.command : typeof existing === 'string' ? existing : null
+  const wrappedPath = join(dirs.statuslineDir, 'wrapped-command.json')
+
+  if (sub === 'install') {
+    if (existing && isSmaStatuslineCmd(existingCmd)) return { status: 'noop-already', wrote: false } // idempotent
+    let status
+    if (!existing) {
+      settings.statusLine = { type: 'command', command: SMA_STATUSLINE_CMD, padding: 0 }
+      try {
+        atomicWriteJson(wrappedPath, { hadNone: true, savedAt: new Date(now).toISOString(), by })
+      } catch {
+        /* fail-open — worst case uninstall leaves the key; harmless */
+      }
+      status = 'installed'
+    } else {
+      // preserve the foreign command verbatim, then wrap it
+      try {
+        atomicWriteJson(wrappedPath, { command: existingCmd, original: existing, hadNone: false, savedAt: new Date(now).toISOString(), by })
+      } catch {
+        /* fail-open */
+      }
+      settings.statusLine = { type: 'command', command: SMA_STATUSLINE_WRAP_CMD, padding: 0 }
+      status = 'installed-wrap'
+    }
+    if (!writeSettingsStatusLineOnly(settingsPath, settings, before)) return { status: 'parse-failed', wrote: false }
+    return { status, wrote: true }
+  }
+
+  // uninstall
+  const stored = readJsonSafe(wrappedPath) || {}
+  if (stored.hadNone) {
+    delete settings.statusLine
+  } else if (stored.original !== undefined) {
+    settings.statusLine = stored.original // verbatim restore
+  } else if (existing && isSmaStatuslineCmd(existingCmd)) {
+    delete settings.statusLine // no record but ours is present -> remove
+  } else {
+    return { status: 'noop-absent', wrote: false }
+  }
+  if (!writeSettingsStatusLineOnly(settingsPath, settings, before)) return { status: 'parse-failed', wrote: false }
+  return { status: 'uninstalled', wrote: true }
+}
+
+/**
+ * writeSettingsStatusLineOnly(path, settings, before) — assert every NON-statusLine key is
+ * deep-equal to the pre-edit snapshot, then write with 2-space indent. If any other key would
+ * change, abort WITHOUT writing (return false) — the never-clobber guarantee (T-49.3-07-03).
+ */
+function writeSettingsStatusLineOnly(path, settings, before) {
+  try {
+    const strip = (o) => {
+      const c = { ...(o && typeof o === 'object' ? o : {}) }
+      delete c.statusLine
+      return c
+    }
+    if (JSON.stringify(strip(settings)) !== JSON.stringify(strip(before))) return false // a foreign key moved -> abort
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** statusline set-webhook <url> [--clear] — write the user-configured URL with provenance. */
+async function statuslineSetWebhook({ positionals, flags, dirs }) {
+  const { atomicWriteJson } = await import('./lib/fs-atomics.mjs')
+  const path = join(dirs.statuslineDir, 'webhook.json')
+  if (flags.clear) {
+    try {
+      const { rmSync, existsSync } = await import('node:fs')
+      if (existsSync(path)) rmSync(path)
+    } catch {
+      /* fail-open */
+    }
+    process.stdout.write('SMA: webhook очищен — уведомления выключены.\n')
+    return 0
+  }
+  const url = positionals[1]
+  let ok = false
+  try {
+    ok = !!url && (new URL(url).protocol === 'http:' || new URL(url).protocol === 'https:')
+  } catch {
+    ok = false
+  }
+  if (!ok) {
+    process.stderr.write('SMA: укажите http(s) URL: pnpm sma statusline set-webhook <url>\n')
+    return 1
+  }
+  try {
+    atomicWriteJson(path, { url, by: 'sma statusline set-webhook', at: new Date().toISOString() })
+  } catch {
+    process.stderr.write('SMA: не удалось записать webhook.json\n')
+    return 1
+  }
+  process.stdout.write('SMA: webhook настроен (уведомление о waiting-for-human включено).\n')
+  return 0
+}
+
+/**
+ * statuslineStat(name, {dirs}) — the predict-score `--stat` contract: EACH prints a single
+ * finite number as its LAST stdout line (49.1-08 parser). bench-render-p95-ms measures 20
+ * warm renders; selftest-webhook-dedup / selftest-wrap-preserve run against throwaway temp
+ * dirs (the real .sma/ and settings are NEVER touched — 49.2-08 preship selftest posture).
+ */
+async function statuslineStat(name, { dirs }) {
+  try {
+    if (name === 'bench-render-p95-ms') {
+      const p95 = await benchRenderP95(dirs)
+      process.stdout.write(`${p95}\n`)
+      return 0
+    }
+    if (name === 'selftest-webhook-dedup') {
+      process.stdout.write(`${await selftestWebhookDedup()}\n`)
+      return 0
+    }
+    if (name === 'selftest-wrap-preserve') {
+      process.stdout.write(`${await selftestWrapPreserve()}\n`)
+      return 0
+    }
+  } catch {
+    /* fall through to the honest 0 */
+  }
+  process.stdout.write('0\n')
+  return 0
+}
+
+/** 20 warm renders (cache primed once) -> p95 in ms, rounded to 2 dp.
+ * SCOPE HONESTY (P49.3-07-1): this measures the SMA SEGMENT render (readStatuslineState +
+ * renderSegment) — the piece the <=100 ms prediction governs and the TTL cache controls.
+ * The COMPOSED render additionally runs the user's own wrapped statusline command, which is
+ * user code (typically 100-300 ms, acceptable for Claude Code statuslines) and deliberately
+ * NOT TTL-cached (their context % changes every turn) — so it is excluded here by design,
+ * not measured-and-hidden. */
+async function benchRenderP95(dirs) {
+  const statusline = await import('./lib/statusline.mjs')
+  const registry = await import('./lib/registry.mjs')
+  const { readJsonSafe } = await import('./lib/fs-atomics.mjs')
+  const summary = await gatherSummary(dirs)
+  const identity = registry.resolveTerminalIdentity({})
+  const ownSession = readJsonSafe(join(dirs.sessionsDir, `${identity.terminalId}.json`))
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const rdirs = { ...dirs, repoRoot }
+  await statusline.refreshCache({ dirs: rdirs, summary, ownSession }) // prime the TTL cache
+  const samples = []
+  for (let i = 0; i < 20; i++) {
+    const t0 = performance.now()
+    const state = await statusline.readStatuslineState({ dirs: rdirs, summary, ownSession })
+    statusline.renderSegment(state)
+    samples.push(performance.now() - t0)
+  }
+  samples.sort((a, b) => a - b)
+  const p95 = samples[Math.min(samples.length - 1, Math.floor(0.95 * samples.length))]
+  return Math.round(p95 * 100) / 100
+}
+
+/** Run the P49.3-07-2 flap against a throwaway .sma + an injected in-process fetch recorder;
+ * return the delivery count (expected 1). The real .sma/ is NEVER touched. */
+async function selftestWebhookDedup() {
+  const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const notify = await import('./lib/notify.mjs')
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-sl-dedup-'))
+  try {
+    const smaRoot = join(tmp, '.sma')
+    const d = {
+      smaRoot,
+      sessionsDir: join(smaRoot, 'sessions'),
+      statuslineDir: join(smaRoot, 'statusline'),
+      journalDir: join(smaRoot, 'journal'),
+      repoRoot: tmp,
+    }
+    mkdirSync(d.sessionsDir, { recursive: true })
+    const now = 1_000_000
+    let calls = 0
+    const fetchImpl = async () => {
+      calls += 1
+      return { ok: true, status: 200 }
+    }
+    const env = { SMA_WEBHOOK_URL: 'https://selftest.local/hook' }
+    const identity = { terminalId: 'selftest' }
+    const seed = (fp) =>
+      writeFileSync(join(d.sessionsDir, 'selftest.json'), JSON.stringify({ fpStatus: fp, renewTime: new Date(now).toISOString(), label: 'selftest' }))
+    seed('working')
+    const base = { dirs: d, identity, fetchImpl, env }
+    await notify.setPulse('waiting-for-human', { ...base, now })
+    await notify.setPulse('working', { ...base, now: now + 100 })
+    await notify.setPulse('waiting-for-human', { ...base, now: now + 200 }) // inside the cooldown
+    return calls
+  } finally {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  }
+}
+
+/** Install onto a throwaway settings fixture carrying a stub user command; return 1 iff the
+ * user's own line survives FIRST in wrap mode AND every non-statusLine key deep-equal survives. */
+async function selftestWrapPreserve() {
+  const { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync: rf } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-sl-wrap-'))
+  try {
+    const settingsPath = join(tmp, '.claude', 'settings.json')
+    mkdirSync(join(tmp, '.claude'), { recursive: true })
+    const userCmd = 'node -e "process.stdout.write(\'USERLINE\')"'
+    const fixture = { statusLine: { type: 'command', command: userCmd }, hooks: { Stop: [{ x: 1 }] }, model: 'opus' }
+    writeFileSync(settingsPath, JSON.stringify(fixture, null, 2))
+    const d = { smaRoot: join(tmp, '.sma'), statuslineDir: join(tmp, '.sma', 'statusline'), sessionsDir: join(tmp, '.sma', 'sessions') }
+    mkdirSync(d.sessionsDir, { recursive: true })
+    const res = await applyStatuslineInstall('install', { settingsPath, dirs: d, by: 'selftest', now: Date.now() })
+    if (res.status !== 'installed-wrap') return 0
+    const after = JSON.parse(rf(settingsPath, 'utf8'))
+    const keysSurvived = JSON.stringify(after.hooks) === JSON.stringify(fixture.hooks) && after.model === fixture.model
+    const userLine = await wrapUserStatusline({ dirs: d, stdin: '' })
+    return keysSurvived && userLine.startsWith('USERLINE') ? 1 : 0
+  } catch {
+    return 0
+  } finally {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  }
+}
+
+/**
+ * pulse <working|waiting-for-human> [--json] — hook-facing. The Notification hook wiring
+ * invokes `pulse waiting-for-human`; the arg defaults to waiting-for-human. 'idle' is rejected
+ * (derived-only). ALWAYS exit 0. A waiting-for-human transition fires the edge-triggered
+ * webhook (via setPulse) — off by default, one honest event.
+ */
+async function cmdPulse({ positionals, flags, dirs }) {
+  try {
+    const evt = readStdinJson()
+    const sessionToken = windowTokenFrom(evt)
+    let next = typeof positionals[0] === 'string' && positionals[0].trim() ? positionals[0].trim() : 'waiting-for-human'
+    if (next === 'idle') {
+      if (wantsJson(flags)) printJson({ ok: false, rejected: true, reason: 'idle-is-derived' })
+      else process.stdout.write('SMA: «idle» вычисляется автоматически по бездействию — вручную не задаётся.\n')
+      return 0
+    }
+    const registry = await import('./lib/registry.mjs')
+    const notify = await import('./lib/notify.mjs')
+    const identity = registry.resolveTerminalIdentity({ sessionToken })
+    const res = await notify.setPulse(next, { dirs, identity, sessionToken, env: process.env })
+    if (wantsJson(flags)) printJson({ ok: true, changed: !!res.changed, prev: res.prev ?? null })
+    return 0
+  } catch {
+    return 0 // hook-facing — never wedge the session
+  }
 }
 
 /**
@@ -2881,7 +4000,19 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   // non-matching command.
   const runCommand = (cmd) => execSync(cmd, { encoding: 'utf8', timeout: 120_000 })
 
-  const { records, invalid } = predict.scorePlan({ planPath, runCommand })
+  const scored = predict.scorePlan({ planPath, runCommand })
+  let records = scored.records
+  const invalid = scored.invalid
+  // 49.3-02 (D-49.3-10) — stamp every verdict with the CURRENT model before it
+  // lands in the ledger, so the stale-priors guard can tell which model produced
+  // each hit/miss. Fail-open: a stamp failure -> unstamped records, which the
+  // guard's legacy fallback already handles (an unstamped prefix stays valid).
+  try {
+    const mv = await import('./lib/model-version.mjs')
+    records = mv.stampRecords(records, { model: mv.currentModel({ modelDir: dirs.modelDir }) })
+  } catch {
+    /* fail-open — unstamped records remain a valid legacy prefix */
+  }
   for (const r of records) calibration.appendVerdict(r, { calibrationDir: dirs.calibrationDir })
 
   // B19 (49.1-09): every MISS auto-drafts a bug-lesson candidate into
@@ -3159,6 +4290,268 @@ async function cmdChainVerify({ flags, dirs }) {
   }
   process.stdout.write('Разрыв — это улика; НЕ «чинить» перезаписью строки. Единственный путь вперёд — новый chain-start поверх, с сохранённым разрывом.\n')
   return 1
+}
+
+/** Normalize on-disk line endings so the byte-compare is CRLF-agnostic (autocrlf). */
+function normEol(s) {
+  return String(s ?? '').replace(/\r\n/g, '\n')
+}
+
+/**
+ * passport [--build | --verify | --check-badge | --json] (49.3-02, D-49.3-10) —
+ * the calibration-passport surface. NOT hook-facing.
+ *   --build       : buildSnapshot(live dirs) -> renderPassport -> PASSPORT.md,
+ *                   renderBadgeBlock -> README managed block. Exit 0 always
+ *                   (an honest hidden badge is a success, not an error).
+ *   --verify      : fresh clone (committed evidence only) -> re-render from the
+ *                   embedded snapshot -> byte-compare PASSPORT.md + README badge.
+ *                   Prints 1/0 as the LAST line, ALWAYS exit 0 (P49.3-02-A).
+ *   --check-badge : committed snapshot -> renderBadgeBlock vs the live README
+ *                   block. 1/0 last line, exit 0 (P49.3-02-B).
+ *   --json (bare) : canonicalJson(parseSnapshot(committed PASSPORT.md)) — the
+ *                   telemetry read surface for 49.3-07/08/09; missing -> {}.
+ */
+async function cmdPassport({ flags, dirs }) {
+  const passport = await import('./lib/passport.mjs')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const passportPath = join(repoRoot, 'PASSPORT.md')
+  const readmePath = join(repoRoot, 'README.md')
+
+  // ── --build ────────────────────────────────────────────────────────────────
+  if (flags.build === true) {
+    const { atomicWriteRaw } = await import('./lib/fs-atomics.mjs')
+    const snap = passport.buildSnapshot({ dirs })
+    atomicWriteRaw(passportPath, passport.renderPassport(snap))
+    passport.writeManagedBlock({ filePath: readmePath, content: passport.renderBadgeBlock(snap) })
+    if (wantsJson(flags)) {
+      printJson({ built: true, passport: passportPath, readme: readmePath, guard: snap.guard })
+      return 0
+    }
+    process.stdout.write(
+      `SMA passport: собран — состояние бейджа «${snap.guard.status}» (fresh n=${snap.guard.freshN}/${passport.BADGE_MIN_N}). Обновлены ${passportPath} и README-блок.\n`,
+    )
+    return 0
+  }
+
+  // ── --verify (fresh clone, byte-compare) ─────────────────────────────────────
+  if (flags.verify === true) {
+    const { execFileSync } = await import('node:child_process')
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const receipts = await import('./lib/receipts.mjs')
+    const cloneParent = mkdtempSync(join(tmpdir(), 'sma-passport-'))
+    const cloneRoot = join(cloneParent, 'clone')
+    let passportMatch = false
+    let badgeMatch = false
+    try {
+      const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+      receipts.freshClone({ repoRoot, execGit, targetDir: cloneRoot })
+      const committedPassport = normEol(readFileSync(join(cloneRoot, 'PASSPORT.md'), 'utf8'))
+      const snap = passport.parseSnapshot(committedPassport)
+      if (snap) {
+        passportMatch = normEol(passport.renderPassport(snap)) === committedPassport
+        let liveBadge = null
+        try {
+          liveBadge = passport.readManagedBlock(normEol(readFileSync(join(cloneRoot, 'README.md'), 'utf8')))
+        } catch {
+          liveBadge = null
+        }
+        badgeMatch = liveBadge != null && liveBadge === normEol(passport.renderBadgeBlock(snap))
+      }
+    } catch {
+      /* a clone/read failure is a non-reproduction -> 0, never a throw */
+    } finally {
+      rmSync(cloneParent, { recursive: true, force: true, maxRetries: 3 })
+    }
+    const ok = passportMatch && badgeMatch ? 1 : 0
+    if (wantsJson(flags)) printJson({ reproduced: ok, passportMatch, badgeMatch })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (P49.3-02-A scorer contract)
+    return 0
+  }
+
+  // ── --check-badge (no clone; live README vs committed snapshot) ──────────────
+  if (flags['check-badge'] === true) {
+    let ok = 0
+    let expected = null
+    let live = null
+    try {
+      const snap = passport.parseSnapshot(normEol(readFileSync(passportPath, 'utf8')))
+      if (snap) {
+        expected = normEol(passport.renderBadgeBlock(snap))
+        live = passport.readManagedBlock(normEol(readFileSync(readmePath, 'utf8')))
+        ok = live != null && live === expected ? 1 : 0
+      }
+    } catch {
+      ok = 0
+    }
+    if (wantsJson(flags)) printJson({ consistent: ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (P49.3-02-B scorer contract)
+    return 0
+  }
+
+  // ── --json (bare read surface) ───────────────────────────────────────────────
+  let snap = null
+  try {
+    snap = passport.parseSnapshot(normEol(readFileSync(passportPath, 'utf8')))
+  } catch {
+    snap = null
+  }
+  if (!snap) {
+    if (wantsJson(flags)) {
+      process.stdout.write('{}\n')
+      return 0
+    }
+    process.stdout.write('SMA passport: PASSPORT.md ещё не собран — запустите `pnpm sma passport --build`.\n')
+    return 0
+  }
+  if (wantsJson(flags)) {
+    process.stdout.write(passport.canonicalJson(snap) + '\n')
+    return 0
+  }
+  process.stdout.write(
+    `SMA passport: состояние «${snap.guard.status}», fresh n=${snap.guard.freshN}/${passport.BADGE_MIN_N}, модель ${snap.model && snap.model.id ? snap.model.id : '—'}.\n`,
+  )
+  return 0
+}
+
+/**
+ * model [--json] [--count sightings] [--set <id>] (49.3-02, D-49.3-10) — the
+ * model-version guard surface. `--count sightings` prints the integer LAST line
+ * (P49.3-02-C). `--set <id>` records a manual sighting (source 'manual') for a
+ * harness that exposes no model id. NOT hook-facing.
+ */
+async function cmdModel({ flags, dirs }) {
+  const mv = await import('./lib/model-version.mjs')
+  const { BADGE_MIN_N } = await import('./lib/passport.mjs')
+
+  if (typeof flags.set === 'string' && flags.set) {
+    const res = mv.recordModelSighting({ model: flags.set, source: 'manual', modelDir: dirs.modelDir })
+    if (wantsJson(flags)) {
+      printJson(res)
+      return 0
+    }
+    process.stdout.write(`SMA model: ручной sighting «${flags.set}» — ${res.appended ? 'записан' : res.reason || 'пропущен'}.\n`)
+    return 0
+  }
+
+  const timeline = mv.readModelTimeline({ modelDir: dirs.modelDir })
+
+  if (typeof flags.count === 'string') {
+    const n = flags.count === 'sightings' ? timeline.sightings.length : 0
+    if (wantsJson(flags)) printJson({ count: n, of: flags.count })
+    process.stdout.write(`${n}\n`) // integer LAST line (P49.3-02-C scorer contract)
+    return 0
+  }
+
+  const calibration = await import('./lib/calibration.mjs')
+  const { records } = calibration.readLedger({ calibrationDir: dirs.calibrationDir })
+  const predRecords = records.filter((r) => (r.domain ?? 'unknown') !== 'sma.receipts')
+  const guard = mv.modelGuard({ records: predRecords, timeline, minFresh: BADGE_MIN_N })
+
+  if (wantsJson(flags)) {
+    printJson({ current: mv.currentModel({ modelDir: dirs.modelDir }), timeline, guard })
+    return 0
+  }
+  process.stdout.write(
+    `SMA model: текущая модель ${guard.model || '—'}, sightings ${timeline.sightings.length}, guard «${guard.status}» (fresh n=${guard.freshN}/${guard.requiredN}).\n`,
+  )
+  return 0
+}
+
+/**
+ * excavate [repo-path] [--json] [--limit N] [--since ISO] [--max-catches N]
+ *          [--write-drafts] [--stats --metric <approved-lessons|firing-ready-pct|determinism>]
+ *
+ * The adoption wedge (49.3-03, D-49.3-09): mine a STRANGER's git history READ-ONLY
+ * and DETERMINISTICALLY for commit↔revert / typo-fix / red-CI fix-forward evidence,
+ * and print CATCHES — «this reflex would have fired before this push, here». NOT
+ * hook-facing (a direct CLI command; failures exit 1 honestly). Zero network, zero
+ * LLM, nothing mined is ever executed.
+ */
+async function cmdExcavate({ positionals, flags, dirs }) {
+  const excavate = await import('./lib/excavate.mjs')
+
+  // ── instrument mode: one number as the LAST line (predict.mjs scorer contract).
+  if (flags.stats) {
+    const metric = typeof flags.metric === 'string' ? flags.metric : ''
+    const corpusDir =
+      typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
+    const repoPath = positionals[0] || process.cwd()
+    let n = 0
+    try {
+      n = excavate.excavateStats({
+        metric,
+        corpusDir,
+        repoPath,
+        runGit: excavate.defaultRunGit(repoPath),
+      })
+    } catch {
+      n = metric === 'determinism' ? 0 : 0
+    }
+    process.stdout.write(`${n}\n`) // numeric LAST line (D-49.3-16)
+    return 0
+  }
+
+  // ── mining mode.
+  const repoPath = positionals[0] || process.cwd()
+  const runGit = excavate.defaultRunGit(repoPath)
+
+  // read-only repo check via rev-parse (argv-array, shell off).
+  try {
+    runGit(['rev-parse', '--is-inside-work-tree'])
+  } catch {
+    process.stderr.write(`SMA excavate: «${repoPath}» is not a git repository (or git is unavailable).\n`)
+    return 1
+  }
+
+  // origin remote — best-effort; a missing remote just means sha-only links.
+  let remoteUrl = null
+  try {
+    remoteUrl = String(runGit(['remote', 'get-url', 'origin']) || '').trim() || null
+  } catch {
+    remoteUrl = null
+  }
+
+  const limit = Number.isFinite(Number(flags.limit)) ? Number(flags.limit) : 2000
+  const since = typeof flags.since === 'string' ? flags.since : undefined
+  const maxCatches = Number.isFinite(Number(flags['max-catches'])) ? Number(flags['max-catches']) : 25
+
+  let mined
+  try {
+    mined = excavate.mineRepo({ repoPath, runGit, limit, since })
+  } catch (err) {
+    process.stderr.write(`SMA excavate: mining failed — ${String((err && err.message) ?? err)}\n`)
+    return 1
+  }
+  const catches = mined.catches.slice(0, maxCatches)
+
+  if (wantsJson(flags)) {
+    printJson({ catches, stats: mined.stats, remoteRecognized: !!excavate.commitUrl(remoteUrl, 'a'.repeat(40)) })
+    return 0
+  }
+
+  // opt-in draft writing (T-49.3-03C: default only PRINTS).
+  if (flags['write-drafts']) {
+    const repoLabel = remoteUrl || repoPath
+    const draftsDir = join('.claude', 'memory', 'drafts')
+    let wrote = 0
+    for (const c of catches) {
+      const res = excavate.draftLessonFromCatch({ catch: c, repoLabel, dirs: { draftsDir } })
+      if (res.drafted) {
+        wrote++
+        process.stdout.write(`  draft: ${res.path}\n`)
+      } else if (res.error) {
+        process.stdout.write(`  skipped (${res.error})\n`)
+      }
+    }
+    process.stdout.write(
+      `\n${wrote} draft(s) written to ${draftsDir}. Review + promote through the 3-condition gate (move OUT of drafts/ into .claude/memory/).\n`,
+    )
+    return 0
+  }
+
+  process.stdout.write(excavate.formatCatches(catches, { remoteUrl }))
+  return 0
 }
 
 /**
@@ -4433,6 +5826,244 @@ async function cmdSubagentReceipts({ flags, dirs }) {
   return 0
 }
 
+// ── 49.3-06 (D-49.3-12): self-tuning enforcement — ladder / tune / curriculum ───
+
+/**
+ * Assemble the ladder engine's inputs ONCE from the live journal + calibration
+ * ledger + the tracked registry: classifies every fire and computes the 30d benefit
+ * stats. Every downstream verb (ladder/tune/curriculum) reads from this. Fail-open.
+ */
+async function ladderInputs(dirs, { now } = {}) {
+  const journal = await import('./lib/journal.mjs')
+  const calibration = await import('./lib/calibration.mjs')
+  const ladderLib = await import('./lib/ladder.mjs')
+  const nowMs = now ?? Date.now()
+  const windowMs = 30 * 24 * 60 * 60 * 1000
+
+  let events = []
+  try {
+    events = journal.readJournal({ journalDir: dirs.journalDir }).events
+  } catch {
+    /* fail-open */
+  }
+  let ledgers = []
+  try {
+    ledgers = calibration.readLedger({ calibrationDir: dirs.calibrationDir }).records
+  } catch {
+    /* fail-open */
+  }
+  const ladderPath = await ladderPathFrom(dirs)
+  const ladder = ladderLib.readLadder({ ladderPath })
+  const ruleDomains = {}
+  for (const r of ladder.rules) if (r && r.ruleId && r.domain) ruleDomains[r.ruleId] = r.domain
+  const classified = ladderLib.classifyFires({ events, ledgers, now: nowMs, ruleDomains })
+  const stats = ladderLib.benefitStats({ classified, windowMs, now: nowMs })
+  return { journal, calibration, ladderLib, ladderPath, ladder, events, ledgers, classified, stats, nowMs, windowMs }
+}
+
+/** A note/retired reflex rule with evidence rows = a demoted-as-noise rule. */
+function isDemotedNoise(r) {
+  return r && r.kind === 'reflex' && (r.tier === 'note' || r.tier === 'retired') && Array.isArray(r.evidence) && r.evidence.length > 0
+}
+
+/**
+ * ladder [--json | --count-autofix | --noise-demoted-pct] — the tier table + benefit
+ * stats. Each --count/--pct flag prints a BARE integer last line (the scorer contract)
+ * and exits 0. This plan's own predictions (P49.3-06-01/02) are scored from these.
+ */
+async function cmdLadder({ flags, dirs }) {
+  const { ladder, stats } = await ladderInputs(dirs)
+
+  if (flags['count-autofix']) {
+    // Rules at 'auto-fix' whose history rows ALL carry non-empty evidence journalRefs —
+    // an evidence-free hand-set tier is excluded (and is a LADDER-EVIDENCE lint failure).
+    const n = ladder.rules.filter(
+      (r) =>
+        r &&
+        r.tier === 'auto-fix' &&
+        Array.isArray(r.history) &&
+        r.history.length > 0 &&
+        r.history.every((h) => Array.isArray(h.evidence) && h.evidence.some((e) => e && Array.isArray(e.journalRefs) && e.journalRefs.length > 0)),
+    ).length
+    if (wantsJson(flags)) printJson({ autofix_rules_evidenced: n })
+    process.stdout.write(`${n}\n`)
+    return 0
+  }
+
+  if (flags['noise-demoted-pct']) {
+    const demoted = ladder.rules.filter(isDemotedNoise).length
+    const fired = new Set(Object.values(stats).filter((s) => s.kind === 'reflex' && s.fires > 0).map((s) => s.ruleId)).size
+    const pct = fired > 0 ? Math.floor((100 * demoted) / fired) : 0 // honest 0 on empty denominator
+    if (wantsJson(flags)) printJson({ noise_demoted_pct: pct, demoted, reflex_fired: fired })
+    process.stdout.write(`${pct}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson({ ladder, stats })
+    return 0
+  }
+  process.stdout.write(`SMA ladder: ${ladder.rules.length} rule(s) on the registry.\n`)
+  for (const r of ladder.rules) {
+    const s = stats[r.ruleId]
+    const bits = s ? `fires ${s.fires}, heeded ${s.heeded}, ignored-broke ${s.ignoredBroke}` : 'no fires in window'
+    process.stdout.write(`  ${r.ruleId} [${r.kind}] tier=${r.tier} — ${bits}\n`)
+  }
+  return 0
+}
+
+/** A real execFileSync runner for `tune fix` — the injected boundary the libs never cross. */
+async function ladderCommandRunner(repoRoot) {
+  const { execFileSync } = await import('node:child_process')
+  return (command) => {
+    const parts = String(command).trim().split(/\s+/)
+    return execFileSync(parts[0], parts.slice(1), { cwd: repoRoot, encoding: 'utf8' })
+  }
+}
+
+/**
+ * tune — the tuner surface (never commits, never pushes):
+ *   tune [--propose | --apply] [--json]           propose (default, writes NOTHING) / apply the diff
+ *   tune benefit [--json | --ignored-broke-trend-pct]  per-rule benefit table + the trend scorer
+ *   tune fix <ruleId>                              apply a rule's allowlisted fix as a working-tree diff
+ *   tune incident <scope> --rule <ruleId>          the honest manual broke-attribution channel (scored)
+ */
+async function cmdTune({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  const inp = await ladderInputs(dirs)
+  const { ladderLib, ladderPath, ladder, classified, stats, nowMs } = inp
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  // tune benefit — per-rule benefit table + the ignored-broke trend scorer.
+  if (sub === 'benefit') {
+    if (flags['ignored-broke-trend-pct']) {
+      const broke = classified.filter((c) => c.classification === 'ignored-broke').map((c) => Date.parse(c.ts)).filter(Number.isFinite)
+      const THIRTY = 30 * 24 * 60 * 60 * 1000
+      const minTs = broke.length ? Math.min(...broke) : null
+      const base = minTs == null ? 0 : broke.filter((t) => t <= minTs + THIRTY).length
+      const trailing = broke.filter((t) => t >= nowMs - THIRTY).length
+      const pct = base > 0 ? Math.floor((100 * trailing) / base) : 100 // no unearned win on an empty base
+      if (wantsJson(flags)) printJson({ ignored_broke_trend_pct: pct, base, trailing })
+      process.stdout.write(`${pct}\n`)
+      return 0
+    }
+    if (wantsJson(flags)) {
+      printJson({ stats })
+      return 0
+    }
+    process.stdout.write('SMA tune benefit:\n')
+    for (const s of Object.values(stats)) {
+      process.stdout.write(`  ${s.ruleId} [${s.kind}] fires=${s.fires} heeded=${s.heeded} ignored-ok=${s.ignoredOk} ignored-broke=${s.ignoredBroke} spanDays=${Math.round(s.spanDays)}\n`)
+    }
+    return 0
+  }
+
+  // tune fix <ruleId> — apply an allowlisted registered fix as a working-tree diff.
+  if (sub === 'fix') {
+    const ruleId = positionals[1]
+    if (!ruleId) {
+      process.stderr.write('usage: pnpm sma tune fix <ruleId>\n')
+      return 1
+    }
+    let runCommand
+    try {
+      runCommand = await ladderCommandRunner(repoRoot)
+    } catch {
+      runCommand = null
+    }
+    const res = ladderLib.applyFix({ ruleId, runCommand, ladderPath, journalDir: dirs.journalDir, terminalId: 'tune-fix' })
+    if (wantsJson(flags)) printJson(res)
+    else process.stdout.write(res.ok ? `SMA tune fix: ${ruleId} applied (greenApplies=${res.greenApplies}). Review the working-tree diff, then commit yourself.\n` : `SMA tune fix: ${ruleId} not applied — ${res.reason ?? res.error ?? 'no allowlisted fix'}.\n`)
+    return 0
+  }
+
+  // tune incident <scope> --rule <ruleId> — the honest, SCORED manual broke-attribution.
+  if (sub === 'incident') {
+    const scope = positionals[1]
+    const ruleId = typeof flags.rule === 'string' ? flags.rule : null
+    if (!scope || !ruleId) {
+      process.stderr.write('usage: pnpm sma tune incident <scope> --rule <ruleId>\n')
+      return 1
+    }
+    try {
+      inp.journal.appendEvent({ type: 'incident', actors: ['tune-incident'], scope, detail: { ruleId, scope } }, { terminalId: 'tune-incident', journalDir: dirs.journalDir })
+    } catch {
+      /* fail-open */
+    }
+    if (wantsJson(flags)) printJson({ recorded: true, ruleId, scope })
+    else process.stdout.write(`SMA tune incident: recorded a break on ${ruleId} at ${scope} — it now counts as ignored-broke evidence.\n`)
+    return 0
+  }
+
+  // tune [--propose | --apply] — the default proposal surface.
+  let checkFixture = () => null
+  try {
+    const stpa = await import('./lib/stpa.mjs')
+    const report = stpa.shadowRunFixtures({ env: process.env, dirs })
+    checkFixture = (ruleId) => {
+      const row = report.find((r) => r.gateId === ruleId || r.killEnv === ruleId)
+      return row ? { fixtureTrips: row.fixtureTrips, compensated: false } : null // unknown -> conservative refuse
+    }
+  } catch {
+    /* fail-open — no STPA -> conservative refuse default */
+  }
+  const proposals = ladderLib.proposeTierChanges({ ladder, stats, checkFixture })
+
+  if (flags.apply) {
+    const res = ladderLib.applyProposals({ proposals, ladderPath, journalDir: dirs.journalDir, terminalId: 'tune-apply' })
+    if (wantsJson(flags)) printJson({ applied: res.applied, proposals })
+    else process.stdout.write(`SMA tune --apply: ${res.applied} tier change(s) written to ${ladderPath} (working-tree diff only — review \`git diff\` and commit yourself).\n`)
+    return 0
+  }
+
+  // default --propose: print proposals + evidence, write NOTHING.
+  if (wantsJson(flags)) {
+    printJson({ proposals })
+    return 0
+  }
+  process.stdout.write(`SMA tune --propose: ${proposals.length} proposal(s) (advisory — nothing written).\n`)
+  for (const p of proposals) {
+    if (p.kind === 'gate-candidate') {
+      process.stdout.write(`  ${p.ruleId}: GATE-CANDIDATE — ${p.reason}\n`)
+    } else {
+      const e = (p.evidence && p.evidence[0]) || {}
+      process.stdout.write(`  ${p.ruleId}: ${p.from} → ${p.to}${p.refused ? ' [REFUSED: ' + p.refusalReason + ']' : ''} (fires=${e.fires ?? 0}, ignored-broke=${e.ignoredBroke ?? 0})\n`)
+    }
+  }
+  return 0
+}
+
+/**
+ * curriculum [--json | --latest] — assemble the weekly miss-curriculum for the current
+ * ISO week: cluster misses -> prediction templates -> weak-spots brief. --latest prints
+ * the newest brief path. Fail-open; NOT hook-facing.
+ */
+async function cmdCurriculum({ flags, dirs }) {
+  const curriculum = await import('./lib/curriculum.mjs')
+  if (flags.latest) {
+    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
+    if (wantsJson(flags)) printJson(latest)
+    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `pnpm sma curriculum`.\n')
+    return 0
+  }
+
+  const inp = await ladderInputs(dirs)
+  const week = curriculum.isoWeek(Date.now())
+  const clusters = curriculum.clusterMisses({ ledgers: inp.ledgers, events: inp.events, classified: inp.classified, windowMs: inp.windowMs, now: inp.nowMs })
+  const templates = curriculum.predictionTemplates({ clusters, week, dirs })
+  const stpaFixture = () => null
+  const proposals = inp.ladderLib.proposeTierChanges({ ladder: inp.ladder, stats: inp.stats, checkFixture: stpaFixture })
+  const brief = curriculum.weakSpotsBrief({ clusters, proposals, templates, week, dirs })
+
+  if (wantsJson(flags)) {
+    printJson({ week, clusters, templates: templates.length, brief: brief.path })
+    return 0
+  }
+  process.stdout.write(`SMA curriculum ${week.year}W${String(week.week).padStart(2, '0')}: ${clusters.length} cluster(s), ${templates.length} template(s).\n`)
+  process.stdout.write(`  brief: ${brief.path}\n`)
+  return 0
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
@@ -4981,13 +6612,996 @@ async function cmdNearmiss({ positionals, flags, dirs }) {
   return 0
 }
 
-const HOOK_FACING = new Set(['session-start', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule'])
+/**
+ * cmdPreflight — 49.3-10 (D-49.3-17): the already-built pre-dispatch gate. Given a
+ * plan file it prints the deterministic built / partial / absent verdict of the plan's
+ * must_haves against the REAL tree, before any executor is dispatched. Zero LLM tokens.
+ *
+ *   preflight <plan> [--json]   → human summary (or the full result object)
+ *   preflight <plan> --count    → the verdict CODE as the LAST stdout line (0/1/2)
+ *   preflight <plan> --run-verify → additionally run ONLY isSafeCommand-allowlisted
+ *                                   verify commands (default path spawns nothing)
+ *   preflight --selftest        → re-run the built/partial/absent fixtures twice;
+ *                                 print 1 iff every verdict is correct AND identical
+ *
+ * Direct-CLI, may exit nonzero (mirrors the verdict) — NOT hook-facing. Artifact paths
+ * resolve against process.cwd() so a real plan run from the platform root resolves its
+ * `../sma/…`/`src/…` paths correctly; the selftest resolves against the repo root
+ * computed from this file's location so it is cwd-independent and portable.
+ */
+async function cmdPreflight({ positionals, flags, dirs }) {
+  const preflight = await import('./lib/preflight.mjs')
+  const repoRoot = join(MODULE_DIR, '..', '..') // scripts/sma → repo root (cwd-independent)
+
+  // ── selftest: three bundled fixtures, twice, must be correct AND identical (P49.3-10-A).
+  if (flags.selftest === true) {
+    const fixtures = [
+      { name: 'built', expect: 0 },
+      { name: 'partial', expect: 1 },
+      { name: 'absent', expect: 2 },
+    ]
+    let ok = 1
+    try {
+      for (const f of fixtures) {
+        const planPath = join(repoRoot, 'scripts', 'sma', 'fixtures', 'preflight', f.name, 'PLAN.md')
+        const r1 = await preflight.preflightPlan({ planPath, rootDir: repoRoot })
+        const r2 = await preflight.preflightPlan({ planPath, rootDir: repoRoot })
+        if (r1.code !== f.expect || r2.code !== f.expect || r1.code !== r2.code) ok = 0
+      }
+    } catch {
+      ok = 0
+    }
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-49.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  const planPath = positionals[0]
+  if (!planPath) {
+    process.stderr.write('usage: pnpm sma preflight <plan-path> [--count] [--json] [--run-verify]\n')
+    return 1
+  }
+
+  // Read-only exec runner (opt-in only) — the cmdReverify pattern: a nonzero exit is an
+  // OBSERVATION, never a crash. Wired ONLY when --run-verify is passed.
+  let runVerify
+  if (flags['run-verify'] === true) {
+    const { execSync } = await import('node:child_process')
+    runVerify = (cmd, o = {}) => {
+      try {
+        const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? process.cwd() })
+        return { stdout, exitCode: 0 }
+      } catch (err) {
+        return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
+      }
+    }
+  }
+
+  const result = await preflight.preflightPlan({
+    planPath,
+    rootDir: process.cwd(),
+    optVerify: flags['run-verify'] === true,
+    runVerify,
+  })
+
+  if (flags.count === true) {
+    process.stdout.write(`${result.code}\n`) // verdict CODE as LAST line (P49.3-10-C)
+    return result.code === 0 ? 0 : result.code
+  }
+
+  if (wantsJson(flags)) {
+    printJson(result)
+    return result.code === 0 ? 0 : result.code
+  }
+
+  const label = { built: 'BUILT → skip', partial: 'PARTIAL → reconcile-only', absent: 'ABSENT → execute' }[
+    result.verdict
+  ]
+  process.stdout.write(`SMA preflight «${planPath}»: ${label} (code ${result.code}, confidence ${result.confidence})\n`)
+  if (result.error) process.stdout.write(`  ⚠ ${result.error}\n`)
+  for (const a of result.artifacts ?? []) {
+    const mark = a.satisfied ? '✓' : a.exists ? '~' : '✗'
+    const why = a.satisfied ? 'satisfied' : a.exists ? 'present, needle missing' : 'missing'
+    process.stdout.write(`  ${mark} ${a.path}${a.contains ? ` (contains: ${a.contains})` : ''} — ${why}\n`)
+  }
+  if (result.verify && result.verify.length) {
+    process.stdout.write('  verify commands:\n')
+    for (const v of result.verify) process.stdout.write(`    [${v.status}] ${v.inner ?? v.command}\n`)
+  }
+  return result.code === 0 ? 0 : result.code
+}
+
+/**
+ * `sma arena` — the comparative benchmark arena scorer + static graphs page (49.3-11,
+ * D-49.3-18, BL-142). Direct-CLI, NOT hook-facing; the score path spends zero LLM tokens
+ * and reads the 49.2-09 spend-adapter's version tags as its SOLE cost source (D-49.3-02).
+ *
+ *   arena report <records.json> [--out <html>] [--json]
+ *        Score every arm, aggregate on cost-per-RESULT (M1+M2, cost carried not sorted),
+ *        and emit a STATIC HTML page (the `sma report` posture — no daemon, no `sma ui`)
+ *        showing every arm's cost row INCLUDING where SMA loses, the separate safety axis,
+ *        and a Munich last-updated footer. --json prints the aggregate instead.
+ *   arena --selftest
+ *        Re-score + re-render the committed fixture TWICE (at two different clocks); print 1
+ *        iff the aggregate is byte-identical AND the report BODY (footer excluded) is
+ *        byte-identical — the determinism proof (P49.3-11-A). Numeric LAST line.
+ *   arena --selftest-negative
+ *        Score the fixture where SMA is the MOST expensive per task; print 1 iff SMA's cost
+ *        row is present AND the ranking is by cost-per-result (SMA ranked first on M1+M2),
+ *        NOT cost-per-task — the anti-cherry-pick proof (P49.3-11-B). Numeric LAST line.
+ *
+ * The negatives are structurally un-droppable (aggregateArena's `suppressed` is empty by
+ * construction); a suppressed negative or a non-reproducible page is CONS-49.3-11-A.
+ */
+async function cmdArena({ positionals, flags }) {
+  const arena = await import('./lib/arena.mjs')
+  const { readFileSync, writeFileSync } = await import('node:fs')
+  const fixturePath = join(MODULE_DIR, 'fixtures', 'arena', 'sample-results.json')
+  const knownVersions = (await import('./lib/spend-adapter.mjs')).ADAPTER_VERSIONS.map((a) => a.version)
+
+  const loadArms = (path) => {
+    const doc = JSON.parse(readFileSync(path, 'utf8'))
+    const arms = Array.isArray(doc.arms) ? doc.arms : Array.isArray(doc) ? doc : []
+    return arms.map((r) => arena.scoreArm(r, { adapterVersions: knownVersions }))
+  }
+
+  // ── --selftest: deterministic re-score + re-render (P49.3-11-A). Numeric last line.
+  if (flags.selftest === true) {
+    let ok = 1
+    try {
+      const a1 = arena.aggregateArena(loadArms(fixturePath))
+      const a2 = arena.aggregateArena(loadArms(fixturePath))
+      if (JSON.stringify(a1) !== JSON.stringify(a2)) ok = 0
+      // Render twice at DIFFERENT clocks — the BODY must be clock-independent.
+      const h1 = arena.stripGeneratedTimestamp(arena.renderArenaReport(a1, { now: Date.UTC(2026, 0, 1, 8, 0) }))
+      const h2 = arena.stripGeneratedTimestamp(arena.renderArenaReport(a2, { now: Date.UTC(2026, 6, 9, 20, 44) }))
+      if (h1 !== h2) ok = 0
+    } catch {
+      ok = 0
+    }
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-49.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── --selftest-negative: the negative result survives (P49.3-11-B). Numeric last line.
+  if (flags['selftest-negative'] === true) {
+    let ok = 1
+    try {
+      const scored = loadArms(fixturePath).filter((s) => s.arm !== 'sma-solo-recon')
+      const agg = arena.aggregateArena(scored)
+      const sma = agg.arms.find((a) => a.arm === 'sma')
+      const maxCost = Math.max(...agg.arms.map((a) => a.m3MeanCost))
+      const rankedFirst = agg.ranking[0] && agg.ranking[0].arm === 'sma'
+      const cheapest = [...agg.arms].sort((a, b) => a.m3MeanCost - b.m3MeanCost)[0]
+      const html = arena.renderArenaReport(agg, { now: Date.now() })
+      // SMA is the most expensive per task, is NOT the cheapest, ranks FIRST on M1+M2,
+      // its cost row is present on the page, and no arm was suppressed.
+      const smaCostShown = html.includes(String(sma.m3MeanCost))
+      if (!sma) ok = 0
+      else if (sma.m3MeanCost !== maxCost) ok = 0
+      else if (cheapest.arm === 'sma') ok = 0
+      else if (!rankedFirst) ok = 0
+      else if (!smaCostShown) ok = 0
+      else if (agg.suppressed.length !== 0) ok = 0
+    } catch {
+      ok = 0
+    }
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-49.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── arena report <records.json> [--out <html>] [--json]
+  const sub = positionals[0]
+  if (sub !== 'report') {
+    process.stderr.write('usage: pnpm sma arena report <records.json> [--out <html>] [--json] | arena --selftest | arena --selftest-negative\n')
+    return 1
+  }
+  const recordsPath = positionals[1]
+  if (!recordsPath) {
+    process.stderr.write('usage: pnpm sma arena report <records.json> [--out <html>]\n')
+    return 1
+  }
+  let scored
+  try {
+    scored = loadArms(recordsPath)
+  } catch (err) {
+    process.stderr.write(`SMA arena: не удалось прочитать записи «${recordsPath}»: ${err.message}\n`)
+    return 1
+  }
+  const agg = arena.aggregateArena(scored)
+
+  if (wantsJson(flags)) {
+    printJson(agg)
+    return 0
+  }
+
+  const html = arena.renderArenaReport(agg, { now: Date.now() })
+  const outPath = typeof flags.out === 'string' && flags.out ? flags.out : join(process.cwd(), 'benchmark-arena.html')
+  writeFileSync(outPath, html, 'utf8')
+  process.stdout.write(`SMA arena: страница собрана — ${outPath} (${agg.arms.length} рук; лидер по цене за результат: ${agg.ranking[0] ? agg.ranking[0].arm : '-'})\n`)
+  if (agg.underpowered.length) process.stdout.write(`  предварительные (n<${arena.MIN_ARENA_N}): ${agg.underpowered.join(', ')}\n`)
+  return 0
+}
+
+/**
+ * `sma batch` — the /sma-batch MIDDLE lane (49.3-12, D-49.3-19, BL-149). The lane between
+ * an inline fix and a full phase: 2-4 named backlog items (or a self-assembled compatible
+ * set), grill-lite per item, ONE executor (atomic commit each), MANDATORY `sma reverify`
+ * receipts, a surgical backlog check-off, and ONE batch note — never a phase folder.
+ *
+ * Two hard guards (batch.mjs, deterministic): a RISK FILTER rejects anything phase-class
+ * («this is a phase») up front, and an EJECT rule throws a growing item back to the backlog
+ * while the batch continues. Consume-never-reimplement (D-49.3-02): parse-backlog.ts's
+ * grammar reads, grill.mjs gates, `sma reverify` (49.2-03) verifies, `sma preflight`
+ * (49.3-10) guards — batch composes; the only new writer is `checkOffBacklogItem`.
+ *
+ *   batch <BL-ids...>            select the named items (2-4), risk-filter up front, prepare the ordered run
+ *   batch --assemble            auto-pick a compatible set (same area, S/M, non-overlapping files)
+ *   batch ... --json            emit the prepared batch object (ordered items + guard status)
+ *   batch --selftest-riskfilter classify a bundled fixture set; print 1 iff every classification is correct (P49.3-12-A)
+ *   batch --selftest-checkoff   flip one line in a bundled fixture BACKLOG.md; print 1 iff surgical (P49.3-12-C)
+ *
+ * Direct-CLI, NOT hook-facing (it may exit 1). node cannot spawn a Claude executor, so the
+ * CLI does the DETERMINISTIC half (parse + risk gate + selection + preflight) and prepares
+ * the ordered batch; the `/sma-batch` skill drives the executor + `sma reverify` + writes
+ * the check-off using this preparation (runBatch is the shared, fully-tested driver).
+ */
+async function cmdBatch({ positionals, flags, dirs }) {
+  const batch = await import('./lib/batch.mjs')
+
+  // ── --selftest-riskfilter: bundled fixture, every classification must match (P49.3-12-A).
+  if (flags['selftest-riskfilter'] === true) {
+    const fixture = [
+      { item: { id: 'BL-901', title: 'Add migration 099', description: 'schema change' }, allowed: false },
+      { item: { id: 'BL-902', title: 'New inbound webhook', description: 'a webhook route' }, allowed: false },
+      { item: { id: 'BL-903', title: 'New AI agent', description: 'orchestrator agent' }, allowed: false },
+      { item: { id: 'BL-904', title: 'New /crm surface', description: 'a new dashboard page' }, allowed: false },
+      { item: { id: 'BL-905', title: 'Weekly cron poll', description: 'cron job' }, allowed: false },
+      { item: { id: 'BL-906', title: 'Fix RU button label', description: 'copy tweak', size: 'S', files: ['a.ts'] }, allowed: true },
+      { item: { id: 'BL-907', title: 'Bump retry delay', description: 'timeout to 5s', size: 'S', files: ['b.ts'] }, allowed: true },
+      { item: { id: 'BL-908', title: 'Sort list ascending', description: 'by date', size: 'M', files: ['c.ts'] }, allowed: true },
+    ]
+    let ok = 1
+    try {
+      for (const f of fixture) {
+        if (batch.classifyBatchRisk(f.item).allowed !== f.allowed) ok = 0
+      }
+    } catch {
+      ok = 0
+    }
+    if (wantsJson(flags)) printJson({ selftest: 'riskfilter', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-49.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── --selftest-checkoff: surgical single-line flip over a bundled fixture (P49.3-12-C).
+  if (flags['selftest-checkoff'] === true) {
+    const fixture = [
+      '# Backlog',
+      '',
+      '## Backlog',
+      '',
+      '- [ ] **BL-801** · Первая — desc. `size:S` `area:crm` `added:2026-07-09`',
+      '- [ ] **BL-802** · Вторая — desc. `size:M` `area:crm` `added:2026-07-09`',
+      '- [x] **BL-803** · Третья — desc. `size:S` `area:crm` `added:2026-07-08`',
+      '',
+    ].join('\n')
+    let ok = 1
+    try {
+      const { changed, backlogText } = batch.checkOffBacklogItem({ backlogText: fixture, id: 'BL-802' })
+      const before = fixture.split('\n')
+      const after = backlogText.split('\n')
+      if (!changed || before.length !== after.length) ok = 0
+      for (let i = 0; i < before.length; i++) {
+        const expected = before[i].includes('**BL-802**') ? before[i].replace('- [ ]', '- [x]') : before[i]
+        if (after[i] !== expected) ok = 0
+      }
+      // a missing id and an already-[x] line must both be no-ops
+      if (batch.checkOffBacklogItem({ backlogText: fixture, id: 'BL-777' }).changed) ok = 0
+      if (batch.checkOffBacklogItem({ backlogText: fixture, id: 'BL-803' }).changed) ok = 0
+    } catch {
+      ok = 0
+    }
+    if (wantsJson(flags)) printJson({ selftest: 'checkoff', ok })
+    process.stdout.write(`${ok}\n`)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── the real preparation path: read + parse the backlog, select/assemble, risk-filter up front.
+  const { readFileSync } = await import('node:fs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const backlogPath = join(repoRoot, '.planning', 'BACKLOG.md')
+  let items = []
+  try {
+    items = readBacklogItems(readFileSync(backlogPath, 'utf8'))
+  } catch {
+    items = []
+  }
+
+  const sel = flags.assemble === true
+    ? batch.assembleCompatibleBatch(items)
+    : batch.selectBatch(positionals, items)
+
+  if (!sel.ok) {
+    if (wantsJson(flags)) printJson({ ok: false, reason: sel.reason })
+    process.stderr.write(`SMA batch: ${sel.reason}\n`)
+    return 1
+  }
+
+  // UP-FRONT risk filter — a single phase-class item rejects the WHOLE batch, named.
+  const phaseClass = sel.items.map((it) => ({ it, risk: batch.classifyBatchRisk(it) })).filter((x) => !x.risk.allowed)
+  if (phaseClass.length) {
+    const ids = phaseClass.map((x) => x.it.id).join(', ')
+    if (wantsJson(flags)) printJson({ ok: false, reason: 'this is a phase', phaseClass: phaseClass.map((x) => x.it.id) })
+    process.stderr.write(`SMA batch: «this is a phase» — ${ids} is phase-class (new collection / migration / webhook / agent / cron / new surface). Plan it as a phase, not a batch.\n`)
+    return 1
+  }
+
+  // Prepared, ordered batch — the /sma-batch skill drives executor + reverify + check-off.
+  const prepared = {
+    ok: true,
+    mode: flags.assemble === true ? 'assemble' : 'named',
+    count: sel.items.length,
+    backlogPath,
+    items: sel.items.map((it) => ({ id: it.id, title: it.title, size: it.size, area: it.area, files: it.files ?? [] })),
+    order: ['preflight', 'grill-lite', 'executor(atomic commit)', 'reverify(mandatory receipt)', 'checkOffBacklogItem'],
+    guards: { riskFilter: 'passed (no phase-class item)', eject: 'a growing item returns to the backlog; the batch continues' },
+  }
+  if (wantsJson(flags)) {
+    printJson(prepared)
+    return 0
+  }
+  process.stdout.write(`SMA batch — ${prepared.count} item(s) prepared (${prepared.mode}), risk filter passed:\n`)
+  for (const it of prepared.items) {
+    process.stdout.write(`  • ${it.id} [${it.size ?? '?'}·${it.area ?? '?'}] ${it.title}\n`)
+  }
+  process.stdout.write('  order per item: preflight → grill-lite → executor (atomic commit) → sma reverify (mandatory receipt) → check off\n')
+  process.stdout.write('  receipts are MANDATORY — an item is checked off ONLY on a clean reverify receipt; a growing item is ejected back to the backlog.\n')
+  return 0
+}
+
+/**
+ * readBacklogItems(text) — the CLI-side reader over parse-backlog.ts's `## Backlog` grammar
+ * (`- [ ] **BL-NNN** · Title — desc \`size:\` \`area:\` \`added:\` \`files:\``). batch.mjs
+ * (the lib named by the D-49.3-02 prohibition) writes NO parser; this thin grammar-follower
+ * lives at the CLI boundary only, mirroring the inline BL-id reader slots.mjs already uses.
+ * An optional \`files:a.ts;b.ts\` tag feeds the overlap guard; items without it are treated
+ * as non-overlapping.
+ */
+function readBacklogItems(raw) {
+  const lines = String(raw ?? '').split(/\r?\n/)
+  const items = []
+  let inBacklog = false
+  const ITEM_RE = /^-\s+\[([ xX])\]\s+\*\*(BL-\d+)\*\*\s*(.*)$/
+  const TAG_RE = /`([a-z]+):([^`]+)`/gi
+  for (const line of lines) {
+    if (/^##\s+Backlog\b/i.test(line)) { inBacklog = true; continue }
+    if (/^##\s+/.test(line)) { inBacklog = false; continue }
+    if (!inBacklog) continue
+    const m = line.match(ITEM_RE)
+    if (!m) continue
+    const done = m[1].toLowerCase() === 'x'
+    const id = m[2]
+    let rest = m[3].trim()
+    const tags = {}
+    rest = rest.replace(TAG_RE, (_f, k, v) => { tags[k.toLowerCase()] = v.trim(); return '' }).trim()
+    rest = rest.replace(/^[·•]\s*/, '').trim()
+    let title = rest
+    let description = ''
+    const dash = rest.match(/\s[—–-]\s/)
+    if (dash && dash.index !== undefined) {
+      title = rest.slice(0, dash.index).trim()
+      description = rest.slice(dash.index + dash[0].length).trim()
+    }
+    items.push({
+      id,
+      title,
+      description,
+      done,
+      size: tags.size ?? null,
+      area: tags.area ?? null,
+      added: tags.added ?? null,
+      phase: tags.phase ?? null,
+      files: tags.files ? tags.files.split(/[;,]/).map((s) => s.trim()).filter(Boolean) : [],
+    })
+  }
+  return items
+}
+
+/**
+ * session-end (HOOK_FACING) — 49.3-13 (D-49.3-22a) TRIGGER 1: the NEW SessionEnd hook.
+ * Release ALL of this window's own claims (marked «сессия завершена»). Silent, exit-0
+ * unconditional (main() wraps HOOK_FACING). It does NOT touch the Stop hook (Stop fires
+ * per turn — RESEARCH Pitfall 1). Tolerant hook-stdin read; fully fail-open.
+ */
+async function cmdSessionEnd({ dirs }) {
+  try {
+    const evt = readStdinJson()
+    const sessionToken = windowTokenFrom(evt)
+    const registry = await import('./lib/registry.mjs')
+    const claims = await import('./lib/claims.mjs')
+    const identity = registry.resolveTerminalIdentity({ sessionToken })
+    claims.sessionEnd({ identity, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir })
+  } catch {
+    /* fail-open — a session-end failure must never surface */
+  }
+  return 0
+}
+
+/**
+ * ask (direct-CLI, NOT hook-facing) — 49.3-13 (D-49.3-23) the DEMAND STUB. `ask <terminal>
+ * "<question>"` prints the target's FULL fingerprint + journals the unmet question so demand
+ * is MEASURED, not assumed (>=10 unmet cases = the V3.1 ask-bus trigger). `ask --unmet-count`
+ * prints the unmet count as a bare LAST line (scorer contract). It is a STUB: opens no
+ * socket, routes no message — the ask-bus is DEFERRED to V3.1 (D-49.2-05 BRIDGE).
+ */
+async function cmdAsk({ positionals, flags, dirs }) {
+  const fingerprint = await import('./lib/fingerprint.mjs')
+  if (flags['unmet-count']) {
+    const n = fingerprint.askUnmetCount({ journalDir: dirs.journalDir })
+    if (wantsJson(flags)) {
+      printJson({ unmetCount: n })
+      return 0
+    }
+    process.stdout.write(`${n}\n`)
+    return 0
+  }
+  const target = positionals[0]
+  const question = positionals[1] ?? (typeof flags.q === 'string' ? flags.q : '')
+  if (!target) {
+    process.stderr.write('SMA: использование — pnpm sma ask <терминал> "<вопрос>"\n')
+    return 1
+  }
+  const registry = await import('./lib/registry.mjs')
+  const journal = await import('./lib/journal.mjs')
+  const { sessions } = registry.readSessions(dirs)
+  const res = fingerprint.ask({
+    target,
+    question,
+    sessions,
+    journalTail: (t) => journal.journalTail(t, 3, dirs),
+    journalDir: dirs.journalDir,
+    now: Date.now(),
+  })
+  if (wantsJson(flags)) {
+    printJson({ target, answered: res.answered, fingerprint: res.fingerprint })
+    return 0
+  }
+  process.stdout.write(`${res.text}\n`)
+  if (!res.answered) {
+    process.stdout.write('(отпечаток не ответил — вопрос записан; ask-шина появится в V3.1 при спросе)\n')
+  }
+  return 0
+}
+
+/**
+ * buildManifestPlanIndex(repoRoot) -> [{planId, path, files_modified, predictionDomains}].
+ * The selectPlans-shaped index (grill's buildPlanIndex idiom, but carrying the plan
+ * PATH the manifest reader needs). Pure read; fail-open.
+ */
+async function buildManifestPlanIndex(repoRoot) {
+  const predict = await import('./lib/predict.mjs')
+  const planDir = join(repoRoot, '.planning', 'phases')
+  const index = []
+  for (const planPath of findPlanFiles(planDir)) {
+    let text = ''
+    try {
+      text = readFileSync(planPath, 'utf8')
+    } catch {
+      continue
+    }
+    const files_modified = parseYamlListBlock(text, 'files_modified')
+    const { predictions } = predict.parsePredictions(planPath)
+    const predictionDomains = [...new Set(predictions.map((p) => p && p.domain).filter(Boolean))]
+    index.push({ planId: planIdFromPath(planPath), path: planPath, files_modified, predictionDomains })
+  }
+  return index
+}
+
+/**
+ * Resolve the 49.3-02 stale-priors guard state as the manifest's `staleness`
+ * value ('ok' | 'stale-priors' | 'unavailable'). Tolerance rule: lazy-import the
+ * model-version guard, compute over the prediction-domain ledger + the sighting
+ * timeline (the passport's own filter — sma.receipts excluded), and map
+ * 'no-model-data' -> 'unavailable'. ANY failure -> 'unavailable' (honest absent).
+ */
+async function resolveManifestStaleness(dirs) {
+  try {
+    const mv = await import('./lib/model-version.mjs')
+    const calibration = await import('./lib/calibration.mjs')
+    const timeline = mv.readModelTimeline({ modelDir: dirs.modelDir })
+    const { records } = calibration.readLedger({ calibrationDir: dirs.calibrationDir })
+    const predictionRecords = records.filter((r) => r && r.domain !== 'sma.receipts')
+    const guard = mv.modelGuard({ records: predictionRecords, timeline, minFresh: 20 })
+    if (guard.status === 'stale-priors') return 'stale-priors'
+    if (guard.status === 'ok') return 'ok'
+    return 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
+}
+
+/**
+ * gatherManifestInputs({dirs, range, now}) -> the CAPTURED input bundle for
+ * buildManifest. Read-only `git diff` over the range + `git rev-parse HEAD`, scan
+ * the plan index, resolve chainTip + staleness + the spend book, then
+ * selectPlans -> collectEvidence. NO grading, NO network. Every git call is
+ * fail-soft (bad ref / offline -> empty diff, 'nohead'). Separating GATHER from
+ * BUILD is what lets the determinism stat build TWICE from ONE capture — proving
+ * the ASSEMBLY is a pure function, not that the live .sma/ stopped growing (the
+ * journal + the actively-appended session spend log grow continuously on a shared
+ * tree; comparing two independent reads would be a false nondeterminism).
+ */
+async function gatherManifestInputs({ dirs, range, now }) {
+  const manifest = await import('./lib/manifest.mjs')
+  const journal = await import('./lib/journal.mjs')
+  const spend = await import('./lib/spend.mjs')
+  const { execFileSync } = await import('node:child_process')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+
+  let changedFiles = []
+  try {
+    changedFiles = execGit(['diff', '--name-only', range]).split('\n').map((s) => s.trim()).filter(Boolean)
+  } catch {
+    /* fail-soft — no diff resolvable -> empty set */
+  }
+  let headSha = 'nohead'
+  try {
+    headSha = execGit(['rev-parse', 'HEAD']).trim() || 'nohead'
+  } catch {
+    /* fail-soft */
+  }
+
+  const planIndex = await buildManifestPlanIndex(repoRoot)
+  const plans = manifest.selectPlans({ changedFiles, planIndex })
+  const chainTip = journal.chainTip({ journalDir: dirs.journalDir }).tip
+  const staleness = await resolveManifestStaleness(dirs)
+
+  // Spend book (missing logs dir -> absent block, never a fabricated zero).
+  let spendBook = null
+  let spendBudget = {}
+  try {
+    const book = spend.buildBook({ spendDir: dirs.spendDir, repoRoot, env: process.env, now: Date.parse(now) || Date.now() })
+    const hasData = book && (book.logsDir || (book.totals && book.totals.events > 0))
+    spendBook = hasData ? book : null
+    spendBudget = spend.readBudget({ spendDir: dirs.spendDir })
+  } catch {
+    spendBook = null
+  }
+
+  const evidence = manifest.collectEvidence({ plans, dirs })
+  return { range, headSha, plans, evidence, spendBook, spendBudget, chainTip, staleness }
+}
+
+/**
+ * assembleManifest({dirs, range, now}) -> {manifest, headSha}. Gather the inputs
+ * once, build once. (The determinism stat gathers once and builds twice itself.)
+ */
+async function assembleManifest({ dirs, range, now }) {
+  const manifest = await import('./lib/manifest.mjs')
+  const inputs = await gatherManifestInputs({ dirs, range, now })
+  return { manifest: manifest.buildManifest({ ...inputs, now }), headSha: inputs.headSha }
+}
+
+/**
+ * manifest [--range <a>..<b>] [--json|--md] [--stat <name>] — the PR EVIDENCE
+ * PASSPORT (49.3-08, D-49.3-11). Deterministically assembles the Track A evidence
+ * pack and writes .sma/manifest/<headSha>.{json,md}. READER-ONLY: computes no
+ * verdict, opens no network. NOT hook-facing; plain mode always exits 0 (the
+ * manifest OBSERVES — preship, 49.2-08, owns the ship gate).
+ *
+ *   --stat determinism        two builds with one pinned now, byte-compare -> 1|0
+ *   --stat prediction-coverage manifestStats over a fresh build
+ *   --stat bench-build-ms     p95 ms over 5 warm builds
+ * Every --stat prints a single numeric last line and exits 0 (the 49.1-08 scorer contract).
+ */
+async function cmdManifest({ flags, dirs }) {
+  const manifestLib = await import('./lib/manifest.mjs')
+  const { atomicWriteJson, atomicWriteRaw } = await import('./lib/fs-atomics.mjs')
+  const range = typeof flags.range === 'string' && flags.range.trim() ? flags.range.trim() : 'origin/main..HEAD'
+
+  // --stat modes: a scorer-compatible numeric last line, exit 0 regardless of value.
+  if (typeof flags.stat === 'string') {
+    const stat = flags.stat
+    if (stat === 'determinism') {
+      // Gather the inputs ONCE, build TWICE from that single capture with a pinned
+      // now — the substrate-law claim is that the ASSEMBLY is a pure function. A
+      // second independent gather would re-read the live-growing journal + session
+      // spend log and flag a false nondeterminism on a busy shared tree.
+      const pinned = '2000-01-01T00:00:00.000Z'
+      const inputs = await gatherManifestInputs({ dirs, range, now: pinned })
+      const a = manifestLib.buildManifest({ ...inputs, now: pinned })
+      const b = manifestLib.buildManifest({ ...inputs, now: pinned })
+      const identical =
+        JSON.stringify(a, null, 2) === JSON.stringify(b, null, 2) &&
+        manifestLib.renderManifestMarkdown(a) === manifestLib.renderManifestMarkdown(b)
+      const val = identical ? 1 : 0
+      if (wantsJson(flags)) printJson({ stat, value: val })
+      process.stdout.write(`${val}\n`)
+      return 0
+    }
+    if (stat === 'prediction-coverage') {
+      const { manifest } = await assembleManifest({ dirs, range, now: new Date().toISOString() })
+      const val = manifestLib.manifestStats(manifest, 'prediction-coverage')
+      if (wantsJson(flags)) printJson({ stat, value: val })
+      process.stdout.write(`${val}\n`)
+      return 0
+    }
+    if (stat === 'bench-build-ms') {
+      const clock = globalThis.performance && typeof globalThis.performance.now === 'function' ? globalThis.performance : Date
+      const times = []
+      for (let i = 0; i < 5; i++) {
+        const t0 = clock.now()
+        await assembleManifest({ dirs, range, now: '2000-01-01T00:00:00.000Z' })
+        times.push(Math.max(0, clock.now() - t0))
+      }
+      times.sort((a, b) => a - b)
+      const idx = Math.min(times.length - 1, Math.max(0, Math.ceil((95 / 100) * times.length) - 1))
+      const val = Math.round((times[idx] || 0) * 100) / 100
+      if (wantsJson(flags)) printJson({ stat, value: val })
+      process.stdout.write(`${val}\n`)
+      return 0
+    }
+    process.stderr.write(`SMA manifest: неизвестный --stat «${stat}» (determinism|prediction-coverage|bench-build-ms)\n`)
+    process.stdout.write('0\n')
+    return 0
+  }
+
+  // Build once, write both artifacts atomically under dirs.manifestDir.
+  const { manifest, headSha } = await assembleManifest({ dirs, range, now: new Date().toISOString() })
+  const md = manifestLib.renderManifestMarkdown(manifest)
+  try {
+    atomicWriteJson(join(dirs.manifestDir, `${headSha}.json`), manifest)
+    atomicWriteRaw(join(dirs.manifestDir, `${headSha}.md`), md)
+  } catch {
+    /* fail-open — a manifest write failure never blocks a ship */
+  }
+
+  if (flags.json === true || flags.raw === true) {
+    process.stdout.write(JSON.stringify(manifest, null, 2) + '\n')
+    return 0
+  }
+  if (flags.md === true) {
+    process.stdout.write(md)
+    return 0
+  }
+
+  // Default: a human summary.
+  const preds = manifest.predictions.length
+  const scored = manifest.predictions.filter((p) => p.verdict !== 'unscored').length
+  process.stdout.write(`SMA manifest — evidence passport (range ${manifest.range}, head ${String(headSha).slice(0, 12)}):\n`)
+  process.stdout.write(`  plans: ${manifest.plans.length} · predictions: ${scored}/${preds} scored · receipts: ${manifest.receipts.length}\n`)
+  process.stdout.write(`  blind divergences: ${manifest.blind.divergences} · open class-A: ${manifest.consequences.openClassA}\n`)
+  process.stdout.write(`  chainTip: ${String(manifest.chainTip).slice(0, 12)} · staleness: ${manifest.staleness}\n`)
+  process.stdout.write(`  written: ${join(dirs.manifestDir, `${headSha}.json`)} (+ .md)\n`)
+  return 0
+}
+
+/**
+ * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force] [--json]
+ *   worktree --selftest           base + teleport guards over a mock-git recorder (P49.3-14-A)
+ *   worktree --selftest-sibling   sibling-repo resolution order over injected readers (P49.3-14-C)
+ *
+ * Per-terminal worktree isolation (49.3-14, D-49.3-24a/b). Provisions or reuses a
+ * per-SESSION worktree directory so parallel human Claude Code sessions physically
+ * cannot overwrite each other on this shared, auto-deploy checkout. `.sma/`
+ * coordination stays shared for free (registry.smaRoot, D-49.3-02 — NOT re-plumbed
+ * here). A worktree branch enters `main` ONLY via 49.3-15's `sma merge`; push stays
+ * founder-ordered via /sma-ship. Direct-CLI (may exit 1), NEVER hook-facing.
+ */
+async function cmdWorktree({ positionals, flags, dirs }) {
+  const wt = await import('./lib/worktree.mjs')
+
+  // ── --selftest: base-capture + verify + hard-reset + explicit-cwd, over a mock ──
+  if (flags.selftest === true) {
+    let ok = 1
+    const record = []
+    // Case A: base MATCH — no reset should fire.
+    const matchGit = (args, o = {}) => {
+      record.push({ args, cwd: o.cwd })
+      if (o.cwd == null) ok = 0 // explicit-cwd invariant (teleport guard)
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return 'BASE_SHA\n'
+      return ''
+    }
+    const a = wt.provisionWorktree({ branch: 'sma-wt/self-a', path: '/tmp/wt-a', execGit: matchGit, cwd: '/main' })
+    const idxRev = record.findIndex((c) => c.args[0] === 'rev-parse')
+    const idxAdd = record.findIndex((c) => c.args[0] === 'worktree' && c.args[1] === 'add')
+    if (!(idxRev >= 0 && idxAdd > idxRev)) ok = 0 // capture precedes add
+    if (a.baseFixed !== false) ok = 0 // match -> no reset
+    if (record.some((c) => c.args[0] === 'reset')) ok = 0
+
+    // Case B: base MISMATCH — hard-reset onto EXPECTED_BASE in the worktree cwd.
+    const record2 = []
+    const mismatchGit = (args, o = {}) => {
+      record2.push({ args, cwd: o.cwd })
+      if (o.cwd == null) ok = 0
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return o.cwd === '/main' ? 'BASE_SHA\n' : 'OLD_SHA\n'
+      return ''
+    }
+    const b = wt.provisionWorktree({ branch: 'sma-wt/self-b', path: '/tmp/wt-b', execGit: mismatchGit, cwd: '/main' })
+    if (b.baseFixed !== true) ok = 0 // mismatch -> reset fired
+    const reset = record2.find((c) => c.args[0] === 'reset' && c.args[1] === '--hard')
+    if (!reset || reset.args[2] !== 'BASE_SHA' || reset.cwd !== '/tmp/wt-b') ok = 0
+
+    // explicit-cwd invariant across BOTH cases: array args, a cwd on every call, no bare `cd`.
+    for (const c of [...record, ...record2]) {
+      if (!Array.isArray(c.args) || typeof c.cwd !== 'string' || !c.cwd) ok = 0
+      if (Array.isArray(c.args) && /(^|\s)cd\s/.test(c.args.join(' '))) ok = 0
+    }
+    if (wantsJson(flags)) printJson({ selftest: true, pass: ok === 1 })
+    process.stdout.write(`${ok}\n`) // numeric last line (P49.3-14-A)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── --selftest-sibling: env → config → profile → relative, deterministic order ──
+  if (flags['selftest-sibling'] === true) {
+    let ok = 1
+    const cases = [
+      { in: { env: { SMA_PRODUCT_REPO: '/abs/env' }, readConfig: () => ({ productRepo: '/abs/cfg' }), readProfile: () => ({ profile: { productRepo: '/abs/prof' } }), cwd: '/main' }, source: 'env', path: '/abs/env' },
+      { in: { env: {}, readConfig: () => ({ productRepo: '/abs/cfg' }), readProfile: () => ({ profile: { productRepo: '/abs/prof' } }), cwd: '/main' }, source: 'config', path: '/abs/cfg' },
+      { in: { env: {}, readConfig: () => ({}), readProfile: () => ({ profile: { productRepo: '/abs/prof' } }), cwd: '/main' }, source: 'profile', path: '/abs/prof' },
+      { in: { env: {}, readConfig: () => ({}), readProfile: () => ({ profile: {} }), cwd: '/main' }, source: 'relative' },
+      // corrupt config + profile (throwing readers) must still fall through to relative, never throw.
+      { in: { env: {}, readConfig: () => { throw new Error('x') }, readProfile: () => { throw new Error('y') }, cwd: '/main' }, source: 'relative' },
+    ]
+    for (const c of cases) {
+      let r
+      try {
+        r = wt.resolveSiblingRepo(c.in)
+      } catch {
+        ok = 0
+        continue
+      }
+      if (r.source !== c.source) ok = 0
+      if (c.path && r.path !== c.path) ok = 0
+    }
+    if (wantsJson(flags)) printJson({ selftestSibling: true, pass: ok === 1 })
+    process.stdout.write(`${ok}\n`) // numeric last line (P49.3-14-C)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── real git wiring for the operational subcommands ──────────────────────────
+  const { execFileSync } = await import('node:child_process')
+  const execGit = (args, o = {}) => execFileSync('git', args, { cwd: o.cwd, encoding: 'utf8' })
+  // The MAIN checkout root — where worktrees are added FROM (registry.smaRoot resolves
+  // it across worktrees via git-common-dir; fail-open to the .sma parent / cwd).
+  let mainRoot = process.cwd()
+  try {
+    const registry = await import('./lib/registry.mjs')
+    mainRoot = registry.smaRoot() || dirname(dirs.smaRoot) || process.cwd()
+  } catch {
+    mainRoot = dirname(dirs.smaRoot) || process.cwd()
+  }
+
+  const sub = positionals[0]
+
+  if (sub === 'list') {
+    const trees = wt.listWorktrees({ execGit, cwd: mainRoot })
+    if (wantsJson(flags)) {
+      printJson({ worktrees: trees })
+      return 0
+    }
+    process.stdout.write('SMA worktree: активные рабочие деревья:\n')
+    for (const t of trees) process.stdout.write(`  ${t.path}  (${t.branch || t.head})\n`)
+    return 0
+  }
+
+  if (sub === 'remove') {
+    const path = positionals[1]
+    if (!path) {
+      process.stderr.write('usage: pnpm sma worktree remove <path> [--force]\n')
+      return 1
+    }
+    const res = wt.removeWorktree({ path, execGit, cwd: mainRoot, force: flags.force === true })
+    if (wantsJson(flags)) {
+      printJson(res)
+      return res.ok ? 0 : 1
+    }
+    if (res.ok) process.stdout.write(`SMA worktree: удалено -> ${res.removed}\n`)
+    else process.stderr.write(`SMA worktree: не удалено (${res.message}). Грязное дерево? добавьте --force.\n`)
+    return res.ok ? 0 : 1
+  }
+
+  if (sub === 'sibling') {
+    // Resolve the sibling product repo (../sma) via the deterministic order.
+    const readConfig = () => {
+      try {
+        const raw = readFileSync(join(dirs.smaRoot, 'config.json'), 'utf8')
+        const parsed = JSON.parse(raw)
+        return parsed && typeof parsed === 'object' ? parsed : {}
+      } catch {
+        return {}
+      }
+    }
+    const readProfileWired = async () => {
+      const prof = await import('./lib/profile.mjs')
+      return prof.readProfile({ profilePath: join(dirs.smaRoot, 'profile.json') })
+    }
+    // resolveSiblingRepo takes a sync readProfile; pre-read the profile once.
+    const profileRes = await readProfileWired()
+    const res = wt.resolveSiblingRepo({
+      env: process.env,
+      readConfig,
+      readProfile: () => profileRes,
+      cwd: mainRoot,
+    })
+    if (wantsJson(flags)) {
+      printJson(res)
+      return 0
+    }
+    process.stdout.write(`SMA worktree: sibling product repo -> ${res.path}  (source: ${res.source})\n`)
+    return 0
+  }
+
+  // default / `provision` — reuse-or-provision this terminal's worktree, base-guarded.
+  let branch = typeof flags.branch === 'string' && flags.branch.trim() ? flags.branch.trim() : ''
+  let terminalId = 'session'
+  try {
+    const registry = await import('./lib/registry.mjs')
+    terminalId = registry.resolveTerminalIdentity().terminalId || 'session'
+  } catch {
+    /* fail-open to a stable stub */
+  }
+  if (!branch) branch = `${wt.WORKTREE_BRANCH_PREFIX}${terminalId}`
+  const path =
+    typeof flags.path === 'string' && flags.path.trim()
+      ? flags.path.trim()
+      : join(dirname(mainRoot), '.sma-worktrees', terminalId) // sibling dir (avoids the nested-removal bug)
+
+  const res = wt.reuseOrProvision({ branch, path, execGit, cwd: mainRoot })
+  if (wantsJson(flags)) {
+    printJson(res)
+    return res.ok === false ? 1 : 0
+  }
+  if (res.ok === false) {
+    process.stderr.write(`SMA worktree: не удалось создать (${res.message}). Остаёмся на основном дереве.\n`)
+    return 1
+  }
+  if (res.reused) {
+    process.stdout.write(`SMA worktree: переиспользуем существующее дерево -> ${res.path}  (ветка ${res.branch})\n`)
+  } else {
+    process.stdout.write(`SMA worktree: создано -> ${res.path}  (ветка ${branch})\n`)
+    if (res.baseFixed) process.stdout.write(`  ⚠ база разошлась с HEAD — выполнен git reset --hard ${String(res.expectedBase).slice(0, 12)} (Windows worktree-base guard)\n`)
+  }
+  process.stdout.write('  Координация (.sma/) остаётся общей для всех деревьев; в main только через `sma merge` (49.3-15), push — по команде основателя.\n')
+  return 0
+}
+
+/**
+ * merge — 49.3-15 (D-49.3-24c/d): the serialized merge ritual + the two numeric
+ * self-tests. `merge <branch>` integrates a worktree branch into main LOCALLY under the
+ * merge-claim slot (concurrent → soft-deny + override; targeted tests on the MERGE RESULT;
+ * journaled receipt) — NEVER a push (push stays founder-ordered via /sma-ship). direct-CLI:
+ * may exit 1, NOT hook-facing. `--selftest` / `--selftest-enforce` print a bare numeric last
+ * line (predict.mjs scorer contract, P49.3-15-A/C) over a mock — no real merge, no real deny.
+ */
+async function cmdMerge({ positionals, flags, dirs }) {
+  const mg = await import('./lib/merge-gate.mjs')
+
+  // ── --selftest: mock-recorder ritual (claim → tests-on-result → receipt → release) + a
+  //    concurrent soft-deny — print 1 iff both hold (P49.3-15-A). No real merge, no real deny.
+  if (flags.selftest === true) {
+    let ok = 1
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sma-merge-self-'))
+    try {
+      const calls = []
+      const execGit = (args) => {
+        calls.push(args)
+        if (args[0] === 'rev-parse') return 'RESULT_SHA\n'
+        return ''
+      }
+      let testedSha = null
+      const runTests = ({ resultSha }) => {
+        testedSha = resultSha
+        return { passed: true }
+      }
+      const res = mg.runMerge({ branch: 'sma-wt/self', by: 'selftest', execGit, runTests, claimsDir: tmp, journalDir: tmp, cwd: tmp })
+      if (res.merged !== true || res.testsPassed !== true) ok = 0
+      const mi = calls.findIndex((a) => a[0] === 'merge')
+      const ri = calls.findIndex((a) => a[0] === 'rev-parse')
+      if (!(mi >= 0 && ri > mi)) ok = 0 // ritual order: merge → tests-on-result
+      if (testedSha !== 'RESULT_SHA') ok = 0 // tests ran on the MERGE RESULT
+      if (calls.some((a) => a.includes('push'))) ok = 0 // NEVER a push
+      // a concurrent merge (slot held by a foreign holder) → soft-deny with an override.
+      mg.acquireMergeClaim({ by: 'other', branch: 'sma-wt/held', claimsDir: tmp, journalDir: tmp })
+      const con = mg.runMerge({ branch: 'sma-wt/self2', by: 'selftest', execGit: () => '', runTests: () => ({ passed: true }), claimsDir: tmp, journalDir: tmp, cwd: tmp })
+      if (!(con.merged === false && con.softDenied === true && typeof con.override === 'string')) ok = 0
+    } catch {
+      ok = 0
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (wantsJson(flags)) printJson({ selftest: true, pass: ok === 1 })
+    process.stdout.write(`${ok}\n`) // numeric last line (P49.3-15-A)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── --selftest-enforce: verified-live → soft-deny+override; stale → warn; error → allow;
+  //    none → allow; cooling-down → warn — print 1 iff all hold (P49.3-15-C). No real deny.
+  if (flags['selftest-enforce'] === true) {
+    let ok = 1
+    try {
+      const collision = await import('./lib/collision.mjs')
+      const v = collision.verifyClaimEvidence
+      const live = mg.enforceScope({ foreignClaim: { by: 'T-x' }, evidence: { scopeDirtyVsHead: true }, env: {}, verifyClaimEvidence: v })
+      if (!(live.action === 'soft-deny' && typeof live.override === 'string')) ok = 0
+      const stale = mg.enforceScope({ foreignClaim: { by: 'T-x' }, evidence: { scopeDirtyVsHead: false, commitInScopeAfterRenew: 'abc1234' }, env: {}, verifyClaimEvidence: v })
+      if (stale.action !== 'warn') ok = 0
+      const err = mg.enforceScope({ foreignClaim: { by: 'T-x' }, evidence: {}, env: {}, verifyClaimEvidence: () => { throw new Error('x') } })
+      if (err.action !== 'allow') ok = 0 // fail-open → allow, never a hard deny
+      const none = mg.enforceScope({ foreignClaim: null, env: {} })
+      if (none.action !== 'allow') ok = 0
+      const cooling = mg.enforceScope({ foreignClaim: { by: 'T-x' }, evidence: { scopeDirtyVsHead: true }, env: {}, verifyClaimEvidence: v, coolingDown: true })
+      if (cooling.action !== 'warn') ok = 0 // founder word wins — never enforce a force-cleared scope
+    } catch {
+      ok = 0
+    }
+    if (wantsJson(flags)) printJson({ selftestEnforce: true, pass: ok === 1 })
+    process.stdout.write(`${ok}\n`) // numeric last line (P49.3-15-C)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── real `merge <branch>` — wire the REAL execGit + a targeted-test runner on the result ──
+  const branch = positionals[0]
+  if (!branch) {
+    process.stderr.write('usage: pnpm sma merge <branch> [--json]\n')
+    return 1
+  }
+  const { execFileSync } = await import('node:child_process')
+  const execGit = (args, o = {}) => execFileSync('git', args, { cwd: o.cwd, encoding: 'utf8' })
+  // the MAIN checkout root (worktrees resolve it via git-common-dir; fail-open to .sma parent / cwd).
+  let mainRoot = process.cwd()
+  let by = 'session'
+  try {
+    const registry = await import('./lib/registry.mjs')
+    mainRoot = registry.smaRoot() || dirname(dirs.smaRoot) || process.cwd()
+    by = registry.resolveTerminalIdentity().holderIdentity || 'session'
+  } catch {
+    mainRoot = dirname(dirs.smaRoot) || process.cwd()
+  }
+  // targeted-test runner ON THE MERGE RESULT — the merge-gate suite as the smoke (never the full suite).
+  const runTests = () => {
+    try {
+      execFileSync('pnpm', ['vitest', 'run', 'scripts/sma/__tests__/merge-gate.test.ts'], { cwd: mainRoot, encoding: 'utf8', stdio: 'ignore' })
+      return { passed: true }
+    } catch {
+      return { passed: false }
+    }
+  }
+  const res = mg.runMerge({ branch, by, execGit, runTests, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir, cwd: mainRoot })
+  if (wantsJson(flags)) {
+    printJson(res)
+    return res.merged && res.testsPassed !== false ? 0 : 1
+  }
+  if (res.softDenied) {
+    process.stderr.write(`SMA merge: слияние уже идёт — ${res.override}\n`)
+    return 1
+  }
+  if (res.ok === false) {
+    process.stderr.write(`SMA merge: не удалось (${res.message}). Дерево не тронуто сверх git merge; слот освобождён.\n`)
+    return 1
+  }
+  process.stdout.write(`SMA merge: ${branch} влит в main ЛОКАЛЬНО${res.resultSha ? ` (${String(res.resultSha).slice(0, 7)})` : ''}; тесты на результате слияния: ${res.testsPassed ? 'зелёные' : 'КРАСНЫЕ'}.\n`)
+  process.stdout.write('  push — по команде основателя через /sma-ship; `sma merge` НЕ пушит и НЕ деплоит.\n')
+  return res.testsPassed ? 0 : 1
+}
+
+const HOOK_FACING = new Set(['session-start', 'session-end', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule', 'statusline', 'pulse'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
   status: cmdStatus,
   heartbeat: cmdHeartbeat,
   'session-start': cmdSessionStart,
+  'session-end': cmdSessionEnd, // 49.3-13 (D-49.3-22a) — SessionEnd hook: release own claims
+  ask: cmdAsk, // 49.3-13 (D-49.3-23) — fingerprint demand stub (+ --unmet-count)
   pre: cmdPre,
   'pre-bench': cmdPreBench,
   'collision-check': cmdCollisionCheck,
@@ -5012,7 +7626,9 @@ const HANDLERS = {
   preship: cmdPreship,
   disposition: cmdDisposition,
   lint: cmdLint,
+  profile: cmdProfile, // 49.3-01 (D-49.3-04) — deterministic profile surface (--json|--lint|--coverage|--recap)
   'build-index': cmdBuildIndex,
+  emit: cmdEmit, // 49.3-04 (D-49.3-08) — one corpus -> CLAUDE.md/AGENTS.md/.cursorrules/GEMINI.md managed blocks
   load: cmdLoad,
   snapshot: cmdSnapshot,
   'upstream-check': cmdUpstreamCheck,
@@ -5044,6 +7660,24 @@ const HANDLERS = {
   skeptic: cmdSkeptic, // 49.2-10 — Goodhart skeptic countersign (sign|verify)
   canary: cmdCanary, // 49.2-10 — planted false-done canaries (plant|score|sweep) — S8
   nearmiss: cmdNearmiss, // 49.2-10 — scoring-immune near-miss channel (ASRS)
+  passport: cmdPassport, // 49.3-02 (D-49.3-10) — calibration passport (--build|--verify|--check-badge|--json)
+  model: cmdModel, // 49.3-02 — model-version guard surface (--json|--count sightings|--set <id>)
+  excavate: cmdExcavate, // 49.3-03 (D-49.3-09) — adoption wedge: read-only history miner + CATCHES + --stats instrument
+  ladder: cmdLadder, // 49.3-06 (D-49.3-12) — tier table + benefit stats (--json|--count-autofix|--noise-demoted-pct)
+  tune: cmdTune, // 49.3-06 — the tuner (propose|apply|benefit|fix|incident) — never commits, never pushes
+  curriculum: cmdCurriculum, // 49.3-06 (D-49.3-16) — weekly miss-curriculum: clusters -> templates -> weak-spots brief
+  preflight: cmdPreflight, // 49.3-10 (D-49.3-17) — already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
+  arena: cmdArena, // 49.3-11 (D-49.3-18) — benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
+  batch: cmdBatch, // 49.3-12 (D-49.3-19) — /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
+  catalog: cmdCatalog, // 49.3-05 (D-49.3-06) — deterministic file catalog (refresh|find|--check --count)
+  context: cmdContext, // 49.3-05 (D-49.3-07) — context compiler (compile|score|miss|exam|--selftest)
+  statusline: cmdStatusline, // 49.3-07 (D-49.3-13) — native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)
+  pulse: cmdPulse, // 49.3-07 (D-49.3-13) — hook-facing attention pulse (working|waiting-for-human); idle is derived
+  manifest: cmdManifest, // 49.3-08 (D-49.3-11) — PR evidence passport reader (--range|--json|--md|--stat)
+  worktree: cmdWorktree, // 49.3-14 (D-49.3-24a/b) — per-terminal worktree isolation (provision|list|remove|sibling; --selftest|--selftest-sibling)
+  merge: cmdMerge, // 49.3-15 (D-49.3-24c/d) — serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
+  explain: cmdExplain, // 49.3-09 (D-49.3-15) — in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
+  'doc-audit': cmdDocAudit, // 49.3-09 (D-49.3-01/15) — deterministic docs honesty audit (--target manual|readme|all|--count|--json)
 }
 
 async function main() {
@@ -5053,7 +7687,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|build-index|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss>\n',
+      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit>\n',
     )
     return 0
   }

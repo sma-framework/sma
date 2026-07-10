@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto'
 
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { compileGlob, normalizePath } from './collision.mjs'
+import { appendEvent } from './journal.mjs'
 import {
   SESSIONS_DIR,
   SMA_ROOT,
@@ -46,6 +47,10 @@ import {
 
 /** Valid self-reported status values (C12). Liveness is a SEPARATE axis (B16). */
 export const STATUS_VALUES = ['working', 'blocked', 'idle', 'done']
+
+/** 49.3-13 (D-49.3-21) — the fingerprint's ATTENTION-axis values. Stored on the lease as
+ * `fpStatus`, ALONGSIDE the work-axis `status` above, never conflated with it. */
+export const FP_STATUS_VALUES = ['working', 'waiting-for-human', 'idle']
 
 /**
  * tokenHash(token) — a short, stable, deterministic 8-hex suffix derived from a
@@ -205,6 +210,23 @@ export function heartbeat(beat, opts = {}) {
           ? existing.label
           : ''
 
+    // 49.3-13 (D-49.3-21) — fingerprint fields on the SAME lease (D-49.3-02: no parallel
+    // store). intent is the agent-maintained one-line string (preserved when a beat omits
+    // it, never invented); fpStatus is the attention axis; filesRecent is preserved here
+    // (the `sma pre` self-capture is its primary mutator — a separate no-spawn write).
+    const intent =
+      typeof beat.intent === 'string' && beat.intent.trim()
+        ? beat.intent.trim()
+        : existing && typeof existing.intent === 'string'
+          ? existing.intent
+          : ''
+    const fpStatus = FP_STATUS_VALUES.includes(beat.fpStatus)
+      ? beat.fpStatus
+      : existing && FP_STATUS_VALUES.includes(existing.fpStatus)
+        ? existing.fpStatus
+        : 'working'
+    const filesRecent = existing && Array.isArray(existing.filesRecent) ? existing.filesRecent : []
+
     if (existing) {
       const renewMs = Date.parse(existing.renewTime)
       const young = Number.isFinite(renewMs) && nowMs - renewMs < HEARTBEAT_INTERVAL_MS
@@ -213,7 +235,12 @@ export function heartbeat(beat, opts = {}) {
       // The label is a meaningful-change axis too: a refreshed label (the work moved to a
       // new phase/scope) forces a write so the founder-visible identity follows the work.
       const sameLabel = (existing.label ?? '') === label
-      if (young && sameScope && sameStatus && sameLabel) {
+      // Fingerprint intent/fpStatus are meaningful too (they follow the work). filesRecent
+      // is NOT a throttle axis — the self-capture writes it directly, bypassing this beat,
+      // so a touch never forces (and never spawns) an extra snapshot from here.
+      const sameIntent = (existing.intent ?? '') === intent
+      const sameFp = (existing.fpStatus ?? 'working') === fpStatus
+      if (young && sameScope && sameStatus && sameLabel && sameIntent && sameFp) {
         return { skipped: true } // throttle: nothing meaningful changed within the interval
       }
     }
@@ -230,6 +257,9 @@ export function heartbeat(beat, opts = {}) {
       status, // self-reported (B16)
       blockers,
       label, // FI-10 — founder-readable work label, refreshed from live context
+      intent, // 49.3-13 (D-49.3-21) — fingerprint intent line («чиню тест dispatcher…»)
+      fpStatus, // 49.3-13 — fingerprint attention axis (working|waiting-for-human|idle)
+      filesRecent, // 49.3-13 — self-captured touch trail (mutated by the `sma pre` stream)
       acquireTime,
       renewTime: nowIso, // liveness axis (B16)
       leaseDurationSeconds: SESSION_TTL_MS / 1000,
@@ -404,6 +434,50 @@ export function reapStale(opts = {}) {
     }
   }
   return { reaped, candidates }
+}
+
+/**
+ * reapStaleObservable(opts) — BL-158 (D-49.3-22f): the reap call path made OBSERVABLE.
+ * The prior sole call site (cmdStatus/gatherSummary) wrapped reapStale in a SILENT
+ * try/catch, so a reap failure was invisible and uncountable — the reaper could stop
+ * running and nobody would know. This wrapper stays fail-open (a reap bug NEVER wedges a
+ * session) BUT journals a countable signal: a `reap` event carrying the reaped count on
+ * success, a `reap-fail` event carrying the error on a throw. Liveness stays renewTime-only
+ * (reapStale -> classifyStaleness, no pid). Injectable reapFn for tests.
+ * @param {{reapFn?:Function, journalDir?:string, terminalId?:string, now?:string, ...}} opts
+ * @returns {{reaped:string[], candidates:string[], ok:boolean, error?:boolean}}
+ */
+export function reapStaleObservable(opts = {}) {
+  const reapFn = typeof opts.reapFn === 'function' ? opts.reapFn : reapStale
+  const journalDir = opts.journalDir
+  const terminalId = opts.terminalId || 'reaper'
+  try {
+    const res = reapFn(opts) || { reaped: [], candidates: [] }
+    const count = Array.isArray(res.reaped) ? res.reaped.length : 0
+    if (count > 0 && journalDir) {
+      try {
+        appendEvent(
+          { type: 'reap', actors: [terminalId], detail: { reaped: count } },
+          { terminalId, journalDir, now: opts.now },
+        )
+      } catch {
+        /* fail-open — the diagnostic is best-effort */
+      }
+    }
+    return { reaped: res.reaped ?? [], candidates: res.candidates ?? [], ok: true }
+  } catch (err) {
+    if (journalDir) {
+      try {
+        appendEvent(
+          { type: 'reap-fail', actors: [terminalId], detail: { error: String((err && err.message) || err) } },
+          { terminalId, journalDir, now: opts.now },
+        )
+      } catch {
+        /* fail-open */
+      }
+    }
+    return { reaped: [], candidates: [], ok: false, error: true }
+  }
 }
 
 /** Directory names never worth walking for a scope-mtime probe (WR-01). */

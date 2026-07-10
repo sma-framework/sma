@@ -1,0 +1,118 @@
+# sma-manifest — the CI terminal for the PR EVIDENCE PASSPORT (49.3-08, D-49.3-11).
+#
+# Two jobs, one file:
+#   manifest (pull_request) — build the deterministic evidence pack via the shipped
+#     reader `sma manifest`, append it to the step summary, upload it as an artifact,
+#     and upsert ONE managed PR comment (marker-keyed). The comment step is CONDITIONED
+#     on a same-repo head — a fork PR's token cannot write, so it degrades to artifact +
+#     step summary (never fails). continue-on-error keeps a comment hiccup from reddening
+#     the check.
+#   evaluate (push to main = merge) — for each changed -PLAN.md, re-run the OBJECTIVE
+#     predict-score engine (re-run commands, compare numbers; no LLM judge anywhere) and
+#     print verdicts to the step summary + upload the CI ledger as an independent witness.
+#
+# LAWS honored (must_haves / threat register):
+#   - `pull_request` ONLY, NEVER the target-elevated variant (T-49.3-08-02): no write
+#     token is ever handed to untrusted fork code.
+#   - Least-privilege `permissions:` — contents:read + pull-requests:write, nothing more.
+#   - Every action pinned by full 40-hex commit SHA; first-party actions only (no
+#     third-party action runs untrusted code with our token — T-49.3-08-SC).
+#   - The workflow NEVER gates a merge: no required check, the comment step is
+#     continue-on-error, the evaluate job never fails on a miss. The LAW's gating surface
+#     is `sma preship` at ship time (49.2-08), not CI (fail-open).
+#   - manifest.mjs itself executes nothing; the merge-time evaluation delegates 100% to
+#     the shipped predict-score engine behind isSafeCommand (49.1-08) — zero new
+#     command-execution surface (T-49.3-08-03).
+
+name: sma-manifest
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: sma-manifest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── PR: build + comment the evidence passport ──────────────────────────────
+  manifest:
+    name: PR evidence passport
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # the range diff needs history
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+
+      - name: Build the manifest (reader-only, fail-open, no network)
+        run: |
+          node scripts/sma/cli.mjs manifest --range "origin/${GITHUB_BASE_REF}..HEAD" --md > manifest.md || true
+          cat manifest.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload the manifest pack (the fork-PR degrade surface)
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: sma-manifest
+          path: .sma/manifest/
+          if-no-files-found: ignore
+
+      - name: Upsert the ONE managed PR comment (same-repo head only)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          marker='<!-- sma-manifest:v1 -->'
+          existing=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | head -n1)
+          if [ -n "$existing" ]; then
+            gh api "repos/${REPO}/issues/comments/${existing}" -X PATCH -F body=@manifest.md
+          else
+            gh pr comment "$PR" --body-file manifest.md
+          fi
+
+  # ── merge (push to main): objective prediction evaluation ──────────────────
+  evaluate:
+    name: Merge-time prediction evaluation
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+
+      - name: Enable pnpm (bundled corepack — no third-party action)
+        run: corepack enable
+
+      - name: Install (the repo's own frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Evaluate predictions for changed plans (objective re-run, never gates)
+        run: |
+          for plan in $(git diff --name-only "${{ github.event.before }}..${{ github.sha }}" | grep -E '\-PLAN\.md$' || true); do
+            echo "## $plan" >> "$GITHUB_STEP_SUMMARY"
+            node scripts/sma/cli.mjs predict-score "$plan" >> "$GITHUB_STEP_SUMMARY" || true
+          done
+
+      - name: Upload the CI verdicts (independent public witness; local ledger stays of record)
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: sma-ci-verdicts
+          path: .sma/calibration/
+          if-no-files-found: ignore

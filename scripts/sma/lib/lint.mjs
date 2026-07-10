@@ -30,6 +30,10 @@ import { createHash } from 'node:crypto'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { parsePredictions, validatePrediction, isSafeCommand } from './predict.mjs'
+// 49.3-01 (D-49.3-04): the PROFILE family delegates ALL schema/secret/dead-field
+// judgment to the profile lib — one boundary, never duplicated (same lock as
+// PRED → predict.mjs). lint renders findings, it never re-implements the checks.
+import { validateProfile, normalizeProfile, deadFields, readProfile } from './profile.mjs'
 // 49.2-08 (D-49.2-12): the CONS lint family delegates field validation to the
 // consequences lib — one boundary, never duplicated (same posture as PRED → predict.mjs).
 import { parseConsequences, validateConsequence } from './consequences.mjs'
@@ -49,9 +53,19 @@ import { verifySkeptic } from './goodhart.mjs'
 // stpa.mjs imports gates/journal/calibration, never lint.
 import { uncompensatedKillSwitches } from './stpa.mjs'
 import { GATES } from './gates.mjs'
+// 49.3-06 (D-49.3-12): LADDER-EVIDENCE reads the TRACKED tier registry through the
+// ladder lib (readLadder) — the same delegation lock as PRED → predict.mjs. It is the
+// env-independent compensating control the SMA_LADDER_OFF HAZARDS row cites: an
+// evidence-free tier escalation, or an unchecked retirement, cannot survive a commit.
+import { readLadder } from './ladder.mjs'
 // The ONE contradiction implementation (49.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
+// 49.3-05 (D-49.3-07): the FRAG family delegates ALL fragment schema/byte/trigger
+// judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
+// boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
+// fragments/ dir is a valid state (listFragments returns []) — fail-open.
+import { listFragments, validateFragment } from './fragments.mjs'
 // FI-9/FI-11 layer budgets (49.1-13): the four size lints reference these ONLY —
 // no magic byte numbers live in this module.
 import {
@@ -367,6 +381,21 @@ function buildContext(opts) {
     }
   }
 
+  // PROFILE family (49.3-01): read .sma/profile.json ONCE here (tolerant reader).
+  // A missing profile is a valid state → profile:null → PROFILE-SCHEMA/PROFILE-SECRET
+  // skip (fail-open); PROFILE-DEADFIELD is schema-level and always runs.
+  let profile = null
+  if (typeof opts.profilePath === 'string' && opts.profilePath.trim() !== '' && existsSync(opts.profilePath)) {
+    profile = readProfile({ profilePath: opts.profilePath }).profile
+  }
+
+  // LADDER-EVIDENCE (49.3-06): the tracked tier registry, read ONCE here. A missing
+  // file is a valid state (no overlay) → ladder:null → the check is silent (fail-open).
+  let ladder = null
+  if (typeof opts.ladderPath === 'string' && opts.ladderPath.trim() !== '' && existsSync(opts.ladderPath)) {
+    ladder = readLadder({ ladderPath: opts.ladderPath })
+  }
+
   return {
     corpusDir,
     tagsPath,
@@ -379,6 +408,10 @@ function buildContext(opts) {
     areaIndexFiles,
     statePath: opts.statePath,
     stateText,
+    profilePath: opts.profilePath,
+    profile,
+    ladderPath: opts.ladderPath,
+    ladder,
     // Task 2 injection points (default undefined — checks degrade gracefully):
     generate: opts.generate,
     generateAreas: opts.generateAreas,
@@ -1145,6 +1178,45 @@ const HAZARD_NOCONTROL = {
   },
 }
 
+// ── 49.3-06 (D-49.3-12): LADDER-EVIDENCE — no evidence-free tier escalation ────
+
+const LADDER_EVIDENCE = {
+  id: 'LADDER-EVIDENCE',
+  title: 'Every ladder tier change carries evidence rows with journalRefs; retirements cite a fixture check (D-49.3-12)',
+  tier: 'critical',
+  run(ctx) {
+    const ladder = ctx.ladder
+    if (!ladder || !Array.isArray(ladder.rules)) return []
+    const file = basename(ctx.ladderPath || 'sma-ladder.json')
+    const out = []
+    for (const rule of ladder.rules) {
+      if (!rule || !rule.ruleId) continue
+      const tier = rule.tier
+      const evidence = Array.isArray(rule.evidence) ? rule.evidence : []
+      const hasRefs = evidence.some((e) => e && Array.isArray(e.journalRefs) && e.journalRefs.length > 0)
+
+      // (a) any tier other than the shipped default 'warn' must carry evidence rows
+      //     with non-empty journalRefs — a hand-set tier without measured benefit is
+      //     an evidence-free enforcement escalation (the exact self-grading V3 kills).
+      if (tier && tier !== 'warn') {
+        if (!evidence.length || !hasRefs) {
+          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden (D-49.3-12); tune only via \`pnpm sma tune --apply\`, never a hand-edit`))
+        }
+      }
+      // (b) a 'retired' rule must carry a fixtureCheck record (the STPA birth-fixture
+      //     sign-off — a rule can never auto-tune into silent removal, D-49.2-14).
+      if (tier === 'retired' && (!rule.fixtureCheck || typeof rule.fixtureCheck !== 'object')) {
+        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} is 'retired' without a fixtureCheck record — retirement requires the 49.2-10 birth-fixture sign-off (D-49.2-14)`))
+      }
+      // (c) a registered fix command must pass the imported isSafeCommand allowlist.
+      if (rule.fix && rule.fix.command && !isSafeCommand(rule.fix.command)) {
+        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} registers a fix command that fails isSafeCommand — fix commands go through predict.mjs's single allowlist ONLY (T-49.3-60)`))
+      }
+    }
+    return out
+  },
+}
+
 // ── 49.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
@@ -1381,6 +1453,75 @@ const MEM_SECRET = {
   },
 }
 
+// ── 49.3-01 (D-49.3-04): PROFILE family — the profile is schema-bound, secret-free,
+// and every schema field has a live consumer (adoption scorecard metric 5) ──────
+
+const PROFILE_DEADFIELD = {
+  id: 'PROFILE-DEADFIELD',
+  title: 'Every profile schema field has a registered consumer (metric 5)',
+  tier: 'critical',
+  run() {
+    // Schema-level — runs even with NO profile on disk. Delegated to profile.mjs.
+    return deadFields().map((f) =>
+      finding(
+        'PROFILE-DEADFIELD',
+        'critical',
+        '',
+        `profile schema field "${f}" has no registered consumer in PROFILE_CONSUMERS — a field nobody reads is the «700-line rules file» failure in miniature (metric 5); add a consumer in lib/profile.mjs + the reference doc, or drop the field`,
+      ),
+    )
+  },
+}
+
+const PROFILE_SCHEMA_LINT = {
+  id: 'PROFILE-SCHEMA',
+  title: 'Committed profile carries no unknown/mistyped field (D-49.3-04)',
+  tier: 'critical',
+  run(ctx) {
+    if (!ctx.profile) return [] // missing profile = valid state (fail-open)
+    const { violations } = validateProfile(normalizeProfile(ctx.profile))
+    return violations
+      .filter((v) => v.rule === 'PROFILE-SCHEMA')
+      .map((v) => finding('PROFILE-SCHEMA', 'critical', ctx.profilePath ?? '', v.message))
+  },
+}
+
+const PROFILE_SECRET = {
+  id: 'PROFILE-SECRET',
+  title: 'Committed profile stores NAMES + facts only, never a secret value (T-49.3-06)',
+  tier: 'critical',
+  run(ctx) {
+    if (!ctx.profile) return [] // missing profile = valid state (fail-open)
+    const { violations } = validateProfile(normalizeProfile(ctx.profile))
+    return violations
+      .filter((v) => v.rule === 'PROFILE-SECRET')
+      .map((v) => finding('PROFILE-SECRET', 'critical', ctx.profilePath ?? '', v.message))
+  },
+}
+
+// ── 49.3-05 (D-49.3-07): FRAG family — fragments are atomic (one fact, <= 400 bytes),
+// carry a parseable trigger, and are schema-valid (id == filename stem) ──────────
+const FRAG_LINT = {
+  id: 'FRAG',
+  title: 'Fragments are atomic, triggered, schema-valid (one fact per fragment)',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    let frags
+    try {
+      frags = listFragments({ corpusDir: ctx.corpusDir }) // missing fragments/ → [] (fail-open)
+    } catch {
+      return []
+    }
+    for (const frag of frags) {
+      for (const v of validateFragment(frag)) {
+        out.push(finding(v.rule, 'critical', `fragments/${v.file}`, v.detail))
+      }
+    }
+    return out
+  },
+}
+
 // The check registry — the full R5 class list plus the two D-49-15 checks
 // plus the 49.1-09 PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
@@ -1410,6 +1551,11 @@ export const LINT_CHECKS = [
   CONS_NOBLOCK,
   RECEIPT_PROSE,
   HAZARD_NOCONTROL,
+  LADDER_EVIDENCE,
+  PROFILE_DEADFIELD,
+  PROFILE_SCHEMA_LINT,
+  PROFILE_SECRET,
+  FRAG_LINT,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────

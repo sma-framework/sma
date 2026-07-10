@@ -1,0 +1,119 @@
+{
+  "_note": "Benchmark arena sample records (49.3-11, D-49.3-18). A 4-arm comparison (vanilla / superpowers / gsd / sma) with n>=4 per arm PLUS one underpowered n<4 reconnaissance arm (the pilot's n=1 «разведка, не статистика» honesty). SMA deliberately carries the HIGHEST raw M3 cost yet the best done-right-first-time record — the negative-result subject (P49.3-11-B): the arena ranks by cost-per-RESULT (M1+M2), NOT cost-per-task, and still publishes SMA's expensive cost row. Metric arrays are aligned by run index. Costs are produced by the 49.2-09 spend-adapter and carry its version tag (D-49.3-02: the adapter is the sole cost source).",
+  "task": "fix-a-broken-feature: cart pricing engine (12 hidden acceptance cases)",
+  "model": "claude-opus-4-8",
+  "pricingVersion": "claude-pricing-2026-07",
+  "adapterVersion": "v1-claude-jsonl-2026-07",
+  "arms": [
+    {
+      "arm": "vanilla",
+      "label": "vanilla Claude Code",
+      "m1PassCounts": [
+        { "pass": 12, "total": 12 },
+        { "pass": 12, "total": 12 },
+        { "pass": 11, "total": 12 },
+        { "pass": 12, "total": 12 }
+      ],
+      "m2Rounds": [0, 0, 1, 0],
+      "m3Cost": [
+        { "cost": 0.70585, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 6 },
+        { "cost": 0.6812, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 5 },
+        { "cost": 0.8241, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 7 },
+        { "cost": 0.7133, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 6 }
+      ],
+      "m4Loc": [
+        { "added": 11, "removed": 5 },
+        { "added": 10, "removed": 4 },
+        { "added": 14, "removed": 6 },
+        { "added": 11, "removed": 5 }
+      ],
+      "m6Questions": [0, 0, 0, 0],
+      "m7Scope": [false, false, false, false]
+    },
+    {
+      "arm": "superpowers",
+      "label": "Superpowers only",
+      "m1PassCounts": [
+        { "pass": 12, "total": 12 },
+        { "pass": 10, "total": 12 },
+        { "pass": 12, "total": 12 },
+        { "pass": 11, "total": 12 }
+      ],
+      "m2Rounds": [0, 1, 0, 1],
+      "m3Cost": [
+        { "cost": 0.981, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 8 },
+        { "cost": 1.104, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 9 },
+        { "cost": 0.933, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 7 },
+        { "cost": 1.021, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 8 }
+      ],
+      "m4Loc": [
+        { "added": 18, "removed": 7 },
+        { "added": 22, "removed": 9 },
+        { "added": 16, "removed": 6 },
+        { "added": 20, "removed": 8 }
+      ],
+      "m6Questions": [1, 2, 0, 1],
+      "m7Scope": [false, false, true, false]
+    },
+    {
+      "arm": "gsd",
+      "label": "GSD only",
+      "m1PassCounts": [
+        { "pass": 12, "total": 12 },
+        { "pass": 12, "total": 12 },
+        { "pass": 12, "total": 12 },
+        { "pass": 11, "total": 12 }
+      ],
+      "m2Rounds": [0, 0, 0, 1],
+      "m3Cost": [
+        { "cost": 1.284, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 11 },
+        { "cost": 1.401, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 12 },
+        { "cost": 1.198, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 10 },
+        { "cost": 1.512, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 13 }
+      ],
+      "m4Loc": [
+        { "added": 24, "removed": 8 },
+        { "added": 21, "removed": 7 },
+        { "added": 26, "removed": 9 },
+        { "added": 23, "removed": 8 }
+      ],
+      "m6Questions": [1, 0, 1, 2],
+      "m7Scope": [false, false, false, false]
+    },
+    {
+      "arm": "sma",
+      "label": "SMA",
+      "m1PassCounts": [
+        { "pass": 12, "total": 12 },
+        { "pass": 12, "total": 12 },
+        { "pass": 12, "total": 12 },
+        { "pass": 12, "total": 12 }
+      ],
+      "m2Rounds": [0, 0, 0, 0],
+      "m3Cost": [
+        { "cost": 1.902, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 17 },
+        { "cost": 2.014, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 18 },
+        { "cost": 1.853, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 16 },
+        { "cost": 1.949, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 17 }
+      ],
+      "m4Loc": [
+        { "added": 13, "removed": 6 },
+        { "added": 12, "removed": 5 },
+        { "added": 14, "removed": 6 },
+        { "added": 13, "removed": 6 }
+      ],
+      "m6Questions": [0, 0, 0, 0],
+      "m7Scope": [false, false, false, false]
+    },
+    {
+      "arm": "sma-solo-recon",
+      "label": "SMA (n=1 разведка)",
+      "m1PassCounts": [{ "pass": 12, "total": 12 }],
+      "m2Rounds": [0],
+      "m3Cost": [{ "cost": 1.603, "adapterVersion": "v1-claude-jsonl-2026-07", "events": 14 }],
+      "m4Loc": [{ "added": 13, "removed": 6 }],
+      "m6Questions": [0],
+      "m7Scope": [false]
+    }
+  ]
+}

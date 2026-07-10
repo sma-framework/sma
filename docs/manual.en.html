@@ -146,6 +146,18 @@
     <tr><td><code>/sma-pause-work</code></td><td>Hand off context when pausing mid-phase</td></tr>
     <tr><td><code>/sma-help</code></td><td>Show the available commands and the usage guide</td></tr>
   </table>
+  <p>Beyond the slash commands there is a <code>pnpm sma</code> command family for the deterministic surfaces. The ones worth knowing on day one:</p>
+  <table>
+    <tr><th>Command</th><th>What it does</th></tr>
+    <tr><td><code>pnpm sma explain &lt;topic&gt;</code></td><td>A plain-language explainer for any concept or any command; <code>--list</code> shows the catalog, an unknown topic never errors</td></tr>
+    <tr><td><code>pnpm sma doc-audit</code></td><td>Deterministically checks that this manual and the README positioning stay complete, fresh and honest</td></tr>
+    <tr><td><code>pnpm sma excavate</code></td><td>Mine a repo's git history read-only for mistakes a reflex would have caught</td></tr>
+    <tr><td><code>pnpm sma emit</code></td><td>Compile the corpus into CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md</td></tr>
+    <tr><td><code>pnpm sma context compile</code></td><td>Build a deterministic, budgeted context pack for a task</td></tr>
+    <tr><td><code>pnpm sma passport --build</code></td><td>Rebuild the calibration badge and PASSPORT.md from the ledger</td></tr>
+    <tr><td><code>pnpm sma manifest --range a..b</code></td><td>Assemble the PR evidence passport for a commit range</td></tr>
+  </table>
+  <p class="muted">Every one of these has its own explainer: try <code>pnpm sma explain excavate</code> or <code>pnpm sma explain --list</code>.</p>
 </div>
 
 <h2>12. What happens on its own, without you</h2>
@@ -171,9 +183,90 @@
   </ol>
 </div>
 
+<!-- sma:v35:start -->
+
+<h2>14. Why the process matters: the accountable loop, worked end to end</h2>
+<div class="card accent">
+  <p>This is the whole idea in one worked example. Follow it once and you understand what SMA actually buys you. The accountable loop has four beats: predict, act, score, learn.</p>
+
+  <h3>1. Predict — the plan promises a number before any code is written</h3>
+  <p>Every plan carries a <code>predictions:</code> block in its header. It is a promise stated as a measurement, not a mood:</p>
+  <table>
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>claim</td><td>"Every command has a plain-language explainer"</td></tr>
+    <tr><td>metric</td><td><code>uncovered_handlers_count</code></td></tr>
+    <tr><td>check_command</td><td><code>pnpm sma explain --coverage --count</code></td></tr>
+    <tr><td>comparator / threshold</td><td><code>==</code> / <code>0</code></td></tr>
+  </table>
+
+  <h3>2. Act — the work is done</h3>
+  <p>The plan executes. New commands land, docs get written, tests go green.</p>
+
+  <h3>3. Score — a script settles the promise, not the assistant's word</h3>
+  <p>At close, the deterministic scorer runs the exact check command and compares it against the threshold:</p>
+  <p><code>$ pnpm sma predict-score</code><br>
+  <code>P49.3-09-A  uncovered_handlers_count == 0  →  actual 1  →  MISS</code></p>
+  <p>A later command shipped without an explainer, so the real count is 1, not 0. The promise <b>missed</b>. The calibration ledger gains a row:</p>
+  <table>
+    <tr><th>domain</th><th>hits</th><th>misses</th><th>hit rate</th></tr>
+    <tr><td>sma.docs</td><td>17</td><td>1</td><td>94%</td></tr>
+  </table>
+  <p class="muted">The number is honest because it is computed from a settled prediction, not asserted.</p>
+
+  <h3>4. Learn — the miss becomes a rule that fires next time</h3>
+  <p>The miss drafts a lesson, and the lesson becomes a reflex with a firing condition. The next time anyone edits the command table, a warning is injected into the conversation <b>before</b> the edit:</p>
+  <p><code>⚠ reflex: a new command needs an explainer topic — run `pnpm sma explain --coverage` before you commit.</code></p>
+
+  <p><b>Why this matters.</b> The accountable loop is what turns "I told the agent" into "the agent could not miss it, and a script checked it". The promise is falsifiable, the score is deterministic, and the miss is remembered. Nobody has to trust the assistant's own summary of its work.</p>
+</div>
+
+<h2>15. The V3.5 surfaces, in ten minutes</h2>
+<div class="card">
+  <p>A ten-minute tour of everything V3.5 adds. Each is a deterministic script over files and git, and each kills a specific failure.</p>
+
+  <h3>Deep onboarding — <code>/sma-start</code></h3>
+  <p>The first run is a staged, in-conversation teaching of how the accountable loop works and why, and it records a full infrastructure and working-style profile that every later command reads. It asks about your deploy host and your release ritual once, so nothing has to be re-explained.</p>
+
+  <h3>The calibration passport + badge</h3>
+  <p>The <b>calibration passport</b> builds a public README badge from the ledger, for example <code>SMA-calibrated: 94% hits, n=48</code>, reproducible on a fresh clone. A model-version guard <b>hides the badge until n reaches 20</b> after a model change, because an old hit rate no longer describes a new model. That is honesty about statistics, not modesty.</p>
+
+  <h3>Five-minute value — <code>sma excavate</code></h3>
+  <p><code>sma excavate</code> mines a stranger's git history read-only for commit-revert pairs, typo-fix chains and red CI runs, and prints a CATCHES line showing which reflex would have fired before which push. A sample line: <code>CATCHES: 2 commit-revert pairs; a migration reflex would have fired before commit a1b2c3.</code></p>
+
+  <h3>No lock-in — <code>sma emit</code></h3>
+  <p><code>sma emit</code> compiles the corpus into <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>.cursorrules</code> and <code>GEMINI.md</code> inside managed blocks. Your content outside the block is never touched, and a re-emit is byte-identical, so re-running it is a no-op in git.</p>
+
+  <h3>Catalog before grep — <code>sma context</code></h3>
+  <p><code>sma context</code> compiles a task-scoped context pack from a deterministic one-line card per file (catalog-before-grep). The same input always produces the same pack, so two runs of one task see the same context.</p>
+
+  <h3>The self-tuning ladder</h3>
+  <p>Enforcement rules rise <b>and</b> fall only on journal evidence, always as a reviewable diff. This <b>self-tuning</b> promotes rules that keep proving useful and demotes noisy ones, so the rule set sharpens over time instead of only growing.</p>
+
+  <h3>The statusline segment + attention pulse</h3>
+  <p>The <b>statusline segment</b> renders active sessions, today's collisions and the next free slot into your status line, and an attention pulse marks whether a window is working or waiting for a human. The optional webhook is outbound only: SMA sends a nudge out, there is no inbound path and nothing listens.</p>
+
+  <h3>The PR evidence passport</h3>
+  <p>The <b>PR evidence passport</b> turns a commit range into an evidence pack, so the reviewer starts from the claims, predictions, outcomes and receipts, not from diff archaeology. Run <code>pnpm sma manifest --range main..HEAD --md</code> and paste the result into the pull request.</p>
+</div>
+
+<h2>16. How SMA compares</h2>
+<div class="card">
+  <p>SMA sits next to five well-loved tools, and the honest read is that each does something better than SMA in its own lane. The point of SMA is the lane none of them occupy.</p>
+  <ul>
+    <li><b>claude-mem</b> leads on memory mechanics, but it does not score whether its memory actually helped.</li>
+    <li><b>Aider</b>'s repo-map is a deterministic context graph with years of production proof, but it carries no memory corpus and no learning loop.</li>
+    <li><b>Letta</b> (MemGPT) has a rich memory-block architecture, but it runs a database and a server, and the agent grades itself.</li>
+    <li><b>ccusage</b> is excellent at local spend observability, but it only observes: nothing learns or enforces.</li>
+    <li><b>BMAD</b> ships rich orchestration templates, but with no verification layer the claims stay claims.</li>
+  </ul>
+  <p><b>The wedge.</b> A model vendor cannot neutrally grade its own agent's homework. The accountability layer is the part nobody else can ship impartially, and it is exactly why SMA survives platform absorption: only SMA settles "done" with a script, never with the model's own word.</p>
+</div>
+
+<!-- sma:v35:end -->
+
 <footer>
   SMA · user manual · sma-framework, MIT license, engine derived from gsd-core<br>
-  Last updated: 06.07.2026, 11:38 CEST
+  Last updated: 10.07.2026, 00:02 CEST
 </footer>
 
 </div>

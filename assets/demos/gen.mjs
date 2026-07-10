@@ -191,6 +191,69 @@ const DEMOS = [
     ['  quick · fast · debug · progress · resume · pause', 'dim'],
     ['◆ files + git underneath — everything you can diff', 'accent'],
   ] },
+
+  // ── V3 · the trust spine (authentic behavior, house style) ───────────────────
+  { cmd: 'sma reverify', file: 'sma-reverify', lines: [
+    ['$ sma reverify --all --fresh-clone', 'cmd'],
+    ['◇ re-running every "done" on a throwaway git clone', 'accent'],
+    ['  only committed evidence counts — no live mutable state', 'dim'],
+    ['✓ 24/24 structural receipts reproduced (observed = expected)', 'ok'],
+    ['✓ RECEIPT-PROSE lint clean — no naked prose "done"', 'ok'],
+    ['◆ "done" is a command that re-runs, not a sentence', 'accent'],
+  ] },
+  { cmd: 'sma blind-verify', file: 'sma-blind-verify', lines: [
+    ['$ sma blind-verify 49.2-07-PLAN.md', 'cmd'],
+    ['◇ re-deriving every "done" from the code tree alone', 'accent'],
+    ['⚠ BLIND_FORBIDDEN: a SUMMARY as input is structurally refused', 'hi'],
+    ['  the verifier never sees the executor’s own report', 'dim'],
+    ['✓ 9 checks derived from -PLAN.md + tree · no divergence', 'ok'],
+    ['◆ claimed-pass / reproduced-fail is the heaviest ledger event', 'accent'],
+  ] },
+  { cmd: 'sma preship', file: 'sma-preship', lines: [
+    ['$ sma preship', 'cmd'],
+    ['⚠ SHIP BLOCKED — 1 open class-A event', 'hi'],
+    ['  blind-divergence in sma.receipts — a false "done" reproduced', 'dim'],
+    ['$ sma disposition <event> --verdict fix-forward --reason "…" --yes', 'cmd'],
+    ['✓ disposition recorded in the append-only ledger', 'ok'],
+    ['✓ sma preship: clean — ship may proceed', 'ok'],
+    ['◆ the agent cannot forgive itself — only the founder unblocks', 'accent'],
+  ] },
+  { cmd: 'sma grill', file: 'sma-grill', lines: [
+    ['$ sma grill 12-01-PLAN.md --gate', 'cmd'],
+    ['◇ cross-examining every promise before the build', 'accent'],
+    ['⚠ BLOCKED — 1 unresolved challenge', 'hi'],
+    ['  CH-1: «rejects the 101st req» ⟵ what about a burst at t=0?', 'dim'],
+    ['✓ CH-1 → converted to a registered prediction (PRED-03)', 'ok'],
+    ['◆ allowed — no challenge left standing, the build may start', 'accent'],
+  ] },
+  { cmd: 'sma pre-bench', file: 'sma-pre-bench', lines: [
+    ['$ sma pre-bench', 'cmd'],
+    ['◇ the PreToolUse multiplexer — ONE spawn per tool call', 'accent'],
+    ['  V2 base: 1268.6 ms/call (3–4 spawns) · SLO p95 ≤ 300 ms', 'dim'],
+    ['✓ p95 152–157 ms · spawn-count 1 · parity 0 mismatches', 'ok'],
+    ['◆ every check now rides one node run, not four', 'accent'],
+  ] },
+  { cmd: 'sma undo', file: 'sma-undo', lines: [
+    ['$ sma undo --dry-run', 'cmd'],
+    ['◇ the git airbag — a ms-level snapshot before destructive git', 'accent'],
+    ['  update-ref refs/sma/airbag + stash create (never a slow bundle)', 'dim'],
+    ['✓ newest snapshot restorable: HEAD + dirty + untracked', 'ok'],
+    ['◆ one action back to safety —  sma undo --yes', 'accent'],
+  ] },
+  { cmd: 'sma resume', file: 'sma-resume', lines: [
+    ['$ sma resume', 'cmd'],
+    ['◇ rebuilding the brief from the flight recorder (zero LLM)', 'accent'],
+    ['  intent · touched files · recent decisions · open questions', 'dim'],
+    ['✓ back exactly where compaction cut you off — minutes, not scratch', 'ok'],
+    ['◆ the capsule was written BEFORE the context was cut', 'accent'],
+  ] },
+  { cmd: 'sma spend', file: 'sma-spend', lines: [
+    ['$ sma spend', 'cmd'],
+    ['◇ deterministic spend ledger — parsed from local session logs', 'accent'],
+    ['  per session · subagent · model   (no daemon, no cloud)', 'dim'],
+    ['⚠ budget reflex warns at 70/90%; a loop-breaker disarms a runaway rule', 'hi'],
+    ['◆ spend blindness is the proven enterprise veto — this closes it', 'accent'],
+  ] },
 ]
 
 mkdirSync(OUT, { recursive: true })

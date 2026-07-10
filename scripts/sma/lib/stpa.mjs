@@ -187,6 +187,19 @@ export const HAZARDS = [
     compensatingControl: 'HAZARD-NOCONTROL is an ENV-INDEPENDENT git-side lint — it runs regardless of SMA_STPA_OFF, so the guard cannot silently kill the guard',
     fixture: null, // the compensating control is a lint, not a tool-event fixture
   },
+  {
+    // 49.3-06 (D-49.3-12) — the self-tuning ladder's OWN kill env. Disabling the
+    // overlay freezes every tier: demotions/re-arms stop, so a warned-then-ignored
+    // rule can neither quieten nor re-arm. The disarm-path guard covers the tuner
+    // itself. Its compensating control is env-independent: the tier registry is a
+    // TRACKED file (git history is the record), LADDER-EVIDENCE lint fails any
+    // evidence-free tier, and applyProposals cross-journals every legitimate change.
+    killEnv: 'SMA_LADDER_OFF',
+    kind: 'self',
+    hazard: 'the ladder overlay is silently disabled -> tiers frozen; demotions and incident re-arms stop',
+    compensatingControl: 'the TRACKED sma-ladder.json (git diff/history is the tamper record) + the LADDER-EVIDENCE critical lint (evidence-free tiers + unchecked retirements fail regardless of the env) + applyProposals cross-journaling every change',
+    fixture: null, // the compensating control is the tracked file + lint, not a tool-event fixture
+  },
 ]
 
 /** The HAZARDS row for a given killEnv, or null. */

@@ -34,6 +34,16 @@ import { fileURLToPath } from 'node:url';
 
 const pkgRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+/** The package version (single source: package.json) for the installer banner; '' on any failure. */
+function pkgVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '';
+  } catch {
+    return '';
+  }
+}
+
 // ── user-facing command set (source of truth: sma-core/aliases/README.md table) ──
 
 const COMMANDS = [
@@ -242,7 +252,8 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`\nInstalling SMA (${isGlobal ? 'global' : 'local'}) ...\n`);
+  const version = pkgVersion();
+  console.log(`\nInstalling SMA${version ? ` v${version}` : ''} (${isGlobal ? 'global' : 'local'}) ...\n`);
 
   // 1. Engine: sma-core -> <config>/sma-core (aliases ship separately, flag-gated)
   const destCore = path.join(configDir, 'sma-core');
@@ -331,7 +342,7 @@ function main() {
 
   // 8. Plain-language completion summary
   console.log(`
-Done. SMA is installed${isGlobal ? ' globally' : ' in this project'}.
+Done. SMA${version ? ` v${version}` : ''} is installed${isGlobal ? ' globally' : ' in this project'}.
 
   What you got:
     - the SMA engine (workflows, agents, templates) under ${isGlobal ? '~/.claude' : '.claude'}/sma-core
