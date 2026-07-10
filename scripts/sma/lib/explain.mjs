@@ -143,6 +143,10 @@ export const COMMAND_TOPICS = {
   profile: 'tour',
   explain: 'tour',
   'doc-audit': 'tour',
+
+  // v3.6 — the off-ramp and the onboarding preview
+  deleteme: 'deleteme',
+  'memory-preview': 'memory-preview',
 }
 
 /**

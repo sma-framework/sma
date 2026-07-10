@@ -249,7 +249,24 @@
   <p>The <b>PR evidence passport</b> turns a commit range into an evidence pack, so the reviewer starts from the claims, predictions, outcomes and receipts, not from diff archaeology. Run <code>pnpm sma manifest --range main..HEAD --md</code> and paste the result into the pull request.</p>
 </div>
 
-<h2>16. How SMA compares</h2>
+<h2>16. New in V3.6 — the one-command door, both ways</h2>
+<div class="card">
+  <p>V3.6 makes entering and leaving equally cheap, and shows a newcomer their own project before they commit to anything.</p>
+
+  <h3>One-command install — <code>npx -y sma-framework@latest init</code></h3>
+  <p>The package is on the public npm registry. One command from your project root installs the engine, the runtime, the <code>/sma-*</code> skills and the hooks — zero dependencies, and the version you see in the banner is the version in the tag. A deterministic package gate (<code>package-check</code>) refuses a tarball with a stale version, a private flag or a missing file.</p>
+
+  <h3>The rules block in CLAUDE.md</h3>
+  <p>The installer now embeds a short managed <b>rules block</b> into your project's CLAUDE.md, so every future agent session knows where the memory corpus lives and how to load it. It obeys the same splice law as <code>sma emit</code>: your own text is never touched, a re-run changes nothing, torn markers are refused rather than repaired.</p>
+
+  <h3>The off-ramp — <code>sma deleteme</code></h3>
+  <p>One command removes everything the installer wrote: skills, engine, runtime, hooks, statusline, managed blocks. It is dry-run by default and it <b>preserves <code>.claude/memory/</code></b> — the lessons your project learned stay yours, readable by any tool. Leaving is as cheap as arriving; that is the trust argument.</p>
+
+  <h3>Your memory, previewed — <code>sma memory-preview</code></h3>
+  <p>During onboarding, <code>memory-preview</code> draws an ASCII graph of how SMA would lay out YOUR repository's memory: the always-loaded core, the periphery areas folded from your real file tree, and the reflex candidates mined from your own git history. Read-only, zero network, byte-identical at one commit. <code>--project &lt;path&gt;</code> previews any other repository first.</p>
+</div>
+
+<h2>17. How SMA compares</h2>
 <div class="card">
   <p>SMA sits next to five well-loved tools, and the honest read is that each does something better than SMA in its own lane. The point of SMA is the lane none of them occupy.</p>
   <ul>
@@ -266,7 +283,7 @@
 
 <footer>
   SMA · user manual · sma-framework, MIT license, engine derived from gsd-core<br>
-  Last updated: 10.07.2026, 00:02 CEST
+  Last updated: 10.07.2026, 18:23 CEST
 </footer>
 
 </div>

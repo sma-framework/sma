@@ -216,13 +216,22 @@ function deriveKind({ file, fm, body, registry }) {
   const prefix = prefixOf(file)
   const oldType = legacyType(fm)
 
-  // IDEMPOTENCE: an already-normalized note carries a `kind` field and NO legacy
-  // `type:`. Re-deriving from prefix alone would lose the original signal (e.g. a
-  // HARD-RULE feedback note stored under a project_ filename). If a valid kind is
-  // already present, preserve it — a re-run must not reclassify (B12 / R3).
-  if (registry && fm.kind && !oldType) {
-    const k = resolveAlias(String(fm.kind).trim(), registry)
-    if (registry.kind.has(k)) return k
+  // IDEMPOTENCE: a normalized note carries a `kind` — or the auto-memory hook nests
+  // it under `metadata:` — and NO legacy `type:`. Re-deriving from prefix alone
+  // would lose the original signal (e.g. a HARD-RULE note stored under a project_
+  // filename). If a valid canonical kind is already present (top-level OR nested),
+  // preserve it — a re-run must not reclassify (B12 / R3).
+  if (registry && !oldType) {
+    const rawKind =
+      typeof fm.kind === 'string' && fm.kind.trim()
+        ? fm.kind
+        : typeof fm.metadata?.kind === 'string'
+          ? fm.metadata.kind
+          : ''
+    if (rawKind.trim()) {
+      const k = resolveAlias(rawKind.trim(), registry)
+      if (registry.kind.has(k)) return k
+    }
   }
 
   // decision-like legacy type is honored first.
@@ -244,10 +253,30 @@ function deriveKind({ file, fm, body, registry }) {
 }
 
 /**
- * deriveAreas(file, description) → an ordered, deduped list of area tags. Always
- * ≥1 (AREA_FALLBACK). All values are canonical TAGS.md area tags (validated).
+ * deriveAreas({file, description, fm, registry}) → an ordered, deduped list of area
+ * tags. PREFERS hand-authored area tags (top-level `tags:` OR nested
+ * `metadata.tags`), validated against TAGS.md, so a deliberate tagging (e.g. a
+ * document-search note tagged `crm`) is not lost to the keyword map; derives from
+ * filename+description only when no valid existing area tag is present. Always ≥1
+ * (AREA_FALLBACK). All values are canonical TAGS.md area tags (validated). Idempotent
+ * — a migrated note's top-level tags are re-read on a re-run.
  */
-function deriveAreas({ file, description }) {
+function deriveAreas({ file, description, fm, registry }) {
+  // Preserve hand-authored, canonical area tags where present (top-level or nested).
+  const existingRaw = Array.isArray(fm?.tags)
+    ? fm.tags
+    : Array.isArray(fm?.metadata?.tags)
+      ? fm.metadata.tags
+      : []
+  if (registry && existingRaw.length) {
+    const kept = []
+    for (const t of existingRaw) {
+      const canon = resolveAlias(String(t).trim(), registry)
+      if (registry.area.has(canon) && !kept.includes(canon)) kept.push(canon)
+    }
+    if (kept.length) return kept.slice(0, 3) // cap 3 (B4 anti-overbroad)
+  }
+  // No valid existing area tag → derive from filename + description.
   const hay = `${file} ${description}`.toLowerCase()
   const areas = []
   for (const [re, area] of AREA_KEYWORD_MAP) {
@@ -258,8 +287,23 @@ function deriveAreas({ file, description }) {
   return areas.slice(0, 3)
 }
 
-/** deriveImportance(ctx) → integer 1–10 via the first matching IMPORTANCE_RULE. */
+/**
+ * deriveImportance(ctx) → integer 1–10. PRESERVES a hand-authored importance
+ * (top-level `importance:` OR nested `metadata.importance`) when it is a valid
+ * 1–10 integer — a deliberate CORE curation (importance ≥ CORE_THRESHOLD) must
+ * survive migration, not be demoted by the rule derivation. Derives via the first
+ * matching IMPORTANCE_RULE only when no explicit importance is present. Idempotent
+ * — a migrated note's top-level importance is re-read on a re-run.
+ */
 function deriveImportance(ctx) {
+  const raw = ctx.fm?.importance ?? ctx.fm?.metadata?.importance
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && /^\d+$/.test(raw.trim())
+        ? parseInt(raw.trim(), 10)
+        : NaN
+  if (Number.isInteger(n) && n >= 1 && n <= 10) return n
   for (const rule of IMPORTANCE_RULES) {
     if (rule.test(ctx)) return rule.importance
   }
@@ -307,7 +351,16 @@ function deriveDescription(fm, indexLine) {
 const AUTO_USEWHEN_PREFIX = 'при работе с:'
 
 function deriveUseWhen(fm, description) {
-  const existing = typeof fm['use-when'] === 'string' ? fm['use-when'].trim() : ''
+  // Prefer a top-level use-when; fall back to a nested metadata.use-when (the
+  // auto-memory hook nests it) so a human-authored trigger is never lost when a
+  // hook-nested note is migrated — same nested-fallback the supersession keys use.
+  const rawUseWhen =
+    typeof fm['use-when'] === 'string'
+      ? fm['use-when']
+      : typeof fm.metadata?.['use-when'] === 'string'
+        ? fm.metadata['use-when']
+        : ''
+  const existing = rawUseWhen.trim()
   // Preserve a HUMAN-authored use-when verbatim. An AUTO-derived one (our own
   // "при работе с:" form) is regenerated from the clean description each run, so
   // a re-run cannot compound escaping / mid-word truncation from a prior pass
@@ -418,7 +471,7 @@ export function migrateNote({ file, text, indexLine, registry }) {
   if (!description) return { skip: true, reason: 'no derivable description (no field + no index line)' }
 
   const kind = deriveKind({ file, fm, body, registry })
-  const tags = deriveAreas({ file, description })
+  const tags = deriveAreas({ file, description, fm, registry })
   const useWhen = deriveUseWhen(fm, description)
   const importance = deriveImportance({
     file,
@@ -426,6 +479,7 @@ export function migrateNote({ file, text, indexLine, registry }) {
     description,
     body,
     oldType: legacyType(fm),
+    fm,
   })
 
   const normalized = { description, kind, tags, 'use-when': useWhen, importance }

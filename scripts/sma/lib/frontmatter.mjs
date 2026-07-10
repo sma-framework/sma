@@ -110,7 +110,10 @@ function parseFrontmatterBlock(block, file) {
     const key = m[1]
     const rest = m[2]
 
-    // The ONE nested block we support: `metadata:` with 2-space scalar sub-keys.
+    // The ONE nested block we support: `metadata:` with 2-space scalar sub-keys,
+    // plus a 4-space dash-list value under a sub-key (`  tags:` followed by
+    // `    - item` lines) — the block-sequence shape the auto-memory hook emits for
+    // tags. Any other nested structure throws loudly (B12).
     if (key === 'metadata' && rest.trim() === '') {
       const nested = {}
       i++
@@ -123,7 +126,20 @@ function parseFrontmatterBlock(block, file) {
             `frontmatter parse error in ${file} line ${subFileLine}: unsupported nested structure under metadata: "${subLine}" (only 2-space scalar sub-keys are supported)`,
           )
         }
-        nested[sm[1]] = unquote(sm[2])
+        const subKey = sm[1]
+        const subRest = sm[2]
+        // A 4-space dash-list value under a sub-key → collect `    - item` lines.
+        if (subRest.trim() === '' && i + 1 < lines.length && /^    -\s/.test(lines[i + 1])) {
+          const arr = []
+          i++
+          while (i < lines.length && /^    -\s/.test(lines[i])) {
+            arr.push(unquote(lines[i].replace(/^    -\s+/, '').trim()))
+            i++
+          }
+          nested[subKey] = arr
+          continue
+        }
+        nested[subKey] = unquote(subRest)
         i++
       }
       out.metadata = nested
