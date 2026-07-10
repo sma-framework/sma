@@ -1,0 +1,181 @@
+{
+  "_comment": "Standing recall benchmark (B3/B8). Self-contained: the test ships THIS mini-corpus + these pinned queries and never reads a machine's private .claude/memory corpus. Distilled from the V1 recall protocol (17/18) and generalized to a fixture corpus of project-shaped notes for a FICTIONAL product — none of these notes describe a real project. Each query resolves through resolvePeriphery; a query hits when its expectedNoteId lands in CORE (importance >= 9) or the tag-matched periphery. The single knownMiss mirrors the V1 tag-only ceiling: a note tagged in one area is missed by a query naming another.",
+  "tagsRegistry": {
+    "area": [
+      "compliance",
+      "design",
+      "orm",
+      "deploy",
+      "workflow",
+      "release",
+      "testing",
+      "admin",
+      "memory",
+      "security",
+      "notifications",
+      "copy",
+      "tech",
+      "governance"
+    ],
+    "kind": [
+      "procedural-rule",
+      "bug-lesson",
+      "reference",
+      "status",
+      "decision",
+      "episodic"
+    ]
+  },
+  "corpus": [
+    {
+      "file": "core_compliance_deferred.md",
+      "description": "All data-retention compliance work is deferred until the owner explicitly starts it and it never blocks a push",
+      "kind": "procedural-rule",
+      "tags": ["compliance"],
+      "importance": 9,
+      "body": "A load-bearing standing rule that lives in CORE and is always surfaced.\n"
+    },
+    {
+      "file": "core_design_prompt_first.md",
+      "description": "Any user-facing surface needs a design brief marked New in the design register before code-complete",
+      "kind": "procedural-rule",
+      "tags": ["design"],
+      "importance": 9,
+      "body": "A load-bearing standing rule that lives in CORE and is always surfaced.\n"
+    },
+    {
+      "file": "lesson_migration_rename_prompt.md",
+      "description": "A migration that adds and removes columns in one window makes the ORM prompt is-this-a-rename and hangs a headless deploy",
+      "kind": "bug-lesson",
+      "tags": ["orm", "deploy"],
+      "importance": 8,
+      "body": "**Why:** the rename prompt has no TTY on the deploy host. **How to apply:** split add and drop across migrations.\n"
+    },
+    {
+      "file": "lesson_seed_prod_migrations.md",
+      "description": "Running a client-booting seed script against prod applies pending local migrations to the production database",
+      "kind": "bug-lesson",
+      "tags": ["deploy"],
+      "importance": 8,
+      "body": "**Why:** the script boots the data layer which runs migrations. **How to apply:** never run seed scripts against prod.\n"
+    },
+    {
+      "file": "lesson_worktree_teleport.md",
+      "description": "Claude Code shell can teleport into a worktree mid-Bash session during parallel execute-phase runs",
+      "kind": "bug-lesson",
+      "tags": ["workflow"],
+      "importance": 8,
+      "body": "**Why:** the harness switches cwd. **How to apply:** cd to project root before each git command.\n"
+    },
+    {
+      "file": "rule_full_suite_before_push.md",
+      "description": "Run the full test suite and the type check green before every push to main not just your changed slice",
+      "kind": "procedural-rule",
+      "tags": ["release", "testing"],
+      "importance": 8,
+      "body": "**Why:** a change ripples into tests you never opened. **How to apply:** run the whole suite before pushing.\n"
+    },
+    {
+      "file": "rule_admin_nav_config.md",
+      "description": "The live admin sidebar is driven by the nav-config file not the Sidebar component so wire routes there",
+      "kind": "procedural-rule",
+      "tags": ["admin", "design"],
+      "importance": 8,
+      "body": "**Why:** the rail reads nav-config. **How to apply:** register new admin routes in nav-config or no button appears.\n"
+    },
+    {
+      "file": "ref_release_versions.md",
+      "description": "The versioned release series increments by one on every push to main starting from the first tag",
+      "kind": "reference",
+      "tags": ["release"],
+      "importance": 6,
+      "body": "Read the last-used number before every push and bump it after.\n"
+    },
+    {
+      "file": "ref_sma_protocol.md",
+      "description": "The SMA protocol for agents covers how to read memory coordinate terminals and pick migration slots",
+      "kind": "reference",
+      "tags": ["memory"],
+      "importance": 6,
+      "body": "Load CORE automatically and pull periphery by tag on demand.\n"
+    },
+    {
+      "file": "status_phase_billing.md",
+      "description": "The billing and invoicing enhancement phase is code-complete across its five sub-plans awaiting live smoke",
+      "kind": "status",
+      "tags": ["admin"],
+      "importance": 7,
+      "body": "Engineering shipped, human live-verify gate pending.\n"
+    },
+    {
+      "file": "lesson_server_api_access.md",
+      "description": "The server-side data API defaults to bypassing access control so row-level predicates do not apply unless the caller attaches a user",
+      "kind": "bug-lesson",
+      "tags": ["orm", "security"],
+      "importance": 8,
+      "body": "**Why:** the server client skips access checks by default. **How to apply:** pass the requesting user on protected reads.\n"
+    },
+    {
+      "file": "lesson_notify_fallback.md",
+      "description": "Notification routing prefers in-app push where SMS delivery is unreliable then falls back to email continuity",
+      "kind": "bug-lesson",
+      "tags": ["notifications"],
+      "importance": 8,
+      "body": "**Why:** SMS delivery varies by region. **How to apply:** resolve the preferred channel per account in the dispatcher.\n"
+    },
+    {
+      "file": "rule_copy_style.md",
+      "description": "Customer-facing copy uses sentence case no exclamation marks and no first-person product voice",
+      "kind": "procedural-rule",
+      "tags": ["copy"],
+      "importance": 8,
+      "body": "**Why:** the product voice is the brand. **How to apply:** never use exclamation marks in customer-facing copy.\n"
+    },
+    {
+      "file": "lesson_tailwind_backslash.md",
+      "description": "Tailwind v4 oxide scans markdown files and crashes on Windows backslash paths that form a six-char hex CSS escape",
+      "kind": "bug-lesson",
+      "tags": ["design", "testing"],
+      "importance": 8,
+      "body": "**Why:** the suffix parses as a CSS escape. **How to apply:** use forward slashes in absolute paths inside docs.\n"
+    },
+    {
+      "file": "ref_stack.md",
+      "description": "The stack is a React metaframework with a headless CMS and Postgres behind a managed deploy host",
+      "kind": "reference",
+      "tags": ["tech"],
+      "importance": 6,
+      "body": "Full rationale lives in the stack research document.\n"
+    },
+    {
+      "file": "lesson_build_route_exports.md",
+      "description": "The type check and unit tests do not catch framework route export violations so run the production build before pushing route changes",
+      "kind": "bug-lesson",
+      "tags": ["deploy", "workflow"],
+      "importance": 8,
+      "body": "**Why:** route-export rules are a build-time check. **How to apply:** run the production build for phases that add route files.\n"
+    }
+  ],
+  "queries": [
+    { "id": "Q1", "query": "when is deferred compliance work allowed to start", "tags": ["compliance"], "expectedNoteId": "core_compliance_deferred.md" },
+    { "id": "Q2", "query": "does a new user-facing surface need a design brief", "tags": ["design"], "expectedNoteId": "core_design_prompt_first.md" },
+    { "id": "Q3", "query": "migration rename prompt footgun on deploy", "tags": ["orm"], "expectedNoteId": "lesson_migration_rename_prompt.md" },
+    { "id": "Q4", "query": "a deploy hang caused by a migration", "tags": ["deploy"], "expectedNoteId": "lesson_migration_rename_prompt.md" },
+    { "id": "Q5", "query": "shell teleporting into a worktree during parallel work", "tags": ["workflow"], "expectedNoteId": "lesson_worktree_teleport.md" },
+    { "id": "Q6", "query": "what gate runs before a push to main", "tags": ["release"], "expectedNoteId": "rule_full_suite_before_push.md" },
+    { "id": "Q7", "query": "where do new admin sidebar routes get wired", "tags": ["admin"], "expectedNoteId": "rule_admin_nav_config.md" },
+    { "id": "Q8", "query": "how the release version number is chosen", "tags": ["release", "reference"], "expectedNoteId": "ref_release_versions.md" },
+    { "id": "Q9", "query": "the SMA memory and coordination protocol", "tags": ["memory"], "expectedNoteId": "ref_sma_protocol.md" },
+    { "id": "Q10", "query": "current status of the billing phase", "tags": ["admin", "status"], "expectedNoteId": "status_phase_billing.md" },
+    { "id": "Q11", "query": "server data API access-control default", "tags": ["orm"], "expectedNoteId": "lesson_server_api_access.md" },
+    { "id": "Q12", "query": "notification channel routing and fallback", "tags": ["notifications"], "expectedNoteId": "lesson_notify_fallback.md" },
+    { "id": "Q13", "query": "customer-facing copy style rules", "tags": ["copy"], "expectedNoteId": "rule_copy_style.md" },
+    { "id": "Q14", "query": "Tailwind crashing on Windows backslash paths", "tags": ["design"], "expectedNoteId": "lesson_tailwind_backslash.md" },
+    { "id": "Q15", "query": "what is the technology stack", "tags": ["tech"], "expectedNoteId": "ref_stack.md" },
+    { "id": "Q16", "query": "why run the production build before pushing route changes", "tags": ["deploy"], "expectedNoteId": "lesson_build_route_exports.md" },
+    { "id": "Q17", "query": "a data-layer bug-lesson about access control", "tags": ["orm", "bug-lesson"], "expectedNoteId": "lesson_server_api_access.md" },
+    { "id": "Q18", "query": "a security lesson at a trust boundary read", "tags": ["security"], "expectedNoteId": "lesson_server_api_access.md" },
+    { "id": "Q19", "query": "a testing lesson about the build tool", "tags": ["testing"], "expectedNoteId": "lesson_tailwind_backslash.md" },
+    { "id": "Q20", "query": "the seed-script-applies-migrations lesson looked up as a migration topic", "tags": ["orm"], "expectedNoteId": "lesson_seed_prod_migrations.md", "knownMiss": true, "note": "B8 tag-only ceiling: the note is tagged deploy (the deploy surface) not orm, so a migration-topic query on the orm facet misses it. It stays reachable via the deploy facet (Q4-style). A semantic retrieval layer closes this class at rank 1; knownMiss stays true as the DETERMINISTIC tag-only marker (what resolvePeriphery alone still misses on the orm facet)." }
+  ]
+}

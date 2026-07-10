@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMA: what it is and how to work with it (manual)</title>
+<style>
+  :root{
+    --bg:#0A0D14; --surface:#11151F; --surface2:#12161F; --line:#232A3A;
+    --text:#E8ECF4; --muted:#9AA5B8; --blue:#3B82F6; --violet:#8B5CF6;
+    --green:#3CC0A0; --amber:#E5B567;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{background:var(--bg); color:var(--text); font:16px/1.7 "Segoe UI", system-ui, sans-serif; padding:0 0 60px}
+  .wrap{max-width:940px; margin:0 auto; padding:0 24px}
+  header{padding:52px 0 30px; border-bottom:1px solid var(--line);
+    background:linear-gradient(135deg,#243B66 0%,#1F5A86 30%,#1B7E9C 55%,#1FA0A6 80%,#3CC0A0 100%);}
+  h1{font-family:Georgia, serif; font-size:38px; line-height:1.15; font-weight:600; color:#fff}
+  .sub{color:#DCE6F5; margin-top:10px; font-size:17px; max-width:740px}
+  .badge{display:inline-block; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.3); color:#fff; border-radius:999px; padding:3px 14px; font-size:13px; margin-bottom:14px}
+  h2{font-family:Georgia, serif; font-size:28px; font-weight:600; margin:46px 0 12px; color:#fff}
+  h3{font-size:17px; font-weight:600; margin:20px 0 8px; color:var(--blue)}
+  p{margin:10px 0}
+  .muted{color:var(--muted)}
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:20px 22px; margin:14px 0}
+  .card.accent{border-left:3px solid var(--blue)}
+  .card.good{border-left:3px solid var(--green)}
+  .card.warn{border-left:3px solid var(--amber)}
+  table{width:100%; border-collapse:collapse; margin:14px 0; font-size:14.5px}
+  th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top}
+  th{background:var(--surface2); color:var(--muted); font-weight:600}
+  code{background:#1A2130; border:1px solid var(--line); border-radius:5px; padding:1px 7px; font-size:13.5px; color:#B9C6DE}
+  ol,ul{margin:8px 0 8px 22px}
+  li{margin:7px 0}
+  footer{margin-top:54px; padding-top:18px; border-top:1px solid var(--line); color:var(--muted); font-size:13.5px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <span class="badge">Manual · SMA V2</span>
+    <h1>SMA: a memory and coordination framework for AI agents</h1>
+    <p class="sub">What it is, how it works, which commands you have, and what happens on its own. In plain words, no jargon.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+<h2>1. What it is, in a nutshell</h2>
+<div class="card accent">
+  <p>You work with several AI assistant windows at once (each window is called a "terminal" here). This way of working has two chronic problems:</p>
+  <ol>
+    <li><b>The assistant forgets.</b> Every new conversation starts from a blank slate. Rules, past mistakes, and agreements have to be repeated, or you hope it finds them on its own.</li>
+    <li><b>Terminals get in each other's way.</b> Two windows edit the same file, grab the same database number, and every so often that ends in breakage.</li>
+  </ol>
+  <p><b>SMA solves both.</b> It is a framework that gives assistants a permanent memory and teaches terminals to see each other. The second version adds a third thing: a learning loop. The assistant states in advance what its work will change, compares the promise against the fact, and every miss becomes a permanent rule.</p>
+</div>
+
+<h2>2. How it is built: engine and overlay</h2>
+<div class="card">
+  <p>Inside runs an open workflow engine derived from <b>gsd-core</b> (MIT license; provenance is tracked in the repo files). It knows how to drive a project step by step: discuss the task, write a plan, execute it, verify the result.</p>
+  <p>The SMA overlay adds what the engine cannot do:</p>
+  <table>
+    <tr><th>The engine (workflows)</th><th>The SMA overlay</th></tr>
+    <tr><td>Drives a project: discussion, plan, execution, verification</td><td><b>Permanent memory:</b> project knowledge as notes, the assistant receives the relevant ones automatically</td></tr>
+    <tr><td>Keeps documents per phase</td><td><b>Terminal coordination:</b> who is working, on what, warnings before a conflict</td></tr>
+    <tr><td>Knows nothing about several windows at once</td><td><b>Shared counters:</b> migration and release numbers are handed out in turn, no collisions</td></tr>
+    <tr><td>Executes the plan and stops</td><td><b>Learning loop:</b> predictions, promise-vs-fact scoring, reflexes born from misses</td></tr>
+  </table>
+  <p class="muted">The simplest way to think about it: the engine is the motor, SMA is the car built around it. Everything is deterministic scripts over files and git: no daemons, no databases, no network dependencies.</p>
+</div>
+
+<h2>3. The foundation: memory</h2>
+<div class="card">
+  <p>Your project's knowledge lives in the project folder as <b>small notes</b>, one fact per note: a rule, a lesson from a mistake, a decision, a work status. Every note carries tags from a strict vocabulary.</p>
+  <ul>
+    <li><b>The core is always with the assistant.</b> The most important rules and current blockers load into every conversation automatically, from the first second.</li>
+    <li><b>The rest on demand.</b> Working on payments? The assistant pulls only the notes tagged "finance", not the whole memory at once.</li>
+    <li><b>The index is machine-built.</b> The memory table of contents is generated by a script from the notes. A manual edit is flagged immediately by the checker.</li>
+    <li><b>There is a quality inspector.</b> <code>pnpm sma lint</code> finds notes without tags, with vocabulary typos, with broken links, or gone stale.</li>
+  </ul>
+</div>
+
+<h2>4. The foundation: terminals see each other</h2>
+<div class="card">
+  <p>Every window leaves a "pulse": a small file saying who it is and what it is working on. From that, several abilities follow:</p>
+  <ul>
+    <li><b>Who is working right now.</b> <code>pnpm sma status</code> shows all active windows and what each one is doing.</li>
+    <li><b>A claim on files.</b> A terminal declares "I am taking these files" (<code>pnpm sma claim</code>). If another terminal reaches for the same files, it gets a warning BEFORE the edit, with the name of whoever holds them. Work is never blocked: a warning only.</li>
+    <li><b>Numbers without races.</b> A migration or release number comes from <code>pnpm sma next-slot</code>: the first terminal gets 067, the second automatically gets 068.</li>
+    <li><b>The "push in progress" signal.</b> While one terminal ships code to your deploy host, the others see it and stay out of the way.</li>
+  </ul>
+</div>
+
+<h2>5. V2 pillar: predictions</h2>
+<div class="card accent">
+  <p><b>What it does.</b> Every work plan states up front what will measurably change: a metric, a check command, a threshold. After execution, a deterministic scorer compares promise against fact and writes the verdict to the journal. A calibration ledger shows in which areas the system is wrong most often: those areas get stricter oversight.</p>
+  <p><b>The command:</b> scoring runs at plan close (<code>predict-score</code>); results surface in the report.</p>
+</div>
+
+<h2>6. V2 pillar: reflexes</h2>
+<div class="card accent">
+  <p><b>What it does.</b> A scored miss becomes a rule with a firing condition. Before each subsequent assistant action, the system checks whether the action matches a condition, and if it does, injects a warning straight into the conversation, BEFORE the edit. Like a child who touches boiling water once and never again. Noise controls are built in: repeats are muted, and every rule has a kill switch.</p>
+  <p><b>The command:</b> fires on its own through a pre-action hook; the rule list and its statistics surface in the report.</p>
+</div>
+
+<h2>7. V2 pillar: corpus health</h2>
+<div class="card accent">
+  <p><b>What it does.</b> To keep the memory sharp at hundreds of notes, the system tidies up regularly: merges duplicates, promotes lessons that keep proving true, marks stale material, and catches contradicting notes from parallel terminals before they reach the main branch.</p>
+  <p><b>The command:</b> <code>pnpm sma consolidate</code> (scheduled cleanup) and <code>pnpm sma lint</code> (quality check).</p>
+</div>
+
+<h2>8. V2 pillar: coordination with teeth</h2>
+<div class="card accent">
+  <p><b>What it does.</b> Checkable hard rules of the project graduate from "a request in prose" to automatic gates: the system itself catches forbidden actions before they run. File claims gain a second tier: for hot files, a soft deny can be enabled while another terminal holds a fresh claim. Every shared counter in the project is handed out in turn.</p>
+  <p><b>The command:</b> works on its own through hooks; the picture is visible in <code>pnpm sma status</code>.</p>
+</div>
+
+<h2>9. V2 pillar: a resilient harness</h2>
+<div class="card accent">
+  <p><b>What it does.</b> Every plan keeps a progress journal: if an executor dies mid-work, a new session resumes from the exact spot in minutes instead of reconstructing the picture from crumbs. A stall detector notices when the assistant is going in circles. Task waves are computed from dependencies and run in parallel when it is safe.</p>
+  <p><b>The command:</b> built into <code>/sma-execute-phase</code>; resumption via <code>/sma-resume-work</code>.</p>
+</div>
+
+<h2>10. V2 pillar: the report</h2>
+<div class="card accent">
+  <p><b>What it does.</b> One panel shows the whole picture: active sessions, predictions and their per-area accuracy, reflex firings, terminal collisions, memory health. The state of the system is visible, not assumed.</p>
+  <p><b>The command:</b> <code>/sma-progress</code> in the chat; the data is assembled from journals and git.</p>
+</div>
+
+<h2>11. Your commands</h2>
+<div class="card">
+  <p>Everything is driven by words in the chat. The full set:</p>
+  <table>
+    <tr><th>Command</th><th>What it does</th></tr>
+    <tr><td><code>/sma-start</code></td><td>First run: explains the system, seeds the memory corpus, and records your infrastructure profile (your deploy host, your release ritual)</td></tr>
+    <tr><td><code>/sma-discuss-phase</code></td><td>Discuss a phase: the assistant asks you questions and gathers context before planning</td></tr>
+    <tr><td><code>/sma-plan-phase</code></td><td>Write a detailed phase plan with a verification loop</td></tr>
+    <tr><td><code>/sma-execute-phase</code></td><td>Execute all plans in a phase in waves, with parallelization</td></tr>
+    <tr><td><code>/sma-verify-work</code></td><td>Verify the work together with you, as a conversation</td></tr>
+    <tr><td><code>/sma-quick</code></td><td>A quick task with SMA guarantees, skipping optional agents</td></tr>
+    <tr><td><code>/sma-fast</code></td><td>A trivial task inline, no subagents, no planning</td></tr>
+    <tr><td><code>/sma-debug</code></td><td>Investigate a bug systematically, with state kept across sessions</td></tr>
+    <tr><td><code>/sma-progress</code></td><td>Where things stand: phase progress plus the live picture of who is doing what</td></tr>
+    <tr><td><code>/sma-resume-work</code></td><td>Resume a previous session's work with full context restoration</td></tr>
+    <tr><td><code>/sma-pause-work</code></td><td>Hand off context when pausing mid-phase</td></tr>
+    <tr><td><code>/sma-help</code></td><td>Show the available commands and the usage guide</td></tr>
+  </table>
+</div>
+
+<h2>12. What happens on its own, without you</h2>
+<div class="card good">
+  <ul>
+    <li>At the start of every conversation: the window registers itself and loads the memory core.</li>
+    <li>Before every file edit: a check whether the file is claimed by another terminal.</li>
+    <li>Before every action: a check whether it matches the firing condition of a known reflex.</li>
+    <li>Every collision is written to the journal, so the real collision rate can be measured.</li>
+    <li>Dead entries from closed windows are cleaned up automatically.</li>
+  </ul>
+  <p><b>The core principle: the system never blocks work.</b> It warns and records, but does not stop you. If the memory or coordination layer itself breaks, work continues as before, just without the hints. Hard denies are reserved for security checks only.</p>
+</div>
+
+<h2>13. Try it right now: 10 minutes</h2>
+<div class="card good">
+  <ol>
+    <li>Install: <code>npx sma-framework init</code>, then open a Claude Code session and type <code>/sma-start</code>.</li>
+    <li>Type into the chat: <code>pnpm sma status</code>. You will see how many windows are working and what they are busy with.</li>
+    <li>Open a second terminal. In the first one, claim some folder via <code>pnpm sma claim</code>.</li>
+    <li>In the second one, ask the assistant to edit a file from that folder: a warning with the first terminal's name appears before the edit.</li>
+    <li>In both windows at once: <code>pnpm sma next-slot migration</code>. The numbers come out different, no race.</li>
+  </ol>
+</div>
+
+<footer>
+  SMA · user manual · sma-framework, MIT license, engine derived from gsd-core<br>
+  Last updated: 06.07.2026, 11:38 CEST
+</footer>
+
+</div>
+</body>
+</html>

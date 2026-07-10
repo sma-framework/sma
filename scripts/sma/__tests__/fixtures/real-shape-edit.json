@@ -1,0 +1,13 @@
+{
+  "session_id": "00000000-1111-2222-3333-444444444444",
+  "transcript_path": "C:\\Users\\dev\\.claude\\projects\\C--Users-dev-projects-example-app\\00000000-1111-2222-3333-444444444444.jsonl",
+  "cwd": "C:\\Users\\dev\\projects\\example-app",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "C:\\Users\\dev\\projects\\example-app\\src\\migrations\\index.ts",
+    "old_string": "export const migrations = [",
+    "new_string": "export const migrations = [\n  migration_046,"
+  }
+}
