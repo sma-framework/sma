@@ -1,0 +1,7 @@
+{
+  "session_id": "pre-fixture-window-2",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git status --short"
+  }
+}

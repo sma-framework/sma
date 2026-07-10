@@ -1,0 +1,38 @@
+{
+  "id": "sma",
+  "role": "feature",
+  "version": "2.0.0-alpha.0",
+  "title": "SMA framework core",
+  "description": "First-party identity of the SMA framework itself: layered memory corpus (CORE + per-area index over .claude/memory/), multi-terminal coordination over .sma/ (claims, sessions, push-claims), and the V2 prediction/reflex loop (reflex-check, gates-check, stall-check hook consumers, calibration, report). No daemons, no DB substrate.",
+  "tier": "standard",
+  "requires": [],
+  "engines": {
+    "sma": ">=1.6.0"
+  },
+  "runtimeCompat": {
+    "supported": [
+      "*"
+    ],
+    "unsupported": []
+  },
+  "skills": [],
+  "agents": [],
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "script": "scripts/sma/cli.mjs"
+    },
+    {
+      "event": "PreToolUse",
+      "script": "scripts/sma/cli.mjs"
+    },
+    {
+      "event": "PostToolUse",
+      "script": "scripts/sma/cli.mjs"
+    }
+  ],
+  "config": {},
+  "steps": [],
+  "contributions": [],
+  "gates": []
+}

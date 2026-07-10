@@ -1,0 +1,8 @@
+{
+  "session_id": "pre-fixture-window-3",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "scripts/sma/fixtures/pre/scratch-new.txt",
+    "content": "fresh path, no collision, no reflex, no gate"
+  }
+}

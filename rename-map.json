@@ -1,0 +1,215 @@
+{
+  "generated": "2026-07-06",
+  "plan": "49.1-02",
+  "decision": "D-49.1-01 (atomic fork rebrand) + FI-7 (atomic rename lock)",
+  "package": {
+    "from": "@opengsd/gsd-core",
+    "to": "sma-framework",
+    "install": "npx sma-framework init"
+  },
+  "files": [
+    {
+      "from": "sma-core/agents/gsd-advisor-researcher.md",
+      "to": "sma-core/agents/sma-advisor-researcher.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-ai-researcher.md",
+      "to": "sma-core/agents/sma-ai-researcher.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-assumptions-analyzer.md",
+      "to": "sma-core/agents/sma-assumptions-analyzer.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-code-fixer.md",
+      "to": "sma-core/agents/sma-code-fixer.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-code-reviewer.md",
+      "to": "sma-core/agents/sma-code-reviewer.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-codebase-mapper.md",
+      "to": "sma-core/agents/sma-codebase-mapper.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-debug-session-manager.md",
+      "to": "sma-core/agents/sma-debug-session-manager.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-debugger.md",
+      "to": "sma-core/agents/sma-debugger.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-doc-classifier.md",
+      "to": "sma-core/agents/sma-doc-classifier.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-doc-synthesizer.md",
+      "to": "sma-core/agents/sma-doc-synthesizer.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-doc-verifier.md",
+      "to": "sma-core/agents/sma-doc-verifier.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-doc-writer.md",
+      "to": "sma-core/agents/sma-doc-writer.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-domain-researcher.md",
+      "to": "sma-core/agents/sma-domain-researcher.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-eval-auditor.md",
+      "to": "sma-core/agents/sma-eval-auditor.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-eval-planner.md",
+      "to": "sma-core/agents/sma-eval-planner.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-executor.md",
+      "to": "sma-core/agents/sma-executor.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-framework-selector.md",
+      "to": "sma-core/agents/sma-framework-selector.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-integration-checker.md",
+      "to": "sma-core/agents/sma-integration-checker.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-intel-updater.md",
+      "to": "sma-core/agents/sma-intel-updater.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-mempalace-curator.md",
+      "to": "sma-core/agents/sma-mempalace-curator.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-nyquist-auditor.md",
+      "to": "sma-core/agents/sma-nyquist-auditor.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-pattern-mapper.md",
+      "to": "sma-core/agents/sma-pattern-mapper.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-phase-researcher.md",
+      "to": "sma-core/agents/sma-phase-researcher.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-plan-checker.md",
+      "to": "sma-core/agents/sma-plan-checker.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-planner.md",
+      "to": "sma-core/agents/sma-planner.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-project-researcher.md",
+      "to": "sma-core/agents/sma-project-researcher.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-research-synthesizer.md",
+      "to": "sma-core/agents/sma-research-synthesizer.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-roadmapper.md",
+      "to": "sma-core/agents/sma-roadmapper.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-security-auditor.md",
+      "to": "sma-core/agents/sma-security-auditor.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-ui-auditor.md",
+      "to": "sma-core/agents/sma-ui-auditor.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-ui-checker.md",
+      "to": "sma-core/agents/sma-ui-checker.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-ui-researcher.md",
+      "to": "sma-core/agents/sma-ui-researcher.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-user-profiler.md",
+      "to": "sma-core/agents/sma-user-profiler.md"
+    },
+    {
+      "from": "sma-core/agents/gsd-verifier.md",
+      "to": "sma-core/agents/sma-verifier.md"
+    },
+    {
+      "from": "sma-core/bin/gsd_run",
+      "to": "sma-core/bin/sma_run"
+    },
+    {
+      "from": "sma-core/bin/gsd-tools.cjs",
+      "to": "sma-core/bin/sma-tools.cjs"
+    },
+    {
+      "from": "sma-core/bin/lib/gsd2-import.cjs",
+      "to": "sma-core/bin/lib/sma2-import.cjs"
+    },
+    {
+      "from": "sma-core/bin/lib/installer-migrations/003-rename-get-shit-done-to-gsd-core.cjs",
+      "to": "sma-core/bin/lib/installer-migrations/003-rename-get-shit-done-to-sma-core.cjs"
+    }
+  ],
+  "strings": [
+    {
+      "from": "@opengsd/gsd-core",
+      "to": "sma-framework"
+    },
+    {
+      "from": "open-gsd/gsd-core",
+      "to": "sma-framework/sma"
+    },
+    {
+      "from": "opengsd",
+      "to": "sma-framework"
+    },
+    {
+      "from": "gsd-core",
+      "to": "sma-core"
+    },
+    {
+      "from": "gsd-tools",
+      "to": "sma-tools"
+    },
+    {
+      "from": "gsd",
+      "to": "sma"
+    },
+    {
+      "from": "GSD",
+      "to": "SMA"
+    },
+    {
+      "from": "Gsd",
+      "to": "Sma"
+    }
+  ],
+  "exclusions": [
+    "vendor/**  (pristine upstream snapshot — the 49.1-07 diff base)",
+    "LICENSE  (upstream MIT text, attribution)",
+    "THIRD-PARTY-LICENSES.md  (attribution: \"derived from gsd-core\" stays verbatim)",
+    "UPSTREAM.json  (upstream anchor keeps the original package/source names)",
+    "rename-map.json  (this map itself)",
+    "tools/**  (rename/verify scripts carry the old tokens as data)",
+    "sma-core/aliases/**  (transitional /gsd-* alias layer intentionally carries the old prefix, D-49.1-02)",
+    "lines matching /derived from gsd-core/i anywhere (attribution sentences stay verbatim)",
+    "the literal string \"get-shit-done\" / \"Get Shit Done\" (pre-gsd-core historical migration source names; contains no gsd token, left verbatim)"
+  ],
+  "notes": [
+    "String substitutions are ORDERED — apply top to bottom (most specific first).",
+    "File renames apply the same ordered map to basenames.",
+    "Attribution lines matching /derived from gsd-core/i are kept verbatim wherever they occur.",
+    "Purely mechanical: zero logic changes vs vendor/gsd-core-1.6.1 (Pitfall 5 — keeps the upstream diff base clean)."
+  ]
+}

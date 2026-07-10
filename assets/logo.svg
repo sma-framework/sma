@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="SMA — Shared Memory &amp; Automation">
+  <defs>
+    <linearGradient id="bar1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2E6FD9"/>
+      <stop offset="1" stop-color="#1B7E9C"/>
+    </linearGradient>
+    <linearGradient id="bar2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1B7E9C"/>
+      <stop offset="1" stop-color="#1FA0A6"/>
+    </linearGradient>
+    <linearGradient id="bar3" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1FA0A6"/>
+      <stop offset="1" stop-color="#74DBA0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.78" r="0.9">
+      <stop offset="0" stop-color="#1FA0A6" stop-opacity="0.28"/>
+      <stop offset="0.55" stop-color="#1FA0A6" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#1FA0A6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sparkGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#74DBA0" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#74DBA0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ground -->
+  <rect x="0" y="0" width="512" height="512" rx="116" fill="#0A0D14"/>
+  <rect x="0" y="0" width="512" height="512" rx="116" fill="url(#glow)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="114.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="3"/>
+
+  <!-- three memory layers, staggered: sessions writing into one shared memory -->
+  <rect x="180" y="148" width="204" height="62" rx="31" fill="url(#bar1)"/>
+  <rect x="128" y="225" width="256" height="62" rx="31" fill="url(#bar2)"/>
+  <rect x="128" y="302" width="204" height="62" rx="31" fill="url(#bar3)"/>
+
+  <!-- the reflex spark: the loop feeding back to the top -->
+  <circle cx="404" cy="122" r="52" fill="url(#sparkGlow)"/>
+  <path d="M404 88 C409 107 417 115 436 120 C417 125 409 133 404 152 C399 133 391 125 372 120 C391 115 399 107 404 88 Z" fill="#74DBA0"/>
+</svg>

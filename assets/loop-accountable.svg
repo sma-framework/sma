@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 300" width="860" height="300" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="The accountable loop: predict, act, score, learn — reflexes fire before the act, misses become permanent lessons.">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2E6FD9"/>
+      <stop offset="0.35" stop-color="#1B7E9C"/>
+      <stop offset="0.7" stop-color="#1FA0A6"/>
+      <stop offset="1" stop-color="#74DBA0"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .ttl{fill:#E6EDF5;font-weight:700;font-size:16px}
+      .sub{fill:#9AA7B8;font-size:12px}
+      .num{fill:#5b6b7f;font-size:12px;font-weight:700}
+      .cap{fill:#8b98a9;font-size:12.5px}
+      .arc{fill:#74DBA0;font-size:12.5px;font-weight:600}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="860" height="300" rx="16" fill="#0A0D14"/>
+  <rect x="0.5" y="0.5" width="859" height="299" rx="16" fill="none" stroke="#1b2230" stroke-width="1"/>
+
+  <!-- top return arc: miss -> permanent reflex -->
+  <path d="M 750 118 C 750 40, 110 40, 110 118" fill="none" stroke="#2b3546" stroke-width="2" stroke-dasharray="5 5"/>
+  <path d="M 110 118 l -6 -12 l 12 0 z" fill="#2b3546"/>
+  <text x="430" y="34" text-anchor="middle" class="arc">miss &#8594; lesson written &#8594; reflex armed &#8594; never again</text>
+
+  <!-- connector arrows between cards -->
+  <g stroke="url(#brand)" stroke-width="2.5" fill="none">
+    <path d="M 220 168 L 250 168"/><path d="M 250 168 l -10 -5 l 0 10 z" fill="url(#brand)" stroke="none"/>
+    <path d="M 420 168 L 450 168"/><path d="M 450 168 l -10 -5 l 0 10 z" fill="url(#brand)" stroke="none"/>
+    <path d="M 620 168 L 650 168"/><path d="M 650 168 l -10 -5 l 0 10 z" fill="url(#brand)" stroke="none"/>
+  </g>
+
+  <!-- CARD 1 · Plan predicts -->
+  <g transform="translate(40,118)">
+    <rect width="180" height="100" rx="12" fill="#12161F" stroke="#26303f" stroke-width="1.2"/>
+    <rect width="180" height="100" rx="12" fill="#2E6FD9" opacity="0" filter="url(#glow)">
+      <animate attributeName="opacity" dur="4s" begin="0s" repeatCount="indefinite" values="0;0.22;0;0;0" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <rect width="180" height="100" rx="12" fill="none" stroke="#2E6FD9" stroke-width="2" opacity="0.25">
+      <animate attributeName="opacity" dur="4s" begin="0s" repeatCount="indefinite" values="0.25;1;0.25;0.25;0.25" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <text x="16" y="30" class="num">1</text>
+    <text x="16" y="52" class="ttl">Plan predicts</text>
+    <text x="16" y="74" class="sub">what will change +</text>
+    <text x="16" y="90" class="sub">the command that proves it</text>
+  </g>
+
+  <!-- CARD 2 · Agent acts (with reflex flash) -->
+  <g transform="translate(240,118)">
+    <rect width="180" height="100" rx="12" fill="#12161F" stroke="#26303f" stroke-width="1.2"/>
+    <rect width="180" height="100" rx="12" fill="#1B7E9C" opacity="0" filter="url(#glow)">
+      <animate attributeName="opacity" dur="4s" begin="1s" repeatCount="indefinite" values="0;0.22;0;0;0" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <rect width="180" height="100" rx="12" fill="none" stroke="#1FA0A6" stroke-width="2" opacity="0.25">
+      <animate attributeName="opacity" dur="4s" begin="1s" repeatCount="indefinite" values="0.25;1;0.25;0.25;0.25" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <text x="16" y="30" class="num">2</text>
+    <text x="16" y="52" class="ttl">Agent acts</text>
+    <text x="16" y="74" class="sub">edits, runs, commits</text>
+    <!-- reflex badge flashes just BEFORE the act -->
+    <g opacity="0">
+      <animate attributeName="opacity" dur="4s" begin="0.7s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.06;0.14;0.2;1"/>
+      <rect x="42" y="-16" width="150" height="26" rx="13" fill="#0A0D14" stroke="#74DBA0" stroke-width="1.5"/>
+      <text x="117" y="1" text-anchor="middle" fill="#74DBA0" font-size="12" font-weight="700">&#9889; reflex fires first</text>
+    </g>
+  </g>
+
+  <!-- CARD 3 · Scorer settles -->
+  <g transform="translate(440,118)">
+    <rect width="180" height="100" rx="12" fill="#12161F" stroke="#26303f" stroke-width="1.2"/>
+    <rect width="180" height="100" rx="12" fill="#1FA0A6" opacity="0" filter="url(#glow)">
+      <animate attributeName="opacity" dur="4s" begin="2s" repeatCount="indefinite" values="0;0.22;0;0;0" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <rect width="180" height="100" rx="12" fill="none" stroke="#1FA0A6" stroke-width="2" opacity="0.25">
+      <animate attributeName="opacity" dur="4s" begin="2s" repeatCount="indefinite" values="0.25;1;0.25;0.25;0.25" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <text x="16" y="30" class="num">3</text>
+    <text x="16" y="52" class="ttl">Scorer settles</text>
+    <text x="16" y="74" class="sub">a script, not a judge model</text>
+    <text x="16" y="90" class="sub">promise vs. fact</text>
+  </g>
+
+  <!-- CARD 4 · Lesson learned -->
+  <g transform="translate(640,118)">
+    <rect width="180" height="100" rx="12" fill="#12161F" stroke="#26303f" stroke-width="1.2"/>
+    <rect width="180" height="100" rx="12" fill="#3CC0A0" opacity="0" filter="url(#glow)">
+      <animate attributeName="opacity" dur="4s" begin="3s" repeatCount="indefinite" values="0;0.22;0;0;0" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <rect width="180" height="100" rx="12" fill="none" stroke="#74DBA0" stroke-width="2" opacity="0.25">
+      <animate attributeName="opacity" dur="4s" begin="3s" repeatCount="indefinite" values="0.25;1;0.25;0.25;0.25" keyTimes="0;0.1;0.32;0.9;1"/>
+    </rect>
+    <text x="16" y="30" class="num">4</text>
+    <text x="16" y="52" class="ttl">Lesson learned</text>
+    <text x="16" y="74" class="sub">miss becomes a rule that</text>
+    <text x="16" y="90" class="sub">fires before the next time</text>
+  </g>
+
+  <!-- title + footer caption -->
+  <text x="40" y="264" class="cap">The loop cannot flatter itself: the scorer is a deterministic script, and every claim is settled against the real tree.</text>
+  <rect x="40" y="278" width="780" height="3" rx="1.5" fill="url(#brand)" opacity="0.5"/>
+</svg>
