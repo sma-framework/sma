@@ -677,6 +677,22 @@ Every command is a terminal conversation. Expand any to watch what it does — e
 - **Fail-open by design.** A warning never blocks your work; a dead hook never wedges a session; every stream has a kill-switch. Hard blocking is reserved for security gates you configure yourself and for the consequences law you opt into.
 - **Yours.** The corpus lives in your repository, travels with `git clone`, and is portable to other agents — it is knowledge you own, not a vendor cache.
 
+## Side by side — one task, four setups
+
+The same model does the coding in bare Claude Code, in Superpowers, in GSD, and in SMA. What changes is the process around it — and, at the finish line, **whose word you take for "done."** Here is one ~30-minute task followed through its phases:
+
+| Phase | Bare Claude Code | Superpowers | GSD | **SMA** |
+|---|---|---|---|---|
+| **Plan** | In its head, ad-hoc | Brainstorm → plan skill | Written `PLAN.md`, checked by an agent | Plan, then **grilled** — every promise cross-examined before a line is written |
+| **Research** | From what it already knows | Research skill | Research subagents → `RESEARCH.md` | Reads its **own memory + receipts** first; catalog before grep |
+| **Execute** | Writes the code | Test-first skills | Executor subagents, atomic commits | Executes — the relevant rule **fires at the exact tool call**, not in a file skimmed once |
+| **Verify** | "Looks done" — its own word | Runs the tests | A verifier *agent* checks the goal | **Re-derives "done" from the code alone**, refuses the self-report; a false "done" blocks the release |
+| **Remember** | Nothing — next session starts blank | Nothing carries across sessions | Learnings saved to `.planning` (this project) | Lessons + calibration + coordination **persist and fire next time** — across sessions and terminals |
+
+Every column but one ends on *the agent's own word* for "done." SMA is the layer that checks the homework the model cannot grade itself — and remembers, so you don't pay for the same mistake twice.
+
+> **Honest caveat.** On a single task, SMA costs more — the checks and the memory are not free. Its bet is **cost per correct result across many tasks**, not the cheapest single run.
+
 ## Roadmap — what's next (V3.5, the adoption & onboarding track)
 
 V3 shipped the trust spine. **V3.5 is about getting that spine into a stranger's repo on day one, and making its honesty legible from the outside.** Every item below is the same bet — a deterministic script on files + git — and ships evidence-first, one falsifiable metric at a time.
