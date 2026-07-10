@@ -110,7 +110,22 @@ sma_run query commit "docs: initialize project via /sma-start" --files .planning
 
 Deliver Module 2 (the three memory layers) here — it explains WHY the facts you are about
 to capture are worth writing down once (they become the always-loaded CORE + tag-pulled
-periphery every future session reads). Then ask five questions (Stage B of the profile):
+periphery every future session reads).
+
+**Make the split CONCRETE — render the memory-graph preview of THEIR repo (v3.6):**
+
+```bash
+node scripts/sma/cli.mjs memory-preview            # this project (--lang ru for Russian)
+```
+
+Show the rendered graph to the user verbatim. It draws how THIS project's memory will
+split — CORE / periphery areas from their real file tree / reflex candidates mined from
+their own git history — read-only, zero network, deterministic at one HEAD. To preview a
+DIFFERENT repository first: `node scripts/sma/cli.mjs memory-preview --project <path>`.
+A directory with no git history degrades to the fresh-project layout; never let a
+preview failure stall the onboarding — skip it and continue.
+
+Then ask five questions (Stage B of the profile):
 
 7. **Languages and frameworks?** → `stack.languages[]`, `stack.frameworks[]`
 8. **Package manager?** (npm, pnpm, pip, cargo…) → `stack.packageManager`

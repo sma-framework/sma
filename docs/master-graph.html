@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:,">
+<meta name="description" content="SMA master map — the version-layered system map of the SMA framework, v3.6.0. Every number is committed data or a verified release receipt.">
+<title>SMA — the master map</title>
+<style>
+  :root{
+    --bg0:#0B0912; --bg1:#100D1A; --surface:#14101F; --surface2:#181328;
+    --ink:#EDEAF7; --ink2:#BAB3CF; --mut:#8B84A3;
+    --vio:#8B5CF6; --vio2:#A78BFA; --mint:#6EE7A0; --amber:#FBBF24; --red:#F87171;
+    --line:rgba(167,139,250,.13); --line2:rgba(167,139,250,.28);
+    --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg0);
+    background-image:radial-gradient(1100px 500px at 75% -10%, rgba(139,92,246,.10), transparent 60%),
+                     radial-gradient(900px 600px at -10% 25%, rgba(31,90,134,.08), transparent 55%);
+    color:var(--ink);
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  a{color:var(--vio2)}
+  .skip{position:absolute;left:-999px;top:8px;background:var(--surface2);color:var(--ink);padding:8px 14px;border:1px solid var(--line2);border-radius:8px;z-index:60}
+  .skip:focus{left:8px}
+  button{font:inherit;color:inherit}
+  :focus-visible{outline:2px solid var(--vio2);outline-offset:2px;border-radius:6px}
+
+  /* ── hero ─────────────────────────────────────────── */
+  header.hero{padding:76px 0 44px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--mut)}
+  h1{font-size:clamp(30px,5vw,46px);font-weight:750;letter-spacing:-.02em;margin:12px 0 14px}
+  .thesis{font-size:17px;color:var(--ink2);max-width:640px}
+  .heromea{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:26px}
+  .pill{font-family:var(--mono);font-size:12px;padding:5px 12px;border-radius:999px;border:1px solid var(--vio);color:var(--vio2);background:rgba(139,92,246,.12)}
+  .stat{font-family:var(--mono);font-size:12px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);color:var(--ink2);background:rgba(255,255,255,.02)}
+
+  /* ── sections ─────────────────────────────────────── */
+  section.block{padding:44px 0 8px}
+  .block>h2{font-size:22px;font-weight:700;letter-spacing:-.01em}
+  .block>.sub{color:var(--mut);font-size:13.5px;margin:6px 0 22px;max-width:720px}
+  .legend{font-family:var(--mono);font-size:11px;color:var(--mut)}
+  .legend b{font-weight:600}
+  .lg-amber{color:var(--amber)} .lg-red{color:var(--red)} .lg-mint{color:var(--mint)}
+
+  /* ── version bands ────────────────────────────────── */
+  .band{display:grid;grid-template-columns:216px 1fr;gap:20px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--surface),var(--bg1));padding:18px;margin-bottom:12px}
+  .band.b36{border-color:var(--line2);background:linear-gradient(180deg,var(--surface2),var(--bg1))}
+  .b36 .rail .vchip{border-color:var(--vio);color:var(--vio2);background:rgba(139,92,246,.14)}
+  .band.b35{border-color:var(--line2);background:linear-gradient(180deg,var(--surface2),var(--bg1))}
+  .rail .vchip{display:inline-block;font-family:var(--mono);font-size:12px;font-weight:600;padding:3px 10px;border-radius:7px;border:1px solid var(--line2);color:var(--mut)}
+  .b35 .rail .vchip{border-color:var(--vio);color:var(--vio2);background:rgba(139,92,246,.14)}
+  .b3 .rail .vchip{border-color:rgba(167,139,250,.45);color:var(--vio2)}
+  .rail h3{font-size:14.5px;font-weight:650;margin:10px 0 4px}
+  .rail p{font-size:11.5px;color:var(--mut);line-height:1.5}
+  .nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;align-content:start}
+  .node{display:block;text-align:left;width:100%;padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s}
+  .node:hover{border-color:var(--line2);background:rgba(139,92,246,.07)}
+  .node[aria-expanded="true"]{border-color:var(--vio);background:rgba(139,92,246,.13)}
+  .nt{display:block;font-size:13px;line-height:1.3;font-weight:600}
+  .ns{display:block;font-size:11px;color:var(--mut);margin-top:3px}
+
+  /* ── charts ───────────────────────────────────────── */
+  .charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .charts figure{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:16px 16px 14px;min-width:0}
+  .charts figure.wide{grid-column:1/-1}
+  .charts h3{font-size:13px;font-weight:650;margin-bottom:12px}
+  .charts h3 small{color:var(--mut);font-weight:500}
+  figcaption{font-size:12px;color:var(--mut);line-height:1.55;margin-top:10px}
+  .chart-scroll{overflow-x:auto}
+  .chart-scroll svg{display:block;width:100%;min-width:430px;height:auto}
+  svg text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .ax{font-size:10px;fill:var(--mut)}
+  .axm{font-family:var(--mono);font-size:10px;fill:var(--mut)}
+  .lab{font-size:11px;fill:var(--ink2)}
+  .val{font-size:11px;font-weight:600;fill:var(--ink)}
+  .gridl{stroke:rgba(255,255,255,.06);stroke-width:1}
+  .track{fill:rgba(255,255,255,.05)}
+
+  /* timeline (CSS, not SVG — wraps to vertical on small screens) */
+  .timeline{list-style:none;display:flex;gap:0;margin-top:6px}
+  .timeline li{flex:1;position:relative;padding:26px 10px 0 0;min-width:0}
+  .timeline li::before{content:"";position:absolute;top:7px;left:18px;right:0;height:2px;background:var(--line2)}
+  .timeline li:last-child::before{background:repeating-linear-gradient(90deg,var(--line2) 0 6px,transparent 6px 12px)}
+  .timeline li:first-child::before{left:18px}
+  .timeline .dot{position:absolute;top:0;left:0;width:16px;height:16px;border-radius:50%;background:var(--vio);border:3px solid var(--bg1)}
+  .timeline li.planned .dot{background:transparent;border:2px dashed var(--amber);width:14px;height:14px}
+  .timeline .tv{display:block;font-family:var(--mono);font-size:12.5px;font-weight:700}
+  .timeline li.planned .tv{color:var(--amber)}
+  .timeline .tn{display:block;font-size:11.5px;color:var(--ink2);margin-top:3px}
+  .timeline .tp{display:block;font-size:10.5px;color:var(--mut);margin-top:2px;font-family:var(--mono)}
+
+  /* receipts strip */
+  .tiles{display:flex;flex-wrap:wrap;gap:10px}
+  .tile{flex:1;min-width:158px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:rgba(255,255,255,.02)}
+  .tile .tv{font-size:19px;font-weight:700}
+  .tile .ok{color:var(--mint);font-size:15px;margin-right:6px}
+  .tile .tl{display:block;font-size:11px;color:var(--mut);margin-top:3px}
+
+  /* ── pipeline ─────────────────────────────────────── */
+  .pipe-scroll{overflow-x:auto;padding-bottom:6px}
+  .pipe{display:flex;align-items:stretch;gap:6px}
+  @media (min-width:901px){.pipe{flex-wrap:wrap;row-gap:10px}}
+  @media (max-width:900px){.pipe{min-width:max-content}}
+  .pstep{display:block;text-align:left;min-width:112px;padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s}
+  .pstep:hover{border-color:var(--line2);background:rgba(139,92,246,.07)}
+  .pstep[aria-expanded="true"]{border-color:var(--vio);background:rgba(139,92,246,.13)}
+  .pn{display:block;font-family:var(--mono);font-size:10px;color:var(--mut)}
+  .pt{display:block;font-size:13px;font-weight:600;margin-top:2px}
+  .ps{display:block;font-size:10.5px;color:var(--mut);margin-top:2px}
+  .parr{align-self:center;color:var(--mut);font-size:14px;user-select:none}
+
+  /* ── drawer ───────────────────────────────────────── */
+  #scrim{position:fixed;inset:0;background:rgba(6,4,12,.62);opacity:0;pointer-events:none;transition:opacity .2s;z-index:30}
+  #scrim.open{opacity:1;pointer-events:auto}
+  #drawer{position:fixed;top:0;right:0;height:100%;width:min(432px,94vw);background:var(--surface);border-left:1px solid var(--line2);transform:translateX(103%);visibility:hidden;transition:transform .22s ease,visibility 0s linear .22s;z-index:40;display:flex;flex-direction:column}
+  #drawer.open{transform:none;visibility:visible;transition:transform .22s ease}
+  .dhead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
+  .dband{font-family:var(--mono);font-size:11px;color:var(--vio2);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;background:rgba(139,92,246,.10)}
+  .dclose{background:none;border:1px solid var(--line);border-radius:8px;width:30px;height:30px;cursor:pointer;color:var(--ink2);font-size:15px;line-height:1}
+  .dclose:hover{border-color:var(--line2);color:var(--ink)}
+  .dbody{padding:20px;overflow-y:auto}
+  .dbody h2{font-size:18px;font-weight:700;letter-spacing:-.01em}
+  .dtag{font-size:12px;color:var(--mut);margin-top:2px}
+  .dbadge{display:inline-block;font-family:var(--mono);font-size:11px;border-radius:999px;padding:3px 10px;margin-top:10px}
+  .dbadge.amber{color:var(--amber);border:1px solid rgba(251,191,36,.4);background:rgba(251,191,36,.08)}
+  .dbadge.red{color:var(--red);border:1px solid rgba(248,113,113,.4);background:rgba(248,113,113,.08)}
+  .dbadge.info{color:var(--vio2);border:1px solid var(--line2);background:rgba(139,92,246,.08)}
+  .dprose{font-size:13.5px;color:var(--ink2);line-height:1.6;margin-top:12px}
+  .dsec{margin-top:18px}
+  .dsec h4{font-size:10.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--mut);margin-bottom:8px}
+  .chip{display:inline-block;font-family:var(--mono);font-size:12px;padding:3px 9px;margin:0 6px 6px 0;border:1px solid var(--line2);border-radius:7px;background:rgba(139,92,246,.08);color:var(--ink)}
+  .dfiles{list-style:none}
+  .dfiles li{font-family:var(--mono);font-size:11.5px;color:var(--ink2);padding:2px 0;word-break:break-all}
+  .dnums{list-style:none}
+  .dnums li{font-size:13px;color:var(--ink2);padding:3px 0 3px 16px;position:relative}
+  .dnums li::before{content:"▪";position:absolute;left:0;color:var(--mint);font-size:10px;top:6px}
+  .dhook{font-family:var(--mono);font-size:12px;color:var(--ink2)}
+  .dhook b{color:var(--vio2);font-weight:600}
+
+  /* ── footer ───────────────────────────────────────── */
+  footer{border-top:1px solid var(--line);margin-top:52px;padding:28px 0 52px}
+  footer p{font-size:12.5px;color:var(--mut);margin-top:4px}
+  footer p:first-child{color:var(--ink2)}
+
+  @media (max-width:900px){
+    header.hero{padding:52px 0 34px}
+    .band{grid-template-columns:1fr;gap:12px}
+    .charts{grid-template-columns:1fr}
+    .timeline{flex-direction:column}
+    .timeline li{padding:0 0 22px 32px}
+    .timeline li::before{top:16px;left:7px;right:auto;bottom:-2px;width:2px;height:auto}
+    .timeline li:last-child::before{background:repeating-linear-gradient(180deg,var(--line2) 0 6px,transparent 6px 12px)}
+    .timeline li:last-child{padding-bottom:0}
+    #drawer{top:auto;bottom:0;left:0;right:0;width:100%;height:auto;max-height:78vh;border-left:none;border-top:1px solid var(--line2);border-radius:16px 16px 0 0;transform:translateY(103%)}
+    #drawer.open{transform:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    *,#drawer,#scrim{transition:none !important}
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#map">Skip to the map</a>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">SMA framework · system map</p>
+    <h1>SMA — the master map</h1>
+    <p class="thesis">The agent stops trusting its own word: every claim carries a re-runnable receipt.</p>
+    <div class="heromea">
+      <span class="pill">v3.6.0</span>
+      <span class="stat">792/792 tests</span>
+      <span class="stat">83 CLI verbs</span>
+      <span class="stat">20 in-product explainers</span>
+      <span class="stat">p95 hook 155 ms</span>
+      <span class="stat">calibration n=16/20 · collecting</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ══ THE MAP ══════════════════════════════════════ -->
+  <section class="block" id="map" aria-label="The map">
+    <h2>The map</h2>
+    <p class="sub">Four version layers, newest on top. Click any node for its plain-language card — commands, files, honest numbers. One panel at a time; <kbd>Esc</kbd> or click-away closes; the URL remembers where you were.
+    <br><span class="legend"><b class="lg-amber">amber</b> = opt-in, default off · <b class="lg-red">red</b> = blocking · everything else observes and warns</span></p>
+
+    <section class="band b36" aria-labelledby="bt36">
+      <div class="rail">
+        <span class="vchip">V3.6</span>
+        <h3 id="bt36">The One-Command Door</h3>
+        <p>4 subsystems · 1 batch<br>Entering and leaving cost one command each; the newcomer sees their own repo first.</p>
+      </div>
+      <div class="nodes">
+        <button class="node" data-node="npminstall" aria-haspopup="dialog" aria-expanded="false"><span class="nt">npx install</span><span class="ns">the public front door</span></button>
+        <button class="node" data-node="claudeembed" aria-haspopup="dialog" aria-expanded="false"><span class="nt">CLAUDE.md rules block</span><span class="ns">memory made visible</span></button>
+        <button class="node" data-node="deleteme" aria-haspopup="dialog" aria-expanded="false"><span class="nt">sma deleteme</span><span class="ns">the memory-preserving off-ramp</span></button>
+        <button class="node" data-node="memorypreview" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Memory preview</span><span class="ns">your repo, drawn first</span></button>
+      </div>
+    </section>
+
+    <section class="band b35" aria-labelledby="bt35">
+      <div class="rail">
+        <span class="vchip">V3.5</span>
+        <h3 id="bt35">Adoption &amp; Trust Telemetry</h3>
+        <p>15 subsystems · 15 plans<br>The release that makes trust visible to strangers.</p>
+      </div>
+      <div class="nodes">
+        <button class="node" data-node="onboarding" aria-haspopup="dialog" aria-expanded="false"><span class="nt">/sma-start + profile v2</span><span class="ns">guided first run</span></button>
+        <button class="node" data-node="passport" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Calibration passport</span><span class="ns">public trust badge</span></button>
+        <button class="node" data-node="excavate" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Excavate</span><span class="ns">git-history lesson miner</span></button>
+        <button class="node" data-node="emit" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Emit</span><span class="ns">corpus to rulefiles</span></button>
+        <button class="node" data-node="catalog" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Catalog + context packs</span><span class="ns">capability inventory, sliced</span></button>
+        <button class="node" data-node="ladder" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Enforcement ladder</span><span class="ns">note to auto-fix</span></button>
+        <button class="node" data-node="statusline" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Statusline + pulse</span><span class="ns">cockpit, user-first</span></button>
+        <button class="node" data-node="manifest" aria-haspopup="dialog" aria-expanded="false"><span class="nt">PR evidence manifest</span><span class="ns">CI + tag pins</span></button>
+        <button class="node" data-node="explain" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Explain + doc-audit</span><span class="ns">self-checking docs</span></button>
+        <button class="node" data-node="preflight" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Preflight</span><span class="ns">already-built detector</span></button>
+        <button class="node" data-node="arena" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Benchmark arena</span><span class="ns">4-arm honest bench</span></button>
+        <button class="node" data-node="batch" aria-haspopup="dialog" aria-expanded="false"><span class="nt">/sma-batch</span><span class="ns">the middle lane</span></button>
+        <button class="node" data-node="fingerprint" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Fingerprint + claim trust</span><span class="ns">observable claim reaper</span></button>
+        <button class="node" data-node="worktrees" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Per-terminal worktrees</span><span class="ns">physical file isolation</span></button>
+        <button class="node" data-node="merge" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Serialized merge gate</span><span class="ns">one integration lane</span></button>
+      </div>
+    </section>
+
+    <section class="band b3" aria-labelledby="bt3">
+      <div class="rail">
+        <span class="vchip">V3</span>
+        <h3 id="bt3">Trust Spine</h3>
+        <p>10 subsystems · 10 plans<br>Every claim gets a receipt a stranger can re-run.</p>
+      </div>
+      <div class="nodes">
+        <button class="node" data-node="receipts" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Structural receipts</span><span class="ns">claims carry proof</span></button>
+        <button class="node" data-node="reverify" aria-haspopup="dialog" aria-expanded="false"><span class="nt">sma reverify</span><span class="ns">fresh-clone replay</span></button>
+        <button class="node" data-node="blind" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Blind verify</span><span class="ns">verdict frozen first</span></button>
+        <button class="node" data-node="consequences" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Consequences law</span><span class="ns">misses block ship</span></button>
+        <button class="node" data-node="goodhart" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Goodhart pack</span><span class="ns">anti-gaming battery</span></button>
+        <button class="node" data-node="airbag" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Git airbag</span><span class="ns">millisecond undo</span></button>
+        <button class="node" data-node="capsule" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Pre-compaction capsule</span><span class="ns">intent survives compaction</span></button>
+        <button class="node" data-node="spend" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Spend ledger</span><span class="ns">versioned cost adapter</span></button>
+        <button class="node" data-node="pretask" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Pretask-pack + receipts</span><span class="ns">phantom-write catcher</span></button>
+        <button class="node" data-node="journal" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Journal hash chain</span><span class="ns">tamper-evident history</span></button>
+      </div>
+    </section>
+
+    <section class="band b2" aria-labelledby="bt2">
+      <div class="rail">
+        <span class="vchip">V2</span>
+        <h3 id="bt2">Predictions · Reflexes · Coordination</h3>
+        <p>6 subsystems<br>The agent starts betting on itself, in writing.</p>
+      </div>
+      <div class="nodes">
+        <button class="node" data-node="predictions" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Predictions</span><span class="ns">immutable stakes</span></button>
+        <button class="node" data-node="calibration" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Predict-score + ledger</span><span class="ns">per-area hit-rates</span></button>
+        <button class="node" data-node="reflexes" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Reflexes</span><span class="ns">lessons that fire</span></button>
+        <button class="node" data-node="gates" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Gates</span><span class="ns">soft-deny, evidence-priced</span></button>
+        <button class="node" data-node="claims" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Claims + collisions</span><span class="ns">multi-terminal awareness</span></button>
+        <button class="node" data-node="slots" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Slots</span><span class="ns">race-free numbering</span></button>
+      </div>
+    </section>
+
+    <section class="band b1" aria-labelledby="bt1">
+      <div class="rail">
+        <span class="vchip">V1</span>
+        <h3 id="bt1">Memory Foundation</h3>
+        <p>5 subsystems<br>Durable memory that outlives the conversation.</p>
+      </div>
+      <div class="nodes">
+        <button class="node" data-node="corpus" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Layered memory corpus</span><span class="ns">core + periphery</span></button>
+        <button class="node" data-node="load" aria-haspopup="dialog" aria-expanded="false"><span class="nt">sma load --tags</span><span class="ns">memory on demand</span></button>
+        <button class="node" data-node="index" aria-haspopup="dialog" aria-expanded="false"><span class="nt">build-index</span><span class="ns">pinned generated index</span></button>
+        <button class="node" data-node="sessions" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Session registry</span><span class="ns">heartbeats + presence</span></button>
+        <button class="node" data-node="loop" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Accountable loop</span><span class="ns">session to memory</span></button>
+      </div>
+    </section>
+  </section>
+
+  <!-- ══ CHARTS ═══════════════════════════════════════ -->
+  <section class="block" id="charts" aria-label="The numbers">
+    <h2>The numbers</h2>
+    <p class="sub">Every figure below is committed data or a verified release receipt. Nothing modeled, nothing projected.</p>
+
+    <div class="charts">
+
+      <figure>
+        <h3>Test-suite growth <small>· verified release points</small></h3>
+        <div class="chart-scroll">
+        <svg viewBox="0 0 460 212" role="img" aria-label="Test suite growth from 532 tests at v3.0.0 to 744 tests at v3.5.0 to 792 tests across 74 files at v3.6.0. Three verified release points only.">
+          <g>
+            <line class="gridl" x1="44" y1="170" x2="430" y2="170"/>
+            <line class="gridl" x1="44" y1="132.5" x2="430" y2="132.5"/>
+            <line class="gridl" x1="44" y1="95" x2="430" y2="95"/>
+            <line class="gridl" x1="44" y1="57.5" x2="430" y2="57.5"/>
+            <line class="gridl" x1="44" y1="20" x2="430" y2="20"/>
+            <text class="axm" x="38" y="173" text-anchor="end">0</text>
+            <text class="axm" x="38" y="135.5" text-anchor="end">200</text>
+            <text class="axm" x="38" y="98" text-anchor="end">400</text>
+            <text class="axm" x="38" y="60.5" text-anchor="end">600</text>
+            <text class="axm" x="38" y="23" text-anchor="end">800</text>
+          </g>
+          <line x1="140" y1="70.3" x2="320" y2="30.5" stroke="#8B5CF6" stroke-width="2"/>
+          <line x1="320" y1="30.5" x2="410" y2="21.5" stroke="#8B5CF6" stroke-width="2"/>
+          <circle cx="140" cy="70.3" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v3.0.0 — 532 tests</title></circle>
+          <circle cx="320" cy="30.5" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v3.5.0 — 744 tests, 70 files</title></circle>
+          <circle cx="410" cy="21.5" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v3.6.0 — 792 tests, 74 files</title></circle>
+          <text class="val" x="140" y="94" text-anchor="middle">532</text>
+          <text class="val" x="320" y="54" text-anchor="middle">744</text>
+          <text class="val" x="410" y="12" text-anchor="middle">792</text>
+          <text class="ax" x="410" y="46" text-anchor="middle">74 files</text>
+          <text class="axm" x="140" y="192" text-anchor="middle">v3.0.0</text>
+          <text class="axm" x="320" y="192" text-anchor="middle">v3.5.0</text>
+          <text class="axm" x="410" y="192" text-anchor="middle">v3.6.0</text>
+        </svg>
+        </div>
+        <figcaption>Tests in the suite at the three verified release points. Only these three points were measured — the lines are connectors, not a trend claim.</figcaption>
+      </figure>
+
+      <figure>
+        <h3>Hook overhead <small>· log scale, lower is better</small></h3>
+        <div class="chart-scroll">
+        <svg viewBox="0 0 460 196" role="img" aria-label="Hook overhead on a log scale. V2 baseline: 1268.6 milliseconds per tool call with 3 to 4 process spawns. V3 multiplexer p95: 155 milliseconds. Statusline render: 0.43 milliseconds.">
+          <g>
+            <line class="gridl" x1="150" y1="20" x2="150" y2="152"/>
+            <line class="gridl" x1="215.1" y1="20" x2="215.1" y2="152"/>
+            <line class="gridl" x1="280.2" y1="20" x2="280.2" y2="152"/>
+            <line class="gridl" x1="345.3" y1="20" x2="345.3" y2="152"/>
+            <line class="gridl" x1="410.4" y1="20" x2="410.4" y2="152"/>
+            <text class="axm" x="150" y="170" text-anchor="middle">0.1</text>
+            <text class="axm" x="215.1" y="170" text-anchor="middle">1</text>
+            <text class="axm" x="280.2" y="170" text-anchor="middle">10</text>
+            <text class="axm" x="345.3" y="170" text-anchor="middle">100</text>
+            <text class="axm" x="410.4" y="170" text-anchor="middle">1000 ms</text>
+          </g>
+          <g>
+            <text class="lab" x="8" y="44">V2 hooks · 3–4 spawns</text>
+            <line class="track" x1="150" y1="40" x2="430" y2="40" stroke="rgba(255,255,255,.07)" stroke-width="2"/>
+            <circle cx="417.1" cy="40" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>V2 baseline — 1268.6 ms per tool call</title></circle>
+            <text class="val" x="404" y="30" text-anchor="middle">1268.6 ms</text>
+          </g>
+          <g>
+            <text class="lab" x="8" y="94">V3 multiplexer p95</text>
+            <line x1="150" y1="90" x2="430" y2="90" stroke="rgba(255,255,255,.07)" stroke-width="2"/>
+            <circle cx="357.7" cy="90" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>V3 multiplexer — p95 155 ms</title></circle>
+            <text class="val" x="357.7" y="80" text-anchor="middle">155 ms</text>
+          </g>
+          <g>
+            <text class="lab" x="8" y="144">Statusline render</text>
+            <line x1="150" y1="140" x2="430" y2="140" stroke="rgba(255,255,255,.07)" stroke-width="2"/>
+            <circle cx="191.2" cy="140" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>Statusline render — 0.43 ms</title></circle>
+            <text class="val" x="191.2" y="130" text-anchor="middle">0.43 ms</text>
+          </g>
+        </svg>
+        </div>
+        <figcaption>Cost per tool call: the V2 hooks spawned 3–4 processes each time; the V3 multiplexer folds them into one call. Log scale — on a linear axis the 0.43 ms dot would sit on zero.</figcaption>
+      </figure>
+
+      <figure>
+        <h3>Prediction calibration by area <small>· tiny n, shown on purpose</small></h3>
+        <div class="chart-scroll">
+        <svg viewBox="0 0 460 240" role="img" aria-label="Prediction calibration by area, from the committed passport of SMA user number one: bridges 0 percent at n equals 1; coordination 50 percent at n equals 2; enforce 100 percent at n equals 1; manifest 100 percent at n equals 4. Overall collecting: 16 of 20 scored predictions; the badge stays hidden until 20.">
+          <g>
+            <text class="lab" x="8" y="33">bridges</text>
+            <rect class="track" x="120" y="24" width="260" height="12" rx="4"/>
+            <text class="val" x="388" y="34"><tspan fill="#BAB3CF" font-weight="400">0%</tspan> <tspan font-weight="700">n=1</tspan></text>
+          </g>
+          <g>
+            <text class="lab" x="8" y="69">coordination</text>
+            <rect class="track" x="120" y="60" width="260" height="12" rx="4"/>
+            <path d="M120 60 h126 q4 0 4 4 v4 q0 4 -4 4 h-126 z" fill="#8B5CF6"/>
+            <text class="val" x="388" y="70"><tspan fill="#BAB3CF" font-weight="400">50%</tspan> <tspan font-weight="700">n=2</tspan></text>
+          </g>
+          <g>
+            <text class="lab" x="8" y="105">enforce</text>
+            <rect class="track" x="120" y="96" width="260" height="12" rx="4"/>
+            <path d="M120 96 h256 q4 0 4 4 v4 q0 4 -4 4 h-256 z" fill="#8B5CF6"/>
+            <text class="val" x="388" y="106"><tspan fill="#BAB3CF" font-weight="400">100%</tspan> <tspan font-weight="700">n=1</tspan></text>
+          </g>
+          <g>
+            <text class="lab" x="8" y="141">manifest</text>
+            <rect class="track" x="120" y="132" width="260" height="12" rx="4"/>
+            <path d="M120 132 h256 q4 0 4 4 v4 q0 4 -4 4 h-256 z" fill="#8B5CF6"/>
+            <text class="val" x="388" y="142"><tspan fill="#BAB3CF" font-weight="400">100%</tspan> <tspan font-weight="700">n=4</tspan></text>
+          </g>
+          <line class="gridl" x1="8" y1="166" x2="430" y2="166"/>
+          <g>
+            <text class="lab" x="8" y="197">overall</text>
+            <rect class="track" x="120" y="188" width="260" height="12" rx="4"/>
+            <path d="M120 188 h204 q4 0 4 4 v4 q0 4 -4 4 h-204 z" fill="#FBBF24"/>
+            <text class="val" x="388" y="194">16/20</text>
+            <text class="ax" x="388" y="207" style="fill:#FBBF24">collecting</text>
+            <text class="ax" x="8" y="228">badge hidden until n=20 · a 0% or 100% at n=1 is noise — the chart says so</text>
+          </g>
+        </svg>
+        </div>
+        <figcaption>Per-area hit-rates from the committed calibration passport of SMA user #1. The point is honesty at small n: sample sizes are printed louder than the percentages, and the public badge stays hidden until n≥20.</figcaption>
+      </figure>
+
+      <figure>
+        <h3>Release gate receipts <small>· v3.6.0</small></h3>
+        <div class="tiles" role="list" aria-label="Release gate receipts for v3.6.0">
+          <div class="tile" role="listitem"><span class="tv"><span class="ok" aria-hidden="true">✓</span>0</span><span class="tl">doc-audit findings</span></div>
+          <div class="tile" role="listitem"><span class="tv"><span class="ok" aria-hidden="true">✓</span>0</span><span class="tl">explain coverage gaps</span></div>
+          <div class="tile" role="listitem"><span class="tv"><span class="ok" aria-hidden="true">✓</span>792/792</span><span class="tl">test suite</span></div>
+          <div class="tile" role="listitem"><span class="tv"><span class="ok" aria-hidden="true">✓</span>1/1</span><span class="tl">passport verify, reproduced</span></div>
+          <div class="tile" role="listitem"><span class="tv"><span class="ok" aria-hidden="true">✓</span>0</span><span class="tl">blind-verify divergences</span></div>
+          <div class="tile" role="listitem"><span class="tv"><span class="ok" aria-hidden="true">✓</span>0</span><span class="tl">package-check violations</span></div>
+        </div>
+        <figcaption>The six receipts the v3.6.0 tag ships with. Each one re-derives from the repository — none of them is a self-assessment.</figcaption>
+      </figure>
+
+      <figure class="wide">
+        <h3>Version story <small>· what each layer added</small></h3>
+        <ol class="timeline">
+          <li><span class="dot" aria-hidden="true"></span><span class="tv">V1</span><span class="tn">Memory + coordination</span><span class="tp">corpus · sessions · claims</span></li>
+          <li><span class="dot" aria-hidden="true"></span><span class="tv">V2</span><span class="tn">Predictions + reflexes</span><span class="tp">the agent bets on itself</span></li>
+          <li><span class="dot" aria-hidden="true"></span><span class="tv">V3</span><span class="tn">Trust spine</span><span class="tp">10 plans · receipts everywhere</span></li>
+          <li><span class="dot" aria-hidden="true"></span><span class="tv">V3.5</span><span class="tn">Adoption &amp; telemetry</span><span class="tp">15 plans · trust made public</span></li>
+          <li><span class="dot" aria-hidden="true"></span><span class="tv">V3.6</span><span class="tn">The one-command door</span><span class="tp">npx install · off-ramp · memory preview · rules block</span></li>
+          <li class="planned"><span class="dot" aria-hidden="true"></span><span class="tv">V4</span><span class="tn">Planned</span><span class="tp">not shipped, not promised</span></li>
+        </ol>
+        <figcaption>V4 (planned): Anthropic managed-agents absorption. Dashed means planned — nothing on the V4 list is claimed as built.</figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <!-- ══ PIPELINE ═════════════════════════════════════ -->
+  <section class="block" id="pipeline" aria-label="How one prompt flows">
+    <h2>How one prompt flows</h2>
+    <p class="sub">The path a single instruction takes through the framework. Each step opens the subsystem that owns it.</p>
+    <div class="pipe-scroll">
+      <div class="pipe">
+        <button class="pstep" data-node="sessions" aria-haspopup="dialog" aria-expanded="false"><span class="pn">01</span><span class="pt">session</span><span class="ps">register + heartbeat</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="batch" aria-haspopup="dialog" aria-expanded="false"><span class="pn">02</span><span class="pt">lane</span><span class="ps">fix · batch · phase</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="predictions" aria-haspopup="dialog" aria-expanded="false"><span class="pn">03</span><span class="pt">grill</span><span class="ps">promises → predictions</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="reflexes" aria-haspopup="dialog" aria-expanded="false"><span class="pn">04</span><span class="pt">pre-hooks</span><span class="ps">p95 155 ms</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="pretask" aria-haspopup="dialog" aria-expanded="false"><span class="pn">05</span><span class="pt">build</span><span class="ps">packs + write-receipts</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="blind" aria-haspopup="dialog" aria-expanded="false"><span class="pn">06</span><span class="pt">verify</span><span class="ps">blind, frozen verdict</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="consequences" aria-haspopup="dialog" aria-expanded="false"><span class="pn">07</span><span class="pt">consequences</span><span class="ps">class-A blocks ship</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="manifest" aria-haspopup="dialog" aria-expanded="false"><span class="pn">08</span><span class="pt">ship</span><span class="ps">manifest + tag pins</span></button>
+        <span class="parr" aria-hidden="true">→</span>
+        <button class="pstep" data-node="corpus" aria-haspopup="dialog" aria-expanded="false"><span class="pn">09</span><span class="pt">learn</span><span class="ps">lessons → corpus</span></button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ══ DRAWER ═════════════════════════════════════════ -->
+<div id="scrim"></div>
+<aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle">
+  <div class="dhead">
+    <span class="dband" id="dbandchip"></span>
+    <button class="dclose" id="dclose" aria-label="Close panel">✕</button>
+  </div>
+  <div class="dbody" id="dbody" tabindex="-1">
+    <h2 id="dtitle"></h2>
+    <p class="dtag" id="dtag"></p>
+    <div id="dcontent"></div>
+  </div>
+</aside>
+
+<footer>
+  <div class="wrap">
+    <p><strong>SMA v3.6.0</strong> · <a href="https://github.com/sma-framework/sma">github.com/sma-framework/sma</a></p>
+    <p>Self-contained file: no external fonts, scripts, images, or requests of any kind. Works offline.</p>
+    <p>Last updated: 10.07.2026, 18:45 (Munich, CEST)</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var BANDS = {
+    "v3.6": "V3.6 · The One-Command Door",
+    "v3.5": "V3.5 · Adoption & Trust Telemetry",
+    "v3":   "V3 · Trust Spine",
+    "v2":   "V2 · Predictions · Reflexes · Coordination",
+    "v1":   "V1 · Memory Foundation"
+  };
+
+  var NODES = {
+    npminstall: { v: "v3.6", title: "npx -y sma-framework@latest init", tag: "the public front door",
+      body: "The package is on the public npm registry. One command from a project root installs the engine, the runtime, the /sma-* skills and the hooks — Node built-ins only, zero dependencies. A deterministic package gate (package-check) enforces the version single-source law: the tag, package.json, capability.json and the installer banner are ONE value, and a private or incomplete tarball cannot ship (it runs as prepublishOnly).",
+      cmds: ["npx -y sma-framework@latest init", "node scripts/sma/lib/package-check.mjs --count"],
+      files: ["bin/init.mjs", "scripts/sma/lib/package-check.mjs"],
+      nums: ["package-check violations at the v3.6.0 gate: 0", "npm pack: 708 files, one tarball"] },
+    claudeembed: { v: "v3.6", title: "CLAUDE.md rules block", tag: "memory made visible",
+      body: "Most projects never wire .claude/memory/ into the agent's context, so the corpus SMA builds was invisible to the very agent it exists for. The installer now splices a short managed rules block — where the memory lives, how to load it, how to coordinate, how to leave — into the project's CLAUDE.md under the same splice law as sma emit: user bytes are never touched, re-runs are no-ops, torn markers are refused. Its own anchor family (SMA:RULES) keeps it from ever fighting the corpus block over one span.",
+      cmds: ["npx sma-framework init", "node scripts/sma/lib/claude-embed.mjs --selftest"],
+      files: ["scripts/sma/lib/claude-embed.mjs", "bin/init.mjs"],
+      nums: ["selftest: created / unchanged / appended / replaced / corrupt-refused — 1"] },
+    deleteme: { v: "v3.6", title: "sma deleteme — the off-ramp", tag: "leave in one command, memory stays",
+      body: "One command reverses everything the installer wrote: skills, engine, runtime, agents, hooks, the statusline segment (the user's original line is restored verbatim), both managed blocks, the .sma/ state. It is dry-run by default and it PRESERVES .claude/memory/ — the lessons a project learned stay its own, readable by any tool. The trust argument is symmetry: an adopter who can see the exit will walk through the entrance.",
+      cmds: ["/sma-deleteme", "sma deleteme", "sma deleteme --yes"],
+      files: ["scripts/sma/lib/deleteme.mjs", "sma-core/workflows/sma-deleteme.md"],
+      nums: ["live smoke: 52 artifacts reversed, memory + foreign settings intact, second run a no-op"] },
+    memorypreview: { v: "v3.6", title: "Memory preview", tag: "your repo, drawn before you commit",
+      body: "During /sma-start TEACH, memory-preview draws an ASCII graph of how SMA would lay out the memory of THIS repository: the always-loaded core, the periphery areas folded from the real file tree, and the reflex candidates excavate mines from the real git history. Read-only, zero network, byte-identical at one HEAD; a directory with no git history degrades to the fresh-project layout instead of crashing the onboarding.",
+      cmds: ["sma memory-preview", "sma memory-preview --project <path>", "sma memory-preview --lang ru"],
+      files: ["scripts/sma/lib/memory-preview.mjs", "sma-core/workflows/sma-start.md"],
+      nums: ["double render at one HEAD: byte-equal — determinism 1"] },
+    onboarding: { v: "v3.5", title: "/sma-start onboarding + profile v2", tag: "guided first run",
+      body: "A first-run conversation that explains the system, then seeds the project scaffold, a starter memory corpus, and an infrastructure profile. Profile v2 records how this repository actually works — package manager, test runner, deploy path — so every later command speaks the project’s own dialect instead of a generic one.",
+      cmds: ["/sma-start", "sma profile"],
+      files: ["scripts/sma/lib/profile.mjs"],
+      nums: [] },
+    passport: { v: "v3.5", title: "Calibration passport + badge", tag: "public trust telemetry",
+      body: "A committed, public trust surface: per-domain prediction hit-rates rendered deterministically from committed data. A stranger can re-derive it byte-for-byte on a fresh clone. The badge stays hidden until the sample is real, so a tiny n can never decorate a README.",
+      cmds: ["sma passport --verify", "sma calibration", "sma model"],
+      files: ["PASSPORT.md", "scripts/sma/lib/passport.mjs", "scripts/sma/lib/calibration.mjs"],
+      nums: ["badge hidden until n≥20 — currently collecting at n=16/20 (first adopter’s ledger)", "passport --verify: 1/1 reproduced on a fresh clone"] },
+    excavate: { v: "v3.5", title: "Excavate — git-history lesson miner", tag: "retroactive memory",
+      body: "Mines the existing git history — reverted commits, fix-after-fix chains, recurring message patterns — and turns what it finds into memory notes with use-when triggers. It gives a repository that adopted SMA late a past to learn from.",
+      cmds: ["sma excavate"],
+      files: ["scripts/sma/lib/excavate.mjs"],
+      nums: [] },
+    emit: { v: "v3.5", title: "Emit — corpus to rulefiles", tag: "one corpus, every assistant",
+      body: "Compiles the memory corpus into the rule files other tools read, so one maintained corpus feeds every assistant instead of four hand-kept copies drifting apart.",
+      cmds: ["sma emit"],
+      files: ["scripts/sma/lib/emit.mjs"],
+      nums: ["4 targets: CLAUDE.md · AGENTS.md · .cursorrules · GEMINI.md"] },
+    catalog: { v: "v3.5", title: "Catalog + context packs", tag: "capability inventory, sliced",
+      body: "A generated catalog of what the framework can do, plus per-task context packs — the small, relevant slice of docs and memory a task actually needs, instead of the whole corpus pasted into every prompt.",
+      cmds: ["sma catalog", "sma context"],
+      files: ["scripts/sma/lib/catalog.mjs", "scripts/sma/lib/context-pack.mjs"],
+      nums: [] },
+    ladder: { v: "v3.5", title: "Enforcement ladder", tag: "note → warn → soft-deny → auto-fix",
+      body: "Enforcement that escalates instead of nagging. A rule starts as a note and climbs — warn, soft-deny, auto-fix — only as its evidence accumulates. Tune and curriculum control how fast a rule is allowed to climb.",
+      cmds: ["sma ladder", "sma tune", "sma curriculum"],
+      files: ["scripts/sma/lib/ladder.mjs", "scripts/sma/lib/curriculum.mjs"],
+      nums: ["4 rungs: note → warn → soft-deny → auto-fix"],
+      hook: "PreToolUse — rungs surface at edit time" },
+    statusline: { v: "v3.5", title: "Statusline + pulse", tag: "live cockpit line",
+      body: "A one-line cockpit in the terminal status bar: session, claims, gates, spend. It composes with a pre-existing user statusline rather than replacing it — the user’s line renders first, SMA appends.",
+      cmds: ["sma statusline", "sma pulse"],
+      files: ["scripts/sma/lib/statusline.mjs", "scripts/sma/statusline-snippet.md"],
+      nums: ["render: 0.43 ms", "user line first, SMA second — always"],
+      hook: "statusline slot" },
+    manifest: { v: "v3.5", title: "PR evidence manifest + CI + tag pins", tag: "receipts travel with the code",
+      body: "Every pull request carries an evidence manifest — which receipts back which claims — and CI checks it. Release tags pin the journal chain tip, so the release and its history are anchored to the same tamper-evidence line.",
+      cmds: ["sma manifest"],
+      files: ["scripts/sma/lib/manifest.mjs", "scripts/sma/lib/evidence.mjs"],
+      nums: ["calibration area ‘manifest’: 100% hit-rate at n=4 (tiny n, labeled as such)"] },
+    explain: { v: "v3.5", title: "Explain + doc-audit + manual v3.5", tag: "self-checking docs",
+      body: "Eighteen in-product explainers answer “what is this and why” from the CLI itself, and doc-audit checks the documentation against the code so the manual cannot silently rot. The v3.5 manual ships in the repo, offline like everything else.",
+      cmds: ["sma explain tour", "sma doc-audit"],
+      files: ["scripts/sma/explainers/ (18 topics)", "scripts/sma/lib/doc-audit.mjs", "docs/manual.en.html"],
+      nums: ["20 explainer topics", "doc-audit findings at the v3.6.0 gate: 0"] },
+    preflight: { v: "v3.5", title: "Preflight — already-built detector", tag: "check before re-executing",
+      body: "Before executing a plan, preflight checks whether the work already exists in the tree — the millisecond-level “is this already written?” question that prevents re-executing a parallel terminal’s finished work.",
+      cmds: ["sma preflight"],
+      files: ["scripts/sma/lib/preflight.mjs"],
+      nums: ["millisecond-level check"] },
+    arena: { v: "v3.5", title: "Benchmark arena", tag: "negatives un-droppable",
+      body: "A four-arm benchmark harness for comparing setups on the same task. Its defining property: negative results cannot be dropped — every registered arm is reported, so the bench cannot quietly become a highlight reel.",
+      cmds: ["sma arena", "sma bench"],
+      files: ["scripts/sma/lib/arena.mjs", "scripts/sma/lib/bench.mjs"],
+      nums: ["4 arms", "negative results are un-droppable by construction"] },
+    batch: { v: "v3.5", title: "/sma-batch — the middle lane", tag: "between fix and phase",
+      body: "The lane between an inline fix and a full phase: two to four backlog items with a light grill, mandatory reverify receipts, and one batch note. A risk filter rejects phase-class items up front, and an item that grows mid-flight is ejected back to the backlog instead of silently becoming a phase.",
+      cmds: ["sma batch", "/sma-batch"],
+      files: ["scripts/sma/lib/batch.mjs"],
+      nums: ["2–4 backlog items per batch", "two guards: phase-class rejected · growing item ejected"] },
+    fingerprint: { v: "v3.5", title: "Live fingerprint + claim trust", tag: "observable claim reaper",
+      body: "Claims carry a live fingerprint of the scope they hold, and a reaper clears claims whose terminal is observably gone — instead of trusting timestamps and hoping. Stale claims stop generating false collision warnings.",
+      cmds: ["sma status", "sma claim", "sma force-clear"],
+      files: ["scripts/sma/lib/fingerprint.mjs", "scripts/sma/lib/registry.mjs"],
+      nums: ["collision noise in the first live run: 142 → 41"] },
+    worktrees: { v: "v3.5", title: "Per-terminal worktrees", tag: "physical file isolation",
+      body: "Each terminal can get its own git worktree in a sibling directory — a separate working copy on its own branch. Parallel sessions on a shared checkout physically cannot overwrite each other’s files anymore.",
+      cmds: ["sma worktree provision", "sma worktree sibling", "sma worktree list", "sma worktree remove"],
+      files: ["scripts/sma/lib/worktree.mjs"],
+      nums: [] },
+    merge: { v: "v3.5", title: "Serialized merge gate + enforcing scopes", tag: "one integration lane",
+      body: "Worktree branches enter the main branch only through a serialized merge gate — one integration at a time, locally, never pushing on its own. Enforcing scopes can additionally turn advisory claims into hard boundaries; they are opt-in and off by default.",
+      cmds: ["sma merge <branch>"],
+      files: ["scripts/sma/lib/merge-gate.mjs"],
+      nums: [],
+      badge: { cls: "amber", text: "enforcing scopes: opt-in · default off" } },
+
+    receipts: { v: "v3", title: "Structural receipts", tag: "assertion + command + sha256",
+      body: "A claim of done-ness stops being prose. Each receipt is an assertion, the exact command that re-checks it, and the sha256 of what it checked — a statement anyone can re-run without asking the agent to vouch for itself.",
+      cmds: ["sma receipt-hash"],
+      files: ["scripts/sma/lib/receipts.mjs"],
+      nums: ["3 parts: assertion · command · sha256"] },
+    reverify: { v: "v3", title: "sma reverify", tag: "fresh-clone replay",
+      body: "Replays all receipts on a fresh clone with zero LLM involvement. If the claims were true, they verify with no agent in the room; if they were not, the divergence is a fact, not an argument.",
+      cmds: ["sma reverify"],
+      files: ["scripts/sma/cli.mjs", "scripts/sma/lib/receipts.mjs"],
+      nums: ["fresh clone · zero LLM"] },
+    blind: { v: "v3", title: "Blind verify", tag: "verdict frozen before comparison",
+      body: "The verifier freezes its verdict before it ever sees the builder’s claim, and a BLIND_FORBIDDEN input barrier keeps the claim out of its context entirely. No anchoring, no grading your own homework.",
+      cmds: ["sma blind-verify"],
+      files: ["scripts/sma/lib/blind-verify.mjs"],
+      nums: ["divergences at the v3.6.0 gate: 0"] },
+    consequences: { v: "v3", title: "Consequences law", tag: "a miss has a price",
+      body: "A class-A miss blocks the ship: preship exits 1 and the pipeline stops. Only the founder can disposition a miss — accept, fix-forward, or rollback. The agent cannot wave its own failure through.",
+      cmds: ["sma preship", "sma disposition"],
+      files: ["scripts/sma/lib/consequences.mjs"],
+      nums: ["preship exit code on a class-A miss: 1", "dispositions: accept · fix-forward · rollback (founder-only)"],
+      badge: { cls: "red", text: "blocking · class-A stops ship" } },
+    goodhart: { v: "v3", title: "Goodhart pack", tag: "anti-gaming battery",
+      body: "The metrics are guarded against the agent optimizing the metrics. A skeptic countersigns verdicts, seeded canary false-dones must be caught, a seeded share of receipts gets a deep audit, and an STPA guard watches the disarm paths themselves.",
+      cmds: ["sma skeptic", "sma canary", "sma integrity", "sma nearmiss"],
+      files: ["scripts/sma/lib/goodhart.mjs", "scripts/sma/lib/canary.mjs", "scripts/sma/lib/stpa.mjs"],
+      nums: ["canary catch-rate required: ≥90%", "seeded deep audit: 5% of receipts"] },
+    airbag: { v: "v3", title: "Git airbag", tag: "millisecond undo",
+      body: "A crash bag for the working tree: built on update-ref plus stash, it snapshots in milliseconds before risky edits so an undo is one command, not an archaeology session. Opt-in.",
+      cmds: ["sma airbag", "sma undo", "sma airbag-check"],
+      files: ["scripts/sma/lib/airbag.mjs"],
+      nums: ["millisecond-level, update-ref + stash"],
+      badge: { cls: "amber", text: "opt-in · default off" } },
+    capsule: { v: "v3", title: "Pre-compaction capsule", tag: "intent survives compaction",
+      body: "Before the conversation context is compacted, the current intent is written to a capsule file with zero LLM tokens spent. The next session resumes from the capsule, not from vibes.",
+      cmds: ["sma precompact-capsule", "sma resume", "sma flight"],
+      files: [".sma/flight/intent.md", "scripts/sma/lib/flight.mjs"],
+      nums: ["zero LLM tokens"],
+      hook: "PreCompact" },
+    spend: { v: "v3", title: "Spend ledger", tag: "versioned cost adapter",
+      body: "A per-phase cost ledger behind a versioned adapter — transcript formats change, so the adapter versions with them instead of silently misparsing. Opt-in.",
+      cmds: ["sma spend", "sma spend-check", "sma breaker"],
+      files: ["scripts/sma/lib/spend.mjs", "scripts/sma/lib/spend-adapter.mjs"],
+      nums: [],
+      badge: { cls: "amber", text: "opt-in · default off" } },
+    pretask: { v: "v3", title: "Pretask-pack + subagent write-receipts", tag: "phantom-write catcher",
+      body: "Subagents start from a pretask pack capped at 8 KB — enough context to work, small enough to audit — and must return write-receipts for the files they claim to have written. Phantom writes are caught deterministically, not by re-reading and hoping.",
+      cmds: ["sma pretask-pack", "sma subagent-verify", "sma subagent-receipts"],
+      files: ["scripts/sma/lib/subagent-pack.mjs", "scripts/sma/lib/subagent-receipts.mjs"],
+      nums: ["pack capped at 8 KB", "phantom writes caught deterministically"] },
+    journal: { v: "v3", title: "Journal hash chain", tag: "tamper-evident history",
+      body: "Every event lands in an append-only journal whose lines are hash-chained. The chain tip is pinned into each release tag, so the project’s history cannot be quietly rewritten after the fact.",
+      cmds: ["sma chain-tip", "sma chain-verify", "sma exec-journal"],
+      files: [".sma/journal/*.jsonl", "scripts/sma/lib/journal.mjs"],
+      nums: ["chain tip pinned into release tags as SMA-Journal-Tip"] },
+
+    predictions: { v: "v2", title: "Predictions", tag: "metric + threshold + horizon",
+      body: "Before a build starts, the plan’s promises become registered predictions — a metric, a threshold, a horizon. Once registered they are immutable: a promise cannot be quietly reworded after the result is in. The grill ritual is where unresolved challenges must become predictions or be withdrawn.",
+      cmds: ["sma grill", "/sma-grill"],
+      files: ["scripts/sma/lib/predict.mjs", "scripts/sma/lib/grill.mjs"],
+      nums: ["immutable once registered"] },
+    calibration: { v: "v2", title: "Predict-score + calibration ledger", tag: "per-area hit-rates",
+      body: "When a prediction’s horizon arrives, predict-score grades it and records the outcome in a per-area ledger. This ledger is the raw feed the V3.5 passport later publishes — the learning loop’s bookkeeping.",
+      cmds: ["sma predict-score", "sma calibration"],
+      files: ["scripts/sma/lib/calibration.mjs"],
+      nums: ["per-area hit-rates · feeds the V3.5 passport"] },
+    reflexes: { v: "v2", title: "Reflexes", tag: "lessons that fire",
+      body: "Lessons stop being prose in a file nobody re-reads. Each reflex carries a use-when trigger and fires at edit time — the lesson surfaces exactly when a matching file is about to be touched, not in a post-mortem.",
+      cmds: ["sma reflex-check"],
+      files: ["scripts/sma/lib/reflex.mjs"],
+      nums: [],
+      hook: "PreToolUse via the sma pre multiplexer (p95 155 ms)" },
+    gates: { v: "v2", title: "Gates", tag: "soft-deny with evidence burden",
+      body: "Policy checks that soft-deny: the agent may proceed only by acknowledging with evidence, and every acknowledgment is journaled. The gate does not trust the agent’s mood — it prices the override.",
+      cmds: ["sma gates", "sma gates-check", "sma gates-ack", "sma gates-report"],
+      files: ["scripts/sma/lib/gates.mjs"],
+      nums: [],
+      hook: "PreToolUse via the sma pre multiplexer",
+      badge: { cls: "amber", text: "soft-deny · evidence to pass" } },
+    claims: { v: "v2", title: "Multi-terminal claims + collisions", tag: "advisory by design",
+      body: "Terminals on a shared checkout declare what they are working on; collisions warn before files are touched. Advisory by design — it never denies. Removing another terminal’s claim is a deliberate act: the holder is shown first and explicit confirmation is required, with the event journaled.",
+      cmds: ["sma claim", "sma release", "sma collision-check", "sma force-clear"],
+      files: ["scripts/sma/lib/claims.mjs", "scripts/sma/lib/collision.mjs", ".sma/claims/"],
+      nums: ["warns, never denies", "force-clear: holder shown + explicit --yes, journaled with provenance"],
+      hook: "SessionStart + PreToolUse",
+      badge: { cls: "info", text: "advisory · never blocks" } },
+    slots: { v: "v2", title: "Slots", tag: "race-free numbering",
+      body: "Migration and release numbers come from a race-free allocator instead of two parallel terminals guessing the same next number and colliding on deploy.",
+      cmds: ["sma next-slot migration", "sma next-slot release", "sma consume"],
+      files: ["scripts/sma/lib/slots.mjs"],
+      nums: [] },
+
+    corpus: { v: "v1", title: "Layered memory corpus", tag: "core + periphery + index",
+      body: "Memory is layered: a small core loaded in every session, a large periphery pulled by tag only when relevant, and a generated index pinned to the commit it was built from. The corpus is the durable brain; conversations are disposable.",
+      cmds: ["sma load", "sma lint"],
+      files: [".claude/memory/", "MEMORY.md (generated index)"],
+      nums: ["core ≈ 20 notes, always loaded", "periphery 200+ notes, by tag", "index pinned to a commit"] },
+    load: { v: "v1", title: "sma load --tags", tag: "memory on demand",
+      body: "Pulls only the notes relevant to the task at hand, by tag, instead of pasting the whole index into the context window. Cheap, deterministic, local.",
+      cmds: ["sma load --tags <area>"],
+      files: ["scripts/sma/lib/loader.mjs"],
+      nums: [] },
+    index: { v: "v1", title: "build-index", tag: "pinned generated index",
+      body: "Regenerates the memory index deterministically from the corpus and pins it to the commit it was built from, so a stale index is detectable rather than silently trusted. Lint keeps the note schema and vocabulary honest.",
+      cmds: ["sma build-index", "sma lint"],
+      files: ["scripts/sma/lib/generator.mjs", "scripts/sma/lib/lint.mjs"],
+      nums: [] },
+    sessions: { v: "v1", title: "Session registry + heartbeats", tag: "who is here, really",
+      body: "Every terminal registers a session and heartbeats while it works. Status shows who is active, what each session claims, and which sessions went stale — presence as data, not guesswork.",
+      cmds: ["sma session-start", "sma heartbeat", "sma session-end", "sma status"],
+      files: ["scripts/sma/lib/registry.mjs", ".sma/sessions/"],
+      nums: [],
+      hook: "SessionStart" },
+    loop: { v: "v1", title: "The accountable loop", tag: "session → memory",
+      body: "The loop every task walks: session → lane → grill → build → verify → ship → learn → memory. Each stage leaves an artifact the next stage can check — the loop is accountable because no stage takes the previous one’s word for it.",
+      cmds: ["/sma-plan", "/sma-grill", "/sma-build", "/sma-verify", "/sma-ship"],
+      files: ["sma-core/workflows/"],
+      nums: [] }
+  };
+
+  var drawer = document.getElementById("drawer");
+  var scrim = document.getElementById("scrim");
+  var dbandchip = document.getElementById("dbandchip");
+  var dtitle = document.getElementById("dtitle");
+  var dtag = document.getElementById("dtag");
+  var dcontent = document.getElementById("dcontent");
+  var dclose = document.getElementById("dclose");
+  var dbody = document.getElementById("dbody");
+
+  var activeId = null;
+  var lastOpener = null;
+  var openers = {}; // nodeId -> [buttons]
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-node]"), function (btn) {
+    var id = btn.getAttribute("data-node");
+    (openers[id] = openers[id] || []).push(btn);
+    btn.addEventListener("click", function () { toggleNode(id, btn); });
+  });
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function section(label) {
+    var s = el("div", "dsec");
+    s.appendChild(el("h4", null, label));
+    return s;
+  }
+
+  function render(node) {
+    dbandchip.textContent = BANDS[node.v] || node.v;
+    dtitle.textContent = node.title;
+    dtag.textContent = node.tag || "";
+    dcontent.innerHTML = "";
+
+    if (node.badge) {
+      dcontent.appendChild(el("span", "dbadge " + node.badge.cls, node.badge.text));
+    }
+    dcontent.appendChild(el("p", "dprose", node.body));
+
+    if (node.cmds && node.cmds.length) {
+      var sc = section("Commands");
+      node.cmds.forEach(function (c) { sc.appendChild(el("span", "chip", c)); });
+      dcontent.appendChild(sc);
+    }
+    if (node.files && node.files.length) {
+      var sf = section("Files & artifacts");
+      var ul = el("ul", "dfiles");
+      node.files.forEach(function (f) { ul.appendChild(el("li", null, f)); });
+      sf.appendChild(ul);
+      dcontent.appendChild(sf);
+    }
+    if (node.nums && node.nums.length) {
+      var sn = section("Honest numbers");
+      var un = el("ul", "dnums");
+      node.nums.forEach(function (n) { un.appendChild(el("li", null, n)); });
+      sn.appendChild(un);
+      dcontent.appendChild(sn);
+    }
+    if (node.hook) {
+      var sh = section("Hook point");
+      var p = el("p", "dhook");
+      var b = el("b", null, node.hook.split(" ")[0]);
+      p.appendChild(b);
+      p.appendChild(document.createTextNode(node.hook.slice(node.hook.split(" ")[0].length)));
+      sh.appendChild(p);
+      dcontent.appendChild(sh);
+    }
+  }
+
+  function setExpanded(id, val) {
+    (openers[id] || []).forEach(function (b) { b.setAttribute("aria-expanded", val ? "true" : "false"); });
+  }
+
+  function toggleNode(id, opener) {
+    if (activeId === id && drawer.classList.contains("open")) { closeDrawer(); return; }
+    openNode(id, opener);
+  }
+
+  function openNode(id, opener) {
+    var node = NODES[id];
+    if (!node) return;
+    if (activeId && activeId !== id) setExpanded(activeId, false);
+    activeId = id;
+    lastOpener = opener || (openers[id] && openers[id][0]) || null;
+    setExpanded(id, true);
+    render(node);
+    drawer.classList.add("open");
+    scrim.classList.add("open");
+    if (location.hash.slice(1) !== id) {
+      try { location.hash = id; } catch (e) { /* file:// edge — hash stays, harmless */ }
+    }
+    dbody.scrollTop = 0;
+    dclose.focus();
+  }
+
+  function closeDrawer() {
+    if (!drawer.classList.contains("open")) return;
+    drawer.classList.remove("open");
+    scrim.classList.remove("open");
+    if (activeId) setExpanded(activeId, false);
+    activeId = null;
+    if (location.hash) {
+      try { location.hash = ""; } catch (e) { /* ignore */ }
+    }
+    if (lastOpener) { lastOpener.focus(); lastOpener = null; }
+  }
+
+  dclose.addEventListener("click", closeDrawer);
+  scrim.addEventListener("click", closeDrawer);
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") { closeDrawer(); return; }
+    if (ev.key === "Tab" && drawer.classList.contains("open")) {
+      // minimal trap: keep focus inside the drawer (close button <-> scrollable body)
+      var focusables = [dclose, dbody];
+      var idx = focusables.indexOf(document.activeElement);
+      if (idx === -1) { dclose.focus(); ev.preventDefault(); return; }
+      var next = ev.shiftKey ? idx - 1 : idx + 1;
+      if (next < 0 || next >= focusables.length) {
+        focusables[ev.shiftKey ? focusables.length - 1 : 0].focus();
+        ev.preventDefault();
+      }
+    }
+  });
+
+  window.addEventListener("hashchange", function () {
+    var id = location.hash.slice(1);
+    if (NODES[id]) {
+      if (id !== activeId) openNode(id, null);
+    } else {
+      closeDrawer();
+    }
+  });
+
+  // deep link on load
+  var initial = location.hash.slice(1);
+  if (NODES[initial]) {
+    openNode(initial, null);
+    var btns = openers[initial];
+    if (btns && btns[0] && btns[0].scrollIntoView) {
+      btns[0].scrollIntoView({ block: "center" });
+    }
+  }
+})();
+</script>
+</body>
+</html>

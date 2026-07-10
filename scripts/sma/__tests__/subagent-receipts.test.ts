@@ -16,6 +16,7 @@ import {
   writeReceipt,
   correlateSpawn,
   receiptStats,
+  receiptStatsSchemaOk,
 } from '../lib/subagent-receipts.mjs'
 
 /** A minimal Claude-Code-shaped transcript JSONL fixture (as a string). */
@@ -243,5 +244,30 @@ describe('Task 2 — receipt + stats', () => {
     // honest empty state: zero spawns → coverage 100, phantoms 0, pack-p95 0, empty
     const e = receiptStats([])
     expect(e).toMatchObject({ coverage: 100, phantoms: 0, packP95: 0, empty: true })
+  })
+})
+
+// ── BL-172 (2026-07-10): the --schema-check contract — receipts pin STRUCTURE, never accruing state ──
+
+describe('receiptStatsSchemaOk — deterministic report-shape check (BL-172)', () => {
+  it('accepts the honest-empty stats AND a heavily-populated stats object — accrual never changes the verdict', () => {
+    expect(receiptStatsSchemaOk(receiptStats([]))).toBe(true)
+    const packs = Array.from({ length: 594 }, (_, i) => ({ type: 'subagent-pack', detail: { durationMs: i } }))
+    const recs = Array.from({ length: 594 }, () => ({
+      type: 'subagent-receipt',
+      detail: { counts: { phantomToolCall: 1, phantomAsserted: 2 } },
+    }))
+    expect(receiptStatsSchemaOk(receiptStats([...packs, ...recs]))).toBe(true)
+  })
+
+  it('rejects a missing key, a non-finite number, a non-boolean empty, and a non-object', () => {
+    const good = receiptStats([])
+    const { packP95: _dropped, ...missingKey } = good
+    expect(receiptStatsSchemaOk(missingKey)).toBe(false)
+    expect(receiptStatsSchemaOk({ ...good, phantoms: NaN })).toBe(false)
+    expect(receiptStatsSchemaOk({ ...good, coverage: 'high' })).toBe(false)
+    expect(receiptStatsSchemaOk({ ...good, empty: 'yes' })).toBe(false)
+    expect(receiptStatsSchemaOk(null)).toBe(false)
+    expect(receiptStatsSchemaOk([])).toBe(false)
   })
 })

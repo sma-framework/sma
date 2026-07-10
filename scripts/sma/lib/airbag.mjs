@@ -590,6 +590,29 @@ export function listSnapshots({ runGit } = {}) {
   return [...groups.values()].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
 }
 
+/**
+ * snapshotListSchemaOk(groups) -> boolean — the `airbag list --schema-check`
+ * contract (BL-172, 2026-07-10): a structural receipt over the airbag admin
+ * surface must pin the list's SHAPE, never its CONTENTS — refs/sma/airbag/*
+ * ACCRUES with every airbag firing, so hashing the listing output re-fails on
+ * every reverify by construction (the 49.2-05 R2 lesson). Valid: an array
+ * (empty = honest-empty, still valid) whose every group carries a non-empty
+ * string id, an object refs map, and an array-of-strings refnames.
+ *
+ * @param {*} groups  a listSnapshots() result
+ * @returns {boolean}
+ */
+export function snapshotListSchemaOk(groups) {
+  if (!Array.isArray(groups)) return false
+  for (const g of groups) {
+    if (!g || typeof g !== 'object' || Array.isArray(g)) return false
+    if (typeof g.id !== 'string' || !g.id.trim()) return false
+    if (!g.refs || typeof g.refs !== 'object' || Array.isArray(g.refs)) return false
+    if (!Array.isArray(g.refnames) || g.refnames.some((r) => typeof r !== 'string')) return false
+  }
+  return true
+}
+
 /** Parse the ms epoch from a snapshotId (`YYYYMMDDTHHMMSSmmmZ-rand4`), or NaN. */
 function idToMs(id) {
   const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z/.exec(String(id))

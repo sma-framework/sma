@@ -4,16 +4,13 @@ SMA (sma-framework) is a layered memory + multi-terminal coordination framework
 for AI coding agents. This page covers both install paths and what each one
 puts on your machine.
 
-> The package is **private until the founder flip (49.1-27)**. Until then the
-> npx path only works from a machine with access to the private registry or a
-> local checkout; the git-clone fallback below always works.
-
 ## Path 1: npx (the front door)
 
+The package is published on the public npm registry as `sma-framework` (v3.6+).
 From the root of the project you want SMA installed into:
 
 ```bash
-npx sma-framework init
+npx -y sma-framework@latest init
 ```
 
 Options:

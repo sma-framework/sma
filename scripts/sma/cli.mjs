@@ -2053,6 +2053,14 @@ async function cmdAirbag({ positionals, flags, dirs }) {
 
   if (sub === 'list') {
     const groups = airbag.listSnapshots({ runGit })
+    // BL-172: deterministic structural mode — the listing's SHAPE, never its
+    // accruing ref contents. 1/0 LAST line, always exit 0.
+    if (flags['schema-check'] === true) {
+      const ok = airbag.snapshotListSchemaOk(groups) ? 1 : 0
+      if (wantsJson(flags)) printJson({ schemaOk: ok })
+      process.stdout.write(`${ok}\n`)
+      return 0
+    }
     const view = groups.map((g) => ({ id: g.id, refs: Object.keys(g.refs).filter((k) => !k.startsWith('_sha_')) }))
     if (wantsJson(flags)) {
       printJson({ snapshots: view, n: view.length })
@@ -3984,6 +3992,12 @@ async function cmdUpstreamCheck({ flags }) {
  * ledger. Zero LLM anywhere in scoring. NOT hook-facing: exits 1 when any
  * 'error' verdict occurs (callers decide); a miss is a valid scoring outcome
  * -> exit 0.
+ *
+ * Scores `predictions:` ONLY. A `receipts:` block (SUMMARY build-time claims,
+ * D-49.2-06) is `sma reverify` territory — never scored here, only reported as
+ * skipped (R1/R2 false class-A lesson, 2026-07-10: wholesale-run re-scores of
+ * expected_sha256 receipts pinned over accruing .sma state are guaranteed
+ * drift-misses).
  */
 async function cmdPredictScore({ positionals, flags, dirs }) {
   const planPath = positionals[0]
@@ -4003,6 +4017,11 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const scored = predict.scorePlan({ planPath, runCommand })
   let records = scored.records
   const invalid = scored.invalid
+  const excluded = scored.excluded ?? []
+  // R1/R2 false class-A lesson (2026-07-10): a SUMMARY's `receipts:` block is
+  // `sma reverify` territory — predict-score NEVER scores it. Count it so a
+  // wholesale run over SUMMARYs sees the skip explicitly instead of silence.
+  const receiptsSkipped = predict.parseFrontmatterEntries(planPath, 'receipts').entries.length
   // 49.3-02 (D-49.3-10) — stamp every verdict with the CURRENT model before it
   // lands in the ledger, so the stale-priors guard can tell which model produced
   // each hit/miss. Fail-open: a stamp failure -> unstamped records, which the
@@ -4037,12 +4056,17 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const exitCode = hasError ? 1 : 0
 
   if (wantsJson(flags)) {
-    printJson({ plan: planPath, records, invalid, drafts, appended: records.length, exitCode })
+    printJson({ plan: planPath, records, invalid, excluded, receiptsSkipped, drafts, appended: records.length, exitCode })
     return exitCode
   }
 
-  if (!records.length && !invalid.length) {
+  if (!records.length && !invalid.length && !excluded.length) {
     process.stdout.write(`SMA: в ${planPath} нет блока predictions — оценивать нечего.\n`)
+    if (receiptsSkipped) {
+      process.stdout.write(
+        `  (receipts: ${receiptsSkipped} — территория sma reverify; predict-score их не оценивает)\n`,
+      )
+    }
     return 0
   }
   process.stdout.write(`SMA predict-score: ${planPath}\n`)
@@ -4055,6 +4079,16 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   for (const inv of invalid) {
     process.stdout.write(
       `  [invalid] ${inv.id ?? '<без id>'}: пропущены поля ${inv.missing.join(', ') || '—'}${inv.errors.length ? `; ошибки: ${inv.errors.join('; ')}` : ''}\n`,
+    )
+  }
+  for (const ex of excluded) {
+    process.stdout.write(
+      `  [excluded] ${ex.id ?? '<без id>'}: receipt-запись (expected_sha256) — территория sma reverify, вердикт не пишется\n`,
+    )
+  }
+  if (receiptsSkipped) {
+    process.stdout.write(
+      `  (receipts: ${receiptsSkipped} — территория sma reverify; predict-score их не оценивает)\n`,
     )
   }
   if (drafts.length) {
@@ -4310,6 +4344,8 @@ function normEol(s) {
  *                   block. 1/0 last line, exit 0 (P49.3-02-B).
  *   --json (bare) : canonicalJson(parseSnapshot(committed PASSPORT.md)) — the
  *                   telemetry read surface for 49.3-07/08/09; missing -> {}.
+ *   --schema-check: bare 1/0 LAST line, always exit 0 — structural validity of
+ *                   the read surface (BL-172 accrual-proof receipt pin).
  */
 async function cmdPassport({ flags, dirs }) {
   const passport = await import('./lib/passport.mjs')
@@ -4389,6 +4425,23 @@ async function cmdPassport({ flags, dirs }) {
     return 0
   }
 
+  // ── --schema-check (BL-172): structural validity of the read surface ─────────
+  // Pin THIS in receipts, never `--json` output — the passport is rebuilt each
+  // release, so its content hash re-fails on every reverify by construction.
+  // 1/0 LAST line, always exit 0 (numeric scorer contract).
+  if (flags['schema-check'] === true) {
+    let snap = null
+    try {
+      snap = passport.parseSnapshot(normEol(readFileSync(passportPath, 'utf8')))
+    } catch {
+      snap = null
+    }
+    const ok = passport.snapshotSchemaOk(snap) ? 1 : 0
+    if (wantsJson(flags)) printJson({ schemaOk: ok })
+    process.stdout.write(`${ok}\n`)
+    return 0
+  }
+
   // ── --json (bare read surface) ───────────────────────────────────────────────
   let snap = null
   try {
@@ -4415,10 +4468,12 @@ async function cmdPassport({ flags, dirs }) {
 }
 
 /**
- * model [--json] [--count sightings] [--set <id>] (49.3-02, D-49.3-10) — the
- * model-version guard surface. `--count sightings` prints the integer LAST line
- * (P49.3-02-C). `--set <id>` records a manual sighting (source 'manual') for a
- * harness that exposes no model id. NOT hook-facing.
+ * model [--json] [--count sightings] [--set <id>] [--schema-check] (49.3-02,
+ * D-49.3-10) — the model-version guard surface. `--count sightings` prints the
+ * integer LAST line (P49.3-02-C). `--set <id>` records a manual sighting
+ * (source 'manual') for a harness that exposes no model id. `--schema-check`
+ * prints bare 1/0, always exit 0 — the timeline's SHAPE, never its accruing
+ * count (BL-172 accrual-proof receipt pin). NOT hook-facing.
  */
 async function cmdModel({ flags, dirs }) {
   const mv = await import('./lib/model-version.mjs')
@@ -4435,6 +4490,15 @@ async function cmdModel({ flags, dirs }) {
   }
 
   const timeline = mv.readModelTimeline({ modelDir: dirs.modelDir })
+
+  // BL-172: deterministic structural mode — the sighting timeline's SHAPE,
+  // never its accruing COUNT. 1/0 LAST line, always exit 0.
+  if (flags['schema-check'] === true) {
+    const ok = mv.timelineSchemaOk(timeline) ? 1 : 0
+    if (wantsJson(flags)) printJson({ schemaOk: ok })
+    process.stdout.write(`${ok}\n`)
+    return 0
+  }
 
   if (typeof flags.count === 'string') {
     const n = flags.count === 'sightings' ? timeline.sightings.length : 0
@@ -5785,11 +5849,14 @@ async function cmdSubagentVerify({ dirs }) {
 }
 
 /**
- * subagent-receipts [--json] [--stat coverage|phantoms|pack-p95] — the report
- * (direct-CLI, may exit 1). Reads the shared journal via receiptStats. `--stat`
- * prints the bare numeric as the LAST line (the predict.mjs scorer contract — these
- * are this plan's three check_commands). Honest empty: zero spawns → coverage 100,
- * phantoms 0, pack-p95 0, flagged "empty" in --json.
+ * subagent-receipts [--json] [--stat coverage|phantoms|pack-p95] [--schema-check]
+ * — the report (direct-CLI, may exit 1). Reads the shared journal via
+ * receiptStats. `--stat` prints the bare numeric as the LAST line (the
+ * predict.mjs scorer contract — these are this plan's three check_commands).
+ * `--schema-check` prints bare 1/0 (report shape valid?) and ALWAYS exits 0 —
+ * the accrual-proof receipt surface (BL-172): pin THIS, never the --json
+ * output, whose numbers accrue with every spawn. Honest empty: zero spawns →
+ * coverage 100, phantoms 0, pack-p95 0, flagged "empty" in --json.
  */
 async function cmdSubagentReceipts({ flags, dirs }) {
   const receipts = await import('./lib/subagent-receipts.mjs')
@@ -5801,6 +5868,14 @@ async function cmdSubagentReceipts({ flags, dirs }) {
     events = []
   }
   const stats = receipts.receiptStats(events)
+
+  // BL-172: deterministic structural mode — 1/0 LAST line, always exit 0.
+  if (flags['schema-check'] === true) {
+    const ok = receipts.receiptStatsSchemaOk(stats) ? 1 : 0
+    if (wantsJson(flags)) printJson({ schemaOk: ok })
+    process.stdout.write(`${ok}\n`)
+    return 0
+  }
 
   if (typeof flags.stat === 'string') {
     const map = { coverage: stats.coverage, phantoms: stats.phantoms, 'pack-p95': stats.packP95 }
@@ -7008,6 +7083,93 @@ function readBacklogItems(raw) {
 }
 
 /**
+ * deleteme [--yes] [--global] [--json] [--selftest] — the one-click OFF-RAMP (BL-162,
+ * v3.6). DRY-RUN by default: prints exactly what would be removed and what stays;
+ * `--yes` applies. Reverses every installer artifact (engine, runtime, agents, skills,
+ * hooks, statusline, managed blocks, .sma state, the .gitignore line) and PRESERVES
+ * `.claude/memory/**` — the corpus is the user's asset, not the framework's. Direct
+ * CLI command (may exit nonzero), never hook-facing.
+ */
+async function cmdDeleteme({ flags, dirs }) {
+  const deleteme = await import('./lib/deleteme.mjs')
+
+  if (flags.selftest === true) {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-deleteme-'))
+    let ok = 0
+    try {
+      ok = deleteme.deletemeSelftest({ tmpRoot })
+    } finally {
+      try {
+        rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 3 })
+      } catch {
+        /* temp cleanup is best-effort */
+      }
+    }
+    if (wantsJson(flags)) printJson({ selftest: 'deleteme', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-49.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  const project = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const configDir = flags.global === true
+    ? (process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CONFIG_DIR.trim()) || join((await import('node:os')).homedir(), '.claude')
+    : join(project, '.claude')
+  const dryRun = flags.yes !== true
+
+  const res = deleteme.applyDeleteme({ project, configDir, dryRun })
+  if (wantsJson(flags)) {
+    printJson({ ok: true, dryRun, ...res })
+    return 0
+  }
+  if (!res.actions.length) {
+    process.stdout.write('SMA deleteme: артефакты установки не найдены — удалять нечего.\n')
+    return 0
+  }
+  process.stdout.write(dryRun
+    ? `SMA deleteme — ПЛАН удаления (${res.actions.length} действий, ничего не тронуто):\n`
+    : `SMA deleteme — выполнено (${res.actions.length} действий):\n`)
+  for (const a of res.actions) {
+    process.stdout.write(`  ${a.status.padEnd(18)} ${a.kind.padEnd(14)} ${a.target}${a.detail ? `  (${a.detail})` : ''}\n`)
+  }
+  process.stdout.write('\n  Остаётся нетронутым: корпус памяти .claude/memory/, все чужие ключи settings.json, каждый байт вне managed-блоков.\n')
+  if (dryRun) process.stdout.write('  Применить: node scripts/sma/cli.mjs deleteme --yes\n')
+  else process.stdout.write('  Перезапустите терминал — команд /sma-* больше не будет. Корпус памяти на месте.\n')
+  return 0
+}
+
+/**
+ * memory-preview [--project <path>] [--lang en|ru] [--json] [--selftest] — the
+ * onboarding memory-graph preview (BL-174, v3.6). Renders an ASCII graph of how
+ * SMA will lay out THIS (or --project's) repository's memory: CORE / periphery
+ * by area (from `git ls-files`) / reflex candidates (excavate's mineRepo over
+ * the real history). Read-only, zero network, byte-deterministic at one HEAD.
+ * Direct CLI command (may exit nonzero), never hook-facing.
+ */
+async function cmdMemoryPreview({ flags, dirs }) {
+  const preview = await import('./lib/memory-preview.mjs')
+
+  if (flags.selftest === true) {
+    const ok = preview.previewSelftest()
+    if (wantsJson(flags)) printJson({ selftest: 'memory-preview', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-49.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const repoDir = typeof flags.project === 'string' && flags.project.trim() ? flags.project.trim() : repoRoot
+  const lang = flags.lang === 'ru' ? 'ru' : 'en'
+  const analysis = preview.analyzeRepo({ repoDir })
+  if (wantsJson(flags)) {
+    printJson({ ok: true, ...analysis })
+    return 0
+  }
+  process.stdout.write(preview.renderPreview(analysis, { lang }) + '\n')
+  return 0
+}
+
+/**
  * session-end (HOOK_FACING) — 49.3-13 (D-49.3-22a) TRIGGER 1: the NEW SessionEnd hook.
  * Release ALL of this window's own claims (marked «сессия завершена»). Silent, exit-0
  * unconditional (main() wraps HOOK_FACING). It does NOT touch the Stop hook (Stop fires
@@ -7669,6 +7831,8 @@ const HANDLERS = {
   preflight: cmdPreflight, // 49.3-10 (D-49.3-17) — already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
   arena: cmdArena, // 49.3-11 (D-49.3-18) — benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
   batch: cmdBatch, // 49.3-12 (D-49.3-19) — /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
+  deleteme: cmdDeleteme, // 49.4 BL-162 (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
+  'memory-preview': cmdMemoryPreview, // 49.4 BL-174 (v3.6) — onboarding ASCII memory-graph preview (--project|--lang|--json|--selftest)
   catalog: cmdCatalog, // 49.3-05 (D-49.3-06) — deterministic file catalog (refresh|find|--check --count)
   context: cmdContext, // 49.3-05 (D-49.3-07) — context compiler (compile|score|miss|exam|--selftest)
   statusline: cmdStatusline, // 49.3-07 (D-49.3-13) — native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)

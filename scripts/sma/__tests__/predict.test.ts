@@ -14,6 +14,11 @@
  *     'skipped-unsafe' and the runner is NEVER invoked (T-49.1-14).
  *   - Test 5: a throwing runner yields verdict 'error'; scorePlan itself
  *     never throws.
+ *   - Test 6 (R1/R2 false class-A lesson, 2026-07-10): predict-score scores
+ *     plan-frontmatter `predictions:` ONLY. SUMMARY `receipts:` claims
+ *     (expected_sha256-pinned, D-49.2-06) are `sma reverify` territory — a
+ *     receipts block yields zero verdicts, and a receipt-shaped entry misfiled
+ *     under `predictions:` is EXCLUDED (never scored, never run).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -230,6 +235,84 @@ describe('runner failure (Test 5)', () => {
     const p = writePlan(entryYaml())
     const { records } = scorePlan({ planPath: p, runCommand: runner })
     expect(records[0].verdict).toBe('error')
+  })
+})
+
+// ── Test 6: receipts are reverify territory (R1/R2 false class-A lesson, 2026-07-10) ──
+
+/** A SUMMARY-style receipts block: expected_sha256 pinned over accruing .sma state. */
+const receiptsBlock =
+  [
+    'receipts:',
+    '  - id: R1',
+    '    assertion: subagent receipt coverage stays pinned over accruing state',
+    '    check_command: pnpm sma subagent-receipts --json',
+    '    expected_sha256: aaaa1111bbbb2222',
+    '    hash_stdout: true',
+    '  - id: R2',
+    '    assertion: passport read surface stays pinned',
+    '    check_command: pnpm sma passport --json',
+    '    expected_sha256: cccc3333dddd4444',
+  ].join('\n') + '\n'
+
+/** Write a fixture SUMMARY.md carrying the given raw frontmatter lines. */
+function writeSummary(frontmatter: string, name = 'SUMMARY.md'): string {
+  const p = join(dir, name)
+  writeFileSync(p, `---\n${frontmatter}---\n\nbody text\n`)
+  return p
+}
+
+describe('predict-score scores plan predictions ONLY — receipts belong to reverify (Test 6)', () => {
+  it('a SUMMARY carrying only a receipts block yields ZERO verdicts; the runner is never invoked', () => {
+    let called = 0
+    const runner = () => {
+      called += 1
+      return '0\n'
+    }
+    const p = writeSummary(`phase: test\n${receiptsBlock}`)
+    const res = scorePlan({ planPath: p, runCommand: runner })
+    expect(res.records).toEqual([])
+    expect(res.invalid).toEqual([])
+    expect(res.excluded).toEqual([])
+    expect(called).toBe(0)
+  })
+
+  it('a SUMMARY with BOTH predictions and receipts writes verdicts ONLY for the predictions', () => {
+    const seen: string[] = []
+    const runner = (cmd: string) => {
+      seen.push(cmd)
+      return '0\n'
+    }
+    const p = writeSummary(`phase: test\npredictions:\n${entryYaml()}${receiptsBlock}`)
+    const { records, excluded } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records).toHaveLength(1)
+    expect(records[0].id).toBe('P1')
+    expect(records[0].verdict).toBe('hit')
+    expect(excluded).toEqual([])
+    // The receipts' check_commands (allowlisted!) were still NEVER run by predict-score.
+    expect(seen).toEqual(['node scripts/sma/check.mjs'])
+  })
+
+  it('a receipt-shaped entry misfiled INSIDE predictions: is excluded — field-completion cannot make it scoreable', () => {
+    const seen: string[] = []
+    const runner = (cmd: string) => {
+      seen.push(cmd)
+      return '0\n'
+    }
+    // R1 carries even the FULL prediction field set — expected_sha256 still excludes it.
+    const misfiledFull = entryYaml({ id: 'R1', expected_sha256: 'aaaa1111bbbb2222' })
+    // R2 is a bare receipt claim (no metric/comparator/threshold) — excluded, NOT invalid-noise.
+    const misfiledBare =
+      '  - id: R2\n    assertion: "bare receipt claim"\n    check_command: "pnpm sma passport --json"\n    expected_sha256: cccc3333dddd4444\n'
+    const p = writePlan(entryYaml() + misfiledFull + misfiledBare)
+    const { records, invalid, excluded } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records).toHaveLength(1)
+    expect(records[0].id).toBe('P1')
+    expect(invalid).toEqual([])
+    expect(excluded.map((e: { id: string | null }) => e.id).sort()).toEqual(['R1', 'R2'])
+    expect(excluded.every((e: { reason: string }) => e.reason === 'receipt')).toBe(true)
+    // Neither excluded entry's command ever ran.
+    expect(seen).toEqual(['node scripts/sma/check.mjs'])
   })
 })
 

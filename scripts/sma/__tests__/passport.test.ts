@@ -16,6 +16,10 @@
  *   - Test 6: managed block (outside-untouched, EOF append, idempotent).
  *   - Test 7: fresh-window numbers (badge = current model's window; passport
  *     still shows all-time + per-model).
+ *   - Test 8: re-scored predictions never inflate the passport — calibration
+ *     totals/domains/perModel count UNIQUE prediction ids (latest verdict
+ *     wins), in agreement with modelGuard's freshN; receipts counts and the
+ *     ledger line count stay per-record (2026-07-10 dogfood lesson).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -33,6 +37,7 @@ import {
   writeManagedBlock,
   spliceManagedBlock,
   readManagedBlock,
+  snapshotSchemaOk,
 } from '../lib/passport.mjs'
 
 let calibrationDir: string
@@ -61,11 +66,19 @@ function writeSightings(sightings: object[]) {
   writeFileSync(join(modelDir, 'sightings.jsonl'), sightings.map((s) => JSON.stringify(s)).join('\n') + '\n')
 }
 
+/**
+ * Ids auto-increment: the passport counts UNIQUE prediction ids (Test 8), so
+ * fixtures that mean N distinct predictions must carry N distinct ids. Pass an
+ * explicit id to model a re-score of the same prediction.
+ */
+let predSeq = 0
 function hit(extra: object = {}) {
-  return { id: 'P', verdict: 'hit', scoredAt: '2026-07-01T00:00:00Z', ...extra }
+  predSeq += 1
+  return { id: `P${predSeq}`, verdict: 'hit', scoredAt: '2026-07-01T00:00:00Z', ...extra }
 }
 function miss(extra: object = {}) {
-  return { id: 'P', verdict: 'miss', scoredAt: '2026-07-01T00:00:00Z', ...extra }
+  predSeq += 1
+  return { id: `P${predSeq}`, verdict: 'miss', scoredAt: '2026-07-01T00:00:00Z', ...extra }
 }
 
 const dirsFor = () => ({ calibrationDir, modelDir })
@@ -250,5 +263,79 @@ describe('Test 7 — fresh-window numbers', () => {
     expect(passport).toContain('claude-x-1')
     expect(passport).toContain('claude-x-2')
     expect(passport).toContain('| **Total** |')
+  })
+})
+
+describe('Test 8 — re-scored predictions never inflate the passport (dedupe by id, latest verdict wins)', () => {
+  it('totals + domains + guard count unique predictions; receipts and ledger lines stay per-record', () => {
+    writeSightings([{ model: 'claude-x-1', source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger('sma.bench', [
+      hit({ id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }),
+      miss({ id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }), // re-score — latest wins
+      hit({ id: 'P-solo', model: 'claude-x-1' }),
+    ])
+    writeLedger('sma.receipts', [
+      { id: 'R1', verdict: 'hit', receipt_verdict: 'verified' },
+      { id: 'R1', verdict: 'hit', receipt_verdict: 'verified' }, // R1 reused by ANOTHER summary — never deduped
+    ])
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    // 3 bench records, 2 unique predictions; P-dup stands at its latest verdict (miss).
+    expect(snap.calibration.totals).toMatchObject({ n: 2, hits: 1, misses: 1 })
+    expect(snap.calibration.domains.find((d) => d.domain === 'sma.bench')).toMatchObject({
+      n: 2,
+      hits: 1,
+      misses: 1,
+    })
+    // The guard counts the SAME deduped set — passport and badge can never disagree.
+    expect(snap.guard.freshN).toBe(2)
+    expect(snap.guard.freshRate).toBe(0.5)
+    // Receipt ids are only unique within one SUMMARY — receipts counts stay per-record.
+    expect(snap.receipts).toMatchObject({ verified: 2, n: 2 })
+    // Ledger meta stays the raw line count (a size stat, not a calibration claim).
+    expect(snap.ledger).toMatchObject({ lines: 5, corrupt: 0 })
+  })
+
+  it('perModel counts a re-scored prediction ONCE, under the model of its latest verdict', () => {
+    writeSightings([
+      { model: 'claude-x-1', source: 'env', at: '2026-06-01T00:00:00Z' },
+      { model: 'claude-x-2', source: 'env', at: '2026-07-01T00:00:00Z' },
+    ])
+    writeLedger('sma.bench', [
+      hit({ id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-06-15T00:00:00Z' }),
+      miss({ id: 'P-dup', model: 'claude-x-2', scoredAt: '2026-07-05T00:00:00Z' }),
+    ])
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.calibration.totals).toMatchObject({ n: 1, hits: 0, misses: 1 })
+    // The superseded claude-x-1 verdict does not surface a per-model row at all.
+    expect(snap.calibration.perModel.find((m) => m.model === 'claude-x-1')).toBeUndefined()
+    expect(snap.calibration.perModel.find((m) => m.model === 'claude-x-2')).toMatchObject({ n: 1, misses: 1 })
+  })
+})
+
+describe('Test 9 — snapshotSchemaOk: the --schema-check contract (BL-172)', () => {
+  it('accepts null (the honest {} read surface), an empty-ledger snapshot, AND a populated one — accrual never flips it', () => {
+    expect(snapshotSchemaOk(null)).toBe(true) // PASSPORT.md absent/no fence -> --json honestly prints {}
+    const empty = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'empty', now: 't' })
+    expect(snapshotSchemaOk(empty)).toBe(true)
+
+    writeSightings([{ model: 'claude-x-1', source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger('sma.bench', [hit({ model: 'claude-x-1' }), miss({ model: 'claude-x-1' })])
+    const populated = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+    expect(snapshotSchemaOk(populated)).toBe(true)
+    // round-trip: the committed-passport read path yields a schema-valid snapshot
+    expect(snapshotSchemaOk(parseSnapshot(renderPassport(populated)))).toBe(true)
+  })
+
+  it('rejects a wrong schema version and a mis-shaped snapshot', () => {
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+    expect(snapshotSchemaOk({ ...snap, schema: 2 })).toBe(false)
+    expect(snapshotSchemaOk({ ...snap, guard: null })).toBe(false)
+    expect(snapshotSchemaOk({ ...snap, calibration: { ...snap.calibration, domains: 'x' } })).toBe(false)
+    expect(snapshotSchemaOk({ ...snap, ledger: { lines: NaN, corrupt: 0 } })).toBe(false)
+    expect(snapshotSchemaOk('not an object')).toBe(false)
   })
 })

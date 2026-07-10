@@ -357,3 +357,25 @@ export function receiptStats(events = []) {
     empty: spawnRecords === 0 && receipts.length === 0,
   }
 }
+
+/**
+ * receiptStatsSchemaOk(stats) -> boolean — the `subagent-receipts
+ * --schema-check` contract (BL-172, 2026-07-10): a structural receipt over
+ * the report surface must pin the report's SHAPE, never its NUMBERS —
+ * .sma/subagents state ACCRUES with every spawn, so hashing the `--json`
+ * output re-fails on every reverify by construction (the class the 49.2-04 R2
+ * assertion already names: «a receipt must never hash accruing
+ * .sma/subagents state»). Valid: an object whose six count fields are finite
+ * numbers and whose `empty` flag is a boolean.
+ *
+ * @param {*} stats  a receiptStats() result
+ * @returns {boolean}
+ */
+export function receiptStatsSchemaOk(stats) {
+  const s = stats
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return false
+  for (const k of ['coverage', 'phantoms', 'phantomsAsserted', 'packP95', 'spawnRecords', 'receipts']) {
+    if (!Number.isFinite(s[k])) return false
+  }
+  return typeof s.empty === 'boolean'
+}

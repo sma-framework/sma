@@ -1,10 +1,35 @@
 {
   "name": "sma-framework",
-  "version": "3.5.0",
-  "private": true,
-  "description": "SMA — layered memory + multi-terminal coordination framework for AI coding agents. Private until the 49.1-27 founder flip.",
+  "version": "3.6.0",
+  "description": "SMA (Shared Memory & Automation) - the accountability layer for AI coding agents: layered memory, multi-terminal coordination without a server, and verified claims. Plain files + git, zero LLM in the hot path. Install: npx -y sma-framework@latest init",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sma-framework/sma.git"
+  },
+  "homepage": "https://github.com/sma-framework/sma#readme",
+  "bugs": {
+    "url": "https://github.com/sma-framework/sma/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "agent-memory",
+    "coding-agent",
+    "multi-terminal",
+    "coordination",
+    "calibration",
+    "receipts",
+    "claude",
+    "llm"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "sma-framework": "bin/init.mjs",
     "sma-init": "bin/init.mjs",
@@ -25,6 +50,7 @@
   ],
   "scripts": {
     "test": "vitest run && node tools/verify-rebrand.mjs",
+    "prepublishOnly": "node scripts/sma/lib/package-check.mjs --strict && node tools/verify-rebrand.mjs",
     "sma": "node scripts/sma/cli.mjs"
   },
   "devDependencies": {

@@ -210,6 +210,23 @@ function compare(actual, comparator, threshold) {
 }
 
 /**
+ * isReceiptEntry(entry) — the receipts discriminator (R1/R2 false class-A
+ * lesson, 2026-07-10). A structural receipt pins `expected_sha256` over an
+ * observation (the locked D-49.2-06 evidence field); a prediction NEVER
+ * carries it — its expectation is a numeric `threshold`. A receipt is a
+ * BUILD-TIME claim: re-scoring it later as a standing prediction against
+ * ACCRUING .sma state (e.g. `subagent-receipts --json` output) is a guaranteed
+ * drift-miss that opens a false class-A event. Receipts are `sma reverify`
+ * territory — predict-score writes NO verdict for them, even when one is
+ * misfiled under `predictions:` (field-completion cannot make it scoreable:
+ * this check runs BEFORE validation).
+ */
+export function isReceiptEntry(entry) {
+  const e = entry ?? {}
+  return e.expected_sha256 != null && e.expected_sha256 !== ''
+}
+
+/**
  * Charset guard closing the shell-injection gap the prefix allowlist alone
  * leaves open (T-49.1-14): `node scripts/sma/x.mjs; rm -rf /` matches the
  * prefix but carries shell metacharacters. Only plain words, spaces, and
@@ -224,7 +241,14 @@ export function isSafeCommand(command) {
 }
 
 /**
- * scorePlan({planPath, runCommand, now}) -> {records, invalid}.
+ * scorePlan({planPath, runCommand, now}) -> {records, invalid, excluded}.
+ *
+ * Scores plan-frontmatter `predictions:` entries ONLY — the `receipts:` block
+ * (a SUMMARY's build-time structural claims, D-49.2-06) is NEVER consumed
+ * here; re-verifying receipts is `sma reverify`'s territory (R1/R2 false
+ * class-A lesson, 2026-07-10). A receipt-shaped entry misfiled inside
+ * `predictions:` (see isReceiptEntry) lands in `excluded` with NO verdict and
+ * the runner never invoked.
  *
  * For each VALID predictions entry: allowlist check -> run (injected runner)
  * -> numeric last-line parse -> comparator compare. Deterministic; zero LLM;
@@ -237,15 +261,27 @@ export function isSafeCommand(command) {
  * confidence, scoredAt, plan, error?}
  *
  * @param {{planPath: string, runCommand: Function, now?: string}} args
- * @returns {{records: object[], invalid: object[]}}
+ * @returns {{records: object[], invalid: object[], excluded: object[]}}
  */
 export function scorePlan({ planPath, runCommand, now }) {
   const { predictions, error } = parsePredictions(planPath)
   const records = []
   const invalid = []
-  if (error) return { records, invalid: [{ id: null, missing: [], errors: [error] }] }
+  const excluded = []
+  if (error) return { records, invalid: [{ id: null, missing: [], errors: [error] }], excluded }
 
   for (const entry of predictions) {
+    // Receipts are reverify's territory — excluded BEFORE validation so no
+    // field-completion can ever turn a receipt into a scoreable prediction.
+    if (isReceiptEntry(entry)) {
+      excluded.push({
+        id: entry.id ?? null,
+        reason: 'receipt',
+        assertion: entry.assertion ?? entry.claim ?? null,
+      })
+      continue
+    }
+
     const v = validatePrediction(entry)
     if (!v.valid) {
       invalid.push({ id: entry.id ?? null, missing: v.missing, errors: v.errors })
@@ -302,7 +338,7 @@ export function scorePlan({ planPath, runCommand, now }) {
     records.push({ ...base, actual, hit, verdict: hit ? 'hit' : 'miss' })
   }
 
-  return { records, invalid }
+  return { records, invalid, excluded }
 }
 
 /**

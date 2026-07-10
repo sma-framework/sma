@@ -36,7 +36,14 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 `state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|`
 `pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
 `grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|manifest|`
-`worktree|merge|explain|doc-audit>`
+`worktree|merge|explain|doc-audit|deleteme|memory-preview>`
+
+The v3.6 surfaces:
+
+| Subcommand | Purpose | Key flags |
+|---|---|---|
+| `deleteme` | One-click uninstall (BL-162): reverses every installer artifact — engine, runtime, agents, skills, hooks, statusline, managed blocks, `.sma/` — and PRESERVES `.claude/memory/**`. Dry-run by default; never-clobber settings surgery; a torn anchor pair is refused, never repaired. Direct CLI, not hook-facing. | `--yes` \| `--global` \| `--selftest` \| `--json` |
+| `memory-preview` | Onboarding memory-graph preview (BL-174): an ASCII graph of how SMA will lay out THIS repo's memory — CORE / periphery areas from `git ls-files` / reflex candidates from excavate's history mining. Read-only, zero network, byte-deterministic at one HEAD; an empty repo degrades to the fresh-project layout. Rendered during /sma-start TEACH. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
 
 The V3.5 docs / teaching surfaces:
 
@@ -516,6 +523,12 @@ every format and performs zero writes.
 
 **Workflow:** run `pnpm sma emit` after the corpus changes (a consolidation or a
 `build-index`) so `pnpm sma emit --check --count drift` stays at zero.
+
+**The installer's sibling block (v3.6, BL-165):** `npx sma-framework init` embeds a
+SECOND managed block — the SMA operating rules — into the project's CLAUDE.md via
+`lib/claude-embed.mjs`: the same splice law (create/append/replace/unchanged/
+corrupt=refuse), its OWN anchor family (`SMA:RULES`), so the corpus block and the
+rules block never fight over one span. `deleteme` removes both.
 
 ```
 pnpm sma emit                       # write the managed blocks (reviewable diff)

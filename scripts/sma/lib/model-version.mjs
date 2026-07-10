@@ -13,9 +13,11 @@
  *      the session-start hook (fail-open) and stamped onto every predict-score
  *      ledger record (stampRecords) so each future verdict knows its model.
  *   2. The GUARD MATH — modelGuard turns {timeline, records} into a status
- *      ('ok' | 'stale-priors' | 'no-model-data') plus the count of FRESH
- *      hit/miss verdicts under the current model. renderBadgeBlock (passport.mjs)
- *      hides the hit-rate claim until that count crosses BADGE_MIN_N.
+ *      ('ok' | 'stale-priors' | 'no-model-data') plus the count of UNIQUE
+ *      predictions whose LATEST hit/miss verdict is fresh under the current
+ *      model (latestVerdictPerPrediction — re-scores never inflate n).
+ *      renderBadgeBlock (passport.mjs) hides the hit-rate claim until that
+ *      count crosses BADGE_MIN_N.
  *
  * `records` fed to modelGuard are calibration-ledger records for PREDICTION
  * domains only — the CALLER (passport.buildSnapshot) filters out sma.receipts,
@@ -119,6 +121,32 @@ export function readModelTimeline(opts = {}) {
 }
 
 /**
+ * timelineSchemaOk(timeline) -> boolean — the `model --schema-check` contract
+ * (BL-172, 2026-07-10): a structural receipt over the model-version guard's
+ * data feed must pin the timeline's SHAPE, never its COUNT — sightings ACCRUE
+ * with every session, so hashing `model --count sightings` output re-fails on
+ * every reverify by construction (the 49.3-02 R1 lesson). Valid: an object
+ * with a sightings array (empty = honest-empty, still valid) whose every
+ * entry carries a non-empty string model plus string source/at, and a finite
+ * non-negative corrupt count.
+ *
+ * @param {*} timeline  a readModelTimeline() result
+ * @returns {boolean}
+ */
+export function timelineSchemaOk(timeline) {
+  const t = timeline
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return false
+  if (!Array.isArray(t.sightings)) return false
+  if (!Number.isFinite(t.corrupt) || t.corrupt < 0) return false
+  for (const s of t.sightings) {
+    if (!s || typeof s !== 'object') return false
+    if (typeof s.model !== 'string' || !s.model.trim()) return false
+    if (typeof s.source !== 'string' || typeof s.at !== 'string') return false
+  }
+  return true
+}
+
+/**
  * currentModel({modelDir}) -> the last sighting's model, or null on an
  * empty/missing timeline (honest empty, never a fake id).
  *
@@ -167,11 +195,48 @@ function isHitOrMiss(r) {
 }
 
 /**
+ * latestVerdictPerPrediction(records) -> records with the hit/miss verdicts
+ * DEDUPED by prediction id — the LATEST (by scoredAt/at ISO compare; a tie
+ * falls to ledger append order) hit-or-miss verdict per id wins.
+ *
+ * Re-scoring a prediction APPENDS a new ledger record (append-only by
+ * construction); counting records therefore inflates n — the 2026-07-10
+ * dogfood lesson: 55 hit/miss records over 45 unique predictions. A
+ * prediction's standing verdict is its latest one; everything earlier is
+ * superseded evidence, never a second data point.
+ *
+ * Non-hit/miss records (skipped-unsafe / error / divergence / dispositions)
+ * pass through untouched — they are not evidence about the CLAIM and must
+ * never shadow a hit/miss. Records without an id are never collapsed.
+ *
+ * Exported so passport.buildSnapshot counts its calibration totals over the
+ * SAME deduped set — one boundary; the guard and the passport cannot disagree.
+ *
+ * @param {object[]} records
+ * @returns {object[]}
+ */
+export function latestVerdictPerPrediction(records) {
+  const list = Array.isArray(records) ? records : []
+  const latest = new Map()
+  for (const r of list) {
+    if (!isHitOrMiss(r) || r.id == null || r.id === '') continue
+    const prev = latest.get(r.id)
+    if (!prev || String(r.scoredAt ?? r.at ?? '') >= String(prev.scoredAt ?? prev.at ?? '')) {
+      latest.set(r.id, r)
+    }
+  }
+  return list.filter((r) => !isHitOrMiss(r) || r.id == null || r.id === '' || latest.get(r.id) === r)
+}
+
+/**
  * modelGuard({records, timeline, minFresh}) -> {status, model, freshN,
  * requiredN, lastChangeAt}. Pure function (behavior tests 4-5).
  *
  * - No sightings -> {status:'no-model-data', freshN:0}.
- * - freshN = count of hit/miss records that are FRESH under the current model:
+ * - freshN = count of UNIQUE predictions whose LATEST hit/miss verdict is
+ *   FRESH under the current model. Records are deduped by prediction id FIRST
+ *   (latestVerdictPerPrediction — a re-score appends a duplicate record and
+ *   must never inflate n; latest verdict wins), then:
  *     * a STAMPED record (r.model set) is fresh iff r.model === current model;
  *     * an UNSTAMPED legacy record is fresh iff there has been no model change
  *       OR its scoredAt is strictly after the last change sighting's `at`
@@ -204,9 +269,10 @@ export function modelGuard({ records = [], timeline, minFresh = DEFAULT_MIN_FRES
   // Accumulate FRESH hit/miss counts under the current model. freshRate is the
   // hit-rate the badge headlines — computed over the SAME set as freshN so the
   // guard is the single source of truth for the fresh window (passport reads it).
+  // Dedupe FIRST: one prediction = one data point, its LATEST verdict standing.
   let freshN = 0
   let freshHits = 0
-  for (const r of Array.isArray(records) ? records : []) {
+  for (const r of latestVerdictPerPrediction(records)) {
     if (!isHitOrMiss(r)) continue
     const fresh =
       r.model != null ? r.model === current : !hasChange || String(r.scoredAt ?? '') > String(lastChangeAt)

@@ -49,6 +49,13 @@ export const SURFACE_MANIFEST = [
   { id: 'statusline', en: 'statusline segment', ru: 'сегмент строки состояния' },
   { id: 'pr-passport', en: 'PR evidence passport', ru: 'паспорт доказательств' },
   { id: 'loop', en: 'accountable loop', ru: 'подотчётный цикл' },
+  // v3.6 (BL-162/163/165/174) — the region id `sma:v35` is a STABLE anchor, not a
+  // version claim; new surfaces grow THIS manifest so a shipped-but-undocumented
+  // surface scores a miss (the same grow-the-guard law as the platform's).
+  { id: 'npm-install', en: 'npx -y sma-framework@latest', ru: 'npx -y sma-framework@latest' },
+  { id: 'deleteme', en: 'sma deleteme', ru: 'sma deleteme' },
+  { id: 'memory-preview', en: 'memory-preview', ru: 'memory-preview' },
+  { id: 'claude-embed', en: 'rules block', ru: 'блок правил' },
 ]
 
 /** The five world analogs the positioning region must name honestly (brand tokens). */

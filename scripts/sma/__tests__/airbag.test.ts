@@ -29,6 +29,8 @@ import {
   takeSnapshot,
   checkAirbag,
   nativeCheckpointProbe,
+  listSnapshots,
+  snapshotListSchemaOk,
 } from '../lib/airbag.mjs'
 import { AIRBAG_UNTRACKED_MAX_FILES } from '../lib/constants.mjs'
 
@@ -295,5 +297,27 @@ describe('checkAirbag', () => {
     const allowed = checkAirbag(evt, { ...base, seen: { keys: {} } })
     expect(allowed.deny).toBeUndefined()
     expect(existsSync(tokenPath)).toBe(false) // consumed
+  })
+})
+
+// ── BL-172 (2026-07-10): the --schema-check contract — receipts pin STRUCTURE, never accruing refs ──
+
+describe('snapshotListSchemaOk — deterministic airbag-list shape check (Test 10, BL-172)', () => {
+  it('accepts the honest-empty list AND a real listSnapshots result — ref accrual never changes the verdict', () => {
+    expect(snapshotListSchemaOk([])).toBe(true)
+    const { run } = mkRunner({
+      'for-each-ref':
+        'sha1\trefs/sma/airbag/20260710-120000-1/head\nsha2\trefs/sma/airbag/20260710-120000-1/stash\nsha3\trefs/sma/airbag/20260709-090000-7/head\n',
+    })
+    const groups = listSnapshots({ runGit: run })
+    expect(groups.length).toBe(2)
+    expect(snapshotListSchemaOk(groups)).toBe(true)
+  })
+
+  it('rejects a group without an id, non-array refnames, non-object refs, and a non-array input', () => {
+    expect(snapshotListSchemaOk([{ refs: {}, refnames: [] }])).toBe(false)
+    expect(snapshotListSchemaOk([{ id: 'x', refs: {}, refnames: 'r' }])).toBe(false)
+    expect(snapshotListSchemaOk([{ id: 'x', refs: null, refnames: [] }])).toBe(false)
+    expect(snapshotListSchemaOk('nope')).toBe(false)
   })
 })

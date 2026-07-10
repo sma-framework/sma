@@ -22,7 +22,12 @@
  * journal chainTip (49.2-03) — and re-implements NONE of them (D-49.3-02). The
  * prediction-calibration claim EXCLUDES sma.receipts (which get their own
  * PASSPORT.md section); inflating the badge n with receipt hits is exactly the
- * statistical dishonesty this plan guards against.
+ * statistical dishonesty this plan guards against. It also counts UNIQUE
+ * predictions only — records are deduped by prediction id, latest verdict
+ * wins (model-version.latestVerdictPerPrediction, the SAME boundary modelGuard
+ * uses, so guard and passport can never disagree; a re-score appending a
+ * duplicate ledger record must never inflate n — 2026-07-10 lesson: 55 records
+ * vs 45 unique predictions).
  *
  * Node built-ins only; pure functions over injected data — only writeManagedBlock
  * and the snapshot's ledger reads touch fs, both DI. No LLM, no network: the
@@ -35,7 +40,7 @@ import { join } from 'node:path'
 
 import { readLedger, hitRate } from './calibration.mjs'
 import { chainTip as journalChainTip } from './journal.mjs'
-import { readModelTimeline, modelGuard } from './model-version.mjs'
+import { readModelTimeline, modelGuard, latestVerdictPerPrediction } from './model-version.mjs'
 import { atomicWriteRaw } from './fs-atomics.mjs'
 
 /**
@@ -127,7 +132,14 @@ function countReceipts(receiptRecords) {
  */
 export function buildSnapshot({ dirs = {}, chainTipFn, now, fs } = {}) {
   const { records, corrupt } = readLedger({ calibrationDir: dirs.calibrationDir })
-  const predictionRecords = records.filter((r) => (r.domain ?? 'unknown') !== RECEIPTS_DOMAIN)
+  // Dedupe re-scored predictions (latest hit/miss verdict per id wins) so
+  // domains/perModel/totals count UNIQUE predictions — the same boundary
+  // modelGuard applies internally. Receipt records stay per-record: receipt
+  // ids (R1/R2…) are only unique WITHIN one SUMMARY, so an id-dedupe there
+  // would silently merge different summaries' claims.
+  const predictionRecords = latestVerdictPerPrediction(
+    records.filter((r) => (r.domain ?? 'unknown') !== RECEIPTS_DOMAIN),
+  )
   const receiptRecords = records.filter((r) => (r.domain ?? 'unknown') === RECEIPTS_DOMAIN)
 
   const timeline = readModelTimeline({ modelDir: dirs.modelDir, fs })
@@ -294,6 +306,39 @@ export function parseSnapshot(passportText) {
   } catch {
     return null
   }
+}
+
+/**
+ * snapshotSchemaOk(snap) -> boolean — the `passport --schema-check` contract
+ * (BL-172, 2026-07-10): a structural receipt over the passport read surface
+ * must pin its SHAPE, never its CONTENTS — the passport is rebuilt each
+ * release, so hashing `passport --json` output re-fails on every reverify by
+ * construction (the 49.3-02 R2 lesson). Valid: null (PASSPORT.md absent or no
+ * fenced block — the --json surface honestly prints {}), OR a schema-1
+ * snapshot carrying the seven top-level sections with structurally sound
+ * types (guard status string + finite freshN; calibration domains array +
+ * totals object; receipts object; chainTip present; finite ledger counts).
+ *
+ * @param {*} snap  a parseSnapshot() result (object or null)
+ * @returns {boolean}
+ */
+export function snapshotSchemaOk(snap) {
+  if (snap === null) return true // the honest {} read surface
+  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return false
+  if (snap.schema !== 1) return false
+  if (typeof snap.capturedAt !== 'string' || !snap.capturedAt) return false
+  if (!snap.model || typeof snap.model !== 'object') return false
+  const g = snap.guard
+  if (!g || typeof g !== 'object' || typeof g.status !== 'string' || !Number.isFinite(g.freshN)) return false
+  const cal = snap.calibration
+  if (!cal || typeof cal !== 'object' || !Array.isArray(cal.domains) || !Array.isArray(cal.perModel)) return false
+  const totals = cal.totals
+  if (!totals || typeof totals !== 'object' || !Number.isFinite(totals.n)) return false
+  if (!snap.receipts || typeof snap.receipts !== 'object' || !Number.isFinite(snap.receipts.n)) return false
+  if (snap.chainTip == null) return false
+  const led = snap.ledger
+  if (!led || typeof led !== 'object' || !Number.isFinite(led.lines) || !Number.isFinite(led.corrupt)) return false
+  return true
 }
 
 /**

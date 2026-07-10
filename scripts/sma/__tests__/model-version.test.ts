@@ -15,6 +15,9 @@
  *     non-hit/miss verdicts).
  *   - Test 6: stampRecords pure additive stamp.
  *   - Test 7: recorder fail-open under a throwing fs double.
+ *   - Test 8: freshN dedupes by prediction id — the LATEST hit/miss verdict
+ *     wins; re-scoring never inflates n (2026-07-10 dogfood lesson: 55 ledger
+ *     records vs 45 unique predictions).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -29,6 +32,7 @@ import {
   modelGuard,
   stampRecords,
   resolveModelId,
+  timelineSchemaOk,
 } from '../lib/model-version.mjs'
 
 let modelDir: string
@@ -43,12 +47,18 @@ afterEach(() => {
 
 const FIXED_NOW = '2026-07-09T12:00:00.000Z'
 
-/** A minimal calibration verdict record. */
+/**
+ * A minimal calibration verdict record. Ids auto-increment: freshN counts
+ * UNIQUE prediction ids (Test 8), so fixtures that mean N distinct predictions
+ * must carry N distinct ids. Pass an explicit id to model a re-score.
+ */
+let recSeq = 0
 function rec(
   verdict: 'hit' | 'miss' | 'skipped-unsafe' | 'error',
   extra: Record<string, unknown> = {},
 ) {
-  return { id: 'P1', domain: 'sma.bench', verdict, scoredAt: '2026-07-01T00:00:00.000Z', ...extra }
+  recSeq += 1
+  return { id: `P${recSeq}`, domain: 'sma.bench', verdict, scoredAt: '2026-07-01T00:00:00.000Z', ...extra }
 }
 
 describe('Test 1 — recordModelSighting dedup timeline', () => {
@@ -236,5 +246,73 @@ describe('Test 7 — recorder fail-open', () => {
     }).not.toThrow()
     expect(res!).toMatchObject({ ok: false })
     expect(res!.error).toBeTruthy()
+  })
+})
+
+describe('Test 8 — freshN dedupes by prediction id (latest verdict wins)', () => {
+  const timeline = { sightings: [{ model: 'claude-x-1', source: 'env', at: 't0' }] }
+
+  it('re-scoring the same prediction does not inflate n; the LATEST verdict stands', () => {
+    const records = [
+      rec('hit', { id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }),
+      rec('miss', { id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }),
+    ]
+    const g = modelGuard({ records, timeline })
+    expect(g.freshN).toBe(1)
+    expect(g.freshHits).toBe(0)
+    expect(g.freshRate).toBe(0)
+  })
+
+  it('latest is picked by scoredAt, not array position; a timestamp tie falls to ledger (append) order', () => {
+    const records = [
+      rec('miss', { id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }),
+      rec('hit', { id: 'P-dup', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }), // earlier, later in array
+    ]
+    expect(modelGuard({ records, timeline })).toMatchObject({ freshN: 1, freshHits: 0 })
+
+    const tied = [
+      rec('hit', { id: 'P-tie', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }),
+      rec('miss', { id: 'P-tie', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }), // appended later -> wins
+    ]
+    expect(modelGuard({ records: tied, timeline })).toMatchObject({ freshN: 1, freshHits: 0 })
+  })
+
+  it('55 records over 45 unique predictions count as n=45 (2026-07-10 dogfood lesson)', () => {
+    const uniques = Array.from({ length: 45 }, (_, i) =>
+      rec('hit', { id: `P-u${i}`, model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }),
+    )
+    const rescored = Array.from({ length: 10 }, (_, i) =>
+      rec('miss', { id: `P-u${i}`, model: 'claude-x-1', scoredAt: '2026-07-08T00:00:00Z' }),
+    )
+    const g = modelGuard({ records: [...uniques, ...rescored], timeline })
+    expect(g.freshN).toBe(45)
+    expect(g.freshHits).toBe(35) // the 10 re-scored predictions stand at their LATEST verdict (miss)
+    expect(g.freshRate).toBeCloseTo(35 / 45, 10)
+  })
+
+  it('records without an id are never collapsed together', () => {
+    const records = [
+      rec('hit', { id: undefined, model: 'claude-x-1' }),
+      rec('hit', { id: undefined, model: 'claude-x-1' }),
+    ]
+    expect(modelGuard({ records, timeline }).freshN).toBe(2)
+  })
+})
+
+describe('Test 9 — timelineSchemaOk: the --schema-check contract (BL-172)', () => {
+  it('accepts the honest-empty timeline AND a populated one — the sighting COUNT never changes the verdict', () => {
+    expect(timelineSchemaOk({ sightings: [], corrupt: 0 })).toBe(true)
+    expect(timelineSchemaOk(readModelTimeline({ modelDir }))).toBe(true) // real reader, empty dir
+    const sightings = Array.from({ length: 8 }, (_, i) => ({ model: `m-${i}`, source: 'env', at: `t${i}` }))
+    expect(timelineSchemaOk({ sightings, corrupt: 0 })).toBe(true)
+  })
+
+  it('rejects a malformed sighting, a non-numeric corrupt count, and a non-object', () => {
+    expect(timelineSchemaOk({ sightings: [{ source: 'env', at: 't' }], corrupt: 0 })).toBe(false) // no model
+    expect(timelineSchemaOk({ sightings: [{ model: '', source: 'env', at: 't' }], corrupt: 0 })).toBe(false)
+    expect(timelineSchemaOk({ sightings: [{ model: 'm', source: 'env' }], corrupt: 0 })).toBe(false) // no at
+    expect(timelineSchemaOk({ sightings: 'nope', corrupt: 0 })).toBe(false)
+    expect(timelineSchemaOk({ sightings: [], corrupt: NaN })).toBe(false)
+    expect(timelineSchemaOk(null)).toBe(false)
   })
 })

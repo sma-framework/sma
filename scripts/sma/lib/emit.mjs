@@ -297,14 +297,16 @@ export function renderBlock({ format, selection, commitHash, corpusDir }) {
 // ─────────────────────────── splice engine (the managed-block law) ───────────
 
 /**
- * locateBlock(text, style) — find the managed block by WHOLE-LINE anchor match: a
- * line starting with the style's BEGIN prefix, and the style's exact END line.
- * Returns the classification the splice/check paths both share.
+ * locateBlock(text, style, markers?) — find the managed block by WHOLE-LINE anchor
+ * match: a line starting with the BEGIN prefix, and the exact END line. Defaults to
+ * the style's SMA:EXPORT markers; a caller owning a DIFFERENT anchor family (the
+ * installer's SMA:RULES block, claude-embed.mjs) passes its own pair — the splice
+ * law is shared, the anchors are not.
  *
  * @returns {{status:'none'|'ok'|'corrupt', begin?:number, end?:number}}
  */
-function locateBlock(text, style) {
-  const { beginPrefix, end: endLine } = anchorMarkers(style)
+function locateBlock(text, style, markers) {
+  const { beginPrefix, end: endLine } = markers ?? anchorMarkers(style)
   const lines = String(text ?? '').split('\n')
   const begins = []
   const ends = []
@@ -320,7 +322,7 @@ function locateBlock(text, style) {
 }
 
 /**
- * spliceBlock({existingText, block, style}) — PURE (no fs). The managed-block law:
+ * spliceBlock({existingText, block, style, markers?}) — PURE (no fs). The managed-block law:
  *   - empty existing text            -> {created}   block + one trailing LF
  *   - present, no block              -> {appended}  userContent (byte-identical
  *                                        prefix) + exactly one blank line + block + LF
@@ -330,9 +332,9 @@ function locateBlock(text, style) {
  *
  * @returns {{text:string, action:'created'|'appended'|'replaced'|'unchanged'|'skipped-corrupt'}}
  */
-export function spliceBlock({ existingText, block, style }) {
+export function spliceBlock({ existingText, block, style, markers }) {
   const text = String(existingText ?? '')
-  const loc = locateBlock(text, style)
+  const loc = locateBlock(text, style, markers)
 
   if (loc.status === 'corrupt') return { text, action: 'skipped-corrupt' }
 

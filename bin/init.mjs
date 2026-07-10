@@ -15,6 +15,8 @@
  *   sma-core/aliases     -> <config>/skills/gsd-<cmd>/  (ONLY with --with-gsd-aliases, D-49.1-02)
  *   hooks                -> <config>/settings.json      (additive merge, existing entries preserved)
  *   .sma/{sessions,claims,journal}                      (runtime scaffold in the project)
+ *   rules block          -> <project>/CLAUDE.md         (managed SMA:RULES block via the emit splice
+ *                                                        law — BL-165; user bytes never touched)
  *
  * <config> = <project>/.claude (--local, default) or $CLAUDE_CONFIG_DIR|~/.claude (--global).
  */
@@ -59,6 +61,7 @@ const COMMANDS = [
   { name: 'pause-work',    workflow: 'pause-work.md',     description: 'Create a context handoff when pausing work mid-phase' },
   { name: 'fast',          workflow: 'fast.md',           description: 'Execute a trivial task inline, no subagents, no planning overhead' },
   { name: 'help',          workflow: 'help.md',           description: 'Show available SMA commands and usage guide' },
+  { name: 'deleteme',      workflow: 'sma-deleteme.md',   description: 'Remove SMA from this project in one action — skills, engine, hooks, statusline, managed blocks; your memory corpus stays' },
 ];
 
 // ── hooks the installer manages (matched by command string for idempotency) ──
@@ -217,7 +220,7 @@ Read and follow \`${workflowRef}\` end to end, treating the user's arguments as 
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   const { flags, unknown } = parseArgs(process.argv.slice(2));
   if (flags.help) return printHelp();
   if (unknown.length) {
@@ -340,6 +343,25 @@ function main() {
   }
   console.log(`  + runtime dirs  .sma/{sessions,claims,journal,reflex}`);
 
+  // 7.5. CLAUDE.md — managed SMA rules block (BL-165, v3.6): most installs have no
+  // autoMemoryDirectory wiring, so without this pointer the memory corpus is
+  // invisible to the very agent it exists for. Same splice law as `sma emit`,
+  // its own SMA:RULES anchor family; an embed failure warns, NEVER fails the install.
+  try {
+    const { pathToFileURL } = await import('node:url');
+    const embed = await import(pathToFileURL(path.join(pkgRoot, 'scripts', 'sma', 'lib', 'claude-embed.mjs')).href);
+    const res = embed.embedRules({ projectDir: project, version });
+    if (res.action === 'skipped-corrupt') {
+      console.warn('  ! CLAUDE.md     SMA:RULES anchors are torn — block NOT written; fix the markers and re-run init');
+    } else if (res.action === 'error') {
+      console.warn(`  ! CLAUDE.md     rules block not written (${res.detail})`);
+    } else {
+      console.log(`  + CLAUDE.md     SMA rules block (${res.action})`);
+    }
+  } catch (e) {
+    console.warn(`  ! CLAUDE.md     rules block skipped (${e && e.message ? e.message : e})`);
+  }
+
   // 8. Plain-language completion summary
   console.log(`
 Done. SMA${version ? ` v${version}` : ''} is installed${isGlobal ? ' globally' : ' in this project'}.
@@ -365,4 +387,4 @@ if (process.argv[1]) {
     invokedDirectly = path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
   }
 }
-if (invokedDirectly) main();
+if (invokedDirectly) await main();
