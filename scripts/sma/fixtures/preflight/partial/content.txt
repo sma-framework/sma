@@ -1,0 +1,3 @@
+preflight partial-fixture artifact content.
+Only the first needle lives here; the second is intentionally absent:
+MARKER_ALPHA

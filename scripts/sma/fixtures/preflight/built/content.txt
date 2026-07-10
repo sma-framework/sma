@@ -1,0 +1,4 @@
+preflight built-fixture artifact content.
+Both needles live here so both artifacts are satisfied:
+MARKER_ALPHA
+MARKER_BETA
