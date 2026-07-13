@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.6.0-3B82F6" alt="version 3.6.0">
-  <img src="https://img.shields.io/badge/tests-792%2F792-3CC0A0" alt="tests 792/792">
+  <img src="https://img.shields.io/badge/version-4.0.0-3B82F6" alt="version 4.0.0">
+  <img src="https://img.shields.io/badge/tests-876%2F876-3CC0A0" alt="tests 876/876">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3CC0A0" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -13,9 +13,9 @@
 
 # SMA — Shared Memory & Automation
 
-**The accountability layer for AI coding agents: layered memory that arrives on time, multi-terminal coordination without a server, and verified claims that *control* behavior. v3.6 — the one-command door, both ways: `npx` install, a memory-preserving off-ramp, and a preview of YOUR repo's memory before you commit to anything.**
+**The accountability layer for AI coding agents: layered memory that arrives on time, multi-terminal coordination without a server, and verified claims that *control* behavior. v4 — grade the grader: every separate-context verdict is recorded as a prediction and scored against what git actually did, on the thesis that a vendor can *verify* but cannot be *audited* — and per-lane economy meters that price every run against your own spend, each savings number paired with a quality guard.**
 
-[Русская версия → README.ru.md](README.ru.md) · [Interactive system map → docs/master-graph.html](docs/master-graph.html)
+[Русская версия → README.ru.md](README.ru.md) · [Interactive system map → master-graph (live)](https://sma-framework.github.io/sma/master-graph.html)
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and — since V3 — a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -50,6 +50,137 @@ Open a Claude Code session in your project and run:
 ```
 
 The onboarding conversation explains the system, seeds your starter memory corpus and project scaffolding, and records your infrastructure profile (your deploy host, your release ritual) so every later command speaks your stack. From that point on, each new session registers itself automatically and loads the memory core before doing anything else.
+
+## Before SMA → After SMA
+
+The whole point of SMA is the second column. Same agent, same model — a different discipline around it.
+
+| | **Without SMA** | **With SMA** |
+|---|---|---|
+| **1 · A rule is dropped** | Your instructions say "every schema change needs a migration." Twenty edits later the agent adds a column and forgets. It ships; queries break on deploy. | The moment the agent touches the schema file, a reflex fires **into that tool call**: *"schema change → migration required (last time this broke prod)."* It cannot be skimmed past. |
+| **2 · "Done" that isn't** | *"All tests pass, feature complete."* You pull, run them, three are red. The confident summary was the only evidence, and it was wrong. | The plan pre-registered a check. At close, a **script** re-runs it on a fresh clone and writes `hit` or `miss` to the ledger. "Done" is a re-runnable command, not a sentence — and a blind verifier re-derives it without ever reading the agent's report. |
+| **3 · A lesson re-learned** | The same build flag bites you a third month running. Each fix lived only in one closed chat; nothing carried it forward. | The first burn was written as a note with a trigger. Every later session — and every teammate's clone — gets the warning **before** repeating it. One burn, permanent avoidance. |
+| **4 · Two terminals collide** | Terminal B edits `src/api` while Terminal A is mid-refactor there. B's push silently reverts an hour of A's work; nobody notices until CI. | B registered a session and A had **claimed** `src/api`. When B goes to edit, it is warned *before* the keystroke — and both drew their migration numbers from one queue, so they never clash. |
+| **5 · A false "done" ships** | The report said the feature works. It didn't; the regression reaches `main` and the next release carries it. | A class-A divergence **auto-blocks `sma ship`** until the founder records an explicit disposition. The ledger is append-only; the agent cannot forgive itself. |
+
+
+## Side by side — one task, four setups
+
+The same model does the coding in bare Claude Code, in Superpowers, in GSD, and in SMA. What changes is the process around it — and, at the finish line, **whose word you take for "done."** Here is one ~30-minute task followed through its phases:
+
+| Phase | Bare Claude Code | Superpowers | GSD | **SMA** |
+|---|---|---|---|---|
+| **Plan** | In its head, ad-hoc | Brainstorm → plan skill | Written `PLAN.md`, checked by an agent | Plan, then **grilled** — every promise cross-examined before a line is written |
+| **Research** | From what it already knows | Research skill | Research subagents → `RESEARCH.md` | Reads its **own memory + receipts** first; catalog before grep |
+| **Execute** | Writes the code | Test-first skills | Executor subagents, atomic commits | Executes — the relevant rule **fires at the exact tool call**, not in a file skimmed once |
+| **Verify** | "Looks done" — its own word | Runs the tests | A verifier *agent* checks the goal | **Re-derives "done" from the code alone**, refuses the self-report; a false "done" blocks the release |
+| **Remember** | Nothing — next session starts blank | Nothing carries across sessions | Learnings saved to `.planning` (this project) | Lessons + calibration + coordination **persist and fire next time** — across sessions and terminals |
+
+Every column but one ends on *the agent's own word* for "done." SMA is the layer that checks the homework the model cannot grade itself — and remembers, so you don't pay for the same mistake twice.
+
+> **Honest caveat.** On a single task, SMA costs more — the checks and the memory are not free. Its bet is **cost per correct result across many tasks**, not the cheapest single run.
+
+<!-- sma:positioning:start -->
+
+## How SMA compares
+
+A model vendor cannot neutrally grade its own agent's homework. With Claude Outcomes that sentence needs sharpening, not retiring: the vendor now *can* verify, because separate-context grading shipped as a platform feature. What it cannot do is be **audited**. An outcomes grade is an opaque rubric verdict: no re-runnable receipt, no published track record, no consequence when it is wrong. SMA's lane is the audit layer any grader — theirs or ours — has to survive, and that lane is exactly why SMA outlives platform absorption.
+
+So the comparison is deliberately honest, including where each analog is better than SMA:
+
+| Tool | Reach | What it does better than SMA | What only SMA does |
+|------|-------|------------------------------|--------------------|
+| **Claude Outcomes** | platform | Managed sessions, a built-in outcome grader, zero setup | Deterministic re-runnable receipts, a judge-attributed calibrated hit rate, and a contradicted "satisfied" that blocks the release until a human rules |
+| **claude-mem** | 86k★ | Category-leading memory mechanics, polished SQLite runtime | Scores whether the memory actually helped, and publishes the hit rate |
+| **Aider** repo-map | 47k★ | Deterministic context graph with years of production proof | Carries a memory corpus and a learning loop on top of the graph |
+| **Letta** / MemGPT | 24k★ | Rich memory-block architecture | No DB, no server, and the agent does not grade itself |
+| **ccusage** | 16.5k★ | Excellent local spend observability | The spend signal drives enforcement, not just observation |
+| **BMAD** | 50k★ | Rich orchestration templates | A verification layer, so a claim has to survive a script |
+
+**What SMA deliberately does not do:** no daemon, no database, no embeddings, no cloud, no LLM in the hot path. Everything is files and git (see `pnpm sma explain substrate`). Correctness never depends on a model call.
+
+**The grader itself is graded.** Every separate-context verdict — the blind verifier's, or an outcomes grader's if ever consumed — is recorded, scored against ground truth (a revert, a rework, red CI, a founder rejection), and a wrong "satisfied" cannot be audited away: it blocks the release until a human dispositions it. That is the audit an opaque grade cannot offer.
+
+Economy is held to the same evidence bar. Lane budgets are derived from the project's *own* spend percentiles, never a vendor benchmark; any plan can publish a **footprint receipt** — git-diff arithmetic against a written claim, an overrun scored as a calibration miss; and the ship lanes gate a push on a full test-and-security run a quick lane can never weaken. Every saving is paired with a quality guard, and a number is published only once it has been scored (see `pnpm sma explain economy`).
+
+Adoption is reported honestly, not asserted: the real hit rate and sample size live in the calibration badge and `PASSPORT.md`, rebuilt each release and reproducible on a fresh clone. The badge hides itself after a model change until enough new data exists, so it never quietly overstates.
+
+Three trust-spine features (the git airbag, the spend ledger, and the pre-compaction capsule) are bridges the wider ecosystem may well absorb, and that is fine; they are not the headline, the accountability layer is. Two vendor-absorbable candidates stay explicit WATCH tripwires rather than headlines — a cross-session, on-by-default agent-teams primitive, and the advisor tool exposed inside sessions — each carrying a self-removal condition that retires our bridge the day the platform ships it.
+
+<!-- sma:positioning:end -->
+
+## What makes it different
+
+- **Accountable, not just helpful.** Every claim SMA makes about itself is a pre-registered prediction settled by a script and re-derived by a blind verifier. Memory frameworks promise recall; SMA publishes its hit rate and lets a false "done" block its own release.
+- **The layer a vendor cannot ship.** A model vendor cannot impartially grade its own agent's homework. SMA grades it from outside — deterministically, with no LLM in the hot path — which is exactly why it survives platform absorption.
+- **Deterministic first.** Retrieval is tag- and trigger-driven, enforcement is plain scripts, and the whole learning-and-verification loop runs without a single LLM call in the hot path. Optional intelligence can sit on top; correctness never depends on it.
+- **Git-native and reversible.** Notes, ledgers, journals, receipts — all files in your repo. Self-improvement arrives as diffs you review; anything the system learns can be reverted with `git revert`.
+- **Fail-open by design.** A warning never blocks your work; a dead hook never wedges a session; every stream has a kill-switch. Hard blocking is reserved for security gates you configure yourself and for the consequences law you opt into.
+- **Yours.** The corpus lives in your repository, travels with `git clone`, and is portable to other agents — it is knowledge you own, not a vendor cache.
+
+## How the loop runs
+
+<p align="center">
+  <img src="assets/loop-accountable.svg" alt="The accountable loop: plan predicts, reflex fires before the agent acts, a deterministic scorer settles the claim, a miss becomes a permanent reflex." width="820">
+</p>
+
+```mermaid
+flowchart LR
+    A["Plan writes<br>predictions"] --> B["Agent acts"]
+    R["Reflexes fire<br>BEFORE the act"] --> B
+    B --> C["Deterministic scorer<br>settles each prediction"]
+    C --> D["Calibration ledger<br>per-area hit rates"]
+    C -->|miss| E["Lesson drafted"]
+    E -->|promoted on evidence| R
+    D --> F["Report: sessions ·<br>predictions · collisions"]
+```
+
+One burn, permanent avoidance — the model is a child who touches boiling water once. The miss is written down, the written lesson gets a trigger, and the trigger fires as a warning in front of the *next* matching action, in every terminal, forever. And because the scorer is a script, the loop cannot flatter itself.
+
+
+## Memory, in three layers
+
+Not one big instruction file — three tiers that keep the always-loaded budget tiny while nothing is ever forgotten.
+
+```mermaid
+flowchart TD
+    subgraph Always["Loaded every session"]
+        C["CORE — a few KB<br>the rules that always apply"]
+    end
+    subgraph OnDemand["Loaded when the task touches it"]
+        I["AREA INDEXES<br>topic notes, pulled by tag"]
+    end
+    subgraph AtTheAct["Delivered at the tool call"]
+        X["REFLEXES<br>one lesson, right before the matching action"]
+    end
+    C --> I --> X
+```
+
+Auto-trim never deletes — it *demotes* down the layers, so the system gets lighter without ever losing a fact (in this repo's own dogfood, the always-loaded index went from 46 KB to 5 KB with full recall preserved, gated by a standing benchmark).
+
+**How a memory actually gets saved** — a fact never enters by accident, and it never leaves by accident either:
+
+```mermaid
+flowchart LR
+    T["Something is learned<br>(a burn, a decision, a fact)"] --> N["Written as one small note<br>frontmatter: tags + use-when trigger"]
+    N --> L["Lint: schema · duplicates ·<br>contradictions with existing notes"]
+    L --> U["Used: pulled by tag, or fired as a reflex"]
+    U -->|cited enough / a real miss| PR["Promoted → armed as a reflex"]
+    U -->|cold, superseded| DM["Demoted a layer<br>(smaller footprint, never deleted)"]
+```
+
+Each note carries a `use-when` trigger — that single line is what lets SMA deliver it at exactly the right tool call instead of dumping the whole corpus into every prompt. Promotion is earned by evidence, never by a timer; demotion shrinks the hot budget without forgetting. *The system never forgets — it only changes how loudly it remembers.*
+
+
+## The pillars
+
+- **Predictions** — every plan states, up front, what will measurably change and how to check it; a deterministic scorer compares promise to fact at plan close, and a calibration ledger tracks which areas keep being wrong.
+- **Receipts + blind verification (V3)** — every "done" carries a re-runnable check with an expected hash; a blind verifier re-derives it from the tree alone, and a divergence is the heaviest event the system knows.
+- **Consequences (V3)** — a class-A miss does not just get logged, it *acts*: it blocks the next ship until a human dispositions it, from an append-only ledger the agent cannot edit.
+- **Reflexes** — a scored miss becomes a permanent rule that fires *before* the next matching tool call. Touch boiling water once, never again.
+- **Corpus health** — lint, contradiction detection, scheduled consolidation, and promotion counters keep the memory sharp at hundreds of notes instead of decaying into noise.
+- **Coordination** — session registry, file claims with pre-edit warnings, shared counters for anything two terminals could race on, and a live "someone is pushing" signal.
+- **Harness** — per-plan progress journals make an executor death a five-minute resume; stall detection, dependency-aware waves, and the one-spawn `pre` multiplexer keep long runs honest, parallel, and cheap.
 
 ## Commands
 
@@ -269,6 +400,38 @@ flowchart TD
 
 That is the entire integration surface. The hooks call the same CLI you can run by hand (`pnpm sma …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is now a **single** `pre` entry; the old per-stream commands remain as deprecated aliases for back-compat.
 
+## What's new in V4 — grade the grader
+
+V3 built the trust spine: every "done" is settled by a script and re-derived by a blind verifier. **V4 turns that skepticism on the verifier itself.** The bet is one line: a model vendor can *verify* — it cannot be *audited*. An opaque vendor grader (Anthropic's Outcomes, a managed judge) can say pass or fail, but you cannot open it, replay it, or hold last week's verdict against this week's model. SMA grades its graders in the open. Eight surfaces, the same discipline as always: deterministic scripts on files + git, no LLM in the hot path.
+
+### Grade the grader — every verdict is a scored prediction
+
+Each separate-context LLM verdict is recorded as a prediction (`--grader-record`) and scored against deterministic ground truth — a revert, a rework, a red CI run, a founder rejection. The judge model id is stamped on every record, so calibration slices by *who* judged (`hitRateByJudge`): a model change never lets stale accuracy headline a new judge. A verdict of 'satisfied' that ground truth later contradicts is a **class-A ship blocker** until the founder records a disposition — the grader does not get to be wrong quietly.
+
+```mermaid
+flowchart LR
+    V["separate-context verdict<br>satisfied / not"] --> R["sma record --grader-record<br>prediction + judge-model-id"]
+    R --> GT["ground truth<br>revert · rework · red CI · rejection"]
+    GT --> S{"verdict vs<br>what git did"}
+    S -->|"contradicted 'satisfied'"| BLK["class-A ship block<br>until founder disposition"]
+    S -->|"scored"| HR["hitRateByJudge<br>calibration sliced by judge"]
+```
+
+### The economy meters — every run priced against your own spend, guarded on quality
+
+Per-lane USD and minute budgets are derived from *your* project's own spend-ledger percentiles — not a vendor default — for the fix / quick / batch / build lanes; an overrun is scored as a calibration miss and drafts a lesson. `sma memory stats` reports the deterministic, versioned token cost of the corpus; `sma spend self-cost` makes SMA measure its own injection overhead. Every savings number is paired with a quality guard, so cheaper can never quietly mean worse.
+
+### The rest of V4
+
+| Surface | What it does |
+|---|---|
+| **Standing vendor triage** (`sma vendor`) | An append-only `VENDOR-LEDGER.md` (14 rows seeded, negative verdicts included) triages every upstream vendor capability as CORE or BRIDGE; `lint`/`count` verbs and a product release gate refuse to ship on an untriaged row. The vendor is watched in the open, not chased. |
+| **Footprint ladder** (`reverify --footprint`) | A plan declares its footprint up front in frontmatter (files, new files, ~LOC, new deps); the grill asks «which ladder rung?»; a receipt checks the claim against `git diff --numstat` actuals — an overrun is a flagged calibration row. Ideology absorbed from two MIT sources (credited in THIRD-PARTY-LICENSES.md); their LLM judge was rejected and rebuilt as a deterministic receipt. |
+| **Quick-ship lane** (`/sma-quick-ship`) | A deterministic entry precondition — origin delta ≤ 5 commits, no migrations, no foreign push-claim — or it REFUSES back into the full ritual. The gate is identical, never weaker; the lane only buys a small reviewed delta a deterministic conventional-commit changelog, plus pending-run orphan visibility. |
+| **Phantom-instrument precision** (`--stat phantomsAsserted`) | S4 receipt forensics: dedupe, basename cross-match kill, a negation stoplist, and an honest unknown-key error path. Nine forensic rows are frozen as permanent regression fixtures. |
+| **Quick profile update** (`sma profile --quick`) | An existing install no longer re-interviews from scratch: `--quick` plans an interview over unset fields only, with `--selftest` and `--profile`; `sma-start` routes existing installs there. |
+| **Positioning, re-anchored** | The README positioning region (EN + RU) is rebuilt around the Outcomes row, the audit-gap thesis, and the economy pillar; 'Outcomes' joins the doc-audit ANALOGS honesty guard, and falsified claims were dropped. |
+
 ## What's new in V3.6 — the one-command door, both ways
 
 V3.5 made the trust spine legible from the outside. **V3.6 removes the last friction at the door — in BOTH directions — and shows a newcomer their own project before they adopt anything.** Four surfaces, the same bet as always: deterministic scripts on files + git, no LLM in the hot path.
@@ -413,7 +576,7 @@ flowchart LR
 | **Integrity guards** | skeptic countersign, seeded 5% receipt audit, planted canary false-dones, STPA disarm-path guard — so the published numbers stay honest | `sma skeptic` / `sma canary` / `sma integrity` |
 | **`sma bench`** | the 8-metric scorecard, captured and frozen *before* the spine was built ("no measured base, no target") | `sma bench` |
 
-Each of these is explained, with its own diagram and — where you drive it — an animated demo, in **[The Trust Spine, process by process](#the-trust-spine-process-by-process)** below. The V3 release ate its own cooking: **532/532 tests green at that tag (the suite stands at 792/792, 74 files, in v3.6.0); hostile goal-backward verification 56/56 after a same-day fix round; the consequences law fired for real during that verification.** Journal chain tip at the V3 release: `b745d7d4…67db0161`, 0 breaks.
+Each of these is explained, with its own diagram and — where you drive it — an animated demo, in **[The Trust Spine, process by process](#the-trust-spine-process-by-process)** below. The V3 release ate its own cooking: **532/532 tests green at that tag (the suite stands at 876/876, 78 files, in v4.0.0); hostile goal-backward verification 56/56 after a same-day fix round; the consequences law fired for real during that verification.** Journal chain tip at the V3 release: `b745d7d4…67db0161`, 0 breaks.
 
 ### The Trust Spine, process by process
 
@@ -777,70 +940,6 @@ Three subsystems on one substrate, now bound by a fourth — the accountability 
 
 </details>
 
-### Before SMA → After SMA
-
-The whole point of SMA is the second column. Same agent, same model — a different discipline around it.
-
-| | **Without SMA** | **With SMA** |
-|---|---|---|
-| **1 · A rule is dropped** | Your instructions say "every schema change needs a migration." Twenty edits later the agent adds a column and forgets. It ships; queries break on deploy. | The moment the agent touches the schema file, a reflex fires **into that tool call**: *"schema change → migration required (last time this broke prod)."* It cannot be skimmed past. |
-| **2 · "Done" that isn't** | *"All tests pass, feature complete."* You pull, run them, three are red. The confident summary was the only evidence, and it was wrong. | The plan pre-registered a check. At close, a **script** re-runs it on a fresh clone and writes `hit` or `miss` to the ledger. "Done" is a re-runnable command, not a sentence — and a blind verifier re-derives it without ever reading the agent's report. |
-| **3 · A lesson re-learned** | The same build flag bites you a third month running. Each fix lived only in one closed chat; nothing carried it forward. | The first burn was written as a note with a trigger. Every later session — and every teammate's clone — gets the warning **before** repeating it. One burn, permanent avoidance. |
-| **4 · Two terminals collide** | Terminal B edits `src/api` while Terminal A is mid-refactor there. B's push silently reverts an hour of A's work; nobody notices until CI. | B registered a session and A had **claimed** `src/api`. When B goes to edit, it is warned *before* the keystroke — and both drew their migration numbers from one queue, so they never clash. |
-| **5 · A false "done" ships** | The report said the feature works. It didn't; the regression reaches `main` and the next release carries it. | A class-A divergence **auto-blocks `sma ship`** until the founder records an explicit disposition. The ledger is append-only; the agent cannot forgive itself. |
-
-### How the loop runs
-
-<p align="center">
-  <img src="assets/loop-accountable.svg" alt="The accountable loop: plan predicts, reflex fires before the agent acts, a deterministic scorer settles the claim, a miss becomes a permanent reflex." width="820">
-</p>
-
-```mermaid
-flowchart LR
-    A["Plan writes<br>predictions"] --> B["Agent acts"]
-    R["Reflexes fire<br>BEFORE the act"] --> B
-    B --> C["Deterministic scorer<br>settles each prediction"]
-    C --> D["Calibration ledger<br>per-area hit rates"]
-    C -->|miss| E["Lesson drafted"]
-    E -->|promoted on evidence| R
-    D --> F["Report: sessions ·<br>predictions · collisions"]
-```
-
-One burn, permanent avoidance — the model is a child who touches boiling water once. The miss is written down, the written lesson gets a trigger, and the trigger fires as a warning in front of the *next* matching action, in every terminal, forever. And because the scorer is a script, the loop cannot flatter itself.
-
-### Memory, in three layers
-
-Not one big instruction file — three tiers that keep the always-loaded budget tiny while nothing is ever forgotten.
-
-```mermaid
-flowchart TD
-    subgraph Always["Loaded every session"]
-        C["CORE — a few KB<br>the rules that always apply"]
-    end
-    subgraph OnDemand["Loaded when the task touches it"]
-        I["AREA INDEXES<br>topic notes, pulled by tag"]
-    end
-    subgraph AtTheAct["Delivered at the tool call"]
-        X["REFLEXES<br>one lesson, right before the matching action"]
-    end
-    C --> I --> X
-```
-
-Auto-trim never deletes — it *demotes* down the layers, so the system gets lighter without ever losing a fact (in this repo's own dogfood, the always-loaded index went from 46 KB to 5 KB with full recall preserved, gated by a standing benchmark).
-
-**How a memory actually gets saved** — a fact never enters by accident, and it never leaves by accident either:
-
-```mermaid
-flowchart LR
-    T["Something is learned<br>(a burn, a decision, a fact)"] --> N["Written as one small note<br>frontmatter: tags + use-when trigger"]
-    N --> L["Lint: schema · duplicates ·<br>contradictions with existing notes"]
-    L --> U["Used: pulled by tag, or fired as a reflex"]
-    U -->|cited enough / a real miss| PR["Promoted → armed as a reflex"]
-    U -->|cold, superseded| DM["Demoted a layer<br>(smaller footprint, never deleted)"]
-```
-
-Each note carries a `use-when` trigger — that single line is what lets SMA deliver it at exactly the right tool call instead of dumping the whole corpus into every prompt. Promotion is earned by evidence, never by a timer; demotion shrinks the hot budget without forgetting. *The system never forgets — it only changes how loudly it remembers.*
-
 ### The version timeline
 
 ```mermaid
@@ -848,80 +947,17 @@ flowchart LR
     V1["V1<br>memory + coordination<br>on files + git"] --> V2["V2<br>predictions · reflexes ·<br>corpus health · gates"]
     V2 --> V3["V3<br>the trust spine:<br>receipts · blind verify · consequences"]
     V3 --> V35["V3.5<br>adoption & trust telemetry"]
-    V35 --> V36["V3.6 — current<br>the one-command door:<br>npm install · off-ramp · memory preview"]
-    V36 -.-> V4["V4 — planned<br>managed-agents absorption"]
+    V35 --> V36["V3.6<br>the one-command door:<br>npm install · off-ramp · memory preview"]
+    V36 --> V4["V4 — current<br>grade the grader:<br>graded verdicts · economy meters · vendor triage"]
 ```
 
-## The pillars
+## Planned next
 
-- **Predictions** — every plan states, up front, what will measurably change and how to check it; a deterministic scorer compares promise to fact at plan close, and a calibration ledger tracks which areas keep being wrong.
-- **Receipts + blind verification (V3)** — every "done" carries a re-runnable check with an expected hash; a blind verifier re-derives it from the tree alone, and a divergence is the heaviest event the system knows.
-- **Consequences (V3)** — a class-A miss does not just get logged, it *acts*: it blocks the next ship until a human dispositions it, from an append-only ledger the agent cannot edit.
-- **Reflexes** — a scored miss becomes a permanent rule that fires *before* the next matching tool call. Touch boiling water once, never again.
-- **Corpus health** — lint, contradiction detection, scheduled consolidation, and promotion counters keep the memory sharp at hundreds of notes instead of decaying into noise.
-- **Coordination** — session registry, file claims with pre-edit warnings, shared counters for anything two terminals could race on, and a live "someone is pushing" signal.
-- **Harness** — per-plan progress journals make an executor death a five-minute resume; stall detection, dependency-aware waves, and the one-spawn `pre` multiplexer keep long runs honest, parallel, and cheap.
+Directions, not dates — and each will arrive the way everything here arrives: as a deterministic script with a registered prediction. The managed-agents absorption and the adoption/off-ramp hygiene that lived here have shipped — see **[What's new in V4](#whats-new-in-v4--grade-the-grader)** and **[What's new in V3.6](#whats-new-in-v36--the-one-command-door-both-ways)**.
 
-## What makes it different
+**Publish this repo's calibration badge.** The honest badge stays hidden until *this* repo's committed ledger reaches n ≥ 20 settled predictions on one Claude model; the graded-grader loop now feeds it. When the gate is met, the README badge turns on.
 
-- **Accountable, not just helpful.** Every claim SMA makes about itself is a pre-registered prediction settled by a script and re-derived by a blind verifier. Memory frameworks promise recall; SMA publishes its hit rate and lets a false "done" block its own release.
-- **The layer a vendor cannot ship.** A model vendor cannot impartially grade its own agent's homework. SMA grades it from outside — deterministically, with no LLM in the hot path — which is exactly why it survives platform absorption.
-- **Deterministic first.** Retrieval is tag- and trigger-driven, enforcement is plain scripts, and the whole learning-and-verification loop runs without a single LLM call in the hot path. Optional intelligence can sit on top; correctness never depends on it.
-- **Git-native and reversible.** Notes, ledgers, journals, receipts — all files in your repo. Self-improvement arrives as diffs you review; anything the system learns can be reverted with `git revert`.
-- **Fail-open by design.** A warning never blocks your work; a dead hook never wedges a session; every stream has a kill-switch. Hard blocking is reserved for security gates you configure yourself and for the consequences law you opt into.
-- **Yours.** The corpus lives in your repository, travels with `git clone`, and is portable to other agents — it is knowledge you own, not a vendor cache.
-
-## Side by side — one task, four setups
-
-The same model does the coding in bare Claude Code, in Superpowers, in GSD, and in SMA. What changes is the process around it — and, at the finish line, **whose word you take for "done."** Here is one ~30-minute task followed through its phases:
-
-| Phase | Bare Claude Code | Superpowers | GSD | **SMA** |
-|---|---|---|---|---|
-| **Plan** | In its head, ad-hoc | Brainstorm → plan skill | Written `PLAN.md`, checked by an agent | Plan, then **grilled** — every promise cross-examined before a line is written |
-| **Research** | From what it already knows | Research skill | Research subagents → `RESEARCH.md` | Reads its **own memory + receipts** first; catalog before grep |
-| **Execute** | Writes the code | Test-first skills | Executor subagents, atomic commits | Executes — the relevant rule **fires at the exact tool call**, not in a file skimmed once |
-| **Verify** | "Looks done" — its own word | Runs the tests | A verifier *agent* checks the goal | **Re-derives "done" from the code alone**, refuses the self-report; a false "done" blocks the release |
-| **Remember** | Nothing — next session starts blank | Nothing carries across sessions | Learnings saved to `.planning` (this project) | Lessons + calibration + coordination **persist and fire next time** — across sessions and terminals |
-
-Every column but one ends on *the agent's own word* for "done." SMA is the layer that checks the homework the model cannot grade itself — and remembers, so you don't pay for the same mistake twice.
-
-> **Honest caveat.** On a single task, SMA costs more — the checks and the memory are not free. Its bet is **cost per correct result across many tasks**, not the cheapest single run.
-
-<!-- sma:positioning:start -->
-
-## How SMA compares
-
-A model vendor cannot neutrally grade its own agent's homework. That is the one thing SMA does that nobody selling the model can ship impartially: an accountability layer that settles "done" with a script, never with the model's own word. Memory, context and orchestration are crowded, well-served lanes; the neutral verification layer over an agent's own claims is the lane that is open, and it is exactly why SMA survives platform absorption.
-
-So the comparison is deliberately honest, including where each analog is better than SMA:
-
-| Tool | Stars | What it does better than SMA | What only SMA does |
-|------|-------|------------------------------|--------------------|
-| **claude-mem** | 86k★ | Category-leading memory mechanics, polished SQLite runtime | Scores whether the memory actually helped, and publishes the hit rate |
-| **Aider** repo-map | 47k★ | Deterministic context graph with years of production proof | Carries a memory corpus and a learning loop on top of the graph |
-| **Letta** / MemGPT | 24k★ | Rich memory-block architecture | No DB, no server, and the agent does not grade itself |
-| **ccusage** | 16.5k★ | Excellent local spend observability | The spend signal drives enforcement, not just observation |
-| **BMAD** | 50k★ | Rich orchestration templates | A verification layer, so a claim has to survive a script |
-
-**What SMA deliberately does not do:** no daemon, no database, no embeddings, no cloud, no LLM in the hot path. Everything is files and git (see `pnpm sma explain substrate`). Correctness never depends on a model call.
-
-Adoption is reported honestly, not asserted: the real hit rate and sample size live in the calibration badge and `PASSPORT.md`, rebuilt each release and reproducible on a fresh clone. The badge hides itself after a model change until enough new data exists, so it never quietly overstates.
-
-Three trust-spine features (the git airbag, the spend ledger, and the pre-compaction capsule) are bridges the wider ecosystem may well absorb, and that is fine; they are not the headline, the accountability layer is.
-
-<!-- sma:positioning:end -->
-
-## Planned for V4
-
-Directions, not dates — and each will arrive the way everything here arrives: as a deterministic script with a registered prediction.
-
-**Absorbing the managed-agents platform.** Anthropic's managed agents — lead/worker sessions, multi-agent sessions, the advisor tool — fit SMA's *plan big, execute small* shape: the strongest model plans and grills, cheaper workers execute under receipts. Each absorbed capability is classified up front as **CORE** (it strengthens the accountability layer a vendor cannot ship neutrally) or **BRIDGE** (vendor-absorbable; it ships with a self-removal prediction and is never headlined).
-
-**Adoption & off-ramp hygiene.**
-- `/sma-deleteme` — one-click uninstall: the framework leaves, your memory corpus stays. It is your knowledge, in your repo.
-- `npx` one-command install, replacing `git clone`.
-- A single version source: the release tag, `package.json`, the installer banner, and the passport all read one number.
-- The installer auto-embeds the rules block into `CLAUDE.md` at install time, via the same managed `emit` block.
+**Keep watching the vendor in the open.** Vendor triage is a standing process, not a one-time pass: each new upstream capability gets a CORE/BRIDGE verdict in the append-only ledger, and a BRIDGE surface ships with its own self-removal prediction — never headlined.
 
 ## Star History
 
@@ -931,7 +967,7 @@ Directions, not dates — and each will arrive the way everything here arrives: 
 
 MIT — see [LICENSE](LICENSE).
 
-**Creator: Matvey Maslov.**
+**Author: Matvey Maslov.** Questions, feedback, adoption stories: [matvey.maslov99@gmail.com](mailto:matvey.maslov99@gmail.com) — or open an [issue](https://github.com/sma-framework/sma/issues).
 
 The workflow engine inside SMA is derived from [gsd-core](https://github.com/open-gsd/gsd-core) (MIT). The pristine upstream snapshot, the rename map, and third-party notices are tracked in [UPSTREAM.json](UPSTREAM.json), [rename-map.json](rename-map.json), and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
 

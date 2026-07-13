@@ -38,6 +38,8 @@ import {
   deadFields,
   answeredFields,
   renderRecap,
+  interviewPlan,
+  profileSelftest,
 } from '../lib/profile.mjs'
 
 let dir: string
@@ -194,5 +196,89 @@ describe('renderRecap — determinism (Test 7)', () => {
     expect(a).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/)
     // seeded files listed
     expect(a).toContain('.planning/PROJECT.md')
+  })
+})
+
+// A profile answering EVERY non-meta schema field — the base for the unset-N and
+// nothing-to-ask fixtures. Values are the minimal type-valid non-empty answer.
+function fullyAnswered(): Record<string, unknown> {
+  const p: Record<string, unknown> = { profileVersion: 2 }
+  for (const e of PROFILE_SCHEMA) {
+    if (e.askStage === 'meta') continue
+    switch (e.type) {
+      case 'number':
+        p[e.field] = 1
+        break
+      case 'enum':
+        p[e.field] = (e as { values: string[] }).values[0]
+        break
+      case 'string[]':
+        p[e.field] = ['x']
+        break
+      case 'object':
+        p[e.field] = { k: 'v' }
+        break
+      default:
+        p[e.field] = 'x'
+    }
+  }
+  return p
+}
+
+describe('interviewPlan — deterministic unset-fields planner (Tests 1-5)', () => {
+  it('Test 1: exactly the 2 unset fields, in askStage A→D then schema order, each carrying {field, askStage, description}', () => {
+    const p = fullyAnswered()
+    delete p.riskTolerance // stage D
+    delete p.parallelTerminals // stage A
+    const plan = interviewPlan(p)
+    expect(plan.nothingToAsk).toBe(false)
+    // A before D regardless of the deletion order above
+    expect(plan.entries.map((e) => e.field)).toEqual(['parallelTerminals', 'riskTolerance'])
+    expect(plan.entries[0]).toEqual({ field: 'parallelTerminals', askStage: 'A', description: expect.any(String) })
+    expect(plan.entries[1].askStage).toBe('D')
+  })
+
+  it('Test 2: a fully-answered profile → [] and nothingToAsk:true (never a manufactured question)', () => {
+    const plan = interviewPlan(fullyAnswered())
+    expect(plan.entries).toEqual([])
+    expect(plan.nothingToAsk).toBe(true)
+  })
+
+  it('Test 3: a v1 profile (no profileVersion) is normalized first — v2-only unset fields appear, v1-answered fields do not', () => {
+    const v1 = { pushTarget: 'github.com/acme/shop', database: 'postgres' }
+    const plan = interviewPlan(v1)
+    const fields = plan.entries.map((e) => e.field)
+    expect(fields).not.toContain('pushTarget') // already answered in the v1 file
+    expect(fields).not.toContain('database')
+    expect(fields).toContain('stack') // genuinely unset → asked
+    expect(fields).not.toContain('profileVersion') // meta is never asked
+  })
+
+  it('Test 4: no profile at all → the FULL non-meta schema in askStage order (honest degradation, still zero TEACH)', () => {
+    const plan = interviewPlan({})
+    const nonMeta = PROFILE_SCHEMA.filter((s) => s.askStage !== 'meta')
+    expect(plan.entries.length).toBe(nonMeta.length)
+    expect(plan.nothingToAsk).toBe(false)
+    expect(plan.entries.some((e) => e.field === 'profileVersion')).toBe(false)
+    // stages are non-decreasing A→D
+    const order: Record<string, number> = { A: 0, B: 1, C: 2, D: 3 }
+    const stages = plan.entries.map((e) => order[e.askStage])
+    expect(stages).toEqual([...stages].sort((a, b) => a - b))
+  })
+
+  it('Test 5: determinism — two calls with identical input are deeply equal (no Date.now, no randomness)', () => {
+    const p = fullyAnswered()
+    delete p.notes
+    delete p.envVarNames
+    expect(interviewPlan(p)).toEqual(interviewPlan(p))
+  })
+})
+
+describe('profileSelftest — the self-proving fixture pair (Test 6)', () => {
+  it('returns 1 on the real planner; 0 when the planner is sabotaged to re-ask an answered field', () => {
+    expect(profileSelftest()).toBe(1)
+    // A sabotaged planner that fabricates a single (wrong) entry fails the 2-unset fixture → 0.
+    const sabotaged = () => ({ entries: [{ field: 'stack', askStage: 'B', description: 'x' }], nothingToAsk: false })
+    expect(profileSelftest(sabotaged as never)).toBe(0)
   })
 })
