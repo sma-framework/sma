@@ -133,6 +133,18 @@ describe('doc-audit.mjs — readme positioning audit', () => {
     const v = auditReadme(bad)
     expect(v.some((x) => x.rule === 'analog-missing' && x.detail === 'ccusage')).toBe(true)
     expect(v.some((x) => x.rule === 'wedge-missing' && x.file === 'README.ru.md')).toBe(true)
+
+    // 49.4-05: 'Outcomes' is now a guarded analog — a positioning region without the
+    // Outcomes token scores an analog-honesty violation, so the SMA-vs-Outcomes row
+    // can never silently disappear from either language.
+    expect(ANALOGS).toContain('Outcomes')
+    const droppedOutcomes = fakeReader({
+      'README.md': readmeMd('en', { dropAnalog: 'Outcomes' }),
+      'README.ru.md': readmeMd('ru'),
+    })
+    expect(
+      auditReadme(droppedOutcomes).some((x) => x.rule === 'analog-missing' && x.detail === 'Outcomes'),
+    ).toBe(true)
   })
 
   it('Test 5: a multiplier is a violation INSIDE the region, allowed OUTSIDE it', () => {

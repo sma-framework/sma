@@ -123,6 +123,13 @@ export function eventKey(record) {
 export function classifyEvent(record) {
   const r = record ?? {}
   if (r.kind === 'disposition') return null // a disposition is not itself an event
+  // Grade-the-grader (49.4-02): a scored grader-contradiction (a `satisfied`
+  // verdict ground-truth refutes, or an `unsatisfied` one clean ground truth
+  // refutes) is class-A via the EXISTING sma.verification domain boundary — a
+  // NEW event type, never a new domain (CLASS_A_DOMAINS untouched).
+  if (r.type === 'grader-contradiction' || r.kind === 'grader-contradiction') {
+    return CLASS_A_DOMAINS.includes(r.domain) ? 'A' : 'B'
+  }
   if (r.verdict === 'divergence') return 'A' // claimed-pass / reproduced-fail — always A
   if (r.verdict !== 'miss') return null // hit / skipped-unsafe / error carry no class
 
@@ -155,11 +162,15 @@ export function openBlocks(opts = {}) {
 
   const blocks = []
   const warns = []
+  const seenBlockKeys = new Set() // dedupe an event reported twice into ONE open block
   for (const r of records) {
     const cls = classifyEvent(r)
     if (cls === 'A') {
       const key = eventKey(r)
-      if (!dispositionedKeys.has(key)) blocks.push({ ...r, class: 'A', eventKey: key })
+      if (!dispositionedKeys.has(key) && !seenBlockKeys.has(key)) {
+        seenBlockKeys.add(key)
+        blocks.push({ ...r, class: 'A', eventKey: key })
+      }
     } else if (cls === 'B') {
       warns.push({ ...r, class: 'B', eventKey: eventKey(r) })
     }
@@ -217,5 +228,41 @@ export function openRollbackCandidate({ slug, sha, execGit }) {
     return { created: true, ref, sha }
   } catch (err) {
     return { created: false, existed: true, ref, reason: String((err && err.message) ?? err) }
+  }
+}
+
+/**
+ * graderContradictionEvent(scored, opts) -> the canonical class-A event a
+ * contradicted grader verdict becomes (49.4-02). A thin adapter over a scored
+ * grader-verdict record (calibration.scoreGraderVerdicts output whose outcome is
+ * 'contradicted'): it builds the `type:'grader-contradiction'` shape classifyEvent
+ * scores class-A, in the sma.verification domain (already frozen class-A —
+ * CLASS_A_DOMAINS is NOT widened).
+ *
+ * The event's timestamp is DERIVED from the grader record's own time
+ * (scoredAt ?? at), NOT the wall clock, so the SAME contradiction always yields
+ * the SAME eventKey — reporting it twice dedupes to one open block (openBlocks'
+ * eventKey contract). The founder disposition door stays the ONLY clearing path
+ * (recordDisposition); this adapter never blesses or clears anything.
+ *
+ * @param {object} scored  a scored grader-verdict record (outcome:'contradicted')
+ * @param {{now?:string}} [opts]  optional explicit timestamp (else derived)
+ * @returns {object} the class-A grader-contradiction event record
+ */
+export function graderContradictionEvent(scored, opts = {}) {
+  const s = scored ?? {}
+  const at = opts.now ?? s.scoredAt ?? s.at ?? '0'
+  return {
+    kind: 'grader-contradiction',
+    type: 'grader-contradiction',
+    domain: s.domain ?? 'sma.verification',
+    id: s.id ?? s.planId ?? 'unknown',
+    planId: s.planId ?? s.id ?? null,
+    judgeModelId: s.judgeModelId ?? null,
+    graderVerdict: s.verdict ?? null,
+    source: s.source ?? null,
+    ...(s.contradictedBy ? { contradictedBy: s.contradictedBy } : {}),
+    at,
+    scoredAt: at,
   }
 }

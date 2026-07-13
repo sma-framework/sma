@@ -223,6 +223,56 @@ export function grillGate({ planId, dirs = {} } = {}) {
   }
 }
 
+// ── the standing footprint challenge «which ladder rung?» (49.4-07) ─────────────
+
+/**
+ * standingFootprint({planPath, planId, claim, grillDir, now}) -> a check-and-toggle
+ * over the EXISTING ledger primitives. It is the economy ladder's teeth WITHOUT any
+ * new gate code:
+ *   - claim == null: the plan has no footprint-заявка, so it must answer «which
+ *     ladder rung?» — register ONE standing challenge (raisedBy 'standing-footprint').
+ *     Idempotent: an open standing challenge is never duplicated.
+ *   - claim present: resolve any OPEN standing challenge as withdrawn, the claim
+ *     summary as the reason. If none is open, it is a no-op (no write — a plan never
+ *     touched by --standing keeps grillGate {grilled:false}).
+ * grillGate/foldChallenges/challengeStats are UNCHANGED — the standing challenge is an
+ * ordinary open challenge, so --gate blocks it under the same D-49.2-11 law. Never throws.
+ *
+ * @param {{planPath?:string, planId:string, claim:(object|null), grillDir:string, now?:string}} args
+ * @returns {{action:'registered'|'already-open'|'resolved'|'resolve-failed'|'no-op', challenge?:object, reason?:string}}
+ */
+export function standingFootprint({ planPath, planId, claim, grillDir, now } = {}) {
+  const { challenges } = readChallenges({ planId }, { grillDir })
+  const standing = challenges.find((c) => c.raisedBy === 'standing-footprint')
+  const openStanding = standing && standing.status === 'open' ? standing : null
+
+  if (claim == null) {
+    if (openStanding) return { action: 'already-open', challenge: openStanding }
+    const rec = registerChallenge(
+      {
+        planId,
+        promise: 'объём этого плана ограничен и заявлен (footprint claim)',
+        attack:
+          'which ladder rung? в frontmatter нет footprint-заявки (files/new_files/~loc/new_deps) — ' +
+          'неограниченный объём это отказ по умолчанию',
+        raisedBy: 'standing-footprint',
+      },
+      { grillDir, now },
+    )
+    return { action: 'registered', challenge: rec }
+  }
+
+  if (!openStanding) return { action: 'no-op' }
+  const reason =
+    `footprint claim present: files ${claim.files}, new_files ${claim.new_files}, ` +
+    `~loc ${claim.loc}, new_deps ${claim.new_deps}, tolerance ${claim.tolerance_pct}%`
+  const r = resolveChallenge(
+    { planPath, planId, challengeId: standing.id, status: 'withdrawn', reason, by: 'standing-footprint' },
+    { grillDir, now },
+  )
+  return { action: r.ok ? 'resolved' : 'resolve-failed', challenge: r.challenge, reason: r.reason }
+}
+
 // ── the budget-aware pre-push planner ──────────────────────────────────────────
 
 /** Normalize a path for matching: lower-case, backslash → forward-slash. */

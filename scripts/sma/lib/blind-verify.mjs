@@ -23,12 +23,21 @@
  * from predict.mjs, reused VERBATIM, never a second allowlist (T-49.2-07A). Node built-ins
  * only; DI runner + readFn + dirs so tests never shell out; zero LLM; fail-open (C9) —
  * blindVerify never throws.
+ *
+ * SCHEMA NOTE — grade the grader (49.4-02): each verdict object gains an OPTIONAL
+ * `judgeModelId` field (JUDGE_MODEL_FIELD), populated from resolveModelId when a
+ * model id is available — the blind verifier IS a separate-context judge, and any
+ * separate-context verdict SHOULD be recorded via calibration.recordGraderVerdict
+ * so it enters the graded track record (scored against ground truth, sliced by
+ * judge). This is a schema note only: the deterministic checks are UNCHANGED, no
+ * LLM is invoked here, and the field is absent when no model id resolves.
  */
 
 import { isAbsolute, join, dirname, basename } from 'node:path'
 
 import { isSafeCommand, parsePredictions, parseFrontmatterEntries } from './predict.mjs'
 import { appendVerdict, readLedger } from './calibration.mjs'
+import { resolveModelId, JUDGE_MODEL_FIELD } from './model-version.mjs'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 
 /** The default domain for a divergence/under-claim with no domain of its own. */
@@ -256,7 +265,7 @@ function verifyCommand(check, runCommand) {
  *          rootDir?:string, planId?:string, now?:string}} args
  * @returns {{planId:string, verdicts:object[], frozenPath:string}}
  */
-export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, planId, now } = {}) {
+export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, planId, now, env } = {}) {
   const pid = planId ?? planIdFromPath(planPath)
   const verdicts = []
 
@@ -265,6 +274,12 @@ export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, 
   if (isForbiddenPath(planPath)) {
     return { planId: pid, verdicts, refused: true, reason: blindRefusalReason(planPath), frozenPath: null }
   }
+
+  // The blind verifier is itself a separate-context judge (49.4-02). Resolve its
+  // model id ONCE (optional, DI-able via opts.env) so each verdict can carry the
+  // judge stamp — schema note only, no behavioral change to the checks.
+  const resolvedJudge = resolveModelId({ env: env ?? (typeof process !== 'undefined' ? process.env : {}) })
+  const judgeStamp = resolvedJudge && resolvedJudge.model ? { [JUDGE_MODEL_FIELD]: resolvedJudge.model } : {}
 
   try {
     const { checks } = deriveChecks({ planPath, readFn, rootDir })
@@ -281,6 +296,7 @@ export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, 
         verdict,
         ...(check.path != null ? { path: check.path } : {}),
         ...(check.domain != null ? { domain: check.domain } : {}),
+        ...judgeStamp,
       })
     }
   } catch {

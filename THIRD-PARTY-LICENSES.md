@@ -6,6 +6,19 @@ The pristine upstream snapshot lives under `vendor/gsd-core-1.6.1/` and
 `vendor/agents-1.6.1/` (source: `@opengsd/gsd-core@1.6.1`, see `UPSTREAM.json`).
 The working engine under `sma-core/` is a derivative of that snapshot.
 
+## Ideology absorbed, no code vendored (49.4-07)
+
+The decision-ladder wording in the installer's managed CLAUDE.md rules block
+(`renderRulesBlock`, "Economy ladder") is adapted from the IDEOLOGY of
+DietrichGebert/ponytail (MIT) — its "does this need to exist? … only then the
+minimum that works" posture. The token-economy honesty posture (measure your own
+cost before you enforce a budget) is informed by juliusbrussee/caveman (MIT). No
+source code from either project is vendored or copied into this repository; only
+the ideas were absorbed, in our own wording, and both upstreams are MIT-licensed.
+Ponytail's LLM-based `/review` delete-list mechanism is explicitly NOT adopted —
+SMA's footprint receipt is deterministic `git diff --numstat` arithmetic against a
+written claim, with zero LLM in the path.
+
 ## gsd-core — MIT License (verbatim)
 
 MIT License

@@ -33,6 +33,7 @@ import {
   openBlocks,
   recordDisposition,
   openRollbackCandidate,
+  graderContradictionEvent,
   CLASS_A_DOMAINS,
 } from '../lib/consequences.mjs'
 import { appendVerdict, readLedger, hitRate } from '../lib/calibration.mjs'
@@ -216,6 +217,86 @@ describe('consequences.mjs — the law brain (49.2-08 task 1)', () => {
     const existed = openRollbackCandidate({ slug: 's', sha: good, execGit: thrower })
     expect(existed.created).toBe(false)
     expect(existed.existed).toBe(true)
+  })
+})
+
+// ── grader-contradiction is class-A (49.4-02) ────────────────────────────────
+
+describe('grader-contradiction class-A clause (49.4-02 task 2)', () => {
+  /** A scored (contradicted) grader-verdict record, as scoreGraderVerdicts emits. */
+  function contradicted(over: Record<string, unknown> = {}) {
+    return {
+      kind: 'grader-verdict',
+      domain: 'sma.verification',
+      id: 'P',
+      planId: 'P',
+      verdict: 'satisfied',
+      judgeModelId: 'judge-x',
+      source: 'blind-verify',
+      at: '2026-07-08T00:00:00.000Z',
+      outcome: 'contradicted',
+      ...over,
+    }
+  }
+
+  it('Test 1: a grader-contradiction event classifies class-A via the existing domain boundary', () => {
+    const ev = graderContradictionEvent(contradicted())
+    expect(ev.type).toBe('grader-contradiction')
+    expect(ev.domain).toBe('sma.verification')
+    expect(ev.judgeModelId).toBe('judge-x')
+    expect(classifyEvent(ev)).toBe('A')
+    // sma.verification is ALREADY in CLASS_A_DOMAINS — no new domain added.
+    expect(CLASS_A_DOMAINS).toContain('sma.verification')
+    // a grader-contradiction outside a class-A domain is only a warn (boundary is real).
+    expect(classifyEvent({ type: 'grader-contradiction', domain: 'sma.perf' })).toBe('B')
+  })
+
+  it('Test 2: an open grader-contradiction blocks (openBlocks) and survives an unrelated disposition', () => {
+    const calibrationDir = join(dir, 'calibration')
+    const ev = graderContradictionEvent(contradicted())
+    appendVerdict(ev, { calibrationDir })
+    // an unrelated trust miss too
+    appendVerdict({ id: 'P-OTHER', verdict: 'miss', domain: 'sma.receipts', scoredAt: '2026-07-08T05:00:00Z' }, { calibrationDir })
+
+    const before = openBlocks({ calibrationDir })
+    expect(before.blocks).toHaveLength(2)
+    // dispose the OTHER event → the grader-contradiction still blocks.
+    recordDisposition(
+      { eventKey: 'P-OTHER@2026-07-08T05:00:00Z', disposition: 'accept', reason: 'x', by: 'founder', domain: 'sma.receipts' },
+      { calibrationDir },
+    )
+    const after = openBlocks({ calibrationDir })
+    expect(after.blocks).toHaveLength(1)
+    expect(after.blocks[0].type).toBe('grader-contradiction')
+  })
+
+  it('Test 3: only a founder disposition against the eventKey clears it — nothing else does', () => {
+    const calibrationDir = join(dir, 'calibration')
+    const ev = graderContradictionEvent(contradicted())
+    appendVerdict(ev, { calibrationDir })
+    const open = openBlocks({ calibrationDir })
+    expect(open.blocks).toHaveLength(1)
+    const key = open.blocks[0].eventKey
+
+    // a disposition against a DIFFERENT key does not clear it.
+    recordDisposition({ eventKey: 'WRONG@0', disposition: 'accept', reason: 'r', by: 'founder', domain: 'sma.verification' }, { calibrationDir })
+    expect(openBlocks({ calibrationDir }).blocks).toHaveLength(1)
+
+    // the correct founder disposition clears it.
+    recordDisposition({ eventKey: key, disposition: 'fix-forward', reason: 'r', by: 'founder', domain: 'sma.verification' }, { calibrationDir })
+    expect(openBlocks({ calibrationDir }).blocks).toHaveLength(0)
+  })
+
+  it('Test 4: the same contradiction reported twice yields ONE open block (eventKey dedupe)', () => {
+    const calibrationDir = join(dir, 'calibration')
+    // derived-from-record timestamp → identical eventKey on both events
+    const ev1 = graderContradictionEvent(contradicted())
+    const ev2 = graderContradictionEvent(contradicted())
+    expect(ev1.scoredAt).toBe(ev2.scoredAt) // deterministic key, not wall-clock
+    appendVerdict(ev1, { calibrationDir })
+    appendVerdict(ev2, { calibrationDir })
+    const res = openBlocks({ calibrationDir })
+    expect(res.blocks).toHaveLength(1)
   })
 })
 

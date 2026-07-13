@@ -61,6 +61,11 @@ export function renderRulesBlock({ version = '' } = {}) {
     '  reading the last one.',
     '- **Receipts over prose.** A claim of "done" should carry a reproducible check',
     '  (`node scripts/sma/cli.mjs receipt-hash "<command>"`). `reverify` re-runs them.',
+    '- **Economy ladder.** Before writing code ask, in order: does this need to exist?',
+    '  already in this codebase? stdlib? native platform feature? installed dependency?',
+    '  one line? Only then: the minimum that works. The floor is fixed — security,',
+    '  data-loss handling, trust-boundary validation, and accessibility are',
+    '  never on the chopping block.',
     '- **Entry points.** `/sma-start` (onboarding), `/sma-help` (command map),',
     '  `node scripts/sma/cli.mjs explain <topic>` (in-product explainers).',
     '- **Off-ramp.** `/sma-deleteme` removes the framework; the memory corpus stays.',
@@ -114,6 +119,9 @@ export function embedSelftest({ tmpRoot }) {
     if (embedRules({ projectDir: fresh, version: '9.9.9' }).action !== 'created') return 0
     const created = readFileSync(join(fresh, 'CLAUDE.md'), 'utf8')
     if (!created.includes('SMA:RULES:BEGIN') || !created.includes('.claude/memory/MEMORY.md')) return 0
+    // 49.4-07: the economy ladder ships WITH its safety carveout welded on — a ladder
+    // line without the "never on the chopping block" floor scores 0 (CONS-49.4-07-B).
+    if (!created.includes('Economy ladder') || !created.includes('never on the chopping block')) return 0
 
     // 2. idempotent
     if (embedRules({ projectDir: fresh, version: '9.9.9' }).action !== 'unchanged') return 0

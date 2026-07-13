@@ -144,6 +144,11 @@ export const COMMAND_TOPICS = {
   explain: 'tour',
   'doc-audit': 'tour',
 
+  // v4 — the standing Anthropic-update triage ledger + the economy meters
+  vendor: 'vendor',
+  memory: 'economy', // 49.4-06 — corpus token-cost report, lane budgets, self-cost meter
+  'ship-lane': 'economy', // 49.4-08 — the ship lanes: quick-ship precondition + changelog drafter + lane records
+
   // v3.6 — the off-ramp and the onboarding preview
   deleteme: 'deleteme',
   'memory-preview': 'memory-preview',

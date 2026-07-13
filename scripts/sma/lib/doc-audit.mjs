@@ -58,8 +58,14 @@ export const SURFACE_MANIFEST = [
   { id: 'claude-embed', en: 'rules block', ru: 'блок правил' },
 ]
 
-/** The five world analogs the positioning region must name honestly (brand tokens). */
-export const ANALOGS = ['claude-mem', 'Aider', 'Letta', 'ccusage', 'BMAD']
+/**
+ * The world analogs the positioning region must name honestly (brand tokens).
+ * 'Outcomes' joins the list in 49.4-05: after Claude Outcomes shipped separate-context
+ * grading, the honest comparison row is load-bearing — dropping it from either
+ * language's region is now a scored analog-honesty violation (the same grow-the-guard
+ * law as the platform's security guard; the guard only ever grows).
+ */
+export const ANALOGS = ['claude-mem', 'Aider', 'Letta', 'ccusage', 'BMAD', 'Outcomes']
 
 /** One distinctive wedge phrase per language from the defensible-core thesis. */
 export const WEDGE = {

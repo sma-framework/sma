@@ -1107,7 +1107,11 @@ async function cmdLint({ flags }) {
 async function cmdProfile({ flags, dirs }) {
   const prof = await import('./lib/profile.mjs')
   const { readFileSync, existsSync } = await import('node:fs')
-  const profilePath = join(dirs.smaRoot, 'profile.json')
+  // --profile <path> overrides the default .sma/profile.json for ALL modes, so a
+  // check run from a different repo root can target a specific profile
+  // unambiguously (P49.4-04-B). A missing/unreadable path degrades through
+  // readProfile's tolerant reader to the empty state, never a throw.
+  const profilePath = typeof flags.profile === 'string' ? flags.profile : join(dirs.smaRoot, 'profile.json')
   // The teaching source ships with the install (sma-core/references) — renderRecap
   // reads its five Recap: lines so the copy lives once (onboarding-teaching.md).
   const teachingPath = join(MODULE_DIR, '..', '..', 'sma-core', 'references', 'onboarding-teaching.md')
@@ -1183,6 +1187,35 @@ async function cmdProfile({ flags, dirs }) {
       return 0
     }
     process.stdout.write(`recap written to ${outPath}\n`)
+    return 0
+  }
+
+  // ── --selftest: profileSelftest()'s 1/0 as the last line (P49.4-04-A scorer) ──
+  if (flags.selftest === true) {
+    process.stdout.write(`${prof.profileSelftest()}\n`)
+    return 0
+  }
+
+  // ── --quick: the BL-167 quick-update interview plan (unset fields only) ───────
+  if (flags.quick === true) {
+    const { profile } = prof.readProfile({ profilePath })
+    const plan = prof.interviewPlan(profile) // interviewPlan normalizes internally
+    if (wantsJson(flags)) {
+      printJson({ entries: plan.entries, nothingToAsk: plan.nothingToAsk })
+      return 0
+    }
+    if (flags.count === true) {
+      process.stdout.write(`${plan.entries.length}\n`) // bare number, last line (scorer contract)
+      return 0
+    }
+    if (plan.nothingToAsk) {
+      process.stdout.write('Nothing to ask — every profile field is already set.\n')
+      return 0
+    }
+    process.stdout.write('Quick profile update — answer only these unset fields (zero teaching):\n')
+    for (const e of plan.entries) {
+      process.stdout.write(`  [${e.askStage}] ${e.field} — ${e.description}\n`)
+    }
     return 0
   }
 
@@ -2143,6 +2176,11 @@ async function cmdSpend({ positionals, flags, dirs }) {
     return 0
   }
 
+  // lane <open|close|report|derive> — the per-lane economy budgets (49.4-06).
+  if (sub === 'lane') return cmdSpendLane({ positionals, flags, dirs })
+  // self-cost — SMA's own static per-session injection overhead (49.4-06).
+  if (sub === 'self-cost') return cmdSpendSelfCost({ flags, dirs })
+
   const repoRoot = await resolveRepoRootForSpend()
   const now = Date.now()
   const book = spend.buildBook({ spendDir: dirs.spendDir, repoRoot, env: process.env, now })
@@ -2209,6 +2247,222 @@ async function cmdSpend({ positionals, flags, dirs }) {
     `  распознано ${c.recognized} · не-usage ${c.nonUsage} · дубликаты ${c.duplicate} · ` +
       `дрейф(unrecognized) ${c.unrecognized} · без цены(unpriced) ${c.unpriced} · повреждено ${c.corrupt}\n`,
   )
+  return 0
+}
+
+/**
+ * spend lane <open <fix|quick|batch|build>|close|report|derive> [--json] | spend lane
+ *   --selftest | spend lane --stat max-lane-closed-runs — the per-lane economy budgets
+ *   (49.4-06). Budgets derive ONLY from OUR own closed-run percentiles (p75); a lane with
+ *   fewer than 5 closed clean runs stays report-only. `close` attributes the run from the
+ *   book, and on an over-budget CLEAN run CONSUMES calibration.appendVerdict +
+ *   predict.draftLessonFromMiss (the 2026-06-19 incident as a mechanism). Overlap-flagged
+ *   runs are excluded from derivation and never score a miss (CH-49.4-06-1). Fail-open.
+ */
+async function cmdSpendLane({ positionals, flags, dirs }) {
+  const economy = await import('./lib/economy.mjs')
+  const spendDir = dirs.spendDir
+  const action = positionals[1]
+
+  if (flags.selftest === true) {
+    const ok = await economy.laneSelftest()
+    if (wantsJson(flags)) printJson({ selftest: 'spend-lane', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract, P49.4-06-B)
+    return ok === 1 ? 0 : 1
+  }
+  if (flags.stat) {
+    const name = String(flags.stat)
+    const { runs } = economy.readLaneRuns({ spendDir })
+    const value = name === 'max-lane-closed-runs' ? economy.maxLaneClosedRuns(runs) : 0
+    process.stdout.write(`${value}\n`) // numeric LAST line (P49.4-06-F accrual)
+    return 0
+  }
+
+  const LANES = ['fix', 'quick', 'batch', 'build']
+
+  if (action === 'open') {
+    const lane = positionals[2]
+    if (!LANES.includes(lane)) {
+      process.stdout.write(`usage: sma spend lane open <${LANES.join('|')}>\n`)
+      return 1
+    }
+    const terminalId = await resolveTerminalId()
+    const rec = economy.appendLaneEvent({ spendDir, event: { type: 'open', lane, terminalId } })
+    if (wantsJson(flags)) printJson(rec)
+    else process.stdout.write(`SMA lane: открыта полоса ${lane} (терминал ${terminalId}); бюджеты выводятся только из нашей истории\n`)
+    return 0
+  }
+
+  if (action === 'close') {
+    const terminalId = await resolveTerminalId()
+    const { runs } = economy.readLaneRuns({ spendDir })
+    const open = [...runs].reverse().find((r) => r.open && r.terminalId === terminalId)
+    if (!open) {
+      process.stdout.write('SMA lane: нет открытой полосы для этого терминала\n')
+      return 1
+    }
+    const spend = await import('./lib/spend.mjs')
+    const repoRoot = await resolveRepoRootForSpend()
+    const now = Date.now()
+    const book = spend.buildBook({ spendDir, repoRoot, env: process.env, now })
+    const closedAt = new Date(now).toISOString()
+    const attributed = economy.attributeLaneRun({ run: { ...open, closedAt }, book, now })
+    economy.appendLaneEvent({ spendDir, event: { type: 'close', lane: open.lane, terminalId, ts: closedAt, ...attributed } })
+
+    const budgetsFile = economy.readLaneBudgets({ spendDir })
+    const budgets = budgetsFile && budgetsFile.budgets ? budgetsFile.budgets : {}
+    const calibration = await import('./lib/calibration.mjs')
+    const predict = await import('./lib/predict.mjs')
+    const appendVerdict = (rec) => calibration.appendVerdict(rec, { calibrationDir: dirs.calibrationDir })
+    const draftLesson = ({ verdict, planId }) => predict.draftLessonFromMiss({ verdict, planId, dirs: {} })
+    const run = { lane: open.lane, terminalId, openedAt: open.openedAt, closedAt, ...attributed, open: false }
+    const decision = economy.checkLaneOverrun({ run, budgets, appendVerdict, draftLesson, now: closedAt })
+
+    if (wantsJson(flags)) {
+      printJson({ run, decision })
+      return 0
+    }
+    if (decision.miss) {
+      process.stdout.write(
+        `SMA lane: ПЕРЕРАСХОД полосы ${open.lane} — бюджет p${budgets[open.lane].pct} $${decision.budgetUsd}, ` +
+          `факт $${decision.actualUsd}. Зачтён промах калибровки (sma.economy)` +
+          `${decision.draftedPath ? ` + черновик урока: ${decision.draftedPath}` : ''}.\n`,
+      )
+    } else if (decision.reportOnly) {
+      const why =
+        decision.reason === 'overlap'
+          ? 'параллельный терминал жёг расход в окне — только отчёт, промах не засчитывается (CH-49.4-06-1)'
+          : decision.reason === 'no-budget'
+            ? 'бюджет ещё не выведен (мало прогонов) — только отчёт'
+            : 'только отчёт'
+      process.stdout.write(`SMA lane: закрыта полоса ${open.lane} ($${attributed.usd}, ${attributed.minutes} мин); ${why}\n`)
+    } else {
+      process.stdout.write(
+        `SMA lane: закрыта полоса ${open.lane} в пределах бюджета ($${decision.actualUsd} из $${decision.budgetUsd})\n`,
+      )
+    }
+    return 0
+  }
+
+  if (action === 'derive') {
+    const pct = Number.isFinite(Number(flags.pct)) ? Number(flags.pct) : 75
+    const { runs } = economy.readLaneRuns({ spendDir })
+    const budgets = economy.deriveLaneBudgets({ runs, pct })
+    economy.writeLaneBudgets(budgets, { spendDir })
+    if (wantsJson(flags)) {
+      printJson({ budgets, pct })
+      return 0
+    }
+    const lanes = Object.keys(budgets)
+    if (!lanes.length) process.stdout.write('SMA lane: пока нет закрытых прогонов — выводить нечего\n')
+    for (const lane of lanes) {
+      const b = budgets[lane]
+      if (b.insufficient) process.stdout.write(`  ${lane}: мало данных (${b.n} < 5) — только отчёт\n`)
+      else process.stdout.write(`  ${lane}: бюджет p${b.pct} $${b.usd} · ${b.minutes} мин (из ${b.n} прогонов)\n`)
+    }
+    return 0
+  }
+
+  // report (default).
+  const { runs, corrupt } = economy.readLaneRuns({ spendDir })
+  const budgetsFile = economy.readLaneBudgets({ spendDir })
+  const budgets = budgetsFile && budgetsFile.budgets ? budgetsFile.budgets : {}
+  if (wantsJson(flags)) {
+    printJson({ runs, budgets, corrupt })
+    return 0
+  }
+  const closed = runs.filter((r) => !r.open)
+  const openN = runs.length - closed.length
+  process.stdout.write(`SMA lane: ${closed.length} закрытых прогонов, ${openN} открытых${corrupt ? ` (повреждено строк: ${corrupt})` : ''}\n`)
+  for (const lane of LANES) {
+    const list = closed.filter((r) => r.lane === lane)
+    const b = budgets[lane]
+    const cleanN = list.filter((r) => !r.overlap).length
+    const bTxt = b && !b.insufficient ? `бюджет p${b.pct} $${b.usd}` : `бюджета нет (${cleanN} < 5 чистых прогонов)`
+    process.stdout.write(`  ${lane}: ${list.length} прогонов (${cleanN} чистых) · ${bTxt}\n`)
+  }
+  return 0
+}
+
+/**
+ * spend self-cost [--json] | spend self-cost --stat self-cost-tokens — the SMA self-cost
+ * meter (49.4-06). Measures the framework's OWN static per-session injection overhead
+ * (SMA:RULES span + emitted corpus block span in CLAUDE.md + MEMORY.md core load) and
+ * names what is NOT counted (variable per-turn hook stdout). caveman's ~1-1.5k/turn caveat
+ * turned into our feature; no other framework meters its own overhead. Read-only, fail-open.
+ */
+async function cmdSpendSelfCost({ flags, dirs }) {
+  const economy = await import('./lib/economy.mjs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const paths = { claudeMd: join(repoRoot, 'CLAUDE.md'), memoryMd: join(repoRoot, '.claude', 'memory', 'MEMORY.md') }
+  const report = economy.selfCost({ paths })
+
+  if (flags.stat) {
+    const name = String(flags.stat)
+    const value = name === 'self-cost-tokens' ? report.total : 0
+    process.stdout.write(`${value}\n`) // numeric LAST line (P49.4-06-C scorer)
+    return 0
+  }
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+  process.stdout.write(`SMA self-cost: статическая инъекция ~${report.total} токенов (оценщик ${report.estimatorVersion})\n`)
+  for (const s of report.surfaces) process.stdout.write(`  ${s.surface}: ~${s.tokens}\n`)
+  if (!report.surfaces.length) process.stdout.write('  ни одной управляемой поверхности не найдено (нет SMA:RULES / emitted / MEMORY.md)\n')
+  process.stdout.write(`  ${report.notCounted}\n`)
+  process.stdout.write(`  ${report.caveat}\n`)
+  return 0
+}
+
+/**
+ * memory stats [--json] [--top N] | memory stats --stat core-tokens|corpus-tokens |
+ *   memory stats --selftest — the deterministic, VERSIONED corpus token-cost report
+ *   (49.4-06). Prices MEMORY.md (core load), each note, each INDEX-*.md, and the top-N
+ *   heaviest, with ESTIMATOR_VERSION stamped so numbers reproduce run-to-run and are never
+ *   billing truth. NOT hook-facing. Compress is DEFERRED by design (memory stats is its
+ *   evidence gate — no corpus rewrite in this plan). Fail-open.
+ */
+async function cmdMemory({ positionals, flags, dirs }) {
+  const economy = await import('./lib/economy.mjs')
+  const sub = positionals[0]
+
+  if (sub !== 'stats') {
+    process.stdout.write('usage: sma memory stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
+    process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
+    return 1
+  }
+
+  if (flags.selftest === true) {
+    const ok = economy.memoryStatsSelftest()
+    if (wantsJson(flags)) printJson({ selftest: 'memory-stats', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (P49.4-06-A)
+    return ok === 1 ? 0 : 1
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+  const topN = Number.isFinite(Number(flags.top)) ? Number(flags.top) : 10
+  const stats = economy.corpusStats({ corpusDir, topN })
+
+  if (flags.stat) {
+    const name = String(flags.stat)
+    const value = name === 'core-tokens' ? stats.core || 0 : name === 'corpus-tokens' ? stats.totals.all : 0
+    process.stdout.write(`${value}\n`)
+    return 0
+  }
+  if (wantsJson(flags)) {
+    printJson(stats)
+    return 0
+  }
+  process.stdout.write(`SMA memory: корпус ~${stats.totals.all} токенов (оценщик ${stats.estimatorVersion})\n`)
+  process.stdout.write(
+    `  ядро MEMORY.md: ${stats.core == null ? 'нет' : `~${stats.core}`} · заметки ~${stats.totals.notes} (${stats.notes.length}) · ` +
+      `индексы ~${stats.totals.indexes} (${stats.indexes.length})\n`,
+  )
+  for (const n of stats.top) process.stdout.write(`  ${n.file}: ~${n.tokens}\n`)
+  process.stdout.write(`  ${stats.caveat}\n`)
+  process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
   return 0
 }
 
@@ -4145,6 +4399,66 @@ async function cmdReverify({ flags, dirs }) {
 
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
 
+  // ── footprint receipt modes (49.4-07) — the economy ladder's deterministic
+  // «claim vs git diff --numstat» receipt. Separate concern from the structural
+  // receipts walk below, so these branch early. Zero LLM anywhere.
+  if (flags['footprint-selftest']) {
+    const footprint = await import('./lib/footprint.mjs')
+    const ok = await footprint.footprintSelftest()
+    process.stdout.write(`${ok}\n`)
+    return ok === 1 ? 0 : 1
+  }
+  if (flags['footprint-overruns']) {
+    // count of undispositioned sma.economy footprint_overrun misses (scorer contract, P49.4-07-C).
+    const { records } = calibration.readLedger({ calibrationDir: dirs.calibrationDir, domain: 'sma.economy' })
+    const n = records.filter(
+      (r) => r && r.metric === 'footprint_overrun' && r.verdict === 'miss' && (r.disposition == null || r.disposition === ''),
+    ).length
+    if (wantsJson(flags)) printJson({ metric: 'footprint_overrun', undispositioned: n })
+    process.stdout.write(`${n}\n`)
+    return 0
+  }
+  if (typeof flags.footprint === 'string') {
+    const footprint = await import('./lib/footprint.mjs')
+    const predict = await import('./lib/predict.mjs')
+    const planPath = flags.footprint
+    const planId = planIdFromPath(planPath)
+    const claim = footprint.parseFootprintClaim(planPath)
+    const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+    const actuals = footprint.footprintActuals({ planId, execGit })
+
+    if (!claim) {
+      if (wantsJson(flags)) printJson({ planId, verdict: null, reason: 'no-claim' })
+      else process.stdout.write(`SMA reverify [${planId}]: у плана нет footprint-заявки — проверять нечего (честный пустой случай).\n`)
+      return 0
+    }
+    if (actuals.empty) {
+      if (wantsJson(flags)) printJson({ planId, verdict: null, reason: 'no-commits', claim })
+      else process.stdout.write(`SMA reverify [${planId}]: ни одного коммита с меткой «${planId}» — рецепт пуст (честный пустой случай).\n`)
+      return 0
+    }
+
+    const draftsDir = join(repoRoot, '.claude', 'memory', 'drafts')
+    const appendVerdict = (rec) => calibration.appendVerdict(rec, { calibrationDir: dirs.calibrationDir })
+    const draftLesson = ({ verdict, planId: pid }) => predict.draftLessonFromMiss({ verdict, planId: pid, dirs: { draftsDir } })
+    const res = footprint.footprintReceipt({ claim, actuals, planId, planPath, appendVerdict, draftLesson })
+
+    if (wantsJson(flags)) {
+      printJson({ planId, claim, actuals: { files: actuals.files, loc: actuals.loc, new_deps: actuals.new_deps, commits: actuals.commits, shas: actuals.shas }, receipt: res })
+      return res.verdict === 'overrun' ? 1 : 0
+    }
+    process.stdout.write(`SMA reverify [${planId}] — footprint receipt (заявлено / фактически, коммитов: ${actuals.commits}):\n`)
+    process.stdout.write(`  files:    ${claim.files} (≤ ${Math.floor(claim.files * (1 + (claim.tolerance_pct || 0) / 100))}) / ${actuals.files}\n`)
+    process.stdout.write(`  loc:      ${claim.loc} (≤ ${Math.floor(claim.loc * (1 + (claim.tolerance_pct || 0) / 100))}) / ${actuals.loc}\n`)
+    process.stdout.write(`  new_deps: ${claim.new_deps} (tolerance 0) / ${actuals.new_deps}\n`)
+    if (res.verdict === 'overrun') {
+      process.stdout.write(`  → ПЕРЕРАСХОД по оси «${res.axis}»: ${res.actual} > ${res.expected}. Зачтён промах sma.economy + черновик урока.\n`)
+      return 1
+    }
+    process.stdout.write('  → в пределах заявленного объёма (verified).\n')
+    return 0
+  }
+
   // Which summaries to reverify.
   const summaryPaths = []
   if (typeof flags.summary === 'string') {
@@ -4619,12 +4933,153 @@ async function cmdExcavate({ positionals, flags, dirs }) {
 }
 
 /**
+ * graderSelftest() -> 1|0 — the grade-the-grader pipeline proves itself end to
+ * end in a THROWAWAY ledger (49.4-02, P49.4-02-A). The real .sma/ is NEVER
+ * touched: record a satisfied verdict → inject a revert evidence within horizon
+ * → score 'contradicted' → graderContradictionEvent → openBlocks counts 1 → a
+ * founder disposition clears it → counts 0. Returns 1 iff the whole chain holds.
+ */
+async function graderSelftest() {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const calibration = await import('./lib/calibration.mjs')
+  const consequences = await import('./lib/consequences.mjs')
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-grader-selftest-'))
+  const selfDir = join(tmp, 'calibration')
+  try {
+    // 1. record a satisfied verdict (fixed time + horizon, DI'd throwaway dir).
+    const rec = calibration.recordGraderVerdict(
+      { planId: 'SELF-GRADER', verdict: 'satisfied', judgeModelId: 'selftest-judge', source: 'blind-verify', horizon: '2026-01-02T00:00:00.000Z' },
+      { calibrationDir: selfDir, now: '2026-01-01T00:00:00.000Z' },
+    )
+    // 2. inject a revert ground-truth within the horizon → 3. score contradicted.
+    const evidence = [{ type: 'revert', planId: 'SELF-GRADER', at: '2026-01-01T12:00:00.000Z' }]
+    const scored = calibration.scoreGraderVerdicts({ records: [rec], evidence, now: '2026-01-03T00:00:00.000Z' })
+    const contradiction = scored.find((s) => s.outcome === 'contradicted')
+    if (!contradiction) return 0
+    // 4. the contradiction becomes a class-A block openBlocks counts.
+    calibration.appendVerdict(consequences.graderContradictionEvent(contradiction), { calibrationDir: selfDir })
+    const before = consequences.openBlocks({ calibrationDir: selfDir })
+    if (before.blocks.length !== 1) return 0
+    // 5. ONLY a founder disposition clears it.
+    consequences.recordDisposition(
+      { eventKey: before.blocks[0].eventKey, disposition: 'accept', reason: 'selftest', by: 'founder', domain: 'sma.verification' },
+      { calibrationDir: selfDir },
+    )
+    const after = consequences.openBlocks({ calibrationDir: selfDir })
+    return after.blocks.length === 0 ? 1 : 0
+  } catch {
+    return 0
+  } finally {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  }
+}
+
+/**
  * calibration [--domain <d>] [--json] — the B20 answer surface: per-domain
  * hit-rate table + the low-calibration escalation list (hitRate < 0.6 при
  * n >= 5). Empty ledger -> honest empty state, exit 0.
+ *
+ * Grade-the-grader (49.4-02): `--grader` lists the graded track record of
+ * separate-context verdicts with per-judge hit-rate + per-evidence-type
+ * accounting; `--grader --stat recorded-verdicts` prints the bare count (scorer
+ * contract, P49.4-02-C starvation sentinel); `--grader-record --plan <id>
+ * --verdict <satisfied|unsatisfied> --source <...> [--horizon <spec>]` is the
+ * MANDATORY feeding entry point (CH-49.4-02-1); `--grader-selftest` prints 1/0
+ * (P49.4-02-A). Grader verdicts are themselves predictions — scored against
+ * ground truth and sliced by judge model.
  */
 async function cmdCalibration({ flags, dirs }) {
   const calibration = await import('./lib/calibration.mjs')
+
+  // ── --grader-selftest: the pipeline proves itself (numeric last line) ────────
+  if (flags['grader-selftest'] === true) {
+    const ok = await graderSelftest()
+    process.stdout.write(`${ok}\n`)
+    return ok === 1 ? 0 : 1
+  }
+
+  // ── --grader-record: the MANDATORY-feeding entry point (CH-49.4-02-1) ────────
+  if (flags['grader-record'] === true) {
+    const planId = typeof flags.plan === 'string' ? flags.plan : null
+    const verdict = flags.verdict
+    if (!planId || (verdict !== 'satisfied' && verdict !== 'unsatisfied')) {
+      process.stderr.write('usage: pnpm sma calibration --grader-record --plan <id> --verdict <satisfied|unsatisfied> --source <blind-verify|verifier|vendor> [--horizon <spec>]\n')
+      return 1
+    }
+    const rec = calibration.recordGraderVerdict(
+      {
+        planId,
+        verdict,
+        source: typeof flags.source === 'string' ? flags.source : 'unspecified',
+        horizon: typeof flags.horizon === 'string' ? flags.horizon : null,
+        judgeModelId: typeof flags.judge === 'string' ? flags.judge : undefined,
+      },
+      { calibrationDir: dirs.calibrationDir },
+    )
+    if (wantsJson(flags)) {
+      printJson({ recorded: rec })
+      return 0
+    }
+    process.stdout.write(
+      `grader verdict recorded: ${rec.planId} → ${rec.verdict} (judge: ${rec.judgeModelId ?? 'unstamped'}, stampedBy: ${rec.stampedBy}, source: ${rec.source})\n`,
+    )
+    return 0
+  }
+
+  // ── --grader: graded track record + per-judge hit-rate + evidence accounting ─
+  if (flags.grader === true) {
+    const { records, corrupt } = calibration.readLedger({ calibrationDir: dirs.calibrationDir, domain: 'sma.verification' })
+    const graderRecords = records.filter((r) => r && r.kind === 'grader-verdict')
+
+    // --stat recorded-verdicts: bare count as the LAST stdout line (scorer
+    // contract; the P49.4-02-C starvation sentinel — 0 is an HONEST miss).
+    if (flags.stat === 'recorded-verdicts') {
+      process.stdout.write(`${graderRecords.length}\n`)
+      return 0
+    }
+
+    const evidence = records.filter((r) => r && calibration.GROUND_TRUTH_EVIDENCE_TYPES.includes(r.type))
+    const scored = calibration.scoreGraderVerdicts({ records: graderRecords, evidence, now: new Date().toISOString() })
+    const byJudge = calibration.hitRateByJudge(scored)
+
+    // Per-evidence-type accounting: revert/founder-rejection have live producers;
+    // red-ci/rework stay «manual until CI-terminal wiring» (CH-49.4-02-1) — the
+    // starvation is VISIBLE, never silent.
+    const LIVE = ['revert', 'founder-rejection']
+    const MANUAL = ['red-ci', 'rework']
+    const evCount = (t) => evidence.filter((e) => e.type === t).length
+
+    if (wantsJson(flags)) {
+      printJson({
+        graderRecords: scored,
+        hitRateByJudge: byJudge,
+        evidenceAccounting: { live: Object.fromEntries(LIVE.map((t) => [t, evCount(t)])), manual: MANUAL },
+        recordedVerdicts: graderRecords.length,
+        corrupt,
+      })
+      return 0
+    }
+
+    if (!scored.length) {
+      process.stdout.write('SMA calibration --grader: реестр вердиктов грейдера пуст — ни один отдельный контекст ещё не оценивался.\n')
+    } else {
+      process.stdout.write(`SMA calibration --grader — оценённые вердикты грейдера (${scored.length}):\n`)
+      for (const s of scored) {
+        process.stdout.write(`  ${s.planId} → ${s.verdict} [${s.outcome}] судья ${s.judgeModelId ?? 'unstamped'}, источник ${s.source ?? '—'}\n`)
+      }
+      process.stdout.write('Точность по судьям (кто оценивал):\n')
+      for (const [judge, b] of Object.entries(byJudge)) {
+        const pct = b.rate == null ? '—' : `${Math.round(b.rate * 100)}%`
+        process.stdout.write(`  ${judge}: ${pct} (${b.hits}/${b.hits + b.misses})\n`)
+      }
+    }
+    process.stdout.write('Учёт наземной истины по типам:\n')
+    for (const t of LIVE) process.stdout.write(`  ${t}: ${evCount(t)} (живой источник)\n`)
+    for (const t of MANUAL) process.stdout.write(`  ${t}: manual until CI-terminal wiring\n`)
+    if (corrupt) process.stdout.write(`  (повреждённых строк леджера пропущено: ${corrupt})\n`)
+    return 0
+  }
   const domainFilter = typeof flags.domain === 'string' ? flags.domain : null
 
   const { records, corrupt } = calibration.readLedger({
@@ -5878,11 +6333,20 @@ async function cmdSubagentReceipts({ flags, dirs }) {
   }
 
   if (typeof flags.stat === 'string') {
-    const map = { coverage: stats.coverage, phantoms: stats.phantoms, 'pack-p95': stats.packP95 }
+    const map = {
+      coverage: stats.coverage,
+      phantoms: stats.phantoms,
+      'pack-p95': stats.packP95,
+      phantomsAsserted: stats.phantomsAsserted,
+    }
     const key = flags.stat
     if (!(key in map)) {
-      process.stderr.write(`SMA subagent-receipts: неизвестный --stat «${key}» (coverage|phantoms|pack-p95)\n`)
-      process.stdout.write('0\n')
+      // BL-173/plan-checker BLOCK: an unknown key is a LOUD error on stderr with SILENT
+      // stdout — a scorer parsing the last stdout line must see the ABSENCE of a number,
+      // never a fabricated 0 (the vacuous-pass class). No stdout write here.
+      process.stderr.write(
+        `SMA subagent-receipts: неизвестный --stat «${key}» (coverage|phantoms|pack-p95|phantomsAsserted)\n`,
+      )
       return 1
     }
     process.stdout.write(`${map[key]}\n`)
@@ -6225,6 +6689,8 @@ function parseYamlListBlock(text, key) {
  *   grill <plan> --resolve <CH-id> --as converted --prediction <P-id>
  *   grill <plan> --resolve <CH-id> --as withdrawn|accepted-risk --reason|--disposition
  *   grill <plan> --gate                                print allowed/blocked; exit 1 if blocked
+ *   grill <plan> --standing                            the economy-ladder standing challenge «which ladder rung?»
+ *   grill --standing-selftest                          1/0 last line (P49.4-07-A)
  *   grill <plan> --land <CH-id>                        tag a landed pre-push defect
  *   grill --pre-push [--budget 3]                      budget-aware pre-push depth plan
  *   grill --stats --metric challenge-yield             numeric last line (P49.2-07-A)
@@ -6233,6 +6699,14 @@ function parseYamlListBlock(text, key) {
 async function cmdGrill({ positionals, flags, dirs }) {
   const grill = await import('./lib/grill.mjs')
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  // --standing-selftest → 1/0 last line (P49.4-07-A; no plan path needed).
+  if (flags['standing-selftest']) {
+    const footprint = await import('./lib/footprint.mjs')
+    const ok = await footprint.standingSelftest()
+    process.stdout.write(`${ok}\n`)
+    return ok === 1 ? 0 : 1
+  }
 
   // --stats --metric challenge-yield → numeric last line (the scorer contract).
   if (flags.stats) {
@@ -6276,11 +6750,38 @@ async function cmdGrill({ positionals, flags, dirs }) {
 
   const planPath = positionals[0]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma grill <plan-path> [--challenge "promise::attack" | --resolve <CH-id> --as <status> | --gate | --land <CH-id>]\n')
+    process.stderr.write('usage: pnpm sma grill <plan-path> [--challenge "promise::attack" | --resolve <CH-id> --as <status> | --gate | --standing | --land <CH-id>] | grill --standing-selftest\n')
     return 1
   }
   const planId = planIdFromPath(planPath)
   const by = await resolveTerminalId().catch(() => 'unknown')
+
+  // --standing → the economy ladder's standing challenge «which ladder rung?»
+  // (49.4-07). No claim -> register an open challenge (so --gate blocks per
+  // D-49.2-11, zero new gate code). A claim present -> resolve it as withdrawn.
+  if (flags.standing) {
+    const footprint = await import('./lib/footprint.mjs')
+    const claim = footprint.parseFootprintClaim(planPath)
+    const res = grill.standingFootprint({ planPath, planId, claim, grillDir: dirs.grillDir })
+    if (wantsJson(flags)) {
+      printJson({ ...res, claim })
+      return 0
+    }
+    if (res.action === 'registered') {
+      process.stdout.write(
+        `SMA grill [${planId}]: standing challenge «which ladder rung?» зарегистрирован (${res.challenge?.id}) — ` +
+          'план БЕЗ footprint-заявки не проходит gate. Добавьте в frontmatter блок `footprint:` ' +
+          '(files/new_files/loc/new_deps/tolerance_pct) и повторите `grill <plan> --standing`.\n',
+      )
+    } else if (res.action === 'already-open') {
+      process.stdout.write(`SMA grill [${planId}]: standing challenge уже открыт (${res.challenge?.id}) — footprint-заявки всё ещё нет.\n`)
+    } else if (res.action === 'resolved') {
+      process.stdout.write(`SMA grill [${planId}]: standing challenge снят — footprint-заявка присутствует (${res.reason}).\n`)
+    } else {
+      process.stdout.write(`SMA grill [${planId}]: footprint-заявка присутствует, открытого standing-вызова нет — ничего не требуется.\n`)
+    }
+    return 0
+  }
 
   // --gate → the build gate verdict; exit 1 on blocked (caller decides).
   if (flags.gate) {
@@ -6340,7 +6841,7 @@ async function cmdGrill({ positionals, flags, dirs }) {
     return r.ok ? 0 : 1
   }
 
-  process.stderr.write('SMA grill: укажите один из режимов: --challenge | --resolve | --gate | --land | --pre-push | --stats\n')
+  process.stderr.write('SMA grill: укажите один из режимов: --challenge | --resolve | --gate | --standing | --land | --pre-push | --stats\n')
   return 1
 }
 
@@ -7440,6 +7941,128 @@ async function cmdManifest({ flags, dirs }) {
 }
 
 /**
+ * ship-lane <check|changelog|record|report> [--base <branch>] [--max-delta N] [--json]
+ *   ship-lane --stat quick-active-p50-min|quick-red-minus-full-red-pct   bare numeric last line
+ *   ship-lane --selftest                                                  prints 1/0
+ *
+ * The SHIP LANES substrate (49.4-08, BL-177). READ-ONLY: it checks, drafts, and records —
+ * it NEVER pushes, tags, or deploys (pushing stays inside the founder-ordered skill
+ * rituals, D-49.3-24d). NOT hook-facing. Subcommands:
+ *   - check     runs the real precondition (real execGit at the repo root + real
+ *               checkPushClaim over dirs.claimsDir) and prints eligible / every failing leg;
+ *               exit 1 on a refuse (the skill stops there and routes to the full lane).
+ *   - changelog prints the deterministic conventional-commit grouped draft over the delta.
+ *   - record    appends a lane run {lane, outcome, startedAt, endedAt?} to ship-lanes.jsonl.
+ *   - report    lists pending runs first + flags >24h orphaned watches (CH-49.4-08-2).
+ * Fail-open on git reads; over-refusal is the safe direction.
+ */
+async function cmdShipLane({ positionals, flags, dirs }) {
+  const shipLane = await import('./lib/ship-lane.mjs')
+  const spendDir = dirs.spendDir
+  const sub = positionals[0]
+
+  if (flags.selftest === true) {
+    const ok = shipLane.shipLaneSelftest()
+    if (wantsJson(flags)) printJson({ selftest: 'ship-lane', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  if (flags.stat) {
+    const name = String(flags.stat)
+    const { runs } = shipLane.readShipLaneRuns({ spendDir })
+    const stats = shipLane.laneStats({ runs, now: Date.now() })
+    const value =
+      name === 'quick-active-p50-min'
+        ? stats.quickActiveP50Min
+        : name === 'quick-red-minus-full-red-pct'
+          ? stats.quickRedMinusFullRedPct
+          : 0
+    process.stdout.write(`${value}\n`) // numeric LAST line (P49.4-08-B/C scorer contract)
+    return 0
+  }
+
+  const base = typeof flags.base === 'string' && flags.base.trim() ? flags.base.trim() : 'main'
+  const { execFileSync } = await import('node:child_process')
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const execGit = (args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+
+  if (sub === 'check') {
+    const slots = await import('./lib/slots.mjs')
+    const self = await resolveTerminalId()
+    const maxDelta = Number.isFinite(Number(flags['max-delta'])) && Number(flags['max-delta']) > 0 ? Number(flags['max-delta']) : 5
+    const res = shipLane.checkQuickPrecondition({
+      execGit,
+      checkPushClaim: () => slots.checkPushClaim({ claimsDir: dirs.claimsDir }),
+      self,
+      base,
+      maxDelta,
+    })
+    if (wantsJson(flags)) printJson(res)
+    else if (res.allowed) {
+      process.stdout.write(
+        `SMA ship-lane: ПОДХОДИТ для /sma-quick-ship — дельта ${res.delta} коммит(ов), миграций нет, чужой push-claim отсутствует. Гейт тот же, что в /sma-ship.\n`,
+      )
+    } else {
+      process.stdout.write('SMA ship-lane: НЕ подходит для быстрой полосы — используйте полный /sma-ship:\n')
+      for (const r of res.reasons) process.stdout.write(`  - ${r}\n`)
+    }
+    return res.allowed ? 0 : 1
+  }
+
+  if (sub === 'changelog') {
+    let commits = []
+    try {
+      const raw = execGit(['log', `--format=%H%x1f%s`, `origin/${base}..HEAD`])
+      commits = raw
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const [sha, subject] = l.split('\x1f')
+          return { sha, subject: subject || '' }
+        })
+    } catch {
+      commits = [] // fail-open — an unresolvable range drafts an empty changelog
+    }
+    process.stdout.write(shipLane.draftChangelog({ commits }))
+    if (!String(shipLane.draftChangelog({ commits })).endsWith('\n')) process.stdout.write('\n')
+    return 0
+  }
+
+  if (sub === 'record') {
+    const lane = String(flags.lane || '')
+    const outcome = String(flags.outcome || '')
+    const startedAt = typeof flags.started === 'string' ? flags.started : ''
+    if (!['quick', 'full'].includes(lane) || !['green', 'red', 'pending'].includes(outcome) || !startedAt) {
+      process.stdout.write('usage: sma ship-lane record --lane quick|full --outcome green|red|pending --started <iso> [--ended <iso>]\n')
+      return 1
+    }
+    const run = { lane, outcome, startedAt }
+    if (typeof flags.ended === 'string' && flags.ended) run.endedAt = flags.ended
+    const rec = shipLane.appendShipLaneRun({ spendDir, run })
+    if (wantsJson(flags)) printJson(rec)
+    else process.stdout.write(`SMA ship-lane: записан прогон ${lane}/${outcome} (started ${startedAt})\n`)
+    return 0
+  }
+
+  // report (default).
+  const { runs } = shipLane.readShipLaneRuns({ spendDir })
+  const rep = shipLane.laneReport({ runs, now: Date.now() })
+  if (wantsJson(flags)) {
+    printJson({ ...rep, stats: shipLane.laneStats({ runs, now: Date.now() }) })
+    return 0
+  }
+  process.stdout.write(`SMA ship-lane отчёт — прогонов ${runs.length} (ожидающих ${rep.pending.length}, брошенных ${rep.orphaned.length}):\n`)
+  for (const r of rep.pending) {
+    const orphan = rep.orphaned.includes(r) ? ' [БРОШЕН >24ч — фоновый watch прервался; проверьте CI/Railway вручную]' : ''
+    process.stdout.write(`  ОЖИДАЕТ ${r.lane} (started ${r.startedAt})${orphan}\n`)
+  }
+  for (const r of rep.finalized.slice(-8)) process.stdout.write(`  ${r.outcome} ${r.lane} (started ${r.startedAt})\n`)
+  return 0
+}
+
+/**
  * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force] [--json]
  *   worktree --selftest           base + teleport guards over a mock-git recorder (P49.3-14-A)
  *   worktree --selftest-sibling   sibling-repo resolution order over injected readers (P49.3-14-C)
@@ -7755,6 +8378,68 @@ async function cmdMerge({ positionals, flags, dirs }) {
   return res.testsPassed ? 0 : 1
 }
 
+/**
+ * vendor [--json] | --count untriaged | --selftest (49.4-01, BL-160) — the
+ * standing Anthropic-update triage ledger linter. Deterministic READER/LINTER
+ * over docs/VENDOR-LEDGER.md: it parses the append-only table, fails rows that
+ * are missing a verdict or disposition, and never fetches anything. Zero
+ * network, zero LLM (substrate law) — the ledger is written by whoever read the
+ * release notes; this verb only keeps them honest.
+ *
+ * `--count untriaged` prints the bare untriaged count as its LAST stdout line
+ * (the predict.mjs scorer contract) — the /sma-ship gate blocks a release on a
+ * non-zero count. `--selftest` runs the inline fixture pair and prints 1/0. A
+ * missing ledger is fail-open: count prints 0 with a stderr warning, so the gate
+ * can never wedge a ship on an absent file. NOT hook-facing.
+ */
+async function cmdVendor({ flags, dirs }) {
+  const vl = await import('./lib/vendor-ledger.mjs')
+
+  // ── --selftest: the linter proves itself (numeric last line) ────────────────
+  if (flags.selftest === true) {
+    const ok = vl.selftest()
+    process.stdout.write(`${ok}\n`)
+    return ok === 1 ? 0 : 1
+  }
+
+  // The ledger lives at docs/VENDOR-LEDGER.md from the product repo root
+  // (dirname of the .sma root). resolveRoot falls back to cwd/.sma outside a repo.
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const ledgerPath = join(repoRoot, 'docs', 'VENDOR-LEDGER.md')
+  const { rows, errors, warnings } = vl.parseLedger({ ledgerPath })
+
+  // ── --count untriaged: the bare number as the last stdout line ──────────────
+  if (flags.count === 'untriaged') {
+    // Fail-open: an absent/unreadable ledger warns on stderr and counts 0 so the
+    // ship gate can never wedge on a missing file.
+    for (const w of warnings) process.stderr.write(`  ! ${w}\n`)
+    process.stdout.write(`${vl.countUntriaged(rows)}\n`) // numeric last line (scorer contract)
+    return 0
+  }
+
+  // ── default: the ledger table + violation list, or --json ───────────────────
+  const { ok, violations } = vl.lintLedger(rows)
+
+  if (wantsJson(flags)) {
+    printJson({ ok, rows, violations, errors, warnings })
+    return ok && errors.length === 0 ? 0 : 1
+  }
+
+  for (const w of warnings) process.stderr.write(`  ! ${w}\n`)
+  if (!rows.length) {
+    process.stdout.write('Vendor ledger is empty — no Anthropic sightings recorded yet.\n')
+    return 0
+  }
+  process.stdout.write(`Vendor ledger — ${rows.length} sighting(s):\n`)
+  for (const r of rows) {
+    process.stdout.write(`  ${r.date}  [${r.verdict || '(no verdict)'}]  ${r.source} — ${r.capability}  → ${r.disposition || '(no disposition)'}\n`)
+  }
+  for (const e of errors) process.stdout.write(`  ✗ line ${e.line}: ${e.message}\n`)
+  for (const v of violations) process.stdout.write(`  [${v.rule}] ${v.field}: ${v.message}\n`)
+  process.stdout.write(`  untriaged: ${vl.countUntriaged(rows)}\n`)
+  return ok && errors.length === 0 ? 0 : 1
+}
+
 const HOOK_FACING = new Set(['session-start', 'session-end', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule', 'statusline', 'pulse'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
@@ -7842,6 +8527,9 @@ const HANDLERS = {
   merge: cmdMerge, // 49.3-15 (D-49.3-24c/d) — serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
   explain: cmdExplain, // 49.3-09 (D-49.3-15) — in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
   'doc-audit': cmdDocAudit, // 49.3-09 (D-49.3-01/15) — deterministic docs honesty audit (--target manual|readme|all|--count|--json)
+  vendor: cmdVendor, // 49.4-01 (BL-160) — standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
+  memory: cmdMemory, // 49.4-06 (BL-176) — deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  'ship-lane': cmdShipLane, // 49.4-08 (BL-177) — ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
 }
 
 async function main() {
@@ -7851,7 +8539,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit>\n',
+      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane>\n',
     )
     return 0
   }

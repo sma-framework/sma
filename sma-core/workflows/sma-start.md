@@ -59,6 +59,34 @@ Also read:
 
 <process>
 
+## Quick path for existing installs (BL-167)
+
+Before Stage 0, decide whether this is a FRESH install or an EXISTING one — this
+routing happens BEFORE any teaching module fires:
+
+```bash
+ls .sma/profile.json 2>/dev/null && echo "EXISTING — profile present" || echo "FRESH — full onboarding"
+```
+
+- **FRESH install** (no `.sma/profile.json`): run the full staged teaching flow
+  below, Stage 0 through Stage 5. This is the default.
+- **EXISTING install** (a `.sma/profile.json` is already present): the user already
+  knows SMA — do NOT re-run the ~23-question teaching onboarding. Offer the quick
+  path instead:
+
+  > You already have a profile. Two options: a full re-onboarding (all stages, with
+  > teaching), or the quick path — `pnpm sma profile --quick` prints exactly the
+  > fields that are still unset, in order, with zero teaching modules. Answer only
+  > those; I write them straight to `.sma/profile.json` through the same validation
+  > (secret-shaped values are still rejected, T-49.3-06). Which do you want?
+
+  On the quick path: run `pnpm sma profile --quick`, ask ONLY the fields it lists
+  (each carries its one-line description), and write the answers through the Stage D
+  profile-write step (`pnpm sma profile --lint` clean, then commit). If it prints
+  «nothing to ask», the profile is already complete — say so and stop. NEVER re-ask
+  an answered field; NEVER deliver a TEACH module on the quick path. A full
+  re-onboarding stays available on request and remains the default for fresh installs.
+
 ## Stage 0 — OPEN with the thesis
 
 > TEACH(accountable-loop)

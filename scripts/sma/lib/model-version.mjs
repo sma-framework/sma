@@ -47,6 +47,16 @@ import { MODEL_DIR } from './constants.mjs'
  */
 const DEFAULT_MIN_FRESH = 20
 
+/**
+ * The canonical stamp field for a SEPARATE-CONTEXT JUDGE's model id (49.4-02).
+ * Exported so calibration.mjs (recordGraderVerdict / hitRateByJudge) and
+ * blind-verify.mjs reference the field BY NAME rather than by a scattered string
+ * literal — a grader swap is then visible in the track record the same way an
+ * actor-model swap already is. Distinct from the `model` (actor) stamp: a record
+ * may carry both — `model` = who DID the work, `judgeModelId` = who JUDGED it.
+ */
+export const JUDGE_MODEL_FIELD = 'judgeModelId'
+
 /** The real fs seam, overridable via opts.fs for tests. */
 const REAL_FS = {
   readFileSync: fsReadFileSync,
@@ -294,17 +304,24 @@ export function modelGuard({ records = [], timeline, minFresh = DEFAULT_MIN_FRES
 }
 
 /**
- * stampRecords(records, {model}) — pure additive model stamp (behavior test 6).
- * Returns copies each carrying `model` without mutating any other field; a null
- * model returns the records untouched (no `model` key added), so tolerant
- * readers (calibration.mjs parseFile) keep the whole V2 history valid as an
- * unstamped legacy prefix.
+ * stampRecords(records, {model, judgeModelId}) — pure additive stamp (behavior
+ * test 6). Returns copies each carrying `model` (actor) and/or the optional
+ * `judgeModelId` (JUDGE_MODEL_FIELD, 49.4-02) without mutating any other field.
+ * Both stamps are independent and optional: a null `model` no longer adds the
+ * actor key, a null `judgeModelId` no longer adds the judge key, and when BOTH
+ * are null the records pass through UNTOUCHED — so tolerant readers
+ * (calibration.mjs parseFile) keep the whole V2 history valid as an unstamped
+ * legacy prefix, and existing callers passing only `{model}` are unchanged.
  *
  * @param {object[]} records
- * @param {{model?:string|null}} [args]
+ * @param {{model?:string|null, judgeModelId?:string|null}} [args]
  */
-export function stampRecords(records, { model } = {}) {
+export function stampRecords(records, { model, judgeModelId } = {}) {
   if (!Array.isArray(records)) return records
-  if (model == null) return records
-  return records.map((r) => ({ ...r, model }))
+  if (model == null && judgeModelId == null) return records
+  return records.map((r) => ({
+    ...r,
+    ...(model != null ? { model } : {}),
+    ...(judgeModelId != null ? { [JUDGE_MODEL_FIELD]: judgeModelId } : {}),
+  }))
 }

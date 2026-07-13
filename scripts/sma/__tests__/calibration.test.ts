@@ -19,7 +19,15 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { appendVerdict, readLedger, hitRate, escalations } from '../lib/calibration.mjs'
+import {
+  appendVerdict,
+  readLedger,
+  hitRate,
+  escalations,
+  recordGraderVerdict,
+  scoreGraderVerdicts,
+  hitRateByJudge,
+} from '../lib/calibration.mjs'
 
 let calibrationDir: string
 
@@ -164,5 +172,153 @@ describe('corrupt line tolerance (Test 4 — journal.mjs posture)', () => {
     const res = readLedger({ calibrationDir })
     expect(res.records).toHaveLength(2)
     expect(res.corrupt).toBe(1)
+  })
+})
+
+// ── Grade the grader (49.4-02) ────────────────────────────────────────────────
+
+/** A ground-truth evidence record for planId at `at` of the given type. */
+function ev(type: string, planId: string, at: string) {
+  return { type, planId, at }
+}
+
+describe('recordGraderVerdict (Test 1 — verdict-as-prediction record)', () => {
+  it('appends a kind:grader-verdict record to the sma.verification ledger via appendVerdict', () => {
+    const rec = recordGraderVerdict(
+      { planId: '49.4-02', verdict: 'satisfied', judgeModelId: 'claude-judge-x', source: 'blind-verify', horizon: '2026-08-31' },
+      { calibrationDir },
+    )
+    expect(rec).toMatchObject({
+      kind: 'grader-verdict',
+      domain: 'sma.verification',
+      planId: '49.4-02',
+      verdict: 'satisfied',
+      judgeModelId: 'claude-judge-x',
+      stampedBy: 'explicit',
+      source: 'blind-verify',
+    })
+    // It landed in the sma.verification ledger file.
+    const raw = readFileSync(join(calibrationDir, 'sma.verification.jsonl'), 'utf8')
+    expect(raw.trim().split('\n')).toHaveLength(1)
+    const { records } = readLedger({ calibrationDir, domain: 'sma.verification' })
+    expect(records[0]).toMatchObject({ kind: 'grader-verdict', judgeModelId: 'claude-judge-x' })
+  })
+
+  it('missing judgeModelId falls back to resolveModelId({env}) and records stampedBy:resolved', () => {
+    const rec = recordGraderVerdict(
+      { planId: 'P', verdict: 'satisfied', source: 'verifier', horizon: 'h' },
+      { calibrationDir, env: { SMA_MODEL: 'claude-from-env' } },
+    )
+    expect(rec.judgeModelId).toBe('claude-from-env')
+    expect(rec.stampedBy).toBe('resolved')
+  })
+
+  it('nothing resolvable -> null judge id + stampedBy:unstamped (never a fake id)', () => {
+    const rec = recordGraderVerdict(
+      { planId: 'P', verdict: 'unsatisfied', source: 'verifier' },
+      { calibrationDir, env: {} },
+    )
+    expect(rec.judgeModelId).toBeNull()
+    expect(rec.stampedBy).toBe('unstamped')
+  })
+
+  it('a raw grader-verdict record is NOT a hit/miss and never distorts hitRate', () => {
+    recordGraderVerdict({ planId: 'P', verdict: 'satisfied', judgeModelId: 'j' }, { calibrationDir })
+    const { records } = readLedger({ calibrationDir, domain: 'sma.verification' })
+    expect(hitRate(records).n).toBe(0) // 'satisfied' is not 'hit'/'miss'
+  })
+})
+
+describe('scoreGraderVerdicts (Test 2/3 — ground-truth scoring, both directions)', () => {
+  function graderRec(over: Record<string, unknown> = {}) {
+    return {
+      kind: 'grader-verdict',
+      domain: 'sma.verification',
+      planId: 'P',
+      id: 'P',
+      verdict: 'satisfied',
+      judgeModelId: 'j',
+      horizon: '2026-08-31T00:00:00.000Z',
+      at: '2026-07-01T00:00:00.000Z',
+      ...over,
+    }
+  }
+
+  it('Test 2: satisfied + revert within horizon -> contradicted; after horizon or none (past horizon) -> stood; before horizon -> unsettled', () => {
+    const rec = graderRec()
+    // revert within horizon → contradicted
+    const contra = scoreGraderVerdicts({
+      records: [rec],
+      evidence: [ev('revert', 'P', '2026-07-15T00:00:00.000Z')],
+      now: '2026-09-01T00:00:00.000Z',
+    })
+    expect(contra[0].outcome).toBe('contradicted')
+    expect(contra[0].contradictedBy).toMatchObject({ type: 'revert' })
+
+    // evidence AFTER horizon → stood (horizon passed, nothing within)
+    const late = scoreGraderVerdicts({
+      records: [rec],
+      evidence: [ev('revert', 'P', '2026-09-15T00:00:00.000Z')],
+      now: '2026-10-01T00:00:00.000Z',
+    })
+    expect(late[0].outcome).toBe('stood')
+
+    // no evidence + horizon passed → stood
+    const stood = scoreGraderVerdicts({ records: [rec], evidence: [], now: '2026-09-01T00:00:00.000Z' })
+    expect(stood[0].outcome).toBe('stood')
+
+    // horizon not yet passed + no evidence → unsettled
+    const unsettled = scoreGraderVerdicts({ records: [rec], evidence: [], now: '2026-07-10T00:00:00.000Z' })
+    expect(unsettled[0].outcome).toBe('unsettled')
+  })
+
+  it('Test 3: unsatisfied verdict contradicted by clean ground truth (ci-green / founder-acceptance)', () => {
+    const rec = graderRec({ verdict: 'unsatisfied' })
+    const contra = scoreGraderVerdicts({
+      records: [rec],
+      evidence: [ev('ci-green', 'P', '2026-07-20T00:00:00.000Z')],
+      now: '2026-09-01T00:00:00.000Z',
+    })
+    expect(contra[0].outcome).toBe('contradicted')
+
+    // negative evidence CONFIRMS an unsatisfied verdict → it stood (grader was right)
+    const stood = scoreGraderVerdicts({
+      records: [rec],
+      evidence: [ev('revert', 'P', '2026-07-20T00:00:00.000Z')],
+      now: '2026-09-01T00:00:00.000Z',
+    })
+    expect(stood[0].outcome).toBe('stood')
+  })
+
+  it('Test 5: scoring is pure over injected records+evidence+now — a non-grader record is ignored', () => {
+    const mixed = [graderRec(), verdict('sma.verification', 'hit', 'X')]
+    const scored = scoreGraderVerdicts({ records: mixed, evidence: [], now: '2026-09-01T00:00:00.000Z' })
+    expect(scored).toHaveLength(1) // only the grader-verdict record is scored
+    expect(scored[0].kind).toBe('grader-verdict')
+  })
+})
+
+describe('hitRateByJudge (Test 4 — judge slicing)', () => {
+  function scored(judge: string | null, outcome: string) {
+    return { kind: 'grader-verdict', judgeModelId: judge, outcome }
+  }
+
+  it('groups scored grader records by judgeModelId; stood=hit, contradicted=miss, unsettled ignored', () => {
+    const res = hitRateByJudge([
+      scored('judge-a', 'stood'),
+      scored('judge-a', 'stood'),
+      scored('judge-a', 'contradicted'),
+      scored('judge-b', 'contradicted'),
+      scored('judge-b', 'unsettled'), // ignored
+    ])
+    expect(res['judge-a']).toEqual({ hits: 2, misses: 1, rate: 2 / 3 })
+    expect(res['judge-b']).toEqual({ hits: 0, misses: 1, rate: 0 })
+  })
+
+  it('records without a judge id land in an explicit unstamped bucket, never merged', () => {
+    const res = hitRateByJudge([scored(null, 'stood'), scored('judge-a', 'stood')])
+    expect(res.unstamped).toEqual({ hits: 1, misses: 0, rate: 1 })
+    expect(res['judge-a']).toEqual({ hits: 1, misses: 0, rate: 1 })
+    expect(Object.keys(res).sort()).toEqual(['judge-a', 'unstamped'])
   })
 })

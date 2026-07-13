@@ -33,6 +33,7 @@ import {
   stampRecords,
   resolveModelId,
   timelineSchemaOk,
+  JUDGE_MODEL_FIELD,
 } from '../lib/model-version.mjs'
 
 let modelDir: string
@@ -224,6 +225,21 @@ describe('Test 6 — stampRecords pure additive', () => {
     const out = stampRecords(src, { model: null })
     expect(out).toEqual([{ id: 'A', verdict: 'hit' }])
     expect('model' in out[0]).toBe(false)
+  })
+
+  it('stamps an optional judgeModelId under JUDGE_MODEL_FIELD; both stamps are independent (49.4-02)', () => {
+    const src = [{ id: 'A', verdict: 'hit' }]
+    // judge-only stamp
+    expect(stampRecords(src, { judgeModelId: 'judge-x' })).toEqual([{ id: 'A', verdict: 'hit', judgeModelId: 'judge-x' }])
+    // both actor + judge stamps
+    expect(stampRecords(src, { model: 'actor-1', judgeModelId: 'judge-x' })).toEqual([
+      { id: 'A', verdict: 'hit', model: 'actor-1', judgeModelId: 'judge-x' },
+    ])
+    // BOTH null → untouched (existing callers passing only {model} unchanged)
+    const out = stampRecords(src, { model: null, judgeModelId: null })
+    expect(out).toEqual([{ id: 'A', verdict: 'hit' }])
+    expect('judgeModelId' in out[0]).toBe(false)
+    expect(JUDGE_MODEL_FIELD).toBe('judgeModelId')
   })
 })
 

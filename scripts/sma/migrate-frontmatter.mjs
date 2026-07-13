@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * migrate-frontmatter.mjs — R2 corpus migration (Phase 49 Plan 11).
  *

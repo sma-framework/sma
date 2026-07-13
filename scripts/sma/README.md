@@ -36,7 +36,7 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 `state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|`
 `pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
 `grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|manifest|`
-`worktree|merge|explain|doc-audit|deleteme|memory-preview>`
+`worktree|merge|explain|doc-audit|deleteme|memory-preview|vendor>`
 
 The v3.6 surfaces:
 
@@ -45,12 +45,21 @@ The v3.6 surfaces:
 | `deleteme` | One-click uninstall (BL-162): reverses every installer artifact — engine, runtime, agents, skills, hooks, statusline, managed blocks, `.sma/` — and PRESERVES `.claude/memory/**`. Dry-run by default; never-clobber settings surgery; a torn anchor pair is refused, never repaired. Direct CLI, not hook-facing. | `--yes` \| `--global` \| `--selftest` \| `--json` |
 | `memory-preview` | Onboarding memory-graph preview (BL-174): an ASCII graph of how SMA will lay out THIS repo's memory — CORE / periphery areas from `git ls-files` / reflex candidates from excavate's history mining. Read-only, zero network, byte-deterministic at one HEAD; an empty repo degrades to the fresh-project layout. Rendered during /sma-start TEACH. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
 
+The V4 maintainer-process surface:
+
+| Subcommand | Purpose | Key flags |
+|---|---|---|
+| `vendor` | Anthropic capability ledger linter (49.4-01, BL-160): parses `docs/VENDOR-LEDGER.md`, fails rows missing a verdict or disposition; `--count untriaged` prints the bare number as a last line (scorer contract) that the `/sma-ship` gate blocks on; `--selftest` proves the linter against a fixture pair. Read-only, zero network, never writes a verdict. NOT hook-facing. | `[--count untriaged]` \| `--selftest` \| `--json` |
+| `memory` | Deterministic corpus token-cost report (49.4-06, BL-176): `memory stats` prices the MEMORY.md core load, every note, every INDEX file, and the top-N heaviest with a VERSIONED estimator (`ESTIMATOR_VERSION` stamped, approximation not billing truth); `--stat core-tokens\|corpus-tokens` prints the bare number (scorer contract); `--selftest` proves determinism. Compress is deliberately absent — deferred until stats shows measured pain. NOT hook-facing. | `stats [--top N]` \| `--stat core-tokens\|corpus-tokens` \| `--selftest` \| `--json` |
+| `ship-lane` | The ship lanes (49.4-08, BL-177): a DETERMINISTIC quick-ship precondition (`check` — origin-delta <= 5 commits AND no migrations AND no foreign push-claim, else refuses «this is a full /sma-ship» naming every failing leg), a deterministic conventional-commit changelog drafter (`changelog`, the full lane consumes it too), and a lane-outcome ledger (`record`/`report`, pending runs listed first + >24h orphaned-watch flag). `--stat quick-active-p50-min\|quick-red-minus-full-red-pct` prints the bare number (scorer contract); `--selftest` proves the fixture pack. READ-ONLY — never pushes, tags, or deploys. NOT hook-facing. | `check [--base <b>] [--max-delta N]` \| `changelog [--base <b>]` \| `record --lane quick\|full --outcome green\|red\|pending --started <iso> [--ended <iso>]` \| `report` \| `--stat <name>` \| `--selftest` \| `--json` |
+
 The V3.5 docs / teaching surfaces:
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
 | `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (P49.3-09-A scorer). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
 | `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (P49.3-09-B/C scorer). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
+| `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (49.3-01) plus the BL-167 quick-update path (49.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
 contract). Hook-facing subcommands (`session-start`, `pre`, `heartbeat`, `pretask-pack`,
@@ -84,7 +93,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `build-index` | (re)generate MEMORY.md | `--write` (DRY by default) |
 | `load` | resolve a tag set into CORE + periphery notes | `--tags <csv> [--json]` |
 | `snapshot` | push a bounded, allowlisted state view to the CRM cockpit | `--json` |
-| `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (49.2-03) | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--json` |
+| `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (49.2-03). The footprint receipt (49.4-07) compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
 | `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block) | `<command> [--hash-stdout] [--cwd <path>]` |
 | `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
 | `chain-verify` | verify the tamper-evident journal chain; list breaks | `--count breaks` \| `--json` |
@@ -128,7 +137,7 @@ diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-
 | Subcommand | Purpose | Key flags / usage |
 |---|---|---|
 | `blind-verify` | Re-derive every «done» from the `-PLAN.md` + code tree ALONE; a SUMMARY/exec-journal on input is structurally refused (`BLIND_FORBIDDEN`). A claimed-pass / reproduced-fail divergence is the heaviest ledger event and blocks ship (D-49.2-11). | `<plan-path>` \| `--stats --metric divergence-count` \| `--json` |
-| `grill` | The adversarial pre-build gate. Register a challenge, resolve it (→ registered prediction, withdrawn, or founder-accepted), gate the build, or run the budget-aware pre-push grill over `origin..main`. | `<plan-path> --challenge "promise::attack"` \| `--resolve <CH-id> --as <converted\|withdrawn\|accepted-risk> [--prediction <P-id>]` \| `--gate` \| `--land <CH-id>` \| `--pre-push [--budget N] [--name-only]` \| `--stats` |
+| `grill` | The adversarial pre-build gate. Register a challenge, resolve it (→ registered prediction, withdrawn, or founder-accepted), gate the build, or run the budget-aware pre-push grill over `origin..main`. | `<plan-path> --challenge "promise::attack"` \| `--resolve <CH-id> --as <converted\|withdrawn\|accepted-risk> [--prediction <P-id>]` \| `--gate` \| `--standing` \| `--standing-selftest` \| `--land <CH-id>` \| `--pre-push [--budget N] [--name-only]` \| `--stats` |
 | `preship` | The consequences gate the `sma ship` ritual calls: lists open class-A events (a class-A miss or a divergence) that BLOCK the ship. Read-only; never unblocks. | `[--count]` (numeric last line, scorer contract) \| `--selftest` \| `--json` |
 | `disposition` | The ONLY way to clear a `preship` block — the founder records an explicit verdict into the append-only ledger. The agent can never call this on its own behalf. | `<eventKey> --verdict <accept\|fix-forward\|rollback> --reason "<why>" --yes` |
 | `evidence` | Burden-of-proof record required before a risky op (extends the D-49-09 force-clear provenance pattern). | `<force-push\|allowlist-edit\|foreign-claim-clear> --target <…> --reason "<why>" --checked "a; b"` \| `--stats` |
@@ -208,6 +217,7 @@ resolves; the build never fetches.
 |---|---|---|
 | `passport` | Build / verify / read the calibration passport + README badge. | `passport --build` \| `passport --verify` \| `passport --check-badge` \| `passport --json` |
 | `model` | Model-version guard surface — sighting timeline, current model, guard state. | `model --json` \| `model --count sightings` \| `model --set <id>` |
+| `calibration` | Per-domain hit-rate table + low-calibration escalation list. Grade the grader (49.4-02): any separate-context LLM verdict is itself a prediction, scored against deterministic ground truth (revert / rework / red CI / founder rejection) and sliced by judge model; a contradicted «satisfied» is a class-A ship-blocker. | `[--domain <d>]` \| `--json` \| `--grader` (+ `--stat recorded-verdicts`, numeric last line) \| `--grader-record --plan <id> --verdict <satisfied\|unsatisfied> --source <blind-verify\|verifier\|vendor> [--horizon <spec>]` \| `--grader-selftest` (1/0, scorer contract) |
 
 - `passport --build` — rebuild `PASSPORT.md` + the README badge from the live ledger.
 - `passport --verify` — clone the repo into a throwaway dir and re-derive the passport
@@ -468,7 +478,7 @@ table above for the git airbag (`undo` / `airbag`).
 
 | Subcommand | Bridge | Key flags |
 |---|---|---|
-| `spend` | Deterministic spend ledger — per session/subagent/model book parsed from local logs via a versioned adapter; budget reflexes warn at 70/90%; soft-deny NEW subagents over cap; OTel/ccusage-compatible fields. | `[--by model\|session\|day\|agent]` \| `--window <hours>` \| `set-cap <usd> [--window-hours N]` \| `--stat <name>` \| `--json` |
+| `spend` | Deterministic spend ledger — per session/subagent/model book parsed from local logs via a versioned adapter; budget reflexes warn at 70/90%; soft-deny NEW subagents over cap; OTel/ccusage-compatible fields. Plus the 49.4-06 economy meters: `lane open\|close\|report\|derive` (per-lane fix/quick/batch/build budgets from OUR own p75 percentiles; overrun = scored calibration miss + drafted lesson; overlap-flagged runs excluded) and `self-cost` (SMA's own static per-session injection overhead). | `[--by model\|session\|day\|agent]` \| `--window <hours>` \| `set-cap <usd> [--window-hours N]` \| `lane open\|close\|report\|derive` \| `self-cost` \| `--selftest` \| `--stat <name>` \| `--json` |
 | `spend-check` | Pre-less fallback for the spend stream (budget reflexes + loop-breaker); the canonical wiring is the `pre` multiplexer. | — (hook-facing) |
 | `breaker` | Loop-breaker admin — a rule that fires runaway per the journal is disarmed until review. | `breaker <list\|re-arm <ruleId>>` |
 | `resume` | Continuation brief assembled from the flight recorder alone (works after a terminal death, not only after compaction). | `--json` |

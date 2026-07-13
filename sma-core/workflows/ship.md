@@ -47,6 +47,8 @@ BASE_BRANCH=$(sma_run query git.base-branch)
 <step name="preflight_checks">
 Verify the work is ready to ship:
 
+**Ship lane (49.4-08, BL-177):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick ritual (`/sma-quick-ship`) — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal («this is a full /sma-ship») means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background CI+Railway watch, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
+
 1. **Verification passed?**
    ```bash
    VERIFICATION=$(sma_run query verification.status "${PHASE_DIR}" 2>/dev/null)
@@ -154,7 +156,20 @@ commands implement them, never WHETHER they run:
    path push without tripping its own gate. Arming the gate at all is a founder action
    justified by `pnpm sma gates-report --promotion-readiness`; it ships DORMANT.
 
-2. **Origin-diff review.** Review every commit that would ride along with this ship —
+2. **Vendor untriaged gate (49.4-01).** No release ships past an untriaged Anthropic
+   capability sighting. Run the vendor-ledger linter in the product repo and block on a
+   non-zero count:
+
+   ```bash
+   node scripts/sma/cli.mjs vendor --count untriaged
+   ```
+
+   The command prints the untriaged count as its last line. A non-zero count blocks the
+   release until every sighting in `docs/VENDOR-LEDGER.md` carries a verdict + disposition
+   (or the founder dispositions the miss). A missing ledger is fail-open (counts 0) — the
+   gate can only block on an HONEST non-zero count.
+
+3. **Origin-diff review.** Review every commit that would ride along with this ship —
    on a shared checkout your push carries other sessions' local commits too:
 
    ```bash

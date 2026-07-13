@@ -316,6 +316,91 @@ export function answeredFields(profile) {
   return out.sort()
 }
 
+// ─────────────────────────── quick-path interview planner (BL-167) ───────────
+
+/** askStage rank for the quick-path ordering (A→D); 'meta' is never asked. */
+const ASK_STAGE_ORDER = { A: 0, B: 1, C: 2, D: 3 }
+
+/**
+ * interviewPlan(profile) -> { entries:[{field, askStage, description}], nothingToAsk }.
+ *
+ * The BL-167 quick-update planner: the deterministic complement of answeredFields.
+ * It returns every NON-meta schema field the user has NOT answered, ordered by
+ * askStage A→D then PROFILE_SCHEMA declaration order within a stage. PURE:
+ * normalizeProfile FIRST (so a v1 profile's already-answered fields never
+ * re-surface — the v1 user is asked only the genuinely new v2 fields), then
+ * schema-minus-answered via the SAME per-field `isAnswered` predicate
+ * answeredFields uses (no duplication). No Date.now, no random — identical inputs
+ * yield deeply-equal plans. It PLANS ONLY; it never writes and never re-asks an
+ * answered field. An empty profile degrades honestly to the full non-meta schema
+ * (a full interview, still zero TEACH).
+ *
+ * @param {object} profile
+ * @returns {{entries:{field:string, askStage:string, description:string}[], nothingToAsk:boolean}}
+ */
+export function interviewPlan(profile) {
+  const p = normalizeProfile(profile)
+  const entries = []
+  for (const entry of PROFILE_SCHEMA) {
+    if (entry.askStage === 'meta') continue // auto-set — never asked
+    if (isAnswered(p[entry.field])) continue // already answered — never re-asked
+    entries.push({ field: entry.field, askStage: entry.askStage, description: entry.description })
+  }
+  // Stable sort by askStage A→D; PROFILE_SCHEMA declaration order survives within a stage.
+  entries.sort((a, b) => (ASK_STAGE_ORDER[a.askStage] ?? 99) - (ASK_STAGE_ORDER[b.askStage] ?? 99))
+  return { entries, nothingToAsk: entries.length === 0 }
+}
+
+/** A minimal schema-type-valid non-empty sample value (selftest fixtures only). */
+function sampleAnswer(entry) {
+  switch (entry.type) {
+    case 'number':
+      return 2
+    case 'enum':
+      return Array.isArray(entry.values) && entry.values.length ? entry.values[0] : 'x'
+    case 'string[]':
+      return ['x']
+    case 'object':
+      return { k: 'v' }
+    default:
+      return 'x'
+  }
+}
+
+/**
+ * profileSelftest(planner = interviewPlan) -> 1 | 0. Runs the fixture pair in
+ * memory: (a) a v2 profile with exactly 2 unset fields must plan exactly those 2;
+ * (b) a fully-answered profile must yield the nothing-to-ask fast exit. Returns 1
+ * when both hold, else 0. The planner is INJECTED so a sabotaged copy (one that
+ * re-asks an answered field) provably scores 0 — the self-proving contract. Pure,
+ * numeric: the predict.mjs scorer reads the bare 1/0 (P49.4-04-A).
+ *
+ * @param {(profile:object)=>{entries:{field:string}[], nothingToAsk:boolean}} [planner]
+ * @returns {number}
+ */
+export function profileSelftest(planner = interviewPlan) {
+  const full = {}
+  for (const entry of PROFILE_SCHEMA) {
+    full[entry.field] = entry.askStage === 'meta' ? 2 : sampleAnswer(entry)
+  }
+  const twoUnset = { ...full }
+  delete twoUnset.pushTarget
+  delete twoUnset.database
+
+  const planA = planner(twoUnset)
+  const fieldsA = Array.isArray(planA && planA.entries) ? planA.entries.map((e) => e.field) : []
+  const okA =
+    fieldsA.length === 2 &&
+    fieldsA.includes('pushTarget') &&
+    fieldsA.includes('database') &&
+    planA.nothingToAsk === false
+
+  const planB = planner(full)
+  const okB = Array.isArray(planB && planB.entries) && planB.entries.length === 0 && planB.nothingToAsk === true
+
+  return okA && okB ? 1 : 0
+}
+
 // ─────────────────────────── recap render ────────────────────────────────────
 
 /** The five Recap: one-liners from onboarding-teaching.md, in document order. */

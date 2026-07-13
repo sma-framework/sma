@@ -309,6 +309,53 @@ describe('cli.mjs window-stable identity across sequential hook PROCESSES (R7/D-
   })
 })
 
+describe('cli.mjs subagent-receipts --stat (BL-173: honest stat surface)', () => {
+  /** Seed a journal .jsonl with the given events under .sma/journal/. */
+  function seedJournal(terminalId: string, events: Record<string, unknown>[]) {
+    const dir = join(smaRoot, 'journal')
+    mkdirSync(dir, { recursive: true })
+    const lines = events.map((e, i) => JSON.stringify({ seq: i + 1, terminal: terminalId, ...e })).join('\n') + '\n'
+    writeFileSync(join(dir, `${terminalId}.jsonl`), lines)
+  }
+
+  /** One pack + one receipt carrying the given tier counts. */
+  function seedReceipts(counts: Record<string, number>, transcriptSha = 'sha-1') {
+    seedJournal('mozg', [
+      { ts: new Date().toISOString(), type: 'subagent-pack', detail: { durationMs: 100 } },
+      { ts: new Date().toISOString(), type: 'subagent-receipt', detail: { transcriptSha, counts } },
+    ])
+  }
+
+  it('Test 1: --stat phantomsAsserted prints the asserted-tier count as the LAST stdout line, exit 0', () => {
+    seedReceipts({ verified: 1, phantomToolCall: 0, phantomAsserted: 3 })
+    const { stdout, status } = runCli(['subagent-receipts', '--stat', 'phantomsAsserted'], { terminalName: 'Мозг' })
+    expect(status).toBe(0)
+    expect(stdout.trim().split('\n').pop()).toBe('3')
+  })
+
+  it('Test 2: the existing keys are unregressed — coverage / phantoms / pack-p95 still resolve', () => {
+    seedReceipts({ verified: 1, phantomToolCall: 2, phantomAsserted: 5 })
+    const cov = runCli(['subagent-receipts', '--stat', 'coverage'], { terminalName: 'Мозг' })
+    expect(cov.status).toBe(0)
+    expect(cov.stdout.trim().split('\n').pop()).toBe('100') // 1 receipt / 1 pack
+
+    const ph = runCli(['subagent-receipts', '--stat', 'phantoms'], { terminalName: 'Мозг' })
+    expect(ph.status).toBe(0)
+    expect(ph.stdout.trim().split('\n').pop()).toBe('2') // tool-call tier only
+
+    const p95 = runCli(['subagent-receipts', '--stat', 'pack-p95'], { terminalName: 'Мозг' })
+    expect(p95.status).toBe(0)
+    expect(p95.stdout.trim().split('\n').pop()).toBe('100')
+  })
+
+  it('Test 3: an unknown --stat key exits 1 and writes NOTHING to stdout (no fabricated 0 a scorer could read)', () => {
+    seedReceipts({ verified: 1, phantomToolCall: 0, phantomAsserted: 0 })
+    const { stdout, status } = runCli(['subagent-receipts', '--stat', 'bogus'], { terminalName: 'Мозг' })
+    expect(status).toBe(1)
+    expect(stdout).toBe('') // the vacuous-pass seam is closed: empty stdout, error on stderr
+  })
+})
+
 describe('cli.mjs status — collision counter is bounded to today (WR-04)', () => {
   /** Seed a journal .jsonl file with the given events under .sma/journal/. */
   function seedJournal(terminalId: string, events: Record<string, unknown>[]) {

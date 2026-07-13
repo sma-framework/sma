@@ -11,6 +11,20 @@
  * hash-chained journal receipt with per-claim verdicts. Phantom writes (claimed but
  * absent / tree-unchanged) are flagged deterministically, zero LLM.
  *
+ * Asserted-tier precision (BL-173, 49.4-03; forensics 49.3-PHANTOM-FORENSICS.md proved
+ * all 9 asserted phantoms were instrument noise, 0 real). Three false-positive
+ * mechanisms fixed:
+ *   1. Repo-root basename resolution — a bare basename («Wrote 46.2-DOD.json») no longer
+ *      resolves to <repo>/basename → phantom; it cross-matches the SAME receipt's
+ *      tool-call paths (endsWith), then `git ls-files`, and demotes to
+ *      `unverifiable: ambiguous-basename` when unresolved. NEVER phantom for a bare
+ *      basename, NEVER promoted to verified without tool-call or tree evidence.
+ *   2. Write-verb line sweep — a NEGATION_STOPLIST (by another terminal / not in /
+ *      foreign / untracked / confirmed) + a verb↔token proximity window keep disclaimers
+ *      and status reports from becoming asserted write claims.
+ *   3. Duplicate receipts — receiptStats dedupes by transcriptSha (dedupeByTranscriptSha),
+ *      so an unchanged transcript re-receipted N times counts ONCE.
+ *
  * Design invariants:
  *   - DI everywhere ({runGit, statFile, appendEvent, now, readFn}) so tests never
  *     shell out or touch git. The CLI wires runGit = execFileSync('git', args) with
@@ -42,6 +56,23 @@ const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 
 /** A write verb on the SAME line as a path token makes an asserted-tier claim. */
 const WRITE_VERB = /(wrote|created|updated|added|modified)\b/i
+
+/**
+ * NEGATION_STOPLIST (BL-173 mechanism 2, forensics rows 2/7/8) — sentence-context
+ * markers that turn a write-verb line into a DISCLAIMER or status report, never a
+ * first-person write claim: «modified by another terminal», «confirmed foreign/
+ * untracked», «modified but not in any commit». A line whose lowercased text hits any
+ * of these yields NO asserted claim, even if it carries a write verb + path token.
+ */
+export const NEGATION_STOPLIST = ['by another terminal', 'not in', 'foreign', 'untracked', 'confirmed']
+
+/**
+ * Max character distance between a write verb and a path token for the token to be an
+ * asserted claim (BL-173 mechanism 2, proximity guard). A path token far from every
+ * write verb on the line (e.g. a status mention that shares a line with an unrelated
+ * write) is not a claim. Generous so genuine adjacent claims («Wrote X.json») always land.
+ */
+const VERB_PROXIMITY = 60
 
 /**
  * A repo-relative path token with a real (letter-initial) file extension. The
@@ -155,10 +186,22 @@ export function extractClaimedWrites(transcriptPath, opts = {}) {
   }
   for (const rawLine of finalText.split('\n')) {
     if (!WRITE_VERB.test(rawLine)) continue // read-mentions without a verb do not inflate the denominator
+    // mechanism 2: a disclaimer / status-report line (negation or foreign attribution)
+    // is never a first-person write claim — drop the whole line.
+    const lower = rawLine.toLowerCase()
+    if (NEGATION_STOPLIST.some((phrase) => lower.includes(phrase))) continue
+    // collect every write-verb position on the line for the proximity check.
+    const verbPositions = []
+    const verbRe = new RegExp(WRITE_VERB.source, 'gi')
+    let vm
+    while ((vm = verbRe.exec(rawLine)) !== null) verbPositions.push(vm.index)
     let m
     PATH_TOKEN.lastIndex = 0
     while ((m = PATH_TOKEN.exec(rawLine)) !== null) {
-      claims.push({ path: m[1], tier: 'asserted', toolResultOk: true })
+      // mechanism 2: only a path token WITHIN the proximity window of some write verb
+      // is a claim (a token far from every verb is an incidental mention, not a write).
+      const near = verbPositions.some((vp) => Math.abs(vp - m.index) <= VERB_PROXIMITY)
+      if (near) claims.push({ path: m[1], tier: 'asserted', toolResultOk: true })
     }
   }
 
@@ -170,8 +213,40 @@ function insideRepo(abs, repoRoot) {
   return abs === repoRoot || abs.startsWith(repoRoot.endsWith(sep) ? repoRoot : repoRoot + sep)
 }
 
+/** True when path is a bare basename (no directory separator, either slash flavor). */
+function isBareBasename(path) {
+  return !path.includes('/') && !path.includes('\\')
+}
+
+/**
+ * Resolve a bare-basename claim WITHOUT ever scoring it phantom (BL-173 mechanism 1,
+ * forensics rows 1/3/4/9). Prose names files by basename («Wrote 46.2-DOD.json»), which
+ * `resolve(repoRoot, basename)` would falsely map to <repo>/basename → phantom-missing.
+ * Instead:
+ *   (a) endsWith-match the basename against the SAME receipt's tool-call claim paths
+ *       -> verified (reason basename-crossmatch), the tree-as-witness the receipt already holds;
+ *   (b) else `git ls-files` for the basename — EXACTLY one hit -> verified (basename-lsfiles);
+ *   (c) else (zero or multiple hits) -> unverifiable: ambiguous-basename.
+ * NEVER phantom, NEVER verified without tool-call or tree evidence.
+ */
+function resolveBasename(base, path, { runGit, toolCallPaths }) {
+  const tcPaths = Array.isArray(toolCallPaths) ? toolCallPaths : []
+  if (tcPaths.some((tp) => typeof tp === 'string' && tp.endsWith(path))) {
+    return { ...base, verdict: 'verified', reason: 'basename-crossmatch' }
+  }
+  let hits = []
+  try {
+    const out = typeof runGit === 'function' ? String(runGit('ls-files', ['--', path, `*/${path}`]) ?? '') : ''
+    hits = out.split('\n').map((s) => s.trim()).filter(Boolean)
+  } catch {
+    hits = []
+  }
+  if (hits.length === 1) return { ...base, verdict: 'verified', reason: 'basename-lsfiles' }
+  return { ...base, verdict: 'unverifiable', reason: 'ambiguous-basename' }
+}
+
 /** Verify a single claim against the tree. Never throws. */
-function verifyOne(c, { repoRoot, spawnedAt, runGit, statFile }) {
+function verifyOne(c, { repoRoot, spawnedAt, runGit, statFile, toolCallPaths }) {
   const tier = c && c.tier ? c.tier : 'tool-call'
   const path = c && typeof c.path === 'string' ? c.path : null
   const base = { path, tier }
@@ -188,6 +263,12 @@ function verifyOne(c, { repoRoot, spawnedAt, runGit, statFile }) {
 
   // the tool call errored yet the write is claimed -> divergent (report says done, git said no).
   if (c.toolResultOk === false) return { ...base, verdict: 'divergent', reason: 'tool-error-claimed' }
+
+  // mechanism 1: an ASSERTED bare basename (prose naming a file by name, «Wrote
+  // 46.2-DOD.json») resolves against the receipt's own tool-call paths / the tree BEFORE
+  // any repo-root disk check — never phantom for a basename. Tool-call claims carry an
+  // authoritative file_path from the tool input and keep the normal disk/git checks.
+  if (tier === 'asserted' && isBareBasename(path)) return resolveBasename(base, path, { runGit, toolCallPaths })
 
   // disk truth first — missing means phantom no matter what the report says.
   let exists = false
@@ -239,8 +320,21 @@ export function verifyWrites(claims, opts = {}) {
   // but resolve(repoRoot, path) yields backslashes on Windows — comparing the two raw
   // would score EVERY claim 'unverifiable' on Windows. Resolving both sides fixes it.
   const repoRoot = resolve(opts.repoRoot ?? process.cwd())
-  const ctx = { repoRoot, spawnedAt: opts.spawnedAt, runGit: opts.runGit, statFile: opts.statFile }
-  return (Array.isArray(claims) ? claims : []).map((c) => verifyOne(c, ctx))
+  const claimList = Array.isArray(claims) ? claims : []
+  // The receipt's own tool-call claim paths — the witness for the basename cross-match
+  // (mechanism 1). A basename asserted in prose is verified when its full path was
+  // tool-called in the SAME receipt.
+  const toolCallPaths = claimList
+    .filter((c) => c && c.tier === 'tool-call' && typeof c.path === 'string')
+    .map((c) => c.path)
+  const ctx = {
+    repoRoot,
+    spawnedAt: opts.spawnedAt,
+    runGit: opts.runGit,
+    statFile: opts.statFile,
+    toolCallPaths,
+  }
+  return claimList.map((c) => verifyOne(c, ctx))
 }
 
 /** Per-tier phantom / verdict tally over a verified-claim list. */
@@ -318,8 +412,39 @@ function percentile(values, p) {
 }
 
 /**
+ * dedupeByTranscriptSha(events) -> events with duplicate receipts collapsed (BL-173
+ * mechanism 3, forensics rows 5/6). An unchanged transcript re-receipted N times (same
+ * `detail.transcriptSha`, identical claims by construction) is a double-COUNT, not extra
+ * coverage. Keeps the LAST receipt per transcriptSha at the FIRST occurrence's position;
+ * non-receipt events and receipts with no transcriptSha pass through untouched (they
+ * carry no dedupe key and must not be collapsed together).
+ */
+export function dedupeByTranscriptSha(events) {
+  const list = Array.isArray(events) ? events : []
+  const out = []
+  const shaAt = new Map() // transcriptSha -> index in `out`
+  for (const e of list) {
+    if (e && e.type === 'subagent-receipt') {
+      const sha = e.detail && typeof e.detail.transcriptSha === 'string' ? e.detail.transcriptSha : null
+      if (sha) {
+        if (shaAt.has(sha)) {
+          out[shaAt.get(sha)] = e // keep the LAST receipt for this transcript
+        } else {
+          shaAt.set(sha, out.length)
+          out.push(e)
+        }
+        continue
+      }
+    }
+    out.push(e)
+  }
+  return out
+}
+
+/**
  * receiptStats(events) -> {coverage, phantoms, phantomsAsserted, packP95, spawnRecords,
- * receipts, empty}. Over the shared journal events:
+ * receipts, empty}. Over the shared journal events (deduped by transcriptSha first, so an
+ * unchanged transcript re-receipted N times counts ONCE — BL-173 mechanism 3):
  *   - coverage  = 100 * receipts / spawnRecords ('subagent-pack' events); 100 when empty
  *   - phantoms  = tool-call-tier phantom count (the ==0 prediction's instrument)
  *   - phantomsAsserted = asserted-tier phantoms, counted SEPARATELY (plan 10's audit)
@@ -327,7 +452,7 @@ function percentile(values, p) {
  * Honest empty: zero spawns -> coverage 100, phantoms 0, packP95 0, empty:true.
  */
 export function receiptStats(events = []) {
-  const list = Array.isArray(events) ? events : []
+  const list = dedupeByTranscriptSha(Array.isArray(events) ? events : [])
   const packs = list.filter((e) => e && e.type === 'subagent-pack')
   const receipts = list.filter((e) => e && e.type === 'subagent-receipt')
   const spawnRecords = packs.length
