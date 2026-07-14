@@ -108,8 +108,8 @@ export const BUG_LESSON_KIND = 'bug-lesson'
  * duplicated as a tag (D-49-12 facet separation).
  */
 export const AREA_KEYWORD_MAP = [
-  // messaging channels (aliases sms/gateway/push/vk/inbox → messaging)
-  [/\b(sms|gateway|push|\bvk\b|inbox|messaging|legacyvoip|legacyinbox|legacygw|dispatcher|channel)\b/, 'messaging'],
+  // messaging channels (sms/push/inbox → messaging)
+  [/\b(sms|push|notification|inbox|messaging|dispatcher|channel|gateway)\b/, 'messaging'],
   // payload CMS
   [/\b(payload|collection|local api|migration|drizzle|cms|afterchange|field-hook|relationship)\b/, 'payload'],
   // railway / hosting / deploy
@@ -117,13 +117,13 @@ export const AREA_KEYWORD_MAP = [
   // security / rbac
   [/\b(security|rbac|webhook|secret|xss|regress|guard|access|auth|idor)\b/, 'security'],
   // phi / privacy
-  [/\b(phi|gdpr|privacy|encryption|pii|bedrock)\b/, 'phi'],
+  [/\b(phi|gdpr|privacy|encryption|retention|pii)\b/, 'phi'],
   // seo / geo
-  [/\b(seo|searchidx|geo|ai-search|schema\.org|sitemap|visibility)\b/, 'seo'],
+  [/\b(seo|geo|ai-search|schema\.org|sitemap|visibility|indexing)\b/, 'seo'],
   // design / brand / ui
   [/\b(design|brand|ui|token|visual|frontend|figma|css|scroll|body reset|back-link|backlink)\b/, 'design'],
   // release / version / push
-  [/\b(release|version|v1\.|changelog|push|tag)\b/, 'release'],
+  [/\b(release|version|semver|changelog|push|tag)\b/, 'release'],
   // finance / billing
   [/\b(finance|billing|invoice|settlement|payment|spend|cost)\b/, 'finance'],
   // agents / ai / orchestrator
@@ -136,10 +136,10 @@ export const AREA_KEYWORD_MAP = [
   [/\b(gsd|workflow|process|discuss|plan-phase|execute-phase|verify|phase work|subagent|worktree)\b/, 'workflow'],
   // os / framework / backlog / tracker / map
   [/\b(backlog|tracker|master-map|master map|operation|framework|internal-framework|roadmap|state\.md|projects board|dod|action)\b/, 'os'],
-  // content / seo-pages / blog (CIS content)
-  [/\b(content|blog|article|landing|microsite|expert|translation|russian|cis|copy)\b/, 'content'],
-  // crm — tickets/patients/funnel/internal screens (broad; placed late so specific channels win first)
-  [/\b(crm|ticket|account|funnel|approval|pipeline|board|kanban|master-map)\b/, 'crm'],
+  // content / public pages / blog
+  [/\b(content|blog|article|landing|microsite|translation|localization|copy)\b/, 'content'],
+  // crm — records/funnel/internal screens (broad; placed late so specific channels win first)
+  [/\b(crm|ticket|account|funnel|approval|pipeline|kanban|board)\b/, 'crm'],
   // governance — rules/decisions/DoD/audit/compliance/sources-of-truth
   [/\b(governance|decision|audit|compliance|source of truth|source-of-truth|rule|honesty|convention)\b/, 'governance'],
 ]

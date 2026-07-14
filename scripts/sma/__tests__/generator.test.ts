@@ -93,7 +93,7 @@ beforeEach(() => {
   })
   // Periphery (below the coreThreshold=9):
   note(corpusDir, 'bbb.md', {
-    description: 'SMS is the primary customer channel not Push',
+    description: 'SMS is the primary customer channel not push',
     kind: 'reference',
     tags: ['messaging'],
     'use-when': 'choosing an outbound channel',
