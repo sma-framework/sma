@@ -342,7 +342,7 @@ function categorizeItem(result, reason, blockedBy) {
                 return 'device_needed';
             if (/build|release|preview/i.test(blockedBy))
                 return 'build_needed';
-            if (/third.party|stripe/i.test(blockedBy))
+            if (/third.party|twilio|stripe/i.test(blockedBy))
                 return 'third_party';
         }
         return 'blocked';
