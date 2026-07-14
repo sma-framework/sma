@@ -123,7 +123,7 @@ describe('spend-adapter — the versioned log-format quarantine (Task 1)', () =>
   })
 
   it('Test 5: slugForRepoRoot matches the vendor sanitization; discoverLogsDir precedence', () => {
-    // verified against this machine's real ~/.claude/projects entry.
+    // matches the vendor's directory-name derivation for ~/.claude/projects entries.
     expect(slugForRepoRoot('C:\\Users\\Jane_Doe\\projects\\my-app')).toBe(
       'C--Users-Jane-Doe-projects-my-app',
     )

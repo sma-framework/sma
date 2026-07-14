@@ -15,7 +15,10 @@
 
 **The accountability layer for AI coding agents: layered memory that arrives on time, multi-terminal coordination without a server, and verified claims that *control* behavior. v4 — grade the grader: every separate-context verdict is recorded as a prediction and scored against what git actually did, on the thesis that a vendor can *verify* but cannot be *audited* — and per-lane economy meters that price every run against your own spend, each savings number paired with a quality guard.**
 
-[Русская версия → README.ru.md](README.ru.md) · [Interactive system map → master-graph (live)](https://sma-framework.github.io/sma/master-graph.html)
+[Русская версия → README.ru.md](README.ru.md)
+
+> ### 🗺️ [Open the live system map →](https://sma-framework.github.io/sma/master-graph.html)
+> Every subsystem of SMA on one interactive page: six version layers, clickable node cards with commands, files, and honest numbers, verified benchmarks, and the registered 10× bets. The fastest way to see how everything connects.
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and — since V3 — a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
