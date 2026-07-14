@@ -256,8 +256,8 @@ export function parseLogLine(rawLine, opts = {}) {
 /**
  * slugForRepoRoot(root) — the vendor's local-project-log directory name derivation:
  * every non-alphanumeric character becomes a dash (case PRESERVED). Verified against
- * this machine's real ~/.claude/projects entry
- * (`C--Users-Jane-Doe-projects-my-app`). NOTE: we do NOT
+ * a real ~/.claude/projects entry
+ * (e.g. `C:\Users\Jane\projects\my-app` → `C--Users-Jane-projects-my-app`). NOTE: we do NOT
  * route through collision.normalizePath here — that lowercases + folds slashes, which
  * would break the case-sensitive vendor slug.
  * @param {string} root
