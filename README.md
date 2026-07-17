@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/version-4.0.0-3B82F6" alt="version 4.0.0">
   <img src="https://img.shields.io/badge/tests-876%2F876-3CC0A0" alt="tests 876/876">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3CC0A0" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-FSL--1.1--MIT-3CC0A0" alt="FSL-1.1-MIT license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
   <img src="https://img.shields.io/badge/LLM%20in%20the%20hot%20path-zero-1FA0A6" alt="zero LLM in the hot path">
 </p>
@@ -968,7 +968,7 @@ Directions, not dates — and each will arrive the way everything here arrives: 
 
 ## License and attribution
 
-MIT — see [LICENSE](LICENSE).
+**FSL-1.1-MIT** (Functional Source License) — see [LICENSE](LICENSE). In plain words: the source is open to read, install locally, modify, and use internally or for non-commercial education and research — free of charge. What it forbids is offering SMA (or a substantially similar product) as a competing commercial product or service. Each released version automatically becomes plain MIT two years after its release. Versions released before the license change (v4.0.2 and earlier, including the npm releases) remain MIT.
 
 **Author: Matvey Maslov.** Questions, feedback, adoption stories: [matvey.maslov99@gmail.com](mailto:matvey.maslov99@gmail.com) — or open an [issue](https://github.com/sma-framework/sma/issues).
 

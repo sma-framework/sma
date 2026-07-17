@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/version-4.0.0-3B82F6" alt="версия 4.0.0">
   <img src="https://img.shields.io/badge/tests-876%2F876-3CC0A0" alt="тесты 876/876">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="калибровка: набирается, значок скрыт до n≥20">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3CC0A0" alt="лицензия MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-FSL--1.1--MIT-3CC0A0" alt="лицензия FSL-1.1-MIT"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="обычные файлы + git">
   <img src="https://img.shields.io/badge/LLM%20in%20the%20hot%20path-zero-1FA0A6" alt="ноль LLM в горячем пути">
 </p>
@@ -968,7 +968,7 @@ flowchart LR
 
 ## Лицензия и происхождение
 
-MIT, см. [LICENSE](LICENSE).
+**FSL-1.1-MIT** (Functional Source License), см. [LICENSE](LICENSE). Простыми словами: исходный код открыт — его можно читать, ставить себе локально, менять и использовать внутри своей команды, а также в некоммерческом образовании и исследованиях — бесплатно. Запрещено одно: предлагать SMA (или по сути аналогичный продукт) как конкурирующий коммерческий продукт или сервис. Каждая выпущенная версия автоматически становится обычной MIT через два года после релиза. Версии, выпущенные до смены лицензии (v4.0.2 и раньше, включая релизы npm), остаются под MIT.
 
 **Автор: Матвей Маслов (Matvey Maslov).** Вопросы, обратная связь, истории внедрения: [matvey.maslov99@gmail.com](mailto:matvey.maslov99@gmail.com), либо откройте [issue](https://github.com/sma-framework/sma/issues).
 
