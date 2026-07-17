@@ -952,11 +952,27 @@ flowchart LR
     V3 --> V35["V3.5<br>adoption & trust telemetry"]
     V35 --> V36["V3.6<br>the one-command door:<br>npm install · off-ramp · memory preview"]
     V36 --> V4["V4 — current<br>grade the grader:<br>graded verdicts · economy meters · vendor triage"]
+    V4 -.-> V5["V5 — planned<br>orchestration:<br>a 24/7 worker fleet"]
 ```
 
 ## Planned next
 
 Directions, not dates — and each will arrive the way everything here arrives: as a deterministic script with a registered prediction. The managed-agents absorption and the adoption/off-ramp hygiene that lived here have shipped — see **[What's new in V4](#whats-new-in-v4--grade-the-grader)** and **[What's new in V3.6](#whats-new-in-v36--the-one-command-door-both-ways)**.
+
+### V5 — Orchestration: a 24/7 worker fleet (the next major)
+
+Until now SMA has been the discipline *around* one interactive session. V5 adds the layer that runs the work itself, overnight, while the trust spine stays exactly as strict:
+
+- **A durable queue and a dispatcher.** A small always-on daemon on a dedicated machine. Tasks live in a durable local queue; workers claim atomically (a task can never be taken twice), a heartbeat returns silent tasks to the queue, and the tick loop is stateless — kill the daemon mid-step, restart it, nothing is lost.
+- **Headless runners.** Workers drive Claude Code and Codex CLI headless sessions. Every task gets its own isolated worktree and home directory, so context never leaks between tasks; dangerous CLI flags are refused by construction.
+- **Subscription-window routing with a budget stop.** Several accounts, honest window estimates, automatic hand-over when a limit closes, and an API fallback under a hard monthly spend ceiling.
+- **The same gate for every lane.** Whoever produced the work — no reverify receipt, no "done". Workers never push and never merge; a human reviews, approves, and publishes.
+- **An owner's front.** A token-authenticated panel with a deliberately frozen route table (the surface cannot grow into remote command execution), and a richer app on top: today view, task board, team roster, live work stream, costs and limits, rules.
+- **The decision snapshot.** Mine the owner's own session history — locally, secrets redacted, never committed — into a situation → decision corpus; distill it into the dispatcher's policy; grade it with a replay exam ("decides like you in N cases out of 100").
+- **The Creator.** A standing roster role that drafts new agents, skills, and tool requests from a plain-language description, knowing the product it serves. Drafts only — nothing activates without the owner's explicit approval.
+- **Report-back.** A morning summary over a webhook (a chat bot as the first consumer): done, failed, spend, awaiting approval.
+
+Each piece ships the way everything here ships: deterministic scripts, registered predictions, receipts.
 
 **Publish this repo's calibration badge.** The honest badge stays hidden until *this* repo's committed ledger reaches n ≥ 20 settled predictions on one Claude model; the graded-grader loop now feeds it. When the gate is met, the README badge turns on.
 
