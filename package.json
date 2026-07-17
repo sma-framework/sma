@@ -3,7 +3,7 @@
   "version": "4.0.2",
   "description": "SMA (Shared Memory & Automation) - the accountability layer for AI coding agents: layered memory, multi-terminal coordination without a server, and verified claims. Plain files + git, zero LLM in the hot path. Install: npx -y sma-framework@latest init",
   "author": "Matvey Maslov <matvey.maslov99@gmail.com>",
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "type": "module",
   "repository": {
     "type": "git",

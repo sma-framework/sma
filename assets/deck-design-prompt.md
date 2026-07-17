@@ -52,7 +52,7 @@ features, numbers, or screens.
 **Slide 1 — Title.** Logo mark large, wordmark "SMA", subline "Shared Memory &
 Automation". Tagline below: "The accountable memory & coordination layer for AI
 coding agents." Small pill row: `plain files + git` · `no daemons` · `no
-databases` · `MIT`. Background: faint giant bar motif.
+databases` · `source-available (FSL)`. Background: faint giant bar motif.
 
 **Slide 2 — Your agent is brilliant. And unaccountable.** Four pain cards in a
 2×2 grid, each with a stat chip and one line:
@@ -113,7 +113,7 @@ passport — a public badge with the measured hit rate.
 
 **Slide 10 — Close.** Logo mark. One command, huge, centered:
 `npx sma-framework init`. Below: "Own your agent's memory." and the repo URL.
-Pill row repeats: `plain files + git` · `no daemons` · `MIT`. Small dim credit
+Pill row repeats: `plain files + git` · `no daemons` · `source-available (FSL)`. Small dim credit
 line at the bottom: "Created by Matvey Maslov".
 
 ## Quality bar
