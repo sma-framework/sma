@@ -20,6 +20,9 @@
 > ### 🗺️ [Open the live system map →](https://sma-framework.github.io/sma/master-graph.html)
 > Every subsystem of SMA on one interactive page: six version layers, clickable node cards with commands, files, and honest numbers, verified benchmarks, and the registered 10× bets. The fastest way to see how everything connects.
 
+> ### 🧭 [Roadmap →](ROADMAP.md)
+> Where SMA is and what comes next — headline of the next major: **V5, orchestration: a 24/7 worker fleet.**
+
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and — since V3 — a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
 ---
