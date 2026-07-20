@@ -1,9 +1,9 @@
 /**
  * grill.mjs — the /sma-grill adversarial challenge ledger + build gate + the
- * budget-aware pre-push planner (49.2-07, D-49.2-11, the founder's /grillme ritual
+ * budget-aware pre-push planner (9.2-07, D-9.2-11, the founder's /grillme ritual
  * absorbed into architecture).
  *
- * The LAW (D-49.2-11): an unresolved grill challenge blocks the build. A challenge
+ * The LAW (D-9.2-11): an unresolved grill challenge blocks the build. A challenge
  * closes ONLY by
  *   - conversion — naming a predictionId that parsePredictions actually finds in the
  *     plan AND validatePrediction accepts (the teeth: verified against the committed
@@ -143,7 +143,7 @@ const RESOLVE_STATUSES = new Set(['converted', 'withdrawn', 'accepted-risk', 'la
 /**
  * resolveChallenge(args, {grillDir}) -> {ok, reason?, challenge?}.
  *
- * The LAW's teeth (D-49.2-11): 'converted' is VERIFIED — parsePredictions(planPath)
+ * The LAW's teeth (D-9.2-11): 'converted' is VERIFIED — parsePredictions(planPath)
  * must contain the named predictionId AND validatePrediction must accept it, else the
  * resolution is rejected and the challenge stays open. 'withdrawn' needs a non-empty
  * reason; 'accepted-risk' needs non-empty disposition text (the founder's words).
@@ -223,7 +223,7 @@ export function grillGate({ planId, dirs = {} } = {}) {
   }
 }
 
-// ── the standing footprint challenge «which ladder rung?» (49.4-07) ─────────────
+// ── the standing footprint challenge «which ladder rung?» (9.4-07) ─────────────
 
 /**
  * standingFootprint({planPath, planId, claim, grillDir, now}) -> a check-and-toggle
@@ -236,7 +236,7 @@ export function grillGate({ planId, dirs = {} } = {}) {
  *     summary as the reason. If none is open, it is a no-op (no write — a plan never
  *     touched by --standing keeps grillGate {grilled:false}).
  * grillGate/foldChallenges/challengeStats are UNCHANGED — the standing challenge is an
- * ordinary open challenge, so --gate blocks it under the same D-49.2-11 law. Never throws.
+ * ordinary open challenge, so --gate blocks it under the same D-9.2-11 law. Never throws.
  *
  * @param {{planPath?:string, planId:string, claim:(object|null), grillDir:string, now?:string}} args
  * @returns {{action:'registered'|'already-open'|'resolved'|'resolve-failed'|'no-op', challenge?:object, reason?:string}}
@@ -386,7 +386,7 @@ export function prePushPlan(args = {}) {
  * "grilled" if its ledger carries >=1 challenge; yield = pct of grilled plans having
  * >=1 challenge with landed:true (set by the --land flow when a pre-push defect traces
  * back to a challenge). Zero grilled plans -> 0. yieldPct is an integer (the
- * P49.2-07-A instrument's numeric-last-line contract). Never throws.
+ * P9.2-07-A instrument's numeric-last-line contract). Never throws.
  *
  * @param {{grillDir:string}} opts
  * @returns {{grilledPlans:number, plansWithLanded:number, yieldPct:number}}

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/package-check.mjs (49.4 BL-163/BL-164, v3.6 — the npm
+ * Tests for scripts/sma/lib/package-check.mjs (9.4 BL-163/BL-164, v3.6 — the npm
  * publishability gate + the version single-source law).
  *
  * The load-bearing behaviors:

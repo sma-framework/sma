@@ -2,7 +2,7 @@
 /**
  * verify-rebrand.mjs — integrity gate for the gsd -> sma atomic rebrand.
  *
- * Plan 49.1-02 Task 2 (T-49.1-03 / T-49.1-04 mitigations). Three checks:
+ * Plan 9.1-02 Task 2 (T-9.1-03 / T-9.1-04 mitigations). Three checks:
  *   (a) DISPATCH: every subagent_type value in sma-core/workflows/** resolves
  *       to an existing sma-core/agents/<name>.md (broken dispatch is invisible
  *       until a command runs — FI-7).
@@ -10,7 +10,7 @@
  *       alternation — avoids camelCase false positives like "learningsDelete")
  *       anywhere in sma-core/** contents or filenames, outside the exclusions
  *       recorded in rename-map.json (aliases/ layer intentionally carries the
- *       old prefix per D-49.1-02).
+ *       old prefix per D-9.1-02).
  *   (c) COLORS: every sma-core/agents/sma-*.md frontmatter carries a color field.
  *
  * Exit 0 = rebrand intact. Exit 1 = violations listed on stderr.
@@ -33,7 +33,7 @@ function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const p = path.join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (path.relative(CORE, p).split(path.sep)[0] === 'aliases') continue // D-49.1-02 exclusion
+      if (path.relative(CORE, p).split(path.sep)[0] === 'aliases') continue // D-9.1-02 exclusion
       walk(p, out)
     } else if (entry.isFile()) out.push(p)
   }

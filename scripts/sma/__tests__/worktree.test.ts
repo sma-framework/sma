@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/worktree.mjs (Phase 49.3 Plan 14).
+ * Tests for scripts/sma/lib/worktree.mjs (Phase 9.3 Plan 14).
  *
- * Per-terminal worktree isolation (D-49.3-24a/b): `sma worktree` provisions or
+ * Per-terminal worktree isolation (D-9.3-24a/b): `sma worktree` provisions or
  * reuses a per-session worktree DIRECTORY so parallel human Claude Code sessions
  * physically cannot overwrite each other on this shared, auto-deploy checkout.
  *

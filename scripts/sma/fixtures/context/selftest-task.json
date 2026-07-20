@@ -1,5 +1,5 @@
 {
-  "_note": "49.3-05 context-compiler selftest fixture (D-49.3-07). Self-contained: a task + a pinned commit + a mini catalog + note pointers, so `sma context --selftest` double-compiles IN PROCESS on any machine, byte-compares PACK.md + MANIFEST.json, and prints 1 — no repo state touched. Cards use empty git.lastCommit so the pack carries no timestamp (determinism is the feature).",
+  "_note": "9.3-05 context-compiler selftest fixture (D-9.3-07). Self-contained: a task + a pinned commit + a mini catalog + note pointers, so `sma context --selftest` double-compiles IN PROCESS on any machine, byte-compares PACK.md + MANIFEST.json, and prints 1 — no repo state touched. Cards use empty git.lastCommit so the pack carries no timestamp (determinism is the feature).",
   "task": "wire the crm inbox webhook handler",
   "commit": "0000000selftest",
   "core": ["reference_sma_protocol.md"],

@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/stpa.mjs (Phase 49.2 Plan 10, Task 3).
+ * Tests for scripts/sma/lib/stpa.mjs (Phase 9.2 Plan 10, Task 3).
  *
- * The STPA disarm-path guard (D-49.2-14):
+ * The STPA disarm-path guard (D-9.2-14):
  *   - Test 1: HAZARDS covers every kill-switch; uncompensatedKillSwitches -> [] on
  *     the shipped registry, and returns the orphan for a synthetic uncompensated gate.
  *   - Test 2: shadowRunFixtures replays a DISARMED gate's birth fixture through

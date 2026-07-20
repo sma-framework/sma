@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/state-section.mjs (Phase 49.1 Plan 19 — D-49.1-14).
+ * Tests for scripts/sma/lib/state-section.mjs (Phase 9.1 Plan 19 — D-9.1-14).
  *
  * The machine-managed STATE.md section: the three contended zones (Current
  * Position / Open Blockers / Active Sessions) live inside a `<!-- SMA-MANAGED -->`
@@ -47,7 +47,7 @@ const LINES = [
   '',
   '## Current Position',
   '',
-  '**Phase: 49.1 (SMA V2) — ИСПОЛНЯЕТСЯ. Планы 16–26 последовательно; этот терминал держит claim 49.1.**',
+  '**Phase: 9.1 (SMA V2) — ИСПОЛНЯЕТСЯ. Планы 16–26 последовательно; этот терминал держит claim 9.1.**',
   '',
   '## Open Blockers',
   '',
@@ -104,16 +104,16 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
   })
 
   it('Test 2 — setPosition OVERWRITES the Current Position body, one heading, Phase line preserved', () => {
-    const r1 = setPosition({ phase: '49.1', text: 'executing wave 15' }, { statePath })
+    const r1 = setPosition({ phase: '9.1', text: 'executing wave 15' }, { statePath })
     expect(r1.ok).toBe(true)
     const out = read()
     expect(count(out, '## Current Position')).toBe(1)
-    expect(out).toMatch(/\*\*Phase: 49\.1 — executing wave 15\*\*/)
+    expect(out).toMatch(/\*\*Phase: 9.1 — executing wave 15\*\*/)
     // parser contract: a `Phase: N` line still resolves.
-    expect(out).toMatch(/Phase:\s*49\.1/)
+    expect(out).toMatch(/Phase:\s*9.1/)
 
     // second call overwrites (snapshot rule — never appends)
-    const r2 = setPosition({ phase: '49.1', text: 'wave 16 next' }, { statePath })
+    const r2 = setPosition({ phase: '9.1', text: 'wave 16 next' }, { statePath })
     expect(r2.ok).toBe(true)
     const out2 = read()
     expect(count(out2, '## Current Position')).toBe(1)
@@ -123,13 +123,13 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
 
   it('Test 3 — addBlocker appends a parser-compatible bullet; resolveBlocker removes exactly the match', () => {
     const add = addBlocker(
-      { phase: '49.1', text: 'state verbs shipping — verify the board parser', kind: 'tech' },
+      { phase: '9.1', text: 'state verbs shipping — verify the board parser', kind: 'tech' },
       { statePath },
     )
     expect(add.ok).toBe(true)
     const out = read()
     // parser-compatible: phase-literal + action word + bullet.
-    expect(out).toMatch(/- \*\*Phase 49\.1 blocked:\*\* state verbs shipping — verify the board parser \(tech\)/)
+    expect(out).toMatch(/- \*\*Phase 9.1 blocked:\*\* state verbs shipping — verify the board parser \(tech\)/)
     // the bullet lands inside Open Blockers, before Active Sessions.
     expect(out.indexOf('state verbs shipping')).toBeLessThan(out.indexOf('## Active Sessions'))
     expect(out.indexOf('state verbs shipping')).toBeGreaterThan(out.indexOf('## Open Blockers'))
@@ -145,7 +145,7 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
 
   it('Test 4 — a concurrent out-of-band change between read and write aborts with a retry signal', () => {
     let calls = 0
-    const changed = FIXTURE.replace('claim 49.1', 'claim 49.1 CHANGED BY OTHER TERMINAL')
+    const changed = FIXTURE.replace('claim 9.1', 'claim 9.1 CHANGED BY OTHER TERMINAL')
     const readFn = () => {
       calls += 1
       return calls === 1 ? FIXTURE : changed
@@ -155,7 +155,7 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
       wrote = true
     }
     const res = setPosition(
-      { phase: '49.1', text: 'x' },
+      { phase: '9.1', text: 'x' },
       { statePath, readFn, writeFn, renameFn: () => {}, mkdirFn: () => {} },
     )
     expect(res.ok).toBe(false)
@@ -170,10 +170,10 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
       s.slice(0, s.indexOf(FENCE_START)) + s.slice(s.indexOf('## Archive'))
     const before = outsideOf(FIXTURE)
 
-    setPosition({ phase: '49.1', text: 'moved on' }, { statePath })
-    addBlocker({ phase: '49.1', text: 'new thing — clear it', kind: 'ops' }, { statePath })
+    setPosition({ phase: '9.1', text: 'moved on' }, { statePath })
+    addBlocker({ phase: '9.1', text: 'new thing — clear it', kind: 'ops' }, { statePath })
     resolveBlocker({ match: 'Phase 25.1 needs check' }, { statePath })
-    setSessions({ name: 'Phase 49.1 (this terminal)', owns: 'scripts/sma/** — state-section' }, { statePath })
+    setSessions({ name: 'Phase 9.1 (this terminal)', owns: 'scripts/sma/** — state-section' }, { statePath })
 
     const after = read()
     expect(outsideOf(after)).toBe(before)
@@ -184,12 +184,12 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
 
   it('setSessions appends a session bullet inside Active Sessions without clobbering existing ones', () => {
     const res = setSessions(
-      { name: 'Phase 49.1 (this terminal)', owns: 'scripts/sma/** — state-section' },
+      { name: 'Phase 9.1 (this terminal)', owns: 'scripts/sma/** — state-section' },
       { statePath },
     )
     expect(res.ok).toBe(true)
     const out = read()
-    expect(out).toContain('- **Phase 49.1 (this terminal):** scripts/sma/** — state-section')
+    expect(out).toContain('- **Phase 9.1 (this terminal):** scripts/sma/** — state-section')
     // the pre-existing session line is still present.
     expect(out).toContain('Phase 48 (parallel terminal)')
     // the appended bullet sits inside Active Sessions, before the Quick Tasks subsection.

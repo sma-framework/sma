@@ -73,7 +73,7 @@ stripped — any repo, any planning tree). Verified by the V1 suite under
 
 ---
 
-## Delta V2.0 — Predictions · Reflexes · Enforcement (Phase 49.1)
+## Delta V2.0 — Predictions · Reflexes · Enforcement (Phase 9.1)
 
 Six pillars extend the V1 primitives in-place (never a rewrite). Each entry: the
 requirement it adds + its verifying test file under `scripts/sma/__tests__/`.
@@ -117,7 +117,7 @@ requirement it adds + its verifying test file under `scripts/sma/__tests__/`.
   session on what changed since its last heartbeat.
   *Verified by:* `snapshot.test.ts`, `digest.test.ts`.
 
-### Delta note — 49.1-23 (B17) residuals
+### Delta note — 9.1-23 (B17) residuals
 
 This plan shipped the P5 residuals of the delta above: `tia` (regex test-impact analysis,
 advisory tier), config-enforced read-only tool scope on `sma-verifier` + `sma-plan-checker`,

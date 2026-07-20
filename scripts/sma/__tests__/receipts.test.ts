@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/receipts.mjs (Phase 49.2 Plan 03, Task 1).
+ * Tests for scripts/sma/lib/receipts.mjs (Phase 9.2 Plan 03, Task 1).
  *
- * Structural receipts — the claims schema over the V2 coverage block (D-49.2-06):
+ * Structural receipts — the claims schema over the V2 coverage block (D-9.2-06):
  *   - Test 1: parseReceipts extracts a flat `receipts:` dash-list; missing file /
  *     no fence / no block -> {receipts: []} honest-empty, never a throw.
  *   - Test 2: validateReceipt rejects a missing locked field; enforces the 64-hex
@@ -36,7 +36,7 @@ function summary(bodyLines: string[]): string {
 describe('parseReceipts', () => {
   it('extracts a flat receipts dash-list from frontmatter', () => {
     const text = summary([
-      'phase: 49.2',
+      'phase: 9.2',
       'receipts:',
       '  - id: R1',
       '    assertion: the thing holds',
@@ -60,7 +60,7 @@ describe('parseReceipts', () => {
   it('missing file / no fence / no block -> {receipts: []}, never a throw', () => {
     expect(parseReceipts('S.md', { readFn: () => { throw new Error('ENOENT') } }).receipts).toEqual([])
     expect(parseReceipts('S.md', { readFn: () => 'no fence here' }).receipts).toEqual([])
-    expect(parseReceipts('S.md', { readFn: () => summary(['phase: 49.2']) }).receipts).toEqual([])
+    expect(parseReceipts('S.md', { readFn: () => summary(['phase: 9.2']) }).receipts).toEqual([])
   })
 })
 
@@ -163,7 +163,7 @@ describe('recordReceipt round-trip', () => {
 describe('parseCoverage — tolerates nested verification sub-lists', () => {
   it('extracts {id, human_judgment} and does not break on the 6-space dedent', () => {
     const text = summary([
-      'phase: 49.2',
+      'phase: 9.2',
       'coverage:',
       '  - id: cov-1',
       '    description: a machine claim',

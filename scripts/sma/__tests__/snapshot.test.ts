@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/snapshot.mjs (Phase 49 Plan 13, Task 1).
  *
- * The terminal→CRM reporter (R12, D-49-04/05/11, P1):
+ * The terminal→CRM reporter (R12, D-9-04/05/11, P1):
  *   - Test 1: buildSnapshotPayload output keys are EXACTLY the allowlist (deep,
  *     incl. nested collisionFeed item keys) — nothing else survives serialization (P1).
  *   - Test 2: collisionFeed is the OWN journal tail bounded to 20; memoryHealth
@@ -34,14 +34,14 @@ const ALLOWED_KEYS = [
   'sentAt',
   'collisionFeed',
   'memoryHealth',
-  // v2 (49.1-25, B21) — the extended cockpit blocks.
+  // v2 (9.1-25, B21) — the extended cockpit blocks.
   'schemaVersion',
   'predictions',
   'calibration',
   'reflexFires',
   'gates',
   'corpusHealth',
-  // 49.2-09 (D-49.2-13) — the deterministic spend ledger block.
+  // 9.2-09 (D-9.2-13) — the deterministic spend ledger block.
   'spend',
 ]
 
@@ -92,7 +92,7 @@ function writeJournal(n: number) {
   writeFileSync(join(journalDir, `${identity.terminalId}.jsonl`), lines.join('\n') + '\n')
 }
 
-/** Append calibration ledger records for a domain (49.1-25 v2 fixtures). */
+/** Append calibration ledger records for a domain (9.1-25 v2 fixtures). */
 function writeCalibration(domain: string, records: Array<{ verdict: string; ts: string }>) {
   const lines = records.map((r) => JSON.stringify({ domain, verdict: r.verdict, ts: r.ts }))
   writeFileSync(join(calibrationDir, `${domain}.jsonl`), lines.join('\n') + '\n')
@@ -226,7 +226,7 @@ describe('buildSnapshotPayload — bounded feed + narrowed health (Test 2)', () 
   })
 })
 
-describe('buildSnapshotPayload — v2 cockpit blocks (49.1-25, B21)', () => {
+describe('buildSnapshotPayload — v2 cockpit blocks (9.1-25, B21)', () => {
   it('Test 1: payload gains predictions/calibration/reflexFires/gates/corpusHealth + schemaVersion 2; session block unchanged', () => {
     writeLease()
     writeReflexAndGateJournal()

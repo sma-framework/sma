@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/deleteme.mjs (49.4 BL-162, v3.6 — the one-click off-ramp).
+ * Tests for scripts/sma/lib/deleteme.mjs (9.4 BL-162, v3.6 — the one-click off-ramp).
  *
  * The load-bearing behaviors:
  *   Test 1 — cutBlock: whole-line span removal; zero anchors no-op; torn/duplicate pair REFUSED

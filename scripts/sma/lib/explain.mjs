@@ -1,12 +1,12 @@
 /**
- * explain.mjs — in-product explainers with a command-coverage tripwire (49.3-09).
+ * explain.mjs — in-product explainers with a command-coverage tripwire (9.3-09).
  *
  * `pnpm sma explain <topic>` prints a plain-language explainer for every core SMA
  * concept AND, via the COMMAND_TOPICS alias map, for every CLI subcommand registered
  * in cli.mjs's HANDLERS block. An unknown topic lists the catalog and exits 0 — the
- * teaching surface never punishes curiosity (D-49.3-15).
+ * teaching surface never punishes curiosity (D-9.3-15).
  *
- * THE DRIFT TRIPWIRE (P49.3-09-A): `coverage()` reads cli.mjs as TEXT (anchored regex
+ * THE DRIFT TRIPWIRE (P9.3-09-A): `coverage()` reads cli.mjs as TEXT (anchored regex
  * over the `const HANDLERS = {` block) and reports every HANDLERS key with no resolvable
  * explainer topic. A sibling plan that lands a new command WITHOUT extending COMMAND_TOPICS
  * flips the uncovered count above 0 and scores a miss. That is by design — docs cannot
@@ -33,7 +33,7 @@ const EM_DASH_RE = /—/
 /**
  * COMMAND_TOPICS — the exhaustive alias map from every LIVE cli.mjs HANDLERS key to an
  * explainer topic id. This is the join between the command surface and the topic corpus.
- * A later sibling adding a HANDLERS key without extending this map flips P49.3-09-A — the
+ * A later sibling adding a HANDLERS key without extending this map flips P9.3-09-A — the
  * designed drift tripwire. Keep this map exhaustive against the live HANDLERS block.
  */
 export const COMMAND_TOPICS = {
@@ -48,7 +48,7 @@ export const COMMAND_TOPICS = {
   consume: 'coordination',
   tia: 'coordination',
   worktree: 'coordination',
-  merge: 'merge', // 49.3-15 — the serialized merge ritual has its own topic
+  merge: 'merge', // 9.3-15 — the serialized merge ritual has its own topic
 
   // hooks — the four hook points
   'session-start': 'hooks',
@@ -126,7 +126,7 @@ export const COMMAND_TOPICS = {
   // substrate — files + git, no daemon/DB/cloud
   'upstream-check': 'substrate',
 
-  // passport — PASSPORT.md + badge + model-version guard (49.3-02)
+  // passport — PASSPORT.md + badge + model-version guard (9.3-02)
   passport: 'passport',
   model: 'passport',
 
@@ -146,12 +146,16 @@ export const COMMAND_TOPICS = {
 
   // v4 — the standing Anthropic-update triage ledger + the economy meters
   vendor: 'vendor',
-  memory: 'economy', // 49.4-06 — corpus token-cost report, lane budgets, self-cost meter
-  'ship-lane': 'economy', // 49.4-08 — the ship lanes: quick-ship precondition + changelog drafter + lane records
+  memory: 'economy', // 9.4-06 — corpus token-cost report, lane budgets, self-cost meter
+  'ship-lane': 'economy', // 9.4-08 — the ship lanes: quick-ship precondition + changelog drafter + lane records
 
   // v3.6 — the off-ramp and the onboarding preview
   deleteme: 'deleteme',
   'memory-preview': 'memory-preview',
+
+  // v5 — the decision corpus and the replay exam
+  decisions: 'decisions',
+  exam: 'exam',
 }
 
 /**
@@ -253,7 +257,7 @@ export function renderTopic(id, { explainersDir, lang = 'en' }) {
 /**
  * coverage({cliSource, explainersDir}) — {uncovered:[...keys], count}. A HANDLERS key
  * absent from COMMAND_TOPICS counts; a key mapped to a topic whose file does not exist
- * ALSO counts. `count` is the number P49.3-09-A scores (0 at phase verify).
+ * ALSO counts. `count` is the number P9.3-09-A scores (0 at phase verify).
  */
 export function coverage({ cliSource, explainersDir }) {
   const keys = extractHandlersKeys(cliSource)

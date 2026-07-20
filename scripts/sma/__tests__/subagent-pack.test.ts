@@ -1,6 +1,6 @@
 /**
  * Tests for subagent-pack.mjs — deterministic PreTask context-pack assembly +
- * the PreToolUse `updatedInput` injection payload (Phase 49.2 Plan 04, Task 1).
+ * the PreToolUse `updatedInput` injection payload (Phase 9.2 Plan 04, Task 1).
  *
  * Everything is DI: sources are injected functions, so tests never touch the
  * filesystem, never shell out, and are fully deterministic (ages come from
@@ -34,7 +34,7 @@ function fullSources(over: any = {}) {
     readClaims: () => [
       { name: 'memory-corpus', provenance: { by: 'Tom' }, ageMs: 5 * 60000 },
     ],
-    readSessions: () => [{ holderIdentity: 'Tom', label: 'phase:49.2', phase: '49.2' }],
+    readSessions: () => [{ holderIdentity: 'Tom', label: 'phase:9.2', phase: '9.2' }],
     execTail: () => [
       { event: 'task_start', task: 1 },
       { event: 'task_complete', task: 1 },
@@ -69,7 +69,7 @@ describe('Task 1 — subagent-pack assembly', () => {
     expect(iClaims).toBeLessThan(iSlice)
     expect(iSlice).toBeLessThan(iLessons)
     // named-identity claim line uses the displayIdentity convention.
-    expect(pack).toContain('«memory-corpus» held by P49.2 Tom (5 min)')
+    expect(pack).toContain('«memory-corpus» held by P9.2 Tom (5 min)')
   })
 
   it('Test 2: determinism + budget — byte-identical across runs; overflow drops lessons from the END, digest never trimmed', () => {

@@ -1,6 +1,6 @@
 /**
  * subagent-receipts.mjs — transcript claim extraction + tree verification + the
- * shared-journal receipt (49.2-04, D-49.2-10).
+ * shared-journal receipt (9.2-04, D-9.2-10).
  *
  * The workspace paper's finding: an agent's self-report is structurally incomplete,
  * so «done» must rest on observable tree consequences, never on the subagent's word.
@@ -11,7 +11,7 @@
  * hash-chained journal receipt with per-claim verdicts. Phantom writes (claimed but
  * absent / tree-unchanged) are flagged deterministically, zero LLM.
  *
- * Asserted-tier precision (BL-173, 49.4-03; forensics 49.3-PHANTOM-FORENSICS.md proved
+ * Asserted-tier precision (BL-173, 9.4-03; forensics 9.3-PHANTOM-FORENSICS.md proved
  * all 9 asserted phantoms were instrument noise, 0 real). Three false-positive
  * mechanisms fixed:
  *   1. Repo-root basename resolution — a bare basename («Wrote 46.2-DOD.json») no longer
@@ -29,14 +29,14 @@
  *   - DI everywhere ({runGit, statFile, appendEvent, now, readFn}) so tests never
  *     shell out or touch git. The CLI wires runGit = execFileSync('git', args) with
  *     arg arrays and a literal `--` before every claimed path (no shell string is
- *     ever built from transcript content — T-49.2-04-C).
+ *     ever built from transcript content — T-9.2-04-C).
  *   - The tree is the only witness: a subagent's self-report is NEVER trusted as
- *     evidence of a write (D-49.2-10). verifyWrites never throws on a malformed
+ *     evidence of a write (D-9.2-10). verifyWrites never throws on a malformed
  *     claim — a null/outside-repo path scores 'unverifiable', never a phantom.
  *   - Receipts ride journal.mjs appendEvent UNCHANGED — plan 03's hash chain then
- *     covers receipt lines for free (D-49.2-07). This module re-implements nothing.
+ *     covers receipt lines for free (D-9.2-07). This module re-implements nothing.
  *   - transcriptSha pins WHAT was verified so plan 10's 5% audit re-derives the
- *     same verdicts (D-49.2-14 hook).
+ *     same verdicts (D-9.2-14 hook).
  *
  * Node built-ins only; no child_process (git is injected), no network, no LLM.
  */
@@ -304,7 +304,7 @@ function verifyOne(c, { repoRoot, spawnedAt, runGit, statFile, toolCallPaths }) 
 
 /**
  * verifyWrites(claims, {repoRoot, spawnedAt, runGit, statFile}) -> [{path, tier,
- * verdict, reason?}]. The verdict matrix (D-49.2-10):
+ * verdict, reason?}]. The verdict matrix (D-9.2-10):
  *   exists + dirty                         -> verified
  *   exists + clean + commit since spawn    -> verified
  *   exists + clean + no commit since spawn -> phantom-unchanged
@@ -488,7 +488,7 @@ export function receiptStats(events = []) {
  * --schema-check` contract (BL-172, 2026-07-10): a structural receipt over
  * the report surface must pin the report's SHAPE, never its NUMBERS —
  * .sma/subagents state ACCRUES with every spawn, so hashing the `--json`
- * output re-fails on every reverify by construction (the class the 49.2-04 R2
+ * output re-fails on every reverify by construction (the class the 9.2-04 R2
  * assertion already names: «a receipt must never hash accruing
  * .sma/subagents state»). Valid: an object whose six count fields are finite
  * numbers and whose `empty` flag is a boolean.

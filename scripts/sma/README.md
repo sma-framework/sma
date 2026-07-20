@@ -1,10 +1,10 @@
 # SMA — Shared Memory & Automation (Phase 49, V1)
 
 > **This is the CANONICAL copy of the SMA runtime layer** (sma-framework product
-> repo, migrated in 49.1-03 per FI-1 / D-49.1-05). The originating platform's
-> `scripts/sma/` copy is FROZEN for the duration of phase 49.1: all V2 pillar
-> work (P1-P6, plans 49.1-07..24) extends THIS tree. The platform re-syncs from
-> here at the dogfood step (49.1-26). Path parity is deliberate: hook commands
+> repo, migrated in 9.1-03 per FI-1 / D-9.1-05). The originating platform's
+> `scripts/sma/` copy is FROZEN for the duration of phase 9.1: all V2 pillar
+> work (P1-P6, plans 9.1-07..24) extends THIS tree. The platform re-syncs from
+> here at the dogfood step (9.1-26). Path parity is deliberate: hook commands
 > (`node scripts/sma/cli.mjs ...`) stay valid unchanged in any install target.
 
 SMA is the layered-memory + multi-terminal coordination framework that sits on top
@@ -20,7 +20,7 @@ of gsd-core in this repo. It has two pillars:
 Everything is deterministic Node (built-ins only, zero npm deps). All CLI verbs run
 through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 
-> **CLAUDE.md is frozen for V1 (D-49-08).** The agent-facing protocol lives in the
+> **CLAUDE.md is frozen for V1 (D-9-08).** The agent-facing protocol lives in the
 > CORE-bound memory note `.claude/memory/reference_sma_protocol.md` and in this
 > README, not in CLAUDE.md. The SPEC's in-scope wording ("a CLAUDE.md section") is
 > satisfied this way; the founder may relocate it into CLAUDE.md in a later version.
@@ -49,17 +49,17 @@ The V4 maintainer-process surface:
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `vendor` | Anthropic capability ledger linter (49.4-01, BL-160): parses `docs/VENDOR-LEDGER.md`, fails rows missing a verdict or disposition; `--count untriaged` prints the bare number as a last line (scorer contract) that the `/sma-ship` gate blocks on; `--selftest` proves the linter against a fixture pair. Read-only, zero network, never writes a verdict. NOT hook-facing. | `[--count untriaged]` \| `--selftest` \| `--json` |
-| `memory` | Deterministic corpus token-cost report (49.4-06, BL-176): `memory stats` prices the MEMORY.md core load, every note, every INDEX file, and the top-N heaviest with a VERSIONED estimator (`ESTIMATOR_VERSION` stamped, approximation not billing truth); `--stat core-tokens\|corpus-tokens` prints the bare number (scorer contract); `--selftest` proves determinism. Compress is deliberately absent — deferred until stats shows measured pain. NOT hook-facing. | `stats [--top N]` \| `--stat core-tokens\|corpus-tokens` \| `--selftest` \| `--json` |
-| `ship-lane` | The ship lanes (49.4-08, BL-177): a DETERMINISTIC quick-ship precondition (`check` — origin-delta <= 5 commits AND no migrations AND no foreign push-claim, else refuses «this is a full /sma-ship» naming every failing leg), a deterministic conventional-commit changelog drafter (`changelog`, the full lane consumes it too), and a lane-outcome ledger (`record`/`report`, pending runs listed first + >24h orphaned-watch flag). `--stat quick-active-p50-min\|quick-red-minus-full-red-pct` prints the bare number (scorer contract); `--selftest` proves the fixture pack. READ-ONLY — never pushes, tags, or deploys. NOT hook-facing. | `check [--base <b>] [--max-delta N]` \| `changelog [--base <b>]` \| `record --lane quick\|full --outcome green\|red\|pending --started <iso> [--ended <iso>]` \| `report` \| `--stat <name>` \| `--selftest` \| `--json` |
+| `vendor` | Anthropic capability ledger linter (9.4-01, BL-160): parses `docs/VENDOR-LEDGER.md`, fails rows missing a verdict or disposition; `--count untriaged` prints the bare number as a last line (scorer contract) that the `/sma-ship` gate blocks on; `--selftest` proves the linter against a fixture pair. Read-only, zero network, never writes a verdict. NOT hook-facing. | `[--count untriaged]` \| `--selftest` \| `--json` |
+| `memory` | Deterministic corpus token-cost report (9.4-06, BL-176): `memory stats` prices the MEMORY.md core load, every note, every INDEX file, and the top-N heaviest with a VERSIONED estimator (`ESTIMATOR_VERSION` stamped, approximation not billing truth); `--stat core-tokens\|corpus-tokens` prints the bare number (scorer contract); `--selftest` proves determinism. Compress is deliberately absent — deferred until stats shows measured pain. NOT hook-facing. | `stats [--top N]` \| `--stat core-tokens\|corpus-tokens` \| `--selftest` \| `--json` |
+| `ship-lane` | The ship lanes (9.4-08, BL-177): a DETERMINISTIC quick-ship precondition (`check` — origin-delta <= 5 commits AND no migrations AND no foreign push-claim, else refuses «this is a full /sma-ship» naming every failing leg), a deterministic conventional-commit changelog drafter (`changelog`, the full lane consumes it too), and a lane-outcome ledger (`record`/`report`, pending runs listed first + >24h orphaned-watch flag). `--stat quick-active-p50-min\|quick-red-minus-full-red-pct` prints the bare number (scorer contract); `--selftest` proves the fixture pack. READ-ONLY — never pushes, tags, or deploys. NOT hook-facing. | `check [--base <b>] [--max-delta N]` \| `changelog [--base <b>]` \| `record --lane quick\|full --outcome green\|red\|pending --started <iso> [--ended <iso>]` \| `report` \| `--stat <name>` \| `--selftest` \| `--json` |
 
 The V3.5 docs / teaching surfaces:
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (P49.3-09-A scorer). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
-| `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (P49.3-09-B/C scorer). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
-| `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (49.3-01) plus the BL-167 quick-update path (49.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
+| `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (P9.3-09-A scorer). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
+| `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (P9.3-09-B/C scorer). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
+| `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (9.3-01) plus the BL-167 quick-update path (9.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
 contract). Hook-facing subcommands (`session-start`, `pre`, `heartbeat`, `pretask-pack`,
@@ -77,7 +77,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `status` | statusline/hook JSON: active sessions, collisions, next slots | `--json` |
 | `heartbeat` | renew this session's lease (cadence: every 3 min) | — |
 | `session-start` | register this terminal's session lease | — |
-| `pre` | **the PreToolUse multiplexer (49.2-02) — ONE spawn per Edit/Write/Bash** dispatching collision → reflex → gates | — |
+| `pre` | **the PreToolUse multiplexer (9.2-02) — ONE spawn per Edit/Write/Bash** dispatching collision → reflex → gates | — |
 | `pre-bench` | SLO instrument for `pre`: full-spawn p95, spawn-count, dispatch parity | `--runs N` \| `--metric spawn-count\|parity` |
 | `collision-check` | DEPRECATED single-stream alias (delegates to `pre`'s collision stream; kept for back-compat) | `--json` |
 | `reflex-check` | DEPRECATED single-stream alias (reflex stream) | — |
@@ -93,12 +93,12 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `build-index` | (re)generate MEMORY.md | `--write` (DRY by default) |
 | `load` | resolve a tag set into CORE + periphery notes | `--tags <csv> [--json]` |
 | `snapshot` | push a bounded, allowlisted state view to the CRM cockpit | `--json` |
-| `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (49.2-03). The footprint receipt (49.4-07) compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
+| `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (9.2-03). The footprint receipt (9.4-07) compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
 | `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block) | `<command> [--hash-stdout] [--cwd <path>]` |
 | `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
 | `chain-verify` | verify the tamper-evident journal chain; list breaks | `--count breaks` \| `--json` |
 
-### Tamper-evident journal + release-tag pin (D-49.2-07)
+### Tamper-evident journal + release-tag pin (D-9.2-07)
 
 Every `.sma/journal` line is hash-chained: `prev` = sha256 of the previous raw
 line (`genesis` for the first). The whole V2 history is a legacy prev-less
@@ -113,14 +113,14 @@ pins `SMA-Journal-Tip: <tip>`** as the final line of the annotated `V1.N` tag
 `git tag -n99 V1.N`, read the pinned tip, and recompute `chain-tip` against the
 journal state at that commit — a mismatch is evidence of a local edit.
 
-### Structural receipts (D-49.2-06)
+### Structural receipts (D-9.2-06)
 
 A SUMMARY may carry a `receipts:` frontmatter block — machine-checkable claims
 `{id, assertion, check_command, expected_sha256}` (plus optional `expected_exit`,
 `hash_stdout`, `coverage_id`) layered over the V2 `coverage:` block. `reverify`
 re-runs each `check_command` across the SAME `isSafeCommand` boundary as
 predictions; `--fresh-clone` runs on a `git clone --no-hardlinks` so only
-COMMITTED evidence counts. The RECEIPT-PROSE lint fails any 49.2+ SUMMARY whose
+COMMITTED evidence counts. The RECEIPT-PROSE lint fails any 9.2+ SUMMARY whose
 machine-verifiable coverage item (`human_judgment: false`) carries no receipt —
 a prose-only «done» cannot pass lint.
 
@@ -128,7 +128,7 @@ a prose-only «done» cannot pass lint.
 
 ## V3 trust-spine subcommands
 
-The accountability layer (Phase 49.2). Every verb here is a deterministic script on
+The accountability layer (Phase 9.2). Every verb here is a deterministic script on
 the same files+git substrate — no LLM in the hot path. The narrative overview, with
 diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-by-process).
 
@@ -136,11 +136,11 @@ diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-
 
 | Subcommand | Purpose | Key flags / usage |
 |---|---|---|
-| `blind-verify` | Re-derive every «done» from the `-PLAN.md` + code tree ALONE; a SUMMARY/exec-journal on input is structurally refused (`BLIND_FORBIDDEN`). A claimed-pass / reproduced-fail divergence is the heaviest ledger event and blocks ship (D-49.2-11). | `<plan-path>` \| `--stats --metric divergence-count` \| `--json` |
+| `blind-verify` | Re-derive every «done» from the `-PLAN.md` + code tree ALONE; a SUMMARY/exec-journal on input is structurally refused (`BLIND_FORBIDDEN`). A claimed-pass / reproduced-fail divergence is the heaviest ledger event and blocks ship (D-9.2-11). | `<plan-path>` \| `--stats --metric divergence-count` \| `--json` |
 | `grill` | The adversarial pre-build gate. Register a challenge, resolve it (→ registered prediction, withdrawn, or founder-accepted), gate the build, or run the budget-aware pre-push grill over `origin..main`. | `<plan-path> --challenge "promise::attack"` \| `--resolve <CH-id> --as <converted\|withdrawn\|accepted-risk> [--prediction <P-id>]` \| `--gate` \| `--standing` \| `--standing-selftest` \| `--land <CH-id>` \| `--pre-push [--budget N] [--name-only]` \| `--stats` |
 | `preship` | The consequences gate the `sma ship` ritual calls: lists open class-A events (a class-A miss or a divergence) that BLOCK the ship. Read-only; never unblocks. | `[--count]` (numeric last line, scorer contract) \| `--selftest` \| `--json` |
 | `disposition` | The ONLY way to clear a `preship` block — the founder records an explicit verdict into the append-only ledger. The agent can never call this on its own behalf. | `<eventKey> --verdict <accept\|fix-forward\|rollback> --reason "<why>" --yes` |
-| `evidence` | Burden-of-proof record required before a risky op (extends the D-49-09 force-clear provenance pattern). | `<force-push\|allowlist-edit\|foreign-claim-clear> --target <…> --reason "<why>" --checked "a; b"` \| `--stats` |
+| `evidence` | Burden-of-proof record required before a risky op (extends the D-9-09 force-clear provenance pattern). | `<force-push\|allowlist-edit\|foreign-claim-clear> --target <…> --reason "<why>" --checked "a; b"` \| `--stats` |
 
 ```bash
 # a plan promise → a registered prediction, else the build does not start
@@ -156,7 +156,7 @@ pnpm sma preship
 pnpm sma disposition blind-divergence:sma.receipts:R-01 --verdict fix-forward --reason "regression fixed in <sha>" --yes
 ```
 
-### Subagent honesty (D-49.2-10)
+### Subagent honesty (D-9.2-10)
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
@@ -176,7 +176,7 @@ pnpm sma disposition blind-divergence:sma.receipts:R-01 --verdict fix-forward --
 ]
 ```
 
-### Measurement — `bench` (D-49.2-01)
+### Measurement — `bench` (D-9.2-01)
 
 The 8-metric scorecard harness that shipped BEFORE the spine (no measured base, no
 target). Each metric emits exactly one numeric last line (the scorer contract).
@@ -193,7 +193,7 @@ pnpm sma bench --metric self-cost      # S7 — measured ms-per-tool-call
 pnpm sma bench --metric canary-catch   # S8 — planted-canary catch rate
 ```
 
-### Integrity guards (D-49.2-14)
+### Integrity guards (D-9.2-14)
 
 | Subcommand | Purpose | Usage |
 |---|---|---|
@@ -202,7 +202,7 @@ pnpm sma bench --metric canary-catch   # S8 — planted-canary catch rate
 | `integrity` | STPA disarm-path guard — every kill-switch must cite a compensating control; the birth-fixture shadow-runs while off and auto-re-arms. | `integrity <hazards\|shadow\|disarms\|disarm-renew>` \| `disarm-renew <gateId> --reason "<why>"` \| `--json` \| `--count-uncompensated` \| `--count-silent` |
 | `nearmiss` | Scoring-immune near-miss channel (ASRS-style) — report what nearly went wrong without it counting against calibration. | `nearmiss "<what nearly went wrong>"` |
 
-### Calibration passport + public badge (D-49.3-10)
+### Calibration passport + public badge (D-9.3-10)
 
 The passport is the public trust-telemetry surface: one deterministic script over
 the calibration ledger + the reverify receipts writes `PASSPORT.md` (with an
@@ -217,13 +217,13 @@ resolves; the build never fetches.
 |---|---|---|
 | `passport` | Build / verify / read the calibration passport + README badge. | `passport --build` \| `passport --verify` \| `passport --check-badge` \| `passport --json` |
 | `model` | Model-version guard surface — sighting timeline, current model, guard state. | `model --json` \| `model --count sightings` \| `model --set <id>` |
-| `calibration` | Per-domain hit-rate table + low-calibration escalation list. Grade the grader (49.4-02): any separate-context LLM verdict is itself a prediction, scored against deterministic ground truth (revert / rework / red CI / founder rejection) and sliced by judge model; a contradicted «satisfied» is a class-A ship-blocker. | `[--domain <d>]` \| `--json` \| `--grader` (+ `--stat recorded-verdicts`, numeric last line) \| `--grader-record --plan <id> --verdict <satisfied\|unsatisfied> --source <blind-verify\|verifier\|vendor> [--horizon <spec>]` \| `--grader-selftest` (1/0, scorer contract) |
+| `calibration` | Per-domain hit-rate table + low-calibration escalation list. Grade the grader (9.4-02): any separate-context LLM verdict is itself a prediction, scored against deterministic ground truth (revert / rework / red CI / founder rejection) and sliced by judge model; a contradicted «satisfied» is a class-A ship-blocker. | `[--domain <d>]` \| `--json` \| `--grader` (+ `--stat recorded-verdicts`, numeric last line) \| `--grader-record --plan <id> --verdict <satisfied\|unsatisfied> --source <blind-verify\|verifier\|vendor> [--horizon <spec>]` \| `--grader-selftest` (1/0, scorer contract) |
 
 - `passport --build` — rebuild `PASSPORT.md` + the README badge from the live ledger.
 - `passport --verify` — clone the repo into a throwaway dir and re-derive the passport
   + badge from the **committed** embedded snapshot; prints `1` (byte-identical) or `0`
   as the last line, always exit 0. This proves render determinism, not ledger
-  truthfulness (that is owned by the canary + 5% audit, 49.2-10).
+  truthfulness (that is owned by the canary + 5% audit, 9.2-10).
 - `passport --check-badge` — the live README badge equals `renderBadgeBlock(committed snapshot)`; `1`/`0` last line.
 - `passport --json` — the committed snapshot as canonical JSON (the read surface for the statusline / PR passport / docs).
 - `model --set <id>` — record a manual sighting (source `manual`) when the harness exposes no model id.
@@ -235,7 +235,7 @@ git clone <this-repo> sma-check && cd sma-check
 node scripts/sma/cli.mjs passport --verify   # prints 1 -> the published numbers re-derive byte-identically
 ```
 
-### PR evidence passport — `sma manifest` (D-49.3-11)
+### PR evidence passport — `sma manifest` (D-9.3-11)
 
 The passport a reviewer meets a pull request with: `sma manifest` deterministically
 assembles an evidence pack from the Track A artifacts — which predictions were
@@ -275,7 +275,7 @@ node scripts/sma/cli.mjs manifest --md                 # render the passport (ma
 node scripts/sma/cli.mjs manifest --stat determinism   # prints 1 -> the pack re-derives byte-identically
 ```
 
-### Excavate — day-one value (D-49.3-09)
+### Excavate — day-one value (D-9.3-09)
 
 The adoption wedge: point `excavate` at ANY repository and it mines that repo's own
 git history for prevented-loss evidence, then prints CATCHES — «this reflex would
@@ -323,18 +323,18 @@ incident class, and an `excavated_from: <repoLabel>@<sha7>` provenance back-link
 
 | metric | prints | prediction |
 |---|---|---|
-| `approved-lessons` | count of corpus notes carrying `excavated_from` (fresh install: `0`) | P49.3-03-A |
-| `firing-ready-pct` | integer % of those notes that replay firing-ready (no notes: `0`) | P49.3-03-B |
-| `determinism` | `1` when two mineRepo runs on the current repo are serialized-equal, else `0` | P49.3-03-C |
+| `approved-lessons` | count of corpus notes carrying `excavated_from` (fresh install: `0`) | P9.3-03-A |
+| `firing-ready-pct` | integer % of those notes that replay firing-ready (no notes: `0`) | P9.3-03-B |
+| `determinism` | `1` when two mineRepo runs on the current repo are serialized-equal, else `0` | P9.3-03-C |
 
 `excavate` is a direct CLI command — it is **not** hook-facing and never rides `sma pre`,
 so it cannot touch the V3 self-cost envelope; its failures exit `1` honestly.
 
-### Pre-dispatch: `sma preflight` (D-49.3-17)
+### Pre-dispatch: `sma preflight` (D-9.3-17)
 
 The already-built gate. Before an executor is dispatched for a plan, `preflight` asks
 one question of the **real code tree**: is this plan already built? It parses the plan's
-`must_haves` (artifact paths + `contains` needles) with 49.2-01's own bench parser,
+`must_haves` (artifact paths + `contains` needles) with 9.2-01's own bench parser,
 checks them against the tree, and returns exactly one verdict — **built / partial /
 absent → skip / reconcile-only / execute**. Deterministic, read-only, **zero LLM
 tokens**. It mechanizes the house verify-before-execute HARD RULE (the 23-02 incident,
@@ -365,12 +365,12 @@ AND the operator passed `--run-verify`; a non-allowlisted command is reported
 `skipped-unsafe`, never run. A false `built` is the one forbidden failure — any doubt
 lands `partial` or the conservative `absent` (execute), never a skip of real work.
 
-**Consume-never-reimplement (D-49.3-02):** bench.mjs parses, predict.mjs gates commands,
+**Consume-never-reimplement (D-9.3-02):** bench.mjs parses, predict.mjs gates commands,
 blind-verify.mjs reconciles — `preflight` composes, it writes no second frontmatter
 parser, allowlist, or tree-comparison engine.
 
 **Integration recipe** — `/sma-execute-phase` gates each plan before spawning an
-executor, and 49.3-12 `/sma-batch` runs it on every item first (D-49.3-19). Both invoke
+executor, and 9.3-12 `/sma-batch` runs it on every item first (D-9.3-19). Both invoke
 it across the CLI boundary and branch on the exit code:
 
 ```sh
@@ -385,7 +385,7 @@ esac
 `preflight` is a direct CLI command — **not** hook-facing (it may exit nonzero), never
 rides `sma pre`, so it cannot touch the V3 self-cost envelope.
 
-### Benchmark arena: `sma arena` (D-49.3-18, BL-142)
+### Benchmark arena: `sma arena` (D-9.3-18, BL-142)
 
 The **«why to trust us»** asset. The calibration passport (above) proves SMA is honest on
 **our** repo; the arena proves the adoption claim against **named rivals on neutral
@@ -393,7 +393,7 @@ ground**. It hardens the founder-run n=1 pilot into a reproducible **n≥4 four-
 comparison** — vanilla Claude Code / GSD only / Superpowers only / SMA — over a **fixed
 ticket set on a public repo**, scored **fully deterministically**: git-diff LOC (M4),
 acceptance-test pass count (M1 first-done, M2 rounds-to-green), tokens+cost (M3) via the
-**49.2-09 spend-adapter** (the sole cost source, D-49.3-02), plus a **separate adversarial
+**9.2-09 spend-adapter** (the sole cost source, D-9.3-02), plus a **separate adversarial
 safety tier** (M7).
 
 **The tested claim is cost-per-RESULT, not cost-per-task.** The headline is M1
@@ -415,7 +415,7 @@ with a per-arm `CLAUDE_CONFIG_DIR` (so the machine's global skills cannot leak i
 vanilla arm). The full four-arm setup, the isolation check, the git-clone-by-tag SMA
 install, the identical prompt, the attempt budget, the run order, and the M3 collection
 recipe (`SMA_SPEND_LOGS_DIR=<arm-cfg>/... sma spend`) are frozen **before the first run**
-in `49.3-11-ARENA-RUNBOOK.md` + `49.3-11-ARENA-SCORING.md`. The operator collects per-arm
+in `9.3-11-ARENA-RUNBOOK.md` + `9.3-11-ARENA-SCORING.md`. The operator collects per-arm
 records, runs `arena report`, and the static page **rebuilds from the raw records** — an
 outsider can catch a doctored figure, and the negatives are on the page.
 
@@ -423,7 +423,7 @@ The scorer is **pure** (no wall-clock, no randomness in any aggregate or the ren
 report body — the footer timestamp is the sole dated field), imports **no LLM / network /
 child_process** on the score path, and is a direct CLI command — **not** hook-facing.
 
-### Three lanes: fix / batch / phase — `sma batch` (D-49.3-19, BL-149)
+### Three lanes: fix / batch / phase — `sma batch` (D-9.3-19, BL-149)
 
 There are now **three** ways to move work, and the lane is picked by the task, not by habit:
 
@@ -433,7 +433,7 @@ There are now **three** ways to move work, and the lane is picked by the task, n
 | **`/sma-batch`** (middle) | 2-4 backlog items that are not small but do not warrant a phase — same area, size S/M, non-overlapping files | grill-lite per item (must_haves + ONE falsifiable check, **no** research/plan-checker/discuss), ONE executor with an atomic commit per item, ONE batch note | **mandatory** — every item is `sma reverify`-blind-reverified before its backlog box flips |
 | **full phase** | a new route / page / CRM surface / collection / migration / AI agent / cron / webhook / external integration, or genuine multi-wave work | discuss → plan → grill → execute → verify, wave-parallel subagents | full receipts + consequences ledger |
 
-`/sma-batch` is the founder's gap-filler (D-49.3-19, verbatim: «tasks which are not small,
+`/sma-batch` is the founder's gap-filler (D-9.3-19, verbatim: «tasks which are not small,
 but not phase oriented … 2-3-4 backlog items»). It fills the gap **without dropping the
 accountability floor**: «light» means fewer AGENTS, never fewer RECEIPTS.
 
@@ -441,8 +441,8 @@ accountability floor**: «light» means fewer AGENTS, never fewer RECEIPTS.
 sma batch <BL-ids...>          # select 2-4 named backlog items, risk-filter, prepare the ordered run
 sma batch --assemble          # auto-pick a compatible set (same area, S/M, non-overlapping files)
 sma batch ... --json          # the prepared batch object (ordered items + guard status)
-sma batch --selftest-riskfilter  # classify a bundled fixture set → prints 1 (P49.3-12-A)
-sma batch --selftest-checkoff    # surgical single-line [ ]→[x] over a fixture → prints 1 (P49.3-12-C)
+sma batch --selftest-riskfilter  # classify a bundled fixture set → prints 1 (P9.3-12-A)
+sma batch --selftest-checkoff    # surgical single-line [ ]→[x] over a fixture → prints 1 (P9.3-12-C)
 ```
 
 **The two hard guards** (both deterministic, `batch.mjs`):
@@ -455,20 +455,20 @@ sma batch --selftest-checkoff    # surgical single-line [ ]→[x] over a fixture
   backlog with a note («grew past batch-class — replan as a phase») and the batch **continues**
   with the remaining items; it never aborts.
 
-**Order per item** (every stage a call to an existing verb, D-49.3-02): `preflight` (49.3-10,
+**Order per item** (every stage a call to an existing verb, D-9.3-02): `preflight` (9.3-10,
 already-built guard) → **grill-lite** (grill.mjs's `grillGate`, a lighter registration of the
-SAME gate) → ONE executor (atomic commit, targeted tests) → **`sma reverify`** (49.2-03, the
+SAME gate) → ONE executor (atomic commit, targeted tests) → **`sma reverify`** (9.2-03, the
 mandatory receipt) → `checkOffBacklogItem` (the ONE new markdown writer — flips exactly the
 matched `[ ]`→`[x]` line). An item is checked off **only** on a clean reverify receipt; a
 divergent receipt records a failed item and leaves the box `[ ]`. Output = checked-off BL items
 + **one batch note**, never a phase folder.
 
-**Consume-never-reimplement (D-49.3-02):** `batch.mjs` writes no second backlog parser, no
+**Consume-never-reimplement (D-9.3-02):** `batch.mjs` writes no second backlog parser, no
 second challenge ledger, no second reverifier, no second preflight — parse-backlog.ts reads,
 grill.mjs gates, `sma reverify` verifies, `sma preflight` guards. `batch` is a direct CLI
 command — **not** hook-facing (it may exit nonzero).
 
-### Bridges — opt-in, never headlined (D-49.2-05)
+### Bridges — opt-in, never headlined (D-9.2-05)
 
 Each bridge sits behind a capability probe and registers a falsifiable self-removal
 prediction; it stands down the day a sufficient native equivalent ships. See the
@@ -478,7 +478,7 @@ table above for the git airbag (`undo` / `airbag`).
 
 | Subcommand | Bridge | Key flags |
 |---|---|---|
-| `spend` | Deterministic spend ledger — per session/subagent/model book parsed from local logs via a versioned adapter; budget reflexes warn at 70/90%; soft-deny NEW subagents over cap; OTel/ccusage-compatible fields. Plus the 49.4-06 economy meters: `lane open\|close\|report\|derive` (per-lane fix/quick/batch/build budgets from OUR own p75 percentiles; overrun = scored calibration miss + drafted lesson; overlap-flagged runs excluded) and `self-cost` (SMA's own static per-session injection overhead). | `[--by model\|session\|day\|agent]` \| `--window <hours>` \| `set-cap <usd> [--window-hours N]` \| `lane open\|close\|report\|derive` \| `self-cost` \| `--selftest` \| `--stat <name>` \| `--json` |
+| `spend` | Deterministic spend ledger — per session/subagent/model book parsed from local logs via a versioned adapter; budget reflexes warn at 70/90%; soft-deny NEW subagents over cap; OTel/ccusage-compatible fields. Plus the 9.4-06 economy meters: `lane open\|close\|report\|derive` (per-lane fix/quick/batch/build budgets from OUR own p75 percentiles; overrun = scored calibration miss + drafted lesson; overlap-flagged runs excluded) and `self-cost` (SMA's own static per-session injection overhead). | `[--by model\|session\|day\|agent]` \| `--window <hours>` \| `set-cap <usd> [--window-hours N]` \| `lane open\|close\|report\|derive` \| `self-cost` \| `--selftest` \| `--stat <name>` \| `--json` |
 | `spend-check` | Pre-less fallback for the spend stream (budget reflexes + loop-breaker); the canonical wiring is the `pre` multiplexer. | — (hook-facing) |
 | `breaker` | Loop-breaker admin — a rule that fires runaway per the journal is disarmed until review. | `breaker <list\|re-arm <ruleId>>` |
 | `resume` | Continuation brief assembled from the flight recorder alone (works after a terminal death, not only after compaction). | `--json` |
@@ -501,7 +501,7 @@ pnpm sma spend --stat bench-check-p95-ms     # the S7 self-cost scorer line
   CORE + periphery notes. Example bug-lesson recall: `--tags bug-lesson,payload`.
 - `pnpm sma lint` — see the memory-lint checks below. `--json` emits `{findings:[...]}`.
 
-#### `sma emit` — one corpus, any agent (D-49.3-08)
+#### `sma emit` — one corpus, any agent (D-9.3-08)
 
 `pnpm sma emit` compiles the learned memory corpus into a **managed export block**
 inside each of `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `GEMINI.md`, every block
@@ -556,7 +556,7 @@ shape: it prepends `name: ""`, moves `kind`/`tags`/`use-when`/`importance` into 
 `metadata:` block, and injects `node_type: memory` + the session `originSessionId`. A
 schema-correct flat note comes back nested and non-conformant — `MEM-SCHEMA` then fails
 and the generator skips it (`MEM-ORPHAN`). This is the B6 hook↔schema conflict; it was
-re-confirmed with a probe in 49.1-14 (still reproduces).
+re-confirmed with a probe in 9.1-14 (still reproduces).
 
 Use the sanctioned write path instead:
 
@@ -564,7 +564,7 @@ Use the sanctioned write path instead:
 - **A one-off note / surgical fix** — a small `node -e` / bash `fs.writeFileSync`, or the
   `serializeNote()` path in `scripts/sma/lib/frontmatter.mjs`. Plain `fs` writes bypass the
   Write-tool interception.
-- **Reflex guard (49.1-10)** — the lesson note `feedback_memory_write_via_fs_not_write_tool.md`
+- **Reflex guard (9.1-10)** — the lesson note `feedback_memory_write_via_fs_not_write_tool.md`
   carries `use-when-pattern: .claude/memory/**`, so a future Write attempt into the corpus
   WARNS with this rule (the reflex system solving its own B6).
 
@@ -574,7 +574,7 @@ would silently fall out of the index.
 
 ### Coordination (pillar 2)
 
-- `pnpm sma claim memory-flip --globs ".claude/memory/**" --desc "D-49-06 flip prep"`
+- `pnpm sma claim memory-flip --globs ".claude/memory/**" --desc "D-9-06 flip prep"`
 - `pnpm sma release memory-flip`
 - `pnpm sma next-slot migration` — the ONLY sanctioned way to pick a migration number.
 - `pnpm sma next-slot release` — the ONLY sanctioned way to pick the next V1.N; re-check
@@ -583,11 +583,11 @@ would silently fall out of the index.
 
 ---
 
-## Search rule: catalog before grep (49.3-05, D-49.3-06/07)
+## Search rule: catalog before grep (9.3-05, D-9.3-06/07)
 
 Every git-tracked repo file gets ONE deterministic one-line **card** — path, language
 class, key symbols, import targets, git stats (last-commit ISO + commit count), size — and
-**nothing derived by an LLM** (the meaning-string is CUT per D-49.3-06). A card is a pure
+**nothing derived by an LLM** (the meaning-string is CUT per D-9.3-06). A card is a pure
 function of (file bytes, injected git data): same input → the same card, byte-for-byte. The
 catalog lives in the gitignored `.sma/catalog/cards.jsonl` (rebuildable anywhere, committed
 nowhere) and refreshes ON COMMIT with zero new spawns (the `context` PreToolUse stream
@@ -615,7 +615,7 @@ pnpm sma catalog --check --count    # drift count: 0 clean, -1 = never built (ho
 note pointers — under `PACK_BUDGET` (16 KB) with a `MANIFEST.json`. **Same input (normalized
 task + commit + corpus + catalog) → byte-identical `PACK.md` + `MANIFEST.json`** — no
 wall-clock, no locale, no machine identity, no randomness in the pack bytes (determinism is
-what makes pack purity falsifiable, D-49.3-07). The manifest carries the pack's OWN prediction
+what makes pack purity falsifiable, D-9.3-07). The manifest carries the pack's OWN prediction
 («the session touches no file outside `files[]`»), which is what makes purity auto-checkable.
 
 ```bash
@@ -631,7 +631,7 @@ become new exam questions (a context miss becomes a standing question, never a s
 
 > **Touched-not-read honesty.** Purity measures Edit/Write/Bash **touches** (the deterministic
 > observable) as the v1 proxy for «read» — hooking Read would add a spawn per file read and blow
-> the 49.2-02 hook envelope. Timestamps live ONLY in the touch/exam `.jsonl` journals, never in
+> the 9.2-02 hook envelope. Timestamps live ONLY in the touch/exam `.jsonl` journals, never in
 > the regenerable `PACK.md` / `MANIFEST.json` bytes.
 
 ### Fragments — one fact, one file, a trigger
@@ -663,7 +663,7 @@ pack — installing SMA changes nothing until then. Kill-switch: **`SMA_CONTEXT_
 
 ---
 
-## `.sma/` layout (D-49-05: local files are the sole coordination truth)
+## `.sma/` layout (D-9-05: local files are the sole coordination truth)
 
 ```
 .sma/
@@ -677,7 +677,7 @@ deterministic slot name is the atomic lock (a lost race retries at N+1).
 
 ---
 
-## Staleness tiers + TTLs (D-49-11)
+## Staleness tiers + TTLs (D-9-11)
 
 Session liveness is graduated by age since the last heartbeat renew:
 
@@ -732,7 +732,7 @@ to surface active sessions / collisions / next slots.
 
 ## Multi-terminal conventions
 
-### Per-terminal worktrees — `sma worktree` (49.3-14, D-49.3-24a/b, BL-156)
+### Per-terminal worktrees — `sma worktree` (9.3-14, D-9.3-24a/b, BL-156)
 
 The founder runs several Claude Code sessions against ONE checkout that auto-deploys
 `main`. Two sessions editing the same files means one terminal's push carries the
@@ -746,7 +746,7 @@ pnpm sma worktree remove <path> [--force]                      # remove one (ref
 pnpm sma worktree sibling                                      # resolved path of the sibling product repo (../sma)
 ```
 
-**The model is per-TERMINAL, not per-phase or executor-only (D-49.3-24a).** Three
+**The model is per-TERMINAL, not per-phase or executor-only (D-9.3-24a).** Three
 sessions sit on ONE phase today and the pain is human-driven parallel sessions — so
 one worktree per terminal is the model. Per-phase (two sessions on one phase still
 collide) and executor-only (misses the human-parallel case) are rejected. The branch
@@ -754,13 +754,13 @@ defaults to `sma-wt/<terminalId>`; the directory defaults to a sibling
 `.sma-worktrees/<terminalId>` (a sibling dir, not nested inside the repo — the nested
 path is what makes `git worktree remove` fail with «filename too long» on Windows).
 
-**Coordination stays shared for free (D-49.3-02).** `.sma/` (the claims, sessions,
+**Coordination stays shared for free (D-9.3-02).** `.sma/` (the claims, sessions,
 journal, fingerprint) resolves to the MAIN checkout from inside any worktree via
 `git rev-parse --git-common-dir` (registry.smaRoot). So every worktree session still
 registers in the one shared `.sma/` — nothing about coordination is re-plumbed; only
 working-tree directories are created.
 
-**The sibling product repo resolves from an ABSOLUTE path (D-49.3-24b).** Scripts that
+**The sibling product repo resolves from an ABSOLUTE path (D-9.3-24b).** Scripts that
 operate on `../sma/scripts/sma/**` from inside a worktree cannot trust a relative
 `../sma`. `sma worktree sibling` resolves in a fixed order — the `SMA_PRODUCT_REPO`
 env, then a `.sma/config.json` value, then the /sma-start profile's recorded path,
@@ -774,14 +774,14 @@ from an OLDER commit than HEAD — it fired 3/4 in Phase 17.2 and 3/3 on 2026-07
 Every git command passes an EXPLICIT cwd via the injected runner — never a bare
 `cd <dir> && git ...` — so a teleported shell CWD cannot run git on the wrong branch.
 
-**Integration path.** A worktree branch enters `main` ONLY through 49.3-15's
+**Integration path.** A worktree branch enters `main` ONLY through 9.3-15's
 `sma merge` (serialized, local only). This command NEVER runs `git push` or
 `git merge`; push stays founder-ordered via /sma-ship.
 
 `worktree --selftest` proves the base + teleport guards over a mock-git recorder;
 `worktree --selftest-sibling` proves the resolution order — each prints a bare `1`.
 
-## Serialized merge + enforcing scopes (49.3-15, D-49.3-24c/d/e/f)
+## Serialized merge + enforcing scopes (9.3-15, D-9.3-24c/d/e/f)
 
 Per-terminal worktrees (above) make parallel sessions physically isolated; `sma merge`
 is the integration path that keeps `main` honest. A worktree branch enters `main` ONLY
@@ -807,14 +807,14 @@ founder-ordered via `/sma-ship` (slots.mjs header law). A red merge is surfaced 
 WARN into a **soft-deny with an override token** for the ONE safe case: a **verified-LIVE**
 foreign claim (fresh touches + a live heartbeat, via plan 13's `verifyClaimEvidence`). A
 stale or unverified claim stays WARN-only; a cooling-down / force-cleared scope is never
-enforced (the founder word, D-49-09, always wins). The stream is fail-open: any error
+enforced (the founder word, D-9-09, always wins). The stream is fail-open: any error
 degrades to allow — a gate bug can never wedge a session. Hard deny stays the security
 guard's alone; `SMA_ENFORCE_SCOPES_DISABLE` is the kill-switch.
 
-> **Vendor-absorbable (D-49.2-05 BRIDGE).** Serialized-merge multiplayer is a bridge, not
+> **Vendor-absorbable (D-9.2-05 BRIDGE).** Serialized-merge multiplayer is a bridge, not
 > a moat — a demolition clause with a self-removal disposition if a vendor ships it natively.
 
-### Hot files (D-49-16)
+### Hot files (D-9-16)
 
 `.planning/STATE.md`, `.planning/ROADMAP.md`, `.claude/memory/MEMORY.md` are
 high-content and edited by many terminals. When ≥2 sessions are `fresh`, an
@@ -823,7 +823,7 @@ informational WARN («N сессий активны; файл высококон
 immediately before writing them. Info-tier warns are never counted in the collision
 total (the statusline counts `tier: 'warn'` only).
 
-### STATE.md blocker ownership + provenance stamp (D-49-17)
+### STATE.md blocker ownership + provenance stamp (D-9-17)
 
 A terminal edits ONLY the `## Open Blockers` lines for its OWN phase (lines are keyed
 by the literal `Phase N`). Each edited blocker line carries a provenance-lite stamp:
@@ -844,18 +844,18 @@ isolatedContext. It becomes a slot candidate in v1.5+ if the slot list grows.
 
 ---
 
-## Coordination trust — the live fingerprint + claim repair (49.3-13, D-49.3-21/22/23)
+## Coordination trust — the live fingerprint + claim repair (9.3-13, D-9.3-21/22/23)
 
 «What is each terminal doing RIGHT NOW, and can I trust this collision warning?» is
 answerable from the local `.sma/` files, in the agent's own language — between the lines,
 not from ROADMAP/STATE.
 
-### The live work fingerprint (D-49.3-21)
+### The live work fingerprint (D-9.3-21)
 
 Each terminal's `sma pre` hook SELF-CAPTURES its own touched files onto its OWN session
 lease at the moment of touching — riding the existing once-per-tool-call heartbeat, **zero
 new spawns**. Attribution is self-capture ONLY: `git status` is never read (on a shared
-tree it shows the union of every terminal's work). The lease (no parallel store — D-49.3-02)
+tree it shows the union of every terminal's work). The lease (no parallel store — D-9.3-02)
 now carries, alongside the work-axis `status`:
 
 - `intent` — the agent-maintained one-line string («чиню тест dispatcher, не трогайте
@@ -871,7 +871,7 @@ terminals (one line each — status + intent + phase), throttled to ~10 min via 
 compare (never a timer/daemon); PLUS (2) the FULL fingerprint of terminal B injected
 immediately when you touch a file/scope inside B's fingerprint.
 
-### Claim trust repair (D-49.3-22)
+### Claim trust repair (D-9.3-22)
 
 Claims auto-release on **exactly two triggers** — never an idle timer (a timer would reap a
 terminal that thinks/researches long before editing):
@@ -885,7 +885,7 @@ terminal that thinks/researches long before editing):
 Every collision WARN is **self-verifying**: a live warn carries «занято … правки N мин назад,
 намерение: …»; a stale warn carries «claim устарел (скоуп чист, коммит abc123 уже в HEAD) —
 можно работать». A `.cooldown-*` marker after a force-clear reads «недавно освобождён», never
-«занято» (force-clear keeps provenance + explicit confirmation, D-49-09 — unchanged).
+«занято» (force-clear keeps provenance + explicit confirmation, D-9-09 — unchanged).
 
 **BL-158 absorbed:** `attention` is distinguished from `fresh` (a fresh owner reads «занято»,
 an attention owner reads «внимание»; the active count splits the two tiers); the reaper's
@@ -893,7 +893,7 @@ failures are observable (`reapStaleObservable` journals a countable `reap` / `re
 liveness relies on renewTime freshness ONLY (pid is never consulted — it is stale across
 Claude restarts).
 
-### Instruments + the `sma ask` demand stub (D-49.3-23)
+### Instruments + the `sma ask` demand stub (D-9.3-23)
 
 - `pnpm sma status --stale-warn-share` — the deterministic % of shown collision warns that
   were noise over 7 days (a WARN whose claim then auto-released with zero further touches).
@@ -919,7 +919,7 @@ Claude restarts).
 | `MEM-SUPERSEDE` | critical | `supersedes`/`superseded_by` targets exist (symmetric back-pointers) |
 | `MEM-ORPHAN` | critical | index ↔ corpus symmetry (clears once MEMORY.md is generated) |
 | `MEM-REGEN` | critical | committed MEMORY.md == a fresh regeneration (active post-flip) |
-| `MEM-SECRET` | critical | screens note bodies for secret material at the corpus door (49.1-14) |
+| `MEM-SECRET` | critical | screens note bodies for secret material at the corpus door (9.1-14) |
 | `MEM-TAGCHAOS` | warn | near-duplicate / single-use / overbroad tags |
 | `MEM-CLAUDEDUP` | warn | a memory note duplicating a CLAUDE.md rule verbatim |
 
@@ -928,7 +928,7 @@ corpus or escalate (same ethic as the security-regression guard).
 
 ---
 
-## Hook wiring (PreToolUse — the `sma pre` multiplexer, 49.2-02)
+## Hook wiring (PreToolUse — the `sma pre` multiplexer, 9.2-02)
 
 The canonical PreToolUse wiring is **ONE** spawn per tool call — the `pre` multiplexer,
 which reads the hook event once and dispatches the ordered internal stream pipeline
@@ -963,7 +963,7 @@ construction. Only a `mayDeny:true` stream (today: `gates`) can surface a `deny`
 `deny` returned by any other stream is downgraded to a warn line (posture protection).
 `pre-bench --metric parity` re-verifies merged-vs-single-stream parity after any change.
 
-## Pre-compaction flight recorder (49.2-06, D-49.2-09)
+## Pre-compaction flight recorder (9.2-06, D-9.2-09)
 
 Auto-compaction silently deletes a session's working state. The flight recorder makes
 that moment survivable with **pure file assembly** — zero LLM, zero network, zero
@@ -991,7 +991,7 @@ spend tokens). It generalizes the V2 per-executor exec-journal to ALL sessions.
 ]
 ```
 
-**gitignore stanza (DEC-49.2-06-01):** capsules + briefs are git-TRACKED (vendor-proof
+**gitignore stanza (DEC-9.2-06-01):** capsules + briefs are git-TRACKED (vendor-proof
 durability) after an unconditional secret-scan; the high-churn per-tool-call marks stay
 local runtime. After the existing `.sma/*` + `!.sma/README.md` lines add:
 
@@ -1000,7 +1000,7 @@ local runtime. After the existing `.sma/*` + `!.sma/README.md` lines add:
 .sma/flight/marks/
 ```
 
-**Secret scan (unconditional, T-49.2-06A):** `writeCapsule` and `writeHandoff` route
+**Secret scan (unconditional, T-9.2-06A):** `writeCapsule` and `writeHandoff` route
 every line through `scanForSecrets` before touching a tracked path — an AWS key, a
 `-----BEGIN … PRIVATE KEY-----` header, a `Bearer …`/`sk-…` token, or a `secret=`/
 `password=` assignment is redacted to `[redacted:<rule>]`, even under kill-switch or probe
@@ -1010,11 +1010,11 @@ stand-down. Bash marks record a command SLUG only, never the full arg line.
 
 | Env var | Effect |
 |---|---|
-| `SMA_FLIGHT_DISABLE=1` | instant no-op — no capsule write, no restore injection, no mark append. **Compensating control (D-49.2-14):** the V2 exec-journal resume ritual still reconstructs the resume point from `.sma/exec/*.jsonl`. |
-| `SMA_FLIGHT_NATIVE=1` | the capability probe reports native — the whole bridge STANDS DOWN (writeCapsule → `{skipped:'native'}`). This is the D-49.2-05 demolition-clause seam: the day the vendor ships a sufficient native pre-compaction preservation mechanism, this stream retires. |
+| `SMA_FLIGHT_DISABLE=1` | instant no-op — no capsule write, no restore injection, no mark append. **Compensating control (D-9.2-14):** the V2 exec-journal resume ritual still reconstructs the resume point from `.sma/exec/*.jsonl`. |
+| `SMA_FLIGHT_NATIVE=1` | the capability probe reports native — the whole bridge STANDS DOWN (writeCapsule → `{skipped:'native'}`). This is the D-9.2-05 demolition-clause seam: the day the vendor ships a sufficient native pre-compaction preservation mechanism, this stream retires. |
 
-**Bridge posture (D-49.2-05):** the flight recorder is a BRIDGE, not a headline. It is
-probe-gated, registers a falsifiable prediction of its own removal (P49.2-06-03), and is
+**Bridge posture (D-9.2-05):** the flight recorder is a BRIDGE, not a headline. It is
+probe-gated, registers a falsifiable prediction of its own removal (P9.2-06-03), and is
 never positioned as a defensible feature — the accountability layer is the core, this is
 a bridge that retires when a sufficient native equivalent arrives.
 

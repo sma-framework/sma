@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/goodhart.mjs (Phase 49.2 Plan 10, Task 1).
+ * Tests for scripts/sma/lib/goodhart.mjs (Phase 9.2 Plan 10, Task 1).
  *
- * The Goodhart integrity guards (D-49.2-14):
+ * The Goodhart integrity guards (D-9.2-14):
  *   - Test 1: signPredictions writes a countersign; verifySkeptic on the untouched
  *     plan -> {ok:true}.
  *   - Test 2: editing the predictions block after signing -> {ok:false,
@@ -46,7 +46,7 @@ function sha256(s: string): string {
 
 /** A minimal PLAN.md with a predictions block. */
 function planText(predBody: string[]): string {
-  return ['---', 'phase: 49.2', 'plan: 10', 'predictions:', ...predBody, 'requirements: [X]', '---', '', '# body'].join('\n') + '\n'
+  return ['---', 'phase: 9.2', 'plan: 10', 'predictions:', ...predBody, 'requirements: [X]', '---', '', '# body'].join('\n') + '\n'
 }
 
 const PRED_BODY = [
@@ -62,8 +62,8 @@ const PRED_BODY = [
 
 describe('planIdFromPath', () => {
   it('strips the -PLAN.md suffix', () => {
-    expect(planIdFromPath('/a/b/49.2-10-PLAN.md')).toBe('49.2-10')
-    expect(planIdFromPath('49.2-03-PLAN.md')).toBe('49.2-03')
+    expect(planIdFromPath('/a/b/9.2-10-PLAN.md')).toBe('9.2-10')
+    expect(planIdFromPath('9.2-03-PLAN.md')).toBe('9.2-03')
   })
 })
 
@@ -71,7 +71,7 @@ describe('signPredictions + verifySkeptic', () => {
   it('Test 1: signs the predictions block; verify on the untouched plan -> ok', () => {
     const dir = tmp()
     const skepticDir = join(dir, 'skeptic')
-    const planPath = join(dir, '49.2-10-PLAN.md')
+    const planPath = join(dir, '9.2-10-PLAN.md')
     const text = planText(PRED_BODY)
     writeFileSync(planPath, text)
 
@@ -81,7 +81,7 @@ describe('signPredictions + verifySkeptic', () => {
       dirs: { skepticDir },
       now: '2026-07-08T00:00:00Z',
     })
-    expect(rec.planId).toBe('49.2-10')
+    expect(rec.planId).toBe('9.2-10')
     expect(rec.skeptic.terminalId).toBe('skeptic-A')
     expect(rec.predictionsHash).toHaveLength(64)
 
@@ -93,7 +93,7 @@ describe('signPredictions + verifySkeptic', () => {
   it('Test 2: editing the predictions block after signing voids the countersign', () => {
     const dir = tmp()
     const skepticDir = join(dir, 'skeptic')
-    const planPath = join(dir, '49.2-10-PLAN.md')
+    const planPath = join(dir, '9.2-10-PLAN.md')
     writeFileSync(planPath, planText(PRED_BODY))
     signPredictions({ planPath, identity: { terminalId: 'skeptic-A' }, dirs: { skepticDir } })
 
@@ -109,7 +109,7 @@ describe('signPredictions + verifySkeptic', () => {
     const dir = tmp()
     const skepticDir = join(dir, 'skeptic')
     const execDir = join(dir, 'exec')
-    const planPath = join(dir, '49.2-10-PLAN.md')
+    const planPath = join(dir, '9.2-10-PLAN.md')
     writeFileSync(planPath, planText(PRED_BODY))
 
     // Unsigned -> unsigned reason.
@@ -124,7 +124,7 @@ describe('signPredictions + verifySkeptic', () => {
     // Now write an exec journal naming impl-1 as the implementer -> self-sign.
     mkdirSync(execDir, { recursive: true })
     appendFileSync(
-      join(execDir, '49.2-10.jsonl'),
+      join(execDir, '9.2-10.jsonl'),
       JSON.stringify({ ts: '2026-07-08T00:00:00Z', event: 'task_complete', task: 1, terminalId: 'impl-1' }) + '\n',
     )
     expect(verifySkeptic({ planPath, dirs: { skepticDir, execDir } })).toEqual({ ok: false, reason: 'self-sign' })

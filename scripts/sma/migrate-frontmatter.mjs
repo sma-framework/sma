@@ -76,7 +76,7 @@ export const EXCLUDED_FILES = new Set([...STRUCTURAL_FILES, ...PARALLEL_TERMINAL
 /**
  * KIND_MAP — derive the normalized `kind` from filename prefix + legacy type.
  *
- * feedback_* splits on body markers (D-49-15): a note carrying BOTH the bold
+ * feedback_* splits on body markers (D-9-15): a note carrying BOTH the bold
  * **Why:** and **How to apply:** sections is a `bug-lesson`; every other
  * feedback_* is a `procedural-rule`. That marker split is applied in
  * deriveKind() (it needs the body), NOT here — this table is the prefix default.
@@ -87,13 +87,13 @@ export const EXCLUDED_FILES = new Set([...STRUCTURAL_FILES, ...PARALLEL_TERMINAL
  */
 export const KIND_MAP = {
   // legacy `type:` scalar → kind (used when no stronger signal applies)
-  feedback: 'procedural-rule', // refined to bug-lesson by body markers (D-49-15)
+  feedback: 'procedural-rule', // refined to bug-lesson by body markers (D-9-15)
   reference: 'reference',
   project: 'episodic', // refined to status by active-signal in deriveKind()
   decision: 'decision',
 }
 
-/** The kind for a feedback_* note whose body carries the D-49-15 bug-lesson form. */
+/** The kind for a feedback_* note whose body carries the D-9-15 bug-lesson form. */
 export const BUG_LESSON_KIND = 'bug-lesson'
 
 /**
@@ -105,7 +105,7 @@ export const BUG_LESSON_KIND = 'bug-lesson'
  * closed-vocab self-check (validateTables) fails the run otherwise (B3).
  *
  * The kind facet is carried by the `kind` FIELD and is deliberately NOT
- * duplicated as a tag (D-49-12 facet separation).
+ * duplicated as a tag (D-9-12 facet separation).
  */
 export const AREA_KEYWORD_MAP = [
   // messaging channels (sms/push/inbox → messaging)
@@ -196,7 +196,7 @@ function prefixOf(file) {
   return m ? m[1] : ''
 }
 
-/** A feedback body carries the D-49-15 bug-lesson form: BOTH **Why:** and **How to apply:**. */
+/** A feedback body carries the D-9-15 bug-lesson form: BOTH **Why:** and **How to apply:**. */
 function hasBugLessonForm(body) {
   return /\*\*Why:\*\*/i.test(body) && /\*\*How to apply:?\*\*/i.test(body)
 }

@@ -40,6 +40,8 @@
   "files": [
     "sma-core",
     "scripts/sma",
+    "daemon",
+    "supervisor",
     "bin",
     "docs",
     "README.md",

@@ -1,6 +1,6 @@
 /**
- * Tests for scripts/sma/lib/passport.mjs (Phase 49.3 Plan 02, Task 2 —
- * D-49.3-10).
+ * Tests for scripts/sma/lib/passport.mjs (Phase 9.3 Plan 02, Task 2 —
+ * D-9.3-10).
  *
  * The calibration passport: a deterministic, reproducible function of committed
  * data that writes PASSPORT.md + a public README badge.

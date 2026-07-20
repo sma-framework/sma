@@ -1,10 +1,10 @@
 /**
  * passport.mjs — the calibration passport: a deterministic, reproducible
  * function of COMMITTED data that writes PASSPORT.md + a public README badge
- * (49.3-02, D-49.3-10).
+ * (9.3-02, D-9.3-10).
  *
  * The moment we publish a trust number we acquire the incentive to fake it
- * (T-49.3-01). This module makes the honest path the ONLY path:
+ * (T-9.3-01). This module makes the honest path the ONLY path:
  *
  *   - The badge is a PURE FUNCTION of the committed PASSPORT.md snapshot
  *     (parseSnapshot -> renderBadgeBlock), NEVER the live gitignored ledger —
@@ -18,8 +18,8 @@
  *     badge is its own kind of lie).
  *
  * This is a READER over the Track A artifacts — the V2 calibration ledger
- * (calibration.mjs, 49.1-08), the reverify receipt verdicts (49.2-03), the
- * journal chainTip (49.2-03) — and re-implements NONE of them (D-49.3-02). The
+ * (calibration.mjs, 9.1-08), the reverify receipt verdicts (9.2-03), the
+ * journal chainTip (9.2-03) — and re-implements NONE of them (D-9.3-02). The
  * prediction-calibration claim EXCLUDES sma.receipts (which get their own
  * PASSPORT.md section); inflating the badge n with receipt hits is exactly the
  * statistical dishonesty this plan guards against. It also counts UNIQUE
@@ -268,7 +268,7 @@ export function renderPassport(snapshot) {
   L.push('## What `--verify` proves (and what it does not)')
   L.push('')
   L.push(
-    '`sma passport --verify` proves RENDER DETERMINISM: the rendered passport and badge re-derive byte-identically from the embedded snapshot on a fresh clone. It does NOT prove the underlying ledger is truthful — ledger truthfulness is owned upstream by the canary false-dones and the 5% deep audit (49.2-10). This passport reports the ledger line and corrupt counts (' +
+    '`sma passport --verify` proves RENDER DETERMINISM: the rendered passport and badge re-derive byte-identically from the embedded snapshot on a fresh clone. It does NOT prove the underlying ledger is truthful — ledger truthfulness is owned upstream by the canary false-dones and the 5% deep audit (9.2-10). This passport reports the ledger line and corrupt counts (' +
       `${snapshot.ledger ? snapshot.ledger.lines : 0} lines, ${snapshot.ledger ? snapshot.ledger.corrupt : 0} corrupt) and says so plainly rather than overclaiming.`,
   )
   L.push('')
@@ -313,7 +313,7 @@ export function parseSnapshot(passportText) {
  * (BL-172, 2026-07-10): a structural receipt over the passport read surface
  * must pin its SHAPE, never its CONTENTS — the passport is rebuilt each
  * release, so hashing `passport --json` output re-fails on every reverify by
- * construction (the 49.3-02 R2 lesson). Valid: null (PASSPORT.md absent or no
+ * construction (the 9.3-02 R2 lesson). Valid: null (PASSPORT.md absent or no
  * fenced block — the --json surface honestly prints {}), OR a schema-1
  * snapshot carrying the seven top-level sections with structurally sound
  * types (guard status string + finite freshN; calibration domains array +
@@ -405,7 +405,7 @@ export function readManagedBlock(text, beginMarker = BADGE_BEGIN, endMarker = BA
 /**
  * writeManagedBlock({filePath, content, beginMarker, endMarker}) — read the
  * file (fail-open to ''), splice the managed block, write atomically. Exported
- * for 49.3-04's emit reuse (the MEMORY.md/MEM-REGEN managed-artifact pattern).
+ * for 9.3-04's emit reuse (the MEMORY.md/MEM-REGEN managed-artifact pattern).
  *
  * @param {{filePath:string, content:string, beginMarker?:string, endMarker?:string, fs?:object}} args
  * @returns {{filePath:string, bytes:number}}

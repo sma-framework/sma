@@ -1,5 +1,5 @@
 /**
- * pre.mjs — the `sma pre` PreToolUse multiplexer dispatch core (49.2-02, D-49.2-04).
+ * pre.mjs — the `sma pre` PreToolUse multiplexer dispatch core (9.2-02, D-9.2-04).
  *
  * ONE node run per Edit/Write/Bash tool call. Reads the hook event once, builds a
  * SHARED context (identity + heartbeat + seen-store loaded once), dispatches an
@@ -10,7 +10,7 @@
  * ═══════════════════════════════ THE DISPATCH CONTRACT ═══════════════════════════
  *
  * This module is the CANONICAL SPEC downstream stream authors read before
- * registering. Plans 49.2-05 (git airbag) and 49.2-09 (spend ledger) each append
+ * registering. Plans 9.2-05 (git airbag) and 9.2-09 (spend ledger) each append
  * ONE stream object literal to the exported `PRE_CHECKS` array below — there is NO
  * dynamic registration API; consolidation is structural, one reviewable array in
  * one file, and the one-spawn guarantee never renegotiates.
@@ -24,10 +24,10 @@
  *     run(ctx):      { warns: string[], deny?: { text } }   // never throws (wrapped)
  *   }
  *
- * POSTURE LOCKS (carried forward from V1/V2, D-49.1-12 / D-49-02):
+ * POSTURE LOCKS (carried forward from V1/V2, D-9.1-12 / D-9-02):
  *   - Enforcement is fail-open WARN / soft-deny; hard-deny stays the security
  *     guard's alone. Only the gates stream carries mayDeny:true (soft-deny tier
- *     D-49.1-13). A `deny` returned by ANY other stream is DOWNGRADED to a warn
+ *     D-9.1-13). A `deny` returned by ANY other stream is DOWNGRADED to a warn
  *     line — a merge bug can never escalate WARN posture to a real deny.
  *   - Four independent fail-open layers protect every tool call: the HOOK_FACING
  *     exit-0 wrapper in cli.mjs, per-stream try/catch here, the SMA_PRE_DISABLE
@@ -52,7 +52,7 @@ export const DEFAULT_PRE_BUDGET_MS = 1500
 const PERF_MAX_BYTES = 256 * 1024
 const PERF_KEEP_LINES = 500
 
-// ── 49.3-06 (D-49.3-12): the maturation-ladder OVERLAY ───────────────────────
+// ── 9.3-06 (D-9.3-12): the maturation-ladder OVERLAY ───────────────────────
 // A bounded, fail-open read of the TRACKED sma-ladder.json (repo root) — ONE
 // readJsonSafe per tool call, memoized on ctx, inside the hook p95 <= 300 ms
 // envelope. The overlay resolves each reflex/gate to its effective tier so a
@@ -90,7 +90,7 @@ function overlayTierOf(overlay, ruleId) {
 
 /**
  * collision stream — scope-collision (Edit/Write touched path) + push-claim
- * (Bash git deploy) channels. WARN-only (D-49-02): mayDeny:false, no kill-switch.
+ * (Bash git deploy) channels. WARN-only (D-9-02): mayDeny:false, no kill-switch.
  * Identity + the throttled heartbeat are resolved ONCE in buildCtx (moved out of
  * this stream so the heartbeat cadence survives even when collision is silent).
  */
@@ -131,7 +131,7 @@ async function runCollision(ctx) {
     /* fail-open */
   }
 
-  // (2) push-claim channel (Bash git deploy invocation) — D-49-02 second channel.
+  // (2) push-claim channel (Bash git deploy invocation) — D-9-02 second channel.
   // The two-word deploy invocation is detected with an ESCAPED regex so this
   // source file never carries the adjacent literal (SMA-3 discipline).
   try {
@@ -151,7 +151,7 @@ async function runCollision(ctx) {
 }
 
 /**
- * reflex stream — the P2 reflex consumer (49.1-10). Derives tags → matches promoted
+ * reflex stream — the P2 reflex consumer (9.1-10). Derives tags → matches promoted
  * bug-lessons → applies the launch-blocking fatigue battery → journals each fire.
  * Mutates the SHARED ctx.seen (loaded/saved once by runPre, not here). WARN-only.
  * Kill-switch SMA_REFLEX_DISABLE (also honored by runPre before this runs).
@@ -185,7 +185,7 @@ async function runReflex(ctx) {
     // Shared seen-store (loaded once in buildCtx) — applyFatigue mutates it in place.
     const res = reflex.applyFatigue({ candidates, targetClass, sessionSeen: ctx.seen, env: ctx.env })
 
-    // 49.3-06 overlay: a rule demoted to 'note'/'retired' is journaled SILENTLY
+    // 9.3-06 overlay: a rule demoted to 'note'/'retired' is journaled SILENTLY
     // (evidence keeps accruing — behavior stays observable) but EXCLUDED from the
     // additionalContext output. A rule at 'warn' (or absent from the overlay) is
     // unchanged. One bounded overlay read; fail-open leaves V2 behavior intact.
@@ -214,7 +214,7 @@ async function runReflex(ctx) {
 }
 
 /**
- * gates stream — the P4 enforcement consumer (49.1-16, D-49.1-12/13). Evaluates the
+ * gates stream — the P4 enforcement consumer (9.1-16, D-9.1-12/13). Evaluates the
  * checkable HARD-RULE inventory (gates.checkEvent — which journals internally and
  * mutates the SHARED ctx.seen under 'gate:' keys). The ONLY mayDeny:true stream: an
  * armed soft-deny gate returns {deny:{text}}; dormant gates never set deny, so the
@@ -227,9 +227,9 @@ async function runGates(ctx) {
     if (!gates) return { warns }
     const terminalId = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : 'unknown'
 
-    // 49.3-06 overlay: for each ladder gate rule at tier 'soft-deny', ARM the gate by
+    // 9.3-06 overlay: for each ladder gate rule at tier 'soft-deny', ARM the gate by
     // injecting its dormant softDeny.armEnv into checkEvent's env — the exact injectable
-    // surface 49.2-10's shadow-run uses, run in reverse. gates.mjs stays byte-untouched;
+    // surface 9.2-10's shadow-run uses, run in reverse. gates.mjs stays byte-untouched;
     // the module's kill envs + SMA_GATES_DISABLE still win (they ride the same env).
     const overlay = loadLadderOverlay(ctx)
     let env = ctx.env
@@ -258,7 +258,7 @@ async function runGates(ctx) {
     })
     for (const w of res.warns) {
       // At tier 'auto-fix', NAME the deterministic fix verb (the hook never RUNS it —
-      // execution is the explicit `tune fix` CLI verb, D-49.3-12 prohibition).
+      // execution is the explicit `tune fix` CLI verb, D-9.3-12 prohibition).
       if (overlay && overlayTierOf(overlay, w.gateId) === 'auto-fix') {
         warns.push(`${w.text}\nSMA ladder: детерминированный фикс — pnpm sma tune fix ${w.gateId}`)
       } else {
@@ -273,13 +273,13 @@ async function runGates(ctx) {
 }
 
 /**
- * airbag stream — the git airbag GATE (49.2-05, D-49.2-08). Bash-only: matches a
+ * airbag stream — the git airbag GATE (9.2-05, D-9.2-08). Bash-only: matches a
  * destructive git command and writes a ms-level recovery point (update-ref + stash
  * create + batched hash-object/mktree) BEFORE it runs, journaling an 'airbag' receipt.
  * mayDeny:true — an armed (SMA_AIRBAG_DENY) soft-deny on a dirty tree / foreign claim
  * surfaces permissionDecision 'deny' unless a GATE-AIRBAG override token is present.
  *
- * OPT-IN (CONS-49.2-B): the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
+ * OPT-IN (CONS-9.2-B): the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
  * plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
  * multiplexer re-measures under SLO. Protection stays UNCONDITIONAL once enabled
  * (the snapshot is not posture-gated; only the deny tier is). Kill: SMA_AIRBAG_DISABLE.
@@ -287,7 +287,7 @@ async function runGates(ctx) {
 async function runAirbag(ctx) {
   const warns = []
   try {
-    // opt-in default-off until the multiplexer meets its SLO (CONS-49.2-B).
+    // opt-in default-off until the multiplexer meets its SLO (CONS-9.2-B).
     if (!envOn(ctx.env.SMA_AIRBAG_ENABLE)) return { warns }
     if (ctx.toolName !== 'Bash') return { warns }
     const { airbag, slots } = ctx.deps
@@ -319,22 +319,22 @@ async function runAirbag(ctx) {
 }
 
 /**
- * spend stream — the deterministic spend ledger reflexes (49.2-09, D-49.2-13). Applies
+ * spend stream — the deterministic spend ledger reflexes (9.2-09, D-9.2-13). Applies
  * the locked 70/90 window-budget WARNs and the Task-ONLY soft-deny past a configured
  * cap (checkSpend), and detects+trips a repeatedly-firing SMA rule in the journal
  * (detectAndTrip). mayDeny:true — but checkSpend only ever denies the Task tool at
  * >=100% of a FOUNDER-CONFIGURED cap; every other tool is WARN-only forever.
  *
- * OPT-IN (CONS-49.2-09-B / CONS-49.2-B): the stream is a NO-OP unless SMA_SPEND_OPTIN
+ * OPT-IN (CONS-9.2-09-B / CONS-9.2-B): the stream is a NO-OP unless SMA_SPEND_OPTIN
  * is set — plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
- * multiplexer re-measures under SLO (and P49.2-09-2 scores the warm spend-check <=50ms).
+ * multiplexer re-measures under SLO (and P9.2-09-2 scores the warm spend-check <=50ms).
  * The mechanism ships complete + inert. Kill-switch: SMA_SPEND_DISABLE. Native probe true
  * → silent (bridge stood down). Fully fail-open — a spend/breaker bug never wedges a session.
  */
 async function runSpend(ctx) {
   const warns = []
   try {
-    // opt-in default-off until the multiplexer meets its SLO (CONS-49.2-09-B).
+    // opt-in default-off until the multiplexer meets its SLO (CONS-9.2-09-B).
     if (!envOn(ctx.env.SMA_SPEND_OPTIN)) return { warns }
     const { spend, breaker } = ctx.deps
     if (!spend) return { warns }
@@ -371,7 +371,7 @@ async function runSpend(ctx) {
 }
 
 /**
- * fingerprint stream — the live work fingerprint's INJECTION side (49.3-13, D-49.3-21c).
+ * fingerprint stream — the live work fingerprint's INJECTION side (9.3-13, D-9.3-21c).
  * WARN-only (mayDeny:false), kill-switch SMA_FINGERPRINT_DISABLE. Two channels, never
  * per-tool-call spam: (1) an IMMEDIATE full-fingerprint injection of any OTHER terminal
  * whose fingerprint overlaps the file A just touched; (2) an AMBIENT digest of all live
@@ -431,8 +431,8 @@ async function runFingerprint(ctx) {
 }
 
 /**
- * context stream — knowledge delivery AT the act (49.3-05, D-49.3-06/07). WARN-only
- * (mayDeny:false), kill-switch SMA_CONTEXT_DISABLE, registered LAST so 49.2-02's soft
+ * context stream — knowledge delivery AT the act (9.3-05, D-9.3-06/07). WARN-only
+ * (mayDeny:false), kill-switch SMA_CONTEXT_DISABLE, registered LAST so 9.2-02's soft
  * time-budget sacrifices delivery/refresh before any enforcement stream — knowledge is
  * never bought with enforcement latency. STRICT NO-OP when no catalog, no fragments, and
  * no active pack exist, so installing SMA changes nothing until the user opts in by
@@ -589,7 +589,7 @@ async function runContext(ctx) {
 }
 
 /**
- * enforce stream — enforcing scopes (49.3-15, D-49.3-24c/f). SOFT-deny-with-override
+ * enforce stream — enforcing scopes (9.3-15, D-9.3-24c/f). SOFT-deny-with-override
  * (mayDeny:true), OPT-IN default-off behind SMA_ENFORCE_SCOPES (strict no-op until the
  * operator opts in — installation changes nothing), kill-switch SMA_ENFORCE_SCOPES_DISABLE.
  * It soft-denies an Edit/Write ONLY when it overlaps a VERIFIED-LIVE foreign claim (fresh
@@ -597,7 +597,7 @@ async function runContext(ctx) {
  * mergeGate.enforceScope over collision.verifyClaimEvidence — ONE evidence source). A
  * stale/unverified overlap stays WARN; a soft-deny always carries an override token.
  * Fully fail-open (C9): any error -> {warns:[]}, NEVER a hard block, NEVER a wedge; hard
- * deny stays the security guard's alone and the founder word (D-49-09) always wins.
+ * deny stays the security guard's alone and the founder word (D-9-09) always wins.
  */
 async function runEnforce(ctx) {
   const warns = []
@@ -667,8 +667,8 @@ function safeDeriveTags(reflex, toolInput, repoRoot) {
 }
 
 /**
- * PRE_CHECKS — the ordered internal dispatch pipeline (D-49.2-04). THE registration
- * point plans 05 (airbag), 09 (spend), 13 (fingerprint) and 49.3-05 (context) extend:
+ * PRE_CHECKS — the ordered internal dispatch pipeline (D-9.2-04). THE registration
+ * point plans 05 (airbag), 09 (spend), 13 (fingerprint) and 9.3-05 (context) extend:
  * each appends one stream object literal here. Order is emit order for warns. collision +
  * fingerprint + context are WARN-only; gates + airbag + spend are the deny-capable streams
  * (airbag + spend are opt-in until the SLO is met). `context` sits LAST so the soft
@@ -681,7 +681,7 @@ export const PRE_CHECKS = [
   { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
   { id: 'spend', tools: ['Edit', 'Write', 'Bash', 'Task'], killSwitchEnv: 'SMA_SPEND_DISABLE', mayDeny: true, run: runSpend },
   { id: 'fingerprint', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_FINGERPRINT_DISABLE', mayDeny: false, run: runFingerprint },
-  // 49.3-15 (D-49.3-24c/f) — enforcing scopes: SOFT-deny-with-override, opt-in default-off
+  // 9.3-15 (D-9.3-24c/f) — enforcing scopes: SOFT-deny-with-override, opt-in default-off
   // (SMA_ENFORCE_SCOPES), verified-live-only, fail-open. mayDeny:true = soft-deny tier ONLY,
   // never a hard block. Positioned after fingerprint (whose overlap it consumes), before context.
   { id: 'enforce', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_ENFORCE_SCOPES_DISABLE', mayDeny: true, run: runEnforce },
@@ -727,10 +727,10 @@ async function loadDefaultDeps() {
       import('./spend.mjs'),
       import('./breaker.mjs'),
       import('./fingerprint.mjs'),
-      import('./catalog.mjs'), // 49.3-05 (D-49.3-06) — context stream: catalog read/refresh
-      import('./fragments.mjs'), // 49.3-05 (D-49.3-07) — context stream: fragment delivery
-      import('./citations.mjs'), // 49.3-05 — fragment fires ride the SAME usage journal
-      import('./merge-gate.mjs'), // 49.3-15 (D-49.3-24c/f) — enforce stream: verified-live-only soft-deny predicate
+      import('./catalog.mjs'), // 9.3-05 (D-9.3-06) — context stream: catalog read/refresh
+      import('./fragments.mjs'), // 9.3-05 (D-9.3-07) — context stream: fragment delivery
+      import('./citations.mjs'), // 9.3-05 — fragment fires ride the SAME usage journal
+      import('./merge-gate.mjs'), // 9.3-15 (D-9.3-24c/f) — enforce stream: verified-live-only soft-deny predicate
     ])
   return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate }
 }
@@ -796,7 +796,7 @@ export async function buildCtx(opts = {}) {
     /* fail-open — no session read */
   }
 
-  // 49.3-13 (D-49.3-21a): fingerprint SELF-CAPTURE. Append THIS tool's own file_path to the
+  // 9.3-13 (D-9.3-21a): fingerprint SELF-CAPTURE. Append THIS tool's own file_path to the
   // terminal's OWN lease filesRecent[] — riding the once-per-tool-call buildCtx (ZERO new
   // spawn; a targeted atomicWriteJson, NOT a heartbeat, so it never fires the detached
   // snapshot child). Attribution is SELF-CAPTURE only (never a git-status read — on a shared

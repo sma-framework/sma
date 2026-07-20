@@ -1,11 +1,11 @@
 /**
- * evidence.mjs — burden-of-proof evidence records for risky ops (49.2-07, D-49.2-11).
+ * evidence.mjs — burden-of-proof evidence records for risky ops (9.2-07, D-9.2-11).
  *
  * A risky op — git force-push, an edit to the SAFE_COMMAND allowlist (predict.mjs), a
  * foreign-claim force-clear — must carry a burden-of-proof record in .sma/evidence/
  * naming the reason AND the verifications performed BEFORE it proceeds. The record
- * follows the force-clear-with-provenance shape (D-49-09, claims.mjs lineage):
- * append-only, actor+pid+ts stamped, NEVER overwritten and NEVER deleted (T-49.2-07C —
+ * follows the force-clear-with-provenance shape (D-9-09, claims.mjs lineage):
+ * append-only, actor+pid+ts stamped, NEVER overwritten and NEVER deleted (T-9.2-07C —
  * there is no unlink path in this module). The risky-op gates (gates.mjs) consult
  * hasFreshEvidence for their DORMANT soft-deny tier; the advisory WARN + the journaled
  * risky-op event are the default posture (hard-deny stays the security guard's alone).
@@ -68,7 +68,7 @@ export function writeEvidence({ op, target, reason, checks, actor } = {}, opts =
     id,
   }
   const path = join(opts.evidenceDir, `${id}.json`)
-  atomicWriteJson(path, record) // append-only; never unlinked (T-49.2-07C)
+  atomicWriteJson(path, record) // append-only; never unlinked (T-9.2-07C)
   return { ok: true, id, path, record }
 }
 
@@ -105,7 +105,7 @@ export function hasFreshEvidence({ op, target, maxAgeMs } = {}, opts = {}) {
  * evidenceStats({evidenceDir, journalDir}) -> {coverage, riskyOps, covered}. Coverage =
  * pct of journal events type 'risky-op' that reference an evidenceId. No risky-op events
  * → 100 (coverage of an empty set is honestly full). coverage is an integer (the
- * P49.2-07-C numeric-last-line contract). Never throws.
+ * P9.2-07-C numeric-last-line contract). Never throws.
  *
  * @param {{evidenceDir?:string, journalDir:string}} opts
  * @returns {{coverage:number, riskyOps:number, covered:number}}

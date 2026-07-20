@@ -3,7 +3,7 @@
  * sma-framework installer — `npx sma-framework init [--claude] [--local|--global] [--with-gsd-aliases]`
  *
  * Mirrors the upstream `npx @opengsd/gsd-core --claude --local` installer pattern
- * (D-49.1-06): copy the engine payload, derive the /sma-* command skills from the
+ * (D-9.1-06): copy the engine payload, derive the /sma-* command skills from the
  * user-facing workflow set, merge hooks into .claude/settings.json additively and
  * idempotently, scaffold the .sma/ runtime. Node built-ins only — zero dependencies.
  *
@@ -12,7 +12,7 @@
  *   scripts/sma/         -> <project>/scripts/sma/      (V1 runtime: cli.mjs + lib — path parity with hooks)
  *   sma-core/agents      -> <config>/agents/            (subagent definitions, sma-<name>.md)
  *   derived skills       -> <config>/skills/sma-<cmd>/  (thin SKILL.md wrappers over sma-core/workflows)
- *   sma-core/aliases     -> <config>/skills/gsd-<cmd>/  (ONLY with --with-gsd-aliases, D-49.1-02)
+ *   sma-core/aliases     -> <config>/skills/gsd-<cmd>/  (ONLY with --with-gsd-aliases, D-9.1-02)
  *   hooks                -> <config>/settings.json      (additive merge, existing entries preserved)
  *   .sma/{sessions,claims,journal}                      (runtime scaffold in the project)
  *   rules block          -> <project>/CLAUDE.md         (managed SMA:RULES block via the emit splice
@@ -70,18 +70,18 @@ const SMA_HOOKS = [
   { event: 'SessionStart', matcher: null, command: 'node scripts/sma/cli.mjs session-start', timeout: 10 },
   { event: 'PreToolUse', matcher: 'Edit|Write', command: 'node scripts/sma/cli.mjs collision-check', timeout: 5 },
   { event: 'PreToolUse', matcher: 'Bash', command: 'node scripts/sma/cli.mjs collision-check', timeout: 5 },
-  // 49.1-10 (B2): the reflex consumer is a SIBLING of collision-check, not a
+  // 9.1-10 (B2): the reflex consumer is a SIBLING of collision-check, not a
   // replacement — listed AFTER it so mergeHooks appends it behind the collision
   // entry in each matcher group. Every install target fires reflexes from day one.
   { event: 'PreToolUse', matcher: 'Edit|Write', command: 'node scripts/sma/cli.mjs reflex-check', timeout: 5 },
   { event: 'PreToolUse', matcher: 'Bash', command: 'node scripts/sma/cli.mjs reflex-check', timeout: 5 },
-  // 49.1-16 (B9/B10, D-49.1-12): the checkable HARD-RULE gates are a SIBLING of
+  // 9.1-16 (B9/B10, D-9.1-12): the checkable HARD-RULE gates are a SIBLING of
   // reflex-check — listed AFTER it so mergeHooks appends gates-check behind the
   // reflex entry in each matcher group. Advisory WARN only (permissionDecision
   // allow); every install target enforces the inventory in observation mode.
   { event: 'PreToolUse', matcher: 'Edit|Write', command: 'node scripts/sma/cli.mjs gates-check', timeout: 5 },
   { event: 'PreToolUse', matcher: 'Bash', command: 'node scripts/sma/cli.mjs gates-check', timeout: 5 },
-  // 49.1-21 (B16): the stall detector feeds on PostToolUse — a NEW hook type
+  // 9.1-21 (B16): the stall detector feeds on PostToolUse — a NEW hook type
   // for SMA (any pre-existing Stop/SubagentStop entries, e.g. a project's
   // security guard, live under different events and are untouched by the
   // additive merge). Advisory additionalContext nudge only, never a block.
@@ -116,7 +116,7 @@ function printHelp() {
     --claude             Install for Claude Code (default and only runtime today)
     -l, --local          Install into the current project (default)
     -g, --global         Install into $CLAUDE_CONFIG_DIR or ~/.claude
-    --with-gsd-aliases   Also install the transitional /gsd-* alias skills (D-49.1-02)
+    --with-gsd-aliases   Also install the transitional /gsd-* alias skills (D-9.1-02)
     -h, --help           Show this help
 
   Examples:
@@ -176,7 +176,7 @@ function rewriteMarkdownPaths(dir) {
 
 /**
  * Merge SMA hook entries into a parsed settings object IN PLACE.
- * - never removes or reorders existing entries (T-49.1-08)
+ * - never removes or reorders existing entries (T-9.1-08)
  * - idempotent: an entry whose command string already exists under the same
  *   event (and matcher, for matcher events) is skipped
  * Returns the number of entries added.
@@ -295,7 +295,7 @@ async function main() {
   }
   console.log(`  + skills        ${skillCount} /sma-* commands -> ${destSkills}`);
 
-  // 5. Transitional /gsd-* aliases — ONLY with --with-gsd-aliases (D-49.1-02)
+  // 5. Transitional /gsd-* aliases — ONLY with --with-gsd-aliases (D-9.1-02)
   if (flags.withGsdAliases) {
     const srcAliases = path.join(srcCore, 'aliases');
     let aliasCount = 0;
@@ -309,7 +309,7 @@ async function main() {
     console.log(`  + aliases       ${aliasCount} transitional /gsd-* skills (remove after phases 51/52 close)`);
   }
 
-  // 6. Hooks merge into <config>/settings.json — additive + idempotent (T-49.1-08)
+  // 6. Hooks merge into <config>/settings.json — additive + idempotent (T-9.1-08)
   const settingsPath = path.join(configDir, 'settings.json');
   let settings = {};
   if (existsSync(settingsPath)) {

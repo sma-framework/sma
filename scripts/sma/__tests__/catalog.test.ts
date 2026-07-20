@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/catalog.mjs (Phase 49.3 Plan 05, Task 1 — D-49.3-06).
+ * Tests for scripts/sma/lib/catalog.mjs (Phase 9.3 Plan 05, Task 1 — D-9.3-06).
  *
  * The deterministic one-line file catalog. Every card is a pure function of (file
  * bytes, injected git data) — no LLM meaning-string, no wall-clock, no machine id.

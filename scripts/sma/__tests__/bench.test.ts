@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/bench.mjs (Phase 49.2 Plan 01, Task 1 — the W0 harness).
+ * Tests for scripts/sma/lib/bench.mjs (Phase 9.2 Plan 01, Task 1 — the W0 harness).
  *
  * The 8-metric registry + deterministic base readers (S1, S2, S4, S5; registered
  * S6/S8; S3 reads results, S7 reads a persisted base). Everything DI so tests never
@@ -62,7 +62,7 @@ function writePlan(
     .join('\n')
   const verifyBlocks = verifyCmds.map((c) => `<verify>\n  <automated>${c}</automated>\n</verify>`).join('\n')
   const text = `---
-phase: 49.1
+phase: 9.1
 plan: ${name}
 must_haves:
   truths:
@@ -75,7 +75,7 @@ ${artLines}
 ${verifyBlocks}
 </tasks>
 `
-  const p = join(dir, `49.1-${name}-PLAN.md`)
+  const p = join(dir, `9.1-${name}-PLAN.md`)
   writeFileSync(p, text, 'utf8')
   return p
 }
@@ -171,7 +171,7 @@ describe('S1 false-done-rate (blind, claims-only)', () => {
       runCommand: runner,
       summaryAccess: { exists: () => true },
     })
-    expect(runner).not.toHaveBeenCalled() // unsafe command NEVER spawned (T-49.2-01)
+    expect(runner).not.toHaveBeenCalled() // unsafe command NEVER spawned (T-9.2-01)
     expect(out.unverifiable).toBe(1)
     expect(out.detail[0].falseDone).toBe(false) // unverifiable is not false-done (honest denominator)
 
@@ -188,7 +188,7 @@ describe('S1 false-done-rate (blind, claims-only)', () => {
 describe('S2 airbag-coverage / S4 phantom-writes', () => {
   it('Test 5 (S4): a claimed file no plan-id commit touched counts phantom; share/count modes', () => {
     const summaryText = `---
-phase: 49.1
+phase: 9.1
 plan: 24
 key-files:
   created:
@@ -197,10 +197,10 @@ key-files:
 ---
 body
 `
-    const sp = join(dir, '49.1-24-SUMMARY.md')
+    const sp = join(dir, '9.1-24-SUMMARY.md')
     writeFileSync(sp, summaryText, 'utf8')
     const parsed = parseSummaryClaims(summaryText)
-    expect(parsed.planId).toBe('49.1-24')
+    expect(parsed.planId).toBe('9.1-24')
     expect(parsed.files).toContain('scripts/sma/lib/real.mjs')
 
     // gitLog: only real.mjs was actually committed under the plan id

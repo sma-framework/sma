@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/grill.mjs (Phase 49.2 Plan 07, Task 1 — D-49.2-11).
+ * Tests for scripts/sma/lib/grill.mjs (Phase 9.2 Plan 07, Task 1 — D-9.2-11).
  *
  * The /sma-grill challenge ledger: an unresolved challenge blocks the build; a
  * conversion is VERIFIED against the plan's real predictions block (parsePredictions
@@ -38,7 +38,7 @@ let planPath: string
 
 /** A minimal PLAN.md fixture carrying a real predictions block. */
 const PLAN_FIXTURE = `---
-phase: 49.2-test
+phase: 9.2-test
 plan: 07
 predictions:
   - id: P-REAL-A

@@ -1,5 +1,5 @@
 /**
- * predict.mjs — the P1 prediction engine core (49.1-08, B18; D-49.1-10).
+ * predict.mjs — the P1 prediction engine core (9.1-08, B18; D-9.1-10).
  *
  * A PLAN.md may carry an optional `predictions:` block in frontmatter — a
  * pre-registered, machine-checkable claim set scored DETERMINISTICALLY at
@@ -12,7 +12,7 @@
  * verbalized-confidence anti-pattern lock carried forward from V1 (RESEARCH
  * cites systematic LLM overconfidence).
  *
- * Security boundary (T-49.1-14, Elevation of Privilege — mitigate): plan files
+ * Security boundary (T-9.1-14, Elevation of Privilege — mitigate): plan files
  * can arrive via import from untrusted sources, and check_command strings get
  * executed. SAFE_COMMAND_PATTERNS is the anchored allowlist enforced BEFORE
  * any run; a non-matching command scores 'skipped-unsafe' with the runner
@@ -37,7 +37,7 @@ import { serializeNote } from './frontmatter.mjs'
 
 /**
  * Anchored command allowlist — the ONLY shapes a check_command may take.
- * Exported so 49.1-09's PRED-* lint reuses the exact same boundary.
+ * Exported so 9.1-09's PRED-* lint reuses the exact same boundary.
  */
 export const SAFE_COMMAND_PATTERNS = [
   /^node scripts\/sma\//,
@@ -89,7 +89,7 @@ function scalarValue(raw) {
  * first line outside that indentation closes the block. Missing file, no
  * fence, or no block -> honest empty array, never a throw (fail-open C9 — the
  * consumers are observers, not gates). Parameterizing the top-level key is the
- * ONLY change vs the original parsePredictions inline scan (49.2-08 T1): the
+ * ONLY change vs the original parsePredictions inline scan (9.2-08 T1): the
  * `predictions:` and `consequences:` blocks share one narrow extractor rather
  * than two hand-rolled copies.
  *
@@ -148,7 +148,7 @@ export function parseFrontmatterEntries(planPath, key, opts = {}) {
  * parsePredictions(planPath, opts) -> {predictions, error?}.
  *
  * Thin wrapper over parseFrontmatterEntries keyed to 'predictions'. Behavior
- * is byte-identical to the pre-49.2-08 inline scan — predict.test.ts is the
+ * is byte-identical to the pre-9.2-08 inline scan — predict.test.ts is the
  * regression proof.
  *
  * @param {string} planPath
@@ -212,7 +212,7 @@ function compare(actual, comparator, threshold) {
 /**
  * isReceiptEntry(entry) — the receipts discriminator (R1/R2 false class-A
  * lesson, 2026-07-10). A structural receipt pins `expected_sha256` over an
- * observation (the locked D-49.2-06 evidence field); a prediction NEVER
+ * observation (the locked D-9.2-06 evidence field); a prediction NEVER
  * carries it — its expectation is a numeric `threshold`. A receipt is a
  * BUILD-TIME claim: re-scoring it later as a standing prediction against
  * ACCRUING .sma state (e.g. `subagent-receipts --json` output) is a guaranteed
@@ -228,7 +228,7 @@ export function isReceiptEntry(entry) {
 
 /**
  * Charset guard closing the shell-injection gap the prefix allowlist alone
- * leaves open (T-49.1-14): `node scripts/sma/x.mjs; rm -rf /` matches the
+ * leaves open (T-9.1-14): `node scripts/sma/x.mjs; rm -rf /` matches the
  * prefix but carries shell metacharacters. Only plain words, spaces, and
  * path/flag characters may appear — no ; & | ` $ < > ( ) quotes or newlines.
  */
@@ -244,7 +244,7 @@ export function isSafeCommand(command) {
  * scorePlan({planPath, runCommand, now}) -> {records, invalid, excluded}.
  *
  * Scores plan-frontmatter `predictions:` entries ONLY — the `receipts:` block
- * (a SUMMARY's build-time structural claims, D-49.2-06) is NEVER consumed
+ * (a SUMMARY's build-time structural claims, D-9.2-06) is NEVER consumed
  * here; re-verifying receipts is `sma reverify`'s territory (R1/R2 false
  * class-A lesson, 2026-07-10). A receipt-shaped entry misfiled inside
  * `predictions:` (see isReceiptEntry) lands in `excluded` with NO verdict and
@@ -301,7 +301,7 @@ export function scorePlan({ planPath, runCommand, now }) {
       plan: planPath,
     }
 
-    // T-49.1-14: allowlist BEFORE any run — the runner is never invoked for a
+    // T-9.1-14: allowlist BEFORE any run — the runner is never invoked for a
     // non-matching command.
     if (!isSafeCommand(entry.check_command)) {
       records.push({ ...base, actual: null, hit: false, verdict: 'skipped-unsafe' })
@@ -356,7 +356,7 @@ export function scorePlan({ planPath, runCommand, now }) {
  *
  * @param {object} args
  * @param {object} args.verdict  a scorePlan record ({verdict:'miss', id, claim, ...})
- * @param {string} args.planId   the plan identity, e.g. '49.1-09'
+ * @param {string} args.planId   the plan identity, e.g. '9.1-09'
  * @param {{draftsDir?:string}} [args.dirs]  DI dir (default .claude/memory/drafts)
  * @returns {{drafted: boolean, path: string|null}}
  */

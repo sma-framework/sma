@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/doc-audit.mjs (Phase 49.3 Plan 09, Task 2 — D-49.3-01/15).
+ * Tests for scripts/sma/lib/doc-audit.mjs (Phase 9.3 Plan 09, Task 2 — D-9.3-01/15).
  *
  *  - Test 1: extractRegion returns the content between paired markers; missing/unpaired
  *    markers return {found:false}.
@@ -134,7 +134,7 @@ describe('doc-audit.mjs — readme positioning audit', () => {
     expect(v.some((x) => x.rule === 'analog-missing' && x.detail === 'ccusage')).toBe(true)
     expect(v.some((x) => x.rule === 'wedge-missing' && x.file === 'README.ru.md')).toBe(true)
 
-    // 49.4-05: 'Outcomes' is now a guarded analog — a positioning region without the
+    // 9.4-05: 'Outcomes' is now a guarded analog — a positioning region without the
     // Outcomes token scores an analog-honesty violation, so the SMA-vs-Outcomes row
     // can never silently disappear from either language.
     expect(ANALOGS).toContain('Outcomes')

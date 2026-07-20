@@ -198,7 +198,7 @@ COMPLEMENTS (does not replace) the existing verify-before-execute artifact grep.
 2. **Read the journal + `git log` — establish what is DONE.** Read
    `.sma/exec/<phase>-<plan>.jsonl` (`node scripts/sma/cli.mjs exec-journal read
    --phase <X> --plan <NN>`) AND `git log --oneline -15`. The two are INDEPENDENT
-   sources (T-49.1-43): the last `task_complete` line's `commitSha` should be
+   sources (T-9.1-43): the last `task_complete` line's `commitSha` should be
    reachable in the git log. If they disagree, trust `git log` (the commit is the
    ground truth) and treat the journal as advisory.
 3. **Read the plan's task list, take `nextUndone`.** From the plan's `<task>`
@@ -333,7 +333,7 @@ Canonical per-task commit rules live in **`agents/sma-executor.md`** (`<task_com
 **Journal-append (P5, B14) — after EVERY task commit.** The moment a task's
 production commit lands, append one line to the per-plan execution journal so a
 mid-plan terminal death becomes data, not a forensic reconstruction. The append
-is BEST-EFFORT (fail-open, T-49.1-44): a journal write failure must NEVER block
+is BEST-EFFORT (fail-open, T-9.1-44): a journal write failure must NEVER block
 the commit or the plan — wrap it so a non-zero exit is swallowed.
 
 ```bash
@@ -494,7 +494,7 @@ if [ "$IS_WORKTREE" != "true" ]; then
 fi
 ```
 
-**STATE.md machine-managed region (D-49.1-14, B13).** When STATE.md carries the
+**STATE.md machine-managed region (D-9.1-14, B13).** When STATE.md carries the
 `<!-- SMA-MANAGED:START -->` fenced region, the `## Current Position`,
 `## Open Blockers`, and `## Active Sessions` zones are SNAPSHOT-OVERWRITTEN and may
 be written ONLY through the snapshot-aware state verbs — never a raw editor and never a
@@ -522,7 +522,7 @@ sma_run query state.add-decision \
   --phase "${PHASE}" --summary-file "${DECISION_TEXT_FILE}" --rationale-file "${RATIONALE_FILE}"
 
 # Add blockers if any found.
-# STATE.md machine-managed region (D-49.1-14, B13): `## Open Blockers` is a fenced,
+# STATE.md machine-managed region (D-9.1-14, B13): `## Open Blockers` is a fenced,
 # snapshot-managed zone — append blockers through the snapshot-aware verb, NOT the
 # query handler (which errored on the snapshot format during P49). The verb emits the
 # parser-compatible `- **Phase N blocked:** <what> — <how to clear> (kind)` shape:

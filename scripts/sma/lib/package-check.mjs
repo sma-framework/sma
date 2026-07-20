@@ -9,7 +9,7 @@
  * must all be ONE value (the banner already reads package.json, so the check
  * here is package.json == capability.json).
  *
- * Violations counted (--count prints the bare total, D-49.3-16 scorer contract):
+ * Violations counted (--count prints the bare total, D-9.3-16 scorer contract):
  *   1. package.json carries a truthy `private` flag
  *   2. package.json version != sma-core/capabilities/sma/capability.json version
  *   3. a `bin` entry whose target file is missing

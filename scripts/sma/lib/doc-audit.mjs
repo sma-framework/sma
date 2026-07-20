@@ -1,6 +1,6 @@
 /**
  * doc-audit.mjs — deterministic honesty audit over the manual and README positioning
- * (49.3-09, D-49.3-01 + D-49.3-15).
+ * (9.3-09, D-9.3-01 + D-9.3-15).
  *
  * Every promise the docs plan makes is turned into a number a script prints, not a
  * sentence a reviewer trusts. It verifies, zero-LLM and read-only:
@@ -10,7 +10,7 @@
  *   - both README positioning regions (`sma:positioning`) name all five ANALOGS and the
  *     per-language WEDGE clause of the defensible-core thesis;
  *   - the positioning regions contain ZERO multiplier claims (the 10x claim lives with
- *     49.2 only) and the RU manual + RU positioning regions contain ZERO em-dashes.
+ *     9.2 only) and the RU manual + RU positioning regions contain ZERO em-dashes.
  *
  * SUBSTRATE LAW: Node built-ins only; every file read flows through an injected `readFile`
  * so tests never touch the real tree. Tolerant of missing files — a missing audited file,
@@ -60,7 +60,7 @@ export const SURFACE_MANIFEST = [
 
 /**
  * The world analogs the positioning region must name honestly (brand tokens).
- * 'Outcomes' joins the list in 49.4-05: after Claude Outcomes shipped separate-context
+ * 'Outcomes' joins the list in 9.4-05: after Claude Outcomes shipped separate-context
  * grading, the honest comparison row is load-bearing — dropping it from either
  * language's region is now a scored analog-honesty violation (the same grow-the-guard
  * law as the platform's security guard; the guard only ever grows).

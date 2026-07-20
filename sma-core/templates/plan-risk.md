@@ -42,7 +42,7 @@ The verify step writes the result into the phase DoD JSON as a top-level field b
 ```json
 {
   "schemaVersion": 1,
-  "phaseId": "49.1",
+  "phaseId": "9.1",
   "emittedAt": "...",
   "risk": { "score": 7, "tier": "high" },
   "dimensions": [ ... ]

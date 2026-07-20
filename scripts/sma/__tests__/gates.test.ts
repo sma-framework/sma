@@ -1,8 +1,8 @@
 /**
- * Tests for scripts/sma/lib/gates.mjs (Phase 49.1 Plan 16, Task 2 — B9/B10, D-49.1-12).
+ * Tests for scripts/sma/lib/gates.mjs (Phase 9.1 Plan 16, Task 2 — B9/B10, D-9.1-12).
  *
  * The checkable HARD-RULE inventory promoted from prose to PreToolUse WARN gates.
- * ALL gates advisory WARN (permissionDecision allow); soft-deny is 49.1-17.
+ * ALL gates advisory WARN (permissionDecision allow); soft-deny is 9.1-17.
  *
  * REAL-SHAPE fixtures (CR-01, RESEARCH Pitfall 1): Edit/Write events carry ABSOLUTE
  * Windows paths and Bash events carry realistic command strings, mirroring what
@@ -151,7 +151,7 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
       // fence-intersecting: the new_string carries a managed heading (or a fence marker).
       const fenceEdit = edit('.planning/STATE.md', {
         old_string: 'x',
-        new_string: '## Current Position\n\n**Phase: 49.1 — hand-edited by mistake**',
+        new_string: '## Current Position\n\n**Phase: 9.1 — hand-edited by mistake**',
       })
       expect(ids(run(fenceEdit))).toContain('GATE-STATEEDIT')
       const markerWrite = write('.planning/STATE.md', 'noise\n<!-- SMA-MANAGED:START -->\n## Open Blockers\n')
@@ -260,14 +260,14 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
     })
   })
 
-  // ── soft-deny tier (49.1-17, D-49.1-13) ──────────────────────────────────────
+  // ── soft-deny tier (9.1-17, D-9.1-13) ──────────────────────────────────────
   //
   // The two gates that carry teeth: GATE-PUSH (push without full-gate evidence) and
   // GATE-MEMEDIT (hand-edit of generated MEMORY.md). Deny is DORMANT by default —
   // it exists ONLY when the per-gate arm env is set, and even then a fresh evidence
   // marker or a one-shot override token allows the operation. An exception anywhere
   // in the deny path degrades to allow (fail-open, scorecard metric 7).
-  describe('soft-deny tier (49.1-17, D-49.1-13)', () => {
+  describe('soft-deny tier (9.1-17, D-9.1-13)', () => {
     let gatesDir: string
     let journalDir: string
     beforeEach(() => {
@@ -283,7 +283,7 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
     const pushEvt = () => bash('git push origin main')
     const memEvt = () => edit('.claude/memory/MEMORY.md', { old_string: 'a', new_string: 'b' })
 
-    // GATE-PUSH + GATE-MEMEDIT (49.1-17) plus the 49.2-07 risky-op gates carry softDeny.
+    // GATE-PUSH + GATE-MEMEDIT (9.1-17) plus the 9.2-07 risky-op gates carry softDeny.
     it('exactly the softDeny-capable gates carry a softDeny capability', () => {
       const withSoft = GATES.filter((g: any) => g.softDeny)
       expect(new Set(withSoft.map((g: any) => g.id))).toEqual(

@@ -205,7 +205,7 @@
   <h3>3. Score — a script settles the promise, not the assistant's word</h3>
   <p>At close, the deterministic scorer runs the exact check command and compares it against the threshold:</p>
   <p><code>$ pnpm sma predict-score</code><br>
-  <code>P49.3-09-A  uncovered_handlers_count == 0  →  actual 1  →  MISS</code></p>
+  <code>P9.3-09-A  uncovered_handlers_count == 0  →  actual 1  →  MISS</code></p>
   <p>A later command shipped without an explainer, so the real count is 1, not 0. The promise <b>missed</b>. The calibration ledger gains a row:</p>
   <table>
     <tr><th>domain</th><th>hits</th><th>misses</th><th>hit rate</th></tr>

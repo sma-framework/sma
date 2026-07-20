@@ -1,5 +1,5 @@
 /**
- * goodhart.mjs — the Goodhart integrity guards (49.2-10, D-49.2-14).
+ * goodhart.mjs — the Goodhart integrity guards (9.2-10, D-9.2-14).
  *
  * The moment trust numbers are published, the incentive to game them exists.
  * This module is the anti-gaming layer for the receipts/predictions spine:
@@ -23,7 +23,7 @@
  *      bench, audit, digest) ever reads .sma/nearmiss/, so reporting a near-miss
  *      can never hurt a number — immunity is what makes reporting rational.
  *
- * Security boundary (T-49.2-30): the audit executes check_command strings sourced
+ * Security boundary (T-9.2-30): the audit executes check_command strings sourced
  * from claims files. The audit reuses receipts.verifyReceipt, which enforces the
  * ONE isSafeCommand boundary (imported from predict.mjs) BEFORE any run — a
  * non-allowlisted command scores 'skipped-unsafe' with the runner never invoked.
@@ -50,12 +50,12 @@ function sha256(s) {
   return createHash('sha256').update(String(s), 'utf8').digest('hex')
 }
 
-/** '49.2-10-PLAN.md' -> '49.2-10' (the plan identity a countersign is keyed by). */
+/** '9.2-10-PLAN.md' -> '9.2-10' (the plan identity a countersign is keyed by). */
 export function planIdFromPath(planPath) {
   return basename(String(planPath)).replace(/-PLAN\.md$/i, '').replace(/\.md$/i, '')
 }
 
-/** '49.2-10' -> {phase:'49.2', plan:'10'} (the exec-journal file key). */
+/** '9.2-10' -> {phase:'9.2', plan:'10'} (the exec-journal file key). */
 function splitPlanId(planId) {
   const s = String(planId)
   const i = s.lastIndexOf('-')

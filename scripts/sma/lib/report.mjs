@@ -1,14 +1,14 @@
 /**
- * report.mjs — the LOCAL, self-contained static-HTML report (49.1-24, B23,
- * D-49.1-07). Zero server, zero daemon, zero DB — it must open file:// offline.
+ * report.mjs — the LOCAL, self-contained static-HTML report (9.1-24, B23,
+ * D-9.1-07). Zero server, zero daemon, zero DB — it must open file:// offline.
  * The live-server panel (the deferred `sma ui`) stays REJECTED (V3 candidate).
  *
  * renderReport(data) is a PURE transform: fixtures / gathered sources in, ONE
  * self-contained HTML string out (inline CSS, no external asset URLs, no fetches).
- * The six sections + process metrics per D-49.1-07: sessions, predictions,
+ * The six sections + process metrics per D-9.1-07: sessions, predictions,
  * calibration (per domain), reflex firings, collisions, corpus health, metrics.
  *
- * SECURITY (T-49.1-51): every interpolated value is HTML-escaped through the
+ * SECURITY (T-9.1-51): every interpolated value is HTML-escaped through the
  * single `esc` helper — journal text lands in a browser context, so a
  * <script>-bearing journal string must render as inert text, never live markup.
  * No inline event handlers, no external assets.
@@ -27,7 +27,7 @@ import { join } from 'node:path'
 
 // ── escaping ──────────────────────────────────────────────────────────────────
 
-/** HTML-escape a value (T-49.1-51). Non-strings coerce to '' or their String form. */
+/** HTML-escape a value (T-9.1-51). Non-strings coerce to '' or their String form. */
 function esc(v) {
   if (v == null) return ''
   return String(v)

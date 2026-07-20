@@ -1,15 +1,15 @@
 /**
- * Tests for scripts/sma/lib/report.mjs (Phase 49.1 Plan 24, Task 2 — D-49.1-07, B23).
+ * Tests for scripts/sma/lib/report.mjs (Phase 9.1 Plan 24, Task 2 — D-9.1-07, B23).
  *
  * The LOCAL static-HTML report: zero server, zero daemon, zero DB. renderReport is
  * a pure transform (fixtures in, one self-contained HTML string out). The four
- * pinned behaviours + the XSS escape pin (T-49.1-51):
+ * pinned behaviours + the XSS escape pin (T-9.1-51):
  *   - Test 1: renderReport over full fixture -> one self-contained HTML string
  *     (no external script/css URLs) containing the six sections + metrics.
  *   - Test 2: every empty data source renders its honest empty-state text.
  *   - Test 3: the footer carries the generated-at timestamp line.
  *   - Test 4: writeReport writes the file; defaultReportPath is .sma/report/index.html.
- *   - Test 5 (T-49.1-51): journal strings are HTML-escaped (a <script> fixture entry
+ *   - Test 5 (T-9.1-51): journal strings are HTML-escaped (a <script> fixture entry
  *     never lands as live markup).
  */
 
@@ -29,7 +29,7 @@ const FULL = {
   collisions: [{ type: 'collision', actors: ['Tom', 'Sam'], scope: 'src/x.ts', ts: '2026-07-05T11:30:00Z' }],
   corpus: { lintCritical: 0, lintWarn: 2, corpusFiles: 206, indexCommit: 'abc1234' },
   metrics: {
-    leadTime: { available: true, plans: [{ id: '49.1-01', ms: 3600000, incomplete: false }] },
+    leadTime: { available: true, plans: [{ id: '9.1-01', ms: 3600000, incomplete: false }] },
     reworkRate: { available: true, rate: 0.2, rework: 2, total: 10 },
     deviations: { available: true, byKind: { gate: 2, collision: 1 }, total: 3 },
   },
@@ -112,7 +112,7 @@ describe('writeReport + defaultReportPath', () => {
   })
 })
 
-describe('XSS escape (T-49.1-51)', () => {
+describe('XSS escape (T-9.1-51)', () => {
   it('escapes journal strings so a <script> entry never lands as live markup', () => {
     const evil = {
       ...FULL,

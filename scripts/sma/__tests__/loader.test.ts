@@ -12,7 +12,7 @@
  *   - Test 5: facet semantics — {area:[tech], kind:[procedural-rule]} matches notes
  *     with tech AND procedural-rule; {area:[tech, memory]} matches tech OR memory
  *     (AND across facets, OR within a facet — B1 intersection).
- *   - Test 6 (D-49-15): the set-query «bug-lesson + parser» returns exactly the
+ *   - Test 6 (D-9-15): the set-query «bug-lesson + parser» returns exactly the
  *     fixture's bug-lesson notes carrying the parser topic tag.
  */
 
@@ -99,7 +99,7 @@ beforeEach(() => {
     'use-when': 'memory work',
     importance: 5,
   })
-  // bug-lesson carrying the parser topic — the D-49-15 target.
+  // bug-lesson carrying the parser topic — the D-9-15 target.
   note(corpusDir, 'lesson-parser.md', {
     description: 'A bug lesson about the parser',
     kind: 'bug-lesson',
@@ -176,7 +176,7 @@ describe('loader.mjs — resolvePeriphery (R4)', () => {
     expect(orRes.periphery).toContain('mem-ref.md')
   })
 
-  it('Test 6 (D-49-15): «bug-lesson + parser» returns only the parser bug-lesson', () => {
+  it('Test 6 (D-9-15): «bug-lesson + parser» returns only the parser bug-lesson', () => {
     // kind bug-lesson AND the parser topic tag (an unknown facet-less tag matched
     // against the note tags).
     const res = resolvePeriphery({

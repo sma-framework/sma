@@ -1,6 +1,6 @@
 /**
  * vendor-ledger.mjs — the standing Anthropic-update triage ledger linter
- * (49.4-01, BL-160; §3.4 of 49.4-RESEARCH).
+ * (9.4-01, BL-160; §3.4 of 9.4-RESEARCH).
  *
  * The founder's standing mandate mechanized: every Anthropic dev update becomes
  * ONE append-only row in docs/VENDOR-LEDGER.md carrying a mandatory verdict
@@ -11,7 +11,7 @@
  * network (the ledger is written by whoever read the release notes; the verb
  * only counts and lints).
  *
- * CONSUME-NEVER-REIMPLEMENT (D-49.3-02), the house patterns this mirrors:
+ * CONSUME-NEVER-REIMPLEMENT (D-9.3-02), the house patterns this mirrors:
  *   - journal.mjs's tolerant-reader posture: a missing/corrupt ledger never
  *     throws — a missing file is a warning + empty rows, a malformed table line
  *     is skip-and-counted into `errors`.

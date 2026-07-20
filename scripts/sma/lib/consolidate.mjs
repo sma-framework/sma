@@ -1,9 +1,9 @@
 /**
- * consolidate.mjs — the P3 consolidation core (49.1-12, B5/FI-9): a PROPOSE-ONLY
+ * consolidate.mjs — the P3 consolidation core (9.1-12, B5/FI-9): a PROPOSE-ONLY
  * review pass over the memory corpus. Structural analog of lint.mjs's runLint —
  * pure read → collect proposals → structured return. The lib NEVER writes;
  * rendering/persisting is the CLI layer's job and APPLYING any proposal is the
- * operator's reviewed action (T-49.1-23).
+ * operator's reviewed action (T-9.1-23).
  *
  * TRIGGER CONTRACT (event-driven, never a daemon/clock): run `pnpm sma
  * consolidate` at every ~25 commits touching .claude/memory/** OR at
@@ -11,14 +11,14 @@
  * HIGH-confidence constraint across all research lanes (RESEARCH Pattern 3).
  *
  * FI-9 (carried-forward lock): memory is NEVER deleted or time-decayed.
- * Promotion counters are usage-evidence based (49.1-11's citation ledger);
- * dead weight demotes via 49.1-13's trim, consolidation only proposes.
+ * Promotion counters are usage-evidence based (9.1-11's citation ledger);
+ * dead weight demotes via 9.1-13's trim, consolidation only proposes.
  *
  * Exports (consumed by the CLI `consolidate` subcommand + lint's MEM-CONTRADICT):
  *   - propose(opts)            -> {merges, promotions, contradictions, digest}
  *   - digest(opts)             -> {topCited, incidents, summary}
  *   - findContradictions(opts) -> contradiction pairs (the ONE shared detector —
- *       lint.mjs imports THIS, single implementation, 49.1-12 T2 acceptance)
+ *       lint.mjs imports THIS, single implementation, 9.1-12 T2 acceptance)
  *
  * DESIGN INVARIANTS:
  *   - READ-ONLY: imports ONLY read APIs from node:fs. Zero write calls (test 5).
@@ -76,7 +76,7 @@ function listNoteFiles(corpusDir) {
     return []
   }
   return entries
-    // The FI-11 per-area INDEX-<area>.md files (49.1-13) are structural, not notes.
+    // The FI-11 per-area INDEX-<area>.md files (9.1-13) are structural, not notes.
     .filter((f) => f.endsWith('.md') && !STRUCTURAL_FILES.has(f) && !/^INDEX-[^/\\]+\.md$/.test(f))
     .filter((f) => {
       try {
@@ -317,7 +317,7 @@ function findMerges(notes, registry, threshold) {
 /**
  * Promotion counters (promotion-NOT-time-decay, FI-9): an episodic note cited
  * by >= PROMOTION_THRESHOLD DISTINCT task-tag-sets in the usage ledger
- * (49.1-11's citation data) is proposed for episodic→semantic promotion.
+ * (9.1-11's citation data) is proposed for episodic→semantic promotion.
  * A citation event's task-tag-set key = its sorted `tags` array when recorded;
  * events without tags fall back to their session key (one session ≈ one task).
  */
@@ -408,7 +408,7 @@ export function digest(opts = {}) {
  * @param {object} opts
  * @param {string} opts.corpusDir   directory of the memory notes
  * @param {string} [opts.tagsPath]  path to TAGS.md (defaults to corpusDir/TAGS.md)
- * @param {string} [opts.usageDir]  .sma/usage ledger dir (49.1-11 promotion evidence)
+ * @param {string} [opts.usageDir]  .sma/usage ledger dir (9.1-11 promotion evidence)
  * @param {string} [opts.journalDir] .sma/journal dir (digest incident classes)
  * @param {number} [opts.promotionThreshold] distinct tag-sets to propose promotion
  * @param {number} [opts.mergeSimilarity]    Jaccard threshold for merge proposals

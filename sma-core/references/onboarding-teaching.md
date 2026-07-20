@@ -1,10 +1,10 @@
-# Onboarding teaching modules — the five things a new user must understand (D-49.3-03/05)
+# Onboarding teaching modules — the five things a new user must understand (D-9.3-03/05)
 
 The centerpiece of adoption is the first ten minutes. An uninitiated user who does not
 understand WHY the process matters abandons the HOW. This file holds the deterministic
 teaching content `/sma-start` delivers — the module TEXT lives here, versioned; the
 workflow only STAGES it (a `> TEACH(<module-id>)` marker fires each module immediately
-before the stage it makes meaningful, never one front-loaded lecture, D-49.3-05).
+before the stage it makes meaningful, never one front-loaded lecture, D-9.3-05).
 
 Every module is written in plain words: each technical term is glossed in one line the
 first time it appears (the novice hard rule, carried from V2). Each module carries one

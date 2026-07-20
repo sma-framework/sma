@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/consolidate.mjs (Phase 49.1 Plan 12, Task 1 — B5/FI-9).
+ * Tests for scripts/sma/lib/consolidate.mjs (Phase 9.1 Plan 12, Task 1 — B5/FI-9).
  *
  * P3 consolidation core — a PROPOSE-ONLY review pass over the memory corpus
  * (runLint contract: pure read + structured return, ZERO disk writes; the CLI
@@ -106,7 +106,7 @@ afterEach(() => {
 
 const opts = () => ({ corpusDir, tagsPath, usageDir, journalDir })
 
-describe('consolidate.mjs — propose() merge proposals (49.1-12 test 1)', () => {
+describe('consolidate.mjs — propose() merge proposals (9.1-12 test 1)', () => {
   it('Test 1: two near-duplicate notes (same area+kind, high body overlap) → one MERGE naming both', () => {
     note(
       corpusDir,
@@ -155,7 +155,7 @@ describe('consolidate.mjs — propose() merge proposals (49.1-12 test 1)', () =>
   })
 })
 
-describe('consolidate.mjs — propose() promotion counters (49.1-12 test 2)', () => {
+describe('consolidate.mjs — propose() promotion counters (9.1-12 test 2)', () => {
   it('Test 2: episodic note cited by >= 3 distinct task-tag-sets → PROMOTE (episodic → procedural-rule)', () => {
     note(corpusDir, 'episodic_incident_z.md', {
       description: 'One incident record about the flaky sandbox verification on Windows.',
@@ -192,7 +192,7 @@ describe('consolidate.mjs — propose() promotion counters (49.1-12 test 2)', ()
   })
 })
 
-describe('consolidate.mjs — propose() contradiction detection (49.1-12 test 3)', () => {
+describe('consolidate.mjs — propose() contradiction detection (9.1-12 test 3)', () => {
   it('Test 3: two decision notes, same area+kind, conflicting claims, unlinked → CONTRADICT naming both', () => {
     note(corpusDir, 'decision_bundler_yes.md', {
       description: 'Always use webpack for the production build bundler pipeline.',
@@ -242,7 +242,7 @@ describe('consolidate.mjs — propose() contradiction detection (49.1-12 test 3)
   })
 })
 
-describe('consolidate.mjs — digest() reflection summary (49.1-12 test 4)', () => {
+describe('consolidate.mjs — digest() reflection summary (9.1-12 test 4)', () => {
   it('Test 4: digest over a usage+journal window lists top-cited notes and repeated incident classes', () => {
     jsonl(join(usageDir, 'term-1.jsonl'), [
       { ts: '2026-07-01T00:00:00.000Z', terminal: 'term-1', seq: 1, noteId: 'a.md', kind: 'load', session: 's1' },
@@ -274,7 +274,7 @@ describe('consolidate.mjs — digest() reflection summary (49.1-12 test 4)', () 
   })
 })
 
-describe('consolidate.mjs — zero-writes contract (49.1-12 test 5)', () => {
+describe('consolidate.mjs — zero-writes contract (9.1-12 test 5)', () => {
   it('Test 5: propose() performs ZERO disk writes — tree byte-identical, no write API in source', () => {
     note(corpusDir, 'decision_bundler_yes.md', {
       description: 'Always use webpack for the production build bundler pipeline.',

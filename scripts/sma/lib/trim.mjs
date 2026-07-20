@@ -1,5 +1,5 @@
 /**
- * trim.mjs — the FI-9 demotion-only trimmer (49.1-13): the auto-repair for the
+ * trim.mjs — the FI-9 demotion-only trimmer (9.1-13): the auto-repair for the
  * four size lints (MEM-CORESIZE / MEM-NOTESIZE / MEM-INDEXSIZE / STATE-SIZE).
  *
  * FOUNDER LOCK (FI-9, verbatim): «система никогда ничего не забывает» — overflow
@@ -18,7 +18,7 @@
  * the plan's grep gate pins that. Every apply path stages a same-dir temp file
  * and renames it over the target via fs-atomics (Windows-safe).
  *
- * Demotion ORDER = least-recently-cited first (49.1-11's citation ledger via
+ * Demotion ORDER = least-recently-cited first (9.1-11's citation ledger via
  * citations.usageStats: never-cited notes demote before long-ago-cited ones,
  * and a recently-cited note is never selected while an uncited one exists) —
  * hot layers stay maximally useful per byte.

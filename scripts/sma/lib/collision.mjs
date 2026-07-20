@@ -1,6 +1,6 @@
 /**
  * collision.mjs — advisory scope-glob collision detector + Terraform-style WARN
- * builder (R8, B20/B25, D-49-16).
+ * builder (R8, B20/B25, D-9-16).
  *
  * READ-ONLY over a readSessions() snapshot (SPEC edge: concurrency R8) — the detector
  * NEVER writes or deletes anything except a journal append. It only returns data; the
@@ -11,7 +11,7 @@
  * slashes + collapsed slashes) runs BEFORE any glob intersection — NTFS compares
  * case-insensitively (B18).
  *
- * D-49-16 hot-file watch list (real incident 2026-07-02): .planning/STATE.md /
+ * D-9-16 hot-file watch list (real incident 2026-07-02): .planning/STATE.md /
  * .planning/ROADMAP.md / .claude/memory/MEMORY.md are first-class collision targets.
  * When >=2 sessions are fresh and an input path touches one of these — EVEN WITHOUT an
  * explicit claim — an informational (tier:'info') warn rides the same channel; it is
@@ -38,7 +38,7 @@ export function normalizePath(p) {
     .replace(/\/{2,}/g, '/')
 }
 
-/** D-49-16: built-in hot-file watch list (normalized). Planning files are first-class. */
+/** D-9-16: built-in hot-file watch list (normalized). Planning files are first-class. */
 export const HOT_FILES = [
   normalizePath('.planning/STATE.md'),
   normalizePath('.planning/ROADMAP.md'),
@@ -102,7 +102,7 @@ export function relativizePath(p, rootNorm) {
  * checkScopeCollision(paths[], {sessions, selfTerminalId, now, scopeMtimeProbe, root}) —
  * read-only over the sessions snapshot. For each FOREIGN session with scope.globs,
  * intersect its compiled globs against the normalized input paths; build a warn per hit.
- * Additionally (D-49-16) emit an info warn for any input path on HOT_FILES when >=2
+ * Additionally (D-9-16) emit an info warn for any input path on HOT_FILES when >=2
  * sessions are fresh — even with no claim. Fail-open: any error -> [].
  *
  * CR-01: when `root` (the repo root) is supplied, each candidate is relativized against
@@ -166,7 +166,7 @@ export function checkScopeCollision(paths, opts = {}) {
       }
     }
 
-    // D-49-16 hot-file advisory: >=2 fresh sessions + a hot-file path, no claim needed.
+    // D-9-16 hot-file advisory: >=2 fresh sessions + a hot-file path, no claim needed.
     const freshCount = sessions.filter((s) => {
       const cls = classifyStaleness(s, { now })
       return cls.state === 'fresh'
@@ -221,14 +221,14 @@ export function buildWarnText(warn) {
   if (!warn) return ''
   if (warn.tier === 'info') return warn.text ?? ''
   const since = formatSince(warn.since)
-  // BL-158 (D-49.3-22f): attention ≠ fully-active. A `fresh` owner reads «занято» (busy
+  // BL-158 (D-9.3-22f): attention ≠ fully-active. A `fresh` owner reads «занято» (busy
   // NOW). An `attention` owner (missed heartbeats — possibly idle, possibly still there)
   // reads «внимание» so the reader knows it is NOT a hard busy and the raw tier is carried
   // inline. The active COUNT split lives in countSessionTiers; this is the WARN-text split.
   const attention = warn.staleness === 'attention'
   const lead = attention ? 'внимание' : 'занято'
   const staleNote = warn.staleness && warn.staleness !== 'fresh' ? ` [${warn.staleness}]` : ''
-  // D-49.3-22: self-verifying evidence inline (live «правки N мин назад…» / stale «можно
+  // D-9.3-22: self-verifying evidence inline (live «правки N мин назад…» / stale «можно
   // работать») when the caller attached it via verifyClaimEvidence.
   const evidence = typeof warn.evidence === 'string' && warn.evidence ? ` — ${warn.evidence}` : ''
   return (
@@ -239,7 +239,7 @@ export function buildWarnText(warn) {
 }
 
 /**
- * countSessionTiers(sessions, {now, classify}) — BL-158 (D-49.3-22f): count `fresh` and
+ * countSessionTiers(sessions, {now, classify}) — BL-158 (D-9.3-22f): count `fresh` and
  * `attention` SEPARATELY instead of collapsing both into one "active" boolean. Liveness is
  * renewTime-only (classifyStaleness — no pid). `active` (fresh+attention) is kept for the
  * legacy count, but the two tiers are also individually visible so a caller can distinguish
@@ -268,7 +268,7 @@ export function countSessionTiers(sessions, opts = {}) {
 
 /**
  * verifyClaimEvidence({claim, scopeDirtyVsHead, commitInScopeAfterRenew, mtimeAgeMin, intent})
- * — the self-verifying WARN banner (D-49.3-22). Every collision WARN carries its OWN
+ * — the self-verifying WARN banner (D-9.3-22). Every collision WARN carries its OWN
  * evidence so the reader can trust it WITHOUT a manual check. A claim is STALE (safe to
  * take) when the scope is CLEAN vs HEAD AND a commit landed in scope after the claim's
  * renewTime — the «verify before holding» lesson mechanized. Otherwise it is LIVE (real

@@ -20,7 +20,7 @@ Options:
 | `--claude` | Install for Claude Code (default and only runtime today) |
 | `--local` / `-l` | Install into the current project (default) |
 | `--global` / `-g` | Install into `$CLAUDE_CONFIG_DIR` or `~/.claude` instead |
-| `--with-gsd-aliases` | Also install the transitional `/gsd-*` alias skills (D-49.1-02) |
+| `--with-gsd-aliases` | Also install the transitional `/gsd-*` alias skills (D-9.1-02) |
 | `--help` / `-h` | Show usage |
 
 Examples:
@@ -31,7 +31,7 @@ npx sma-framework init --global            # global install (all your projects)
 npx sma-framework init --with-gsd-aliases  # local + transitional /gsd-* aliases
 ```
 
-## Path 2: git clone (the documented fallback, D-49.1-06)
+## Path 2: git clone (the documented fallback, D-9.1-06)
 
 No registry access needed. Clone anywhere, then run the installer **from the
 project you want SMA installed into** (the installer refuses to install into
@@ -99,13 +99,13 @@ rm -f  .claude/agents/sma-*.md
 `node scripts/sma/cli.mjs`. Everything else in `settings.json` is yours and
 untouched. Optionally drop the `.sma/` line from `.gitignore`.
 
-## Audited payload manifest (T-49.1-07)
+## Audited payload manifest (T-9.1-07)
 
 The package uses a **files allowlist** (never a denylist) in `package.json`.
 The manifest below is the verbatim output of `npm pack --dry-run` for
 `sma-framework@2.0.0-alpha.0` (2026-07-06). Explicitly absent: `vendor/`
 (pristine upstream snapshot stays git-only), `.sma/` runtime state, `tools/`,
-`.env*`, and all dotfiles. Re-audited at the 49.1-27 pre-flip gate.
+`.env*`, and all dotfiles. Re-audited at the 9.1-27 pre-flip gate.
 
 Top-level composition (534 files, 1.8 MB packed / 6.6 MB unpacked):
 

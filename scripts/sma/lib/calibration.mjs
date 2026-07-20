@@ -1,19 +1,19 @@
 /**
- * calibration.mjs — per-domain prediction-calibration ledger (49.1-08, B20).
+ * calibration.mjs — per-domain prediction-calibration ledger (9.1-08, B20).
  *
  * Answers "in which areas are our plans historically wrong" with DATA:
  * every predict-score verdict is appended to .sma/calibration/<domain>.jsonl,
  * and hitRate/escalations() compute per-domain hit-rates + the
  * low-calibration domain list for auto-escalation (stricter gates / founder
- * review surface via 49.1-18's digest and 49.1-24's report — this module
+ * review surface via 9.1-18's digest and 9.1-24's report — this module
  * only COMPUTES, it never gates).
  *
  * Structure mirrors journal.mjs EXACTLY (PATTERNS analog): one append-only
  * JSONL file per key (here: domain, there: terminal), appendFileSync single-
  * line appends, tolerant skip-and-count line reader (fail-open C9), missing
- * dir -> honest empty report. Ledger integrity is accepted-risk T-49.1-15:
+ * dir -> honest empty report. Ledger integrity is accepted-risk T-9.1-15:
  * the dir lives in gitignored .sma/; the committed rollup lands with
- * 49.1-24's report.
+ * 9.1-24's report.
  *
  * Node built-ins only; the ledger dir is dependency-injectable via
  * opts.calibrationDir (default CALIBRATION_DIR from constants.mjs — never
@@ -28,7 +28,7 @@ import { resolveModelId } from './model-version.mjs'
 
 /**
  * The GROUND-TRUTH evidence vocabulary the grade-the-grader pipeline CONSUMES
- * (49.4-02). A grader's verdict is a PREDICTION; deterministic ground truth
+ * (9.4-02). A grader's verdict is a PREDICTION; deterministic ground truth
  * settles it. Evidence records have the shape { type, planId, at } and are
  * produced by EXISTING mechanisms — never fabricated here (this module only
  * reads them):
@@ -186,7 +186,7 @@ export function escalations(opts = {}) {
   return flagged
 }
 
-// ── Grade the grader (49.4-02) ────────────────────────────────────────────────
+// ── Grade the grader (9.4-02) ────────────────────────────────────────────────
 //
 // Any separate-context LLM verdict — the blind verifier's, or a vendor
 // outcomes-style grader's if ever consumed — is recorded as a PREDICTION here
@@ -293,7 +293,7 @@ export function scoreGraderVerdicts({ records, evidence = [], now } = {}) {
  *   - a verdict that was CONTRADICTED is a MISS (the judge was wrong),
  *   - an UNSETTLED verdict counts as neither.
  * Records without a judgeModelId land in an explicit 'unstamped' bucket — never
- * silently merged into another judge's rate (T-49.4-02-A: missing identity is
+ * silently merged into another judge's rate (T-9.4-02-A: missing identity is
  * VISIBLE).
  *
  * @param {object[]} records  scored grader-verdict records (from scoreGraderVerdicts)

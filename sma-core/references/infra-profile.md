@@ -20,7 +20,7 @@ The profile lives in TWO synchronized forms:
 
 ## Schema v2 (`.sma/profile.json`)
 
-Schema v2 (D-49.3-04) keeps EVERY v1 field and v1 law intact and ADDS a fuller working
+Schema v2 (D-9.3-04) keeps EVERY v1 field and v1 law intact and ADDS a fuller working
 profile — stack, test commands, parallel-terminal habits, risk posture, danger-command
 patterns, working style, machine lessons, and env-var NAMES. A v1 profile (no
 `profileVersion`) is upgraded to the v2 shape IN MEMORY by the reader (`normalizeProfile`)
@@ -100,12 +100,12 @@ the user AT THAT MOMENT and offers to save the answer back into the profile.
 | `workflows/ship.md` | `releaseRitual` (tagPattern, fullGateCommand, ciWatchCommand), `autoDeployBranch`, `pushTarget`, `envVarNames` (ship preflight) | Ask the user for the missing piece, offer to save it into `.sma/profile.json`. Never substitute another project's ritual. |
 | `next-slot` (`scripts/sma/lib/slots.mjs` via `pnpm sma next-slot`) | `sharedCounters` — which counters are coordination-worthy in this project | Counter not listed = no slot coordination claimed for it; ask before assuming a counter is shared. |
 | Push-safety gates (pre-push hooks, push-claim checks) | `autoDeployBranch` (a push to it is a deploy), `releaseRitual.fullGateCommand` | Ask; a gate never invents a command to run. |
-| `sma emit` headers + planner context (49.3-04/05) | `stack` (languages, frameworks, packageManager) | Omit the stack header; the planner asks when it matters. |
+| `sma emit` headers + planner context (9.3-04/05) | `stack` (languages, frameworks, packageManager) | Omit the stack header; the planner asks when it matters. |
 | Executor targeted-test rule + ship full gate | `testRunner.targetedCommand` (per-edit), `testRunner.fullSuiteCommand` / `typeCheckCommand` (push gate) | Ask for the command; never invent a test invocation. |
-| Statusline segment + collision messaging (49.3-07) | `parallelTerminals` (typicalCount, splitHabit) | Segment renders a neutral count; no assumption about split habit. |
+| Statusline segment + collision messaging (9.3-07) | `parallelTerminals` (typicalCount, splitHabit) | Segment renders a neutral count; no assumption about split habit. |
 | gates/reflex verbosity + self-tuning ladder | `riskTolerance` | Default to the balanced presentation; ask before assuming a posture. |
 | gates-check PreToolUse warn patterns | `dangerCommands` — match patterns only, NEVER executed | No extra warn patterns; the built-in safety invariants still fire. |
-| Context-compiler pack header (49.3-05) | `workingStyle` (sessionRhythm, tddPreference, reviewHabit) | Omit the working-style header. |
+| Context-compiler pack header (9.3-05) | `workingStyle` (sessionRhythm, tddPreference, reviewHabit) | Omit the working-style header. |
 | Reflex surface (seeded notes) | `machineLessons` — seeded as memory notes at onboarding | No machine-specific reflex; nothing assumed. |
 
 The one non-negotiable rule for all consumers: **fallback is ask-the-user, never a
@@ -118,7 +118,7 @@ a lint failure (PROFILE-DEADFIELD) — a field nobody reads is the "700-line rul
 failure in miniature (adoption scorecard metric 5). This table and `PROFILE_CONSUMERS`
 must stay in agreement: adding a field here without a consumer entry there fails lint.
 
-## Privacy boundary (T-49.3-06)
+## Privacy boundary (T-9.3-06)
 
 The profile stores **env-var NAMES and tool FACTS only — never a secret VALUE.** A name
 (`STRIPE_SECRET_KEY`, `DATABASE_URL`) is a fact about which variables the project uses; a
@@ -131,7 +131,7 @@ NAMES (uppercase-with-underscores allowed), so the literal name `STRIPE_SECRET_K
 passes while a value never would. A secret-shaped value is a rejection (PROFILE-SECRET),
 not a warning; the onboarding workflow never echoes a value into the profile.
 
-## Safety boundary (T-49.1-09)
+## Safety boundary (T-9.1-09)
 
 The profile supplies COMMAND STRINGS (`fullGateCommand`, `ciWatchCommand`) that the
 user themselves configured for their own repository. Consumers must:
@@ -162,5 +162,5 @@ spoken in the conversation, never silently written into the profile:
 Any specific team's process — a particular deploy host, a particular tag series, a
 particular full-gate sequence — is exactly ONE possible profile. At dogfood time a team
 writes ITS values into ITS `.sma/profile.json` (for this framework's home platform that
-happens in phase 49.1-26). Nothing in sma-core may treat any team's values as the
+happens in phase 9.1-26). Nothing in sma-core may treat any team's values as the
 built-in behavior.

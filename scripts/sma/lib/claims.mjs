@@ -1,13 +1,13 @@
 /**
  * claims.mjs — atomic mkdir claim gate + provenance-lite stamps + expectedPrev
- * scanner (R11, C8, B18/B19/B24). D-49-09 groundwork; consumed by slots/CLI later.
+ * scanner (R11, C8, B18/B19/B24). D-9-09 groundwork; consumed by slots/CLI later.
  *
  * The gate is `fs.mkdirSync(dir)` with NO recursive flag: on a race, exactly one
  * caller creates the dir and every other gets EEXIST — that is the whole atomicity
  * primitive (RESEARCH Pattern 4). Provenance is written INSIDE the just-created dir
  * via atomicWriteJson (B19: metadata from creation, age over PID).
  *
- * Foreign-claim protection (P3, D-49-09): releaseSlot removes only the caller's OWN
+ * Foreign-claim protection (P3, D-9-09): releaseSlot removes only the caller's OWN
  * claim; a foreign claim is refused unless {force:true} — the single foreign-removal
  * path, reachable only via the interactive force-clear command (49-10) with journaled
  * provenance.
@@ -51,8 +51,8 @@ export function claimSlot(name, provenance, opts = {}) {
   }
 
   const stamp = {
-    by: provenance.by, // human holderIdentity (D-49-01)
-    pid: provenance.pid ?? process.pid, // pid rides alongside (D-49-01)
+    by: provenance.by, // human holderIdentity (D-9-01)
+    pid: provenance.pid ?? process.pid, // pid rides alongside (D-9-01)
     session: provenance.session ?? null,
     at: new Date().toISOString(),
     expectedPrev: provenance.expectedPrev ?? null,
@@ -126,11 +126,11 @@ export function releaseSlot(name, opts = {}) {
 }
 
 /**
- * cooldownText(name, opts) — 49.3-13 (D-49.3-22c): the rendered collision text for a slot
+ * cooldownText(name, opts) — 9.3-13 (D-9.3-22c): the rendered collision text for a slot
  * in cooldown. A recently force-cleared / released scope reads «недавно освобождён», NEVER
  * «занято» — the reader must know it is FREE-ish (in a short cooldown), not busy. Empty
  * string when the slot is not cooling down. The cooldown marker / provenance / force-clear
- * confirmation machinery (D-49-09) is UNCHANGED — only this copy is the fix.
+ * confirmation machinery (D-9-09) is UNCHANGED — only this copy is the fix.
  * @param {string} name
  * @param {{claimsDir?:string, now?:number}} [opts]
  * @returns {string}
@@ -169,7 +169,7 @@ export function isCoolingDown(name, opts = {}) {
   }
 }
 
-// ── 49.1-23 (B17) — idempotent slot reconciliation ─────────────────────────────────
+// ── 9.1-23 (B17) — idempotent slot reconciliation ─────────────────────────────────
 //
 // The claimed-but-not-consumed gap: a terminal claims a number slot (migration-100),
 // then dies / aborts before actually writing the number into the source file. The old
@@ -269,10 +269,10 @@ export function scanProvenance(opts = {}) {
   return warnings
 }
 
-// ── 49.3-13 (D-49.3-22) — claim trust repair: the TWO auto-release triggers ──────────
+// ── 9.3-13 (D-9.3-22) — claim trust repair: the TWO auto-release triggers ──────────
 //
 // Claims become trustworthy by auto-releasing on EXACTLY two triggers — never an idle
-// timer (D-49.3-22a: an idle timer would reap a terminal that thinks/researches long
+// timer (D-9.3-22a: an idle timer would reap a terminal that thinks/researches long
 // before editing). Trigger 1: a SessionEnd hook releases all of the session's claims.
 // Trigger 2: commit-evidence — the claimed scope is clean vs HEAD AND a commit landed in
 // scope after renewTime, so the work is provably DONE — release immediately, no TTL wait.
@@ -330,7 +330,7 @@ export function commitEvidenceRelease(opts = {}) {
   if (!name) return { released: false, reason: 'no-name' }
   const by = claim.by || (claim.provenance && claim.provenance.by) || opts.by || '—'
   // Evidence-based auto-release: the git facts justify removal, so force:true is used with
-  // a fully-journaled provenance (D-49-09 governs the interactive force-clear COMMAND, not
+  // a fully-journaled provenance (D-9-09 governs the interactive force-clear COMMAND, not
   // this evidence trigger).
   const r = releaseSlot(name, { by, force: true, claimsDir: opts.claimsDir })
   if (!r.released) return { released: false, reason: r.reason }

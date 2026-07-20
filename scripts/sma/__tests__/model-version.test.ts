@@ -1,6 +1,6 @@
 /**
- * Tests for scripts/sma/lib/model-version.mjs (Phase 49.3 Plan 02, Task 1 —
- * D-49.3-10, grill missing-leaps ICE 567).
+ * Tests for scripts/sma/lib/model-version.mjs (Phase 9.3 Plan 02, Task 1 —
+ * D-9.3-10, grill missing-leaps ICE 567).
  *
  * The model-sighting timeline + stale-priors guard that keeps the calibration
  * badge honest across a Claude-model change.
@@ -227,7 +227,7 @@ describe('Test 6 — stampRecords pure additive', () => {
     expect('model' in out[0]).toBe(false)
   })
 
-  it('stamps an optional judgeModelId under JUDGE_MODEL_FIELD; both stamps are independent (49.4-02)', () => {
+  it('stamps an optional judgeModelId under JUDGE_MODEL_FIELD; both stamps are independent (9.4-02)', () => {
     const src = [{ id: 'A', verdict: 'hit' }]
     // judge-only stamp
     expect(stampRecords(src, { judgeModelId: 'judge-x' })).toEqual([{ id: 'A', verdict: 'hit', judgeModelId: 'judge-x' }])

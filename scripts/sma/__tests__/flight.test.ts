@@ -1,6 +1,6 @@
 /**
- * Tests for the deterministic pre-compaction FLIGHT RECORDER (Phase 49.2 Plan 06,
- * D-49.2-09). Lib core (Task 1, tests 1-8) + CLI wiring (Task 2, tests 9-13).
+ * Tests for the deterministic pre-compaction FLIGHT RECORDER (Phase 9.2 Plan 06,
+ * D-9.2-09). Lib core (Task 1, tests 1-8) + CLI wiring (Task 2, tests 9-13).
  *
  * The capsule makes auto-compaction survivable with PURE file assembly — zero LLM,
  * zero network, zero child_process in the path. Every lib fs dependency is injected
@@ -57,10 +57,10 @@ function capsuleFixture(overrides: Record<string, unknown> = {}) {
   return {
     now: '2026-07-08T12:00:00.000Z',
     identity: { holderIdentity: 'Мозг', terminalId: 'mozg-abc123' },
-    label: 'phase:49.2 — flight recorder',
+    label: 'phase:9.2 — flight recorder',
     trigger: 'auto',
-    statePosition: 'Phase: 49.2 — building the flight capsule',
-    stateBlockers: ['Phase 49.2 blocked: re-measure p95 (ops)'],
+    statePosition: 'Phase: 9.2 — building the flight capsule',
+    stateBlockers: ['Phase 9.2 blocked: re-measure p95 (ops)'],
     ownClaim: { globs: ['scripts/sma/lib/flight.mjs'], description: 'flight recorder', name: 'flight-slot' },
     otherClaims: [{ by: 'Фабрика', globs: ['src/**'] }],
     pushClaim: null,
@@ -72,7 +72,7 @@ function capsuleFixture(overrides: Record<string, unknown> = {}) {
       { tool: 'Read', target: 'lib/journal.mjs' },
       { tool: 'Edit', target: 'lib/flight.mjs' },
     ],
-    execState: { planId: '49.2-06', nextUndone: 2, complete: false },
+    execState: { planId: '9.2-06', nextUndone: 2, complete: false },
     ...overrides,
   }
 }
@@ -104,7 +104,7 @@ describe('buildCapsule', () => {
     const inputs = capsuleFixture()
     const a = buildCapsule(inputs)
     const b = buildCapsule(capsuleFixture())
-    expect(a).toBe(b) // byte-deterministic (P49.2-06-02)
+    expect(a).toBe(b) // byte-deterministic (P9.2-06-02)
 
     const iHeader = a.indexOf('# SMA Flight Capsule')
     const iTask = a.indexOf('## Current task')
@@ -210,7 +210,7 @@ describe('continuation briefs', () => {
     expect(() => buildResumeBrief({})).not.toThrow()
   })
 
-  it('Test 8: buildHandoffBrief = resume + claim-transfer (exact release/claim commands + D-49-09 warning); write scrubs secrets', () => {
+  it('Test 8: buildHandoffBrief = resume + claim-transfer (exact release/claim commands + D-9-09 warning); write scrubs secrets', () => {
     const brief = buildHandoffBrief({ ...capsuleFixture(), capsuleFresh: '2026-07-08T12:00:00.000Z' })
     // everything resume has
     expect(brief).toContain('следующая задача 2')
@@ -219,7 +219,7 @@ describe('continuation briefs', () => {
     expect(brief).toContain('pnpm sma release flight-slot')
     expect(brief).toContain('pnpm sma claim')
     expect(brief).toContain('force-clear')
-    expect(brief).toContain('D-49-09')
+    expect(brief).toContain('D-9-09')
 
     // the handoff write path routes through scanForSecrets before disk
     const flightDir = join(tmp, 'flight')
@@ -243,7 +243,7 @@ function seedRoot(root: string, opts: { trigger?: string } = {}) {
   const execDir = join(smaDir, 'exec')
   mkdirSync(execDir, { recursive: true })
   appendFileSync(
-    join(execDir, '49.2-06.jsonl'),
+    join(execDir, '9.2-06.jsonl'),
     JSON.stringify({ ts: '2026-07-08T11:00:00.000Z', task: 1, event: 'task_complete', status: 'done' }) + '\n',
   )
   // claim
@@ -270,11 +270,11 @@ function seedRoot(root: string, opts: { trigger?: string } = {}) {
       '<!-- SMA-MANAGED:START -->',
       '## Current Position',
       '',
-      '**Phase: 49.2 — building the flight capsule seed task**',
+      '**Phase: 9.2 — building the flight capsule seed task**',
       '',
       '## Open Blockers',
       '',
-      '- **Phase 49.2 blocked:** re-measure p95 before arming (ops)',
+      '- **Phase 9.2 blocked:** re-measure p95 before arming (ops)',
       '',
       '## Active Sessions',
       '',
@@ -315,7 +315,7 @@ describe('CLI precompact-capsule', () => {
   it('Test 10: corrupted root -> exit 0, never throws (fail-open, hook never blocks compaction)', () => {
     const smaDir = join(tmp, '.sma')
     mkdirSync(join(smaDir, 'exec'), { recursive: true })
-    writeFileSync(join(smaDir, 'exec', '49.2-06.jsonl'), '{{{ not json')
+    writeFileSync(join(smaDir, 'exec', '9.2-06.jsonl'), '{{{ not json')
     mkdirSync(join(smaDir, 'claims'), { recursive: true })
     writeFileSync(join(smaDir, 'claims', 'garbage'), 'not even a dir marker')
     const r = runCli(['precompact-capsule'], { root: tmp, stdin: '{{{ not json' })

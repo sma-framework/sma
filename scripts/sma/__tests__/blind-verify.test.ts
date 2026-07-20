@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/blind-verify.mjs (Phase 49.2 Plan 07, Task 2 — D-49.2-11).
+ * Tests for scripts/sma/lib/blind-verify.mjs (Phase 9.2 Plan 07, Task 2 — D-9.2-11).
  *
  * The tree-only re-derivation with a STRUCTURAL information barrier: «done» is
  * re-derived from the plan file + the code tree ALONE — the verifier takes NO
@@ -39,7 +39,7 @@ let planPath: string
 let dirs: { blindDir: string; calibrationDir: string }
 
 const PLAN = `---
-phase: 49.2-test
+phase: 9.2-test
 plan: 07
 must_haves:
   truths:
@@ -175,12 +175,12 @@ describe('blind-verify.mjs — tree-only re-derivation + divergence-as-heaviest-
     expect(divergenceStats({ calibrationDir: dirs.calibrationDir }).count).toBe(1)
   })
 
-  it('Test 6 — INPUT BARRIER: a SUMMARY input path is structurally refused, nothing frozen, ledger untouched (D-49.2-11, gap 2)', () => {
+  it('Test 6 — INPUT BARRIER: a SUMMARY input path is structurally refused, nothing frozen, ledger untouched (D-9.2-11, gap 2)', () => {
     // A SUMMARY-class input is refused by the predicate the CLI guards on.
-    const summaryInput = join(root, '49.2-03-SUMMARY.md')
+    const summaryInput = join(root, '9.2-03-SUMMARY.md')
     writeFileSync(
       summaryInput,
-      '---\nphase: 49.2-test\nreceipts:\n  - id: R1\n    check_command: "node scripts/sma/cli.mjs grill --stats --metric challenge-yield"\n    expected_sha256: deadbeef\n---\n# summary\n',
+      '---\nphase: 9.2-test\nreceipts:\n  - id: R1\n    check_command: "node scripts/sma/cli.mjs grill --stats --metric challenge-yield"\n    expected_sha256: deadbeef\n---\n# summary\n',
       'utf8',
     )
     expect(isForbiddenBlindPath(summaryInput)).toBe(true)
@@ -202,7 +202,7 @@ describe('blind-verify.mjs — tree-only re-derivation + divergence-as-heaviest-
     expect(res.refused).toBe(true)
     expect(res.verdicts).toEqual([])
     expect(res.frozenPath).toBe(null)
-    expect(existsSync(join(dirs.blindDir, '49.2-03.json'))).toBe(false)
+    expect(existsSync(join(dirs.blindDir, '9.2-03.json'))).toBe(false)
 
     // the calibration ledger was NEVER touched (no divergence manufactured).
     const { records } = readLedger({ calibrationDir: dirs.calibrationDir })

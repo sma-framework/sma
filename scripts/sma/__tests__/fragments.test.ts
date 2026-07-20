@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/fragments.mjs (Phase 49.3 Plan 05, Task 2 — D-49.3-07).
+ * Tests for scripts/sma/lib/fragments.mjs (Phase 9.3 Plan 05, Task 2 — D-9.3-07).
  *
  *   - Test 1 (format): parseFragment → {id, trigger, tags, body}; validateFragment flags
  *     over-budget body (FRAG-BYTES), missing/unparseable trigger (FRAG-TRIGGER), and

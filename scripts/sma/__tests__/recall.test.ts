@@ -1,5 +1,5 @@
 /**
- * recall.test.ts — the STANDING recall benchmark (Phase 49.1 Plan 14, B3/B8).
+ * recall.test.ts — the STANDING recall benchmark (Phase 9.1 Plan 14, B3/B8).
  *
  * V1's 17/18 recall was a hand-run protocol executed twice (49-01, 49-16) and then
  * never re-run — memory quality could silently regress. This test turns that
@@ -16,7 +16,7 @@
  * misses a note tagged in one area when the natural query names another) is present
  * in the set, marked `knownMiss: true`, counted SEPARATELY, and asserted to still
  * miss — so the gate is honest about the ceiling AND any NEW miss fails loudly. The
- * knownMiss stays visible until the MemPalace обкатка (49.1-15) resolves it.
+ * knownMiss stays visible until the MemPalace обкатка (9.1-15) resolves it.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -100,7 +100,7 @@ function resolves(q: RecallQuery): boolean {
   return seen.has(q.expectedNoteId)
 }
 
-describe('standing recall benchmark (49.1-14, B3/B8)', () => {
+describe('standing recall benchmark (9.1-14, B3/B8)', () => {
   it('Test 0 (fixture shape): >= 18 entries, each with query/tags/expectedNoteId in the shipped corpus', () => {
     expect(fixture.queries.length).toBeGreaterThanOrEqual(18)
     const corpusFiles = new Set(fixture.corpus.map((c) => c.file))
@@ -129,7 +129,7 @@ describe('standing recall benchmark (49.1-14, B3/B8)', () => {
     // The V1 tag-only ceiling class must stay visible in the fixture.
     expect(known.length).toBeGreaterThanOrEqual(1)
     for (const q of known) {
-      // If a future retrieval improvement (49.1-15) resolves it, this fails and
+      // If a future retrieval improvement (9.1-15) resolves it, this fails and
       // tells you to reclassify — the ceiling is never silently "fixed".
       expect(resolves(q), `knownMiss ${q.id} unexpectedly resolved — reclassify (B8 ceiling moved)`).toBe(false)
     }

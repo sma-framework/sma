@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/explain.mjs (Phase 49.3 Plan 09, Task 1 — D-49.3-15).
+ * Tests for scripts/sma/lib/explain.mjs (Phase 9.3 Plan 09, Task 1 — D-9.3-15).
  *
  *  - Test 1 (getTopic parse): a fixture topic parses into {ok, id, title, summary,
  *    en, ru}; a topic missing the ## ru section returns {ok:false, missing:['ru']}.
@@ -88,7 +88,7 @@ describe('explain.mjs — HANDLERS extraction + coverage', () => {
       "const decoy = { notAKey: 1 }",
       "const HANDLERS = {",
       "  status: cmdStatus,",
-      "  'predict-score': cmdPredictScore, // 49.1-08 — note: with a colon in the comment",
+      "  'predict-score': cmdPredictScore, // 9.1-08 — note: with a colon in the comment",
       "  claim: cmdClaim,",
       "  'next-slot': cmdNextSlot,",
       "}",

@@ -1,6 +1,6 @@
 /**
  * Tests for the hash chain added to scripts/sma/lib/journal.mjs
- * (Phase 49.2 Plan 03, Task 2; D-49.2-07 tamper-evident journal).
+ * (Phase 9.2 Plan 03, Task 2; D-9.2-07 tamper-evident journal).
  *
  *   - Test 1: appendEvent writes prev — first line 'genesis'; the third line's
  *     prev equals lineHash of the SECOND raw line's exact bytes.

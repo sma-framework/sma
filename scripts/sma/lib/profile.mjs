@@ -1,6 +1,6 @@
 /**
  * profile.mjs — the ONE deterministic reader/validator/consumer-registry/recap for
- * the SMA infra + working-style profile (49.3-01, D-49.3-04 / T-49.3-06).
+ * the SMA infra + working-style profile (9.3-01, D-9.3-04 / T-9.3-06).
  *
  * Every later Track B command reads the profile through THIS module — never by
  * re-parsing .sma/profile.json itself. Schema v2 (this plan) keeps every v1 field
@@ -13,13 +13,13 @@
  *   - PURE + DETERMINISTIC: normalizeProfile / validateProfile / deadFields /
  *     answeredFields / renderRecap are pure functions of their inputs — no
  *     Date.now(), no random, no network, no LLM (substrate law). renderRecap's
- *     reproducibility is a shipped feature (P49.3-01-B).
+ *     reproducibility is a shipped feature (P9.3-01-B).
  *   - TOLERANT READER (journal.mjs posture): a missing/corrupt profile never
  *     throws — readProfile returns {} plus a warnings entry.
  *   - DI EVERYWHERE: readProfile takes {profilePath, readFile}; deadFields takes
  *     {schema, consumers}; renderRecap takes {profile, teachingSource, seededFiles}
  *     — tests never touch the real .sma/ and never shell out.
- *   - PRIVACY (T-49.3-06): the profile stores env-var NAMES and tool FACTS only.
+ *   - PRIVACY (T-9.3-06): the profile stores env-var NAMES and tool FACTS only.
  *     validateProfile REJECTS a secret-shaped VALUE anywhere (PROFILE-SECRET)
  *     before anything is written — a rejection, not a warning.
  *   - CONSUMER REGISTRY IS A CONTRACT: PROFILE_CONSUMERS covers EVERY schema
@@ -132,7 +132,7 @@ export function normalizeProfile(raw) {
   return copy
 }
 
-// ─────────────────────────── secret screening (T-49.3-06) ────────────────────
+// ─────────────────────────── secret screening (T-9.3-06) ────────────────────
 
 /** Unambiguous credential token shapes — a VALUE carrying one is a secret. */
 const SECRET_TOKEN_PATTERNS = [
@@ -248,7 +248,7 @@ export function validateProfile(profile) {
       for (const name of p[key]) {
         if (isEnvVarName(name)) continue // a NAME is a fact — allowed
         if (secretShaped(name)) {
-          violations.push({ rule: 'PROFILE-SECRET', field: key, message: `envVarNames entry is secret-shaped — store NAMES only, never a value (T-49.3-06)` })
+          violations.push({ rule: 'PROFILE-SECRET', field: key, message: `envVarNames entry is secret-shaped — store NAMES only, never a value (T-9.3-06)` })
         }
       }
       continue
@@ -257,7 +257,7 @@ export function validateProfile(profile) {
     collectStrings(p[key], strings)
     for (const s of strings) {
       if (secretShaped(s)) {
-        violations.push({ rule: 'PROFILE-SECRET', field: key, message: `field "${key}" carries a secret-shaped value — the profile stores env-var NAMES and tool facts only, never a secret value (T-49.3-06)` })
+        violations.push({ rule: 'PROFILE-SECRET', field: key, message: `field "${key}" carries a secret-shaped value — the profile stores env-var NAMES and tool facts only, never a secret value (T-9.3-06)` })
         break // one violation per field is enough
       }
     }
@@ -301,7 +301,7 @@ function isAnswered(value) {
 /**
  * answeredFields(profile) -> string[]. The user-answered schema fields (askStage
  * A-D); 'meta' fields (profileVersion) never count. Its length is the coverage
- * number behind `sma profile --coverage` (P49.3-01-C). Pure; sorted.
+ * number behind `sma profile --coverage` (P9.3-01-C). Pure; sorted.
  *
  * @param {object} profile
  * @returns {string[]}
@@ -373,7 +373,7 @@ function sampleAnswer(entry) {
  * (b) a fully-answered profile must yield the nothing-to-ask fast exit. Returns 1
  * when both hold, else 0. The planner is INJECTED so a sabotaged copy (one that
  * re-asks an answered field) provably scores 0 — the self-proving contract. Pure,
- * numeric: the predict.mjs scorer reads the bare 1/0 (P49.4-04-A).
+ * numeric: the predict.mjs scorer reads the bare 1/0 (P9.4-04-A).
  *
  * @param {(profile:object)=>{entries:{field:string}[], nothingToAsk:boolean}} [planner]
  * @returns {number}
@@ -431,7 +431,7 @@ const NOT_SET = 'not set — will ask when needed'
 /**
  * renderRecap({profile, teachingSource, seededFiles}) -> markdown string. PURE +
  * DETERMINISTIC: no Date.now(), no random — same inputs yield byte-identical
- * output (P49.3-01-B). Sections: (a) seeded files; (b) the profile table (answered
+ * output (P9.3-01-B). Sections: (a) seeded files; (b) the profile table (answered
  * vs «not set»); (c) the five module recap one-liners read from teachingSource;
  * (d) next commands. Unset fields render the honest NOT_SET copy.
  *

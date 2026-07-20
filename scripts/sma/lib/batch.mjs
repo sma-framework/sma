@@ -1,7 +1,7 @@
 /**
- * batch.mjs — the /sma-batch MIDDLE lane (Phase 49.3 Plan 12).
+ * batch.mjs — the /sma-batch MIDDLE lane (Phase 9.3 Plan 12).
  *
- * D-49.3-19 / BL-149 verbatim (the founder's gap): «tasks which are not small, but not
+ * D-9.3-19 / BL-149 verbatim (the founder's gap): «tasks which are not small, but not
  * phase oriented … 2-3-4 backlog items, plans them and executes, but not in the full
  * scale which takes so long.» The house two-lane rule (inline fix vs full phase) leaves a
  * gap for genuine multi-item work that does not warrant a phase. /sma-batch fills it:
@@ -20,19 +20,19 @@
  *     batch CONTINUES with the remaining items — never aborts.
  *
  * RECEIPTS ARE NON-NEGOTIABLE (the accountability floor): every item is blind-reverified
- * (49.2-03 `sma reverify`) after its atomic commit BEFORE its backlog checkbox flips. A
+ * (9.2-03 `sma reverify`) after its atomic commit BEFORE its backlog checkbox flips. A
  * green-looking item with no reproduced receipt does NOT get checked off. «Light» means
  * fewer AGENTS (no research / plan-checker / discuss), never fewer RECEIPTS
- * (D-49.3-19: «light does not mean unaccountable»).
+ * (D-9.3-19: «light does not mean unaccountable»).
  *
- * Consume-never-reimplement (D-49.3-02): this module writes NO second backlog parser, NO
+ * Consume-never-reimplement (D-9.3-02): this module writes NO second backlog parser, NO
  * second challenge ledger, NO second reverifier, NO second preflight. It COMPOSES the
  * existing substrate, all handed in by DI at the CLI boundary:
  *   - parse-backlog.ts's `parseBacklogContent` reads the `- [ ] **BL-NNN** …` grammar
  *     (the CLI parses; these functions consume the parsed items — this lib has no reader);
  *   - grill.mjs's `grillGate` is grill-lite (the SAME gate, a lighter registration);
- *   - `sma reverify` (49.2-03) produces the receipt;
- *   - `sma preflight` (49.3-10) is the per-item already-built guard.
+ *   - `sma reverify` (9.2-03) produces the receipt;
+ *   - `sma preflight` (9.3-10) is the per-item already-built guard.
  * The ONLY new markdown surface is `checkOffBacklogItem` — the companion WRITER that flips
  * exactly the matched `[ ]`→`[x]` line and leaves every other byte identical.
  *
@@ -171,7 +171,7 @@ function escapeId(id) {
 
 /**
  * checkOffBacklogItem({backlogText, id}) -> {changed, backlogText}. The surgical WRITER
- * (the one new markdown surface, D-49.3-02): flips EXACTLY the matched `- [ ] **BL-NNN**`
+ * (the one new markdown surface, D-9.3-02): flips EXACTLY the matched `- [ ] **BL-NNN**`
  * line to `- [x] **BL-NNN**` and leaves every other byte identical. An already-`[x]` line
  * is a no-op; a missing id returns {changed:false} without touching the text.
  */
@@ -226,10 +226,10 @@ export function ejectItem({ item, backlogText, note }) {
  * runBatch({items, runPreflight, grillGate, runExecutor, runReverify, backlogIo, now})
  * -> {items:[result], note}. The driver. Per item, in THIS order:
  *   1. RISK FILTER — a phase-class item is rejected «this is a phase», batch continues.
- *   2. preflight (49.3-10) — a `built` verdict SKIPS the item (no tokens on built work).
+ *   2. preflight (9.3-10) — a `built` verdict SKIPS the item (no tokens on built work).
  *   3. grill-lite gate (grill.mjs, fail-open) — an open challenge BLOCKS that item.
  *   4. ONE executor pass — an atomic commit per item (targeted tests inside the executor).
- *   5. reverify (49.2-03) — the mandatory receipt.
+ *   5. reverify (9.2-03) — the mandatory receipt.
  *   6. checkOffBacklogItem — flips the box ONLY on a clean reverify receipt; a divergent
  *      receipt records a FAILED item and leaves the box `[ ]`.
  * Every runner is injected; the lib spawns nothing. `backlogIo` = {read, write}.
@@ -341,7 +341,7 @@ export function writeBatchNote(results) {
   return [
     `# SMA batch note`,
     ``,
-    `Middle lane (/sma-batch, D-49.3-19). ${pass}/${total} items passed. Receipts are mandatory — each pass carries a reproduced reverify receipt.`,
+    `Middle lane (/sma-batch, D-9.3-19). ${pass}/${total} items passed. Receipts are mandatory — each pass carries a reproduced reverify receipt.`,
     ``,
     ...rows,
     ``,

@@ -1,4 +1,4 @@
-# upstream-watch — the DAILY upstream cadence of D-49.1-03 (49.1-07 T3).
+# upstream-watch — the DAILY upstream cadence of D-9.1-03 (9.1-07 T3).
 #
 # Runs in the product repo's CI ONLY — never as a daemon on a local checkout
 # (the no-daemons V1 lock holds). Compares the UPSTREAM.json anchor against the
@@ -8,7 +8,7 @@
 #     the clean set is pre-applied on an Action-created branch
 #     (upstream/<version>, same applyCleanSet path as the local --apply door),
 #     the PR body is the three-way integration report. MERGE STAYS A HUMAN
-#     ACTION — this workflow contains NO merge step of any kind (T-49.1-12).
+#     ACTION — this workflow contains NO merge step of any kind (T-9.1-12).
 #   status=new + clean bucket EMPTY (all-conflict release) -> one GitHub issue
 #     per release version carrying the report (create-or-update, no duplicates).
 #
@@ -64,7 +64,7 @@ jobs:
       # the report file) on the workspace; the next step turns the workspace
       # delta into ONE PR per release version (branch upstream/<version>,
       # created-or-updated, never duplicated). Merging that PR is a HUMAN
-      # action — there is deliberately no merge automation here (T-49.1-12).
+      # action — there is deliberately no merge automation here (T-9.1-12).
       - name: Apply clean set (review-gated auto-port)
         if: steps.check.outputs.status == 'new' && steps.check.outputs.clean != '0'
         run: node scripts/sma/cli.mjs upstream-check --apply

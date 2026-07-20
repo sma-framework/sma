@@ -1,6 +1,6 @@
 /**
- * Tests for scripts/sma/lib/evidence.mjs + the 49.2-07 risky-op gates in gates.mjs
- * (Phase 49.2 Plan 07, Task 3 — D-49.2-11).
+ * Tests for scripts/sma/lib/evidence.mjs + the 9.2-07 risky-op gates in gates.mjs
+ * (Phase 9.2 Plan 07, Task 3 — D-9.2-11).
  *
  * Burden of proof before the hook yields: a risky op (force-push, allowlist-edit,
  * foreign-claim-clear) carries an append-only evidence record naming the reason + the

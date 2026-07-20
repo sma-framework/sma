@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/digest.mjs (Phase 49.1 Plan 18, Task 2 — B12).
+ * Tests for scripts/sma/lib/digest.mjs (Phase 9.1 Plan 18, Task 2 — B12).
  *
  * The session-start cross-terminal digest — pure assembly over INJECTED sources into a
  * budgeted RU block. No network: the git-log runner is injected; sessions / push claim /

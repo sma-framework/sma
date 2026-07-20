@@ -1,19 +1,19 @@
 /**
  * footprint.mjs — the economy ladder as a claim + a deterministic receipt
- * (49.4-07, BL-176/BL-160). The ponytail absorption done the SMA way
- * (49.4-RESEARCH-ECONOMY §2 rows 1-2): their /review LLM diff judge is REJECTED
+ * (9.4-07, BL-176/BL-160). The ponytail absorption done the SMA way
+ * (9.4-RESEARCH-ECONOMY §2 rows 1-2): their /review LLM diff judge is REJECTED
  * and rebuilt here as arithmetic — a plan CLAIMS its footprint in frontmatter
  * (files touched, new files, ~LOC, new deps, tolerance %), and the receipt
  * compares `git diff --numstat` ACTUALS against that written claim. An overrun
  * beyond the stated tolerance is a SCORED sma.economy calibration miss + an
  * auto-drafted lesson. Zero LLM, zero network, zero judgment anywhere.
  *
- * Consume-never-reimplement (D-49.3-02):
+ * Consume-never-reimplement (D-9.3-02):
  *   - the claim rides predict.mjs's parseFrontmatterEntries generalized reader —
  *     no new YAML machinery;
  *   - the overrun row is shaped EXACTLY as a scorePlan miss so
  *     predict.draftLessonFromMiss + calibration.appendVerdict work UNMODIFIED
- *     (the same seam plan 49.4-06's checkLaneOverrun used);
+ *     (the same seam plan 9.4-06's checkLaneOverrun used);
  *   - the standing challenge «which ladder rung?» lives inside grill.mjs's
  *     existing ledger law (grill.standingFootprint) — this module never touches
  *     the gate.
@@ -234,7 +234,7 @@ export function footprintReceipt({ claim, actuals, planId, planPath, appendVerdi
 // ═══════════════════════════ selftests (self-proving) ═══════════════════════════
 
 /**
- * standingSelftest() -> 1|0 (P49.4-07-A). Runs the fixture pair in a temp grillDir
+ * standingSelftest() -> 1|0 (P9.4-07-A). Runs the fixture pair in a temp grillDir
  * against the REAL grill.standingFootprint + grillGate:
  *   - a plan with NO footprint claim -> standing challenge registered AND gate blocked
  *     (idempotent — a second call does not duplicate);
@@ -291,7 +291,7 @@ export async function standingSelftest() {
 }
 
 /**
- * footprintSelftest() -> 1|0 (P49.4-07-B). Proves the receipt arithmetic end-to-end
+ * footprintSelftest() -> 1|0 (P9.4-07-B). Proves the receipt arithmetic end-to-end
  * against the REAL calibration.appendVerdict + predict.draftLessonFromMiss pointed at
  * temp dirs:
  *   - within-tolerance actuals -> verified, zero calibration rows, zero drafts;

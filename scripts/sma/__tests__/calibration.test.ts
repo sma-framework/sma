@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/calibration.mjs (Phase 49.1 Plan 08, Task 2 — B20).
+ * Tests for scripts/sma/lib/calibration.mjs (Phase 9.1 Plan 08, Task 2 — B20).
  *
  * Per-domain calibration ledger, mirroring journal.mjs's append-only-JSONL
  * shape (PATTERNS analog: exact):
@@ -175,7 +175,7 @@ describe('corrupt line tolerance (Test 4 — journal.mjs posture)', () => {
   })
 })
 
-// ── Grade the grader (49.4-02) ────────────────────────────────────────────────
+// ── Grade the grader (9.4-02) ────────────────────────────────────────────────
 
 /** A ground-truth evidence record for planId at `at` of the given type. */
 function ev(type: string, planId: string, at: string) {
@@ -185,13 +185,13 @@ function ev(type: string, planId: string, at: string) {
 describe('recordGraderVerdict (Test 1 — verdict-as-prediction record)', () => {
   it('appends a kind:grader-verdict record to the sma.verification ledger via appendVerdict', () => {
     const rec = recordGraderVerdict(
-      { planId: '49.4-02', verdict: 'satisfied', judgeModelId: 'claude-judge-x', source: 'blind-verify', horizon: '2026-08-31' },
+      { planId: '9.4-02', verdict: 'satisfied', judgeModelId: 'claude-judge-x', source: 'blind-verify', horizon: '2026-08-31' },
       { calibrationDir },
     )
     expect(rec).toMatchObject({
       kind: 'grader-verdict',
       domain: 'sma.verification',
-      planId: '49.4-02',
+      planId: '9.4-02',
       verdict: 'satisfied',
       judgeModelId: 'claude-judge-x',
       stampedBy: 'explicit',

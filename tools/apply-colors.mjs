@@ -2,7 +2,7 @@
 /**
  * apply-colors.mjs — apply the house palette to every sma-core agent (FI-7).
  *
- * Plan 49.1-02 Task 2. Founder requirement: the stock orange/yellow chip goes,
+ * Plan 9.1-02 Task 2. Founder requirement: the stock orange/yellow chip goes,
  * agents carry the house palette.
  *
  * Palette intent (brand book): blue #3B82F6 for the execution family, teal
@@ -26,7 +26,7 @@ const CYAN_FAMILY = /(researcher|verifier|auditor|plan-checker)\.md$/
 
 const CONSTRAINT_COMMENT =
   '# house palette: blue = #3B82F6 family (execution), cyan = #3CC0A0 family (research/verify).\n' +
-  '# Claude Code agent frontmatter accepts NAMED colors only — hex is not rendered (FI-7 fallback branch, 49.1-02).'
+  '# Claude Code agent frontmatter accepts NAMED colors only — hex is not rendered (FI-7 fallback branch, 9.1-02).'
 
 let changed = 0
 for (const name of fs.readdirSync(AGENTS).sort()) {

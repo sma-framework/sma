@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/tia.mjs (Phase 49.1 Plan 23, B17).
+ * Tests for scripts/sma/lib/tia.mjs (Phase 9.1 Plan 23, B17).
  *
  * Regex-based test-impact analysis — the cheap v1 (RESEARCH Don't-Hand-Roll: the
  * changed file's exported symbols grepped across test files; NO import-graph walker).

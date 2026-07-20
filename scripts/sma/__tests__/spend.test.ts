@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/spend.mjs (Phase 49.2 Plan 09, Task 2).
+ * Tests for scripts/sma/lib/spend.mjs (Phase 9.2 Plan 09, Task 2).
  *
  * The spend book, the rolling window budget, and the `--stat` scorer contract:
  *   - Test 1 (buildBook): aggregates by session / model / day / agent(main vs sidechain)

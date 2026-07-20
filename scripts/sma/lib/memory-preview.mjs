@@ -15,7 +15,7 @@
  * fresh-project preview, never a crash: the preview runs during onboarding,
  * where a crash costs the adopter.
  *
- * Consume-never-reimplement (D-49.3-02): history mining IS excavate.mineRepo;
+ * Consume-never-reimplement (D-9.3-02): history mining IS excavate.mineRepo;
  * this module adds only the ls-files area fold and the renderer.
  */
 

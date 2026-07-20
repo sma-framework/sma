@@ -131,7 +131,7 @@ export function isSmaStatuslineCmd(cmd) {
 
 /**
  * restoreStatusline(settings, wrapped) — the uninstall arm of the statusline contract
- * (wrapped-command.json, 49.3-07): hadNone -> delete the key; a stored original ->
+ * (wrapped-command.json, 9.3-07): hadNone -> delete the key; a stored original ->
  * verbatim restore; no record but OUR command present -> delete; anything else -> noop.
  * @returns {'restored'|'removed'|'noop'}
  */

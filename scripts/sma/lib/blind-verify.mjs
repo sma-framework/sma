@@ -1,6 +1,6 @@
 /**
  * blind-verify.mjs — tree-only re-derivation with a STRUCTURAL information barrier +
- * divergence as the heaviest calibration-ledger event (49.2-07, D-49.2-11).
+ * divergence as the heaviest calibration-ledger event (9.2-07, D-9.2-11).
  *
  * The verifier re-derives every «done» from the plan file + the code tree ALONE. It is
  * «blind» as a PROPERTY OF THE CODE, not of the caller's discipline:
@@ -9,22 +9,22 @@
  *     scores 'refused-blind' WITHOUT a read;
  *   - the CLI freezes the blind verdicts to .sma/blind/<planId>.json BEFORE it ever
  *     parses the claimed side (compareToClaimed refuses until that frozen file exists),
- *     so the executor's report can never contaminate the blind pass (T-49.2-07B).
+ *     so the executor's report can never contaminate the blind pass (T-9.2-07B).
  *
  * A claimed-pass / reproduced-fail DIVERGENCE reuses the V2 ledger EXACTLY
  * (calibration.appendVerdict — calibration.mjs stays untouched): it carries
  * verdict:'divergence' so plan 08's shipped classifyEvent scores it class A (the
  * auto-block), PLUS kind:'divergence' so plan 07's divergenceStats and plan 10's canary
- * audit key on it. (The 49.2-07 plan text said verdict:'miss'; reconciled to the SHIPPED
+ * audit key on it. (The 9.2-07 plan text said verdict:'miss'; reconciled to the SHIPPED
  * plan-08 consumer, whose classifyEvent keys class-A on verdict:'divergence' — never on
  * kind — so the block fires for EVERY divergence regardless of the check's domain.)
  *
  * Every check_command crosses the SAME SAFE_COMMAND boundary as predictions — isSafeCommand
- * from predict.mjs, reused VERBATIM, never a second allowlist (T-49.2-07A). Node built-ins
+ * from predict.mjs, reused VERBATIM, never a second allowlist (T-9.2-07A). Node built-ins
  * only; DI runner + readFn + dirs so tests never shell out; zero LLM; fail-open (C9) —
  * blindVerify never throws.
  *
- * SCHEMA NOTE — grade the grader (49.4-02): each verdict object gains an OPTIONAL
+ * SCHEMA NOTE — grade the grader (9.4-02): each verdict object gains an OPTIONAL
  * `judgeModelId` field (JUDGE_MODEL_FIELD), populated from resolveModelId when a
  * model id is available — the blind verifier IS a separate-context judge, and any
  * separate-context verdict SHOULD be recorded via calibration.recordGraderVerdict
@@ -59,7 +59,7 @@ function isForbiddenPath(p) {
  * Public alias of the barrier predicate so the CLI (and any programmatic caller) can
  * refuse a forbidden INPUT path BEFORE any freeze / ledger write. The blind pass takes
  * ONLY a -PLAN.md; a SUMMARY/exec-journal positional is an operator error that would
- * otherwise diff a report against itself and poison the ledger (49.2-07, D-49.2-11).
+ * otherwise diff a report against itself and poison the ledger (9.2-07, D-9.2-11).
  */
 export function isForbiddenBlindPath(p) {
   return isForbiddenPath(p)
@@ -140,7 +140,7 @@ export function deriveChecks({ planPath, readFn, rootDir } = {}) {
   const root = rootDir ?? dirname(String(planPath ?? '.'))
   const checks = []
 
-  // INPUT BARRIER (D-49.2-11): a SUMMARY/exec-journal input is refused BEFORE any read —
+  // INPUT BARRIER (D-9.2-11): a SUMMARY/exec-journal input is refused BEFORE any read —
   // deriving checks from an executor report is exactly the contamination the barrier kills.
   if (isForbiddenPath(planPath)) {
     return { checks, refused: true, reason: blindRefusalReason(planPath) }
@@ -236,7 +236,7 @@ function verifyArtifact(check, readFn) {
 }
 
 /**
- * verifyCommand(check, runCommand) -> verdict. The allowlist gate FIRST (T-49.2-07A):
+ * verifyCommand(check, runCommand) -> verdict. The allowlist gate FIRST (T-9.2-07A):
  * a non-matching command scores 'skipped-unsafe' with runCommand NEVER invoked. A safe
  * command runs; non-numeric output or a throwing runner → 'error'; else numeric compare.
  */
@@ -269,13 +269,13 @@ export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, 
   const pid = planId ?? planIdFromPath(planPath)
   const verdicts = []
 
-  // INPUT BARRIER (D-49.2-11): refuse a SUMMARY/exec-journal input path — nothing frozen,
+  // INPUT BARRIER (D-9.2-11): refuse a SUMMARY/exec-journal input path — nothing frozen,
   // no ledger touched. The blind pass accepts ONLY a -PLAN.md.
   if (isForbiddenPath(planPath)) {
     return { planId: pid, verdicts, refused: true, reason: blindRefusalReason(planPath), frozenPath: null }
   }
 
-  // The blind verifier is itself a separate-context judge (49.4-02). Resolve its
+  // The blind verifier is itself a separate-context judge (9.4-02). Resolve its
   // model id ONCE (optional, DI-able via opts.env) so each verdict can carry the
   // judge stamp — schema note only, no behavioral change to the checks.
   const resolvedJudge = resolveModelId({ env: env ?? (typeof process !== 'undefined' ? process.env : {}) })
@@ -407,7 +407,7 @@ export function compareToClaimed({ claimed, planId, dirs = {}, lastGoodSha, now 
 
 /**
  * divergenceStats({calibrationDir}) -> {count}. Counts kind:'divergence' records across
- * ALL domain ledgers — the P49.2-07-B instrument (numeric-last-line via the CLI). Missing
+ * ALL domain ledgers — the P9.2-07-B instrument (numeric-last-line via the CLI). Missing
  * ledger dir → 0, never throws.
  *
  * @param {{calibrationDir:string}} opts

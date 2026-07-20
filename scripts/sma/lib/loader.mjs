@@ -200,7 +200,7 @@ export function resolvePeriphery(opts) {
 
   const core = coreNotes.map((n) => n.file)
 
-  // FI-11 (49.1-13): the on-demand discovery fallback — for every queried AREA
+  // FI-11 (9.1-13): the on-demand discovery fallback — for every queried AREA
   // facet whose per-area index file exists, name it, so the caller can read
   // the full catalog line for a match (discovery line → INDEX file → note).
   const indexFiles = [...buckets.area]
@@ -214,7 +214,7 @@ export function resolvePeriphery(opts) {
       }
     })
 
-  // 49.1-11 (B4): best-effort load-citation emission — one call per RETURNED
+  // 9.1-11 (B4): best-effort load-citation emission — one call per RETURNED
   // note (CORE + periphery), so every load is measured at the consumption
   // point. The callback is optional + injected (callers without it are byte-
   // identical in behavior) and each call is fail-open: a citation failure can

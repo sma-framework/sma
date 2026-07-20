@@ -1,8 +1,8 @@
 /**
- * Tests for scripts/sma/lib/airbag.mjs (Phase 49.2 Plan 05, Task 1).
+ * Tests for scripts/sma/lib/airbag.mjs (Phase 9.2 Plan 05, Task 1).
  *
  * The git airbag — a cheap ms-level GATE that snapshots a recovery point BEFORE a
- * destructive git command runs (D-49.2-08):
+ * destructive git command runs (D-9.2-08):
  *   - Test 1 (matchDestructive): classifies every destructive class + variants; safe
  *     commands (status/add/plain-push/pnpm/non-git rm) return null.
  *   - Test 2 (snapshot, clean tree): pins exactly <id>/head HEAD; receipt shape; every

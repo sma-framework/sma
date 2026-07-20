@@ -1,16 +1,16 @@
 /**
  * receipts.mjs — STRUCTURAL receipts: the claims schema over the V2 coverage
- * block (49.2-03, D-49.2-06). The single new-CLASS capability of V3.
+ * block (9.2-03, D-9.2-06). The single new-CLASS capability of V3.
  *
  * A `done` stops being a sentence and becomes a data structure: a claim
  * {id, assertion, re-runnable check_command, expected hash} that any machine
  * can re-execute and diff. `sma reverify` re-runs every claim across the
  * SAFE_COMMAND boundary — on a fresh clone (only COMMITTED evidence counts) —
  * and reports observed-vs-expected. The RECEIPT-PROSE lint (in lint.mjs) fails
- * any 49.2+ SUMMARY whose machine-verifiable coverage item carries no receipt.
+ * any 9.2+ SUMMARY whose machine-verifiable coverage item carries no receipt.
  *
  * SCHEMA (flat frontmatter dash-list `receipts:`), the four locked fields of
- * D-49.2-06 plus this plan's discretion encoding (D-49.2-06 Claude's-discretion):
+ * D-9.2-06 plus this plan's discretion encoding (D-9.2-06 Claude's-discretion):
  *   { id, assertion, check_command, expected_sha256,
  *     expected_exit?, hash_stdout?, coverage_id? }
  *   - id               : receipt identity (unique within the SUMMARY)
@@ -33,11 +33,11 @@
  * is stable across shells and terminals. expected_sha256 = sha256(observation),
  * machine-comparable, uniform schema whether or not stdout is hashed.
  *
- * SECURITY BOUNDARY (T-49.2-03-01, Elevation of Privilege — mitigate): receipt
+ * SECURITY BOUNDARY (T-9.2-03-01, Elevation of Privilege — mitigate): receipt
  * check_command strings arrive from SUMMARY files (which may be imported from
  * untrusted sources) and get EXECUTED. The boundary is NOT re-derived here — it
  * is the SAME isSafeCommand + SAFE_COMMAND_PATTERNS imported from predict.mjs
- * (the 49.1-08 single-execution-boundary lock, T-49.1-14 extension). Every path
+ * (the 9.1-08 single-execution-boundary lock, T-9.1-14 extension). Every path
  * that would run a command — verifyReceipts AND the emit path recordReceipt —
  * gates on isSafeCommand FIRST; a non-matching command scores 'skipped-unsafe'
  * and the runner is NEVER invoked.
@@ -52,7 +52,7 @@
  * FRESH CLONE (freshClone): `git clone --no-hardlinks --quiet <repoRoot>
  * <targetDir>` via the injected git runner. Only COMMITTED receipts exist in a
  * clone — that is the POINT, not a limitation: uncommitted local doctoring is
- * invisible to a fresh-clone reverify by construction (T-49.2-03-03 partial
+ * invisible to a fresh-clone reverify by construction (T-9.2-03-03 partial
  * mitigation; the committed-code residual is plan 10's Goodhart layer).
  *
  * Node built-ins only; zero npm deps; zero LLM/network anywhere (substrate law).
@@ -63,7 +63,7 @@ import { createHash } from 'node:crypto'
 
 import { isSafeCommand, parseFrontmatterEntries } from './predict.mjs'
 
-/** The four locked fields of D-49.2-06 — every receipt MUST carry them. */
+/** The four locked fields of D-9.2-06 — every receipt MUST carry them. */
 export const RECEIPT_REQUIRED_FIELDS = ['id', 'assertion', 'check_command', 'expected_sha256']
 
 /** sha256 hex of a UTF-8 string. */
@@ -103,7 +103,7 @@ export function parseReceipts(summaryPath, opts = {}) {
  * indented 6+ spaces, treating them as part of the current entry rather than a
  * block-closer). Extracts ONLY {id, human_judgment} per coverage item.
  * human_judgment absent -> false: a coverage item is machine-verifiable BY
- * DEFAULT and must OPT OUT of receipts, never silently evade them (D-49.2-06).
+ * DEFAULT and must OPT OUT of receipts, never silently evade them (D-9.2-06).
  *
  * @param {string} summaryPath
  * @param {{readFn?:Function}} [opts]
@@ -229,7 +229,7 @@ function runOne(runCommand, cmd, cwd) {
 /**
  * verifyReceipt(entry, {runCommand, cwd, now, summary}) -> one verdict record.
  *
- * Allowlist gate FIRST (T-49.2-03-01) -> run -> recompute observation hash ->
+ * Allowlist gate FIRST (T-9.2-03-01) -> run -> recompute observation hash ->
  * compare. Never throws. Verdicts: 'verified' | 'divergent' | 'skipped-unsafe'
  * | 'error'. A divergent record carries BOTH observed_sha256 and
  * expected_sha256 — the observed-vs-expected diff is the product.
@@ -252,7 +252,7 @@ export function verifyReceipt(entry, { runCommand, cwd, now, summary } = {}) {
     domain: 'sma.receipts',
   }
 
-  // T-49.2-03-01: allowlist BEFORE any run — the runner is never invoked for a
+  // T-9.2-03-01: allowlist BEFORE any run — the runner is never invoked for a
   // non-matching command.
   if (!isSafeCommand(entry.check_command)) {
     return { ...base, verdict: 'skipped-unsafe' }
@@ -305,7 +305,7 @@ export function verifyReceipts({ summaryPath, receipts, runCommand, cwd, now, re
  *
  * Allowlist gate FIRST: refuses (returns {error}) for a non-allowlisted
  * command — forging a receipt for an unrunnable command is structurally
- * impossible (T-49.2-03-03). recordReceipt is the programmatic twin of the
+ * impossible (T-9.2-03-03). recordReceipt is the programmatic twin of the
  * `sma receipt-hash` CLI.
  *
  * @param {{entry:object, runCommand:Function, cwd?:string}} args

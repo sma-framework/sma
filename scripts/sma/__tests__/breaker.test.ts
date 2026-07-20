@@ -1,6 +1,6 @@
 /**
  * Tests for the budget reflexes (spend.checkSpend) + the loop-breaker (breaker.mjs)
- * — Phase 49.2 Plan 09, Task 3.
+ * — Phase 9.2 Plan 09, Task 3.
  *
  *   - Test 1 (checkSpend deciles): cap 10 + window 7.20 → ONE 70% WARN; deduped on the
  *     second same-session/decile call; crossing 90% fires the stronger WARN once.

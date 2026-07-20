@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/exec-journal.mjs (Phase 49.1 Plan 20, Task 1 — P5, B14).
+ * Tests for scripts/sma/lib/exec-journal.mjs (Phase 9.1 Plan 20, Task 1 — P5, B14).
  *
  * The per-plan execution progress journal + the resume-point derivation:
  *   - Test 1: append writes the RESEARCH Pattern-5 line shape to
@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { append, read, nextUndone } from '../lib/exec-journal.mjs'
 
 let execDir: string
-const PLAN = { phase: '49.1', plan: '20' }
+const PLAN = { phase: '9.1', plan: '20' }
 
 beforeEach(() => {
   execDir = mkdtempSync(join(tmpdir(), 'sma-exec-'))
@@ -45,7 +45,7 @@ describe('append + read — Pattern-5 line shape round-trips', () => {
     )
 
     // One file per <phase>-<plan>.
-    const raw = readFileSync(join(execDir, '49.1-20.jsonl'), 'utf8').trim()
+    const raw = readFileSync(join(execDir, '9.1-20.jsonl'), 'utf8').trim()
     expect(raw.split('\n')).toHaveLength(1)
 
     const { events, count, corrupt } = read({ ...PLAN, execDir })
@@ -95,7 +95,7 @@ describe('nextUndone — resume pick', () => {
 
 describe('fail-open — corrupt line tolerated', () => {
   it('skips a corrupt line on read and still appends afterwards', () => {
-    const file = join(execDir, '49.1-20.jsonl')
+    const file = join(execDir, '9.1-20.jsonl')
     writeFileSync(
       file,
       [

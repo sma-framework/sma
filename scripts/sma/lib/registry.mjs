@@ -9,7 +9,7 @@
  * that escapes to a hook.
  *
  * Two axes, never conflated (B16): `status` is what the session SAYS (working|blocked|
- * idle|done); liveness is `renewTime`/mtime. Staleness is graduated (D-49-11): fresh ->
+ * idle|done); liveness is `renewTime`/mtime. Staleness is graduated (D-9-11): fresh ->
  * attention after ATTENTION_AFTER_MISSES missed beats -> reap-eligible after TTL+grace,
  * and reap-eligible splits clean (auto-reapable) vs dirty (fresh mtimes inside claimed
  * globs -> needs-human, NEVER auto-deleted, P3).
@@ -48,7 +48,7 @@ import {
 /** Valid self-reported status values (C12). Liveness is a SEPARATE axis (B16). */
 export const STATUS_VALUES = ['working', 'blocked', 'idle', 'done']
 
-/** 49.3-13 (D-49.3-21) — the fingerprint's ATTENTION-axis values. Stored on the lease as
+/** 9.3-13 (D-9.3-21) — the fingerprint's ATTENTION-axis values. Stored on the lease as
  * `fpStatus`, ALONGSIDE the work-axis `status` above, never conflated with it. */
 export const FP_STATUS_VALUES = ['working', 'waiting-for-human', 'idle']
 
@@ -70,14 +70,14 @@ function firstToken(...candidates) {
 }
 
 /**
- * resolveTerminalIdentity({env, pid, sessionToken}) — D-49-01 window-stable identity.
+ * resolveTerminalIdentity({env, pid, sessionToken}) — D-9-01 window-stable identity.
  *
  * holderIdentity = env.SMA_TERMINAL_NAME (the human window name, «Мозг» / «Фабрика») if
  * set; else a fallback derived from the WINDOW TOKEN when one is available (`T-<hash>`),
  * else the volatile `T-<pid>`. terminalId = slugified holderIdentity SUFFIXED WITH a
  * disambiguator so two windows sharing a name never collapse into one id.
  *
- * THE FIX (R7/D-49-01): every SMA hook is a one-shot `node cli.mjs` process, so a
+ * THE FIX (R7/D-9-01): every SMA hook is a one-shot `node cli.mjs` process, so a
  * pid-based disambiguator changed on EVERY tool call — terminalId fragmented into
  * hundreds of write-once lease files and renewal/throttle/transitions never saw the same
  * identity twice. The disambiguator is now the WINDOW TOKEN when present:
@@ -210,7 +210,7 @@ export function heartbeat(beat, opts = {}) {
           ? existing.label
           : ''
 
-    // 49.3-13 (D-49.3-21) — fingerprint fields on the SAME lease (D-49.3-02: no parallel
+    // 9.3-13 (D-9.3-21) — fingerprint fields on the SAME lease (D-9.3-02: no parallel
     // store). intent is the agent-maintained one-line string (preserved when a beat omits
     // it, never invented); fpStatus is the attention axis; filesRecent is preserved here
     // (the `sma pre` self-capture is its primary mutator — a separate no-spawn write).
@@ -257,9 +257,9 @@ export function heartbeat(beat, opts = {}) {
       status, // self-reported (B16)
       blockers,
       label, // FI-10 — founder-readable work label, refreshed from live context
-      intent, // 49.3-13 (D-49.3-21) — fingerprint intent line («чиню тест dispatcher…»)
-      fpStatus, // 49.3-13 — fingerprint attention axis (working|waiting-for-human|idle)
-      filesRecent, // 49.3-13 — self-captured touch trail (mutated by the `sma pre` stream)
+      intent, // 9.3-13 (D-9.3-21) — fingerprint intent line («чиню тест dispatcher…»)
+      fpStatus, // 9.3-13 — fingerprint attention axis (working|waiting-for-human|idle)
+      filesRecent, // 9.3-13 — self-captured touch trail (mutated by the `sma pre` stream)
       acquireTime,
       renewTime: nowIso, // liveness axis (B16)
       leaseDurationSeconds: SESSION_TTL_MS / 1000,
@@ -267,7 +267,7 @@ export function heartbeat(beat, opts = {}) {
     }
     atomicWriteJson(file, lease)
 
-    // D-49-11 cadence: a NON-skipped heartbeat spawns a detached one-shot snapshot
+    // D-9-11 cadence: a NON-skipped heartbeat spawns a detached one-shot snapshot
     // reporter (fire-and-forget) so the CRM mirror refreshes on the same cadence
     // WITHOUT a daemon and WITHOUT the hook ever waiting on the network. The child
     // is unref'd so the parent (the PreToolUse hook) exits immediately; any spawn
@@ -288,7 +288,7 @@ export function heartbeat(beat, opts = {}) {
 /**
  * spawnDetachedSnapshot(opts) — fire-and-forget `node scripts/sma/cli.mjs snapshot`.
  * detached + stdio:'ignore' + unref so it outlives the short-lived hook process and
- * the parent never blocks on it (a short-lived child is NOT a daemon, D-49-11).
+ * the parent never blocks on it (a short-lived child is NOT a daemon, D-9-11).
  * Fully fail-open: a spawn error is swallowed. Injectable via opts.spawnFn for tests.
  * @param {{spawnFn?:Function, cliPath?:string, sessionToken?:string|null}} [opts]
  */
@@ -368,7 +368,7 @@ export function readSessions(opts = {}) {
 }
 
 /**
- * classifyStaleness(session, {now, scopeMtimeProbe}) — graduated grading (D-49-11):
+ * classifyStaleness(session, {now, scopeMtimeProbe}) — graduated grading (D-9-11):
  *   fresh          renewTime younger than ATTENTION window
  *   attention      >= ATTENTION_AFTER_MISSES × HEARTBEAT_INTERVAL_MS since renewTime
  *   reap-clean     > SESSION_TTL_MS + GRACE_MS AND claimed globs have NO fresh mtimes
@@ -437,7 +437,7 @@ export function reapStale(opts = {}) {
 }
 
 /**
- * reapStaleObservable(opts) — BL-158 (D-49.3-22f): the reap call path made OBSERVABLE.
+ * reapStaleObservable(opts) — BL-158 (D-9.3-22f): the reap call path made OBSERVABLE.
  * The prior sole call site (cmdStatus/gatherSummary) wrapped reapStale in a SILENT
  * try/catch, so a reap failure was invisible and uncountable — the reaper could stop
  * running and nobody would know. This wrapper stays fail-open (a reap bug NEVER wedges a
@@ -561,7 +561,7 @@ export function probeScopeMtime(session, opts = {}) {
 // work. The label is recomputed on EVERY heartbeat from live context so a window is
 // «P49 Tom — правит slots.mjs», never an anonymous t-3bbdef7f with an empty who column.
 
-/** Read the STATE.md Current-Position phase (e.g. '49.1'), or null. Fail-open. */
+/** Read the STATE.md Current-Position phase (e.g. '9.1'), or null. Fail-open. */
 function readStatePhase(statePath, readFileFn) {
   if (!statePath) return null
   try {

@@ -1,5 +1,5 @@
 /**
- * Tests for the `sma pre` PreToolUse multiplexer (Phase 49.2 Plan 02).
+ * Tests for the `sma pre` PreToolUse multiplexer (Phase 9.2 Plan 02).
  *
  * Task 1 — the dispatch core (lib/pre.mjs): behaviors 1-8.
  * Task 2 — the CLI surface (cli.mjs cmdPre / cmdPreBench / legacy delegation): 9-14.
@@ -71,11 +71,11 @@ describe('Task 1 — dispatch core', () => {
     const dirs = tmpDirs()
     const other = {
       _file: 'other-terminal.json',
-      holderIdentity: 'P49.2 Other',
+      holderIdentity: 'P9.2 Other',
       scope: { globs: ['scripts/sma/lib/**'] },
     }
     const stubRegistry = {
-      resolveTerminalIdentity: () => ({ terminalId: 'me', holderIdentity: 'P49.2 Me' }),
+      resolveTerminalIdentity: () => ({ terminalId: 'me', holderIdentity: 'P9.2 Me' }),
       heartbeat: () => {},
       readSessions: () => ({ sessions: [other], warnings: [] }),
       displayIdentity: ({ holderIdentity }: any) => holderIdentity || '—',

@@ -4,7 +4,7 @@
  * Turns the memory corpus into MEMORY.md = an always-load CORE section (blockers,
  * current-task pointer, top facts) plus a sparse one-line-per-fact index (C1, B9,
  * B10). CORE is generated ONLY from memory notes — the repo instruction file is
- * NEVER an input (D-49-08). Output is byte-deterministic: no clock, no mtime, no HEAD
+ * NEVER an input (D-9-08). Output is byte-deterministic: no clock, no mtime, no HEAD
  * read in the output-producing path — the commit hash and the last-commit date map
  * are INJECTED so lint's MEM-REGEN (49-08) can byte-compare a committed artifact
  * against a fresh regeneration, and so the flip (49-14) can prove determinism.
@@ -87,7 +87,7 @@ function listNoteFiles(corpusDir) {
  * schema errors (MEM-SCHEMA); the generator stays fail-soft (never crashes on a
  * bad note, so a regen during a partial migration still produces a stable file).
  *
- * Exported for trim.mjs (49.1-13): the trimmer sizes/demotes CORE through the
+ * Exported for trim.mjs (9.1-13): the trimmer sizes/demotes CORE through the
  * SAME read + render path the generator writes with — one membership truth.
  */
 export function readNotes(corpusDir) {
@@ -189,7 +189,7 @@ function renderCoreLine(n) {
   const useWhen = renderableUseWhen(n)
   return `- **[${truncateClaim(n.description)}](${n.file})**${useWhen ? ` — ${useWhen}` : ''}`
 }
-// trim.mjs (49.1-13) sizes CORE demotions with the exact render the generator
+// trim.mjs (9.1-13) sizes CORE demotions with the exact render the generator
 // writes — exported so the byte math cannot drift from the artifact.
 export { renderCoreLine }
 
@@ -270,7 +270,7 @@ export function buildIndex(opts) {
     out.push('')
   }
 
-  // ── Thin discovery layer (FI-11, 49.1-13) ───────────────────────────────
+  // ── Thin discovery layer (FI-11, 9.1-13) ───────────────────────────────
   // One line per AREA with a count; the full one-line-per-note catalog lives
   // in the per-area INDEX-<area>.md files, pulled by tag on demand via
   // `pnpm sma load` — always-load stays within its byte budget with zero loss

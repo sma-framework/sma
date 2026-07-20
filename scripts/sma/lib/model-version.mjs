@@ -1,6 +1,6 @@
 /**
  * model-version.mjs — the Claude-model sighting timeline + stale-priors guard
- * (49.3-02, D-49.3-10, grill missing-leaps ICE 567).
+ * (9.3-02, D-9.3-10, grill missing-leaps ICE 567).
  *
  * The calibration passport publishes a public hit-rate badge. The moment the
  * underlying Claude model changes, the historical priors are about a DIFFERENT
@@ -48,7 +48,7 @@ import { MODEL_DIR } from './constants.mjs'
 const DEFAULT_MIN_FRESH = 20
 
 /**
- * The canonical stamp field for a SEPARATE-CONTEXT JUDGE's model id (49.4-02).
+ * The canonical stamp field for a SEPARATE-CONTEXT JUDGE's model id (9.4-02).
  * Exported so calibration.mjs (recordGraderVerdict / hitRateByJudge) and
  * blind-verify.mjs reference the field BY NAME rather than by a scattered string
  * literal — a grader swap is then visible in the track record the same way an
@@ -135,7 +135,7 @@ export function readModelTimeline(opts = {}) {
  * (BL-172, 2026-07-10): a structural receipt over the model-version guard's
  * data feed must pin the timeline's SHAPE, never its COUNT — sightings ACCRUE
  * with every session, so hashing `model --count sightings` output re-fails on
- * every reverify by construction (the 49.3-02 R1 lesson). Valid: an object
+ * every reverify by construction (the 9.3-02 R1 lesson). Valid: an object
  * with a sightings array (empty = honest-empty, still valid) whose every
  * entry carries a non-empty string model plus string source/at, and a finite
  * non-negative corrupt count.
@@ -306,7 +306,7 @@ export function modelGuard({ records = [], timeline, minFresh = DEFAULT_MIN_FRES
 /**
  * stampRecords(records, {model, judgeModelId}) — pure additive stamp (behavior
  * test 6). Returns copies each carrying `model` (actor) and/or the optional
- * `judgeModelId` (JUDGE_MODEL_FIELD, 49.4-02) without mutating any other field.
+ * `judgeModelId` (JUDGE_MODEL_FIELD, 9.4-02) without mutating any other field.
  * Both stamps are independent and optional: a null `model` no longer adds the
  * actor key, a null `judgeModelId` no longer adds the judge key, and when BOTH
  * are null the records pass through UNTOUCHED — so tolerant readers

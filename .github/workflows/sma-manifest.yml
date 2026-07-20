@@ -1,4 +1,4 @@
-# sma-manifest — the CI terminal for the PR EVIDENCE PASSPORT (49.3-08, D-49.3-11).
+# sma-manifest — the CI terminal for the PR EVIDENCE PASSPORT (9.3-08, D-9.3-11).
 #
 # Two jobs, one file:
 #   manifest (pull_request) — build the deterministic evidence pack via the shipped
@@ -12,17 +12,17 @@
 #     print verdicts to the step summary + upload the CI ledger as an independent witness.
 #
 # LAWS honored (must_haves / threat register):
-#   - `pull_request` ONLY, NEVER the target-elevated variant (T-49.3-08-02): no write
+#   - `pull_request` ONLY, NEVER the target-elevated variant (T-9.3-08-02): no write
 #     token is ever handed to untrusted fork code.
 #   - Least-privilege `permissions:` — contents:read + pull-requests:write, nothing more.
 #   - Every action pinned by full 40-hex commit SHA; first-party actions only (no
-#     third-party action runs untrusted code with our token — T-49.3-08-SC).
+#     third-party action runs untrusted code with our token — T-9.3-08-SC).
 #   - The workflow NEVER gates a merge: no required check, the comment step is
 #     continue-on-error, the evaluate job never fails on a miss. The LAW's gating surface
-#     is `sma preship` at ship time (49.2-08), not CI (fail-open).
+#     is `sma preship` at ship time (9.2-08), not CI (fail-open).
 #   - manifest.mjs itself executes nothing; the merge-time evaluation delegates 100% to
-#     the shipped predict-score engine behind isSafeCommand (49.1-08) — zero new
-#     command-execution surface (T-49.3-08-03).
+#     the shipped predict-score engine behind isSafeCommand (9.1-08) — zero new
+#     command-execution surface (T-9.3-08-03).
 
 name: sma-manifest
 

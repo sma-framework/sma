@@ -1,6 +1,6 @@
 /**
  * stall.mjs — rule-based stall detection over a rolling PostToolUse window
- * (49.1-21, B16 sibling; OpenHands StuckDetector doctrine).
+ * (9.1-21, B16 sibling; OpenHands StuckDetector doctrine).
  *
  * DOCTRINE (RESEARCH Anti-pattern A1, plan prohibition): detection is
  * DETERMINISTIC and rule-based — NEVER an LLM judgment. Four rules over the
@@ -25,7 +25,7 @@
  * Everything is fail-open (C9): errors yield empty results, never throws.
  * The consumer (cli.mjs stall-check) is ADVISORY ONLY — additionalContext
  * nudge, never a block. SMA_STALL_DISABLE is the global kill-switch
- * (T-49.1-46). Node built-ins only.
+ * (T-9.1-46). Node built-ins only.
  */
 
 import { createHash } from 'node:crypto'
@@ -52,7 +52,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write'])
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/** True when the SMA_STALL_DISABLE kill-switch is set (T-49.1-46). */
+/** True when the SMA_STALL_DISABLE kill-switch is set (T-9.1-46). */
 function isDisabled(env) {
   const v = String((env || {}).SMA_STALL_DISABLE ?? '').trim().toLowerCase()
   return Boolean(v) && v !== '0' && v !== 'false'

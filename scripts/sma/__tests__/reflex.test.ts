@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/reflex.mjs (Phase 49.1 Plan 10, Task 1 — B1/B2).
+ * Tests for scripts/sma/lib/reflex.mjs (Phase 9.1 Plan 10, Task 1 — B1/B2).
  *
  * P2 reflex consumer core: deriveTags + matchReflexes + applyFatigue + formatWarn.
  *
@@ -350,7 +350,7 @@ describe('cli.mjs reflex-check (hook consumer, Task 2)', () => {
     expect(status).toBe(0)
     const out = JSON.parse(stdout)
     expect(out.hookSpecificOutput.hookEventName).toBe('PreToolUse')
-    expect(out.hookSpecificOutput.permissionDecision).toBe('allow') // NEVER deny (D-49.1-12)
+    expect(out.hookSpecificOutput.permissionDecision).toBe('allow') // NEVER deny (D-9.1-12)
     expect(out.hookSpecificOutput.additionalContext).toContain('lesson-migration')
   })
 

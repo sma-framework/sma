@@ -202,7 +202,7 @@ const DEMOS = [
     ['◆ "done" is a command that re-runs, not a sentence', 'accent'],
   ] },
   { cmd: 'sma blind-verify', file: 'sma-blind-verify', lines: [
-    ['$ sma blind-verify 49.2-07-PLAN.md', 'cmd'],
+    ['$ sma blind-verify 9.2-07-PLAN.md', 'cmd'],
     ['◇ re-deriving every "done" from the code tree alone', 'accent'],
     ['⚠ BLIND_FORBIDDEN: a SUMMARY as input is structurally refused', 'hi'],
     ['  the verifier never sees the executor’s own report', 'dim'],

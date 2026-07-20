@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/bench.mjs harness (Phase 49.2 Plan 01, Task 2).
+ * Tests for scripts/sma/lib/bench.mjs harness (Phase 9.2 Plan 01, Task 2).
  *
  * The A/B throwaway-clone replay + hook timing (S7), the compaction exam (S3), and
  * the ttc first-edit recorder (S5 instrument). Everything DI (injected exec/hrtime/
@@ -144,16 +144,16 @@ describe('compaction exam (S3)', () => {
   it('Test 4: examNew is deterministic; examGrade keyword-matches and appends ONE result line', () => {
     const benchDir = join(dir, 'bench')
     const state = {
-      activePlan: '49.2-01',
+      activePlan: '9.2-01',
       nextTask: 'task 2',
       filesModified: ['scripts/sma/lib/bench.mjs'],
-      claims: ['bench-49.2-01'],
+      claims: ['bench-9.2-01'],
       journalTail: ['claim bench', 'gate GATE-CHECKOUT'],
       gates: ['GATE-PUSH'],
       nextMigration: '046',
-      phaseWave: '49.2 wave 0',
-      lockedDecisions: ['D-49.2-02'],
-      predictions: ['P49.2-01-A threshold 8'],
+      phaseWave: '9.2 wave 0',
+      lockedDecisions: ['D-9.2-02'],
+      predictions: ['P9.2-01-A threshold 8'],
     }
     const now = '2026-07-08T00:00:00.000Z'
     const a = examNew({ dirs: { benchDir }, state, now })

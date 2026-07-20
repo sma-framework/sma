@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/predict.mjs (Phase 49.1 Plan 08, Task 1 — B18).
+ * Tests for scripts/sma/lib/predict.mjs (Phase 9.1 Plan 08, Task 1 — B18).
  *
  * P1 prediction engine core — deterministic, allowlisted, confidence-blind:
  *   - Test 1: validatePrediction rejects an entry missing any of
@@ -11,12 +11,12 @@
  *     the injected runner, parses the numeric last-line output, and compares
  *     with every comparator (==, !=, >=, <=, >, <) correctly.
  *   - Test 4: a non-allowlisted check_command (`rm -rf /`) scores
- *     'skipped-unsafe' and the runner is NEVER invoked (T-49.1-14).
+ *     'skipped-unsafe' and the runner is NEVER invoked (T-9.1-14).
  *   - Test 5: a throwing runner yields verdict 'error'; scorePlan itself
  *     never throws.
  *   - Test 6 (R1/R2 false class-A lesson, 2026-07-10): predict-score scores
  *     plan-frontmatter `predictions:` ONLY. SUMMARY `receipts:` claims
- *     (expected_sha256-pinned, D-49.2-06) are `sma reverify` territory — a
+ *     (expected_sha256-pinned, D-9.2-06) are `sma reverify` territory — a
  *     receipts block yields zero verdicts, and a receipt-shaped entry misfiled
  *     under `predictions:` is EXCLUDED (never scored, never run).
  */
@@ -81,7 +81,7 @@ const fullEntry = {
 }
 
 describe('SAFE_COMMAND_PATTERNS', () => {
-  it('is exported (for the 49.1-09 lint reuse) and anchored', () => {
+  it('is exported (for the 9.1-09 lint reuse) and anchored', () => {
     expect(Array.isArray(SAFE_COMMAND_PATTERNS)).toBe(true)
     expect(SAFE_COMMAND_PATTERNS.length).toBeGreaterThanOrEqual(3)
     expect(SAFE_COMMAND_PATTERNS.some((re: RegExp) => re.test('node scripts/sma/cli.mjs status'))).toBe(true)
@@ -184,7 +184,7 @@ describe('scorePlan — deterministic comparator scoring (Test 3)', () => {
   })
 })
 
-describe('allowlist boundary (Test 4 — T-49.1-14)', () => {
+describe('allowlist boundary (Test 4 — T-9.1-14)', () => {
   it('a non-allowlisted check_command scores skipped-unsafe; the runner is NEVER invoked', () => {
     let called = 0
     const runner = () => {
@@ -316,7 +316,7 @@ describe('predict-score scores plan predictions ONLY — receipts belong to reve
   })
 })
 
-// ── 49.1-09 Task 2: on-surprise lesson drafting (B19) ────────────────────────
+// ── 9.1-09 Task 2: on-surprise lesson drafting (B19) ────────────────────────
 
 /** A miss verdict record in the scorePlan record shape. */
 function missVerdict(overrides: Record<string, unknown> = {}) {
@@ -333,21 +333,21 @@ function missVerdict(overrides: Record<string, unknown> = {}) {
     verdict: 'miss',
     confidence: null,
     scoredAt: '2026-07-06T00:00:00Z',
-    plan: '49.1-09-PLAN.md',
+    plan: '9.1-09-PLAN.md',
     ...overrides,
   }
 }
 
-describe('draftLessonFromMiss — surprise drafting (49.1-09 task 2)', () => {
+describe('draftLessonFromMiss — surprise drafting (9.1-09 task 2)', () => {
   it('Test 1: a miss writes drafts/bug-lesson-<planId>-<predId>.md with kind, predicted_from and the Why/How stubs', () => {
     const draftsDir = join(dir, 'drafts')
-    const res = draftLessonFromMiss({ verdict: missVerdict(), planId: '49.1-09', dirs: { draftsDir } })
+    const res = draftLessonFromMiss({ verdict: missVerdict(), planId: '9.1-09', dirs: { draftsDir } })
     expect(res.drafted).toBe(true)
-    const path = join(draftsDir, 'bug-lesson-49.1-09-P1.md')
+    const path = join(draftsDir, 'bug-lesson-9.1-09-P1.md')
     expect(existsSync(path)).toBe(true)
     const text = readFileSync(path, 'utf8')
     expect(text).toContain('kind: bug-lesson')
-    expect(text).toContain('predicted_from: 49.1-09-P1')
+    expect(text).toContain('predicted_from: 9.1-09-P1')
     // MEM-BUGLESSON's two required sections are present as stubs.
     expect(text).toMatch(/\*\*Why:\*\*/)
     expect(text).toMatch(/\*\*How to apply:\*\*/)
@@ -359,7 +359,7 @@ describe('draftLessonFromMiss — surprise drafting (49.1-09 task 2)', () => {
     const draftsDir = join(dir, 'drafts')
     const res = draftLessonFromMiss({
       verdict: missVerdict({ verdict: 'hit', hit: true, actual: 0 }),
-      planId: '49.1-09',
+      planId: '9.1-09',
       dirs: { draftsDir },
     })
     expect(res.drafted).toBe(false)
@@ -368,11 +368,11 @@ describe('draftLessonFromMiss — surprise drafting (49.1-09 task 2)', () => {
 
   it('Test 3: drafting is idempotent — a re-run neither duplicates nor overwrites an edited draft', () => {
     const draftsDir = join(dir, 'drafts')
-    draftLessonFromMiss({ verdict: missVerdict(), planId: '49.1-09', dirs: { draftsDir } })
-    const path = join(draftsDir, 'bug-lesson-49.1-09-P1.md')
+    draftLessonFromMiss({ verdict: missVerdict(), planId: '9.1-09', dirs: { draftsDir } })
+    const path = join(draftsDir, 'bug-lesson-9.1-09-P1.md')
     // Simulate a human editing the draft before promotion.
     writeFileSync(path, readFileSync(path, 'utf8') + '\nHUMAN EDIT\n')
-    const res = draftLessonFromMiss({ verdict: missVerdict(), planId: '49.1-09', dirs: { draftsDir } })
+    const res = draftLessonFromMiss({ verdict: missVerdict(), planId: '9.1-09', dirs: { draftsDir } })
     expect(res.drafted).toBe(false)
     expect(readFileSync(path, 'utf8')).toContain('HUMAN EDIT')
     expect(readdirSync(draftsDir)).toHaveLength(1)
@@ -386,17 +386,17 @@ describe('draftLessonFromMiss — surprise drafting (49.1-09 task 2)', () => {
       '---\ndescription: a real note claim of five words\nkind: reference\ntags: [workflow]\nuse-when: testing the generator\nimportance: 4\n---\nbody\n',
     )
     writeFileSync(join(corpusDir, 'TAGS.md'), '## area\n\n- workflow — stuff.\n\n## kind\n\n- reference — stuff.\n')
-    draftLessonFromMiss({ verdict: missVerdict(), planId: '49.1-09', dirs: { draftsDir: join(corpusDir, 'drafts') } })
-    // Post-49.1-13 (FI-11): MEMORY.md carries the area OVERVIEW; per-note lines
+    draftLessonFromMiss({ verdict: missVerdict(), planId: '9.1-09', dirs: { draftsDir: join(corpusDir, 'drafts') } })
+    // Post-9.1-13 (FI-11): MEMORY.md carries the area OVERVIEW; per-note lines
     // live in INDEX-<area>.md. The invariant under test is unchanged: the real
     // note is discovered, the draft enters NEITHER artifact.
     const index = buildIndex({ corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commitHash: 'abc1234' })
     expect(index).toContain('заметок: 1')
-    expect(index).not.toContain('bug-lesson-49.1-09-P1')
+    expect(index).not.toContain('bug-lesson-9.1-09-P1')
     const areas = buildAreaIndexes({ corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commitHash: 'abc1234' })
     const all = areas.map((a: { file: string; content: string }) => a.content).join('\n')
     expect(all).toContain('reference_real_note.md')
-    expect(all).not.toContain('bug-lesson-49.1-09-P1')
+    expect(all).not.toContain('bug-lesson-9.1-09-P1')
   })
 })
 

@@ -95,7 +95,7 @@ export function atomicWriteJson(targetPath, obj, opts = {}) {
 /**
  * atomicWriteRaw(targetPath, text, opts) — write a raw string atomically (same
  * temp-sibling + renameWithRetry contract as atomicWriteJson, but no JSON.stringify).
- * The report generator (49.1-24) uses this so a half-written HTML file is never
+ * The report generator (9.1-24) uses this so a half-written HTML file is never
  * observed — a reader either sees the previous report or the new one, never a torn one.
  *
  * @param {string} targetPath

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/footprint.mjs + grill.standingFootprint (49.4-07 — the
+ * Tests for scripts/sma/lib/footprint.mjs + grill.standingFootprint (9.4-07 — the
  * economy ladder as a claim + a deterministic receipt). The five load-bearing behaviors:
  *   Test 1 — claim parse: parseFootprintClaim coerces the frontmatter dash-entry;
  *            absent block -> null; missing new_deps -> 0
@@ -25,10 +25,10 @@ import { standingFootprint, grillGate, readChallenges } from '../lib/grill.mjs'
 // ── Test 1 — claim parse ─────────────────────────────────────────────────────
 describe('footprint — parseFootprintClaim (Test 1)', () => {
   const withClaim =
-    '---\nphase: 49.4\nplan: 07\nfootprint:\n  - files: 9\n    new_files: 2\n    loc: 750\n    new_deps: 0\n    tolerance_pct: 50\nautonomous: true\n---\n\nbody\n'
-  const noBlock = '---\nphase: 49.4\nplan: 07\nautonomous: true\n---\n\nbody\n'
+    '---\nphase: 9.4\nplan: 07\nfootprint:\n  - files: 9\n    new_files: 2\n    loc: 750\n    new_deps: 0\n    tolerance_pct: 50\nautonomous: true\n---\n\nbody\n'
+  const noBlock = '---\nphase: 9.4\nplan: 07\nautonomous: true\n---\n\nbody\n'
   const noDeps =
-    '---\nphase: 49.4\nplan: 08\nfootprint:\n  - files: 3\n    new_files: 0\n    loc: 120\n    tolerance_pct: 25\n---\n\nbody\n'
+    '---\nphase: 9.4\nplan: 08\nfootprint:\n  - files: 3\n    new_files: 0\n    loc: 120\n    tolerance_pct: 25\n---\n\nbody\n'
 
   it('coerces the dash-entry to numeric fields', () => {
     const claim = parseFootprintClaim('x-PLAN.md', { readFn: () => withClaim })
@@ -88,7 +88,7 @@ describe('footprint — footprintActuals (Test 3)', () => {
   }
 
   it('folds log + numstat into files/loc/new_deps/commits', () => {
-    const a = footprintActuals({ planId: '49.4-07', execGit: fakeExecGit })
+    const a = footprintActuals({ planId: '9.4-07', execGit: fakeExecGit })
     expect(a.empty).toBe(false)
     expect(a.commits).toBe(2)
     expect(a.loc).toBe(15) // 5 + 10; binary '-' skipped
@@ -112,7 +112,7 @@ describe('footprint — footprintReceipt (Test 4)', () => {
     const res = footprintReceipt({
       claim,
       actuals: { empty: false, files: 5, loc: 140, new_deps: 0 },
-      planId: '49.4-07',
+      planId: '9.4-07',
       planPath: 'p-PLAN.md',
       appendVerdict,
       draftLesson,
@@ -128,7 +128,7 @@ describe('footprint — footprintReceipt (Test 4)', () => {
     const res = footprintReceipt({
       claim,
       actuals: { empty: false, files: 5, loc: 300, new_deps: 0 },
-      planId: '49.4-07',
+      planId: '9.4-07',
       planPath: 'p-PLAN.md',
       appendVerdict,
       draftLesson,
@@ -138,7 +138,7 @@ describe('footprint — footprintReceipt (Test 4)', () => {
     expect(appendVerdict).toHaveBeenCalledTimes(1)
     expect(draftLesson).toHaveBeenCalledTimes(1)
     const row = appendVerdict.mock.calls[0][0]
-    expect(row).toMatchObject({ verdict: 'miss', domain: 'sma.economy', metric: 'footprint_overrun', id: 'FOOT-49.4-07', comparator: '<=' })
+    expect(row).toMatchObject({ verdict: 'miss', domain: 'sma.economy', metric: 'footprint_overrun', id: 'FOOT-9.4-07', comparator: '<=' })
   })
 
   it('treats new_deps with tolerance 0 (a single extra dep is an overrun)', () => {
@@ -146,7 +146,7 @@ describe('footprint — footprintReceipt (Test 4)', () => {
     const res = footprintReceipt({
       claim,
       actuals: { empty: false, files: 5, loc: 100, new_deps: 1 },
-      planId: '49.4-07',
+      planId: '9.4-07',
       planPath: 'p-PLAN.md',
       appendVerdict,
       draftLesson: vi.fn(() => ({ path: null })),
@@ -157,7 +157,7 @@ describe('footprint — footprintReceipt (Test 4)', () => {
 
   it('returns honest empty for empty actuals with no verdict', () => {
     const appendVerdict = vi.fn()
-    const res = footprintReceipt({ claim, actuals: { empty: true }, planId: '49.4-07', appendVerdict })
+    const res = footprintReceipt({ claim, actuals: { empty: true }, planId: '9.4-07', appendVerdict })
     expect(res.empty).toBe(true)
     expect(res.verdict).toBeNull()
     expect(appendVerdict).not.toHaveBeenCalled()

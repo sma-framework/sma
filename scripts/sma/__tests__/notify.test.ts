@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/notify.mjs (Phase 49.3 Plan 07 — D-49.3-13).
+ * Tests for scripts/sma/lib/notify.mjs (Phase 9.3 Plan 07 — D-9.3-13).
  *
  * The claim PULSE (on the EXISTING lease `fpStatus` field — no parallel store) + the
  * edge-triggered outbound waiting-for-human webhook: outbound events only, explicit-pick
@@ -62,7 +62,7 @@ afterEach(() => {
 function seedLease(fpStatus: string, extra: Record<string, unknown> = {}) {
   writeFileSync(
     join(dirs.sessionsDir, `${TERMINAL}.json`),
-    JSON.stringify({ holderIdentity: 'Tester', fpStatus, renewTime: new Date(NOW).toISOString(), label: '49.3-07', ...extra }),
+    JSON.stringify({ holderIdentity: 'Tester', fpStatus, renewTime: new Date(NOW).toISOString(), label: '9.3-07', ...extra }),
   )
 }
 
@@ -76,7 +76,7 @@ function recorder(impl?: (url: string, init: any) => any) {
   return { calls, fetchImpl }
 }
 
-describe('notify.mjs — pulse + edge-triggered webhook (D-49.3-13)', () => {
+describe('notify.mjs — pulse + edge-triggered webhook (D-9.3-13)', () => {
   it('Test 1: a working -> waiting-for-human transition fires exactly one explicit-pick delivery', async () => {
     seedLease('working')
     const { calls, fetchImpl } = recorder()
@@ -181,7 +181,7 @@ describe('notify.mjs — pulse + edge-triggered webhook (D-49.3-13)', () => {
     }
     const fetchImpl = async () => bodyTrap
     const res = await firePulseWebhook(
-      { terminalId: TERMINAL, workLabel: '49.3-07', repoRoot: dirs.repoRoot },
+      { terminalId: TERMINAL, workLabel: '9.3-07', repoRoot: dirs.repoRoot },
       { dirs, env, fetchImpl, now: NOW },
     )
     // return value carries ONLY the delivered boolean — no directive from the response

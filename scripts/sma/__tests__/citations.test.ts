@@ -1,11 +1,11 @@
 /**
  * Tests for scripts/sma/lib/citations.mjs + the loader's load-citation wiring
- * (Phase 49.1 Plan 11, Task 1 — B4 usage journal).
+ * (Phase 9.1 Plan 11, Task 1 — B4 usage journal).
  *
  *   - Test 1: recordCitation({noteId, kind, terminal}) appends ONE JSONL line to
  *     .sma/usage/<terminal>.jsonl (temp DI dir); seq increments per terminal file.
  *   - Test 2: usageStats over a fixture ledger returns per-note counts split by
- *     kind ('load' vs 'fire') with lastCitedAt; reflex journal entries (49.1-10,
+ *     kind ('load' vs 'fire') with lastCitedAt; reflex journal entries (9.1-10,
  *     type 'reflex') fold in as fire-citations — one usage model over both.
  *   - Test 3: deadWeight({sessions: N}) lists corpus notes with ZERO citations
  *     across the last N sessions; a cited note is excluded.
@@ -119,7 +119,7 @@ describe('citations.mjs — usageStats (per-note counts, reflex fires folded)', 
       { noteId: 'b.md', kind: 'load', terminal: 'term-2' },
       { usageDir, now: '2026-07-01T12:00:00.000Z' },
     )
-    // A reflex fire journaled by 49.1-10's consumer — folds in as a fire-citation.
+    // A reflex fire journaled by 9.1-10's consumer — folds in as a fire-citation.
     appendEvent(
       { type: 'reflex', scope: 'src/x.ts', detail: { noteId: 'b.md', target: 'src/x.ts', tier: 'warn' } },
       { terminalId: 'term-2', journalDir, now: '2026-07-03T00:00:00.000Z' },
@@ -251,7 +251,7 @@ function runCli(
   }
 }
 
-describe('cli.mjs session-start — budgeted pre-act injection (49.1-11 T2, B1)', () => {
+describe('cli.mjs session-start — budgeted pre-act injection (9.1-11 T2, B1)', () => {
   let root: string
   let smaRoot: string
   let realCorpus: string
@@ -368,7 +368,7 @@ describe('cli.mjs session-start — budgeted pre-act injection (49.1-11 T2, B1)'
   })
 })
 
-describe('cli.mjs usage — B4 report (49.1-11 T3)', () => {
+describe('cli.mjs usage — B4 report (9.1-11 T3)', () => {
   let root: string
   let smaRoot: string
 

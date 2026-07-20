@@ -10,7 +10,7 @@
  * DIFFERENT anchor family (SMA:RULES) so the corpus block and the rules block
  * never fight over one span.
  *
- * Consume-never-reimplement (D-49.3-02): the splice engine is emit.mjs's
+ * Consume-never-reimplement (D-9.3-02): the splice engine is emit.mjs's
  * spliceBlock with injected markers — this module writes no second block law.
  * The inverse lives in deleteme.mjs (BLOCK_ANCHORS strips SMA:RULES too).
  *
@@ -119,8 +119,8 @@ export function embedSelftest({ tmpRoot }) {
     if (embedRules({ projectDir: fresh, version: '9.9.9' }).action !== 'created') return 0
     const created = readFileSync(join(fresh, 'CLAUDE.md'), 'utf8')
     if (!created.includes('SMA:RULES:BEGIN') || !created.includes('.claude/memory/MEMORY.md')) return 0
-    // 49.4-07: the economy ladder ships WITH its safety carveout welded on — a ladder
-    // line without the "never on the chopping block" floor scores 0 (CONS-49.4-07-B).
+    // 9.4-07: the economy ladder ships WITH its safety carveout welded on — a ladder
+    // line without the "never on the chopping block" floor scores 0 (CONS-9.4-07-B).
     if (!created.includes('Economy ladder') || !created.includes('never on the chopping block')) return 0
 
     // 2. idempotent

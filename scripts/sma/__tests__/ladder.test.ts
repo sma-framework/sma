@@ -1,5 +1,5 @@
 /**
- * Tests for the rule-maturation ladder — Phase 49.3 Plan 06, Task 1 (D-49.3-12).
+ * Tests for the rule-maturation ladder — Phase 9.3 Plan 06, Task 1 (D-9.3-12).
  *
  *   - Test 1 (empty overlay = today): a missing ladder file -> {version:1, rules:[]}
  *     and tierOf resolves every rule to its shipped default 'warn' — V2 unchanged.

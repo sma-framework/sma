@@ -47,7 +47,7 @@ BASE_BRANCH=$(sma_run query git.base-branch)
 <step name="preflight_checks">
 Verify the work is ready to ship:
 
-**Ship lane (49.4-08, BL-177):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick ritual (`/sma-quick-ship`) — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal («this is a full /sma-ship») means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background CI+Railway watch, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
+**Ship lane (9.4-08, BL-177):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick ritual (`/sma-quick-ship`) — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal («this is a full /sma-ship») means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background CI+Railway watch, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
 
 1. **Verification passed?**
    ```bash
@@ -133,7 +133,7 @@ commands implement them, never WHETHER they run:
 
 1. **Never ship red.** Run the full gate before pushing. Echo the profile-supplied
    command verbatim before executing it (the user must see what is about to run —
-   T-49.1-09):
+   T-9.1-09):
 
    ```bash
    echo "Full gate (from .sma/profile.json): ${FULL_GATE_COMMAND}"
@@ -142,7 +142,7 @@ commands implement them, never WHETHER they run:
 
    Non-zero exit blocks the ship. Fix first; never push over a red gate.
 
-   **Full-gate evidence marker (D-49.1-13).** Immediately after the full gate passes,
+   **Full-gate evidence marker (D-9.1-13).** Immediately after the full gate passes,
    record the evidence marker for the current HEAD — this is the proof that GATE-PUSH's
    soft-deny tier checks before it will allow a push:
 
@@ -156,7 +156,7 @@ commands implement them, never WHETHER they run:
    path push without tripping its own gate. Arming the gate at all is a founder action
    justified by `pnpm sma gates-report --promotion-readiness`; it ships DORMANT.
 
-2. **Vendor untriaged gate (49.4-01).** No release ships past an untriaged Anthropic
+2. **Vendor untriaged gate (9.4-01).** No release ships past an untriaged Anthropic
    capability sighting. Run the vendor-ledger linter in the product repo and block on a
    non-zero count:
 
@@ -548,7 +548,7 @@ After shipping:
 - [ ] Preflight checks passed (verification, clean tree, branch, remote, gh)
 - [ ] Infra profile read (.sma/profile.json) — missing fields asked and offered for save, never defaulted
 - [ ] Full gate green before push (profile-supplied command, echoed before running) + origin-diff reviewed
-- [ ] Full-gate evidence marker written after the gate passed (`pnpm sma gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-49.1-13)
+- [ ] Full-gate evidence marker written after the gate passed (`pnpm sma gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-9.1-13)
 - [ ] Branch pushed to remote
 - [ ] PR created with rich auto-generated body
 - [ ] STATE.md updated with shipping status

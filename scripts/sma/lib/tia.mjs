@@ -1,5 +1,5 @@
 /**
- * tia.mjs — regex-based test-impact analysis (49.1-23, B17).
+ * tia.mjs — regex-based test-impact analysis (9.1-23, B17).
  *
  * The CHEAP v1 the research mandates (RESEARCH Don't-Hand-Roll, SMA-V2-CODING #5,
  * Anti-patterns): grep the changed files' exported symbols across the test files and
@@ -10,7 +10,7 @@
  * TIA is an ADVISORY middle tier between "targeted tests only" (the dev loop) and the
  * full pre-push suite (the push gate). It is INTENTIONALLY under-inclusive: it can only
  * see symbols it can name and grep. Therefore EVERY output carries the disclaimer that
- * the full `pnpm test` suite remains the push gate (T-49.1-49). This module NEVER
+ * the full `pnpm test` suite remains the push gate (T-9.1-49). This module NEVER
  * presents its set as a substitute for that suite — the prohibition is load-bearing.
  *
  * Determinism: all I/O is dependency-injectable — `readFile` reads a file body,

@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/collision.mjs (Phase 49 Plan 05, Task 2).
  *
- * R8 advisory scope-glob collision detector (B20/B25, D-49-16):
+ * R8 advisory scope-glob collision detector (B20/B25, D-9-16):
  *   - Test 1: normalizePath case-folds + slash-normalizes BEFORE any matching
  *     (SPEC edge: encoding R8).
  *   - Test 2: a path inside another session's claimed glob -> one WARN with
@@ -11,7 +11,7 @@
  *     journal event with actors + ts.
  *   - Test 5: an aged-out DIRTY owner in the intersection is annotated
  *     'needs-human', not removed (P3).
- *   - Test 6 (D-49-16): a HOT_FILES path with >=2 fresh sessions + NO claim ->
+ *   - Test 6 (D-9-16): a HOT_FILES path with >=2 fresh sessions + NO claim ->
  *     an informational (tier:'info') warn; 1 session -> none; info never counted.
  */
 
@@ -221,7 +221,7 @@ describe('checkScopeCollision — aged-out dirty owner (Test 5, P3)', () => {
   })
 })
 
-describe('HOT_FILES (D-49-16)', () => {
+describe('HOT_FILES (D-9-16)', () => {
   it('exports the built-in hot-file watch list containing the three planning files', () => {
     expect(HOT_FILES).toEqual(
       expect.arrayContaining([

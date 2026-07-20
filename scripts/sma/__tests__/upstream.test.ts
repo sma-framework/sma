@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/upstream.mjs (Phase 49.1 Plan 07, Task 1 — D-49.1-03).
+ * Tests for scripts/sma/lib/upstream.mjs (Phase 9.1 Plan 07, Task 1 — D-9.1-03).
  *
  * Daily upstream-watch mechanic:
  *   - Test 1: checkVersion anchor 1.6.1 vs registry 1.6.1 -> { status: 'current' }

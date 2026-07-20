@@ -11,7 +11,7 @@
  *   - Test 4: ordering within a section = importance desc → dateMap desc → name asc
  *     (ties proven by fixture).
  *   - Test 5: a kind='status' high-importance note renders in CORE's active-blockers
- *     subsection first (D-49-08: CORE = blockers + current pointer + top facts).
+ *     subsection first (D-9-08: CORE = blockers + current pointer + top facts).
  *
  * Determinism: the generator NEVER reads Date.now()/mtime/HEAD in the output path;
  * commitHash + dateMap are injected. Tests never shell out.
@@ -185,9 +185,9 @@ describe('generator.mjs — buildIndex (R3)', () => {
   })
 })
 
-// ── 49.1-13 Task 3: FI-11 index restructure — thin discovery + per-area files ──
+// ── 9.1-13 Task 3: FI-11 index restructure — thin discovery + per-area files ──
 
-describe('index restructure (49.1-13 task 3, FI-11)', () => {
+describe('index restructure (9.1-13 task 3, FI-11)', () => {
   /** A 200-note corpus across three areas with fat descriptions. */
   function bigCorpus(): { dir: string; tags: string } {
     const dir = mkdtempSync(join(tmpdir(), 'sma-gen-big-'))

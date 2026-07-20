@@ -1,8 +1,8 @@
 /**
- * Tests for scripts/sma/lib/vendor-ledger.mjs (49.4-01 — the standing
+ * Tests for scripts/sma/lib/vendor-ledger.mjs (9.4-01 — the standing
  * Anthropic-update triage ledger linter).
  *
- * The load-bearing behaviors (plan 49.4-01 Task 1):
+ * The load-bearing behaviors (plan 9.4-01 Task 1):
  *   Test 1 — parseLedger (tolerant reader): a missing file returns
  *            { rows: [], errors: [] } + a warning, never throws; a corrupt
  *            table line lands in errors while valid rows still parse.
@@ -40,7 +40,7 @@ function parseText(text) {
   return parseLedger({ ledgerPath: 'FIXTURE', readFile: () => text })
 }
 
-const OK_ROW = ['2026-07-10', 'S1 multi-agent', 'hub-and-spoke, 20 agents', 'api', 'IRRELEVANT', 'none', '49.4 research']
+const OK_ROW = ['2026-07-10', 'S1 multi-agent', 'hub-and-spoke, 20 agents', 'api', 'IRRELEVANT', 'none', '9.4 research']
 
 describe('vendor-ledger — LEDGER_VERDICTS', () => {
   it('is the frozen §3.4 vocabulary, byte-exact', () => {
@@ -76,7 +76,7 @@ describe('vendor-ledger — Test 1: tolerant parse', () => {
       '|---|---|---|---|---|---|---|',
       `| ${OK_ROW.join(' | ')} |`,
       '| 2026-07-10 | too | few | cells |', // 4 cells — corrupt
-      `| 2026-07-11 | S2 cookbook | plan-big | api | ABSORB | none | 49.4 research |`,
+      `| 2026-07-11 | S2 cookbook | plan-big | api | ABSORB | none | 9.4 research |`,
       '',
     ].join('\n')
     const res = parseText(text)
@@ -102,7 +102,7 @@ describe('vendor-ledger — Test 2: row shape', () => {
     expect(row.runtime).toBe('api')
     expect(row.verdict).toBe('IRRELEVANT')
     expect(row.disposition).toBe('none')
-    expect(row.triagedBy).toBe('49.4 research')
+    expect(row.triagedBy).toBe('9.4 research')
   })
 
   it('the header + separator rows are not parsed as data', () => {

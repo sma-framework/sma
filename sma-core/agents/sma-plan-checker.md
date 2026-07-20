@@ -1,7 +1,7 @@
 ---
 name: sma-plan-checker
 description: Verifies plans will achieve phase goal before execution. Goal-backward analysis of plan quality. Spawned by /sma-plan-phase orchestrator.
-# tool-scope (49.1-23, B17): fully read-only, config-enforced (NOT prompt-requested).
+# tool-scope (9.1-23, B17): fully read-only, config-enforced (NOT prompt-requested).
 # The plan-checker only reads plans + the codebase and returns a verdict — it writes
 # NOTHING (the orchestrator persists any output). All write tools are omitted from the
 # allowlist AND explicitly denied. Bash is for read-only inspection commands only.

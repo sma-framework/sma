@@ -1,6 +1,6 @@
 /**
  * Tests for scripts/sma/lib/manifest.mjs + the `sma manifest` CLI + the
- * sma-manifest CI workflow (Phase 49.3 Plan 08 — D-49.3-11, D-49.3-02).
+ * sma-manifest CI workflow (Phase 9.3 Plan 08 — D-9.3-11, D-9.3-02).
  *
  * The PR EVIDENCE PASSPORT: a deterministic, reader-only assembler over the
  * Track A trust-spine outputs. It computes ZERO new verdicts — every number is
@@ -52,11 +52,11 @@ function writeFixture() {
   mkdirSync(blindDir, { recursive: true })
 
   // Plan A — 3 predictions (hit/miss/unscored), 2 receipts (verified/divergent), a blind file.
-  const planA = join(plansDir, '49.3-AA-PLAN.md')
+  const planA = join(plansDir, '9.3-AA-PLAN.md')
   writeFileSync(
     planA,
     `---
-phase: 49.3-test
+phase: 9.3-test
 plan: AA
 predictions:
   - id: P-HIT
@@ -88,7 +88,7 @@ body
 `,
   )
   writeFileSync(
-    join(plansDir, '49.3-AA-SUMMARY.md'),
+    join(plansDir, '9.3-AA-SUMMARY.md'),
     `---
 receipts:
   - id: R-VER
@@ -104,8 +104,8 @@ body
 `,
   )
   // Plan B — no predictions, no summary, no blind file (a not-run blind entry).
-  const planB = join(plansDir, '49.3-BB-PLAN.md')
-  writeFileSync(planB, `---\nphase: 49.3-test\nplan: BB\n---\nbody\n`)
+  const planB = join(plansDir, '9.3-BB-PLAN.md')
+  writeFileSync(planB, `---\nphase: 9.3-test\nplan: BB\n---\nbody\n`)
 
   // Calibration ledger (real JSONL files per domain).
   writeFileSync(
@@ -125,18 +125,18 @@ body
   )
   writeFileSync(
     join(calibrationDir, 'sma.verification.jsonl'),
-    JSON.stringify({ kind: 'divergence', verdict: 'divergence', id: 'P-HIT', planId: '49.3-AA', plan: '49.3-AA', domain: 'sma.verification', at: '2026-07-09T00:00:00.000Z', scoredAt: '2026-07-09T00:00:00.000Z' }) + '\n',
+    JSON.stringify({ kind: 'divergence', verdict: 'divergence', id: 'P-HIT', planId: '9.3-AA', plan: '9.3-AA', domain: 'sma.verification', at: '2026-07-09T00:00:00.000Z', scoredAt: '2026-07-09T00:00:00.000Z' }) + '\n',
   )
   // Frozen blind verdicts for plan A only.
   writeFileSync(
-    join(blindDir, '49.3-AA.json'),
-    JSON.stringify({ planId: '49.3-AA', frozenAt: NOW, verdicts: [{ id: 'x', verdict: 'pass' }, { id: 'y', verdict: 'fail' }] }),
+    join(blindDir, '9.3-AA.json'),
+    JSON.stringify({ planId: '9.3-AA', frozenAt: NOW, verdicts: [{ id: 'x', verdict: 'pass' }, { id: 'y', verdict: 'fail' }] }),
   )
 
   const dirs = { calibrationDir, blindDir }
   const plans = [
-    { planId: '49.3-AA', path: planA, files_modified: ['../sma/lib/manifest.mjs'], predictionDomains: ['sma.demoA', 'sma.demoB', 'sma.demoC'] },
-    { planId: '49.3-BB', path: planB, files_modified: ['x/y.ts'], predictionDomains: [] },
+    { planId: '9.3-AA', path: planA, files_modified: ['../sma/lib/manifest.mjs'], predictionDomains: ['sma.demoA', 'sma.demoB', 'sma.demoC'] },
+    { planId: '9.3-BB', path: planB, files_modified: ['x/y.ts'], predictionDomains: [] },
   ]
   const spendBook = {
     byModel: { 'claude-opus': { usd: 3, events: 2 }, 'claude-sonnet': { usd: 1, events: 5 } },
@@ -209,8 +209,8 @@ describe('manifest.mjs — the reader-only PR evidence passport', () => {
     expect(rdiv.verdict).toBe('divergent')
     expect(rdiv.hashMatch).toBe(false)
     // 3. blind verdict counts + divergence count.
-    const blindA = m.blind.plans.find((b: any) => b.plan === '49.3-AA')
-    const blindB = m.blind.plans.find((b: any) => b.plan === '49.3-BB')
+    const blindA = m.blind.plans.find((b: any) => b.plan === '9.3-AA')
+    const blindB = m.blind.plans.find((b: any) => b.plan === '9.3-BB')
     expect(blindA.counts).toEqual({ pass: 1, fail: 1 })
     expect(blindB.status).toBe('not-run')
     expect(m.blind.divergences).toBe(1)
@@ -230,13 +230,13 @@ describe('manifest.mjs — the reader-only PR evidence passport', () => {
   it('Test 4 (honest empty): missing inputs render absent/unscored/not-run; nothing throws', () => {
     const plansDir = join(root, 'plans')
     mkdirSync(plansDir, { recursive: true })
-    const planA = join(plansDir, '49.3-ZZ-PLAN.md')
+    const planA = join(plansDir, '9.3-ZZ-PLAN.md')
     writeFileSync(
       planA,
-      `---\nphase: 49.3-test\nplan: ZZ\npredictions:\n  - id: P-1\n    claim: c\n    metric: m\n    check_command: node scripts/sma/cli.mjs manifest --md\n    comparator: "=="\n    threshold: 1\n    horizon: h\n    domain: sma.empty\n---\nbody\n`,
+      `---\nphase: 9.3-test\nplan: ZZ\npredictions:\n  - id: P-1\n    claim: c\n    metric: m\n    check_command: node scripts/sma/cli.mjs manifest --md\n    comparator: "=="\n    threshold: 1\n    horizon: h\n    domain: sma.empty\n---\nbody\n`,
     )
     const dirs = { calibrationDir: join(root, '.sma', 'calibration'), blindDir: join(root, '.sma', 'blind') }
-    const plans = [{ planId: '49.3-ZZ', path: planA, files_modified: [], predictionDomains: ['sma.empty'] }]
+    const plans = [{ planId: '9.3-ZZ', path: planA, files_modified: [], predictionDomains: ['sma.empty'] }]
     let m: any
     expect(() => {
       const evidence = collectEvidence({ plans, dirs })
@@ -251,18 +251,18 @@ describe('manifest.mjs — the reader-only PR evidence passport', () => {
 
   it('Test 5 (selectPlans): path-in-diff / summary-sibling / files_modified intersection', () => {
     const index = [
-      { planId: '49.3-AA', path: 'p/49.3-AA-PLAN.md', files_modified: ['src/a.ts'], predictionDomains: [] },
-      { planId: '49.3-BB', path: 'p/49.3-BB-PLAN.md', files_modified: ['src/b.ts'], predictionDomains: [] },
-      { planId: '49.3-CC', path: 'p/49.3-CC-PLAN.md', files_modified: ['src/deep/**'], predictionDomains: [] },
+      { planId: '9.3-AA', path: 'p/9.3-AA-PLAN.md', files_modified: ['src/a.ts'], predictionDomains: [] },
+      { planId: '9.3-BB', path: 'p/9.3-BB-PLAN.md', files_modified: ['src/b.ts'], predictionDomains: [] },
+      { planId: '9.3-CC', path: 'p/9.3-CC-PLAN.md', files_modified: ['src/deep/**'], predictionDomains: [] },
     ]
     // plan-path in diff
-    expect(selectPlans({ changedFiles: ['p/49.3-AA-PLAN.md'], planIndex: index }).map((p) => p.planId)).toEqual(['49.3-AA'])
+    expect(selectPlans({ changedFiles: ['p/9.3-AA-PLAN.md'], planIndex: index }).map((p) => p.planId)).toEqual(['9.3-AA'])
     // summary sibling in diff
-    expect(selectPlans({ changedFiles: ['p/49.3-BB-SUMMARY.md'], planIndex: index }).map((p) => p.planId)).toEqual(['49.3-BB'])
+    expect(selectPlans({ changedFiles: ['p/9.3-BB-SUMMARY.md'], planIndex: index }).map((p) => p.planId)).toEqual(['9.3-BB'])
     // files_modified intersection (exact + glob)
-    expect(selectPlans({ changedFiles: ['src/a.ts', 'src/deep/x/y.ts'], planIndex: index }).map((p) => p.planId)).toEqual(['49.3-AA', '49.3-CC'])
+    expect(selectPlans({ changedFiles: ['src/a.ts', 'src/deep/x/y.ts'], planIndex: index }).map((p) => p.planId)).toEqual(['9.3-AA', '9.3-CC'])
     // dedup + deterministic order
-    expect(selectPlans({ changedFiles: ['p/49.3-AA-PLAN.md', 'src/a.ts'], planIndex: index }).map((p) => p.planId)).toEqual(['49.3-AA'])
+    expect(selectPlans({ changedFiles: ['p/9.3-AA-PLAN.md', 'src/a.ts'], planIndex: index }).map((p) => p.planId)).toEqual(['9.3-AA'])
     // empty diff -> empty, never a throw
     expect(selectPlans({ changedFiles: [], planIndex: index })).toEqual([])
   })

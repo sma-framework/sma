@@ -220,7 +220,7 @@ describe('memory-lint supersession / regen / duplication (49-08 task 2)', () => 
     expect(dup.every((f) => f.tier === 'warn')).toBe(true)
   })
 
-  it('Test 12 (bug-lesson form, D-49-15): missing Why / How to apply → CRITICAL; well-formed passes', () => {
+  it('Test 12 (bug-lesson form, D-9-15): missing Why / How to apply → CRITICAL; well-formed passes', () => {
     const res = lintCase('buglesson')
     const bug = findingsOf(res, 'MEM-BUGLESSON')
     expect(bug.length).toBeGreaterThanOrEqual(1)
@@ -230,7 +230,7 @@ describe('memory-lint supersession / regen / duplication (49-08 task 2)', () => 
     expect(bug.some((f) => f.file.includes('feedback_good_lesson.md'))).toBe(false)
   })
 
-  it('Test 13 (wikilinks, D-49-15): [[link]] to a non-existent note → CRITICAL; valid links pass', () => {
+  it('Test 13 (wikilinks, D-9-15): [[link]] to a non-existent note → CRITICAL; valid links pass', () => {
     const res = lintCase('wikilink')
     const wl = findingsOf(res, 'MEM-WIKILINK')
     expect(wl.length).toBeGreaterThanOrEqual(1)
@@ -241,7 +241,7 @@ describe('memory-lint supersession / regen / duplication (49-08 task 2)', () => 
   })
 })
 
-// ── 49.1-09 Task 1: PRED lint family (pre-registration integrity) + predicted_from ──
+// ── 9.1-09 Task 1: PRED lint family (pre-registration integrity) + predicted_from ──
 
 /** Read-only git runner for the temp-repo fixtures (same shape the CLI injects). */
 const execGit = (args: string[], opts: { cwd?: string } = {}): string =>
@@ -280,21 +280,21 @@ function runPredLint(plansDir: string, extra: Record<string, unknown> = {}) {
   })
 }
 
-describe('PRED lint family (49.1-09 task 1)', () => {
+describe('PRED lint family (9.1-09 task 1)', () => {
   it('Test 1 (PRED-NOMETRIC): predictions entry missing check_command → CRITICAL naming the field', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-pred-nometric-'))
     try {
       const entry =
         '  - id: P1\n    claim: "x"\n    metric: exit_code\n    comparator: "=="\n' +
         '    threshold: 0\n    horizon: "h"\n    domain: tech.test\n'
-      writeFileSync(join(tmp, '49.1-09-PLAN.md'), planWithPredictions(entry))
+      writeFileSync(join(tmp, '9.1-09-PLAN.md'), planWithPredictions(entry))
       const res = runPredLint(tmp)
       const f = findingsOf(res, 'PRED-NOMETRIC')
       expect(f.length).toBeGreaterThanOrEqual(1)
       expect(f.every((x) => x.tier === 'critical')).toBe(true)
       expect(f.some((x) => x.message.includes('check_command'))).toBe(true)
       // A plan whose entries are complete raises no PRED-NOMETRIC finding.
-      writeFileSync(join(tmp, '49.1-09-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, '9.1-09-PLAN.md'), planWithPredictions(GOOD_ENTRY))
       expect(findingsOf(runPredLint(tmp), 'PRED-NOMETRIC')).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
@@ -305,8 +305,8 @@ describe('PRED lint family (49.1-09 task 1)', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-pred-postedit-'))
     try {
       execGit(['init', '-q'], { cwd: tmp })
-      const edited = join(tmp, '49.1-01-PLAN.md')
-      const untouched = join(tmp, '49.1-02-PLAN.md')
+      const edited = join(tmp, '9.1-01-PLAN.md')
+      const untouched = join(tmp, '9.1-02-PLAN.md')
       writeFileSync(edited, planWithPredictions(GOOD_ENTRY))
       writeFileSync(untouched, planWithPredictions(GOOD_ENTRY))
       gitCommit(tmp, 'first commit locks the predictions')
@@ -316,9 +316,9 @@ describe('PRED lint family (49.1-09 task 1)', () => {
       writeFileSync(untouched, planWithPredictions(GOOD_ENTRY).replace('plan: 01', 'plan: 02'))
       const res = runPredLint(tmp, { execGit })
       const f = findingsOf(res, 'PRED-POSTEDIT')
-      expect(f.some((x) => x.tier === 'critical' && x.file.includes('49.1-01-PLAN.md'))).toBe(true)
+      expect(f.some((x) => x.tier === 'critical' && x.file.includes('9.1-01-PLAN.md'))).toBe(true)
       // The no-false-positive case (Pitfall 3): unrelated edit is NOT flagged.
-      expect(f.some((x) => x.file.includes('49.1-02-PLAN.md'))).toBe(false)
+      expect(f.some((x) => x.file.includes('9.1-02-PLAN.md'))).toBe(false)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }
@@ -327,10 +327,10 @@ describe('PRED lint family (49.1-09 task 1)', () => {
   it('Test 3 (PRED-DUPDOD): check_command duplicating a DoD dimension check → WARN', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-pred-dupdod-'))
     try {
-      writeFileSync(join(tmp, '49.1-09-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, '9.1-09-PLAN.md'), planWithPredictions(GOOD_ENTRY))
       // Whitespace differs → the compare must normalize before matching.
       writeFileSync(
-        join(tmp, '49.1-DOD.json'),
+        join(tmp, '9.1-DOD.json'),
         JSON.stringify({
           schemaVersion: 1,
           dimensions: [
@@ -356,20 +356,20 @@ describe('PRED lint family (49.1-09 task 1)', () => {
         tags: ['workflow'],
         'use-when': 'when reviewing the missed prediction',
         importance: 5,
-        predicted_from: '49.1-08-P1',
+        predicted_from: '9.1-08-P1',
       },
       body: 'body text\n',
     }
     const text = serializeNote(note)
-    expect(text).toContain('predicted_from: 49.1-08-P1')
+    expect(text).toContain('predicted_from: 9.1-08-P1')
     const round = parseNote(text, { file: 'draft.md' })
-    expect(round.frontmatter?.predicted_from).toBe('49.1-08-P1')
+    expect(round.frontmatter?.predicted_from).toBe('9.1-08-P1')
     // Byte-identical second serialization = the normalized emit path is stable.
     expect(serializeNote({ frontmatter: round.frontmatter!, body: round.body })).toBe(text)
   })
 })
 
-// ── 49.2-08 Task 2: CONS lint family (the consequences block is law) ─────────
+// ── 9.2-08 Task 2: CONS lint family (the consequences block is law) ─────────
 
 const CONS_ENTRY =
   '  - id: CONS-1\n' +
@@ -385,19 +385,19 @@ function planWith({ predictions, consequences }: { predictions?: string; consequ
   return fm + '---\n\n<objective>x</objective>\n'
 }
 
-describe('CONS lint family (49.2-08 task 2)', () => {
+describe('CONS lint family (9.2-08 task 2)', () => {
   it('Test 1 (CONS-SCHEMA): entry missing `until` → CRITICAL naming the field; valid → silent', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-schema-'))
     try {
       const missingUntil = '  - id: CONS-1\n    trigger: "t"\n    blocks: "b"\n'
-      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ consequences: missingUntil }))
+      writeFileSync(join(tmp, '9.2-08-PLAN.md'), planWith({ consequences: missingUntil }))
       const res = runPredLint(tmp)
       const f = findingsOf(res, 'CONS-SCHEMA')
       expect(f.length).toBeGreaterThanOrEqual(1)
       expect(f.every((x) => x.tier === 'critical')).toBe(true)
       expect(f.some((x) => x.message.includes('until'))).toBe(true)
       // A fully valid block raises nothing.
-      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ consequences: CONS_ENTRY }))
+      writeFileSync(join(tmp, '9.2-08-PLAN.md'), planWith({ consequences: CONS_ENTRY }))
       expect(findingsOf(runPredLint(tmp), 'CONS-SCHEMA')).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
@@ -408,14 +408,14 @@ describe('CONS lint family (49.2-08 task 2)', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-postedit-'))
     try {
       execGit(['init', '-q'], { cwd: tmp })
-      const edited = join(tmp, '49.2-08-PLAN.md')
+      const edited = join(tmp, '9.2-08-PLAN.md')
       writeFileSync(edited, planWith({ consequences: CONS_ENTRY }))
       gitCommit(tmp, 'first commit locks the consequences')
       // Renegotiate the law AFTER the first commit.
       writeFileSync(edited, planWith({ consequences: CONS_ENTRY.replace('founder disposition recorded', 'anyone can clear it') }))
       const res = runPredLint(tmp, { execGit })
       const f = findingsOf(res, 'CONS-POSTEDIT')
-      expect(f.some((x) => x.tier === 'critical' && x.file.includes('49.2-08-PLAN.md'))).toBe(true)
+      expect(f.some((x) => x.tier === 'critical' && x.file.includes('9.2-08-PLAN.md'))).toBe(true)
 
       // No execGit injected → single info-degrade finding (PRED-POSTEDIT parity).
       const degraded = runPredLint(tmp)
@@ -431,7 +431,7 @@ describe('CONS lint family (49.2-08 task 2)', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-postedit2-'))
     try {
       execGit(['init', '-q'], { cwd: tmp })
-      const p = join(tmp, '49.2-08-PLAN.md')
+      const p = join(tmp, '9.2-08-PLAN.md')
       writeFileSync(p, planWith({ consequences: CONS_ENTRY }))
       gitCommit(tmp, 'lock the law')
       // Only the `plan:` line changes; the consequences block is byte-unchanged.
@@ -447,17 +447,17 @@ describe('CONS lint family (49.2-08 task 2)', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-noblock-'))
     try {
       // predictions only → warn.
-      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ predictions: GOOD_ENTRY }))
+      writeFileSync(join(tmp, '9.2-08-PLAN.md'), planWith({ predictions: GOOD_ENTRY }))
       const warnRes = findingsOf(runPredLint(tmp), 'CONS-NOBLOCK')
       expect(warnRes.length).toBeGreaterThanOrEqual(1)
       expect(warnRes.every((x) => x.tier === 'warn')).toBe(true)
 
       // both → silent.
-      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
+      writeFileSync(join(tmp, '9.2-08-PLAN.md'), planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
       expect(findingsOf(runPredLint(tmp), 'CONS-NOBLOCK')).toHaveLength(0)
 
       // neither → silent (V2 corpus stays green, fail-open law).
-      writeFileSync(join(tmp, '49.2-08-PLAN.md'), planWith({}))
+      writeFileSync(join(tmp, '9.2-08-PLAN.md'), planWith({}))
       expect(findingsOf(runPredLint(tmp), 'CONS-NOBLOCK')).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
@@ -465,7 +465,7 @@ describe('CONS lint family (49.2-08 task 2)', () => {
   })
 })
 
-// ── 49.2-03 Task 3: RECEIPT-PROSE lint (a machine «done» needs a receipt) ─────
+// ── 9.2-03 Task 3: RECEIPT-PROSE lint (a machine «done» needs a receipt) ─────
 
 const HEX64 = 'a'.repeat(64)
 
@@ -478,12 +478,12 @@ function summaryWith({ coverage, receipts }: { coverage?: string; receipts?: str
   return fm + '---\n\n# summary body\n'
 }
 
-describe('RECEIPT-PROSE lint (49.2-03 task 3)', () => {
-  it('Case 1: a 49.2 SUMMARY with a machine coverage item and no receipts → CRITICAL', () => {
+describe('RECEIPT-PROSE lint (9.2-03 task 3)', () => {
+  it('Case 1: a 9.2 SUMMARY with a machine coverage item and no receipts → CRITICAL', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-1-'))
     try {
       const coverage = '  - id: cov-1\n    description: a machine claim\n    human_judgment: false\n'
-      writeFileSync(join(tmp, '49.2-03-SUMMARY.md'), summaryWith({ coverage }))
+      writeFileSync(join(tmp, '9.2-03-SUMMARY.md'), summaryWith({ coverage }))
       const f = findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')
       expect(f.length).toBeGreaterThanOrEqual(1)
       expect(f.every((x) => x.tier === 'critical')).toBe(true)
@@ -501,18 +501,18 @@ describe('RECEIPT-PROSE lint (49.2-03 task 3)', () => {
         '  - id: R1\n    assertion: the chain verifies\n' +
         '    check_command: pnpm sma chain-verify --count breaks\n' +
         `    expected_sha256: ${HEX64}\n    coverage_id: cov-1\n`
-      writeFileSync(join(tmp, '49.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
+      writeFileSync(join(tmp, '9.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
       expect(findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }
   })
 
-  it('Case 3: a 49.1 (pre-cutover) SUMMARY with an uncovered machine item → NO finding', () => {
+  it('Case 3: a 9.1 (pre-cutover) SUMMARY with an uncovered machine item → NO finding', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-3-'))
     try {
       const coverage = '  - id: cov-1\n    human_judgment: false\n'
-      writeFileSync(join(tmp, '49.1-09-SUMMARY.md'), summaryWith({ coverage }))
+      writeFileSync(join(tmp, '9.1-09-SUMMARY.md'), summaryWith({ coverage }))
       expect(findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
@@ -527,7 +527,7 @@ describe('RECEIPT-PROSE lint (49.2-03 task 3)', () => {
         '  - id: R1\n    assertion: evades the boundary\n' +
         '    check_command: git push --force origin main\n' +
         `    expected_sha256: ${HEX64}\n    coverage_id: cov-1\n`
-      writeFileSync(join(tmp, '49.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
+      writeFileSync(join(tmp, '9.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
       const f = findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')
       expect(f.length).toBeGreaterThanOrEqual(1)
       expect(f.every((x) => x.tier === 'critical')).toBe(true)
@@ -537,12 +537,12 @@ describe('RECEIPT-PROSE lint (49.2-03 task 3)', () => {
     }
   })
 
-  it('Case 5 (regime gate): a non-SMA (49.2+) summary with an uncovered machine item → NO finding', () => {
+  it('Case 5 (regime gate): a non-SMA (9.2+) summary with an uncovered machine item → NO finding', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-5-'))
     try {
-      // A GSD medical-phase summary (numerically >= 49.2 but subsystem is not sma…):
+      // A GSD medical-phase summary (numerically >= 9.2 but subsystem is not sma…):
       // the receipts law is SMA-only; the shared dogfood phase-number namespace must
-      // never retro-fail unrelated medical phases (49.2-03 Rule-3 deviation).
+      // never retro-fail unrelated medical phases (9.2-03 Rule-3 deviation).
       const fm =
         '---\nphase: 53\nplan: 05\nsubsystem: operator-tools, remi-bridge\n' +
         'coverage:\n  - id: T1\n    human_judgment: false\n---\n\n# summary body\n'
@@ -554,7 +554,7 @@ describe('RECEIPT-PROSE lint (49.2-03 task 3)', () => {
   })
 })
 
-// ── 49.1-13 Task 1: FI-9/FI-11 size lints (budgets are law) ──────────────────
+// ── 9.1-13 Task 1: FI-9/FI-11 size lints (budgets are law) ──────────────────
 
 import { CORE_BUDGET, NOTE_BUDGET, ALWAYS_LOAD_BUDGET, STATE_BUDGET } from '../lib/constants.mjs'
 
@@ -606,7 +606,7 @@ function lintSized(setup: (dir: string) => void, extra: Record<string, unknown> 
   }
 }
 
-describe('size lints — WARN at 80%, critical at 100% (49.1-13 task 1)', () => {
+describe('size lints — WARN at 80%, critical at 100% (9.1-13 task 1)', () => {
   it('Test 1 (MEM-CORESIZE): warn at ~5.1 KB CORE (83% of budget), critical at ~6.5 KB', () => {
     // 5.1 KB CORE — inside [80%, 100%) of CORE_BUDGET=6144 → WARN.
     const warned = lintSized((dir) => {
@@ -710,9 +710,9 @@ describe('size lints — WARN at 80%, critical at 100% (49.1-13 task 1)', () => 
   })
 })
 
-// ── 49.1-12 Task 2: bi-temporal fields + MEM-CONTRADICT (B5) ─────────────────
+// ── 9.1-12 Task 2: bi-temporal fields + MEM-CONTRADICT (B5) ─────────────────
 
-describe('bi-temporal fields + MEM-CONTRADICT (49.1-12 task 2)', () => {
+describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
   it('Test 1 (bi-temporal): valid_from/valid_until round-trip through parse+serialize', () => {
     const note = {
       frontmatter: {
@@ -780,7 +780,7 @@ describe('bi-temporal fields + MEM-CONTRADICT (49.1-12 task 2)', () => {
   })
 })
 
-// ── 49.1-14 Task 2: MEM-SECRET — screen secrets at the corpus door (T-49.1-27) ─
+// ── 9.1-14 Task 2: MEM-SECRET — screen secrets at the corpus door (T-9.1-27) ─
 
 /**
  * Run lint over a single schema-valid note whose BODY is `body`. The note is
@@ -813,7 +813,7 @@ function lintBody(body: string) {
   }
 }
 
-describe('MEM-SECRET — corpus-door secret screen (49.1-14 task 2)', () => {
+describe('MEM-SECRET — corpus-door secret screen (9.1-14 task 2)', () => {
   it('Test 1 (secret shapes): AWS key id, sk- token, and a base64/opaque run each → MEM-SECRET critical', () => {
     // AWS-style access key id.
     const aws = findingsOf(lintBody('deploy key AKIAIOSFODNN7EXAMPLE was rotated\n'), 'MEM-SECRET')

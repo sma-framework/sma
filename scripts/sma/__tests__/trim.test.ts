@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/trim.mjs (Phase 49.1 Plan 13, Task 2).
+ * Tests for scripts/sma/lib/trim.mjs (Phase 9.1 Plan 13, Task 2).
  *
  * FI-9 demotion-only trimmer — overflow moves DOWN a layer, nothing is ever
  * deleted ("система никогда ничего не забывает", founder lock):
@@ -14,7 +14,7 @@
  *   - Test 4: trimState on an over-budget STATE fixture moves the overflow
  *     section to STATE-ARCHIVE.md verbatim (byte-level containment assert).
  *   - Test 5: a note with recent citations is NEVER selected while an uncited
- *     one exists (49.1-11 usage data decides WHAT demotes).
+ *     one exists (9.1-11 usage data decides WHAT demotes).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -223,7 +223,7 @@ describe('trim.mjs — trimState (STATE.md overflow → STATE-ARCHIVE.md)', () =
       '',
       '## Current Position',
       '',
-      'Phase 49.1 — plan 13 executing.',
+      'Phase 9.1 — plan 13 executing.',
       '',
       '## Open Blockers',
       '',

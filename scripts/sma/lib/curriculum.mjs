@@ -1,5 +1,5 @@
 /**
- * curriculum.mjs — the weekly miss-curriculum (49.3-06, D-49.3-16).
+ * curriculum.mjs — the weekly miss-curriculum (9.3-06, D-9.3-16).
  *
  * Turns error clusters (calibration misses + journal incidents + ignored-broke
  * fires) into two engineer-facing artifacts, MECHANICALLY — zero LLM, zero hidden
@@ -25,7 +25,7 @@ import { appendFileSync, readFileSync, readdirSync, statSync, mkdirSync } from '
 import { join } from 'node:path'
 
 import { atomicWriteRaw } from './fs-atomics.mjs'
-// The ONE allowlist boundary (49.2-10 lock): isSafeCommand = charset + pattern guard;
+// The ONE allowlist boundary (9.2-10 lock): isSafeCommand = charset + pattern guard;
 // SAFE_COMMAND_PATTERNS is the anchored shape a template's check_command must match to
 // be safe for the planner to run unedited. Both IMPORTED, never re-declared here.
 import { isSafeCommand, SAFE_COMMAND_PATTERNS } from './predict.mjs'

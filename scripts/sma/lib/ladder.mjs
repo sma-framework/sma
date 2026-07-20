@@ -1,5 +1,5 @@
 /**
- * ladder.mjs — the rule-maturation ladder (49.3-06, D-49.3-12).
+ * ladder.mjs — the rule-maturation ladder (9.3-06, D-9.3-12).
  *
  * A rule's tier (note -> warn -> soft-deny -> deterministic auto-fix, plus the
  * off-ladder terminal state 'retired') rises AND falls ONLY on measured journal
@@ -16,7 +16,7 @@
  * ignored-broke; demotion keys on measured zero-benefit. A rule that fires 20
  * times and is heeded is HEALTHY — high fire count alone never moves a tier.
  *
- * SILENCE-IMMUNITY (T-49.3-63, D-49.2-14): retirement DEFERS to the 49.2-10 STPA
+ * SILENCE-IMMUNITY (T-9.3-63, D-9.2-14): retirement DEFERS to the 9.2-10 STPA
  * birth-fixture check via an injected checkFixture(ruleId) -> {fixtureTrips,
  * compensated}; a rule can only retire when its fixture no longer trips OR a
  * compensating control is cited. Absent/unknown checker -> retire REFUSED
@@ -24,7 +24,7 @@
  * re-arms it one rung immediately (fail-open overlay bump) AND emits the matching
  * re-arm proposal so the diff still lands for review.
  *
- * AUTO-FIX BOUNDARY (T-49.3-60): a registered fix command must pass predict.mjs's
+ * AUTO-FIX BOUNDARY (T-9.3-60): a registered fix command must pass predict.mjs's
  * isSafeCommand at registration AND again at run — the ONE allowlist, imported,
  * never re-implemented. Promotion to auto-fix requires >= 3 recorded green applies.
  *
@@ -258,7 +258,7 @@ function evidenceRow(window, s) {
  *   {ruleId, kind, from, to, reason, evidence, refused:false}          — a tier move
  *   {ruleId, kind, from:'note'|... , to:'retired', refused:true, ...}  — a refused retire
  *   {kind:'gate-candidate', ruleId, evidence, reason}                  — a reflex that
- *        earned soft-deny evidence (reflexes NEVER deny — D-49.1-12; a human authors
+ *        earned soft-deny evidence (reflexes NEVER deny — D-9.1-12; a human authors
  *        the gate from the brief instead).
  *
  * @param {{ladder:{rules:object[]}, stats:Object<string,object>, checkFixture?:Function, thresholds?:object}} args
@@ -279,7 +279,7 @@ export function proposeTierChanges({ ladder = { rules: [] }, stats = {}, checkFi
     const zeroBenefit = fires >= t.demoteFires && (s.spanDays ?? 0) >= t.demoteSpanDays && (s.heeded ?? 0) === 0 && (s.ignoredBroke ?? 0) === 0
 
     // (1) incident RE-ARM — an ignored-broke on a silenced rule bumps one rung up,
-    // immediately and as a reviewable diff (never silent, T-49.3-63 / Test 6).
+    // immediately and as a reviewable diff (never silent, T-9.3-63 / Test 6).
     if ((tier === 'note' || tier === 'retired') && (s.ignoredBroke ?? 0) >= 1) {
       proposals.push({ ruleId, kind, from: tier, to: bumpUp(tier), reason: 'ignored-broke re-arm', refused: false, evidence: ev })
       continue
@@ -311,7 +311,7 @@ export function proposeTierChanges({ ladder = { rules: [] }, stats = {}, checkFi
       continue
     }
 
-    // (5) demote note -> retired ONLY when the birth fixture signs off (D-49.2-14).
+    // (5) demote note -> retired ONLY when the birth fixture signs off (D-9.2-14).
     if (tier === 'note' && zeroBenefit) {
       let fx = null
       try {

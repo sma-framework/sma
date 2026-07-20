@@ -1,13 +1,13 @@
-# HARD-RULE checkability inventory (D-49.1-12)
+# HARD-RULE checkability inventory (D-9.1-12)
 
-This is the planner-resolved "точная инвентаризация" the D-49.1-12 decision defers to
+This is the planner-resolved "точная инвентаризация" the D-9.1-12 decision defers to
 planning: a structured pass over this checkout's `CLAUDE.md` HARD-RULE list, splitting
 each rule into **deterministically checkable** (ships now as a PreToolUse gate) vs
 **needs human judgment** (stays prose / skill-level). It is the paper contract that
 `scripts/sma/lib/gates.mjs` implements.
 
-**Posture (D-49.1-12, non-negotiable in this wave):** every gate below is **advisory
-WARN only** — `permissionDecision` is ALWAYS `allow`. The soft-deny tier is 49.1-17's
+**Posture (D-9.1-12, non-negotiable in this wave):** every gate below is **advisory
+WARN only** — `permissionDecision` is ALWAYS `allow`. The soft-deny tier is 9.1-17's
 separately-gated mechanism, never introduced here. `gates-check` is HOOK_FACING and
 fail-open: a gate bug can never wedge a session (scorecard metric 7).
 
@@ -41,9 +41,9 @@ the reflex fatigue store under a `gate:` key prefix (a gate fires once per sessi
 | Compliance-defer / regulated-data handling | "Is this field/route regulated data?" is semantic; a security-regression guard owns its concrete sub-checks (never-log, encryption-at-rest, fail-closed routing) | security-regression-guard skill |
 | Versioned-release changelog quality | Whether a changelog is "plain enough for the founder" is a judgment; the mechanical `V1.N` tag steps live in the ship ritual | `/sma-ship` workflow |
 
-## Evidence loop (D-49.1-13 promotion)
+## Evidence loop (D-9.1-13 promotion)
 
 Every gate fire is journaled (`type:'gate'`), so `gates-report` can surface per-gate fire
-counts and false-positive acks. That fire+ack ledger is the promotion evidence D-49.1-13
-needs before any gate graduates from WARN to the soft-deny tier in 49.1-17. A gate with
+counts and false-positive acks. That fire+ack ledger is the promotion evidence D-9.1-13
+needs before any gate graduates from WARN to the soft-deny tier in 9.1-17. A gate with
 persistent false positives is fixed or kept WARN; it is never promoted on volume alone.

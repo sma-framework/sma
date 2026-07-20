@@ -1,6 +1,6 @@
 /**
  * spend.mjs — the deterministic spend BOOK, the rolling window budget, and the
- * hot-path spend-check decision core (49.2-09, D-49.2-13).
+ * hot-path spend-check decision core (9.2-09, D-9.2-13).
  *
  * ═══════════════════════════ THE BOOK ═════════════════════════════════════════
  *
@@ -19,12 +19,12 @@
  * (same size+mtime) is not re-read; an appended file is parsed ONLY from its cached
  * byte offset; a SHRUNK or replaced file invalidates its entry and reparses from
  * zero (fail-open — never wrong-by-cache). This is what keeps a warm spend-check
- * inside `sma pre`'s 300 ms SLO (P49.2-09-2 / key_links).
+ * inside `sma pre`'s 300 ms SLO (P9.2-09-2 / key_links).
  *
  * ═══════════════════════════ THE WINDOW BUDGET ════════════════════════════════
  *
  * .sma/spend/budget.json = {windowHours, capUsd, warnAt:[0.7,0.9], by, at}. The
- * 70/90 warn levels are LOCKED (D-49.2-13). capUsd defaults null → report-only: a
+ * 70/90 warn levels are LOCKED (D-9.2-13). capUsd defaults null → report-only: a
  * soft-deny must NEVER fire off an assumed number (Claude's-discretion default).
  *
  * Node built-ins only; every fs touch is behind try/catch and dependency-injectable.
@@ -46,7 +46,7 @@ import {
 /** The current (latest) adapter version — stamped into every book. */
 const CURRENT_ADAPTER_VERSION = ADAPTER_VERSIONS[ADAPTER_VERSIONS.length - 1].version
 
-/** The LOCKED safe-default budget (D-49.2-13). capUsd null = report-only, never deny. */
+/** The LOCKED safe-default budget (D-9.2-13). capUsd null = report-only, never deny. */
 export const DEFAULT_BUDGET = { windowHours: 5, capUsd: null, warnAt: [0.7, 0.9] }
 
 /** Round a USD amount to 1e-6 (never carry float noise into a report). */
@@ -324,7 +324,7 @@ export function windowSpend({ book, now, windowHours } = {}) {
 /**
  * readBudget({spendDir}) -> budget. Reads spendDir/budget.json; a missing OR corrupt
  * file yields the LOCKED safe default {windowHours:5, capUsd:null, warnAt:[0.7,0.9]}.
- * The 70/90 warnAt levels are always re-applied (locked, D-49.2-13) — a tampered
+ * The 70/90 warnAt levels are always re-applied (locked, D-9.2-13) — a tampered
  * warnAt in the file is ignored. capUsd null → report-only.
  * @param {{spendDir?:string}} [opts]
  * @returns {object}
@@ -372,7 +372,7 @@ export function writeBudget(budget = {}, opts = {}) {
 
 /**
  * spendStats(name, opts) -> a single finite number. The predict-score scorer parses
- * the numeric LAST line of a `--stat` run (49.1-08 contract). Every stat resolves to
+ * the numeric LAST line of a `--stat` run (9.1-08 contract). Every stat resolves to
  * ONE finite number, never NaN/Infinity.
  *
  *   parse-coverage    recognized / (recognized + unrecognized) * 100 (no drift → 100)
@@ -463,7 +463,7 @@ export function checkSpend(ctx = {}, opts = {}) {
     if (truthy(env.SMA_SPEND_DISABLE)) return out // kill-switch first
 
     const probeFn = typeof opts.probe === 'function' ? opts.probe : probeNativeSpend
-    if (probeFn({ env }).native) return out // native surface detected → silent (D-49.2-05a)
+    if (probeFn({ env }).native) return out // native surface detected → silent (D-9.2-05a)
 
     const budget = opts.budget || readBudget({ spendDir: opts.spendDir })
     const cap = budget.capUsd
@@ -515,7 +515,7 @@ export function checkSpend(ctx = {}, opts = {}) {
 
 /**
  * benchCheckP95(opts) -> number. Warm the incremental cache once, then run checkSpend
- * 20x over the warm book and return the p95 wall-clock ms. This is the P49.2-09-2
+ * 20x over the warm book and return the p95 wall-clock ms. This is the P9.2-09-2
  * instrument (a warm spend-check must ride inside sma pre's 300 ms SLO). Deterministic
  * inputs; the number is the last stdout line of `spend --stat bench-check-p95-ms`.
  * @param {{spendDir?:string, repoRoot?:string, env?:object}} [opts]

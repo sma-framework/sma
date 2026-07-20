@@ -1,6 +1,6 @@
 /**
  * airbag.mjs — the git airbag: a cheap GATE that writes a recovery point in
- * MILLISECONDS before a destructive git command runs (49.2-05, D-49.2-08).
+ * MILLISECONDS before a destructive git command runs (9.2-05, D-9.2-08).
  *
  * ═══════════════════════════════ WHY A GATE, NOT A BUNDLE ═══════════════════════
  *
@@ -10,7 +10,7 @@
  * timeout gives FALSE protection at exactly the catastrophe moment — a large tree is
  * precisely when the bundle times out and NO snapshot is taken, so the one firing
  * that most needed a recovery point gets none. The grill flagged the bundle as a
- * design trap, not an optimization (D-49.2-08). Task 1 test 7 asserts on the injected
+ * design trap, not an optimization (D-9.2-08). Task 1 test 7 asserts on the injected
  * runner spy that the archive verb ('bundle') is NEVER passed on any path.
  *
  * ═══════════════════════════════ REF LAYOUT ════════════════════════════════════
@@ -23,7 +23,7 @@
  *   refs/sma/airbag/<id>/branch-<name>    a doomed branch tip (branch-delete / rebase)
  *   refs/sma/airbag/<id>/remote           the remote-tracking ref (force-push destroys it)
  * These refs live ONLY in the local object store — they are outside default push
- * refspecs and are NEVER pushed (T-49.2-05-06). Receipts carry untracked path NAMES
+ * refspecs and are NEVER pushed (T-9.2-05-06). Receipts carry untracked path NAMES
  * only, never content. `sma airbag prune` unpins old groups so the objects GC.
  *
  * ═══════════════════════════════ POSTURE ═══════════════════════════════════════
@@ -36,11 +36,11 @@
  * degrades to WARN + an ok:false journal receipt — NEVER a deny, never a block, never
  * an exception. Hard-deny stays the security guard's alone.
  *
- * ═══════════════════════════════ BRIDGE (D-49.2-05) ════════════════════════════
+ * ═══════════════════════════════ BRIDGE (D-9.2-05) ════════════════════════════
  *
  * This is one of the three ICE bridge-features and carries the demolition clause:
  * nativeCheckpointProbe is the capability sensor (stand the stream down the day a
- * native pre-Bash-git snapshot mechanism ships), P49.2-05-C is the registered
+ * native pre-Bash-git snapshot mechanism ships), P9.2-05-C is the registered
  * self-removal prediction, and the airbag is NEVER headlined in README/positioning.
  *
  * SMA-3 escaped-verb discipline: every sensitive git verb literal is assembled via
@@ -94,7 +94,7 @@ const reRebase = new RegExp('\\b' + GIT + '\\s+' + REBASE_VERB + '\\b([^&|;]*)')
 /**
  * matchDestructive(command) -> {cmdClass, branchName?, ignoredInBlast?} | null.
  * A PURE matcher over the Bash tool command string. The command is ONLY matched —
- * no fragment of it EVER reaches our own git argv (T-49.2-05-01). Returns the first
+ * no fragment of it EVER reaches our own git argv (T-9.2-05-01). Returns the first
  * (highest-severity) destructive class, or null for a safe command.
  *
  * Classes: 'reset-hard' | 'clean' | 'force-push' | 'branch-delete' |
@@ -354,14 +354,14 @@ export function takeSnapshot(evt = {}, deps = {}) {
   return receipt
 }
 
-// ── the capability probe (demolition-clause sensor, D-49.2-05a / P49.2-05-C) ─────
+// ── the capability probe (demolition-clause sensor, D-9.2-05a / P9.2-05-C) ─────
 
 /**
  * nativeCheckpointProbe({env}) -> {native, probeVersion}. v1: today NO runtime
  * mechanism snapshots command side effects before a Bash git command (Claude Code
  * checkpoints cover file EDITS, not command side effects), so native is false unless
  * the versioned test seam SMA_NATIVE_CHECKPOINTS is truthy. When native, the airbag
- * stands down (D-49.2-05). This probe prints the P49.2-05-C scorer's numeric.
+ * stands down (D-9.2-05). This probe prints the P9.2-05-C scorer's numeric.
  * @param {{env?:object}} [opts]
  * @returns {{native:boolean, probeVersion:number}}
  */
@@ -434,7 +434,7 @@ export function checkAirbag(evt = {}, opts = {}) {
     const seen = opts.seen && typeof opts.seen === 'object' ? opts.seen : { keys: {} }
     if (!seen.keys || typeof seen.keys !== 'object') seen.keys = {}
 
-    // Probe stand-down (D-49.2-05a): a native mechanism → no snapshot, no warn, a
+    // Probe stand-down (D-9.2-05a): a native mechanism → no snapshot, no warn, a
     // single journal note once per session (reflex seen-store key prefix 'airbag:').
     const probe = nativeCheckpointProbe({ env })
     if (probe.native) {
@@ -503,7 +503,7 @@ export function checkAirbag(evt = {}, opts = {}) {
       if (truthy(env.SMA_AIRBAG_DENY)) {
         // Armed: the evidence escape REUSES gates.mjs's one-shot override token
         // (GATE-AIRBAG). Present → consumed + journaled 'gate-override', allow;
-        // absent → deny. NO new evidence machinery is built (D-49-09 provenance).
+        // absent → deny. NO new evidence machinery is built (D-9-09 provenance).
         const overridden = consumeOverrideToken('GATE-AIRBAG', { gatesDir: dirs.gatesDir, journalDir, terminalId })
         if (!overridden) {
           out.deny = { text: denyText(command, conditions) }
@@ -595,7 +595,7 @@ export function listSnapshots({ runGit } = {}) {
  * contract (BL-172, 2026-07-10): a structural receipt over the airbag admin
  * surface must pin the list's SHAPE, never its CONTENTS — refs/sma/airbag/*
  * ACCRUES with every airbag firing, so hashing the listing output re-fails on
- * every reverify by construction (the 49.2-05 R2 lesson). Valid: an array
+ * every reverify by construction (the 9.2-05 R2 lesson). Valid: an array
  * (empty = honest-empty, still valid) whose every group carries a non-empty
  * string id, an object refs map, and an array-of-strings refnames.
  *

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/metrics.mjs (Phase 49.1 Plan 24, Task 1 — D-49.1-07, B23).
+ * Tests for scripts/sma/lib/metrics.mjs (Phase 9.1 Plan 24, Task 1 — D-9.1-07, B23).
  *
  * Read-only process telemetry over INJECTED sources (git log + exec journals +
  * gate/collision/stall journals). No writes, no network. The four behaviours the
@@ -22,7 +22,7 @@ describe('leadTime — per-plan duration from the exec journal', () => {
   it('computes plan_start..plan_complete duration per plan', () => {
     const journals = [
       {
-        id: '49.1-01',
+        id: '9.1-01',
         events: [
           { event: 'plan_start', ts: '2026-07-01T10:00:00Z' },
           { event: 'task_complete', task: 1, ts: '2026-07-01T10:30:00Z' },
@@ -33,7 +33,7 @@ describe('leadTime — per-plan duration from the exec journal', () => {
     const res = leadTime(journals)
     expect(res.available).toBe(true)
     expect(res.plans).toHaveLength(1)
-    expect(res.plans[0].id).toBe('49.1-01')
+    expect(res.plans[0].id).toBe('9.1-01')
     expect(res.plans[0].ms).toBe(2 * 3600 * 1000)
   })
 

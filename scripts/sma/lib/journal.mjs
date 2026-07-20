@@ -1,13 +1,13 @@
 /**
  * journal.mjs — per-terminal collision-event journal (R10, B15/B20), made
- * TAMPER-EVIDENT by a per-file hash chain (49.2-03, D-49.2-07).
+ * TAMPER-EVIDENT by a per-file hash chain (9.2-03, D-9.2-07).
  *
  * Each terminal appends to its OWN <terminalId>.jsonl file — there is no shared
  * append-file race by construction (shared-file appends are NOT atomic on Windows,
  * SPEC R10). The reader merge-sorts across all terminal files by (ts, terminal, seq)
  * so the timeline is stable even under equal timestamps.
  *
- * HASH CHAIN (D-49.2-07): every line appendEvent writes now carries `prev` =
+ * HASH CHAIN (D-9.2-07): every line appendEvent writes now carries `prev` =
  * lineHash of the previous non-blank raw line in that file ('genesis' for the
  * first). verifyChain detects any edit, deletion, or post-chain insertion; the
  * whole V2 history is a legacy prev-less PREFIX that is NEVER retro-broken, and
@@ -116,7 +116,7 @@ export function appendEvent(evt, opts = {}) {
   const { events } = parseFile(file)
   const lastSeq = events.length ? events[events.length - 1].seq ?? events.length : 0
 
-  // Hash-chain (D-49.2-07): prev = lineHash of the last non-blank raw line, or
+  // Hash-chain (D-9.2-07): prev = lineHash of the last non-blank raw line, or
   // 'genesis' for the first line of the file. Computed over the RAW bytes so a
   // later verifyChain re-derives the identical link.
   const last = lastRawLine(file)
@@ -130,7 +130,7 @@ export function appendEvent(evt, opts = {}) {
     actors: evt.actors ?? [],
     scope: evt.scope ?? null,
     detail: evt.detail ?? null,
-    prev, // hash-chain link (D-49.2-07) — MUST stay last so JSON.stringify order is deterministic
+    prev, // hash-chain link (D-9.2-07) — MUST stay last so JSON.stringify order is deterministic
   }
   appendFileSync(file, JSON.stringify(record) + '\n')
   return record

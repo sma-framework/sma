@@ -30,43 +30,43 @@ import { createHash } from 'node:crypto'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { parsePredictions, validatePrediction, isSafeCommand } from './predict.mjs'
-// 49.3-01 (D-49.3-04): the PROFILE family delegates ALL schema/secret/dead-field
+// 9.3-01 (D-9.3-04): the PROFILE family delegates ALL schema/secret/dead-field
 // judgment to the profile lib — one boundary, never duplicated (same lock as
 // PRED → predict.mjs). lint renders findings, it never re-implements the checks.
 import { validateProfile, normalizeProfile, deadFields, readProfile } from './profile.mjs'
-// 49.2-08 (D-49.2-12): the CONS lint family delegates field validation to the
+// 9.2-08 (D-9.2-12): the CONS lint family delegates field validation to the
 // consequences lib — one boundary, never duplicated (same posture as PRED → predict.mjs).
 import { parseConsequences, validateConsequence } from './consequences.mjs'
-// 49.2-03 (D-49.2-06): RECEIPT-PROSE delegates ALL parsing/validation to the
+// 9.2-03 (D-9.2-06): RECEIPT-PROSE delegates ALL parsing/validation to the
 // receipts lib (parseReceipts + parseCoverage + validateReceipt) — lint renders
 // findings, it NEVER re-implements a parser (same lock as PRED → predict.mjs).
 import { parseReceipts, parseCoverage, validateReceipt } from './receipts.mjs'
-// 49.2-10 (D-49.2-14): PRED-SKEPTIC delegates the countersign verdict to the
+// 9.2-10 (D-9.2-14): PRED-SKEPTIC delegates the countersign verdict to the
 // Goodhart guard (verifySkeptic) — lint renders the advisory, it never re-checks
 // the hash. goodhart.mjs imports extractPredictionsBlock BACK from this module
 // (one extraction truth); the cycle is safe because both sides use the imported
 // binding only inside functions, never at module-eval time.
 import { verifySkeptic } from './goodhart.mjs'
-// 49.2-10 (D-49.2-14): HAZARD-NOCONTROL is the ENV-INDEPENDENT git-side check that
+// 9.2-10 (D-9.2-14): HAZARD-NOCONTROL is the ENV-INDEPENDENT git-side check that
 // every kill-switch cites a compensating control — it is itself the control cited
 // by SMA_STPA_OFF's HAZARDS row (the guard cannot silently kill the guard). No cycle:
 // stpa.mjs imports gates/journal/calibration, never lint.
 import { uncompensatedKillSwitches } from './stpa.mjs'
 import { GATES } from './gates.mjs'
-// 49.3-06 (D-49.3-12): LADDER-EVIDENCE reads the TRACKED tier registry through the
+// 9.3-06 (D-9.3-12): LADDER-EVIDENCE reads the TRACKED tier registry through the
 // ladder lib (readLadder) — the same delegation lock as PRED → predict.mjs. It is the
 // env-independent compensating control the SMA_LADDER_OFF HAZARDS row cites: an
 // evidence-free tier escalation, or an unchecked retirement, cannot survive a commit.
 import { readLadder } from './ladder.mjs'
-// The ONE contradiction implementation (49.1-12 T2): lint imports consolidate's
+// The ONE contradiction implementation (9.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
-// 49.3-05 (D-49.3-07): the FRAG family delegates ALL fragment schema/byte/trigger
+// 9.3-05 (D-9.3-07): the FRAG family delegates ALL fragment schema/byte/trigger
 // judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
 // fragments/ dir is a valid state (listFragments returns []) — fail-open.
 import { listFragments, validateFragment } from './fragments.mjs'
-// FI-9/FI-11 layer budgets (49.1-13): the four size lints reference these ONLY —
+// FI-9/FI-11 layer budgets (9.1-13): the four size lints reference these ONLY —
 // no magic byte numbers live in this module.
 import {
   CORE_BUDGET,
@@ -97,7 +97,7 @@ const GENERATOR_PATH = join(__dirname, 'generator.mjs')
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 
 /**
- * The FI-11 on-demand per-area index files (INDEX-<area>.md, 49.1-13) are
+ * The FI-11 on-demand per-area index files (INDEX-<area>.md, 9.1-13) are
  * structural artifacts too: never notes, never counted against the always-load
  * budget (they are pulled by tag on demand, not loaded whole).
  */
@@ -198,8 +198,8 @@ function parseIndexLinks(indexText) {
 
 /**
  * Recursively list files with a given suffix under plansDir (sorted, fail-soft).
- * The PRED/CONS families (49.1-09 / 49.2-08) lint `-PLAN.md` frontmatter; the
- * RECEIPT-PROSE check (49.2-03) lints `-SUMMARY.md` frontmatter. One walk,
+ * The PRED/CONS families (9.1-09 / 9.2-08) lint `-PLAN.md` frontmatter; the
+ * RECEIPT-PROSE check (9.2-03) lints `-SUMMARY.md` frontmatter. One walk,
  * parameterized by suffix — never a duplicated tree walk.
  */
 function listPlanFiles(plansDir, suffix = '-PLAN.md') {
@@ -236,7 +236,7 @@ function readOnce(paths) {
 
 /**
  * comparePhase(a, b) -> -1|0|1. Splits on '.' and numeric-compares each segment
- * so '49.10' > '49.2' (NEVER a float compare). Used to honor the receipts
+ * so '9.10' > '9.2' (NEVER a float compare). Used to honor the receipts
  * cutover (RECEIPTS_ENFORCED_FROM): pre-cutover summaries are never retro-failed.
  */
 function comparePhase(a, b) {
@@ -251,7 +251,7 @@ function comparePhase(a, b) {
   return 0
 }
 
-/** The leading dotted-numeric phase token of a SUMMARY filename ('49.2-03-…' -> '49.2'). */
+/** The leading dotted-numeric phase token of a SUMMARY filename ('9.2-03-…' -> '9.2'). */
 function summaryPhase(summaryPath) {
   const m = /^(\d+(?:\.\d+)*)-/.exec(basename(summaryPath))
   return m ? m[1] : null
@@ -272,7 +272,7 @@ function frontmatterText(text) {
  * NUMBER namespace with unrelated GSD medical phases (50-55+). A numeric phase
  * cutover alone would retro-fail those medical summaries (which legitimately use
  * prose coverage); gating on `subsystem: sma…` scopes enforcement to the SMA
- * lineage without a magic upper bound. (49.2-03 deviation, Rule 3.)
+ * lineage without a magic upper bound. (9.2-03 deviation, Rule 3.)
  */
 function isSmaRegimeSummary(text) {
   return /^subsystem:\s*sma\b/m.test(frontmatterText(text))
@@ -282,7 +282,7 @@ function isSmaRegimeSummary(text) {
  * Extract the RAW `<key>:` dash-list block text from a PLAN.md's frontmatter
  * ('' when absent). POSTEDIT lints hash THIS block only — not the whole file —
  * so unrelated frontmatter edits never false-positive (Pitfall 3). The key is
- * parameterized (49.2-08) so PRED-POSTEDIT and CONS-POSTEDIT share one extractor.
+ * parameterized (9.2-08) so PRED-POSTEDIT and CONS-POSTEDIT share one extractor.
  */
 function extractFrontmatterBlock(text, key) {
   const t = String(text).replace(/\r\n/g, '\n')
@@ -307,7 +307,7 @@ function extractFrontmatterBlock(text, key) {
 
 /**
  * Predictions-block extractor — a thin wrapper so PRED-POSTEDIT is byte-identical.
- * EXPORTED (49.2-10): goodhart.mjs's skeptic countersign hashes THIS exact block
+ * EXPORTED (9.2-10): goodhart.mjs's skeptic countersign hashes THIS exact block
  * so the countersign voids on any post-sign edit, mirroring PRED-POSTEDIT's
  * immutability — one extraction truth, two consumers (never re-derived).
  */
@@ -350,7 +350,7 @@ function buildContext(opts) {
     indexText = ''
   }
 
-  // FI-11 (49.1-13): the catalog is now MEMORY.md + the per-area INDEX-<area>.md
+  // FI-11 (9.1-13): the catalog is now MEMORY.md + the per-area INDEX-<area>.md
   // files. MEM-ORPHAN's "absent from the index" direction must see the union of
   // links across all of them, or every periphery note would false-positive.
   const indexLinks = parseIndexLinks(indexText)
@@ -369,7 +369,7 @@ function buildContext(opts) {
     /* fail-soft — unreadable corpus dir */
   }
 
-  // STATE-SIZE (49.1-13): the state path is dependency-injected so the
+  // STATE-SIZE (9.1-13): the state path is dependency-injected so the
   // platform's .planning/STATE.md and any user's path both work. Absent path
   // or unreadable file → null → the check degrades to silence (fail-soft).
   let stateText = null
@@ -381,7 +381,7 @@ function buildContext(opts) {
     }
   }
 
-  // PROFILE family (49.3-01): read .sma/profile.json ONCE here (tolerant reader).
+  // PROFILE family (9.3-01): read .sma/profile.json ONCE here (tolerant reader).
   // A missing profile is a valid state → profile:null → PROFILE-SCHEMA/PROFILE-SECRET
   // skip (fail-open); PROFILE-DEADFIELD is schema-level and always runs.
   let profile = null
@@ -389,7 +389,7 @@ function buildContext(opts) {
     profile = readProfile({ profilePath: opts.profilePath }).profile
   }
 
-  // LADDER-EVIDENCE (49.3-06): the tracked tier registry, read ONCE here. A missing
+  // LADDER-EVIDENCE (9.3-06): the tracked tier registry, read ONCE here. A missing
   // file is a valid state (no overlay) → ladder:null → the check is silent (fail-open).
   let ladder = null
   if (typeof opts.ladderPath === 'string' && opts.ladderPath.trim() !== '' && existsSync(opts.ladderPath)) {
@@ -416,10 +416,10 @@ function buildContext(opts) {
     generate: opts.generate,
     generateAreas: opts.generateAreas,
     claudeMdPath: opts.claudeMdPath,
-    // PRED family (49.1-09): plan files are read ONCE here, like the corpus.
+    // PRED family (9.1-09): plan files are read ONCE here, like the corpus.
     // execGit is an injected read-only git runner (args, {cwd}) => stdout.
     plans: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-PLAN.md')) : [],
-    // RECEIPT-PROSE (49.2-03): SUMMARY files are read ONCE here, same posture as
+    // RECEIPT-PROSE (9.2-03): SUMMARY files are read ONCE here, same posture as
     // plans — no check re-reads the disk.
     summaries: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-SUMMARY.md')) : [],
     execGit: opts.execGit,
@@ -683,7 +683,7 @@ const MEM_SUPERSEDE = {
 
 const MEM_BUGLESSON = {
   id: 'MEM-BUGLESSON',
-  title: 'bug-lesson body form: Why + How to apply (D-49-15)',
+  title: 'bug-lesson body form: Why + How to apply (D-9-15)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -707,7 +707,7 @@ const MEM_BUGLESSON = {
 
 const MEM_WIKILINK = {
   id: 'MEM-WIKILINK',
-  title: 'Wikilink integrity: every [[name]] resolves (D-49-15)',
+  title: 'Wikilink integrity: every [[name]] resolves (D-9-15)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -768,7 +768,7 @@ const MEM_REGEN = {
       out.push(finding('MEM-REGEN', 'critical', ctx.indexPath, `MEMORY.md differs from regeneration — the GENERATED artifact was hand-edited; regenerate it (do not hand-edit)`))
     }
 
-    // FI-11 (49.1-13): the per-area INDEX-<area>.md files are GENERATED
+    // FI-11 (9.1-13): the per-area INDEX-<area>.md files are GENERATED
     // artifacts too — staleness covers them when an area regenerator is wired.
     const generateAreas = ctx.generateAreas
     if (typeof generateAreas === 'function') {
@@ -812,7 +812,7 @@ function normalizeRuleLine(s) {
 
 const MEM_CLAUDEDUP = {
   id: 'MEM-CLAUDEDUP',
-  title: 'CLAUDE.md ↔ note duplication (D-49-08)',
+  title: 'CLAUDE.md ↔ note duplication (D-9-08)',
   tier: 'warn',
   run(ctx) {
     const out = []
@@ -836,14 +836,14 @@ const MEM_CLAUDEDUP = {
       const norm = normalizeRuleLine(desc)
       if (norm.split(' ').filter(Boolean).length < 8) continue
       if (claudeLines.has(norm)) {
-        out.push(finding('MEM-CLAUDEDUP', 'warn', note.file, `note ${note.file} description duplicates a CLAUDE.md rule line — CLAUDE.md is the source of truth (D-49-08)`))
+        out.push(finding('MEM-CLAUDEDUP', 'warn', note.file, `note ${note.file} description duplicates a CLAUDE.md rule line — CLAUDE.md is the source of truth (D-9-08)`))
       }
     }
     return out
   },
 }
 
-// ── 49.1-12: MEM-CONTRADICT — bi-temporal same-subject conflicts (B5) ─────────
+// ── 9.1-12: MEM-CONTRADICT — bi-temporal same-subject conflicts (B5) ─────────
 
 const MEM_CONTRADICT = {
   id: 'MEM-CONTRADICT',
@@ -851,7 +851,7 @@ const MEM_CONTRADICT = {
   tier: 'critical',
   run(ctx) {
     // Detection is DELEGATED to consolidate.mjs's findContradictions — the one
-    // shared implementation (49.1-12 T2 acceptance). Lint only renders findings.
+    // shared implementation (9.1-12 T2 acceptance). Lint only renders findings.
     const notes = ctx.parsed.filter((n) => n.frontmatter && !n.parseError && !n.error)
     const pairs = findContradictions({ notes, registry: ctx.registry })
     return pairs.map((p) =>
@@ -865,7 +865,7 @@ const MEM_CONTRADICT = {
   },
 }
 
-// ── 49.1-09: PRED family — pre-registration integrity for plan predictions ───
+// ── 9.1-09: PRED family — pre-registration integrity for plan predictions ───
 
 const PRED_NOMETRIC = {
   id: 'PRED-NOMETRIC',
@@ -875,7 +875,7 @@ const PRED_NOMETRIC = {
     const out = []
     for (const plan of ctx.plans) {
       // Field validation is DELEGATED to predict.mjs's validatePrediction —
-      // one boundary, never duplicated (49.1-08 lock).
+      // one boundary, never duplicated (9.1-08 lock).
       const { predictions } = parsePredictions(plan.path, { readFn: () => plan.text })
       for (const entry of predictions) {
         const v = validatePrediction(entry)
@@ -934,19 +934,19 @@ const PRED_POSTEDIT = {
   },
 }
 
-// ── 49.2-10 (D-49.2-14): PRED-SKEPTIC — predictions need an adversarial countersign ─
+// ── 9.2-10 (D-9.2-14): PRED-SKEPTIC — predictions need an adversarial countersign ─
 
 const PRED_SKEPTIC = {
   id: 'PRED-SKEPTIC',
-  title: 'A 49.2+ plan\'s predictions carry a valid skeptic countersign (Goodhart guard)',
+  title: 'A 9.2+ plan\'s predictions carry a valid skeptic countersign (Goodhart guard)',
   tier: 'warn',
   run(ctx) {
     const out = []
     for (const plan of ctx.plans) {
       // Only plans that actually pre-register predictions are in scope.
       if (extractPredictionsBlock(plan.text) === '') continue
-      // Cutover: enforce only from the trust-spine regime forward (49.2+). The
-      // whole V2 history and unrelated pre-49.2 plans are never retro-flagged.
+      // Cutover: enforce only from the trust-spine regime forward (9.2+). The
+      // whole V2 history and unrelated pre-9.2 plans are never retro-flagged.
       const phase = summaryPhase(plan.path)
       if (phase == null || comparePhase(phase, RECEIPTS_ENFORCED_FROM) < 0) continue
 
@@ -966,7 +966,7 @@ const PRED_SKEPTIC = {
             'PRED-SKEPTIC',
             'warn',
             basename(plan.path),
-            `predictions block in ${basename(plan.path)} ${why}. Advisory here; the blocking gate is /sma-grill's unresolved-challenge check (D-49.2-11).`,
+            `predictions block in ${basename(plan.path)} ${why}. Advisory here; the blocking gate is /sma-grill's unresolved-challenge check (D-9.2-11).`,
           ),
         )
       }
@@ -1025,11 +1025,11 @@ const PRED_DUPDOD = {
   },
 }
 
-// ── 49.2-08: CONS family — the consequences block is LAW after first commit ──
+// ── 9.2-08: CONS family — the consequences block is LAW after first commit ──
 
 const CONS_SCHEMA = {
   id: 'CONS-SCHEMA',
-  title: 'Consequences entries carry the full {id, trigger, blocks, until} contract (D-49.2-12)',
+  title: 'Consequences entries carry the full {id, trigger, blocks, until} contract (D-9.2-12)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1092,7 +1092,7 @@ const CONS_POSTEDIT = {
 
 const CONS_NOBLOCK = {
   id: 'CONS-NOBLOCK',
-  title: 'A plan with predictions must declare what a class-A miss blocks (D-49.2-15)',
+  title: 'A plan with predictions must declare what a class-A miss blocks (D-9.2-15)',
   tier: 'warn',
   run(ctx) {
     const out = []
@@ -1100,18 +1100,18 @@ const CONS_NOBLOCK = {
       const hasPredictions = extractFrontmatterBlock(plan.text, 'predictions') !== ''
       const hasConsequences = extractFrontmatterBlock(plan.text, 'consequences') !== ''
       if (hasPredictions && !hasConsequences) {
-        out.push(finding('CONS-NOBLOCK', 'warn', basename(plan.path), `${basename(plan.path)} carries a predictions block but no consequences block — a prediction without a consequence is a diary entry; declare what a class-A miss blocks (D-49.2-15)`))
+        out.push(finding('CONS-NOBLOCK', 'warn', basename(plan.path), `${basename(plan.path)} carries a predictions block but no consequences block — a prediction without a consequence is a diary entry; declare what a class-A miss blocks (D-9.2-15)`))
       }
     }
     return out
   },
 }
 
-// ── 49.2-03: RECEIPT-PROSE — a machine «done» must carry a re-runnable receipt ─
+// ── 9.2-03: RECEIPT-PROSE — a machine «done» must carry a re-runnable receipt ─
 
 const RECEIPT_PROSE = {
   id: 'RECEIPT-PROSE',
-  title: 'A machine-verifiable «done» carries a structural receipt, not prose (D-49.2-06)',
+  title: 'A machine-verifiable «done» carries a structural receipt, not prose (D-9.2-06)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1122,7 +1122,7 @@ const RECEIPT_PROSE = {
       // phase-number namespace is shared with unrelated GSD medical phases —
       // enforce only on SMA-lineage summaries (subsystem: sma…).
       if (!isSmaRegimeSummary(s.text)) continue
-      // Cutover: the whole V2 history (< 49.2) is NEVER retro-failed. The retro
+      // Cutover: the whole V2 history (< 9.2) is NEVER retro-failed. The retro
       // look at V2 false-dones is plan 01's baseline harness, not this lint.
       if (comparePhase(phase, RECEIPTS_ENFORCED_FROM) < 0) continue
 
@@ -1133,7 +1133,7 @@ const RECEIPT_PROSE = {
 
       // A malformed receipt, or one whose check_command evades the SAFE_COMMAND
       // boundary, is its OWN critical finding — the lint cannot claim to enforce
-      // a boundary receipts routinely evade (CONS-49.2-03-B).
+      // a boundary receipts routinely evade (CONS-9.2-03-B).
       for (const r of receipts) {
         const v = validateReceipt(r)
         if (!v.valid) {
@@ -1159,7 +1159,7 @@ const RECEIPT_PROSE = {
   },
 }
 
-// ── 49.2-10 (D-49.2-14): HAZARD-NOCONTROL — every kill-switch cites a control ──
+// ── 9.2-10 (D-9.2-14): HAZARD-NOCONTROL — every kill-switch cites a control ──
 
 const HAZARD_NOCONTROL = {
   id: 'HAZARD-NOCONTROL',
@@ -1172,17 +1172,17 @@ const HAZARD_NOCONTROL = {
         'HAZARD-NOCONTROL',
         'critical',
         '',
-        `kill-switch ${k} has no compensating control in the HAZARDS registry (lib/stpa.mjs) — a switch that can silently disable a protection with no cited mitigation is an STPA violation (D-49.2-14); add a HAZARDS row with a non-empty compensatingControl + birth fixture`,
+        `kill-switch ${k} has no compensating control in the HAZARDS registry (lib/stpa.mjs) — a switch that can silently disable a protection with no cited mitigation is an STPA violation (D-9.2-14); add a HAZARDS row with a non-empty compensatingControl + birth fixture`,
       ),
     )
   },
 }
 
-// ── 49.3-06 (D-49.3-12): LADDER-EVIDENCE — no evidence-free tier escalation ────
+// ── 9.3-06 (D-9.3-12): LADDER-EVIDENCE — no evidence-free tier escalation ────
 
 const LADDER_EVIDENCE = {
   id: 'LADDER-EVIDENCE',
-  title: 'Every ladder tier change carries evidence rows with journalRefs; retirements cite a fixture check (D-49.3-12)',
+  title: 'Every ladder tier change carries evidence rows with journalRefs; retirements cite a fixture check (D-9.3-12)',
   tier: 'critical',
   run(ctx) {
     const ladder = ctx.ladder
@@ -1200,24 +1200,24 @@ const LADDER_EVIDENCE = {
       //     an evidence-free enforcement escalation (the exact self-grading V3 kills).
       if (tier && tier !== 'warn') {
         if (!evidence.length || !hasRefs) {
-          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden (D-49.3-12); tune only via \`pnpm sma tune --apply\`, never a hand-edit`))
+          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden (D-9.3-12); tune only via \`pnpm sma tune --apply\`, never a hand-edit`))
         }
       }
       // (b) a 'retired' rule must carry a fixtureCheck record (the STPA birth-fixture
-      //     sign-off — a rule can never auto-tune into silent removal, D-49.2-14).
+      //     sign-off — a rule can never auto-tune into silent removal, D-9.2-14).
       if (tier === 'retired' && (!rule.fixtureCheck || typeof rule.fixtureCheck !== 'object')) {
-        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} is 'retired' without a fixtureCheck record — retirement requires the 49.2-10 birth-fixture sign-off (D-49.2-14)`))
+        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} is 'retired' without a fixtureCheck record — retirement requires the 9.2-10 birth-fixture sign-off (D-9.2-14)`))
       }
       // (c) a registered fix command must pass the imported isSafeCommand allowlist.
       if (rule.fix && rule.fix.command && !isSafeCommand(rule.fix.command)) {
-        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} registers a fix command that fails isSafeCommand — fix commands go through predict.mjs's single allowlist ONLY (T-49.3-60)`))
+        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} registers a fix command that fails isSafeCommand — fix commands go through predict.mjs's single allowlist ONLY (T-9.3-60)`))
       }
     }
     return out
   },
 }
 
-// ── 49.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
+// ── 9.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
 function byteLen(s) {
@@ -1329,12 +1329,12 @@ const STATE_SIZE = {
   },
 }
 
-// ── 49.1-14: MEM-SECRET — screen secrets at the corpus door (T-49.1-27) ───────
+// ── 9.1-14: MEM-SECRET — screen secrets at the corpus door (T-9.1-27) ───────
 //
 // The note author -> corpus trust boundary: anything written becomes injectable
 // context forever, so a leaked secret would be echoed by any reflex that surfaces
 // the note. Write-time screening beats fire-time filtering — this lands BEFORE
-// reflex injection goes live platform-wide (49.1-26). Aligned with the security
+// reflex injection goes live platform-wide (9.1-26). Aligned with the security
 // guard's secret-pattern conventions (checks.mjs SEC-11/SEC-12/R2-MOUNT-1):
 // unambiguous token prefixes + assignment-shaped literals + high-entropy runs,
 // with the false-positive classes (env var NAMES, git shas) explicitly allowlisted
@@ -1389,7 +1389,7 @@ function isHexRun(s) {
 
 const MEM_SECRET = {
   id: 'MEM-SECRET',
-  title: 'Secret material screened at the corpus door (T-49.1-27)',
+  title: 'Secret material screened at the corpus door (T-9.1-27)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1453,7 +1453,7 @@ const MEM_SECRET = {
   },
 }
 
-// ── 49.3-01 (D-49.3-04): PROFILE family — the profile is schema-bound, secret-free,
+// ── 9.3-01 (D-9.3-04): PROFILE family — the profile is schema-bound, secret-free,
 // and every schema field has a live consumer (adoption scorecard metric 5) ──────
 
 const PROFILE_DEADFIELD = {
@@ -1475,7 +1475,7 @@ const PROFILE_DEADFIELD = {
 
 const PROFILE_SCHEMA_LINT = {
   id: 'PROFILE-SCHEMA',
-  title: 'Committed profile carries no unknown/mistyped field (D-49.3-04)',
+  title: 'Committed profile carries no unknown/mistyped field (D-9.3-04)',
   tier: 'critical',
   run(ctx) {
     if (!ctx.profile) return [] // missing profile = valid state (fail-open)
@@ -1488,7 +1488,7 @@ const PROFILE_SCHEMA_LINT = {
 
 const PROFILE_SECRET = {
   id: 'PROFILE-SECRET',
-  title: 'Committed profile stores NAMES + facts only, never a secret value (T-49.3-06)',
+  title: 'Committed profile stores NAMES + facts only, never a secret value (T-9.3-06)',
   tier: 'critical',
   run(ctx) {
     if (!ctx.profile) return [] // missing profile = valid state (fail-open)
@@ -1499,7 +1499,7 @@ const PROFILE_SECRET = {
   },
 }
 
-// ── 49.3-05 (D-49.3-07): FRAG family — fragments are atomic (one fact, <= 400 bytes),
+// ── 9.3-05 (D-9.3-07): FRAG family — fragments are atomic (one fact, <= 400 bytes),
 // carry a parseable trigger, and are schema-valid (id == filename stem) ──────────
 const FRAG_LINT = {
   id: 'FRAG',
@@ -1522,8 +1522,8 @@ const FRAG_LINT = {
   },
 }
 
-// The check registry — the full R5 class list plus the two D-49-15 checks
-// plus the 49.1-09 PRED family (pre-registration integrity).
+// The check registry — the full R5 class list plus the two D-9-15 checks
+// plus the 9.1-09 PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
   MEM_VOCAB,
   MEM_ALIAS,
@@ -1578,7 +1578,7 @@ function sortFindings(findings) {
  * @param {string} opts.indexPath  path to MEMORY.md (the index)
  * @param {(committed:string)=>string} [opts.generate]  regeneration fn (49-09 / test)
  * @param {string} [opts.claudeMdPath]  path to CLAUDE.md (for MEM-CLAUDEDUP)
- * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family, 49.1-09)
+ * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family, 9.1-09)
  * @param {(args:string[], o?:{cwd?:string})=>string} [opts.execGit]  read-only git runner (PRED-POSTEDIT)
  * @returns {{critical:number, warn:number, info:number, findings:Array, summary:string, exitCode:number}}
  */

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/profile.mjs (Phase 49.3 Plan 01, Task 2 — D-49.3-04/T-49.3-06).
+ * Tests for scripts/sma/lib/profile.mjs (Phase 9.3 Plan 01, Task 2 — D-9.3-04/T-9.3-06).
  *
  * The deterministic profile library every later Track B command reads through:
  *   - Test 1 (tolerant read): a missing file → {} (never throws); corrupt JSON →

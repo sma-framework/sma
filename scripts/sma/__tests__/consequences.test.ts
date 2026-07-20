@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/consequences.mjs (Phase 49.2 Plan 08 — D-49.2-12).
+ * Tests for scripts/sma/lib/consequences.mjs (Phase 9.2 Plan 08 — D-9.2-12).
  *
  * Consequences-as-LAW: the deterministic brain that turns a recorded class-A
  * event into a ship BLOCK.
@@ -68,7 +68,7 @@ function writePlan(entries: string, name = 'PLAN.md'): string {
   return p
 }
 
-describe('consequences.mjs — the law brain (49.2-08 task 1)', () => {
+describe('consequences.mjs — the law brain (9.2-08 task 1)', () => {
   it('Test 1: validateConsequence rejects missing required fields, guards class {A,B}', () => {
     // Missing `until` → invalid, names the field.
     const noUntil = validateConsequence({ id: 'C', trigger: 't', blocks: 'b' })
@@ -195,12 +195,12 @@ describe('consequences.mjs — the law brain (49.2-08 task 1)', () => {
       calls.push(args)
       return ''
     }
-    const ok = openRollbackCandidate({ slug: 'plan/49.2 08!', sha: good, execGit: spy })
+    const ok = openRollbackCandidate({ slug: 'plan/9.2 08!', sha: good, execGit: spy })
     expect(ok.created).toBe(true)
     expect(calls).toHaveLength(1)
     const [verb, ref, sha, oldval] = calls[0]
     expect(verb).toBe('update-ref')
-    expect(ref).toBe('refs/heads/sma/rollback-candidate/plan_49.2_08_')
+    expect(ref).toBe('refs/heads/sma/rollback-candidate/plan_9.2_08_')
     expect(sha).toBe(good)
     expect(oldval).toBe('0'.repeat(40)) // create-only: refuses if the ref exists
 
@@ -220,9 +220,9 @@ describe('consequences.mjs — the law brain (49.2-08 task 1)', () => {
   })
 })
 
-// ── grader-contradiction is class-A (49.4-02) ────────────────────────────────
+// ── grader-contradiction is class-A (9.4-02) ────────────────────────────────
 
-describe('grader-contradiction class-A clause (49.4-02 task 2)', () => {
+describe('grader-contradiction class-A clause (9.4-02 task 2)', () => {
   /** A scored (contradicted) grader-verdict record, as scoreGraderVerdicts emits. */
   function contradicted(over: Record<string, unknown> = {}) {
     return {
@@ -324,7 +324,7 @@ function lastLine(stdout: string): string {
   return lines[lines.length - 1] ?? ''
 }
 
-describe('preship + disposition CLI (49.2-08 task 3)', () => {
+describe('preship + disposition CLI (9.2-08 task 3)', () => {
   it('Test 1: preship exits 0 on empty ledger, 1 on an undispositioned divergence, 0 after disposition', () => {
     const smaRoot = join(dir, '.sma')
     const calibrationDir = join(smaRoot, 'calibration')

@@ -1,8 +1,8 @@
 /**
- * state-section.mjs — the machine-managed STATE.md section (49.1-19, D-49.1-14).
+ * state-section.mjs — the machine-managed STATE.md section (9.1-19, D-9.1-14).
  *
  * STATE.md was rewritten under executors repeatedly during P49 (the B6 conflict
- * class). D-49.1-14's answer is a FENCED region wrapping the three contended
+ * class). D-9.1-14's answer is a FENCED region wrapping the three contended
  * zones — `## Current Position`, `## Open Blockers`, `## Active Sessions` — that is
  * written ONLY through these snapshot-semantics verbs. A git merge driver was
  * explicitly REJECTED; a single sanctioned writer + a re-read-before-write guard
@@ -175,7 +175,7 @@ function mutate(transform, opts = {}) {
     return { ok: false, retry: false, reason: err && err.message }
   }
 
-  // re-read-before-write guard (T-49.1-40): a change since raw1 → abort, do not write.
+  // re-read-before-write guard (T-9.1-40): a change since raw1 → abort, do not write.
   let raw2
   try {
     raw2 = readFn(path, 'utf8')

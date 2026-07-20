@@ -1,11 +1,11 @@
 /**
- * metrics.mjs — read-only process telemetry from git + artifacts (49.1-24, B23,
- * D-49.1-07; CODING #8 pattern).
+ * metrics.mjs — read-only process telemetry from git + artifacts (9.1-24, B23,
+ * D-9.1-07; CODING #8 pattern).
  *
  * The public product's "how is delivery actually going" layer, computed from data
  * that already exists on disk — NO new state, NO writes, NO network:
  *   - leadTime(journals)        — per-plan plan_start..plan_complete duration from
- *                                 the exec journals (49.1-20).
+ *                                 the exec journals (9.1-20).
  *   - reworkRate({commits,plans}) — share of commits that touch a plan's files AFTER
  *                                 that plan's plan_complete (churn after "done").
  *   - deviationCounts(events)   — gate fires + stall detections + collision warns
@@ -212,7 +212,7 @@ function readExecJournals(opts = {}) {
 /**
  * gatherMetrics({ dirs, execGit, since }) -> { leadTime, reworkRate, deviations }.
  *
- * The ONE impure entry: reads exec journals (49.1-20) + the coordination journal
+ * The ONE impure entry: reads exec journals (9.1-20) + the coordination journal
  * (deviation events) + `git log` (via the injected execGit runner) and computes
  * all three metrics. Every source is fail-open — a missing source yields that
  * metric's honest empty marker, never a throw. READ-ONLY (git log / --name-only

@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/merge-gate.mjs (Phase 49.3 Plan 15).
+ * Tests for scripts/sma/lib/merge-gate.mjs (Phase 9.3 Plan 15).
  *
- * 49.3-15 (D-49.3-24c/d/e/f) — the serialized merge gate + the verified-live-only
+ * 9.3-15 (D-9.3-24c/d/e/f) — the serialized merge gate + the verified-live-only
  * enforcing-scope predicate.
  *
  * Task 1 — merge-claim triplet + the `sma merge` ritual:
@@ -71,7 +71,7 @@ function makeExecGit(opts: { throwOn?: string; resultSha?: string } = {}) {
   return runner as ((args: string[], o?: { cwd?: string }) => string) & { calls: typeof calls }
 }
 
-describe('49.3-15 Task 1 — merge-claim triplet + the sma merge ritual', () => {
+describe('9.3-15 Task 1 — merge-claim triplet + the sma merge ritual', () => {
   it('Test 1: the merge-claim triplet mirrors the push-claim (acquire/second-fails/check/release)', () => {
     const a = acquireMergeClaim({ by: 'T-a', branch: 'sma-wt/x', claimsDir, journalDir })
     expect(a.acquired).toBe(true)
@@ -203,7 +203,7 @@ function makeCtx(opts: { env?: Record<string, string>; overlaps?: any[]; overlap
   } as any
 }
 
-describe('49.3-15 Task 2 — enforcing scopes (verified-live-only soft-deny + opt-in stream)', () => {
+describe('9.3-15 Task 2 — enforcing scopes (verified-live-only soft-deny + opt-in stream)', () => {
   it('Test 7: enforceScope soft-denies ONLY a verified-LIVE claim; stale -> warn; none -> allow', () => {
     // dirty scope (no post-renew commit) -> verifyClaimEvidence LIVE -> soft-deny + override.
     const live = enforceScope({ foreignClaim: { by: 'T-x' }, evidence: { scopeDirtyVsHead: true }, env: {}, verifyClaimEvidence })
@@ -293,7 +293,7 @@ describe('49.3-15 Task 2 — enforcing scopes (verified-live-only soft-deny + op
       evidence: { scopeDirtyVsHead: true }, // would be LIVE...
       env: {},
       verifyClaimEvidence,
-      coolingDown: true, // ...but a cooling-down scope is never enforced (D-49-09).
+      coolingDown: true, // ...but a cooling-down scope is never enforced (D-9-09).
     })
     expect(cooling.action).toBe('warn')
     expect(cooling.action).not.toBe('soft-deny')

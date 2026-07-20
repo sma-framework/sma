@@ -1,13 +1,13 @@
 /**
- * gates.mjs — the P4 propose/enforce split (49.1-16, B9/B10, D-49.1-12).
+ * gates.mjs — the P4 propose/enforce split (9.1-16, B9/B10, D-9.1-12).
  *
  * Promotes the deterministically-checkable HARD RULEs from prompt-convention to
  * PreToolUse gates. The full paper contract (matchers, WARN texts, kill envs,
  * not-checkable rationale) lives in sma-core/references/gates-inventory.md.
  *
- * POSTURE (D-49.1-12, non-negotiable in THIS wave): every gate is ADVISORY WARN.
+ * POSTURE (D-9.1-12, non-negotiable in THIS wave): every gate is ADVISORY WARN.
  * checkEvent never denies — the CLI handler (`gates-check`) emits
- * permissionDecision 'allow' ALWAYS. The soft-deny tier is 49.1-17's separately
+ * permissionDecision 'allow' ALWAYS. The soft-deny tier is 9.1-17's separately
  * gated mechanism; NO permissionDecision 'deny' is ever emitted from this module.
  *
  * FAIL-OPEN (C9, scorecard metric 7): the whole evaluation is wrapped, and EACH
@@ -34,7 +34,7 @@ import { normalizePath, relativizePath } from './collision.mjs'
 import { appendEvent } from './journal.mjs'
 import { hasFreshEvidence } from './evidence.mjs'
 
-// ── soft-deny tier (49.1-17, D-49.1-13) ─────────────────────────────────────────
+// ── soft-deny tier (9.1-17, D-9.1-13) ─────────────────────────────────────────
 // Full-gate evidence marker TTL: a fullgate-<sha>.json older than this no longer
 // satisfies GATE-PUSH (the tree moved on since the heavy gate ran). 6 hours.
 const FULLGATE_TTL_MS = 6 * 60 * 60 * 1000
@@ -46,7 +46,7 @@ const ADD_VERB = ['add'].join('') //           the stage verb
 const CHECKOUT_VERB = ['checkout'].join('') //  the destructive-restore verb
 const RESTORE_VERB = ['restore'].join('') //    the destructive-restore verb (v2)
 const BUILD_VERB = ['build'].join('') //        the local-build verb
-const FORCE_VERB = ['force'].join('') //        the force-push flag literal (49.2-07)
+const FORCE_VERB = ['force'].join('') //        the force-push flag literal (9.2-07)
 
 // ── matcher helpers ───────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ const reGitRestore = new RegExp('\\bgit\\s+' + RESTORE_VERB + '\\b')
 const reNextBuild = new RegExp(
   '(\\bnext\\s+' + BUILD_VERB + '\\b)|(\\b(pnpm|npm|yarn)\\s+(run\\s+)?' + BUILD_VERB + '\\b)',
 )
-// force-push flag: --force / --force-with-lease / a bare -f (49.2-07, GATE-FORCEPUSH).
+// force-push flag: --force / --force-with-lease / a bare -f (9.2-07, GATE-FORCEPUSH).
 const reForceFlag = new RegExp('(--' + FORCE_VERB + '(-with-lease)?\\b)|(\\s-f\\b)')
 // the allowlist source file — any target ending with lib/predict.mjs (SAFE_COMMAND lives here).
 const reAllowlistFile = /(^|\/)lib\/predict\.mjs$/i
@@ -87,7 +87,7 @@ function forcePushTarget(command) {
 const reMemGenerated = /(^|\/)\.claude\/memory\/(MEMORY\.md|INDEX-[^/]*\.md)$/i
 const reDodPath = /-DOD\.json$/i
 const reMigIndex = /(^|\/)src\/migrations\/index\.ts$/i
-// GATE-STATEEDIT (D-49.1-14): the machine-managed STATE.md fenced region. The target
+// GATE-STATEEDIT (D-9.1-14): the machine-managed STATE.md fenced region. The target
 // must be `.planning/STATE.md` AND the written content must INTERSECT the fence — i.e.
 // carry a fence marker or one of the three managed section headings (Current Position /
 // Open Blockers / Active Sessions). A free-form STATE.md edit outside those zones stays
@@ -118,7 +118,7 @@ function dodHumanPass(content) {
 // ── the registry ──────────────────────────────────────────────────────────────
 
 /**
- * GATES — the checkable HARD-RULE inventory (D-49.1-12). Each entry:
+ * GATES — the checkable HARD-RULE inventory (D-9.1-12). Each entry:
  *   id      — GATE-<NAME>
  *   tools   — which PreToolUse tools it matches (Bash | Edit | Write)
  *   match   — (ctx) => boolean over the relativized tool input (CR-01)
@@ -137,7 +137,7 @@ export const GATES = [
       'SMA-гейт [GATE-PUSH]: обнаружен push. Перед push прогоните полный гейт ' +
       '(pnpm test + pnpm tsc --noEmit), просмотрите git log origin/main..main и присвойте ' +
       'следующий тег V1.N. Пушить только по явной команде основателя.',
-    // Soft-deny tier (D-49.1-13): DORMANT unless SMA_GATE_PUSH_DENY is set. When armed,
+    // Soft-deny tier (D-9.1-13): DORMANT unless SMA_GATE_PUSH_DENY is set. When armed,
     // a push is denied unless a fresh full-gate evidence marker exists for HEAD (written
     // by /sma-ship via `pnpm sma gates mark-fullgate`) or a one-shot override token is
     // present. Promotion (arming) is a founder action justified by gates-report
@@ -191,7 +191,7 @@ export const GATES = [
       'SMA-гейт [GATE-MEMEDIT]: MEMORY.md / INDEX-*.md — СГЕНЕРИРОВАННЫЕ файлы, ручная правка ' +
       'потеряется при пересборке. Меняйте исходные заметки в .claude/memory/ и пересоберите ' +
       'индекс: pnpm sma build-index.',
-    // Soft-deny tier (D-49.1-13): DORMANT unless SMA_GATE_MEMEDIT_DENY is set. A hand-edit
+    // Soft-deny tier (D-9.1-13): DORMANT unless SMA_GATE_MEMEDIT_DENY is set. A hand-edit
     // of a generated file has no positive "evidence" escape (nothing legitimizes it) — the
     // only sanctioned bypass is a one-shot override token with provenance.
     softDeny: {
@@ -246,7 +246,7 @@ export const GATES = [
     id: 'GATE-STATEEDIT',
     tools: ['Edit', 'Write'],
     killEnv: 'SMA_GATE_STATEEDIT_OFF',
-    // Advisory WARN only (D-49.1-14 says WARN, never deny — no softDeny here). Fires on a
+    // Advisory WARN only (D-9.1-14 says WARN, never deny — no softDeny here). Fires on a
     // hand-edit of the machine-managed STATE.md zones; a free-form STATE.md edit is silent.
     match: (ctx) => reStatePath.test(ctx.target) && reStateManaged.test(ctx.content),
     warn:
@@ -256,7 +256,7 @@ export const GATES = [
       'add-blocker | resolve-blocker | set-session.',
   },
   {
-    // 49.2-07 (D-49.2-11): a git force-push is a RISKY OP — it carries a burden-of-proof
+    // 9.2-07 (D-9.2-11): a git force-push is a RISKY OP — it carries a burden-of-proof
     // evidence record (op force-push). Advisory WARN by default; the soft-deny tier is
     // DORMANT behind SMA_GATE_FORCEPUSH_DENY and, when armed, is satisfied ONLY by a fresh
     // evidence record (mirrors GATE-PUSH's evidence-closure shape). Hard-deny stays the
@@ -288,9 +288,9 @@ export const GATES = [
     },
   },
   {
-    // 49.2-07 (D-49.2-11): editing the SAFE_COMMAND allowlist (predict.mjs) is a RISKY OP
+    // 9.2-07 (D-9.2-11): editing the SAFE_COMMAND allowlist (predict.mjs) is a RISKY OP
     // — the allowlist is the single execution boundary the blind verifier + receipts + the
-    // pre-push grill all ride on (T-49.2-07A: allowlist drift). Advisory WARN by default;
+    // pre-push grill all ride on (T-9.2-07A: allowlist drift). Advisory WARN by default;
     // killEnv SMA_GATE_ALLOWLIST_OFF; the DORMANT soft-deny behind SMA_GATE_ALLOWLIST_DENY
     // requires a fresh 'allowlist-edit' evidence record.
     id: 'GATE-ALLOWLIST',
@@ -328,11 +328,11 @@ function truthy(v) {
 
 /**
  * consumeOverrideToken(gateId, {gatesDir, journalDir, terminalId}) -> boolean.
- * The one-shot override-token escape (force-clear-style provenance, D-49-09),
- * exported so any gate — including the 49.2-05 airbag (GATE-AIRBAG) — reuses the
+ * The one-shot override-token escape (force-clear-style provenance, D-9-09),
+ * exported so any gate — including the 9.2-05 airbag (GATE-AIRBAG) — reuses the
  * SAME machinery instead of forking its own. Present → read who/why, unlink
  * (consume so it cannot be replayed), journal a 'gate-override' event with
- * provenance (T-49.1-35), and return true. Absent/error → false. Never throws.
+ * provenance (T-9.1-35), and return true. Absent/error → false. Never throws.
  * @param {string} gateId
  * @param {{gatesDir?:string, journalDir?:string, terminalId?:string}} [opts]
  * @returns {boolean}
@@ -357,7 +357,7 @@ export function consumeOverrideToken(gateId, opts = {}) {
     } catch {
       /* consumption failure is non-fatal — still allow this one */
     }
-    // journal the override use with who/why (repudiation mitigation, T-49.1-35).
+    // journal the override use with who/why (repudiation mitigation, T-9.1-35).
     if (journalDir && terminalId) {
       try {
         appendEvent(
@@ -380,7 +380,7 @@ export function consumeOverrideToken(gateId, opts = {}) {
 }
 
 /**
- * evaluateSoftDeny(gate, opts) → { deny:boolean } — the D-49.1-13 soft-deny decision
+ * evaluateSoftDeny(gate, opts) → { deny:boolean } — the D-9.1-13 soft-deny decision
  * for a gate that carries `softDeny`. DORMANT by default: returns {deny:false} unless
  * the gate's arm env is set. When armed, the operation is allowed if EITHER a fresh
  * evidence marker satisfies the gate OR a one-shot override token is present (consumed
@@ -402,7 +402,7 @@ function evaluateSoftDeny(gate, opts = {}) {
   if (!truthy(env[sd.armEnv])) return { deny: false } // dormant unless explicitly armed
 
   try {
-    // 1) evidence escape (GATE-PUSH's fullgate marker; the 49.2-07 risky-op gates'
+    // 1) evidence escape (GATE-PUSH's fullgate marker; the 9.2-07 risky-op gates'
     //    burden-of-proof record via evidenceDir + ctx). Absent for GATE-MEMEDIT.
     if (typeof sd.evidence === 'function') {
       if (sd.evidence({ gatesDir: opts.gatesDir, headSha: opts.headSha, now: opts.now, evidenceDir: opts.evidenceDir, ctx: opts.ctx }) === true) {
@@ -463,7 +463,7 @@ function buildCtx(toolName, input, root) {
  * FAIL-OPEN: the whole body is wrapped; each gate's match is independently guarded
  * so one throwing gate never stops the others (behavior test 5, scorecard 7).
  *
- * SOFT-DENY (D-49.1-13): a gate carrying `softDeny` may set `out.deny = {gateId, text}`
+ * SOFT-DENY (D-9.1-13): a gate carrying `softDeny` may set `out.deny = {gateId, text}`
  * when its arm env is set AND neither evidence nor a one-shot override allows it. The
  * deny is evaluated BEFORE per-session dedup so a repeated push keeps being denied. The
  * caller (cmdGatesCheck) consumes `out.deny` to emit permissionDecision 'deny'. Dormant
@@ -502,7 +502,7 @@ export function checkEvent(opts = {}) {
         }
         if (!hit) continue
 
-        // Soft-deny tier (D-49.1-13): evaluated BEFORE dedup so a repeated push keeps
+        // Soft-deny tier (D-9.1-13): evaluated BEFORE dedup so a repeated push keeps
         // being denied. Dormant unless the gate's arm env is set; fail-open inside.
         if (gate.softDeny && !out.deny) {
           const sd = evaluateSoftDeny(gate, {
@@ -512,8 +512,8 @@ export function checkEvent(opts = {}) {
             now: opts.now,
             journalDir: opts.journalDir,
             terminalId: opts.terminalId,
-            evidenceDir: opts.evidenceDir, // 49.2-07 — burden-of-proof dir for the risky-op gates
-            ctx, // 49.2-07 — the relativized command/target the evidence must match
+            evidenceDir: opts.evidenceDir, // 9.2-07 — burden-of-proof dir for the risky-op gates
+            ctx, // 9.2-07 — the relativized command/target the evidence must match
           })
           if (sd.deny) {
             out.deny = { gateId: gate.id, text: gate.softDeny.denyText || gate.warn }
@@ -532,7 +532,7 @@ export function checkEvent(opts = {}) {
         out.warns.push({ gateId: gate.id, target, text: gate.warn })
         out.fires.push({ gateId: gate.id, target })
 
-        // journal the fire (promotion evidence, D-49.1-13). Fail-open.
+        // journal the fire (promotion evidence, D-9.1-13). Fail-open.
         if (opts.journalDir && opts.terminalId) {
           try {
             appendEvent(

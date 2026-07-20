@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/memory-preview.mjs (49.4 BL-174, v3.6 — the onboarding
+ * Tests for scripts/sma/lib/memory-preview.mjs (9.4 BL-174, v3.6 — the onboarding
  * memory-graph preview).
  *
  * The load-bearing behaviors:

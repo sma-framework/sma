@@ -1,7 +1,7 @@
 {
   "generated": "2026-07-06",
-  "plan": "49.1-02",
-  "decision": "D-49.1-01 (atomic fork rebrand) + FI-7 (atomic rename lock)",
+  "plan": "9.1-02",
+  "decision": "D-9.1-01 (atomic fork rebrand) + FI-7 (atomic rename lock)",
   "package": {
     "from": "@opengsd/gsd-core",
     "to": "sma-framework",
@@ -196,13 +196,13 @@
     }
   ],
   "exclusions": [
-    "vendor/**  (pristine upstream snapshot — the 49.1-07 diff base)",
+    "vendor/**  (pristine upstream snapshot — the 9.1-07 diff base)",
     "LICENSE  (upstream MIT text, attribution)",
     "THIRD-PARTY-LICENSES.md  (attribution: \"derived from gsd-core\" stays verbatim)",
     "UPSTREAM.json  (upstream anchor keeps the original package/source names)",
     "rename-map.json  (this map itself)",
     "tools/**  (rename/verify scripts carry the old tokens as data)",
-    "sma-core/aliases/**  (transitional /gsd-* alias layer intentionally carries the old prefix, D-49.1-02)",
+    "sma-core/aliases/**  (transitional /gsd-* alias layer intentionally carries the old prefix, D-9.1-02)",
     "lines matching /derived from gsd-core/i anywhere (attribution sentences stay verbatim)",
     "the literal string \"get-shit-done\" / \"Get Shit Done\" (pre-gsd-core historical migration source names; contains no gsd token, left verbatim)"
   ],

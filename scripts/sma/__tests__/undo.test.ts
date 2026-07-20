@@ -1,6 +1,6 @@
 /**
  * Tests for `sma undo` — restoreSnapshot / listSnapshots / pruneSnapshots
- * (Phase 49.2 Plan 05, Task 2). These run against REAL git in mkdtemp repos —
+ * (Phase 9.2 Plan 05, Task 2). These run against REAL git in mkdtemp repos —
  * the drill is only honest against real git (no mocked runner in this file).
  *
  *   - Test 1: the BYTE-FOR-BYTE drill — snapshot → catastrophe (reset --hard + clean

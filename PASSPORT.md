@@ -30,7 +30,7 @@ This tip is pinned into each release tag as `SMA-Journal-Tip`, anchoring this sn
 
 ## What `--verify` proves (and what it does not)
 
-`sma passport --verify` proves RENDER DETERMINISM: the rendered passport and badge re-derive byte-identically from the embedded snapshot on a fresh clone. It does NOT prove the underlying ledger is truthful — ledger truthfulness is owned upstream by the canary false-dones and the 5% deep audit (49.2-10). This passport reports the ledger line and corrupt counts (0 lines, 0 corrupt) and says so plainly rather than overclaiming.
+`sma passport --verify` proves RENDER DETERMINISM: the rendered passport and badge re-derive byte-identically from the embedded snapshot on a fresh clone. It does NOT prove the underlying ledger is truthful — ledger truthfulness is owned upstream by the canary false-dones and the 5% deep audit (9.2-10). This passport reports the ledger line and corrupt counts (0 lines, 0 corrupt) and says so plainly rather than overclaiming.
 
 Captured at: 2026-07-09T17:57:17.707Z
 

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/context-pack.mjs (Phase 49.3 Plan 05, Task 2 — D-49.3-07).
+ * Tests for scripts/sma/lib/context-pack.mjs (Phase 9.3 Plan 05, Task 2 — D-9.3-07).
  *
  *   - Test 4 (pack determinism): compilePack twice → byte-identical PACK.md + MANIFEST.json;
  *     packId is a stable short sha; no compile-time wall-clock in the bytes.

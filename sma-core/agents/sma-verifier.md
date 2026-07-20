@@ -1,7 +1,7 @@
 ---
 name: sma-verifier
 description: Verifies phase goal achievement through goal-backward analysis. Checks codebase delivers what phase promised, not just that tasks completed. Creates VERIFICATION.md report.
-# tool-scope (49.1-23, B17): least-privilege, config-enforced (NOT prompt-requested).
+# tool-scope (9.1-23, B17): least-privilege, config-enforced (NOT prompt-requested).
 # The verifier reads the codebase and runs read-only checks; it NEVER mutates the code
 # under test. Edit/MultiEdit are config-denied (disallowedTools). Bash is for read-only
 # verification commands (test runs, grep, git rev-parse/show) — never destructive git or

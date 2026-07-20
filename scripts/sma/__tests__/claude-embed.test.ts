@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/claude-embed.mjs (49.4 BL-165, v3.6 — the installer's
+ * Tests for scripts/sma/lib/claude-embed.mjs (9.4 BL-165, v3.6 — the installer's
  * CLAUDE.md rules block).
  *
  * The load-bearing behaviors:

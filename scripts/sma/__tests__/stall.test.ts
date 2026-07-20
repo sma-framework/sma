@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/stall.mjs (Phase 49.1 Plan 21, Task 1 — B16 sibling).
+ * Tests for scripts/sma/lib/stall.mjs (Phase 9.1 Plan 21, Task 1 — B16 sibling).
  *
  * Rule-based stall detection (OpenHands StuckDetector doctrine — deterministic
  * thresholds, NEVER LLM-judged; RESEARCH Anti-pattern A1) over a rolling

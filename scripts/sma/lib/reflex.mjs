@@ -1,5 +1,5 @@
 /**
- * reflex.mjs — the P2 reflex consumer core (49.1-10, B1/B2).
+ * reflex.mjs — the P2 reflex consumer core (9.1-10, B1/B2).
  *
  * The founder's hot-stove model: one burn (a promoted bug-lesson note),
  * permanent pre-act avoidance, inherited by every terminal. A PreToolUse hook
@@ -7,9 +7,9 @@
  * Edit/Write/Bash tool call against the `use-when` triggers of promoted
  * bug-lesson notes and inject an ADVISORY WARN via additionalContext.
  *
- * POSTURE (D-49.1-12, carried-forward lock): advisory WARN only —
+ * POSTURE (D-9.1-12, carried-forward lock): advisory WARN only —
  * permissionDecision is ALWAYS 'allow'; hard deny stays security-guard-only.
- * Soft-deny is 49.1-17's GATES tier, never a reflex.
+ * Soft-deny is 9.1-17's GATES tier, never a reflex.
  *
  * NO EMBEDDINGS in the match path (founder lock): matching is the existing
  * deterministic tag-facet loader (loader.resolvePeriphery) + an optional
@@ -284,7 +284,7 @@ function extractHowToApply(body) {
 }
 
 /**
- * formatWarn(note, tier) → the WARN text (T-49.1-18: rule line + How-to-apply
+ * formatWarn(note, tier) → the WARN text (T-9.1-18: rule line + How-to-apply
  * extract + note id ONLY — never the full body).
  *
  * @param {{noteId?:string, file?:string, description?:string, useWhen?:string, body?:string}} note

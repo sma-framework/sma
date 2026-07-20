@@ -9,7 +9,7 @@
  *     claim, calibration escalations) — zero I/O of its own beyond the injected runner, so
  *     tests never touch the network. The CLI wires the real sources.
  *   - Per-source try/catch: ONE failing source degrades to a PARTIAL digest, never a throw
- *     (T-49.1-37 — session-start is HOOK_FACING and must never wedge a window).
+ *     (T-9.1-37 — session-start is HOOK_FACING and must never wedge a window).
  *   - Read-only git ONLY (the injected runner issues `git log`, a read subcommand; the
  *     founder-reserved deploy op is never invoked here — V1 posture).
  *   - Budgeted: the assembled block is clamped to DIGEST_BUDGET_BYTES (UTF-8 bytes) so the
@@ -84,7 +84,7 @@ function bytes(text) {
 /**
  * buildDigest(o) -> a budgeted RU text block «Что изменилось с вашего последнего
  * heartbeat», or '' when there is nothing worth surfacing. Assembles four sections, each
- * behind its own try/catch (T-49.1-37 partial degradation):
+ * behind its own try/catch (T-9.1-37 partial degradation):
  *   1. commits since my last heartbeat, grouped by author;
  *   2. other live sessions' claims with their NAMED identity («P52 Anna: <scope>»);
  *   3. the live push signal («Отправка в origin: <who> готовит <version>»);

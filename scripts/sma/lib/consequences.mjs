@@ -1,6 +1,6 @@
 /**
  * consequences.mjs — Consequences-as-LAW: the single step from RECORDING to
- * CONTROL (49.2-08, D-49.2-12, ICE 648). Verified claims must control behavior:
+ * CONTROL (9.2-08, D-9.2-12, ICE 648). Verified claims must control behavior:
  * a class-A prediction miss OR a claimed-pass/reproduced-fail divergence stops
  * `sma ship` until the founder dispositions it, and a divergence leaves a ready
  * rollback candidate branch.
@@ -21,7 +21,7 @@
  *      calibration ledger and the ONLY unblock path (a NEW appended disposition
  *      record, never an edit).
  *   4. `openRollbackCandidate` — create-only `update-ref` in a dedicated
- *      namespace (airbag D-49.2-08 posture: milliseconds, working tree untouched).
+ *      namespace (airbag D-9.2-08 posture: milliseconds, working tree untouched).
  *
  * Prohibitions honored HERE (see the plan's threat register):
  *   - NEVER a PreToolUse/hook hard deny — enforcement is exit codes the ship
@@ -35,7 +35,7 @@ import { readLedger, appendVerdict } from './calibration.mjs'
 import { parseFrontmatterEntries } from './predict.mjs'
 
 /**
- * The three trust-claim domains from CONS-49.2-A: a `miss` verdict in ANY of
+ * The three trust-claim domains from CONS-9.2-A: a `miss` verdict in ANY of
  * them is class A by construction — these ARE the trust claim (S1 false-done,
  * S4 subagent honesty, S8 blind-verifier quality). Frozen + exported so plan
  * 10's guards and the report reuse ONE boundary, never a second copy.
@@ -123,7 +123,7 @@ export function eventKey(record) {
 export function classifyEvent(record) {
   const r = record ?? {}
   if (r.kind === 'disposition') return null // a disposition is not itself an event
-  // Grade-the-grader (49.4-02): a scored grader-contradiction (a `satisfied`
+  // Grade-the-grader (9.4-02): a scored grader-contradiction (a `satisfied`
   // verdict ground-truth refutes, or an `unsatisfied` one clean ground truth
   // refutes) is class-A via the EXISTING sma.verification domain boundary — a
   // NEW event type, never a new domain (CLASS_A_DOMAINS untouched).
@@ -211,7 +211,7 @@ export function recordDisposition({ eventKey: ref, disposition, reason, by, doma
  * short-circuits with the spy NEVER called), sanitize the slug, then issue
  * `update-ref <ref> <sha> <40-zeros>` — the 40-zeros oldvalue makes it CREATE
  * ONLY (git refuses if the ref already exists). No checkout, no reset, no delete,
- * ever (airbag D-49.2-08: milliseconds, working tree untouched). Never throws —
+ * ever (airbag D-9.2-08: milliseconds, working tree untouched). Never throws —
  * an execGit failure (ref exists / git unavailable) returns {created:false}.
  *
  * @param {{slug:string, sha:string, execGit:Function}} args
@@ -233,7 +233,7 @@ export function openRollbackCandidate({ slug, sha, execGit }) {
 
 /**
  * graderContradictionEvent(scored, opts) -> the canonical class-A event a
- * contradicted grader verdict becomes (49.4-02). A thin adapter over a scored
+ * contradicted grader verdict becomes (9.4-02). A thin adapter over a scored
  * grader-verdict record (calibration.scoreGraderVerdicts output whose outcome is
  * 'contradicted'): it builds the `type:'grader-contradiction'` shape classifyEvent
  * scores class-A, in the sma.verification domain (already frozen class-A —

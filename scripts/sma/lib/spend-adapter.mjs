@@ -1,5 +1,5 @@
 /**
- * spend-adapter.mjs — the VERSIONED log-format adapter (49.2-09, D-49.2-13).
+ * spend-adapter.mjs — the VERSIONED log-format adapter (9.2-09, D-9.2-13).
  *
  * ═══════════════════════════ THE QUARANTINE ═══════════════════════════════════
  *
@@ -8,7 +8,7 @@
  * drift; by confining every field-name / structural assumption to `ADAPTER_VERSIONS`
  * here, a future log-format change is a ONE-FILE fix (append one adapter entry) and
  * an unrecognized-but-usage-bearing line is COUNTED as drift, never thrown or lost
- * (D-49.2-13). spend.mjs and breaker.mjs import vendor knowledge ONLY via these
+ * (D-9.2-13). spend.mjs and breaker.mjs import vendor knowledge ONLY via these
  * exports — they never touch a raw transcript field.
  *
  * ═══════════════════════════ THE CANONICAL EVENT ══════════════════════════════
@@ -31,11 +31,11 @@
  * over guessing; the caller surfaces the `unpriced` count in every report. NO
  * network fetch of pricing EVER (substrate law) — the table is versioned data.
  *
- * ═══════════════════════════ BRIDGE (D-49.2-05) ═══════════════════════════════
+ * ═══════════════════════════ BRIDGE (D-9.2-05) ═══════════════════════════════
  *
  * probeNativeSpend is the demolition-clause sensor: the day the vendor ships a
  * sufficient LOCAL spend surface (per-session + per-model + window totals without
- * network), the probe flips and spend.mjs stands the ledger down. P49.2-09-3 is the
+ * network), the probe flips and spend.mjs stands the ledger down. P9.2-09-3 is the
  * registered self-removal prediction; the ledger is NEVER headlined in positioning.
  *
  * Node built-ins only; zero npm deps, zero network, zero LLM.
@@ -303,7 +303,7 @@ export function discoverLogsDir(opts = {}) {
   return { dir, files }
 }
 
-// ═══════════════════════════ the capability probe (D-49.2-05) ════════════════════
+// ═══════════════════════════ the capability probe (D-9.2-05) ════════════════════
 
 /** The probe version — bump when the native-detection criteria change (V3.2 re-score). */
 export const NATIVE_SPEND_PROBE_VERSION = 1
@@ -323,7 +323,7 @@ export const NATIVE_SPEND_CRITERIA = [
  * native LOCAL spend surface exists (Console analytics is network-bound), so native is
  * false unless the versioned test seam SMA_NATIVE_SPEND is truthy. When native, spend.mjs
  * banners "native surface detected — bridge standing down" and spend-check goes silent
- * (the demolition clause, D-49.2-05a). Deterministic, local, no network.
+ * (the demolition clause, D-9.2-05a). Deterministic, local, no network.
  * @param {{env?:object}} [opts]
  * @returns {{native:boolean, probeVersion:number, criteria:string[]}}
  */

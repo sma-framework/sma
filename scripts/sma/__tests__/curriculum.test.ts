@@ -1,5 +1,5 @@
 /**
- * Tests for the weekly miss-curriculum — Phase 49.3 Plan 06, Task 2 (D-49.3-16).
+ * Tests for the weekly miss-curriculum — Phase 9.3 Plan 06, Task 2 (D-9.3-16).
  *
  *   - Test 1 (deterministic clustering): clusterMisses groups calibration misses by
  *     domain + journal incidents / ignored-broke fires by targetClass prefix, ranks

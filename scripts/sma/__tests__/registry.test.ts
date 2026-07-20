@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/registry.mjs (Phase 49 Plan 05, Task 1).
  *
- * R7 heartbeat session registry (B15 lease schema, D-49-01 identity, D-49-11 grading):
+ * R7 heartbeat session registry (B15 lease schema, D-9-01 identity, D-9-11 grading):
  *   - Test 1: heartbeat() on a clean dir creates <terminalId>.json with the FULL
  *     B15 schema.
  *   - Test 2: heartbeat() again within HEARTBEAT_INTERVAL_MS, unchanged scope/status
@@ -63,7 +63,7 @@ afterEach(() => {
   rmSync(sessionsDir, { recursive: true, force: true })
 })
 
-describe('resolveTerminalIdentity (D-49-01)', () => {
+describe('resolveTerminalIdentity (D-9-01)', () => {
   it('uses SMA_TERMINAL_NAME when set; slugifies for terminalId; pid rides along', () => {
     const id = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'Фабрика' } })
     expect(id.holderIdentity).toBe('Фабрика')
@@ -96,7 +96,7 @@ describe('resolveTerminalIdentity (D-49-01)', () => {
   })
 })
 
-describe('resolveTerminalIdentity — window-stable across sequential hook invocations (R7/D-49-01)', () => {
+describe('resolveTerminalIdentity — window-stable across sequential hook invocations (R7/D-9-01)', () => {
   it('SAME window token + DIFFERENT pids -> SAME terminalId (kills per-invocation fragmentation)', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-1' })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 200, sessionToken: 'sess-1' })
@@ -293,7 +293,7 @@ describe('readSessions — duplicate holderIdentity (Test 5, concurrency R7)', (
   })
 })
 
-describe('classifyStaleness — graduated grading (Test 6, D-49-11, P3)', () => {
+describe('classifyStaleness — graduated grading (Test 6, D-9-11, P3)', () => {
   const base = {
     holderIdentity: 'Мозг',
     pid: 111,
@@ -431,8 +431,8 @@ describe('resolveWorkLabel — precedence: claim scope > STATE phase > command (
     const label = resolveWorkLabel({
       claimScope: 'правит slots.mjs',
       statePath: '/whatever/STATE.md',
-      argv: ['sma-build', '49.1'],
-      readFileFn: () => '## Current Position\nPhase: 49.1',
+      argv: ['sma-build', '9.1'],
+      readFileFn: () => '## Current Position\nPhase: 9.1',
     })
     expect(label).toBe('правит slots.mjs')
   })
@@ -440,10 +440,10 @@ describe('resolveWorkLabel — precedence: claim scope > STATE phase > command (
   it('Test 1b: no claim -> the STATE.md Current Position phase', () => {
     const label = resolveWorkLabel({
       statePath: '/whatever/STATE.md',
-      argv: ['sma-build', '49.1'],
-      readFileFn: () => '## Current Position\nPhase: 49.1 — SMA V2\n',
+      argv: ['sma-build', '9.1'],
+      readFileFn: () => '## Current Position\nPhase: 9.1 — SMA V2\n',
     })
-    expect(label).toBe('phase:49.1')
+    expect(label).toBe('phase:9.1')
   })
 
   it('Test 1c: no claim, no STATE phase -> the invoking command name', () => {
@@ -461,18 +461,18 @@ describe('heartbeat — the work label lands + REFRESHES each call (FI-10, Test 
   it('Test 1: the label lands in the heartbeat record', () => {
     const identity = { holderIdentity: 'Tom', terminalId: 'tom', pid: 111 }
     heartbeat(
-      { scope: { globs: ['scripts/**'], description: 'slots' }, status: 'working', label: 'phase:49.1' },
+      { scope: { globs: ['scripts/**'], description: 'slots' }, status: 'working', label: 'phase:9.1' },
       { sessionsDir, identity },
     )
     const lease = JSON.parse(readFileSync(join(sessionsDir, 'tom.json'), 'utf8'))
-    expect(lease.label).toBe('phase:49.1')
+    expect(lease.label).toBe('phase:9.1')
   })
 
   it('Test 2: a changed label forces a refresh even within the throttle interval', () => {
     const identity = { holderIdentity: 'Tom', terminalId: 'tom2', pid: 222 }
     const scope = { globs: ['scripts/**'], description: 'slots' }
     const t0 = Date.parse('2026-07-06T10:00:00.000Z')
-    const r1 = heartbeat({ scope, status: 'working', label: 'phase:49.1' }, { sessionsDir, identity, now: t0 })
+    const r1 = heartbeat({ scope, status: 'working', label: 'phase:9.1' }, { sessionsDir, identity, now: t0 })
     expect(r1.skipped).toBeFalsy()
 
     // Within HEARTBEAT_INTERVAL_MS, same scope/status but a NEW label -> not throttled.
@@ -490,7 +490,7 @@ describe('heartbeat — the work label lands + REFRESHES each call (FI-10, Test 
     const identity = { holderIdentity: 'Tom', terminalId: 'tom3', pid: 333 }
     const t0 = Date.parse('2026-07-06T10:00:00.000Z')
     heartbeat(
-      { scope: { globs: ['a/**'], description: 'a' }, status: 'working', label: 'phase:49.1' },
+      { scope: { globs: ['a/**'], description: 'a' }, status: 'working', label: 'phase:9.1' },
       { sessionsDir, identity, now: t0 },
     )
     // A later beat with a new scope but NO label keeps the prior label.
@@ -499,7 +499,7 @@ describe('heartbeat — the work label lands + REFRESHES each call (FI-10, Test 
       { sessionsDir, identity, now: t0 + HEARTBEAT_INTERVAL_MS + 1000 },
     )
     const lease = JSON.parse(readFileSync(join(sessionsDir, 'tom3.json'), 'utf8'))
-    expect(lease.label).toBe('phase:49.1')
+    expect(lease.label).toBe('phase:9.1')
   })
 })
 
@@ -510,7 +510,7 @@ describe('displayIdentity — «P<phase> <Name>», graceful degradation (FI-10, 
 
   it('accepts a dotted phase and a P-token label', () => {
     expect(displayIdentity({ holderIdentity: 'Angie', label: 'phase:51.2' })).toBe('P51.2 Angie')
-    expect(displayIdentity({ holderIdentity: 'Tom', phase: '49.1' })).toBe('P49.1 Tom')
+    expect(displayIdentity({ holderIdentity: 'Tom', phase: '9.1' })).toBe('P9.1 Tom')
   })
 
   it('name unset (auto T- token) degrades to «P<phase>» — no anonymous token', () => {

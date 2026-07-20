@@ -1,6 +1,6 @@
 /**
  * Tests for subagent-receipts.mjs — transcript claim extraction + tree verification
- * + the shared-journal receipt (Phase 49.2 Plan 04, Task 2).
+ * + the shared-journal receipt (Phase 9.2 Plan 04, Task 2).
  *
  * Everything is DI: readFn feeds a fixture transcript string, runGit/statFile are
  * injected stubs (never git, never the real fs), appendEvent is a spy. Deterministic.
@@ -274,11 +274,11 @@ describe('receiptStatsSchemaOk — deterministic report-shape check (BL-172)', (
   })
 })
 
-// ── BL-173 (49.4-03): the three false-positive mechanisms killed, with the 9 forensic ──
-// rows (49.3-PHANTOM-FORENSICS.md — 0 real phantoms / 4 path artifacts / 5 instrument
+// ── BL-173 (9.4-03): the three false-positive mechanisms killed, with the 9 forensic ──
+// rows (9.3-PHANTOM-FORENSICS.md — 0 real phantoms / 4 path artifacts / 5 instrument
 // artifacts) as permanent regression fixtures.
 
-describe('forensics — BL-173 asserted-tier precision (49.3-PHANTOM-FORENSICS.md)', () => {
+describe('forensics — BL-173 asserted-tier precision (9.3-PHANTOM-FORENSICS.md)', () => {
   const repoRoot = resolve('/repo')
 
   /** runGit dispatcher: status/log from a map, ls-files from a fixed hit list. */
@@ -337,7 +337,7 @@ describe('forensics — BL-173 asserted-tier precision (49.3-PHANTOM-FORENSICS.m
       runGit: runGitWith({
         lsFiles: [
           '.planning/phases/53.1-x/deferred-items.md',
-          '.planning/phases/49.4-x/deferred-items.md',
+          '.planning/phases/9.4-x/deferred-items.md',
         ],
       }),
       statFile: () => false,

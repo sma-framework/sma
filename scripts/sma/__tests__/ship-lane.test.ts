@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/ship-lane.mjs (49.4-08, BL-177 — the ship lanes).
+ * Tests for scripts/sma/lib/ship-lane.mjs (9.4-08, BL-177 — the ship lanes).
  *
  * The five load-bearing behaviors of the quick-ship substrate:
  *   Test 1 — delta count leg: a 6-commit origin-delta refuses «this is a full /sma-ship»

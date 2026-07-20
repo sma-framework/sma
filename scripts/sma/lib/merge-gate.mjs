@@ -1,10 +1,10 @@
 /**
- * merge-gate.mjs — 49.3-15 (D-49.3-24c/d/e/f): the serialized merge gate + the
+ * merge-gate.mjs — 9.3-15 (D-9.3-24c/d/e/f): the serialized merge gate + the
  * verified-live-only enforcing-scope predicate.
  *
- * ═══════════════════════════ THE MERGE RITUAL (D-49.3-24d) ═══════════════════════
+ * ═══════════════════════════ THE MERGE RITUAL (D-9.3-24d) ═══════════════════════
  *
- * A worktree branch (49.3-14) enters `main` ONLY through `runMerge`, under a
+ * A worktree branch (9.3-14) enters `main` ONLY through `runMerge`, under a
  * merge-claim slot, IN ORDER:
  *   1. acquire the `merge-in-progress` slot  (a concurrent merge -> SOFT-deny + override)
  *   2. merge the branch into main LOCALLY    (mock/real execGit — NEVER a push, NEVER a deploy)
@@ -15,7 +15,7 @@
  * on the merged tree, receipted, and LOCAL. `git push` is explicitly OUT of scope — push
  * stays founder-ordered via /sma-ship (slots.mjs header law, unchanged).
  *
- * ═══════════════════════════ CONSUME-NEVER-REIMPLEMENT (D-49.3-02) ═══════════════
+ * ═══════════════════════════ CONSUME-NEVER-REIMPLEMENT (D-9.3-02) ═══════════════
  *
  * The merge-claim triplet (acquire/release/check) mirrors slots.mjs's push-claim triplet
  * near line-for-line, built on claims.mjs's claimSlot/releaseSlot mkdir-EEXIST primitive
@@ -23,13 +23,13 @@
  * enforcing check reuses plan 13's verifyClaimEvidence (collision.mjs) for the
  * verified-LIVE-vs-stale decision — ONE evidence source, never a second logic.
  *
- * ═══════════════════════════ POSTURE LOCKS (D-49.3-24f, carried) ═════════════════
+ * ═══════════════════════════ POSTURE LOCKS (D-9.3-24f, carried) ═════════════════
  *
  *   - The C9 fail-open wrapper is absolute: any error in runMerge or enforceScope
  *     degrades to an honest failure / allow, releasing any held slot — a gate bug can
  *     NEVER wedge a session and NEVER leave a slot stuck.
  *   - enforceScope is SOFT-deny-with-override ONLY (mayDeny tier). Hard deny remains the
- *     security guard's alone. The founder word (D-49-09) always wins: releaseSlot's
+ *     security guard's alone. The founder word (D-9-09) always wins: releaseSlot's
  *     foreign-claim refusal + force-clear provenance are inherited unchanged, and a
  *     cooling-down / force-cleared scope is NEVER enforced.
  *
@@ -49,7 +49,7 @@ export { MERGE_SLOT_NAME } from './constants.mjs'
 
 /**
  * The override instruction a SOFT-deny carries — the legitimate escape hatch so an
- * enforcing soft-deny can NEVER block real work (D-49.3-24c/f). Plain RU (shareholder-facing).
+ * enforcing soft-deny can NEVER block real work (D-9.3-24c/f). Plain RU (shareholder-facing).
  */
 export const ENFORCE_OVERRIDE_HINT =
   'переопределить (если правка действительно нужна): SMA_ENFORCE_SCOPES_DISABLE=1 для этого вызова, ' +
@@ -77,7 +77,7 @@ function envOn(v) {
   return !!s && s !== '0' && s !== 'false'
 }
 
-// ── the merge-claim triplet — mirrors slots.mjs's push-claim triplet (D-49.3-02) ─────
+// ── the merge-claim triplet — mirrors slots.mjs's push-claim triplet (D-9.3-02) ─────
 
 /**
  * acquireMergeClaim({by, session, branch, claimsDir}) — win the single
@@ -112,7 +112,7 @@ export function acquireMergeClaim(o = {}) {
 
 /**
  * releaseMergeClaim({by, claimsDir}) — release the caller's OWN merge claim. A foreign
- * claim is refused by releaseSlot (P3, D-49-09) — force-clear lives in the interactive
+ * claim is refused by releaseSlot (P3, D-9-09) — force-clear lives in the interactive
  * CLI (49-10), never here.
  */
 export function releaseMergeClaim(o = {}) {
@@ -172,7 +172,7 @@ export function checkMergeClaim(o = {}) {
 
 /**
  * runMerge({branch, execGit, runTests, claimsDir, journalDir, cwd, by, now}) — the
- * serialized merge ritual (D-49.3-24d). IN ORDER: acquire the merge slot (a concurrent
+ * serialized merge ritual (D-9.3-24d). IN ORDER: acquire the merge slot (a concurrent
  * hold -> SOFT-deny + override) -> merge the branch into main LOCALLY (no push) -> run
  * the injected tests on the MERGE RESULT -> journal a receipt (pass OR fail honestly) ->
  * release the slot. Wrapped fail-open (C9): any error releases the held slot and returns
@@ -256,7 +256,7 @@ export function runMerge(o = {}) {
   }
 }
 
-// ── enforcing scopes — the verified-LIVE-only soft-deny predicate (D-49.3-24c/f) ─────
+// ── enforcing scopes — the verified-LIVE-only soft-deny predicate (D-9.3-24c/f) ─────
 //
 // enforceScope is the SOFT-deny-with-override predicate. It fires (soft-deny + override)
 // ONLY on a VERIFIED-LIVE foreign claim — the SAME evidence logic as plan 13's
@@ -266,7 +266,7 @@ export function runMerge(o = {}) {
 //   - SOFT-deny-with-override ONLY — NEVER a hard block (hard deny stays the security
 //     guard's alone, carried posture lock).
 //   - Any error degrades to ALLOW (C9 fail-open) — a gate bug can NEVER wedge a session.
-//   - A cooling-down / force-cleared scope is NEVER enforced — the founder word (D-49-09)
+//   - A cooling-down / force-cleared scope is NEVER enforced — the founder word (D-9-09)
 //     always wins.
 // The OPT-IN gate (SMA_ENFORCE_SCOPES, default off) lives in the pre.mjs `enforce` stream,
 // NOT here — so this predicate stays a pure evidence->action function.
@@ -276,7 +276,7 @@ export function runMerge(o = {}) {
  * — decide the enforcing action for an Edit/Write that overlaps a foreign claim.
  *   - no foreign claim                       -> {action:'allow'}
  *   - SMA_ENFORCE_SCOPES_DISABLE set          -> {action:'allow'} (kill-switch, before any evidence read)
- *   - cooling-down / force-cleared scope      -> {action:'warn'}  (founder word wins, D-49-09)
+ *   - cooling-down / force-cleared scope      -> {action:'warn'}  (founder word wins, D-9-09)
  *   - foreign claim STALE/unverified          -> {action:'warn', text}
  *   - foreign claim VERIFIED-LIVE             -> {action:'soft-deny', text, override}
  * Deterministic over the injected evidence + verifyClaimEvidence (plan 13's ONE evidence
@@ -292,7 +292,7 @@ export function enforceScope(o = {}) {
     const foreignClaim = o.foreignClaim
     if (!foreignClaim) return { action: 'allow' } // no overlap -> nothing to enforce
 
-    // NEVER enforce a cooling-down / force-cleared scope — the founder word wins (D-49-09).
+    // NEVER enforce a cooling-down / force-cleared scope — the founder word wins (D-9-09).
     if (o.coolingDown) {
       return { action: 'warn', text: 'скоуп недавно освобождён — можно занимать (не блокируем)' }
     }

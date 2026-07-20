@@ -2,9 +2,9 @@
 /**
  * rename.mjs — deterministic, mechanical gsd -> sma rebrand of the sma-core/ tree.
  *
- * Plan 49.1-02 Task 1 (D-49.1-01, FI-7). Zero logic changes: file renames +
+ * Plan 9.1-02 Task 1 (D-9.1-01, FI-7). Zero logic changes: file renames +
  * ordered, case-preserving string substitution only. Emits rename-map.json at
- * the repo root — the machine-readable map the 49.1-07 upstream-watch differ
+ * the repo root — the machine-readable map the 9.1-07 upstream-watch differ
  * consumes to translate upstream paths/strings into ours.
  *
  * Scope: sma-core/** ONLY. vendor/**, LICENSE, THIRD-PARTY-LICENSES.md,
@@ -25,7 +25,7 @@ const SCAN_ROOT = path.join(ROOT, 'sma-core')
 // CONTENTS and to file BASENAMES alike.
 const STRING_MAP = [
   // npm package identity: chosen product name is "sma-framework" (no scope) —
-  // 49.1-NAMING.md CHOSEN marker, reverified live 2026-07-06.
+  // 9.1-NAMING.md CHOSEN marker, reverified live 2026-07-06.
   { from: '@opengsd/gsd-core', to: 'sma-framework' },
   // GitHub source coordinates -> future product repo github.com/sma-framework/sma
   { from: 'open-gsd/gsd-core', to: 'sma-framework/sma' },
@@ -44,13 +44,13 @@ const STRING_MAP = [
 
 // Paths (repo-root-relative, forward slashes) never scanned or rewritten.
 const EXCLUSIONS = [
-  'vendor/**  (pristine upstream snapshot — the 49.1-07 diff base)',
+  'vendor/**  (pristine upstream snapshot — the 9.1-07 diff base)',
   'LICENSE  (upstream MIT text, attribution)',
   'THIRD-PARTY-LICENSES.md  (attribution: "derived from gsd-core" stays verbatim)',
   'UPSTREAM.json  (upstream anchor keeps the original package/source names)',
   'rename-map.json  (this map itself)',
   'tools/**  (rename/verify scripts carry the old tokens as data)',
-  'sma-core/aliases/**  (transitional /gsd-* alias layer intentionally carries the old prefix, D-49.1-02)',
+  'sma-core/aliases/**  (transitional /gsd-* alias layer intentionally carries the old prefix, D-9.1-02)',
   'lines matching /derived from gsd-core/i anywhere (attribution sentences stay verbatim)',
   'the literal string "get-shit-done" / "Get Shit Done" (pre-gsd-core historical migration source names; contains no gsd token, left verbatim)',
 ]
@@ -115,11 +115,11 @@ for (const file of walk(SCAN_ROOT)) {
   }
 }
 
-// Emit the machine-readable map (consumed by the 49.1-07 three-way differ)
+// Emit the machine-readable map (consumed by the 9.1-07 three-way differ)
 const map = {
   generated: new Date().toISOString().slice(0, 10),
-  plan: '49.1-02',
-  decision: 'D-49.1-01 (atomic fork rebrand) + FI-7 (atomic rename lock)',
+  plan: '9.1-02',
+  decision: 'D-9.1-01 (atomic fork rebrand) + FI-7 (atomic rename lock)',
   package: { from: '@opengsd/gsd-core', to: 'sma-framework', install: 'npx sma-framework init' },
   files: fileRenames,
   strings: STRING_MAP,

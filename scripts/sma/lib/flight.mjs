@@ -1,5 +1,5 @@
 /**
- * flight.mjs — the deterministic pre-compaction FLIGHT RECORDER (49.2-06, D-49.2-09).
+ * flight.mjs — the deterministic pre-compaction FLIGHT RECORDER (9.2-06, D-9.2-09).
  *
  * The #1-world-pain bridge: auto-compaction silently deletes a session's working
  * state. This module makes that moment survivable with PURE FILE ASSEMBLY — zero
@@ -15,8 +15,8 @@
  *     sections, byte-deterministic, budgeted to CAPSULE_BUDGET (oldest events
  *     dropped first; header + Current-task NEVER truncated).
  *   - scanForSecrets — a pure deterministic redactor run before EVERY write; a
- *     matched secret is NEVER written in raw form (T-49.2-06A, unconditional).
- *   - nativeProbe — the D-49.2-05 demolition-clause sensor: when a sufficient
+ *     matched secret is NEVER written in raw form (T-9.2-06A, unconditional).
+ *   - nativeProbe — the D-9.2-05 demolition-clause sensor: when a sufficient
  *     native pre-compaction preservation mechanism is detected the whole stream
  *     stands down (writeCapsule -> {skipped:'native'}).
  *   - buildResumeBrief / buildHandoffBrief — continuation briefs assembled from
@@ -87,7 +87,7 @@ function parseFile(path) {
  * Structurally mirrors journal.mjs (per-terminal file, seq = last+1, tolerant parse).
  * Mark shape: {ts, terminal, seq, tool, target}. `target` is a file path for Edit/
  * Write or a first-token command SLUG for Bash — NEVER the full command line (secrets
- * ride in command args; T-49.2-06A).
+ * ride in command args; T-9.2-06A).
  * @param {{tool?:string, target?:string}} entry
  * @param {{terminalId:string, flightDir?:string, now?:string}} opts
  * @returns {object} the written mark
@@ -148,14 +148,14 @@ export function readMarks(opts = {}) {
   return { marks: all, count: all.length, corrupt }
 }
 
-// ── the capability probe (demolition-clause sensor, D-49.2-05) ───────────────────
+// ── the capability probe (demolition-clause sensor, D-9.2-05) ───────────────────
 
 /**
  * nativeProbe(opts) -> {native, reason}. Today NO vendor mechanism preserves a
  * session's working state deterministically across compaction, so native is false
  * unless the documented stand-down override SMA_FLIGHT_NATIVE is truthy — that is
  * also the seam where a real vendor-feature detection lands the day one exists.
- * When native, writeCapsule stands the whole bridge down (D-49.2-05). Deterministic.
+ * When native, writeCapsule stands the whole bridge down (D-9.2-05). Deterministic.
  * @param {{env?:object}} [opts]
  * @returns {{native:boolean, reason:string}}
  */
@@ -166,7 +166,7 @@ export function nativeProbe(opts = {}) {
     : { native: false, reason: 'no native pre-compaction preservation mechanism known' }
 }
 
-// ── secret scan (unconditional redaction before EVERY write, T-49.2-06A) ─────────
+// ── secret scan (unconditional redaction before EVERY write, T-9.2-06A) ─────────
 
 /**
  * SECRET_PATTERNS — anchored regexes with rule names. Pure data; scanForSecrets and
@@ -228,7 +228,7 @@ function nextStepFrom(inputs) {
 
 /**
  * buildCapsule(inputs) -> markdown string. PURE — zero fs, zero clock (inputs.now is
- * injected; the determinism precondition, P49.2-06-02). Fixed 5-section order; enforces
+ * injected; the determinism precondition, P9.2-06-02). Fixed 5-section order; enforces
  * CAPSULE_BUDGET by dropping the OLDEST events first with one `…truncated` marker. The
  * header and Current-task sections are NEVER truncated.
  * @param {{now, identity, label, trigger, statePosition, stateBlockers, ownClaim, otherClaims, pushClaim, journalTail, marksTail, execState}} inputs
@@ -327,7 +327,7 @@ export function buildCapsule(inputs = {}) {
  * writeCapsule({capsule, terminalId}, opts) — probe stand-down -> redact EVERY line via
  * scanForSecrets -> atomicWriteRaw to BOTH intent.md and capsules/<terminalId>.md.
  * When the probe reports native, writes NOTHING and returns {skipped:'native'} (bridge
- * stands down, D-49.2-05). Returns {written:[paths], redactions}.
+ * stands down, D-9.2-05). Returns {written:[paths], redactions}.
  * @param {{capsule:string, terminalId:string}} args
  * @param {{flightDir?:string, env?:object, writeRaw?:Function}} [opts]
  */
@@ -426,7 +426,7 @@ export function buildResumeBrief(inputs = {}) {
 /**
  * buildHandoffBrief(inputs) -> markdown string. Everything buildResumeBrief has PLUS a
  * claim-transfer section naming the exact `pnpm sma release <slot>` / `pnpm sma claim`
- * commands + the D-49-09 force-clear warning. PURE — the write path (writeHandoff) runs
+ * commands + the D-9-09 force-clear warning. PURE — the write path (writeHandoff) runs
  * the secret scan. Honest empty when the flight dir is empty.
  */
 export function buildHandoffBrief(inputs = {}) {
@@ -438,6 +438,6 @@ export function buildHandoffBrief(inputs = {}) {
   const lines = ['# SMA Handoff Brief', '', ...briefBody(inputs), '', '## Передача claim (claim transfer)', '']
   lines.push(`- Отпустить ваш claim: \`pnpm sma release ${slot ?? '<slot>'}\``)
   lines.push('- Принять на другом терминале: `pnpm sma claim <globs> --description "<что>"`')
-  lines.push('- ⚠ Чужой claim снимается только через `pnpm sma force-clear <slot> --yes` — force-clear показывает владельца и требует явного подтверждения (D-49-09).')
+  lines.push('- ⚠ Чужой claim снимается только через `pnpm sma force-clear <slot> --yes` — force-clear показывает владельца и требует явного подтверждения (D-9-09).')
   return lines.join('\n') + '\n'
 }

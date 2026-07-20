@@ -250,7 +250,7 @@ type: feedback
 ---
 `
 
-/** A feedback fixture carrying the D-49-15 bug-lesson form (Why + How to apply). */
+/** A feedback fixture carrying the D-9-15 bug-lesson form (Why + How to apply). */
 const BUGLESSON_NOTE = `---
 name: feedback_migration_rename_footgun
 description: Drizzle add+drop column in one migration window hangs the Railway deploy.
@@ -359,7 +359,7 @@ describe('migrate-frontmatter (Plan 11 Task 1)', () => {
     expect(res.frontmatter).toBeUndefined()
   })
 
-  it('Test 4: feedback with Why + How-to-apply → kind bug-lesson + a topic tag (D-49-15)', () => {
+  it('Test 4: feedback with Why + How-to-apply → kind bug-lesson + a topic tag (D-9-15)', () => {
     const res = migrateNote({
       file: 'feedback_migration_rename_footgun.md',
       text: BUGLESSON_NOTE,

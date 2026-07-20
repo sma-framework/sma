@@ -1,9 +1,9 @@
 /**
- * citations.mjs — the B4 usage-citation ledger of the layered memory (49.1-11).
+ * citations.mjs — the B4 usage-citation ledger of the layered memory (9.1-11).
  *
  * Every note consumption is a citation event: a 'load' (the loader returned the
  * note to a session — `sma load`, pre-act injection) or a 'fire' (a promoted
- * reflex surfaced it via 49.1-10's PreToolUse consumer). One usage model over
+ * reflex surfaced it via 9.1-10's PreToolUse consumer). One usage model over
  * both makes «which notes are actually used and which are dead weight»
  * answerable with data — the input FI-9's demotion ordering needs.
  *
@@ -13,9 +13,9 @@
  * Reader is tolerant: a corrupt line is skipped-and-counted, never a throw (C9).
  *
  * Fail-open discipline (C9/P4): recordCitation NEVER throws — a citation write
- * failure must never break the load it instruments (49.1-11 Test 5).
+ * failure must never break the load it instruments (9.1-11 Test 5).
  *
- * Exports (consumed by loader.mjs wiring + `sma usage` + 49.1-12/13):
+ * Exports (consumed by loader.mjs wiring + `sma usage` + 9.1-12/13):
  *   - recordCitation(evt, opts) — append one citation line (fail-open, null on error)
  *   - readUsage(opts)           — merged citation events (usage ledger + reflex fires)
  *   - usageStats(opts)          — per-note counts split by kind, with lastCitedAt
@@ -63,7 +63,7 @@ function parseFile(path) {
  * recordCitation(evt, opts) — append ONE citation line to <terminal>.jsonl.
  * seq = last line's seq + 1 (missing file -> 1), matching journal.appendEvent.
  * FAIL-OPEN: any error returns null — a citation must never break the load
- * it instruments (49.1-11 Test 5).
+ * it instruments (9.1-11 Test 5).
  *
  * @param {{noteId:string, kind:'load'|'fire', terminal:string, session?:string|null}} evt
  * @param {{usageDir?:string, now?:string}} [opts]
@@ -107,7 +107,7 @@ function compareEvents(a, b) {
 
 /**
  * readUsage(opts) -> {events, corrupt}. Merges the usage ledger with the reflex
- * journal's fire events (49.1-10 journals each surviving fire as type 'reflex'
+ * journal's fire events (9.1-10 journals each surviving fire as type 'reflex'
  * with detail.noteId) — ONE usage model over both consumption points.
  *
  * @param {{usageDir?:string, journalDir?:string}} [opts]
@@ -129,7 +129,7 @@ export function readUsage(opts = {}) {
     corrupt += c
   }
 
-  // Fold reflex fires from the journal (event kind 'reflex', 49.1-10).
+  // Fold reflex fires from the journal (event kind 'reflex', 9.1-10).
   if (opts.journalDir) {
     try {
       const { events } = readJournal({ journalDir: opts.journalDir })
@@ -185,7 +185,7 @@ export function usageStats(opts = {}) {
 }
 
 /** List corpus note files (*.md, non-structural) — mirrors loader.mjs's listing.
- * The FI-11 per-area INDEX-<area>.md files (49.1-13) are structural, not notes. */
+ * The FI-11 per-area INDEX-<area>.md files (9.1-13) are structural, not notes. */
 function listCorpusNotes(corpusDir) {
   let entries
   try {

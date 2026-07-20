@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/canary.mjs (Phase 49.2 Plan 10, Task 2).
+ * Tests for scripts/sma/lib/canary.mjs (Phase 9.2 Plan 10, Task 2).
  *
- * Planted false-«done» canaries with a sealed ledger (D-49.2-14):
+ * Planted false-«done» canaries with a sealed ledger (D-9.2-14):
  *   - Test 1: plantCanary appends ONE canary claim (expected hash perturbed, false
  *     by construction) to the claims file AND a sealed, hash-chained ledger line;
  *     the planted claim body carries NO extra marker key vs a real claim.

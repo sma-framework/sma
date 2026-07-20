@@ -265,7 +265,7 @@ describe('P5 — no push subcommand across the whole module (T-49-06-01)', () =>
 // ── B11 — all-counter slots (bl / action / decision / phase) ────────────────────────
 //
 // Fixtures mirror the LIVE .planning source files' parse-relevant syntax verbatim (the
-// `- [ ] **BL-NNN** ·` / `**A-NNN**` bullets, `D-49.1-NN` decision tags, `### Phase N`
+// `- [ ] **BL-NNN** ·` / `**A-NNN**` bullets, `D-9.1-NN` decision tags, `### Phase N`
 // headings) per feedback_test_fixtures_mirror_live_files — a dead scanner is caught.
 
 // Verbatim-format excerpt of .planning/BACKLOG.md (## Backlog section).
@@ -285,8 +285,8 @@ const ACTIONS_FIXTURE = `## Actions
 // Verbatim-format excerpt of a phase *-CONTEXT.md decision block.
 const CONTEXT_FIXTURE = `## Decisions
 
-- **D-49.1-14** · Первое решение фазы.
-- **D-49.1-15** · Второе решение фазы.
+- **D-9.1-14** · Первое решение фазы.
+- **D-9.1-15** · Второе решение фазы.
 `
 
 // Verbatim-format excerpt of .planning/ROADMAP.md phase headings (incl. a dotted N.M).
@@ -294,7 +294,7 @@ const ROADMAP_FIXTURE = `### Phase 52: Search — Indexing Pipeline
 
 ### Phase 53: Reports — Export Engine
 
-### Phase 49.1: SMA V2 — Predictions, Reflexes, Enforcement
+### Phase 9.1: SMA V2 — Predictions, Reflexes, Enforcement
 `
 
 describe('nextCounterSlot — all-counter slots (B11, FI-5)', () => {
@@ -329,13 +329,13 @@ describe('nextCounterSlot — all-counter slots (B11, FI-5)', () => {
     expect(res.id).toBe('A-203') // outliers never collide again — numeric max wins
   })
 
-  it('Test 3: next-slot decision --phase 49.1 scans the phase CONTEXT.md and returns the next', () => {
-    const contextPath = join(planningRoot, '49.1-CONTEXT.md')
+  it('Test 3: next-slot decision --phase 9.1 scans the phase CONTEXT.md and returns the next', () => {
+    const contextPath = join(planningRoot, '9.1-CONTEXT.md')
     writeFileSync(contextPath, CONTEXT_FIXTURE)
-    const res = nextCounterSlot('decision', { phase: '49.1', contextPath, by: 'alice', claimsDir })
+    const res = nextCounterSlot('decision', { phase: '9.1', contextPath, by: 'alice', claimsDir })
     expect(res.won).toBe(true)
     expect(res.number).toBe(16)
-    expect(res.id).toBe('D-49.1-16')
+    expect(res.id).toBe('D-9.1-16')
   })
 
   it('decision without --phase is refused (no source to scan)', () => {
@@ -349,7 +349,7 @@ describe('nextCounterSlot — all-counter slots (B11, FI-5)', () => {
     writeFileSync(roadmapPath, ROADMAP_FIXTURE)
     const res = nextCounterSlot('phase', { roadmapPath, by: 'alice', claimsDir })
     expect(res.won).toBe(true)
-    expect(res.number).toBe(54) // max integer heading (53) + 1; the dotted 49.1 never wins
+    expect(res.number).toBe(54) // max integer heading (53) + 1; the dotted 9.1 never wins
     expect(res.id).toBe('54')
   })
 
@@ -400,7 +400,7 @@ describe('nextCounterSlot — all-counter slots (B11, FI-5)', () => {
   })
 })
 
-// ── 49.1-23 (B17) — idempotent slot reconciliation (the claimed-but-not-consumed gap) ─
+// ── 9.1-23 (B17) — idempotent slot reconciliation (the claimed-but-not-consumed gap) ─
 //
 // A terminal claims a number slot then dies before writing the number into the source.
 // The old scan saw the live claim dir and skipped that number forever. Reconcile: an
@@ -414,7 +414,7 @@ function ageClaim(claimsDir: string, slotName: string, olderThanMs: number) {
   writeFileSyncNode(provPath, JSON.stringify(prov))
 }
 
-describe('slot reconciliation — expired unconsumed claims are re-issued (49.1-23, B17)', () => {
+describe('slot reconciliation — expired unconsumed claims are re-issued (9.1-23, B17)', () => {
   it('reconcileExpiredClaim removes an expired UNconsumed claim, spares a fresh or consumed one', () => {
     // fresh -> spared
     claimSlot('migration-500', { by: 'x', session: 's', expectedPrev: null, reason: 'migration-number' }, { claimsDir })
@@ -474,7 +474,7 @@ describe('slot reconciliation — expired unconsumed claims are re-issued (49.1-
     expect(isConsumed('bl-122', { claimsDir })).toBe(true)
     // decision without --phase cannot resolve a slot name
     expect(markSlotConsumed('decision', 16, { claimsDir }).consumed).toBe(false)
-    expect(slotNameForKind('decision', 16, { phase: '49.1' })).toBe('decision-49.1-16')
+    expect(slotNameForKind('decision', 16, { phase: '9.1' })).toBe('decision-9.1-16')
     expect(slotNameForKind('migration', 7)).toBe('migration-007')
   })
 

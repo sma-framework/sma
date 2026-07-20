@@ -1,4 +1,4 @@
-# SMA statusline segment (D-49-03)
+# SMA statusline segment (D-9-03)
 
 A persistent «SMA: N сессий · M коллизий» indicator for the Claude Code statusline.
 It reads the local `.sma/` files **directly** (`fs.readFileSync` only — no network, no
@@ -27,7 +27,7 @@ the repo root (derive it from the session `cwd` the statusline already receives 
 or hard-code the checkout path on a single-project machine).
 
 ```javascript
-// ── SMA segment (D-49-03): direct .sma/ read, no network, empty string on ANY error ──
+// ── SMA segment (D-9-03): direct .sma/ read, no network, empty string on ANY error ──
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -78,7 +78,7 @@ function smaSegment(repoRoot) {
     if (sessions === 0 && collisions === 0) return ""; // nothing to show
     return `SMA: ${sessions} сессий · ${collisions} коллизий`;
   } catch {
-    return ""; // a statusline must NEVER crash the prompt (D-49-03)
+    return ""; // a statusline must NEVER crash the prompt (D-9-03)
   }
 }
 ```

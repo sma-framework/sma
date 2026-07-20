@@ -1,5 +1,5 @@
 /**
- * worktree.mjs — per-TERMINAL git worktree isolation (49.3-14, D-49.3-24a/b, BL-156a).
+ * worktree.mjs — per-TERMINAL git worktree isolation (9.3-14, D-9.3-24a/b, BL-156a).
  *
  * WHY THIS EXISTS
  * The founder runs MULTIPLE parallel Claude Code sessions against ONE checkout
@@ -8,23 +8,23 @@
  * «your push carried my half-built work» PHYSICALLY impossible: each session gets
  * its own working directory + branch (`git worktree add <path> -b <branch>`), so two
  * sessions can never overwrite each other's files. Integration back to main is
- * SERIALIZED through 49.3-15's `sma merge` (local only); push stays founder-ordered
+ * SERIALIZED through 9.3-15's `sma merge` (local only); push stays founder-ordered
  * via /sma-ship. This module NEVER runs `git push` or `git merge`.
  *
- * THE MODEL IS PER-TERMINAL, NOT PER-PHASE OR EXECUTOR-ONLY (D-49.3-24a)
+ * THE MODEL IS PER-TERMINAL, NOT PER-PHASE OR EXECUTOR-ONLY (D-9.3-24a)
  * Three sessions sit on ONE phase today and the pain is human-driven parallel
  * sessions — so one worktree per TERMINAL is the model. Per-phase (too coarse — two
  * sessions on one phase still collide) and executor-only (misses the human-parallel
  * case entirely) are REJECTED.
  *
- * `.sma/` COORDINATION IS ALREADY WORKTREE-TRANSPARENT — NOT RE-PLUMBED (D-49.3-02)
+ * `.sma/` COORDINATION IS ALREADY WORKTREE-TRANSPARENT — NOT RE-PLUMBED (D-9.3-02)
  * registry.smaRoot() resolves `.sma/` to the MAIN checkout via
  * `git rev-parse --git-common-dir`, so every worktree session ALREADY registers in
  * the shared checkout's `.sma/` — the fingerprint, claims, sessions, and journal
  * «just work» across worktrees for free. Plan 14 provisions WORKING-TREE directories
  * ONLY; it imports/relies on that resolution and never re-implements coordination.
  *
- * THE SIBLING PRODUCT REPO RESOLVES FROM AN ABSOLUTE PATH (D-49.3-24b, closes BL-156)
+ * THE SIBLING PRODUCT REPO RESOLVES FROM AN ABSOLUTE PATH (D-9.3-24b, closes BL-156)
  * Scripts operating on `../sma/scripts/sma/**` from INSIDE a worktree cannot trust a
  * relative `../sma` (it may not point at the same place as the main checkout's). So
  * resolveSiblingRepo reads a recorded ABSOLUTE product-repo path in a FIXED order:
@@ -48,7 +48,7 @@
  * error degrades to an honest {ok:false, fellBackToPrimary:true, message} + the primary
  * checkout, never a wedged session and never a throw that escapes to the caller.
  *
- * BRIDGE POSTURE (D-49.2-05, applied via D-49.3-24): worktree-per-terminal multiplayer
+ * BRIDGE POSTURE (D-9.2-05, applied via D-9.3-24): worktree-per-terminal multiplayer
  * is vendor-absorbable (OpenAI acquired Multi in 2024) — a demolition clause with a
  * self-removal disposition, never headlined as a moat.
  *
@@ -228,7 +228,7 @@ export function removeWorktree(opts = {}) {
 /**
  * resolveSiblingRepo({env, readConfig, readProfile, profilePath, cwd, relativeFallback})
  * -> {path, source}. Resolves the sibling product repo (`../sma`) from an ABSOLUTE
- * recorded path in a FIXED, deterministic order (D-49.3-24b):
+ * recorded path in a FIXED, deterministic order (D-9.3-24b):
  *   1. env.SMA_PRODUCT_REPO      (source: 'env')
  *   2. a `.sma/` config value    (source: 'config')  — via the injected readConfig
  *   3. the profile's productRepo (source: 'profile') — via profile.mjs readProfile

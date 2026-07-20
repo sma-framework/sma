@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/excavate.mjs (Phase 49.3 Plan 03 — D-49.3-09).
+ * Tests for scripts/sma/lib/excavate.mjs (Phase 9.3 Plan 03 — D-9.3-09).
  *
  * `sma excavate` mines a STRANGER's git history READ-ONLY and DETERMINISTICALLY:
  * commit↔revert pairs, typo-fix chains, red-CI fix-forward chains — and turns
@@ -95,7 +95,7 @@ const F = '1'.repeat(40)
 const G = '2'.repeat(40)
 const H = '3'.repeat(40)
 
-describe('excavate — parser + three miners (49.3-03 Task 1)', () => {
+describe('excavate — parser + three miners (9.3-03 Task 1)', () => {
   it('Test 1: parseGitLog round-trips a 6-commit fixture incl a hostile subject as inert text; mineRepo calls runGit once', () => {
     const hostile = 'fix $(rm -rf /) and `whoami` now'
     const raw =
@@ -213,7 +213,7 @@ describe('excavate — parser + three miners (49.3-03 Task 1)', () => {
   })
 })
 
-describe('excavate — CATCH links + gated drafts + firing-ready replay (49.3-03 Task 2)', () => {
+describe('excavate — CATCH links + gated drafts + firing-ready replay (9.3-03 Task 2)', () => {
   let dir: string
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'sma-excavate-'))

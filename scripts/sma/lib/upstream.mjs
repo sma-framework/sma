@@ -1,5 +1,5 @@
 /**
- * upstream.mjs — daily upstream-watch mechanic (D-49.1-03, 49.1-07).
+ * upstream.mjs — daily upstream-watch mechanic (D-9.1-03, 9.1-07).
  *
  * Compares the fork's anchored upstream version (UPSTREAM.json) against the
  * latest published release, and on a new release produces a THREE-WAY
@@ -14,7 +14,7 @@
  * npmFetchVersion shells `npm view <pkg> version` only when CALLED). The only
  * writer is applyCleanSet, and only when apply === true (review-gated on both
  * entry points: the Action's PR branch and the local --apply flag; conflicts
- * NEVER auto-apply — T-49.1-12).
+ * NEVER auto-apply — T-9.1-12).
  *
  * Exports: checkVersion, threeWayReport, applyCleanSet, renderReport,
  *          mapPath, mapContent, npmFetchVersion
@@ -220,7 +220,7 @@ export function threeWayReport({ vendorBaseDir, newUpstreamDir, oursDir, renameM
   return { clean, conflict, summary: { clean: clean.length, conflict: conflict.length, total, divergencePct } }
 }
 
-// ── clean-set apply (the ONLY writer — review-gated, T-49.1-12) ──────────────
+// ── clean-set apply (the ONLY writer — review-gated, T-9.1-12) ──────────────
 
 /**
  * applyCleanSet({ report, oursDir, apply }) — write the mapped new-upstream
@@ -289,7 +289,7 @@ export function renderReport({ report, version, anchor, generatedAt } = {}) {
   }
   lines.push('')
   lines.push('---')
-  lines.push('Merge of any auto-port PR is a HUMAN action (T-49.1-12 review gate). Conflicts never auto-apply.')
+  lines.push('Merge of any auto-port PR is a HUMAN action (T-9.1-12 review gate). Conflicts never auto-apply.')
   lines.push('')
   return lines.join('\n')
 }

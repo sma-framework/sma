@@ -101,7 +101,7 @@ function padMigration(n) {
  * @param {object} o
  * @param {(args:string[])=>string} [o.execGit]        injectable git runner
  * @param {string} [o.migrationsPath]                   path to the local migrations index
- * @param {string} o.by                                 holder identity (D-49-01)
+ * @param {string} o.by                                 holder identity (D-9-01)
  * @param {string} [o.session]
  * @param {string} [o.claimsDir]                        test override for the claims dir
  * @param {string} [o.journalDir]                       journal dir (WR-03: events go here,
@@ -179,7 +179,7 @@ export function nextMigrationSlot(o = {}) {
       }
     }
 
-    // 49.1-23 (B17): before leaking this number to N+1, try to reconcile an EXPIRED
+    // 9.1-23 (B17): before leaking this number to N+1, try to reconcile an EXPIRED
     // unconsumed claim on the SAME slot — an abandoned number is nobody's. On success,
     // reclaim the same candidate immediately (the claimed-number-lost class ends).
     const rec = reconcileExpiredClaim(slotName, { ...claimOpts, ttlMs: SLOT_CLAIM_TTL_MS })
@@ -483,7 +483,7 @@ function counterSpec(kind, o = {}) {
     const path = o.roadmapPath ?? join(planningRoot, 'ROADMAP.md')
     return {
       sourceText: safeReadText(path),
-      // Dotted headings (### Phase 49.1) match too; the capture is the INTEGER part, so
+      // Dotted headings (### Phase 9.1) match too; the capture is the INTEGER part, so
       // the next phase is the next whole number above the highest integer seen.
       re: /^###\s+Phase\s+(\d+)/gm,
       format: (n) => `${n}`,
@@ -502,7 +502,7 @@ function counterSpec(kind, o = {}) {
  * @param {'bl'|'action'|'decision'|'phase'} kind
  * @param {object} o
  * @param {string} [o.by]                holder identity
- * @param {string} [o.phase]             REQUIRED for kind='decision' (e.g. '49.1')
+ * @param {string} [o.phase]             REQUIRED for kind='decision' (e.g. '9.1')
  * @param {string} [o.planningRoot]      default '.planning'
  * @param {string} [o.backlogPath|o.actionsPath|o.roadmapPath|o.contextPath] path overrides (DI)
  * @param {string} [o.claimsDir] [o.journalDir] [o.terminalId] [o.session]
@@ -560,7 +560,7 @@ export function nextCounterSlot(kind, o = {}) {
       }
     }
 
-    // 49.1-23 (B17): reconcile an EXPIRED unconsumed claim on the SAME slot before
+    // 9.1-23 (B17): reconcile an EXPIRED unconsumed claim on the SAME slot before
     // leaking the number to N+1 — the claimed-number-lost class ends for counters too.
     const rec = reconcileExpiredClaim(slotName, { ...claimOpts, ttlMs: SLOT_CLAIM_TTL_MS })
     if (rec.reconciled) {
@@ -607,7 +607,7 @@ export function nextCounterSlot(kind, o = {}) {
   }
 }
 
-// ── 49.1-23 (B17) — consume: mark a claimed number as ACTUALLY used ──────────────────
+// ── 9.1-23 (B17) — consume: mark a claimed number as ACTUALLY used ──────────────────
 
 /**
  * slotNameForKind(kind, n, o) -> the claim-dir name for a number slot, or null when the

@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/batch.mjs (Phase 49.3 Plan 12 — the /sma-batch middle lane).
+ * Tests for scripts/sma/lib/batch.mjs (Phase 9.3 Plan 12 — the /sma-batch middle lane).
  *
- * D-49.3-19 / BL-149: the lane between an inline fix and a full phase. It takes 2-4
+ * D-9.3-19 / BL-149: the lane between an inline fix and a full phase. It takes 2-4
  * named backlog items (or self-assembles a compatible set), runs grill-lite per item,
  * executes with ONE executor (atomic commit per item), blind-reverifies every item,
  * checks the items off the backlog, and writes ONE batch note — with two hard guards:
@@ -37,11 +37,11 @@ const BACKLOG_FIXTURE = `# Backlog — fixture
 
 ## Backlog
 
-- [ ] **BL-201** · Поправить подпись кнопки — исправить RU-текст на «Готово». \`size:S\` \`area:crm\` \`added:2026-07-09\`
-- [ ] **BL-202** · Увеличить таймаут ретрая — поднять задержку до 5с. \`size:S\` \`area:crm\` \`added:2026-07-09\`
-- [ ] **BL-203** · Отсортировать список — сортировать по дате по возрастанию. \`size:M\` \`area:crm\` \`added:2026-07-09\`
-- [ ] **BL-204** · Новая коллекция Payload для документов — add a new collection + migration. \`size:L\` \`area:tech\` \`added:2026-07-09\`
-- [x] **BL-205** · Уже закрытая задача — дедупнуть массив. \`size:S\` \`area:content\` \`added:2026-07-08\`
+- [ ] **BL-101** · Поправить подпись кнопки — исправить RU-текст на «Готово». \`size:S\` \`area:crm\` \`added:2026-07-09\`
+- [ ] **BL-102** · Увеличить таймаут ретрая — поднять задержку до 5с. \`size:S\` \`area:crm\` \`added:2026-07-09\`
+- [ ] **BL-103** · Отсортировать список — сортировать по дате по возрастанию. \`size:M\` \`area:crm\` \`added:2026-07-09\`
+- [ ] **BL-104** · Новая коллекция Payload для документов — add a new collection + migration. \`size:L\` \`area:tech\` \`added:2026-07-09\`
+- [x] **BL-105** · Уже закрытая задача — дедупнуть массив. \`size:S\` \`area:content\` \`added:2026-07-08\`
 
 ## Actions
 `
@@ -49,16 +49,16 @@ const BACKLOG_FIXTURE = `# Backlog — fixture
 // Parsed item shape (what parse-backlog.ts's parseBacklogContent yields, plus an optional
 // files[] the batch layer uses for overlap detection).
 const items = {
-  BL201: { id: 'BL-201', title: 'Поправить подпись кнопки', description: 'исправить RU-текст на «Готово»', size: 'S', area: 'crm', done: false, files: ['src/a.ts'] },
-  BL202: { id: 'BL-202', title: 'Увеличить таймаут ретрая', description: 'поднять задержку до 5с', size: 'S', area: 'crm', done: false, files: ['src/b.ts'] },
-  BL203: { id: 'BL-203', title: 'Отсортировать список', description: 'сортировать по дате', size: 'M', area: 'crm', done: false, files: ['src/c.ts'] },
+  BL201: { id: 'BL-101', title: 'Поправить подпись кнопки', description: 'исправить RU-текст на «Готово»', size: 'S', area: 'crm', done: false, files: ['src/a.ts'] },
+  BL202: { id: 'BL-102', title: 'Увеличить таймаут ретрая', description: 'поднять задержку до 5с', size: 'S', area: 'crm', done: false, files: ['src/b.ts'] },
+  BL203: { id: 'BL-103', title: 'Отсортировать список', description: 'сортировать по дате', size: 'M', area: 'crm', done: false, files: ['src/c.ts'] },
   // phase-class: mentions a new collection + migration
-  BL204: { id: 'BL-204', title: 'Новая коллекция Payload', description: 'add a new collection + migration', size: 'L', area: 'tech', done: false, files: ['src/d.ts'] },
-  // overlaps BL-201 on files
-  BL201b: { id: 'BL-206', title: 'Другой фикс', description: 'править тот же файл', size: 'S', area: 'crm', done: false, files: ['src/a.ts'] },
+  BL204: { id: 'BL-104', title: 'Новая коллекция Payload', description: 'add a new collection + migration', size: 'L', area: 'tech', done: false, files: ['src/d.ts'] },
+  // overlaps BL-101 on files
+  BL201b: { id: 'BL-106', title: 'Другой фикс', description: 'править тот же файл', size: 'S', area: 'crm', done: false, files: ['src/a.ts'] },
 }
 
-describe('49.3-12 batch — risk filter (Test 1)', () => {
+describe('9.3-12 batch — risk filter (Test 1)', () => {
   it('rejects every phase-class item with «this is a phase» and accepts S/M non-overlapping items', () => {
     const phaseClass = [
       { id: 'BL-301', title: 'Add a migration', description: 'schema change' },
@@ -91,19 +91,19 @@ describe('49.3-12 batch — risk filter (Test 1)', () => {
   })
 })
 
-describe('49.3-12 batch — selection + compatibility assembly (Test 2)', () => {
+describe('9.3-12 batch — selection + compatibility assembly (Test 2)', () => {
   it('selectBatch resolves named ids, caps at 4, refuses a file-overlapping set', () => {
-    const ok = selectBatch(['BL-201', 'BL-202', 'BL-203'], Object.values(items))
+    const ok = selectBatch(['BL-101', 'BL-102', 'BL-103'], Object.values(items))
     expect(ok.ok).toBe(true)
-    expect(ok.items.map((i) => i.id)).toEqual(['BL-201', 'BL-202', 'BL-203'])
+    expect(ok.items.map((i) => i.id)).toEqual(['BL-101', 'BL-102', 'BL-103'])
 
-    // file overlap (BL-201 and BL-206 share src/a.ts)
-    const overlap = selectBatch(['BL-201', 'BL-206'], Object.values(items))
+    // file overlap (BL-101 and BL-106 share src/a.ts)
+    const overlap = selectBatch(['BL-101', 'BL-106'], Object.values(items))
     expect(overlap.ok).toBe(false)
     expect(overlap.reason).toMatch(/overlap/i)
 
     // a missing id is honest
-    const missing = selectBatch(['BL-201', 'BL-999'], Object.values(items))
+    const missing = selectBatch(['BL-101', 'BL-999'], Object.values(items))
     expect(missing.ok).toBe(false)
     expect(missing.reason).toMatch(/BL-999/)
   })
@@ -138,17 +138,17 @@ describe('49.3-12 batch — selection + compatibility assembly (Test 2)', () => 
   })
 })
 
-describe('49.3-12 batch — surgical backlog writer (Test 3)', () => {
+describe('9.3-12 batch — surgical backlog writer (Test 3)', () => {
   it('flips exactly the matched line to [x] and leaves every other byte identical', () => {
     const before = BACKLOG_FIXTURE
-    const { changed, backlogText } = checkOffBacklogItem({ backlogText: before, id: 'BL-202' })
+    const { changed, backlogText } = checkOffBacklogItem({ backlogText: before, id: 'BL-102' })
     expect(changed).toBe(true)
 
     const beforeLines = before.split('\n')
     const afterLines = backlogText.split('\n')
     expect(afterLines.length).toBe(beforeLines.length)
     for (let i = 0; i < beforeLines.length; i++) {
-      if (beforeLines[i].includes('**BL-202**')) {
+      if (beforeLines[i].includes('**BL-102**')) {
         expect(afterLines[i]).toBe(beforeLines[i].replace('- [ ]', '- [x]'))
       } else {
         expect(afterLines[i]).toBe(beforeLines[i]) // byte-identical
@@ -157,7 +157,7 @@ describe('49.3-12 batch — surgical backlog writer (Test 3)', () => {
   })
 
   it('is a no-op on an already-[x] line', () => {
-    const r = checkOffBacklogItem({ backlogText: BACKLOG_FIXTURE, id: 'BL-205' })
+    const r = checkOffBacklogItem({ backlogText: BACKLOG_FIXTURE, id: 'BL-105' })
     expect(r.changed).toBe(false)
     expect(r.backlogText).toBe(BACKLOG_FIXTURE)
   })
@@ -169,22 +169,22 @@ describe('49.3-12 batch — surgical backlog writer (Test 3)', () => {
   })
 })
 
-describe('49.3-12 batch — eject on growth (Test 4)', () => {
+describe('9.3-12 batch — eject on growth (Test 4)', () => {
   it('returns the item to the backlog as [ ] with the eject note and keeps the text valid', () => {
-    // start from a backlog where BL-203 was checked off mid-run, then grows
-    const checked = checkOffBacklogItem({ backlogText: BACKLOG_FIXTURE, id: 'BL-203' }).backlogText
+    // start from a backlog where BL-103 was checked off mid-run, then grows
+    const checked = checkOffBacklogItem({ backlogText: BACKLOG_FIXTURE, id: 'BL-103' }).backlogText
     const r = ejectItem({ item: items.BL203, backlogText: checked, note: 'grew past batch-class — replan as a phase' })
     expect(r.ejected).toBe(true)
     expect(r.note).toMatch(/replan as a phase/)
-    // the BL-203 line is back to [ ] and carries the note
-    const line = r.backlogText.split('\n').find((l) => l.includes('**BL-203**'))
+    // the BL-103 line is back to [ ] and carries the note
+    const line = r.backlogText.split('\n').find((l) => l.includes('**BL-103**'))
     expect(line).toBeTruthy()
     expect(line).toContain('- [ ]')
     expect(line).toMatch(/replan as a phase/)
   })
 })
 
-describe('49.3-12 batch — orchestration order + mandatory receipts (Test 5)', () => {
+describe('9.3-12 batch — orchestration order + mandatory receipts (Test 5)', () => {
   function makeIo(initial) {
     let text = initial
     const order = []
@@ -211,7 +211,7 @@ describe('49.3-12 batch — orchestration order + mandatory receipts (Test 5)', 
     expect(res.items[0].status).toBe('pass')
     expect(res.items[0].commit).toBe('abc1234')
     // the box actually flipped in the backlog text
-    expect(bag.text.split('\n').find((l) => l.includes('**BL-201**'))).toContain('- [x]')
+    expect(bag.text.split('\n').find((l) => l.includes('**BL-101**'))).toContain('- [x]')
   })
 
   it('does NOT check off an item whose reverify diverges — the box stays [ ]', async () => {
@@ -225,7 +225,7 @@ describe('49.3-12 batch — orchestration order + mandatory receipts (Test 5)', 
 
     expect(res.items[0].status).toBe('fail')
     expect(bag.order).not.toContain('checkoff') // never written
-    expect(bag.text.split('\n').find((l) => l.includes('**BL-201**'))).toContain('- [ ]')
+    expect(bag.text.split('\n').find((l) => l.includes('**BL-101**'))).toContain('- [ ]')
   })
 
   it('skips an already-built item (preflight built) without running the executor', async () => {
@@ -264,14 +264,14 @@ describe('49.3-12 batch — orchestration order + mandatory receipts (Test 5)', 
     const runReverify = async () => ({ verdict: 'verified' })
 
     const res = await runBatch({ items: [items.BL204, items.BL201], runPreflight, grillGate, runExecutor, runReverify, backlogIo: bag.io })
-    // BL-204 is phase-class → rejected; BL-201 still processes
-    expect(res.items.find((r) => r.id === 'BL-204').status).toBe('rejected')
-    expect(res.items.find((r) => r.id === 'BL-204').reason).toBe('this is a phase')
-    expect(commits).toEqual(['BL-201'])
+    // BL-104 is phase-class → rejected; BL-101 still processes
+    expect(res.items.find((r) => r.id === 'BL-104').status).toBe('rejected')
+    expect(res.items.find((r) => r.id === 'BL-104').reason).toBe('this is a phase')
+    expect(commits).toEqual(['BL-101'])
   })
 })
 
-describe('49.3-12 batch — one note, not a phase folder (Test 6)', () => {
+describe('9.3-12 batch — one note, not a phase folder (Test 6)', () => {
   it('writeBatchNote emits a single note carrying every item; 3 items → 3 commits + 1 note', async () => {
     const bag = { read: () => BACKLOG_FIXTURE, write: () => {} }
     const commits = []
@@ -285,10 +285,10 @@ describe('49.3-12 batch — one note, not a phase folder (Test 6)', () => {
 
     const note = writeBatchNote(res.items)
     expect(typeof note).toBe('string')
-    for (const id of ['BL-201', 'BL-202', 'BL-203']) expect(note).toContain(id)
+    for (const id of ['BL-101', 'BL-102', 'BL-103']) expect(note).toContain(id)
     // the note records receipts (accountability floor)
     expect(note).toMatch(/reverify|receipt|verified/i)
     // res.note is the same single note (one note, no phase folder)
-    expect(res.note).toContain('BL-201')
+    expect(res.note).toContain('BL-101')
   })
 })

@@ -1,26 +1,26 @@
 /**
- * context-pack.mjs — the deterministic, budgeted task-pack compiler (49.3-05, D-49.3-07).
+ * context-pack.mjs — the deterministic, budgeted task-pack compiler (9.3-05, D-9.3-07).
  *
  * `sma context "<task>"` assembles a MINIMAL pack — catalog cards + inline fragments +
  * note pointers — under PACK_BUDGET with a MANIFEST. Same input (normalized task text +
  * commit + corpus + catalog) yields BYTE-IDENTICAL PACK.md + MANIFEST.json: no wall-clock,
  * no locale, no machine identity, no randomness anywhere in pack bytes (determinism is the
- * feature — it is what makes pack purity falsifiable, D-49.3-07). The manifest carries the
+ * feature — it is what makes pack purity falsifiable, D-9.3-07). The manifest carries the
  * pack's OWN prediction (the session touches no file outside the pack), which is what makes
  * pack purity auto-checkable, and every «context not found in time» miss AUTOMATICALLY grows
  * the repo's memory exam.
  *
- * SUBSTRATE CONSUMED, NEVER RE-IMPLEMENTED (D-49.3-02): notes resolve via loader.mjs
+ * SUBSTRATE CONSUMED, NEVER RE-IMPLEMENTED (D-9.3-02): notes resolve via loader.mjs
  * resolvePeriphery (injectable), ordering rides generator.mjs makeComparator through the
  * loader, cards via catalog.mjs findCards, citations via the SAME journal (recordCitation);
  * fragment ids flow through that journal so usageStats/deadWeight score facts with zero new
  * machinery. profile.mjs readProfile is the fail-soft consumer of `workingStyle` (pack header)
- * and `stack` (tie-break boost for matching-language cards) — this keeps 49.3-01's schema-v2
+ * and `stack` (tie-break boost for matching-language cards) — this keeps 9.3-01's schema-v2
  * fields alive under PROFILE-DEADFIELD (scorecard metric 5).
  *
- * TOUCHED-NOT-READ HONESTY: P49.3-05-C measures Edit/Write/Bash TOUCHES (the deterministic
+ * TOUCHED-NOT-READ HONESTY: P9.3-05-C measures Edit/Write/Bash TOUCHES (the deterministic
  * observable) as the v1 proxy for «read» — hooking Read would add a spawn per file read and
- * blow the 49.2-02 envelope. Timestamps live ONLY in the touch/exam JOURNALS (.jsonl state),
+ * blow the 9.2-02 envelope. Timestamps live ONLY in the touch/exam JOURNALS (.jsonl state),
  * never in the regenerable PACK.md / MANIFEST.json bytes.
  *
  * Node built-ins only; everything DI; no child_process anywhere; zero network; zero LLM.
@@ -183,7 +183,7 @@ export function compilePack(opts = {}) {
   }
   fragments.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
-  // (4) profile working-style header line (fail-soft consumer of 49.3-01's field).
+  // (4) profile working-style header line (fail-soft consumer of 9.3-01's field).
   let workingStyleLine = ''
   if (profile && profile.workingStyle && typeof profile.workingStyle === 'object') {
     const parts = Object.keys(profile.workingStyle)
@@ -398,7 +398,7 @@ function examKey(q) {
  * growExam({contextDir}) → {added, total}. Converts every settled pack's outside-pack
  * touches into exam lines {query: pack task text, expected: missed path}, appended to
  * `<contextDir>/exam.jsonl` (dedup on query+expected, append-only). A context failure
- * becomes a standing question — never a shrug (D-49.3-07).
+ * becomes a standing question — never a shrug (D-9.3-07).
  */
 export function growExam({ contextDir } = {}) {
   const examPath = join(contextDir, 'exam.jsonl')

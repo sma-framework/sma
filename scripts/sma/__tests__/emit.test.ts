@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/emit.mjs (Phase 49.3 Plan 04 — D-49.3-08, T-49.3-03).
+ * Tests for scripts/sma/lib/emit.mjs (Phase 9.3 Plan 04 — D-9.3-08, T-9.3-03).
  *
  * `sma emit` compiles the learned memory corpus into managed export blocks in
  * CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md, each under a per-format byte

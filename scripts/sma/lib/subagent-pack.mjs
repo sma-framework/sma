@@ -1,6 +1,6 @@
 /**
  * subagent-pack.mjs — deterministic PreTask context-pack assembly + the PreToolUse
- * `updatedInput` injection payload (49.2-04, D-49.2-10).
+ * `updatedInput` injection payload (9.2-04, D-9.2-10).
  *
  * Anthropic closed the native subagent-inheritance request «not planned», so a
  * spawned subagent starts rule-blind unless an outer layer injects the context.
@@ -14,7 +14,7 @@
  *     readSessions, execTail, vocab}) — zero I/O of its own, so tests never touch
  *     the filesystem. The CLI wires the real sources (loader/claims/registry/exec).
  *   - Per-source try/catch: ONE failing source degrades to a PARTIAL pack with a
- *     collected warning, never a throw (T-49.2-04, digest.mjs T-49.1-37 posture) —
+ *     collected warning, never a throw (T-9.2-04, digest.mjs T-9.1-37 posture) —
  *     `pretask-pack` is HOOK_FACING and must never wedge a Task spawn.
  *   - Hard byte budget (PACK_BUDGET_BYTES, UTF-8 bytes). When over budget the trim
  *     order is lessons (from the END of the loader-ordered list) -> parent slice ->

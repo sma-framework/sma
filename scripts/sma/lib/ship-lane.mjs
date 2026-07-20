@@ -1,14 +1,14 @@
 /**
- * ship-lane.mjs — the SMA ship lanes (49.4-08, BL-177). The founder's 2026-07-13 ask
+ * ship-lane.mjs — the SMA ship lanes (9.4-08, BL-177). The founder's 2026-07-13 ask
  * («shipment of 90-100 commits takes around 1h — is it normal?» + «can we add
  * /sma-quick-ship … to move it to prod not to wait so long?»). The 1h/90-commit
- * diagnosis (49.4-RESEARCH-ECONOMY §4): the gates cost ~10 minutes; the hour was BATCH
+ * diagnosis (9.4-RESEARCH-ECONOMY §4): the gates cost ~10 minutes; the hour was BATCH
  * SIZE and passive BABYSITTING. So the treatment is cadence + a background watch, NEVER
  * a weaker gate — the quality-ratchet law from 06/07 stays armed over both lanes.
  *
  * This module is a READ-ONLY checker / drafter / recorder. It NEVER pushes, tags, or
  * deploys — pushing stays inside the founder-ordered skill rituals (substrate law + the
- * /sma-ship sole-push-path boundary, D-49.3-24d). Four surfaces:
+ * /sma-ship sole-push-path boundary, D-9.3-24d). Four surfaces:
  *   1. checkQuickPrecondition — the deterministic entry gate: origin-delta <= maxDelta
  *      commits AND no migrations in the delta AND no FOREIGN push-claim. Any failing leg
  *      refuses «this is a full /sma-ship: <legs>» (the batch.mjs {allowed, reason} refusal
@@ -23,10 +23,10 @@
  *      posture, but a SEPARATE file: lane BUDGETS and ship OUTCOMES are different records).
  *      A run is appended {outcome:'pending'} AT PUSH TIME and finalized (last-wins on the
  *      same startedAt) when the background watch returns; an interrupted watch leaves an
- *      ORPHANED pending run visible to the next session (grill CH-49.4-08-2).
+ *      ORPHANED pending run visible to the next session (grill CH-9.4-08-2).
  *   4. shipLaneSelftest — canned-git fixtures proving all of the above, returns 1/0.
  *
- * Consume-never-reimplement (D-49.3-02): the CLI injects slots.checkPushClaim (the exact
+ * Consume-never-reimplement (D-9.3-02): the CLI injects slots.checkPushClaim (the exact
  * triplet the airbag + merge-gate consume) and a DI execGit (slots.mjs defaultExecGit
  * pattern); this lib spawns nothing and reads no .sma/ directly in tests. The refusal shape
  * mirrors batch.mjs verbatim. Node built-ins only. Zero LLM, zero network, zero
@@ -229,7 +229,7 @@ export function draftChangelog(o = {}) {
 
 // ═══════════════════════════ the lane outcome ledger ════════════════════════════
 
-/** ship-lanes.jsonl lives in the EXISTING spendDir — NO new .sma subdir (D-49.3-02). */
+/** ship-lanes.jsonl lives in the EXISTING spendDir — NO new .sma subdir (D-9.3-02). */
 function shipLaneFile(spendDir) {
   return join(spendDir, 'ship-lanes.jsonl')
 }
@@ -321,7 +321,7 @@ function percentile(values, pct) {
 /**
  * laneReport({runs, now}) -> {pending, orphaned, finalized}. Pending runs are listed FIRST
  * (an interrupted background watch is visible to the NEXT session, never silent), and any
- * pending run older than 24h is flagged as an ORPHANED watch (grill CH-49.4-08-2).
+ * pending run older than 24h is flagged as an ORPHANED watch (grill CH-9.4-08-2).
  *
  * @param {{runs:object[], now?:number}} o
  * @returns {{pending:object[], orphaned:object[], finalized:object[]}}
@@ -346,12 +346,12 @@ export function laneReport({ runs, now } = {}) {
 /**
  * laneStats({runs, now}) -> the two paired scorer signals with documented sentinels:
  *   - quickActiveP50Min: p50 active minutes of FINALIZED quick runs; the 9999 sentinel when
- *     fewer than 3 quick runs exist (P49.4-08-B honest-miss: a lane nobody used saved
+ *     fewer than 3 quick runs exist (P9.4-08-B honest-miss: a lane nobody used saved
  *     nothing).
  *   - quickRedMinusFullRedPct: (quickRedPct - fullRedPct). 0 when the quick side has NO
  *     finalized runs (no data, guard idle); when quick has runs but full has none it returns
  *     quickRedPct ALONE so the ratchet guard fires on the FIRST quick red with no full
- *     baseline (P49.4-08-C — teeth from day one).
+ *     baseline (P9.4-08-C — teeth from day one).
  * Pending runs count toward NEITHER stat. Deterministic.
  *
  * @param {{runs:object[], now?:number}} o

@@ -1,6 +1,6 @@
 /**
  * Tests for scripts/sma/lib/statusline.mjs + the cli.mjs statusline surface
- * (Phase 49.3 Plan 07 — D-49.3-13).
+ * (Phase 9.3 Plan 07 — D-9.3-13).
  *
  * The native-statusline SEGMENT: a pure, degradable, cheap function over injected +
  * cached local state, plus the managed settings install/wrap/uninstall that NEVER
@@ -51,9 +51,9 @@ afterEach(() => {
 
 describe('statusline.mjs — Task 1 (pure render + cache + adapters)', () => {
   it('Test 1: renderSegment is deterministic over a fully-injected working state', () => {
-    const state = { pulse: 'working', claim: '49.3-07', collisions: 0, windowPct: 42, gates: 1, unscored: 3 }
+    const state = { pulse: 'working', claim: '9.3-07', collisions: 0, windowPct: 42, gates: 1, unscored: 3 }
     const out = renderSegment(state)
-    expect(out).toBe('sma ▸working · claim 49.3-07 · coll 0 · win 42% · gates 1 · preds 3')
+    expect(out).toBe('sma ▸working · claim 9.3-07 · coll 0 · win 42% · gates 1 · preds 3')
     // pure: same input -> same output
     expect(renderSegment(state)).toBe(out)
     // plain ASCII beside the pulse glyph (only the leading ▸ is non-ASCII, plus the · separators)
@@ -61,8 +61,8 @@ describe('statusline.mjs — Task 1 (pure render + cache + adapters)', () => {
   })
 
   it('Test 2: null spend/gates/preds render as "—"; never throws on any partial state', () => {
-    const degraded = renderSegment({ pulse: 'working', claim: '49.3-07', collisions: 2, windowPct: null, gates: null, unscored: null })
-    expect(degraded).toBe('sma ▸working · claim 49.3-07 · coll 2 · win — · gates — · preds —')
+    const degraded = renderSegment({ pulse: 'working', claim: '9.3-07', collisions: 2, windowPct: null, gates: null, unscored: null })
+    expect(degraded).toBe('sma ▸working · claim 9.3-07 · coll 2 · win — · gates — · preds —')
     // never throws on ANY partial state, including {}
     expect(() => renderSegment({})).not.toThrow()
     expect(renderSegment({})).toContain('sma ')

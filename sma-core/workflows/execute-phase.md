@@ -1106,8 +1106,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
       in one line — it is the only thing the founder sees on the board card.
 
    2. **SURFACE** — no extra step needed by construction: the `state add-blocker`
-      line lands in STATE.md's fenced Open Blockers region (49.1-19,
-      parser-compatible format), so the session-start digest (49.1-18) and the
+      line lands in STATE.md's fenced Open Blockers region (9.1-19,
+      parser-compatible format), so the session-start digest (9.1-18) and the
       project board both show the parked plan automatically.
 
    3. **CONTINUE** — do NOT wait for the founder. Mark the plan `parked` in the
@@ -1117,7 +1117,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
       `{ok}/{total}, {parked} parked` instead of hanging.
 
    4. **RESUME** — when the founder clears the blocker, the resume ritual
-      (49.1-20) picks the parked plan back up from its exec-journal: the
+      (9.1-20) picks the parked plan back up from its exec-journal: the
       `blocked` event's `--reason` plus the last `task_complete` events give the
       continuation agent its exact resume point. On resume, close the loop:
       ```bash

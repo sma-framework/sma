@@ -1,5 +1,5 @@
 /**
- * stpa.mjs — the STPA disarm-path guard (49.2-10, D-49.2-14).
+ * stpa.mjs — the STPA disarm-path guard (9.2-10, D-9.2-14).
  *
  * STPA (System-Theoretic Process Analysis) asks not «did a component fail» but
  * «what control action, or its ABSENCE, leads to a hazard». Our hazard: a
@@ -28,7 +28,7 @@
  *      a rule off deliberately via renewDisarm (recorded provenance) but NEVER
  *      silently.
  *
- * CONS-49.2-B: everything here is fail-open. shadowRunFixtures/reArmDecisions wrap
+ * CONS-9.2-B: everything here is fail-open. shadowRunFixtures/reArmDecisions wrap
  * every path — an IO error yields empty results so session-start can never wedge.
  * They wire into session-start + the lint ONLY, never the per-tool-call hot path
  * (plan 02 SLO): gates-check consults a re-arm decision solely on the rare path
@@ -114,7 +114,7 @@ export const HAZARDS = [
     kind: 'gate',
     hazard: 'a human DoD gate is self-certified pass by a file write instead of the founder',
     compensatingControl: 'the DoD honesty house rule + /crm/projects human-gate toggles are the source of truth; a file-written pass is visible in the board audit',
-    fixture: { tool_name: 'Write', tool_input: { file_path: 'phases/49.2-DOD.json', content: '{"kind":"human","status":"pass"}' } },
+    fixture: { tool_name: 'Write', tool_input: { file_path: 'phases/9.2-DOD.json', content: '{"kind":"human","status":"pass"}' } },
   },
   {
     killEnv: 'SMA_GATE_NEXTBUILD_OFF',
@@ -188,7 +188,7 @@ export const HAZARDS = [
     fixture: null, // the compensating control is a lint, not a tool-event fixture
   },
   {
-    // 49.3-06 (D-49.3-12) — the self-tuning ladder's OWN kill env. Disabling the
+    // 9.3-06 (D-9.3-12) — the self-tuning ladder's OWN kill env. Disabling the
     // overlay freezes every tier: demotions/re-arms stop, so a warned-then-ignored
     // rule can neither quieten nor re-arm. The disarm-path guard covers the tuner
     // itself. Its compensating control is env-independent: the tier registry is a
@@ -393,7 +393,7 @@ export function reArmDecisions({ env = {}, now, dirs = {}, gates = GATES } = {})
  * countSilentDisarms({env, now, dirs}) -> integer. A SILENT disarm = a set
  * kill-switch that is being HONORED (not re-armed) yet carries no provenance —
  * disabled with neither a live provenance lease NOR an auto-re-arm. The data
- * source for `integrity disarms --count-silent` (P49.2-10-02). Zero on an env
+ * source for `integrity disarms --count-silent` (P9.2-10-02). Zero on an env
  * with no kill-switch set.
  *
  * @param {{env?:object, now?:(string|number), dirs?:object}} [args]
@@ -405,7 +405,7 @@ export function countSilentDisarms({ env = {}, now, dirs = {} } = {}) {
 
 /**
  * renewDisarm({gateId, reason, identity, dirs, now, ttlMs}) -> the renewed lease.
- * Re-leases a kill-switch WITH provenance {renewedAt, by, reason} (D-49-09 shape)
+ * Re-leases a kill-switch WITH provenance {renewedAt, by, reason} (D-9-09 shape)
  * so a founder can keep a rule off deliberately — but never silently. Journals the
  * renewal. `gateId` is the lease key (a gate id, or a global killEnv). Never throws.
  *
