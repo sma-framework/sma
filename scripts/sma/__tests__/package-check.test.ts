@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/package-check.mjs (9.4 a backlog item/a backlog item, v3.6 — the npm
+ * Tests for scripts/sma/lib/package-check.mjs (9.4, v3.6 — the npm
  * publishability gate + the version single-source law).
  *
  * The load-bearing behaviors:

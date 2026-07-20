@@ -221,7 +221,7 @@ export function buildWarnText(warn) {
   if (!warn) return ''
   if (warn.tier === 'info') return warn.text ?? ''
   const since = formatSince(warn.since)
-  // a backlog item (D-9.3-22f): attention ≠ fully-active. A `fresh` owner reads «занято» (busy
+  // D-9.3-22f: attention ≠ fully-active. A `fresh` owner reads «занято» (busy
   // NOW). An `attention` owner (missed heartbeats — possibly idle, possibly still there)
   // reads «внимание» so the reader knows it is NOT a hard busy and the raw tier is carried
   // inline. The active COUNT split lives in countSessionTiers; this is the WARN-text split.
@@ -239,7 +239,7 @@ export function buildWarnText(warn) {
 }
 
 /**
- * countSessionTiers(sessions, {now, classify}) — a backlog item (D-9.3-22f): count `fresh` and
+ * countSessionTiers(sessions, {now, classify}) — D-9.3-22f: count `fresh` and
  * `attention` SEPARATELY instead of collapsing both into one "active" boolean. Liveness is
  * renewTime-only (classifyStaleness — no pid). `active` (fresh+attention) is kept for the
  * legacy count, but the two tiers are also individually visible so a caller can distinguish

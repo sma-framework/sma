@@ -38,7 +38,7 @@ quarter — the same reason the `nearmiss` and `disposition` ledgers exist.
    `node scripts/sma/cli.mjs vendor --count untriaged`. A non-zero count blocks
    the release until every sighting is triaged (or the founder dispositions the
    miss). A release with untriaged rows is the process not existing.
-2. **Weekly reading slot.** The platform's weekly miss-curriculum slot (9.3-06)
+2. **Weekly reading slot.** The weekly miss-curriculum slot (9.3-06)
    is the natural rhythm to read Anthropic's changelog / blog and append the new
    week's sightings.
 
@@ -58,11 +58,11 @@ Keep each capability cell to one line and free of the `|` character. The
 | 2026-07-09 | S2 cookbook | plan-big-execute-small: Fable-5 coordinator (no tools) + Sonnet-5 workers | api | ABSORB | none | 9.4 research |
 | 2026-07-10 | S3 advisor tool | advisor tool (Messages API only; NOT exposed inside Claude Code sessions) | api | WATCH | tripwire P9.4-05-C | 9.4 research |
 | 2026-07-10 | D1 agent-teams | agent-teams reworked at v2.1.178: TeamCreate/TeamDelete deleted, team_name deprecated, still session-scoped and off by default | claude-code | WATCH | tripwire P9.4-05-B | 9.4 research |
-| 2026-07-10 | D2 subagents | subagents run in background by default since v2.1.198 (shifts SubagentStop timing) | claude-code | BRIDGE-candidate | a backlog item | 9.4 research |
+| 2026-07-10 | D2 subagents | subagents run in background by default since v2.1.198 (shifts SubagentStop timing) | claude-code | BRIDGE-candidate | backlogged | 9.4 research |
 | 2026-07-10 | D4 pricing | Managed-Agents pricing published: $0.08 per session-hour; Sonnet-5 intro $2/$10 until 2026-08-31 | api | IRRELEVANT | none | 9.4 research |
 | 2026-07-09 | S4 loops article | loop primitives /goal /loop /schedule (points at git worktrees for parallelism) | claude-code | IRRELEVANT | none | 9.4 research |
-| 2026-07-09 | S6 outcomes | Outcomes grader is opaque — verifiable but not auditable (the lane SMA answers) | api | CORE-threat | a backlog item | 9.4 research |
+| 2026-07-09 | S6 outcomes | Outcomes grader is opaque — verifiable but not auditable (the lane SMA answers) | api | CORE-threat | backlogged | 9.4 research |
 | 2026-07-10 | sma emit target | proposed `sma emit` fifth target: the vendor memory-store format | api | WATCH | none | 9.4 research |
 | 2026-07-10 | dream-parity | proposed corpus dream-parity curation pass (duplicate/staleness) | | IRRELEVANT | none | 9.4 research |
 | 2026-07-10 | arena attribution | benchmark-arena coordinator/worker token attribution | claude-code | WATCH | none | 9.4 research |
-| 2026-07-10 | a backlog item note | receipt re-pin to structural checks — owned «в работе» by another terminal | | IRRELEVANT | a backlog item | 9.4 research |
+| 2026-07-10 | receipt-pin note | receipt re-pin to structural checks — owned «в работе» by another terminal | | IRRELEVANT | backlogged | 9.4 research |

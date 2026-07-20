@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  sma-daemon-windows.task.xml — the Windows sibling of com.sma.daemon.plist
+  (the launchd LaunchAgent). A thin supervisor layer only (D-9.5-02a: the daemon
+  core is host-agnostic; the OS binding is a template).
+
+  SHIPPED DISABLED, NEVER REGISTERED BY THE PILOT. <Settings><Enabled>false</Enabled>
+  means that even an accidental import cannot auto-run the worker. Registering AND
+  enabling are FOUNDER-ONLY commands, documented in setup-windows.md — the pilot runs
+  neither.
+
+  No-admin by design: LogonType is InteractiveToken (the current interactive user),
+  NOT a SYSTEM/service principal — this host has no admin rights. A real Windows
+  service (NSSM / a native service) stays a later product drop-in (the deferred
+  supervisor item in 9.5-CONTEXT), untouched here.
+
+  Import (founder-only): schtasks /Create /TN SMA-Daemon /XML supervisor\sma-daemon-windows.task.xml
+  Replace <SMA_HOME> below with the absolute path of the SMA product clone before import
+  (same placeholder convention as the plist's <SMA_HOME>).
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>SMA V5 night worker daemon (host-agnostic core, thin Windows supervisor). Shipped disabled.</Description>
+    <URI>\SMA-Daemon</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T23:30:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <!-- The task is delivered OFF. The founder enables it only after the smoke passes. -->
+    <Enabled>false</Enabled>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "&lt;SMA_HOME&gt;\supervisor\start-daemon-windows.ps1"</Arguments>
+      <WorkingDirectory>&lt;SMA_HOME&gt;</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

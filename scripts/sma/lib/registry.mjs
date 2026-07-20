@@ -437,7 +437,7 @@ export function reapStale(opts = {}) {
 }
 
 /**
- * reapStaleObservable(opts) — a backlog item (D-9.3-22f): the reap call path made OBSERVABLE.
+ * reapStaleObservable(opts) — D-9.3-22f: the reap call path made OBSERVABLE.
  * The prior sole call site (cmdStatus/gatherSummary) wrapped reapStale in a SILENT
  * try/catch, so a reap failure was invisible and uncountable — the reaper could stop
  * running and nobody would know. This wrapper stays fail-open (a reap bug NEVER wedges a

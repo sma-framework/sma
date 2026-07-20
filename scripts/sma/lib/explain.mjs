@@ -152,6 +152,10 @@ export const COMMAND_TOPICS = {
   // v3.6 — the off-ramp and the onboarding preview
   deleteme: 'deleteme',
   'memory-preview': 'memory-preview',
+
+  // v5 — the decision corpus and the replay exam
+  decisions: 'decisions',
+  exam: 'exam',
 }
 
 /**

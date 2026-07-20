@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/memory-preview.mjs (9.4 a backlog item, v3.6 — the onboarding
+ * Tests for scripts/sma/lib/memory-preview.mjs (9.4, v3.6 — the onboarding
  * memory-graph preview).
  *
  * The load-bearing behaviors:

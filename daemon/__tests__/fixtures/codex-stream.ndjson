@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"th_01H8XABCDEFG"}
+{"type":"item.started","item":{"id":"it_1","type":"reasoning"}}
+{"type":"item.completed","item":{"id":"it_1","type":"reasoning","text":"planning the draft"}}
+{"type":"item.completed","item":{"id":"it_2","type":"assistant_message","text":"research brief drafted"}}
+{"type":"turn.completed","usage":{"input_tokens":3400,"output_tokens":1200,"cached_input_tokens":200}}

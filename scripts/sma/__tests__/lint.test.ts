@@ -540,9 +540,9 @@ describe('RECEIPT-PROSE lint (9.2-03 task 3)', () => {
   it('Case 5 (regime gate): a non-SMA (9.2+) summary with an uncovered machine item → NO finding', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-5-'))
     try {
-      // A GSD medical-phase summary (numerically >= 9.2 but subsystem is not sma…):
+      // A legacy-phase summary (numerically >= 9.2 but subsystem is not sma…):
       // the receipts law is SMA-only; the shared dogfood phase-number namespace must
-      // never retro-fail unrelated medical phases (9.2-03 Rule-3 deviation).
+      // never retro-fail unrelated legacy phases (9.2-03 Rule-3 deviation).
       const fm =
         '---\nphase: 53\nplan: 05\nsubsystem: operator-tools, intake-bridge\n' +
         'coverage:\n  - id: T1\n    human_judgment: false\n---\n\n# summary body\n'

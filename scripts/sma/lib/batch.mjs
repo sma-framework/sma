@@ -1,7 +1,7 @@
 /**
  * batch.mjs — the /sma-batch MIDDLE lane (Phase 9.3 Plan 12).
  *
- * D-9.3-19 / a backlog item verbatim (the founder's gap): «tasks which are not small, but not
+ * D-9.3-19 verbatim (the founder's gap): «tasks which are not small, but not
  * phase oriented … 2-3-4 backlog items, plans them and executes, but not in the full
  * scale which takes so long.» The house two-lane rule (inline fix vs full phase) leaves a
  * gap for genuine multi-item work that does not warrant a phase. /sma-batch fills it:

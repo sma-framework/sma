@@ -1,7 +1,7 @@
 /**
  * preflight.mjs — the already-built pre-dispatch comparator (Phase 9.3 Plan 10).
  *
- * D-9.3-17 / a backlog item verbatim: «it looks into the tree and sees whether the code
+ * D-9.3-17 verbatim: «it looks into the tree and sees whether the code
  * exists so we don't spend so many tokens — it is critical.» Given a plan file this
  * is a DETERMINISTIC, zero-LLM, read-only check run BEFORE any executor is dispatched:
  * it parses the plan's must_haves (artifact paths + `contains` needles) and its

@@ -1,6 +1,6 @@
 /**
  * footprint.mjs — the economy ladder as a claim + a deterministic receipt
- * (9.4-07, a backlog item/a backlog item). The ponytail absorption done the SMA way
+ * (9.4-07). The ponytail absorption done the SMA way
  * (9.4-RESEARCH-ECONOMY §2 rows 1-2): their /review LLM diff judge is REJECTED
  * and rebuilt here as arithmetic — a plan CLAIMS its footprint in frontmatter
  * (files touched, new files, ~LOC, new deps, tolerance %), and the receipt

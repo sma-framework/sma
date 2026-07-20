@@ -108,9 +108,9 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
     expect(r1.ok).toBe(true)
     const out = read()
     expect(count(out, '## Current Position')).toBe(1)
-    expect(out).toMatch(/\*\*Phase: 49\.1 — executing wave 15\*\*/)
+    expect(out).toMatch(/\*\*Phase: 9.1 — executing wave 15\*\*/)
     // parser contract: a `Phase: N` line still resolves.
-    expect(out).toMatch(/Phase:\s*49\.1/)
+    expect(out).toMatch(/Phase:\s*9.1/)
 
     // second call overwrites (snapshot rule — never appends)
     const r2 = setPosition({ phase: '9.1', text: 'wave 16 next' }, { statePath })
@@ -129,7 +129,7 @@ describe('state-section.mjs — machine-managed STATE.md fenced region', () => {
     expect(add.ok).toBe(true)
     const out = read()
     // parser-compatible: phase-literal + action word + bullet.
-    expect(out).toMatch(/- \*\*Phase 9\.1 blocked:\*\* state verbs shipping — verify the board parser \(tech\)/)
+    expect(out).toMatch(/- \*\*Phase 9.1 blocked:\*\* state verbs shipping — verify the board parser \(tech\)/)
     // the bullet lands inside Open Blockers, before Active Sessions.
     expect(out.indexOf('state verbs shipping')).toBeLessThan(out.indexOf('## Active Sessions'))
     expect(out.indexOf('state verbs shipping')).toBeGreaterThan(out.indexOf('## Open Blockers'))

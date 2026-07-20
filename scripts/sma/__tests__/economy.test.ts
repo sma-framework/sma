@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/economy.mjs (9.4-06, a backlog item/a backlog item — the economy meters).
+ * Tests for scripts/sma/lib/economy.mjs (9.4-06 — the economy meters).
  *
  * The six load-bearing behaviors:
  *   Test 1 — estimator: estimateTokens is pure/deterministic; ESTIMATOR_VERSION stamped; empty -> 0

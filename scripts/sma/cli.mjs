@@ -221,7 +221,7 @@ async function gatherSummary(dirs) {
   try {
     const registry = await import('./lib/registry.mjs')
     const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-    // a backlog item (D-9.3-22f): reapStaleObservable journals a countable reap / reap-fail signal
+    // D-9.3-22f: reapStaleObservable journals a countable reap / reap-fail signal
     // so a silently-broken reaper is no longer invisible (the prior bare reapStale swallowed
     // every failure). Still fail-open — a reap bug NEVER wedges status/session-start.
     registry.reapStaleObservable({
@@ -4933,6 +4933,153 @@ async function cmdExcavate({ positionals, flags, dirs }) {
 }
 
 /**
+ * cmdDecisions — 9.5-02 (D-9.5-08) — the founder decision-corpus miner.
+ *
+ * `sma decisions mine [--limit N] [--dry] [--transcripts-dir P]` retrospectively
+ * mines the founder's real decisions from LOCAL session transcripts into
+ * drafts-only founder-decision notes «ситуация → решение + почему». `stats` counts
+ * the drafted/promoted founder-decision corpus. NOT hook-facing (direct command;
+ * may exit 1 on bad args). The corpus stays in the CURRENT working repo's
+ * .claude/memory — never the product. Drafts are NEVER auto-committed.
+ */
+async function cmdDecisions({ positionals, flags }) {
+  const dc = await import('./lib/decision-corpus.mjs')
+  const sub = positionals[0]
+  // corpus stays in the CURRENT working repo (never the SMA product) — cwd-based.
+  const memoryDir = join(process.cwd(), '.claude', 'memory')
+
+  if (sub === 'stats') {
+    const stats = dc.corpusStats({ memoryDir })
+    if (wantsJson(flags)) {
+      printJson(stats)
+      return 0
+    }
+    process.stdout.write(`SMA decisions: ${stats.total} founder-decision note(s)\n`)
+    for (const [tag, n] of Object.entries(stats.byTag).sort((a, b) => b[1] - a[1])) {
+      process.stdout.write(`  ${tag}: ${n}\n`)
+    }
+    process.stdout.write(`${stats.total}\n`) // numeric LAST line (instrument contract)
+    return 0
+  }
+
+  if (sub === 'mine') {
+    const transcriptsDir =
+      typeof flags['transcripts-dir'] === 'string' ? flags['transcripts-dir'] : process.env.SMA_TRANSCRIPTS_DIR
+    if (!transcriptsDir) {
+      process.stderr.write(
+        'SMA decisions mine: pass --transcripts-dir <p> or set SMA_TRANSCRIPTS_DIR (the local Claude Code projects dir).\n',
+      )
+      return 1
+    }
+    const limit = Number.isFinite(Number(flags.limit)) ? Number(flags.limit) : 50
+
+    // --dry: scan + rank but WRITE NOTHING (a no-op fsImpl counts would-be drafts).
+    if (flags.dry === true) {
+      const { readdirSync, readFileSync } = await import('node:fs')
+      const fsImpl = {
+        readdirSync,
+        readFileSync,
+        existsSync: () => false,
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+      }
+      let res
+      try {
+        res = dc.mineDecisions({ transcriptsDir, memoryDir, limit, fsImpl })
+      } catch (err) {
+        process.stderr.write(`SMA decisions mine --dry: ${String((err && err.message) ?? err)}\n`)
+        return 1
+      }
+      process.stdout.write(
+        `SMA decisions mine --dry: ${res.drafted} candidate draft(s) from ${res.scanned} record(s) (${res.skipped} skipped) — nothing written.\n`,
+      )
+      return 0
+    }
+
+    let res
+    try {
+      res = dc.mineDecisions({ transcriptsDir, memoryDir, limit })
+    } catch (err) {
+      process.stderr.write(`SMA decisions mine: ${String((err && err.message) ?? err)}\n`)
+      return 1
+    }
+    process.stdout.write(
+      `SMA decisions mine: ${res.drafted} draft(s) → ${join(memoryDir, 'drafts')} ` +
+        `(${res.scanned} records scanned, ${res.skipped} skipped). ` +
+        `Review + promote through the 3-condition gate — drafts are NEVER auto-committed.\n`,
+    )
+    return 0
+  }
+
+  process.stderr.write(
+    'SMA decisions: usage — decisions mine [--limit N] [--dry] [--transcripts-dir P] | decisions stats\n',
+  )
+  return 1
+}
+
+/**
+ * cmdExam — 9.5-06 (D-9.5-08) — the replay exam (calibration metric).
+ *
+ * `sma exam build --seed N [--holdout P]` samples held-out founder-decision notes
+ * deterministically, strips the real decision into a hidden `-key.jsonl`, and writes
+ * the exam items for the synthetic orchestrator (the key is NEVER handed to it).
+ * `sma exam score <gradesPath>` reads externally-graded rows, computes the match
+ * rate against the founder's real decisions, appends it to the score ledger keyed by
+ * policy_version, and prints the rate as the numeric LAST line. Corpus + exam stay in
+ * the CURRENT working repo's .claude/memory — never the product.
+ */
+async function cmdExam({ positionals, flags }) {
+  const re = await import('./lib/replay-exam.mjs')
+  const sub = positionals[0]
+  const memoryDir = join(process.cwd(), '.claude', 'memory')
+
+  if (sub === 'build') {
+    const seed = flags.seed != null ? flags.seed : 0
+    const holdoutPct = Number.isFinite(Number(flags.holdout)) ? Number(flags.holdout) : 20
+    let res
+    try {
+      res = re.buildExam({ memoryDir, holdoutPct, seed })
+    } catch (err) {
+      process.stderr.write(`SMA exam build: ${String((err && err.message) ?? err)}\n`)
+      return 1
+    }
+    if (wantsJson(flags)) {
+      printJson(res)
+      return 0
+    }
+    process.stdout.write(
+      `SMA exam build: ${res.count} item(s) held out of ${res.total} founder-decision note(s) → ${res.examPath} ` +
+        `(answer key: ${res.keyPath} — NEVER hand this to the examinee).\n`,
+    )
+    return 0
+  }
+
+  if (sub === 'score') {
+    const gradesPath = positionals[1]
+    if (!gradesPath) {
+      process.stderr.write('SMA exam score: pass the path to the graded rows file — exam score <gradesPath>\n')
+      return 1
+    }
+    const policyVersion = flags['policy-version'] != null ? flags['policy-version'] : null
+    let res
+    try {
+      res = re.scoreExam({ gradesPath, memoryDir, policyVersion }) // prints the numeric LAST line itself
+    } catch (err) {
+      process.stderr.write(`SMA exam score: ${String((err && err.message) ?? err)}\n`)
+      return 1
+    }
+    if (wantsJson(flags)) {
+      printJson(res)
+      return 0
+    }
+    return 0
+  }
+
+  process.stderr.write('SMA exam: usage — exam build [--seed N] [--holdout P] | exam score <gradesPath> [--policy-version V]\n')
+  return 1
+}
+
+/**
  * graderSelftest() -> 1|0 — the grade-the-grader pipeline proves itself end to
  * end in a THROWAWAY ledger (9.4-02, P9.4-02-A). The real .sma/ is NEVER
  * touched: record a satisfied verdict → inject a revert evidence within horizon
@@ -7406,7 +7553,7 @@ async function cmdArena({ positionals, flags }) {
  *
  * Two hard guards (batch.mjs, deterministic): a RISK FILTER rejects anything phase-class
  * («this is a phase») up front, and an EJECT rule throws a growing item back to the backlog
- * while the batch continues. Consume-never-reimplement (D-9.3-02): the backlog parser's
+ * while the batch continues. Consume-never-reimplement (D-9.3-02): the backlog
  * grammar reads, grill.mjs gates, `sma reverify` (9.2-03) verifies, `sma preflight`
  * (9.3-10) guards — batch composes; the only new writer is `checkOffBacklogItem`.
  *
@@ -8530,6 +8677,8 @@ const HANDLERS = {
   vendor: cmdVendor, // 9.4-01  — standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
   memory: cmdMemory, // 9.4-06  — deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
   'ship-lane': cmdShipLane, // 9.4-08  — ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
+  decisions: cmdDecisions, // 9.5-02 (D-9.5-08) — decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
+  exam: cmdExam, // 9.5-06 (D-9.5-08) — replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
 }
 
 async function main() {
@@ -8539,7 +8688,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane>\n',
+      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam>\n',
     )
     return 0
   }

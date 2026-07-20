@@ -1,5 +1,5 @@
 /**
- * worktree.mjs — per-TERMINAL git worktree isolation (9.3-14, D-9.3-24a/b, a backlog itema).
+ * worktree.mjs — per-TERMINAL git worktree isolation (9.3-14, D-9.3-24a/b).
  *
  * WHY THIS EXISTS
  * The founder runs MULTIPLE parallel Claude Code sessions against ONE checkout
@@ -24,7 +24,7 @@
  * «just work» across worktrees for free. Plan 14 provisions WORKING-TREE directories
  * ONLY; it imports/relies on that resolution and never re-implements coordination.
  *
- * THE SIBLING PRODUCT REPO RESOLVES FROM AN ABSOLUTE PATH (D-9.3-24b, closes a backlog item)
+ * THE SIBLING PRODUCT REPO RESOLVES FROM AN ABSOLUTE PATH (D-9.3-24b)
  * Scripts operating on `../sma/scripts/sma/**` from INSIDE a worktree cannot trust a
  * relative `../sma` (it may not point at the same place as the main checkout's). So
  * resolveSiblingRepo reads a recorded ABSOLUTE product-repo path in a FIXED order:

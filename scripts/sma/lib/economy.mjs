@@ -1,5 +1,5 @@
 /**
- * economy.mjs — the SMA economy meters (9.4-06, a backlog item/a backlog item). The caveman
+ * economy.mjs — the SMA economy meters (9.4-06). The caveman
  * absorption done the SMA way (9.4-RESEARCH-ECONOMY §2 rows 4/6): their local
  * token estimates become a VERSIONED estimator, their per-turn overhead caveat
  * becomes our own self-cost meter, and — unlike them — every savings number is

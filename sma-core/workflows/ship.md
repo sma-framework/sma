@@ -47,7 +47,7 @@ BASE_BRANCH=$(sma_run query git.base-branch)
 <step name="preflight_checks">
 Verify the work is ready to ship:
 
-**Ship lane (9.4-08):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick ritual (`/sma-quick-ship`) — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal («this is a full /sma-ship») means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background CI+Railway watch, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
+**Ship lane (9.4-08):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick ritual (`/sma-quick-ship`) — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal («this is a full /sma-ship») means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background watch over CI and the deploy host, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
 
 1. **Verification passed?**
    ```bash

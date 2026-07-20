@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280">
+<title>SMA · парк работников</title>
+<style>
+  :root{
+    --bg:#0A0D14; --surface:#11151F; --surface2:#12161F; --line:#232B3B;
+    --text:#E6EAF2; --muted:#9AA4B8; --dim:#6C7689;
+    --blue:#3B82F6; --violet:#8B5CF6; --teal:#1FA0A6; --green:#3CC0A0;
+    --red:#E05B5B; --amber:#E0B25B;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text)}
+  body{font:13px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif;min-width:1160px}
+  a{color:#8FB6FF;text-decoration:none}
+  .wrap{max-width:1440px;margin:0 auto;padding:0 22px 48px}
+
+  /* top bar — compact system label, no greeting (D-9.5-12) */
+  .top{display:flex;align-items:center;justify-content:space-between;padding:14px 0 10px}
+  .top .lbl{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .top .lbl b{color:var(--text);letter-spacing:.06em}
+  .top .meta{font-size:12px;color:var(--dim)}
+  .top .meta span{color:var(--muted)}
+  .rule{height:2px;border-radius:2px;background:linear-gradient(90deg,#243B66,#1F5A86,#1B7E9C,#1FA0A6,#3CC0A0,#74DBA0)}
+
+  .offline{display:none;margin:10px 0 0;padding:8px 14px;border-radius:8px;background:#2A1414;border:1px solid var(--red);color:#FFD9D9;font-size:12.5px}
+  .offline.on{display:block}
+
+  /* KPI strip — dense tiles, exact numbers */
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:16px 0}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:9px 12px}
+  .kpi b{display:block;font-size:19px;font-weight:600;color:#fff;line-height:1.2}
+  .kpi.eur b{color:var(--muted);font-size:16px}
+  .kpi span{display:block;font-size:11.5px;color:var(--muted);margin-top:2px}
+
+  h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#CFE0FF;margin:22px 0 9px;font-weight:600}
+  .cols{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:start}
+
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
+  .panel h3{margin:0 0 9px;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+  /* dense rows, not big cards */
+  .row{background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0}
+  .row .rid{font-weight:600;color:#fff}
+  .row .rt{color:var(--text)}
+  .row .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .row.dashed{border-style:dashed;color:var(--muted)}
+
+  .tag{display:inline-block;padding:0 7px;border-radius:99px;font-size:10.5px;line-height:17px;margin:3px 4px 0 0;border:1px solid var(--line);color:var(--muted);vertical-align:middle}
+  .tag.ok{color:var(--green);border-color:var(--green)}
+  .tag.no{color:var(--red);border-color:var(--red)}
+  .tag.mid{color:var(--amber);border-color:var(--amber)}
+  .tag.blu{color:#8FB6FF;border-color:var(--blue)}
+  .tag.vio{color:#C9B6F5;border-color:var(--violet)}
+
+  .bar{height:6px;border-radius:99px;background:#0E1420;border:1px solid var(--line);overflow:hidden;margin:5px 0 2px}
+  .bar i{display:block;height:100%;border-radius:99px}
+  .est{font-size:10.5px;color:var(--dim);margin-left:4px}
+
+  /* compact in-row buttons */
+  .btn{display:inline-block;border:1px solid var(--line);border-radius:7px;padding:2px 10px;font-size:11.5px;margin:6px 5px 0 0;color:#CFE0FF;background:#0E1420;cursor:pointer;font-family:inherit}
+  .btn:hover{border-color:#3a4763}
+  .btn.primary{border-color:var(--green);color:var(--green)}
+  .btn.warn{border-color:var(--amber);color:var(--amber)}
+  .btn.small{padding:1px 8px;font-size:11px}
+
+  .workers-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  @media(max-width:1200px){.workers-grid{grid-template-columns:1fr}}
+
+  .feed .row.fail{border-color:var(--red)}
+  .feed .accept{background:#0C1626;border:1px solid #1d3a5a;border-radius:7px;padding:6px 9px;margin:6px 0;font-size:12px;color:#BFD6F5}
+  .feed .accept .lead{color:var(--green);font-size:11px;letter-spacing:.04em;text-transform:uppercase;display:block;margin-bottom:2px}
+
+  .spend-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+  @media(max-width:1100px){.spend-grid{grid-template-columns:1fr 1fr}}
+  .apiline{margin-top:10px;padding:7px 11px;border-radius:8px;background:var(--surface2);border:1px solid var(--line);font-size:12px;color:var(--muted)}
+
+  /* enqueue form — one field set, appears on demand */
+  .enqueue{display:none;margin-top:8px;padding:9px 10px;border:1px dashed #33405A;border-radius:8px;background:#0E1420}
+  .enqueue.on{display:block}
+  .enqueue label{display:block;font-size:11px;color:var(--muted);margin:6px 0 2px}
+  .enqueue input,.enqueue select{width:100%;background:#0A0D14;border:1px solid var(--line);border-radius:6px;color:var(--text);padding:4px 7px;font:inherit;font-size:12px}
+  .enqueue .rowg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+  .fresh{font-size:11.5px;color:var(--dim)}
+  footer{margin-top:36px;border-top:1px solid var(--line);padding-top:12px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="lbl">SMA V5 · <b>парк работников</b></div>
+    <div class="meta"><span class="fresh" id="fresh">данные ещё не загружены</span> · версия 4.0.2</div>
+  </div>
+  <div class="rule"></div>
+
+  <div class="offline" id="offline">Демон недоступен. Данные не обновляются, показаны последние полученные значения.</div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="cols">
+    <div class="panel">
+      <h3>Очередь</h3>
+      <div id="queue"></div>
+      <button class="btn" id="enqueue-toggle" type="button">+ Поставить задачу в очередь</button>
+      <form class="enqueue" id="enqueue-form">
+        <label for="q-title">Название задачи</label>
+        <input id="q-title" name="title" type="text" maxlength="200" autocomplete="off" required>
+        <div class="rowg">
+          <div>
+            <label for="q-lane">Полоса</label>
+            <select id="q-lane" name="lane">
+              <option value="prod">прод-код</option>
+              <option value="research">ресёрч</option>
+              <option value="paperwork">бумажная работа</option>
+              <option value="forge">кузница</option>
+            </select>
+          </div>
+          <div>
+            <label for="q-provider">Исполнитель</label>
+            <select id="q-provider" name="provider">
+              <option value="">по умолчанию</option>
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+              <option value="api">API</option>
+            </select>
+          </div>
+        </div>
+        <div class="rowg">
+          <div>
+            <label for="q-model">Модель</label>
+            <input id="q-model" name="model" type="text" autocomplete="off">
+          </div>
+          <div>
+            <label for="q-effort">Усилие</label>
+            <input id="q-effort" name="effort" type="text" autocomplete="off">
+          </div>
+        </div>
+        <label for="q-priority">Приоритет (число, больше — раньше)</label>
+        <input id="q-priority" name="priority" type="number" value="0">
+        <button class="btn primary" id="enqueue-submit" type="submit">Поставить в очередь</button>
+        <span class="fresh" id="enqueue-msg"></span>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h3>Работники</h3>
+      <div class="workers-grid" id="workers"></div>
+    </div>
+  </div>
+
+  <h2>Сделано за ночь · ждёт Вашего одобрения</h2>
+  <div class="panel feed">
+    <div id="done"></div>
+  </div>
+
+  <h2>Расход и окна подписки</h2>
+  <div class="panel">
+    <div class="spend-grid" id="spend-accounts"></div>
+    <div class="apiline" id="spend-api"></div>
+    <div class="fresh" style="margin-top:7px">Проценты окон подписки показаны оценкой.</div>
+  </div>
+
+  <footer>
+    Последнее обновление: 20.07.2026, 09:26 (Мюнхен, CEST) · SMA версия 4.0.2 ·
+    аварийный операционный пульт парка (продукт SMA). Работники не пушат и не мёржат сами:
+    пуш в main остаётся за Вами.
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var POLL_MS = 3000;
+
+  // ── DOM helpers — every dynamic string goes through textContent only ──
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if(cls) n.className = cls;
+    if(text != null) n.textContent = String(text);
+    return n;
+  }
+  function clear(node){ while(node.firstChild) node.removeChild(node.firstChild); }
+  function tag(cls, text){ return el("span", "tag " + cls, text); }
+  function num(v){ return (v == null || v !== v) ? 0 : v; }
+  function pct(v){ return Math.max(0, Math.min(100, Math.round(num(v)))); }
+  function eur(v){ return "€ " + (Math.round(num(v) * 100) / 100).toFixed(2); }
+  function barColor(p){ return p >= 90 ? "var(--red)" : (p >= 70 ? "var(--amber)" : "var(--teal)"); }
+
+  function windowBar(parent, win){
+    if(!win) return;
+    var p5 = pct(win.pct5h);
+    var line = el("div", "sub");
+    line.appendChild(document.createTextNode("окно 5 ч: " + p5 + "% · неделя: " + pct(win.pctWeek) + "%"));
+    if(win.estimated) line.appendChild(el("span", "est", "оценка"));
+    parent.appendChild(line);
+    var bar = el("div", "bar");
+    var fill = el("i");
+    fill.style.width = p5 + "%";
+    fill.style.background = barColor(p5);
+    bar.appendChild(fill);
+    parent.appendChild(bar);
+  }
+
+  // ── KPI strip ──
+  function renderKpis(k){
+    var host = document.getElementById("kpis");
+    clear(host);
+    k = k || {};
+    var tiles = [
+      { v: num(k.workersBusy) + " / " + num(k.workersTotal), s: "работников заняты" },
+      { v: String(num(k.queued)), s: "задач в очереди" },
+      { v: String(num(k.awaitingApproval)), s: "готово, ждёт одобрения" },
+      { v: String(num(k.windowsOpen)), s: "окон подписки открыто" },
+      { v: eur(k.spentTodayEur), s: "потрачено сегодня (запасной API)", eur: true }
+    ];
+    tiles.forEach(function(t){
+      var c = el("div", "kpi" + (t.eur ? " eur" : ""));
+      c.appendChild(el("b", null, t.v));
+      c.appendChild(el("span", null, t.s));
+      host.appendChild(c);
+    });
+  }
+
+  // ── Queue ──
+  var LANE_LABEL = { prod: "прод-код", research: "ресёрч", paperwork: "бумага", forge: "кузница" };
+  function renderQueue(queue){
+    var host = document.getElementById("queue");
+    clear(host);
+    queue = queue || [];
+    if(queue.length === 0){
+      host.appendChild(el("div", "row dashed", "Очередь пуста."));
+      return;
+    }
+    queue.forEach(function(q){
+      var r = el("div", "row");
+      var head = el("div");
+      head.appendChild(el("span", "rid", q.id));
+      if(q.title){ head.appendChild(document.createTextNode(" · ")); head.appendChild(el("span", "rt", q.title)); }
+      r.appendChild(head);
+      var tags = el("div");
+      if(q.lane) tags.appendChild(tag("blu", LANE_LABEL[q.lane] || q.lane));
+      if(q.provider) tags.appendChild(tag("vio", q.provider));
+      if(num(q.priority) > 0) tags.appendChild(tag("mid", "приоритет: " + num(q.priority)));
+      if(q.agedForHours != null) tags.appendChild(tag("no", "застряла: " + num(q.agedForHours) + " ч в очереди"));
+      r.appendChild(tags);
+      r.appendChild(el("div", "sub", "позиция в очереди: " + num(q.position) + " · статус: " + statusRu(q.status)));
+      host.appendChild(r);
+    });
+  }
+  function statusRu(s){
+    if(s === "queued") return "в очереди";
+    if(s === "claimed") return "взята работником";
+    if(s === "awaiting_approval") return "ждёт одобрения";
+    if(s === "completed") return "завершена";
+    if(s === "failed") return "не справился";
+    return s || "—";
+  }
+
+  // ── Workers ──
+  var PRESENCE = { "работает": "ok", "ждёт окно": "mid", "свободен": "" };
+  function renderWorkers(workers){
+    var host = document.getElementById("workers");
+    clear(host);
+    workers = workers || [];
+    if(workers.length === 0){
+      host.appendChild(el("div", "row dashed", "Работники не настроены."));
+      return;
+    }
+    workers.forEach(function(w){
+      var r = el("div", "row");
+      var head = el("div");
+      head.appendChild(el("span", "rid", w.id));
+      head.appendChild(document.createTextNode(" "));
+      head.appendChild(tag(PRESENCE[w.presence] != null ? PRESENCE[w.presence] : "", w.presence || "—"));
+      r.appendChild(head);
+      if(w.taskId){
+        r.appendChild(el("div", "sub", "задача: " + w.taskId + " · ветка: " + (w.branch || ("wt/" + w.taskId))));
+      } else {
+        r.appendChild(el("div", "sub", "возьмёт следующую подходящую задачу из очереди"));
+      }
+      r.appendChild(el("div", "sub", "аккаунт: " + (w.account || "—")));
+      windowBar(r, w.window);
+      if(w.pulseAgeSec != null){
+        r.appendChild(el("div", "sub", "пульс: " + num(w.pulseAgeSec) + " сек назад"));
+      }
+      host.appendChild(r);
+    });
+  }
+
+  // ── Done feed ──
+  function receiptTags(parent, rc){
+    if(!rc) return;
+    if(rc.testsTotal != null && rc.testsPassed != null){
+      var green = rc.testsPassed === rc.testsTotal;
+      parent.appendChild(tag(green ? "ok" : "no", "тесты " + rc.testsPassed + "/" + rc.testsTotal));
+    }
+    if(rc.tscClean != null) parent.appendChild(tag(rc.tscClean ? "ok" : "no", "tsc: " + (rc.tscClean ? "чисто" : "красный")));
+    if(rc.guardClean != null) parent.appendChild(tag(rc.guardClean ? "ok" : "no", "guard: " + (rc.guardClean ? "чисто" : "красный")));
+  }
+  function renderDone(done){
+    var host = document.getElementById("done");
+    clear(host);
+    done = done || [];
+    if(done.length === 0){
+      host.appendChild(el("div", "row dashed", "За ночь пока ничего не завершено."));
+      return;
+    }
+    done.forEach(function(d){
+      var failed = d.failed != null;
+      var r = el("div", "row" + (failed ? " fail" : ""));
+      var head = el("div");
+      head.appendChild(el("span", "rid", d.id));
+      if(d.title){ head.appendChild(document.createTextNode(" · ")); head.appendChild(el("span", "rt", d.title)); }
+      if(failed){ head.appendChild(document.createTextNode(" ")); head.appendChild(tag("no", "не справился")); }
+      r.appendChild(head);
+
+      // «Обещано → проверено» — the task's acceptance beside the receipt (D-9.5-11)
+      if(d.acceptance){
+        var acc = el("div", "accept");
+        acc.appendChild(el("span", "lead", "Обещано → проверено"));
+        acc.appendChild(document.createTextNode(d.acceptance));
+        r.appendChild(acc);
+      }
+
+      var tags = el("div");
+      receiptTags(tags, d.receipt);
+      r.appendChild(tags);
+
+      if(failed){
+        // RU reasonLabel only — the raw reason code is never shown
+        var label = d.failed.reasonLabel || "нужен человек";
+        r.appendChild(el("div", "sub", "причина: " + label + " · попыток: " + num(d.failed.attemptsCount)));
+        r.appendChild(el("div", "sub", "ветка сохранена: " + (d.branch || ("wt/" + d.id))));
+        var b = el("div");
+        b.appendChild(mkBtn("btn", "Открыть diff", function(){ openDiff(d.id); }));
+        r.appendChild(b);
+      } else {
+        var meta = [];
+        if(d.workerId) meta.push("работник: " + d.workerId);
+        if(d.diffStat) meta.push("дифф: " + d.diffStat);
+        if(d.commits && d.commits.length) meta.push("коммитов: " + d.commits.length);
+        if(meta.length) r.appendChild(el("div", "sub", meta.join(" · ")));
+        var btns = el("div");
+        btns.appendChild(mkBtn("btn primary", "Одобрить и смёржить", function(){ approve(d.id); }));
+        btns.appendChild(mkBtn("btn warn", "Вернуть с комментарием", function(){ returnTask(d.id); }));
+        btns.appendChild(mkBtn("btn", "Открыть diff", function(){ openDiff(d.id); }));
+        r.appendChild(btns);
+      }
+      host.appendChild(r);
+    });
+  }
+  function mkBtn(cls, text, fn){
+    var b = el("button", cls, text);
+    b.type = "button";
+    b.addEventListener("click", fn);
+    return b;
+  }
+
+  // ── Spend strip — subscription windows lead; euro is one compact line ──
+  function renderSpend(spend){
+    var host = document.getElementById("spend-accounts");
+    clear(host);
+    spend = spend || {};
+    var accounts = spend.accounts || [];
+    if(accounts.length === 0){
+      host.appendChild(el("div", "row dashed", "Аккаунты подписок не настроены."));
+    } else {
+      accounts.forEach(function(a){
+        var c = el("div", "row");
+        c.appendChild(el("div", "rid", a.name));
+        windowBar(c, { pct5h: a.pct5h, pctWeek: a.pctWeek, estimated: true });
+        host.appendChild(c);
+      });
+    }
+    var api = spend.apiFallback || {};
+    var line = document.getElementById("spend-api");
+    clear(line);
+    var mode = api.switchMode === "api" ? "запасной API-канал" : "подписка (штатный режим)";
+    line.appendChild(document.createTextNode(
+      "Запасной API-канал · сегодня " + eur(api.todayEur) + " · месяц " + eur(api.monthEur) +
+      " · потолок " + eur(api.capEur) + " · переключатель: " + mode
+    ));
+  }
+
+  // ── actions ──
+  function postJson(url, body){
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  }
+  function approve(id){
+    postJson("/api/approve", { taskId: id }).then(function(){ poll(); }).catch(function(){});
+  }
+  function returnTask(id){
+    // One field, only after «Вернуть» is clicked (no per-card textareas)
+    var note = window.prompt("Комментарий для возврата задачи " + id + " в очередь:");
+    if(note == null) return;
+    postJson("/api/return", { taskId: id, note: note }).then(function(){ poll(); }).catch(function(){});
+  }
+  function openDiff(id){ window.open("/api/diff/" + encodeURIComponent(id), "_blank"); }
+
+  // enqueue form
+  var toggle = document.getElementById("enqueue-toggle");
+  var form = document.getElementById("enqueue-form");
+  toggle.addEventListener("click", function(){ form.classList.toggle("on"); });
+  form.addEventListener("submit", function(ev){
+    ev.preventDefault();
+    var msg = document.getElementById("enqueue-msg");
+    msg.textContent = "";
+    var body = { title: form.title.value.trim(), lane: form.lane.value };
+    if(!body.title){ msg.textContent = "введите название"; return; }
+    if(form.provider.value) body.provider = form.provider.value;
+    if(form.model.value.trim()) body.model = form.model.value.trim();
+    if(form.effort.value.trim()) body.effort = form.effort.value.trim();
+    var pr = parseInt(form.priority.value, 10);
+    if(!isNaN(pr)) body.priority = pr;
+    postJson("/api/enqueue", body).then(function(r){
+      if(r.ok){ msg.textContent = "поставлена в очередь"; form.title.value = ""; poll(); }
+      else { msg.textContent = "не удалось поставить (код " + r.status + ")"; }
+    }).catch(function(){ msg.textContent = "демон недоступен"; });
+  });
+
+  // ── poll loop ──
+  function setOffline(on){ document.getElementById("offline").classList.toggle("on", on); }
+  function stamp(){
+    var d = new Date();
+    function p2(n){ return (n < 10 ? "0" : "") + n; }
+    document.getElementById("fresh").textContent =
+      "обновлено в " + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  }
+  function render(data){
+    renderKpis(data.kpis);
+    renderQueue(data.queue);
+    renderWorkers(data.workers);
+    renderDone(data.done);
+    renderSpend(data.spend);
+    stamp();
+  }
+  function poll(){
+    fetch("/api/state", { credentials: "same-origin", headers: { "accept": "application/json" } })
+      .then(function(r){
+        if(!r.ok) throw new Error("state " + r.status);
+        return r.json();
+      })
+      .then(function(data){ setOffline(false); render(data); })
+      .catch(function(){ setOffline(true); });
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

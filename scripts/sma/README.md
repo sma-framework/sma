@@ -1,9 +1,9 @@
 # SMA — Shared Memory & Automation (Phase 9, V1)
 
 > **This is the CANONICAL copy of the SMA runtime layer** (sma-framework product
-> repo, migrated in 9.1-03 per FI-1 / D-9.1-05). The originating platform's
+> repo, migrated in 9.1-03 per FI-1 / D-9.1-05). The origin project's
 > `scripts/sma/` copy is FROZEN for the duration of phase 9.1: all V2 pillar
-> work (P1-P6, plans 9.1-07..24) extends THIS tree. The platform re-syncs from
+> work (P1-P6, plans 9.1-07..24) extends THIS tree. The origin project re-syncs from
 > here at the dogfood step (9.1-26). Path parity is deliberate: hook commands
 > (`node scripts/sma/cli.mjs ...`) stay valid unchanged in any install target.
 
@@ -59,7 +59,7 @@ The V3.5 docs / teaching surfaces:
 |---|---|---|
 | `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (P9.3-09-A scorer). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
 | `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (P9.3-09-B/C scorer). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
-| `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (9.3-01) plus the a backlog item quick-update path (9.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
+| `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (9.3-01) plus the quick-update path (9.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
 contract). Hook-facing subcommands (`session-start`, `pre`, `heartbeat`, `pretask-pack`,

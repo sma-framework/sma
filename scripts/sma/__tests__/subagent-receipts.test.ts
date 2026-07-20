@@ -274,11 +274,11 @@ describe('receiptStatsSchemaOk — deterministic report-shape check', () => {
   })
 })
 
-// ── a backlog item (9.4-03): the three false-positive mechanisms killed, with the 9 forensic ──
+// ── 9.4-03: the three false-positive mechanisms killed, with the 9 forensic ──
 // rows (9.3-PHANTOM-FORENSICS.md — 0 real phantoms / 4 path artifacts / 5 instrument
 // artifacts) as permanent regression fixtures.
 
-describe('forensics — a backlog item asserted-tier precision (9.3-PHANTOM-FORENSICS.md)', () => {
+describe('forensics — asserted-tier precision (9.3-PHANTOM-FORENSICS.md)', () => {
   const repoRoot = resolve('/repo')
 
   /** runGit dispatcher: status/log from a map, ls-files from a fixed hit list. */
