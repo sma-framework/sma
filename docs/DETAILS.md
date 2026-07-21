@@ -516,7 +516,7 @@ flowchart TD
     CH --> Q{"resolved?"}
     Q -->|"converted → registered prediction"| GO["build may start"]
     Q -->|"withdrawn / founder-accepted"| GO
-    Q -->|"still open"| STOP["--gate BLOCKS the build (D-49.2-11)"]
+    Q -->|"still open"| STOP["--gate BLOCKS the build (D-9.2-11)"]
     GO --> PP["pre-push: budget-aware grill over origin..main<br>deeper where the ledger proves miscalibration"]
 ```
 
@@ -591,7 +591,7 @@ Three conveniences ship behind capability probes, each with a **registered self-
 
 ```mermaid
 flowchart LR
-    B["Three opt-in bridges<br>demolition clause registered (D-49.2-05)"] --> A1["git airbag + sma undo"]
+    B["Three opt-in bridges<br>demolition clause registered (D-9.2-05)"] --> A1["git airbag + sma undo"]
     B --> A2["flight capsule + sma resume / handoff"]
     B --> A3["spend ledger + budget reflexes"]
     A1 & A2 & A3 --> DC["each ships behind a capability probe<br>+ a falsifiable self-removal prediction"]
