@@ -323,6 +323,39 @@ export function readLaneRuns({ spendDir, readFile } = {}) {
 }
 
 /**
+ * pickOpenRunToClose(runs, {terminalId, lane}) -> {run, crossTerminal} | null.
+ * The 2026-07-21 close fix: on agent-driven terminals EVERY CLI invocation is its own
+ * process, so an open and its close almost never share a terminalId — strict
+ * same-terminal matching left the ledger with 0 closed runs EVER (stranded opens,
+ * budgets could never derive). Selection order:
+ *   1. the newest open run of THIS terminal (lane-filtered when `lane` given) — the
+ *      original semantics, crossTerminal:false;
+ *   2. else the newest open run overall (lane-filtered) — crossTerminal:true, the CLI
+ *      prints an honest note naming whose open it pairs.
+ * Deterministic: newest by openedAt (ties → last in ledger order). Returns null when
+ * nothing matches. Pure — no io.
+ *
+ * @param {object[]} runs
+ * @param {{terminalId?:string, lane?:string}} opts
+ * @returns {{run:object, crossTerminal:boolean}|null}
+ */
+export function pickOpenRunToClose(runs, { terminalId, lane } = {}) {
+  const opens = (runs || []).filter(
+    (r) => r && r.open && (!lane || r.lane === lane),
+  )
+  if (!opens.length) return null
+  const newest = (list) =>
+    list.reduce((best, r) => {
+      const t = Date.parse(r.openedAt || '') || 0
+      const bt = Date.parse((best && best.openedAt) || '') || 0
+      return t >= bt ? r : best
+    }, null)
+  const own = opens.filter((r) => terminalId && r.terminalId === terminalId)
+  if (own.length) return { run: newest(own), crossTerminal: false }
+  return { run: newest(opens), crossTerminal: true }
+}
+
+/**
  * attributeLaneRun({run, book, now}) -> {usd, events, sessionsInWindow, overlap, minutes}.
  * Attributes a lane run from the book's events inside [openedAt, closedAt] (windowSpend
  * boundary rules: both ends inclusive). The book exposes USD per event, not tokens, so

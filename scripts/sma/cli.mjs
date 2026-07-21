@@ -2260,13 +2260,17 @@ async function cmdSpend({ positionals, flags, dirs }) {
 }
 
 /**
- * spend lane <open <fix|quick|batch|build>|close|report|derive> [--json] | spend lane
- *   --selftest | spend lane --stat max-lane-closed-runs — the per-lane economy budgets
- *   (9.4-06). Budgets derive ONLY from OUR own closed-run percentiles (p75); a lane with
- *   fewer than 5 closed clean runs stays report-only. `close` attributes the run from the
- *   book, and on an over-budget CLEAN run CONSUMES calibration.appendVerdict +
- *   predict.draftLessonFromMiss (the 2026-06-19 incident as a mechanism). Overlap-flagged
- *   runs are excluded from derivation and never score a miss (CH-9.4-06-1). Fail-open.
+ * spend lane <open <fix|quick|batch|build>|close [--lane L] [--abandon]|reap [--hours N]|
+ *   report|derive> [--json] | spend lane --selftest | spend lane --stat
+ *   max-lane-closed-runs — the per-lane economy budgets (9.4-06). Budgets derive ONLY
+ *   from OUR own closed-run percentiles (p75); a lane with fewer than 5 closed clean runs
+ *   stays report-only. `close` attributes the run from the book, and on an over-budget
+ *   CLEAN run CONSUMES calibration.appendVerdict + predict.draftLessonFromMiss (the
+ *   2026-06-19 incident as a mechanism). Overlap-flagged runs are excluded from
+ *   derivation and never score a miss (CH-9.4-06-1). Fail-open. 2026-07-21: close
+ *   pairs via pickOpenRunToClose (own newest → newest overall, cross-terminal noted) —
+ *   per-process terminal ids never matched, the ledger had 0 closed runs ever; `reap`
+ *   closes stranded opens as abandoned (overlap:true, never shape a budget).
  */
 async function cmdSpendLane({ positionals, flags, dirs }) {
   const economy = await import('./lib/economy.mjs')
@@ -2305,18 +2309,40 @@ async function cmdSpendLane({ positionals, flags, dirs }) {
   if (action === 'close') {
     const terminalId = await resolveTerminalId()
     const { runs } = economy.readLaneRuns({ spendDir })
-    const open = [...runs].reverse().find((r) => r.open && r.terminalId === terminalId)
-    if (!open) {
-      process.stdout.write('SMA lane: нет открытой полосы для этого терминала\n')
+    // 2026-07-21 fix: every CLI invocation is its OWN process on agent terminals, so a
+    // strict same-terminal match never paired (0 closed runs EVER). Prefer own open,
+    // fall back to the newest open overall; the close event carries the OPEN's
+    // terminalId (readLaneRuns pairs by it) + closedBy for honesty.
+    const laneFilter = typeof flags.lane === 'string' ? flags.lane : undefined
+    const picked = economy.pickOpenRunToClose(runs, { terminalId, lane: laneFilter })
+    if (!picked) {
+      process.stdout.write('SMA lane: нет открытой полосы' + (laneFilter ? ` (${laneFilter})` : '') + '\n')
       return 1
     }
-    const spend = await import('./lib/spend.mjs')
-    const repoRoot = await resolveRepoRootForSpend()
+    const open = picked.run
+    if (picked.crossTerminal) {
+      process.stdout.write(
+        `SMA lane: своей открытой полосы нет — закрываю новейшую открытую (${open.lane}, открыта терминалом ${open.terminalId}); closedBy ${terminalId}\n`,
+      )
+    }
     const now = Date.now()
-    const book = spend.buildBook({ spendDir, repoRoot, env: process.env, now })
     const closedAt = new Date(now).toISOString()
-    const attributed = economy.attributeLaneRun({ run: { ...open, closedAt }, book, now })
-    economy.appendLaneEvent({ spendDir, event: { type: 'close', lane: open.lane, terminalId, ts: closedAt, ...attributed } })
+    let attributed
+    if (flags.abandon === true) {
+      // Abandoned close: no book attribution; overlap:true keeps it OUT of budget
+      // derivation forever (deriveLaneBudgets filters overlap) — it exists only to
+      // clear the open, never to shape a number.
+      attributed = { usd: 0, minutes: 0, events: 0, sessionsInWindow: 0, overlap: true, abandoned: true }
+    } else {
+      const spend = await import('./lib/spend.mjs')
+      const repoRoot = await resolveRepoRootForSpend()
+      const book = spend.buildBook({ spendDir, repoRoot, env: process.env, now })
+      attributed = economy.attributeLaneRun({ run: { ...open, closedAt }, book, now })
+    }
+    economy.appendLaneEvent({
+      spendDir,
+      event: { type: 'close', lane: open.lane, terminalId: open.terminalId, closedBy: terminalId, ts: closedAt, ...attributed },
+    })
 
     const budgetsFile = economy.readLaneBudgets({ spendDir })
     const budgets = budgetsFile && budgetsFile.budgets ? budgetsFile.budgets : {}
@@ -2350,6 +2376,44 @@ async function cmdSpendLane({ positionals, flags, dirs }) {
         `SMA lane: закрыта полоса ${open.lane} в пределах бюджета ($${decision.actualUsd} из $${decision.budgetUsd})\n`,
       )
     }
+    return 0
+  }
+
+  if (action === 'reap') {
+    // Close every stranded open older than --hours (default 1) as ABANDONED
+    // (overlap:true — excluded from budget derivation forever). One-off hygiene for
+    // the pre-fix backlog + a guard against future orphans; a fresh open (< the
+    // threshold) is left alone — its terminal may be mid-task.
+    const hours = Number.isFinite(Number(flags.hours)) ? Number(flags.hours) : 1
+    const terminalId = await resolveTerminalId()
+    const { runs } = economy.readLaneRuns({ spendDir })
+    const now = Date.now()
+    const stale = runs.filter(
+      (r) => r.open && now - (Date.parse(r.openedAt || '') || 0) > hours * 3600000,
+    )
+    for (const open of stale) {
+      economy.appendLaneEvent({
+        spendDir,
+        event: {
+          type: 'close',
+          lane: open.lane,
+          terminalId: open.terminalId,
+          closedBy: `reap:${terminalId}`,
+          ts: new Date(now).toISOString(),
+          usd: 0,
+          minutes: 0,
+          events: 0,
+          sessionsInWindow: 0,
+          overlap: true,
+          abandoned: true,
+        },
+      })
+    }
+    if (wantsJson(flags)) printJson({ reaped: stale.length, hours })
+    else
+      process.stdout.write(
+        `SMA lane: закрыто как брошенные ${stale.length} открытий старше ${hours} ч (в бюджеты не входят)\n`,
+      )
     return 0
   }
 
