@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.sma.daemon.plist — the macOS launchd LaunchAgent that supervises the SMA V5
+  daemon on the first 24/7 host, the Mac mini (D-9.5-02b). This is the thin
+  supervisor layer ONLY (D-9.5-02a): the daemon process itself is host-agnostic;
+  launchd binds it to macOS, exactly as sma-daemon-windows.task.xml binds it to the
+  Windows Task Scheduler and a systemd unit would bind it to Linux. All three are
+  add-only siblings over the SAME host-neutral core.
+
+  WHY LaunchAgent, NOT LaunchDaemon (portability audit rows 10/11; assumptions A2/A7)
+    A LaunchDaemon runs at boot with NO user context and NO login session. The daemon
+    spawns `claude` / `codex` workers whose auth is strictly PER-USER: `claude
+    setup-token` credentials, `~/.claude`, and each account's CLAUDE_CONFIG_DIR all
+    live under the worker user. A background LaunchDaemon may also be denied Keychain
+    access. So the 24/7 shape is a LaunchAgent under a DEDICATED auto-login worker
+    user: the mini logs that user in automatically at boot, launchd loads this agent
+    at login (RunAtLoad), and the per-user auth is present. Keychain-vs-headless is
+    verified live during setup-macos.md; if OAuth-in-Keychain proves to work headless,
+    the token env files can be simplified later.
+
+  PLACEHOLDER CONVENTION (fill BEFORE `launchctl load`, same as the Windows harness)
+    <SMA_HOME>     absolute path of the mini's ../sma clone
+                   (e.g. /Users/worker/sma). The daemon composition root is
+                   <SMA_HOME>/daemon/src/main.mjs.
+    <WORKER_HOME>  the auto-login worker user's home dir (e.g. /Users/worker).
+                   launchd does NOT expand `~`, so the log paths must be absolute.
+    Node path: Apple Silicon Homebrew installs node at /opt/homebrew/bin/node
+    (used below). On an Intel Mac mini it is /usr/local/bin/node — swap if needed.
+    Confirm with `which node` during setup.
+
+  ProgramArguments targets main.mjs — the composition root from plan 9.5-08 task 4.
+  It wires config -> durable queue -> event hub -> event-wrapped adapter into BOTH the
+  stateless tick AND the roster front (one process, one adapter). The 9.5-RESEARCH
+  launchd example still named loop.mjs; that reference predates the D-9.5-05 РЕВИЗИЯ
+  entrypoint. main.mjs is the correct target — loop.mjs is a library the root imports.
+
+  KeepAlive true = launchd restarts the process on any exit (crash, kill, OOM). Combined
+  with the daemon's statelessness (D-9.5-02: all truth in Postgres + .sma/ + git), a
+  restart resumes losslessly — this is the macOS half of the kill-drill proven in the
+  bring-up pass (plan 9.5-10 task 3).
+
+  INSTALL (founder, per setup-macos.md):
+    cp supervisor/com.sma.daemon.plist ~/Library/LaunchAgents/com.sma.daemon.plist
+    # edit the two placeholders in the copy, then:
+    launchctl load -w ~/Library/LaunchAgents/com.sma.daemon.plist
+    launchctl list | grep com.sma.daemon      # confirm it is running
+  UNLOAD:
+    launchctl unload -w ~/Library/LaunchAgents/com.sma.daemon.plist
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.sma.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/node</string>
+      <string>&lt;SMA_HOME&gt;/daemon/src/main.mjs</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>&lt;WORKER_HOME&gt;/Library/Logs/sma-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>&lt;WORKER_HOME&gt;/Library/Logs/sma-daemon.err</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>WorkingDirectory</key>
+    <string>&lt;SMA_HOME&gt;</string>
+  </dict>
+</plist>
