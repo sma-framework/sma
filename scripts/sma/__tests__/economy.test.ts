@@ -5,6 +5,7 @@
  *   Test 1 — estimator: estimateTokens is pure/deterministic; ESTIMATOR_VERSION stamped; empty -> 0
  *   Test 2 — corpus stats: core/notes/indexes over an inline corpus; drafts excluded; missing MEMORY.md -> core:null
  *   Test 3 — lane fold: readLaneRuns folds open/close from lanes.jsonl; corrupt line skip-and-counted; open-without-close stays open
+ *   Test 3b — cross-process close pairing: pickOpenRunToClose prefers this terminal's newest open, falls back to the newest overall (crossTerminal:true), lane filter, null when nothing matches
  *   Test 4 — derivation honesty: budget only for >=5 closed CLEAN runs; overlap excluded; <5 -> insufficient; p75 exact; maxLaneClosedRuns
  *   Test 5 — overrun consumption: over-budget CLEAN run consumes appendVerdict + draftLesson once; within/no-budget/overlap consume neither
  *   Test 6 — self-cost: per-surface tokens over a fixture CLAUDE.md + MEMORY.md; MEMORY.md-only repo -> total>0; no surfaces -> 0; not-counted caveat present
@@ -20,6 +21,7 @@ import {
   maxLaneClosedRuns,
   checkLaneOverrun,
   selfCost,
+  pickOpenRunToClose,
 } from '../lib/economy.mjs'
 
 // ── Test 1 — the versioned estimator ─────────────────────────────────────────
@@ -116,6 +118,53 @@ describe('economy — readLaneRuns (Test 3)', () => {
     })
     expect(runs).toEqual([])
     expect(corrupt).toBe(0)
+  })
+})
+
+// ── Test 3b — pickOpenRunToClose (cross-process close, the 2026-07-21 fix) ───
+// Every CLI invocation is its OWN process on agent-driven terminals, so open and
+// close almost never share a terminalId — strict same-terminal matching left the
+// ledger with 0 closed runs ever. The picker prefers the same terminal, then
+// falls back to the newest open run overall (optionally lane-filtered), reporting
+// crossTerminal honestly.
+describe('economy — pickOpenRunToClose (Test 3b)', () => {
+  const opens = [
+    { lane: 'fix', terminalId: 'A', openedAt: '2026-07-21T08:00:00.000Z', open: true },
+    { lane: 'quick', terminalId: 'B', openedAt: '2026-07-21T09:00:00.000Z', open: true },
+    { lane: 'build', terminalId: 'C', openedAt: '2026-07-21T10:00:00.000Z', open: true },
+    { lane: 'fix', terminalId: 'D', openedAt: '2026-07-21T07:00:00.000Z', open: false },
+  ]
+
+  it('prefers the newest open run of the SAME terminal (crossTerminal false)', () => {
+    const res = pickOpenRunToClose(opens, { terminalId: 'B' })
+    expect(res).not.toBeNull()
+    expect(res!.run.terminalId).toBe('B')
+    expect(res!.crossTerminal).toBe(false)
+  })
+
+  it('falls back to the newest open run overall when this terminal has none', () => {
+    const res = pickOpenRunToClose(opens, { terminalId: 'Z' })
+    expect(res).not.toBeNull()
+    expect(res!.run.terminalId).toBe('C') // newest by openedAt
+    expect(res!.run.lane).toBe('build')
+    expect(res!.crossTerminal).toBe(true)
+  })
+
+  it('lane filter narrows both the same-terminal and the fallback pick', () => {
+    const res = pickOpenRunToClose(opens, { terminalId: 'Z', lane: 'quick' })
+    expect(res).not.toBeNull()
+    expect(res!.run.terminalId).toBe('B')
+    expect(res!.crossTerminal).toBe(true)
+    const own = pickOpenRunToClose(opens, { terminalId: 'A', lane: 'fix' })
+    expect(own!.run.terminalId).toBe('A')
+    expect(own!.crossTerminal).toBe(false)
+  })
+
+  it('returns null when nothing is open (or nothing matches the lane)', () => {
+    expect(pickOpenRunToClose([], { terminalId: 'A' })).toBeNull()
+    expect(pickOpenRunToClose(opens, { terminalId: 'Z', lane: 'nope' })).toBeNull()
+    const onlyClosed = opens.filter((r) => !r.open)
+    expect(pickOpenRunToClose(onlyClosed, { terminalId: 'D' })).toBeNull()
   })
 })
 
