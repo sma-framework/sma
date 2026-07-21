@@ -62,6 +62,7 @@ const COMMANDS = [
   { name: 'fast',          workflow: 'fast.md',           description: 'Execute a trivial task inline, no subagents, no planning overhead' },
   { name: 'help',          workflow: 'help.md',           description: 'Show available SMA commands and usage guide' },
   { name: 'deleteme',      workflow: 'sma-deleteme.md',   description: 'Remove SMA from this project in one action — skills, engine, hooks, statusline, managed blocks; your memory corpus stays' },
+  { name: 'update',        workflow: 'sma-update.md',     description: 'Check installed vs available SMA versions and update via the standard installer — memory corpus, profile, and .sma state preserved' },
 ];
 
 // ── hooks the installer manages (matched by command string for idempotency) ──
