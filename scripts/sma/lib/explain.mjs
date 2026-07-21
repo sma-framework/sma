@@ -156,6 +156,9 @@ export const COMMAND_TOPICS = {
   // v5 — the decision corpus and the replay exam
   decisions: 'decisions',
   exam: 'exam',
+
+  // v5 — the consumer-side updater
+  update: 'update',
 }
 
 /**

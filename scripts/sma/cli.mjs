@@ -32,7 +32,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
-import { join, dirname, basename, isAbsolute } from 'node:path'
+import { join, dirname, basename, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** This module's own dir (scripts/sma/) — resolves cli.mjs + fixtures regardless of cwd. */
@@ -7864,6 +7864,141 @@ async function cmdDeleteme({ flags, dirs }) {
   return 0
 }
 
+/** RU rendering of the fixed per-source update verdicts (update.mjs VERDICTS). */
+const UPDATE_VERDICT_RU = {
+  'update-available': 'доступно обновление',
+  'up-to-date': 'актуально',
+  'installed-newer': 'установленная версия НОВЕЕ (например, установка из локального источника); это НЕ предложение отката',
+  unreachable: 'источник недоступен',
+  'unknown-installed': 'установленная версия неизвестна, сравнивать не с чем',
+}
+
+/**
+ * update [--source npm|local|<path>] [--yes] [--global] [--json] [--selftest] — the
+ * consumer-side updater (v5): PULL the available versions (npm registry + a detected
+ * local product checkout), COMPARE against the installed stamp
+ * (<config>/sma-core/capabilities/sma/capability.json — the a backlog item single source the
+ * installer copies), REPORT honestly. DRY-RUN by default; `--yes` re-runs the ONE
+ * standard installer from the chosen source (default npm; `--source local` for the
+ * sibling checkout). The verb itself writes NOTHING — preservation (memory corpus,
+ * .sma state incl. profile.json, foreign settings.json keys, user CLAUDE.md bytes) is
+ * the installer's own guarantee. Installed NEWER than a source is stated plainly and
+ * an apply from that source is REFUSED — never a silent downgrade. An unreachable
+ * registry is an honest report line, not a crash. Direct CLI (may exit nonzero),
+ * never hook-facing.
+ */
+async function cmdUpdate({ flags, dirs }) {
+  const upd = await import('./lib/update.mjs')
+
+  if (flags.selftest === true) {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-update-'))
+    let ok = 0
+    try {
+      ok = upd.updateSelftest({ tmpRoot })
+    } finally {
+      try {
+        rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 3 })
+      } catch {
+        /* temp cleanup is best-effort */
+      }
+    }
+    if (wantsJson(flags)) printJson({ selftest: 'update', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  const project = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const isGlobal = flags.global === true
+  const configDir = isGlobal
+    ? (process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CONFIG_DIR.trim()) || join((await import('node:os')).homedir(), '.claude')
+    : join(project, '.claude')
+
+  // --source: npm (default apply source) | local (the detected sibling checkout) | an explicit path
+  const sourceFlag = typeof flags.source === 'string' ? flags.source : 'npm'
+  let localDir = null
+  if (sourceFlag !== 'npm' && sourceFlag !== 'local') {
+    const candidate = resolve(project, sourceFlag)
+    if (!upd.isProductCheckout(candidate)) {
+      process.stderr.write(`SMA update: «${candidate}» не похож на checkout продукта (нужны bin/init.mjs и package.json c name=${upd.PACKAGE_NAME}).\n`)
+      return 1
+    }
+    localDir = candidate
+  } else {
+    localDir = upd.detectLocalSource({ projectDir: project })
+  }
+  const applySource = sourceFlag === 'npm' ? 'npm' : 'local'
+
+  const installed = upd.readInstalledVersion({ configDir })
+  const npm = await upd.fetchNpmVersion({})
+  const local = localDir
+    ? (() => {
+        const r = upd.readSourceVersion({ sourceDir: localDir })
+        return { ok: r.version != null, version: r.version, dir: localDir, ...(r.detail ? { detail: r.detail } : {}) }
+      })()
+    : null
+  const report = upd.buildReport({ installed: installed.version, npm, local })
+  const plan = upd.planUpdate({ source: applySource, localDir, isGlobal })
+  const dryRun = flags.yes !== true
+
+  if (dryRun) {
+    if (wantsJson(flags)) {
+      printJson({ ok: true, dryRun: true, installed, report, plan, preserved: upd.PRESERVED })
+      return 0
+    }
+    process.stdout.write('SMA update — отчёт по версиям (сухой прогон, ничего не изменено):\n')
+    process.stdout.write(`  установлено   ${installed.version ?? '(нет)'}  ${installed.source}${installed.detail ? `  (${installed.detail})` : ''}\n`)
+    for (const s of report.sources) {
+      process.stdout.write(`  ${s.id === 'npm' ? 'npm latest  ' : 'локальный   '}  ${s.version ?? '(нет)'}  ${s.label} → ${UPDATE_VERDICT_RU[s.verdict] ?? s.verdict}${s.detail ? `  (${s.detail})` : ''}\n`)
+    }
+    process.stdout.write('\n  Применить: node scripts/sma/cli.mjs update --yes' + (applySource === 'local' ? ' --source local' : '') + (isGlobal ? ' --global' : '') + '\n')
+    process.stdout.write('  Обновление выполняет ШТАТНЫЙ установщик; остаётся нетронутым:\n')
+    for (const p of upd.PRESERVED) process.stdout.write(`    - ${p}\n`)
+    return 0
+  }
+
+  // ── --yes: apply through the ONE standard installer, exactly once ────────────
+  const chosen = report.sources.find((s) => s.id === applySource)
+  if (!chosen || chosen.ok !== true) {
+    const why = chosen && chosen.detail ? chosen.detail : 'источник недоступен'
+    process.stderr.write(`SMA update: источник «${applySource}» недоступен (${why}) — обновление не выполнено. ${applySource === 'npm' ? 'Попробуйте позже или укажите --source local.' : 'Проверьте путь к локальному checkout.'}\n`)
+    return 1
+  }
+  if (chosen.verdict === 'installed-newer') {
+    process.stderr.write(`SMA update: установленная версия ${installed.version} НОВЕЕ, чем ${chosen.version} из «${applySource}» — откат не выполняю. Если откат осознан, запустите установщик вручную: ${plan.command} ${plan.args.join(' ')}\n`)
+    return 1
+  }
+  const { spawnSync } = await import('node:child_process')
+  const runner = ({ command, args }) => {
+    const res = spawnSync(command, args, {
+      cwd: project,
+      stdio: 'inherit',
+      // npx is a .cmd shim on Windows and needs a shell; node never does.
+      shell: process.platform === 'win32' && command === 'npx',
+    })
+    return { exitCode: typeof res.status === 'number' ? res.status : 1 }
+  }
+  if (!wantsJson(flags)) {
+    if (chosen.verdict === 'up-to-date') {
+      process.stdout.write(`SMA update: версии совпадают (${installed.version}); переустановка поверх — установщик идемпотентен.\n`)
+    }
+    process.stdout.write(`SMA update: ${installed.version ?? '(нет)'} → ${chosen.version} из «${applySource}»; запускаю: ${plan.command} ${plan.args.join(' ')}\n\n`)
+  }
+  const applied = upd.applyUpdate({ plan, runner })
+  if (wantsJson(flags)) {
+    printJson({ ok: applied.ran && applied.exitCode === 0, dryRun: false, from: installed.version, to: chosen.version, source: applySource, plan, applied, preserved: upd.PRESERVED })
+    return applied.ran && applied.exitCode === 0 ? 0 : 1
+  }
+  if (!applied.ran || applied.exitCode !== 0) {
+    process.stderr.write(`\nSMA update: установщик завершился с ошибкой (${applied.error ?? `код ${applied.exitCode}`}) — состояние см. в его выводе выше.\n`)
+    return 1
+  }
+  process.stdout.write('\nSMA update: готово. Перезапустите терминал, чтобы подхватить обновлённые команды.\n')
+  process.stdout.write('  Остаётся нетронутым: корпус памяти .claude/memory/, состояние .sma/ (включая profile.json), чужие ключи settings.json, каждый байт CLAUDE.md вне managed-блока.\n')
+  return 0
+}
+
 /**
  * memory-preview [--project <path>] [--lang en|ru] [--json] [--selftest] — the
  * onboarding memory-graph preview (v3.6). Renders an ASCII graph of how
@@ -8756,6 +8891,7 @@ const HANDLERS = {
   'ship-lane': cmdShipLane, // 9.4-08  — ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // 9.5-02 (D-9.5-08) — decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
   exam: cmdExam, // 9.5-06 (D-9.5-08) — replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
+  update: cmdUpdate, // v5 — consumer-side updater: version report (installed vs npm vs local source) | --yes re-runs the standard installer | --selftest; memory corpus + .sma state PRESERVED (installer guarantee)
 }
 
 async function main() {
@@ -8765,7 +8901,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam>\n',
+      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }
