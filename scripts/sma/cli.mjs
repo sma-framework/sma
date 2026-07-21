@@ -4624,15 +4624,18 @@ async function cmdReverify({ flags, dirs }) {
 }
 
 /**
- * receipt-hash <command> [--hash-stdout] [--cwd <path>] — the EMIT path. Gates on
+ * receipt-hash <command> [--exit-only] [--cwd <path>] — the EMIT path. Gates on
  * isSafeCommand (refuses anything else with exit 1 + a usage hint), runs the
- * command, and prints the observation sha256 as the LAST line. Executors paste
- * that hash into a SUMMARY receipts block; recordReceipt is the programmatic twin.
+ * command, and prints the observation sha256 as the LAST line. The digest binds
+ * the exact command string + exit code + normalized stdout; --exit-only drops
+ * stdout (for outputs nondeterministic across honest re-runs) but the command
+ * and exit stay bound. Executors paste that hash into a SUMMARY receipts block;
+ * recordReceipt is the programmatic twin.
  */
 async function cmdReceiptHash({ positionals, flags, dirs }) {
   const command = positionals[0]
   if (!command) {
-    process.stderr.write('usage: pnpm sma receipt-hash "<command>" [--hash-stdout] [--cwd <path>]\n')
+    process.stderr.write('usage: pnpm sma receipt-hash "<command>" [--exit-only] [--cwd <path>]\n')
     return 1
   }
   const predict = await import('./lib/predict.mjs')
@@ -4645,7 +4648,8 @@ async function cmdReceiptHash({ positionals, flags, dirs }) {
   const receipts = await import('./lib/receipts.mjs')
   const { execSync } = await import('node:child_process')
   const cwd = typeof flags.cwd === 'string' ? flags.cwd : dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-  const hashStdout = flags['hash-stdout'] === true
+  // stdout is bound by default; --exit-only opts out (--hash-stdout stays accepted as the legacy no-op).
+  const hashStdout = flags['exit-only'] !== true
   const runCommand = (cmd, o = {}) => {
     try {
       return { stdout: execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd }), exitCode: 0 }
@@ -4666,7 +4670,7 @@ async function cmdReceiptHash({ positionals, flags, dirs }) {
     printJson({ command, expected_sha256: rec.receipt.expected_sha256, expected_exit: rec.receipt.expected_exit, hash_stdout: hashStdout })
     return 0
   }
-  process.stdout.write(`exit:${rec.receipt.expected_exit}${hashStdout ? ' (+stdout hashed)' : ''}\n`)
+  process.stdout.write(`exit:${rec.receipt.expected_exit}${hashStdout ? ' (cmd+exit+stdout hashed)' : ' (exit-only: cmd+exit hashed)'}\n`)
   process.stdout.write(`${rec.receipt.expected_sha256}\n`) // sha256 as the LAST line
   return 0
 }

@@ -162,7 +162,7 @@ describe('sampleReceipts', () => {
 describe('auditReceipts', () => {
   /** A receipt whose expected hash matches a runner that returns exit 0 + `stdout`. */
   function receiptFor(id: string, cmd: string, stdout: string): any {
-    const expected = sha256(observationOf({ exitCode: 0, stdout, hashStdout: true }))
+    const expected = sha256(observationOf({ command: cmd, exitCode: 0, stdout, hashStdout: true }))
     return { id, assertion: id, check_command: cmd, expected_sha256: expected, hash_stdout: true, coverage_id: `cov-${id}` }
   }
 
