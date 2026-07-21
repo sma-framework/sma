@@ -35,7 +35,7 @@ One command, from the root of your own project (zero dependencies — the instal
 npx -y sma-framework@latest init
 ```
 
-That is the whole install. It also embeds a short managed rules block into your project's CLAUDE.md so agents can find the memory corpus (your own content is never touched), and the off-ramp is symmetric: `/sma-deleteme` removes everything and PRESERVES `.claude/memory/`. The git-clone path, flags, and the full payload manifest are in [docs/INSTALL.md](docs/INSTALL.md).
+That is the whole install. It also embeds a short managed rules block into your project's CLAUDE.md so agents can find the memory corpus (your own content is never touched), and the off-ramp is symmetric: `/sma-deleteme` removes everything and PRESERVES `.claude/memory/`. Updating later is one command too: `/sma-update` compares the installed version against what is available and re-runs this same installer — the memory corpus, your profile, and all local state stay yours. The git-clone path, flags, and the full payload manifest are in [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Quickstart
 
@@ -168,8 +168,9 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-pause-work` | Create a context handoff when pausing mid-phase |
 | `/sma-help` | Show available commands and the usage guide |
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
+| `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI (`pnpm sma`) — 83 verbs, each with an in-product explainer (`pnpm sma explain <verb>`). The full reference lives in [scripts/sma/README.md](scripts/sma/README.md).
+Underneath runs the coordination + accountability CLI (`pnpm sma`) — 89 verbs, each with an in-product explainer (`pnpm sma explain <verb>`). The full reference lives in [scripts/sma/README.md](scripts/sma/README.md).
 
 ---
 

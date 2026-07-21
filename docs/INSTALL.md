@@ -83,6 +83,32 @@ and are removed once the live platform phases 51/52 close (see
 
 Open a Claude Code session in the project and run `/sma-start`.
 
+## Updating
+
+Updates flow through the SAME standard installer — never through hand-editing
+installed files. From the project root:
+
+```bash
+node scripts/sma/cli.mjs update        # report only: installed vs npm latest (and a detected local checkout)
+node scripts/sma/cli.mjs update --yes  # apply: re-runs the installer from the chosen source
+```
+
+Or conversationally, inside a Claude Code session: `/sma-update`.
+
+- The installed version is read from the install's own stamp
+  (`.claude/sma-core/capabilities/sma/capability.json`); the available versions
+  come from the npm registry and, when a product checkout sits next to your
+  project (the git-clone fallback shape above), from that local source — clearly
+  labeled as such. `--source local` applies from the checkout; `--global`
+  targets a global install.
+- The report is honest at the edges: an unreachable registry is a report line,
+  not a crash, and an installed version NEWER than npm (a local-source install)
+  is stated plainly as newer — `--yes` refuses to roll back.
+- Because the update just re-runs `bin/init.mjs`, everything local is preserved
+  by the installer's own guarantees: `.claude/memory/**`, the `.sma/` state
+  including `profile.json`, every foreign `settings.json` key, and every user
+  byte of CLAUDE.md.
+
 ## Uninstalling
 
 SMA does not scatter files. Remove, from the target you installed into:
