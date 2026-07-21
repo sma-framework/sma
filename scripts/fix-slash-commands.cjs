@@ -12,17 +12,33 @@
  * matching + word-boundary safety). Non-commands (sma-sdk, sma-tools, etc.) are
  * intentionally left untouched.
  *
- * The transforms are pure and exported for use by the installer and tests.
+ * The pure transforms live in sma-core/bin/lib/command-roster.cjs — the runtime
+ * module shipped inside every install — and this dev-time one-shot requires them
+ * from there. The dependency used to point the other way (command-roster required
+ * this file at `../../../scripts/`), which resolved in the source tree but not in
+ * installs, where scripts/ is never delivered next to sma-core/. Reversing it
+ * keeps installs self-contained while this walker stays dev-only.
  *
- * SMA-renamed copy of the upstream GSD `scripts/fix-slash-commands.cjs`
- * (@opengsd/gsd-core 1.6.1) — required by sma-core/bin/lib/command-roster.cjs,
- * which resolves it at `../../../scripts/` relative to its own location.
+ * Derived from the upstream `scripts/fix-slash-commands.cjs` pattern
+ * (@opengsd/gsd-core 1.6.1), renamed for SMA.
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 
-const COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'sma');
+const {
+  readSmaCommandNames,
+  transformContent,
+  transformContentToHyphen,
+  buildPattern,
+  buildColonPattern,
+} = require('../sma-core/bin/lib/command-roster.cjs');
+
+// Kept as a named export for API compatibility: the roster resolves the same
+// <repo>/commands/sma directory this file historically read (scripts/.. and
+// sma-core/bin/lib/../../.. are both the repo root in the source tree).
+const readCmdNames = readSmaCommandNames;
+
 const SEARCH_DIRS = [
   path.join(__dirname, '..', 'sma-core', 'bin', 'lib'),
   path.join(__dirname, '..', 'sma-core', 'workflows'),
@@ -45,72 +61,6 @@ const EXTENSIONS = new Set(['.md', '.cjs', '.js', '.ts', '.tsx']);
 // is expected to strip). Rewriting them changes test semantics.
 function isTestFile(name) {
   return /\.test\.(c?js|tsx?)$/.test(name);
-}
-
-function buildPattern(cmdNames) {
-  // Empty input would compile `/sma-()(?=[^a-zA-Z0-9_-]|$)/g`, which the regex
-  // engine still matches at any `/sma-` token followed by a non-word boundary
-  // (e.g. EOL, whitespace, punctuation) — rewriting it to a stray `/sma:`.
-  // Short-circuit so the caller can no-op on a missing/empty registry rather
-  // than perform an unintended broad rewrite.
-  if (!Array.isArray(cmdNames) || cmdNames.length === 0) return null;
-  const sorted = [...cmdNames].sort((a, b) => b.length - a.length); // longest first to avoid partial matches
-  return new RegExp(`/sma-(${sorted.join('|')})(?=[^a-zA-Z0-9_-]|$)`, 'g');
-}
-
-/**
- * Pure transform: rewrite retired `/sma-<cmd>` to `/sma:<cmd>` for the given command names.
- * Returns the rewritten string. Identifiers not in `cmdNames` (e.g. `/sma-sdk`,
- * `/sma-tools`) are left untouched.
- */
-function transformContent(src, cmdNames) {
-  const pattern = buildPattern(cmdNames);
-  if (!pattern) return src;
-  return src.replace(pattern, (_, cmd) => `/sma:${cmd}`);
-}
-
-/**
- * Build regex for the reverse direction (colon form → hyphen form).
- * Matches both "sma:cmd" and "/sma:cmd" (the leading / is preserved automatically
- * because it is not part of the match). Uses longest-first ordering plus
- * bidirectional word-boundary safety (negative lookbehind on the left, lookahead
- * on the right) so matches only occur at token boundaries.
- */
-function buildColonPattern(cmdNames) {
-  if (!Array.isArray(cmdNames) || cmdNames.length === 0) return null;
-  const sorted = [...cmdNames].sort((a, b) => b.length - a.length);
-  return new RegExp(`(?<![a-zA-Z0-9_-])sma:(${sorted.join('|')})(?=[^a-zA-Z0-9_-]|$)`, 'g');
-}
-
-/**
- * Pure transform (reverse): rewrite `/sma:<cmd>` / `sma:<cmd>` to hyphen form
- * for known SMA commands.
- *
- * Non-command identifiers (e.g. sma-sdk, sma-tools) are left untouched, matching
- * the safety contract of the forward transform.
- */
-function transformContentToHyphen(src, cmdNames) {
-  const pattern = buildColonPattern(cmdNames);
-  if (!pattern) return src;
-  return src.replace(pattern, (_, cmd) => `sma-${cmd}`);
-}
-
-function readCmdNames() {
-  try {
-    return fs.readdirSync(COMMANDS_DIR)
-      .filter(f => f.endsWith('.md'))
-      .map(f => f.replace(/\.md$/, ''));
-  } catch (err) {
-    // Only swallow the missing-directory case. Any other error (EACCES, ENOTDIR,
-    // etc.) indicates a real misconfiguration and must propagate so callers are
-    // not silently handed an empty registry while the real problem goes undetected.
-    if (err.code !== 'ENOENT') throw err;
-    // COMMANDS_DIR may not exist on installs that use skill-based runtimes or
-    // global Claude installs (no local commands/sma/ directory). Return [] so
-    // callers that handle an empty array gracefully (buildPattern returns null,
-    // transformContent is a no-op) are not broken by a missing directory.
-    return [];
-  }
 }
 
 function processFile(file, cmdNames) {
