@@ -302,7 +302,7 @@ describe('pg-boss backend — start() lane provisioning', () => {
     const { adapter, createQueueCalls } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
     await adapter.start()
     // pg-boss v11 rejects a lane queue whose deadLetter target does not exist yet
-    // (pilot fresh-boot finding) — the shared dead queue must be provisioned first.
+    // (the pilot fresh-boot finding) — the shared dead queue must be provisioned first.
     expect(createQueueCalls.map((x) => x.name)).toEqual([
       'sma.task.dead',
       'sma.task.prod',

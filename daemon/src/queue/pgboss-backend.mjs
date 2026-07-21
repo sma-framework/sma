@@ -141,7 +141,7 @@ export function createPgBossQueue({
       bossInstance.on('error', (err) => log(`boss error: ${maskError(err)}`))
     }
     // Idempotent queue provisioning: the shared dead-letter FIRST — pg-boss v11 rejects a
-    // lane queue whose deadLetter target does not exist yet (pilot fresh-boot
+    // lane queue whose deadLetter target does not exist yet (the pilot fresh-boot
     // finding) — then the per-lane queues (grill CH-9.5-07-1).
     await bossInstance.createQueue(DEAD_LETTER_QUEUE)
     for (const lane of TASK_QUEUE_LANES) {
