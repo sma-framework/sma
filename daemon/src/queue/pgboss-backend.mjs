@@ -140,7 +140,10 @@ export function createPgBossQueue({
     } else if (typeof bossInstance.on === 'function') {
       bossInstance.on('error', (err) => log(`boss error: ${maskError(err)}`))
     }
-    // Idempotent per-lane queue creation with a shared dead-letter (grill CH-9.5-07-1).
+    // Idempotent queue provisioning: the shared dead-letter FIRST — pg-boss v11 rejects a
+    // lane queue whose deadLetter target does not exist yet (pilot fresh-boot
+    // finding) — then the per-lane queues (grill CH-9.5-07-1).
+    await bossInstance.createQueue(DEAD_LETTER_QUEUE)
     for (const lane of TASK_QUEUE_LANES) {
       await bossInstance.createQueue(laneQueue(lane), { deadLetter: DEAD_LETTER_QUEUE })
     }
