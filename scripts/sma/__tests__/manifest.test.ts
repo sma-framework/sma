@@ -396,10 +396,10 @@ describe('sma-manifest CI workflow — the security posture locked as text', () 
     // triggers: pull_request + push to main ONLY, and NEVER the target-elevated variant.
     expect(yaml).toMatch(/^on:/m)
     expect(yaml).toMatch(/\n\s{2}pull_request:/)
-    expect(yaml).toMatch(/\n\s{2}push:\n\s{4}branches:\s*\[main\]/)
+    expect(yaml).toMatch(/\n\s{2}push:\r?\n\s{4}branches:\s*\[main\]/)
     expect(yaml).not.toMatch(/pull_request_target/)
     // explicit least-privilege permissions block — exactly contents:read + pull-requests:write.
-    expect(yaml).toMatch(/permissions:\n\s{2}contents:\s*read\n\s{2}pull-requests:\s*write/)
+    expect(yaml).toMatch(/permissions:\r?\n\s{2}contents:\s*read\r?\n\s{2}pull-requests:\s*write/)
     // every `uses:` pins to a full 40-hex commit SHA.
     expect(usesLines.length).toBeGreaterThan(0)
     for (const line of usesLines) {
