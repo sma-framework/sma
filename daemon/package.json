@@ -2,12 +2,13 @@
   "name": "@sma/daemon",
   "version": "0.0.0",
   "private": true,
-  "description": "SMA V5 orchestration daemon — the stateless 24/7 worker-fleet runner (D-9.5-01, scenario C). Queue + runner + roster front + report-back over the 10 SMA verbs. Ships with the product (root files[] allowlist), not a separate npm package.",
+  "description": "SMA V5 orchestration daemon — the stateless 24/7 worker-fleet runner (D-49.5-01, scenario C). Queue + runner + roster front + report-back over the 10 SMA verbs. Ships with the product (root files[] allowlist), not a separate npm package.",
   "type": "module",
   "engines": {
     "node": ">=18.17"
   },
   "dependencies": {
-    "pg-boss": "^12.26"
+    "pg": "^8.11.0",
+    "pg-boss": "^11.0.0"
   }
 }

@@ -1,9 +1,9 @@
 /**
- * Tests for daemon/src/queue/pgboss-backend.mjs (Phase 9.5 Plan 03, Task 1) +
+ * Tests for daemon/src/queue/pgboss-backend.mjs (Phase 49.5 Plan 03, Task 1) +
  * daemon/src/queue/attempt-ledger.mjs (Task 2, direct invariants).
  *
  * The pg-boss backend is a certified QueueAdapter: it re-runs the SAME
- * `queueAdapterContractSuite` the in-memory reference passes (plan 9.5-01), here
+ * `queueAdapterContractSuite` the in-memory reference passes (plan 49.5-01), here
  * against a STATEFUL FAKE pg-boss (send/fetch/touch/complete/fail/getQueueStats over
  * Maps, honouring singletonKey + priority + expireInSeconds) plus a fake execSql over
  * the same store. NO live Postgres, NO real pg-boss is ever loaded (boss is injected).
@@ -229,7 +229,7 @@ const mkClock = (start = 1000) => {
 }
 
 const backlog = (over: any = {}) => ({
-  id: 'BL-96',
+  id: 'BL-196',
   source: 'backlog',
   title: 'do the thing',
   lane: 'prod',
@@ -247,7 +247,7 @@ describe('pg-boss backend — job-option contract', () => {
     await adapter.enqueue(backlog())
     expect(sendCalls).toHaveLength(1)
     expect(sendCalls[0].name).toBe('sma.task.prod')
-    expect(sendCalls[0].opts.singletonKey).toBe('BL-96')
+    expect(sendCalls[0].opts.singletonKey).toBe('BL-196')
     expect(sendCalls[0].opts.expireInSeconds).toBe(5) // ceil(5000/1000)
     expect(sendCalls[0].opts.retryLimit).toBe(2)
     expect(sendCalls[0].opts.retryBackoff).toBe(true)
@@ -277,7 +277,7 @@ describe('pg-boss backend — job-option contract', () => {
     const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
     await adapter.enqueue(backlog())
     await adapter.claimNext('w1', {})
-    await expect(adapter.complete('BL-96', {} as any)).rejects.toBeInstanceOf(NoReceiptError)
+    await expect(adapter.complete('BL-196', {} as any)).rejects.toBeInstanceOf(NoReceiptError)
     const [r] = await adapter.list({})
     expect(r.status).toBe('claimed') // untouched — still active
   })
@@ -288,8 +288,8 @@ describe('pg-boss backend — job-option contract', () => {
     const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
     await adapter.enqueue(backlog())
     await adapter.claimNext('w1', {})
-    await adapter.fail('BL-96', 'missing_access')
-    const rows = readAttempts(ledgerDir, 'BL-96')
+    await adapter.fail('BL-196', 'missing_access')
+    const rows = readAttempts(ledgerDir, 'BL-196')
     expect(rows).toHaveLength(1)
     expect(rows[0].outcome).toBe('failed')
     expect(rows[0].failureReason).toBe('missing_access')
@@ -297,17 +297,21 @@ describe('pg-boss backend — job-option contract', () => {
 })
 
 describe('pg-boss backend — start() lane provisioning', () => {
-  it('start() creates the four lane queues idempotently with the shared deadLetter', async () => {
+  it('start() creates the dead-letter queue FIRST, then the four lane queues with the shared deadLetter', async () => {
     const c = mkClock()
     const { adapter, createQueueCalls } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
     await adapter.start()
+    // pg-boss v11 rejects a lane queue whose deadLetter target does not exist yet
+    // (BL-194 pilot fresh-boot finding) — the shared dead queue must be provisioned first.
     expect(createQueueCalls.map((x) => x.name)).toEqual([
+      'sma.task.dead',
       'sma.task.prod',
       'sma.task.research',
       'sma.task.paperwork',
       'sma.task.forge',
     ])
-    for (const call of createQueueCalls) expect(call.opts.deadLetter).toBe(DEAD_LETTER_QUEUE)
+    expect(createQueueCalls[0].opts?.deadLetter).toBeUndefined()
+    for (const call of createQueueCalls.slice(1)) expect(call.opts.deadLetter).toBe(DEAD_LETTER_QUEUE)
     // exported vocabulary matches
     expect([...TASK_QUEUE_LANES]).toEqual(['prod', 'research', 'paperwork', 'forge'])
   })

@@ -1,6 +1,6 @@
 /**
  * main.mjs — THE DAEMON COMPOSITION ROOT: the process entrypoint the supervisor plist
- * targets (Phase 9.5 Plan 08, Task 4; D-9.5-02/04/05 РЕВИЗИЯ).
+ * targets (Phase 49.5 Plan 08, Task 4; D-49.5-02/04/05 РЕВИЗИЯ).
  *
  * ═══════════════════════ PURE WIRING, NO LOGIC ═══════════════════════════════════
  * This file COMPOSES; it computes nothing. It constructs the config, the durable queue,
@@ -16,7 +16,7 @@
  * resolves (events.mjs). The tick drives the durable side; the front's approve/return
  * handlers emit their own post-CAS hints through the same hub. Truth always lives in the
  * queue + `.sma/`; the hub is a hint transport that a restart may drop losslessly
- * (D-9.5-02 statelessness holds because truth never lives in the hub).
+ * (D-49.5-02 statelessness holds because truth never lives in the hub).
  *
  * ═══════════════════════ THE FOUNDER-PUSH LAW (carried) ══════════════════════════
  * This process holds NO origin-push path (loop.mjs law). The front's approve runs the
@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url'
 
 import { loadConfig } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
+import { recordAttempt, readAttempts } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
@@ -60,8 +61,15 @@ export function createDaemon(o = {}) {
   const ledgerDir = o.ledgerDir ?? config.ledgerDir
   const repoDir = o.repoDir ?? config.repoDir
 
-  // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store.
+  // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store; plus the
+  // sidecar attempt ledger as an OBJECT seam (liveness/sp-report call ledger.readAttempts —
+  // a bare dir string silently no-ops them; BL-194 pilot finding).
   const durable = o.adapter ?? createPgBossQueue({ queueUrl: config.queueUrl, clock, ledgerDir })
+  const ledger =
+    o.ledger ?? {
+      readAttempts: (taskId) => readAttempts(ledgerDir, taskId),
+      recordAttempt: (row) => recordAttempt(ledgerDir, row),
+    }
 
   // (2) the SSE hint hub + the event-wrapped adapter handed to BOTH sides.
   const hub = o.hub ?? createEventHub({ clock })
@@ -99,7 +107,7 @@ export function createDaemon(o = {}) {
     clock,
     adapter,
     config,
-    ledger: ledgerDir,
+    ledger,
     routing: { resolveRoute },
     windows: windowsOpenFor,
     spawnWorker,
@@ -115,14 +123,18 @@ export function createDaemon(o = {}) {
     adapter,
     front,
     daemon,
-    start() {
+    async start() {
+      // the durable adapter owns its connection + queue provisioning — it must come up
+      // BEFORE the tick can claim or the front can enqueue (BL-194 pilot finding).
+      if (typeof durable.start === 'function') await durable.start()
       front.listen()
       daemon.start()
     },
-    stop() {
+    async stop() {
       daemon.stop()
       if (front.server && typeof front.server.close === 'function') front.server.close()
       if (typeof hub.close === 'function') hub.close()
+      if (typeof durable.stop === 'function') await durable.stop()
     },
   }
 }
@@ -130,5 +142,12 @@ export function createDaemon(o = {}) {
 // ── process entrypoint (the plist target). Import stays side-effect-free. ──
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
-  createDaemon().start()
+  createDaemon()
+    .start()
+    .catch((err) => {
+      // fail loud for the supervisor (KeepAlive restarts); mask any connection string.
+      const msg = String((err && err.message) || err).replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
+      console.error(`[SmaDaemon] fatal boot error: ${msg}`)
+      process.exit(1)
+    })
 }

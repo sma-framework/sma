@@ -1,27 +1,27 @@
 /**
- * pgboss-backend.mjs — the durable QueueAdapter over pg-boss (Phase 9.5 Plan 03,
- * Task 1; D-9.5-02, D-9.5-02c).
+ * pgboss-backend.mjs — the durable QueueAdapter over pg-boss (Phase 49.5 Plan 03,
+ * Task 1; D-49.5-02, D-49.5-02c).
  *
  * WHAT: a certified QueueAdapter (the adapter.mjs contract) whose task truth lives
  * ENTIRELY in Postgres via pg-boss. The daemon holds NO task state — kill it at any
- * line and no task is lost (D-9.5-02). This backend re-runs the SAME
- * `queueAdapterContractSuite` the in-memory reference passes (plan 9.5-01): a backend
+ * line and no task is lost (D-49.5-02). This backend re-runs the SAME
+ * `queueAdapterContractSuite` the in-memory reference passes (plan 49.5-01): a backend
  * that passes the suite IS a conforming adapter; nothing else certifies it.
  *
- * WHERE THE QUEUE DB LIVES (D-9.5-02 / D-9.5-02c): a **LOCAL Postgres owned by the
+ * WHERE THE QUEUE DB LIVES (D-49.5-02 / D-49.5-02c): a **LOCAL Postgres owned by the
  * daemon host** (Homebrew postgresql@16 on the Mac mini for the pilot). The connection
- * string comes from config `queueUrl`. The Railway / host-platform `DATABASE_URI`
+ * string comes from config `queueUrl`. The Railway / Institut-platform `DATABASE_URI`
  * MUST NEVER appear in this file or its config — SMA is a standalone product, and
  * worker churn (fetch polling, touch ticks) never belongs in a production medical CRM.
  *
- * PER-LANE QUEUES (grill CH-9.5-07-1): pg-boss `fetch` cannot filter by payload, and a
+ * PER-LANE QUEUES (grill CH-49.5-07-1): pg-boss `fetch` cannot filter by payload, and a
  * `fetch` IS a claim — one shared queue would force fetch-then-unfetch to honour lane
  * eligibility. So each lane is its OWN queue `sma.task.<lane>` (prod / research /
  * paperwork / forge), sharing one deadLetter `sma.task.dead`. claimNext fetches the
  * eligible lanes in a documented stable order (prod → research → paperwork → forge), so
  * a claimed task is BY CONSTRUCTION one an open worker can run.
  *
- * READ-ONLY-BY-CONTRACT list() (grill CH-9.5-03-1): the roster feed + D-9.5-10
+ * READ-ONLY-BY-CONTRACT list() (grill CH-49.5-03-1): the roster feed + D-49.5-10
  * timestamps need to enumerate jobs with their payloads across states — which no
  * pg-boss API exposes. So list() is ONE read-only SELECT over the pg-boss job tables
  * via an injected `execSql` (the SAME DI seam as cas.mjs), and taskId→job resolution
@@ -41,7 +41,7 @@
  * задача вернулась в очередь»). The explicit sweep (liveness.mjs) is the belt-and-
  * suspenders audit on top.
  *
- * LOGGING (T-9.5-09): task ids + masked errors ONLY — never task payloads, never the
+ * LOGGING (T-49.5-09): task ids + masked errors ONLY — never task payloads, never the
  * connection string (agent-run-queue maskSecrets discipline).
  *
  * DI: `boss` (a pg-boss instance or a fake), `execSql`, `clock`, and `ledgerDir` are
@@ -59,7 +59,7 @@ import {
 } from './adapter.mjs'
 import { recordAttempt } from './attempt-ledger.mjs'
 
-/** The four execution lanes, in the documented stable claim order (grill CH-9.5-07-1). */
+/** The four execution lanes, in the documented stable claim order (grill CH-49.5-07-1). */
 export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
 
 /** Shared dead-letter queue for exhausted retries → the roster's red «не справился» card. */
@@ -140,7 +140,10 @@ export function createPgBossQueue({
     } else if (typeof bossInstance.on === 'function') {
       bossInstance.on('error', (err) => log(`boss error: ${maskError(err)}`))
     }
-    // Idempotent per-lane queue creation with a shared dead-letter (grill CH-9.5-07-1).
+    // Idempotent queue provisioning: the shared dead-letter FIRST — pg-boss v11 rejects a
+    // lane queue whose deadLetter target does not exist yet (BL-194 pilot fresh-boot
+    // finding) — then the per-lane queues (grill CH-49.5-07-1).
+    await bossInstance.createQueue(DEAD_LETTER_QUEUE)
     for (const lane of TASK_QUEUE_LANES) {
       await bossInstance.createQueue(laneQueue(lane), { deadLetter: DEAD_LETTER_QUEUE })
     }
@@ -191,7 +194,7 @@ export function createPgBossQueue({
   }
 
   async function claimNext(workerId, { lanes } = {}) {
-    // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation (grill CH-9.5-07-1).
+    // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation (grill CH-49.5-07-1).
     if (Array.isArray(lanes) && lanes.length === 0) return null
     const eligible = Array.isArray(lanes)
       ? TASK_QUEUE_LANES.filter((l) => lanes.includes(l)) // restricted, but keep the stable order
