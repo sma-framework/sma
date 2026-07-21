@@ -73,6 +73,25 @@ describe('memory-lint core (49-08 task 1)', () => {
     }
   })
 
+  it('Test 1b (vocab, no registry): a corpus WITHOUT TAGS.md → ONE structural CRITICAL naming the path, never a crash or a per-tag flood', () => {
+    const tmp = copyCase('vocab')
+    try {
+      rmSync(join(tmp, 'TAGS.md'), { force: true })
+      const res = runLint({
+        corpusDir: tmp,
+        tagsPath: join(tmp, 'TAGS.md'),
+        indexPath: join(tmp, 'MEMORY.md'),
+      })
+      const vocab = findingsOf(res, 'MEM-VOCAB')
+      expect(vocab).toHaveLength(1)
+      expect(vocab[0].tier).toBe('critical')
+      expect(vocab[0].message).toContain('TAGS.md')
+      expect(vocab[0].message).toContain('not found')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('Test 2 (alias): tag uses an alias where the canonical exists → WARN suggesting the canonical', () => {
     const res = lintCase('alias')
     const alias = findingsOf(res, 'MEM-ALIAS')

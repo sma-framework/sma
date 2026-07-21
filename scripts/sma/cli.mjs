@@ -1354,6 +1354,15 @@ async function cmdBuildIndex({ flags }) {
   const tagsPath = join(corpusDir, 'TAGS.md')
   const indexPath = join(corpusDir, 'MEMORY.md')
 
+  // A missing registry is tolerated (loadTagsRegistry fail-soft: the index is
+  // built with every periphery note in the `misc` area) — but say so, or the
+  // degraded grouping looks like a bug.
+  if (!existsSync(tagsPath)) {
+    process.stderr.write(
+      `SMA: TAGS.md не найден (${tagsPath}) — индекс собран без реестра тегов, все заметки попадут в область misc\n`,
+    )
+  }
+
   // Build a date map + commit anchor from git (read-only), fail-open to empty.
   let dateMap = {}
   let commitHash = '0000000'
@@ -8717,4 +8726,10 @@ async function main() {
 
 main()
   .then((code) => process.exit(typeof code === 'number' ? code : 0))
-  .catch(() => process.exit(1))
+  .catch((err) => {
+    // A direct-CLI verb that crashes must say WHAT failed and WHY — a silent
+    // exit 1 is undebuggable. (Hook-facing verbs never reach here: main() wraps
+    // them in a swallow-to-exit-0 try/catch — the fail-open contract holds.)
+    process.stderr.write(`SMA: сбой команды — ${err && err.stack ? err.stack : String(err)}\n`)
+    process.exit(1)
+  })

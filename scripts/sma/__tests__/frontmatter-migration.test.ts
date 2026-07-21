@@ -213,6 +213,16 @@ describe('loadTagsRegistry + resolveAlias', () => {
     // An unknown tag is returned unchanged (membership is lint's job, 49-08).
     expect(resolveAlias('totally-unknown', registry)).toBe('totally-unknown')
   })
+
+  it('an absent TAGS.md returns an EMPTY registry with missing:true (fail-soft), never throws', () => {
+    const registry = loadTagsRegistry(join(__dirname, 'fixtures', 'no-such-TAGS.md'))
+    expect(registry.missing).toBe(true)
+    expect(registry.area.size).toBe(0)
+    expect(registry.kind.size).toBe(0)
+    expect(registry.aliases.size).toBe(0)
+    // resolveAlias stays total over the empty registry.
+    expect(resolveAlias('anything', registry)).toBe('anything')
+  })
 })
 
 // ══════════════════════════════════════════════════════════════════════════════

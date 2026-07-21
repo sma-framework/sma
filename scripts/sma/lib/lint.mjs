@@ -439,6 +439,19 @@ const MEM_VOCAB = {
   tier: 'critical',
   run(ctx) {
     const out = []
+    // No registry at all → ONE structural finding, not a per-tag flood: the
+    // tags are not wrong, the registry is absent (loadTagsRegistry fail-soft).
+    if (ctx.registry.missing) {
+      out.push(
+        finding(
+          'MEM-VOCAB',
+          'critical',
+          ctx.tagsPath,
+          `tag registry not found at ${ctx.tagsPath} — create TAGS.md (facets ## area / ## kind / ## phase, lines "- <tag> — <desc>") so the closed vocabulary can be checked`,
+        ),
+      )
+      return out
+    }
     const known = new Set([...ctx.registry.area, ...ctx.registry.kind])
     for (const note of ctx.parsed) {
       const tags = note.frontmatter?.tags
