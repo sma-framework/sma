@@ -248,11 +248,26 @@ function serializeScalar(v) {
  * current facet and map each alias -> canonical (B2 USE/UF). The `phase` facet is
  * open-form (documented, no enumerated tags) so its bullet-less prose is ignored.
  *
+ * A corpus WITHOUT a TAGS.md is a valid degraded state (pre-onboarding install,
+ * mid-migration adoption): every consumer of the single shared read path used to
+ * crash on the missing file. Instead, an absent registry returns empty facets
+ * plus `missing: true` so a consumer can report it ONCE (lint MEM-VOCAB) or
+ * degrade gracefully (generator's `misc` bucket) — same fail-soft posture as the
+ * rest of the read path. Any error other than ENOENT still throws loudly (B12).
+ *
  * @param {string} tagsPath
- * @returns {{area:Set<string>, kind:Set<string>, aliases:Map<string,string>}}
+ * @returns {{area:Set<string>, kind:Set<string>, aliases:Map<string,string>, missing?:true}}
  */
 export function loadTagsRegistry(tagsPath) {
-  const text = readFileSync(tagsPath, 'utf8')
+  let text
+  try {
+    text = readFileSync(tagsPath, 'utf8')
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { area: new Set(), kind: new Set(), aliases: new Map(), missing: true }
+    }
+    throw err
+  }
   const area = new Set()
   const kind = new Set()
   const aliases = new Map()

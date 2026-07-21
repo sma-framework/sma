@@ -335,3 +335,21 @@ describe('generator.mjs — computeDateMap (injectable git)', () => {
     expect(map['bbb.md']).toBe('2026-06-01T00:00:00+00:00')
   })
 })
+
+describe('generator.mjs — corpus without TAGS.md (fail-soft registry)', () => {
+  it('buildIndex + buildAreaIndexes succeed with an absent registry: every periphery note lands in misc', () => {
+    rmSync(tagsPath, { force: true })
+
+    const generated = buildIndex({ corpusDir, tagsPath, commitHash: HASH, dateMap })
+    // The index is a complete GENERATED artifact — no crash, CORE intact.
+    expect(generated).toContain('GENERATED')
+    expect(generated).toContain('(blocker.md)')
+    // With no registered areas the whole periphery is catalogued under misc.
+    expect(generated).toContain('INDEX-misc.md')
+
+    const areas = buildAreaIndexes({ corpusDir, tagsPath, commitHash: HASH, dateMap })
+    expect(areas.map((a) => a.file)).toEqual(['INDEX-misc.md'])
+    // A periphery note is still a discoverable index line (misc bucket).
+    expect(areas[0].content).toContain('(bbb.md)')
+  })
+})
