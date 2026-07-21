@@ -1,9 +1,9 @@
 /**
- * Tests for daemon/src/queue/pgboss-backend.mjs (Phase 49.5 Plan 03, Task 1) +
+ * Tests for daemon/src/queue/pgboss-backend.mjs (Phase 9.5 Plan 03, Task 1) +
  * daemon/src/queue/attempt-ledger.mjs (Task 2, direct invariants).
  *
  * The pg-boss backend is a certified QueueAdapter: it re-runs the SAME
- * `queueAdapterContractSuite` the in-memory reference passes (plan 49.5-01), here
+ * `queueAdapterContractSuite` the in-memory reference passes (plan 9.5-01), here
  * against a STATEFUL FAKE pg-boss (send/fetch/touch/complete/fail/getQueueStats over
  * Maps, honouring singletonKey + priority + expireInSeconds) plus a fake execSql over
  * the same store. NO live Postgres, NO real pg-boss is ever loaded (boss is injected).
@@ -302,7 +302,7 @@ describe('pg-boss backend — start() lane provisioning', () => {
     const { adapter, createQueueCalls } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
     await adapter.start()
     // pg-boss v11 rejects a lane queue whose deadLetter target does not exist yet
-    // (BL-194 pilot fresh-boot finding) — the shared dead queue must be provisioned first.
+    // (the pilot fresh-boot finding) — the shared dead queue must be provisioned first.
     expect(createQueueCalls.map((x) => x.name)).toEqual([
       'sma.task.dead',
       'sma.task.prod',

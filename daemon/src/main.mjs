@@ -1,6 +1,6 @@
 /**
  * main.mjs — THE DAEMON COMPOSITION ROOT: the process entrypoint the supervisor plist
- * targets (Phase 49.5 Plan 08, Task 4; D-49.5-02/04/05 РЕВИЗИЯ).
+ * targets (Phase 9.5 Plan 08, Task 4; D-9.5-02/04/05 РЕВИЗИЯ).
  *
  * ═══════════════════════ PURE WIRING, NO LOGIC ═══════════════════════════════════
  * This file COMPOSES; it computes nothing. It constructs the config, the durable queue,
@@ -16,7 +16,7 @@
  * resolves (events.mjs). The tick drives the durable side; the front's approve/return
  * handlers emit their own post-CAS hints through the same hub. Truth always lives in the
  * queue + `.sma/`; the hub is a hint transport that a restart may drop losslessly
- * (D-49.5-02 statelessness holds because truth never lives in the hub).
+ * (D-9.5-02 statelessness holds because truth never lives in the hub).
  *
  * ═══════════════════════ THE FOUNDER-PUSH LAW (carried) ══════════════════════════
  * This process holds NO origin-push path (loop.mjs law). The front's approve runs the
@@ -63,7 +63,7 @@ export function createDaemon(o = {}) {
 
   // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store; plus the
   // sidecar attempt ledger as an OBJECT seam (liveness/sp-report call ledger.readAttempts —
-  // a bare dir string silently no-ops them; BL-194 pilot finding).
+  // a bare dir string silently no-ops them; the pilot finding).
   const durable = o.adapter ?? createPgBossQueue({ queueUrl: config.queueUrl, clock, ledgerDir })
   const ledger =
     o.ledger ?? {
@@ -125,7 +125,7 @@ export function createDaemon(o = {}) {
     daemon,
     async start() {
       // the durable adapter owns its connection + queue provisioning — it must come up
-      // BEFORE the tick can claim or the front can enqueue (BL-194 pilot finding).
+      // BEFORE the tick can claim or the front can enqueue (the pilot finding).
       if (typeof durable.start === 'function') await durable.start()
       front.listen()
       daemon.start()
