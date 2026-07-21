@@ -11,6 +11,8 @@
  *   - Test 3 (cost precedence): line costUSD wins verbatim; missing → computed from the
  *     static pricing table (cache-write / cache-read at their own rates); UNKNOWN model
  *     → costUSD null + costSource 'unpriced', tokens still booked.
+ *   - Test 3b (the 2026-07-21 table): version pinned; fable row present and priced;
+ *     mythos ids route to the fable tier; the corrected opus/sonnet rates locked.
  *   - Test 4 (skip taxonomy): non-usage lines skipped silently; malformed JSON → 'corrupt';
  *     an unfamiliar shape that DOES carry token usage → 'unrecognized' (the drift signal);
  *     parseLogLine NEVER throws on any input.
@@ -102,6 +104,30 @@ describe('spend-adapter — the versioned log-format quarantine (Task 1)', () =>
     expect(unknown.costSource).toBe('unpriced')
     expect(unknown.inputTokens).toBe(10)
     expect(unknown.outputTokens).toBe(2)
+  })
+
+  it('Test 3b: the 2026-07-21 table — version pinned, fable priced, mythos routed, opus corrected', () => {
+    // The version IS the contract: a rate change without a version bump is a silent
+    // table swap, which the stamp exists to forbid.
+    expect(pricingVersion).toBe('claude-pricing-2026-07-21')
+    expect(PRICING_USD_PER_MTOK.fable).toEqual({ input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 })
+    expect(PRICING_USD_PER_MTOK.opus).toEqual({ input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 })
+    expect(PRICING_USD_PER_MTOK.sonnet).toEqual({ input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 })
+
+    // A fable-family id computes from the fable row (was unpriced before this table).
+    const fable = parseLogLine(
+      assistantLine({ message: { id: 'msg-f', model: 'claude-fable-5', usage: { input_tokens: 1000, output_tokens: 500 } } }),
+    )
+    const r = PRICING_USD_PER_MTOK.fable
+    expect(fable.costSource).toBe('computed')
+    expect(fable.costUSD).toBeCloseTo((1000 * r.input + 500 * r.output) / 1e6, 9)
+
+    // A mythos id routes to the same tier.
+    const mythos = parseLogLine(
+      assistantLine({ message: { id: 'msg-m', model: 'us.anthropic.claude-mythos-1', usage: { input_tokens: 100, output_tokens: 10 } } }),
+    )
+    expect(mythos.costSource).toBe('computed')
+    expect(mythos.costUSD).toBeCloseTo((100 * r.input + 10 * r.output) / 1e6, 9)
   })
 
   it('Test 4: skip taxonomy — non-usage / corrupt / unrecognized; never throws', () => {
