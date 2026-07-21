@@ -20,8 +20,8 @@
 > ### 🗺️ [Open the live system map →](https://sma-framework.github.io/sma/master-graph.html)
 > Every subsystem of SMA on one interactive page — the fastest way to see how everything connects.
 
-> ### 🧭 [Roadmap →](ROADMAP.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) → V5.1 works-with-what-you-have + Memory Model 1.0 → V5.2 measured memory → V5.3 governance + hardened fleet.**
+> ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + Memory Model 1.0 + the working front → V5.2 measured memory → V5.3 governance + hardened fleet.**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -178,7 +178,7 @@ Underneath runs the coordination + accountability CLI (`pnpm sma`) — 83 verbs,
 Everything above is the core. The detail lives one link away:
 
 - **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history V1 → V4 with the trust spine process by process.
-- **[ROADMAP.md](ROADMAP.md)** — V5 orchestration and the memory-foundation program (V5.1 → V5.3).
+- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), then V5.1 → V5.3 — the import door, the working front, multi-machine federation, and the memory-foundation program. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
 - **[docs/INSTALL.md](docs/INSTALL.md)** — install flags, payload manifest, uninstall.
 - **[scripts/sma/README.md](scripts/sma/README.md)** — every CLI subcommand, flag, hook event, and kill-switch.
 - **[PASSPORT.md](PASSPORT.md)** — the calibration passport: the real hit rate and sample size, reproducible on a fresh clone.
