@@ -125,7 +125,7 @@ Each note carries a `use-when` trigger — that single line is what lets SMA del
 - **Receipts + blind verification** — every "done" carries a re-runnable check; a blind verifier re-derives it from the tree alone, refusing the agent's self-report as input.
 - **Consequences** — a class-A miss does not just get logged, it *acts*: it blocks the next ship until a human dispositions it, from an append-only ledger the agent cannot edit.
 - **Reflexes** — a scored miss becomes a permanent rule that fires *before* the next matching tool call. Touch boiling water once, never again.
-- **Corpus health** — lint, contradiction detection, and consolidation keep the memory sharp at hundreds of notes instead of decaying into noise.
+- **Corpus health** — lint, contradiction detection, and consolidation keep the memory sharp at hundreds of notes instead of decaying into noise. Diagnostics are loud: a failing memory command prints what broke and why, and a corpus without its tag registry still builds a usable index instead of erroring.
 - **Coordination** — session registry, file claims with pre-edit warnings, and shared counters for anything two terminals could race on.
 - **Economy** — lane budgets derived from your own spend history, a self-cost meter, and quality guards on every savings number.
 
