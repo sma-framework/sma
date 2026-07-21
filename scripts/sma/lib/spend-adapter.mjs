@@ -65,7 +65,7 @@ function strOr(v, d) {
 // ═══════════════════════════ pricing (versioned data) ═══════════════════════════
 
 /** The pricing-table version, stamped into every report (no silent table swaps). */
-export const pricingVersion = 'claude-pricing-2026-07'
+export const pricingVersion = 'claude-pricing-2026-07-21'
 
 /**
  * PRICING_USD_PER_MTOK — USD per MILLION tokens for the known model families. Input,
@@ -73,16 +73,27 @@ export const pricingVersion = 'claude-pricing-2026-07'
  * own rate. Static data, NEVER fetched over the network. An unknown model → null
  * (booked token-only, costUSD null, `unpriced`). Family match is a substring test on
  * a lowercased model string so a versioned id ('claude-opus-4-8') maps to its tier.
+ *
+ * Source: the official Anthropic pricing page, verified 2026-07-21.
+ * The prior table (claude-pricing-2026-07) OVERCOUNTED opus 3x (it carried the
+ * deprecated Opus 4.1/4 rates $15/$75; current Opus 4.5-4.8 are $5/$25) and had NO
+ * fable row (fable-family events went unpriced). cacheWrite = the 5-minute-TTL write
+ * rate (the table's single-rate convention); 1h-TTL writes bill higher ($20 fable /
+ * $10 opus) — a known, stated approximation, not billing truth. Sonnet row = the
+ * promo price THROUGH 2026-08-31 ($2/$10); from Sep 1 it becomes $3/$15 — bump this
+ * table + its version then.
  */
 export const PRICING_USD_PER_MTOK = {
-  opus: { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
-  sonnet: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+  fable: { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 },
+  opus: { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  sonnet: { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
   haiku: { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
 }
 
 /** pricingFor(model) → the tier rates, or null for an unknown model family. */
 function pricingFor(model) {
   const m = String(model || '').toLowerCase()
+  if (m.includes('fable') || m.includes('mythos')) return PRICING_USD_PER_MTOK.fable
   if (m.includes('opus')) return PRICING_USD_PER_MTOK.opus
   if (m.includes('sonnet')) return PRICING_USD_PER_MTOK.sonnet
   if (m.includes('haiku')) return PRICING_USD_PER_MTOK.haiku
