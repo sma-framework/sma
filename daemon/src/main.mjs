@@ -63,7 +63,7 @@ export function createDaemon(o = {}) {
 
   // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store; plus the
   // sidecar attempt ledger as an OBJECT seam (liveness/sp-report call ledger.readAttempts —
-  // a bare dir string silently no-ops them; a backlog item pilot finding).
+  // a bare dir string silently no-ops them; the pilot finding).
   const durable = o.adapter ?? createPgBossQueue({ queueUrl: config.queueUrl, clock, ledgerDir })
   const ledger =
     o.ledger ?? {
@@ -125,7 +125,7 @@ export function createDaemon(o = {}) {
     daemon,
     async start() {
       // the durable adapter owns its connection + queue provisioning — it must come up
-      // BEFORE the tick can claim or the front can enqueue (pilot finding).
+      // BEFORE the tick can claim or the front can enqueue (the pilot finding).
       if (typeof durable.start === 'function') await durable.start()
       front.listen()
       daemon.start()
