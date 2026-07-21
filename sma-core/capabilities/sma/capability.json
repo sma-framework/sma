@@ -1,7 +1,7 @@
 {
   "id": "sma",
   "role": "feature",
-  "version": "4.0.2",
+  "version": "5.0.1",
   "title": "SMA framework core",
   "description": "First-party identity of the SMA framework itself: layered memory corpus (CORE + per-area index over .claude/memory/), multi-terminal coordination over .sma/ (claims, sessions, push-claims), and the V2 prediction/reflex loop (reflex-check, gates-check, stall-check hook consumers, calibration, report). No daemons, no DB substrate.",
   "tier": "standard",
