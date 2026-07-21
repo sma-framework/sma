@@ -36,7 +36,7 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 `state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|`
 `pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
 `grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|manifest|`
-`worktree|merge|explain|doc-audit|deleteme|memory-preview|vendor>`
+`worktree|merge|explain|doc-audit|deleteme|memory-preview|vendor|memory|ship-lane|decisions|exam|update>`
 
 The v3.6 surfaces:
 
@@ -44,6 +44,12 @@ The v3.6 surfaces:
 |---|---|---|
 | `deleteme` | One-click uninstall : reverses every installer artifact — engine, runtime, agents, skills, hooks, statusline, managed blocks, `.sma/` — and PRESERVES `.claude/memory/**`. Dry-run by default; never-clobber settings surgery; a torn anchor pair is refused, never repaired. Direct CLI, not hook-facing. | `--yes` \| `--global` \| `--selftest` \| `--json` |
 | `memory-preview` | Onboarding memory-graph preview : an ASCII graph of how SMA will lay out THIS repo's memory — CORE / periphery areas from `git ls-files` / reflex candidates from excavate's history mining. Read-only, zero network, byte-deterministic at one HEAD; an empty repo degrades to the fresh-project layout. Rendered during /sma-start TEACH. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
+
+The v5 consumer surface:
+
+| Subcommand | Purpose | Key flags |
+|---|---|---|
+| `update` | Consumer-side updater (`/sma-update`): reads the INSTALLED version from the install's own stamp (`.claude/sma-core/capabilities/sma/capability.json` — the same single source `package.json` is pinned to at publish), pulls the AVAILABLE versions from the npm registry and from a detected sibling product checkout (clearly labeled as local source), and prints an honest semver comparison — installed NEWER than a source is stated plainly, never offered as a downgrade; an unreachable registry is a report line, not a crash. Dry-run by default; `--yes` re-runs the ONE standard installer (`bin/init.mjs`) from the chosen source and refuses rollbacks — the verb itself writes nothing, so the memory corpus, `.sma/` state (incl. `profile.json`), foreign `settings.json` keys, and user CLAUDE.md bytes survive by the installer's own guarantee. Direct CLI, not hook-facing. | `--yes` \| `--source npm\|local\|<path>` \| `--global` \| `--selftest` \| `--json` |
 
 The V4 maintainer-process surface:
 
