@@ -1,0 +1,96 @@
+{
+  "name": "sma-core-vscode",
+  "displayName": "SMA Core",
+  "description": "SMA orchestration engine embedded in VS Code (ADR-1239 IDE profile).",
+  "version": "1.7.0",
+  "publisher": "sma-framework",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:sma.invoke"
+  ],
+  "main": "./extension.js",
+  "browser": "./browser.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sma.invoke",
+        "title": "SMA: Invoke Command"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "sma",
+        "name": "sma",
+        "fullName": "SMA Core",
+        "description": "Invoke SMA orchestration commands from chat.",
+        "isSticky": true
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "sma_progress",
+        "tags": [
+          "sma",
+          "status"
+        ],
+        "toolReferenceName": "sma-progress",
+        "displayName": "SMA Progress",
+        "modelDescription": "Reports SMA milestone/phase progress (percent complete, plan and summary counts) for the current project.",
+        "userDescription": "Check SMA project progress.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "sma_workstreams",
+        "tags": [
+          "sma",
+          "status"
+        ],
+        "toolReferenceName": "sma-workstreams",
+        "displayName": "SMA Workstreams",
+        "modelDescription": "Lists the SMA parallel workstreams for the current project (or reports flat/single-workstream mode).",
+        "userDescription": "List SMA workstreams.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "sma_plan_phase",
+        "tags": [
+          "sma",
+          "plan"
+        ],
+        "toolReferenceName": "sma-plan-phase",
+        "displayName": "SMA Plan Phase",
+        "modelDescription": "Looks up the plan index (plans, waves, checkpoints) for a named SMA phase. Read-only — does not create or modify a phase plan; use the /sma-plan-phase chat workflow for full phase planning.",
+        "userDescription": "Look up a SMA phase's plan index.",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "phase": {
+              "type": "string",
+              "description": "The SMA phase name to look up (e.g. \"01-core\")."
+            }
+          },
+          "required": [
+            "phase"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

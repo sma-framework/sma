@@ -1,0 +1,24 @@
+{
+  "name": "sma-core",
+  "displayName": "SMA Core",
+  "version": "1.7.0",
+  "description": "SMA Core is a meta-prompting, context engineering, and spec-driven development system for AI coding agents.",
+  "author": {
+    "name": "open-sma",
+    "url": "https://github.com/open-sma"
+  },
+  "homepage": "https://github.com/sma-framework/sma",
+  "repository": "https://github.com/sma-framework/sma",
+  "license": "MIT",
+  "keywords": [
+    "spec-driven-development",
+    "planning",
+    "workflow",
+    "context-engineering",
+    "claude-code",
+    "sma"
+  ],
+  "commands": "./commands/sma/",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

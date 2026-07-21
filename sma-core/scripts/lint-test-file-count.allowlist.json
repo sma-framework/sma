@@ -1,0 +1,120 @@
+{
+  "_doc": "Baseline of modules currently exceeding the 2-test-file limit. Each entry locks in TODAY's exact test filenames as the allowlisted set (identity ratchet). Adding a NEW test file to a capped module fails (novel). Removing one requires pruning this list (stale, ratchet-down). When a cluster drops to ≤ 2, remove its entry entirely. New entries require justification in PR description.",
+  "modules": {
+    "config": {
+      "files": [
+        "config-field-docs.test.cjs",
+        "config-get-default.test.cjs",
+        "config-schema.property.test.cjs",
+        "config.test.cjs"
+      ],
+      "issue": "TBD"
+    },
+    "graphify": {
+      "files": [
+        "graphify-auto-update.slow.test.cjs",
+        "graphify-command-cutover.test.cjs",
+        "graphify-graph-path.test.cjs",
+        "graphify-query.test.cjs",
+        "graphify-visualization.test.cjs",
+        "graphify.test.cjs"
+      ],
+      "issue": "622"
+    },
+    "milestone": {
+      "files": [
+        "milestone-archive.test.cjs",
+        "milestone-helper.test.cjs",
+        "milestone-prefixed-convention.test.cjs",
+        "milestone-summary.test.cjs",
+        "milestone.test.cjs"
+      ],
+      "issue": "TBD"
+    },
+    "roadmap": {
+      "files": [
+        "roadmap-mode-field.test.cjs",
+        "roadmap-phase-fallback.test.cjs",
+        "roadmap.test.cjs"
+      ],
+      "issue": "TBD"
+    },
+    "runtime-artifact-layout": {
+      "files": [
+        "runtime-artifact-layout-descriptor-drive.test.cjs",
+        "runtime-artifact-layout-install-profiles.test.cjs",
+        "runtime-artifact-layout-surface.test.cjs",
+        "runtime-artifact-layout.test.cjs"
+      ],
+      "issue": "TBD"
+    },
+    "security": {
+      "files": [
+        "security-dead-exports.regression.test.cjs",
+        "security-prompt-injection.security.test.cjs",
+        "security-scan.security.test.cjs",
+        "security.test.cjs"
+      ],
+      "issue": "2198"
+    },
+    "state": {
+      "files": [
+        "state-acquirestatelock-non-eexist.test.cjs",
+        "state-prune.test.cjs",
+        "state-rebuild-cli.test.cjs",
+        "state-rebuild.test.cjs",
+        "state.test.cjs"
+      ],
+      "issue": "180"
+    },
+    "verify": {
+      "files": [
+        "verify-health.test.cjs",
+        "verify-mvp-uat.test.cjs",
+        "verify-npm-publish.test.cjs",
+        "verify-test-quality.test.cjs",
+        "verify-work-auto-transition.test.cjs",
+        "verify.test.cjs"
+      ],
+      "issue": "3767"
+    },
+    "install": {
+      "files": [
+        "install-minimal-hooks.test.cjs",
+        "install-nested-layout.test.cjs",
+        "install-path-detection.test.cjs",
+        "install-regressions.test.cjs",
+        "install-runtime-artifacts.test.cjs",
+        "install-update-marker.test.cjs",
+        "install-write-confinement.test.cjs",
+        "install.test.cjs"
+      ],
+      "issue": "1679"
+    },
+    "edge-probe": {
+      "files": [
+        "edge-probe-docs-fixtures.test.cjs",
+        "edge-probe-planner-contract.test.cjs",
+        "edge-probe-spec-phase-contract.test.cjs",
+        "edge-probe.test.cjs"
+      ],
+      "issue": "550"
+    },
+    "federated-config": {
+      "files": [
+        "federated-config.test.cjs",
+        "federated-config-loadconfig.test.cjs",
+        "federated-config-key-removal.test.cjs"
+      ],
+      "issue": "TBD"
+    },
+    "host-integration": {
+      "files": [
+        "host-integration.test.cjs",
+        "host-integration-validator-parity.test.cjs",
+        "host-integration-descriptors.test.cjs"
+      ],
+      "issue": "1684"
+    }
+  }
+}
