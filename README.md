@@ -92,7 +92,7 @@ Three trust-spine features (the git airbag, the spend ledger, and the pre-compac
 
 ## What makes it different
 
-- **Accountable, not just helpful.** Every claim SMA makes about itself is a pre-registered prediction settled by a script and re-derived by a blind verifier. Memory frameworks promise recall; SMA publishes its hit rate and lets a false "done" block its own release.
+- **Accountable, not just helpful.** Every claim SMA makes about itself is a pre-registered prediction settled by a script and re-derived by a blind verifier. A receipt's digest is derived from the exact check command, its exit code and its normalized output, so two different checks can never share a hash. Memory frameworks promise recall; SMA publishes its hit rate and lets a false "done" block its own release.
 - **The layer a vendor cannot ship.** A model vendor cannot impartially grade its own agent's homework. SMA grades it from outside — deterministically, with no LLM in the hot path — which is exactly why it survives platform absorption.
 - **Deterministic first.** Retrieval is tag- and trigger-driven, enforcement is plain scripts, and the whole learning-and-verification loop runs without a single LLM call in the hot path. Optional intelligence can sit on top; correctness never depends on it.
 - **Git-native and reversible.** Notes, ledgers, journals, receipts — all files in your repo. Self-improvement arrives as diffs you review; anything the system learns can be reverted with `git revert`.

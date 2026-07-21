@@ -14,6 +14,9 @@
  *   - Test 6: recordReceipt round-trip — record then verify with the same runner -> 'verified'.
  *   - Test 7: parseCoverage extracts {id, human_judgment} and TOLERATES nested
  *     verification sub-lists (does not break on the 6-space dedent).
+ *   - Test 8: the digest binds the exact command + exit + normalized stdout —
+ *     different commands NEVER share a digest (even exit-only); the same
+ *     command + same output re-derives the identical digest.
  */
 
 import { describe, it, expect, vi } from 'vitest'
@@ -93,8 +96,11 @@ describe('validateReceipt', () => {
 
 describe('verifyReceipts — verified vs divergent', () => {
   it('matching observation -> verified; mismatch -> divergent with both hashes', () => {
-    // A deterministic exit-only observation (hash_stdout default false) → sha256('exit:0').
-    const expected = require('node:crypto').createHash('sha256').update('exit:0', 'utf8').digest('hex')
+    // hash_stdout absent -> stdout bound by default: sha256('cmd:<command>\nexit:0\n<stdout>').
+    const expected = require('node:crypto')
+      .createHash('sha256')
+      .update(observationOf({ command: 'pnpm sma chain-verify --count breaks', exitCode: 0, stdout: 'anything' }), 'utf8')
+      .digest('hex')
     const receipts = [
       { id: 'R1', assertion: 'exits clean', check_command: 'pnpm sma chain-verify --count breaks', expected_sha256: expected },
       { id: 'R2', assertion: 'stale hash', check_command: 'pnpm sma chain-verify --count breaks', expected_sha256: 'c'.repeat(64) },
@@ -191,9 +197,66 @@ describe('parseCoverage — tolerates nested verification sub-lists', () => {
   })
 })
 
-describe('observationOf — exit-only vs hashed stdout', () => {
-  it('exit-only by default; folds normalized stdout only when hashStdout', () => {
-    expect(observationOf({ exitCode: 0 })).toBe('exit:0')
-    expect(observationOf({ exitCode: 1, stdout: 'x\r\ny\r\n', hashStdout: true })).toBe('exit:1\nx\ny')
+describe('observationOf — binds command + exit + normalized stdout', () => {
+  it('folds command, exit and normalized stdout by default; explicit hashStdout:false keeps cmd+exit', () => {
+    expect(observationOf({ command: 'pnpm sma chain-tip', exitCode: 0, stdout: '' })).toBe('cmd:pnpm sma chain-tip\nexit:0\n')
+    expect(observationOf({ command: 'pnpm sma chain-tip', exitCode: 1, stdout: 'x\r\ny\r\n' })).toBe('cmd:pnpm sma chain-tip\nexit:1\nx\ny')
+    expect(observationOf({ command: 'pnpm sma chain-tip', exitCode: 0, stdout: 'noise', hashStdout: false })).toBe('cmd:pnpm sma chain-tip\nexit:0')
+  })
+})
+
+describe('digest degeneracy is fixed (Test 8) — a receipt binds WHAT ran and WHAT it printed', () => {
+  const runnerWith = (stdout: string) => () => ({ stdout, exitCode: 0 })
+
+  it('(a) different commands -> different digests, same runner output and exit', () => {
+    const a = recordReceipt({
+      entry: { id: 'A', assertion: 'a', check_command: 'node scripts/sma/cli.mjs preship --count' },
+      runCommand: runnerWith('0\n'),
+    })
+    const b = recordReceipt({
+      entry: { id: 'B', assertion: 'b', check_command: 'node scripts/sma/cli.mjs chain-verify --count breaks' },
+      runCommand: runnerWith('0\n'),
+    })
+    expect(a.receipt.expected_sha256).not.toBe(b.receipt.expected_sha256)
+  })
+
+  it('(a2) exit-only receipts still bind the command — no shared digest across commands', () => {
+    const a = recordReceipt({
+      entry: { id: 'A', assertion: 'a', check_command: 'node scripts/sma/cli.mjs preship --count', hash_stdout: false },
+      runCommand: runnerWith('0\n'),
+    })
+    const b = recordReceipt({
+      entry: { id: 'B', assertion: 'b', check_command: 'node scripts/sma/cli.mjs chain-verify --count breaks', hash_stdout: false },
+      runCommand: runnerWith('1\n'),
+    })
+    expect(a.receipt.expected_sha256).not.toBe(b.receipt.expected_sha256)
+    // exit-only really is exit-only: same command, different stdout -> same digest.
+    const a2 = recordReceipt({
+      entry: { id: 'A2', assertion: 'a', check_command: 'node scripts/sma/cli.mjs preship --count', hash_stdout: false },
+      runCommand: runnerWith('totally different\n'),
+    })
+    expect(a2.receipt.expected_sha256).toBe(a.receipt.expected_sha256)
+  })
+
+  it('(b) same command + same output twice -> the identical digest (deterministic)', () => {
+    const entry = { id: 'R', assertion: 'stable', check_command: 'pnpm sma chain-tip' }
+    const one = recordReceipt({ entry: { ...entry }, runCommand: runnerWith('tip-abc\n') })
+    const two = recordReceipt({ entry: { ...entry }, runCommand: runnerWith('tip-abc\n') })
+    expect(one.receipt.expected_sha256).toBe(two.receipt.expected_sha256)
+    // and different output for the same command -> a different digest.
+    const three = recordReceipt({ entry: { ...entry }, runCommand: runnerWith('tip-DEF\n') })
+    expect(three.receipt.expected_sha256).not.toBe(one.receipt.expected_sha256)
+  })
+
+  it('(c) reverify verifies a receipt produced by the fixed emit path (default stdout binding)', () => {
+    const runCommand = runnerWith('deterministic\noutput\n')
+    const rec = recordReceipt({
+      entry: { id: 'R1', assertion: 'produces the output', check_command: 'node scripts/sma/cli.mjs chain-tip' },
+      runCommand,
+    })
+    expect(rec.error).toBeUndefined()
+    expect(rec.receipt.hash_stdout).toBe(true) // normalized to an explicit bool
+    const { records } = verifyReceipts({ receipts: [rec.receipt], runCommand, now: 'T' })
+    expect(records[0].verdict).toBe('verified')
   })
 })

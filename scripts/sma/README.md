@@ -94,7 +94,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `load` | resolve a tag set into CORE + periphery notes | `--tags <csv> [--json]` |
 | `snapshot` | push a bounded, allowlisted state view to the CRM cockpit | `--json` |
 | `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (9.2-03). The footprint receipt (9.4-07) compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
-| `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block) | `<command> [--hash-stdout] [--cwd <path>]` |
+| `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block). The digest binds the exact command + exit code + normalized stdout; `--exit-only` drops stdout for nondeterministic outputs (command and exit stay bound) | `<command> [--exit-only] [--cwd <path>]` |
 | `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
 | `chain-verify` | verify the tamper-evident journal chain; list breaks | `--count breaks` \| `--json` |
 
@@ -117,7 +117,11 @@ journal state at that commit — a mismatch is evidence of a local edit.
 
 A SUMMARY may carry a `receipts:` frontmatter block — machine-checkable claims
 `{id, assertion, check_command, expected_sha256}` (plus optional `expected_exit`,
-`hash_stdout`, `coverage_id`) layered over the V2 `coverage:` block. `reverify`
+`hash_stdout`, `coverage_id`) layered over the V2 `coverage:` block.
+`expected_sha256` is derived from the exact `check_command` + exit code +
+normalized stdout (`hash_stdout: false` opts stdout out for outputs that are
+nondeterministic across honest re-runs; the command and exit stay bound — no
+two commands ever share a digest). `reverify`
 re-runs each `check_command` across the SAME `isSafeCommand` boundary as
 predictions; `--fresh-clone` runs on a `git clone --no-hardlinks` so only
 COMMITTED evidence counts. The RECEIPT-PROSE lint fails any 9.2+ SUMMARY whose

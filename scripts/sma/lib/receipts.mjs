@@ -18,20 +18,25 @@
  *   - check_command    : a re-runnable command; MUST pass isSafeCommand
  *   - expected_sha256  : sha256 hex of the canonical OBSERVATION (see below)
  *   - expected_exit    : optional — the observed process exit code, for the record
- *   - hash_stdout      : optional bool — when true the observation includes
- *                        normalized stdout; default false (exit-only receipts
- *                        survive nondeterministic vitest timing noise). Deterministic
- *                        outputs (`--json`, `--count`) SHOULD set hash_stdout true.
+ *   - hash_stdout      : optional bool — normalized stdout is part of the
+ *                        observation BY DEFAULT; set false ONLY for outputs that
+ *                        are nondeterministic across honest re-runs (vitest
+ *                        timing noise). The command string and exit code are
+ *                        bound EITHER WAY — no two commands ever share a digest.
  *   - coverage_id      : optional — back-reference to a V2 coverage item {id};
  *                        RECEIPT-PROSE uses it to bind a receipt to a machine-
  *                        verifiable coverage item (human_judgment: false).
  *
  * EVIDENCE ENCODING (the hash is over a canonical OBSERVATION string, not raw
- * bytes): observationOf({exitCode, stdout, hashStdout}) = `exit:<code>` plus,
- * when hashStdout, `\n` + normalizeOutput(stdout). normalizeOutput folds CRLF,
- * strips ANSI, rstrips each line and drops trailing blank lines — so a receipt
- * is stable across shells and terminals. expected_sha256 = sha256(observation),
- * machine-comparable, uniform schema whether or not stdout is hashed.
+ * bytes): observationOf({command, exitCode, stdout, hashStdout}) =
+ * `cmd:<check_command>` + `\n` + `exit:<code>` plus, unless hashStdout is
+ * explicitly false, `\n` + normalizeOutput(stdout). The digest is therefore a
+ * deterministic function of the exact command, its exit code and (by default)
+ * its normalized output — it can only be reproduced by re-running the SAME
+ * check. normalizeOutput folds CRLF, strips ANSI, rstrips each line and drops
+ * trailing blank lines — so a receipt is stable across shells and terminals.
+ * expected_sha256 = sha256(observation), machine-comparable, uniform schema
+ * whether or not stdout is hashed.
  *
  * SECURITY BOUNDARY (T-9.2-03-01, Elevation of Privilege — mitigate): receipt
  * check_command strings arrive from SUMMARY files (which may be imported from
@@ -74,6 +79,17 @@ function sha256(s) {
 /** Coerce a frontmatter scalar to a boolean (true only for the literal 'true'). */
 function coerceBool(v) {
   return v === true || String(v ?? '').trim().replace(/\s+#.*$/, '').replace(/^['"]|['"]$/g, '') === 'true'
+}
+
+/**
+ * hash_stdout tri-state: absent -> true (stdout is bound by default); ONLY an
+ * explicit false opts a receipt down to command+exit, for outputs that are
+ * nondeterministic across honest re-runs.
+ */
+function coerceHashStdout(v) {
+  if (v == null || v === '') return true
+  if (v === false) return false
+  return String(v).trim().replace(/\s+#.*$/, '').replace(/^['"]|['"]$/g, '') !== 'false'
 }
 
 /**
@@ -204,16 +220,17 @@ export function normalizeOutput(stdout) {
 }
 
 /**
- * observationOf({exitCode, stdout, hashStdout}) -> the canonical observation
- * string that gets hashed. Exit-only by default; stdout folded in (normalized)
- * only when hashStdout. `exit:<code>` is always present so an exit-only receipt
- * is still a real, comparable observation.
+ * observationOf({command, exitCode, stdout, hashStdout}) -> the canonical
+ * observation string that gets hashed. ALWAYS binds the exact command string
+ * and the exit code; folds in normalized stdout unless hashStdout is explicitly
+ * false — the digest is a function of what ran AND what it printed, so two
+ * different commands can never share a hash.
  *
- * @param {{exitCode:number, stdout?:string, hashStdout?:boolean}} args
+ * @param {{command:string, exitCode:number, stdout?:string, hashStdout?:boolean}} args
  * @returns {string}
  */
-export function observationOf({ exitCode, stdout, hashStdout }) {
-  const head = `exit:${exitCode}`
+export function observationOf({ command, exitCode, stdout, hashStdout = true }) {
+  const head = `cmd:${String(command ?? '')}\nexit:${exitCode}`
   return hashStdout ? `${head}\n${normalizeOutput(stdout)}` : head
 }
 
@@ -265,9 +282,9 @@ export function verifyReceipt(entry, { runCommand, cwd, now, summary } = {}) {
     return { ...base, verdict: 'error', error: String((err && err.message) ?? err) }
   }
 
-  const hashStdout = coerceBool(entry.hash_stdout)
+  const hashStdout = coerceHashStdout(entry.hash_stdout)
   const observed_sha256 = sha256(
-    observationOf({ exitCode: observed.exitCode, stdout: observed.stdout, hashStdout }),
+    observationOf({ command: entry.check_command, exitCode: observed.exitCode, stdout: observed.stdout, hashStdout }),
   )
   const verdict = observed_sha256 === entry.expected_sha256 ? 'verified' : 'divergent'
   return { ...base, observed_sha256, exitCode: observed.exitCode, verdict }
@@ -301,7 +318,8 @@ export function verifyReceipts({ summaryPath, receipts, runCommand, cwd, now, re
 
 /**
  * recordReceipt({entry, runCommand, cwd}) -> the entry with expected_sha256 (+
- * expected_exit) filled — the EMIT path executors use at SUMMARY time.
+ * expected_exit, + hash_stdout normalized to an explicit bool) filled — the
+ * EMIT path executors use at SUMMARY time.
  *
  * Allowlist gate FIRST: refuses (returns {error}) for a non-allowlisted
  * command — forging a receipt for an unrunnable command is structurally
@@ -322,11 +340,11 @@ export function recordReceipt({ entry, runCommand, cwd } = {}) {
   } catch (err) {
     return { error: String((err && err.message) ?? err) }
   }
-  const hashStdout = coerceBool(e.hash_stdout)
+  const hashStdout = coerceHashStdout(e.hash_stdout)
   const expected_sha256 = sha256(
-    observationOf({ exitCode: observed.exitCode, stdout: observed.stdout, hashStdout }),
+    observationOf({ command: e.check_command, exitCode: observed.exitCode, stdout: observed.stdout, hashStdout }),
   )
-  return { receipt: { ...e, expected_sha256, expected_exit: observed.exitCode } }
+  return { receipt: { ...e, hash_stdout: hashStdout, expected_sha256, expected_exit: observed.exitCode } }
 }
 
 /**
