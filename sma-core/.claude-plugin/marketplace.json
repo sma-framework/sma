@@ -1,0 +1,20 @@
+{
+  "name": "sma-core",
+  "description": "Marketplace for SMA Core — meta-prompting, context engineering, and spec-driven development system for AI coding agents.",
+  "owner": {
+    "name": "open-sma",
+    "url": "https://github.com/open-sma"
+  },
+  "plugins": [
+    {
+      "name": "sma-core",
+      "description": "SMA Core is a meta-prompting, context engineering, and spec-driven development system for AI coding agents.",
+      "version": "1.8.0",
+      "source": "./",
+      "author": {
+        "name": "open-sma",
+        "url": "https://github.com/open-sma"
+      }
+    }
+  ]
+}

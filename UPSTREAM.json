@@ -1,7 +1,7 @@
 {
   "package": "@opengsd/gsd-core",
-  "version": "1.6.1",
+  "version": "1.8.0",
   "source": "github.com/open-gsd/gsd-core",
-  "snapshotDate": "2026-07-06",
+  "snapshotDate": "2026-07-24",
   "localOrigin": "~/.claude/gsd-core + ~/.claude/agents"
 }
