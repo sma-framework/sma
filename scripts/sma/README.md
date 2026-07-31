@@ -42,8 +42,8 @@ The v3.6 surfaces:
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `deleteme` | One-click uninstall : reverses every installer artifact — engine, runtime, agents, skills, hooks, statusline, managed blocks, `.sma/` — and PRESERVES `.claude/memory/**`. Dry-run by default; never-clobber settings surgery; a torn anchor pair is refused, never repaired. Direct CLI, not hook-facing. | `--yes` \| `--global` \| `--selftest` \| `--json` |
-| `memory-preview` | Onboarding memory-graph preview : an ASCII graph of how SMA will lay out THIS repo's memory — CORE / periphery areas from `git ls-files` / reflex candidates from excavate's history mining. Read-only, zero network, byte-deterministic at one HEAD; an empty repo degrades to the fresh-project layout. Rendered during /sma-start TEACH. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
+| `deleteme` | One-click uninstall: reverses every installer artifact — engine, runtime, agents, skills, hooks, statusline, managed blocks, `.sma/` — and PRESERVES `.claude/memory/**`. Dry-run by default; never-clobber settings surgery; a torn anchor pair is refused, never repaired. Direct CLI, not hook-facing. | `--yes` \| `--global` \| `--selftest` \| `--json` |
+| `memory-preview` | Onboarding memory-graph preview: an ASCII graph of how SMA will lay out THIS repo's memory — CORE / periphery areas from `git ls-files` / reflex candidates from excavate's history mining. Read-only, zero network, byte-deterministic at one HEAD; an empty repo degrades to the fresh-project layout. Rendered during /sma-start TEACH. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
 
 The v5 consumer surface:
 

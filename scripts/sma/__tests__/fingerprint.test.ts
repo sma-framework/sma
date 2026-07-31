@@ -163,8 +163,8 @@ describe('overlapInjection (channel 2, D-9.3-21c)', () => {
   })
 })
 
-// ── 5: a backlog item — attention ≠ fully-active ─────────────────────────────────────
-describe('a backlog item attention split (D-9.3-22f)', () => {
+// ── 5: attention ≠ fully-active ──────────────────────────────────────────────
+describe('attention split (D-9.3-22f)', () => {
   it('the WARN text for an attention owner reads «внимание», a fresh owner reads «занято»', () => {
     const fresh = buildWarnText({ tier: 'warn', who: 'A', pid: 1, operation: 'x', scope: 'src/**', since: null, staleness: 'fresh', howToClear: 'wait' })
     const att = buildWarnText({ tier: 'warn', who: 'A', pid: 1, operation: 'x', scope: 'src/**', since: null, staleness: 'attention', howToClear: 'wait' })
