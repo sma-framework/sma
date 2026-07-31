@@ -13,7 +13,9 @@
  *   sma-core/agents      -> <config>/agents/            (subagent definitions, sma-<name>.md)
  *   derived skills       -> <config>/skills/sma-<cmd>/  (thin SKILL.md wrappers over sma-core/workflows)
  *   sma-core/aliases     -> <config>/skills/gsd-<cmd>/  (ONLY with --with-gsd-aliases, D-9.1-02)
- *   hooks                -> <config>/settings.json      (additive merge, existing entries preserved)
+ *   hooks                -> <config>/settings.json      (additive merge, foreign entries preserved;
+ *                                                        SMA's own legacy per-stream PreToolUse
+ *                                                        entries migrate to the `pre` multiplexer)
  *   .sma/{sessions,claims,journal}                      (runtime scaffold in the project)
  *   rules block          -> <project>/CLAUDE.md         (managed SMA:RULES block via the emit splice
  *                                                        law: user bytes never touched)
@@ -69,25 +71,33 @@ const COMMANDS = [
 
 const SMA_HOOKS = [
   { event: 'SessionStart', matcher: null, command: 'node scripts/sma/cli.mjs session-start', timeout: 10 },
-  { event: 'PreToolUse', matcher: 'Edit|Write', command: 'node scripts/sma/cli.mjs collision-check', timeout: 5 },
-  { event: 'PreToolUse', matcher: 'Bash', command: 'node scripts/sma/cli.mjs collision-check', timeout: 5 },
-  // 9.1-10 (B2): the reflex consumer is a SIBLING of collision-check, not a
-  // replacement — listed AFTER it so mergeHooks appends it behind the collision
-  // entry in each matcher group. Every install target fires reflexes from day one.
-  { event: 'PreToolUse', matcher: 'Edit|Write', command: 'node scripts/sma/cli.mjs reflex-check', timeout: 5 },
-  { event: 'PreToolUse', matcher: 'Bash', command: 'node scripts/sma/cli.mjs reflex-check', timeout: 5 },
-  // 9.1-16 (B9/B10, D-9.1-12): the checkable HARD-RULE gates are a SIBLING of
-  // reflex-check — listed AFTER it so mergeHooks appends gates-check behind the
-  // reflex entry in each matcher group. Advisory WARN only (permissionDecision
-  // allow); every install target enforces the inventory in observation mode.
-  { event: 'PreToolUse', matcher: 'Edit|Write', command: 'node scripts/sma/cli.mjs gates-check', timeout: 5 },
-  { event: 'PreToolUse', matcher: 'Bash', command: 'node scripts/sma/cli.mjs gates-check', timeout: 5 },
+  // 9.2-02 (D-9.2-04): the whole PreToolUse pipeline is ONE `pre` multiplexer
+  // spawn — collision → reflex → gates run as ordered streams inside a single
+  // node process, so sibling ordering is internal to the CLI, not a property
+  // of hook wiring anymore. The old per-stream entries (collision-check /
+  // reflex-check / gates-check × 'Edit|Write' and 'Bash') are listed in
+  // STALE_SMA_HOOK_COMMANDS below and removed by mergeHooks, so an existing
+  // install heals to the single spawn on update.
+  { event: 'PreToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs pre', timeout: 5 },
   // 9.1-21 (B16): the stall detector feeds on PostToolUse — a NEW hook type
   // for SMA (any pre-existing Stop/SubagentStop entries, e.g. a project's
   // security guard, live under different events and are untouched by the
   // additive merge). Advisory additionalContext nudge only, never a block.
+  // NOT absorbed by `pre` (that multiplexer is PreToolUse-only), so it stays
+  // its own entry.
   { event: 'PostToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs stall-check', timeout: 5 },
 ];
+
+// PreToolUse commands this installer USED to ship before the `pre` multiplexer
+// replaced them. They are SMA-managed by construction — these exact strings only
+// ever came from this template — so mergeHooks may drop them without touching
+// foreign hooks. Kept so an install that still carries the legacy 3-spawn
+// chains is healed (not doubled) on update.
+const STALE_SMA_HOOK_COMMANDS = new Set([
+  'node scripts/sma/cli.mjs collision-check',
+  'node scripts/sma/cli.mjs reflex-check',
+  'node scripts/sma/cli.mjs gates-check',
+]);
 
 // ── tiny arg parser ──────────────────────────────────────────────────────────
 
@@ -176,13 +186,39 @@ function rewriteMarkdownPaths(dir) {
 // ── hooks merge (additive, idempotent, order-preserving) ─────────────────────
 
 /**
+ * Drop the legacy per-stream PreToolUse entries this installer itself shipped
+ * before the `pre` multiplexer (STALE_SMA_HOOK_COMMANDS) from a parsed settings
+ * object IN PLACE. Exact command-string match only — foreign hooks are never
+ * touched. A matcher group left empty is removed; a PreToolUse event left empty
+ * is removed. Returns the number of entries dropped.
+ */
+export function removeStaleSmaHooks(settings) {
+  if (!settings || typeof settings.hooks !== 'object' || settings.hooks === null) return 0;
+  const groups = settings.hooks.PreToolUse;
+  if (!Array.isArray(groups)) return 0;
+  let removed = 0;
+  for (const g of groups) {
+    if (!g || !Array.isArray(g.hooks)) continue;
+    const kept = g.hooks.filter((h) => !(h && STALE_SMA_HOOK_COMMANDS.has(h.command)));
+    removed += g.hooks.length - kept.length;
+    g.hooks = kept;
+  }
+  settings.hooks.PreToolUse = groups.filter((g) => g && Array.isArray(g.hooks) && g.hooks.length > 0);
+  if (settings.hooks.PreToolUse.length === 0) delete settings.hooks.PreToolUse;
+  return removed;
+}
+
+/**
  * Merge SMA hook entries into a parsed settings object IN PLACE.
- * - never removes or reorders existing entries (T-9.1-08)
+ * - first drops SMA's OWN known-stale entries (removeStaleSmaHooks) so an
+ *   install carrying the legacy 3-spawn PreToolUse chains heals on update
+ * - never removes or reorders FOREIGN entries (T-9.1-08)
  * - idempotent: an entry whose command string already exists under the same
  *   event (and matcher, for matcher events) is skipped
- * Returns the number of entries added.
+ * Returns { added, removedStale }.
  */
 export function mergeHooks(settings, hookDefs = SMA_HOOKS) {
+  const removedStale = removeStaleSmaHooks(settings);
   if (typeof settings.hooks !== 'object' || settings.hooks === null) settings.hooks = {};
   let added = 0;
   for (const def of hookDefs) {
@@ -202,7 +238,7 @@ export function mergeHooks(settings, hookDefs = SMA_HOOKS) {
     else groups.push(def.matcher === null ? { hooks: [hookEntry] } : { matcher: def.matcher, hooks: [hookEntry] });
     added += 1;
   }
-  return added;
+  return { added, removedStale };
 }
 
 // ── skill derivation ─────────────────────────────────────────────────────────
@@ -310,7 +346,9 @@ async function main() {
     console.log(`  + aliases       ${aliasCount} transitional /gsd-* skills (remove after phases 51/52 close)`);
   }
 
-  // 6. Hooks merge into <config>/settings.json — additive + idempotent (T-9.1-08)
+  // 6. Hooks merge into <config>/settings.json — additive + idempotent for
+  // foreign entries (T-9.1-08); SMA's own legacy per-stream PreToolUse chains
+  // are migrated to the single `pre` multiplexer entry.
   const settingsPath = path.join(configDir, 'settings.json');
   let settings = {};
   if (existsSync(settingsPath)) {
@@ -323,9 +361,10 @@ async function main() {
       process.exit(1);
     }
   }
-  const added = mergeHooks(settings);
+  const { added, removedStale } = mergeHooks(settings);
   writeText(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  console.log(`  + hooks         ${added} added, existing entries preserved (${settingsPath})`);
+  const staleNote = removedStale ? `, ${removedStale} legacy per-stream entries replaced by the \`pre\` multiplexer` : '';
+  console.log(`  + hooks         ${added} added${staleNote}, foreign entries preserved (${settingsPath})`);
 
   // 7. .sma/ runtime scaffold + .gitignore line
   for (const d of ['sessions', 'claims', 'journal', 'reflex']) mkdirSync(path.join(project, '.sma', d), { recursive: true });
@@ -371,7 +410,7 @@ Done. SMA${version ? ` v${version}` : ''} is installed${isGlobal ? ' globally' :
     - the SMA engine (workflows, agents, templates) under ${isGlobal ? '~/.claude' : '.claude'}/sma-core
     - the coordination runtime at scripts/sma (multi-terminal sessions, claims, journal)
     - the /sma-* command skills (${skillCount} commands)${flags.withGsdAliases ? '\n    - the transitional /gsd-* aliases' : ''}
-    - hooks in ${isGlobal ? '~/.claude' : '.claude'}/settings.json (your existing hooks were kept as they were)
+    - hooks in ${isGlobal ? '~/.claude' : '.claude'}/settings.json (your own hooks were kept as they were)
 
   Next step: open a Claude Code session in this project and run \`/sma-start\`.
 `);

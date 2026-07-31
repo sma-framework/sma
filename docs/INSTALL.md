@@ -63,13 +63,18 @@ zero dependencies).
 | Subagent definitions (`sma-*.md`) | `<project>/.claude/agents/` | `~/.claude/agents/` |
 | Command skills (`/sma-*`, 11 commands) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Transitional `/gsd-*` aliases (flag-gated) | `<project>/.claude/skills/` | `~/.claude/skills/` |
-| Hooks (SessionStart + PreToolUse collision checks) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
+| Hooks (SessionStart + the one-spawn PreToolUse `pre` multiplexer + the PostToolUse stall check) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
 | Runtime scaffold | `<project>/.sma/{sessions,claims,journal}` + a `.sma/` line in `.gitignore` | same (project-level) |
 
-The hooks merge is **additive and idempotent**: your existing hook entries are
+The hooks merge is **additive and idempotent**: your own hook entries are
 never removed, reordered, or rewritten, and re-running `init` never duplicates
-an SMA entry (entries are matched by their command string). If your
-`settings.json` is not valid JSON, the installer refuses to touch it and exits.
+an SMA entry (entries are matched by their command string). The one exception
+is SMA's own legacy wiring: installs that predate the `pre` multiplexer carried
+per-stream PreToolUse entries (`collision-check` / `reflex-check` /
+`gates-check`), and re-running the installer replaces those with the single
+`node scripts/sma/cli.mjs pre` entry so the pre-checks run in one spawn instead
+of three. If your `settings.json` is not valid JSON, the installer refuses to
+touch it and exits.
 
 ## The /gsd-* alias flag
 
