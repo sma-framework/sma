@@ -24,6 +24,26 @@
  *   - failed rows carry {reason, reasonLabel} — reasonLabel from REASON_LABELS
  *     (adapter.mjs, the single source); the raw code still travels for machines.
  *
+ * ═══════════ V5.1 — PROJECTS, MACHINES, FEDERATION (D-9.7-01 / D-9.7-04) ═════════
+ * The payload gains `projects[]`, `activeProject`, `machines[]` and `federation` — all
+ * DERIVED, none stored: projects come from the config registry, their counts from the
+ * queue selection, the machine from the config plus its federation role.
+ *
+ * THE SHAPE IS FINAL NOW, ON PURPOSE. `machines[]` today holds exactly one entry — this
+ * machine ({id, title, role:'self', online:true}) — and `federation.hubReachable` exists
+ * before anything probes a hub. Plan 9.7-13 FILLS these fields with real peers; it does
+ * not redefine them, so the SPA (plan 9.7-04) types the contract once and never revises it.
+ * `hubReachable` is an injectable seam (`deps.hubReachable`) defaulting to true: nothing
+ * has proven a hub unreachable until 9.7-13 wires the probe.
+ *
+ * Every task row carries its project and its machine, so a screen FILTERS instead of
+ * guessing. The optional `project` filter narrows tasks and the kpis; it deliberately does
+ * NOT narrow `projects[]` or `machines[]` — the project switcher has to see all of them,
+ * and per-project counts are what make it useful.
+ *
+ * Nothing here carries a peer url, a peer token or free text (T-9.7-05): the federation
+ * field is a role and a boolean, and that is the whole of it.
+ *
  * Every collaborator (adapter, ledger reader, the window-state function, usageReader,
  * the git/receipt readers, clock) is dependency-injected, so tests derive from fixtures
  * with no real Postgres / git / fs. Node built-ins only; zero deps; zero network.
@@ -163,6 +183,45 @@ function windowFor(windows, account) {
   }
 }
 
+/** The project a row belongs to: its own, else the active project, else the default id. */
+function projectOf(row, activeProject) {
+  const own = row && row.project
+  return (typeof own === 'string' && own !== '' ? own : activeProject) || 'default'
+}
+
+/**
+ * deriveProjects(rows, config) → [{id, name, taskCounts}] over the WHOLE selection.
+ * Counts are per project by construction, so they are computed from every row regardless
+ * of an active filter — that is exactly what makes the switcher readable.
+ */
+function deriveProjects(rows, config) {
+  const registry = Array.isArray(config.projects) ? config.projects : []
+  const active = config.activeProject ?? (registry[0] && registry[0].id) ?? null
+  return registry.map((p) => {
+    const mine = rows.filter((r) => projectOf(r, active) === p.id)
+    const taskCounts = { queued: 0, claimed: 0, awaiting_approval: 0, completed: 0, failed: 0, total: mine.length }
+    for (const r of mine) {
+      if (Object.prototype.hasOwnProperty.call(taskCounts, r.status)) taskCounts[r.status] += 1
+    }
+    return { id: p.id, name: p.name, taskCounts }
+  })
+}
+
+/**
+ * deriveMachines(config) → the machine list. Today: exactly this machine. Plan 9.7-13
+ * appends aggregated peers into the SAME shape (T-9.7-05 keeps their url/token out).
+ */
+function deriveMachines(config) {
+  return [
+    {
+      id: config.machineId ?? 'self',
+      title: config.machineTitle ?? 'Эта машина',
+      role: 'self',
+      online: true,
+    },
+  ]
+}
+
 /** A payload window bar — ALWAYS carries estimated (honest labels, A3). */
 function windowBar(win) {
   return {
@@ -187,6 +246,8 @@ function windowBar(win) {
  *   readReceipt?: Function,               // resolve a receiptRef string → receipt object
  *   execGit?: (args:string[], opts?:object)=>string,
  *   clock?: ()=>number,
+ *   project?: string,                     // optional filter — narrows tasks, never the lists
+ *   hubReachable?: boolean,               // 9.7-13 probe seam; absent = true
  * }} deps
  * @returns {Promise<object>}
  */
@@ -198,12 +259,27 @@ export async function deriveState(deps = {}) {
   const workersCfg = Array.isArray(config.workers) ? config.workers : []
   const agingMs = (config.agingHours ?? 24) * HOUR_MS
 
-  let rows = []
+  let allRows = []
   try {
-    rows = (await adapter.list({})) || []
+    allRows = (await adapter.list({})) || []
   } catch {
-    rows = []
+    allRows = []
   }
+
+  // ── projects / machines / federation — derived from the config, never stored ──
+  const projectRegistry = Array.isArray(config.projects) ? config.projects : []
+  const activeProject = config.activeProject ?? (projectRegistry[0] && projectRegistry[0].id) ?? null
+  const projects = deriveProjects(allRows, config)
+  const machines = deriveMachines(config)
+  const machineId = machines[0].id
+  const federation = {
+    role: (config.federation && config.federation.role) || 'standalone',
+    hubReachable: typeof deps.hubReachable === 'boolean' ? deps.hubReachable : true,
+  }
+
+  // The project filter narrows the TASKS only (the lists above are already built).
+  const rows = deps.project ? allRows.filter((r) => projectOf(r, activeProject) === deps.project) : allRows
+
   const queuedRows = rows.filter((r) => r.status === 'queued')
   const claimedRows = rows.filter((r) => r.status === 'claimed')
   const awaitingRows = rows.filter((r) => r.status === 'awaiting_approval')
@@ -223,6 +299,8 @@ export async function deriveState(deps = {}) {
       id: r.id,
       title: r.title ?? null,
       lane: r.lane ?? null,
+      project: projectOf(r, activeProject),
+      machine: machineId,
       ...(r.provider ? { provider: r.provider } : {}),
       priority: Number(r.priority) || 0,
       status: r.status,
@@ -256,7 +334,9 @@ export async function deriveState(deps = {}) {
   })
 
   // ── done[] — «сделано за ночь»; durable sources only ──
-  const done = doneRows.map((r) => buildDoneRow(r, { readTaskAttempts, readReceipt, execGit }))
+  const done = doneRows.map((r) =>
+    buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject, machineId }),
+  )
 
   // ── spend strip — per (deduped) account % bars + the API-fallback € budget ──
   const seen = new Set()
@@ -308,7 +388,7 @@ export async function deriveState(deps = {}) {
     windowsOpen,
   }
 
-  return { kpis, queue, workers, done, spend, costs }
+  return { kpis, queue, workers, done, spend, costs, projects, activeProject, machines, federation }
 }
 
 /** Sum costUsd across every account over a rolling window via the injected usageReader. */
@@ -331,7 +411,7 @@ function totalCost(usageReader, workersCfg, windowMs, now) {
 }
 
 /** Build ONE «сделано за ночь» row from a durable done/failed adapter row + the ledger. */
-function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit }) {
+function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject, machineId }) {
   const attempts = readTaskAttempts(r.id)
   const last = attempts.length ? attempts[attempts.length - 1] : null
   const receipt = parseReceiptSummary(last && last.receiptRef, { readReceipt })
@@ -359,6 +439,8 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit }) {
   const out = {
     id: r.id,
     title: r.title ?? null,
+    project: projectOf(r, activeProject),
+    machine: machineId ?? 'self',
     finishedAt: r.completedAt ?? null,
     workerId: (last && last.workerId) ?? r.workerId ?? null,
     receipt,
