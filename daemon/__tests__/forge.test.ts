@@ -311,6 +311,8 @@ function makeSpawnWorker(order: string[]) {
   return (spec: any) => {
     order.push('spawn')
     spec.onLine?.('forging…')
+    // the forge lane owes an approach note like any other lane (D-9.7-14)
+    spec.onLine?.('APPROACH_NOTE: описал черновик по образцу существующего')
     spec.onExit?.({ code: 0, signal: null })
     return { pid: 7, kill: () => {} }
   }

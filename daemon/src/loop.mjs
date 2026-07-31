@@ -33,6 +33,16 @@
  * is «the push verb». Workers never push; the loop's only git surface is worktree/merge
  * verbs, both local by construction.
  *
+ * ═══════════════════════ AN ATTEMPT MUST EXPLAIN ITSELF (D-9.7-14) ═══════════════
+ * The exit gate asks TWO questions, in the same place, under the same law:
+ *   - is there a GREEN reverify receipt?         (the work is certified)
+ *   - did the attempt leave an APPROACH NOTE?    (the work is explained)
+ * A green receipt without a note fails 'no_journal' — down the identical path an attempt
+ * without a receipt takes. The note is read off the stream the tick already collects (the
+ * same soft-marker protocol as the failure markers) and appended to the decision journal,
+ * alongside the memory trace derived from the worker-context load. Every journal write is
+ * fail-open: an unwritable journal can never wedge a tick, and never lies a status.
+ *
  * ═══════════════════════ FAIL-OPEN HONESTY (merge-gate posture) ═══════════════════
  * The whole tick is wrapped fail-open: any thrown error is journaled and the affected
  * task is FAILED HONESTLY ('runtime_offline' on spawn infra errors) — a tick bug can
@@ -46,6 +56,7 @@ import { join } from 'node:path'
 
 import { livenessSweep } from './queue/liveness.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
+import { parseApproachNote } from './front/journal.mjs'
 
 /** The execution lanes, in the documented stable order (mirrors the adapter's lanes). */
 const LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
@@ -65,13 +76,16 @@ const MARKER_RE = /^\s*(NEEDS_DECISION|MISSING_ACCESS)\s*:/
  *   red reverify receipt           → 'tests_red'        (targeted tests failed)
  *   no receipt + nonzero exit      → 'agent_error'      (the worker crashed)
  *   no receipt + exit 0            → 'no_receipt'        (claimed done, never certified)
+ *   green receipt + no note        → 'no_journal'       (certified, never explained)
  *   anything else                  → 'agent_error'
- * A marker (when present) BEATS the receipt — the worker gave the sharper reason.
+ * A marker (when present) BEATS the receipt — the worker gave the sharper reason. The
+ * missing-RECEIPT law is never weakened by the missing-NOTE law: an attempt with neither
+ * still reads 'no_receipt' (the older, sharper omission wins).
  *
- * @param {{spawnError?:any, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null}} [o]
+ * @param {{spawnError?:any, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, exitCode, receipt, workerMarker } = {}) {
+export function classifyFailure({ spawnError, exitCode, receipt, workerMarker, journalComplete } = {}) {
   if (spawnError) return 'runtime_offline'
   if (workerMarker === 'NEEDS_DECISION') return 'needs_decision'
   if (workerMarker === 'MISSING_ACCESS') return 'missing_access'
@@ -79,7 +93,21 @@ export function classifyFailure({ spawnError, exitCode, receipt, workerMarker } 
   if (!receipt) {
     return Number.isFinite(exitCode) && exitCode !== 0 ? 'agent_error' : 'no_receipt'
   }
+  if (receipt.verdict === 'green' && journalComplete === false) return 'no_journal'
   return 'agent_error'
+}
+
+/**
+ * writeJournal(deps, entry) — append one decision-journal layer through the injected sink.
+ * FAIL-OPEN by construction: an unwritable or absent journal never changes an outcome.
+ */
+function writeJournal(deps, entry) {
+  if (typeof deps.decisionJournal !== 'function') return
+  try {
+    deps.decisionJournal(entry)
+  } catch {
+    /* the journal never wedges a tick */
+  }
 }
 
 /** Parse the last JSON object on a verb's stdout; fail-open to {} (never throws). */
@@ -107,6 +135,24 @@ async function invokeVerb(verbRunner, verb, args, cwd) {
   } catch (err) {
     return { code: 1, error: String((err && err.message) || err) }
   }
+}
+
+/**
+ * recordApproachNote(deps, task, note) → did THIS attempt leave a note?
+ * Appends the approach layer when it did. The answer is about the NOTE, not about the
+ * journal's disk: an unwritable journal must not fail a worker that did explain itself.
+ * The note text is DATA — it is stored capped by the normalizer, and any later prompt that
+ * shows it must fence it (T-9-08).
+ */
+function recordApproachNote(deps, task, note) {
+  if (!note || !note.approach) return false
+  writeJournal(deps, {
+    taskId: task.id,
+    attempt: task.attempt,
+    layer: 'approach',
+    payload: note,
+  })
+  return true
 }
 
 /** Detect a worker final-output marker among the collected stream lines (soft protocol). */
@@ -260,7 +306,15 @@ export async function tick(deps = {}) {
 
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
-      const route = deps.routing.resolveRoute(task, { workers: config.workers, windows: deps.windows, clock, config })
+      // The router writes its OWN dispatcher layer at the decision (D-9.7-14) — the tick
+      // only hands it the sink; it never narrates the routing reason on the router's behalf.
+      const route = deps.routing.resolveRoute(task, {
+        workers: config.workers,
+        windows: deps.windows,
+        clock,
+        config,
+        decisionJournal: deps.decisionJournal,
+      })
       if (!route || (!route.workerId && !route.useApiFallback)) {
         // Claimed but no runnable target after the real route (rare race) — degrade honestly.
         await failTask(deps, task, { reason: 'window_exhausted', now: now() })
@@ -299,6 +353,18 @@ export async function tick(deps = {}) {
         if (worker && (worker.roleFile || (Array.isArray(worker.skills) && worker.skills.length))) {
           const ctx = deps.resolveWorkerContext({ worker, repoDir: config.repoDir, fsImpl: deps.fsImpl })
           if (ctx && ctx.rolePreamble) spec.prompt = `${ctx.rolePreamble}\n\n${spec.prompt ?? ''}`
+          // The MEMORY layer of the journal: which notes were loaded, which reflexes fired.
+          // IDS ONLY — the loaded role BODY never travels into the journal (T-9-10); the
+          // normalizer drops anything that does not read as an identifier.
+          writeJournal(deps, {
+            taskId: task.id,
+            attempt: task.attempt,
+            layer: 'memory',
+            payload: {
+              notes: worker.roleFile ? [worker.roleFile] : [],
+              reflexes: (ctx && ctx.skillsList) || worker.skills || [],
+            },
+          })
         }
       }
       const streamLines = []
@@ -323,11 +389,22 @@ export async function tick(deps = {}) {
       }
       const marker = detectMarker(streamLines)
 
-      if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref) {
+      // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
+      // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
+      const note = parseApproachNote(streamLines)
+      const noteWritten = recordApproachNote(deps, task, note)
+
+      if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now() })
         result.completed = task.id
       } else {
-        const reason = classifyFailure({ spawnError: exit.spawnError, exitCode: exit.code, receipt, workerMarker: marker })
+        const reason = classifyFailure({
+          spawnError: exit.spawnError,
+          exitCode: exit.code,
+          receipt,
+          workerMarker: marker,
+          journalComplete: noteWritten,
+        })
         await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now() })
         result.failed = { taskId: task.id, reason }
       }
@@ -399,7 +476,9 @@ async function runForgeTask(deps, task, route, result, now) {
     repoDir: config.repoDir,
   })
   let lastTouchAt = 0
-  const onLine = () => {
+  const streamLines = []
+  const onLine = (line) => {
+    streamLines.push(line)
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
       lastTouchAt = t
@@ -407,6 +486,9 @@ async function runForgeTask(deps, task, route, result, now) {
     }
   }
   const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
+
+  // The forge lane creates an attempt, so the forge lane owes a note like any other lane.
+  const noteWritten = recordApproachNote(deps, task, parseApproachNote(streamLines))
 
   if (exit.spawnError) {
     await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now() })
@@ -427,6 +509,13 @@ async function runForgeTask(deps, task, route, result, now) {
     const failed = lint.checks.filter((c) => !c.ok).map((c) => c.name).join(',')
     await failTask(deps, task, { reason: 'agent_error', branch, route, now: now() })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: `lint failed: ${failed}` }
+    return result
+  }
+
+  if (!noteWritten) {
+    // Certified draft, unexplained attempt — the same gate, the same named failure.
+    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now() })
+    result.failed = { taskId: task.id, reason: 'no_journal' }
     return result
   }
 

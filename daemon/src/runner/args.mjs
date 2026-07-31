@@ -45,6 +45,7 @@
 import { join } from 'node:path'
 
 import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { APPROACH_MARKERS } from '../front/journal.mjs'
 
 /** Named error for any attempt to reach the permissions-skip flag (both guard vectors). */
 export class ForbiddenFlagError extends Error {
@@ -285,6 +286,12 @@ function fencedBlock(label, content) {
  * D-9.5-10) → the block is omitted with no placeholder. Acceptance content is DATA in
  * the fence, NEVER an instruction to the daemon.
  *
+ * THE APPROACH NOTE (D-9.7-14): the prompt states the note requirement explicitly and names
+ * the exact markers the worker must print at the end of the attempt. An attempt without a
+ * note is INCOMPLETE by the same law that makes it incomplete without a receipt — so the
+ * contract is stated in the same place the DoD is stated, not left to habit. The markers are
+ * imported from the journal module so the prompt and the reader can never drift apart.
+ *
  * @param {{task:{id?:string, title?:string, note?:string, acceptance?:string}}} args
  * @returns {string}
  */
@@ -316,6 +323,17 @@ export function buildTaskPrompt({ task } = {}) {
       fencedBlock('acceptance', String(task.acceptance)),
     )
   }
+
+  parts.push(
+    '',
+    '## Записка о подходе (обязательна)',
+    'Попытка без записки о подходе НЕ полна — ровно так же, как попытка без квитанции.',
+    'Завершая работу, выведите последними строками:',
+    '',
+    `${APPROACH_MARKERS.approach} какой подход выбран (одной строкой)`,
+    `${APPROACH_MARKERS.rejected} какая альтернатива отвергнута (строка на каждую; можно опустить)`,
+    `${APPROACH_MARKERS.influences} какое правило или заметка на это повлияли (строка на каждую; можно опустить)`,
+  )
 
   return parts.join('\n')
 }

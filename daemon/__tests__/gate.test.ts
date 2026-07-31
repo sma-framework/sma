@@ -39,8 +39,10 @@ function makeVerbRunner(responses: Record<string, any>) {
   }
 }
 
+// A COMPLETE attempt now leaves an approach note as well as a receipt (D-9.7-14), so the
+// default fake worker leaves one — the note law is exercised on its own in journal.test.ts.
 function makeSpawnWorker(opts: { lines?: string[]; code?: number } = {}) {
-  const { lines = ['working'], code = 0 } = opts
+  const { lines = ['working', 'APPROACH_NOTE: прямой путь'], code = 0 } = opts
   return (spec: any) => {
     for (const l of lines) spec.onLine?.(l)
     spec.onExit?.({ code, signal: null })

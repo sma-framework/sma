@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url'
 
 import { loadConfig } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
-import { recordAttempt, readAttempts } from './queue/attempt-ledger.mjs'
+import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
@@ -69,6 +69,9 @@ export function createDaemon(o = {}) {
     o.ledger ?? {
       readAttempts: (taskId) => readAttempts(ledgerDir, taskId),
       recordAttempt: (row) => recordAttempt(ledgerDir, row),
+      // the decision journal rides the same ledger dir (D-9.7-14) — same seam, same object
+      appendJournal: (entry) => appendJournalEntry(ledgerDir, entry),
+      readJournalEntries: (taskId) => readJournalEntries(ledgerDir, taskId),
     }
 
   // (2) the SSE hint hub + the event-wrapped adapter handed to BOTH sides.
@@ -114,6 +117,10 @@ export function createDaemon(o = {}) {
     verbRunner: o.verbRunner,
     report: o.report,
     journal: o.journal,
+    // the DECISION journal sink (three layers per attempt) — distinct from `journal`,
+    // which is the daemon's own event log
+    decisionJournal:
+      o.decisionJournal ?? ((entry) => (typeof ledger.appendJournal === 'function' ? ledger.appendJournal(entry) : undefined)),
   }
   const daemon = runDaemon({ tickMs: config.tickMs ?? 5000, onTick: () => tick(tickDeps) })
 

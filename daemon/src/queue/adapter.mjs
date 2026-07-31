@@ -87,6 +87,9 @@ export const TASK_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge
  * The human-readable failure taxonomy (D-9.5-11). `fail(taskId, reason)` accepts ONLY
  * these; the roster renders the RU подпись from REASON_LABELS, never the raw code.
  *   no_receipt      — the exit gate produced no reverify receipt
+ *   no_journal      — the attempt left no approach note (D-9.7-14): the work may be
+ *                     certified, but it never explained itself, and an unexplained attempt
+ *                     is incomplete by the same law that makes an uncertified one incomplete
  *   agent_error     — the worker process errored
  *   tests_red       — a red reverify receipt (targeted tests failed)
  *   needs_decision  — the worker surfaced a call only a human can make
@@ -96,6 +99,7 @@ export const TASK_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge
  */
 export const FAIL_REASONS = Object.freeze([
   'no_receipt',
+  'no_journal',
   'agent_error',
   'tests_red',
   'needs_decision',
@@ -109,6 +113,7 @@ export const FAIL_REASONS = Object.freeze([
 /** RU подписи для красной карточки ростера — single source; план 08 передаёт, план 09 рендерит (D-9.5-11). */
 export const REASON_LABELS = Object.freeze({
   no_receipt: 'нет квитанции — работа не подтверждена',
+  no_journal: 'нет записки о подходе — попытка не объяснена',
   agent_error: 'ошибка работника',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
