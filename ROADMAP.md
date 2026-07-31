@@ -27,7 +27,7 @@ flowchart LR
 | V3.5 | Adoption & trust telemetry | ✅ shipped |
 | V3.6 | The one-command door: npm install, off-ramp, memory preview | ✅ shipped |
 | V4 | Grade the grader: graded verdicts, economy meters, vendor triage | ✅ shipped |
-| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.0.3, July 2026) |
+| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.0.4, July 2026) |
 | V5.1 | Works with what you have + Memory Model 1.0 + the working front | 🔵 in design |
 | V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | 🔵 planned |
 | V5.3 | Memory governance, hardened fleet, external validation | 🔵 planned |
