@@ -22,12 +22,17 @@ import {
   JOURNAL_LAYERS,
   DISPATCH_REASONS,
   APPROACH_NOTE_CAP,
+  APPROACH_MARKERS,
   attemptIdFor,
   readJournal,
   journalComplete,
   parseApproachNote,
 } from '../src/front/journal.mjs'
 import { appendJournalEntry, readJournalEntries, recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
+import { resolveRoute } from '../src/policy/routing.mjs'
+import { buildTaskPrompt } from '../src/runner/args.mjs'
+import { tick, classifyFailure } from '../src/loop.mjs'
+import { createMemoryQueue, FAIL_REASONS, REASON_LABELS } from '../src/queue/adapter.mjs'
 
 let dir: string
 let ledger: any
@@ -237,6 +242,250 @@ describe('backward compatibility — a task from before this revision', () => {
     // simulate a torn write by appending garbage through the same append primitive
     appendFileSync(journalFile(taskId), '{not json\n')
     expect(readJournalEntries(dir, taskId)).toHaveLength(1)
+  })
+})
+
+describe('the dispatcher layer is written BY the router, at the decision (D-9.7-14)', () => {
+  const worker = { id: 'max-2', lane: 'prod', provider: 'claude', enabled: true, account: { configDir: '/x' } }
+  const nightClock = () => new Date('2026-07-21T03:00:00').getTime() // outside active hours
+
+  const route = (task: any, over: any = {}) => {
+    const written: any[] = []
+    const decision = resolveRoute(task, {
+      workers: [worker],
+      windows: () => true,
+      clock: nightClock,
+      config: {},
+      decisionJournal: (e: any) => written.push(e),
+      ...over,
+    })
+    return { decision, written }
+  }
+
+  const outcomes: Array<[string, any, any, string]> = [
+    ['lane default → lane_default', { id: 'BL-A', lane: 'prod' }, {}, 'lane_default'],
+    ['per-task override → per_task_override', { id: 'BL-B', lane: 'prod', model: 'opus' }, {}, 'per_task_override'],
+    [
+      'per-worker override → per_worker_override',
+      { id: 'BL-C', lane: 'prod' },
+      { workers: [{ ...worker, model: 'sonnet' }] },
+      'per_worker_override',
+    ],
+    ['explicit api → api_fallback_requested', { id: 'BL-D', lane: 'prod', provider: 'api' }, {}, 'api_fallback_requested'],
+    ['no open window → window_exhausted', { id: 'BL-E', lane: 'prod' }, { windows: () => false }, 'window_exhausted'],
+    [
+      'the founder’s protected account during active hours → day_priority_protected',
+      { id: 'BL-F', lane: 'prod' },
+      { workers: [{ ...worker, dayPriorityOwner: true }], clock: () => new Date('2026-07-21T12:00:00').getTime() },
+      'day_priority_protected',
+    ],
+  ]
+
+  for (const [name, task, over, code] of outcomes) {
+    it(`${name} — the code is on the decision AND in the journal`, () => {
+      const { decision, written } = route(task, over)
+      expect(decision.reasonCode).toBe(code)
+      expect(Object.keys(DISPATCH_REASONS)).toContain(code)
+      expect(written).toHaveLength(1)
+      expect(written[0].layer).toBe('dispatcher')
+      expect(written[0].taskId).toBe(task.id)
+      expect(written[0].payload.code).toBe(code)
+    })
+  }
+
+  it('every routing outcome code exists in the closed vocabulary and is renderable', () => {
+    for (const [, task, over, code] of outcomes) {
+      route(task, over)
+      expect(typeof DISPATCH_REASONS[code]).toBe('string')
+    }
+  })
+
+  it('a lane PROBE (no task id) writes nothing — the tick asks routing many times per tick', () => {
+    const { written } = route({ lane: 'prod' })
+    expect(written).toHaveLength(0)
+  })
+
+  it('a throwing journal sink never breaks routing (fail-open)', () => {
+    const decision = resolveRoute(
+      { id: 'BL-G', lane: 'prod' },
+      {
+        workers: [worker],
+        windows: () => true,
+        clock: nightClock,
+        config: {},
+        decisionJournal: () => {
+          throw new Error('disk on fire')
+        },
+      },
+    )
+    expect(decision.workerId).toBe('max-2')
+  })
+})
+
+describe('the approach note is part of the task prompt contract', () => {
+  it('buildTaskPrompt demands the note, names its markers, and still fences task DATA', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 'do it', note: 'from the founder' } })
+    expect(prompt).toContain(APPROACH_MARKERS.approach)
+    expect(prompt).toContain(APPROACH_MARKERS.rejected)
+    expect(prompt).toContain(APPROACH_MARKERS.influences)
+    expect(prompt).toMatch(/записк/i)
+    expect(prompt).toContain('```task') // untrusted task data still rides the fence
+  })
+})
+
+describe('the completion gate asks for the note where it asks for the receipt', () => {
+  const backlogTask = (over: any = {}) => ({
+    id: 'BL-J1',
+    source: 'backlog',
+    title: 'do the thing',
+    lane: 'prod',
+    priority: 0,
+    storyPoints: 3,
+    acceptance: 'green targeted tests + a reverify receipt',
+    ...over,
+  })
+
+  const GREEN_REVERIFY = {
+    code: 0,
+    stdout: JSON.stringify({ verdict: 'green', receiptRef: 'reverify:abc', diffStat: '+10 -2' }),
+  }
+
+  function makeDeps(adapter: any, streamLines: string[], over: any = {}) {
+    const written: any[] = []
+    const deps: any = {
+      adapter,
+      ledger: { recordAttempt: () => {}, readAttempts: () => [] },
+      config: {
+        workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
+        repoDir: '/repo',
+        ...over.config,
+      },
+      routing: { resolveRoute },
+      windows: () => true,
+      buildArgs: () => ({ bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }),
+      verbRunner: async (_bin: string, argsArray: string[]) => {
+        const verb = argsArray[1]
+        if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
+        if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/x' }) }
+        if (verb === 'reverify') return GREEN_REVERIFY
+        return { code: 0, stdout: '{}' }
+      },
+      spawnWorker: (spec: any) => {
+        for (const l of streamLines) spec.onLine?.(l)
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      clock: () => new Date('2026-07-21T03:00:00').getTime(),
+      decisionJournal: (e: any) => written.push(e),
+      ...over.deps,
+    }
+    return { deps, written }
+  }
+
+  it('a green receipt WITHOUT an approach note does NOT complete — it fails "no_journal"', async () => {
+    const adapter = createMemoryQueue({ clock: () => Date.now(), expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps(adapter, ['ordinary output, no note'])
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBeUndefined()
+    expect(res.failed).toEqual({ taskId: 'BL-J1', reason: 'no_journal' })
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('failed')
+    expect(row.failure_reason).toBe('no_journal')
+  })
+
+  it('the same attempt WITH a note completes, and the note lands in the journal as data', async () => {
+    const adapter = createMemoryQueue({ clock: () => Date.now(), expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-J2' }))
+    const { deps, written } = makeDeps(adapter, [
+      'working…',
+      'APPROACH_NOTE: расширил существующий леджер вместо нового хранилища',
+      'APPROACH_REJECTED: новое хранилище журнала',
+      'APPROACH_INFLUENCES: rule_zero_dep',
+    ])
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-J2')
+    const approach = written.filter((e) => e.layer === 'approach')
+    expect(approach).toHaveLength(1)
+    expect(approach[0].taskId).toBe('BL-J2')
+    expect(approach[0].payload.approach).toContain('леджер')
+    expect(approach[0].payload.rejected).toEqual(['новое хранилище журнала'])
+  })
+
+  it('no_journal is a first-class failure reason with a RU подпись', () => {
+    expect(FAIL_REASONS).toContain('no_journal')
+    expect(typeof REASON_LABELS.no_journal).toBe('string')
+    expect(REASON_LABELS.no_journal.length).toBeGreaterThan(0)
+  })
+
+  it('classifyFailure names a missing note only once the receipt is green', () => {
+    expect(classifyFailure({ exitCode: 0, receipt: { verdict: 'green', ref: 'r' }, journalComplete: false })).toBe('no_journal')
+    expect(classifyFailure({ exitCode: 0, receipt: { verdict: 'green', ref: 'r' }, journalComplete: true })).toBe('agent_error')
+    // a missing receipt still beats a missing note — the older law is not weakened
+    expect(classifyFailure({ exitCode: 0, receipt: null, journalComplete: false })).toBe('no_receipt')
+  })
+
+  it('the memory trace is written from the worker-context load: IDS only, no content', async () => {
+    const adapter = createMemoryQueue({ clock: () => Date.now(), expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-J3' }))
+    const { deps, written } = makeDeps(adapter, ['APPROACH_NOTE: сделал прямо'], {
+      config: {
+        workers: [
+          {
+            id: 'max-2',
+            lane: 'prod',
+            provider: 'claude',
+            account: { configDir: '/x' },
+            enabled: true,
+            roleFile: '.claude/agents/builder.md',
+            skills: ['sma-debug', 'sma-quick'],
+          },
+        ],
+        repoDir: '/repo',
+      },
+      deps: {
+        resolveWorkerContext: () => ({ rolePreamble: 'ТЫ СТРОИТЕЛЬ. Секретный текст роли.', skillsList: ['sma-debug', 'sma-quick'] }),
+      },
+    })
+
+    await tick(deps)
+
+    const memory = written.filter((e) => e.layer === 'memory')
+    expect(memory).toHaveLength(1)
+    expect(memory[0].payload.notes).toContain('.claude/agents/builder.md')
+    expect(memory[0].payload.reflexes).toEqual(['sma-debug', 'sma-quick'])
+    expect(JSON.stringify(memory[0])).not.toContain('Секретный')
+  })
+
+  it('a throwing journal sink never wedges the tick (fail-open, merge-gate posture)', async () => {
+    const adapter = createMemoryQueue({ clock: () => Date.now(), expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-J4' }))
+    const { deps } = makeDeps(adapter, ['APPROACH_NOTE: сделал прямо'], {
+      deps: {
+        decisionJournal: () => {
+          throw new Error('disk on fire')
+        },
+      },
+    })
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-J4')
+  })
+})
+
+describe('the tick file keeps its disciplines', () => {
+  const src = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
+
+  it('holds NO in-process keyed collection (D-9.5-02 grep gate)', () => {
+    expect(src).not.toMatch(/new Map\b/)
+    expect(src).not.toMatch(/new Set\b/)
+  })
+
+  it('never writes the reserved push literal (SMA-3 comment discipline)', () => {
+    expect(src.toLowerCase()).not.toMatch(/git\s+push/)
   })
 })
 
