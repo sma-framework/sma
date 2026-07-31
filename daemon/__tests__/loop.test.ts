@@ -52,8 +52,10 @@ function makeVerbRunner(responses: Record<string, any>, order?: string[]) {
 
 // A recording spawnWorker: emits stream lines then exits. Optionally throws synchronously
 // (an infra spawn error) or is left un-exited (to model a mid-tick kill).
+// A COMPLETE attempt carries BOTH a green receipt and an approach note (D-9.7-14) — the
+// default fake worker leaves the note; the note law itself is exercised in journal.test.ts.
 function makeSpawnWorker(order?: string[], opts: { lines?: string[]; code?: number; throwSync?: boolean } = {}) {
-  const { lines = ['stream line'], code = 0, throwSync = false } = opts
+  const { lines = ['stream line', 'APPROACH_NOTE: прямой путь'], code = 0, throwSync = false } = opts
   return (spec: any) => {
     order?.push('spawn')
     if (throwSync) throw new Error('spawn infra failure')

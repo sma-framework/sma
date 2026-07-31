@@ -223,9 +223,10 @@ describe('project — an additive task field with an injected default (D-9.7-01)
 })
 
 describe('constants — taxonomy (D-9.5-11)', () => {
-  it('FAIL_REASONS is the 9-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 10-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
+      'no_journal',
       'agent_error',
       'tests_red',
       'needs_decision',
