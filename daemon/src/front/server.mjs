@@ -7,12 +7,20 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FOURTEEN routes
- *     (re-frozen 2026-07-17 per D-9.5-09 — the harness growth is EXPLICIT, declared
- *     once, never incremental). A path outside the table is 404 BEFORE any auth-error
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY THIRTY routes
+ *     (re-frozen 2026-08-01 per D-9.7-09 — the V5.1 growth is EXPLICIT, declared ONCE
+ *     for the whole release and never incremental; the previous freeze was FOURTEEN,
+ *     2026-07-17, D-9.5-09). A path outside the table is 404 BEFORE any auth-error
  *     detail (no route reflection). No command-exec endpoint exists or ever may
- *     (T-9.5-25) — adding a route requires touching THIS table AND the plan-09 guard
- *     invariant that polices it. Object.keys(ROUTES).length === 14 is a test.
+ *     (T-9.5-25) — adding a route requires touching THIS table AND the guard
+ *     invariant that polices it. Object.keys(ROUTES).length === 30 is a test.
+ *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
+ *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
+ *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
+ *     the address is resolved server-side from the peers registry and a request can
+ *     never name an arbitrary host. The entry point stays the same and only the
+ *     addressee changes, so the DoR/approve gates can never be re-implemented a second
+ *     time behind a parallel «peer» route (D-9.7-07).
  *   - TOKEN EVERYWHERE. Every route (including GET /api/state) is auth-gated before its
  *     handler runs (auth.mjs, timing-safe). Constant-body 401 (no oracle), 429 on a
  *     failure-window breach (T-9.5-24).
@@ -24,8 +32,15 @@
  *     auth'd (T-9.5-27/35).
  *
  * The five D-9.5-09 harness routes (GET /api/harness + POST /api/forge, /api/agent/
- * toggle, /api/skill/assign, /api/mcp/toggle) ship here as NAMED 501 stubs so the table
- * is complete and frozen from the first commit; their handlers land in plan 9.5-11.
+ * toggle, /api/skill/assign, /api/mcp/toggle) shipped as NAMED 501 stubs so the table
+ * was complete and frozen from the first commit; their handlers landed in plan 9.5-11.
+ *
+ * The SIXTEEN D-9.7-09 routes (SPA asset serving, projects, machines/federation, chat,
+ * import, onboarding) ship the SAME way — named 501 stubs, present and auth-gated from
+ * the first commit of the release, so every screen is built against the final contract
+ * instead of an imagined one. A stub reads NOTHING off the request; it answers 501 and
+ * stops. Their handlers land in plans 9.7-09 (static + projects), 9.7-15 (machines +
+ * chat) and 9.7-20 (import + onboarding) — and NO plan of the release adds a route.
  *
  * Node built-ins only (node:http). Every collaborator (deriveState, adapter, ledger,
  * the merge verbRunner, execGit, the event hub, clock) is dependency-injected via
@@ -61,15 +76,26 @@ const DIFF_CAP = 500 * 1024
 /** Commit-log cap on the task-timeline read (bounded, never unbounded git output). */
 const COMMIT_CAP = 50
 
+/** A static-asset file name: FLAT and hashed (Vite output), never a path. A leading dot
+ *  and every separator are excluded by construction, so `..`, `../x` and `a/b` cannot
+ *  match — directory traversal dies at the name parse, before any handler runs. */
+const ASSET_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/
+
 /**
- * ROUTES — THE FINAL FROZEN TABLE (D-9.5-09, re-frozen 2026-07-17). Exactly FOURTEEN
+ * ROUTES — THE FINAL FROZEN TABLE (D-9.7-09, re-frozen 2026-08-01; the single freeze
+ * revision of the V5.1 release, superseding the FOURTEEN of D-9.5-09). Exactly THIRTY
  * entries mapping `${METHOD} ${path-pattern}` → handler name. `:id` marks the two
- * dynamic segments (/api/task/:id, /api/diff/:id), both bound to ID_RE. This object IS
- * the contract the plan-09 guard invariant polices — its size is a test
- * (Object.keys(ROUTES).length === 14) and no route may be added without also touching
+ * dynamic id segments (/api/task/:id, /api/diff/:id), both bound to ID_RE; `:file` marks
+ * the one dynamic asset segment (/assets/:file), bound to ASSET_RE. This object IS the
+ * contract the guard invariant polices — its size is a test
+ * (Object.keys(ROUTES).length === 30) and no route may be added without also touching
  * that guard invariant.
+ *
+ * The first fourteen are LIVE. The sixteen below them are the declared-once V5.1
+ * surface: each is registered, auth-gated and answers 501 until its fill plan lands.
  */
 export const ROUTES = Object.freeze({
+  // ── the D-9.5-09 fourteen (live) ──
   'GET /': 'handleIndex',
   'GET /api/state': 'handleState',
   'GET /api/done': 'handleDone',
@@ -84,6 +110,23 @@ export const ROUTES = Object.freeze({
   'POST /api/agent/toggle': 'handleAgentToggle',
   'POST /api/skill/assign': 'handleSkillAssign',
   'POST /api/mcp/toggle': 'handleMcpToggle',
+  // ── the D-9.7-09 sixteen (declared here, filled by their own plans) ──
+  'GET /assets/:file': 'handleAsset',
+  'GET /api/projects': 'handleProjects',
+  'POST /api/project/add': 'handleProjectAdd',
+  'POST /api/project/rename': 'handleProjectRename',
+  'POST /api/project/select': 'handleProjectSelect',
+  'GET /api/machines': 'handleMachines',
+  'POST /api/machine/pair': 'handleMachinePair',
+  'POST /api/machine/add': 'handleMachineAdd',
+  'POST /api/machine/remove': 'handleMachineRemove',
+  'POST /api/chat': 'handleChat',
+  'GET /api/chat/history': 'handleChatHistory',
+  'POST /api/import/scan': 'handleImportScan',
+  'POST /api/import/enroll': 'handleImportEnroll',
+  'GET /api/onboarding': 'handleOnboarding',
+  'POST /api/onboarding/answer': 'handleOnboardingAnswer',
+  'POST /api/onboarding/complete': 'handleOnboardingComplete',
 })
 
 // ── response helpers (explicit-pick, no-store, nosniff; constant 401 body) ──
@@ -114,7 +157,7 @@ const send400 = (res, msg = 'bad request') => sendText(res, 400, msg)
 const send409 = (res, msg = 'conflict') => sendText(res, 409, msg)
 const send429 = (res) => sendText(res, 429, 'rate limited')
 const send503 = (res, msg = 'unavailable') => sendText(res, 503, msg)
-const send501 = (res) => sendText(res, 501, 'not implemented') // harness stubs → plan 9.5-11
+const send501 = (res) => sendText(res, 501, 'not implemented') // a declared-but-unfilled route
 
 // ── request parsing ──
 
@@ -133,9 +176,10 @@ function remoteAddr(req) {
 
 /**
  * matchRoute(method, pathname) → { handler, params } | { badId:true } | null.
- * Static routes hit the frozen table by key; the two dynamic routes match a prefix and
- * validate the id against ID_RE (a failing id → badId → 400, never a 404 that would hint
- * the route shape). Anything else → null → 404.
+ * Static routes hit the frozen table by key; the three dynamic routes match a prefix and
+ * validate their segment against ID_RE (task/diff) or ASSET_RE (assets) — a failing
+ * segment → badId → 400, never a 404 that would hint the route shape. Anything else →
+ * null → 404.
  */
 export function matchRoute(method, pathname) {
   const key = `${method} ${pathname}`
@@ -146,6 +190,8 @@ export function matchRoute(method, pathname) {
     if (diff) return ID_RE.test(diff[1]) ? { handler: 'handleDiff', params: { id: diff[1] } } : { badId: true }
     const task = pathname.match(/^\/api\/task\/(.+)$/)
     if (task) return ID_RE.test(task[1]) ? { handler: 'handleTask', params: { id: task[1] } } : { badId: true }
+    const asset = pathname.match(/^\/assets\/(.+)$/)
+    if (asset) return ASSET_RE.test(asset[1]) ? { handler: 'handleAsset', params: { file: asset[1] } } : { badId: true }
   }
   return null
 }
@@ -356,10 +402,31 @@ function handleEvents({ res, deps }) {
 }
 
 /**
+ * The OPTIONAL `machine` field of the three action bodies (D-9.7-07) — the whole of
+ * «do it on another machine». It is an IDENTIFIER matched by ID_RE, never a url: the
+ * hub resolves the address from its own peers registry, so a request can never point an
+ * action at an arbitrary host (T-9.7-04). Absent/empty = this machine.
+ *
+ * Until the federation module lands (plan 9.7-15) a non-empty machine answers 501 — the
+ * door is open, the addressee is not wired yet. Returns true when a response was sent.
+ */
+function rejectUnwiredMachine(res, b) {
+  const m = b.machine
+  if (m === undefined || m === null || m === '') return false // local machine
+  if (typeof m !== 'string' || !ID_RE.test(m)) {
+    send400(res, 'invalid machine')
+    return true
+  }
+  send501(res) // the peer target is resolved in plan 9.7-15
+  return true
+}
+
+/**
  * POST /api/enqueue — a founder roster button. Body {title, lane, provider?, model?,
- * effort?, priority?}. validateTask gates it; the id is minted `R-<epochMs>` with
- * source:'roster' (founder-explicit → DoR-exempt). Founder text becomes a task TITLE,
- * never a command (T-9.5-25).
+ * effort?, priority?, machine?}. Explicit-pick: an unknown key → 400 before anything
+ * runs. validateTask gates it; the id is minted `R-<epochMs>` with source:'roster'
+ * (founder-explicit → DoR-exempt). Founder text becomes a task TITLE, never a command
+ * (T-9.5-25).
  */
 async function handleEnqueue({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -367,6 +434,10 @@ async function handleEnqueue({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['title', 'lane', 'provider', 'model', 'effort', 'priority', 'machine']))) {
+    return undefined
+  }
+  if (rejectUnwiredMachine(res, b)) return undefined
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const task = {
     id: `R-${clock()}`,
@@ -391,7 +462,7 @@ async function handleEnqueue({ req, res, config, deps }) {
 
 /**
  * POST /api/approve — the HUMAN-only approve path (it exists ONLY behind the token the
- * founder holds; the daemon never calls it). Body {taskId}. CAS the row
+ * founder holds; the daemon never calls it). Body {taskId, machine?}. CAS the row
  * awaiting_approval→approving (claim generation), run the EXISTING serialized merge verb
  * on wt/<taskId> LOCALLY (never a push), then CAS to approved on green / back to
  * awaiting_approval on red with the merge receipt. A lost CAS race → 409 (T-9.5-26).
@@ -399,7 +470,10 @@ async function handleEnqueue({ req, res, config, deps }) {
 async function handleApprove({ req, res, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
-  const taskId = body.value && body.value.taskId
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'machine']))) return undefined
+  if (rejectUnwiredMachine(res, b)) return undefined
+  const taskId = b.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
   if (typeof deps.casExec !== 'function' || typeof deps.verbRunner !== 'function') return send501(res)
 
@@ -442,14 +516,16 @@ async function handleApprove({ req, res, deps }) {
 }
 
 /**
- * POST /api/return — return-with-comment. Body {taskId, note} (note <= 2000). CAS
- * awaiting_approval→returned, then re-enqueue with source:'return' + the note +
- * attempt+1. The note is DATA (T-9.5-25). A lost race → 409.
+ * POST /api/return — return-with-comment. Body {taskId, note, title?, lane?, machine?}
+ * (note <= 2000). CAS awaiting_approval→returned, then re-enqueue with source:'return' +
+ * the note + attempt+1. The note is DATA (T-9.5-25). A lost race → 409.
  */
 async function handleReturn({ req, res, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const v = body.value || {}
+  if (rejectUnknownKeys(res, v, new Set(['taskId', 'note', 'title', 'lane', 'machine']))) return undefined
+  if (rejectUnwiredMachine(res, v)) return undefined
   const taskId = v.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
   const note = v.note == null ? '' : String(v.note)
@@ -645,6 +721,94 @@ async function handleMcpToggle({ req, res, deps }) {
   }
 }
 
+// ── the sixteen D-9.7-09 stubs (the route table stays FROZEN at 30) ──
+//
+// Declared once, filled later. Each is a named handler that answers 501 and NOTHING else:
+// it never touches `req`, so a stub cannot read a body, cannot be probed for a field name,
+// and cannot grow a side effect by accident (T-9.7-01). The dispatcher runs authed() BEFORE
+// any handler, so an unauthenticated call to any of these is a 401 — never a 501 that would
+// betray which routes exist. Their fill plans are named per group below.
+
+/** GET /assets/:file — the built SPA bundles (flat, hashed names) → plan 9.7-09. */
+function handleAsset({ res }) {
+  send501(res)
+}
+
+/** GET /api/projects — the project registry read model → plan 9.7-09. */
+function handleProjects({ res }) {
+  send501(res)
+}
+
+/** POST /api/project/add — register a project directory → plan 9.7-09. */
+function handleProjectAdd({ res }) {
+  send501(res)
+}
+
+/** POST /api/project/rename — rename a registered project → plan 9.7-09. */
+function handleProjectRename({ res }) {
+  send501(res)
+}
+
+/** POST /api/project/select — switch the active project → plan 9.7-09. */
+function handleProjectSelect({ res }) {
+  send501(res)
+}
+
+/** GET /api/machines — the peers read model (presence + last snapshot) → plan 9.7-15. */
+function handleMachines({ res }) {
+  send501(res)
+}
+
+/** POST /api/machine/pair — mint/exchange a pairing secret → plan 9.7-15. */
+function handleMachinePair({ res }) {
+  send501(res)
+}
+
+/** POST /api/machine/add — enrol a paired peer into the registry → plan 9.7-15. */
+function handleMachineAdd({ res }) {
+  send501(res)
+}
+
+/** POST /api/machine/remove — drop a peer from the registry → plan 9.7-15. */
+function handleMachineRemove({ res }) {
+  send501(res)
+}
+
+/** POST /api/chat — one conversation turn (headless, drafts-only) → plan 9.7-15. */
+function handleChat({ res }) {
+  send501(res)
+}
+
+/** GET /api/chat/history — the conversation read model → plan 9.7-15. */
+function handleChatHistory({ res }) {
+  send501(res)
+}
+
+/** POST /api/import/scan — scan a foreign agent tree into candidates → plan 9.7-20. */
+function handleImportScan({ res }) {
+  send501(res)
+}
+
+/** POST /api/import/enroll — write the candidates as drafts (same DoR door) → plan 9.7-20. */
+function handleImportEnroll({ res }) {
+  send501(res)
+}
+
+/** GET /api/onboarding — the onboarding progress read model → plan 9.7-20. */
+function handleOnboarding({ res }) {
+  send501(res)
+}
+
+/** POST /api/onboarding/answer — record one onboarding answer → plan 9.7-20. */
+function handleOnboardingAnswer({ res }) {
+  send501(res)
+}
+
+/** POST /api/onboarding/complete — write the profile + seed notes → plan 9.7-20. */
+function handleOnboardingComplete({ res }) {
+  send501(res)
+}
+
 const HANDLERS = Object.freeze({
   handleIndex,
   handleState,
@@ -660,6 +824,22 @@ const HANDLERS = Object.freeze({
   handleAgentToggle,
   handleSkillAssign,
   handleMcpToggle,
+  handleAsset,
+  handleProjects,
+  handleProjectAdd,
+  handleProjectRename,
+  handleProjectSelect,
+  handleMachines,
+  handleMachinePair,
+  handleMachineAdd,
+  handleMachineRemove,
+  handleChat,
+  handleChatHistory,
+  handleImportScan,
+  handleImportEnroll,
+  handleOnboarding,
+  handleOnboardingAnswer,
+  handleOnboardingComplete,
 })
 
 // ── the dispatcher ──

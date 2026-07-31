@@ -155,9 +155,9 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed FOURTEEN-route table', () => {
-  it('the frozen table has EXACTLY fourteen routes (D-9.5-09)', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(14)
+describe('server.mjs — the closed THIRTY-route table', () => {
+  it('the frozen table has EXACTLY thirty routes (D-9.7-09)', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(30)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
@@ -405,9 +405,8 @@ describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
 
 const jsonHeaders = () => ({ ...bearer(), 'content-type': 'application/json' })
 
-describe('server.mjs — the harness routes still fill the FROZEN fourteen (no route added)', () => {
-  it('the five harness routes are handlers, not 501 stubs; the table is still exactly 14', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(14)
+describe('server.mjs — the harness routes still fill a FROZEN slot (no route added)', () => {
+  it('the five harness routes are handlers, not 501 stubs', () => {
     for (const r of ['GET /api/harness', 'POST /api/forge', 'POST /api/agent/toggle', 'POST /api/skill/assign', 'POST /api/mcp/toggle']) {
       expect(ROUTES[r]).toBeTruthy()
     }
