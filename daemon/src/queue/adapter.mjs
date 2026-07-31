@@ -30,11 +30,26 @@
  *   storyPoints?: number,       // CUE estimate, Fibonacci ONLY: 1|2|3|5|8|13 (D-9.5-10); REQUIRED when source==='backlog'
  *   acceptance?: string,        // приёмочные критерии, <= 2000; REQUIRED when source==='backlog' (D-9.5-10 DoR)
  *   note?: string,              // return-with-comment text, <= 2000
+ *   project?: string,           // V5.1 (D-9.7-01): the project slug this task belongs to.
+ *                               // Optional on the wire, ALWAYS present on a read row.
  *   forge?: {                   // REQUIRED iff lane==='forge', forbidden otherwise (D-9.5-09)
  *     kind: 'agent'|'skill'|'mcp',
  *     description: string       // founder free text, <= 2000 — DATA, never instructions
  *   }
  * }
+ *
+ * ═══════════════ V5.1: PROJECT IS ADDITIVE, THE BACKFILL IS ON READ ═════════════
+ * `project` (D-9.7-01) is optional on the wire. An adapter is constructed with the
+ * config's `activeProject`, which an enqueue stamps onto a task that names none. LANE and
+ * PROJECT are independent dimensions — a forge task in another project is perfectly valid.
+ *
+ * Rows written BEFORE the field existed are backfilled ON READ (`backfillProject`), never
+ * by an UPDATE/ALTER over the live queue (D-9.7-08): the daemon is not the source of truth
+ * for its own history, so an existing task is never rewritten — only read completely.
+ *
+ * The adapter stays BACKEND-FREE and IMPORT-FREE: the active project arrives by injection,
+ * so this module still learns nothing about the config module or any backend. The slug
+ * grammar below is deliberately a local constant rather than an import for the same reason.
  *
  * QueueAdapter methods (all async):
  *   enqueue(task)                 → {id, coalesced, coalesceCount}; validateTask on every path
@@ -111,8 +126,18 @@ const STORY_POINTS = Object.freeze([1, 2, 3, 5, 8, 13]) // Fibonacci ONLY (D-9.5
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
   'id', 'source', 'title', 'lane', 'provider', 'model', 'effort',
-  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'forge',
+  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'project', 'forge',
 ])
+
+/**
+ * The project slug grammar (D-9.7-01). A LOCAL constant, not an import: this module must
+ * stay free of the config module to keep the backend-free/import-free law intact. Kept in
+ * agreement with config.mjs's PROJECT_ID_RE by the tests on both sides.
+ */
+const TASK_PROJECT_RE = /^[a-z0-9-]{1,64}$/
+
+/** The project a read row falls back to when nothing else names one (D-9.7-08). */
+export const DEFAULT_PROJECT_ID = 'default'
 
 const CAP_TITLE = 200
 const CAP_TEXT = 2000
@@ -168,6 +193,11 @@ export function validateTask(task) {
   if (task.priority !== undefined && typeof task.priority !== 'number') {
     throw new InvalidTaskError(`task "${task.id}" priority must be a number`)
   }
+  // project (D-9.7-01): STRUCTURAL only. Whether the slug names a REGISTERED project is
+  // the door's question (it owns the config); the adapter never learns the registry.
+  if (task.project !== undefined && (typeof task.project !== 'string' || !TASK_PROJECT_RE.test(task.project))) {
+    throw new InvalidTaskError(`task "${task.id}" has an invalid project "${task.project}"`)
+  }
 
   // forge object: REQUIRED iff lane==='forge', forbidden otherwise (D-9.5-09)
   if (task.lane === 'forge') {
@@ -212,19 +242,41 @@ export function validateTask(task) {
   return out
 }
 
+/**
+ * backfillProject(row, activeProject) → the same row guaranteed to carry a project
+ * (D-9.7-08). A row written before the field existed is COMPLETED on read, never
+ * rewritten on disk: the queue's history stays exactly as it was recorded, and the
+ * migration cost of multi-project is zero rows touched. Pure; a nullish row passes through.
+ *
+ * @param {object|null} row
+ * @param {string} [activeProject]
+ * @returns {object|null}
+ */
+export function backfillProject(row, activeProject) {
+  if (!row || typeof row !== 'object') return row
+  if (typeof row.project === 'string' && row.project !== '') return row
+  return { ...row, project: activeProject || DEFAULT_PROJECT_ID }
+}
+
 // ── in-memory reference backend (the executable spec) ──
 
 /**
- * createMemoryQueue({clock, expireMs}) — the reference QueueAdapter over plain Maps.
+ * createMemoryQueue({clock, expireMs, activeProject}) — the reference QueueAdapter over
+ * plain Maps.
  * Used by the contract suite AND as the executable spec for the pg-boss backend
  * (plan 9.5-03) and the future file backend. Any `Map` of live tasks in the DAEMON
  * would be a bug (D-9.5-02 stateless-tick law) — but THIS is the reference backend
  * itself, whose whole job is to hold the durable state a real backend keeps in PG.
  *
- * @param {{clock?:Function|number, expireMs?:number}} [opts]
+ * `activeProject` is the config's currently selected project (D-9.7-01), injected by the
+ * composition root — the adapter never reads the config itself. An enqueue stamps it onto
+ * a task that names no project; every read path backfills it onto a row that predates the
+ * field.
+ *
+ * @param {{clock?:Function|number, expireMs?:number, activeProject?:string}} [opts]
  * @returns {object} a QueueAdapter
  */
-export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000 } = {}) {
+export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000, activeProject } = {}) {
   /** id -> internal record */
   const records = new Map()
   const now = () => (typeof clock === 'function' ? clock() : clock)
@@ -245,10 +297,11 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000 
   }
 
   function row(rec) {
-    return {
+    return backfillProject({
       id: rec.task.id,
       source: rec.task.source,
       lane: rec.task.lane,
+      project: rec.task.project,
       title: rec.task.title,
       priority: rec.task.priority,
       status: rec.status,
@@ -261,11 +314,13 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000 
       claimedAt: rec.claimedAt,
       completedAt: rec.completedAt,
       failure_reason: rec.failure_reason,
-    }
+    }, activeProject)
   }
 
   async function enqueue(task) {
     const norm = validateTask(task)
+    // D-9.7-01: a task that names no project joins the currently active one.
+    if (norm.project === undefined && activeProject) norm.project = activeProject
     const existing = records.get(norm.id)
     if (existing && existing.status === 'queued') {
       // Pattern 5: ONE pending entry per item — coalesce, keep the original enqueuedAt.
@@ -310,7 +365,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000 
     best.workerId = workerId
     best.claimedAt = t
     best.lastTouch = t
-    return { ...best.task }
+    return backfillProject({ ...best.task }, activeProject)
   }
 
   async function touch(taskId) {
@@ -348,6 +403,10 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000 
     let rows = [...records.values()]
     if (filter.status) rows = rows.filter((r) => r.status === filter.status)
     if (filter.lane) rows = rows.filter((r) => r.task.lane === filter.lane)
+    // D-9.7-01: an optional project filter; its absence means EVERY project.
+    if (filter.project) {
+      rows = rows.filter((r) => (r.task.project || activeProject || DEFAULT_PROJECT_ID) === filter.project)
+    }
     return rows.map(row)
   }
 
