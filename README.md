@@ -170,7 +170,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI (`pnpm sma`) — 89 verbs, each with an in-product explainer (`pnpm sma explain <verb>`). The full reference lives in [scripts/sma/README.md](scripts/sma/README.md).
+Underneath runs the coordination + accountability CLI (`pnpm sma`) — 88 verbs, each with an in-product explainer (`pnpm sma explain <verb>`). The full reference lives in [scripts/sma/README.md](scripts/sma/README.md).
 
 ---
 

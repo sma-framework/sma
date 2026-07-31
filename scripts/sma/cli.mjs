@@ -4168,151 +4168,6 @@ async function cmdSnapshot({ flags, dirs }) {
 }
 
 /**
- * upstream-check [--apply] [--json] — the daily upstream-watch (D-9.1-03,
- * 9.1-07). NOT hook-facing: may exit non-zero on error. Compares the
- * UPSTREAM.json anchor against the latest upstream release; on a NEW release
- * downloads the tarball (npm pack → temp; extracted for DIFFING only, nothing
- * from it ever executes — T-9.1-SC), runs the three-way report through
- * rename-map.json and writes docs/upstream-reports/<version>.md.
- *
- * --apply is the LOCAL operator entry point of the review-gated auto-port: it
- * ports the CLEAN bucket only (the same applyCleanSet path the daily Action's
- * PR branch uses — one porting implementation, two review-gated doors), updates
- * UPSTREAM.json, refreshes the vendor snapshot dir, and prints the commit
- * instruction for the operator. Conflicts NEVER auto-apply — they print as a
- * task list for a human/agent integration pass (T-9.1-12).
- */
-async function cmdUpstreamCheck({ flags }) {
-  const upstream = await import('./lib/upstream.mjs')
-  const { existsSync, mkdirSync, writeFileSync, readFileSync: readFs, cpSync, rmSync, mkdtempSync, readdirSync } =
-    await import('node:fs')
-  const { tmpdir } = await import('node:os')
-  const { execFileSync } = await import('node:child_process')
-
-  const root = process.cwd()
-  const anchorPath = join(root, 'UPSTREAM.json')
-  const renameMapPath = join(root, 'rename-map.json')
-  const oursDir = join(root, 'sma-core')
-  const reportsDir = join(root, 'docs', 'upstream-reports')
-
-  const check = await upstream.checkVersion({ anchorPath, fetchVersion: upstream.npmFetchVersion })
-
-  if (check.status === 'unknown') {
-    if (wantsJson(flags)) {
-      printJson({ status: 'unknown', error: check.error })
-      return 1
-    }
-    process.stderr.write(`SMA: upstream-check не смог опросить реестр — ${check.error}\n`)
-    return 1
-  }
-
-  if (check.status === 'current') {
-    const out = { status: 'current', anchor: check.anchor, latest: check.latest, package: check.package }
-    if (flags.apply === true) out.applied = { noop: true, reason: 'нет новой версии — применять нечего' }
-    if (wantsJson(flags)) {
-      printJson(out)
-      return 0
-    }
-    process.stdout.write(`SMA: upstream ${check.package} ${check.latest} — актуально (якорь ${check.anchor}).\n`)
-    if (flags.apply === true) process.stdout.write('SMA: --apply без новой версии — ничего не применено (no-op).\n')
-    return 0
-  }
-
-  // status === 'new' — download the new tarball for diffing (T-9.1-SC: extract
-  // to temp, nothing executes from it; apply writes file content only after the
-  // report exists).
-  const latest = check.latest
-  if (!/^[\w.+-]+$/.test(latest)) {
-    if (wantsJson(flags)) {
-      printJson({ status: 'unknown', error: `suspicious version string from registry: ${latest}` })
-      return 1
-    }
-    process.stderr.write(`SMA: реестр вернул подозрительную версию «${latest}» — стоп.\n`)
-    return 1
-  }
-  const vendorBaseDir = join(root, 'vendor', `gsd-core-${check.anchor}`)
-  if (!existsSync(vendorBaseDir) || !existsSync(renameMapPath)) {
-    // Missing either differ input makes every release look like 100% conflict —
-    // refuse instead of lying (key_links, 9.1-07).
-    const missing = !existsSync(vendorBaseDir) ? vendorBaseDir : renameMapPath
-    if (wantsJson(flags)) {
-      printJson({ status: 'new', anchor: check.anchor, latest, error: `differ input missing: ${missing}` })
-      return 1
-    }
-    process.stderr.write(`SMA: вход диффера отсутствует (${missing}) — отчёт был бы ложным, стоп.\n`)
-    return 1
-  }
-
-  const tmp = mkdtempSync(join(tmpdir(), 'sma-upstream-'))
-  let report
-  try {
-    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-    execFileSync(npmCmd, ['pack', `${check.package}@${latest}`, '--pack-destination', tmp], {
-      encoding: 'utf8',
-      timeout: 120_000,
-      shell: process.platform === 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    const tarball = readdirSync(tmp).find((f) => f.endsWith('.tgz'))
-    if (!tarball) throw new Error('npm pack produced no tarball')
-    execFileSync('tar', ['-xzf', join(tmp, tarball), '-C', tmp], { encoding: 'utf8', timeout: 120_000 })
-    const newUpstreamDir = join(tmp, 'package')
-    const renameMap = JSON.parse(readFs(renameMapPath, 'utf8'))
-
-    report = upstream.threeWayReport({ vendorBaseDir, newUpstreamDir, oursDir, renameMap })
-
-    // Write the integration report FIRST (apply is gated behind its existence).
-    mkdirSync(reportsDir, { recursive: true })
-    const reportPath = join(reportsDir, `${latest}.md`)
-    writeFileSync(reportPath, upstream.renderReport({ report, version: latest, anchor: check.anchor }))
-
-    const out = {
-      status: 'new',
-      anchor: check.anchor,
-      latest,
-      package: check.package,
-      report: { clean: report.summary.clean, conflict: report.summary.conflict, divergencePct: report.summary.divergencePct, path: reportPath },
-    }
-
-    if (flags.apply === true) {
-      // The LOCAL review-gated door: clean bucket only, then anchor + vendor refresh.
-      const applied = upstream.applyCleanSet({ report, oursDir, apply: true })
-      const anchor = JSON.parse(readFs(anchorPath, 'utf8'))
-      anchor.version = latest
-      anchor.snapshotDate = new Date().toISOString().slice(0, 10)
-      writeFileSync(anchorPath, JSON.stringify(anchor, null, 2) + '\n')
-      const newVendorDir = join(root, 'vendor', `gsd-core-${latest}`)
-      cpSync(newUpstreamDir, newVendorDir, { recursive: true })
-      out.applied = { files: applied.applied, vendorSnapshot: newVendorDir, anchorUpdated: true }
-      if (!wantsJson(flags)) {
-        process.stdout.write(`SMA: чистый набор применён (${applied.applied.length} файлов); якорь → ${latest}; vendor снапшот → ${newVendorDir}\n`)
-        process.stdout.write('Коммит оператора (проверка перед коммитом — это и есть review-gate):\n')
-        process.stdout.write(`  git add sma-core UPSTREAM.json "vendor/gsd-core-${latest}" "docs/upstream-reports/${latest}.md"\n`)
-        process.stdout.write(`  git commit -m "upstream: port clean set of gsd-core ${latest} (report: docs/upstream-reports/${latest}.md)"\n`)
-      }
-    }
-
-    if (wantsJson(flags)) {
-      printJson(out)
-      return 0
-    }
-    process.stdout.write(`SMA: новая версия upstream ${check.package} ${latest} (якорь ${check.anchor}).\n`)
-    process.stdout.write(`Отчёт: ${reportPath} — чистых ${report.summary.clean}, ручных ${report.summary.conflict} (расхождение ${report.summary.divergencePct}%).\n`)
-    if (report.conflict.length) {
-      process.stdout.write('Ручная корзина (интеграционный проход человека/агента):\n')
-      for (const e of report.conflict) process.stdout.write(`  - [ ] ${e.ourPath} (${e.reason || 'diverged'})\n`)
-    }
-    return 0
-  } finally {
-    try {
-      rmSync(tmp, { recursive: true, force: true })
-    } catch {
-      /* temp cleanup is best-effort */
-    }
-  }
-}
-
-/**
  * predict-score <plan-path> [--json] — score a PLAN.md's `predictions:` block
  * DETERMINISTICALLY (9.1-08, B18): allowlist check -> run check_command ->
  * numeric compare -> append every verdict to the per-domain calibration
@@ -8837,7 +8692,6 @@ const HANDLERS = {
   emit: cmdEmit, // 9.3-04 (D-9.3-08) — one corpus -> CLAUDE.md/AGENTS.md/.cursorrules/GEMINI.md managed blocks
   load: cmdLoad,
   snapshot: cmdSnapshot,
-  'upstream-check': cmdUpstreamCheck,
   'predict-score': cmdPredictScore,
   calibration: cmdCalibration,
   usage: cmdUsage,
@@ -8901,7 +8755,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }

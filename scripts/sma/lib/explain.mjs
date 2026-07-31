@@ -123,9 +123,6 @@ export const COMMAND_TOPICS = {
   flight: 'loop',
   batch: 'loop',
 
-  // substrate — files + git, no daemon/DB/cloud
-  'upstream-check': 'substrate',
-
   // passport — PASSPORT.md + badge + model-version guard (9.3-02)
   passport: 'passport',
   model: 'passport',

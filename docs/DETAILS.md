@@ -75,7 +75,7 @@ Each note carries a `use-when` trigger — that single line is what lets SMA del
 
 ## The full CLI reference, by version layer
 
-The coordination + accountability CLI runs underneath (`node scripts/sma/cli.mjs` or `pnpm sma`) — 83 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly, and every one has an in-product explainer (`pnpm sma explain <verb>`).
+The coordination + accountability CLI runs underneath (`node scripts/sma/cli.mjs` or `pnpm sma`) — 82 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly, and every one has an in-product explainer (`pnpm sma explain <verb>`).
 
 ### Core (V1–V2): memory, coordination, slots
 
@@ -90,7 +90,6 @@ The coordination + accountability CLI runs underneath (`node scripts/sma/cli.mjs
 | `lint` · `build-index` · `load` · `snapshot` · `usage` · `consolidate` · `trim` | The memory corpus toolchain: quality lint, machine-built index, tag-scoped loading, usage citations, scheduled consolidation, layer-aware trim |
 | `predict-score` · `calibration` | Settle registered predictions with a script; read the per-domain hit-rate ledger |
 | `state` · `exec-journal` · `metrics` · `report` | Where a plan stands, the per-plan progress journal, and the whole-system report |
-| `upstream-check` | Watch the derived engine's upstream for updates (read-only, never auto-pulls) |
 
 ### V3 — the trust spine
 
