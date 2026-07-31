@@ -129,9 +129,9 @@ untouched. Optionally drop the `.sma/` line from `.gitignore`.
 
 The package uses a **files allowlist** (never a denylist) in `package.json`.
 The manifest below is the verbatim output of `npm pack --dry-run` for
-`sma-framework@2.0.0-alpha.0` (2026-07-06). Explicitly absent: `vendor/`
-(pristine upstream snapshot stays git-only), `.sma/` runtime state, `tools/`,
-`.env*`, and all dotfiles. Re-audited at the 9.1-27 pre-flip gate.
+`sma-framework@2.0.0-alpha.0` (2026-07-06). Explicitly absent: `.sma/` runtime
+state, `tools/`, `.env*`, and all dotfiles. Re-audited at the 9.1-27 pre-flip
+gate.
 
 Top-level composition (532 files, 1.8 MB packed / 6.6 MB unpacked):
 

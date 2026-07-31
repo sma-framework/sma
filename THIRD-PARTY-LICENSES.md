@@ -8,9 +8,9 @@
 
 The SMA engine is derived from gsd-core (MIT), github.com/open-gsd/gsd-core.
 
-The pristine upstream snapshot lives under `vendor/gsd-core-1.6.1/` and
-`vendor/agents-1.6.1/` (source: `@opengsd/gsd-core@1.6.1`).
-The working engine under `sma-core/` is a derivative of that snapshot.
+The pristine upstream source is `@opengsd/gsd-core@1.6.1`, available at
+github.com/open-gsd/gsd-core and on the npm registry.
+The working engine under `sma-core/` is a derivative of that upstream.
 
 ## Ideology absorbed, no code vendored (9.4-07)
 
