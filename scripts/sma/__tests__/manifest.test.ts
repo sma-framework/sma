@@ -17,6 +17,11 @@
  *   - Test 7 (marker + coverage): markdown line 1 is the marker; coverage detects loss.
  *   - Tests 8-10 (CLI): --json/--md artifacts; --stat numeric last line; honest empty.
  *   - Tests 11-12 (workflow-as-text): the CI posture is regression-locked as text.
+ *   - Tests 13-16 (--dense): the compact agent-readable render — determinism, a
+ *     fixed line per section (empty sections MARKED, never dropped), verbatim
+ *     numbers, zero markdown.
+ *   - Test 17 (CLI --dense): exit 0, the fixed shape, and --json unchanged when
+ *     both flags are passed (the two renders never mix).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -29,10 +34,12 @@ import { execFileSync } from 'node:child_process'
 import {
   MANIFEST_VERSION,
   MANIFEST_MARKER,
+  MANIFEST_DENSE_LINES,
   selectPlans,
   collectEvidence,
   buildManifest,
   renderManifestMarkdown,
+  renderManifestDense,
   manifestStats,
 } from '../lib/manifest.mjs'
 
@@ -315,6 +322,77 @@ describe('manifest.mjs — the reader-only PR evidence passport', () => {
   })
 })
 
+function emptyManifest() {
+  return buildManifest({
+    range: '',
+    headSha: '',
+    plans: [],
+    evidence: {},
+    spendBook: null,
+    chainTip: 'empty',
+    staleness: 'unavailable',
+    now: NOW,
+  })
+}
+
+/** The section label of every dense line (everything left of the first colon). */
+function denseLabels(text: string): string[] {
+  return text
+    .trimEnd()
+    .split('\n')
+    .map((l) => l.split(':')[0])
+}
+
+describe('renderManifestDense — the compact, agent-readable passport', () => {
+  it('Test 13 (determinism): two renders of the same manifest are byte-identical', () => {
+    const fx = writeFixture()
+    const m = buildFrom(fx)
+    expect(renderManifestDense(m)).toBe(renderManifestDense(m))
+    // and a second build over the same state renders identically too
+    expect(renderManifestDense(buildFrom(fx))).toBe(renderManifestDense(m))
+  })
+
+  it('Test 14 (fixed shape): one line per section, the same count full or empty', () => {
+    const fx = writeFixture()
+    const full = renderManifestDense(buildFrom(fx))
+    const empty = renderManifestDense(emptyManifest())
+    expect(full.trimEnd().split('\n')).toHaveLength(MANIFEST_DENSE_LINES)
+    expect(empty.trimEnd().split('\n')).toHaveLength(MANIFEST_DENSE_LINES)
+    // an empty section is MARKED, never dropped: same labels, in the same order
+    expect(denseLabels(empty)).toEqual(denseLabels(full))
+    expect(denseLabels(full)).toEqual(['manifest', 'predictions', 'receipts', 'blind', 'spend', 'hit-rate', 'trust'])
+    // the explicit empty markers
+    expect(empty).toMatch(/predictions: n=0 \(none\)/)
+    expect(empty).toMatch(/receipts: n=0 \(none\)/)
+    expect(empty).toMatch(/spend: \(absent\)/)
+    expect(empty).toMatch(/hit-rate: \(none\)/)
+  })
+
+  it('Test 15 (verbatim numbers): the dense line reproduces the ledger verdicts', () => {
+    const fx = writeFixture()
+    const dense = renderManifestDense(buildFrom(fx))
+    expect(dense).toMatch(/predictions: n=3 .*hit=1/)
+    expect(dense).toMatch(/predictions: .*miss=1/)
+    expect(dense).toMatch(/predictions: .*unscored=1/)
+    expect(dense).toMatch(/receipts: n=2 .*divergent=1/)
+    expect(dense).toMatch(/receipts: .*verified=1/)
+    expect(dense).toMatch(/blind: .*divergences=1/)
+    expect(dense).toMatch(/trust: .*open-class-A=2/)
+    expect(dense).toMatch(/trust: .*verdict=red/)
+  })
+
+  it('Test 16 (no markdown): no marker, no table pipes, no headings — a parseable line set', () => {
+    const fx = writeFixture()
+    const dense = renderManifestDense(buildFrom(fx))
+    expect(dense).not.toContain(MANIFEST_MARKER)
+    expect(dense).not.toMatch(/\|/)
+    expect(dense).not.toMatch(/^#/m)
+    expect(dense).not.toMatch(/^_/m)
+    // every line is `label: payload`
+    for (const line of dense.trimEnd().split('\n')) expect(line).toMatch(/^[a-z-]+: \S/)
+  })
+})
+
 const CLI = fileURLToPath(new URL('../cli.mjs', import.meta.url))
 
 function runManifest(args: string[], smaRoot: string): { out: string; code: number } {
@@ -375,6 +453,20 @@ describe('sma manifest — the CLI surface', () => {
       expect(Number.isFinite(Number(last))).toBe(true)
       if (stat === 'determinism') expect(Number(last)).toBe(1)
     }
+  })
+
+  it('Test 17 (--dense): the fixed compact shape, exit 0; --json keeps its own render', () => {
+    const d = runManifest(['--dense'], smaRoot)
+    expect(d.code).toBe(0)
+    const lines = d.out.trimEnd().split('\n')
+    expect(lines).toHaveLength(MANIFEST_DENSE_LINES)
+    expect(lines[0].startsWith('manifest: ')).toBe(true)
+    expect(d.out).not.toContain(MANIFEST_MARKER)
+    // the two renders never mix: --json passed alongside --dense stays JSON (regression)
+    const both = runManifest(['--dense', '--json'], smaRoot)
+    expect(both.code).toBe(0)
+    expect(() => JSON.parse(both.out)).not.toThrow()
+    expect(JSON.parse(both.out).manifestVersion).toBe(MANIFEST_VERSION)
   })
 
   it('Test 10 (honest empty): no plans in range -> plans:[], coverage 100, exit 0', () => {
