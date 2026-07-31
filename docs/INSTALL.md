@@ -133,7 +133,7 @@ The manifest below is the verbatim output of `npm pack --dry-run` for
 (pristine upstream snapshot stays git-only), `.sma/` runtime state, `tools/`,
 `.env*`, and all dotfiles. Re-audited at the 9.1-27 pre-flip gate.
 
-Top-level composition (534 files, 1.8 MB packed / 6.6 MB unpacked):
+Top-level composition (532 files, 1.8 MB packed / 6.6 MB unpacked):
 
 | Path | Files | What it is |
 |---|---|---|
@@ -141,19 +141,17 @@ Top-level composition (534 files, 1.8 MB packed / 6.6 MB unpacked):
 | `scripts/sma/` | ~70 | coordination runtime + its tests and fixtures |
 | `bin/init.mjs` | 1 | this installer |
 | `docs/` | 1+ | this document |
-| root | 5 | `package.json`, `LICENSE`, `THIRD-PARTY-LICENSES.md`, `UPSTREAM.json`, `rename-map.json` |
+| root | 3 | `package.json`, `LICENSE`, `THIRD-PARTY-LICENSES.md` |
 
 <details>
-<summary>Full file list (npm pack --dry-run, 534 files)</summary>
+<summary>Full file list (npm pack --dry-run, 532 files)</summary>
 
 ```
 LICENSE
 THIRD-PARTY-LICENSES.md
-UPSTREAM.json
 bin/init.mjs
 docs/INSTALL.md
 package.json
-rename-map.json
 scripts/sma/README.md
 scripts/sma/__tests__/cli.test.ts
 scripts/sma/__tests__/collision.test.ts

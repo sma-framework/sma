@@ -197,4 +197,4 @@ SMA никогда не правит, не двигает и не перефор
 
 **Автор: Матвей Маслов (Matvey Maslov).** Вопросы, обратная связь, истории внедрения: [matvey.maslov99@gmail.com](mailto:matvey.maslov99@gmail.com), либо откройте [issue](https://github.com/sma-framework/sma/issues).
 
-Движок рабочих процессов внутри SMA производен от [gsd-core](https://github.com/open-gsd/gsd-core) (MIT). Нетронутый снимок исходного проекта, карта переименований и уведомления о сторонних компонентах отслеживаются в [UPSTREAM.json](UPSTREAM.json), [rename-map.json](rename-map.json) и [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+Движок рабочих процессов внутри SMA производен от [gsd-core](https://github.com/open-gsd/gsd-core) (MIT). Уведомления о сторонних компонентах и происхождение движка отслеживаются в [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
