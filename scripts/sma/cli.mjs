@@ -7877,7 +7877,7 @@ const UPDATE_VERDICT_RU = {
  * update [--source npm|local|<path>] [--yes] [--global] [--json] [--selftest] — the
  * consumer-side updater (v5): PULL the available versions (npm registry + a detected
  * local product checkout), COMPARE against the installed stamp
- * (<config>/sma-core/capabilities/sma/capability.json — the a backlog item single source the
+ * (<config>/sma-core/capabilities/sma/capability.json — the version single source the
  * installer copies), REPORT honestly. DRY-RUN by default; `--yes` re-runs the ONE
  * standard installer from the chosen source (default npm; `--source local` for the
  * sibling checkout). The verb itself writes NOTHING — preservation (memory corpus,
