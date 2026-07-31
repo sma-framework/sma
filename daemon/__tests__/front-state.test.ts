@@ -12,6 +12,16 @@
  *   - agedForHours appears ONLY past config.agingHours (both sides of the boundary),
  *   - failed done rows carry {reason, reasonLabel} from REASON_LABELS,
  *   - acceptance («обещано») is carried when the task had one, omitted when it did not.
+ *
+ * V5.1 additions (D-9.7-01 projects, D-9.7-04 machines + federation role):
+ *   - the payload carries projects[] with per-project counts, activeProject, machines[]
+ *     and federation{role,hubReachable} — the SHAPE is final now so the SPA types it once,
+ *     and plan 9.7-13 fills machines[] with peers without changing the contract,
+ *   - every task row carries its project and its machine (screens filter, never guess),
+ *   - the optional project filter narrows tasks and kpis but NOT the project or machine
+ *     lists (the project switcher must see all of them),
+ *   - a config with no federation block derives role standalone and exactly one machine,
+ *   - no new field carries a peer url or a peer token.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -94,7 +104,18 @@ describe('deriveState — the one-poll payload', () => {
 
     const payload = await deriveState({ adapter: mkAdapter(rows), windows, config, usageReader, clock: () => NOW })
 
-    expect(Object.keys(payload).sort()).toEqual(['costs', 'done', 'kpis', 'queue', 'spend', 'workers'])
+    expect(Object.keys(payload).sort()).toEqual([
+      'activeProject',
+      'costs',
+      'done',
+      'federation',
+      'kpis',
+      'machines',
+      'projects',
+      'queue',
+      'spend',
+      'workers',
+    ])
     // kpis
     expect(payload.kpis.workersTotal).toBe(4)
     expect(payload.kpis.workersBusy).toBe(1) // max-1 has the claimed task
@@ -168,5 +189,128 @@ describe('deriveState — the one-poll payload', () => {
     const byId = Object.fromEntries(payload.done.map((d: any) => [d.id, d]))
     expect(byId['BL-a'].acceptance).toBe('green targeted tests')
     expect('acceptance' in byId['R-b']).toBe(false)
+  })
+})
+
+// ── V5.1: projects, machines and the federation role in the read model (D-9.7-01/04) ──
+
+const multiConfig = {
+  ...config,
+  projects: [
+    { id: 'acme-clinic', name: 'Клиника' },
+    { id: 'other-shop', name: 'Магазин' },
+  ],
+  activeProject: 'acme-clinic',
+}
+
+const projectRows = [
+  { id: 'BL-1', status: 'queued', lane: 'prod', title: 'a', priority: 0, project: 'acme-clinic', enqueuedAt: NOW - 1000 },
+  { id: 'BL-2', status: 'queued', lane: 'prod', title: 'b', priority: 0, project: 'other-shop', enqueuedAt: NOW - 900 },
+  { id: 'BL-3', status: 'completed', lane: 'prod', title: 'c', project: 'other-shop', completedAt: NOW },
+]
+
+describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)', () => {
+  it('carries projects[] with per-project counts and the active project', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.activeProject).toBe('acme-clinic')
+    expect(payload.projects.map((p: any) => p.id)).toEqual(['acme-clinic', 'other-shop'])
+    const byId = Object.fromEntries(payload.projects.map((p: any) => [p.id, p]))
+    expect(byId['acme-clinic'].name).toBe('Клиника')
+    expect(byId['acme-clinic'].taskCounts).toMatchObject({ queued: 1, total: 1 })
+    expect(byId['other-shop'].taskCounts).toMatchObject({ queued: 1, completed: 1, total: 2 })
+  })
+
+  it('every task row carries its project and its machine — screens filter, never guess', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: { ...multiConfig, machineId: 'workstation' },
+      clock: () => NOW,
+    })
+    for (const row of payload.queue) {
+      expect(typeof row.project).toBe('string')
+      expect(row.machine).toBe('workstation')
+    }
+    for (const row of payload.done) {
+      expect(typeof row.project).toBe('string')
+      expect(row.machine).toBe('workstation')
+    }
+  })
+
+  it('a row with no project falls back to the active project (the quiet migration, D-9.7-08)', async () => {
+    const legacy = [{ id: 'BL-old', status: 'queued', lane: 'prod', title: 'old', priority: 0, enqueuedAt: NOW }]
+    const payload = await deriveState({
+      adapter: mkAdapter(legacy),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].project).toBe('acme-clinic')
+  })
+
+  it('the project filter narrows tasks and kpis but NOT the project or machine lists', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      project: 'other-shop',
+      clock: () => NOW,
+    })
+    expect(payload.queue.map((q: any) => q.id)).toEqual(['BL-2'])
+    expect(payload.done.map((d: any) => d.id)).toEqual(['BL-3'])
+    expect(payload.kpis.queued).toBe(1)
+    // the switcher must still see every project and every machine
+    expect(payload.projects).toHaveLength(2)
+    expect(payload.machines).toHaveLength(1)
+    expect(payload.projects.find((p: any) => p.id === 'acme-clinic').taskCounts.total).toBe(1)
+  })
+
+  it('a config with NO federation block derives role standalone and exactly one machine', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.federation).toEqual({ role: 'standalone', hubReachable: true })
+    expect(payload.machines).toEqual([{ id: 'self', title: 'Эта машина', role: 'self', online: true }])
+  })
+
+  it('the federation role comes from the config; hubReachable is an injectable seam for 9.7-13', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: {
+        ...multiConfig,
+        machineId: 'mac-mini',
+        machineTitle: 'Mac mini',
+        federation: { role: 'peer', peers: [{ id: 'hub', url: 'http://10.0.0.9:7777', token: 'peer-secret-value' }] },
+      },
+      hubReachable: false,
+      clock: () => NOW,
+    })
+    expect(payload.federation).toEqual({ role: 'peer', hubReachable: false })
+    expect(payload.machines).toEqual([{ id: 'mac-mini', title: 'Mac mini', role: 'self', online: true }])
+  })
+
+  it('NO new field carries a peer url or a peer token (T-9.7-05)', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: {
+        ...multiConfig,
+        federation: { role: 'hub', peers: [{ id: 'mac-mini', url: 'http://10.0.0.4:7777', token: 'peer-secret-value' }] },
+      },
+      clock: () => NOW,
+    })
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain('peer-secret-value')
+    expect(serialized).not.toContain('10.0.0.4')
+    expect(payload.federation.role).toBe('hub')
   })
 })
