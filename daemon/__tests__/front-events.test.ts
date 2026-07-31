@@ -80,6 +80,79 @@ describe('events.mjs — EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('worker.presence')
     expect(EVENT_TYPES).toContain('spend.updated')
   })
+
+  it('the frozen vocabulary is EXACTLY fourteen types (D-9.7-09) with no duplicates', () => {
+    expect(EVENT_TYPES).toHaveLength(14)
+    expect(new Set(EVENT_TYPES).size).toBe(14)
+    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated']) {
+      expect(EVENT_TYPES).toContain(t)
+    }
+  })
+})
+
+// ── the V5.1 types: a frame is a doorbell, never the message (T-9.7-02) ──
+
+/** Emit one event into a throwaway hub and return {raw, payload} of its frame. */
+function emitOne(evt: any) {
+  const chunks: string[] = []
+  const res: any = { writeHead() {}, write: (c: string) => (chunks.push(c), true), end() {} }
+  const hub = createEventHub({ clock: () => 7 })
+  hub.addClient(res)
+  const delivered = hub.emit(evt)
+  const raw = chunks[1] ?? ''
+  const dataLine = raw.split('\n').find((l) => l.startsWith('data: '))
+  return { delivered, raw, payload: dataLine ? JSON.parse(dataLine.slice(6)) : null }
+}
+
+describe('events.mjs — the four D-9.7-09 hint types leak nothing', () => {
+  it('chat.reply carries the turn id and status ONLY — never the text of the reply', () => {
+    const secret = 'мой пароль от банка — hunter2'
+    const { delivered, raw, payload } = emitOne({
+      event: 'chat.reply',
+      turnId: 'C-42',
+      status: 'done',
+      text: secret,
+      message: secret,
+      reply: secret,
+    })
+    expect(delivered).toBe(1)
+    expect(payload).toEqual({ id: 1, event: 'chat.reply', ts: new Date(7).toISOString(), turnId: 'C-42', status: 'done' })
+    expect(raw).not.toContain(secret)
+    expect(raw).not.toContain('hunter2')
+  })
+
+  it('machine.presence carries the machine id and a boolean ONLY — never the peer url or token', () => {
+    const token = 'f'.repeat(64)
+    const { raw, payload } = emitOne({
+      event: 'machine.presence',
+      machineId: 'mac-mini',
+      online: false,
+      token,
+      url: 'http://192.168.1.50:7777',
+    })
+    expect(payload).toEqual({ id: 1, event: 'machine.presence', ts: new Date(7).toISOString(), machineId: 'mac-mini', online: false })
+    expect(raw).not.toContain(token)
+    expect(raw).not.toContain('192.168.1.50')
+  })
+
+  it('project.updated carries the project id; import.updated carries the batch id + count', () => {
+    const p = emitOne({ event: 'project.updated', projectId: 'institut', path: '/home/me/secret-dir' })
+    expect(p.payload.projectId).toBe('institut')
+    expect(p.raw).not.toContain('secret-dir')
+
+    const i = emitOne({ event: 'import.updated', batchId: 'IMP-3', count: 7, files: ['/home/me/.claude/agents/x.md'] })
+    expect(i.payload).toMatchObject({ batchId: 'IMP-3', count: 7 })
+    expect(i.raw).not.toContain('.claude/agents')
+  })
+
+  it('a field belonging to another type is dropped, and an unlisted type is still a no-op', () => {
+    // taskId is legal on task.* frames — it is NOT legal on a chat.reply frame
+    const { payload } = emitOne({ event: 'chat.reply', turnId: 'C-1', taskId: 'R-1', workerId: 'max-1' })
+    expect(payload.taskId).toBeUndefined()
+    expect(payload.workerId).toBeUndefined()
+    expect(emitOne({ event: 'chat.replies', turnId: 'C-1' }).delivered).toBe(0)
+    expect(emitOne({ event: 'machine.token', machineId: 'x' }).delivered).toBe(0)
+  })
 })
 
 // ── createEventHub ──
