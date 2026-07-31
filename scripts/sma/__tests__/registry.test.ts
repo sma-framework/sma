@@ -504,8 +504,8 @@ describe('heartbeat — the work label lands + REFRESHES each call (FI-10, Test 
 })
 
 describe('displayIdentity — «P<phase> <Name>», graceful degradation (FI-10, Test 3)', () => {
-  it('both parts known -> «P49 Tom»', () => {
-    expect(displayIdentity({ holderIdentity: 'Tom', label: 'phase:49' })).toBe('P49 Tom')
+  it('both parts known -> «P9 Tom»', () => {
+    expect(displayIdentity({ holderIdentity: 'Tom', label: 'phase:9' })).toBe('P9 Tom')
   })
 
   it('accepts a dotted phase and a P-token label', () => {
