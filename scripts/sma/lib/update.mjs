@@ -8,7 +8,7 @@
  * settings.json keys, user CLAUDE.md bytes) is the installer's own, so update
  * cannot invent a second write path that drifts from install.
  *
- * VERSION TRUTH (single-source law, reused not re-invented):
+ * VERSION TRUTH (the version single-source law, reused not re-invented):
  *   - installed  = <configDir>/sma-core/capabilities/sma/capability.json `version`
  *                  (the stamp the installer copies with the engine; package-check
  *                  pins package.json == capability.json at publish time)
