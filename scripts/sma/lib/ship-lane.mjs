@@ -41,8 +41,8 @@ import { join } from 'node:path'
 
 /**
  * The default migration-path globs. Covers any `migrations/` directory at any depth
- * (`**​/migrations/**`) plus the platform's own `src/migrations/` (lives there).
- * The platform skill passes nothing — these defaults hold. Over-refusal is safe: any
+ * (`**​/migrations/**`) plus the project's own migrations directory.
+ * The consumer skill passes nothing — these defaults hold. Over-refusal is safe: any
  * doubt routes the delta to the full lane.
  */
 export const DEFAULT_MIGRATIONS_GLOBS = ['**/migrations/**', 'src/migrations/**']

@@ -12,8 +12,8 @@
  *   - `## Current Position` is OVERWRITTEN, never appended (setPosition splices the
  *     body in place → exactly one heading always survives).
  *   - Blockers are one bullet per line in the parser's exact shape
- *     `- **Phase N blocked:** <what> — <how to clear> (kind)` so src/app/project-tracker/
- *     parse-state.ts keeps attaching them to the right phase card.
+ *     `- **Phase N blocked:** <what> — <how to clear> (kind)` so the origin project's
+ *     state parser keeps attaching them to the right phase card.
  *   - Active Sessions is APPEND-style (augment-not-clobber): setSessions adds one
  *     bullet, never rewrites a sibling terminal's entry.
  *

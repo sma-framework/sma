@@ -7663,8 +7663,8 @@ function readBacklogItems(raw) {
 }
 
 /**
- * deleteme [--yes] [--global] [--json] [--selftest] — the one-click OFF-RAMP (a backlog item,
- * v3.6). DRY-RUN by default: prints exactly what would be removed and what stays;
+ * deleteme [--yes] [--global] [--json] [--selftest] — the one-click OFF-RAMP
+ * (v3.6). DRY-RUN by default: prints exactly what would be removed and what stays;
  * `--yes` applies. Reverses every installer artifact (engine, runtime, agents, skills,
  * hooks, statusline, managed blocks, .sma state, the .gitignore line) and PRESERVES
  * `.claude/memory/**` — the corpus is the user's asset, not the framework's. Direct
@@ -8729,8 +8729,8 @@ const HANDLERS = {
   preflight: cmdPreflight, // 9.3-10 (D-9.3-17) — already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
   arena: cmdArena, // 9.3-11 (D-9.3-18) — benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
   batch: cmdBatch, // 9.3-12 (D-9.3-19) — /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
-  deleteme: cmdDeleteme, // 9.4 a backlog item (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
-  'memory-preview': cmdMemoryPreview, // 9.4 a backlog item (v3.6) — onboarding ASCII memory-graph preview (--project|--lang|--json|--selftest)
+  deleteme: cmdDeleteme, // 9.4 (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
+  'memory-preview': cmdMemoryPreview, // 9.4 (v3.6) — onboarding ASCII memory-graph preview (--project|--lang|--json|--selftest)
   catalog: cmdCatalog, // 9.3-05 (D-9.3-06) — deterministic file catalog (refresh|find|--check --count)
   context: cmdContext, // 9.3-05 (D-9.3-07) — context compiler (compile|score|miss|exam|--selftest)
   statusline: cmdStatusline, // 9.3-07 (D-9.3-13) — native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)
@@ -8740,9 +8740,9 @@ const HANDLERS = {
   merge: cmdMerge, // 9.3-15 (D-9.3-24c/d) — serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
   explain: cmdExplain, // 9.3-09 (D-9.3-15) — in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
   'doc-audit': cmdDocAudit, // 9.3-09 (D-9.3-01/15) — deterministic docs honesty audit (--target manual|readme|all|--count|--json)
-  vendor: cmdVendor, // 9.4-01  — standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
-  memory: cmdMemory, // 9.4-06  — deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
-  'ship-lane': cmdShipLane, // 9.4-08  — ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
+  vendor: cmdVendor, // 9.4-01 — standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
+  memory: cmdMemory, // 9.4-06 — deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  'ship-lane': cmdShipLane, // 9.4-08 — ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // 9.5-02 (D-9.5-08) — decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
   exam: cmdExam, // 9.5-06 (D-9.5-08) — replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
   update: cmdUpdate, // v5 — consumer-side updater: version report (installed vs npm vs local source) | --yes re-runs the standard installer | --selftest; memory corpus + .sma state PRESERVED (installer guarantee)

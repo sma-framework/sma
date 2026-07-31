@@ -268,9 +268,9 @@ function frontmatterText(text) {
 /**
  * True when a SUMMARY belongs to the SMA trust-spine regime (subsystem: sma…).
  * The receipts regime is SMA-only: this lint ships in the SMA product repo but
- * ALSO runs on the dogfood platform, whose .planning/phases shares the phase-
- * NUMBER namespace with unrelated GSD medical phases (50-55+). A numeric phase
- * cutover alone would retro-fail those medical summaries (which legitimately use
+ * ALSO runs on the dogfood origin project, whose .planning/phases shares the phase-
+ * NUMBER namespace with unrelated legacy phases (50-55+). A numeric phase
+ * cutover alone would retro-fail those legacy summaries (which legitimately use
  * prose coverage); gating on `subsystem: sma…` scopes enforcement to the SMA
  * lineage without a magic upper bound. (9.2-03 deviation, Rule 3.)
  */
@@ -1131,8 +1131,8 @@ const RECEIPT_PROSE = {
     for (const s of ctx.summaries ?? []) {
       const phase = summaryPhase(s.path)
       if (phase == null) continue
-      // Regime gate: the receipts law is SMA-only. On the dogfood platform the
-      // phase-number namespace is shared with unrelated GSD medical phases —
+      // Regime gate: the receipts law is SMA-only. On the dogfood origin project the
+      // phase-number namespace is shared with unrelated legacy phases —
       // enforce only on SMA-lineage summaries (subsystem: sma…).
       if (!isSmaRegimeSummary(s.text)) continue
       // Cutover: the whole V2 history (< 9.2) is NEVER retro-failed. The retro

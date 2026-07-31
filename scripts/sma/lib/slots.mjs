@@ -385,8 +385,8 @@ export function checkPushClaim(o = {}) {
 //
 // The A-202 anomaly class (a hand-typed ID far above the real max, so the next naive
 // scan collided) ends here: EVERY shared counter that lives in a planning source file
-// gets one generic next-free-number allocator. a backlog item..120 (the founder's auto-numbering
-// asks) are the demand evidence (FI-5) — proof the slot concept deserves this reach.
+// gets one generic next-free-number allocator. The founder's repeated auto-numbering
+// asks are the demand evidence (FI-5) — proof the slot concept deserves this reach.
 //
 // Each kind is a READ-ONLY scanner over its source file(s) (prohibition: next-slot never
 // mutates BACKLOG/ACTIONS/ROADMAP/CONTEXT), reusing the exact claim + sorted-insert
