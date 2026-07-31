@@ -2,9 +2,11 @@
  * Tests for the roster front's auth + closed route table (Phase 9.5 Plan 08, Tasks 1 & 3).
  *
  * The FIRST sanctioned inbound surface must prove the inverted-notify posture:
- *   - token on EVERY route (the full FOURTEEN-route sweep → 401 unauthenticated),
+ *   - token on EVERY route — the sweep is DERIVED from the frozen table itself, so a
+ *     route added without a gate cannot hide behind a stale literal list,
  *   - the closed table (a non-allowlisted path → 404 with no route reflection; a bad
- *     dynamic id → 400), Object.keys(ROUTES).length === 14,
+ *     dynamic segment → 400), ROUTES↔HANDLERS one-to-one, and the route COUNT asserted
+ *     in exactly ONE place in the tree (this file),
  *   - timing-safe token compare + the ?token= → HttpOnly-cookie bootstrap + a constant
  *     401 body (no oracle),
  *   - a per-remote failure-window rate limit (the 11th failure → 429).
@@ -22,6 +24,7 @@ import { request as httpRequest } from 'node:http'
 import {
   createFrontServer,
   ROUTES,
+  HANDLERS,
   matchRoute,
 } from '../src/front/server.mjs'
 import {
@@ -91,22 +94,40 @@ async function call(front: any, reqOpts: any) {
   return res
 }
 
-// The full frozen table as concrete {method, path} pairs (dynamic ids filled).
-const ALL_ROUTES: Array<{ method: string; path: string }> = [
-  { method: 'GET', path: '/' },
-  { method: 'GET', path: '/api/state' },
-  { method: 'GET', path: '/api/done' },
-  { method: 'GET', path: '/api/task/R-1' },
-  { method: 'GET', path: '/api/diff/R-1' },
-  { method: 'GET', path: '/api/events' },
-  { method: 'GET', path: '/api/harness' },
-  { method: 'POST', path: '/api/enqueue' },
-  { method: 'POST', path: '/api/approve' },
-  { method: 'POST', path: '/api/return' },
-  { method: 'POST', path: '/api/forge' },
-  { method: 'POST', path: '/api/agent/toggle' },
-  { method: 'POST', path: '/api/skill/assign' },
-  { method: 'POST', path: '/api/mcp/toggle' },
+/**
+ * Every route of the frozen table as a concrete {method, path} pair, DERIVED from ROUTES
+ * (never a hand-kept literal list): the dynamic segments are filled with a valid id and a
+ * valid flat asset name. A route added to the table joins every sweep below automatically
+ * — that is the point.
+ */
+const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.keys(ROUTES).map((key) => {
+  const [method, pattern] = key.split(' ')
+  return { method, key, path: pattern.replace(':id', 'R-1').replace(':file', 'app-abc123.js') }
+})
+
+/**
+ * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
+ * own plan lands: static + projects in 9.7-09, machines + chat in 9.7-15, import +
+ * onboarding in 9.7-20. Delete an entry here in the SAME commit that fills its handler;
+ * the table itself does NOT change (no route is added or removed by a fill plan).
+ */
+const UNFILLED_ROUTES = [
+  'GET /assets/:file',
+  'GET /api/projects',
+  'POST /api/project/add',
+  'POST /api/project/rename',
+  'POST /api/project/select',
+  'GET /api/machines',
+  'POST /api/machine/pair',
+  'POST /api/machine/add',
+  'POST /api/machine/remove',
+  'POST /api/chat',
+  'GET /api/chat/history',
+  'POST /api/import/scan',
+  'POST /api/import/enroll',
+  'GET /api/onboarding',
+  'POST /api/onboarding/answer',
+  'POST /api/onboarding/complete',
 ]
 
 // ── auth.mjs unit invariants ──
@@ -156,30 +177,67 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 // ── the closed route table ──
 
 describe('server.mjs — the closed THIRTY-route table', () => {
+  // THE ONE PLACE the size of the surface is written down. If this number ever needs to
+  // change again, that change is a declared re-freeze revision, not a routine edit.
   it('the frozen table has EXACTLY thirty routes (D-9.7-09)', () => {
     expect(Object.keys(ROUTES)).toHaveLength(30)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
-  it('matchRoute resolves the dynamic ids and rejects a bad id shape', () => {
+  it('ROUTES↔HANDLERS is one-to-one: no route without a handler, no handler without a route', () => {
+    const routeHandlers = new Set(Object.values(ROUTES))
+    const declared = new Set(Object.keys(HANDLERS))
+    for (const [route, name] of Object.entries(ROUTES)) {
+      expect(typeof HANDLERS[name], `${route} → ${name}`).toBe('function')
+    }
+    for (const name of declared) {
+      expect(routeHandlers.has(name), `handler ${name} has no route`).toBe(true)
+    }
+    expect(declared.size).toBe(routeHandlers.size)
+    expect(Object.isFrozen(HANDLERS)).toBe(true)
+  })
+
+  it('the sixteen unfilled routes are all real entries of the frozen table', () => {
+    for (const key of UNFILLED_ROUTES) expect(ROUTES[key], key).toBeTruthy()
+    expect(UNFILLED_ROUTES).toHaveLength(new Set(UNFILLED_ROUTES).size)
+  })
+
+  it('matchRoute resolves the dynamic segments and rejects a bad shape', () => {
     expect(matchRoute('GET', '/api/task/R-123')).toMatchObject({ handler: 'handleTask', params: { id: 'R-123' } })
     expect(matchRoute('GET', '/api/diff/BL-9')).toMatchObject({ handler: 'handleDiff', params: { id: 'BL-9' } })
     expect(matchRoute('GET', '/api/task/bad$id')).toEqual({ badId: true })
     expect(matchRoute('GET', `/api/task/${'x'.repeat(65)}`)).toEqual({ badId: true })
     expect(matchRoute('GET', '/api/exec')).toBeNull()
   })
+
+  it('an asset name is FLAT: traversal and nesting die at the name parse, not in a handler', () => {
+    expect(matchRoute('GET', '/assets/index-B7f2.js')).toMatchObject({
+      handler: 'handleAsset',
+      params: { file: 'index-B7f2.js' },
+    })
+    expect(matchRoute('GET', '/assets/../daemon/config.json')).toEqual({ badId: true })
+    expect(matchRoute('GET', '/assets/..')).toEqual({ badId: true })
+    expect(matchRoute('GET', '/assets/nested/app.js')).toEqual({ badId: true })
+    expect(matchRoute('GET', '/assets/.env')).toEqual({ badId: true })
+  })
 })
 
 describe('server.mjs — auth gate on every route', () => {
   const front = createFrontServer({ config: { token: TOKEN } })
 
-  it('EVERY one of the fourteen routes returns 401 unauthenticated (the five 501 stubs included)', async () => {
+  it('EVERY route of the frozen table returns 401 unauthenticated — stubs included, 401 BEFORE 501', async () => {
     // A distinct remote per call so the failure-window limiter never masks a 401 as a 429.
     let n = 0
+    const swept: string[] = []
     for (const r of ALL_ROUTES) {
       const res = await call(front, { method: r.method, url: r.path, remote: `10.1.0.${n++}` })
+      // An unfilled route must NOT answer 501 here: authorization runs before the stub, so
+      // an anonymous caller cannot map which routes exist by their status code.
       expect(res.statusCode, `${r.method} ${r.path}`).toBe(401)
+      swept.push(r.key)
     }
+    // the sweep is the WHOLE table — a new route cannot slip past by not being listed
+    expect(swept.sort()).toEqual(Object.keys(ROUTES).sort())
   })
 
   it('the 401 body is a CONSTANT — no route reflection, no reason oracle', async () => {
@@ -401,7 +459,7 @@ describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
   })
 })
 
-// ── Plan 11: the five D-9.5-09 harness handlers (the frozen 14-route table unchanged) ──
+// ── Plan 9.5-11: the five D-9.5-09 harness handlers (filled a slot, added no route) ──
 
 const jsonHeaders = () => ({ ...bearer(), 'content-type': 'application/json' })
 
@@ -509,5 +567,84 @@ describe('server.mjs — POST /api/mcp/toggle (RCE-closed)', () => {
     const res = await call(front, { method: 'POST', url: '/api/mcp/toggle', headers: jsonHeaders(), body: { serverId: 'twitter', enabled: true } })
     expect(res.statusCode).toBe(200)
     expect(JSON.parse(res.body).mcp).toEqual({ id: 'twitter', enabled: true })
+  })
+})
+
+// ── the D-9.7-09 sixteen: declared, gated, and honestly 501 until their own plan ──
+//
+// Every case below is DELETED (one line at a time) by the plan that fills its handler:
+// static + projects in 9.7-09, machines + chat in 9.7-15, import + onboarding in 9.7-20.
+// The table itself never changes — a fill plan replaces a stub, it does not add a route.
+
+describe('server.mjs — the unfilled routes answer 501 when authenticated', () => {
+  const front = createFrontServer({ config: { token: TOKEN } })
+
+  it('an AUTHED request to each of the sixteen unfilled routes → 501', async () => {
+    for (const key of UNFILLED_ROUTES) {
+      const [method, pattern] = key.split(' ')
+      const path = pattern.replace(':file', 'app-abc123.js')
+      const res = await call(front, { method, url: path, headers: jsonHeaders() })
+      expect(res.statusCode, key).toBe(501)
+    }
+  })
+
+  it('a stub never reads the request body: a hostile POST body still yields a bare 501', async () => {
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/import/scan',
+      headers: jsonHeaders(),
+      body: { command: 'rm -rf /', path: '../../etc/passwd' },
+    })
+    expect(res.statusCode).toBe(501)
+    expect(res.body).toBe('not implemented') // no echo, no field name, no oracle
+  })
+})
+
+// ── the `machine` field: another machine is an ADDRESSEE, never another door (D-9.7-07) ──
+
+describe('server.mjs — the optional machine field on enqueue/approve/return', () => {
+  const adapter = { list: async () => [], enqueue: async (t: any) => ({ id: t.id }) }
+  const mkFront = () =>
+    createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter, casExec: makeCasExec('awaiting_approval'), verbRunner: async () => ({ merged: true }), clock: () => 1 },
+    })
+
+  it('a URL in `machine` → 400: the field is an identifier, the address is resolved server-side', async () => {
+    for (const url of ['/api/enqueue', '/api/approve', '/api/return']) {
+      const res = await call(mkFront(), {
+        method: 'POST',
+        url,
+        headers: jsonHeaders(),
+        body: { taskId: 'R-1', title: 'x', lane: 'prod', machine: 'http://192.168.1.50:7777' },
+      })
+      expect(res.statusCode, url).toBe(400)
+    }
+  })
+
+  it('a well-formed machine id → 501 (the door exists, the peer is wired in 9.7-15) — never a silent local run', async () => {
+    const enqueued: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: { list: async () => [], enqueue: async (t: any) => (enqueued.push(t), { id: t.id }) }, clock: () => 1 },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/enqueue',
+      headers: jsonHeaders(),
+      body: { title: 'сделай отчёт', lane: 'prod', machine: 'mac-mini' },
+    })
+    expect(res.statusCode).toBe(501)
+    expect(enqueued).toHaveLength(0) // it did NOT quietly run here instead
+  })
+
+  it('an unknown key on an action body is still rejected before anything runs', async () => {
+    const res = await call(mkFront(), {
+      method: 'POST',
+      url: '/api/enqueue',
+      headers: jsonHeaders(),
+      body: { title: 'x', lane: 'prod', machines: 'mac-mini' },
+    })
+    expect(res.statusCode).toBe(400)
   })
 })

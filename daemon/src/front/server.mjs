@@ -809,7 +809,10 @@ function handleOnboardingComplete({ res }) {
   send501(res)
 }
 
-const HANDLERS = Object.freeze({
+/** HANDLERS — the frozen name→function map. Exported for ONE reason: the shape test
+ *  proves ROUTES↔HANDLERS is one-to-one, so neither a route without a handler nor a
+ *  handler without a route can survive a commit. Importing it opens no request path. */
+export const HANDLERS = Object.freeze({
   handleIndex,
   handleState,
   handleDone,
