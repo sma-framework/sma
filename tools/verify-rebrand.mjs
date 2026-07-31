@@ -8,9 +8,8 @@
  *       until a command runs — FI-7).
  *   (b) ZERO RESIDUE: no old brand token (gsd / GSD / Gsd, case-sensitive
  *       alternation — avoids camelCase false positives like "learningsDelete")
- *       anywhere in sma-core/** contents or filenames, outside the exclusions
- *       recorded in rename-map.json (aliases/ layer intentionally carries the
- *       old prefix per D-9.1-02).
+ *       anywhere in sma-core/** contents or filenames, outside the fixed
+ *       exclusions (the aliases/ layer intentionally carries the old prefix).
  *   (c) COLORS: every sma-core/agents/sma-*.md frontmatter carries a color field.
  *
  * Exit 0 = rebrand intact. Exit 1 = violations listed on stderr.
@@ -72,7 +71,7 @@ for (const file of walk(CORE)) {
   if (buf.includes(0)) continue // binary
   const lines = buf.toString('utf8').split('\n')
   lines.forEach((line, i) => {
-    if (ATTRIBUTION_LINE.test(line)) return // attribution stays verbatim (rename-map exclusion)
+    if (ATTRIBUTION_LINE.test(line)) return // attribution stays verbatim (fixed exclusion)
     if (OLD_TOKEN.test(line)) {
       errors.push(`RESIDUE: ${rel(file)}:${i + 1}: ${line.trim().slice(0, 120)}`)
       residueHits++

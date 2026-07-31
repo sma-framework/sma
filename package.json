@@ -47,9 +47,7 @@
     "README.md",
     "README.ru.md",
     "LICENSE",
-    "THIRD-PARTY-LICENSES.md",
-    "UPSTREAM.json",
-    "rename-map.json"
+    "THIRD-PARTY-LICENSES.md"
   ],
   "scripts": {
     "test": "vitest run && node tools/verify-rebrand.mjs",
