@@ -8061,7 +8061,7 @@ async function assembleManifest({ dirs, range, now }) {
 }
 
 /**
- * manifest [--range <a>..<b>] [--json|--md] [--stat <name>] — the PR EVIDENCE
+ * manifest [--range <a>..<b>] [--json|--md|--dense] [--stat <name>] — the PR EVIDENCE
  * PASSPORT (9.3-08, D-9.3-11). Deterministically assembles the Track A evidence
  * pack and writes .sma/manifest/<headSha>.{json,md}. READER-ONLY: computes no
  * verdict, opens no network. NOT hook-facing; plain mode always exits 0 (the
@@ -8091,7 +8091,8 @@ async function cmdManifest({ flags, dirs }) {
       const b = manifestLib.buildManifest({ ...inputs, now: pinned })
       const identical =
         JSON.stringify(a, null, 2) === JSON.stringify(b, null, 2) &&
-        manifestLib.renderManifestMarkdown(a) === manifestLib.renderManifestMarkdown(b)
+        manifestLib.renderManifestMarkdown(a) === manifestLib.renderManifestMarkdown(b) &&
+        manifestLib.renderManifestDense(a) === manifestLib.renderManifestDense(b)
       const val = identical ? 1 : 0
       if (wantsJson(flags)) printJson({ stat, value: val })
       process.stdout.write(`${val}\n`)
@@ -8140,6 +8141,12 @@ async function cmdManifest({ flags, dirs }) {
   }
   if (flags.md === true) {
     process.stdout.write(md)
+    return 0
+  }
+  // --dense: the compact agent-readable render — one line per passport section,
+  // fixed count, no markdown. Checked AFTER --json/--md so the renders never mix.
+  if (flags.dense === true) {
+    process.stdout.write(manifestLib.renderManifestDense(manifest))
     return 0
   }
 

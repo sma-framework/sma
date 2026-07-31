@@ -258,13 +258,19 @@ network seam at all (the blind-verify barrier idiom, applied to assembly).
 
 | verb | what it does | modes |
 |---|---|---|
-| `manifest` | Assemble + render the PR evidence passport; write `.sma/manifest/<headSha>.{json,md}`. Reader-only, fail-open, no network. | `--range <a>..<b>` \| `--json` \| `--md` \| `--stat <name>` |
+| `manifest` | Assemble + render the PR evidence passport; write `.sma/manifest/<headSha>.{json,md}`. Reader-only, fail-open, no network. | `--range <a>..<b>` \| `--json` \| `--md` \| `--dense` \| `--stat <name>` |
 
 - default range `origin/main..HEAD` (override with `--range`); the CLI derives the
   changed files from a read-only `git diff --name-only`, scans `.planning/phases/**`
   for the plan index, and selects the in-range plans.
 - `--json` / `--md` print the canonical JSON / the markdown (the markdown's FIRST line
   is the managed-comment marker `<!-- sma-manifest:v1 -->` — the CI upsert key).
+- `--dense` prints the COMPACT render an agent reads: exactly one `label: payload` line
+  per passport section (`manifest`, `predictions`, `receipts`, `blind`, `spend`,
+  `hit-rate`, `trust`), no markdown at all. The line count is CONSTANT — an empty
+  section prints `(none)`/`(absent)` rather than vanishing, so "nothing to report" is
+  never confused with "the section fell out of the build". `--json` wins when both are
+  passed; all three renders read the same built object, so they cannot disagree.
 - `--stat determinism|prediction-coverage|bench-build-ms` — each prints a single numeric
   last line and exits 0 (the scorer measurement surface): `determinism` byte-compares two
   builds under one pinned `now` (`1`/`0`), `prediction-coverage` is the % of registered
@@ -282,6 +288,7 @@ the gating.
 
 ```bash
 node scripts/sma/cli.mjs manifest --md                 # render the passport (marker on line 1)
+node scripts/sma/cli.mjs manifest --dense              # the whole passport, one line per section
 node scripts/sma/cli.mjs manifest --stat determinism   # prints 1 -> the pack re-derives byte-identically
 ```
 
