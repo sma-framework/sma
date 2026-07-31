@@ -20,6 +20,8 @@ import {
   createMemoryQueue,
   queueAdapterContractSuite,
   validateTask,
+  backfillProject,
+  DEFAULT_PROJECT_ID,
   TASK_SOURCES,
   TASK_LANES,
   FAIL_REASONS,
@@ -138,6 +140,85 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
     const [row] = await q.list({})
     expect(row.status).toBe('failed')
     expect(row.failure_reason).toBe('tests_red')
+  })
+})
+
+// ── V5.1: the project field on a task (D-9.7-01) + the read-time backfill (D-9.7-08) ──
+
+describe('project — an additive task field with an injected default (D-9.7-01)', () => {
+  it('validateTask accepts an optional project slug and rejects a malformed one', () => {
+    expect(validateTask(backlog({ project: 'acme-clinic' })).project).toBe('acme-clinic')
+    expect(validateTask(backlog()).project).toBeUndefined()
+    expect(() => validateTask(backlog({ project: 'Acme Clinic' }))).toThrow(InvalidTaskError)
+    expect(() => validateTask(backlog({ project: 'a'.repeat(65) }))).toThrow(InvalidTaskError)
+  })
+
+  it('does NOT check the project against a registry — that is the door\'s job, not the adapter\'s', () => {
+    // Structural only: an unknown-but-well-formed slug passes the adapter untouched.
+    expect(validateTask(backlog({ project: 'never-registered' })).project).toBe('never-registered')
+  })
+
+  it('a task enqueued with no project gets the adapter\'s active project', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000, activeProject: 'acme-clinic' })
+    await q.enqueue(backlog())
+    const [row] = await q.list({})
+    expect(row.project).toBe('acme-clinic')
+    const claimed = await q.claimNext('w1', {})
+    expect(claimed.project).toBe('acme-clinic')
+  })
+
+  it('an explicit project survives the enqueue unchanged', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000, activeProject: 'acme-clinic' })
+    await q.enqueue(backlog({ project: 'other-shop' }))
+    const [row] = await q.list({})
+    expect(row.project).toBe('other-shop')
+  })
+
+  it('BACKFILL ON READ — a row stored before the field existed reads with a default, never throws', async () => {
+    // The pure helper is what every read path runs a row through.
+    expect(backfillProject({ id: 'BL-old', lane: 'prod' }, 'acme-clinic')).toMatchObject({
+      id: 'BL-old',
+      project: 'acme-clinic',
+    })
+    expect(backfillProject({ id: 'BL-old' }, undefined).project).toBe(DEFAULT_PROJECT_ID)
+    expect(backfillProject(null, 'acme')).toBeNull()
+
+    // End-to-end: an adapter with NO active project configured (the pre-V5.1 composition
+    // root) stores no project, and every read still hands one back.
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(backlog())
+    const [row] = await q.list({})
+    expect(row.project).toBe(DEFAULT_PROJECT_ID)
+  })
+
+  it('list accepts an optional project filter; no filter means every project', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000, activeProject: 'acme-clinic' })
+    await q.enqueue(backlog({ id: 'BL-a' }))
+    await q.enqueue(backlog({ id: 'BL-b', project: 'other-shop' }))
+    expect(await q.list({})).toHaveLength(2)
+    expect((await q.list({ project: 'other-shop' })).map((r: any) => r.id)).toEqual(['BL-b'])
+    expect((await q.list({ project: 'acme-clinic' })).map((r: any) => r.id)).toEqual(['BL-a'])
+    expect(await q.list({ project: 'nobody' })).toHaveLength(0)
+  })
+
+  it('lane and project are INDEPENDENT dimensions — a forge task in another project is valid', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000, activeProject: 'acme-clinic' })
+    await q.enqueue({
+      id: 'F-9',
+      source: 'roster',
+      title: 'make an agent',
+      lane: 'forge',
+      project: 'other-shop',
+      forge: { kind: 'agent', description: 'parses invoices' },
+    })
+    const [row] = await q.list({ project: 'other-shop' })
+    expect(row.lane).toBe('forge')
+    expect(row.project).toBe('other-shop')
   })
 })
 
