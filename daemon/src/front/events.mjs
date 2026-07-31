@@ -20,9 +20,16 @@
  *     FIRST, then emits. A dropped emit only costs a client one poll of latency; it can
  *     never lose or reorder truth (the ordering test proves zero emits before the durable
  *     promise resolves).
- *   - EXPLICIT-PICK PAYLOADS: an event frame carries ONLY {id, event, taskId?, workerId?,
- *     status?, ts} — never titles, notes, diffs, tokens, or receipt bodies (T-9.5-35).
- *     The SPA fetches details via the auth'd read endpoints.
+ *   - EXPLICIT-PICK PAYLOADS, PER TYPE. An event frame carries {id, event, ts} plus ONLY
+ *     the fields its own type declares in EVENT_FIELDS — never titles, notes, diffs,
+ *     tokens, or receipt bodies (T-9.5-35). A field that belongs to another type is
+ *     dropped, so a hostile or careless emit cannot smuggle a payload through a frame
+ *     shape. The SPA fetches details via the auth'd read endpoints.
+ *     Two bans are ABSOLUTE and hold for every future type (D-9.7-09, T-9.7-02): the
+ *     TEXT of a conversation turn never enters a frame (chat.reply carries a turn id and
+ *     a status, never the reply), and a peer's TOKEN or URL never enters a frame
+ *     (machine.presence carries a machine id and a boolean, never an address). A frame is
+ *     a doorbell: it says something changed, never what was said.
  *   - DoS BOUNDS: maxClients cap (→ the handler answers 503), a 25s heartbeat, and
  *     reap-on-write-failure keep stale handles from accumulating (T-9.5-36).
  *
@@ -35,7 +42,13 @@
  * tests. Zero deps; zero network beyond the response handles it is handed.
  */
 
-/** The frozen event vocabulary — the SPA contract (9.6). Emitting an unlisted event is a no-op. */
+/**
+ * The frozen event vocabulary — the SPA contract. FOURTEEN types (re-frozen 2026-08-01
+ * per D-9.7-09, the single revision of the V5.1 release; the previous freeze was TEN,
+ * D-9.5-09). Emitting an unlisted event is a no-op. The «hint, never truth» contract is
+ * UNCHANGED by the revision: the four new types announce that something changed, and the
+ * client re-reads the auth'd endpoint to learn what.
+ */
 export const EVENT_TYPES = Object.freeze([
   'task.queued',
   'task.claimed',
@@ -47,7 +60,38 @@ export const EVENT_TYPES = Object.freeze([
   'worker.presence',
   'spend.updated',
   'harness.updated', // D-9.5-09: a harness config/registry change hint (agents/skills/mcp)
+  'chat.reply', // D-9.7-09: a conversation turn finished (the TEXT rides the read model)
+  'machine.presence', // D-9.7-09: a peer went online/offline (never its url, never its token)
+  'project.updated', // D-9.7-09: the project registry changed
+  'import.updated', // D-9.7-09: a batch of import drafts was produced
 ])
+
+/**
+ * EVENT_FIELDS — the per-type explicit pick. A frame carries {id, event, ts} plus ONLY
+ * the fields listed here for its own type; everything else on the emitted object is
+ * dropped. Every entry is an IDENTIFIER, a short status, a boolean or a count — never
+ * free text, never a secret, never an address (T-9.5-35, T-9.7-02).
+ */
+const EVENT_FIELDS = Object.freeze({
+  'task.queued': ['taskId', 'workerId', 'status'],
+  'task.claimed': ['taskId', 'workerId', 'status'],
+  'task.running': ['taskId', 'workerId', 'status'],
+  'task.awaiting_approval': ['taskId', 'workerId', 'status'],
+  'task.approved': ['taskId', 'workerId', 'status'],
+  'task.returned': ['taskId', 'workerId', 'status'],
+  'task.failed': ['taskId', 'workerId', 'status'],
+  'worker.presence': ['taskId', 'workerId', 'status'],
+  'spend.updated': ['taskId', 'workerId', 'status'],
+  'harness.updated': ['taskId', 'workerId', 'status'],
+  'chat.reply': ['turnId', 'status'], // NEVER the message text
+  'machine.presence': ['machineId', 'online'], // NEVER the peer url or token
+  'project.updated': ['projectId'],
+  'import.updated': ['batchId', 'count'],
+})
+
+/** Fields serialised as a boolean / a number; everything else is stringified. */
+const BOOLEAN_FIELDS = new Set(['online'])
+const NUMBER_FIELDS = new Set(['count'])
 
 /** Dedup window for the touch→task.running hint (mirrors the loop's 30s touch throttle). */
 const RUNNING_DEDUP_MS = 30000
@@ -55,9 +99,13 @@ const RUNNING_DEDUP_MS = 30000
 /** explicit-pick an event frame payload — NEVER titles/notes/diffs/tokens (T-9.5-35). */
 function pickEvent(evt, id, tsMs) {
   const out = { id, event: evt.event, ts: new Date(tsMs).toISOString() }
-  if (evt.taskId != null) out.taskId = String(evt.taskId)
-  if (evt.workerId != null) out.workerId = String(evt.workerId)
-  if (evt.status != null) out.status = String(evt.status)
+  for (const field of EVENT_FIELDS[evt.event] || []) {
+    const v = evt[field]
+    if (v == null) continue
+    if (BOOLEAN_FIELDS.has(field)) out[field] = Boolean(v)
+    else if (NUMBER_FIELDS.has(field)) out[field] = Number(v)
+    else out[field] = String(v)
+  }
   return out
 }
 
