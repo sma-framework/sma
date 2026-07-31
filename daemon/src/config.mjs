@@ -31,14 +31,48 @@
  * — the founder's daytime account the scheduler must not drain while the founder works
  * (consumed by plan 9.5-05).
  *
+ * ═══════════════ V5.1: A PROJECT IS A FIRST-CLASS FIELD (D-9.7-01) ═══════════════
+ * The project registry lives HERE, in the daemon config, and it exists BEFORE the first
+ * screen does. `projects[]` is the list, `activeProject` is the one currently selected,
+ * `workers[].project` optionally pins a worker to one (absent = the active project). The
+ * id is a slug (PROJECT_ID_RE) and it is the KEY that tasks reference — renaming a
+ * project moves its `name` and NEVER its `id`.
+ *
+ * ONE MACHINE OWNS AN ACCOUNT. A subscription account belongs to exactly one machine:
+ * federation aggregates VIEWS across machines, never credentials. No peer entry carries
+ * an account, and no account is ever addressed across a peer boundary.
+ *
+ * ═══════════════ V5.1: ZERO-FRICTION MIGRATION (D-9.7-08) ═══════════════════════
+ * `ensureDefaultProject` runs at LOAD time, not as a migration script — a script would
+ * be the one manual action D-9.7-08 forbids. On a config with no registry it mints
+ * exactly one entry (name from the install profile `.sma/profile.json` when present,
+ * else the repository directory name) and selects it. It is IDEMPOTENT: once a registry
+ * exists it returns the SAME object it was given, so a second load mints nothing
+ * (T-9.7-06). Existing tasks are attached by the queue's read-time backfill — nothing
+ * rewrites a stored row.
+ *
+ * A name with no latin characters still yields a valid slug (the id falls back to
+ * `project`/`project-2`…): the id is an opaque key, the NAME is what a human reads.
+ *
+ * ═══════════════ V5.1: FEDERATION IS AN ADDITIVE BLOCK (D-9.7-04) ═══════════════
+ * `federation` is optional: `{role: standalone|hub|peer, peers:[{id,url,token}]}`. An
+ * ABSENT block means role `standalone` and today's behaviour exactly. A malformed peer
+ * (bad url, empty token) refuses the whole load with a named error — the daemon never
+ * starts with a half-alive registry it would silently ignore (T-9.7-07).
+ *
+ * PEER TOKENS COLLAPSE FROM DAY ONE (T-9.7-05). secretsView folds every
+ * `federation.peers[].token` into '[set]'/'[unset]' in the SAME change that introduces
+ * the field — a secret that lands in the schema a week before its collapse is a week of
+ * leaking into every payload.
+ *
  * Node built-ins only. randomBytes for the token; atomicWriteJson (scripts/sma/lib,
- * zero-dep law intact) for the write. env / homedir / fsImpl are all
+ * zero-dep law intact) for the write. env / homedir / fsImpl / repoDir are all
  * dependency-injectable so tests never touch the real ~/.sma-daemon.
  */
 
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync, chmodSync as fsChmodSync } from 'node:fs'
 import { homedir as osHomedir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { atomicWriteJson } from '../../scripts/sma/lib/fs-atomics.mjs'
@@ -50,6 +84,36 @@ export class InvalidWorkerProfileError extends Error {
     this.name = 'InvalidWorkerProfileError'
   }
 }
+
+/** Named error for a structurally-invalid project entry (bad id / empty name / duplicate). */
+export class InvalidProjectError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'InvalidProjectError'
+  }
+}
+
+/** Named error for a structurally-invalid federation block or peer entry (T-9.7-07). */
+export class InvalidFederationError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'InvalidFederationError'
+  }
+}
+
+/** Named error for a reference to a project id that is not in the registry (→ 404 at the door). */
+export class UnknownProjectError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'UnknownProjectError'
+  }
+}
+
+/** The project id grammar — a slug, because the id is a key tasks and rows carry. */
+export const PROJECT_ID_RE = /^[a-z0-9-]{1,64}$/
+
+/** The three federation roles. An absent block means `standalone` (D-9.7-04). */
+export const FEDERATION_ROLES = Object.freeze(['standalone', 'hub', 'peer'])
 
 /**
  * resolveConfigPath({env, homedir}) — the config file path.
@@ -108,77 +172,316 @@ function defaultConfig(token) {
 }
 
 /**
- * validateWorker(w) — structural gate: id, lane, and account.configDir are required.
- * Normalizes the D-9.5-09 harness trio (enabled defaults true; roleFile/skills accepted).
- * Throws InvalidWorkerProfileError on a missing required field.
+ * validateProject(p, {seen}) — structural gate for ONE registry entry (D-9.7-01).
+ * Requires a slug `id` (PROJECT_ID_RE) and a non-empty `name`. `seen` is an optional Set
+ * carried across a registry pass so a duplicate id is a named error rather than a silent
+ * shadow. Throws InvalidProjectError; the handler maps a named error to 400/404.
+ *
+ * @param {object} p
+ * @param {{seen?:Set<string>}} [opts]
+ * @returns {object} the normalized entry
  */
-function validateWorker(w) {
+export function validateProject(p, { seen } = {}) {
+  if (!p || typeof p !== 'object') throw new InvalidProjectError('project entry is not an object')
+  if (!p.id || typeof p.id !== 'string') throw new InvalidProjectError('project entry missing "id"')
+  if (!PROJECT_ID_RE.test(p.id)) {
+    throw new InvalidProjectError(`project id "${p.id}" must match ${PROJECT_ID_RE.source}`)
+  }
+  if (typeof p.name !== 'string' || p.name.trim() === '') {
+    throw new InvalidProjectError(`project "${p.id}" missing a non-empty "name"`)
+  }
+  if (seen) {
+    if (seen.has(p.id)) throw new InvalidProjectError(`duplicate project id "${p.id}"`)
+    seen.add(p.id)
+  }
+  return { ...p, id: p.id, name: p.name }
+}
+
+/** validateProjects(list) — the whole registry, duplicate-checked in one pass. */
+function validateProjects(list) {
+  if (!Array.isArray(list)) throw new InvalidProjectError('config.projects must be an array')
+  const seen = new Set()
+  return list.map((p) => validateProject(p, { seen }))
+}
+
+/** A peer entry: slug id, a syntactically valid http(s) url, a non-empty token (T-9.7-07). */
+function validatePeer(peer, seen) {
+  if (!peer || typeof peer !== 'object') throw new InvalidFederationError('peer entry is not an object')
+  if (!peer.id || typeof peer.id !== 'string' || !PROJECT_ID_RE.test(peer.id)) {
+    throw new InvalidFederationError(`peer id "${peer && peer.id}" must match ${PROJECT_ID_RE.source}`)
+  }
+  if (seen.has(peer.id)) throw new InvalidFederationError(`duplicate peer id "${peer.id}"`)
+  seen.add(peer.id)
+  let url
+  try {
+    url = new URL(String(peer.url))
+  } catch {
+    throw new InvalidFederationError(`peer "${peer.id}" has an invalid url`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new InvalidFederationError(`peer "${peer.id}" url must be http(s), got "${url.protocol}"`)
+  }
+  if (typeof peer.token !== 'string' || peer.token === '') {
+    throw new InvalidFederationError(`peer "${peer.id}" requires a non-empty token`)
+  }
+  return { ...peer, id: peer.id, url: peer.url, token: peer.token }
+}
+
+/**
+ * validateFederation(f) — the additive federation block (D-9.7-04). An absent/null block
+ * normalizes to `{role:'standalone', peers:[]}` — standalone IS today's behaviour, so an
+ * install that never heard of federation keeps working untouched. A malformed peer throws
+ * InvalidFederationError, refusing the load outright (T-9.7-07): a half-alive peer registry
+ * silently ignored is worse than a daemon that will not start.
+ *
+ * @param {object|undefined|null} f
+ * @returns {{role:string, peers:object[]}}
+ */
+export function validateFederation(f) {
+  if (f === undefined || f === null) return { role: 'standalone', peers: [] }
+  if (typeof f !== 'object' || Array.isArray(f)) throw new InvalidFederationError('federation block is not an object')
+  const role = f.role === undefined ? 'standalone' : f.role
+  if (!FEDERATION_ROLES.includes(role)) {
+    throw new InvalidFederationError(`federation role "${role}" must be one of ${FEDERATION_ROLES.join('|')}`)
+  }
+  const raw = f.peers === undefined ? [] : f.peers
+  if (!Array.isArray(raw)) throw new InvalidFederationError('federation.peers must be an array')
+  const seen = new Set()
+  return { ...f, role, peers: raw.map((p) => validatePeer(p, seen)) }
+}
+
+/**
+ * validateWorker(w, knownProjects) — structural gate: id, lane, and account.configDir are
+ * required. Normalizes the D-9.5-09 harness trio (enabled defaults true; roleFile/skills
+ * accepted) and the D-9.7-01 optional `project` by the SAME conditional-spread idiom:
+ * absent means «the active project», present must reference a registry entry.
+ * Throws InvalidWorkerProfileError on a missing required field or a dangling project.
+ */
+function validateWorker(w, knownProjects) {
   if (!w || typeof w !== 'object') throw new InvalidWorkerProfileError('worker profile is not an object')
   if (!w.id) throw new InvalidWorkerProfileError('worker profile missing "id"')
   if (!w.lane) throw new InvalidWorkerProfileError(`worker "${w.id}" missing "lane"`)
   if (!w.account || !w.account.configDir) {
     throw new InvalidWorkerProfileError(`worker "${w.id}" missing "account.configDir"`)
   }
+  if (w.project !== undefined) {
+    if (typeof w.project !== 'string' || !PROJECT_ID_RE.test(w.project)) {
+      throw new InvalidWorkerProfileError(`worker "${w.id}" has an invalid project id "${w.project}"`)
+    }
+    if (knownProjects && !knownProjects.has(w.project)) {
+      throw new InvalidWorkerProfileError(`worker "${w.id}" references unknown project "${w.project}"`)
+    }
+  }
   return {
     ...w,
     enabled: w.enabled === undefined ? true : Boolean(w.enabled),
     ...(w.roleFile !== undefined ? { roleFile: w.roleFile } : {}),
     ...(w.skills !== undefined ? { skills: w.skills } : {}),
+    ...(w.project !== undefined ? { project: w.project } : {}),
   }
 }
 
 /**
- * validateConfig(config) — returns a normalized copy; throws on any invalid worker.
+ * validateConfig(config) — returns a normalized copy; throws on any invalid worker,
+ * project or federation entry. `projects` / `activeProject` / `federation` stay ABSENT
+ * when the incoming config never carried them (the additive-field law): the quiet
+ * migration, not the validator, is what mints a registry.
  */
 function validateConfig(config) {
   if (!config || typeof config !== 'object') throw new InvalidWorkerProfileError('config is not an object')
-  const workers = Array.isArray(config.workers) ? config.workers.map(validateWorker) : []
-  return { ...config, workers }
+  const hasProjects = config.projects !== undefined
+  const projects = hasProjects ? validateProjects(config.projects) : []
+  const knownProjects = new Set(projects.map((p) => p.id))
+  if (config.activeProject !== undefined && config.activeProject !== null) {
+    if (!knownProjects.has(config.activeProject)) {
+      throw new UnknownProjectError(`activeProject "${config.activeProject}" is not in the project registry`)
+    }
+  }
+  const workers = Array.isArray(config.workers) ? config.workers.map((w) => validateWorker(w, knownProjects)) : []
+  const hasFederation = config.federation !== undefined
+  const federation = hasFederation ? validateFederation(config.federation) : undefined
+  return {
+    ...config,
+    ...(hasProjects ? { projects } : {}),
+    workers,
+    ...(hasFederation ? { federation } : {}),
+  }
 }
 
-/**
- * loadConfig({env, homedir, fsImpl}) — read the daemon config, creating a 0600 default
- * (with a fresh 64-hex token) on first boot. Existing files are parsed and validated.
- *
- * @param {{env?:object, homedir?:Function, fsImpl?:object}} [opts]
- * @returns {object} the normalized config
- */
-export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl } = {}) {
+/** slugify(name) → a PROJECT_ID_RE-safe id; a name with no latin chars falls back to 'project'. */
+function slugify(name) {
+  const s = String(name ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+    .replace(/-+$/g, '')
+  return s || 'project'
+}
+
+/** A free id: the slug, or slug-2, slug-3… when the registry already holds it. */
+function freeProjectId(base, taken) {
+  if (!taken.has(base)) return base
+  for (let n = 2; n < 1000; n += 1) {
+    const candidate = `${base.slice(0, 60)}-${n}`
+    if (!taken.has(candidate)) return candidate
+  }
+  return `${base.slice(0, 55)}-${randomBytes(3).toString('hex')}`
+}
+
+/** The install profile name, when `.sma/profile.json` carries one (tolerant reader). */
+function profileProjectName(repoDir, fsImpl) {
   const io = fsImpl ?? {}
   const existsSync = io.existsSync ?? fsExistsSync
   const readFileSync = io.readFileSync ?? fsReadFileSync
-  const chmodSync = io.chmodSync ?? fsChmodSync
-
-  const path = resolveConfigPath({ env, homedir })
-
-  if (existsSync(path)) {
-    const raw = JSON.parse(readFileSync(path, 'utf8'))
-    return validateConfig(raw)
+  try {
+    const path = join(repoDir, '.sma', 'profile.json')
+    if (!existsSync(path)) return null
+    const profile = JSON.parse(readFileSync(path, 'utf8'))
+    const name = profile && (profile.projectName ?? profile.project ?? profile.name)
+    return typeof name === 'string' && name.trim() !== '' ? name.trim() : null
+  } catch {
+    return null // a missing / corrupt profile is a valid state — fall through to the dir name
   }
+}
 
-  // Bootstrap: fresh token, atomic write, best-effort 0600.
-  const token = randomBytes(32).toString('hex')
-  const config = validateConfig(defaultConfig(token))
+/**
+ * ensureDefaultProject(config, {repoDir, fsImpl, projectName}) — the quiet migration
+ * (D-9.7-08). A config that already carries a registry is returned UNCHANGED (the same
+ * object reference — that is the idempotence proof, T-9.7-06); a config without one gains
+ * exactly ONE entry and has `activeProject` pointed at it. The name comes from the install
+ * profile when there is one, otherwise from the repository directory name.
+ *
+ * Nothing else moves: workers keep no project field (absent = the active project) and no
+ * queue row is rewritten — the queue backfills on read.
+ *
+ * @param {object} config
+ * @param {{repoDir?:string, fsImpl?:object, projectName?:string}} [opts]
+ * @returns {object} the same config, or a copy carrying the minted registry
+ */
+export function ensureDefaultProject(config, { repoDir = process.cwd(), fsImpl, projectName } = {}) {
+  const existing = Array.isArray(config && config.projects) ? config.projects : null
+  if (existing && existing.length > 0) {
+    const ids = new Set(existing.map((p) => p && p.id))
+    if (config.activeProject && ids.has(config.activeProject)) return config
+    return { ...config, activeProject: existing[0].id }
+  }
+  const name = projectName ?? profileProjectName(repoDir, fsImpl) ?? basename(repoDir) ?? 'project'
+  const project = validateProject({ id: slugify(name), name: String(name) })
+  return { ...config, projects: [project], activeProject: project.id }
+}
+
+/**
+ * writeConfig(config, {env, homedir, fsImpl}) — the ONE write path: the existing atomic
+ * writer plus a best-effort re-stamp of the 0600 mode (rename installs the temp file's
+ * mode, so re-stamping PRESERVES the permissions rather than changing them).
+ */
+function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const io = fsImpl ?? {}
+  const path = resolveConfigPath({ env, homedir })
   atomicWriteJson(path, config, {
     mkdirFn: io.mkdirSync,
     writeFn: io.writeFileSync,
     renameFn: io.renameSync,
   })
+  const chmodSync = io.chmodSync ?? fsChmodSync
   try {
-    chmodSync(path, 0o600) // win32: documented no-op — never fail the boot on it
+    chmodSync(path, 0o600) // win32: documented no-op — never fail on it
   } catch {
     /* platform ignores chmod (win32) — the file is still owner-scoped by ACL default */
   }
+  return path
+}
+
+/**
+ * loadConfig({env, homedir, fsImpl, repoDir}) — read the daemon config, creating a 0600
+ * default (with a fresh 64-hex token) on first boot. Existing files are parsed and
+ * validated, then run through the D-9.7-08 quiet migration: a config with no project
+ * registry gains one and is persisted, in place, with no manual action. The migration is
+ * idempotent, so every later load is a pure read.
+ *
+ * @param {{env?:object, homedir?:Function, fsImpl?:object, repoDir?:string}} [opts]
+ * @returns {object} the normalized config
+ */
+export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, repoDir = process.cwd() } = {}) {
+  const io = fsImpl ?? {}
+  const existsSync = io.existsSync ?? fsExistsSync
+  const readFileSync = io.readFileSync ?? fsReadFileSync
+
+  const path = resolveConfigPath({ env, homedir })
+
+  if (existsSync(path)) {
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    const config = validateConfig(raw)
+    const migrated = ensureDefaultProject(config, { repoDir, fsImpl })
+    if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl })
+    return migrated
+  }
+
+  // Bootstrap: fresh token, the default pool, its project registry, atomic write, 0600.
+  const token = randomBytes(32).toString('hex')
+  const config = ensureDefaultProject(validateConfig(defaultConfig(token)), { repoDir, fsImpl })
+  writeConfig(config, { env, homedir, fsImpl })
   return config
 }
 
 /**
+ * addProject(config, {id, name}, io) — append a validated entry to the registry and
+ * persist. A duplicate id is an InvalidProjectError; the registry is the key space tasks
+ * reference, so it never silently shadows.
+ *
+ * @returns {object} the updated config
+ */
+export function addProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const projects = Array.isArray(config && config.projects) ? config.projects : []
+  const seen = new Set(projects.map((p) => p.id))
+  const entry = validateProject({ id, name }, { seen })
+  const next = { ...config, projects: [...projects, entry], activeProject: config.activeProject ?? entry.id }
+  writeConfig(next, { env, homedir, fsImpl })
+  return next
+}
+
+/**
+ * renameProject(config, {id, name}, io) — change the NAME only. The id is the key rows
+ * and workers reference; it is immutable by construction here. Unknown id →
+ * UnknownProjectError (a named error the door maps to 404).
+ *
+ * @returns {object} the updated config
+ */
+export function renameProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const projects = Array.isArray(config && config.projects) ? config.projects : []
+  const idx = projects.findIndex((p) => p && p.id === id)
+  if (idx === -1) throw new UnknownProjectError(`renameProject: unknown project "${id}"`)
+  const entry = validateProject({ ...projects[idx], id: projects[idx].id, name })
+  const next = { ...config, projects: projects.map((p, i) => (i === idx ? entry : p)) }
+  writeConfig(next, { env, homedir, fsImpl })
+  return next
+}
+
+/**
+ * selectProject(config, {id}, io) — move `activeProject`. Unknown id → UnknownProjectError.
+ *
+ * @returns {object} the updated config
+ */
+export function selectProject(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const projects = Array.isArray(config && config.projects) ? config.projects : []
+  if (!projects.some((p) => p && p.id === id)) {
+    throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
+  }
+  const next = { ...config, activeProject: id }
+  writeConfig(next, { env, homedir, fsImpl })
+  return next
+}
+
+/**
  * secretsView(config, {env}) — THE ONLY loggable shape. Deep-copies the config with
- * `token` and every `account.oauthTokenEnv` collapsed to '[set]'/'[unset]'. The raw
- * token and the env-var NAMES never appear in the returned object (T-9.5-01).
+ * `token`, every `account.oauthTokenEnv` AND every `federation.peers[].token` collapsed
+ * to '[set]'/'[unset]'. The raw token, the env-var NAMES and every peer token never
+ * appear in the returned object (T-9.5-01, T-9.7-05).
  *
  * `[set]`/`[unset]` for an account reflects whether the NAMED env var is populated in
- * `env` (default process.env) — operational insight with zero leakage.
+ * `env` (default process.env) — operational insight with zero leakage. A peer token, by
+ * contrast, IS a value in the config, so its collapse reflects the stored value itself.
  *
  * @param {object} config
  * @param {{env?:object}} [opts]
@@ -192,9 +495,17 @@ export function secretsView(config, { env = process.env } = {}) {
       oauthTokenEnv: env[w.account?.oauthTokenEnv] ? '[set]' : '[unset]',
     },
   }))
+  const hasFederation = config.federation !== undefined && config.federation !== null
+  const federation = hasFederation
+    ? {
+        ...config.federation,
+        peers: (config.federation.peers ?? []).map((p) => ({ ...p, token: p && p.token ? '[set]' : '[unset]' })),
+      }
+    : undefined
   return {
     ...config,
     token: config.token ? '[set]' : '[unset]',
     workers,
+    ...(hasFederation ? { federation } : {}),
   }
 }
