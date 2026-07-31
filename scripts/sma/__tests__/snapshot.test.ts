@@ -296,8 +296,8 @@ describe('buildSnapshotPayload — v2 cockpit blocks (9.1-25, B21)', () => {
     expect(payload.corpusHealth).toBeNull()
   })
 
-  it('Test 3: named identity ("P49 Том" + work label) rides in the session block (FI-10)', () => {
-    writeLease({ holderIdentity: 'P49 Том', scope: { globs: ['src/**'], description: 'платёжный модуль' } })
+  it('Test 3: named identity ("P9 Том" + work label) rides in the session block (FI-10)', () => {
+    writeLease({ holderIdentity: 'P9 Том', scope: { globs: ['src/**'], description: 'платёжный модуль' } })
     const payload = buildSnapshotPayload({
       identity,
       sessionsDir,
