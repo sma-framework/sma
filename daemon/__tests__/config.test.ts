@@ -19,21 +19,53 @@
  *   - Test 8: secretsView is the ONLY loggable shape — token and every
  *     account.oauthTokenEnv collapse to '[set]'/'[unset]' (T-9.5-01); no secret,
  *     no env-var NAME, ever leaves.
+ *
+ * V5.1 additions (D-9.7-01 project registry, D-9.7-08 quiet migration, D-9.7-04
+ * federation shape):
+ *   - Test 9: REGRESSION — a config carrying NEITHER projects NOR federation still
+ *     loads and validates (the additive-field law: no existing install breaks).
+ *   - Test 10: ensureDefaultProject is the quiet migration — the first load mints
+ *     exactly ONE project (name from the install profile when present, else the
+ *     repo directory name) and a second load mints nothing (idempotence, T-9.7-06).
+ *   - Test 11: validateProject truth table (missing id, bad slug, duplicate, empty name).
+ *   - Test 12: validateFederation truth table (three roles, broken url, empty token).
+ *   - Test 13: peer tokens collapse in secretsView from the day the field exists
+ *     (T-9.7-05) — the token value appears in NO serialization of the view.
+ *   - Test 14: renaming a project changes the name only — the id is the key tasks
+ *     reference and never moves.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 
-import { resolveConfigPath, loadConfig, secretsView, InvalidWorkerProfileError } from '../src/config.mjs'
+import {
+  resolveConfigPath,
+  loadConfig,
+  secretsView,
+  ensureDefaultProject,
+  validateProject,
+  validateFederation,
+  addProject,
+  renameProject,
+  selectProject,
+  FEDERATION_ROLES,
+  InvalidWorkerProfileError,
+  InvalidProjectError,
+  InvalidFederationError,
+  UnknownProjectError,
+} from '../src/config.mjs'
 
 let home: string
+let repo: string
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'sma-daemon-cfg-'))
+  repo = mkdtempSync(join(tmpdir(), 'sma-repo-'))
 })
 afterEach(() => {
   rmSync(home, { recursive: true, force: true })
+  rmSync(repo, { recursive: true, force: true })
 })
 
 const homedir = () => home
@@ -161,5 +193,206 @@ describe('secretsView (T-9.5-01 — the only loggable shape)', () => {
     const cfg = loadConfig({ env: {}, homedir })
     const view = secretsView({ ...cfg, token: '' }, { env: {} })
     expect(view.token).toBe('[unset]')
+  })
+})
+
+// ─────────────────── V5.1: projects + federation (D-9.7-01/04/08) ───────────────────
+
+/** Seed a PRE-V5.1 config on disk: workers, token — no projects, no federation. */
+function seedLegacyConfig(): string {
+  const path = resolveConfigPath({ env: {}, homedir })
+  loadConfig({ env: {}, homedir, repoDir: repo })
+  const raw = JSON.parse(readFileSync(path, 'utf8'))
+  delete raw.projects
+  delete raw.activeProject
+  delete raw.federation
+  writeFileSync(path, JSON.stringify(raw, null, 2))
+  return path
+}
+
+describe('REGRESSION — a pre-V5.1 config still loads (additive-field law, D-9.7-08)', () => {
+  it('a config with NEITHER projects NOR federation validates and keeps its workers and token', () => {
+    const path = seedLegacyConfig()
+    const before = JSON.parse(readFileSync(path, 'utf8'))
+    expect(before.projects).toBeUndefined()
+    expect(before.federation).toBeUndefined()
+
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.workers).toHaveLength(5)
+    expect(cfg.token).toBe(before.token)
+    expect(cfg.workers.find((w: any) => w.id === 'creator').lane).toBe('forge')
+  })
+})
+
+describe('ensureDefaultProject — the quiet migration (D-9.7-08, T-9.7-06)', () => {
+  it('the first load mints exactly ONE project and points activeProject at it', () => {
+    seedLegacyConfig()
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.projects).toHaveLength(1)
+    expect(cfg.activeProject).toBe(cfg.projects[0].id)
+    expect(cfg.projects[0].id).toMatch(/^[a-z0-9-]{1,64}$/)
+  })
+
+  it('the project name comes from the install profile when there is one', () => {
+    mkdirSync(join(repo, '.sma'), { recursive: true })
+    writeFileSync(join(repo, '.sma', 'profile.json'), JSON.stringify({ projectName: 'Acme Clinic' }))
+    seedLegacyConfig()
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.projects[0].name).toBe('Acme Clinic')
+    expect(cfg.projects[0].id).toBe('acme-clinic')
+  })
+
+  it('with no profile the name falls back to the repository directory name', () => {
+    seedLegacyConfig()
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.projects[0].name).toBe(basename(repo))
+  })
+
+  it('a name with no latin characters still yields a VALID slug id, name preserved', () => {
+    const out = ensureDefaultProject({ workers: [] }, { projectName: 'Клиника' })
+    expect(out.projects[0].name).toBe('Клиника')
+    expect(out.projects[0].id).toMatch(/^[a-z0-9-]{1,64}$/)
+  })
+
+  it('IDEMPOTENT — a second load does not mint a second project (T-9.7-06)', () => {
+    seedLegacyConfig()
+    const first = loadConfig({ env: {}, homedir, repoDir: repo })
+    const second = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(second.projects).toHaveLength(1)
+    expect(second.projects[0].id).toBe(first.projects[0].id)
+    expect(second.activeProject).toBe(first.activeProject)
+  })
+
+  it('is a no-op (same object reference) once a registry exists', () => {
+    const cfg = { workers: [], projects: [{ id: 'acme', name: 'Acme' }], activeProject: 'acme' }
+    expect(ensureDefaultProject(cfg, { projectName: 'Other' })).toBe(cfg)
+  })
+})
+
+describe('validateProject — truth table (D-9.7-01)', () => {
+  it('accepts a well-formed entry', () => {
+    expect(validateProject({ id: 'acme-clinic', name: 'Acme Clinic' })).toMatchObject({
+      id: 'acme-clinic',
+      name: 'Acme Clinic',
+    })
+  })
+
+  it('rejects a missing id, an id outside the slug pattern, an empty name and a duplicate id', () => {
+    expect(() => validateProject({ name: 'no id' })).toThrow(InvalidProjectError)
+    expect(() => validateProject({ id: 'Acme Clinic', name: 'bad slug' })).toThrow(InvalidProjectError)
+    expect(() => validateProject({ id: 'a'.repeat(65), name: 'too long' })).toThrow(InvalidProjectError)
+    expect(() => validateProject({ id: 'acme', name: '   ' })).toThrow(InvalidProjectError)
+    const seen = new Set<string>()
+    validateProject({ id: 'acme', name: 'Acme' }, { seen })
+    expect(() => validateProject({ id: 'acme', name: 'Acme again' }, { seen })).toThrow(InvalidProjectError)
+  })
+
+  it('workers[].project is optional, and when present must reference an existing project', () => {
+    const path = resolveConfigPath({ env: {}, homedir })
+    loadConfig({ env: {}, homedir, repoDir: repo })
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    raw.workers.push({
+      id: 'w-ghost',
+      lane: 'prod',
+      provider: 'claude',
+      account: { name: 'max-1', configDir: '~/.sma-accounts/max-1' },
+      project: 'no-such-project',
+    })
+    writeFileSync(path, JSON.stringify(raw, null, 2))
+    expect(() => loadConfig({ env: {}, homedir, repoDir: repo })).toThrow(InvalidWorkerProfileError)
+  })
+})
+
+describe('validateFederation — truth table (D-9.7-04, T-9.7-07)', () => {
+  it('an absent block means role standalone with no peers', () => {
+    expect(validateFederation(undefined)).toMatchObject({ role: 'standalone', peers: [] })
+    expect(FEDERATION_ROLES).toEqual(['standalone', 'hub', 'peer'])
+  })
+
+  it('accepts exactly the three roles', () => {
+    for (const role of FEDERATION_ROLES) {
+      expect(validateFederation({ role, peers: [] }).role).toBe(role)
+    }
+    expect(() => validateFederation({ role: 'leader', peers: [] })).toThrow(InvalidFederationError)
+  })
+
+  it('accepts a well-formed peer and rejects a broken url or an empty token', () => {
+    const ok = validateFederation({ role: 'hub', peers: [{ id: 'mac-mini', url: 'https://10.0.0.4:7777', token: 'tk' }] })
+    expect(ok.peers[0].id).toBe('mac-mini')
+    expect(() => validateFederation({ role: 'hub', peers: [{ id: 'p', url: 'not a url', token: 'tk' }] })).toThrow(
+      InvalidFederationError,
+    )
+    expect(() => validateFederation({ role: 'hub', peers: [{ id: 'p', url: 'ftp://host/x', token: 'tk' }] })).toThrow(
+      InvalidFederationError,
+    )
+    expect(() => validateFederation({ role: 'hub', peers: [{ id: 'p', url: 'http://h:7777', token: '' }] })).toThrow(
+      InvalidFederationError,
+    )
+    expect(() => validateFederation({ role: 'hub', peers: [{ id: 'BAD ID', url: 'http://h:7777', token: 'tk' }] })).toThrow(
+      InvalidFederationError,
+    )
+  })
+
+  it('a broken peer entry refuses the whole load — the daemon never starts half-alive (T-9.7-07)', () => {
+    const path = resolveConfigPath({ env: {}, homedir })
+    loadConfig({ env: {}, homedir, repoDir: repo })
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    raw.federation = { role: 'hub', peers: [{ id: 'p1', url: 'nonsense', token: 'tk' }] }
+    writeFileSync(path, JSON.stringify(raw, null, 2))
+    expect(() => loadConfig({ env: {}, homedir, repoDir: repo })).toThrow(InvalidFederationError)
+  })
+})
+
+describe('secretsView — peer tokens collapse the day the field exists (T-9.7-05)', () => {
+  it('every federation.peers[].token becomes [set]/[unset]; the value is in NO serialization', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const withPeers = {
+      ...cfg,
+      federation: {
+        role: 'hub',
+        peers: [
+          { id: 'mac-mini', url: 'http://10.0.0.4:7777', token: 'peer-secret-value' },
+          { id: 'laptop', url: 'http://10.0.0.5:7777', token: '' },
+        ],
+      },
+    }
+    const view = secretsView(withPeers, { env: {} })
+    expect(view.federation.peers[0].token).toBe('[set]')
+    expect(view.federation.peers[1].token).toBe('[unset]')
+    expect(JSON.stringify(view)).not.toContain('peer-secret-value')
+  })
+
+  it('a config with no federation block passes through secretsView untouched', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const view = secretsView(cfg, { env: {} })
+    expect(view.federation).toBeUndefined()
+    expect(view.token).toBe('[set]')
+  })
+})
+
+describe('project registry mutations — add / rename / select', () => {
+  it('renaming a project changes the NAME only; the id is the key tasks reference', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const id = cfg.projects[0].id
+    const next = renameProject(cfg, { id, name: 'Совсем другое имя' }, { env: {}, homedir })
+    expect(next.projects[0].id).toBe(id)
+    expect(next.projects[0].name).toBe('Совсем другое имя')
+    expect(loadConfig({ env: {}, homedir, repoDir: repo }).projects[0].name).toBe('Совсем другое имя')
+  })
+
+  it('addProject appends a validated entry and refuses a duplicate id', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const next = addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir })
+    expect(next.projects).toHaveLength(2)
+    expect(() => addProject(next, { id: 'second', name: 'Dup' }, { env: {}, homedir })).toThrow(InvalidProjectError)
+  })
+
+  it('selectProject moves activeProject and refuses an unknown id with a named error', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const two = addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir })
+    const next = selectProject(two, { id: 'second' }, { env: {}, homedir })
+    expect(next.activeProject).toBe('second')
+    expect(() => selectProject(next, { id: 'ghost' }, { env: {}, homedir })).toThrow(UnknownProjectError)
+    expect(() => renameProject(next, { id: 'ghost', name: 'x' }, { env: {}, homedir })).toThrow(UnknownProjectError)
   })
 })
