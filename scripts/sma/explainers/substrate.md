@@ -11,8 +11,6 @@ Why this matters:
 - It is fail-open. If a script breaks, your work continues without the hint; nothing wedges.
 - It survives absorption. A model vendor can ship memory, but not a neutral accountability layer over its own agent.
 
-The `pnpm sma upstream-check` command watches the engine SMA is built on for updates without pulling anything automatically.
-
 Example: the calibration ledger, the reflex rules, and the coordination claims are all files under `.sma/` and `.claude/memory/`. Delete the folder and SMA forgets; commit it and the next clone remembers.
 
 ## ru
@@ -23,7 +21,5 @@ Example: the calibration ledger, the reflex rules, and the coordination claims a
 - Оно проверяемо. Всё выученное приходит диффом, который можно прочитать и откатить.
 - Оно не блокирует. Если скрипт ломается, работа продолжается без подсказки, ничего не вешается.
 - Оно переживает поглощение. Поставщик модели может отгрузить память, но не нейтральный слой подотчётности над своим же агентом.
-
-Команда `pnpm sma upstream-check` следит за обновлениями движка, на котором построен SMA, ничего не подтягивая автоматически.
 
 Пример: журнал калибровки, правила рефлексов и заявки координации это всё файлы под `.sma/` и `.claude/memory/`. Удалите папку, и SMA забудет; закоммитьте её, и следующая копия вспомнит.

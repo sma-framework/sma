@@ -32,7 +32,7 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 `pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|`
 `gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|`
 `gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|`
-`build-index|emit|load|snapshot|upstream-check|predict-score|calibration|usage|consolidate|trim|`
+`build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|`
 `state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|`
 `pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
 `grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|manifest|`
