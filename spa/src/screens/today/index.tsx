@@ -3,6 +3,7 @@ import { useStateQuery } from '../../api/queries'
 import type { DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
 import { KpiStrip } from './KpiStrip'
+import { TaskPanel } from './TaskPanel'
 import { accentFor, initialOf, plural } from './format'
 
 /**
@@ -107,6 +108,8 @@ export function Screen() {
             onOpen={setSelectedId}
           />
         </div>
+
+        {selectedId ? <TaskPanel taskId={selectedId} onClose={() => setSelectedId(null)} /> : null}
       </div>
     </section>
   )
