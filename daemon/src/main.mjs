@@ -38,6 +38,7 @@ import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
+import { handleChatTurn, readHistory } from './front/chat.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
 import { deriveState, parseReceiptSummary } from './front/state.mjs'
@@ -125,6 +126,13 @@ export function createDaemon(o = {}) {
         removePeer,
         federation, // the action-proxy engine + the pairing book (D-9.7-06/07)
         aggregator,
+        // the «Разговор» engine — INJECTED, because its free branch spawns a child: a
+        // capability like that reaches a request path only through deliberate wiring.
+        handleChatTurn,
+        readChatHistory: readHistory,
+        chatDir: o.chatDir ?? dataDir, // the transcript lives beside the daemon's own data
+        dataDir, // the spend book the «что съело лимит» branch reads
+        policyDir: o.policyDir ?? dataDir, // where «Мой стиль» puts the distilled voice
         windows: windowsForState,
         usageReader,
         execGit: o.execGit,
