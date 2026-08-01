@@ -355,6 +355,12 @@ export type StyleSection = StyleSnapshot | AbsentSection
 export interface StatePayload {
   kpis: Kpis
   queue: QueueRow[]
+  /**
+   * The work that is finished but still owes a person a word. Same shape as a queue row;
+   * the one that has waited longest comes first. The queue carries what waits for a
+   * WORKER, so these rows live in their own list rather than inside it.
+   */
+  awaiting: QueueRow[]
   workers: WorkerRow[]
   done: DoneRow[]
   spend: Spend

@@ -67,10 +67,14 @@ export function Screen() {
     activeProject ? rows.filter((r) => r.project === activeProject) : rows
 
   const queue: QueueRow[] = useMemo(() => mine(data?.queue ?? []), [data, activeProject])
+  const awaiting: QueueRow[] = useMemo(() => mine(data?.awaiting ?? []), [data, activeProject])
   const done: DoneRow[] = useMemo(() => mine(data?.done ?? []), [data, activeProject])
 
-  const decisions = queue.filter((r) => r.status === 'awaiting_approval')
-  const waiting = queue.filter((r) => r.status !== 'awaiting_approval').sort((a, b) => a.position - b.position)
+  // What needs a person comes from the list that actually carries it; what is waiting for
+  // a worker comes from the queue. Two lists, two questions — neither is sifted out of the
+  // other, so neither can quietly go empty.
+  const decisions = awaiting
+  const waiting = [...queue].sort((a, b) => a.position - b.position)
   const failed = done.filter((r) => r.failed)
   const finished = done.filter((r) => !r.failed)
 
