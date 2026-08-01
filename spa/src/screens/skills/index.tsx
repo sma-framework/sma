@@ -3,9 +3,9 @@ import { isNotReady, isRaceLost } from '../../api/client'
 import { useApprove, useHarnessQuery } from '../../api/queries'
 import type { AgentCard, DraftCard as DraftRow, SkillCard } from '../../api/types'
 import { ForgeDialog } from '../agents/ForgeDialog'
-import { OPEN_SCREEN_EVENT } from '../today/TaskPanel'
-import type { OpenScreenDetail } from '../today/TaskPanel'
-import { accentFor, initialOf } from '../today/format'
+import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
+import type { OpenScreenDetail } from '../../shell/navigation'
+import { accentFor, initialOf } from '../../shell/format'
 import { AssignDialog } from './AssignDialog'
 
 /**

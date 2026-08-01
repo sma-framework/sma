@@ -1,8 +1,10 @@
 /**
- * format.ts — the words and the numbers this screen puts on the glass.
+ * format.ts — the words and the numbers the window puts on the glass.
  *
- * It lives beside the screen it serves, and nowhere else: none of it is general enough to
- * belong to the shell, and a screen that keeps its own wording keeps it consistent.
+ * It began beside «Сегодня», the first screen that needed it. Six screens borrow it now,
+ * so it lives in the shell — where the registry says anything two screens both need
+ * belongs. The move is that decision made out loud; not a word of the wording changed, so
+ * every screen still says a count, a clock face and a colour exactly as before.
  *
  * Nothing here invents a fact. Every helper takes what the reading already said and puts
  * it into Russian a person reads without translating: hours, attempts, a clock time. A

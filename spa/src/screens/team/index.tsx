@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 import { useStateQuery } from '../../api/queries'
 import type { Presence, WorkerRow } from '../../api/types'
-import { OPEN_SCREEN_EVENT } from '../today/TaskPanel'
-import type { OpenScreenDetail } from '../today/TaskPanel'
+import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
+import type { OpenScreenDetail } from '../../shell/navigation'
 import { WorkerCard } from './WorkerCard'
 
 /**

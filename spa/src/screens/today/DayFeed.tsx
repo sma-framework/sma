@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { DoneRow, QueueRow, ReceiptSummary } from '../../api/types'
-import { accentFor, attemptsLabel, clockLabel, hoursLabel, initialOf, plural } from './format'
+import { accentFor, attemptsLabel, clockLabel, hoursLabel, initialOf, plural } from '../../shell/format'
 
 /**
  * DayFeed — what happened while nobody was watching, in the order a person needs it.

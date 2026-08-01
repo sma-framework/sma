@@ -1,5 +1,5 @@
 import type { Kpis, SpendAccount } from '../../api/types'
-import { plural } from './format'
+import { plural } from '../../shell/format'
 
 /**
  * KpiStrip — the day in figures, and how much of each subscription window is spent.
