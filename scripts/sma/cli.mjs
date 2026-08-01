@@ -2627,6 +2627,15 @@ async function cmdMemoryMigrate({ flags, dirs }) {
         `      + claim-stub [${sv.errors.length ? `ОШИБОК ${sv.errors.length} — заполните claim` : 'ok'}] · ${p.stub.draft_path}\n`,
       )
     }
+    for (const part of [p, p.stub].filter(Boolean)) {
+      if (part.draft_status === 'kept-existing') {
+        process.stdout.write(
+          `      ! черновик на диске ОТЛИЧАЕТСЯ от свежего предложения и оставлен как есть (${part.draft_path}) — правка человека или предложение из прошлого прогона; удалите файл, чтобы пересобрать\n`,
+        )
+      } else if (part.draft_status === 'already-applied') {
+        process.stdout.write(`      · предложение уже применено (маркер .applied рядом с ${part.draft_path})\n`)
+      }
+    }
     if ((p.sensitivity_reasons ?? []).length) {
       process.stdout.write(`      ! sensitivity повышена до sensitive: ${p.sensitivity_reasons.join(', ')}\n`)
     }
