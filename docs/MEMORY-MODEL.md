@@ -6,7 +6,7 @@
 | Document version | 1.0 |
 | Date | 2026-08-02 |
 | Applies to | `schema_version: 2`; the entire v1 corpus stays readable with zero edits |
-| Companion documents | [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) — how a record is written, reviewed and retired · `MEMORY-THREAT-MODEL.md` — what the storage classes defend against |
+| Companion documents | [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) — how a record is written, reviewed and retired · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
 
 > **All examples in this document are synthetic.** They describe a fictional
 > web-shop project ("the shop") and exist only to illustrate the schema.
@@ -262,7 +262,8 @@ forbids things:
 schema and the lint can refuse to let such a record sit where it must not sit;
 they do not encrypt anything. Which cipher, which key custody, which
 recovery story — that is policy, and it lives in the companion
-`MEMORY-THREAT-MODEL.md`. Implementing storage encryption is a separate decision;
+[`MEMORY-THREAT-MODEL.md` §6](MEMORY-THREAT-MODEL.md#6-encryption-the-policy-and-the-deferral).
+Implementing storage encryption is a separate decision;
 nothing in this model pretends it has already been made.
 
 **Placement is checked, not assumed.** A record that declares a restricted class

@@ -6,7 +6,7 @@
 | Document version | 1.0 |
 | Date | 2026-08-02 |
 | Applies to | `schema_version: 2` records; v1 notes are read unchanged and are never written by this path |
-| Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · `MEMORY-THREAT-MODEL.md` — what the storage classes defend against |
+| Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
 
 > **All examples in this document are synthetic.**
 
@@ -423,8 +423,9 @@ nothing.
 the question, pointing at [`MEMORY-MODEL.md` §6](MEMORY-MODEL.md#6-lifecycle-status) (what
 erasure would have to mean, and the tombstone a policy may require) and
 [§7](MEMORY-MODEL.md#7-sensitivity-and-storage-classes) (what each storage class can and
-cannot guarantee). The companion `MEMORY-THREAT-MODEL.md` holds the storage-class policy
-this deferral hangs on.
+cannot guarantee). The companion
+[`MEMORY-THREAT-MODEL.md` §2](MEMORY-THREAT-MODEL.md#2-storage-classes) holds the
+storage-class policy this deferral hangs on.
 
 **What to do today.** Prevent, and retire. Material that cannot be allowed to persist must
 not enter a git-backed class in the first place — that is what step 3's hard stop and the
