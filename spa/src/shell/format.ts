@@ -11,6 +11,9 @@
  * value that is not there stays a dash — an empty place is never dressed up as a zero.
  */
 
+import { isNotReady, isRaceLost } from '../api/client'
+import type { ReceiptSummary, TaskStatus } from '../api/types'
+
 /** Russian counts three ways. This is that rule, written once. */
 export function plural(n: number, one: string, few: string, many: string): string {
   const m10 = n % 10
@@ -72,4 +75,66 @@ export function accentFor(name: string | null | undefined): string {
   let hash = 0
   for (let i = 0; i < s.length; i += 1) hash = (hash * 31 + s.charCodeAt(i)) % 9973
   return ACCENTS[hash % ACCENTS.length]
+}
+
+/**
+ * What a status is CALLED, and what colour it wears. One vocabulary for the whole window:
+ * the panel and the card must never call the same state two different things, or a person
+ * learns two words for one fact.
+ */
+const STATUS_WORDS: Record<TaskStatus, string> = {
+  queued: 'в очереди',
+  claimed: 'взята в работу',
+  running: 'в работе',
+  awaiting_approval: 'ждёт решения',
+  approving: 'принимается',
+  approved: 'принято',
+  returned: 'возвращена',
+  completed: 'готово',
+  failed: 'не получилось',
+}
+
+const STATUS_TONE: Record<TaskStatus, string> = {
+  queued: 'bg-idle-s text-idle-tx',
+  claimed: 'bg-blue-s text-blue',
+  running: 'bg-blue-s text-blue',
+  awaiting_approval: 'bg-blue-s text-blue',
+  approving: 'bg-blue-s text-blue',
+  approved: 'bg-ok-s text-ok-tx',
+  returned: 'bg-warn-s text-warn-tx',
+  completed: 'bg-ok-s text-ok-tx',
+  failed: 'bg-err-s text-err-tx',
+}
+
+export function statusWord(status: TaskStatus | null | undefined, unknown = 'открываю'): string {
+  return status ? STATUS_WORDS[status] : unknown
+}
+
+export function statusTone(status: TaskStatus | null | undefined): string {
+  return status ? STATUS_TONE[status] : 'bg-idle-s text-idle-tx'
+}
+
+/**
+ * What the checks said, in the words of the person who has to trust them. A check that was
+ * never read is not listed — an unread receipt is never dressed up as a pass.
+ */
+export function receiptChecks(receipt: ReceiptSummary | null | undefined): { text: string; ok: boolean }[] {
+  if (!receipt) return []
+  const checks: { text: string; ok: boolean }[] = []
+  if (receipt.testsTotal !== null && receipt.testsPassed !== null) {
+    checks.push({
+      text: `Проверки ${receipt.testsPassed} из ${receipt.testsTotal}`,
+      ok: receipt.testsPassed === receipt.testsTotal,
+    })
+  }
+  if (receipt.tscClean !== null) checks.push({ text: 'Сборка без ошибок', ok: receipt.tscClean })
+  if (receipt.guardClean !== null) checks.push({ text: 'Правила соблюдены', ok: receipt.guardClean })
+  return checks
+}
+
+/** A refusal, said in the words of the person it happened to. */
+export function refusalWords(err: unknown): string {
+  if (isNotReady(err)) return 'Это действие пока недоступно.'
+  if (isRaceLost(err)) return 'За эту задачу уже ответили с другой стороны.'
+  return 'Не получилось отправить. Попробуйте ещё раз.'
 }

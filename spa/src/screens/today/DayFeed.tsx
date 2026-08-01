@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import type { DoneRow, QueueRow, ReceiptSummary } from '../../api/types'
-import { accentFor, attemptsLabel, clockLabel, hoursLabel, initialOf, plural } from '../../shell/format'
+import {
+  accentFor,
+  attemptsLabel,
+  clockLabel,
+  hoursLabel,
+  initialOf,
+  plural,
+  receiptChecks,
+} from '../../shell/format'
 
 /**
  * DayFeed — what happened while nobody was watching, in the order a person needs it.
@@ -39,22 +47,10 @@ function SectionTitle({ children }: { children: string }) {
   return <div className="text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">{children}</div>
 }
 
-/** What the checks said, in the words of the person who has to trust them. */
-function checkPills(receipt: ReceiptSummary): { text: string; ok: boolean }[] {
-  const pills: { text: string; ok: boolean }[] = []
-  if (receipt.testsTotal !== null && receipt.testsPassed !== null) {
-    pills.push({
-      text: `Проверки ${receipt.testsPassed} из ${receipt.testsTotal}`,
-      ok: receipt.testsPassed === receipt.testsTotal,
-    })
-  }
-  if (receipt.tscClean !== null) pills.push({ text: 'Сборка без ошибок', ok: receipt.tscClean })
-  if (receipt.guardClean !== null) pills.push({ text: 'Правила соблюдены', ok: receipt.guardClean })
-  return pills
-}
-
 function CheckPills({ receipt }: { receipt: ReceiptSummary }) {
-  const pills = checkPills(receipt)
+  // The wording of a check belongs to the whole window, not to this feed: the card says
+  // «Проверки 34 из 34» in exactly the same words.
+  const pills = receiptChecks(receipt)
   if (pills.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1.5">

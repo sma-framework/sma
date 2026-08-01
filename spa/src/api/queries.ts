@@ -26,6 +26,7 @@ export const HARNESS_KEY = ['harness'] as const
 export const CHAT_KEY = ['chat'] as const
 export const ONBOARDING_KEY = ['onboarding'] as const
 export const taskKey = (id: string) => ['task', id] as const
+export const diffKey = (id: string) => ['diff', id] as const
 
 /** How often the picture is re-read, and how long a fresh reading is trusted. */
 export const STATE_POLL_MS = 3000
@@ -67,6 +68,19 @@ export function useTaskQuery(id: string | null) {
     queryFn: () => api.getTask(id as string),
     enabled: !!id,
     staleTime: STATE_STALE_MS,
+  })
+}
+
+/**
+ * The changes one task made, as plain text. Read only while the card that shows them is
+ * open, and left alone afterwards: a diff is finished work, it does not move under the eye.
+ */
+export function useDiffQuery(id: string | null) {
+  return useQuery<string>({
+    queryKey: diffKey(id ?? ''),
+    queryFn: () => api.getDiff(id as string),
+    enabled: !!id,
+    staleTime: Infinity,
   })
 }
 

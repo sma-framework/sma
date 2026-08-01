@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { isNotReady, isRaceLost } from '../api/client'
 import { useApprove, useReturnTask, useTaskQuery } from '../api/queries'
-import type { TaskAttempt, TaskStatus } from '../api/types'
-import { attemptsLabel, clockLabel } from './format'
+import type { TaskAttempt } from '../api/types'
+import { attemptsLabel, clockLabel, refusalWords, statusTone, statusWord } from './format'
 import { openScreen } from './navigation'
 
 /**
@@ -25,37 +24,6 @@ import { openScreen } from './navigation'
  * and returning go through the same actions every other screen uses, so the picture is
  * re-read once, in the one place that knows something changed.
  */
-
-const STATUS_WORDS: Record<TaskStatus, string> = {
-  queued: 'в очереди',
-  claimed: 'взята в работу',
-  running: 'в работе',
-  awaiting_approval: 'ждёт решения',
-  approving: 'принимается',
-  approved: 'принято',
-  returned: 'возвращена',
-  completed: 'готово',
-  failed: 'не получилось',
-}
-
-const STATUS_TONE: Record<TaskStatus, string> = {
-  queued: 'bg-idle-s text-idle-tx',
-  claimed: 'bg-blue-s text-blue',
-  running: 'bg-blue-s text-blue',
-  awaiting_approval: 'bg-blue-s text-blue',
-  approving: 'bg-blue-s text-blue',
-  approved: 'bg-ok-s text-ok-tx',
-  returned: 'bg-warn-s text-warn-tx',
-  completed: 'bg-ok-s text-ok-tx',
-  failed: 'bg-err-s text-err-tx',
-}
-
-/** A refusal, said in the words of the person it happened to. */
-function refusalWords(err: unknown): string {
-  if (isNotReady(err)) return 'Это действие пока недоступно.'
-  if (isRaceLost(err)) return 'За эту задачу уже ответили с другой стороны.'
-  return 'Не получилось отправить. Попробуйте ещё раз.'
-}
 
 function AttemptLine({ attempt }: { attempt: TaskAttempt }) {
   const started = clockLabel(attempt.startedAt)
@@ -172,12 +140,8 @@ export function TaskPanel({
       >
         <div className="flex-none border-b border-bd px-[22px] pt-[22px] pb-[18px]">
           <div className="mb-2.5 flex items-center justify-between gap-3">
-            <span
-              className={`rounded-full px-2.5 py-[3px] text-[11px] ${
-                status ? STATUS_TONE[status] : 'bg-idle-s text-idle-tx'
-              }`}
-            >
-              {status ? STATUS_WORDS[status] : 'открываю'}
+            <span className={`rounded-full px-2.5 py-[3px] text-[11px] ${statusTone(status)}`}>
+              {statusWord(status)}
             </span>
             <button
               type="button"
