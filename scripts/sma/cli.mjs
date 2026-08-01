@@ -1084,7 +1084,12 @@ async function cmdLint({ flags }) {
     generateAreas,
     ...(statePath ? { statePath } : {}),
     ...(profilePath ? { profilePath } : {}),
-    ...(plansDir ? { plansDir, execGit } : {}),
+    ...(plansDir ? { plansDir } : {}),
+    // The git runner is passed UNCONDITIONALLY: the fingerprint-drift check needs
+    // it to recompute a file-bound stamp even in a project that carries no plans
+    // tree. Without it every fingerprinted claim would report "unverified" —
+    // honest, but useless. Still read-only (rev-parse / log / show / hash-object).
+    execGit,
   }
   const report = lint.runLint(opts)
   if (wantsJson(flags)) {
