@@ -16,12 +16,24 @@
  *   - fs, которая бросает на каждый вызов → пустой результат, не исключение;
  *   - реестр форматов заморожен, claude-code первым;
  *   - структурная проверка: в модуле нет модели и нет следов запуска сессий.
+ *
+ * Покрыто (вторая половина — запись через дверь кузницы):
+ *   - выбранный агент ложится черновиком РОВНО на путь кузницы, проходит её же lint
+ *     и получает её же квитанцию; состояние — ожидание одобрения человеком;
+ *   - навык ложится в .claude/skills/<слаг>/SKILL.md;
+ *   - чужое определение, требующее себе запретных прав, ловится СУЩЕСТВУЮЩИМ потолком
+ *     кузницы — второй проверки способностей у двери импорта нет;
+ *   - коллизия без переименования → отказ ЭТОГО элемента, чужой файл байт-неизменен;
+ *   - переименование принимается только для помеченного коллизией и перепроверяется;
+ *   - красный lint не хоронит партию: остальные элементы едут дальше;
+ *   - правила и неопознанное не энроллятся — «вручную»;
+ *   - движок ничего не включает: пишутся только черновик и квитанция.
  */
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 
-import { scanEstate, FORMAT_PARSERS } from '../src/front/import-scanner.mjs'
+import { scanEstate, enrollSelections, FORMAT_PARSERS } from '../src/front/import-scanner.mjs'
 
 // ── чужие фикстуры (формат Claude Code) ──
 
@@ -63,6 +75,15 @@ tools: Read
 тело
 `
 
+/** Чужое определение, требующее себе запретных прав — потолок кузницы обязан поймать. */
+const FOREIGN_GREEDY = `---
+name: deployer
+description: Раскатывает изменения по кнопке, ни у кого не спрашивая.
+tools: Bash, push to main, merge the release branch
+---
+тело
+`
+
 const PROJECT_RULES = `# Правила проекта
 
 Всегда запускайте тесты перед коммитом.
@@ -82,6 +103,7 @@ function estate(): Record<string, string> {
     '/foreign/.claude/agents/broken.md': FOREIGN_BROKEN,
     '/foreign/.claude/agents/creator.md': FOREIGN_COLLIDING,
     '/foreign/.claude/agents/字資.md': FOREIGN_UNSLUGGABLE,
+    '/foreign/.claude/agents/deployer.md': FOREIGN_GREEDY,
     '/foreign/.claude/skills/release-notes/SKILL.md': FOREIGN_SKILL,
     '/foreign/CLAUDE.md': PROJECT_RULES,
   }
@@ -275,8 +297,157 @@ describe('scanEstate — чужое хозяйство читается дете
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
+describe('enrollSelections — выбранное становится черновиками за дверью кузницы', () => {
+  /** Хозяйство чужое (/foreign), черновики ложатся в наш проект (/host). */
+  function enroll(selections: any[], seed: Record<string, string> = {}) {
+    const fs = fakeFs({ ...estate(), ...seed })
+    const out = enrollSelections({
+      selections,
+      repoDir: '/foreign',
+      targetDir: '/host',
+      fsImpl: fs,
+      registries: REGISTRIES,
+      dataDir: '/data',
+      taskId: 'import-1',
+    })
+    return { fs, out }
+  }
+
+  it('агент ложится ровно на путь кузницы, проходит её lint и получает квитанцию', () => {
+    const { fs, out } = enroll([{ slug: 'twitter-parser', kind: 'agent' }])
+    const res = out.results[0]
+
+    expect(res.status).toBe('awaiting_approval')
+    expect(res.path).toBe('.claude/agents/twitter-parser.md')
+    expect(res.lint.ok).toBe(true)
+    expect(res.lint.findings).toEqual([])
+    expect(res.receiptRef).toMatch(/^forge:import-1:/)
+
+    const written = fs.files.get('/host/.claude/agents/twitter-parser.md') as string
+    expect(written).toBeDefined()
+    expect(written).toMatch(/^---\n/)
+    expect(written).toContain('lane: research')
+    expect(written).toContain('ТРЕТЬЕСТОРОННИЙ')
+    // черновик не включает себя: никакого поля активации
+    expect(written).not.toMatch(/^enabled:/m)
+    expect(written).not.toMatch(/^assigned:/m)
+    // квитанция кузницы записана
+    expect(fs.files.get('/data/receipts/forge.jsonl')).toContain('"passed":true')
+  })
+
+  it('навык ложится в .claude/skills/<слаг>/SKILL.md', () => {
+    const { fs, out } = enroll([{ slug: 'release-notes', kind: 'skill' }])
+    const res = out.results[0]
+
+    expect(res.path).toBe('.claude/skills/release-notes/SKILL.md')
+    expect(res.lint.ok).toBe(true)
+    expect(fs.files.get('/host/.claude/skills/release-notes/SKILL.md')).toContain('use-when:')
+  })
+
+  it('чужое определение с запретным правом ловит СУЩЕСТВУЮЩИЙ потолок кузницы', () => {
+    const { out } = enroll([{ slug: 'deployer', kind: 'agent' }])
+    const res = out.results[0]
+
+    expect(res.status).toBe('awaiting_approval') // черновик написан, человек увидит его diff'ом
+    expect(res.lint.ok).toBe(false)
+    expect(res.lint.findings.map((f: any) => f.name)).toContain('capability-ceiling')
+  })
+
+  it('коллизия без переименования: отказ элемента, чужой файл байт-неизменен', () => {
+    const OURS = '---\nname: наше\n---\nне трогать\n'
+    const { fs, out } = enroll([{ slug: 'twitter-parser', kind: 'agent' }], {
+      '/host/.claude/agents/twitter-parser.md': OURS,
+    })
+    const res = out.results[0]
+
+    expect(res.status).toBe('refused')
+    expect(String(res.reason)).toMatch(/занят/i)
+    expect(fs.files.get('/host/.claude/agents/twitter-parser.md')).toBe(OURS)
+  })
+
+  it('занятое ростером имя без переименования — тоже отказ', () => {
+    const { out } = enroll([{ slug: 'creator', kind: 'agent' }])
+    expect(out.results[0].status).toBe('refused')
+    expect(String(out.results[0].reason)).toContain('creator-imported')
+  })
+
+  it('переименование по предложению принимается и уезжает под суффиксом', () => {
+    const { fs, out } = enroll([{ slug: 'creator', kind: 'agent', overrideSlug: 'creator-imported' }])
+    const res = out.results[0]
+
+    expect(res.status).toBe('awaiting_approval')
+    expect(res.slug).toBe('creator-imported')
+    expect(res.path).toBe('.claude/agents/creator-imported.md')
+    expect(res.renamedFrom).toBe('creator')
+    expect(fs.files.has('/host/.claude/agents/creator-imported.md')).toBe(true)
+  })
+
+  it('переименование НЕ принимается для кандидата без коллизии', () => {
+    const { fs, out } = enroll([{ slug: 'twitter-parser', kind: 'agent', overrideSlug: 'reviewer' }])
+    expect(out.results[0].status).toBe('refused')
+    expect(fs.files.has('/host/.claude/agents/reviewer.md')).toBe(false)
+  })
+
+  it('переименование перепроверяется: занятое новое имя тоже отказ', () => {
+    const { fs, out } = enroll([{ slug: 'creator', kind: 'agent', overrideSlug: 'max-1' }])
+    expect(out.results[0].status).toBe('refused')
+    expect(fs.files.has('/host/.claude/agents/max-1.md')).toBe(false)
+  })
+
+  it('красный элемент не хоронит партию: остальные едут дальше', () => {
+    const { out } = enroll([
+      { slug: 'creator', kind: 'agent' }, // коллизия → отказ
+      { slug: 'twitter-parser', kind: 'agent' }, // чистый → черновик
+      { slug: 'deployer', kind: 'agent' }, // красный lint → черновик с находками
+      { slug: 'release-notes', kind: 'skill' }, // чистый → черновик
+    ])
+
+    expect(out.results.length).toBe(4)
+    expect(out.results.map((r: any) => r.status)).toEqual([
+      'refused',
+      'awaiting_approval',
+      'awaiting_approval',
+      'awaiting_approval',
+    ])
+    expect(out.results[1].lint.ok).toBe(true)
+    expect(out.results[2].lint.ok).toBe(false)
+  })
+
+  it('правила и неопознанное не энроллятся — «вручную»', () => {
+    const { out } = enroll([
+      { kind: 'rules' },
+      { slug: 'broken', kind: 'unknown' },
+    ])
+    expect(out.results.map((r: any) => r.status)).toEqual(['manual', 'manual'])
+    expect(String(out.results[0].reason)).toMatch(/вручную/i)
+  })
+
+  it('несуществующий выбор — честный отказ, а не исключение', () => {
+    const { out } = enroll([{ slug: 'нет-такого', kind: 'agent' }, {} as any])
+    expect(out.results.map((r: any) => r.status)).toEqual(['refused', 'refused'])
+  })
+
+  it('движок ничего не включает: пишутся только черновик и квитанция', () => {
+    const before = new Set(Object.keys(estate()))
+    const { fs } = enroll([
+      { slug: 'twitter-parser', kind: 'agent' },
+      { slug: 'release-notes', kind: 'skill' },
+    ])
+    const added = [...fs.files.keys()].filter((k) => !before.has(k))
+
+    expect(added.sort()).toEqual([
+      '/data/receipts/forge.jsonl',
+      '/host/.claude/agents/twitter-parser.md',
+      '/host/.claude/skills/release-notes/SKILL.md',
+    ])
+    // ни конфига ростера, ни реестра инструментов
+    expect(added.some((k) => /config\.json|mcp\.json/.test(k))).toBe(false)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
 describe('структура модуля — ноль модели, ноль запуска сессий', () => {
-  it('в сканере нет обращений к модели и нет импортов из runner/', () => {
+  it('в сканере нет обращений к модели и нет импортов из слоя запуска', () => {
     expect(MODULE_SRC).not.toMatch(/from '\.\.\/runner\//)
     expect(MODULE_SRC).not.toMatch(/spawn/)
     expect(MODULE_SRC).not.toMatch(/buildClaudeArgs/)
@@ -286,5 +457,18 @@ describe('структура модуля — ноль модели, ноль з
   it('разбор чужого текста — свой, без YAML-пакета и без eval', () => {
     expect(MODULE_SRC).not.toMatch(/require\(|eval\(|new Function/)
     expect(MODULE_SRC).not.toMatch(/from 'js-yaml'|from 'yaml'/)
+  })
+
+  it('дверь одна: lint и квитанция кузницы зовутся, своей проверки способностей нет', () => {
+    expect(MODULE_SRC).toMatch(/lintDraft/)
+    expect(MODULE_SRC).toMatch(/draftPathFor/)
+    expect(MODULE_SRC).toMatch(/writeForgeReceipt/)
+    expect(MODULE_SRC).not.toMatch(/FORBIDDEN/)
+  })
+
+  it('включения из движка нет ни одного', () => {
+    expect(MODULE_SRC).not.toMatch(/Toggle/)
+    expect(MODULE_SRC).not.toMatch(/apply(Agent|Skill|Mcp)/)
+    expect(MODULE_SRC).not.toMatch(/handleApprove/)
   })
 })
