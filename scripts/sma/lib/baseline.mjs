@@ -145,7 +145,8 @@ export function readGoldCases(casesPath, { readFile } = {}) {
  * @param {object} opts
  * @param {string} opts.corpusDir
  * @param {string} opts.casesPath   gold cases, one JSON object per line
- * @param {string} [opts.tagsPath]  defaults to <corpusDir>/TAGS.md through the loader
+ * @param {string} [opts.tagsPath]  defaults to <corpusDir>/TAGS.md (see THE REGISTRY IS NOT
+ *                                  OPTIONAL below)
  * @param {object} [opts.dateMap]   file → last-commit ISO (INJECTED; ordering only)
  * @param {string} [opts.commit]    INJECTED (pack identity only, never the score)
  * @param {number} [opts.budget]    pack budget override
@@ -167,11 +168,22 @@ export function captureRetrieval(opts = {}) {
     checkCommand = RETRIEVAL_CHECK_COMMAND,
   } = opts
 
+  /**
+   * THE REGISTRY IS NOT OPTIONAL. The loader derives a task's tags by matching its words
+   * against the REGISTERED vocabulary, and it selects core from notes it could parse against
+   * that same registry — so an absent registry does not merely narrow the pack, it empties
+   * it. A capture that omitted tagsPath therefore reported recall 0 for every corpus on
+   * earth: a fabricated number indistinguishable from a genuinely blind retrieval layer, and
+   * the exact failure a baseline exists to rule out. The default is resolved HERE, next to
+   * the corpus it belongs to, rather than left to the caller to remember.
+   */
+  const resolvedTagsPath = tagsPath ?? (corpusDir ? join(corpusDir, 'TAGS.md') : undefined)
+
   const { cases, corrupt } = readGoldCases(casesPath, { readFile })
   const scored = scoreNoteCases({
     cases,
     corpusDir,
-    tagsPath,
+    tagsPath: resolvedTagsPath,
     dateMap,
     commit,
     ...(budget == null ? {} : { budget }),
