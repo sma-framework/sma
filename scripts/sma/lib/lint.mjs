@@ -61,6 +61,11 @@ import { readLadder } from './ladder.mjs'
 // The ONE contradiction implementation (9.1-12 T2): lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
+// The MEM-* schema-v2 family delegates ALL record legality to the schema module
+// (same boundary lock as PRED → predict.mjs): this file decides WHERE a rule
+// applies and at which tier, never WHAT the rule says. A second copy of the
+// vocabulary is the exact drift schema-v2.mjs exists to abolish.
+import { validateRecord, validateId, isPrivateFacet, GRACE_HORIZON, STATUS_VALUES } from './schema-v2.mjs'
 // 9.3-05 (D-9.3-07): the FRAG family delegates ALL fragment schema/byte/trigger
 // judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
@@ -335,8 +340,12 @@ function buildContext(opts) {
       continue
     }
     try {
-      const { frontmatter, body } = parseNote(text, { file })
-      parsed.push({ file, frontmatter, body, text })
+      // schemaVersion travels with the note: it is the discriminator that decides
+      // WHICH family of checks may judge this record (v1 completeness vs the v2
+      // record discipline). Without it every check would have to re-sniff the
+      // grammar the parser has already decided.
+      const { frontmatter, body, schemaVersion } = parseNote(text, { file })
+      parsed.push({ file, frontmatter, body, text, schemaVersion })
     } catch (err) {
       // A parse error is surfaced by MEM-SCHEMA as a CRITICAL, not a crash.
       parsed.push({ file, parseError: err.message, text })
@@ -507,6 +516,12 @@ const MEM_SCHEMA = {
         out.push(finding('MEM-SCHEMA', 'critical', note.file, `missing frontmatter in ${note.file}`))
         continue
       }
+      // A schema-v2 record answers to MEM-V2SCHEMA, never to the v1 field set: it
+      // carries claim/memory_type where a v1 note carries description/kind. Holding
+      // it to BOTH would make every migrated record permanently critical for being
+      // exactly what the migration made it — the mirror image of the backward-compat
+      // law that keeps the v2 checks off v1 notes.
+      if (note.schemaVersion === 2) continue
       // description: present + a standalone claim (≥ MIN_DESCRIPTION_WORDS words).
       const desc = typeof fm.description === 'string' ? fm.description.trim() : ''
       if (desc === '') {
@@ -1535,6 +1550,131 @@ const FRAG_LINT = {
   },
 }
 
+// ── The schema-v2 family: record discipline, trust, and placement ─────────────
+//
+// These checks are the ONLY enforcement surface of the memory record schema —
+// there is no second `sma verify-corpus` verb and there must never be one: the
+// corpus has exactly one checker, and extending it is cheaper for every consumer
+// than remembering which of two commands to run.
+//
+// Two laws bound the whole family:
+//   BACKWARD COMPAT — a note with no schema_version is a v1 note and is invisible
+//     to every record check here. A corpus that has not migrated lints today
+//     exactly as it linted yesterday.
+//   READ-ONLY (C4) — nothing in this family fixes, stamps, deletes or expires
+//     anything. A stale fingerprint and an expired claim are REVIEW TRIGGERS;
+//     a lint that silently rewrote the corpus it judges could never be trusted
+//     to judge it.
+
+/**
+ * The v2 half of the corpus: parsed, schema-v2, with frontmatter. Episodes are
+ * absent by construction — the corpus walk is flat and never descends into
+ * episodes/ (that subdirectory has exactly one reader here, MEM-EPISODE).
+ */
+function v2Records(ctx) {
+  return ctx.parsed.filter((n) => n.schemaVersion === 2 && !n.parseError && n.frontmatter)
+}
+
+/** True when the record itself declares it grew out of the v1 grammar. */
+function isMigratedRecord(fm) {
+  return String(fm.migrated_from ?? '').trim() === 'v1'
+}
+
+const MEM_V2SCHEMA = {
+  id: 'MEM-V2SCHEMA',
+  title: 'Schema-v2 record legality — structure always, discipline under grace',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    for (const note of v2Records(ctx)) {
+      const fm = note.frontmatter
+      const migrated = isMigratedRecord(fm)
+      const { errors, warnings } = validateRecord(fm, { migratedFromV1: migrated })
+
+      // The id law is a separate call by design — the validator never sees a
+      // path, and a record whose identity does not survive a move or a copy is a
+      // STRUCTURE failure, so it joins the errors rather than forming its own class.
+      const idError = validateId(fm.id, note.file)
+      const allErrors = idError ? [idError, ...errors] : errors
+
+      // WHICH of the warnings exist only because of the migration grace is the
+      // validator's judgment, not this file's: ask it a second time as if the
+      // record had been authored natively and diff the answers. No discipline
+      // rule is re-derived here, so none of them can drift out of sync.
+      const graced = migrated
+        ? new Set(validateRecord({ ...fm, migrated_from: null }, { migratedFromV1: false }).errors)
+        : null
+
+      for (const message of allErrors) {
+        out.push(finding('MEM-V2SCHEMA', 'critical', note.file, `${note.file}: ${message}`))
+      }
+      for (const message of warnings) {
+        // A grace with no stated horizon is an exemption. The horizon is a NAMED
+        // milestone rather than a date: the calendar meaning belongs to whoever
+        // runs the installation, not to the schema.
+        const grace = graced?.has(message)
+          ? ` — a record migrated from v1 gets this as a WARNING until ${GRACE_HORIZON}; after that it is an error`
+          : ''
+        out.push(finding('MEM-V2SCHEMA', 'warn', note.file, `${note.file}: ${message}${grace}`))
+      }
+    }
+    return out
+  },
+}
+
+/**
+ * Line-start dated update markers. Three or more of them in one body is a
+ * running log — an EPISODE wearing a reviewed record's clothes. The threshold is
+ * deliberately forgiving: two dates are a claim with a history, a dozen are a diary.
+ */
+const DATED_UPDATE_LINE_RE = /^[ \t]*(?:[-*]\s*)?\d{4}-\d{2}-\d{2}\b/gm
+const EPISODE_DISGUISE_THRESHOLD = 3
+
+const MEM_ONECLAIM = {
+  id: 'MEM-ONECLAIM',
+  title: 'One durable claim per reviewed record (episodes are exempt)',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    for (const note of v2Records(ctx)) {
+      const claim = note.frontmatter.claim
+      if (Array.isArray(claim)) {
+        out.push(
+          finding(
+            'MEM-ONECLAIM',
+            'critical',
+            note.file,
+            `${note.file}: claim is a list of ${claim.length} — a record carries ONE durable claim; split it into ${claim.length} records, or store the whole thing as an episode where many claims are legal`,
+          ),
+        )
+      } else if (typeof claim !== 'string' || claim.trim() === '') {
+        out.push(
+          finding(
+            'MEM-ONECLAIM',
+            'critical',
+            note.file,
+            `${note.file}: no claim — a reviewed record whose one durable sentence is missing says nothing that can be recalled, superseded or checked`,
+          ),
+        )
+      }
+
+      const body = typeof note.body === 'string' ? note.body : ''
+      const dated = body.match(DATED_UPDATE_LINE_RE) ?? []
+      if (dated.length >= EPISODE_DISGUISE_THRESHOLD) {
+        out.push(
+          finding(
+            'MEM-ONECLAIM',
+            'warn',
+            note.file,
+            `${note.file}: ${dated.length} dated update lines in the body — this reads as a running log, not as one durable claim; history belongs in episodes/, where many claims are legal, with the claim itself extracted here`,
+          ),
+        )
+      }
+    }
+    return out
+  },
+}
+
 // The check registry — the full R5 class list plus the two D-9-15 checks
 // plus the 9.1-09 PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
@@ -1569,6 +1709,8 @@ export const LINT_CHECKS = [
   PROFILE_SCHEMA_LINT,
   PROFILE_SECRET,
   FRAG_LINT,
+  MEM_V2SCHEMA,
+  MEM_ONECLAIM,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────
