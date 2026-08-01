@@ -37,6 +37,7 @@ import { loadConfig } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
+import { createFederation } from './front/federation.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
 import { deriveState, parseReceiptSummary } from './front/state.mjs'
@@ -83,7 +84,24 @@ export function createDaemon(o = {}) {
   const windowsForState = (account) => windowState({ account, usageReader, clock, dataDir })
   const windowsOpenFor = (account) => isOpen(windowsForState(account), clock)
 
-  // (4) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
+  // (4) federation — a HUB daemon (and only a hub) aggregates its peers. A standalone or
+  // peer role wires nothing, so its behaviour is bit-for-bit what it was before V5.1. The
+  // registry is validated at construction: a peer url the SSRF guard refuses stops the boot
+  // here, loudly, rather than failing on the first poll of a night.
+  const federation =
+    o.federation ??
+    (config.federation && config.federation.role === 'hub' ? createFederation({ config, clock }) : null)
+
+  // The aggregator runs on the SAME rhythm as the founder's own state poll (2-5s): one poll
+  // in, one round of peer polls out. No timer to own, no reconnect state, no drift.
+  const aggregator = federation
+    ? async (payload) => {
+        await federation.pollPeers() // fail-open by construction: it never rejects
+        return federation.aggregateState(payload)
+      }
+    : undefined
+
+  // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
     createFrontServer({
@@ -96,6 +114,8 @@ export function createDaemon(o = {}) {
         repoDir,
         deriveState,
         parseReceiptSummary,
+        federation, // the action-proxy engine (routes wired in plan 9.7-15)
+        aggregator,
         windows: windowsForState,
         usageReader,
         execGit: o.execGit,
@@ -105,7 +125,7 @@ export function createDaemon(o = {}) {
       },
     })
 
-  // (5) the stateless tick — same wrapped adapter, so its transitions emit too.
+  // (6) the stateless tick — same wrapped adapter, so its transitions emit too.
   const tickDeps = {
     clock,
     adapter,
@@ -128,6 +148,7 @@ export function createDaemon(o = {}) {
     config,
     hub,
     adapter,
+    federation,
     front,
     daemon,
     async start() {
