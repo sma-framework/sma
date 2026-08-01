@@ -183,6 +183,8 @@ Everything above is the core. The detail lives one link away:
 - **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history V1 → V4 with the trust spine process by process.
 - **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), then V5.1 → V5.3 — the import door, the working front, multi-machine federation, and the memory-foundation program. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
 - **[docs/INSTALL.md](docs/INSTALL.md)** — install flags, payload manifest, uninstall.
+- **[docs/recipes/browser-check-command.md](docs/recipes/browser-check-command.md)** — how a user-interface check becomes a re-runnable receipt: a headless "command + exit code" script, the browser library in *your* devDependencies (SMA's core stays browser-free), and why pixel diffs are banned as evidence.
+- **[sma-core/references/fanout-ladder.md](sma-core/references/fanout-ladder.md)** — swarm or solo: the four deterministic signals (divisibility into non-overlapping file scopes, risk class, size, budget remaining) that decide fan-out, plus what the shipped commands already do.
 - **[scripts/sma/README.md](scripts/sma/README.md)** — every CLI subcommand, flag, hook event, and kill-switch.
 - **[PASSPORT.md](PASSPORT.md)** — the calibration passport: the real hit rate and sample size, reproducible on a fresh clone.
 

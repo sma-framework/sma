@@ -159,6 +159,19 @@ export const COMMAND_TOPICS = {
 }
 
 /**
+ * TOPIC_REFERENCES — the deep-dive document behind a topic, when one exists. An explainer
+ * is deliberately one screen; a policy that needs a table, worked examples, and an honest
+ * limits section lives in a reference document, and the explainer POINTS at it instead of
+ * quoting it (one source, never two drifting copies).
+ *
+ * Paths are repo-relative and rendered verbatim: this module opens nothing, so a missing
+ * or moved document degrades to a stale line of text, never a throw.
+ */
+export const TOPIC_REFERENCES = {
+  fanout: 'sma-core/references/fanout-ladder.md',
+}
+
+/**
  * extractHandlersKeys(cliSource) — extract every key from the `const HANDLERS = {` block
  * of cli.mjs, given its source as TEXT. Handles both quoted ('predict-score', 'next-slot')
  * and bare (status, claim) keys. Anchored to the block opening and stopping at its closing
@@ -243,15 +256,16 @@ export function listTopics({ explainersDir }) {
 }
 
 /**
- * renderTopic(id, {explainersDir, lang}) — {found, id, title, summary, lang, body} for a
- * known topic; {found:false, catalog:[...]} for an unknown or malformed one (the CLI prints
- * the catalog and exits 0 — teaching-surface contract). Default lang: en.
+ * renderTopic(id, {explainersDir, lang}) — {found, id, title, summary, lang, body, reference}
+ * for a known topic; {found:false, catalog:[...]} for an unknown or malformed one (the CLI
+ * prints the catalog and exits 0 — teaching-surface contract). Default lang: en.
+ * `reference` is the TOPIC_REFERENCES deep-dive path, or null when the topic has none.
  */
 export function renderTopic(id, { explainersDir, lang = 'en' }) {
   const t = getTopic(id, { explainersDir })
   if (!t.ok) return { found: false, catalog: listTopics({ explainersDir }) }
   const body = lang === 'ru' ? t.ru : t.en
-  return { found: true, id, title: t.title, summary: t.summary, lang, body }
+  return { found: true, id, title: t.title, summary: t.summary, lang, body, reference: TOPIC_REFERENCES[id] ?? null }
 }
 
 /**
