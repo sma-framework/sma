@@ -23,23 +23,38 @@
  * NAME-COLLISION NOTICE. `evidence` and `risk` are step NAMES here (positions 6
  * and 7 of the sequence); their implementations are called `attachEvidence` and
  * `assignRisk` so that nothing in this file can be confused with `evidence.mjs`
- * (the risky-operation burden of proof) or with a record's own `risk` field.
- * `compare` reuses `findContradictions` from consolidate.mjs — the ONE
- * contradiction implementation in this codebase; a second one must never exist.
+ * (the risky-operation burden of proof) or with a record's own `risk` field. The
+ * same rule gives step 11 the implementation name `proposeConsolidation`, because
+ * `consolidate` is a module this file imports from. `compare` reuses
+ * `findContradictions` from consolidate.mjs — the ONE contradiction
+ * implementation in this codebase; a second one must never exist.
  *
- * SCOPE. This module implements steps 1-8. Steps 9-12 (index, measure,
- * consolidate, lifecycle) are REGISTERED as named boundaries that throw
- * `not implemented` — a loud gap beats a silent no-op that looks like success.
- * They are unreachable today because every step-8 path is terminal.
+ * THE WALK DOES NOT STOP AT THE CORPUS DOOR. A persisted record continues
+ * through index (9), measure (10), consolidate (11) and lifecycle (12); only the
+ * last of those declares the terminal outcome. Staging and refusal remain
+ * terminal at the step that decided them, so the four tail steps run on exactly
+ * one path: the one where something was actually written.
  *
- * PURITY POSTURE. Filesystem effects live in exactly four places: `observe`
- * (journal append), `persist` (corpus write), `stage` (drafts write) and the
- * one-time `readCorpus` that runs before the walk.
- * Every other step is a pure function over the state object, so the remaining
- * steps can be built and tested in isolation. The corpus is READ once, up
- * front, into `state.corpus` — `compare` never touches the disk.
+ * CONSOLIDATION PROPOSES, IT NEVER MERGES. Step 11 writes a draft proposal and
+ * has no corpus write path at all. Auto-merge and auto-promote are the canon
+ * anti-patterns; a machine that quietly rewrites two beliefs into one has
+ * decided something a human never reviewed.
  *
- * Node built-ins only; every directory is dependency-injectable.
+ * ERASE IS REFUSED, DELIBERATELY. `applyLifecycle` performs supersede, revoke,
+ * expire and archive. It refuses `erase` with a pointer to the policy that owns
+ * the question — and the refusal is honest precisely because there is no
+ * deletion code path in this module for a caller to reach around it.
+ *
+ * PURITY POSTURE. Filesystem effects live in named places only: `observe`
+ * (journal append), `persist` (corpus write), `stage` (drafts write), `index`
+ * (generated index artifacts), `measure` (journal append), `proposeConsolidation`
+ * (drafts write), `applyLifecycle` (the transition pair-write) and the one-time
+ * `readCorpus` that runs before the walk. Every other step is a pure function
+ * over the state object. The corpus is READ once, up front, into `state.corpus`
+ * — `compare` never touches the disk.
+ *
+ * Node built-ins only; every directory is dependency-injectable, and so is the
+ * read-only git runner the index build takes its anchor from.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -50,6 +65,7 @@ import { atomicWriteRaw } from './fs-atomics.mjs'
 import { parseNote, serializeNote } from './frontmatter.mjs'
 import { scanForSecrets } from './flight.mjs'
 import { findContradictions } from './consolidate.mjs'
+import { buildAreaIndexes, buildIndex, computeDateMap } from './generator.mjs'
 import {
   INTERPRETATION_MODES,
   MEMORY_TYPES,
@@ -82,8 +98,30 @@ export const PIPELINE_STEPS = Object.freeze([
 /** The marker every draft this pipeline stages carries, so its origin is greppable. */
 export const PIPELINE_DRAFT_KIND = 'pipeline-write'
 
+/**
+ * The marker on a step-11 draft. A DIFFERENT kind from a staged record, because
+ * it is a different thing: a staged record is a candidate belief awaiting review,
+ * a consolidation proposal is a question about two beliefs that already exist.
+ */
+export const CONSOLIDATION_DRAFT_KIND = 'consolidation-proposal'
+
+/** The id prefix of a consolidation proposal, so the id law still holds for it. */
+const CONSOLIDATION_ID_PREFIX = 'consolidation-'
+
+/**
+ * The journal record kind step 10 appends. It is a HOOK POINT for the
+ * measurement track and nothing more: this module computes no metric from it.
+ */
+export const RETRIEVAL_TRACE_KIND = 'retrieval-trace'
+
 /** The corpus subdirectory drafts live in (the product-wide drafts dir, predict.mjs's too). */
 export const DRAFTS_DIRNAME = 'drafts'
+
+/** The generated always-load index the step-9 rebuild writes. */
+const INDEX_FILENAME = 'MEMORY.md'
+
+/** The build anchor used when no git runner is injected (deterministic, never a guess). */
+const EPOCH_COMMIT = '0000000'
 
 /** The default terminal identity of a pipeline journal file. */
 const DEFAULT_TERMINAL = 'write-pipeline'
@@ -93,6 +131,14 @@ const JOURNAL_EVENT_TYPE = 'memory-write'
 
 /** Structural corpus files that are never records (mirrors loader.mjs/consolidate.mjs). */
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
+
+/**
+ * The per-area index files step 9 generates. They live IN the corpus directory
+ * and are machine artifacts, so the corpus read must skip them exactly like the
+ * generator does — otherwise this pipeline would start comparing new records
+ * against its own output.
+ */
+const GENERATED_INDEX_RE = /^INDEX-[^/\\]+\.md$/
 
 /**
  * The ONLY approval path this pipeline may satisfy without a human. Everything
@@ -116,11 +162,13 @@ const AUTO_PERSIST_PATH = 'auto-ttl'
  *     trace,      // [{step, outcome, detail}] — one entry per EXECUTED step
  *     outcome,    // null while walking; 'persisted-active'|'staged-draft'|'rejected'
  *     path,       // the file finally written, or null
+ *     persisted,  // true once step 8 wrote the record — the flag that keeps the
+ *                 //   walk going into steps 9-12 instead of ending at the door
  *     flags,      // findings that inform later steps but do not stop the walk
  *     redactions, // [{rule, class}] applied to the content
  *     corpus,     // [{file, frontmatter, body}] read ONCE, before the walk
  *     dirs,       // {corpusDir, draftsDir, journalDir}
- *     opts,       // {terminalId, now, registry}
+ *     opts,       // {terminalId, now, registry, execGit}
  *   }
  *
  * @param {{record?:object, body?:string}} event
@@ -135,6 +183,7 @@ export function createPipelineState(event = {}, opts = {}) {
     trace: [],
     outcome: null,
     path: null,
+    persisted: false,
     flags: {},
     redactions: [],
     corpus: opts.corpus ?? null,
@@ -147,6 +196,10 @@ export function createPipelineState(event = {}, opts = {}) {
       terminalId: opts.terminalId ?? DEFAULT_TERMINAL,
       now: opts.now ?? null,
       registry: opts.registry ?? undefined,
+      // The read-only git runner the index build takes its anchor from. Absent
+      // means the deterministic epoch anchor: this module never shells out on
+      // its own, so a memory write cannot become a process spawn by surprise.
+      execGit: typeof opts.execGit === 'function' ? opts.execGit : null,
     },
   }
 }
@@ -548,6 +601,11 @@ function hasRetentionWindow(record) {
  * write itself goes through the atomic primitive, so a reader sees the previous
  * state or the new one and never a torn file. An occupied id is never
  * overwritten — compare normally catches that, and this is the second lock.
+ *
+ * A successful write sets `state.persisted` and does NOT set `state.outcome`:
+ * the corpus door is not the end of the sequence. Steps 9-12 run on this path
+ * and step 12 declares the terminal outcome. Both failure paths (staged,
+ * refused) stay terminal where they are decided.
  */
 export function persist(state) {
   const record = state.record
@@ -579,7 +637,7 @@ export function persist(state) {
 
   atomicWriteRaw(target, rendered.text)
   state.path = target
-  state.outcome = 'persisted-active'
+  state.persisted = true
   journal(state, { stage: 'persist', outcome: 'persisted-active', id: record.id, path: target })
   return trace(state, 'persist', 'persisted', { path: target })
 }
@@ -624,22 +682,464 @@ function stage(state, step, detail) {
   return trace(state, step, 'staged', { ...detail, path: target, draft })
 }
 
-// ── steps 9-12: not yet built ───────────────────────────────────────────────
+// ── step 9: index ───────────────────────────────────────────────────────────
 
-function notImplemented(name) {
-  return () => {
-    throw new Error(
-      `write-pipeline: step "${name}" is not implemented yet — it is a registered boundary, not a no-op`,
-    )
+/**
+ * index(state) — a record nobody can find is not memory. Step 9 regenerates the
+ * always-load index and the per-area catalogs through generator.mjs — the SAME
+ * `buildIndex` / `buildAreaIndexes` path the build-index verb uses. Re-rendering
+ * them here would create a second index grammar, and the first divergence
+ * between the two would be invisible: both files would look plausible.
+ *
+ * FAIL-OPEN. The record is already on disk; an index that cannot be rebuilt is a
+ * stale index, not a failed write. The step degrades with the reason in the
+ * trace rather than unwinding a write that already succeeded.
+ */
+export function index(state) {
+  const res = rebuildIndexes(state)
+  if (res.error) {
+    return trace(state, 'index', 'degraded', {
+      reason: 'the index could not be rebuilt — the record is written, the index is stale',
+      error: res.error,
+    })
   }
+  return trace(state, 'index', 'ok', { index: res.index, area_files: res.areaFiles })
+}
+
+/** The index write boundary. Returns {index, areaFiles, error} — never throws. */
+function rebuildIndexes(state) {
+  const corpusDir = state.dirs.corpusDir
+  try {
+    const args = { corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), ...buildAnchor(state) }
+    const generated = buildIndex(args)
+    const areas = buildAreaIndexes(args)
+    const indexPath = join(corpusDir, INDEX_FILENAME)
+    atomicWriteRaw(indexPath, generated)
+    for (const a of areas) atomicWriteRaw(join(corpusDir, a.file), a.content)
+    return { index: indexPath, areaFiles: areas.map((a) => a.file), error: null }
+  } catch (err) {
+    return { index: null, areaFiles: [], error: String(err?.message ?? err) }
+  }
+}
+
+/**
+ * The build anchor (commit + per-file dates) the generated index is stamped
+ * with. INJECTED, exactly like the build-index verb's: with no runner the anchor
+ * is the deterministic epoch, and the index is stamped honestly as unanchored
+ * rather than carrying a hash nobody computed.
+ */
+function buildAnchor(state) {
+  const execGit = state.opts.execGit
+  if (typeof execGit !== 'function') return { commitHash: EPOCH_COMMIT, dateMap: {} }
+  try {
+    const dateMap = computeDateMap({ execGit })
+    const commitHash = String(execGit(['rev-parse', '--short', 'HEAD']) ?? '').trim() || EPOCH_COMMIT
+    return { commitHash, dateMap }
+  } catch {
+    return { commitHash: EPOCH_COMMIT, dateMap: {} }
+  }
+}
+
+// ── step 10: measure ────────────────────────────────────────────────────────
+
+/**
+ * measure(state) — the HOOK POINT, and deliberately only that.
+ *
+ * Every persisted write leaves one `retrieval-trace` record in the journal: what
+ * was written, when, and the shape of the walk that let it through. No metric is
+ * computed here — measuring retrieval is the measurement track's work, and a
+ * pipeline that scored itself would be marking its own homework. What this step
+ * guarantees is that the data to measure LATER exists at all: a write with no
+ * trace is a repudiable write.
+ *
+ * The record carries a shape, never content: step ids and outcomes, the record
+ * id and its path. The claim itself stays where it belongs — in the record.
+ */
+export function measure(state) {
+  const detail = {
+    stage: 'measure',
+    kind: RETRIEVAL_TRACE_KIND,
+    record_id: typeof state.record.id === 'string' ? state.record.id : null,
+    written_at: state.opts.now ?? new Date().toISOString(),
+    path: state.path,
+    trace_summary: state.trace.map((t) => `${t.step}:${t.outcome}`),
+  }
+  const written = journal(state, detail)
+  return trace(state, 'measure', written ? 'ok' : 'degraded', {
+    kind: RETRIEVAL_TRACE_KIND,
+    record_id: detail.record_id,
+  })
+}
+
+// ── step 11: consolidate ────────────────────────────────────────────────────
+
+/**
+ * proposeConsolidation(state) — step 11 of the sequence. (Named for what it does;
+ * `consolidate` is the step NAME and also a module this file imports from.)
+ *
+ * When step 5 found a contradiction or a near-duplicate, this step writes a
+ * PROPOSAL: a draft that names both records and the action a human might take.
+ * It never merges, never promotes, never edits either record — the step has no
+ * corpus write path at all, and that is the point. Auto-merge is the canon
+ * anti-pattern: two beliefs quietly rewritten into one is a decision nobody
+ * reviewed, made by the component least able to judge which one was right.
+ *
+ * Never clobbers: a proposal already on disk may carry a human's edit.
+ */
+export function proposeConsolidation(state) {
+  const contradictions = Array.isArray(state.flags.contradictions) ? state.flags.contradictions : []
+  const duplicates = Array.isArray(state.flags.duplicateClaims) ? state.flags.duplicateClaims : []
+  if (!contradictions.length && !duplicates.length) {
+    return trace(state, 'consolidate', 'ok', null)
+  }
+
+  const recordId = String(state.record.id ?? '')
+  const paired = unique(
+    [...contradictions.flatMap((c) => (Array.isArray(c?.files) ? c.files : [])), ...duplicates]
+      .map(stemOf)
+      .filter((s) => s !== '' && s !== recordId),
+  ).sort()
+
+  const actions = [
+    ...(contradictions.length ? ['supersede-or-revoke-one-side'] : []),
+    ...(duplicates.length ? ['merge-into-one-record'] : []),
+  ]
+
+  const id = `${CONSOLIDATION_ID_PREFIX}${recordId}`
+  const target = join(state.dirs.draftsDir, `${id}.md`)
+  const idError = validateId(id, target)
+  if (idError) {
+    return trace(state, 'consolidate', 'degraded', { reason: `cannot stage a proposal: ${idError}` })
+  }
+
+  let draft = 'proposed'
+  if (existsSync(target)) {
+    draft = 'proposal-exists'
+  } else {
+    const proposal = {
+      id,
+      schema_version: '2',
+      status: 'draft',
+      draft_kind: CONSOLIDATION_DRAFT_KIND,
+      proposal_action: actions,
+      proposal_records: [recordId, ...paired],
+      proposed_at: state.opts.now ?? new Date().toISOString(),
+    }
+    const rendered = renderV2(proposal, consolidationBody(recordId, paired, actions, contradictions))
+    if (rendered.error) {
+      return trace(state, 'consolidate', 'degraded', { reason: `cannot stage a proposal — ${rendered.error}` })
+    }
+    atomicWriteRaw(target, rendered.text)
+  }
+
+  const detail = { path: target, draft, records: [recordId, ...paired], actions }
+  journal(state, { stage: 'consolidate', outcome: 'proposed', ...detail })
+  return trace(state, 'consolidate', 'proposed', detail)
+}
+
+/** The human-readable half of a proposal: what was found, and who decides. */
+function consolidationBody(recordId, paired, actions, contradictions) {
+  const lines = [
+    '',
+    '# Consolidation proposal',
+    '',
+    '**PROPOSAL ONLY. Nothing has been merged, promoted or rewritten.** The write',
+    'pipeline found that a record it just wrote stands in tension with records the',
+    'corpus already holds. Deciding which belief survives is a human act; no verb in',
+    'this codebase applies a consolidation proposal on its own.',
+    '',
+    `- written record: \`${recordId}\``,
+    ...paired.map((p) => `- already in the corpus: \`${p}\``),
+    '',
+    `Suggested action: ${actions.join(' · ')}`,
+    '',
+  ]
+  for (const c of contradictions) {
+    if (c?.reason) lines.push(`> ${String(c.reason)}`, '')
+  }
+  return lines.join('\n')
+}
+
+// ── step 12: lifecycle ──────────────────────────────────────────────────────
+
+/**
+ * lifecycle(state) — the last step, and the one that declares the outcome.
+ *
+ * It resolves the record's own lifecycle position and completes any supersession
+ * the CALLER DECLARED. Completing a declared pointer is not inference and not a
+ * merge: the record says `supersedes: X`, and leaving X without the matching
+ * `superseded_by` would produce exactly the failure the corpus cannot survive —
+ * a half-written chain in which a belief known to be replaced keeps loading as
+ * current. Nothing is inferred here: a near-duplicate found by step 5 is a
+ * proposal (step 11), never a transition.
+ *
+ * A transition invalidates the index step 9 just rebuilt, so the rebuild is
+ * repeated after it. That is the honest ordering: the canon sequence is fixed,
+ * and a step that changes the corpus must leave the index describing the corpus
+ * as it now is.
+ */
+export function lifecycle(state) {
+  const corpus = Array.isArray(state.corpus) ? state.corpus : []
+  const known = new Set(corpus.map((n) => stemOf(n.file)))
+  const declared = unique(asList(state.record.supersedes).map(stemOf)).filter((t) => known.has(t))
+
+  const superseded = []
+  const refused = []
+  for (const targetId of declared) {
+    const res = applyLifecycle({
+      corpusDir: state.dirs.corpusDir,
+      id: targetId,
+      action: 'supersede',
+      by: String(state.record.id ?? ''),
+      now: state.opts.now,
+      journalDir: state.dirs.journalDir,
+      terminalId: state.opts.terminalId,
+    })
+    if (res.applied) superseded.push(targetId)
+    else refused.push({ id: targetId, reason: res.refusal })
+  }
+
+  let reindexed = false
+  if (superseded.length) {
+    rebuildIndexes(state)
+    reindexed = true
+  }
+
+  state.outcome = 'persisted-active'
+  return trace(state, 'lifecycle', superseded.length ? 'transitioned' : 'ok', {
+    status: state.record.status ?? null,
+    superseded,
+    refused,
+    reindexed,
+  })
+}
+
+// ── the lifecycle transitions (callable outside the walk) ───────────────────
+
+/**
+ * The transitions this module performs. `erase` is NOT among them, and its
+ * absence here is the whole design: a caller cannot ask for erasure by spelling
+ * it differently, because no code path in this file removes a file.
+ */
+export const LIFECYCLE_ACTIONS = Object.freeze(['supersede', 'revoke', 'expire', 'archive'])
+
+/** action -> the status it writes. */
+const LIFECYCLE_STATUS = Object.freeze({
+  supersede: 'superseded',
+  revoke: 'revoked',
+  expire: 'expired',
+  archive: 'archived',
+})
+
+/**
+ * Why erase is refused. It names the policy that owns the question rather than
+ * pretending the question does not exist: erasure means physical removal from
+ * EVERY permitted store with the copies verified, and a module that writes
+ * markdown into a git history cannot promise any part of that sentence.
+ */
+const ERASE_REFUSAL =
+  'erase is refused by policy, not by omission: it means physical removal from every permitted store with ' +
+  'copies and indexes verified, and a module that writes markdown into a git working tree cannot promise ' +
+  'that — deleting the file would leave the history intact and the promise false. See docs/MEMORY-MODEL.md ' +
+  '§6 (lifecycle: after erasure there is no record, at most a tombstone where policy requires one) and §7 ' +
+  '(storage classes: what each class may hold, and what git can never guarantee). No deletion code path ' +
+  'exists in the write pipeline for a caller to reach.'
+
+/**
+ * applyLifecycle({corpusDir, id, action, by, reason, now, journalDir, terminalId})
+ *   -> {applied, action, id, status, changed, refusal}
+ *
+ * The lifecycle transitions as a callable boundary — used by step 12 and by any
+ * verb that retires a record.
+ *
+ * SYMMETRY OR NOTHING. `supersede` writes BOTH ends of the chain: the retired
+ * record gains `status: superseded` + `superseded_by` + `superseded_at`, and the
+ * replacement gains `supersedes`. Both files are rendered and checked BEFORE
+ * either is written, so a failure on the second one cannot leave the first
+ * rewritten — the pair is prepared atomically even though two files can never be
+ * renamed as one.
+ *
+ * THE GRAMMAR GETS THE LAST WORD. A record the shared serializer cannot re-emit
+ * (the corpus lint's round-trip finding) is REFUSED here rather than rewritten
+ * into something the emitter invented. A refusal changes nothing.
+ *
+ * v1 NOTES ARE REFUSED. The v1 grammar has no `status` field: a transition
+ * written onto a v1 note would be dropped silently on the way out. Migrate it
+ * first — a silent no-op is worse than a stated refusal.
+ *
+ * @returns {{applied:boolean, action:string, id:string, status?:string, changed:string[], refusal?:string}}
+ */
+export function applyLifecycle(input = {}) {
+  const { corpusDir, id, action, by, reason, now, journalDir, terminalId } = input
+  const base = { applied: false, action: String(action ?? ''), id: String(id ?? ''), changed: [] }
+
+  if (String(action) === 'erase') return { ...base, refusal: ERASE_REFUSAL }
+  if (!LIFECYCLE_ACTIONS.includes(action)) {
+    return {
+      ...base,
+      refusal: `unknown lifecycle action "${String(action)}" — this module performs ${LIFECYCLE_ACTIONS.join(' · ')} and nothing else`,
+    }
+  }
+
+  const subject = loadRecord(corpusDir, id)
+  if (subject.error) return { ...base, refusal: subject.error }
+
+  const status = LIFECYCLE_STATUS[action]
+  const pending = [] // [{path, frontmatter, body}] — rendered before anything is written
+
+  if (action === 'supersede') {
+    const successorId = String(by ?? '').trim()
+    if (!successorId) {
+      return { ...base, refusal: 'supersede requires "by" — the id of the record that replaces this one' }
+    }
+    if (successorId === base.id) {
+      return { ...base, refusal: 'a record cannot supersede itself' }
+    }
+    const existing = String(subject.frontmatter.superseded_by ?? '').trim()
+    if (existing && existing !== successorId) {
+      return {
+        ...base,
+        refusal: `already superseded by "${existing}" — completing this pointer would break an existing chain`,
+      }
+    }
+    const successor = loadRecord(corpusDir, successorId)
+    if (successor.error) return { ...base, refusal: successor.error }
+
+    pending.push({
+      path: subject.path,
+      frontmatter: {
+        ...subject.frontmatter,
+        status,
+        superseded_by: successorId,
+        superseded_at: dateOf(now),
+      },
+      body: subject.body,
+    })
+    pending.push({
+      path: successor.path,
+      frontmatter: {
+        ...successor.frontmatter,
+        supersedes: collapse(unique([...asList(successor.frontmatter.supersedes).map(stemOf), base.id])),
+      },
+      body: successor.body,
+    })
+  } else if (action === 'revoke') {
+    if (!isNonEmpty(reason)) {
+      return {
+        ...base,
+        refusal:
+          'revoke requires a stated reason — a revocation nobody explained is indistinguishable from an accident, ' +
+          'and the reason is journalled rather than written into the record (the schema has no free-text field for it)',
+      }
+    }
+    pending.push({ path: subject.path, frontmatter: { ...subject.frontmatter, status }, body: subject.body })
+  } else if (action === 'expire') {
+    const until = String(subject.frontmatter.valid_until ?? '').trim()
+    if (until === '') {
+      return {
+        ...base,
+        refusal: 'expire requires valid_until on the record — a claim with no end date has not run out of anything',
+      }
+    }
+    const today = dateOf(now)
+    if (!(until < today)) {
+      return {
+        ...base,
+        refusal: `valid_until ${until} has not passed as of ${today} — a claim is never expired early`,
+      }
+    }
+    pending.push({ path: subject.path, frontmatter: { ...subject.frontmatter, status }, body: subject.body })
+  } else {
+    pending.push({ path: subject.path, frontmatter: { ...subject.frontmatter, status }, body: subject.body })
+  }
+
+  // Render EVERY file first: the grammar may refuse one of them, and a refusal
+  // after a partial write would leave the pair asymmetric — the failure this
+  // whole transition exists to prevent.
+  const writes = []
+  for (const p of pending) {
+    const rendered = renderV2(p.frontmatter, p.body)
+    if (rendered.error) return { ...base, refusal: rendered.error }
+    writes.push({ path: p.path, text: rendered.text })
+  }
+
+  const changed = []
+  for (const w of writes) {
+    if (w.text === readIfPresent(w.path)) continue // nothing to say — nothing written
+    atomicWriteRaw(w.path, w.text)
+    changed.push(w.path)
+  }
+
+  try {
+    appendEvent(
+      {
+        type: JOURNAL_EVENT_TYPE,
+        scope: 'memory-corpus',
+        detail: { stage: 'lifecycle', action: base.action, id: base.id, status, by: by ?? null, reason: reason ?? null, changed },
+      },
+      { terminalId: terminalId ?? DEFAULT_TERMINAL, journalDir: journalDir ?? undefined, now: now ?? undefined },
+    )
+  } catch {
+    // fail-open: the transition happened; an unwritable journal degrades the
+    // audit trail, it does not un-write the corpus.
+  }
+
+  return { ...base, applied: true, status, changed }
+}
+
+/**
+ * Read one corpus record by id. Returns {path, frontmatter, body} or {error}.
+ * A missing record, an unparseable one and a v1 note are all NAMED refusals —
+ * this boundary never guesses what a caller meant.
+ */
+function loadRecord(corpusDir, id) {
+  const recordId = String(id ?? '').trim()
+  if (recordId === '') return { error: 'a lifecycle transition needs the id of the record it acts on' }
+  const path = join(String(corpusDir ?? ''), `${recordId}.md`)
+  if (!existsSync(path)) return { error: `no record "${recordId}" in the corpus (${path})` }
+
+  let note
+  try {
+    note = parseNote(readFileSync(path, 'utf8'), { file: path })
+  } catch (err) {
+    return { error: `record "${recordId}" does not parse: ${String(err?.message ?? err)}` }
+  }
+  if (note.frontmatter == null) return { error: `record "${recordId}" has no frontmatter — it is not a record` }
+  if (note.schemaVersion !== 2) {
+    return {
+      error:
+        `record "${recordId}" is a schema-v1 note: the v1 grammar has no status field, so the transition would be ` +
+        'written and then dropped on the way out — migrate the note to schema v2 first',
+    }
+  }
+  return { path, frontmatter: note.frontmatter, body: note.body ?? '' }
+}
+
+/** The file's current text, or null when it is unreadable/absent. */
+function readIfPresent(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/** A transition date: date-only UTC, the same shape the temporal fields carry. */
+function dateOf(now) {
+  const iso = isNonEmpty(now) ? String(now) : new Date().toISOString()
+  return iso.slice(0, 10)
+}
+
+/** A one-element list is a scalar; the pointer field stays readable either way. */
+function collapse(list) {
+  return list.length === 1 ? list[0] : list
 }
 
 // ── the registry + the walk ─────────────────────────────────────────────────
 
 /**
  * Every canon step name mapped to its implementation. A name with no
- * implementation would let the walk skip a gate silently; a registered thrower
- * cannot.
+ * implementation would let the walk skip a gate silently. All twelve are built.
  */
 export const STEPS = Object.freeze({
   observe,
@@ -650,10 +1150,10 @@ export const STEPS = Object.freeze({
   evidence: attachEvidence,
   risk: assignRisk,
   persist,
-  index: notImplemented('index'),
-  measure: notImplemented('measure'),
-  consolidate: notImplemented('consolidate'),
-  lifecycle: notImplemented('lifecycle'),
+  index,
+  measure,
+  consolidate: proposeConsolidation,
+  lifecycle,
 })
 
 /**
@@ -701,7 +1201,7 @@ export function readCorpus(dir) {
   }
   const out = []
   for (const name of entries.sort()) {
-    if (!name.endsWith('.md') || STRUCTURAL_FILES.has(name)) continue
+    if (!name.endsWith('.md') || STRUCTURAL_FILES.has(name) || GENERATED_INDEX_RE.test(name)) continue
     const path = join(dir, name)
     try {
       if (!statSync(path).isFile()) continue

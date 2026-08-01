@@ -808,16 +808,19 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
     claim: 'The queue adapter drains the nightly backlog in under two minutes on this machine',
   }
 
+  /** Every transition against the fixture corpus + the fixture journal. */
+  function lc(input: Record<string, unknown>) {
+    return applyLifecycle({ corpusDir, journalDir, terminalId: 'test-pipeline', now: NOW, ...input })
+  }
+
   it('Test 48: supersede sets SYMMETRIC pointers on BOTH records', () => {
     seedCorpus(NEIGHBOUR)
     seedCorpus(SUCCESSOR)
 
-    const res = applyLifecycle({
-      corpusDir,
+    const res = lc({
       id: 'working-queue-adapter-nightly-drain',
       action: 'supersede',
       by: 'working-queue-adapter-drain-window',
-      now: NOW,
     })
 
     expect(res.applied).toBe(true)
@@ -838,12 +841,10 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
 
     expect(freshIndex()).toContain('working-queue-adapter-nightly-drain.md')
 
-    applyLifecycle({
-      corpusDir,
+    lc({
       id: 'working-queue-adapter-nightly-drain',
       action: 'supersede',
       by: 'working-queue-adapter-drain-window',
-      now: NOW,
     })
 
     // MEMORY.md names a note only when it is CORE; the hard filter drops it
@@ -854,7 +855,7 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
     seedCorpus(NEIGHBOUR)
     const before = readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')
 
-    const res = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'erase', now: NOW })
+    const res = lc({ id: 'working-queue-adapter-nightly-drain', action: 'erase' })
 
     expect(res.applied).toBe(false)
     expect(res.refusal).toMatch(/MEMORY-MODEL/)
@@ -867,33 +868,18 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
 
   it('Test 51: expire refuses a record whose window has not run out, and applies when it has', () => {
     seedCorpus(NEIGHBOUR)
-    const noWindow = applyLifecycle({
-      corpusDir,
-      id: 'working-queue-adapter-nightly-drain',
-      action: 'expire',
-      now: NOW,
-    })
+    const noWindow = lc({ id: 'working-queue-adapter-nightly-drain', action: 'expire' })
     expect(noWindow.applied).toBe(false)
     expect(noWindow.refusal).toMatch(/valid_until/)
 
     seedCorpus({ ...NEIGHBOUR, valid_until: '2026-12-31' })
-    const future = applyLifecycle({
-      corpusDir,
-      id: 'working-queue-adapter-nightly-drain',
-      action: 'expire',
-      now: NOW,
-    })
+    const future = lc({ id: 'working-queue-adapter-nightly-drain', action: 'expire' })
     expect(future.applied).toBe(false)
     expect(future.refusal).toMatch(/2026-12-31/)
     expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('active')
 
     seedCorpus({ ...NEIGHBOUR, valid_until: '2026-07-01' })
-    const passed = applyLifecycle({
-      corpusDir,
-      id: 'working-queue-adapter-nightly-drain',
-      action: 'expire',
-      now: NOW,
-    })
+    const passed = lc({ id: 'working-queue-adapter-nightly-drain', action: 'expire' })
     expect(passed.applied).toBe(true)
     expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('expired')
   })
@@ -901,19 +887,15 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
   it('Test 52: revoke demands a stated reason, and the reason lands in the journal, not in the record', () => {
     seedCorpus(NEIGHBOUR)
 
-    const bare = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'revoke', now: NOW })
+    const bare = lc({ id: 'working-queue-adapter-nightly-drain', action: 'revoke' })
     expect(bare.applied).toBe(false)
     expect(bare.refusal).toMatch(/reason/i)
     expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('active')
 
-    const res = applyLifecycle({
-      corpusDir,
+    const res = lc({
       id: 'working-queue-adapter-nightly-drain',
       action: 'revoke',
       reason: 'the drill it was drawn from was invalid',
-      now: NOW,
-      journalDir,
-      terminalId: 'test-pipeline',
     })
     expect(res.applied).toBe(true)
     expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('revoked')
@@ -926,7 +908,7 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
 
   it('Test 53: archive takes a record out of active retrieval without touching a byte of history', () => {
     seedCorpus(NEIGHBOUR)
-    const res = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'archive', now: NOW })
+    const res = lc({ id: 'working-queue-adapter-nightly-drain', action: 'archive' })
 
     expect(res.applied).toBe(true)
     const note = readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))
@@ -937,16 +919,11 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
   it('Test 54: an unknown action, an unknown record and a v1 note are refused — never guessed', () => {
     seedCorpus(NEIGHBOUR)
 
-    const unknownAction = applyLifecycle({
-      corpusDir,
-      id: 'working-queue-adapter-nightly-drain',
-      action: 'forget',
-      now: NOW,
-    })
+    const unknownAction = lc({ id: 'working-queue-adapter-nightly-drain', action: 'forget' })
     expect(unknownAction.applied).toBe(false)
     expect(unknownAction.refusal).toContain('archive')
 
-    const unknownRecord = applyLifecycle({ corpusDir, id: 'a-record-that-never-existed', action: 'archive', now: NOW })
+    const unknownRecord = lc({ id: 'a-record-that-never-existed', action: 'archive' })
     expect(unknownRecord.applied).toBe(false)
     expect(filesIn(corpusDir)).toEqual(['working-queue-adapter-nightly-drain.md'])
 
@@ -959,7 +936,7 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
         body: '\nLegacy.\n',
       }),
     )
-    const v1 = applyLifecycle({ corpusDir, id: 'reference_legacy', action: 'archive', now: NOW })
+    const v1 = lc({ id: 'reference_legacy', action: 'archive' })
     expect(v1.applied).toBe(false)
     expect(v1.refusal).toMatch(/schema[- ]v2|migrate/i)
   })
@@ -975,7 +952,7 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
     )
     const before = readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')
 
-    const res = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'archive', now: NOW })
+    const res = lc({ id: 'working-queue-adapter-nightly-drain', action: 'archive' })
 
     expect(res.applied).toBe(false)
     expect(res.refusal).toMatch(/evidence/)
