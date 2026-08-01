@@ -37,6 +37,7 @@ import {
   createFailureLimiter,
   COOKIE_NAME,
 } from '../src/front/auth.mjs'
+import { addProject, renameProject, selectProject } from '../src/config.mjs'
 
 const TOKEN = 'a'.repeat(64) // stand-in for randomBytes(32).toString('hex')
 
@@ -109,16 +110,12 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 
 /**
  * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
- * own plan lands: projects in 9.7-09, machines + chat in 9.7-15, import + onboarding in
- * 9.7-20. Delete an entry here in the SAME commit that fills its handler; the table
- * itself does NOT change (no route is added or removed by a fill plan). The asset route
- * left this list when its handler landed.
+ * own plan lands: machines + chat in 9.7-15, import + onboarding in 9.7-20. Delete an
+ * entry here in the SAME commit that fills its handler; the table itself does NOT change
+ * (no route is added or removed by a fill plan). The static + project group left this
+ * list when their handlers landed.
  */
 const UNFILLED_ROUTES = [
-  'GET /api/projects',
-  'POST /api/project/add',
-  'POST /api/project/rename',
-  'POST /api/project/select',
   'GET /api/machines',
   'POST /api/machine/pair',
   'POST /api/machine/add',
@@ -786,6 +783,270 @@ describe('server.mjs — GET /assets/:file', () => {
 
 const BUILT_APP_DIR = fileURLToPath(new URL('../static/app/', import.meta.url))
 const HAS_BUILD = existsSync(`${BUILT_APP_DIR}index.html`)
+
+// ── Plan 9.7-09 Task 2: the project doors + the decision journal on the task card ──
+//
+// The four project routes do NOT re-implement a single rule of the registry: they reject
+// unknown keys, hand the body to the config.mjs door (addProject / renameProject /
+// selectProject — the REAL ones are wired below, not fakes), map the named error and emit
+// a hint. The id is minted by the door and never moves on a rename.
+
+/** A file system that captures the atomic config write instead of touching the disk. */
+function capturingConfigFs() {
+  const written: any[] = []
+  return {
+    written,
+    mkdirSync: () => undefined,
+    writeFileSync: (_p: any, text: any) => written.push(JSON.parse(String(text))),
+    renameSync: () => undefined,
+    chmodSync: () => undefined,
+  }
+}
+
+const PROJECT_ENV = { SMA_DAEMON_CONFIG: '/nowhere/sma-daemon/config.json' }
+
+/** A config whose federation block carries REAL peer tokens — the leak fixture. */
+function configWithPeers() {
+  return {
+    token: TOKEN,
+    workers: [],
+    projects: [{ id: 'sma', name: 'СМА' }],
+    activeProject: 'sma',
+    federation: { role: 'hub', peers: [{ id: 'mac-mini', url: 'http://10.0.0.5:7777', token: 'peer-secret-token' }] },
+  }
+}
+
+describe('server.mjs — GET /api/projects', () => {
+  it('serves the registry slice and NOT one byte of a secret', async () => {
+    const deriveState = async () => ({
+      projects: [{ id: 'sma', name: 'СМА', taskCounts: { queued: 1, total: 1 } }],
+      activeProject: 'sma',
+      federation: { role: 'hub', peers: [{ id: 'mac-mini', token: 'peer-secret-token' }] },
+      queue: [],
+    })
+    const front = createFrontServer({ config: configWithPeers(), deps: { deriveState } })
+    const res = await call(front, { url: '/api/projects', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.projects[0]).toMatchObject({ id: 'sma', name: 'СМА' })
+    expect(out.activeProject).toBe('sma')
+    expect(res.body).not.toContain('peer-secret-token')
+    expect(res.body).not.toContain(TOKEN)
+  })
+})
+
+describe('server.mjs — the project write doors delegate to the config registry', () => {
+  const mkFront = (config: any, fsImpl: any) =>
+    createFrontServer({
+      config,
+      deps: { addProject, renameProject, selectProject, env: PROJECT_ENV, fsImpl },
+    })
+
+  it('POST /api/project/add takes a folder into the register, id minted by the door', async () => {
+    const fsImpl = capturingConfigFs()
+    const config: any = { token: TOKEN, workers: [], projects: [], activeProject: null }
+    const res = await call(mkFront(config, fsImpl), {
+      method: 'POST',
+      url: '/api/project/add',
+      headers: jsonHeaders(),
+      body: { path: '/Users/f/projects/mass-platform', name: 'Платформа' },
+    })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.ok).toBe(true)
+    expect(out.project.name).toBe('Платформа')
+    expect(out.project.id).toMatch(/^[a-z0-9-]{1,64}$/) // a slug, minted by config.mjs
+    // it reached the durable write, and the folder the founder picked was kept
+    const stored = fsImpl.written[fsImpl.written.length - 1]
+    expect(stored.projects).toHaveLength(1)
+    expect(stored.projects[0].path).toBe('/Users/f/projects/mass-platform')
+    // the in-memory config the next read serves is not stale
+    expect(config.projects).toHaveLength(1)
+  })
+
+  it('a name-less add still works: the folder name becomes the project name', async () => {
+    const fsImpl = capturingConfigFs()
+    const config: any = { token: TOKEN, workers: [], projects: [], activeProject: null }
+    const res = await call(mkFront(config, fsImpl), {
+      method: 'POST',
+      url: '/api/project/add',
+      headers: jsonHeaders(),
+      body: { path: '/Users/f/projects/sma-dev' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).project.name).toBe('sma-dev')
+  })
+
+  it('POST /api/project/rename moves the NAME and never the id (D-9.7-08)', async () => {
+    const fsImpl = capturingConfigFs()
+    const config: any = { token: TOKEN, workers: [], projects: [{ id: 'sma', name: 'СМА' }], activeProject: 'sma' }
+    const res = await call(mkFront(config, fsImpl), {
+      method: 'POST',
+      url: '/api/project/rename',
+      headers: jsonHeaders(),
+      body: { id: 'sma', name: 'СМА — продукт' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).project).toEqual({ id: 'sma', name: 'СМА — продукт' })
+    expect(config.projects[0].id).toBe('sma') // the key tasks reference did NOT move
+  })
+
+  it('POST /api/project/select switches the active project; an unknown id → 404', async () => {
+    const fsImpl = capturingConfigFs()
+    const config: any = {
+      token: TOKEN,
+      workers: [],
+      projects: [{ id: 'sma', name: 'СМА' }, { id: 'platform', name: 'Платформа' }],
+      activeProject: 'sma',
+    }
+    const front = mkFront(config, fsImpl)
+    const ok = await call(front, {
+      method: 'POST',
+      url: '/api/project/select',
+      headers: jsonHeaders(),
+      body: { id: 'platform' },
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(JSON.parse(ok.body).activeProject).toBe('platform')
+    expect(config.activeProject).toBe('platform')
+
+    const ghost = await call(front, {
+      method: 'POST',
+      url: '/api/project/select',
+      headers: jsonHeaders(),
+      body: { id: 'ghost' },
+    })
+    expect(ghost.statusCode).toBe(404)
+  })
+
+  it('a rename of an unknown project → 404 (the named error of the door maps)', async () => {
+    const res = await call(mkFront({ token: TOKEN, workers: [], projects: [] }, capturingConfigFs()), {
+      method: 'POST',
+      url: '/api/project/rename',
+      headers: jsonHeaders(),
+      body: { id: 'ghost', name: 'x' },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('an unknown key on a project body → 400 BEFORE the door is called (zero door calls)', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [], projects: [] },
+      deps: {
+        addProject: (...a: any[]) => (calls.push(a), { projects: [] }),
+        selectProject: (...a: any[]) => (calls.push(a), { projects: [] }),
+        env: PROJECT_ENV,
+      },
+    })
+    const add = await call(front, {
+      method: 'POST',
+      url: '/api/project/add',
+      headers: jsonHeaders(),
+      body: { path: '/p', name: 'x', command: 'rm -rf /' },
+    })
+    expect(add.statusCode).toBe(400)
+    const select = await call(front, {
+      method: 'POST',
+      url: '/api/project/select',
+      headers: jsonHeaders(),
+      body: { id: 'sma', repoDir: '/etc' },
+    })
+    expect(select.statusCode).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('an empty registry write door that is not wired → 501, never a silent no-op', async () => {
+    const front = createFrontServer({ config: { token: TOKEN, projects: [] } })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/project/add',
+      headers: jsonHeaders(),
+      body: { path: '/p' },
+    })
+    expect(res.statusCode).toBe(501)
+  })
+})
+
+// ── the decision journal on the task card (the three layers, BL law of three layers) ──
+
+describe('server.mjs — GET /api/task/:id carries the decision journal', () => {
+  const adapter = { list: async () => [{ id: 'R-9', title: 'ночная задача', lane: 'prod', status: 'completed', attempt: 2 }] }
+
+  it('three layers ride the payload: why it was routed, what was chosen, what was read', async () => {
+    const ledger = {
+      readAttempts: () => [{ attempt: 1, workerId: 'max-1', outcome: 'failed' }, { attempt: 2, workerId: 'max-2', outcome: 'completed' }],
+      readJournalEntries: () => [
+        {
+          taskId: 'R-9',
+          attempt: 1,
+          attemptId: 'R-9#1',
+          layer: 'dispatcher',
+          payload: { code: 'lane_default', lane: 'prod', workerId: 'max-1' },
+          recordedAt: '2026-08-01T01:00:00.000Z',
+        },
+        {
+          taskId: 'R-9',
+          attempt: 2,
+          attemptId: 'R-9#2',
+          layer: 'approach',
+          payload: { approach: 'взял существующий писатель конфига', rejected: ['свой писатель'] },
+          recordedAt: '2026-08-01T02:00:00.000Z',
+        },
+        {
+          taskId: 'R-9',
+          attempt: 2,
+          attemptId: 'R-9#2',
+          layer: 'memory',
+          payload: { notes: ['reference_sma_dev_workspace'], reflexes: ['no-new-store'] },
+          recordedAt: '2026-08-01T02:00:01.000Z',
+        },
+      ],
+    }
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger } })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    // (a) the dispatcher layer: a CODE plus the подпись the card renders
+    expect(out.journal.dispatcher[0]).toMatchObject({ code: 'lane_default', ts: '2026-08-01T01:00:00.000Z' })
+    expect(out.journal.dispatcher[0].label).toBe('маршрут по умолчанию для полосы')
+    // (b) the approach note rides its OWN attempt, not the task
+    expect(out.attempts[1].approachNote).toBe('взял существующий писатель конфига')
+    expect(out.attempts[0].approachNote).toBeUndefined()
+    // (c) the memory layer is IDS ONLY
+    expect(out.journal.memoryTrace).toEqual({ notes: ['reference_sma_dev_workspace'], reflexes: ['no-new-store'] })
+  })
+
+  it('a task older than the journal → EMPTY layers, never an error', async () => {
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger: { readAttempts: () => [] } } })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.journal).toEqual({ dispatcher: [], memoryTrace: { notes: [], reflexes: [] } })
+  })
+})
+
+// ── the carried tail of the state read: the project filter reaches the derive ──
+
+describe('server.mjs — ?project= narrows a state read', () => {
+  it('passes the filter through to the derive, and passes nothing when it is absent', async () => {
+    const seen: any[] = []
+    const deriveState = async (d: any) => (seen.push(d.project), { queue: [], done: [{ id: 'R-1' }] })
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { deriveState } })
+    await call(front, { url: '/api/state?project=platform', headers: bearer() })
+    await call(front, { url: '/api/state', headers: bearer() })
+    await call(front, { url: '/api/done?project=platform', headers: bearer() })
+    expect(seen).toEqual(['platform', undefined, 'platform'])
+  })
+
+  it('an over-long project filter is dropped rather than carried into the derive', async () => {
+    const seen: any[] = []
+    const deriveState = async (d: any) => (seen.push(d.project), { queue: [] })
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { deriveState } })
+    await call(front, { url: `/api/state?project=${'p'.repeat(200)}`, headers: bearer() })
+    expect(seen).toEqual([undefined])
+  })
+})
 
 describe('server.mjs — the real built tree (skipped when `cd spa && npm run build` has not run)', () => {
   it.skipIf(!HAS_BUILD)('serves the real index.html and a real hashed bundle off the disk', async () => {
