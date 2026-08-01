@@ -66,6 +66,13 @@ import { findContradictions } from './consolidate.mjs'
 // applies and at which tier, never WHAT the rule says. A second copy of the
 // vocabulary is the exact drift schema-v2.mjs exists to abolish.
 import { validateRecord, validateId, isPrivateFacet, GRACE_HORIZON, STATUS_VALUES } from './schema-v2.mjs'
+// MEM-EPISODE is the ONE check that descends into episodes/ — through the episode
+// layer's own reader and its own (lighter) required-field list, never through the
+// record validator, which would reject every episode for lacking a `claim`.
+import { readEpisodes, episodeRequiredFields, EPISODES_DIRNAME, EPISODE_MEMORY_TYPE } from './episodes.mjs'
+// The personal-shape vocabulary is the write pipeline's: it screens this material
+// on its way IN, this file screens what is already on disk. Same shapes, one list.
+import { PERSONAL_PATTERNS } from './write-pipeline.mjs'
 // 9.3-05 (D-9.3-07): the FRAG family delegates ALL fragment schema/byte/trigger
 // judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
@@ -451,6 +458,18 @@ function buildContext(opts) {
   const product = resolveProductVersion(opts)
   const today = utcDay(opts.now ?? new Date())
 
+  // The episode layer, read ONCE like everything else. readEpisodes is loud by
+  // design (a history file that vanishes from a read is the failure that layer
+  // exists to prevent), so the noise is caught HERE and handed to MEM-EPISODE as
+  // a finding: one unreadable episode must not take the whole checker down with it.
+  let episodes = []
+  let episodesError = null
+  try {
+    episodes = readEpisodes({ corpusDir })
+  } catch (err) {
+    episodesError = err.message
+  }
+
   return {
     corpusDir,
     tagsPath,
@@ -461,6 +480,8 @@ function buildContext(opts) {
     productVersion: product.version,
     productVersionSource: product.source,
     today,
+    episodes,
+    episodesError,
     // Where a fingerprint's tree_paths are resolved from (repo root by default:
     // undefined lets the injected runner use its own cwd).
     gitCwd: opts.gitCwd,
@@ -1888,6 +1909,207 @@ const MEM_EXPIRE = {
   },
 }
 
+/** Storage classes that must never sit where a public or preset export can see them. */
+const RESTRICTED_CLASSES = new Set(['sensitive', 'encrypted-required'])
+
+/** A facet value that says "this record is meant to be seen from outside". */
+const PUBLIC_AUDIENCE_RE = /^(?:public|preset|published|release|open)$/i
+
+/**
+ * Every place a record declares a public/preset audience, as `label: value`
+ * strings. Deliberately a sweep over the audience-bearing blocks rather than one
+ * hard-coded key: the field that names an audience is a schema decision that may
+ * move, and a placement check that only knows one spelling of "public" is a
+ * placement check that will be silently bypassed by the next one.
+ */
+function publicAudienceMarkers(fm) {
+  const hits = []
+  const sweep = (label, value) => {
+    for (const v of Array.isArray(value) ? value : [value]) {
+      if (typeof v === 'string' && PUBLIC_AUDIENCE_RE.test(v.trim())) hits.push(`${label}: ${v.trim()}`)
+    }
+  }
+  for (const key of ['scope', 'retrieval']) {
+    const block = fm[key]
+    if (block == null || typeof block !== 'object' || Array.isArray(block)) continue
+    for (const [sub, value] of Object.entries(block)) sweep(`${key}.${sub}`, value)
+  }
+  sweep('applies_to', fm.applies_to)
+  return hits
+}
+
+/**
+ * Content shapes that mark material as sensitive REGARDLESS of what the record
+ * says about itself. This is the retrofit half of the placement check: the notes
+ * most likely to be holding this material are the oldest ones, written before
+ * there was a sensitivity field to fill in, and a screen that only reads the
+ * declared class would never look at them.
+ *
+ * The personal shapes come from the write pipeline's one vocabulary; the
+ * security-posture shape is added here because it is a CORPUS problem (an
+ * admission about how something is defended is a fact a note records, not a
+ * value a pipeline scrubs).
+ */
+const SENSITIVE_CONTENT_PATTERNS = [
+  {
+    cls: 'a security-posture admission (a missing second factor)',
+    re: /\b(?:2fa|two[-\s]factor(?:\s+authentication)?|second\s+factor|mfa)\b[^.\n]{0,60}?\b(?:not|no|never|without|disabled|absent|missing|off)\b/i,
+  },
+  {
+    cls: 'a security-posture admission (a missing second factor)',
+    re: /\b(?:no|without|disabled|missing|lacks?)\b[^.\n]{0,40}?\b(?:2fa|two[-\s]factor(?:\s+authentication)?|second\s+factor|mfa)\b/i,
+  },
+  // Non-global copies: a /g RegExp carries lastIndex between .test() calls, which
+  // would make the verdict depend on how many notes were scanned before this one.
+  ...PERSONAL_PATTERNS.map((p) => ({
+    cls: `a personal identifier (${p.rule})`,
+    re: new RegExp(p.re.source, p.re.flags.replace('g', '')),
+  })),
+]
+
+const MEM_SENSPLACE = {
+  id: 'MEM-SENSPLACE',
+  title: 'Sensitive material never sits where a public or preset export can see it',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    for (const note of ctx.parsed) {
+      if (note.parseError || !note.frontmatter) continue
+      const fm = note.frontmatter
+      const sensitivity = typeof fm.sensitivity === 'string' ? fm.sensitivity.trim() : ''
+
+      // ── declared contradiction: CRITICAL ───────────────────────────────────
+      // A record that names itself restricted AND names a public audience is not
+      // ambiguous and needs no heuristic — it is wrong on its own terms.
+      if (note.schemaVersion === 2 && RESTRICTED_CLASSES.has(sensitivity)) {
+        for (const marker of publicAudienceMarkers(fm)) {
+          out.push(
+            finding(
+              'MEM-SENSPLACE',
+              'critical',
+              note.file,
+              `${note.file}: sensitivity "${sensitivity}" is contradicted by ${marker} — a ${sensitivity} record must never carry a public/preset marker; either the class or the audience is a mistake, and guessing which is not this checker's job`,
+            ),
+          )
+        }
+      }
+
+      // ── undeclared content: WARN ───────────────────────────────────────────
+      // In scope: a record that claims a public class, and any note that declares
+      // no class at all (every pre-schema note). Out of scope: internal and
+      // restricted classes, which are already stored where such material belongs.
+      if (sensitivity !== '' && sensitivity !== 'public') continue
+      const haystack = [fm.description, fm.claim, note.body]
+        .filter((s) => typeof s === 'string')
+        .join('\n')
+      if (haystack === '') continue
+      const hits = new Set()
+      for (const { cls, re } of SENSITIVE_CONTENT_PATTERNS) {
+        if (re.test(haystack)) hits.add(cls)
+      }
+      const where = sensitivity === 'public' ? 'sensitivity: public' : 'no sensitivity field at all (schema v1)'
+      for (const cls of [...hits].sort()) {
+        out.push(
+          finding(
+            'MEM-SENSPLACE',
+            'warn',
+            note.file,
+            `${note.file}: the content reads as ${cls}, but the record carries ${where} — classify it (sensitivity: sensitive) or remove the material; a public or preset export would carry it out of this installation as written`,
+          ),
+        )
+      }
+    }
+    return out
+  },
+}
+
+const MEM_PRIVFACET = {
+  id: 'MEM-PRIVFACET',
+  title: 'Installation-private facets stay out of public-class records',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    for (const note of v2Records(ctx)) {
+      const fm = note.frontmatter
+      // Only PUBLIC-class records. An internal record may carry as many
+      // installation-private facets as it likes — that is what internal means.
+      if (String(fm.sensitivity ?? '').trim() !== 'public') continue
+      const retrieval = fm.retrieval
+      const areas =
+        retrieval != null && typeof retrieval === 'object' && !Array.isArray(retrieval) ? retrieval.areas : null
+      for (const [label, value] of [
+        ['applies_to', fm.applies_to],
+        ['retrieval.areas', areas],
+      ]) {
+        const values = Array.isArray(value) ? value : value == null ? [] : [value]
+        for (const v of values) {
+          if (!isPrivateFacet(v)) continue
+          out.push(
+            finding(
+              'MEM-PRIVFACET',
+              'critical',
+              note.file,
+              `${note.file}: ${label} carries the installation-private facet "${String(v).trim()}" in a public-class record — a phase number means nothing outside the installation that minted it, and this is the same leak the release scan exists to catch. Move the record to sensitivity: internal, or drop the facet.`,
+            ),
+          )
+        }
+      }
+    }
+    return out
+  },
+}
+
+const MEM_EPISODE = {
+  id: 'MEM-EPISODE',
+  title: 'Episodes carry their minimal archive fields — and nothing heavier',
+  tier: 'warn',
+  run(ctx) {
+    const out = []
+    // LIGHT BY DESIGN. History must not rot unread, but it is not held to the
+    // reviewed-record discipline: an episode carries no `claim`, may carry a
+    // dozen of them in its body, and would fail the record validator on every
+    // line. What an archive genuinely knows about itself is the field list below.
+    if (ctx.episodesError != null) {
+      return [
+        finding(
+          'MEM-EPISODE',
+          'warn',
+          EPISODES_DIRNAME,
+          `${EPISODES_DIRNAME}/ could not be read: ${ctx.episodesError} — history that cannot be parsed is history that has already begun to rot`,
+        ),
+      ]
+    }
+    for (const episode of ctx.episodes) {
+      const where = `${EPISODES_DIRNAME}/${episode.file}`
+      const fm = episode.frontmatter
+      if (fm == null) {
+        out.push(finding('MEM-EPISODE', 'warn', where, `${where}: carries no frontmatter — an episode with no archive fields cannot be found again`))
+        continue
+      }
+      const idError = validateId(fm.id, episode.file)
+      if (idError) out.push(finding('MEM-EPISODE', 'warn', where, `${where}: ${idError}`))
+      if (Number(fm.schema_version) !== 2) {
+        out.push(finding('MEM-EPISODE', 'warn', where, `${where}: schema_version "${fm.schema_version ?? ''}" — episodes are schema v2 records`))
+      }
+      const memoryType = String(fm.memory_type ?? '').trim()
+      if (memoryType !== EPISODE_MEMORY_TYPE) {
+        out.push(finding('MEM-EPISODE', 'warn', where, `${where}: memory_type "${memoryType}" — an episode is "${EPISODE_MEMORY_TYPE}" by definition`))
+      }
+      const status = String(fm.status ?? '').trim()
+      if (status !== '' && !STATUS_VALUES.includes(status)) {
+        out.push(finding('MEM-EPISODE', 'warn', where, `${where}: status "${status}" is outside the closed vocabulary (${STATUS_VALUES.join(' · ')})`))
+      }
+      for (const field of episodeRequiredFields) {
+        const value = fm[field]
+        if (value == null || String(value).trim() === '') {
+          out.push(finding('MEM-EPISODE', 'warn', where, `${where}: missing archive field "${field}" — the minimal set an episode must carry to stay findable`))
+        }
+      }
+    }
+    return out
+  },
+}
+
 // The check registry — the full R5 class list plus the two D-9-15 checks
 // plus the 9.1-09 PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
@@ -1926,6 +2148,9 @@ export const LINT_CHECKS = [
   MEM_ONECLAIM,
   MEM_FPDRIFT,
   MEM_EXPIRE,
+  MEM_SENSPLACE,
+  MEM_PRIVFACET,
+  MEM_EPISODE,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────
