@@ -1,5 +1,173 @@
-import { Placeholder } from '../../shell/Placeholder'
+import { useMemo } from 'react'
+import { useStateQuery } from '../../api/queries'
+import type { Presence, WorkerRow } from '../../api/types'
+import { OPEN_SCREEN_EVENT } from '../today/TaskPanel'
+import type { OpenScreenDetail } from '../today/TaskPanel'
+import { WorkerCard } from './WorkerCard'
+
+/**
+ * «Команда» — the roster: who is on what, whose window is nearly spent, who is free.
+ *
+ * The screen RENDERS presence, it does not work it out. `workers[].presence` arrives from
+ * the daemon already decided, and the three words it can be are printed exactly as they
+ * came. That is the whole doctrine of this screen in one line: derive on one side of the
+ * wire, render on the other. A roster that recomputed «who is busy» from the window and the
+ * task in hand would be a second opinion, and two opinions about a worker is how a person
+ * stops believing either.
+ *
+ * Everything else on the screen comes out of the SAME one reading: the task in hand is a
+ * row the window already holds, the counts are the finished rows it already holds. Nothing
+ * here asks the daemon a question of its own.
+ */
+
+/** The lines of work, in the words the rest of the product uses for them. */
+const LANE_LABEL: Record<string, string> = {
+  prod: 'прод-код',
+  research: 'ресёрч',
+  paperwork: 'бумага',
+  forge: 'кузница',
+}
+
+/**
+ * The path a task walks: the lines of work that are actually STAFFED, in the order the work
+ * moves through them, and the person it ends at. A line nobody sits on is not drawn — the
+ * strip says who is here, not who was imagined.
+ */
+const LANE_ORDER: readonly string[] = ['research', 'prod', 'paperwork', 'forge'] as const
+
+/** The three words, and the order they are counted in above the roster. */
+const PRESENCE_COUNTS: readonly { presence: Presence; label: string; tone: string }[] = [
+  { presence: 'работает', label: 'работают', tone: 'text-green' },
+  { presence: 'ждёт окно', label: 'ждут окно', tone: 'text-warn' },
+  { presence: 'свободен', label: 'свободны', tone: 'text-tx2' },
+] as const
+
+function KpiPill({ value, label, tone }: { value: number; label: string; tone: string }) {
+  return (
+    <div className="flex flex-none items-baseline gap-2 rounded-[9px] border border-bd bg-card px-3.5 py-1.5 shadow-panel">
+      <span className={`text-[16px] font-bold tabular-nums ${tone}`}>{value}</span>
+      <span className="text-[11.5px] text-tx2">{label}</span>
+    </div>
+  )
+}
+
+function PathStrip({ workers }: { workers: WorkerRow[] }) {
+  const staffed = LANE_ORDER.filter((lane) => workers.some((w) => w.lane === lane))
+  if (staffed.length === 0) return null
+  const steps = [...staffed.map((lane) => LANE_LABEL[lane]), 'Вы']
+
+  return (
+    <div className="flex flex-none flex-wrap items-center gap-2.5 border-b border-bd px-7 py-3">
+      <span className="text-[11px] whitespace-nowrap text-tx3">Путь задачи:</span>
+      {steps.map((step, i) => {
+        const last = i === steps.length - 1
+        return (
+          <div key={step} className="flex items-center gap-2.5">
+            <div className="flex items-center gap-[7px]">
+              <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${last ? 'bg-tx' : 'bg-teal'}`} />
+              <span
+                className={`text-[12.5px] whitespace-nowrap ${last ? 'font-semibold text-tx' : 'text-tx2'}`}
+              >
+                {step}
+              </span>
+            </div>
+            {last ? null : (
+              <span aria-hidden className="text-[12px] text-tx3">
+                →
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 export function Screen() {
-  return <Placeholder title="Команда" />
+  const state = useStateQuery()
+  const data = state.data
+  const activeProject = data?.activeProject ?? null
+  const workers = data?.workers ?? []
+
+  /** The title of a task in hand — looked up in the rows the window already has. */
+  const titleOf = useMemo(() => {
+    const byId = new Map<string, string>()
+    for (const row of data?.queue ?? []) byId.set(row.id, row.title ?? 'Без названия')
+    return byId
+  }, [data])
+
+  /** What each worker has behind them in the rows the reading still carries. */
+  const tally = useMemo(() => {
+    const out = new Map<string, { done: number; failed: number }>()
+    for (const row of data?.done ?? []) {
+      if (activeProject && row.project !== activeProject) continue
+      if (!row.workerId) continue
+      const cur = out.get(row.workerId) ?? { done: 0, failed: 0 }
+      if (row.failed) cur.failed += 1
+      else cur.done += 1
+      out.set(row.workerId, cur)
+    }
+    return out
+  }, [data, activeProject])
+
+  const openTask = (taskId: string) => {
+    const detail: OpenScreenDetail = { screen: 'task-card', taskId }
+    window.dispatchEvent(new CustomEvent<OpenScreenDetail>(OPEN_SCREEN_EVENT, { detail }))
+  }
+
+  return (
+    <section className="flex min-w-0 flex-1 flex-col">
+      <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-2.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
+        <h1 className="m-0 mr-2 flex-none text-[15px] font-semibold tracking-[-0.01em] text-tx">Команда</h1>
+        {PRESENCE_COUNTS.map((p) => (
+          <KpiPill
+            key={p.presence}
+            value={workers.filter((w) => w.presence === p.presence).length}
+            label={p.label}
+            tone={p.tone}
+          />
+        ))}
+      </header>
+
+      {state.isError ? (
+        <div className="flex flex-none items-center gap-2.5 border-b border-warn-s bg-warn-s px-7 py-2.5">
+          <span aria-hidden className="flex-none text-warn-tx">
+            ●
+          </span>
+          <span className="text-[12.5px] text-tx">
+            Связь потеряна. Кто чем занят — на момент последнего, что было видно.
+          </span>
+        </div>
+      ) : null}
+
+      <PathStrip workers={workers} />
+
+      {workers.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center px-7">
+          <p className="m-0 text-[13px] text-tx2">
+            Работников пока нет. Они заводятся на «Агентах» — там же и настраиваются.
+          </p>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-7 pt-6 pb-7">
+          <div className="grid min-w-[1160px] grid-cols-4 gap-[18px]">
+            {workers.map((w) => {
+              const counts = tally.get(w.id) ?? { done: 0, failed: 0 }
+              return (
+                <WorkerCard
+                  key={w.id}
+                  worker={w}
+                  laneLabel={w.lane ? (LANE_LABEL[w.lane] ?? w.lane) : null}
+                  taskTitle={w.taskId ? (titleOf.get(w.taskId) ?? null) : null}
+                  doneCount={counts.done}
+                  failedCount={counts.failed}
+                  onOpenTask={openTask}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </section>
+  )
 }
