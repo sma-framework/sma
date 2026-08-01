@@ -14,6 +14,9 @@
  *     fewer than 5 settled → purityPct -1.
  *   - Test 9 (exam growth + replay): growExam turns outside touches into questions; appendMiss
  *     records a manual one; runExam replays through an injected compile and counts absences.
+ *   - Test 10 (note-level gold cases): scoreNoteCases scores {task, expected_notes, critical_notes,
+ *     forbidden_notes} against the REAL loader selection (CORE rules + tag-matched periphery) —
+ *     hit / miss / critical miss / forbidden, deterministic across runs.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -29,6 +32,7 @@ import {
   growExam,
   appendMiss,
   runExam,
+  scoreNoteCases,
 } from '../lib/context-pack.mjs'
 import { buildCatalog, readCatalog } from '../lib/catalog.mjs'
 import { loadTagsRegistry } from '../lib/frontmatter.mjs'
@@ -220,5 +224,82 @@ describe('growExam + appendMiss + runExam (Test 9)', () => {
     // a compile that returns the expected path → that question passes
     const partial = runExam({ contextDir, compile: (q: string) => ({ files: q === 'wire the widget' ? ['outside.ts'] : [] }) })
     expect(partial.count).toBe(1)
+  })
+})
+
+// ── note-level gold cases (Test 10) ──────────────────────────────────────────
+
+function writeNote(file: string, description: string, tags: string[], importance: number) {
+  const fm = ['---', `description: ${description}`, 'kind: reference', `tags: [${tags.join(', ')}]`, `importance: ${importance}`, '---', 'body']
+  writeFileSync(join(corpusDir, file), fm.join('\n') + '\n', 'utf8')
+}
+
+describe('scoreNoteCases — note-level gold cases (Test 10)', () => {
+  it('scores hit / miss / critical miss / forbidden against the real loader selection', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9) // CORE (>= CORE_THRESHOLD)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5) // periphery, matches a crm task
+    writeNote('auth-detail.md', 'an auth note the crm task never names', ['auth'], 3) // never loads
+
+    const opts = { corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commit: 'c' }
+    const cases = [
+      {
+        task: 'fix the crm handler',
+        expected_notes: ['core-rule.md', 'crm-detail.md', 'auth-detail.md'],
+        critical_notes: ['auth-detail.md'],
+        forbidden_notes: [],
+      },
+    ]
+
+    const res = scoreNoteCases({ cases, ...opts })
+
+    // the always-loaded set comes from the generator's CORE rule, not a reimplementation
+    expect(res.coreLoaded).toEqual(['core-rule.md'])
+
+    const c = res.cases[0]
+    expect(c.task).toBe('fix the crm handler')
+    expect(c.loaded).toEqual(['core-rule.md', 'crm-detail.md'])
+    expect(c.hits).toEqual(['core-rule.md', 'crm-detail.md'])
+    expect(c.missing).toEqual(['auth-detail.md'])
+    expect(c.criticalMissing).toEqual(['auth-detail.md'])
+    expect(c.forbiddenPresent).toEqual([])
+
+    expect(res.totals).toMatchObject({ cases: 1, expected: 3, hits: 2, missing: 1, casesWithCriticalMiss: 1 })
+  })
+
+  it('flags a forbidden note that loads anyway, and is deterministic across runs', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+
+    const cases = [
+      { task: 'fix the crm handler', expected_notes: ['crm-detail.md'], critical_notes: [], forbidden_notes: ['core-rule.md'] },
+    ]
+    const opts = { cases, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commit: 'c' }
+
+    const a = scoreNoteCases(opts)
+    const b = scoreNoteCases(opts)
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b))
+
+    expect(a.cases[0].forbiddenPresent).toEqual(['core-rule.md'])
+    expect(a.cases[0].criticalMissing).toEqual([])
+    expect(a.totals.forbiddenPresent).toBe(1)
+    // no wall-clock anywhere in the report bytes
+    expect(JSON.stringify(a)).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/)
+  })
+
+  it('tolerates a malformed case and an unreadable corpus without throwing', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    // a case with no task and a case whose fields are not arrays are skipped, never fatal
+    const res = scoreNoteCases({
+      cases: [{ expected_notes: ['x.md'] }, { task: 'crm', expected_notes: 'not-an-array' }],
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      commit: 'c',
+    })
+    expect(res.cases).toHaveLength(1) // only the one carrying a task text
+    expect(res.cases[0].expected).toEqual([])
+
+    const missing = scoreNoteCases({ cases: [{ task: 'crm', expected_notes: ['a.md'] }], corpusDir: join(dir, 'nope'), tagsPath: join(dir, 'nope', 'TAGS.md'), commit: 'c' })
+    expect(missing.coreLoaded).toEqual([])
+    expect(missing.cases[0].missing).toEqual(['a.md'])
   })
 })
