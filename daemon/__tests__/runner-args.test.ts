@@ -117,6 +117,21 @@ describe('buildClaudeArgs (D-9.5-04a hooks-enforced lane)', () => {
     expect(clean.some((a) => String(a).startsWith('--dangerously'))).toBe(false)
   })
 
+  it('a conversation turn is a fresh session too — it never inherits another talk’s id', () => {
+    // the chat lane rides these same builders, so its wake kind joins the fresh family:
+    // one turn must never resume the session of a different conversation
+    expect(() => buildClaudeArgs({ resumeId: UUID, wakeKind: 'chat' })).toThrow(/fresh session/i)
+    expect(buildClaudeArgs({ maxTurns: 4, wakeKind: 'chat' })).toEqual([
+      '--print',
+      '-',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--max-turns',
+      '4',
+    ])
+  })
+
   it('fresh-session discipline — a timer/new-task wake REFUSES a resumeId (PF-4)', () => {
     expect(() => buildClaudeArgs({ wakeKind: 'timer', resumeId: UUID })).toThrow()
     expect(() => buildClaudeArgs({ wakeKind: 'new-task', resumeId: UUID })).toThrow()
