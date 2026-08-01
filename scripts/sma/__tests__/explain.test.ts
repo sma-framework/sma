@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   COMMAND_TOPICS,
+  TOPIC_REFERENCES,
   extractHandlersKeys,
   getTopic,
   listTopics,
@@ -127,5 +128,33 @@ describe('explain.mjs — the live corpus stays honest', () => {
     const { uncovered, count } = coverage({ cliSource, explainersDir: REAL_EXPLAINERS })
     expect(uncovered).toEqual([])
     expect(count).toBe(0)
+  })
+
+  it('Test 7: the fan-out topic renders in both languages and points at its reference', () => {
+    const en = renderTopic('fanout', { explainersDir: REAL_EXPLAINERS })
+    expect(en.found).toBe(true)
+    expect(en.body).toMatch(/solo/i)
+    expect(en.reference).toBe(TOPIC_REFERENCES.fanout)
+    const ru = renderTopic('fanout', { explainersDir: REAL_EXPLAINERS, lang: 'ru' })
+    expect(ru.body).toContain('соло')
+    // a topic without a deep-dive keeps reference null — the map is opt-in, not required
+    expect(renderTopic('tour', { explainersDir: REAL_EXPLAINERS }).reference).toBeNull()
+    // the pointed-at document exists and carries all four signals + the deferred layer
+    const ladder = readFileSync(fileURLToPath(new URL(`../../../${TOPIC_REFERENCES.fanout}`, import.meta.url)), 'utf8')
+    for (const signal of ['Divisibility', 'Risk class', 'Size', 'Budget remaining']) {
+      expect(ladder).toContain(signal)
+    }
+    expect(ladder).toMatch(/dispatcher.*deferred|deferred to V5\.3/i)
+  })
+
+  it('Test 8: the browser-check recipe keeps the two rules that make a UI check evidence', () => {
+    const recipe = readFileSync(fileURLToPath(new URL('../../../docs/recipes/browser-check-command.md', import.meta.url)), 'utf8')
+    // the library belongs to the consumer; the core stays browser-free
+    expect(recipe).toMatch(/devDependencies/)
+    expect(recipe).toMatch(/core takes no browser dependency/i)
+    // pixel diffs are banned as receipts (nondeterministic), and so are model verdicts
+    expect(recipe).toMatch(/pixel diff is never a receipt/i)
+    // the receipt form itself: one command, one exit code, hashed
+    expect(recipe).toMatch(/receipt-hash/)
   })
 })

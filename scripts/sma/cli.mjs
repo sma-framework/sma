@@ -1305,6 +1305,8 @@ async function cmdExplain({ positionals, flags }) {
     return 0 // teaching surface never punishes curiosity
   }
   process.stdout.write(`# ${res.title}\n\n${res.summary}\n\n${res.body}\n`)
+  // A topic with a deep-dive document points at it instead of quoting it (one source).
+  if (res.reference) process.stdout.write(`\nFurther reading: ${res.reference}\n`)
   return 0
 }
 
