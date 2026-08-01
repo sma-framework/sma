@@ -21,6 +21,15 @@
  *   - Test 10 (real spawn): the DEFAULT runner actually spawns the entry and times it.
  *   - Test 11 (honest empty latency): no discoverable hook entry -> null stats, never a
  *     fabricated 0 ms.
+ *   - Test 12 (recovery, env down): an unreachable queue is 'environment-unavailable' WITH
+ *     NO recovery_ms — the drill never invents a number it did not measure.
+ *   - Test 13 (recovery, measured): a reachable queue + a drill that returns a number
+ *     reports 'measured' with that number.
+ *   - Test 14 (recovery, drill fails): a throwing drill degrades to the honest branch and
+ *     the connection string is MASKED out of the detail.
+ *   - Test 15 (recovery kills nothing): the module signals no pid at all (source assertion).
+ *   - Test 16 (clean install): wall_ms + per-step timings through an injected step runner.
+ *   - Test 17 (clean install, failing step): reported incomplete, never as an install time.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -33,8 +42,12 @@ import {
   captureRetrieval,
   captureContextCost,
   captureHookLatency,
+  captureWorkerRecovery,
+  captureCleanInstall,
   discoverHookEntry,
   HOOK_LATENCY_CHECK_COMMAND,
+  WORKER_RECOVERY_CHECK_COMMAND,
+  CLEAN_INSTALL_CHECK_COMMAND,
 } from '../lib/baseline.mjs'
 import { corpusStats, ESTIMATOR_VERSION, APPROX_CAVEAT } from '../lib/economy.mjs'
 import { isSafeCommand } from '../lib/predict.mjs'
@@ -323,5 +336,137 @@ describe('captureHookLatency — timing the INSTALLED hook entry (Tests 8-11)', 
 
     // a missing settings file is the same honest empty, not a throw
     expect(captureHookLatency({ settingsPath: join(dir, 'no-such.json') }).runs).toBe(0)
+  })
+})
+
+describe('captureWorkerRecovery — the honest two-branch outcome (Tests 12-15)', () => {
+  // Credentials on purpose: the report must never carry them back out.
+  const DOWN_URL = 'postgres://drill:s3cret@127.0.0.1:1/sma_queue'
+
+  it('an unreachable queue reports environment-unavailable and NO recovery_ms (Test 12)', async () => {
+    // the REAL probe against a port nothing listens on — no injection, the honest path
+    const r = await captureWorkerRecovery({ queueUrl: DOWN_URL, probeTimeoutMs: 500 })
+
+    expect(r.metric).toBe('worker-recovery')
+    expect(r.status).toBe('environment-unavailable')
+    expect('recovery_ms' in r).toBe(false) // absent, not null-with-a-number-shape
+    expect(typeof r.detail).toBe('string')
+    expect(r.detail.length).toBeGreaterThan(0)
+
+    // T-…-04: no credentials, no connection string in a report that gets recorded
+    expect(r.detail).not.toContain('s3cret')
+    expect(r.detail).not.toContain('postgres://')
+    expect(JSON.stringify(r)).not.toContain('s3cret')
+
+    expect(r.check_command).toBe(WORKER_RECOVERY_CHECK_COMMAND)
+    expect(isSafeCommand(r.check_command)).toBe(true)
+
+    // an absent queue url is the SAME honest branch, not a throw
+    const none = await captureWorkerRecovery({})
+    expect(none.status).toBe('environment-unavailable')
+    expect('recovery_ms' in none).toBe(false)
+  })
+
+  it('a reachable queue + a drill that measures reports the number (Test 13)', async () => {
+    const seen: unknown[] = []
+    const r = await captureWorkerRecovery({
+      queueUrl: DOWN_URL,
+      probe: async (t: object) => {
+        seen.push(t)
+        return true
+      },
+      drill: async () => ({ recovery_ms: 12345, detail: 'claim abandoned; redelivered after expiry' }),
+    })
+    expect(r.status).toBe('measured')
+    expect(r.recovery_ms).toBe(12345)
+    expect(r.detail).toMatch(/redelivered/)
+    expect(seen).toHaveLength(1)
+
+    // the receipt path accepts it unmodified
+    const rec = recordReceipt({
+      entry: { id: 'BASE-worker-recovery', assertion: 'the worker-recovery drill re-runs', check_command: r.check_command },
+      runCommand: () => ({ stdout: 'ok\n', exitCode: 0 }),
+    })
+    expect(rec.error).toBeUndefined()
+  })
+
+  it('a failing or numberless drill NEVER becomes a measurement (Test 14)', async () => {
+    const thrown = await captureWorkerRecovery({
+      queueUrl: DOWN_URL,
+      probe: async () => true,
+      drill: async () => {
+        throw new Error(`connect ECONNREFUSED for ${DOWN_URL}`)
+      },
+    })
+    expect(thrown.status).toBe('environment-unavailable')
+    expect('recovery_ms' in thrown).toBe(false)
+    expect(thrown.detail).toContain('ECONNREFUSED')
+    expect(thrown.detail).not.toContain('s3cret') // masked
+    expect(thrown.detail).not.toContain('127.0.0.1:1')
+
+    const numberless = await captureWorkerRecovery({
+      queueUrl: DOWN_URL,
+      probe: async () => true,
+      drill: async () => ({ detail: 'the claim never came back within the window' }),
+    })
+    expect(numberless.status).toBe('environment-unavailable')
+    expect('recovery_ms' in numberless).toBe(false)
+    expect(numberless.detail).toMatch(/never came back/)
+  })
+
+  it('the drill signals no process — it kills nothing at all (Test 15)', () => {
+    const src = readFileSync(fileURLToPath(new URL('../lib/baseline.mjs', import.meta.url)), 'utf8')
+    // T-…-03: the safest way to never kill a foreign pid is to never signal one.
+    expect(src).not.toMatch(/process\.kill/)
+    expect(src).not.toMatch(/\.kill\(/)
+    expect(src).not.toMatch(/SIGKILL|SIGTERM/)
+    expect(src).not.toMatch(/taskkill/)
+  })
+})
+
+describe('captureCleanInstall — the timed fresh install (Tests 16-17)', () => {
+  it('reports wall_ms and per-step timings through an injected runner (Test 16)', () => {
+    let clock = 0
+    const calls: string[] = []
+    const r = captureCleanInstall({
+      repoRoot: dir,
+      tmpDir: join(dir, 'install-scratch'),
+      hrtime: () => clock,
+      exec: (file: string) => {
+        calls.push(file)
+        clock += 100
+        return ''
+      },
+    })
+
+    expect(r.metric).toBe('clean-install')
+    expect(r.status).toBe('measured')
+    expect(r.steps.map((s: { name: string }) => s.name)).toEqual(['clone', 'install'])
+    expect(r.steps.every((s: { ok: boolean }) => s.ok)).toBe(true)
+    expect(r.steps.map((s: { ms: number }) => s.ms)).toEqual([100, 100])
+    expect(r.wall_ms).toBe(200)
+    expect(calls).toHaveLength(2) // one clone, one install — nothing else spawned
+
+    expect(r.check_command).toBe(CLEAN_INSTALL_CHECK_COMMAND)
+    expect(isSafeCommand(r.check_command)).toBe(true)
+    // T-…-04: no machine paths in a report that gets recorded
+    expect(JSON.stringify(r)).not.toContain('install-scratch')
+  })
+
+  it('a failing step is reported incomplete, never as an install timing (Test 17)', () => {
+    let clock = 0
+    const r = captureCleanInstall({
+      repoRoot: dir,
+      tmpDir: join(dir, 'install-scratch-2'),
+      hrtime: () => (clock += 50),
+      exec: (file: string, args: string[]) => {
+        if (String(args?.[0] ?? '').includes('init')) throw new Error('install exploded')
+        return ''
+      },
+    })
+    expect(r.status).toBe('incomplete')
+    expect(r.steps[1].ok).toBe(false)
+    expect(r.steps[1].detail).toMatch(/exploded/)
+    expect(Number.isFinite(r.wall_ms)).toBe(true)
   })
 })
