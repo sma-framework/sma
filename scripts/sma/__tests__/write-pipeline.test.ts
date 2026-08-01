@@ -19,20 +19,27 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, readdirSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
   PIPELINE_STEPS,
+  PIPELINE_DRAFT_KIND,
   STEPS,
   createPipelineState,
   observe,
   classify,
   redact,
   extract,
+  compare,
+  attachEvidence,
+  assignRisk,
+  persist,
   runPipeline,
 } from '../lib/write-pipeline.mjs'
+import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
+import { validateRecord } from '../lib/schema-v2.mjs'
 
 let root: string
 let corpusDir: string
@@ -84,6 +91,36 @@ function filesIn(dir: string): string[] {
 
 function stepsOf(trace: Array<{ step: string }>): string[] {
   return trace.map((t) => t.step)
+}
+
+function traceStep(trace: Array<{ step: string }>, step: string): any {
+  return trace.find((t) => t.step === step)
+}
+
+/** Put a schema-v2 record into the fixture corpus, written by the shared serializer. */
+function seedCorpus(frontmatter: Record<string, unknown>, body = '\nSeeded.\n') {
+  const text = serializeNote({ frontmatter, body, schemaVersion: 2 })
+  writeFileSync(join(corpusDir, `${frontmatter.id}.md`), text)
+}
+
+function readNote(path: string) {
+  return parseNote(readFileSync(path, 'utf8'), { file: path })
+}
+
+/** The corpus neighbour used by the compare tests: the same subject, asserted positively. */
+const NEIGHBOUR = {
+  id: 'working-queue-adapter-nightly-drain',
+  schema_version: '2',
+  status: 'active',
+  memory_type: 'working',
+  truth_mode: 'observed',
+  claim: 'The queue adapter must always drain the nightly backlog on this machine',
+  language: 'en',
+  sensitivity: 'internal',
+  risk: 'low',
+  retention: 'P30D',
+  fingerprint: { product_version: 'v5.0.3' },
+  retrieval: { areas: ['queue'] },
 }
 
 beforeEach(() => {
@@ -331,5 +368,257 @@ describe('the walk — steps 1-4 run in the canon order', () => {
 
     expect(stepsOf(result.trace)).toEqual(['observe', 'classify'])
     expect(result.outcome).toBe('rejected')
+  })
+})
+
+describe('step 5 compare — what the corpus already says', () => {
+  it('Test 22: an opposing claim in the corpus is FLAGGED, not blocked — the record still lands', () => {
+    seedCorpus(NEIGHBOUR)
+    const event = makeEvent({ claim: 'The queue adapter never drains the nightly backlog on this machine' })
+    const result = runPipeline(event, opts())
+
+    const step = traceStep(result.trace, 'compare')
+    expect(step.outcome).toBe('flagged')
+    expect(step.detail.contradictions).toHaveLength(1)
+    expect(step.detail.contradictions[0].files).toContain('working-queue-adapter-nightly-drain.md')
+
+    // non-blocking: a contradiction is a review signal, not a refusal
+    expect(result.outcome).toBe('persisted-active')
+  })
+
+  it('Test 23: an exact-id duplicate is REJECTED and nothing is written', () => {
+    seedCorpus(validRecord({ claim: 'Something else entirely about the drain window' }))
+    const before = filesIn(corpusDir)
+
+    const result = runPipeline(makeEvent(), opts())
+
+    expect(result.outcome).toBe('rejected')
+    const step = traceStep(result.trace, 'compare')
+    expect(step.outcome).toBe('rejected')
+    expect(JSON.stringify(step.detail)).toContain('working-queue-adapter-drain-window')
+    expect(filesIn(corpusDir)).toEqual(before)
+    expect(filesIn(draftsDir)).toEqual([])
+  })
+
+  it('Test 24: the same claim under a different id is flagged, not blocked', () => {
+    seedCorpus({ ...NEIGHBOUR, claim: validRecord().claim })
+    const result = runPipeline(makeEvent(), opts())
+
+    const step = traceStep(result.trace, 'compare')
+    expect(step.detail.duplicateClaims).toContain('working-queue-adapter-nightly-drain.md')
+    expect(result.outcome).toBe('persisted-active')
+  })
+
+  it('Test 25: a named supersedes target is a supersession candidate; a missing one is flagged unresolved', () => {
+    seedCorpus(NEIGHBOUR)
+
+    const resolved = runPipeline(makeEvent({ supersedes: 'working-queue-adapter-nightly-drain' }), opts())
+    const okStep = traceStep(resolved.trace, 'compare')
+    expect(okStep.detail.supersessionCandidates).toContain('working-queue-adapter-nightly-drain.md')
+    expect(okStep.detail.unresolvedSupersedes).toEqual([])
+
+    rmSync(join(corpusDir, 'working-queue-adapter-drain-window.md'), { force: true })
+    const dangling = runPipeline(makeEvent({ supersedes: 'a-record-that-was-never-written' }), opts())
+    expect(traceStep(dangling.trace, 'compare').detail.unresolvedSupersedes).toContain(
+      'a-record-that-was-never-written',
+    )
+  })
+
+  it('Test 26: overlapping validity windows over a shared area are flagged', () => {
+    seedCorpus({ ...NEIGHBOUR, valid_from: '2026-01-01', valid_until: '2026-12-31' })
+    const result = runPipeline(makeEvent({ valid_from: '2026-06-01', valid_until: '2026-09-01' }), opts())
+
+    const step = traceStep(result.trace, 'compare')
+    expect(step.detail.temporalOverlaps).toContain('working-queue-adapter-nightly-drain.md')
+  })
+})
+
+describe('step 6 evidence — a judgment without provenance never becomes active memory', () => {
+  /** An authored judgment: the class the interpretation discipline governs. */
+  function interpretation(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'procedural-prefer-the-queue-adapter',
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'procedural',
+      truth_mode: 'inferred',
+      claim: 'Background work should go through the queue adapter rather than an inline call',
+      language: 'en',
+      sensitivity: 'internal',
+      risk: 'low',
+      retrieval: { areas: ['queue'] },
+      ...overrides,
+    }
+  }
+
+  it('Test 27: THE canonical case — no source.authority means draft/hypothesis, staged, never active', () => {
+    const result = runPipeline({ record: interpretation(), body: '\nA judgment.\n' }, opts())
+
+    expect(result.outcome).toBe('staged-draft')
+    expect(result.record.status).toBe('draft')
+    expect(result.record.truth_mode).toBe('hypothesis')
+
+    // it exists as a draft, and NOT in the corpus
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual(['procedural-prefer-the-queue-adapter.md'])
+
+    const step = traceStep(result.trace, 'evidence')
+    expect(step.outcome).toBe('staged')
+    expect(JSON.stringify(step.detail)).toMatch(/authority/)
+    expect(step.detail.downgraded_from).toBe('inferred')
+  })
+
+  it('Test 28: the staged draft carries the pipeline marker', () => {
+    const result = runPipeline({ record: interpretation(), body: '\nA judgment.\n' }, opts())
+    const note = readNote(result.path)
+
+    expect(note.frontmatter.draft_kind).toBe(PIPELINE_DRAFT_KIND)
+    expect(note.frontmatter.status).toBe('draft')
+  })
+
+  it('Test 29: authority WITH none-recorded evidence is still staged — an honest nothing is nothing', () => {
+    const result = runPipeline(
+      {
+        record: interpretation({ source: { authority: 'self-observed' }, evidence: 'none-recorded' }),
+        body: '\nA judgment.\n',
+      },
+      opts(),
+    )
+
+    expect(result.outcome).toBe('staged-draft')
+    expect(JSON.stringify(traceStep(result.trace, 'evidence').detail)).toMatch(/evidence/)
+    expect(filesIn(corpusDir)).toEqual([])
+  })
+
+  it('Test 30: a fact-mode record passes the evidence step untouched', () => {
+    const state = createPipelineState(makeEvent(), opts())
+    state.corpus = []
+    attachEvidence(state)
+
+    expect(state.outcome).toBeNull()
+    expect(state.record.status).toBe('active')
+    expect(state.record.truth_mode).toBe('observed')
+    expect(traceStep(state.trace, 'evidence').outcome).toBe('ok')
+  })
+})
+
+describe('step 7 risk — only one class of record may be written without a human', () => {
+  it('Test 31: a normative rule is staged for the human path, never persisted', () => {
+    const result = runPipeline(
+      {
+        record: {
+          id: 'normative-never-add-all',
+          schema_version: '2',
+          status: 'active',
+          memory_type: 'normative',
+          truth_mode: 'normative',
+          claim: 'Staging must name explicit paths in this repository',
+          language: 'en',
+          sensitivity: 'internal',
+          risk: 'medium',
+          source: { authority: 'owner-instruction' },
+          evidence: [{ type: 'doc', ref: 'CONTRIBUTING.md' }],
+          retrieval: { areas: ['git'] },
+        },
+        body: '\nA standing rule.\n',
+      },
+      opts(),
+    )
+
+    expect(result.outcome).toBe('staged-draft')
+    expect(traceStep(result.trace, 'risk').detail.approval_path).toBe('human-approval')
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual(['normative-never-add-all.md'])
+  })
+
+  it('Test 32: an auto-path record with NO retention window is staged — an automatic write needs an expiry', () => {
+    const result = runPipeline(makeEvent({ retention: undefined }), opts())
+
+    expect(result.outcome).toBe('staged-draft')
+    const step = traceStep(result.trace, 'risk')
+    expect(step.outcome).toBe('staged')
+    expect(JSON.stringify(step.detail)).toMatch(/retention|ttl/i)
+    expect(filesIn(corpusDir)).toEqual([])
+  })
+
+  it('Test 33: the resolved approval path is always in the trace', () => {
+    const result = runPipeline(makeEvent(), opts())
+    expect(traceStep(result.trace, 'risk')).toMatchObject({
+      outcome: 'ok',
+      detail: { approval_path: 'auto-ttl' },
+    })
+  })
+})
+
+describe('step 8 persist — the only door into the corpus', () => {
+  it('Test 34: the happy path persists, with one trace entry for each of the eight steps', () => {
+    const result = runPipeline(makeEvent(), opts())
+
+    expect(result.outcome).toBe('persisted-active')
+    expect(stepsOf(result.trace)).toEqual([
+      'observe',
+      'classify',
+      'redact',
+      'extract',
+      'compare',
+      'evidence',
+      'risk',
+      'persist',
+    ])
+    expect(filesIn(corpusDir)).toEqual(['working-queue-adapter-drain-window.md'])
+    expect(filesIn(draftsDir)).toEqual([])
+    expect(result.path).toBe(join(corpusDir, 'working-queue-adapter-drain-window.md'))
+  })
+
+  it('Test 35: what landed on disk parses back and validates with zero errors', () => {
+    const result = runPipeline(makeEvent(), opts())
+    const note = readNote(result.path)
+
+    expect(note.schemaVersion).toBe(2)
+    expect(validateRecord(note.frontmatter).errors).toEqual([])
+    expect(note.frontmatter.id).toBe('working-queue-adapter-drain-window')
+    expect(note.frontmatter.status).toBe('active')
+  })
+
+  it('Test 36: a validation failure at the door stages the record — the corpus is never half-written', () => {
+    // observed is a re-derivable mode: without a fingerprint or a verification
+    // plan the record cannot carry its own check, so the validator refuses it.
+    const result = runPipeline(makeEvent({ fingerprint: undefined }), opts())
+
+    expect(result.outcome).toBe('staged-draft')
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual(['working-queue-adapter-drain-window.md'])
+
+    const step = traceStep(result.trace, 'persist')
+    expect(step.outcome).toBe('staged')
+    expect(step.detail.errors.join(' ')).toMatch(/fingerprint|verification/)
+  })
+
+  it('Test 37: persist never clobbers an existing corpus file', () => {
+    seedCorpus(validRecord({ claim: 'The original sentence that must survive' }))
+    const original = readFileSync(join(corpusDir, 'working-queue-adapter-drain-window.md'), 'utf8')
+
+    // corpus injected as empty, so compare cannot catch the collision — persist must
+    const state = createPipelineState(makeEvent(), { ...opts(), corpus: [] })
+    for (const step of [observe, classify, redact, extract, compare, attachEvidence, assignRisk, persist]) step(state)
+
+    expect(state.outcome).toBe('staged-draft')
+    expect(readFileSync(join(corpusDir, 'working-queue-adapter-drain-window.md'), 'utf8')).toBe(original)
+  })
+
+  it('Test 38: the id law holds at the write path — the file stem IS the id', () => {
+    const result = runPipeline(makeEvent(), opts())
+    const note = readNote(result.path)
+    expect(result.path.endsWith(`${note.frontmatter.id}.md`)).toBe(true)
+  })
+
+  it('Test 39: the terminal outcome is journalled', () => {
+    runPipeline(makeEvent(), opts())
+    const events = readFileSync(join(journalDir, 'test-pipeline.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+
+    expect(events.some((e) => e.detail?.stage === 'persist' && e.detail?.outcome === 'persisted-active')).toBe(true)
   })
 })
