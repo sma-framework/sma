@@ -1026,6 +1026,49 @@ describe('MEM-V2SCHEMA + MEM-ONECLAIM — the record discipline', () => {
     expect(findingsOf(res, 'MEM-ONECLAIM')).toHaveLength(0)
   })
 
+  it('Test 5b (the grammar gets the last word): a record the validator accepts but the serializer refuses → CRITICAL', () => {
+    // The parser is more permissive on the way IN than the emitter is on the way
+    // OUT: a scalar where a block is required is read happily and refused on
+    // write. Such a record cannot be written through serializeNote at all, so the
+    // fixture is raw text on purpose — this is precisely the state the lint must
+    // catch, because every tool that round-trips the record will reject it.
+    const dir = mkdtempSync(join(tmpdir(), 'sma-lint-roundtrip-'))
+    try {
+      writeFileSync(join(dir, 'TAGS.md'), SIZE_TAGS_MD, 'utf8')
+      writeFileSync(join(dir, 'MEMORY.md'), '# MEMORY\n\n- [r](semantic_unwritable.md)\n', 'utf8')
+      writeFileSync(
+        join(dir, 'semantic_unwritable.md'),
+        [
+          '---',
+          'id: semantic_unwritable',
+          'schema_version: 2',
+          'status: active',
+          'memory_type: semantic',
+          'truth_mode: factual',
+          'claim: the release gate refuses a build whose checksum file is missing',
+          'language: en',
+          'sensitivity: internal',
+          'evidence: none-recorded',
+          'verification: rerun the release gate',
+          '---',
+          '',
+          'body text',
+          '',
+        ].join('\n'),
+        'utf8',
+      )
+      const res = runLint({
+        corpusDir: dir,
+        tagsPath: join(dir, 'TAGS.md'),
+        indexPath: join(dir, 'MEMORY.md'),
+      })
+      const schema = findingsOf(res, 'MEM-V2SCHEMA').filter((f) => f.tier === 'critical')
+      expect(schema.some((f) => f.message.includes('refuses to write it back'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
   it('Test 6: both checks are registered in LINT_CHECKS as critical classes', () => {
     for (const id of ['MEM-V2SCHEMA', 'MEM-ONECLAIM']) {
       const c = LINT_CHECKS.find((x) => x.id === id)
