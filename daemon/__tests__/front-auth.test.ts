@@ -110,14 +110,13 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 
 /**
  * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
- * own plan lands: import + onboarding in 9.7-20. Delete an entry here in the SAME commit
- * that fills its handler; the table itself does NOT change (no route is added or removed
- * by a fill plan). The static + project group left this list when their handlers landed;
- * the four machine doors and the two chat doors left it with 9.7-15.
+ * own plan lands: onboarding in 9.7-20. Delete an entry here in the SAME commit that fills
+ * its handler; the table itself does NOT change (no route is added or removed by a fill
+ * plan). The static + project group left this list when their handlers landed; the four
+ * machine doors and the two chat doors left it with 9.7-15; the two import doors left it
+ * with the first task of 9.7-20.
  */
 const UNFILLED_ROUTES = [
-  'POST /api/import/scan',
-  'POST /api/import/enroll',
   'GET /api/onboarding',
   'POST /api/onboarding/answer',
   'POST /api/onboarding/complete',
@@ -584,7 +583,7 @@ describe('server.mjs — the unfilled routes answer 501 when authenticated', () 
   it('a stub never reads the request body: a hostile POST body still yields a bare 501', async () => {
     const res = await call(front, {
       method: 'POST',
-      url: '/api/import/scan',
+      url: '/api/onboarding/answer',
       headers: jsonHeaders(),
       body: { command: 'rm -rf /', path: '../../etc/passwd' },
     })
