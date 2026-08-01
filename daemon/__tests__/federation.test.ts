@@ -1,16 +1,20 @@
 /**
  * Tests for the federation module — the daemon's FIRST outbound daemon→daemon contour
- * (Plan 9.7-13, Task 1; D-9.7-01 / D-9.7-03 / D-9.7-04 / D-9.7-07).
+ * (Plan 9.7-13; D-9.7-01 / D-9.7-03 / D-9.7-04 / D-9.7-07).
  *
- * The unit group drives createFederation through an INJECTED fetch, so no socket is
- * opened here: aggregation of two peers, the offline degrade (last snapshot + its age),
- * the SSRF guard at construction, and the token-never-serializes law.
+ * The UNIT groups drive createFederation through an INJECTED fetch, so no socket is
+ * opened there: aggregation of two peers, the offline degrade (last snapshot + its age),
+ * the url guard at construction, the token-never-serializes law and the frozen proxy list.
  *
- * The live two-daemon group (Task 3) is separate and deliberately uses the REAL fetch.
+ * The LIVE group at the bottom injects NOTHING: two real front servers, two ports, two
+ * tokens, the real fetch. That is the D-9.7-03 verification — the contour proved by live
+ * processes on this machine before any second computer exists.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 
+import { createFrontServer } from '../src/front/server.mjs'
+import { deriveState } from '../src/front/state.mjs'
 import {
   createFederation,
   InvalidPeerUrlError,
@@ -317,5 +321,207 @@ describe('federation — proxyAction (D-9.7-07)', () => {
     const err: any = await fed.proxyAction({ machineId: 'mac-mini', path: '/api/return', body: {} }).catch((e) => e)
     expect(err).toBeInstanceOf(PeerUnreachableError)
     expect(err.status).toBe(502)
+  })
+})
+
+// ════════════════ THE LIVE TWO-DAEMON CONTOUR (D-9.7-03) ═══════════════════════════
+//
+// Everything above proves the module's SHAPE against a fake. This group proves the
+// CONTOUR: two real front servers on two ephemeral ports, two different configs, two
+// different tokens, and the REAL global fetch between them — no fetchImpl is injected
+// anywhere below. The known trap is a federation that works only on paper, so the wire is
+// what is under test: real sockets, real bearer auth on the peer side, a real connection
+// refusal for the offline case. The founder's own poll goes through the hub's real
+// GET /api/state, so the aggregator seam is exercised end to end and not just in isolation.
+//
+// Running this on ONE machine is the whole point: it is the cheap honest verification that
+// lands before any second computer is bought. Repeating it on real hardware is a separate
+// smoke, not a substitute for this one.
+
+const HUB_TOKEN = 'hub-live-token-value'
+const PEER_TOKEN = 'peer-live-token-value'
+
+/** Listen on an ephemeral loopback port; resolve the port actually bound. */
+function listenEphemeral(server: any): Promise<number> {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
+}
+
+/** Close a live server AND its keep-alive sockets, so the next fetch is refused at once. */
+function closeServer(server: any): Promise<void> {
+  return new Promise((resolve) => {
+    if (!server.listening) return resolve()
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections()
+    server.close(() => resolve())
+  })
+}
+
+describe('federation — TWO LIVE DAEMONS on this machine (D-9.7-03)', () => {
+  const teardown: Array<() => Promise<void>> = []
+
+  afterEach(async () => {
+    while (teardown.length) await teardown.pop()!()
+  })
+
+  /** Build the peer daemon: its own token, its own machine id, its own rows. */
+  async function startPeer() {
+    const rows = [
+      { id: 'BL-P1', status: 'queued', lane: 'prod', title: 'работа пира', priority: 0, enqueuedAt: NOW - 1000 },
+      { id: 'BL-P9', status: 'awaiting_approval', lane: 'prod', title: 'ждёт приёмки', priority: 0 },
+    ]
+    const front = createFrontServer({
+      config: {
+        token: PEER_TOKEN,
+        bind: '127.0.0.1',
+        machineId: 'peer-self',
+        machineTitle: 'Ноутбук',
+        projects: [{ id: 'shop', name: 'Магазин' }],
+        activeProject: 'shop',
+        workers: [{ id: 'p-1', lane: 'prod', account: { name: 'p-1' } }],
+      },
+      deps: {
+        clock: () => NOW,
+        adapter: { list: async () => rows.slice() },
+        deriveState,
+        // the peer owns its OWN approve logic — the hub must never re-play it
+        casExec: async () => ({ rows: [{ id: 'BL-P9' }] }),
+        verbRunner: async () => ({ merged: true, receipt: { testsPassed: 3, testsTotal: 3 } }),
+        repoDir: '/peer-repo',
+      },
+    })
+    /** Every request the peer actually received, with the bearer it actually carried. */
+    const seen: Array<{ url: string; auth: string | undefined }> = []
+    front.server.on('request', (req: any) => seen.push({ url: req.url, auth: req.headers.authorization }))
+    const port = await listenEphemeral(front.server)
+    teardown.push(() => closeServer(front.server))
+    return { front, port, seen }
+  }
+
+  /** Build the hub daemon around a live peer registry entry + the REAL fetch. */
+  async function startHub(peerPort: number, clock: () => number, token = PEER_TOKEN) {
+    const federation = createFederation({
+      config: {
+        federation: {
+          role: 'hub',
+          // the ONE sanctioned use of the escape hatch: same-host verification
+          allowLoopbackPeers: true,
+          peers: [{ id: 'peer-1', title: 'Ноутбук', url: `http://127.0.0.1:${peerPort}`, token }],
+        },
+      },
+      clock,
+    })
+    const rows = [{ id: 'BL-H1', status: 'queued', lane: 'prod', title: 'работа хаба', priority: 0, enqueuedAt: NOW - 500 }]
+    const front = createFrontServer({
+      config: {
+        token: HUB_TOKEN,
+        bind: '127.0.0.1',
+        machineId: 'this-pc',
+        machineTitle: 'Этот ПК',
+        projects: [{ id: 'home', name: 'Дом' }],
+        activeProject: 'home',
+        federation: { role: 'hub' },
+        workers: [],
+      },
+      deps: {
+        clock: () => NOW,
+        adapter: { list: async () => rows.slice() },
+        deriveState,
+        aggregator: async (payload: any) => {
+          await federation.pollPeers()
+          return federation.aggregateState(payload)
+        },
+      },
+    })
+    const port = await listenEphemeral(front.server)
+    teardown.push(() => closeServer(front.server))
+    return { federation, front, port }
+  }
+
+  it('a hub aggregates a LIVE peer over a real socket, end to end through its own /api/state', async () => {
+    const peer = await startPeer()
+    const hub = await startHub(peer.port, () => NOW)
+
+    // the founder's own poll — a real HTTP GET against the hub, with the HUB's token
+    const r = await fetch(`http://127.0.0.1:${hub.port}/api/state`, { headers: { authorization: `Bearer ${HUB_TOKEN}` } })
+    expect(r.status).toBe(200)
+    const payload: any = await r.json()
+
+    expect(payload.machines.map((m: any) => [m.id, m.role, m.online])).toEqual([
+      ['this-pc', 'self', true],
+      ['peer-1', 'peer', true],
+    ])
+    // the peer's rows arrived, tagged with the REGISTRY id an action would address
+    expect(payload.queue.map((q: any) => [q.id, q.machine])).toEqual([
+      ['BL-H1', 'this-pc'],
+      ['BL-P1', 'peer-1'],
+    ])
+    expect(payload.kpis.queued).toBe(2)
+    expect(payload.kpis.awaitingApproval).toBe(1) // the peer's, counted in the one window
+
+    // the peer was reached on its ORDINARY front contract, with ITS bearer — no special door
+    const stateHits = peer.seen.filter((s) => s.url === '/api/state')
+    expect(stateHits.length).toBeGreaterThan(0)
+    expect(stateHits[0].auth).toBe(`Bearer ${PEER_TOKEN}`)
+    // and no peer token or url ever reaches the founder's payload
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain(PEER_TOKEN)
+    expect(serialized).not.toContain(`127.0.0.1:${peer.port}`)
+  })
+
+  it('KILLING the peer flips it offline on the next poll and keeps its last snapshot, aged', async () => {
+    const peer = await startPeer()
+    let now = NOW
+    const hub = await startHub(peer.port, () => now)
+
+    await hub.federation.pollPeers()
+    expect(hub.federation.peerStatus()[0]).toMatchObject({ id: 'peer-1', online: true })
+
+    // a REAL death: sockets destroyed, port released — the next poll is refused by the OS
+    await closeServer(peer.front.server)
+    now = NOW + 30_000
+
+    await expect(hub.federation.pollPeers()).resolves.toBeTruthy() // still fail-open
+    const status = hub.federation.peerStatus()[0]
+    expect(status.online).toBe(false)
+    expect(status.lastSeenSec).toBe(30)
+
+    // the founder still sees the dead machine's work, explicitly aged (the documented
+    // exception to «derive, never store» — in memory, labelled, lost on restart)
+    const r = await fetch(`http://127.0.0.1:${hub.port}/api/state`, { headers: { authorization: `Bearer ${HUB_TOKEN}` } })
+    const payload: any = await r.json()
+    expect(payload.machines[1]).toMatchObject({ id: 'peer-1', online: false })
+    expect(payload.machines[1].lastSeenSec).toBeGreaterThanOrEqual(30)
+    expect(payload.queue.map((q: any) => q.id)).toEqual(['BL-H1', 'BL-P1'])
+  })
+
+  it('proxies an approve to the LIVE peer with the PEER’s token and relays its answer', async () => {
+    const peer = await startPeer()
+    const hub = await startHub(peer.port, () => NOW)
+
+    const out = await hub.federation.proxyAction({
+      machineId: 'peer-1',
+      path: '/api/approve',
+      body: { taskId: 'BL-P9' },
+    })
+
+    expect(out.status).toBe(200)
+    expect(out.body).toMatchObject({ ok: true, taskId: 'BL-P9', merged: true })
+    // the peer's own merge receipt travelled back VERBATIM — the hub computed nothing
+    expect(out.body.receipt).toEqual({ testsPassed: 3, testsTotal: 3 })
+
+    const approveHit = peer.seen.find((s) => s.url === '/api/approve')
+    expect(approveHit).toBeTruthy()
+    expect(approveHit!.auth).toBe(`Bearer ${PEER_TOKEN}`)
+    expect(approveHit!.auth).not.toBe(`Bearer ${HUB_TOKEN}`)
+  })
+
+  it('a WRONG peer token is refused by the peer’s own auth door and relayed verbatim (401)', async () => {
+    const peer = await startPeer()
+    const hub = await startHub(peer.port, () => NOW, 'a-stale-token-value')
+
+    const out = await hub.federation.proxyAction({ machineId: 'peer-1', path: '/api/approve', body: { taskId: 'BL-P9' } })
+    expect(out.status).toBe(401)
+
+    await hub.federation.pollPeers()
+    expect(hub.federation.peerStatus()[0].online).toBe(false) // and it never looks online
   })
 })
