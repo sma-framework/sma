@@ -58,6 +58,15 @@ const { readVerificationStatus } = verificationMod;
 const { planningDir, withPlanningLock } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
 const { readModifyWriteStateMd, stateExtractField, stateReplaceField, stateReplaceFieldWithFallback, syncStateFrontmatter, withStateLock, updatePerformanceMetricsSection, } = stateMod;
+// The word that introduces a phase in a ROADMAP. Roadmaps are written in the
+// project's own language, so the scans that COUNT used phase numbers accept the
+// localized spellings too — an unrecognized heading is an uncounted phase, and
+// an uncounted phase is a number collision on the next `phase add`.
+const ROADMAP_PHASE_WORD = '(?:Phase|Фаза)';
+// An optional parenthetical between the number and the colon:
+// `### Phase 8 (revised): …`. A parenthetical AFTER the colon is title text and
+// is matched by the colon alone, exactly as before.
+const ROADMAP_PHASE_ASIDE = '(?:\\s*\\([^)\\n]*\\))?';
 // #2893 — strict canonical filter: `{padded_phase}-{NN}-PLAN.md` or `PLAN.md`.
 const isCanonicalPlanFile = (f) => f.endsWith('-PLAN.md') || f === 'PLAN.md';
 // Any .md file with PLAN anywhere in the basename — diagnostic net
@@ -578,12 +587,12 @@ function cmdPhaseAdd(cwd, description, raw, customId) {
             // Three sources are scanned so that a phase in ANY representation
             // (section header, roadmap bullet, or on-disk directory) is counted:
             // 1) Section headers: ### Phase N: / ## Phase N: / #### Phase N:
-            const headerPattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*:/gi;
+            const headerPattern = new RegExp(`#{2,4}\\s*${ROADMAP_PHASE_WORD}\\s+(\\d+)[A-Z]?(?:\\.\\d+)*${ROADMAP_PHASE_ASIDE}:`, 'gi');
             // 2) Roadmap bullet entries: - [ ] **Phase N: ...** (all checkbox variants)
             // The lookahead accepts colon, decimal-dot, whitespace, bold-close asterisk,
             // or end-of-line so titleless forms ("- [ ] **Phase 11**", "- [ ] Phase 11")
             // are counted and cannot collide with a freshly-added phase. (#1229)
-            const bulletPattern = /^[ \t]*-[ \t]*\[[^\]]*\][ \t]*\*{0,2}Phase[ \t]+(\d+)(?=[:.\s*]|$)/gim;
+            const bulletPattern = new RegExp(`^[ \\t]*-[ \\t]*\\[[^\\]]*\\][ \\t]*\\*{0,2}${ROADMAP_PHASE_WORD}[ \\t]+(\\d+)(?=[:.\\s*]|$)`, 'gim');
             const usedPhaseNums = new Set();
             let m;
             while ((m = headerPattern.exec(content)) !== null) {
@@ -662,7 +671,7 @@ function cmdPhaseAddBatch(cwd, descriptions, raw) {
         const content = extractCurrentMilestone(rawContent, cwd);
         let maxPhase = 0;
         if (config.phase_naming !== 'custom') {
-            const phasePattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*:/gi;
+            const phasePattern = new RegExp(`#{2,4}\\s*${ROADMAP_PHASE_WORD}\\s+(\\d+)[A-Z]?(?:\\.\\d+)*${ROADMAP_PHASE_ASIDE}:`, 'gi');
             let m;
             while ((m = phasePattern.exec(content)) !== null) {
                 const num = parseInt(m[1], 10);
