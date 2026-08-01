@@ -74,6 +74,42 @@ export interface HintsHandle {
   close(): void
 }
 
+/** Someone who wants to SEE the bells, not just their effect on the cached picture. */
+export type FrameListener = (evt: EventFrame) => void
+
+const listeners = new Set<FrameListener>()
+
+/**
+ * onFrame(listener) — watch the bells as they arrive, and stop watching by calling what is
+ * returned.
+ *
+ * ONE CHANNEL, WHOEVER IS WATCHING. «Живой поток» shows the bells themselves rather than
+ * their effect, but a second EventSource for it would be a second channel to the same
+ * daemon — twice the sockets, twice the reconnects, and two orders of the same events on one
+ * screen. So the live layer, which already owns the one connection, hands out a copy of what
+ * it hears; a screen that watches nothing costs nothing, because there is nothing to open.
+ *
+ * A listener is told AFTER the cached picture has been patched, so a screen that reacts to a
+ * bell by reading the cache reads the patched one. A listener that throws is ignored: a
+ * broken watcher must not cost the window its live channel.
+ */
+export function onFrame(listener: FrameListener): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+function tellListeners(evt: EventFrame): void {
+  for (const listener of listeners) {
+    try {
+      listener(evt)
+    } catch {
+      // a watcher's own failure is its own; the channel stays open
+    }
+  }
+}
+
 /**
  * subscribeHints(queryClient) — open the live channel and patch the cached picture as
  * bells arrive. Returns a handle; closing it closes the channel.
@@ -97,6 +133,7 @@ export function subscribeHints(queryClient: QueryClient): HintsHandle {
       return
     }
     queryClient.setQueryData<StatePayload>(STATE_KEY, (old) => (old ? applyHint(old, evt) : old))
+    tellListeners(evt)
   }
 
   source.addEventListener('message', onFrame)
