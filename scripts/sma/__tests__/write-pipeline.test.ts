@@ -27,9 +27,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   PIPELINE_STEPS,
@@ -53,10 +55,25 @@ import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 import { buildIndex } from '../lib/generator.mjs'
 import { validateRecord } from '../lib/schema-v2.mjs'
 
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs')
+
 let root: string
 let corpusDir: string
 let draftsDir: string
 let journalDir: string
+
+/** Spawn the real CLI against the per-test temp .sma root. Never throws. */
+function runCli(args: string[]): { stdout: string; stderr: string; status: number } {
+  try {
+    const stdout = execFileSync(process.execPath, [CLI, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, SMA_ROOT_OVERRIDE: join(root, '.sma') },
+    })
+    return { stdout, stderr: '', status: 0 }
+  } catch (err: any) {
+    return { stdout: String(err?.stdout ?? ''), stderr: String(err?.stderr ?? ''), status: err?.status ?? 1 }
+  }
+}
 
 /** The canonical AWS documentation example key — the same fixture flight.test.ts uses. */
 const SEEDED_SECRET = 'AKIAIOSFODNN7EXAMPLE'
@@ -1001,5 +1018,68 @@ describe('step 12 lifecycle — a declared supersession leaves no one-sided poin
     expect(old.superseded_by).toBe('working-queue-adapter-some-other-record')
     const step = traceStep(result.trace, 'lifecycle')
     expect(JSON.stringify(step.detail.refused)).toMatch(/already superseded/i)
+  })
+})
+
+describe('the CLI surface — sma memory write', () => {
+  const CLAIM = 'The queue adapter drains the nightly backlog in under two minutes on this machine'
+
+  it('Test 59: --help names the three flags that carry the classification and the claim', () => {
+    const res = runCli(['memory', 'write', '--help'])
+
+    expect(res.status).toBe(0)
+    const head = res.stdout.split('\n').slice(0, 5).join('\n')
+    expect(head).toContain('--type')
+    expect(head).toContain('--truth')
+    expect(head).toContain('--claim')
+  })
+
+  it('Test 60: a value outside the closed vocabulary is refused WITH the allowed list, and nothing is written', () => {
+    const res = runCli([
+      'memory', 'write', '--corpus', corpusDir,
+      '--type', 'muscle', '--truth', 'observed', '--claim', CLAIM,
+    ])
+
+    expect(res.status).not.toBe(0)
+    expect(`${res.stdout}${res.stderr}`).toContain('--type')
+    expect(`${res.stdout}${res.stderr}`).toContain('working')
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([])
+  })
+
+  it('Test 61: the verb produces the same outcome as the module, and prints the twelve-step trace', () => {
+    const res = runCli([
+      'memory', 'write', '--corpus', corpusDir,
+      '--type', 'working', '--truth', 'observed', '--claim', CLAIM,
+      '--id', 'working-queue-adapter-drain-window',
+      '--areas', 'queue', '--retention', 'P30D', '--product-version', 'v5.0.4',
+      '--body', 'Observed during the nightly drill.',
+    ])
+
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('persisted-active')
+    for (const step of PIPELINE_STEPS) expect(res.stdout).toContain(step)
+    expect(res.stdout).toContain(join(corpusDir, 'working-queue-adapter-drain-window.md'))
+
+    const note = readNote(join(corpusDir, 'working-queue-adapter-drain-window.md'))
+    expect(validateRecord(note.frontmatter).errors).toEqual([])
+    expect(existsSync(join(corpusDir, 'MEMORY.md'))).toBe(true)
+  })
+
+  it('Test 62: a judgment without provenance stages a draft through the verb too — the corpus stays empty', () => {
+    const res = runCli([
+      'memory', 'write', '--corpus', corpusDir,
+      '--type', 'procedural', '--truth', 'inferred',
+      '--claim', 'Background work should go through the queue adapter rather than an inline call',
+      '--id', 'procedural-prefer-the-queue-adapter', '--areas', 'queue',
+    ])
+
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('staged-draft')
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual(['procedural-prefer-the-queue-adapter.md'])
+    expect(readNote(join(draftsDir, 'procedural-prefer-the-queue-adapter.md')).frontmatter.draft_kind).toBe(
+      PIPELINE_DRAFT_KIND,
+    )
   })
 })
