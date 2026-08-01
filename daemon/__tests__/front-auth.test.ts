@@ -20,6 +20,8 @@
 import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
+import { existsSync, readdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import {
   createFrontServer,
@@ -107,12 +109,12 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 
 /**
  * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
- * own plan lands: static + projects in 9.7-09, machines + chat in 9.7-15, import +
- * onboarding in 9.7-20. Delete an entry here in the SAME commit that fills its handler;
- * the table itself does NOT change (no route is added or removed by a fill plan).
+ * own plan lands: projects in 9.7-09, machines + chat in 9.7-15, import + onboarding in
+ * 9.7-20. Delete an entry here in the SAME commit that fills its handler; the table
+ * itself does NOT change (no route is added or removed by a fill plan). The asset route
+ * left this list when its handler landed.
  */
 const UNFILLED_ROUTES = [
-  'GET /assets/:file',
   'GET /api/projects',
   'POST /api/project/add',
   'POST /api/project/rename',
@@ -197,7 +199,7 @@ describe('server.mjs — the closed THIRTY-route table', () => {
     expect(Object.isFrozen(HANDLERS)).toBe(true)
   })
 
-  it('the sixteen unfilled routes are all real entries of the frozen table', () => {
+  it('the still-unfilled routes are all real entries of the frozen table', () => {
     for (const key of UNFILLED_ROUTES) expect(ROUTES[key], key).toBeTruthy()
     expect(UNFILLED_ROUTES).toHaveLength(new Set(UNFILLED_ROUTES).size)
   })
@@ -579,7 +581,7 @@ describe('server.mjs — POST /api/mcp/toggle (RCE-closed)', () => {
 describe('server.mjs — the unfilled routes answer 501 when authenticated', () => {
   const front = createFrontServer({ config: { token: TOKEN } })
 
-  it('an AUTHED request to each of the sixteen unfilled routes → 501', async () => {
+  it('an AUTHED request to each still-unfilled route → 501', async () => {
     for (const key of UNFILLED_ROUTES) {
       const [method, pattern] = key.split(' ')
       const path = pattern.replace(':file', 'app-abc123.js')
@@ -646,5 +648,156 @@ describe('server.mjs — the optional machine field on enqueue/approve/return', 
       body: { title: 'x', lane: 'prod', machines: 'mac-mini' },
     })
     expect(res.statusCode).toBe(400)
+  })
+})
+
+// ── Plan 9.7-09 Task 1: the daemon serves the built SPA itself (D-9.7-04) ──
+//
+// «The app rides with the daemon»: the SAME process, behind the SAME token, with NO second
+// web server. The file system is an injected seam (deps.fsImpl + deps.staticDir), so these
+// cases never touch the real tree — except the ONE smoke at the bottom, which reads the
+// real build when a build is present and skips itself when it is not.
+
+/** A file system that SHOUTS if it is ever reached — the traversal proof (T-9.7-21). */
+function shoutingFs() {
+  const calls: string[] = []
+  return {
+    calls,
+    readFileSync: (p: any) => {
+      calls.push(String(p))
+      throw new Error(`the file system must NEVER be reached for a rejected asset name (got ${p})`)
+    },
+  }
+}
+
+describe('server.mjs — GET / serves the built app', () => {
+  it('serves the built index.html with a no-cache header (the app updates without a manual purge)', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { staticDir: '/built', fsImpl: { readFileSync: () => '<!doctype html><title>СМА</title>' } },
+    })
+    const res = await call(front, { url: '/', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['content-type']).toMatch(/text\/html/)
+    expect(res.headers['cache-control']).toBe('no-cache')
+    expect(res.body).toContain('СМА')
+  })
+
+  it('NO build yet → 200 with the one-line build instruction, never a 500 and never a blank', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        staticDir: '/built',
+        fsImpl: {
+          readFileSync: () => {
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          },
+        },
+      },
+    })
+    const res = await call(front, { url: '/', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toMatch(/npm run build/)
+  })
+
+  it('is still behind the token: an anonymous GET / is a 401, build or no build', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { staticDir: '/built', fsImpl: { readFileSync: () => '<html>secret</html>' } },
+    })
+    const res = await call(front, { url: '/', remote: '10.44.0.1' })
+    expect(res.statusCode).toBe(401)
+    expect(res.body).not.toContain('secret')
+  })
+})
+
+describe('server.mjs — GET /assets/:file', () => {
+  it('serves a hashed bundle with its content-type and an immutable cache header', async () => {
+    const read: string[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        staticDir: '/built',
+        fsImpl: {
+          readFileSync: (p: any) => {
+            read.push(String(p))
+            return Buffer.from('console.log(1)')
+          },
+        },
+      },
+    })
+    const js = await call(front, { url: '/assets/index-B7f2aQ.js', headers: bearer() })
+    expect(js.statusCode).toBe(200)
+    expect(js.headers['content-type']).toMatch(/javascript/)
+    expect(js.headers['cache-control']).toMatch(/immutable/)
+    expect(js.body).toBe('console.log(1)')
+    // the read stayed inside the build directory — a flat name joined to static/app/assets
+    expect(read[0]).toMatch(/index-B7f2aQ\.js$/)
+
+    const css = await call(front, { url: '/assets/index-D-H8.css', headers: bearer() })
+    expect(css.headers['content-type']).toMatch(/text\/css/)
+  })
+
+  it('a missing asset → 404 (not a 500, not an empty 200)', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        staticDir: '/built',
+        fsImpl: {
+          readFileSync: () => {
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          },
+        },
+      },
+    })
+    const res = await call(front, { url: '/assets/gone-1234.js', headers: bearer() })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('an asset is behind the token too — anonymous → 401, never the bundle', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { staticDir: '/built', fsImpl: { readFileSync: () => 'BUNDLE' } },
+    })
+    const res = await call(front, { url: '/assets/index-B7f2aQ.js', remote: '10.45.0.1' })
+    expect(res.statusCode).toBe(401)
+    expect(res.body).not.toContain('BUNDLE')
+  })
+
+  it('TRAVERSAL dies at the name parse: the file system is never reached (T-9.7-21)', async () => {
+    const fs = shoutingFs()
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { staticDir: '/built', fsImpl: fs } })
+    for (const url of [
+      '/assets/nested/app.js', // a separator
+      '/assets/..%2fsecrets', // an encoded separator
+      '/assets/%2e%2e%2fconfig.json', // fully encoded «../»
+      '/assets/.env', // a leading dot
+      '/assets/a%20b.js', // a space
+      `/assets/${'x'.repeat(200)}.js`, // over the length cap
+    ]) {
+      const res = await call(front, { url, headers: bearer() })
+      expect(res.statusCode, url).toBe(400)
+    }
+    expect(fs.calls, `fs was reached for: ${fs.calls.join(', ')}`).toHaveLength(0)
+  })
+})
+
+// ── the ONE smoke that reads the real build (skipped when there is no build) ──
+
+const BUILT_APP_DIR = fileURLToPath(new URL('../static/app/', import.meta.url))
+const HAS_BUILD = existsSync(`${BUILT_APP_DIR}index.html`)
+
+describe('server.mjs — the real built tree (skipped when `cd spa && npm run build` has not run)', () => {
+  it.skipIf(!HAS_BUILD)('serves the real index.html and a real hashed bundle off the disk', async () => {
+    const front = createFrontServer({ config: { token: TOKEN } })
+    const index = await call(front, { url: '/', headers: bearer() })
+    expect(index.statusCode).toBe(200)
+    expect(index.body).toMatch(/<!doctype html>/i)
+
+    const asset = readdirSync(`${BUILT_APP_DIR}assets`).find((f) => f.endsWith('.js'))
+    expect(asset, 'a Vite build always emits at least one .js bundle').toBeTruthy()
+    const res = await call(front, { url: `/assets/${asset}`, headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['content-type']).toMatch(/javascript/)
   })
 })
