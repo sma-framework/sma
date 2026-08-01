@@ -254,6 +254,98 @@ export interface AccountEntry {
   dayPriorityOwner?: true
 }
 
+/**
+ * A section a fresh machine has nothing to say about yet.
+ *
+ * Absent is a STATE, not an error and not an empty form: an install that has never written
+ * a lesson has no corpus, and a payload that answered `{noteCount: 0, tags: []}` would be
+ * claiming a shape that does not exist there. The screens read `absent` first and say so in
+ * words, which is why every one of them has a real thing to show on its first day.
+ */
+export interface AbsentSection {
+  absent: true
+}
+
+/** One theme of the corpus and how many notes carry it. */
+export interface MemoryTagCount {
+  tag: string
+  count: number
+}
+
+/** A note by NAME only. The body is deliberately not in this contract — see below. */
+export interface MemoryNotePointer {
+  id: string
+  title: string
+}
+
+/**
+ * The corpus as a SURFACE: how much there is, what it is about, what moved recently.
+ *
+ * A note's body never travels. Reading a note is a terminal's job with the whole loader
+ * behind it; a payload that carried note bodies would be a copy of the memory tree leaving
+ * the machine every few seconds for no screen that asked for it. `coreSize` is the size in
+ * bytes of the always-loaded index — the part the team reads before every piece of work.
+ */
+export interface MemorySurface {
+  absent?: false
+  noteCount: number
+  coreSize: number
+  tags: MemoryTagCount[]
+  recent: MemoryNotePointer[]
+}
+
+export type MemorySection = MemorySurface | AbsentSection
+
+/** One training of the snapshot: when it ran, over how much, and how it scored. */
+export interface StyleTraining {
+  date: string
+  decisionsCount: number
+  policyVersion?: number | string
+  summary: string
+}
+
+/**
+ * One decision the distillation mined, already redacted.
+ *
+ * Every field here is the content of a fenced block the miner's scrubber wrote. Text a human
+ * typed around those fences went through no scrubber and therefore never reaches this type.
+ */
+export interface StyleDecision {
+  id: string
+  situation: string
+  decision: string
+  why: string
+}
+
+/**
+ * One graded situation of the exam. DECLARED, NOT YET SERVED: the derive omits `examTable`
+ * today because no durable artifact carries the per-situation answers — the exam is sat
+ * blind and its answer key is never opened by a read model. This is the shape the filling
+ * work must honour; until then the screen shows that the breakdown is not published.
+ */
+export interface StyleExamRow {
+  situation: string
+  assistant: string
+  owner: string
+  matched: boolean
+}
+
+/**
+ * The owner's snapshot as METRICS and already-redacted quotes. A metric the artifacts do
+ * not carry is OMITTED rather than invented: an install that has never been graded has no
+ * `matchRate`, and a machine that has never been taught has no style at all.
+ */
+export interface StyleSnapshot {
+  absent?: false
+  policyVersion?: number | string
+  matchRate?: number
+  trainings: StyleTraining[]
+  decisions: StyleDecision[]
+  examTable?: StyleExamRow[]
+}
+
+export type StyleSection = StyleSnapshot | AbsentSection
+
 export interface StatePayload {
   kpis: Kpis
   queue: QueueRow[]
@@ -267,6 +359,8 @@ export interface StatePayload {
   federation: Federation
   rules: Rules
   accounts: AccountEntry[]
+  memory: MemorySection
+  style: StyleSection
 }
 
 // ── one task: GET /api/task/:id ─────────────────────────────────────────────────────
