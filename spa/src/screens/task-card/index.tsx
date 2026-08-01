@@ -16,6 +16,7 @@ import {
 import { openScreen, useOpenedWith } from '../../shell/navigation'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
+import { JournalSection } from './JournalSection'
 
 /**
  * «Карточка задачи» — one task in full: what was promised, what was checked, every run at
@@ -315,6 +316,8 @@ export function Screen() {
               </Panel>
             </div>
           </div>
+
+          <JournalSection journal={detail.data?.journal} attempts={attempts} />
 
           {diffOpen && diff.data ? <DiffText text={diff.data} /> : null}
         </div>
