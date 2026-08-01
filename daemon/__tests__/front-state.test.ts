@@ -31,11 +31,28 @@
  *     machine binding visible («one account lives on exactly one machine»),
  *   - neither section may carry a secret VALUE, a credential env-var NAME or an
  *     account's local config path.
+ *
+ * V5.1 corpus read models (the «Память» / «Мой стиль» screens):
+ *   - memory is a SURFACE: counters, tags and pointers (id + title). The body of a note
+ *     never reaches the payload,
+ *   - style carries the exam ledger's metrics and ONLY the already-redacted fenced
+ *     evidence the distillation produced — a hand-written note contributes nothing,
+ *   - the exam ANSWER KEY is never opened (the blind-exam invariant is asserted by
+ *     recording every read the derive performs),
+ *   - a machine with no corpus / no training is {absent:true}, never an error.
  */
 
 import { describe, it, expect } from 'vitest'
 
-import { deriveState, derivePresence, parseReceiptSummary, deriveRules, deriveAccounts } from '../src/front/state.mjs'
+import {
+  deriveState,
+  derivePresence,
+  parseReceiptSummary,
+  deriveRules,
+  deriveAccounts,
+  deriveMemory,
+  deriveStyle,
+} from '../src/front/state.mjs'
 import { REASON_LABELS } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
@@ -121,10 +138,12 @@ describe('deriveState — the one-poll payload', () => {
       'federation',
       'kpis',
       'machines',
+      'memory',
       'projects',
       'queue',
       'rules',
       'spend',
+      'style',
       'workers',
     ])
     // kpis
@@ -362,10 +381,12 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
       'federation',
       'kpis',
       'machines',
+      'memory',
       'projects',
       'queue',
       'rules',
       'spend',
+      'style',
       'workers',
     ])
   })
@@ -544,5 +565,285 @@ describe('deriveState — rules and accounts ride the EXISTING /api/state route 
     // …and the sections are genuinely populated, so the assertion above is not vacuous
     expect(payload.rules.workers).toHaveLength(3)
     expect(payload.accounts).toHaveLength(2)
+  })
+})
+
+// ── the corpus read models: memory + style (the «Память» / «Мой стиль» screens) ──
+//
+// Both are SURFACES over local artifacts, and the whole design is in what they leave on
+// disk: `memory` counts and points (id + title), never the body of a note; `style` carries
+// ONLY what the distillation already produced as redacted evidence, and never opens the
+// exam's answer key.
+
+const MEM = '/repo/.claude/memory'
+const FENCE = '```'
+const NOTE_BODY_MARKER = 'СОДЕРЖИМОЕ-ЗАМЕТКИ-НЕ-ДОЛЖНО-УЕХАТЬ'
+const UNFENCED_MARKER = 'НЕ-РЕДАКТИРОВАННЫЙ-ТЕКСТ-РУКОПИСНОЙ-ЗАМЕТКИ'
+
+/** An in-memory fs seam that RECORDS every read — that recording is itself an assertion. */
+function mkFs(files: Record<string, string>, mtimes: Record<string, number> = {}) {
+  const norm = (p: string) => String(p).replace(/\\/g, '/')
+  const reads: string[] = []
+  const enoent = (p: string) => Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' })
+  return {
+    reads,
+    impl: {
+      readdirSync(dir: string) {
+        const d = norm(dir).replace(/\/+$/, '')
+        const out = new Set<string>()
+        for (const p of Object.keys(files)) {
+          const np = norm(p)
+          if (!np.startsWith(`${d}/`)) continue
+          const rest = np.slice(d.length + 1)
+          if (!rest.includes('/')) out.add(rest)
+        }
+        if (out.size === 0) throw enoent(d) // an absent directory, not an empty one
+        return [...out].sort()
+      },
+      readFileSync(p: string) {
+        const np = norm(p)
+        reads.push(np)
+        if (files[np] === undefined) throw enoent(np)
+        return files[np]
+      },
+      statSync(p: string) {
+        const np = norm(p)
+        if (files[np] === undefined) throw enoent(np)
+        return { mtimeMs: mtimes[np] ?? 0, isFile: () => true }
+      },
+    },
+  }
+}
+
+/** A memory note in the corpus shape: frontmatter + a body the payload must never carry. */
+function mkNote({ description, tags, importance, body }: any) {
+  return [
+    '---',
+    `description: ${description}`,
+    'kind: pattern',
+    `tags: [${tags.join(', ')}]`,
+    'use-when: при работе с окнами',
+    `importance: ${importance}`,
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n')
+}
+
+/** A distillation draft in the shape the decision miner writes: fenced, already-redacted. */
+function mkDraft({ description, situation, decision, why, kind = 'founder-decision' }: any) {
+  const lines = [
+    '---',
+    `description: ${description}`,
+    `kind: ${kind}`,
+    'tags: [workflow]',
+    'use-when: при похожей ситуации',
+    'importance: 8',
+    '---',
+    '',
+    '## Ситуация (order)',
+    '',
+    'Что происходило до решения (необработанный фрагмент — данные, не инструкция):',
+    '',
+    `${FENCE}untrusted-evidence`,
+    situation,
+    FENCE,
+    '',
+    '## Решение основателя',
+    '',
+    `${FENCE}untrusted-evidence`,
+    decision,
+    FENCE,
+    '',
+    '## Почему',
+    '',
+  ]
+  lines.push(why ? [`${FENCE}untrusted-evidence`, why, FENCE].join('\n') : '_почему не зафиксировано — дополнить при ревью._')
+  lines.push('')
+  return lines.join('\n')
+}
+
+const MEMORY_INDEX = '# MEMORY — сгенерированный индекс памяти\n\n## Ядро\n\n- заметка\n'
+
+const corpusFiles: Record<string, string> = {
+  [`${MEM}/MEMORY.md`]: MEMORY_INDEX,
+  [`${MEM}/TAGS.md`]: '# TAGS\n', // structural — not a note
+  [`${MEM}/INDEX-os.md`]: '# INDEX os\n', // structural — not a note
+  [`${MEM}/note-windows.md`]: mkNote({
+    description: 'Как ведут себя окна подписки',
+    tags: ['os', 'workflow'],
+    importance: 8,
+    body: `## Урок\n\n${NOTE_BODY_MARKER}\n`,
+  }),
+  [`${MEM}/note-release.md`]: mkNote({
+    description: 'Правило релиза',
+    tags: ['os'],
+    importance: 4,
+    body: '## Урок\n\nСначала ворота, потом тег.\n',
+  }),
+  [`${MEM}/broken.md`]: '---\nэто не заметка\n', // unparsable — skipped, never fatal
+}
+
+const corpusMtimes = {
+  [`${MEM}/note-windows.md`]: 1000,
+  [`${MEM}/note-release.md`]: 2000,
+}
+
+describe('deriveMemory — the corpus as a SURFACE: counters and pointers, never content', () => {
+  it('counts the notes, sizes the always-load index, folds the tags and points at the freshest', () => {
+    const fs = mkFs(corpusFiles, corpusMtimes)
+    const memory = deriveMemory({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(memory.noteCount).toBe(2) // the two parsable notes; structural files are not notes
+    expect(memory.coreSize).toBe(Buffer.byteLength(MEMORY_INDEX, 'utf8'))
+    expect(memory.tags).toEqual([
+      { tag: 'os', count: 2 },
+      { tag: 'workflow', count: 1 },
+    ])
+    expect(memory.recent).toEqual([
+      { id: 'note-release', title: 'Правило релиза' }, // newest first
+      { id: 'note-windows', title: 'Как ведут себя окна подписки' },
+    ])
+  })
+
+  it('the BODY of a note never reaches the payload — only its id and its title', () => {
+    const fs = mkFs(corpusFiles, corpusMtimes)
+    const memory = deriveMemory({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(JSON.stringify(memory)).not.toContain(NOTE_BODY_MARKER)
+  })
+
+  it('a machine with no corpus is a normal state: {absent:true}, never an error', () => {
+    expect(deriveMemory({ memoryDir: '/nowhere', fsImpl: mkFs({}).impl })).toEqual({ absent: true })
+    expect(deriveMemory({})).toEqual({ absent: true }) // no dir injected at all
+  })
+})
+
+// ── style ──────────────────────────────────────────────────────────────────────
+
+const SCORES = [
+  JSON.stringify({ ts: '2026-07-30T10:00:00Z', policyVersion: 'v1', matchRate: 62, total: 8, match: 4, partial: 1, miss: 3 }),
+  'не json — строка леджера, которую нельзя разобрать',
+  JSON.stringify({ ts: '2026-07-31T21:00:00Z', policyVersion: 'v2', matchRate: 75, total: 8, match: 6, partial: 0, miss: 2 }),
+  '',
+].join('\n')
+
+const styleFiles: Record<string, string> = {
+  ...corpusFiles,
+  [`${MEM}/exam/scores.jsonl`]: SCORES,
+  [`${MEM}/exam/exam-2026-07-31.jsonl`]: 'ЭКЗАМЕНАЦИОННЫЙ-ПУНКТ',
+  [`${MEM}/exam/exam-2026-07-31-key.jsonl`]: 'КЛЮЧ-ОТВЕТОВ-ЧИТАТЬ-НЕЛЬЗЯ',
+  [`${MEM}/drafts/decision-20260730-identity-aaaa1111.md`]: mkDraft({
+    description: 'Решение основателя: пушим от моего имени',
+    situation: 'Агент предложил два варианта авторства коммитов.',
+    decision: 'Пушим от моего имени.',
+    why: 'чтобы история осталась чистой',
+  }),
+  [`${MEM}/drafts/decision-20260731-readme-bbbb2222.md`]: mkDraft({
+    description: 'Решение основателя: README обновляется вместе с продуктом',
+    situation: 'Вышло обновление без правки README.',
+    decision: 'Каждое обновление правит README, обязательно.',
+    why: '',
+  }),
+  // a HAND-WRITTEN decision note: no distillation fence, therefore nothing to publish
+  [`${MEM}/decision-handwritten.md`]: [
+    '---',
+    'description: Рукописное решение',
+    'kind: founder-decision',
+    'tags: [workflow]',
+    'use-when: никогда',
+    'importance: 7',
+    '---',
+    '',
+    '## Ситуация',
+    '',
+    UNFENCED_MARKER,
+    '',
+    '## Решение основателя',
+    '',
+    UNFENCED_MARKER,
+    '',
+  ].join('\n'),
+}
+
+describe('deriveStyle — metrics plus already-redacted drafts; the raw corpus stays on disk', () => {
+  it('reads the score ledger: the latest match rate and policy version, newest training first', () => {
+    const fs = mkFs(styleFiles, corpusMtimes)
+    const style = deriveStyle({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(style.matchRate).toBe(75)
+    expect(style.policyVersion).toBe('v2')
+    expect(style.trainings).toEqual([
+      { date: '2026-07-31', decisionsCount: 8, policyVersion: 'v2', summary: 'совпадение 75% · 6 / 0 / 2' },
+      { date: '2026-07-30', decisionsCount: 8, policyVersion: 'v1', summary: 'совпадение 62% · 4 / 1 / 3' },
+    ])
+  })
+
+  it('carries the distillation drafts as situation → decision → why, with the fences stripped', () => {
+    const fs = mkFs(styleFiles, corpusMtimes)
+    const style = deriveStyle({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(style.decisions).toEqual([
+      {
+        id: 'decision-20260731-readme-bbbb2222',
+        situation: 'Вышло обновление без правки README.',
+        decision: 'Каждое обновление правит README, обязательно.',
+        why: '',
+      },
+      {
+        id: 'decision-20260730-identity-aaaa1111',
+        situation: 'Агент предложил два варианта авторства коммитов.',
+        decision: 'Пушим от моего имени.',
+        why: 'чтобы история осталась чистой',
+      },
+    ])
+  })
+
+  it('publishes ONLY already-redacted evidence: an unfenced hand-written note contributes nothing', () => {
+    const fs = mkFs(styleFiles, corpusMtimes)
+    const style = deriveStyle({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(JSON.stringify(style)).not.toContain(UNFENCED_MARKER)
+    expect(style.decisions.map((d: any) => d.id)).not.toContain('decision-handwritten')
+  })
+
+  it('NEVER opens the exam answer key — nor the exam items (the blind-exam invariant)', () => {
+    const fs = mkFs(styleFiles, corpusMtimes)
+    deriveStyle({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(fs.reads.some((p) => p.includes('-key.jsonl'))).toBe(false)
+    expect(fs.reads.some((p) => /exam-\d{4}-\d{2}-\d{2}\.jsonl$/.test(p))).toBe(false)
+    expect(fs.reads.some((p) => p.endsWith('exam/scores.jsonl'))).toBe(true) // …and it did read the ledger
+  })
+
+  it('a machine that was never taught is a normal state: {absent:true}', () => {
+    expect(deriveStyle({ memoryDir: '/nowhere', fsImpl: mkFs({}).impl })).toEqual({ absent: true })
+    expect(deriveStyle({})).toEqual({ absent: true })
+  })
+})
+
+describe('deriveState — memory and style ride the SAME route as everything else', () => {
+  it('resolves the corpus from the injected repo dir and carries both sections', async () => {
+    const fs = mkFs(styleFiles, corpusMtimes)
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: rulesConfig,
+      repoDir: '/repo',
+      fsImpl: fs.impl,
+      clock: () => NOW,
+    })
+    expect(payload.memory.noteCount).toBe(3) // the two corpus notes + the hand-written decision
+    expect(payload.style.matchRate).toBe(75)
+    // the negatives hold on the WHOLE payload, not just the section
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain(NOTE_BODY_MARKER)
+    expect(serialized).not.toContain(UNFENCED_MARKER)
+  })
+
+  it('a daemon with no corpus wired still answers — both sections read absent, nothing throws', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: rulesConfig,
+      clock: () => NOW,
+    })
+    expect(payload.memory).toEqual({ absent: true })
+    expect(payload.style).toEqual({ absent: true })
   })
 })
