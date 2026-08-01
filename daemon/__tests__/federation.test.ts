@@ -227,6 +227,63 @@ describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
   })
 })
 
+// ── the cost history: every point learns which machine spent it ──
+
+describe('createFederation — the cost history merges like the rows do', () => {
+  const costPoint = (over: object = {}) => ({
+    day: '2026-08-01',
+    account: 'клод-основной',
+    tokensIn: 10,
+    tokensOut: 5,
+    eur: 0.25,
+    ...over,
+  })
+
+  async function hubWithCosts() {
+    const fetchImpl = async () => {
+      const state: any = peerState({ machine: 'self', title: 'Mac mini', project: 'shop', queueId: 'BL-A1', doneId: 'BL-A0' })
+      state.costs = {
+        series: [costPoint({ account: 'кодекс', eur: 1.5 })],
+        apiFallback: { todayEur: 1.5, monthEur: 9, capEur: 0, switchMode: 'api' },
+      }
+      return res(200, state)
+    }
+    const fed = createFederation({
+      config: { federation: { role: 'hub', peers: [twoPeerConfig.federation.peers[0]] }, machineId: 'this-pc' },
+      fetchImpl,
+      clock: () => NOW,
+    })
+    await fed.pollPeers()
+    const own: any = selfState()
+    own.costs = {
+      series: [costPoint()],
+      apiFallback: { todayEur: 0.25, monthEur: 4, capEur: 400, switchMode: 'subscription' },
+    }
+    return fed.aggregateState(own)
+  }
+
+  it('tags the hub\'s own points and the peer\'s points with their machines', async () => {
+    const agg = await hubWithCosts()
+    expect(agg.costs.series.map((p: any) => [p.account, p.machine])).toEqual([
+      ['клод-основной', 'this-pc'],
+      ['кодекс', 'mac-mini'],
+    ])
+  })
+
+  it('adds the api-fallback money up, and keeps ONE household ceiling', async () => {
+    const agg = await hubWithCosts()
+    expect(agg.costs.apiFallback.todayEur).toBe(1.75)
+    expect(agg.costs.apiFallback.monthEur).toBe(13)
+    expect(agg.costs.apiFallback.capEur).toBe(400) // the hub's setting, never a sum
+  })
+
+  it('leaves the payload key set untouched', async () => {
+    const agg = await hubWithCosts()
+    expect(Object.keys(agg).sort()).toEqual(Object.keys(selfState()).sort())
+    expect(Object.keys(agg.costs).sort()).toEqual(['apiFallback', 'series'])
+  })
+})
+
 // ── T-9.7-31: the peer token never leaves the outgoing header ──
 
 describe('federation — the peer token never serializes (T-9.7-31)', () => {

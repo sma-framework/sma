@@ -465,6 +465,39 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
       out[key] = [...tagSelf(base[key]), ...peers.flatMap((p) => rowsOf(p.id, key))]
     }
 
+    // The cost history is nested one level down, so it is merged by hand rather than by the
+    // row loop above. Every point learns which machine spent it — that, and only that, is
+    // what lets «Расходы» group by machine when there is more than one. The euro figures add
+    // up for the same reason the counts do: one window, one number. The ceiling does NOT add
+    // up — it is one household setting, and the hub's copy is the household's.
+    const selfCosts = base.costs && typeof base.costs === 'object' ? base.costs : {}
+    const selfSeries = Array.isArray(selfCosts.series) ? selfCosts.series : []
+    const peerSeries = peers.flatMap((p) => {
+      const snap = snapshots.get(p.id)
+      const list = snap && snap.state && snap.state.costs && Array.isArray(snap.state.costs.series)
+        ? snap.state.costs.series
+        : []
+      return list.map((pt) => (pt && typeof pt === 'object' ? { ...pt, machine: p.id } : pt))
+    })
+    const fallback = { ...(selfCosts.apiFallback && typeof selfCosts.apiFallback === 'object' ? selfCosts.apiFallback : {}) }
+    for (const p of peers) {
+      const snap = snapshots.get(p.id)
+      const peerFallback =
+        snap && snap.state && snap.state.costs && typeof snap.state.costs.apiFallback === 'object'
+          ? snap.state.costs.apiFallback
+          : null
+      if (!peerFallback) continue
+      for (const key of ['todayEur', 'monthEur']) {
+        const add = Number(peerFallback[key])
+        if (Number.isFinite(add)) fallback[key] = Math.round(((Number(fallback[key]) || 0) + add) * 100) / 100
+      }
+    }
+    out.costs = {
+      ...selfCosts,
+      series: [...selfSeries.map((pt) => (pt && typeof pt === 'object' ? { machine: selfId, ...pt } : pt)), ...peerSeries],
+      apiFallback: fallback,
+    }
+
     // kpis add up across the whole federation — the founder's one window counts one number.
     const kpis = { ...(base.kpis && typeof base.kpis === 'object' ? base.kpis : {}) }
     for (const p of peers) {

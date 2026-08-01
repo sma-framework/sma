@@ -55,7 +55,12 @@ import { buildClaudeArgs, buildAccountEnv } from '../runner/args.mjs'
 import { fencedBlock } from '../runner/prompt-fence.mjs'
 import { spawnWorker } from '../runner/spawn.mjs'
 import { parseClaudeEvent } from '../runner/stream.mjs'
-import { readUsageRows, claudeUsageFromResult, bookUsage as defaultBookUsage } from '../runner/usage.mjs'
+import {
+  CHAT_TASK_ID_PREFIX,
+  readUsageRows,
+  claudeUsageFromResult,
+  bookUsage as defaultBookUsage,
+} from '../runner/usage.mjs'
 
 /** The sentence the screen prints under the input box — the boundary, in the founder's words. */
 export const CHAT_BOUNDARY_FORMULA = 'Читает и предлагает. Ничего не запускает сам.'
@@ -81,8 +86,12 @@ const STATUS_SENTENCE = Object.freeze({
 /** How many turns the transcript keeps. Older turns fall off — the file never grows forever. */
 export const HISTORY_TURN_CAP = 200
 
-/** The reserved task-id prefix for a conversation turn — the contract of the «Разговор» line. */
-export const CHAT_TASK_ID_PREFIX = 'chat-'
+/**
+ * The reserved task-id prefix for a conversation turn — the contract of the «Разговор» line.
+ * Defined beside the spend book that stores it and re-exported here, so the engine that
+ * writes the rows and the views that read them share ONE definition.
+ */
+export { CHAT_TASK_ID_PREFIX }
 
 /** How the spend answer names the conversation's own share. */
 const CHAT_SPEND_LABEL = 'Разговор'
