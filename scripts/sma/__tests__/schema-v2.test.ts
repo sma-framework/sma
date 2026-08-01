@@ -30,6 +30,9 @@ import {
   isPrivateFacet,
   validateId,
   validateRecord,
+  resolveApprovalPath,
+  APPROVAL_PATHS,
+  GRACE_HORIZON,
 } from '../lib/schema-v2.mjs'
 
 // ── Enum registries: exact membership + freeze ───────────────────────────────
@@ -467,6 +470,144 @@ describe('validateRecord — the three failure classes the v1 corpus actually sh
       source: { authority: 'owner-instruction', refs: [] },
     }
     expect(validateRecord(record).errors.some((e) => e.startsWith('evidence:'))).toBe(true)
+  })
+})
+
+// ── The risk-based approval ladder ───────────────────────────────────────────
+
+describe('resolveApprovalPath — the mapped classes', () => {
+  const cases: Array<[string, Record<string, string>, string]> = [
+    [
+      'a low-risk observation of the task in flight rides a TTL',
+      { memory_type: 'working', truth_mode: 'observed', sensitivity: 'internal', risk: 'low' },
+      'auto-ttl',
+    ],
+    [
+      'a candidate lesson from an episode lands as a draft',
+      { memory_type: 'episodic', truth_mode: 'hypothesis', sensitivity: 'internal', risk: 'low' },
+      'auto-draft',
+    ],
+    [
+      'an inferred procedural candidate is still a draft',
+      { memory_type: 'procedural', truth_mode: 'inferred', sensitivity: 'internal', risk: 'medium' },
+      'auto-draft',
+    ],
+    [
+      'a settled procedural recommendation needs an evidence threshold',
+      { memory_type: 'procedural', truth_mode: 'factual', sensitivity: 'internal', risk: 'medium' },
+      'evidence-review',
+    ],
+    [
+      'a reflex-grade rule needs a human',
+      { memory_type: 'normative', truth_mode: 'normative', sensitivity: 'internal', risk: 'high' },
+      'human-approval',
+    ],
+    [
+      'an owner preference is a versioned, owner-controlled record',
+      { memory_type: 'preference', truth_mode: 'decision', sensitivity: 'internal', risk: 'low' },
+      'owner-versioned',
+    ],
+    [
+      'a decision policy is versioned and replayable',
+      { memory_type: 'semantic', truth_mode: 'decision', sensitivity: 'internal', risk: 'medium' },
+      'versioned-replay',
+    ],
+    [
+      'a sensitive record is governed, human-only',
+      { memory_type: 'semantic', truth_mode: 'factual', sensitivity: 'sensitive', risk: 'low' },
+      'governed-human-only',
+    ],
+  ]
+
+  for (const [name, input, expected] of cases) {
+    it(name, () => {
+      expect(resolveApprovalPath(input)).toBe(expected)
+    })
+  }
+
+  it('produces every one of the seven paths across the table', () => {
+    const produced = new Set(cases.map(([, input]) => resolveApprovalPath(input)))
+    expect([...APPROVAL_PATHS].every((path) => produced.has(path))).toBe(true)
+    expect(APPROVAL_PATHS).toHaveLength(7)
+    expect(Object.isFrozen(APPROVAL_PATHS)).toBe(true)
+  })
+})
+
+describe('resolveApprovalPath — escalation and the safe default', () => {
+  it('escalates encrypted-required to governed-human-only whatever else the record says', () => {
+    for (const memory_type of MEMORY_TYPES) {
+      for (const risk of RISK_LEVELS) {
+        expect(
+          resolveApprovalPath({
+            memory_type,
+            truth_mode: 'observed',
+            sensitivity: 'encrypted-required',
+            risk,
+          }),
+        ).toBe('governed-human-only')
+      }
+    }
+  })
+
+  it('escalates critical risk to governed-human-only', () => {
+    expect(
+      resolveApprovalPath({
+        memory_type: 'working',
+        truth_mode: 'observed',
+        sensitivity: 'public',
+        risk: 'critical',
+      }),
+    ).toBe('governed-human-only')
+  })
+
+  it('falls closed on missing input — never a permissive default', () => {
+    expect(resolveApprovalPath({})).toBe('governed-human-only')
+    expect(resolveApprovalPath()).toBe('governed-human-only')
+    expect(resolveApprovalPath(null)).toBe('governed-human-only')
+    expect(
+      resolveApprovalPath({ memory_type: 'working', truth_mode: 'observed', sensitivity: 'internal' }),
+    ).toBe('governed-human-only')
+  })
+
+  it('falls closed on values outside the closed vocabularies', () => {
+    expect(
+      resolveApprovalPath({
+        memory_type: 'anecdotal',
+        truth_mode: 'observed',
+        sensitivity: 'internal',
+        risk: 'low',
+      }),
+    ).toBe('governed-human-only')
+    expect(
+      resolveApprovalPath({
+        memory_type: 'working',
+        truth_mode: 'observed',
+        sensitivity: 'internal',
+        risk: 'apocalyptic',
+      }),
+    ).toBe('governed-human-only')
+  })
+
+  it('never returns an automatic path for a well-formed record it has no rule for', () => {
+    const path = resolveApprovalPath({
+      memory_type: 'prospective',
+      truth_mode: 'factual',
+      sensitivity: 'internal',
+      risk: 'medium',
+    })
+    expect(APPROVAL_PATHS).toContain(path)
+    expect(['auto-ttl', 'auto-draft']).not.toContain(path)
+  })
+
+  it('is deterministic — same input, same path', () => {
+    const input = { memory_type: 'procedural', truth_mode: 'factual', sensitivity: 'internal', risk: 'medium' }
+    expect(resolveApprovalPath(input)).toBe(resolveApprovalPath({ ...input }))
+  })
+})
+
+describe('GRACE_HORIZON', () => {
+  it('names the deadline migrated records have to grow their missing fields', () => {
+    expect(GRACE_HORIZON).toBe('measurement-cycle-close')
   })
 })
 
