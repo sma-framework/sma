@@ -46,6 +46,10 @@
  *              tool allowlists).
  *   - Test 21: model+effort must match the worker profile; a substitution throws
  *              ProfileParityError, a per-task override is the documented precedence.
+ *
+ *   THE ONE FENCE (untrusted data never breaks out, and there is only one copy of the rule):
+ *   - Test 22: the shared fence module scales the fence past ANY backtick run inside the
+ *              content, and it is the SAME function both prompt builders use.
  */
 
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
@@ -68,6 +72,8 @@ import {
   assertProfileParity,
 } from '../src/runner/args.mjs'
 import { spawnWorker, MissingWorkerCwdError } from '../src/runner/spawn.mjs'
+import { fencedBlock } from '../src/runner/prompt-fence.mjs'
+import { buildForgePrompt } from '../src/forge/forge.mjs'
 
 const UUID = '9f8e7d6c-1234-4abc-8def-0123456789ab'
 
@@ -312,5 +318,26 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
       effort: 'high',
     })
     expect(expectedModelEffort({ worker, task: { effort: 'low' } })).toEqual({ model: 'sonnet', effort: 'low' })
+  })
+})
+
+describe('prompt-fence (the single copy of the containment rule)', () => {
+  it('scales the fence past any backtick run inside the content', () => {
+    const block = fencedBlock('untrusted-data', 'сначала ```` затем ````` и ещё `````')
+    const fence = block.slice(0, block.indexOf('untrusted-data'))
+    // the longest run inside is 5 → the fence must be 6, or the content escapes
+    expect(fence).toBe('`'.repeat(6))
+    expect(block.endsWith('\n' + '`'.repeat(6))).toBe(true)
+    // a run-free content still gets the minimum fence
+    expect(fencedBlock('task', 'ничего опасного')).toBe('```task\nничего опасного\n```')
+  })
+
+  it('is the SAME function both prompt builders use — no second copy to drift', () => {
+    const nasty = 'край ```` края'
+    // the task prompt and the forge prompt must contain the exact block the module produces
+    expect(buildTaskPrompt({ task: { id: 't-1', title: nasty } })).toContain(
+      fencedBlock('task', `id: t-1\ntitle: ${nasty}`),
+    )
+    expect(buildForgePrompt({ kind: 'agent', description: nasty })).toContain(fencedBlock('untrusted-data', nasty))
   })
 })
