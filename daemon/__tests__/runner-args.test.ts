@@ -34,7 +34,23 @@
  *   - Test 14: acceptance present → a «Критерии приёмки» DoD block; task text is fenced DATA.
  *   - Test 15: acceptance absent (roster/return exempt) → no block, no placeholder.
  *   - Test 16: a fence-escape attempt in untrusted content cannot break out of the fence.
+ *
+ *   TERMINAL PARITY (the founder's invariant: a worker session equals his own terminal):
+ *   - Test 17: the session's cwd IS the worktree that physically carries `.claude/**` +
+ *              CLAUDE.md — asserted from the spawn, on a real fixture checkout.
+ *   - Test 18: an absent cwd is REFUSED (a child in the daemon's own directory would be a
+ *              silently de-parified session).
+ *   - Test 19: the task prompt names the memory index by path (reachable is not read).
+ *   - Test 20: no produced arg and no accepted option key can bypass the checkout's
+ *              `.claude/settings` (hooks off / substituted settings / permission mode /
+ *              tool allowlists).
+ *   - Test 21: model+effort must match the worker profile; a substitution throws
+ *              ProfileParityError, a per-task override is the documented precedence.
  */
+
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 import {
@@ -44,7 +60,14 @@ import {
   buildTaskPrompt,
   codexConfigSeed,
   ForbiddenFlagError,
+  ProfileParityError,
+  TERMINAL_PARITY_PATHS,
+  MEMORY_INDEX_PATH,
+  modelEffortOf,
+  expectedModelEffort,
+  assertProfileParity,
 } from '../src/runner/args.mjs'
+import { spawnWorker, MissingWorkerCwdError } from '../src/runner/spawn.mjs'
 
 const UUID = '9f8e7d6c-1234-4abc-8def-0123456789ab'
 
@@ -184,5 +207,110 @@ describe('buildTaskPrompt (D-9.5-11 item 1 — DoD contract into the worker)', (
     const longest = Math.max(...fences.map((f) => f.length))
     // there is at least one fence strictly longer than the injected triple-backtick
     expect(longest).toBeGreaterThan(3)
+  })
+})
+
+// ── terminal parity ───────────────────────────────────────────────────────────
+// The founder's invariant, asserted rather than asserted-about: a headless worker session
+// is the SAME session his terminal gives him. Each test below pins one link of the chain
+// documented in args.mjs — cwd, hooks, memory, model/effort.
+
+/** A fixture checkout that physically carries the inherited terminal surface. */
+function makeWorktreeFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), 'sma-parity-'))
+  mkdirSync(join(root, '.claude', 'memory'), { recursive: true })
+  mkdirSync(join(root, '.claude', 'skills'), { recursive: true })
+  writeFileSync(join(root, '.claude', 'settings.json'), '{"hooks":{}}')
+  writeFileSync(join(root, '.claude', 'memory', 'MEMORY.md'), '# CORE\n')
+  writeFileSync(join(root, 'CLAUDE.md'), '# rules\n')
+  return root
+}
+
+/** A recording child: spawnWorker only needs pid/kill, so the fake stays minimal. */
+function recordingSpawn(seen: any) {
+  return (bin: string, args: string[], opts: any) => {
+    seen.bin = bin
+    seen.args = args
+    seen.opts = opts
+    return { pid: 4242, kill: () => {} }
+  }
+}
+
+describe('terminal parity (the worker session equals the founder terminal)', () => {
+  it('the session cwd IS the worktree that physically carries .claude/** and CLAUDE.md', () => {
+    const worktree = makeWorktreeFixture()
+    const seen: any = {}
+    spawnWorker({
+      bin: 'claude',
+      args: buildClaudeArgs({ model: 'sonnet' }),
+      cwd: worktree,
+      env: {},
+      prompt: 'p',
+      spawnImpl: recordingSpawn(seen),
+    })
+    // the child stands exactly where the task's checkout is…
+    expect(seen.opts.cwd).toBe(worktree)
+    expect(seen.opts.shell).toBe(false)
+    // …and that directory carries the whole inherited surface, so hooks/memory/skills/rules
+    // are the checkout's own — nothing is forwarded or emulated by the daemon.
+    for (const rel of TERMINAL_PARITY_PATHS) {
+      expect(existsSync(join(seen.opts.cwd, rel))).toBe(true)
+    }
+  })
+
+  it('an absent cwd is REFUSED — a session in the daemon directory is a de-parified session', () => {
+    expect(() => spawnWorker({ bin: 'claude', args: [], env: {}, prompt: 'p', spawnImpl: recordingSpawn({}) })).toThrow(
+      MissingWorkerCwdError,
+    )
+    expect(() =>
+      spawnWorker({ bin: 'claude', args: [], cwd: '   ', env: {}, prompt: 'p', spawnImpl: recordingSpawn({}) }),
+    ).toThrow(MissingWorkerCwdError)
+  })
+
+  it('the task prompt names the memory index by path (reachable is not read)', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
+    expect(prompt).toContain(MEMORY_INDEX_PATH)
+    expect(prompt).toContain('Память проекта')
+  })
+
+  it('nothing can bypass the checkout settings — neither an option key nor a produced arg', () => {
+    // vector A: keys that read as a hooks/settings/permission bypass are named errors
+    for (const opts of [{ hooks: false }, { settings: '/tmp/other.json' }, { permissionMode: 'bypassPermissions' }]) {
+      expect(() => buildClaudeArgs(opts as any)).toThrow(ForbiddenFlagError)
+    }
+    // vector B: a bypass flag smuggled as a VALUE never reaches the produced array
+    expect(() => buildClaudeArgs({ model: '--no-hooks' })).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ addDir: '--settings' })).toThrow(ForbiddenFlagError)
+    expect(() => buildCodexArgs({ model: '--disallowed-tools' })).toThrow(ForbiddenFlagError)
+    // a legitimately built array carries no settings-bypass flag at all
+    const clean = buildClaudeArgs({ model: 'sonnet', effort: 'high', addDir: '/wt/task-1' })
+    expect(clean.some((a) => /^--(no-hook|disable-hook|setting|permission-mode|allowed-tools|disallowed-tools)/i.test(a))).toBe(false)
+  })
+
+  it('model/effort must match the worker profile — a substitution throws, an override does not', () => {
+    const worker = { id: 'max-1', model: 'sonnet', effort: 'high' }
+    // the profile's own values pass and are reported back
+    expect(assertProfileParity({ args: buildClaudeArgs({ model: 'sonnet', effort: 'high' }), worker })).toEqual({
+      model: 'sonnet',
+      effort: 'high',
+    })
+    // profile sonnet, args opus → the guard screams (T-9-15)
+    expect(() => assertProfileParity({ args: buildClaudeArgs({ model: 'opus', effort: 'high' }), worker })).toThrow(
+      ProfileParityError,
+    )
+    // a per-task override is the documented precedence, not a substitution
+    expect(() =>
+      assertProfileParity({ args: buildClaudeArgs({ model: 'opus', effort: 'high' }), worker, task: { model: 'opus' } }),
+    ).not.toThrow()
+    // a profile that names no model expects NO --model: naming one is a substitution
+    expect(() => assertProfileParity({ args: buildClaudeArgs({ model: 'opus' }), worker: { id: 'w' } })).toThrow(
+      ProfileParityError,
+    )
+    // the reader understands the Codex encoding too (`-c model_reasoning_effort=<E>`)
+    expect(modelEffortOf(buildCodexArgs({ model: 'gpt-5-codex', effort: 'high' }))).toEqual({
+      model: 'gpt-5-codex',
+      effort: 'high',
+    })
+    expect(expectedModelEffort({ worker, task: { effort: 'low' } })).toEqual({ model: 'sonnet', effort: 'low' })
   })
 })
