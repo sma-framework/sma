@@ -1,0 +1,146 @@
+import type { AccountEntry, MachineRow as Machine } from '../../api/types'
+import { hoursLabel, plural } from '../../shell/format'
+
+/**
+ * MachineRow — one machine of the household, as a person needs to see it.
+ *
+ * ═══════════════════════ PRESENCE, NOT PLUMBING ═══════════════════════
+ *
+ * A machine is shown by what it is DOING: whether it is answering, what it did today, and
+ * how much of its windows is left. Its address is not here — not hidden behind a toggle,
+ * not in a title attribute, not in the payload this row is given. The reading carries no
+ * peer url by construction, so there is nothing on this screen to leak over a shoulder and
+ * nothing for the household network to disclose. Neither is there a map or a network
+ * diagram: a person owns machines, not a topology.
+ *
+ * ═════════════ ONE ACCOUNT LIVES ON EXACTLY ONE MACHINE ═════════════
+ *
+ * The quiet line under the name is that law, said before it is asked. Machines share their
+ * VIEWS of the work and never their credentials, so a subscription is logged in in one
+ * place — which is the answer to the commonest question here: why did that account do
+ * nothing last night.
+ */
+
+/** The three states a machine can be in, in the words the design settled on. */
+type Standing = 'online' | 'joining' | 'offline'
+
+/**
+ * What a machine's state IS. A peer that has never once answered is «настраивается»: it is
+ * written down but has not yet spoken, which is a different thing from a machine that
+ * spoke yesterday and is quiet now. The reading tells them apart honestly — a peer never
+ * reached carries no last-seen moment at all.
+ */
+export function standingOf(machine: Machine): Standing {
+  if (machine.online) return 'online'
+  return machine.lastSeenSec === undefined ? 'joining' : 'offline'
+}
+
+const DOT: Record<Standing, string> = {
+  online: 'bg-green',
+  joining: 'bg-warn',
+  offline: 'bg-tx3',
+}
+
+const STATE_WORD: Record<Standing, string> = {
+  online: 'на связи',
+  joining: 'настраивается',
+  offline: 'нет связи',
+}
+
+/** How long ago a machine last spoke, in words. */
+function lastSeenWords(sec: number): string {
+  if (sec < 90) return 'был на связи только что'
+  if (sec < 3600) {
+    const m = Math.round(sec / 60)
+    return `был на связи ${m} ${plural(m, 'минуту', 'минуты', 'минут')} назад`
+  }
+  return `был на связи ${hoursLabel(sec / 3600)} назад`
+}
+
+/** The accounts bound to this machine, said as the law that binds them. */
+function accountsWords(count: number, self: boolean): string {
+  if (count === 0) return 'Аккаунтов нет, привязок нет'
+  const noun = plural(count, 'аккаунт', 'аккаунта', 'аккаунтов')
+  return `${count} ${noun}, ${plural(count, 'привязан', 'привязаны', 'привязаны')} только ${self ? 'сюда' : 'к ней'}`
+}
+
+export function MachineRow({
+  machine,
+  accounts,
+  finishedToday,
+  busyNow,
+  first,
+}: {
+  machine: Machine
+  /** The subscriptions logged in ON this machine — never another machine's. */
+  accounts: AccountEntry[]
+  finishedToday: number
+  busyNow: number
+  first: boolean
+}) {
+  const standing = standingOf(machine)
+  const self = machine.role === 'self'
+  const reachable = standing === 'online'
+
+  /** The fullest window on this machine — the one that runs out first. */
+  const worstPct = accounts.length > 0 ? Math.max(...accounts.map((a) => a.windows.pct5h ?? 0)) : null
+
+  return (
+    <div
+      className={`grid grid-cols-[minmax(0,1fr)_150px_220px_190px] items-start gap-4 px-[18px] py-[15px] ${
+        first ? '' : 'border-t border-bd'
+      }`}
+    >
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span aria-hidden className={`h-2 w-2 flex-none rounded-full ${DOT[standing]}`} />
+          <span className="min-w-0 truncate text-[13.5px] font-semibold text-tx">{machine.title}</span>
+          {self ? (
+            <span className="flex-none rounded-full border border-bd2 px-2 py-[2px] text-[10.5px] whitespace-nowrap text-tx3">
+              эта машина
+            </span>
+          ) : null}
+        </div>
+        <span className="text-[11.5px] text-tx3">{accountsWords(accounts.length, self)}</span>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <span className="text-[12.5px] text-tx2">{STATE_WORD[standing]}</span>
+        {standing === 'joining' ? (
+          <span className="text-[11.5px] text-tx3">заработает после подключения</span>
+        ) : null}
+        {standing === 'offline' && machine.lastSeenSec !== undefined ? (
+          <span className="text-[11.5px] text-tx3">{lastSeenWords(machine.lastSeenSec)}</span>
+        ) : null}
+      </div>
+
+      <div className="text-[12.5px] text-tx2 tabular-nums">
+        {reachable ? (
+          finishedToday + busyNow === 0 ? (
+            <span className="text-tx3">тихо</span>
+          ) : (
+            <span>
+              готово <span className="font-semibold text-tx">{finishedToday}</span> · в работе{' '}
+              <span className="font-semibold text-tx">{busyNow}</span>
+            </span>
+          )
+        ) : (
+          <span className="text-tx3">связи с этой машиной нет</span>
+        )}
+      </div>
+
+      <div className="text-[12.5px] text-tx2 tabular-nums">
+        {accounts.length === 0 ? (
+          <span className="text-tx3">аккаунтов нет</span>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <span className="font-semibold text-tx">{Math.round(worstPct ?? 0)} %</span>
+            <span className="text-[11.5px] text-tx3">
+              {(worstPct ?? 0) >= 90 ? 'окно почти исчерпано' : 'самое полное окно машины'}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
