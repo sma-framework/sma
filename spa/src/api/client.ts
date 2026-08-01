@@ -8,6 +8,7 @@ import type {
   HarnessPayload,
   ImportEnrollResult,
   ImportScanResult,
+  ImportSelection,
   MachinesPayload,
   OkResult,
   OnboardingResult,
@@ -302,14 +303,21 @@ export function getChatHistory(opts: { limit?: number } = {}): Promise<ChatHisto
 
 // ── bringing your own helpers in ────────────────────────────────────────────────────
 
-/** Look through the project for helpers and skills that already live there. */
-export function scanImport(input: { project?: string } = {}): Promise<ImportScanResult> {
-  return postJson<ImportScanResult>('/api/import/scan', withOptional({}, { project: input.project }))
+/**
+ * Look through the project for helpers and skills that already live there.
+ *
+ * The body is EMPTY by contract, and that is the whole of the answer to «read me another
+ * folder»: the estate that is scanned is the project this daemon serves, so there is no
+ * field a caller could point somewhere else. The scan writes nothing — calling it twice
+ * is calling it once.
+ */
+export function scanImport(): Promise<ImportScanResult> {
+  return postJson<ImportScanResult>('/api/import/scan', {})
 }
 
 /** Turn the chosen ones into drafts. They wait for a decision like every other draft. */
-export function enrollImport(input: { batchId: string; keys: string[] }): Promise<ImportEnrollResult> {
-  return postJson<ImportEnrollResult>('/api/import/enroll', { batchId: input.batchId, keys: input.keys })
+export function enrollImport(input: { selections: ImportSelection[] }): Promise<ImportEnrollResult> {
+  return postJson<ImportEnrollResult>('/api/import/enroll', { selections: input.selections })
 }
 
 // ── the first run ───────────────────────────────────────────────────────────────────
