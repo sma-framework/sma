@@ -21,7 +21,10 @@
  *   - the optional project filter narrows tasks and kpis but NOT the project or machine
  *     lists (the project switcher must see all of them),
  *   - a config with no federation block derives role standalone and exactly one machine,
- *   - no new field carries a peer url or a peer token.
+ *   - no new field carries a peer url or a peer token,
+ *   - awaiting[] carries the rows a person still owes a decision to — the same row shape
+ *     the queue uses, oldest first — while queue[] keeps carrying only what waits for a
+ *     worker; the counter and the list come from one source, so they cannot disagree.
  *
  * V5.1 settings read models (the «Правила» / «Аккаунты» screens ride the SAME route —
  * the frozen table is the ROUTES, not the shape of a payload):
@@ -133,6 +136,7 @@ describe('deriveState — the one-poll payload', () => {
     expect(Object.keys(payload).sort()).toEqual([
       'accounts',
       'activeProject',
+      'awaiting',
       'costs',
       'done',
       'federation',
@@ -345,6 +349,114 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
   })
 })
 
+// ── awaiting[] — the decisions a person still owes an answer to, as ROWS and not only ──
+// ── as a counter: the day screen shows the tasks themselves, so the payload has to     ──
+// ── carry them. The queue contract stays what it says it is: rows waiting for a worker. ──
+
+const decisionRows = [
+  {
+    id: 'BL-w1',
+    status: 'awaiting_approval',
+    lane: 'prod',
+    title: 'ждёт слова',
+    priority: 2,
+    project: 'acme-clinic',
+    enqueuedAt: NOW - 40 * HOUR,
+  },
+  {
+    id: 'BL-w2',
+    status: 'awaiting_approval',
+    lane: 'research',
+    title: 'тоже ждёт',
+    priority: 0,
+    project: 'other-shop',
+    provider: 'codex',
+    enqueuedAt: NOW - 2 * HOUR,
+  },
+  { id: 'BL-q1', status: 'queued', lane: 'prod', title: 'в очереди', priority: 0, project: 'acme-clinic', enqueuedAt: NOW - 1000 },
+]
+
+describe('deriveState — awaiting[]: the rows a person still has to decide on', () => {
+  it('an awaiting row rides its OWN list in the queue-row shape, and never queue[]', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(decisionRows),
+      windows: makeWindows({}),
+      config: { ...multiConfig, machineId: 'workstation' },
+      clock: () => NOW,
+    })
+    // the queue contract is untouched: it carries what is waiting for a WORKER
+    expect(payload.queue.map((q: any) => q.id)).toEqual(['BL-q1'])
+    expect(payload.awaiting.map((a: any) => a.id)).toEqual(['BL-w1', 'BL-w2'])
+
+    const first = payload.awaiting[0]
+    expect(Object.keys(first).sort()).toEqual([
+      'agedForHours',
+      'id',
+      'lane',
+      'machine',
+      'position',
+      'priority',
+      'project',
+      'status',
+      'title',
+    ])
+    expect(first).toMatchObject({
+      id: 'BL-w1',
+      title: 'ждёт слова',
+      lane: 'prod',
+      project: 'acme-clinic',
+      machine: 'workstation',
+      priority: 2,
+      status: 'awaiting_approval',
+      position: 1,
+      agedForHours: 40, // the same patience rule the queue rows are aged by
+    })
+    expect(payload.awaiting[1].provider).toBe('codex')
+    expect(payload.awaiting[1].agedForHours).toBeUndefined() // 2h is not «застряла»
+  })
+
+  it('the counter and the list are ONE source: kpis.awaitingApproval === awaiting.length', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(decisionRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.kpis.awaitingApproval).toBe(payload.awaiting.length)
+    expect(payload.kpis.awaitingApproval).toBe(2)
+  })
+
+  it('the one waiting longest comes first, and the positions are 1-based in that order', async () => {
+    const rows = [
+      { id: 'BL-new', status: 'awaiting_approval', lane: 'prod', title: 'n', priority: 9, enqueuedAt: NOW - HOUR },
+      { id: 'BL-old', status: 'awaiting_approval', lane: 'prod', title: 'o', priority: 0, enqueuedAt: NOW - 5 * HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.awaiting.map((a: any) => [a.id, a.position])).toEqual([
+      ['BL-old', 1],
+      ['BL-new', 2],
+    ])
+  })
+
+  it('the project filter narrows awaiting exactly as it narrows the queue', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(decisionRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      project: 'other-shop',
+      clock: () => NOW,
+    })
+    expect(payload.awaiting.map((a: any) => a.id)).toEqual(['BL-w2'])
+    expect(payload.queue).toEqual([])
+    expect(payload.kpis.awaitingApproval).toBe(1)
+  })
+})
+
 // ── 9.7-13: the aggregator seam — deriveState FILLS the same shape, never redefines it ──
 
 describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)', () => {
@@ -376,6 +488,7 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
     expect(Object.keys(payload).sort()).toEqual([
       'accounts',
       'activeProject',
+      'awaiting',
       'costs',
       'done',
       'federation',

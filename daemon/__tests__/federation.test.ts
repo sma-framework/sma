@@ -43,6 +43,9 @@ function peerState(o: { machine: string; title: string; project: string; queueId
   return {
     kpis: { workersBusy: 1, workersTotal: 2, queued: 1, awaitingApproval: 1, spentTodayEur: 1.5, windowsOpen: 1 },
     queue: [{ id: o.queueId, title: 'q', status: 'queued', project: o.project, machine: o.machine, position: 1 }],
+    awaiting: [
+      { id: `${o.queueId}-w`, title: 'w', status: 'awaiting_approval', project: o.project, machine: o.machine, position: 1 },
+    ],
     workers: [{ id: 'max-1', lane: 'prod', presence: 'работает', account: 'max-1', window: { pct5h: 1, pctWeek: 2, estimated: true } }],
     done: [{ id: o.doneId, title: 'd', project: o.project, machine: o.machine, commits: [] }],
     machines: [{ id: o.machine, title: o.title, role: 'self', online: true }],
@@ -57,8 +60,9 @@ function peerState(o: { machine: string; title: string; project: string; queueId
 /** The hub's OWN derive payload (one machine, its own rows). */
 function selfState() {
   return {
-    kpis: { workersBusy: 0, workersTotal: 1, queued: 2, awaitingApproval: 0, spentTodayEur: 0.5, windowsOpen: 1 },
+    kpis: { workersBusy: 0, workersTotal: 1, queued: 2, awaitingApproval: 1, spentTodayEur: 0.5, windowsOpen: 1 },
     queue: [{ id: 'BL-self', title: 's', status: 'queued', project: 'home', machine: 'this-pc', position: 1 }],
+    awaiting: [{ id: 'BL-self-w', title: 'sw', status: 'awaiting_approval', project: 'home', position: 1 }],
     workers: [{ id: 'self-1', lane: 'prod', presence: 'свободен', account: 'max-9', window: { pct5h: 0, pctWeek: 0, estimated: true } }],
     done: [],
     machines: [{ id: 'this-pc', title: 'Этот ПК', role: 'self', online: true }],
@@ -165,10 +169,18 @@ describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
       ['BL-B0', 'studio'],
     ])
     expect(agg.workers.map((w: any) => w.machine)).toEqual(['this-pc', 'mac-mini', 'studio'])
+    // the rows a person still owes a decision to travel the same way the queue does —
+    // otherwise the hub would count decisions it cannot show
+    expect(agg.awaiting.map((a: any) => [a.id, a.machine])).toEqual([
+      ['BL-self-w', 'this-pc'],
+      ['BL-A1-w', 'mac-mini'],
+      ['BL-B1-w', 'studio'],
+    ])
     // counts add up across the whole federation
     expect(agg.kpis.queued).toBe(4) // 2 self + 1 + 1
     expect(agg.kpis.workersTotal).toBe(5)
-    expect(agg.kpis.awaitingApproval).toBe(2)
+    expect(agg.kpis.awaitingApproval).toBe(3) // 1 self + 1 + 1 — as many as the list shows
+    expect(agg.kpis.awaitingApproval).toBe(agg.awaiting.length)
     // the payload key set is UNCHANGED — 9.7-13 fills the 9.7-02 shape, never redefines it
     expect(Object.keys(agg).sort()).toEqual(Object.keys(selfState()).sort())
   })
@@ -224,6 +236,18 @@ describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
     await fed.pollPeers()
     const agg = fed.aggregateState(selfState())
     expect(agg.queue.map((q: any) => q.machine)).toEqual(['this-pc', 'mac-mini'])
+  })
+
+  it('a snapshot from an OLDER daemon that has no decisions list contributes nothing to it', async () => {
+    const fed = createFederation({
+      config: { federation: { role: 'hub', peers: [twoPeerConfig.federation.peers[0]] } },
+      fetchImpl: async () => res(200, { queue: [{ id: 'BL-X', status: 'queued' }] }), // no awaiting key
+      clock: () => NOW,
+    })
+    await fed.pollPeers()
+    const agg = fed.aggregateState(selfState())
+    // fail-open: the merge holds, and the hub still shows its own decision
+    expect(agg.awaiting.map((a: any) => [a.id, a.machine])).toEqual([['BL-self-w', 'this-pc']])
   })
 })
 
@@ -513,6 +537,9 @@ describe('federation — TWO LIVE DAEMONS on this machine (D-9.7-03)', () => {
     ])
     expect(payload.kpis.queued).toBe(2)
     expect(payload.kpis.awaitingApproval).toBe(1) // the peer's, counted in the one window
+    // and the decision the peer is holding arrives as a ROW, not only as a number — the
+    // day screen shows the task itself, so counting it is not enough
+    expect(payload.awaiting.map((a: any) => [a.id, a.machine])).toEqual([['BL-P9', 'peer-1']])
 
     // the peer was reached on its ORDINARY front contract, with ITS bearer — no special door
     const stateHits = peer.seen.filter((s) => s.url === '/api/state')
