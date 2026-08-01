@@ -55,7 +55,7 @@ V5 shipped the engine and a deliberately thin operations panel. V5.1 builds the 
 cd spa && npm run build     # → daemon/static/app — the daemon serves it at its own address
 ```
 
-That is the whole front-end build. The daemon needs no further wiring, and the panel it already served stays exactly where it was, as the emergency view.
+That is the whole front-end build. The daemon needs no further wiring, and the panel it already served stays exactly where it was, as the emergency view. A clean boot now says so out loud — one line, *«Buckle up, soldier — the park is live»*, naming the exact address to open; failure was always loud, and success no longer whispers.
 
 **Your day, not a dashboard.** *Today* opens on what the fleet did overnight and what is waiting on you; the board holds every task; the team screen shows each worker with its lane and its window; the live stream is the work as it happens; costs read straight from the spend book, per day, per lane and per account. The app is built for a desktop screen (1440 px and up) — the phone gets its own design pass, deliberately, in V5.2/V5.3.
 

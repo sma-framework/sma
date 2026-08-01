@@ -191,8 +191,15 @@ export function createDaemon(o = {}) {
 // ── process entrypoint (the plist target). Import stays side-effect-free. ──
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
-  createDaemon()
+  const park = createDaemon()
+  park
     .start()
+    .then(() => {
+      // succeed loud too: a silent boot reads as a hang from the operator's chair.
+      console.log(
+        `[SmaDaemon] All systems green: queue up, front armed at http://${park.config.bind}:${park.config.port}, loop ticking. Buckle up, soldier — the park is live.`
+      )
+    })
     .catch((err) => {
       // fail loud for the supervisor (KeepAlive restarts); mask any connection string.
       const msg = String((err && err.message) || err).replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
