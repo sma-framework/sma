@@ -17,6 +17,9 @@
  *                                                        SMA's own legacy per-stream PreToolUse
  *                                                        entries migrate to the `pre` multiplexer)
  *   .sma/{sessions,claims,journal}                      (runtime scaffold in the project)
+ *   memory skeleton      -> <project>/.claude/memory/   (TAGS.md + an empty generated
+ *                                                        MEMORY.md — the memory SYSTEM,
+ *                                                        ZERO notes; write-if-absent only)
  *   rules block          -> <project>/CLAUDE.md         (managed SMA:RULES block via the emit splice
  *                                                        law: user bytes never touched)
  *
@@ -383,6 +386,23 @@ async function main() {
   }
   console.log(`  + runtime dirs  .sma/{sessions,claims,journal,reflex}`);
 
+  // 7.4. Memory SYSTEM scaffold — the structure ships, the content never does.
+  // The rules block written just below points every agent at
+  // `.claude/memory/MEMORY.md`; without this step that pointer named a file no
+  // install ever created, and `build-index --write` died with ENOENT because the
+  // corpus dir only appeared if the user finished /sma-start. Writes TAGS.md +
+  // an empty generated MEMORY.md, and ONLY where absent — an existing corpus is
+  // the user's asset and is never touched (same law as `sma deleteme`).
+  try {
+    const { pathToFileURL } = await import('node:url');
+    const scaffold = await import(pathToFileURL(path.join(pkgRoot, 'scripts', 'sma', 'lib', 'memory-scaffold.mjs')).href);
+    const res = await scaffold.scaffoldMemory({ projectDir: project });
+    const what = res.created.length ? `${res.created.join(' + ')} (0 notes)` : 'existing corpus kept as it was';
+    console.log(`  + memory        ${what} -> ${res.dir}`);
+  } catch (e) {
+    console.warn(`  ! memory        corpus skeleton skipped (${e && e.message ? e.message : e})`);
+  }
+
   // 7.5. CLAUDE.md — managed SMA rules block (v3.6): most installs have no
   // autoMemoryDirectory wiring, so without this pointer the memory corpus is
   // invisible to the very agent it exists for. Same splice law as `sma emit`,
@@ -410,6 +430,7 @@ Done. SMA${version ? ` v${version}` : ''} is installed${isGlobal ? ' globally' :
     - the SMA engine (workflows, agents, templates) under ${isGlobal ? '~/.claude' : '.claude'}/sma-core
     - the coordination runtime at scripts/sma (multi-terminal sessions, claims, journal)
     - the /sma-* command skills (${skillCount} commands)${flags.withGsdAliases ? '\n    - the transitional /gsd-* aliases' : ''}
+    - the memory system at .claude/memory (tag registry + index, EMPTY — the notes will be yours)
     - hooks in ${isGlobal ? '~/.claude' : '.claude'}/settings.json (your own hooks were kept as they were)
 
   Next step: open a Claude Code session in this project and run \`/sma-start\`.

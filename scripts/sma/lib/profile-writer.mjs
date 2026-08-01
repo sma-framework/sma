@@ -50,6 +50,7 @@ import { join } from 'node:path'
 import { PROFILE_SCHEMA, validateProfile, secretShaped } from './profile.mjs'
 import { serializeNote } from './frontmatter.mjs'
 import { atomicWriteRaw } from './fs-atomics.mjs'
+import { STARTER_TAGS } from './memory-scaffold.mjs'
 
 /** The schema version this writer stamps — same value `sma-start.md` documents. */
 export const PROFILE_VERSION = 2
@@ -398,32 +399,14 @@ export const NOTE_GROUPS = [
 ]
 
 /**
- * The starter tag registry. Only the two UNIVERSAL areas (`tech`, `workflow`) and
- * the closed kind set — exactly the vocabulary `sma-start.md` prescribes, so the
- * seeded notes are registered whichever path wrote the registry.
+ * The starter tag registry now has a THIRD writer — the installer, which
+ * scaffolds an empty corpus so `.claude/memory/` exists before any onboarding
+ * runs. Three writers of one vocabulary is three dialects waiting to happen, so
+ * the constant moved to `memory-scaffold.mjs` and is IMPORTED here: identity,
+ * not a copy. Only the two UNIVERSAL areas (`tech`, `workflow`) and the closed
+ * kind set — exactly the vocabulary `sma-start.md` prescribes, so seeded notes
+ * are registered whichever path wrote the registry.
  */
-const STARTER_TAGS = `# TAGS — закрытый словарь меток
-
-Метки живут в трёх гранях. Строка грамматики строгая: \`- <метка> — <описание>\`.
-
-## area
-
-- tech — инфраструктура, сборка, выкладка, техническая часть проекта.
-- workflow — процесс работы: планирование, исполнение, проверка, правила.
-
-## kind
-
-- procedural-rule — правило «как делать», применяется всегда.
-- decision — принятое решение и его основание.
-- episodic — что произошло в конкретный раз.
-- status — текущее состояние дел.
-- reference — справка: адреса, версии, таблицы фактов.
-- bug-lesson — урок из поломки, с разделами **Why:** и **How to apply:**.
-
-## phase
-
-- Открытая грань: \`phase:NN\` — необязательная метка привязки к этапу.
-`
 
 /**
  * buildCorpusNotes(answers) -> [{file, text}]. PURE.
