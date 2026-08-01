@@ -11,7 +11,14 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { createFederation, InvalidPeerUrlError } from '../src/front/federation.mjs'
+import {
+  createFederation,
+  InvalidPeerUrlError,
+  UnknownPeerError,
+  ProxyPathNotAllowedError,
+  PeerUnreachableError,
+  PROXYABLE_PATHS,
+} from '../src/front/federation.mjs'
 
 const TOKEN_A = 'peer-a-secret-value'
 const TOKEN_B = 'peer-b-secret-value'
@@ -230,5 +237,85 @@ describe('federation — the peer token never serializes (T-9.7-31)', () => {
     expect(serialized).not.toContain(TOKEN_A)
     expect(serialized).not.toContain(TOKEN_B)
     expect(serialized).not.toContain('10.0.0.4') // no peer url leaks into the payload either
+
+    let thrown: any = null
+    try {
+      await fed.proxyAction({ machineId: 'mac-mini', path: '/api/approve', body: { taskId: 'BL-1' } })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(PeerUnreachableError)
+    expect(String(thrown.message)).not.toContain(TOKEN_A)
+    expect(JSON.stringify(thrown, Object.getOwnPropertyNames(thrown))).not.toContain(TOKEN_A)
+  })
+})
+
+// ── the closed proxy list (T-9.7-33) ──
+
+describe('federation — proxyAction (D-9.7-07)', () => {
+  const okState = async () => res(200, { ok: true, taskId: 'BL-1', merged: true })
+
+  it('exposes EXACTLY the three proxyable paths, frozen', () => {
+    expect([...PROXYABLE_PATHS].sort()).toEqual(['/api/approve', '/api/enqueue', '/api/return'])
+    expect(Object.isFrozen(PROXYABLE_PATHS)).toBe(true)
+  })
+
+  it("re-issues the request with the PEER's token and relays its status + body verbatim", async () => {
+    const seen: any[] = []
+    const fetchImpl = async (url: string, init: any) => {
+      seen.push({ url: String(url), method: init.method, auth: init.headers.authorization, body: init.body })
+      return res(200, { ok: true, taskId: 'BL-1', merged: true })
+    }
+    const fed = createFederation({ config: twoPeerConfig, fetchImpl, clock: () => NOW })
+    const out = await fed.proxyAction({ machineId: 'mac-mini', path: '/api/approve', body: { taskId: 'BL-1' } })
+
+    expect(seen[0].url).toBe('http://10.0.0.4:7777/api/approve')
+    expect(seen[0].method).toBe('POST')
+    expect(seen[0].auth).toBe(`Bearer ${TOKEN_A}`)
+    expect(JSON.parse(seen[0].body)).toEqual({ taskId: 'BL-1' })
+    expect(out).toEqual({ status: 200, body: { ok: true, taskId: 'BL-1', merged: true } })
+  })
+
+  it("relays a peer REFUSAL verbatim — the hub never re-plays the peer's CAS logic", async () => {
+    const fed = createFederation({
+      config: twoPeerConfig,
+      fetchImpl: async () => res(409, { error: 'approve race lost (already handled)' }),
+      clock: () => NOW,
+    })
+    const out = await fed.proxyAction({ machineId: 'mac-mini', path: '/api/approve', body: { taskId: 'BL-1' } })
+    expect(out.status).toBe(409)
+    expect(out.body).toEqual({ error: 'approve race lost (already handled)' })
+  })
+
+  it('refuses an unknown machine with a named error', async () => {
+    const fed = createFederation({ config: twoPeerConfig, fetchImpl: okState, clock: () => NOW })
+    await expect(fed.proxyAction({ machineId: 'ghost', path: '/api/approve', body: {} })).rejects.toThrow(UnknownPeerError)
+  })
+
+  it('refuses ANY path outside the frozen list — arbitrary proxying is structurally impossible', async () => {
+    const fed = createFederation({ config: twoPeerConfig, fetchImpl: okState, clock: () => NOW })
+    for (const path of ['/api/state', '/api/mcp/toggle', '/api/approve/../state', '/', '/api/agent/toggle']) {
+      await expect(fed.proxyAction({ machineId: 'mac-mini', path, body: {} })).rejects.toThrow(ProxyPathNotAllowedError)
+    }
+  })
+
+  it('refuses a non-POST method (the three actions are POST-only)', async () => {
+    const fed = createFederation({ config: twoPeerConfig, fetchImpl: okState, clock: () => NOW })
+    await expect(fed.proxyAction({ machineId: 'mac-mini', method: 'GET', path: '/api/approve', body: {} })).rejects.toThrow(
+      ProxyPathNotAllowedError,
+    )
+  })
+
+  it('turns a peer timeout into a named 502-shaped error, never a raw transport throw', async () => {
+    const fed = createFederation({
+      config: twoPeerConfig,
+      fetchImpl: async () => {
+        throw Object.assign(new Error('The operation was aborted'), { name: 'TimeoutError' })
+      },
+      clock: () => NOW,
+    })
+    const err: any = await fed.proxyAction({ machineId: 'mac-mini', path: '/api/return', body: {} }).catch((e) => e)
+    expect(err).toBeInstanceOf(PeerUnreachableError)
+    expect(err.status).toBe(502)
   })
 })

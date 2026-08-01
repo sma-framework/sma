@@ -314,3 +314,80 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
     expect(payload.federation.role).toBe('hub')
   })
 })
+
+// ── 9.7-13: the aggregator seam — deriveState FILLS the same shape, never redefines it ──
+
+describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)', () => {
+  /** A fake aggregator standing in for createFederation().aggregateState. */
+  function fakeAggregator(payload: any) {
+    return {
+      ...payload,
+      machines: [...payload.machines, { id: 'mac-mini', title: 'Mac mini', role: 'peer', online: true, lastSeenSec: 3 }],
+      queue: [...payload.queue, { id: 'BL-peer', title: 'p', status: 'queued', project: 'shop', machine: 'mac-mini', position: 1 }],
+      kpis: { ...payload.kpis, queued: payload.kpis.queued + 1 },
+    }
+  }
+
+  it('an injected aggregator fills machines[] and pours in the peers’ rows', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: { ...multiConfig, machineId: 'this-pc', federation: { role: 'hub', peers: [] } },
+      aggregator: fakeAggregator,
+      clock: () => NOW,
+    })
+    expect(payload.machines.map((m: any) => [m.id, m.role])).toEqual([
+      ['this-pc', 'self'],
+      ['mac-mini', 'peer'],
+    ])
+    expect(payload.queue.map((q: any) => q.machine)).toEqual(['this-pc', 'this-pc', 'mac-mini'])
+    expect(payload.kpis.queued).toBe(3)
+    // the KEY SET is untouched — the 9.7-02 contract the SPA types once
+    expect(Object.keys(payload).sort()).toEqual([
+      'activeProject',
+      'costs',
+      'done',
+      'federation',
+      'kpis',
+      'machines',
+      'projects',
+      'queue',
+      'spend',
+      'workers',
+    ])
+  })
+
+  it('WITHOUT an aggregator the payload is byte-identical to the standalone derive (regression 9.7-02)', async () => {
+    const args = { adapter: mkAdapter(projectRows), windows: makeWindows({}), config: multiConfig, clock: () => NOW }
+    const standalone = await deriveState(args)
+    const withUndefined = await deriveState({ ...args, aggregator: undefined })
+    expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(standalone))
+    expect(standalone.machines).toEqual([{ id: 'self', title: 'Эта машина', role: 'self', online: true }])
+  })
+
+  it('an aggregator that THROWS is fail-open: the founder still sees their own machine', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      aggregator: () => {
+        throw new Error('peer storm')
+      },
+      clock: () => NOW,
+    })
+    expect(payload.machines).toEqual([{ id: 'self', title: 'Эта машина', role: 'self', online: true }])
+    expect(payload.queue.map((q: any) => q.id)).toEqual(['BL-1', 'BL-2'])
+  })
+
+  it('an aggregator that returns junk is ignored (the local payload is never replaced by it)', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      aggregator: () => null,
+      clock: () => NOW,
+    })
+    expect(payload.machines).toHaveLength(1)
+    expect(payload.kpis.queued).toBe(2)
+  })
+})
