@@ -33,7 +33,7 @@
 
 import { fileURLToPath } from 'node:url'
 
-import { loadConfig } from './config.mjs'
+import { loadConfig, addProject, renameProject, selectProject } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
@@ -110,10 +110,15 @@ export function createDaemon(o = {}) {
         clock,
         adapter,
         hub,
+        ledger, // the attempt ledger AND the decision journal ride the same seam
         ledgerDir,
         repoDir,
         deriveState,
         parseReceiptSummary,
+        // the project registry doors — the ONLY way a request reaches a config write
+        addProject,
+        renameProject,
+        selectProject,
         federation, // the action-proxy engine (routes wired in plan 9.7-15)
         aggregator,
         windows: windowsForState,

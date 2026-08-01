@@ -426,16 +426,22 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
 }
 
 /**
- * addProject(config, {id, name}, io) — append a validated entry to the registry and
+ * addProject(config, {id, name, path}, io) — append a validated entry to the registry and
  * persist. A duplicate id is an InvalidProjectError; the registry is the key space tasks
  * reference, so it never silently shadows.
  *
+ * THE ID GRAMMAR HAS EXACTLY ONE OWNER — this module. An omitted `id` is minted here from
+ * the name by the SAME slug+collision path the quiet migration uses, so no caller (least of
+ * all a request handler) ever gets to invent a key shape of its own. `path` is the folder a
+ * human picked; it is carried as opaque DATA on the entry.
+ *
  * @returns {object} the updated config
  */
-export function addProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export function addProject(config, { id, name, path } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   const seen = new Set(projects.map((p) => p.id))
-  const entry = validateProject({ id, name }, { seen })
+  const mintedId = id ?? freeProjectId(slugify(name), seen)
+  const entry = validateProject({ id: mintedId, name, ...(path !== undefined ? { path } : {}) }, { seen })
   const next = { ...config, projects: [...projects, entry], activeProject: config.activeProject ?? entry.id }
   writeConfig(next, { env, homedir, fsImpl })
   return next
