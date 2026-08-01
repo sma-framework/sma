@@ -55,6 +55,16 @@
  * Nothing here carries a peer url, a peer token or free text (T-9.7-05): the federation
  * field is a role and a boolean, and that is the whole of it.
  *
+ * ═══════════ V5.1 — THE SETTINGS READ MODELS (D-9.7-09 holds) ═══════════════════
+ * The settings screens («Правила», «Аккаунты») ride the payload of the EXISTING state
+ * route. The frozen table is the table of ROUTES; the shape of a payload was never the
+ * frozen thing, and a new route per screen would have been the expensive way to say the
+ * same sentence. `rules` and `accounts` are pure derives of the config plus the window
+ * seam the roster already rides — no new stored field exists for them to disagree with.
+ *
+ * Neither section carries a secret VALUE, a credential env-var NAME, or an account's local
+ * config path: they carry an account by NAME and nothing else.
+ *
  * Every collaborator (adapter, ledger reader, the window-state function, usageReader,
  * the git/receipt readers, clock) is dependency-injected, so tests derive from fixtures
  * with no real Postgres / git / fs. Node built-ins only; zero deps; zero network.
@@ -233,6 +243,109 @@ function deriveMachines(config) {
   ]
 }
 
+/**
+ * deriveRules(config, {switchMode}) → the «Правила» read model: the lanes with the workers
+ * riding them, the worker profiles, the budget stops and the sub→API mode.
+ *
+ * PURE OVER THE CONFIG. Every field here already exists in the daemon config — this adds no
+ * stored field, no second place a rule could be written down and then disagree with the one
+ * the runner obeys. `switchMode` is passed IN rather than recomputed: the spend strip works
+ * it out from the live windows, and a rule that reports a different mode than the strip is
+ * worse than no rule at all.
+ *
+ * WHAT IT DELIBERATELY DROPS: the account OBJECT. A worker's account carries `configDir` (a
+ * local path) and `oauthTokenEnv` (the NAME of the env var holding the token — a secret in
+ * its own right, T-9.5-01). The read model carries the account NAME and nothing else, so a
+ * payload that travels the LAN can never carry either.
+ *
+ * @param {object} config
+ * @param {{switchMode?:'subscription'|'api'}} [opts]
+ * @returns {{lanes:object[], workers:object[], budgetStops?:object, subApiSwitch:object}}
+ */
+export function deriveRules(config = {}, { switchMode } = {}) {
+  const workersCfg = Array.isArray(config.workers) ? config.workers : []
+  const lanes = []
+  const byLane = new Map()
+
+  const workers = workersCfg.map((w) => {
+    const lane = w.lane ?? null
+    let bucket = byLane.get(lane)
+    if (!bucket) {
+      bucket = { lane, workers: [] }
+      byLane.set(lane, bucket)
+      lanes.push(bucket) // config order — the order the founder wrote them in
+    }
+    bucket.workers.push(w.id)
+    return {
+      id: w.id,
+      lane,
+      account: accountNameOf(w.account, w.id),
+      // a profile field the config does not carry is OMITTED, never invented as null
+      ...(w.provider !== undefined ? { provider: w.provider } : {}),
+      ...(w.model !== undefined ? { model: w.model } : {}),
+      ...(w.effort !== undefined ? { effort: w.effort } : {}),
+      enabled: w.enabled === undefined ? true : Boolean(w.enabled),
+    }
+  })
+
+  const budget = config.budget
+  const capEur = Number(budget && budget.monthlyApiCapEur) || 0
+  return {
+    lanes,
+    workers,
+    ...(budget
+      ? {
+          budgetStops: {
+            monthlyApiCapEur: capEur,
+            ...(budget.warnPct !== undefined ? { warnPct: budget.warnPct } : {}),
+          },
+        }
+      : {}),
+    subApiSwitch: {
+      mode: switchMode === 'api' ? 'api' : 'subscription',
+      capEur,
+      budgeted: capEur > 0, // no cap → there is no API fallback to switch TO
+    },
+  }
+}
+
+/**
+ * deriveAccounts(config, windows) → the «Аккаунты» read model: one entry per SUBSCRIPTION
+ * (deduped — several workers ride one account), its window bars, the workers riding it, and
+ * the MACHINE it lives on.
+ *
+ * THE MACHINE BINDING IS THE POINT. A subscription belongs to exactly one machine (config.mjs:
+ * federation aggregates views, never credentials), and this is the screen that makes that law
+ * visible instead of folklore. Every locally-configured account is bound to THIS machine; a
+ * peer's accounts arrive, if at all, through the peer's own payload.
+ *
+ * Same omission as deriveRules: the account object never travels, only its name.
+ *
+ * @param {object} config
+ * @param {(account:any)=>object} [windows] the window-state seam
+ * @returns {object[]}
+ */
+export function deriveAccounts(config = {}, windows) {
+  const workersCfg = Array.isArray(config.workers) ? config.workers : []
+  const machineId = config.machineId ?? 'self'
+  const byName = new Map()
+  const out = []
+  for (const w of workersCfg) {
+    const name = accountNameOf(w.account, w.id)
+    let entry = byName.get(name)
+    if (!entry) {
+      entry = { name, machineId, windows: windowBar(windowFor(windows, w.account ?? name)), workers: [] }
+      byName.set(name, entry)
+      out.push(entry)
+    }
+    // the founder's daytime account (D-9.5-03a) — a property of the ACCOUNT, flagged by
+    // whichever worker profile carries it
+    if (w.dayPriorityOwner) entry.dayPriorityOwner = true
+    entry.workers.push(w.id)
+  }
+  return out
+}
+
 /** A payload window bar — ALWAYS carries estimated (honest labels, A3). */
 function windowBar(win) {
   return {
@@ -350,16 +463,11 @@ export async function deriveState(deps = {}) {
     buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject, machineId }),
   )
 
-  // ── spend strip — per (deduped) account % bars + the API-fallback € budget ──
-  const seen = new Set()
-  const spendAccounts = []
-  for (const w of workersCfg) {
-    const name = accountNameOf(w.account, w.id)
-    if (seen.has(name)) continue
-    seen.add(name)
-    const bar = windowBar(windowFor(windows, w.account ?? name))
-    spendAccounts.push({ name, pct5h: bar.pct5h, pctWeek: bar.pctWeek })
-  }
+  // ── accounts — the deduped subscription list the spend strip ALSO rides (one dedup,
+  // one window read per account, one order both sections agree on) ──
+  const accounts = deriveAccounts(config, windows)
+  const spendAccounts = accounts.map((a) => ({ name: a.name, pct5h: a.windows.pct5h, pctWeek: a.windows.pctWeek }))
+
   const todayUsd = totalCost(usageReader, workersCfg, DAY_MS, now)
   const monthUsd = totalCost(usageReader, workersCfg, MONTH_MS, now)
   const capEur = Number(config.budget && config.budget.monthlyApiCapEur) || 0
@@ -400,7 +508,23 @@ export async function deriveState(deps = {}) {
     windowsOpen,
   }
 
-  const payload = { kpis, queue, workers, done, spend, costs, projects, activeProject, machines, federation }
+  // ── the settings read models — the SAME route, a fuller payload (D-9.7-09) ──
+  const rules = deriveRules(config, { switchMode })
+
+  const payload = {
+    kpis,
+    queue,
+    workers,
+    done,
+    spend,
+    costs,
+    projects,
+    activeProject,
+    machines,
+    federation,
+    rules,
+    accounts,
+  }
 
   // ── the federation merge (hub only) — FILLS this payload, never redefines it ──
   return applyAggregator(payload, deps.aggregator)
