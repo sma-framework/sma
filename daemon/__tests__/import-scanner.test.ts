@@ -28,12 +28,23 @@
  *   - красный lint не хоронит партию: остальные элементы едут дальше;
  *   - правила и неопознанное не энроллятся — «вручную»;
  *   - движок ничего не включает: пишутся только черновик и квитанция.
+ *
+ * Покрыто (третья часть — ДВЕРЬ С ФРОНТА, две ручки замороженной таблицы):
+ *   - POST /api/import/scan ничего не пишет и повторяется без последствий;
+ *   - тело обеих ручек — явная выборка: лишнее поле (и снаружи, и внутри элемента)
+ *     отвергается ДО того, как движок вызван хоть раз;
+ *   - партия ограничена потолком SELECTIONS_CAP;
+ *   - отказ элемента (занятое имя без переименования) приезжает В ТЕЛЕ ответа, а не
+ *     роняет партию пятисотым; переименование по предложению уезжает черновиком;
+ *   - кадр import.updated несёт только batchId и count — ни имён, ни слагов.
  */
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { Readable } from 'node:stream'
 
 import { scanEstate, enrollSelections, FORMAT_PARSERS } from '../src/front/import-scanner.mjs'
+import { createFrontServer } from '../src/front/server.mjs'
 
 // ── чужие фикстуры (формат Claude Code) ──
 
@@ -470,5 +481,186 @@ describe('структура модуля — ноль модели, ноль з
     expect(MODULE_SRC).not.toMatch(/Toggle/)
     expect(MODULE_SRC).not.toMatch(/apply(Agent|Skill|Mcp)/)
     expect(MODULE_SRC).not.toMatch(/handleApprove/)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ДВЕРЬ С ФРОНТА: POST /api/import/scan и POST /api/import/enroll.
+//
+// Дверь не повторяет ни одного правила движка — она ограничивает ФОРМУ тела и зовёт
+// сканер. Поэтому здесь проверяется ровно то, что принадлежит двери: явная выборка
+// полей, потолок партии, поэлементные отказы в теле ответа и содержимое кадра.
+
+const TOKEN = 'a'.repeat(64)
+
+function mkReq(o: any = {}) {
+  const { method = 'GET', url = '/', headers = {}, body } = o
+  const payload = body == null ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
+  const req: any = Readable.from(payload)
+  req.method = method
+  req.url = url
+  req.headers = { ...headers }
+  req.socket = { remoteAddress: '10.0.0.1' }
+  return req
+}
+
+function mkRes() {
+  const res: any = {
+    statusCode: 0,
+    headers: {} as Record<string, any>,
+    body: '',
+    headersSent: false,
+    writeHead(code: number, h?: any) {
+      res.statusCode = code
+      res.headersSent = true
+      if (h) for (const [k, v] of Object.entries(h)) res.headers[k.toLowerCase()] = v
+      return res
+    },
+    end(c?: any) {
+      if (c != null) res.body += String(c)
+      return res
+    },
+  }
+  return res
+}
+
+const jsonHeaders = () => ({ authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' })
+
+/**
+ * Хозяйство САМОГО проекта, который обслуживает демон: чужие определения лежат ровно
+ * там, куда лягут черновики. Именно так это выглядит в жизни — поэтому дверь считает
+ * коллизии против своего же дерева, а имя файла, не приводимое к кебабу, уезжает
+ * чисто (`Twitter Parser.md` → слаг `twitter-parser`, путь свободен).
+ */
+function ownEstate(): Record<string, string> {
+  return {
+    '/repo/.claude/agents/Twitter Parser.md': FOREIGN_AGENT,
+    '/repo/.claude/agents/creator.md': FOREIGN_COLLIDING,
+    '/repo/.claude/skills/Release Notes/SKILL.md': FOREIGN_SKILL,
+    '/repo/CLAUDE.md': PROJECT_RULES,
+  }
+}
+
+function door(seed: Record<string, string> = {}) {
+  const fs = fakeFs({ ...ownEstate(), ...seed })
+  const events: any[] = []
+  const front = createFrontServer({
+    config: { token: TOKEN, workers: [{ id: 'max-1' }, { id: 'creator' }] },
+    deps: { repoDir: '/repo', dataDir: '/data', fsImpl: fs, hub: { emit: (e: any) => events.push(e) }, clock: () => 777 },
+  })
+  const call = async (method: string, url: string, body?: any) => {
+    const res = mkRes()
+    await front.handle(mkReq({ method, url, headers: jsonHeaders(), body }), res)
+    return res
+  }
+  const snapshot = () => [...fs.files.keys()].sort()
+  return { fs, events, call, snapshot }
+}
+
+describe('POST /api/import/scan — дверь читает хозяйство и НИЧЕГО не пишет', () => {
+  it('отдаёт кандидатов с коллизиями; повторный скан безопасен и не меняет диск', async () => {
+    const d = door()
+    const before = d.snapshot()
+
+    const first = await d.call('POST', '/api/import/scan', {})
+    expect(first.statusCode).toBe(200)
+    const out = JSON.parse(first.body)
+    expect(out.format).toBe('claude-code')
+
+    const clean = out.candidates.find((c: any) => c.slug === 'twitter-parser')
+    expect(clean.kind).toBe('agent')
+    expect(clean.collision).toBeUndefined()
+
+    const clash = out.candidates.find((c: any) => c.slug === 'creator')
+    expect(clash.collision.existingKind).toBe('worker')
+    expect(clash.collision.suggestion).toBe('creator-imported')
+
+    const again = await d.call('POST', '/api/import/scan', {})
+    expect(again.statusCode).toBe(200)
+    expect(again.body).toBe(first.body)
+    expect(d.snapshot()).toEqual(before) // скан — чтение, и только чтение
+    expect(d.events).toHaveLength(0) // читающая ручка не шлёт подсказок
+  })
+
+  it('лишнее поле в теле → 400, диск не тронут (тело скана пусто по контракту)', async () => {
+    const d = door()
+    const before = d.snapshot()
+    const res = await d.call('POST', '/api/import/scan', { repoDir: '/etc', command: 'rm -rf /' })
+    expect(res.statusCode).toBe(400)
+    expect(d.snapshot()).toEqual(before)
+  })
+})
+
+describe('POST /api/import/enroll — партия едет черновиками, отказы поэлементные', () => {
+  it('занятое имя отказывается В ТЕЛЕ, остальные элементы едут дальше', async () => {
+    const d = door()
+    const res = await d.call('POST', '/api/import/enroll', {
+      selections: [{ slug: 'creator', kind: 'agent' }, { slug: 'twitter-parser', kind: 'agent' }],
+    })
+
+    expect(res.statusCode).toBe(200) // отказ элемента — не пятисотая партии
+    const { drafts } = JSON.parse(res.body)
+    expect(drafts[0]).toMatchObject({ slug: 'creator', status: 'refused' })
+    expect(String(drafts[0].reason)).toContain('creator-imported')
+    expect(drafts[1]).toMatchObject({ slug: 'twitter-parser', status: 'awaiting_approval', path: '.claude/agents/twitter-parser.md' })
+    expect(drafts[1].lint.ok).toBe(true)
+    expect(drafts[1].receiptRef).toMatch(/^forge:/)
+
+    // черновик действительно лёг, а занятый файл остался прежним
+    expect(d.fs.files.get('/repo/.claude/agents/twitter-parser.md')).toContain('ТРЕТЬЕСТОРОННИЙ')
+    expect(d.fs.files.get('/repo/.claude/agents/creator.md')).toBe(FOREIGN_COLLIDING)
+  })
+
+  it('кадр import.updated несёт ТОЛЬКО batchId и count — ни имён, ни слагов', async () => {
+    const d = door()
+    await d.call('POST', '/api/import/enroll', {
+      selections: [{ slug: 'creator', kind: 'agent' }, { slug: 'twitter-parser', kind: 'agent' }],
+    })
+
+    expect(d.events).toHaveLength(1)
+    const frame = d.events[0]
+    expect(Object.keys(frame).sort()).toEqual(['batchId', 'count', 'event'])
+    expect(frame.event).toBe('import.updated')
+    expect(frame.count).toBe(1) // ровно столько черновиков легло
+    expect(JSON.stringify(frame)).not.toMatch(/twitter|creator|parser/i)
+  })
+
+  it('переименование по предложению уезжает черновиком под суффиксом', async () => {
+    const d = door()
+    const res = await d.call('POST', '/api/import/enroll', {
+      selections: [{ slug: 'creator', kind: 'agent', overrideSlug: 'creator-imported' }],
+    })
+
+    expect(res.statusCode).toBe(200)
+    const { drafts } = JSON.parse(res.body)
+    expect(drafts[0]).toMatchObject({ slug: 'creator-imported', status: 'awaiting_approval', renamedFrom: 'creator' })
+    expect(d.fs.files.has('/repo/.claude/agents/creator-imported.md')).toBe(true)
+  })
+
+  it('партия сверх потолка → 400 и ни одной записи', async () => {
+    const d = door()
+    const before = d.snapshot()
+    const selections = Array.from({ length: 51 }, () => ({ slug: 'twitter-parser', kind: 'agent' }))
+    const res = await d.call('POST', '/api/import/enroll', { selections })
+    expect(res.statusCode).toBe(400)
+    expect(d.snapshot()).toEqual(before)
+    expect(d.events).toHaveLength(0)
+  })
+
+  it('лишний ключ ВНУТРИ элемента → 400 до единого касания диска', async () => {
+    const d = door()
+    const before = d.snapshot()
+    const res = await d.call('POST', '/api/import/enroll', {
+      selections: [{ slug: 'twitter-parser', kind: 'agent', targetDir: '/etc' }],
+    })
+    expect(res.statusCode).toBe(400)
+    expect(d.snapshot()).toEqual(before)
+  })
+
+  it('пустой и неправильной формы список — честная четырёхсотая', async () => {
+    const d = door()
+    expect((await d.call('POST', '/api/import/enroll', { selections: [] })).statusCode).toBe(400)
+    expect((await d.call('POST', '/api/import/enroll', { selections: 'все' })).statusCode).toBe(400)
+    expect((await d.call('POST', '/api/import/enroll', {})).statusCode).toBe(400)
   })
 })
