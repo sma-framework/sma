@@ -87,6 +87,7 @@ function dirsFrom(root) {
     contextDir: join(root, 'context'), // 9.3-05 (D-9.3-07) — context packs + active.json + exam.jsonl
     statuslineDir: join(root, 'statusline'), // 9.3-07 (D-9.3-13) — statusline TTL cache + webhook config + cooldown marker
     manifestDir: join(root, 'manifest'), // 9.3-08 (D-9.3-11) — PR evidence passport pack (<headSha>.json + .md)
+    baselineDir: join(root, 'baseline'), // v5.1 — recorded baseline receipts (receipts.json) for replay
   }
 }
 
@@ -4532,6 +4533,142 @@ async function cmdReceiptHash({ positionals, flags, dirs }) {
   return 0
 }
 
+/**
+ * baseline <capture|replay|retrieval|context-cost|hook-latency|worker-recovery|clean-install>
+ *
+ * The measurement instrument of the memory track: what the layer costs and misses TODAY,
+ * captured as receipt-shaped reports so a later re-measurement is a diff instead of a
+ * memory. `capture` measures (all five metrics, or one via `--only`); `--record` turns each
+ * report into a structural receipt — that re-runs the check, which is what makes the digest
+ * honest, and why it is opt-in rather than the default; `replay` re-verifies what was
+ * recorded and exits non-zero on anything that no longer reproduces. NOT hook-facing.
+ */
+async function cmdBaseline({ positionals, flags, dirs }) {
+  const baseline = await import('./lib/baseline.mjs')
+  const sub = positionals[0]
+  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const receiptsPath = join(dirs.baselineDir, 'receipts.json')
+  const { execSync } = await import('node:child_process')
+
+  /**
+   * The receipt runner: a nonzero exit is DATA (receipts.mjs contract), never a throw.
+   * Every command that reaches it has already passed isSafeCommand INSIDE recordReceipt /
+   * verifyReceipts — the allowlist gate runs before the runner is invoked, and its charset
+   * admits no shell metacharacter. Same shape as the receipt-hash runner, deliberately.
+   */
+  const runCommand = (cmd, o = {}) => {
+    try {
+      return { stdout: execSync(cmd, { encoding: 'utf8', timeout: 900_000, cwd: o.cwd ?? repoRoot }), exitCode: 0 }
+    } catch (err) {
+      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
+    }
+  }
+
+  if (sub === 'replay') {
+    let stored = []
+    try {
+      stored = JSON.parse(readFileSync(receiptsPath, 'utf8'))
+    } catch {
+      stored = []
+    }
+    if (!Array.isArray(stored) || stored.length === 0) {
+      if (wantsJson(flags)) printJson({ replayed: 0, divergent: 0, records: [] })
+      else process.stdout.write('SMA baseline replay: записанных квитанций нет — сначала «baseline capture --record» (честный пустой случай).\n')
+      return 0
+    }
+    const { records, invalid, divergent } = baseline.replayBaselineReceipts({ receipts: stored, runCommand, cwd: repoRoot })
+    if (wantsJson(flags)) {
+      printJson({ replayed: records.length, divergent: divergent.length, invalid, records })
+      return divergent.length || invalid.length ? 1 : 0
+    }
+    process.stdout.write(`SMA baseline replay — перепроверка записанных измерений (${records.length}):\n`)
+    for (const r of records) {
+      const detail = r.verdict === 'verified' ? '' : ` (ожидалось ${String(r.expected_sha256).slice(0, 12)}…, получено ${String(r.observed_sha256 ?? 'ничего').slice(0, 12)}…)`
+      process.stdout.write(`  ${r.verdict === 'verified' ? '✓' : '✗'} ${r.id}: ${r.verdict}${detail}\n`)
+    }
+    for (const bad of invalid) {
+      process.stdout.write(`  ✗ ${bad.id ?? '<без id>'}: запись неполна (${[...bad.missing, ...bad.errors].join(', ')})\n`)
+    }
+    return divergent.length || invalid.length ? 1 : 0
+  }
+
+  const isMetric = baseline.BASELINE_METRICS.includes(sub)
+  if (sub !== 'capture' && !isMetric) {
+    process.stdout.write('usage: pnpm sma baseline capture [--only <metric>] [--cases <path>] [--queue-url <url>] [--runs N] [--record] [--json]\n')
+    process.stdout.write('       pnpm sma baseline replay [--json]\n')
+    process.stdout.write(`       pnpm sma baseline <${baseline.BASELINE_METRICS.join('|')}>  — одна метрика (форма, которую перезапускает записанная проверка)\n`)
+    process.stdout.write('  capture измеряет слой: отдача памяти, цена контекста, латентность хука, восстановление воркера, чистая установка.\n')
+    process.stdout.write('  --record пишет по одной структурной квитанции на метрику; replay перепроверяет записанное и падает на расхождении.\n')
+    return sub ? 1 : 0
+  }
+
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+  const casesFlag = typeof flags.cases === 'string' ? flags.cases : null
+  const casesPath = casesFlag ? (isAbsolute(casesFlag) ? casesFlag : join(repoRoot, casesFlag)) : join(corpusDir, 'gold-cases.jsonl')
+  const settingsPath = join(repoRoot, '.claude', 'settings.json')
+  const queueUrl = typeof flags['queue-url'] === 'string' ? flags['queue-url'] : process.env.SMA_QUEUE_URL
+  const runs = Number.isFinite(Number(flags.runs)) ? Number(flags.runs) : undefined
+  const only = isMetric ? sub : typeof flags.only === 'string' ? flags.only : undefined
+
+  const { reports, skipped } = await baseline.captureAll({ only, corpusDir, casesPath, settingsPath, repoRoot, queueUrl, runs })
+
+  let recorded = null
+  if (flags.record === true) {
+    recorded = baseline.recordBaselineReceipts({ reports, runCommand, cwd: repoRoot })
+    mkdirSync(dirname(receiptsPath), { recursive: true })
+    writeFileSync(receiptsPath, JSON.stringify(recorded.receipts, null, 2) + '\n', 'utf8')
+  }
+
+  if (wantsJson(flags)) {
+    printJson({
+      reports: reports.map((r) => r.report),
+      skipped,
+      ...(recorded ? { receipts: recorded.receipts, errors: recorded.errors } : {}),
+    })
+    return recorded && recorded.errors.length ? 1 : 0
+  }
+
+  process.stdout.write(`SMA baseline — измерение слоя (метрик: ${reports.length}):\n`)
+  for (const { metric, report } of reports) process.stdout.write(`  ${metric}: ${summarizeBaseline(metric, report)}\n`)
+  for (const s of skipped) process.stdout.write(`  ${s.metric}: пропущено — ${s.reason}\n`)
+  if (recorded) {
+    for (const r of recorded.receipts) {
+      process.stdout.write(
+        `  квитанция ${r.id}: ${r.expected_sha256.slice(0, 12)}… (exit:${r.expected_exit}${r.hash_stdout ? ', stdout связан' : ', связаны команда и код выхода'})\n`,
+      )
+    }
+    for (const e of recorded.errors) process.stdout.write(`  ✗ квитанция ${e.metric}: ${e.error}\n`)
+    process.stdout.write('  записано — перепроверка: pnpm sma baseline replay\n')
+  } else {
+    process.stdout.write('  (квитанции не записаны — добавьте --record; запись ПЕРЕЗАПУСКАЕТ каждую проверку, поэтому она не по умолчанию)\n')
+  }
+  return recorded && recorded.errors.length ? 1 : 0
+}
+
+/** One readable line per baseline metric — the numbers a human actually compares. */
+function summarizeBaseline(metric, r) {
+  if (metric === 'retrieval') {
+    return (
+      `recall ${r.summary.recall ?? 'нет данных'} · критических промахов ${r.summary.critical_miss_rate ?? 'нет данных'} ` +
+      `(кейсов ${r.cases}${r.corrupt_lines ? `, битых строк ${r.corrupt_lines}` : ''})`
+    )
+  }
+  if (metric === 'context-cost') return `~${r.totals.all} токенов (ядро ${r.totals.core ?? 'нет'}, оценщик ${r.estimator_version})`
+  if (metric === 'hook-latency') {
+    return r.entry_command == null
+      ? `не измерено — ${r.detail}`
+      : `p50 ${r.p50_ms} ms · p95 ${r.p95_ms} ms · среднее ${r.mean_ms} ms (прогонов ${r.runs}, ненулевых выходов ${r.nonzero_exits}) [${r.entry_command}]`
+  }
+  if (metric === 'worker-recovery') {
+    return r.status === 'measured' ? `восстановление ${r.recovery_ms} ms` : `среда недоступна — ${r.detail}`
+  }
+  if (metric === 'clean-install') {
+    const steps = r.steps.map((s) => `${s.name} ${s.ms} ms${s.ok ? '' : ' ✗'}`).join(' · ')
+    return `${r.wall_ms} ms${r.status === 'measured' ? '' : ' (НЕПОЛНО)'}${steps ? ` (${steps})` : ''}`
+  }
+  return JSON.stringify(r)
+}
+
 /** chain-tip [--json] — the deterministic merged journal chain tip (last line). */
 async function cmdChainTip({ flags, dirs }) {
   const journal = await import('./lib/journal.mjs')
@@ -8711,6 +8848,7 @@ const HANDLERS = {
   metrics: cmdMetrics,
   report: cmdReport,
   bench: cmdBench,
+  baseline: cmdBaseline, // v5.1 — the memory-track measurement instrument (capture|replay + one verb per metric)
   reverify: cmdReverify, // 9.2-03 (D-9.2-06) — re-verify structural receipts
   'receipt-hash': cmdReceiptHash, // 9.2-03 — the receipt emit path
   'chain-tip': cmdChainTip, // 9.2-03 (D-9.2-07) — merged journal chain tip (release-tag pin)
@@ -8764,7 +8902,7 @@ async function main() {
 
   if (!cmd || flags.help === true || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }

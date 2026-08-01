@@ -102,6 +102,7 @@ export const COMMAND_TOPICS = {
   grill: 'predictions',
 
   // receipts — structural claims, blind re-verification, subagent receipts
+  baseline: 'receipts', // v5.1 — measurements ARE receipts here: capture records, replay re-verifies
   reverify: 'receipts',
   'receipt-hash': 'receipts',
   'chain-tip': 'receipts',
