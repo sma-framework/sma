@@ -478,3 +478,246 @@ export function scanEstate({ repoDir, targetDir, fsImpl, registries, format = DE
   }
   return { format, candidates, notReady }
 }
+
+// ── маппинг чужого определения в словарь черновиков ──
+
+/**
+ * foreignCapabilities(fm) → заявленные чужим определением способности, ДОСЛОВНО, как
+ * данные. Именно поэтому потолок кузницы работает и для импорта: если чужой текст
+ * требует себе запретного права, оно приезжает в `can[]` и существующий lint его там
+ * находит. Ослаблять или переписывать эту строку здесь — значит открыть вторую дверь.
+ */
+function foreignCapabilities(fm) {
+  const out = []
+  const take = (value) => {
+    const s = sanitizeLine(value, FIELD_CAP)
+    if (s && !out.includes(s)) out.push(s)
+  }
+  for (const key of ['can', 'tools', 'allowed-tools', 'capabilities']) {
+    const v = fm ? fm[key] : undefined
+    if (Array.isArray(v)) v.forEach(take)
+    else if (typeof v === 'string' && v.trim()) String(v).split(',').forEach(take)
+  }
+  return out.slice(0, MAX_CAPABILITIES)
+}
+
+/** Тело чужого определения переносится как данные, обрезанное по потолку страницы. */
+function cappedBody(body) {
+  const s = String(body ?? '').replace(/\r\n/g, '\n')
+  return s.length > BODY_CAP ? `${s.slice(0, BODY_CAP)}\n\n… (текст обрезан при импорте)` : s
+}
+
+function dashList(items) {
+  return items.map((x) => `  - ${sanitizeLine(x, FIELD_CAP)}`)
+}
+
+/**
+ * buildDraft(kind, slug, candidate) → текст черновика в форме, которую требует
+ * кузница (её REQUIRED_FIELDS). Имя и описание — чужие; полоса и забор — наши
+ * безопасные умолчания; заявленные способности — чужие дословно. Поля активации не
+ * пишутся НИКОГДА: черновик не включает себя.
+ */
+function buildDraft(kind, slug, candidate) {
+  const name = candidate.name || slug
+  const description = candidate.description || candidate.summary || name
+  const body = cappedBody(candidate.body)
+
+  if (kind === 'skill') {
+    const fm = candidate.frontmatter || {}
+    const useWhen = sanitizeLine(fm['use-when'] || fm['when-to-use'] || firstSentence(description) || name, FIELD_CAP)
+    return [
+      '---',
+      `name: ${quoted(name)}`,
+      `description: ${quoted(description)}`,
+      `use-when: ${quoted(useWhen)}`,
+      '---',
+      '',
+      `# ${sanitizeLine(name, FIELD_CAP)}`,
+      '',
+      IMPORT_NOTICE,
+      '',
+      body,
+      '',
+    ].join('\n')
+  }
+
+  const declared = foreignCapabilities(candidate.frontmatter)
+  return [
+    '---',
+    `name: ${quoted(name)}`,
+    `description: ${quoted(description)}`,
+    `lane: ${DEFAULT_LANE}`,
+    'can:',
+    ...dashList(declared.length ? declared : FALLBACK_CAN),
+    'cannot:',
+    ...dashList(DEFAULT_CANNOT),
+    '---',
+    '',
+    `# ${sanitizeLine(name, FIELD_CAP)}`,
+    '',
+    IMPORT_NOTICE,
+    '',
+    body,
+    '',
+  ].join('\n')
+}
+
+// ── запись через дверь кузницы ──
+
+/**
+ * resolveTargetSlug(candidate, overrideSlug, ctx) → имя, под которым черновик ляжет.
+ * Политика «отказ или суффикс»: переименование принимается ТОЛЬКО у кандидата,
+ * помеченного коллизией, и само проверяется заново — совпало ли оно с предложением
+ * или нет. Занятое имя без переименования — SlugCollisionError, то есть отказ ЭТОГО
+ * элемента, а не перезапись чужого файла.
+ */
+function resolveTargetSlug(candidate, overrideSlug, ctx) {
+  const wanted = typeof overrideSlug === 'string' && overrideSlug.trim()
+    ? overrideSlug.trim().toLowerCase()
+    : null
+
+  if (!candidate.collision) {
+    if (wanted && wanted !== candidate.slug) {
+      throw new SlugCollisionError('переименование принимается только у кандидата, помеченного коллизией')
+    }
+    return candidate.slug
+  }
+
+  if (!wanted) {
+    const hint = candidate.collision.suggestion ? ` — предложение: «${candidate.collision.suggestion}»` : ''
+    throw new SlugCollisionError(`имя «${candidate.slug}» уже занято (${candidate.collision.existingKind})${hint}`)
+  }
+  if (!SLUG_RE.test(wanted)) {
+    throw new SlugCollisionError(`«${wanted}» не годится как имя: нужны 3..48 символов из a-z, 0-9 и дефиса`)
+  }
+  // повторная проверка ИМЕННО ЗДЕСЬ: ответ скана мог устареть, файл мог появиться
+  if (whatOccupies(wanted, candidate.kind, ctx.taken, ctx.target, ctx.fsImpl)) {
+    throw new SlugCollisionError(`имя «${wanted}» тоже занято`)
+  }
+  return wanted
+}
+
+/** Записать черновик, не перезаписав ничего: существующий путь — отказ, не перезапись. */
+function writeDraftFile(abs, text, fsImpl) {
+  if (existsSafe(abs, fsImpl)) {
+    throw new SlugCollisionError('на целевом пути уже есть файл — перезапись невозможна')
+  }
+  const mkdir = (fsImpl && fsImpl.mkdirSync) || fsMkdirSync
+  const writeFile = (fsImpl && fsImpl.writeFileSync) || fsWriteFileSync
+  const dir = abs.slice(0, abs.lastIndexOf('/'))
+  try {
+    mkdir(dir, { recursive: true })
+  } catch {
+    /* папка уже есть — не повод отказывать */
+  }
+  writeFile(abs, text, 'utf8')
+}
+
+/** Один выбранный элемент: маппинг → путь → запись → lint кузницы → её квитанция. */
+function enrollOne(sel, ctx) {
+  const kind = sel && typeof sel.kind === 'string' ? sel.kind : null
+  const slug = sel && typeof sel.slug === 'string' ? sel.slug : null
+
+  if (!kind) return { slug, kind, status: 'refused', reason: 'в выборе не указан вид' }
+  if (!ENROLLABLE_KINDS.includes(kind)) {
+    return {
+      slug,
+      kind,
+      status: 'manual',
+      reason: 'это переносится вручную: автоматического места в словаре у такого элемента нет',
+    }
+  }
+  if (!slug) return { slug, kind, status: 'refused', reason: 'в выборе не указано имя' }
+
+  const candidate = ctx.byKey.get(`${kind}:${slug}`)
+  if (!candidate) {
+    return { slug, kind, status: 'refused', reason: 'кандидат не найден при повторном скане хозяйства' }
+  }
+
+  let finalSlug
+  let relPath
+  let abs
+  try {
+    finalSlug = resolveTargetSlug(candidate, sel.overrideSlug, ctx)
+    relPath = draftPathFor(kind, finalSlug)
+    abs = `${ctx.target}/${relPath}`
+    writeDraftFile(abs, buildDraft(kind, finalSlug, candidate), ctx.fsImpl)
+  } catch (err) {
+    return { slug, kind, status: 'refused', reason: err && err.message ? err.message : 'элемент не записан' }
+  }
+
+  // ДВЕРЬ КУЗНИЦЫ, дословно: её lint и её квитанция, без второй проверки способностей.
+  const lint = lintDraft({ kind, filePath: abs, fsImpl: ctx.fsImpl })
+  const receiptRef = writeForgeReceipt({
+    dataDir: ctx.dataDir,
+    taskId: ctx.taskId ?? `import-${finalSlug}`,
+    kind,
+    filePath: abs,
+    lint,
+    sha256: lint.sha256,
+    fsImpl: ctx.fsImpl,
+  })
+
+  return {
+    slug: finalSlug,
+    kind,
+    path: relPath,
+    lint: {
+      ok: lint.passed,
+      findings: lint.checks.filter((c) => !c.ok).map((c) => ({ name: c.name, detail: c.detail })),
+    },
+    status: 'awaiting_approval',
+    receiptRef,
+    ...(finalSlug !== candidate.slug ? { renamedFrom: candidate.slug } : {}),
+  }
+}
+
+/**
+ * enrollSelections({selections, repoDir, targetDir, fsImpl, registries, dataDir, taskId, format})
+ *   → {results:[{slug, kind, path?, lint?:{ok, findings}, status, reason?, receiptRef?}]}
+ *
+ * Выбранное человеком хозяйство едет черновиками через СУЩЕСТВУЮЩУЮ дверь кузницы:
+ * draftPathFor → lintDraft → writeForgeReceipt → ожидание одобрения. Красный lint не
+ * хоронит партию — элемент возвращается с находками, остальные продолжают. Занятое
+ * имя без явного переименования — отказ ЭТОГО элемента; чужой файл остаётся байт в
+ * байт тем же. Ничего не включается: конфиг ростера и реестр инструментов не
+ * трогаются вовсе — активация остаётся двумя человеческими шагами.
+ */
+export function enrollSelections({
+  selections,
+  repoDir,
+  targetDir,
+  fsImpl,
+  registries,
+  dataDir,
+  taskId,
+  format = DEFAULT_FORMAT,
+} = {}) {
+  const collected = collectCandidates({ repoDir, targetDir, fsImpl, registries, format })
+  const byKey = new Map()
+  if (collected) {
+    for (const c of collected.raw) {
+      if (c && c.slug) byKey.set(`${c.kind}:${c.slug}`, c)
+    }
+  }
+
+  const ctx = {
+    byKey,
+    taken: collected ? collected.taken : new Map(),
+    target: collected ? collected.target : normDir(targetDir ?? repoDir),
+    fsImpl,
+    dataDir,
+    taskId,
+  }
+
+  const results = []
+  for (const sel of asList(selections)) {
+    try {
+      results.push(enrollOne(sel, ctx))
+    } catch (err) {
+      // ни один элемент не роняет партию целиком
+      results.push({ slug: sel && sel.slug, kind: sel && sel.kind, status: 'refused', reason: err && err.message })
+    }
+  }
+  return { results }
+}
