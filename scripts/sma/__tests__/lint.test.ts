@@ -16,12 +16,13 @@
 import { describe, it, expect } from 'vitest'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdtempSync, cpSync, rmSync, appendFileSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, cpSync, rmSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
 import { LINT_CHECKS, runLint } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
+import { GRACE_HORIZON } from '../lib/schema-v2.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIX = join(__dirname, 'fixtures', 'lint')
@@ -868,5 +869,168 @@ describe('MEM-SECRET — corpus-door secret screen (9.1-14 task 2)', () => {
     const c = LINT_CHECKS.find((x) => x.id === 'MEM-SECRET')
     expect(c).toBeTruthy()
     expect(c!.tier).toBe('critical')
+  })
+})
+
+// ── the schema-v2 discipline: MEM-V2SCHEMA · MEM-ONECLAIM ────────────────────
+//
+// FIXTURE NEUTRALITY: every record below is an INVENTED paraphrase carrying the
+// same DETECTABLE SHAPE as the failure classes this discipline exists to catch.
+// No corpus text, no real address, no machine path, no internal identifier ever
+// appears here — the delivery leak scan is a backstop, not a safety net.
+
+/** A clean schema-v2 record: a rederivable fact that carries its own re-check. */
+function v2Record(id: string, over: Record<string, unknown> = {}) {
+  return {
+    id,
+    schema_version: '2',
+    status: 'active',
+    memory_type: 'semantic',
+    truth_mode: 'factual',
+    claim: 'the release gate refuses a build whose checksum file is missing',
+    language: 'en',
+    sensitivity: 'internal',
+    verification: { method: 'rerun the release gate against a build with no checksum file' },
+    ...over,
+  }
+}
+
+/**
+ * Lint a throwaway corpus built from v2 records. The records are written through
+ * the SHARED serializer, so a fixture that the grammar would refuse can never
+ * silently become a test subject. `extra` may add anything else to the dir.
+ */
+function lintV2(
+  records: Array<{ frontmatter: Record<string, unknown>; body?: string }>,
+  opts: Record<string, unknown> = {},
+  extra?: (dir: string) => void,
+) {
+  const dir = mkdtempSync(join(tmpdir(), 'sma-lint-v2-'))
+  try {
+    writeFileSync(join(dir, 'TAGS.md'), SIZE_TAGS_MD, 'utf8')
+    const links = records.map((r) => `- [${r.frontmatter.id}](${String(r.frontmatter.id)}.md)`).join('\n')
+    writeFileSync(join(dir, 'MEMORY.md'), `# MEMORY\n\n${links}\n`, 'utf8')
+    for (const r of records) {
+      writeFileSync(
+        join(dir, `${String(r.frontmatter.id)}.md`),
+        serializeNote({ frontmatter: r.frontmatter as never, body: r.body ?? 'body text\n', schemaVersion: 2 }),
+        'utf8',
+      )
+    }
+    extra?.(dir)
+    return runLint({
+      corpusDir: dir,
+      tagsPath: join(dir, 'TAGS.md'),
+      indexPath: join(dir, 'MEMORY.md'),
+      ...opts,
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+}
+
+describe('MEM-V2SCHEMA + MEM-ONECLAIM — the record discipline', () => {
+  it('Test 1: a clean v2 record raises nothing — and the v1 completeness check does not judge it', () => {
+    const res = lintV2([{ frontmatter: v2Record('semantic_release_gate') }])
+    expect(findingsOf(res, 'MEM-V2SCHEMA')).toHaveLength(0)
+    expect(findingsOf(res, 'MEM-ONECLAIM')).toHaveLength(0)
+    // A v2 record carries `claim`/`memory_type` where a v1 note carries
+    // description/kind. Holding it to BOTH field sets would make every migrated
+    // record permanently critical, which would make this whole family decoration.
+    expect(findingsOf(res, 'MEM-SCHEMA')).toHaveLength(0)
+  })
+
+  it('Test 2 (D-tiering): the SAME discipline violation is CRITICAL when native and WARN under the migration grace', () => {
+    // A rederivable claim with no verification and no fingerprint — the silent-
+    // stale failure class, in its natively-authored form.
+    const native = lintV2([
+      { frontmatter: v2Record('semantic_unchecked_fact', { verification: null }) },
+    ])
+    const nativeFindings = findingsOf(native, 'MEM-V2SCHEMA')
+    expect(nativeFindings.length).toBe(1)
+    expect(nativeFindings[0].tier).toBe('critical')
+    expect(nativeFindings[0].message).toContain('verification')
+
+    // Byte-for-byte the same violation on a record that says it came from v1.
+    const graced = lintV2([
+      {
+        frontmatter: v2Record('semantic_unchecked_fact', { verification: null, migrated_from: 'v1' }),
+      },
+    ])
+    const gracedFindings = findingsOf(graced, 'MEM-V2SCHEMA')
+    expect(gracedFindings.every((f) => f.tier === 'warn')).toBe(true)
+    expect(gracedFindings.some((f) => f.message.includes('verification'))).toBe(true)
+    // The warning must say WHEN the grace ends — a grace with no horizon is an exemption.
+    expect(gracedFindings.some((f) => f.message.includes(GRACE_HORIZON))).toBe(true)
+    expect(graced.critical).toBe(0)
+  })
+
+  it('Test 3 (one claim): an array-valued claim is CRITICAL; three dated update markers are a WARN', () => {
+    const many = lintV2([
+      {
+        frontmatter: v2Record('semantic_two_claims', {
+          claim: ['the gate refuses an unsigned build', 'the gate also rewrites the manifest'],
+        }),
+      },
+    ])
+    const oneClaim = findingsOf(many, 'MEM-ONECLAIM')
+    expect(oneClaim.some((f) => f.tier === 'critical')).toBe(true)
+
+    // An episode wearing a record's clothes: a running log of dated updates.
+    const log = [
+      '2026-01-04 the gate was introduced behind a flag',
+      '2026-01-19 the flag was removed and the gate became mandatory',
+      '2026-02-02 the gate learned to read the manifest',
+      '',
+    ].join('\n')
+    const disguised = lintV2([{ frontmatter: v2Record('semantic_dated_log'), body: log }])
+    const warns = findingsOf(disguised, 'MEM-ONECLAIM').filter((f) => f.tier === 'warn')
+    expect(warns.length).toBe(1)
+    expect(warns[0].file).toBe('semantic_dated_log.md')
+  })
+
+  it('Test 4 (episodes are exempt): a many-claim file under episodes/ raises no record finding', () => {
+    const res = lintV2([{ frontmatter: v2Record('semantic_release_gate') }], {}, (dir) => {
+      mkdirSync(join(dir, 'episodes'), { recursive: true })
+      writeFileSync(
+        join(dir, 'episodes', 'episode_release_night.md'),
+        serializeNote({
+          frontmatter: {
+            id: 'episode_release_night',
+            schema_version: '2',
+            status: 'archived',
+            memory_type: 'episodic',
+            language: 'en',
+            sensitivity: 'internal',
+            recorded_at: '2026-02-11',
+          } as never,
+          body: [
+            '2026-02-11 the checksum step was added',
+            '2026-02-11 the manifest reader was rewritten',
+            '2026-02-11 the gate was switched on for every branch',
+            '',
+          ].join('\n'),
+          schemaVersion: 2,
+        }),
+        'utf8',
+      )
+    })
+    // The reviewed-corpus checks never descend into episodes/ — the walk is flat.
+    expect(findingsOf(res, 'MEM-ONECLAIM')).toHaveLength(0)
+    expect(findingsOf(res, 'MEM-V2SCHEMA')).toHaveLength(0)
+  })
+
+  it('Test 5 (backward-compat law): a schema-v1 note produces ZERO findings from both checks', () => {
+    const res = lintCase('vocab') // a committed v1-only fixture corpus
+    expect(findingsOf(res, 'MEM-V2SCHEMA')).toHaveLength(0)
+    expect(findingsOf(res, 'MEM-ONECLAIM')).toHaveLength(0)
+  })
+
+  it('Test 6: both checks are registered in LINT_CHECKS as critical classes', () => {
+    for (const id of ['MEM-V2SCHEMA', 'MEM-ONECLAIM']) {
+      const c = LINT_CHECKS.find((x) => x.id === id)
+      expect(c, `${id} must be registered in LINT_CHECKS`).toBeTruthy()
+      expect(c!.tier).toBe('critical')
+    }
   })
 })
