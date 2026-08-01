@@ -36,11 +36,14 @@
  * was complete and frozen from the first commit; their handlers landed in plan 9.5-11.
  *
  * The SIXTEEN D-9.7-09 routes (SPA asset serving, projects, machines/federation, chat,
- * import, onboarding) ship the SAME way — named 501 stubs, present and auth-gated from
- * the first commit of the release, so every screen is built against the final contract
- * instead of an imagined one. A stub reads NOTHING off the request; it answers 501 and
- * stops. Their handlers land in plans 9.7-09 (static + projects), 9.7-15 (machines +
- * chat) and 9.7-20 (import + onboarding) — and NO plan of the release adds a route.
+ * import, onboarding) shipped the SAME way — named 501 stubs, present and auth-gated from
+ * the first commit of the release, so every screen was built against the final contract
+ * instead of an imagined one. Their handlers landed in plans 9.7-09 (static + projects),
+ * 9.7-15 (machines + chat) and 9.7-20 (import + onboarding), and no plan of the release
+ * added a route. THE TABLE IS NOW FULL: every one of the thirty answers for real, and
+ * ZERO handlers are stubs (a test asserts the shape, not a list). A 501 that remains means
+ * one thing only — a collaborator THIS daemon was not wired with (no derive, no federation,
+ * no applier): «not available here», never «not written yet».
  *
  * Node built-ins only (node:http). Every collaborator (deriveState, adapter, ledger,
  * the merge verbRunner, execGit, the event hub, clock) is dependency-injected via
@@ -152,8 +155,9 @@ const BUILD_INSTRUCTION_HTML =
  * (Object.keys(ROUTES).length === 30) and no route may be added without also touching
  * that guard invariant.
  *
- * The first fourteen are LIVE. The sixteen below them are the declared-once V5.1
- * surface: each is registered, auth-gated and answers 501 until its fill plan lands.
+ * The first fourteen are the D-9.5-09 surface; the sixteen below them are the declared-once
+ * V5.1 growth. ALL THIRTY ARE LIVE: the table was written down once, at the start of the
+ * release, and every slot was filled by its own plan without the table ever moving.
  */
 export const ROUTES = Object.freeze({
   // ── the D-9.5-09 fourteen (live) ──
@@ -947,13 +951,13 @@ async function handleMcpToggle({ req, res, deps }) {
   }
 }
 
-// ── the remaining D-9.7-09 stubs (the route table stays FROZEN at 30) ──
+// ── the D-9.7-09 sixteen, all filled (the route table stayed FROZEN at 30 throughout) ──
 //
-// Declared once, filled later. Each is a named handler that answers 501 and NOTHING else:
-// it never touches `req`, so a stub cannot read a body, cannot be probed for a field name,
-// and cannot grow a side effect by accident (T-9.7-01). The dispatcher runs authed() BEFORE
-// any handler, so an unauthenticated call to any of these is a 401 — never a 501 that would
-// betray which routes exist. Their fill plans are named per group below.
+// Declared once, filled by their own plans, in the order the release needed them. Not one
+// of them is a stub any longer, and the table they live in never changed a single key —
+// which was the point of writing it down in full on the first day. The dispatcher runs
+// authed() BEFORE any handler, so an unauthenticated call to any route looks identical
+// from outside and cannot map the surface by status code (T-9.7-01).
 
 // ── the four project doors (D-9.7-01/08; the route table stays FROZEN at 30) ──
 //
@@ -1554,19 +1558,127 @@ async function handleImportEnroll({ req, res, config, deps }) {
   return sendJson(res, 200, { drafts })
 }
 
-/** GET /api/onboarding — the onboarding progress read model → plan 9.7-20. */
-function handleOnboarding({ res }) {
-  send501(res)
+// ── the first-run interview: three doors in front of ONE writer (D-9.7-16) ──
+//
+// The screen «Первый запуск» asks four steps of plain-language questions and ends with
+// the SAME artifacts the terminal flow produces — because `complete()` hands the answers
+// to scripts/sma/lib/profile-writer.mjs and this door adds no write path of its own. The
+// screen's footer («Привычнее в терминале? sma start — всё сохранится») is true only while
+// that holds, and the parity case compares the BYTES of the two paths.
+//
+// A FRESH ENGINE PER REQUEST, and that is the design: the interview's memory is the draft
+// file the engine mirrors atomically after every accepted answer, so the truth survives a
+// restart of this process (and of the browser) instead of living in it. Nothing here holds
+// state between requests — the daemon's statelessness law, kept by construction.
+
+/** An answer is a few sentences typed into a box, never a document pasted into one. */
+const ONBOARDING_TEXT_CAP = 2000
+/** A question key is an identifier of the interview's own map (which owns what exists). */
+const ONBOARDING_KEY_RE = /^[a-z][a-z0-9-]{0,63}$/
+/** A bound on the step NUMBER — the shape only; which steps exist is the engine's truth. */
+const ONBOARDING_STEP_MAX = 16
+
+/** The interview over the project this daemon serves; `.sma/` lives beside its files. */
+function onboardingEngine(config, deps) {
+  return createOnboarding({ targetDir: deps.repoDir ?? config.repoDir ?? '.', fsImpl: deps.fsImpl })
 }
 
-/** POST /api/onboarding/answer — record one onboarding answer → plan 9.7-20. */
-function handleOnboardingAnswer({ res }) {
-  send501(res)
+/**
+ * The interview's named refusals → a status. A question that does not exist, a key from
+ * another step and an answer that looks like a secret are all BAD REQUESTS: the route
+ * exists, the body did not fit the interview. A profile already on disk is a CONFLICT —
+ * the writer refuses to rewrite it, and so does this door.
+ */
+function onboardingError(res, err) {
+  const name = (err && err.name) || ''
+  if (name === 'ProfileExistsError') return send409(res, 'profile already exists')
+  return send400(res, String((err && err.message) || 'bad request'))
 }
 
-/** POST /api/onboarding/complete — write the profile + seed notes → plan 9.7-20. */
-function handleOnboardingComplete({ res }) {
-  send501(res)
+/** One question as the screen shows it — the interview's own words, explicit-picked. */
+function pickQuestion(q) {
+  return q
+    ? { key: q.key, title: q.title, question: q.question, hint: q.hint, step: q.step, index: q.index, optional: !!q.optional }
+    : null
+}
+
+/**
+ * The progress read model. It carries the founder's own answers back, because resuming an
+ * interview means showing what was already said — and they go to the authed caller who
+ * typed them, exactly like a chat transcript. Nothing else of the engine leaks out.
+ */
+function pickOnboardingState(s) {
+  return {
+    needed: !!s.needed,
+    done: !!s.done,
+    finished: !!s.finished,
+    step: s.step,
+    questionIndex: s.questionIndex,
+    question: pickQuestion(s.question),
+    answers: { ...s.answers },
+    visited: { ...s.visited },
+    totalAnswered: s.totalAnswered,
+    totalQuestions: s.totalQuestions,
+    steps: (s.steps || []).map((x) => ({ step: x.step, label: x.label, answered: x.answered, total: x.total, current: !!x.current })),
+    extraTopics: (s.extraTopics || []).map((x) => ({ step: x.step, key: x.key, title: x.title, question: x.question, hint: x.hint, added: !!x.added })),
+    ready: (s.ready || []).map((r) => ({ lead: r.lead, tail: r.tail, done: !!r.done })),
+  }
+}
+
+/**
+ * GET /api/onboarding — where the interview stands. `needed` is the whole first-run
+ * decision: an install that already has a profile answers false, and the app never shows
+ * the wizard again. The cursor is DERIVED here as everywhere — nothing is stored twice.
+ */
+function handleOnboarding({ res, config, deps }) {
+  return sendJson(res, 200, pickOnboardingState(onboardingEngine(config, deps).getState()))
+}
+
+/**
+ * POST /api/onboarding/answer — record ONE answer. Body {step, key, text}: the door bounds
+ * the shape, the engine owns which question that is (and refuses one it does not ask, by
+ * name). An EMPTY text is a legitimate skip — visited, unanswered, the cursor moves on —
+ * so it is not rejected here. A secret-shaped answer never reaches the draft file: the
+ * writer's own heuristic runs inside `answer()` BEFORE memory or disk is touched.
+ */
+async function handleOnboardingAnswer({ req, res, config, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['step', 'key', 'text']))) return undefined
+  if (!Number.isInteger(b.step) || b.step < 1 || b.step > ONBOARDING_STEP_MAX) return send400(res, 'invalid step')
+  if (typeof b.key !== 'string' || !ONBOARDING_KEY_RE.test(b.key)) return send400(res, 'invalid key')
+  if (typeof b.text !== 'string') return send400(res, 'text must be a string')
+  if (b.text.length > ONBOARDING_TEXT_CAP) return send400(res, `text exceeds ${ONBOARDING_TEXT_CAP} chars`)
+
+  try {
+    const state = onboardingEngine(config, deps).answer({ step: b.step, key: b.key, text: b.text })
+    return sendJson(res, 200, pickOnboardingState(state))
+  } catch (err) {
+    return onboardingError(res, err)
+  }
+}
+
+/**
+ * POST /api/onboarding/complete — hand the collected answers to the ONE writer. The body is
+ * EMPTY by contract: the answers come from the draft this daemon has been keeping, never
+ * from the request, so a caller can neither name a target directory nor smuggle an
+ * `overwrite`. A finished install answers 409 — a profile is rewritten by a person who
+ * asked for it in the terminal, never by a page reload.
+ */
+async function handleOnboardingComplete({ req, res, config, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  if (rejectUnknownKeys(res, body.value || {}, NO_FIELDS)) return undefined
+
+  const engine = onboardingEngine(config, deps)
+  if (!engine.getState().needed) return send409(res, 'profile already exists')
+  try {
+    const written = engine.complete()
+    return sendJson(res, 200, { done: true, notes: Array.isArray(written.notes) ? written.notes.length : 0 })
+  } catch (err) {
+    return onboardingError(res, err)
+  }
 }
 
 /** HANDLERS — the frozen name→function map. Exported for ONE reason: the shape test
