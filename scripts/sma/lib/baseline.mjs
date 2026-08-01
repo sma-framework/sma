@@ -16,9 +16,10 @@
  *   - economy.mjs corpusStats — the ONE versioned token estimator. This module counts
  *     no bytes and no tokens of its own; it passes the estimator's numbers, its
  *     version stamp and its honest approximation caveat straight through.
- *   - receipts.mjs — not imported here (a capture writes nothing); the reports are
- *     shaped so recordReceipt accepts them at capture time, which is where the
- *     workspace records them.
+ *   - receipts.mjs — freshClone for the clean-install capture (only COMMITTED evidence is
+ *     installed), and recordReceipt / verifyReceipts for the record + replay entries. The
+ *     capture functions themselves still write nothing: recording is a separate, explicit
+ *     step, so measuring never mutates the evidence store as a side effect.
  *
  * TWO CLASSES OF CAPTURE — and the difference is stated, never blurred:
  *
@@ -42,11 +43,15 @@
  * Node built-ins only; io and runners injectable; zero npm deps, zero LLM, zero network.
  */
 
-import { readFileSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { readFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { execSync, execFileSync } from 'node:child_process'
+import { createConnection } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { scoreNoteCases } from './context-pack.mjs'
 import { corpusStats } from './economy.mjs'
+import { freshClone } from './receipts.mjs'
 
 /**
  * The re-run commands. Both are bare verb forms on purpose: a check_command must pass
@@ -57,6 +62,8 @@ import { corpusStats } from './economy.mjs'
 export const RETRIEVAL_CHECK_COMMAND = 'node scripts/sma/cli.mjs baseline retrieval'
 export const CONTEXT_COST_CHECK_COMMAND = 'node scripts/sma/cli.mjs baseline context-cost'
 export const HOOK_LATENCY_CHECK_COMMAND = 'node scripts/sma/cli.mjs baseline capture --only hook-latency'
+export const WORKER_RECOVERY_CHECK_COMMAND = 'node scripts/sma/cli.mjs baseline capture --only worker-recovery'
+export const CLEAN_INSTALL_CHECK_COMMAND = 'node scripts/sma/cli.mjs baseline capture --only clean-install'
 
 /** Round a rate to 4 decimals (never carry float noise into a recorded number). */
 function rate(numerator, denominator) {
@@ -428,5 +435,329 @@ export function captureHookLatency(opts = {}) {
     entry_command: discovered.command,
     hook_event: discovered.event,
     nonzero_exits: nonzeroExits,
+  }
+}
+
+// ── detail hygiene: a report is a public artifact ──────────────────────────────
+
+/**
+ * safeDetail(text) — the ONLY way a free-text detail enters a report. Connection strings
+ * (credentials and all), bare host:port pairs and machine paths are replaced by markers,
+ * and the text is clipped to its first lines. A baseline report gets recorded, committed
+ * and read by strangers; the measurement is the product, the operator's environment is not.
+ */
+function safeDetail(text) {
+  return String(text ?? '')
+    .split('\n')
+    .slice(0, 3)
+    .join(' ')
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/gi, '[endpoint masked]')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?/g, '[host masked]')
+    .replace(/[A-Za-z]:\\[^\s"']+/g, '[path]')
+    .replace(/(?:\/[\w.@-]+){2,}/g, '[path]')
+    .trim()
+    .slice(0, 400)
+}
+
+/** An error's text, whatever shape it arrived in. */
+function errText(err) {
+  return String((err && err.message) ?? err)
+}
+
+// ── worker recovery: does an abandoned claim actually come back? ───────────────
+
+/** How the recovery number is produced — carried IN the report so it is auditable. */
+const DRILL_METHOD =
+  'a no-op task is enqueued and claimed, then the claim is ABANDONED — never touched, never completed, never failed, exactly as a dead worker leaves it; recovery_ms is the wall time until the queue makes that task claimable again'
+
+/** The worker identity the drill claims under (never a real lane worker's id). */
+const DRILL_WORKER_ID = 'baseline-recovery-drill'
+
+/** The lane the drill uses, and only ever while it is idle. */
+const DRILL_LANE = 'paperwork'
+
+/** {host, port} of a queue connection string, or null when there is nothing to reach. */
+function parseEndpoint(queueUrl) {
+  if (!queueUrl || typeof queueUrl !== 'string') return null
+  try {
+    const u = new URL(queueUrl)
+    if (!u.hostname) return null
+    return { host: u.hostname, port: Number(u.port) || 5432 }
+  } catch {
+    return null
+  }
+}
+
+/** Bounded TCP reachability probe. Resolves true/false; NEVER throws, never leaks a socket. */
+function probeTcp({ host, port, timeoutMs = 2000 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (v) => {
+      if (settled) return
+      settled = true
+      try {
+        socket.destroy()
+      } catch {
+        /* already gone */
+      }
+      resolve(v)
+    }
+    const socket = createConnection({ host, port })
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+  })
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * The default drill against a REAL queue. Composed of the daemon's own queue adapter —
+ * loaded dynamically, because the queue backend is an optional peer of this product, not a
+ * dependency of it: on a machine without it, the import fails and the capture reports the
+ * honest environment-unavailable branch instead of a number.
+ *
+ * TWO SAFETY RULES, both structural:
+ *   1. NOTHING IS EVER SIGNALLED. «Killing the worker» is modelled as abandoning the claim,
+ *      because the queue cannot tell a killed process from a silent one — both surface as a
+ *      claim that stops being refreshed, and both recover by the same expiry path. Killing
+ *      a real process would add risk without adding fidelity, so the drill kills nothing.
+ *   2. THE DRILL REFUSES A BUSY LANE. It checks the lane is idle before enqueuing, and
+ *      aborts the moment it claims anything that is not its own task — a measurement must
+ *      never delay somebody else's work.
+ */
+async function defaultRecoveryDrill({
+  queueUrl,
+  timeoutMs = 180_000,
+  expireMs = 10_000,
+  pollMs = 1_000,
+  clock = () => performance.now(),
+  loadBackend,
+} = {}) {
+  const load = typeof loadBackend === 'function' ? loadBackend : () => import('../../../daemon/src/queue/pgboss-backend.mjs')
+  const { createPgBossQueue } = await load()
+  const taskId = `${DRILL_WORKER_ID}-${Date.now()}`
+  const adapter = createPgBossQueue({ queueUrl, expireMs })
+
+  try {
+    await adapter.start()
+
+    // Rule 2: never drill on a lane that carries live work.
+    const busy = (await adapter.list({ lane: DRILL_LANE })).filter((r) => r.status === 'queued' || r.status === 'claimed')
+    if (busy.length) return { detail: 'the drill lane is not idle — refusing to drill while real work is queued or claimed' }
+
+    await adapter.enqueue({ id: taskId, source: 'roster', lane: DRILL_LANE, title: 'baseline worker-recovery drill (no-op)' })
+
+    const deadline = clock() + timeoutMs
+    let claimed = null
+    while (clock() < deadline) {
+      const got = await adapter.claimNext(DRILL_WORKER_ID, { lanes: [DRILL_LANE] })
+      if (got && got.id !== taskId) {
+        return { detail: 'a task that is not the drill task was claimed — aborting so the drill never delays real work' }
+      }
+      if (got) {
+        claimed = got
+        break
+      }
+      await sleep(pollMs)
+    }
+    if (!claimed) return { detail: 'the drill task never became claimable — there was nothing to recover from' }
+
+    // ABANDONED from here: no touch, no complete, no fail. Exactly what a dead worker leaves.
+    const abandonedAt = clock()
+    let recovered = false
+    while (clock() < deadline) {
+      await sleep(pollMs)
+      const row = (await adapter.list({ lane: DRILL_LANE })).find((r) => r.id === taskId)
+      if (row && row.status === 'queued') {
+        recovered = true
+        break
+      }
+    }
+    if (!recovered) return { detail: `the abandoned claim did not become claimable again within ${timeoutMs} ms` }
+    const recovery_ms = clock() - abandonedAt
+
+    // Best-effort cleanup: reclaim OUR task and close it, so the drill leaves no residue.
+    try {
+      const mine = await adapter.claimNext(DRILL_WORKER_ID, { lanes: [DRILL_LANE] })
+      if (mine && mine.id === taskId) await adapter.fail(taskId, 'manual')
+    } catch {
+      /* the number is already measured; residue is a housekeeping matter, not a result */
+    }
+    return { recovery_ms, detail: DRILL_METHOD }
+  } finally {
+    try {
+      await adapter.stop()
+    } catch {
+      /* closing a connection can never change what was measured */
+    }
+  }
+}
+
+/**
+ * captureWorkerRecovery(opts) → how long an abandoned claim takes to become claimable again.
+ *
+ * Report:
+ *   {metric:'worker-recovery', status:'measured'|'environment-unavailable',
+ *    recovery_ms?, detail, method?, check_command}
+ *
+ * THE HONEST TWO BRANCHES, and there are only two: either the drill ran against a reachable
+ * queue and `recovery_ms` is a number that was MEASURED, or it did not and the report says
+ * so. `recovery_ms` is ABSENT — not null, not 0 — on the unavailable branch, so no reader
+ * and no downstream diff can mistake an unrun drill for a fast one. An environment that is
+ * down is a FIRST-CLASS RESULT worth recording: «this environment could not be drilled on
+ * this date» is exactly the fact a later re-measurement needs.
+ *
+ * @param {object} opts
+ * @param {string} [opts.queueUrl]
+ * @param {Function} [opts.probe]  ({host, port, timeoutMs}) -> Promise<boolean>
+ * @param {Function} [opts.drill]  ({queueUrl, timeoutMs}) -> Promise<{recovery_ms?, detail?}>
+ * @param {number} [opts.probeTimeoutMs]
+ * @param {number} [opts.drillTimeoutMs]
+ * @param {string} [opts.checkCommand]
+ * @returns {Promise<object>}
+ */
+export async function captureWorkerRecovery(opts = {}) {
+  const {
+    queueUrl,
+    probe,
+    drill,
+    probeTimeoutMs = 2000,
+    drillTimeoutMs = 180_000,
+    checkCommand = WORKER_RECOVERY_CHECK_COMMAND,
+  } = opts
+
+  const base = { metric: 'worker-recovery', check_command: checkCommand }
+  const unavailable = (detail) => ({ ...base, status: 'environment-unavailable', detail: safeDetail(detail) })
+
+  const endpoint = parseEndpoint(queueUrl)
+  if (!endpoint) return unavailable('no queue endpoint configured — there is nothing to drill')
+
+  const doProbe = typeof probe === 'function' ? probe : probeTcp
+  let reachable
+  try {
+    reachable = await doProbe({ host: endpoint.host, port: endpoint.port, timeoutMs: probeTimeoutMs })
+  } catch (err) {
+    return unavailable(`the queue probe failed: ${errText(err)}`)
+  }
+  if (!reachable) return unavailable(`the queue endpoint did not accept a connection within ${probeTimeoutMs} ms`)
+
+  const doDrill = typeof drill === 'function' ? drill : defaultRecoveryDrill
+  let result
+  try {
+    result = await doDrill({ queueUrl, timeoutMs: drillTimeoutMs })
+  } catch (err) {
+    return unavailable(`the recovery drill did not complete: ${errText(err)}`)
+  }
+
+  const ms = Number(result && result.recovery_ms)
+  if (!Number.isFinite(ms)) {
+    return unavailable((result && result.detail) || 'the drill returned no measured recovery time')
+  }
+  return {
+    ...base,
+    status: 'measured',
+    recovery_ms: round2(ms),
+    detail: safeDetail(result.detail ?? DRILL_METHOD),
+    method: DRILL_METHOD,
+  }
+}
+
+// ── clean install: what a stranger pays to get from zero to installed ──────────
+
+/**
+ * captureCleanInstall(opts) → the wall-clock cost of a fresh install into an empty target.
+ *
+ * Report:
+ *   {metric:'clean-install', status:'measured'|'incomplete', wall_ms,
+ *    steps:[{name, ms, ok, detail?}], check_command}
+ *
+ * Two timed steps: a FRESH CLONE (receipts.freshClone — only COMMITTED evidence gets
+ * installed, the same discipline the receipt layer verifies under) and the installer run
+ * into an empty directory. A step that fails is reported `ok:false` and flips the status to
+ * `incomplete`: the elapsed milliseconds are real, but a broken install is never allowed to
+ * read as an install TIME.
+ *
+ * No path appears in the report (the target is a throwaway temp dir, and an operator's
+ * machine layout is not part of the measurement). A temp dir this function created is
+ * removed afterwards; a temp dir the CALLER supplied is never touched — deleting a
+ * directory somebody else named is not this function's business.
+ *
+ * @param {object} opts
+ * @param {string} [opts.repoRoot] the repository to clone (default: cwd)
+ * @param {string} [opts.tmpDir]   scratch root (default: a fresh mkdtemp this call owns)
+ * @param {Function} [opts.exec]   (file, args, opts) -> stdout
+ * @param {Function} [opts.hrtime] () -> milliseconds
+ * @param {boolean} [opts.cleanup] false keeps a self-created scratch dir for inspection
+ * @param {string} [opts.checkCommand]
+ * @returns {object}
+ */
+export function captureCleanInstall(opts = {}) {
+  const {
+    repoRoot = process.cwd(),
+    tmpDir,
+    exec,
+    hrtime,
+    cleanup,
+    checkCommand = CLEAN_INSTALL_CHECK_COMMAND,
+  } = opts
+
+  const runExec =
+    typeof exec === 'function'
+      ? exec
+      : (file, args, o = {}) => execFileSync(file, args, { encoding: 'utf8', stdio: 'pipe', ...o })
+  const clock = typeof hrtime === 'function' ? hrtime : () => performance.now()
+
+  const ownsScratch = tmpDir == null
+  const scratch = ownsScratch ? mkdtempSync(join(tmpdir(), 'sma-clean-install-')) : tmpDir
+  const cloneDir = join(scratch, 'clone')
+  const targetDir = join(scratch, 'target')
+
+  const steps = []
+  let status = 'measured'
+  const timed = (name, fn) => {
+    const before = clock()
+    let ok = true
+    let detail
+    try {
+      fn()
+    } catch (err) {
+      ok = false
+      status = 'incomplete'
+      detail = safeDetail(errText(err))
+    }
+    const ms = round2(Math.max(0, clock() - before))
+    steps.push(detail == null ? { name, ms, ok } : { name, ms, ok, detail })
+    return ok
+  }
+
+  try {
+    mkdirSync(targetDir, { recursive: true })
+    const cloned = timed('clone', () =>
+      freshClone({ repoRoot, targetDir: cloneDir, execGit: (args) => runExec('git', args, {}) }),
+    )
+    if (cloned) {
+      timed('install', () => runExec(process.execPath, [join(cloneDir, 'bin', 'init.mjs'), '--local'], { cwd: targetDir }))
+    } else {
+      status = 'incomplete'
+      steps.push({ name: 'install', ms: 0, ok: false, detail: 'skipped — the clone step did not complete' })
+    }
+  } finally {
+    if (ownsScratch && cleanup !== false) {
+      try {
+        rmSync(scratch, { recursive: true, force: true })
+      } catch {
+        /* a leftover temp dir is a housekeeping matter, not a measurement failure */
+      }
+    }
+  }
+
+  return {
+    metric: 'clean-install',
+    status,
+    wall_ms: round2(steps.reduce((a, s) => a + s.ms, 0)),
+    steps,
+    check_command: checkCommand,
   }
 }
