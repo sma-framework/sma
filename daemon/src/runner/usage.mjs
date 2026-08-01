@@ -39,6 +39,20 @@ import { join } from 'node:path'
 /** Coarse time-based token rate for the estimate fallback (documented heuristic, A4). */
 const EST_OUTPUT_TOKENS_PER_SEC = 20
 
+/** One calendar day, for the rolling window the cost view reads. */
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The reserved task-id prefix a conversation books its spend under.
+ *
+ * It lives HERE, next to the book that stores it, because the book is the only place the
+ * prefix is ever read back from: the conversation writes rows under `chat-<ts>`, and both
+ * the conversation's own «что съело лимит» answer and the cost series group by exactly this
+ * prefix. One definition, one law — a second copy is how the two readers start disagreeing
+ * about what the conversation cost.
+ */
+export const CHAT_TASK_ID_PREFIX = 'chat-'
+
 /** Finite non-negative token count (else 0). */
 function num(v) {
   const n = Number(v)
@@ -203,6 +217,77 @@ export function readUsageRows({ dataDir, accountName, windowMs, clock = Date.now
     out.push(r)
   }
   return out
+}
+
+/** The local calendar day of a moment, as `YYYY-MM-DD` — the day the reader lived, not UTC. */
+function dayOf(ms) {
+  const d = new Date(ms)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${mm}-${dd}`
+}
+
+/** Cents, never fractions of one — money on the glass is rounded once, here. */
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100
+}
+
+/**
+ * usageSeries({dataDir, days, accounts, clock, fsImpl}) → the cost history the «Расходы»
+ * screen draws: one point per day, per account, per LANE.
+ *
+ * Two things about it are deliberate.
+ *
+ * TOKENS AND MONEY BOTH TRAVEL. A subscription session books no dollar cost — it is paid
+ * for by the plan, not by the invoice — so a series that carried euros alone would show a
+ * night of real work as a flat zero (Pitfall 5, in the one place a founder actually looks
+ * for it). Every point therefore carries the token counts it is made of; the euro figure is
+ * the API-fallback money, and it is honestly zero when nothing was billed.
+ *
+ * THE CONVERSATION IS ITS OWN LANE. Rows booked under the reserved `chat-` prefix are kept
+ * apart from the ordinary task rows of the same day and account, and the point carries the
+ * booking id it came from, so the screen can group them into their own line by the same
+ * prefix the conversation writes. Splitting by lane — rather than by task — is what keeps
+ * the payload small: at most two points per account per day, whatever the park did.
+ *
+ * A missing or corrupt book yields fewer points, never an error.
+ *
+ * @param {{dataDir:string, days?:number, accounts?:string[], clock?:Function, fsImpl?:object}} opts
+ * @returns {{day:string, account:string, tokensIn:number, tokensOut:number, eur:number, taskId?:string}[]}
+ */
+export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fsImpl } = {}) {
+  const span = Math.max(1, Math.floor(Number(days) || 14))
+  const rows = readUsageRows({ dataDir, windowMs: span * DAY_MS, clock, fsImpl })
+  const wanted = Array.isArray(accounts) && accounts.length > 0 ? new Set(accounts.map(String)) : null
+
+  const points = new Map()
+  for (const r of rows) {
+    const at = Date.parse(r.ts)
+    if (!Number.isFinite(at)) continue // an unstampable row belongs to no day
+    const account = r.accountName == null ? 'unknown' : String(r.accountName)
+    if (wanted && !wanted.has(account)) continue
+
+    const taskId = String(r.taskId ?? '')
+    const conversation = taskId.startsWith(CHAT_TASK_ID_PREFIX)
+    const day = dayOf(at)
+    const key = `${day} ${account} ${conversation ? 'chat' : 'task'}`
+
+    let point = points.get(key)
+    if (!point) {
+      point = { day, account, tokensIn: 0, tokensOut: 0, eur: 0 }
+      points.set(key, point)
+    }
+    point.tokensIn += num(r.inputTokens)
+    point.tokensOut += num(r.outputTokens)
+    if (Number.isFinite(Number(r.costUsd))) point.eur += Number(r.costUsd)
+    // The lane is identified by one of its own real bookings — the latest one seen. The
+    // point is a day's total, not one turn, and the id says only which lane it belongs to.
+    if (conversation) point.taskId = taskId
+  }
+
+  return [...points.values()]
+    .map((p) => ({ ...p, eur: round2(p.eur) }))
+    .sort((a, b) => (a.day === b.day ? a.account.localeCompare(b.account) : a.day.localeCompare(b.day)))
 }
 
 /**

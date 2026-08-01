@@ -116,11 +116,25 @@ export interface Spend {
   apiFallback: ApiFallback
 }
 
-/** One point of the cost history: one account on one day. */
+/**
+ * One point of the cost history: one account, on one day, in one lane.
+ *
+ * Both figures travel because both are true: a subscription session is paid for by the plan
+ * and books no euros, so tokens are what makes that work visible at all, while `eur` is the
+ * API-fallback money — honestly zero when nothing was billed.
+ *
+ * `taskId` is present when the point stands for the conversation's own lane: the daemon
+ * books a turn under the reserved `chat-` prefix, and that prefix is how the screen finds
+ * the «Разговор» line. `machine` appears once more than one machine is in the household.
+ */
 export interface CostPoint {
   day: string
   account: string
+  tokensIn: number
+  tokensOut: number
   eur: number
+  taskId?: string
+  machine?: string
 }
 
 export interface Costs {

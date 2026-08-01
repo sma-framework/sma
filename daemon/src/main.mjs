@@ -44,7 +44,7 @@ import { createFrontServer } from './front/server.mjs'
 import { deriveState, parseReceiptSummary } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
-import { readUsage } from './runner/usage.mjs'
+import { readUsage, usageSeries } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
 
@@ -82,6 +82,9 @@ export function createDaemon(o = {}) {
 
   // (3) read seams for the front derive (windows state + usage), thin wiring only.
   const usageReader = (args) => readUsage({ dataDir, ...args })
+  // The cost history the spend screen draws — the SAME book, read per day and per lane. The
+  // derive declared this seam from its first line; here is where it stops being empty.
+  const usageSeriesReader = (args) => usageSeries({ dataDir, ...args })
   const windowsForState = (account) => windowState({ account, usageReader, clock, dataDir })
   const windowsOpenFor = (account) => isOpen(windowsForState(account), clock)
 
@@ -135,6 +138,7 @@ export function createDaemon(o = {}) {
         policyDir: o.policyDir ?? dataDir, // where «Мой стиль» puts the distilled voice
         windows: windowsForState,
         usageReader,
+        usageSeries: usageSeriesReader,
         execGit: o.execGit,
         casExec: o.casExec, // read-only SQL seam (same as pg-boss list()); wired at deploy
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
