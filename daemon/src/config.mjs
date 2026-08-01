@@ -109,6 +109,18 @@ export class UnknownProjectError extends Error {
   }
 }
 
+/**
+ * Named error for a reference to a machine id that is not in the peer registry (→ 404 at
+ * the door). Federation's own `UnknownPeerError` names the same absence at the OUTBOUND
+ * edge; this one names it at the CONFIG edge, so neither module has to import the other.
+ */
+export class UnknownPeerError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'UnknownPeerError'
+  }
+}
+
 /** The project id grammar — a slug, because the id is a key tasks and rows carry. */
 export const PROJECT_ID_RE = /^[a-z0-9-]{1,64}$/
 
@@ -475,6 +487,51 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
     throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
   }
   const next = { ...config, activeProject: id }
+  writeConfig(next, { env, homedir, fsImpl })
+  return next
+}
+
+/**
+ * addPeer(config, {id, name, url, token}, io) — take a machine into the PEER registry and
+ * persist, atomically (D-9.7-06).
+ *
+ * THE REGISTRY HAS EXACTLY ONE WRITE PATH — this door and its sibling below. The whole
+ * candidate goes back through `validateFederation`, so a joining machine is held to the
+ * SAME rules a peer written by hand is, and a duplicate id is an InvalidFederationError
+ * rather than a silent shadow of a machine that already exists. The role is NOT touched:
+ * what this daemon is stays the founder's declaration, never a side effect of a join.
+ *
+ * `token` here is the PEER'S OWN daemon token, the credential this hub will present when
+ * it calls that machine. It is stored, and it is collapsed by secretsView on the way out
+ * (T-9.7-05) — it never rides a payload.
+ *
+ * @returns {object} the updated config
+ * @throws {InvalidFederationError}
+ */
+export function addPeer(config, { id, name, url, token } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const current = validateFederation((config && config.federation) ?? undefined)
+  const entry = { id, url, token, ...(name !== undefined ? { name } : {}) }
+  const federation = validateFederation({ ...current, peers: [...current.peers, entry] })
+  const next = { ...config, federation }
+  writeConfig(next, { env, homedir, fsImpl })
+  return next
+}
+
+/**
+ * removePeer(config, {id}, io) — let a machine go. Unknown id → UnknownPeerError (a named
+ * error the door maps to 404): removing a machine that is not there is a mistake worth
+ * telling the founder about, not a silent success that hides a typo.
+ *
+ * @returns {object} the updated config
+ * @throws {UnknownPeerError}
+ */
+export function removePeer(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const current = validateFederation((config && config.federation) ?? undefined)
+  if (!current.peers.some((p) => p && p.id === id)) {
+    throw new UnknownPeerError(`removePeer: unknown machine "${id}"`)
+  }
+  const federation = { ...current, peers: current.peers.filter((p) => p.id !== id) }
+  const next = { ...config, federation }
   writeConfig(next, { env, homedir, fsImpl })
   return next
 }

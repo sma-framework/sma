@@ -33,7 +33,7 @@
 
 import { fileURLToPath } from 'node:url'
 
-import { loadConfig, addProject, renameProject, selectProject } from './config.mjs'
+import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
@@ -119,7 +119,11 @@ export function createDaemon(o = {}) {
         addProject,
         renameProject,
         selectProject,
-        federation, // the action-proxy engine (routes wired in plan 9.7-15)
+        // the PEER registry doors — same posture: the introduction wizard reaches the
+        // config only through these, and only after a one-shot invitation was consumed.
+        addPeer,
+        removePeer,
+        federation, // the action-proxy engine + the pairing book (D-9.7-06/07)
         aggregator,
         windows: windowsForState,
         usageReader,
