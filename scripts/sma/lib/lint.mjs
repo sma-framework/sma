@@ -321,6 +321,46 @@ export function extractPredictionsBlock(text) {
 }
 
 /**
+ * Where the product states its own version. capability.json is the single version
+ * truth of this product (package.json is pinned TO it, never the other way round),
+ * so the fingerprint epoch comparison reads THIS file and nothing else.
+ */
+const CAPABILITY_RELPATH = join('sma-core', 'capabilities', 'sma', 'capability.json')
+
+/**
+ * resolveProductVersion(opts) -> {version, source}
+ *
+ * Resolution order: an injected version, an injected path, the copy installed
+ * beside the corpus (`<corpusDir>/../sma-core/…`), then the source tree this
+ * module lives in. Nothing found -> version null, and MEM-FPDRIFT says so out
+ * loud: "unverified" and "current" must never be reported as the same thing.
+ */
+function resolveProductVersion(opts) {
+  if (typeof opts.productVersion === 'string' && opts.productVersion.trim() !== '') {
+    return { version: opts.productVersion.trim(), source: '<injected>' }
+  }
+  const candidates = []
+  if (typeof opts.capabilityPath === 'string' && opts.capabilityPath.trim() !== '') {
+    candidates.push(opts.capabilityPath)
+  }
+  if (typeof opts.corpusDir === 'string' && opts.corpusDir.trim() !== '') {
+    candidates.push(join(opts.corpusDir, '..', CAPABILITY_RELPATH))
+  }
+  candidates.push(join(__dirname, '..', '..', '..', CAPABILITY_RELPATH))
+  for (const path of candidates) {
+    try {
+      const version = JSON.parse(readFileSync(path, 'utf8')).version
+      if (typeof version === 'string' && version.trim() !== '') {
+        return { version: version.trim(), source: path }
+      }
+    } catch {
+      /* fail-soft — try the next candidate */
+    }
+  }
+  return { version: null, source: candidates.join(' · ') }
+}
+
+/**
  * Build the shared lint context once (single corpus read). Every check reads
  * from this — no check re-reads the disk.
  */
@@ -405,6 +445,12 @@ function buildContext(opts) {
     ladder = readLadder({ ladderPath: opts.ladderPath })
   }
 
+  // The fingerprint epoch (MEM-FPDRIFT) and today's date (MEM-EXPIRE), resolved
+  // ONCE here like every other input. `now` is injectable so a fixture's verdict
+  // is a property of the fixture, not of the day the suite happens to run.
+  const product = resolveProductVersion(opts)
+  const today = utcDay(opts.now ?? new Date())
+
   return {
     corpusDir,
     tagsPath,
@@ -412,6 +458,12 @@ function buildContext(opts) {
     registry,
     files,
     parsed,
+    productVersion: product.version,
+    productVersionSource: product.source,
+    today,
+    // Where a fingerprint's tree_paths are resolved from (repo root by default:
+    // undefined lets the injected runner use its own cwd).
+    gitCwd: opts.gitCwd,
     indexText,
     indexLinks,
     areaIndexFiles,
@@ -1675,6 +1727,167 @@ const MEM_ONECLAIM = {
   },
 }
 
+/**
+ * computeTreeHash({paths, execGit, cwd}) — THE definition of a fingerprint's
+ * `tree_hash`, exported so that whoever STAMPS a claim and whoever CHECKS one can
+ * never drift apart: sha256 over `<path>:<git blob hash>` lines, paths sorted, one
+ * trailing newline. Anything else that computes this value is a second definition,
+ * and a second definition means every fingerprint eventually reads as drifted.
+ *
+ * `git hash-object` reads the WORKING TREE, so a claim goes stale the moment the
+ * files it describes change — not only once someone commits them. THROWS with a
+ * readable reason (no runner, empty path list, unreadable path) instead of
+ * returning a sentinel: the caller turns that into an honest "unverified"
+ * finding, and a check that cannot verify must never report "verified".
+ *
+ * Read-only by construction: `hash-object` writes nothing without `-w`.
+ *
+ * @param {{paths: string[], execGit?: Function, cwd?: string}} args
+ * @returns {string} sha256 hex
+ */
+export function computeTreeHash({ paths, execGit, cwd } = {}) {
+  if (typeof execGit !== 'function') {
+    throw new Error('no git runner available — inject execGit to verify a file-bound fingerprint')
+  }
+  if (!Array.isArray(paths) || paths.length === 0) {
+    throw new Error('tree_paths is empty — a hash with no paths can never prove drift')
+  }
+  const lines = []
+  for (const path of paths.map(String).sort()) {
+    const blob = String(execGit(['hash-object', '--', path], cwd ? { cwd } : {})).trim()
+    if (!/^[0-9a-f]{40,}$/.test(blob)) {
+      throw new Error(`git returned no object hash for "${path}"`)
+    }
+    lines.push(`${path}:${blob}`)
+  }
+  return sha256(lines.join('\n') + '\n')
+}
+
+const MEM_FPDRIFT = {
+  id: 'MEM-FPDRIFT',
+  title: 'A fingerprinted claim still describes the world it was stamped against',
+  tier: 'warn',
+  run(ctx) {
+    const out = []
+    for (const note of v2Records(ctx)) {
+      const fp = note.frontmatter.fingerprint
+      if (fp == null || typeof fp !== 'object' || Array.isArray(fp)) continue
+
+      // ── the epoch half: which version of the product the claim is about ─────
+      const stamped = typeof fp.product_version === 'string' ? fp.product_version.trim() : ''
+      if (stamped !== '') {
+        if (ctx.productVersion == null) {
+          out.push(
+            finding(
+              'MEM-FPDRIFT',
+              'warn',
+              note.file,
+              `${note.file}: fingerprint.product_version "${stamped}" is UNVERIFIED — no product version could be read (looked at ${ctx.productVersionSource}); the claim's epoch is unchecked, which is not the same as current`,
+            ),
+          )
+        } else if (stamped !== ctx.productVersion) {
+          out.push(
+            finding(
+              'MEM-FPDRIFT',
+              'warn',
+              note.file,
+              `${note.file}: fingerprint.product_version "${stamped}" is not the current product version "${ctx.productVersion}" — the claim describes an older epoch; re-verify it and re-stamp, or retire it (nothing here rewrites the record)`,
+            ),
+          )
+        }
+      }
+
+      // ── the file-bound half: whether the files it names still hash the same ─
+      const hash = typeof fp.tree_hash === 'string' ? fp.tree_hash.trim() : ''
+      if (hash === '') continue
+      const paths = Array.isArray(fp.tree_paths) ? fp.tree_paths : []
+      let recomputed
+      try {
+        recomputed = computeTreeHash({ paths, execGit: ctx.execGit, cwd: ctx.gitCwd })
+      } catch (err) {
+        out.push(
+          finding(
+            'MEM-FPDRIFT',
+            'warn',
+            note.file,
+            `${note.file}: fingerprint.tree_hash is UNVERIFIED — it could not be recomputed (${err.message}); an unverifiable binding is not a valid one`,
+          ),
+        )
+        continue
+      }
+      if (recomputed !== hash) {
+        out.push(
+          finding(
+            'MEM-FPDRIFT',
+            'warn',
+            note.file,
+            `${note.file}: fingerprint.tree_hash no longer matches the files it names (${paths.map(String).sort().join(', ')}) — the claim is about a state of those files that has since changed`,
+          ),
+        )
+      }
+    }
+    return out
+  },
+}
+
+/**
+ * The UTC calendar day of a value ('YYYY-MM-DD'), or null when it is not a date.
+ * Date-only on purpose: comparing instants would let the machine's timezone decide
+ * whether a claim expired, which is a verdict no lint should hand to a clock offset.
+ */
+function utcDay(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10)
+  const raw = String(value ?? '').trim()
+  if (raw === '') return null
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00Z` : raw)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)
+}
+
+const MEM_EXPIRE = {
+  id: 'MEM-EXPIRE',
+  title: 'An active claim past its horizon is a stale candidate (never auto-deleted)',
+  tier: 'warn',
+  run(ctx) {
+    const out = []
+    const today = ctx.today
+    if (today == null) return out
+    for (const note of v2Records(ctx)) {
+      const fm = note.frontmatter
+      // Only ACTIVE claims. A record that already says `expired` has been dealt
+      // with; re-reporting it would train the reader to ignore this class.
+      if (String(fm.status ?? '').trim() !== 'active') continue
+      const until = typeof fm.valid_until === 'string' ? fm.valid_until.trim() : ''
+      if (until === '') continue
+      const day = utcDay(until)
+      if (day == null) {
+        out.push(
+          finding(
+            'MEM-EXPIRE',
+            'warn',
+            note.file,
+            `${note.file}: valid_until "${until}" is not a readable date — a horizon nobody can compare against is the same as no horizon at all`,
+          ),
+        )
+        continue
+      }
+      if (day < today) {
+        // The message deliberately names only the record's OWN date: printing
+        // today's would make the report text change every midnight for no reader
+        // benefit, and this checker's output is meant to be diffable.
+        out.push(
+          finding(
+            'MEM-EXPIRE',
+            'warn',
+            note.file,
+            `${note.file}: status is active but valid_until ${until} has passed — review it (re-verify and extend, supersede, or set status expired). Expiry is a review trigger: nothing here deletes or rewrites a record.`,
+          ),
+        )
+      }
+    }
+    return out
+  },
+}
+
 // The check registry — the full R5 class list plus the two D-9-15 checks
 // plus the 9.1-09 PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
@@ -1711,6 +1924,8 @@ export const LINT_CHECKS = [
   FRAG_LINT,
   MEM_V2SCHEMA,
   MEM_ONECLAIM,
+  MEM_FPDRIFT,
+  MEM_EXPIRE,
 ]
 
 // ─────────────────────────── runner ──────────────────────────────────────────
