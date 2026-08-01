@@ -1,110 +1,106 @@
-# Functional Source License, Version 1.1, MIT Future License
+SMA Source-Available License v1.0
 
-## Abbreviation
+Copyright (c) 2026 Matvey Maslov
+Commercial licensing contact: matvey.maslov99@gmail.com
 
-FSL-1.1-MIT
+TERMS AND CONDITIONS
 
-## Notice
+1. Definitions
 
-Copyright 2026 Matvey Maslov
+   "Software" means this work: the SMA framework, its source code, its
+   documentation, and any derivative works of them.
 
-## Terms and Conditions
+   "Licensor" means the copyright holder named above.
 
-### Licensor ("We")
+   "You" means the individual or legal entity exercising rights under this
+   License.
 
-The party offering the Software under these Terms and Conditions.
+   "Noncommercial Use" means use that does not, directly or indirectly,
+   generate revenue or other commercial advantage: personal use; use inside
+   your own team or organization on your own projects; evaluation; education;
+   academic research; and contributions back to the Software.
 
-### The Software
+   "Commercial Use" means any use of the Software that is not Noncommercial
+   Use. This includes, without limitation: selling or reselling the Software
+   or derivative works; offering the Software, or a product or service that
+   incorporates or depends on it, for a fee, by subscription, or as a hosted
+   or managed service; using it to deliver paid consulting, support, or
+   development services in which the Software is part of what the customer
+   pays for; and any use in a product, service, or offering that is monetized
+   in any form, including through advertising.
 
-The "Software" is each version of the software that we make available under
-these Terms and Conditions, as indicated by our inclusion of these Terms and
-Conditions with the Software.
+   "Gross Revenue" means all amounts received by You that are attributable to
+   the product, service, or offering that makes Commercial Use of the
+   Software, before deduction of costs.
 
-### License Grant
+2. Grant for Noncommercial Use
 
-Subject to your compliance with this License Grant and the Patents,
-Redistribution and Trademark clauses below, we hereby grant you the right to
-use, copy, modify, create derivative works, publicly perform, publicly display
-and redistribute the Software for any Permitted Purpose identified below.
+   Subject to the terms of this License, the Licensor grants You a worldwide,
+   royalty-free, non-exclusive, non-transferable license to use, copy,
+   modify, and redistribute the Software for Noncommercial Use only, provided
+   that every copy You make or distribute retains this License text, the
+   copyright notice above, and attribution to the Licensor.
 
-### Permitted Purpose
+3. Commercial Use requires a written agreement
 
-A Permitted Purpose is any purpose other than a Competing Use. A Competing Use
-means making the Software available to others in a commercial product or
-service that:
+   Commercial Use of the Software, in whole or in part, is NOT licensed under
+   Section 2. To make Commercial Use of the Software You must first obtain a
+   commercial license from the Licensor. Contact: matvey.maslov99@gmail.com.
 
-1. substitutes for the Software;
+   Unless a separate written agreement between You and the Licensor states
+   otherwise, the default commercial terms offered by the Licensor are: You
+   pay the Licensor thirty percent (30%) of the Gross Revenue of each
+   product, service, or offering that makes Commercial Use of the Software,
+   payable quarterly, together with reasonable revenue reporting.
 
-2. substitutes for any other product or service we offer using the Software
-   that exists as of the date we make the Software available; or
+   These default terms are an offer, not an automatic grant: Commercial Use
+   without a written agreement with the Licensor (or outside the terms of
+   such an agreement) is unlicensed use and constitutes copyright
+   infringement.
 
-3. offers the same or substantially similar functionality as the Software.
+4. Redistribution
 
-Permitted Purposes specifically include using the Software:
+   Redistribution of the Software, in original or modified form, is permitted
+   only for Noncommercial Use, must be free of charge, and must carry this
+   License unmodified, so that every downstream recipient receives the same
+   terms.
 
-1. for your internal use and access;
+5. No other rights
 
-2. for non-commercial education;
+   No trademark rights are granted. No rights are granted beyond those
+   expressly stated in this License; all other rights are reserved by the
+   Licensor.
 
-3. for non-commercial research; and
+6. Termination
 
-4. in connection with professional services that you provide to a licensee
-   using the Software in accordance with these Terms and Conditions.
+   Any breach of this License automatically terminates Your rights under it.
+   Your rights are reinstated if the breach is fully cured within thirty (30)
+   days of You becoming aware of it, unless the Licensor states otherwise in
+   writing.
 
-### Patents
+7. Prior versions
 
-To the extent your use for a Permitted Purpose would necessarily infringe our
-patents, the license grant above includes a license under our patents. If you
-make a claim against any party that the Software infringes or contributes to
-the infringement of any patent, then your patent license to the Software ends
-immediately.
+   Versions of the Software published before this License was adopted remain
+   available under the license they were published with: v4.0.2 and earlier
+   (including the corresponding npm releases) under MIT; v5.0.0 through
+   v5.0.4 under FSL-1.1-MIT, including that license's scheduled conversion of
+   each of those versions to MIT two years after its release. This License
+   applies to every version that ships with it.
 
-### Redistribution
+8. Third-party components
 
-The Terms and Conditions apply to all copies, modifications and derivatives of
-the Software.
+   Third-party components remain under their own licenses; see
+   THIRD-PARTY-LICENSES.md.
 
-If you redistribute any copies, modifications or derivatives of the Software,
-you must include a copy of or a link to these Terms and Conditions and not
-remove any copyright notices provided in or with the Software.
+9. Disclaimer of warranty
 
-### Disclaimer
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTIES OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING GUARANTEES OF FITNESS FOR A PARTICULAR PURPOSE,
-MERCHANTABILITY, TITLE OR NON-INFRINGEMENT.
+10. Limitation of liability
 
-IN NO EVENT WILL WE HAVE ANY LIABILITY TO YOU ARISING OUT OF OR RELATED TO THE
-SOFTWARE, INCLUDING INDIRECT, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES,
-EVEN IF WE HAVE BEEN INFORMED OF THEIR POSSIBILITY IN ADVANCE.
-
-### Trademarks
-
-Except for displaying the License Details and identifying us as the origin of
-the Software, you have no right under these Terms and Conditions to use our
-trademarks, trade names, service marks or product names.
-
-## Grant of Future License
-
-We hereby irrevocably grant you an additional license to use the Software under
-the MIT license that is effective on the second anniversary of the date we make
-the Software available. On or after that date, you may use the Software under
-the MIT license, in which case the following will apply:
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.

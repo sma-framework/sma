@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/version-5.0.4-3B82F6" alt="version 5.0.4">
   <img src="https://img.shields.io/badge/tests-1512%2F1512-3CC0A0" alt="tests 1512/1512">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-FSL--1.1--MIT-3CC0A0" alt="FSL-1.1-MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
   <img src="https://img.shields.io/badge/LLM%20in%20the%20hot%20path-zero-1FA0A6" alt="zero LLM in the hot path">
 </p>
@@ -225,6 +225,6 @@ Everything above is the core. The detail lives one link away:
 
 ## License and attribution
 
-**FSL-1.1-MIT** (Functional Source License) — see [LICENSE](LICENSE). In plain words: the source is open to read, install locally, modify, and use internally or for non-commercial education and research — free of charge. What it forbids is offering SMA (or a substantially similar product) as a competing commercial product or service. Each released version automatically becomes plain MIT two years after its release. Versions released before the license change (v4.0.2 and earlier, including the npm releases) remain MIT.
+**SMA Source-Available License v1.0** — see [LICENSE](LICENSE). In plain words: the source is open to read, install locally, modify, and use for yourself, inside your own team, and in noncommercial education and research — free of charge. Any monetization of SMA — selling it, offering it (or a product built on it) for a fee or as a hosted service, or charging for services where SMA is part of what the customer pays for — requires a written commercial agreement with the author: **matvey.maslov99@gmail.com**. The default commercial terms are 30% of the gross revenue of the offering that uses SMA; write first, always. Earlier versions keep the licenses they shipped with: v4.0.2 and earlier (including those npm releases) remain MIT, and v5.0.0–v5.0.4 remain FSL-1.1-MIT with that license's scheduled conversion of each version to MIT two years after its release.
 
 **Author: Matvey Maslov.** Questions, feedback, adoption stories: [matvey.maslov99@gmail.com](mailto:matvey.maslov99@gmail.com) — or open an [issue](https://github.com/sma-framework/sma/issues).
