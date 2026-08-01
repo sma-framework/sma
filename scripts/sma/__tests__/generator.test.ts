@@ -26,6 +26,8 @@ import { buildIndex, buildAreaIndexes, GENERATED_MARKER, computeDateMap } from '
 import { resolvePeriphery } from '../lib/loader.mjs'
 import { runLint } from '../lib/lint.mjs'
 import { ALWAYS_LOAD_BUDGET } from '../lib/constants.mjs'
+import { serializeNote } from '../lib/frontmatter.mjs'
+import { writeEpisode } from '../lib/episodes.mjs'
 
 // A closed faceted TAGS.md the generator/loader read for facet grouping.
 const TAGS_MD = `# TAGS
@@ -54,6 +56,11 @@ function note(dir: string, name: string, fm: Record<string, unknown>, body = 'bo
   }
   lines.push('---')
   writeFileSync(join(dir, name), lines.join('\n') + '\n' + body, 'utf8')
+}
+
+/** Write a schema-v2 record through the shared serializer (never hand-rolled). */
+function v2note(dir: string, name: string, fm: Record<string, unknown>, body = 'body\n') {
+  writeFileSync(join(dir, name), serializeNote({ frontmatter: fm, body, schemaVersion: 2 }), 'utf8')
 }
 
 let corpusDir: string
@@ -303,6 +310,180 @@ describe('index restructure (9.1-13 task 3, FI-11)', () => {
       expect(
         stale.findings.some((f) => f.checkId === 'MEM-REGEN' && f.tier === 'critical' && f.message.includes('INDEX-tech.md')),
       ).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
+// ── the schema-v2 corpus: status filter, context_priority, retrieval.areas ───
+
+describe('generator.mjs — a corpus that speaks both schema versions', () => {
+  /**
+   * A mixed corpus: v1 notes carrying a lifecycle `status`, and v2 records whose
+   * CORE membership is stated by `context_priority` and whose area membership is
+   * stated by `retrieval.areas` (the v2 twin of v1 `tags`).
+   */
+  function mixedCorpus(): { dir: string; tags: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-gen-v2-'))
+    const tags = join(dir, 'TAGS.md')
+    writeFileSync(tags, TAGS_MD, 'utf8')
+
+    // v1, CORE-worthy by importance, but RETIRED — trust says it must not load.
+    note(dir, 'retired.md', {
+      description: 'The old deploy runbook everyone still quotes',
+      kind: 'procedural-rule',
+      tags: ['tech'],
+      importance: 10,
+      status: 'superseded',
+    })
+    // v1, CORE-worthy by importance, and REVOKED — same verdict, harder.
+    note(dir, 'revoked.md', {
+      description: 'A rule that turned out to be wrong and was withdrawn',
+      kind: 'decision',
+      tags: ['tech'],
+      importance: 10,
+      status: 'revoked',
+    })
+    // v1, CORE, alive — the control.
+    note(dir, 'alive.md', {
+      description: 'The current deploy runbook',
+      kind: 'procedural-rule',
+      tags: ['tech'],
+      importance: 10,
+      status: 'active',
+    })
+
+    // v2, always-load: no importance field exists in v2 at all.
+    v2note(dir, 'v2-always.md', {
+      id: 'v2-always',
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'normative',
+      truth_mode: 'normative',
+      claim: 'The suite runs twice before a release push',
+      language: 'ru',
+      context_priority: 'always',
+      sensitivity: 'internal',
+      retrieval: { areas: ['tech'] },
+    })
+    // v2, on-demand: catalogued, never always-loaded.
+    v2note(dir, 'v2-ondemand.md', {
+      id: 'v2-ondemand',
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'semantic',
+      truth_mode: 'factual',
+      claim: 'SMS remains the primary customer channel',
+      language: 'ru',
+      context_priority: 'on-demand',
+      sensitivity: 'internal',
+      retrieval: { areas: ['messaging'] },
+    })
+    // v2, always-load BUT revoked — the status filter outranks the priority.
+    v2note(dir, 'v2-revoked.md', {
+      id: 'v2-revoked',
+      schema_version: '2',
+      status: 'revoked',
+      memory_type: 'normative',
+      truth_mode: 'normative',
+      claim: 'A withdrawn rule that still asks to be always-loaded',
+      language: 'ru',
+      context_priority: 'always',
+      sensitivity: 'internal',
+      retrieval: { areas: ['tech'] },
+    })
+    return { dir, tags }
+  }
+
+  it('a superseded or revoked note NEVER reaches CORE — whatever its importance says', () => {
+    const { dir, tags } = mixedCorpus()
+    try {
+      const out = buildIndex({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} })
+      expect(out).toContain('(alive.md)') // the control loads
+      expect(out).not.toContain('(retired.md)')
+      expect(out).not.toContain('(revoked.md)')
+      // Not deleted — demoted: still catalogued, and marked for what it is.
+      const all = buildAreaIndexes({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} })
+        .map((a: { content: string }) => a.content)
+        .join('\n')
+      const line = (name: string) => all.split('\n').find((l) => l.includes(`(${name})`))!
+      expect(line('retired.md')).toContain('status: superseded')
+      expect(line('revoked.md')).toContain('status: revoked')
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('a v2 record joins CORE by context_priority — and a revoked one still cannot', () => {
+    const { dir, tags } = mixedCorpus()
+    try {
+      const out = buildIndex({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} })
+      expect(out).toContain('(v2-always.md)')
+      expect(out).toContain('The suite runs twice before a release push') // the claim renders
+      expect(out).not.toContain('(v2-ondemand.md)')
+      expect(out).not.toContain('(v2-revoked.md)')
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('v2 retrieval.areas feeds the area indexes exactly as v1 tags do (1:1)', () => {
+    const { dir, tags } = mixedCorpus()
+    try {
+      const areas = buildAreaIndexes({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} })
+      const byFile = new Map(areas.map((a: { file: string; content: string }) => [a.file, a.content]))
+      // retrieval.areas: [messaging] lands in the messaging index and nowhere else.
+      expect(byFile.get('INDEX-messaging.md')).toContain('(v2-ondemand.md)')
+      expect(byFile.get('INDEX-tech.md') ?? '').not.toContain('(v2-ondemand.md)')
+      // A registered area is never the misc fallback.
+      expect(byFile.has('INDEX-misc.md')).toBe(false)
+      // The index line carries the v2 record's own vocabulary.
+      const line = byFile.get('INDEX-messaging.md')!.split('\n').find((l) => l.includes('(v2-ondemand.md)'))!
+      expect(line).toContain('semantic')
+      expect(line).toContain('messaging')
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('an episode under episodes/ leaves the generated bytes IDENTICAL (invisible by directory)', () => {
+    const { dir, tags } = mixedCorpus()
+    try {
+      const build = () => buildIndex({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} })
+      const buildAreas = () =>
+        JSON.stringify(buildAreaIndexes({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} }))
+      const indexBefore = build()
+      const areasBefore = buildAreas()
+
+      const written = writeEpisode({
+        corpusDir: dir,
+        id: 'episode-release-night',
+        frontmatter: {
+          status: 'archived',
+          recorded_at: '2026-07-22',
+          observed_at: '2026-07-21',
+          sensitivity: 'internal',
+          language: 'ru',
+        },
+        body: '\nMany claims live here, and none of them reach the default load.\n',
+      })
+      expect(written.created).toBe(true)
+
+      // Positive byte-identity: the episode exists on disk and changed nothing.
+      expect(build()).toBe(indexBefore)
+      expect(buildAreas()).toBe(areasBefore)
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('stays byte-deterministic across runs on the mixed corpus (no clock, no locale, no machine identity)', () => {
+    const { dir, tags } = mixedCorpus()
+    try {
+      const opts = { corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} }
+      expect(buildIndex(opts)).toBe(buildIndex(opts))
+      expect(JSON.stringify(buildAreaIndexes(opts))).toBe(JSON.stringify(buildAreaIndexes(opts)))
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
     }
