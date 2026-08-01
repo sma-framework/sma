@@ -221,7 +221,10 @@ const send401 = (res) => sendText(res, 401, UNAUTHORIZED_BODY)
 const send404 = (res) => sendText(res, 404, 'not found')
 const send400 = (res, msg = 'bad request') => sendText(res, 400, msg)
 const send409 = (res, msg = 'conflict') => sendText(res, 409, msg)
+const send413 = (res) => sendText(res, 413, 'payload too large')
 const send429 = (res) => sendText(res, 429, 'rate limited')
+/** A machine that could not be reached is a GATEWAY failure, and says so honestly. */
+const send502 = (res, msg = 'machine did not answer') => sendText(res, 502, msg)
 const send503 = (res, msg = 'unavailable') => sendText(res, 503, msg)
 const send501 = (res) => sendText(res, 501, 'not implemented') // a declared-but-unfilled route
 
@@ -580,22 +583,59 @@ function handleEvents({ res, deps }) {
 }
 
 /**
+ * relayPeerAnswer(res, answer) — the peer's own status and body, unmodified (D-9.7-07).
+ * A JSON body is re-serialized as JSON, anything else as text; an implausible status
+ * degrades to 502 rather than being echoed into a response line.
+ */
+function relayPeerAnswer(res, { status, body } = {}) {
+  const code = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 502
+  if (body !== null && typeof body === 'object') return sendJson(res, code, body)
+  return sendText(res, code, body === null || body === undefined ? '' : String(body))
+}
+
+/**
  * The OPTIONAL `machine` field of the three action bodies (D-9.7-07) — the whole of
  * «do it on another machine». It is an IDENTIFIER matched by ID_RE, never a url: the
  * hub resolves the address from its own peers registry, so a request can never point an
- * action at an arbitrary host (T-9.7-04). Absent/empty = this machine.
+ * action at an arbitrary host (T-9.7-04). Absent/empty = this machine, and that path is
+ * left exactly as it was — this function returns FALSE and the local handler continues.
  *
- * Until the federation module lands (plan 9.7-15) a non-empty machine answers 501 — the
- * door is open, the addressee is not wired yet. Returns true when a response was sent.
+ * WHEN THE FIELD IS SET, THE HUB RE-ISSUES AND RELAYS. It runs none of the action's logic:
+ * the peer's own DoR gate, its own CAS and its own merge run where the work actually lives,
+ * so a gate can never be re-implemented (and quietly weakened) a second time on the hub.
+ * Two details are load-bearing:
+ *   - `machine` is STRIPPED from the forwarded body. The peer receives an ORDINARY local
+ *     request, so it cannot re-proxy it onward: a proxy chain is structurally impossible.
+ *   - a transport failure is reduced to a STATUS. The peer's (or the runtime's) message is
+ *     discarded rather than wrapped — the same discipline federation.mjs keeps on the way
+ *     out, because a message may quote the outgoing header (T-9.7-31).
+ *
+ * @returns {Promise<boolean>} true when a response was already sent (proxied or refused)
  */
-function rejectUnwiredMachine(res, b) {
-  const m = b.machine
-  if (m === undefined || m === null || m === '') return false // local machine
+async function proxyToMachine(res, body, deps, path) {
+  const m = body.machine
+  if (m === undefined || m === null || m === '') return false // local machine — untouched
   if (typeof m !== 'string' || !ID_RE.test(m)) {
     send400(res, 'invalid machine')
     return true
   }
-  send501(res) // the peer target is resolved in plan 9.7-15
+  const fed = deps.federation
+  if (!fed || typeof fed.proxyAction !== 'function') {
+    send501(res) // no federation on this daemon — never a silent local run instead
+    return true
+  }
+  const { machine: _addressee, ...forward } = body
+  let answer
+  try {
+    answer = await fed.proxyAction({ machineId: m, method: 'POST', path, body: forward })
+  } catch (err) {
+    const name = (err && err.name) || ''
+    if (name === 'UnknownPeerError') send404(res)
+    else if (name === 'ProxyPathNotAllowedError') send400(res, 'action is not proxyable')
+    else send502(res)
+    return true
+  }
+  relayPeerAnswer(res, answer)
   return true
 }
 
@@ -615,7 +655,7 @@ async function handleEnqueue({ req, res, config, deps }) {
   if (rejectUnknownKeys(res, b, new Set(['title', 'lane', 'provider', 'model', 'effort', 'priority', 'machine']))) {
     return undefined
   }
-  if (rejectUnwiredMachine(res, b)) return undefined
+  if (await proxyToMachine(res, b, deps, '/api/enqueue')) return undefined
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const task = {
     id: `R-${clock()}`,
@@ -650,7 +690,7 @@ async function handleApprove({ req, res, deps }) {
   if (!body.ok) return send400(res, body.error)
   const b = body.value || {}
   if (rejectUnknownKeys(res, b, new Set(['taskId', 'machine']))) return undefined
-  if (rejectUnwiredMachine(res, b)) return undefined
+  if (await proxyToMachine(res, b, deps, '/api/approve')) return undefined
   const taskId = b.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
   if (typeof deps.casExec !== 'function' || typeof deps.verbRunner !== 'function') return send501(res)
@@ -703,7 +743,7 @@ async function handleReturn({ req, res, deps }) {
   if (!body.ok) return send400(res, body.error)
   const v = body.value || {}
   if (rejectUnknownKeys(res, v, new Set(['taskId', 'note', 'title', 'lane', 'machine']))) return undefined
-  if (rejectUnwiredMachine(res, v)) return undefined
+  if (await proxyToMachine(res, v, deps, '/api/return')) return undefined
   const taskId = v.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
   const note = v.note == null ? '' : String(v.note)
@@ -1215,14 +1255,146 @@ async function handleMachineRemove({ req, res, config, deps }) {
   return sendJson(res, 200, { ok: true, id: b.id })
 }
 
-/** POST /api/chat — one conversation turn (headless, drafts-only) → plan 9.7-15. */
-function handleChat({ res }) {
-  send501(res)
+// ── the two conversation doors (D-9.7-13/15; the route table stays FROZEN at 30) ──
+//
+// The engine is INJECTED (deps.handleChatTurn / deps.readChatHistory), not imported: the
+// free branch of a conversation spawns a child process, and a capability like that reaches
+// a request path only through what the composition root deliberately wired. Everything
+// these two handlers do is shape-checking on the way in and explicit-picking on the way
+// out; the three laws of the lane (hybrid, hands tied, outside the queue) live in chat.mjs
+// and are not restated — a second copy of a law is a second place for it to drift.
+
+/**
+ * A conversation turn is a SENTENCE, so its body gets its own cap well under the roster's
+ * JSON_BODY_CAP: a chat door is the widest free-text surface the daemon has, and a blob
+ * posted at it would be paid for twice — once in memory, once in a model's context window.
+ */
+export const CHAT_BODY_CAP = 8 * 1024
+
+/** And the text inside that body is capped in its own right — a question, not a document. */
+const CHAT_TEXT_CAP = 4000
+
+/** A conversation id is minted by the engine (`conv-<epochMs>`); nothing wider is accepted. */
+const CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+
+/** How many turns a history read returns by default, and the most it will ever return. */
+const CHAT_HISTORY_LIMIT = 50
+const CHAT_HISTORY_MAX = 200
+
+/** The collaborator set the chat engine takes — the chat analogue of stateDeps. */
+function chatDeps(config, deps) {
+  return {
+    adapter: deps.adapter,
+    config,
+    clock: deps.clock,
+    fsImpl: deps.fsImpl,
+    historyDir: deps.chatDir,
+    dataDir: deps.dataDir,
+    policyDir: deps.policyDir,
+    repoDir: deps.repoDir,
+    // the free branch's spawn seam: undefined in production (chat.mjs owns the default),
+    // a spy in the suite that proves a factual answer never reaches for a session
+    spawnWorker: deps.spawnWorker,
+    ...(typeof deps.readUsageRows === 'function' ? { readUsageRows: deps.readUsageRows } : {}),
+  }
 }
 
-/** GET /api/chat/history — the conversation read model → plan 9.7-15. */
-function handleChatHistory({ res }) {
-  send501(res)
+/**
+ * pickAnswer(answer) — what an answer is allowed to carry out of the process.
+ *
+ * The engine's `error` field is DELIBERATELY DROPPED: it holds a spawn message or a timeout
+ * code — operational detail that would put a local binary path (or a runtime's own words)
+ * on the wire in exchange for nothing the founder can act on. The honest sentence the
+ * engine already produced is the answer; the code rides the `status` of the hint instead.
+ */
+function pickAnswer(answer) {
+  const a = answer && typeof answer === 'object' ? answer : {}
+  return {
+    kind: a.kind ?? 'text',
+    text: typeof a.text === 'string' ? a.text : '',
+    ...(a.taskRef ? { taskRef: a.taskRef } : {}),
+    ...(a.draft ? { draft: a.draft } : {}),
+    ...(Array.isArray(a.spend) ? { spend: a.spend } : {}),
+    ...(a.link ? { link: a.link } : {}),
+  }
+}
+
+/** A stored turn as it leaves the process — the same picking, plus who said it and when. */
+function pickTurn(t) {
+  const r = t && typeof t === 'object' ? t : {}
+  return {
+    ts: r.ts ?? null,
+    conversationId: r.conversationId ?? null,
+    role: r.role ?? 'user',
+    kind: r.kind ?? null,
+    text: typeof r.text === 'string' ? r.text : '',
+    ...(r.taskRef ? { taskRef: r.taskRef } : {}),
+    ...(r.draft ? { draft: r.draft } : {}),
+  }
+}
+
+/**
+ * POST /api/chat — one conversation turn. Body {text, conversationId?}.
+ *
+ * The `chat.reply` hint fires AFTER the engine has returned, which is after both turns are
+ * on the transcript — a screen that re-reads on the hint can never find the book behind the
+ * event. The hint carries a turn id and a status and NOTHING ELSE: the founder's question
+ * and the answer's words go to the caller that asked, not to every open screen (T-9.7-39).
+ */
+async function handleChat({ req, res, config, deps }) {
+  if (typeof deps.handleChatTurn !== 'function') return send501(res)
+  const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['text', 'conversationId']))) return undefined
+  if (typeof b.text !== 'string' || b.text.trim() === '') return send400(res, 'text required')
+  if (b.text.length > CHAT_TEXT_CAP) return send400(res, `text exceeds ${CHAT_TEXT_CAP} chars`)
+  if (b.conversationId !== undefined && b.conversationId !== null) {
+    if (typeof b.conversationId !== 'string' || !CONVERSATION_ID_RE.test(b.conversationId)) {
+      return send400(res, 'invalid conversationId')
+    }
+  }
+
+  const turn = await deps.handleChatTurn({
+    text: b.text,
+    ...(b.conversationId ? { conversationId: b.conversationId } : {}),
+    deps: chatDeps(config, deps),
+  })
+  const answer = pickAnswer(turn && turn.answer)
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  emitSafe(deps, {
+    event: 'chat.reply',
+    turnId: `${turn.conversationId}-${clock()}`,
+    status: turn && turn.answer && turn.answer.error ? 'failed' : 'ok',
+  })
+  return sendJson(res, 200, { conversationId: turn.conversationId, kind: turn.kind ?? null, answer })
+}
+
+/**
+ * GET /api/chat/history — the tail of the transcript, oldest first. `?conversationId=`
+ * narrows it; `?limit=` is clamped between one turn and CHAT_HISTORY_MAX, so no query can
+ * ask for the whole book. The turns are DATA on the way out exactly as they were on the way
+ * in: explicit-picked, never interpreted.
+ */
+function handleChatHistory({ res, query, deps }) {
+  if (typeof deps.readChatHistory !== 'function') return send501(res)
+  const asked = Number(query && query.limit)
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), CHAT_HISTORY_MAX) : CHAT_HISTORY_LIMIT
+  const asObj = query && typeof query.conversationId === 'string' ? query.conversationId : ''
+  const conversationId = CONVERSATION_ID_RE.test(asObj) ? asObj : undefined
+  let turns = []
+  try {
+    turns =
+      deps.readChatHistory({
+        dir: deps.chatDir,
+        ...(conversationId ? { conversationId } : {}),
+        limit,
+        fsImpl: deps.fsImpl,
+      }) || []
+  } catch {
+    turns = [] // an unreadable transcript is an EMPTY conversation, never a 500
+  }
+  return sendJson(res, 200, { turns: turns.map(pickTurn) })
 }
 
 /** POST /api/import/scan — scan a foreign agent tree into candidates → plan 9.7-20. */
