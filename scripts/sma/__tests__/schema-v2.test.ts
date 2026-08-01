@@ -150,9 +150,9 @@ describe('private facets', () => {
 
   it('flags phase-numbered values wherever they appear (applies_to and retrieval areas)', () => {
     const appliesTo = ['checkout-service', 'phase:8']
-    const areas = ['payments', 'phase:49.5']
+    const areas = ['payments', 'phase:12.3']
     expect(appliesTo.filter(isPrivateFacet)).toEqual(['phase:8'])
-    expect(areas.filter(isPrivateFacet)).toEqual(['phase:49.5'])
+    expect(areas.filter(isPrivateFacet)).toEqual(['phase:12.3'])
   })
 
   it('passes ordinary areas and non-numeric phase-ish words', () => {

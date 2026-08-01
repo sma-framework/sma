@@ -105,7 +105,7 @@ export const CONTEXT_PRIORITIES = Object.freeze(['always', 'on-demand'])
 
 /**
  * Installation-private facet shape: a phase-numbered value such as `phase:8` or
- * `phase:49.5`. House phase numbers are meaningless outside the installation
+ * `phase:12.3`. Phase numbers are meaningless outside the installation
  * that minted them, so the lint forbids them in records published in a
  * public/preset class — the same mechanic as the release leak scan.
  *
