@@ -184,6 +184,76 @@ export interface Kpis {
   windowsOpen: number
 }
 
+// ── the routing policy, as the reading carries it ───────────────────────────────────
+//
+// These are PURE DERIVES OF THE CONFIG a person already keeps on the machine. There is no
+// second place a rule could be written down, and therefore no way for the window to show a
+// policy that disagrees with the one the runner obeys. It follows that the policy is a
+// READING here: nothing in this file describes a door that changes it, because the daemon
+// opens no such door — a rule is edited where it lives, in the configuration.
+
+/** One lane of work and the workers riding it, in the order the config names them. */
+export interface RulesLane {
+  lane: string | null
+  workers: string[]
+}
+
+/**
+ * A worker's profile. A field the config does not carry is ABSENT rather than null — an
+ * omitted model is «whatever the provider defaults to», which is not the same as «none».
+ */
+export interface RulesWorker {
+  id: string
+  lane: string | null
+  /** The account NAME and nothing else: the account object never travels. */
+  account: string
+  provider?: string
+  model?: string
+  effort?: string
+  enabled: boolean
+}
+
+/** Where the paid channel stops. Present only when a budget is written down at all. */
+export interface BudgetStops {
+  monthlyApiCapEur: number
+  warnPct?: number
+}
+
+/**
+ * Whether the work is riding the plans or the paid channel. Worked out ONCE, by the spend
+ * strip, from the live windows — a rule that reported a different mode than the strip would
+ * be worse than no rule at all.
+ */
+export interface SubApiSwitch {
+  mode: 'subscription' | 'api'
+  capEur: number
+  /** With no cap there is no paid channel to switch TO. */
+  budgeted: boolean
+}
+
+export interface Rules {
+  lanes: RulesLane[]
+  workers: RulesWorker[]
+  budgetStops?: BudgetStops
+  subApiSwitch: SubApiSwitch
+}
+
+/**
+ * One SUBSCRIPTION — deduped, because several workers ride one account.
+ *
+ * `machineId` is the law made visible: a subscription belongs to exactly one machine, and
+ * federation aggregates views, never credentials. A peer's accounts arrive, if at all, in
+ * the peer's own answer.
+ */
+export interface AccountEntry {
+  name: string
+  machineId: string
+  windows: WindowBar
+  workers: string[]
+  /** The daytime account, flagged by whichever worker profile carries it. */
+  dayPriorityOwner?: true
+}
+
 export interface StatePayload {
   kpis: Kpis
   queue: QueueRow[]
@@ -195,6 +265,8 @@ export interface StatePayload {
   activeProject: string | null
   machines: MachineRow[]
   federation: Federation
+  rules: Rules
+  accounts: AccountEntry[]
 }
 
 // ── one task: GET /api/task/:id ─────────────────────────────────────────────────────
