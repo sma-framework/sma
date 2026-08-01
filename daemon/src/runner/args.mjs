@@ -134,8 +134,13 @@ const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-
 /** Strict RFC-4122-ish UUID shape — resume only ever accepts this (resolveSessionID lesson). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** Wakes that ALWAYS get a fresh session — a resumeId with these is refused (PF-4). */
-const FRESH_WAKES = new Set(['timer', 'new-task'])
+/**
+ * Wakes that ALWAYS get a fresh session — a resumeId with these is refused (PF-4).
+ * `chat` joins the family for the same reason a timer wake does: a conversation turn must
+ * never inherit the session of a DIFFERENT conversation. Continuing the same talk is a
+ * different wake, deliberately not spelled here — the default for a chat turn is fresh.
+ */
+const FRESH_WAKES = new Set(['timer', 'new-task', 'chat'])
 
 /**
  * validateOptions(opts, allowed, fnName) — field-allowlist + forbidden-key gate. A key
