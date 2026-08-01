@@ -604,9 +604,13 @@ function windowBar(win) {
 }
 
 /**
- * deriveState(deps) → the one-poll roster payload {kpis, queue, workers, done, spend}.
- * (Task 4 augments it with costs.series over GET /api/state.) Pure over its injected
- * collaborators; re-derives fresh every call.
+ * deriveState(deps) → the one-poll roster payload {kpis, queue, awaiting, workers, done,
+ * spend}. (Task 4 augments it with costs.series over GET /api/state.) Pure over its
+ * injected collaborators; re-derives fresh every call.
+ *
+ * `awaiting` exists because the day screen rides ROWS: it has to name the tasks that are
+ * holding for a person's word, and a counter gives it nothing to show. It is derived from
+ * the same rows the counter is, so the two can never fall out of step.
  *
  * @param {{
  *   adapter: {list:Function},
@@ -657,14 +661,10 @@ export async function deriveState(deps = {}) {
   const awaitingRows = rows.filter((r) => r.status === 'awaiting_approval')
   const doneRows = rows.filter((r) => r.status === 'completed' || r.status === 'failed')
 
-  // ── queue[] — ordered by priority desc, then enqueuedAt asc (the claimNext order) ──
-  const orderedQueue = [...queuedRows].sort((a, b) => {
-    const pa = Number(a.priority) || 0
-    const pb = Number(b.priority) || 0
-    if (pb !== pa) return pb - pa
-    return (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0)
-  })
-  const queue = orderedQueue.map((r, i) => {
+  // ── ONE task row, named field by field. An adapter row may carry anything at all; a
+  // payload carries only what a screen was promised, so the pick is explicit and both
+  // task lists below ride exactly the same one. ──
+  const toTaskRow = (r, i) => {
     const enq = toMs(r.enqueuedAt)
     const ageMs = Number.isFinite(enq) ? now - enq : 0
     const out = {
@@ -680,7 +680,25 @@ export async function deriveState(deps = {}) {
     }
     if (ageMs > agingMs) out.agedForHours = Math.floor(ageMs / HOUR_MS) // «застряла» signal
     return out
+  }
+
+  // ── queue[] — ordered by priority desc, then enqueuedAt asc (the claimNext order) ──
+  const orderedQueue = [...queuedRows].sort((a, b) => {
+    const pa = Number(a.priority) || 0
+    const pb = Number(b.priority) || 0
+    if (pb !== pa) return pb - pa
+    return (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0)
   })
+  const queue = orderedQueue.map(toTaskRow)
+
+  // ── awaiting[] — the work that is finished but still owes a person a word. The day
+  // screen shows those tasks, not a number beside them, so the payload has to carry the
+  // rows: a counter alone leaves the screen with nothing to draw. The one that has waited
+  // longest comes first — waiting is the whole cost here, so priority has no say. The
+  // queue keeps meaning what it says: rows waiting for a WORKER, never for a person. ──
+  const awaiting = [...awaitingRows]
+    .sort((a, b) => (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0))
+    .map(toTaskRow)
 
   // ── workers[] — presence is a PURE derive (Pitfall 2) ──
   const workers = workersCfg.map((w) => {
@@ -766,6 +784,7 @@ export async function deriveState(deps = {}) {
   const payload = {
     kpis,
     queue,
+    awaiting,
     workers,
     done,
     spend,
