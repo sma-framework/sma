@@ -44,8 +44,32 @@
  */
 
 import { createHash } from 'node:crypto'
+import {
+  appendFileSync as fsAppendFileSync,
+  mkdirSync as fsMkdirSync,
+  readFileSync as fsReadFileSync,
+} from 'node:fs'
 
 import { fencedBlock } from '../runner/prompt-fence.mjs'
+
+/**
+ * THE INJECTION SEAM HAS A REAL FLOOR (fixed 2026-08-01).
+ *
+ * Every fs call in this module is injectable so tests never touch disk — but injection is
+ * an OPTION, never the precondition. Earlier this module treated a missing `fsImpl` as «no
+ * filesystem», which read as harmless in tests and was fatal in an install: the daemon's
+ * composition root wires no `fsImpl` at all, so `lintDraft` reported every real draft as
+ * unreadable and `writeForgeReceipt` appended nothing. The forge lane and the import door
+ * both hang off those two calls, so both were dead outside the test suite while the whole
+ * suite stayed green — the exact shape of failure receipts exist to prevent.
+ *
+ * The rule now matches every other daemon module: an injected impl wins, node:fs is the
+ * floor. Absence of injection means «use the real disk», not «do nothing».
+ */
+const readFileWith = (fsImpl) => (fsImpl && typeof fsImpl.readFileSync === 'function' ? fsImpl.readFileSync : fsReadFileSync)
+const mkdirWith = (fsImpl) => (fsImpl && typeof fsImpl.mkdirSync === 'function' ? fsImpl.mkdirSync : fsMkdirSync)
+const appendWith = (fsImpl) =>
+  fsImpl && typeof fsImpl.appendFileSync === 'function' ? fsImpl.appendFileSync : fsAppendFileSync
 
 /** The three draft classes the «Создатель» forges (frozen — the closed vocabulary). */
 export const DRAFT_KINDS = Object.freeze(['agent', 'skill', 'mcp'])
@@ -321,10 +345,12 @@ export function lintDraft({ kind, filePath, fsImpl } = {}) {
   )
 
   // (2) readable — existence + content (part of «exactly one artifact»).
-  const read = fsImpl && typeof fsImpl.readFileSync === 'function' ? fsImpl.readFileSync : null
+  // An injected read wins; node:fs is the floor. A draft on real disk is readable whether
+  // or not the caller injected anything.
+  const read = readFileWith(fsImpl)
   let content = null
   try {
-    content = read ? String(read(filePath, 'utf8')) : null
+    content = String(read(filePath, 'utf8'))
   } catch {
     content = null
   }
@@ -410,11 +436,11 @@ export function writeForgeReceipt({ dataDir, taskId, kind, filePath, lint, sha25
     checks: (lint && Array.isArray(lint.checks) ? lint.checks : []).map((c) => ({ name: c.name, ok: c.ok })),
     at: new Date().toISOString(),
   }
-  if (dataDir && fsImpl) {
+  if (dataDir) {
     try {
       const dir = `${dataDir}/receipts`
-      if (typeof fsImpl.mkdirSync === 'function') fsImpl.mkdirSync(dir, { recursive: true })
-      if (typeof fsImpl.appendFileSync === 'function') fsImpl.appendFileSync(`${dir}/forge.jsonl`, `${JSON.stringify(row)}\n`)
+      mkdirWith(fsImpl)(dir, { recursive: true })
+      appendWith(fsImpl)(`${dir}/forge.jsonl`, `${JSON.stringify(row)}\n`)
     } catch {
       /* the append is a durable log, not the gate — never fail the completion on it */
     }

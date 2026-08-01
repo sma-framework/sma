@@ -3,8 +3,12 @@
  *
  * Proves the drafts-only forge: a described-in-words worker becomes a LINTED draft file
  * committed on the task branch, and a forge task completes ONLY on a deterministic draft-lint
- * receipt (D-9.5-04a for the forge lane). Nothing here spawns a real CLI, spends a token, or
- * touches disk — the worker child, the git reads, and every fs call are fakes/fixtures.
+ * receipt (D-9.5-04a for the forge lane). Nothing here spawns a real CLI or spends a token —
+ * the worker child and the git reads are fakes/fixtures.
+ *
+ * One group deliberately breaks the fakes-only habit: «forge.mjs on the real disk» writes to
+ * a temp dir with NO fsImpl injected, because injection-everywhere is precisely what let the
+ * install path rot unnoticed. A fake there would re-create the blind spot.
  *
  * Covered:
  *   - lintDraft truth table per kind: green / missing field / oversized / smuggled activation
@@ -18,7 +22,10 @@
  *   - an uncommitted draft → fail('agent_error').
  */
 
-import { describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect } from 'vitest'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 import {
   buildForgePrompt,
@@ -282,6 +289,56 @@ describe('writeForgeReceipt — the forge completion evidence', () => {
     expect(appended).toHaveLength(1)
     expect(appended[0].path).toBe('/data/receipts/forge.jsonl')
     expect(JSON.parse(appended[0].line)).toMatchObject({ taskId: 'F-1', kind: 'agent', passed: true })
+  })
+})
+
+// ── the un-injected floor: what an INSTALL actually runs ──
+
+/**
+ * Every other test in this file injects an `fsImpl`, which is exactly how the forge lane
+ * came to be dead in a real install while the suite stayed green: the daemon's composition
+ * root wires no `fsImpl`, and the module used to treat that as «no filesystem» — every real
+ * draft read back as unreadable and the receipt line was never appended.
+ *
+ * These two tests are the floor the fakes were hiding. They use the REAL disk deliberately:
+ * a fake here would re-create the blind spot it exists to close.
+ */
+describe('forge.mjs on the real disk — no fsImpl injected (the install path)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sma-forge-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('lintDraft reads a draft that exists on disk', () => {
+    const draftPath = join(dir, '.claude', 'agents', 'twitter-parser.md')
+    mkdirSync(dirname(draftPath), { recursive: true })
+    writeFileSync(draftPath, AGENT_OK, 'utf8')
+
+    const lint = lintDraft({ kind: 'agent', filePath: draftPath })
+
+    expect(lint.checks.find((c: any) => c.name === 'readable')?.ok).toBe(true)
+    expect(lint.passed).toBe(true)
+    expect(lint.sha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('writeForgeReceipt appends the JSONL row to receipts/forge.jsonl', () => {
+    const ref = writeForgeReceipt({
+      dataDir: dir,
+      taskId: 'F-disk',
+      kind: 'agent',
+      filePath: '.claude/agents/twitter-parser.md',
+      lint: { passed: true, checks: [{ name: 'size', ok: true }] },
+      sha256: 'abcdef0123456789',
+    })
+
+    const line = readFileSync(join(dir, 'receipts', 'forge.jsonl'), 'utf8').trim()
+    expect(ref).toBe('forge:F-disk:abcdef012345')
+    expect(JSON.parse(line)).toMatchObject({ receiptRef: ref, taskId: 'F-disk', kind: 'agent', passed: true })
   })
 })
 
