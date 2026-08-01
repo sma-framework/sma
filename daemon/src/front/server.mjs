@@ -59,6 +59,11 @@ import { casTransition } from '../queue/cas.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
+import { buildPairingInstruction } from './federation.mjs'
+// NOTE: only the pairing INSTRUCTION BUILDER is imported from federation.mjs — a pure text
+// function with no fetch and no state. The federation ENGINE (poll/aggregate/proxy/pairing
+// book) is injected via deps.federation, so no request path can open an outbound daemon→
+// daemon call except through the instance the composition root wired (D-9.7-07).
 // NOTE: readHarness + the appliers (harness.mjs) are INJECTED via deps — never statically
 // imported here — so each per-task commit stays independently green and no request path can
 // reach a config/registry write except through the wired applier (T-9.5-38/39). DRAFT_KINDS
@@ -1025,24 +1030,189 @@ async function handleProjectSelect({ req, res, config, deps }) {
   }
 }
 
-/** GET /api/machines — the peers read model (presence + last snapshot) → plan 9.7-15. */
-function handleMachines({ res }) {
-  send501(res)
+// ── the four machine doors (D-9.7-06; the route table stays FROZEN at 30) ──
+//
+// INTRODUCTION IS THE ONE MOMENT A DAEMON TOKEN LEAVES ITS MACHINE, so these four are the
+// most careful handlers in the file, and every one of them is a DELEGATE:
+//   - the invitation is minted, judged and burned by the federation module's pairing book
+//     (one shot, TTL, timing-safe) — this file never compares a secret itself;
+//   - the registry WRITE goes through the injected config door (addPeer / removePeer),
+//     exactly like the project doors: no request path reaches the config any other way;
+//   - the SSRF guard runs on the joining url BEFORE the write, so a loopback or metadata
+//     address never lands on disk (T-9.7-32);
+//   - THE WIZARD PREPARES, IT DOES NOT EXECUTE: /api/machine/pair returns a SENTENCE for a
+//     human to carry to the other machine. The daemon opens no socket to it and configures
+//     no network — the private mesh stays the founder's own deliberate act.
+
+/** A machine id is a SLUG — the same grammar config.mjs holds peers to (kept local on
+ *  purpose: importing it would put a config WRITE module on server.mjs's import graph). */
+const MACHINE_ID_RE = /^[a-z0-9-]{1,64}$/
+
+/** A peer url is opaque data here; the federation module owns what makes one acceptable. */
+const PEER_URL_CAP = 2048
+/** A peer's daemon token is stored, never echoed; a bounded field all the same. */
+const PEER_TOKEN_CAP = 512
+/** What a machine may be CALLED. A name is read by a human, so it is short by contract. */
+const MACHINE_NAME_CAP = 120
+
+/** A Host header is a hint, not a credential: only a plausible authority is quoted back. */
+const HOST_RE = /^[A-Za-z0-9._~[\]-]{1,253}(:\d{1,5})?$/
+
+/**
+ * hubUrlOf(req, config) — the address the SECOND machine should call back on, for the
+ * instruction text alone. `federation.hubUrl` wins when the founder declared one; else the
+ * authority the founder's own browser reached this hub by (a Host header is echoed only
+ * after HOST_RE, and only into a sentence a human reads — it is never fetched); else the
+ * configured bind:port. No request is ever made to any of them.
+ */
+function hubUrlOf(req, config) {
+  const declared = config && config.federation && config.federation.hubUrl
+  if (typeof declared === 'string' && declared.trim()) return declared.trim().replace(/\/+$/, '')
+  const host = req && req.headers && req.headers.host
+  if (typeof host === 'string' && HOST_RE.test(host)) return `http://${host}`
+  return `http://${(config && config.bind) || '127.0.0.1'}:${(config && config.port) || 7777}`
 }
 
-/** POST /api/machine/pair — mint/exchange a pairing secret → plan 9.7-15. */
-function handleMachinePair({ res }) {
-  send501(res)
+/** The federation role this daemon declares. An absent block means standalone (D-9.7-04). */
+function federationRole(config) {
+  return (config && config.federation && config.federation.role) || 'standalone'
 }
 
-/** POST /api/machine/add — enrol a paired peer into the registry → plan 9.7-15. */
-function handleMachineAdd({ res }) {
-  send501(res)
+/** A machine as it leaves the process: presence only. No url, no token, by construction. */
+function pickMachine(m) {
+  return {
+    id: m.id,
+    title: m.title ?? m.name ?? m.id,
+    role: m.role ?? 'peer',
+    online: m.online === true,
+    ...(m.lastSeenSec !== undefined ? { lastSeenSec: m.lastSeenSec } : {}),
+  }
 }
 
-/** POST /api/machine/remove — drop a peer from the registry → plan 9.7-15. */
-function handleMachineRemove({ res }) {
-  send501(res)
+/**
+ * GET /api/machines — the «Машины и проекты» read model: this machine, then every peer,
+ * with presence and the age of what is being shown. It is the SAME shape `machines[]`
+ * carries inside /api/state (the screen types it once), explicit-picked again here so
+ * neither a peer url nor a peer token can ride out even if the registry grows a field
+ * (T-9.7-05). A standalone daemon answers honestly with exactly one machine: its own.
+ */
+function handleMachines({ res, config, deps }) {
+  const self = {
+    id: (config && config.machineId) ?? 'self',
+    title: (config && config.machineTitle) ?? 'Эта машина',
+    role: 'self',
+    online: true,
+  }
+  const fed = deps.federation
+  const peers = fed && typeof fed.peerStatus === 'function' ? fed.peerStatus() : []
+  sendJson(res, 200, {
+    machines: [self, ...peers.map(pickMachine)],
+    role: federationRole(config),
+  })
+}
+
+/**
+ * POST /api/machine/pair — mint ONE invitation and describe, in words, what to do with it.
+ *
+ * Hub-only: a standalone or peer daemon has nobody to introduce anybody to, and answering
+ * anyway would mint live secrets on a machine that will never consume them. The response
+ * carries the invitation (its whole purpose) and NOT the hub's own token — the instruction
+ * NAMES that token as a placeholder so the reader knows what to paste (T-9.7-05).
+ */
+async function handleMachinePair({ req, res, config, deps }) {
+  if (federationRole(config) !== 'hub') {
+    return send400(res, 'pairing is a hub act; this daemon is not a hub')
+  }
+  const fed = deps.federation
+  if (!fed || typeof fed.generatePairingToken !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  if (rejectUnknownKeys(res, body.value || {}, new Set())) return undefined
+
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  const { token, expiresAt } = fed.generatePairingToken()
+  const expiresSec = Math.max(0, Math.round((expiresAt - clock()) / 1000))
+  return sendJson(res, 200, {
+    pairingToken: token,
+    instruction: buildPairingInstruction({ hubUrl: hubUrlOf(req, config), pairingToken: token, expiresSec }),
+    expiresSec,
+  })
+}
+
+/**
+ * POST /api/machine/add — the JOIN, called ON THE HUB from the second machine.
+ *
+ * Body {pairingToken, machine:{id, name, url, token}} — `token` is the SECOND machine's
+ * own daemon token, the credential this hub will present when it calls that machine. The
+ * order below is the whole security story and is deliberate:
+ *   1. explicit-pick the body (a smuggled key dies before an invitation is even read);
+ *   2. consume the invitation — one shot, timing-safe, TTL (the authorization step);
+ *   3. run the SSRF guard on the url — BEFORE any write, so a refused address touches no disk;
+ *   4. write the registry through the injected door (atomic), refresh the in-process config,
+ *      and register the peer LIVE so the founder can address it without a restart.
+ * A failed step 3 or 4 costs the founder a fresh invitation, which is the right price.
+ */
+async function handleMachineAdd({ req, res, config, deps }) {
+  if (typeof deps.addPeer !== 'function') return send501(res)
+  const fed = deps.federation
+  if (!fed || typeof fed.consumePairingToken !== 'function') return send501(res)
+
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['pairingToken', 'machine']))) return undefined
+  const m = b.machine
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return send400(res, 'machine required')
+  if (rejectUnknownKeys(res, m, new Set(['id', 'name', 'url', 'token']))) return undefined
+  if (typeof m.id !== 'string' || !MACHINE_ID_RE.test(m.id)) return send400(res, 'invalid machine id')
+  if (typeof m.url !== 'string' || m.url === '' || m.url.length > PEER_URL_CAP) return send400(res, 'invalid machine url')
+  if (typeof m.token !== 'string' || m.token === '' || m.token.length > PEER_TOKEN_CAP) {
+    return send400(res, 'invalid machine token')
+  }
+  const name = m.name === undefined || m.name === null || String(m.name).trim() === '' ? m.id : String(m.name).trim()
+  if (name.length > MACHINE_NAME_CAP) return send400(res, 'invalid machine name')
+
+  try {
+    fed.consumePairingToken(b.pairingToken)
+  } catch (err) {
+    return applierError(res, err) // PairingTokenError → 400, one constant message
+  }
+
+  const entry = { id: m.id, name, url: m.url, token: m.token }
+  try {
+    fed.validatePeerUrl(entry) // the SSRF guard runs BEFORE the write (T-9.7-32)
+    const next = deps.addPeer(config, entry, configIo(deps))
+    config.federation = next.federation // the next read must not serve the old registry
+    fed.registerPeer(entry) // live now, not after a restart
+  } catch (err) {
+    return applierError(res, err)
+  }
+
+  emitSafe(deps, { event: 'machine.presence', machineId: entry.id })
+  return sendJson(res, 200, { ok: true, machine: { id: entry.id, title: name, role: 'peer', online: false } })
+}
+
+/**
+ * POST /api/machine/remove — body {id}. The config registry and the LIVE registry move
+ * together, so a machine the founder let go stops being addressable in the same breath.
+ * Unknown id → 404 (the door's named error), never a silent success that hides a typo.
+ */
+async function handleMachineRemove({ req, res, config, deps }) {
+  if (typeof deps.removePeer !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id']))) return undefined
+  if (typeof b.id !== 'string' || !b.id) return send400(res, 'invalid id')
+  try {
+    const next = deps.removePeer(config, { id: b.id }, configIo(deps))
+    config.federation = next.federation
+    if (deps.federation && typeof deps.federation.removePeer === 'function') deps.federation.removePeer(b.id)
+  } catch (err) {
+    return applierError(res, err)
+  }
+  emitSafe(deps, { event: 'machine.presence', machineId: b.id })
+  return sendJson(res, 200, { ok: true, id: b.id })
 }
 
 /** POST /api/chat — one conversation turn (headless, drafts-only) → plan 9.7-15. */

@@ -58,10 +58,32 @@
  * проекты» screen's decision (plan 9.7-18), and inventing it here would freeze it wrong.
  * Federation is COMPUTER-TO-COMPUTER only (D-9.7-02): no phone is part of this contour.
  *
- * Node built-ins only (URL, fetch, AbortSignal). fetchImpl and clock are dependency-
- * injected, so the unit suite opens no socket and the live two-daemon suite opens real
- * ones. Zero new deps.
+ * ═══════════════════ INTRODUCTION: THE WIZARD PREPARES, THE HUMAN APPLIES ════════
+ * A peer registry entry carries the PEER'S OWN DAEMON TOKEN — the one moment a token
+ * leaves the machine that minted it (D-9.7-06, T-9.7-37). The pairing book below is what
+ * makes that moment safe, and it is deliberately small:
+ *
+ *   - The hub mints a ONE-SHOT invitation (32 bytes of crypto randomness) with a TTL and
+ *     hands back a SENTENCE for a person to carry — never a command it runs itself. The
+ *     daemon opens no socket to the second machine, configures no network and executes
+ *     nothing: the human types the command on the other machine, so the mesh stays the
+ *     human's own deliberate act.
+ *   - The invitation is BURNED ON CONSUME whether or not it was still alive, so a replay
+ *     can never find it live a moment later. An expired token and a token that never
+ *     existed are refused with the SAME message: no caller may map which ever existed.
+ *   - The compare walks the WHOLE book through auth.mjs's `tokenEquals` — a `Map.get`
+ *     would answer in a length-dependent time and hand out a prefix oracle for free.
+ *   - The book lives in PROCESS MEMORY with no disk behind it, so a hub restart honestly
+ *     invalidates every unused invitation. That is the safe default, not an omission.
+ *
+ * Node built-ins only (URL, fetch, AbortSignal, crypto). fetchImpl and clock are
+ * dependency-injected, so the unit suite opens no socket and the live two-daemon suite
+ * opens real ones. Zero new deps.
  */
+
+import { randomBytes } from 'node:crypto'
+
+import { tokenEquals } from './auth.mjs'
 
 /** The ONLY paths a hub may re-issue on a peer's behalf (T-9.7-33). Frozen on purpose. */
 export const PROXYABLE_PATHS = Object.freeze(new Set(['/api/approve', '/api/return', '/api/enqueue']))
@@ -103,6 +125,142 @@ export class PeerUnreachableError extends Error {
     this.name = 'PeerUnreachableError'
     this.status = 502
   }
+}
+
+/**
+ * Named error: an invitation that is unknown, already used or expired (T-9.7-37). The
+ * MESSAGE is a constant — `reason` exists for the daemon's own reading and is never put
+ * on the wire, because «expired» versus «never existed» is exactly the difference an
+ * attacker would use to map which invitations were ever minted.
+ */
+export class PairingTokenError extends Error {
+  constructor(reason) {
+    super(PAIRING_REFUSED)
+    this.name = 'PairingTokenError'
+    this.reason = reason
+  }
+}
+
+// ── the pairing book (D-9.7-06) ────────────────────────────────────────────────
+
+/** How long an unused invitation lives. Long enough to walk to the other machine. */
+export const PAIRING_TTL_MS = 15 * 60 * 1000
+
+/** The invitation's width — the same 32 bytes the front token itself is minted from. */
+const PAIRING_TOKEN_BYTES = 32
+
+/** The ONE refusal sentence every failed consume produces (no oracle, ever). */
+const PAIRING_REFUSED = 'the pairing invitation is unknown, already used or expired'
+
+/** A book is a Map token→expiresAt. Anything else is a wiring mistake, not a request. */
+function assertBook(book) {
+  if (!(book instanceof Map)) throw new TypeError('a pairing book (Map) is required')
+}
+
+/**
+ * generatePairingToken({book, clock, ttlMs}) → {token, expiresAt}. Mints ONE invitation
+ * into the given book and sweeps the ones that have aged out on the way past, so a hub
+ * that pairs occasionally never accumulates dead entries.
+ *
+ * @param {{book:Map, clock?:()=>number, ttlMs?:number}} args
+ * @returns {{token:string, expiresAt:number}}
+ */
+export function generatePairingToken({ book, clock = Date.now, ttlMs = PAIRING_TTL_MS } = {}) {
+  assertBook(book)
+  const now = clock()
+  for (const [t, exp] of book) if (exp <= now) book.delete(t)
+  const token = randomBytes(PAIRING_TOKEN_BYTES).toString('hex')
+  const expiresAt = now + ttlMs
+  book.set(token, expiresAt)
+  return { token, expiresAt }
+}
+
+/**
+ * consumePairingToken(token, {book, clock}) → {expiresAt}, or throws PairingTokenError.
+ *
+ * ONE SHOT: a match is DELETED before its liveness is judged, so an expired invitation is
+ * gone the moment it is presented rather than sitting there for the next attempt. The scan
+ * walks every entry with `tokenEquals` and takes NO early exit — the work done is the same
+ * whether the first byte matched or none did.
+ *
+ * @param {string} token
+ * @param {{book:Map, clock?:()=>number}} args
+ * @returns {{expiresAt:number}}
+ * @throws {PairingTokenError}
+ */
+export function consumePairingToken(token, { book, clock = Date.now } = {}) {
+  assertBook(book)
+  const presented = String(token ?? '')
+  let hit = null
+  for (const [t] of book) {
+    if (tokenEquals(presented, t)) hit = t // no break: the scan is constant in the book size
+  }
+  if (hit === null) throw new PairingTokenError('unknown')
+  const expiresAt = book.get(hit)
+  book.delete(hit) // burned on presentation, alive or not
+  if (expiresAt <= clock()) throw new PairingTokenError('expired')
+  return { expiresAt }
+}
+
+/**
+ * createPairingBook({clock, ttlMs}) — one PRIVATE book with the two verbs bound to it.
+ * Every hub holds its own, so an invitation minted by one process is meaningless to
+ * another and a restart honestly forgets what nobody used.
+ *
+ * @param {{clock?:()=>number, ttlMs?:number}} [opts]
+ * @returns {{generatePairingToken:Function, consumePairingToken:Function, size:number}}
+ */
+export function createPairingBook({ clock = Date.now, ttlMs = PAIRING_TTL_MS } = {}) {
+  const book = new Map()
+  return {
+    generatePairingToken: () => generatePairingToken({ book, clock, ttlMs }),
+    consumePairingToken: (token) => consumePairingToken(token, { book, clock }),
+    get size() {
+      return book.size
+    },
+  }
+}
+
+/**
+ * buildPairingInstruction({hubUrl, pairingToken, expiresSec}) — the sentence a human
+ * carries to the second machine.
+ *
+ * IT IS TEXT, NOT A SCRIPT. The daemon never executes it and never sends it anywhere: the
+ * founder reads it, walks to the other machine and types it. Everything secret in it is a
+ * PLACEHOLDER except the invitation itself — the hub's own token is NAMED so the reader
+ * knows what to paste, and never carried, so this string may safely ride a response
+ * (T-9.7-05).
+ *
+ * @param {{hubUrl:string, pairingToken:string, expiresSec:number}} args
+ * @returns {string}
+ */
+export function buildPairingInstruction({ hubUrl, pairingToken, expiresSec = PAIRING_TTL_MS / 1000 } = {}) {
+  const minutes = Math.max(1, Math.round(Number(expiresSec) / 60))
+  const body = JSON.stringify({
+    pairingToken,
+    machine: {
+      id: '<короткое-имя-латиницей>',
+      name: '<как называть на экране>',
+      url: 'http://<адрес-второй-машины-в-вашей-сети>:7777',
+      token: '<токен-демона-второй-машины>',
+    },
+  })
+  return [
+    'Знакомство машин делаете Вы — это два шага, и оба на второй машине.',
+    '',
+    '1) Узнайте её адрес в Вашей частной сети и токен её демона',
+    '   (файл ~/.sma-daemon/config.json, поле token).',
+    '',
+    '2) Выполните там одну команду — она представит вторую машину этому узлу:',
+    '',
+    `curl -X POST ${hubUrl}/api/machine/add \\`,
+    '  -H "Authorization: Bearer <ТОКЕН ЭТОГО УЗЛА>" \\',
+    '  -H "Content-Type: application/json" \\',
+    `  -d '${body}'`,
+    '',
+    `Приглашение срабатывает ОДИН раз и живёт ${minutes} минут.`,
+    'Машины должны видеть друг друга по частной сети: открытый в интернет порт демона запрещён.',
+  ].join('\n')
 }
 
 /** Failure CODES — the only failure information that is ever retained (never a message). */
@@ -207,6 +365,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
   const peers = (Array.isArray(fed.peers) ? fed.peers : []).map((p) => normalizePeer(p, { allowLoopback }))
   const byId = new Map(peers.map((p) => [p.id, p]))
   const doFetch = typeof fetchImpl === 'function' ? fetchImpl : (...a) => globalThis.fetch(...a)
+  const pairing = createPairingBook({ clock })
 
   /** peerId → {state, at} — the LAST successful snapshot (in memory; T-9.7-34). */
   const snapshots = new Map()
@@ -360,5 +519,63 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
     return { status: Number(r.status) || 0, body: parseBody(text) }
   }
 
-  return { pollPeers, aggregateState, proxyAction, peerStatus, peerIds: peers.map((p) => p.id) }
+  /**
+   * validatePeerUrl(entry) — run the SSRF guard on a CANDIDATE without touching the live
+   * registry. The join door calls this BEFORE it writes anything, so a loopback or
+   * metadata address never reaches disk (T-9.7-32).
+   *
+   * @param {object} entry a {id, url, token} candidate
+   * @throws {InvalidPeerUrlError}
+   */
+  function validatePeerUrl(entry) {
+    normalizePeer(entry, { allowLoopback })
+  }
+
+  /**
+   * registerPeer(entry) — take a freshly-joined machine into the LIVE registry, so the
+   * founder can address an action to it immediately instead of after a restart. The same
+   * normalization the boot path uses runs here — a peer that arrived through the door is
+   * held to exactly the constraints a peer written by hand is.
+   *
+   * @param {object} entry {id, name|title, url, token}
+   * @returns {object} the normalized live entry (never carrying the token outward)
+   * @throws {InvalidPeerUrlError}
+   */
+  function registerPeer(entry) {
+    const peer = normalizePeer(entry, { allowLoopback })
+    const at = peers.findIndex((p) => p.id === peer.id)
+    if (at === -1) peers.push(peer)
+    else peers[at] = peer
+    byId.set(peer.id, peer)
+    return { id: peer.id, title: peer.title }
+  }
+
+  /** removePeer(id) — drop a machine from the LIVE registry (and forget its snapshot). */
+  function removePeer(id) {
+    const key = String(id ?? '')
+    const at = peers.findIndex((p) => p.id === key)
+    if (at === -1) return false
+    peers.splice(at, 1)
+    byId.delete(key)
+    snapshots.delete(key)
+    online.delete(key)
+    lastFailure.delete(key)
+    return true
+  }
+
+  return {
+    pollPeers,
+    aggregateState,
+    proxyAction,
+    peerStatus,
+    validatePeerUrl,
+    registerPeer,
+    removePeer,
+    generatePairingToken: pairing.generatePairingToken,
+    consumePairingToken: pairing.consumePairingToken,
+    // a GETTER, not a snapshot: a machine that joined a minute ago is addressable now
+    get peerIds() {
+      return peers.map((p) => p.id)
+    },
+  }
 }

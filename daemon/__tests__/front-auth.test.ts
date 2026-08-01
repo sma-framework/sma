@@ -110,16 +110,12 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 
 /**
  * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
- * own plan lands: machines + chat in 9.7-15, import + onboarding in 9.7-20. Delete an
- * entry here in the SAME commit that fills its handler; the table itself does NOT change
- * (no route is added or removed by a fill plan). The static + project group left this
- * list when their handlers landed.
+ * own plan lands: import + onboarding in 9.7-20. Delete an entry here in the SAME commit
+ * that fills its handler; the table itself does NOT change (no route is added or removed
+ * by a fill plan). The static + project group left this list when their handlers landed,
+ * and the four machine doors left it with the introduction wizard (9.7-15).
  */
 const UNFILLED_ROUTES = [
-  'GET /api/machines',
-  'POST /api/machine/pair',
-  'POST /api/machine/add',
-  'POST /api/machine/remove',
   'POST /api/chat',
   'GET /api/chat/history',
   'POST /api/import/scan',
