@@ -996,10 +996,10 @@ describe('server.mjs — the project write doors delegate to the config registry
       method: 'POST',
       url: '/api/project/add',
       headers: jsonHeaders(),
-      body: { path: '/Users/f/projects/sma-dev' },
+      body: { path: '/Users/f/projects/acme-clinic' },
     })
     expect(res.statusCode).toBe(200)
-    expect(JSON.parse(res.body).project.name).toBe('sma-dev')
+    expect(JSON.parse(res.body).project.name).toBe('acme-clinic')
   })
 
   it('POST /api/project/rename moves the NAME and never the id (D-9.7-08)', async () => {
