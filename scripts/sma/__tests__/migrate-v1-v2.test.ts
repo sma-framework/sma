@@ -30,7 +30,7 @@ import { join, relative } from 'node:path'
 
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 import { validateRecord } from '../lib/schema-v2.mjs'
-import { episodeArchiveFields } from '../lib/episodes.mjs'
+import { EPISODES_DIRNAME, episodeArchiveFields, readEpisodes } from '../lib/episodes.mjs'
 import {
   previewMigration,
   applyProposal,
@@ -375,5 +375,288 @@ describe('previewMigration — determinism', () => {
 
     expect(readFileSync(p.stub.draft_path, 'utf8')).toBe(edited)
     expect(proposalFor(second, 'decision_old_gateway.md').stub.draft_status).toBe('kept-existing')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// applyProposal — the ONE door from drafts/ into the corpus.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('applyProposal — explicit, per-file, validated', () => {
+  it('Test 16: a MISMATCHED confirmation refuses and writes nothing', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'feedback_retry_idempotency.md')
+    const before = snapshotCanonical(corpusDir)
+
+    const res = applyProposal({
+      draftPath: p.draft_path,
+      corpusDir,
+      confirmFile: 'decision_old_gateway.md', // a real note — just not THIS one
+    })
+
+    expect(res.applied).toBe(false)
+    expect(res.target_path).toBeNull()
+    expect(res.reason).toMatch(/confirmation mismatch/i)
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+    expect(existsSync(p.draft_path)).toBe(true) // the draft is NOT consumed
+  })
+
+  it('Test 17: an EMPTY confirmation refuses — silence is not consent', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'feedback_retry_idempotency.md')
+    const before = snapshotCanonical(corpusDir)
+
+    for (const confirmFile of ['', undefined, null] as any[]) {
+      const res = applyProposal({ draftPath: p.draft_path, corpusDir, confirmFile })
+      expect(res.applied).toBe(false)
+    }
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+  })
+
+  it('Test 18: the correct confirmation applies a v2-markup proposal in place, atomically', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'feedback_retry_idempotency.md')
+
+    const res = applyProposal({
+      draftPath: p.draft_path,
+      corpusDir,
+      confirmFile: 'feedback_retry_idempotency.md',
+    })
+
+    expect(res.applied).toBe(true)
+    const applied = readFileSync(join(corpusDir, 'feedback_retry_idempotency.md'), 'utf8')
+    const parsed = parseNote(applied, { file: 'feedback_retry_idempotency.md' })
+    expect(parsed.schemaVersion).toBe(2)
+    expect(parsed.frontmatter!.migrated_from).toBe('v1')
+    // No marker key survived into the corpus.
+    for (const key of DRAFT_MARKER_KEYS) expect(parsed.frontmatter![key]).toBeUndefined()
+    // The body is byte-preserved.
+    expect(parsed.body).toBe(LIVE_NOTE.slice(LIVE_NOTE.indexOf('The incident')))
+    // It validates, and the grammar can write it back (the 08-06 round-trip guard).
+    expect(validateRecord(parsed.frontmatter!).errors).toEqual([])
+    expect(serializeNote({ frontmatter: parsed.frontmatter, body: parsed.body, schemaVersion: 2 })).toBe(applied)
+  })
+
+  it('Test 19: a DOUBLE apply is impossible — the draft is consumed', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'feedback_retry_idempotency.md')
+    applyProposal({ draftPath: p.draft_path, corpusDir, confirmFile: 'feedback_retry_idempotency.md' })
+
+    const applied = readFileSync(join(corpusDir, 'feedback_retry_idempotency.md'), 'utf8')
+    expect(existsSync(p.draft_path)).toBe(false)
+
+    const second = applyProposal({
+      draftPath: p.draft_path,
+      corpusDir,
+      confirmFile: 'feedback_retry_idempotency.md',
+    })
+    expect(second.applied).toBe(false)
+    expect(second.reason).toMatch(/already applied/i)
+    expect(readFileSync(join(corpusDir, 'feedback_retry_idempotency.md'), 'utf8')).toBe(applied)
+  })
+
+  it('Test 20: a draft whose validation has ERRORS refuses — an unfilled stub stays a draft', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'decision_old_gateway.md')
+    const before = snapshotCanonical(corpusDir)
+
+    const res = applyProposal({
+      draftPath: p.stub.draft_path,
+      corpusDir,
+      confirmFile: 'decision_old_gateway.md',
+    })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/does not validate/i)
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+    expect(existsSync(p.stub.draft_path)).toBe(true)
+  })
+
+  it('Test 21: a FILLED stub applies as a new record carrying its episode provenance', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'decision_old_gateway.md')
+    writeFileSync(
+      p.stub.draft_path,
+      readFileSync(p.stub.draft_path, 'utf8').replace(
+        'claim: ""',
+        'claim: The old gateway is the default for card payments',
+      ),
+    )
+
+    const res = applyProposal({
+      draftPath: p.stub.draft_path,
+      corpusDir,
+      confirmFile: 'decision_old_gateway.md',
+    })
+
+    expect(res.applied).toBe(true)
+    const written = parseNote(readFileSync(join(corpusDir, 'decision_old_gateway-claim.md'), 'utf8'), {
+      file: 'decision_old_gateway-claim.md',
+    })
+    expect(written.frontmatter!.derived_from).toBe('decision_old_gateway')
+    expect(written.frontmatter!.claim).toBe('The old gateway is the default for card payments')
+    expect(written.frontmatter!.draft_kind).toBeUndefined()
+  })
+
+  it('Test 22: an episode-archive apply MOVES the note — episodes/ gains it, the corpus loses it', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'decision_old_gateway.md')
+
+    const res = applyProposal({
+      draftPath: p.draft_path,
+      corpusDir,
+      confirmFile: 'decision_old_gateway.md',
+    })
+
+    expect(res.applied).toBe(true)
+    expect(existsSync(join(corpusDir, 'decision_old_gateway.md'))).toBe(false)
+    expect(existsSync(join(corpusDir, EPISODES_DIRNAME, 'decision_old_gateway.md'))).toBe(true)
+
+    const episodes = readEpisodes({ corpusDir })
+    expect(episodes.map((e: any) => e.id)).toEqual(['decision_old_gateway'])
+    expect(episodes[0].frontmatter!.status).toBe('superseded')
+    expect(episodes[0].body).toContain('- Its retry semantics were undocumented.')
+
+    // The claim-extraction half stays in drafts, awaiting its own acceptance.
+    expect(existsSync(p.stub.draft_path)).toBe(true)
+    // Every OTHER canonical file is untouched.
+    expect(existsSync(join(corpusDir, 'feedback_retry_idempotency.md'))).toBe(true)
+    expect(readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')).toContain('# Memory')
+  })
+
+  it('Test 23: a draft that is not a migration proposal refuses', () => {
+    mkdirSync(draftsDir, { recursive: true })
+    const foreign = join(draftsDir, 'bug-lesson-example-P1.md')
+    writeFileSync(
+      foreign,
+      serializeNote({
+        schemaVersion: 2,
+        frontmatter: {
+          id: 'bug-lesson-example-P1',
+          schema_version: '2',
+          status: 'draft',
+          memory_type: 'procedural',
+          truth_mode: 'inferred',
+          claim: 'A draft from another staging producer',
+          language: 'en',
+          sensitivity: 'internal',
+          draft_kind: 'bug-lesson',
+          draft_source: 'feedback_retry_idempotency.md',
+          draft_disposition: 'v2-markup',
+        },
+        body: 'not mine\n',
+      }),
+    )
+    const before = snapshotCanonical(corpusDir)
+
+    const res = applyProposal({ draftPath: foreign, corpusDir, confirmFile: 'feedback_retry_idempotency.md' })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/not a migration proposal/i)
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+  })
+
+  it('Test 24: a draft id that could address a file OUTSIDE the corpus refuses', () => {
+    // A draft is untrusted input on a filesystem boundary: it may have been
+    // hand-edited, generated by a future tool, or pasted in. `id` is joined
+    // onto the corpus path, so a separator in it writes wherever it likes.
+    mkdirSync(draftsDir, { recursive: true })
+    const before = snapshotCanonical(corpusDir)
+    const escapes = ['../escaped', '..\\escaped', 'sub/escaped', '.hidden']
+
+    for (const [i, badId] of escapes.entries()) {
+      const path = join(draftsDir, `migration--hostile-${i}.md`)
+      writeFileSync(
+        path,
+        serializeNote({
+          schemaVersion: 2,
+          frontmatter: {
+            id: badId,
+            schema_version: '2',
+            status: 'draft',
+            // migrated_from engages the grace, so the discipline findings are
+            // warnings: the ONLY thing left that can refuse this draft is a real
+            // id gate, not an incidental validation error.
+            migrated_from: 'v1',
+            memory_type: 'semantic',
+            truth_mode: 'inferred',
+            claim: 'a claim with a hostile identity',
+            language: 'en',
+            sensitivity: 'internal',
+            draft_kind: DRAFT_KIND,
+            draft_source: 'feedback_retry_idempotency.md',
+            draft_disposition: 'claim-stub',
+          },
+          body: 'hostile\n',
+        }),
+      )
+      const res = applyProposal({ draftPath: path, corpusDir, confirmFile: 'feedback_retry_idempotency.md' })
+      expect(res.applied).toBe(false)
+      expect(res.reason).toMatch(/is not a legal record id/i)
+    }
+
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+    expect(existsSync(join(root, '.claude', 'escaped.md'))).toBe(false)
+    expect(existsSync(join(root, 'escaped.md'))).toBe(false)
+  })
+
+  it('Test 25: a draft_source that is not a plain corpus filename refuses', () => {
+    mkdirSync(draftsDir, { recursive: true })
+    const before = snapshotCanonical(corpusDir)
+    const path = join(draftsDir, 'migration--traversal.md')
+    writeFileSync(
+      path,
+      serializeNote({
+        schemaVersion: 2,
+        frontmatter: {
+          id: 'traversal',
+          schema_version: '2',
+          status: 'active',
+          migrated_from: 'v1',
+          memory_type: 'semantic',
+          truth_mode: 'inferred',
+          claim: 'a proposal pointing outside the corpus',
+          language: 'en',
+          sensitivity: 'internal',
+          draft_kind: DRAFT_KIND,
+          draft_source: '../../MEMORY.md',
+          draft_disposition: 'v2-markup',
+        },
+        body: 'traversal\n',
+      }),
+    )
+
+    const res = applyProposal({ draftPath: path, corpusDir, confirmFile: '../../MEMORY.md' })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/is not a plain corpus filename/i)
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+  })
+
+  it('Test 26: a v2-markup draft whose id disagrees with its target refuses (the id law)', () => {
+    const report = previewMigration({ corpusDir, draftsDir, now: NOW })
+    const p = proposalFor(report, 'feedback_retry_idempotency.md')
+    writeFileSync(
+      p.draft_path,
+      readFileSync(p.draft_path, 'utf8').replace('id: feedback_retry_idempotency', 'id: something_else'),
+    )
+    const before = snapshotCanonical(corpusDir)
+
+    const res = applyProposal({
+      draftPath: p.draft_path,
+      corpusDir,
+      confirmFile: 'feedback_retry_idempotency.md',
+    })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/id law|filename stem/i)
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+  })
+
+  it('Test 27: NO bulk-apply path exists — one apply function, one draft at a time', async () => {
+    const mod = (await import('../lib/migrate-v1-v2.mjs')) as Record<string, unknown>
+    const appliers = Object.keys(mod).filter((k) => /appl/i.test(k) && typeof mod[k] === 'function')
+    expect(appliers).toEqual(['applyProposal'])
+    expect(Object.keys(mod).some((k) => /(All|Batch|Bulk)$/.test(k))).toBe(false)
   })
 })
