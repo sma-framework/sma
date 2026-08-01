@@ -149,8 +149,8 @@ function isoDate(now) {
 }
 
 /**
- * languageOf(text) — D-8-09 requires a language on every record, so every
- * proposal carries one. Script-share, not a language model: the only question a
+ * languageOf(text) — the memory model requires a language on every record, so
+ * every proposal carries one. Script-share, not a language model: the only question a
  * cross-language recall benchmark needs answered is which alphabet the claim is
  * written in, and that is countable.
  */
@@ -181,8 +181,9 @@ function classifySensitivity(text) {
 /**
  * unifiedDiff — a line-based unified diff over the WHOLE file (no hunk elision).
  *
- * The full text is deliberate: threat T-08-07-04 is a silently lossy transform,
- * and a diff that hides context is exactly how a dropped field goes unnoticed.
+ * The full text is deliberate: the threat this diff exists to catch is a
+ * silently lossy transform, and a diff that hides context is exactly how a
+ * dropped field goes unnoticed.
  * LCS is quadratic, so a pathologically large pair falls back to a whole-file
  * replacement diff rather than hanging a preview run.
  */
@@ -470,8 +471,10 @@ export function stripDraftMarkers(frontmatter) {
 
 /**
  * The legality of an EPISODE proposal. Episodes carry no `claim`, so
- * `validateRecord` would reject every one of them — 08-05's contract note #3.
- * The lighter rule (episodes.mjs + MEM-EPISODE) is the one that applies.
+ * `validateRecord` would reject every one of them. The lighter rule that the
+ * episode layer states at its own write path (episodes.mjs + the MEM-EPISODE
+ * check) is the one that applies here too — re-deriving it would be a second
+ * answer to a question that already has one.
  */
 function validateEpisodeRecord(record, file) {
   const errors = []
@@ -679,8 +682,10 @@ function previewEpisode({ staging, file, stem, fm, body, sourceText, today, drop
  *
  * The ONE door from drafts/ into the corpus, and it is deliberately narrow:
  *
- *   - `confirmFile` is the human-acceptance token (D-8-04). It must name the
- *     draft's own `draft_source`. A mismatch refuses and writes nothing.
+ *   - `confirmFile` is the human-acceptance token: the migration law says a
+ *     person accepts each rendering, so the act of accepting has to be typed.
+ *     It must name the draft's own `draft_source`; a mismatch refuses and
+ *     writes nothing.
  *   - A draft whose embedded validation has ERRORS refuses. That is what keeps
  *     an unfilled claim stub in drafts/ where it belongs.
  *   - Applying consumes the draft (renamed with an `.applied` marker), so a

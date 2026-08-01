@@ -25,8 +25,10 @@ import {
   existsSync,
   statSync,
 } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { join, relative, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 import { validateRecord } from '../lib/schema-v2.mjs'
@@ -36,8 +38,11 @@ import {
   applyProposal,
   DRAFT_KIND,
   DRAFT_MARKER_KEYS,
+  DRAFTS_DIRNAME,
   KIND_TRANSFORM,
 } from '../lib/migrate-v1-v2.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // A FIXED clock: the only non-deterministic input the transform has is "today",
 // and it is injected so two runs on different days still produce equal bytes.
@@ -271,7 +276,7 @@ describe('previewMigration — the mechanical transform table', () => {
     expect(fm.migrated_from).toBe('v1')
     expect(fm.claim).toBe('Every payment retry must send the idempotency key of the original attempt')
     expect(fm.id).toBe('feedback_retry_idempotency')
-    expect(fm.language).toBe('en') // D-8-09: present on EVERY proposal
+    expect(fm.language).toBe('en') // the model requires it on EVERY record
     expect(fm.recorded_at).toBe('2026-08-01')
   })
 
@@ -432,7 +437,7 @@ describe('applyProposal — explicit, per-file, validated', () => {
     for (const key of DRAFT_MARKER_KEYS) expect(parsed.frontmatter![key]).toBeUndefined()
     // The body is byte-preserved.
     expect(parsed.body).toBe(LIVE_NOTE.slice(LIVE_NOTE.indexOf('The incident')))
-    // It validates, and the grammar can write it back (the 08-06 round-trip guard).
+    // It validates, and the grammar can write it back (the lint's round-trip guard).
     expect(validateRecord(parsed.frontmatter!).errors).toEqual([])
     expect(serializeNote({ frontmatter: parsed.frontmatter, body: parsed.body, schemaVersion: 2 })).toBe(applied)
   })
@@ -658,5 +663,82 @@ describe('applyProposal — explicit, per-file, validated', () => {
     const appliers = Object.keys(mod).filter((k) => /appl/i.test(k) && typeof mod[k] === 'function')
     expect(appliers).toEqual(['applyProposal'])
     expect(Object.keys(mod).some((k) => /(All|Batch|Bulk)$/.test(k))).toBe(false)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The `memory migrate` verb — the same laws, seen from the command line.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('sma memory migrate', () => {
+  const CLI = join(__dirname, '..', 'cli.mjs')
+  const run = (args: string[]) => {
+    try {
+      return execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err: any) {
+      return `${err.stdout ?? ''}${err.stderr ?? ''}`
+    }
+  }
+
+  it('Test 28: --help names both --preview and --apply', () => {
+    const out = run(['memory', 'migrate', '--help'])
+    const head = out.split('\n').slice(0, 5).join('\n')
+    expect(head).toMatch(/--preview/)
+    expect(head).toMatch(/--apply/)
+  })
+
+  it('Test 29: the default action previews — the corpus is byte-identical afterwards', () => {
+    const before = snapshotCanonical(corpusDir)
+
+    const out = run(['memory', 'migrate', '--corpus', corpusDir])
+
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+    expect(out).toMatch(/PREVIEW/)
+    expect(out).toMatch(/v2-markup/)
+    expect(out).toMatch(/episode-archive/)
+    expect(existsSync(join(corpusDir, DRAFTS_DIRNAME, 'migration--feedback_retry_idempotency.md'))).toBe(true)
+  })
+
+  it('Test 30: --apply without --confirm and --yes refuses, and writes nothing', () => {
+    run(['memory', 'migrate', '--corpus', corpusDir])
+    const before = snapshotCanonical(corpusDir)
+    const draft = join(corpusDir, DRAFTS_DIRNAME, 'migration--feedback_retry_idempotency.md')
+
+    const noConfirm = run(['memory', 'migrate', '--corpus', corpusDir, '--apply', draft, '--yes'])
+    const noYes = run([
+      'memory',
+      'migrate',
+      '--corpus',
+      corpusDir,
+      '--apply',
+      draft,
+      '--confirm',
+      'feedback_retry_idempotency.md',
+    ])
+
+    for (const out of [noConfirm, noYes]) expect(out).toMatch(/--confirm/)
+    expect(snapshotCanonical(corpusDir)).toEqual(before)
+  })
+
+  it('Test 31: --apply with the full triple applies exactly one file', () => {
+    run(['memory', 'migrate', '--corpus', corpusDir])
+    const draft = join(corpusDir, DRAFTS_DIRNAME, 'migration--feedback_retry_idempotency.md')
+
+    const out = run([
+      'memory',
+      'migrate',
+      '--corpus',
+      corpusDir,
+      '--apply',
+      draft,
+      '--confirm',
+      'feedback_retry_idempotency.md',
+      '--yes',
+    ])
+
+    expect(out).toMatch(/применено/)
+    expect(parseNote(readFileSync(join(corpusDir, 'feedback_retry_idempotency.md'), 'utf8'), { file: 'x' }).schemaVersion).toBe(2)
+    // The OTHER proposal is untouched — one apply, one file.
+    expect(parseNote(readFileSync(join(corpusDir, 'decision_old_gateway.md'), 'utf8'), { file: 'y' }).schemaVersion).toBe(1)
   })
 })
