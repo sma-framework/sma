@@ -24,6 +24,8 @@
  *   - validateFingerprint(fingerprint) -> string[]
  *   - validateId(id, filePath) -> string|null
  *   - PRIVATE_FACET_PATTERN · isPrivateFacet(value)
+ *   - APPROVAL_PATHS · resolveApprovalPath({memory_type, truth_mode, sensitivity, risk})
+ *   - GRACE_HORIZON
  *
  * Node built-ins only. Every function here is PURE: no fs, no clock, no network.
  * Expiry ("is this valid_until in the past?") is a LINT concern precisely
@@ -349,6 +351,83 @@ function collectRefs(record) {
 
 function isUrlRef(ref) {
   return /^https?:\/\//i.test(ref.trim())
+}
+
+/**
+ * The approval a record needs before it may enter the reviewed corpus, ordered
+ * from the lightest to the strictest. Frozen: a new path is a policy decision.
+ */
+export const APPROVAL_PATHS = Object.freeze([
+  'auto-ttl',
+  'auto-draft',
+  'evidence-review',
+  'human-approval',
+  'owner-versioned',
+  'versioned-replay',
+  'governed-human-only',
+])
+
+/**
+ * The deadline by which a record migrated from v1 must have grown the fields its
+ * discipline requires — after it, the warning grace ends and the findings become
+ * errors. Deliberately a named horizon rather than a date: the calendar meaning
+ * belongs to whoever runs the installation, not to the schema.
+ */
+export const GRACE_HORIZON = 'measurement-cycle-close'
+
+/**
+ * resolveApprovalPath({memory_type, truth_mode, sensitivity, risk}) -> path
+ *
+ * The risk-based approval ladder as a pure, deterministic function. Precedence:
+ *   1. escalation — a sensitive/encrypted-required class or a critical risk
+ *      overrides every type-based default;
+ *   2. fail-closed — any input missing or outside its closed vocabulary yields
+ *      the strictest path, because a record whose class cannot be determined is
+ *      treated as the most restrictive plausible class;
+ *   3. the mapped classes, strictest first: owner preference, decision policy,
+ *      reflex-grade rule, candidate lesson, procedural recommendation, low-risk
+ *      observation;
+ *   4. anything well-formed but unmapped gets `evidence-review` — a human or an
+ *      evidence threshold decides. It is never one of the automatic paths: a gap
+ *      in the table must not become a permission.
+ *
+ * @param {{memory_type?:string, truth_mode?:string, sensitivity?:string, risk?:string}} [record]
+ * @returns {string} one of APPROVAL_PATHS
+ */
+export function resolveApprovalPath(record) {
+  if (!isPlainObject(record)) return 'governed-human-only'
+  const { memory_type: memoryType, truth_mode: truthMode, sensitivity, risk } = record
+
+  // 1. Escalation — checked BEFORE the vocabulary gate so a known-dangerous
+  //    class still escalates even if some other field is malformed.
+  if (sensitivity === 'sensitive' || sensitivity === 'encrypted-required') return 'governed-human-only'
+  if (risk === 'critical') return 'governed-human-only'
+
+  // 2. Fail closed on anything the ladder cannot read.
+  if (
+    !MEMORY_TYPES.includes(memoryType) ||
+    !TRUTH_MODES.includes(truthMode) ||
+    !SENSITIVITY_CLASSES.includes(sensitivity) ||
+    !RISK_LEVELS.includes(risk)
+  ) {
+    return 'governed-human-only'
+  }
+
+  // 3. The mapped classes.
+  if (memoryType === 'preference') return 'owner-versioned'
+  if (truthMode === 'decision') return 'versioned-replay'
+  if (memoryType === 'normative' || truthMode === 'normative') return 'human-approval'
+  if (
+    (memoryType === 'episodic' || memoryType === 'procedural') &&
+    (truthMode === 'hypothesis' || truthMode === 'inferred')
+  ) {
+    return 'auto-draft'
+  }
+  if (memoryType === 'procedural') return 'evidence-review'
+  if (memoryType === 'working' && truthMode === 'observed' && risk === 'low') return 'auto-ttl'
+
+  // 4. Well-formed but unmapped: review, never an automatic path.
+  return 'evidence-review'
 }
 
 /** Evidence that would actually re-verify something — none-recorded is honest, not evidence. */
