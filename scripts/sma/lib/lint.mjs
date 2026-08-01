@@ -28,7 +28,7 @@ import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
-import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
+import { parseNote, serializeNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { parsePredictions, validatePrediction, isSafeCommand } from './predict.mjs'
 // 9.3-01 (D-9.3-04): the PROFILE family delegates ALL schema/secret/dead-field
 // judgment to the profile lib — one boundary, never duplicated (same lock as
@@ -1677,6 +1677,21 @@ const MEM_V2SCHEMA = {
       const graced = migrated
         ? new Set(validateRecord({ ...fm, migrated_from: null }, { migratedFromV1: false }).errors)
         : null
+
+      // The grammar gets the last word. A record can be legal to the VALIDATOR
+      // and unwritable by the SERIALIZER — the parser is more permissive on the
+      // way in than the emitter is on the way out (a scalar where a block is
+      // required is read happily and refused on write). Such a record lints clean
+      // and then breaks the next tool that round-trips it: a migration, a
+      // consolidation, the write pipeline. Asking the grammar directly makes that
+      // disagreement LOUD without deciding which of the two rules should move.
+      try {
+        serializeNote({ frontmatter: fm, body: note.body ?? '', schemaVersion: 2 })
+      } catch (err) {
+        allErrors.push(
+          `record: legal to the validator but the shared grammar refuses to write it back (${err.message}) — a record nothing can re-emit is a record the next tool that touches it will reject`,
+        )
+      }
 
       for (const message of allErrors) {
         out.push(finding('MEM-V2SCHEMA', 'critical', note.file, `${note.file}: ${message}`))
