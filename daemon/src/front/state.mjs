@@ -29,12 +29,23 @@
  * DERIVED, none stored: projects come from the config registry, their counts from the
  * queue selection, the machine from the config plus its federation role.
  *
- * THE SHAPE IS FINAL NOW, ON PURPOSE. `machines[]` today holds exactly one entry — this
- * machine ({id, title, role:'self', online:true}) — and `federation.hubReachable` exists
- * before anything probes a hub. Plan 9.7-13 FILLS these fields with real peers; it does
- * not redefine them, so the SPA (plan 9.7-04) types the contract once and never revises it.
+ * THE SHAPE IS FINAL NOW, ON PURPOSE. `machines[]` holds this machine
+ * ({id, title, role:'self', online:true}) and `federation.hubReachable` exists before
+ * anything probes a hub. The SPA (plan 9.7-04) types the contract once and never revises it.
  * `hubReachable` is an injectable seam (`deps.hubReachable`) defaulting to true: nothing
- * has proven a hub unreachable until 9.7-13 wires the probe.
+ * has proven a hub unreachable until a probe is wired.
+ *
+ * ═══════════ THE AGGREGATOR SEAM — FILLED, NEVER REDEFINED (D-9.7-01) ════════════
+ * A HUB daemon injects `deps.aggregator`: the last step of the derive hands the finished
+ * local payload to it and returns what comes back — federation.mjs merges each peer's
+ * machines[] entry and its rows into the SAME key set. Three properties make this seam
+ * safe to have in the hot path of every poll:
+ *   - ABSENT MEANS UNCHANGED. A standalone daemon injects nothing and gets byte-identical
+ *     output to the pre-federation derive; the whole feature is invisible to it.
+ *   - FAIL-OPEN. An aggregator that throws or returns a non-object is DISCARDED and the
+ *     local payload is served. A peer storm must never blank the founder's own machine.
+ *   - THIS FILE STILL STORES NOTHING. The peer snapshots (and their documented
+ *     derive-never-store exception) live inside federation.mjs; deriveState only composes.
  *
  * Every task row carries its project and its machine, so a screen FILTERS instead of
  * guessing. The optional `project` filter narrows tasks and the kpis; it deliberately does
@@ -208,8 +219,8 @@ function deriveProjects(rows, config) {
 }
 
 /**
- * deriveMachines(config) → the machine list. Today: exactly this machine. Plan 9.7-13
- * appends aggregated peers into the SAME shape (T-9.7-05 keeps their url/token out).
+ * deriveMachines(config) → the LOCAL machine list: exactly this machine. The injected
+ * aggregator appends the peers into the SAME shape (T-9.7-05 keeps their url/token out).
  */
 function deriveMachines(config) {
   return [
@@ -247,7 +258,8 @@ function windowBar(win) {
  *   execGit?: (args:string[], opts?:object)=>string,
  *   clock?: ()=>number,
  *   project?: string,                     // optional filter — narrows tasks, never the lists
- *   hubReachable?: boolean,               // 9.7-13 probe seam; absent = true
+ *   hubReachable?: boolean,               // hub-probe seam; absent = true
+ *   aggregator?: (payload:object)=>object, // hub-only federation merge; absent = local only
  * }} deps
  * @returns {Promise<object>}
  */
@@ -388,7 +400,37 @@ export async function deriveState(deps = {}) {
     windowsOpen,
   }
 
-  return { kpis, queue, workers, done, spend, costs, projects, activeProject, machines, federation }
+  const payload = { kpis, queue, workers, done, spend, costs, projects, activeProject, machines, federation }
+
+  // ── the federation merge (hub only) — FILLS this payload, never redefines it ──
+  return applyAggregator(payload, deps.aggregator)
+}
+
+/**
+ * applyAggregator(payload, aggregator) — hand the finished local payload to the injected
+ * federation merge and return its result, FAIL-OPEN: no aggregator, a throw, or anything
+ * that is not a plain object → the local payload is served untouched. A peer storm degrades
+ * the peers, never the founder's own machine. The merge may be async (the hub polls its
+ * peers inside it), so a REJECTED promise is caught by the same fail-open arm.
+ *
+ * @param {object} payload the local derive
+ * @param {*} aggregator   a function (or {aggregateState}) injected by the composition root
+ * @returns {Promise<object>}
+ */
+async function applyAggregator(payload, aggregator) {
+  const merge =
+    typeof aggregator === 'function'
+      ? aggregator
+      : aggregator && typeof aggregator.aggregateState === 'function'
+        ? (p) => aggregator.aggregateState(p)
+        : null
+  if (!merge) return payload
+  try {
+    const merged = await merge(payload)
+    return merged && typeof merged === 'object' && !Array.isArray(merged) ? merged : payload
+  } catch {
+    return payload
+  }
 }
 
 /** Sum costUsd across every account over a rolling window via the injected usageReader. */

@@ -273,6 +273,9 @@ function stateDeps(config, deps) {
     readReceipt: deps.readReceipt,
     execGit: deps.execGit,
     clock: deps.clock,
+    // hub-only: the federation merge that fills machines[] and pours in the peers' rows.
+    // Absent on a standalone daemon, where the derive is byte-identical to before.
+    aggregator: deps.aggregator,
   }
 }
 
