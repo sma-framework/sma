@@ -445,8 +445,9 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
   /**
    * aggregateState(selfState) — a PURE merge of the hub's own derive with the current peer
    * snapshots. It does not poll (the caller owns the rhythm) and it does not mutate its
-   * input. The payload KEY SET is unchanged: 9.7-13 fills the 9.7-02 contract, it never
-   * redefines it, so the SPA types the shape once.
+   * input. The merge FILLS the same payload contract the derive publishes — including the
+   * list of rows waiting on a person's word — and never invents a shape of its own, so the
+   * SPA types the payload once and reads it the same on a hub as on a lone machine.
    *
    * @param {object} selfState the hub's own deriveState payload
    * @returns {object} the same shape, filled with every peer
@@ -461,7 +462,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
 
     const out = { ...base }
     out.machines = [...selfMachines, ...peerStatus()]
-    for (const key of ['queue', 'done', 'workers']) {
+    for (const key of ['queue', 'awaiting', 'done', 'workers']) {
       out[key] = [...tagSelf(base[key]), ...peers.flatMap((p) => rowsOf(p.id, key))]
     }
 
