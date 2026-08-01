@@ -10,8 +10,11 @@
  * `/sma-start`. The system was reachable by ritual, not by installation.
  *
  * So the installer materializes the SKELETON — and only the skeleton:
- *   TAGS.md   the closed vocabulary (facets area/kind/phase, strict line grammar)
- *   MEMORY.md the generated index of an EMPTY corpus (0 notes, 0 core)
+ *   TAGS.md    the closed vocabulary (facets area/kind/phase, strict line grammar)
+ *   MEMORY.md  the generated index of an EMPTY corpus (0 notes, 0 core)
+ *   episodes/  an EMPTY directory (a `.gitkeep` placeholder, nothing else) —
+ *              the place history goes, shipped as architecture and never as
+ *              content. Same law one level down: zero episodes, ever.
  *
  * and nothing else. Zero notes, ever. A note is a `.md` carrying a leading `---`
  * frontmatter fence; the two files above deliberately carry none — every reader
@@ -37,6 +40,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { EPISODES_DIRNAME } from './episodes.mjs'
 import { atomicWriteRaw } from './fs-atomics.mjs'
 
 /**
@@ -77,7 +81,15 @@ export const STARTER_TAGS = `# TAGS — закрытый словарь мето
 export const CORPUS_RELATIVE_DIR = join('.claude', 'memory')
 
 /** The structural files the scaffold may ever write. Notes are NOT on this list. */
-export const SCAFFOLD_FILES = ['TAGS.md', 'MEMORY.md']
+export const SCAFFOLD_FILES = ['TAGS.md', 'MEMORY.md', `${EPISODES_DIRNAME}/.gitkeep`]
+
+/**
+ * The placeholder that makes an EMPTY directory survive git. Deliberately empty
+ * itself: a `.gitkeep` with prose in it is a file someone will one day edit,
+ * and this one exists only so `episodes/` is a real, committed part of the
+ * skeleton rather than a directory the first write has to invent.
+ */
+const GITKEEP = ''
 
 /** Deterministic commit-anchor fallback — the exact one `sma build-index` uses. */
 const FALLBACK_COMMIT = '0000000'
@@ -106,8 +118,8 @@ async function readCommitHash(projectDir, execGit) {
 /**
  * scaffoldMemory({projectDir, execGit}) — materialize the empty corpus.
  *
- * Writes `<projectDir>/.claude/memory/{TAGS.md,MEMORY.md}` ONLY where the file
- * is absent. Returns what it did, so the caller reports honestly:
+ * Writes `<projectDir>/.claude/memory/{TAGS.md,MEMORY.md,episodes/.gitkeep}`
+ * ONLY where it is absent. Returns what it did, so the caller reports honestly:
  *   {dir, created: string[], kept: string[], notes: 0}
  *
  * `notes` is always 0 by construction — this function has no code path that can
@@ -143,6 +155,21 @@ export async function scaffoldMemory({ projectDir = process.cwd(), execGit } = {
     })
     atomicWriteRaw(indexPath, index)
     created.push('MEMORY.md')
+  }
+
+  // The episode layer ships as an EMPTY directory. The guard is on the
+  // DIRECTORY, not on the placeholder: a live corpus whose episodes/ already
+  // holds someone's history is left completely alone — not one byte rewritten,
+  // and not even a `.gitkeep` added to it. Same law as the two files above, and
+  // the reason is the same one the header states: an installer that can touch
+  // the user's memory is a data-loss bug waiting for its first victim.
+  const episodesDir = join(dir, EPISODES_DIRNAME)
+  if (existsSync(episodesDir)) kept.push(`${EPISODES_DIRNAME}/`)
+  else {
+    // atomicWriteRaw mkdirs the parent, so the placeholder write IS the
+    // directory creation — one guarded step, no unguarded mkdir before it.
+    atomicWriteRaw(join(episodesDir, '.gitkeep'), GITKEEP)
+    created.push(`${EPISODES_DIRNAME}/.gitkeep`)
   }
 
   return { dir, created, kept, notes: 0 }

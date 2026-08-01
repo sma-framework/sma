@@ -208,8 +208,13 @@ const PRESET_SKILLS = [
   'sma-verify-work',
 ]
 
-/** The corpus skeleton: structure only. Any THIRD file here is content. */
-const PRESET_MEMORY = ['MEMORY.md', 'TAGS.md']
+/**
+ * The corpus skeleton: structure only. Any entry here beyond these three is
+ * content. `episodes` is a DIRECTORY and ships EMPTY — the place history goes,
+ * delivered as architecture so the first episode has somewhere to land, never
+ * as somebody's history (asserted below: zero `.md` inside it).
+ */
+const PRESET_MEMORY = ['MEMORY.md', 'TAGS.md', 'episodes']
 
 /**
  * House markers — the private-workspace vocabulary that must never cross into a
@@ -313,6 +318,12 @@ describe('preset — what a stranger actually receives (Tests 5-8)', () => {
       .filter((f) => f.endsWith('.md'))
       .filter((f) => isNoteShaped(readFileSync(join(corpus, f), 'utf8')))
     expect(notes).toEqual([])
+
+    // One level down, the same question: the episode layer ships as an empty
+    // room. A delivered episode would be content by another name.
+    const episodes = join(corpus, 'episodes')
+    expect(existsSync(episodes)).toBe(true)
+    expect(readdirSync(episodes).filter((f) => f.endsWith('.md'))).toEqual([])
   })
 
   it('ships an index that is honestly EMPTY and regen-identical', () => {
