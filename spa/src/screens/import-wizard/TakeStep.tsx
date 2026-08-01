@@ -25,7 +25,7 @@ const SLUG_RE = /^[a-z0-9-]{3,48}$/
 export function nameProblem(candidate: ImportCandidate, value: string): string | null {
   if (!candidate.collision) return null
   const wanted = value.trim().toLowerCase()
-  if (!wanted) return 'Впишите имя, под которым это жить здесь: старое занято.'
+  if (!wanted) return 'Впишите имя, под которым это будет жить здесь: старое занято.'
   if (!SLUG_RE.test(wanted)) return 'Нужны 3–48 символов: маленькие латинские буквы, цифры и дефис.'
   if (wanted === candidate.slug) return 'Это и есть занятое имя. Нужно другое.'
   return null

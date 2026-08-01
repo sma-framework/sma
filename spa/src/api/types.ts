@@ -757,10 +757,14 @@ export interface OnboardingState {
   ready: OnboardingReadyLine[]
 }
 
+/**
+ * What closing the first run answers: that it is done, and how many starter notes were
+ * seeded. Deliberately NOT the profile's path or the notes' contents — the door reports the
+ * outcome, and what was written is read where it lives, by whoever has the right to read it.
+ */
 export interface OnboardingResult {
-  profilePath: string
-  notes: string[]
-  notesDir: string
+  done: boolean
+  notes: number
 }
 
 // ── what the action routes answer ───────────────────────────────────────────────────
