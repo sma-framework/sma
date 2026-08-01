@@ -210,7 +210,7 @@ export function useRenameProject() {
 
 /** Connect a machine, and let one go. */
 export function usePairMachine() {
-  return useAction<{ title: string }, Awaited<ReturnType<typeof api.pairMachine>>>((input) => api.pairMachine(input))
+  return useAction<void, Awaited<ReturnType<typeof api.pairMachine>>>(() => api.pairMachine())
 }
 
 export function useAddMachine() {
@@ -225,12 +225,23 @@ export function useRemoveMachine() {
   )
 }
 
-/** Say something to the team lead. */
+/**
+ * Say something to the team lead.
+ *
+ * A turn is the ONE action in the window that does not re-read the picture afterwards:
+ * a conversation changes nothing about the park, and asking every screen to refresh
+ * because a question was asked would be a poll with extra steps. The transcript is not
+ * re-read either — the answer came back in the response, and the screen already has it.
+ */
 export function useSendChat() {
-  return useAction<{ text: string; project?: string }, Awaited<ReturnType<typeof api.sendChat>>>(
-    (input) => api.sendChat(input),
-    [CHAT_KEY],
-  )
+  const queryClient = useQueryClient()
+  return useMutation<Awaited<ReturnType<typeof api.sendChat>>, Error, { text: string; conversationId?: string }>({
+    mutationFn: (input) => api.sendChat(input),
+    onSuccess: () => {
+      // The book has grown by two turns; a screen opened later reads them from it.
+      void queryClient.invalidateQueries({ queryKey: CHAT_KEY, refetchType: 'none' })
+    },
+  })
 }
 
 /** Look through the project for helpers that already live there, and take them in. */

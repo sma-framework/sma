@@ -63,6 +63,12 @@ export interface WorkerRow {
   /** Seconds since the running task last showed a sign of life. */
   pulseAgeSec?: number
   presence: Presence
+  /**
+   * Which machine the worker sits on. Present once more than one machine is in the
+   * household — the merge tags every row on its way through the hub. A single machine
+   * says nothing, because there is nothing to tell apart.
+   */
+  machine?: string
 }
 
 /** What the checks said. Every field may be null: an unread receipt never guesses. */
@@ -524,27 +530,95 @@ export interface MachinesPayload {
   federation: Federation
 }
 
-/** The wizard's half of pairing: a short-lived code a person carries to the other machine. */
-export interface PairingCode {
-  code: string
-  expiresAt: string
+/**
+ * The wizard's half of pairing: ONE invitation and the words a person carries with it.
+ *
+ * `instruction` is TEXT the daemon wrote for a human to read and retype on the other
+ * machine — never a script this window runs. Everything secret in it is a placeholder
+ * except the invitation itself, which is the whole point of showing it. The invitation
+ * works once and expires; `expiresSec` is how long it has left at the moment it was minted.
+ */
+export interface PairingInvitation {
+  pairingToken: string
+  instruction: string
+  expiresSec: number
 }
 
-// ── the conversation (declared routes, filled by their own work) ────────────────────
+// ── the conversation ────────────────────────────────────────────────────────────────
 
-export interface ChatTurn {
+/** How a question was READ. The engine's own closed vocabulary, never a screen's guess. */
+export type ChatTurnKind = 'fail-reason' | 'spend' | 'status' | 'free'
+
+/**
+ * What an answer IS: a fact taken from the read models, prose from the free lane, or a
+ * PROPOSED task. Only the last one grows a button, and that button is a person's.
+ */
+export type ChatAnswerKind = 'fact' | 'text' | 'draft'
+
+/** The grey link-card an answer carries beside its sentence. */
+export interface ChatTaskRef {
+  id: string | null
+  title: string | null
+  status: TaskStatus | null
+  /** The status in the daemon's own words, so the card and the screens never disagree. */
+  statusLabel: string | null
+}
+
+/**
+ * A task the answer OFFERS to create — checked against the roster before it left the
+ * daemon. It is a proposal and nothing else: the conversation has no path to the queue.
+ */
+export interface ChatDraft {
+  title: string
+  /** The proposed worker, by id. */
+  worker: string
+  mode: string
+  /** What must become true for the work to count as done. */
+  acceptance?: string
+}
+
+/** One line of the spend answer: a share of the window's tokens, in whole percent. */
+export interface ChatSpendShare {
   id: string
-  role: 'human' | 'team'
-  text: string
-  ts: string
-  /** A task the answer pointed at, so the card can be opened from the conversation. */
-  taskRef?: string
-  /** A task the answer offered to create. Nothing is created without a decision. */
-  draft?: { title: string; lane: string | null; workerId: string | null }
+  label: string
+  percent: number
 }
 
+/** Where an answer sends the reader for the full picture. */
+export interface ChatAnswerLink {
+  screen: string
+  label: string
+}
+
+export interface ChatAnswer {
+  kind: ChatAnswerKind
+  text: string
+  taskRef?: ChatTaskRef
+  draft?: ChatDraft
+  spend?: ChatSpendShare[]
+  link?: ChatAnswerLink
+}
+
+/** What POST /api/chat answers: the conversation it belongs to, and the answer itself. */
 export interface ChatReply {
-  turn: ChatTurn
+  conversationId: string
+  kind: ChatTurnKind | null
+  answer: ChatAnswer
+}
+
+/**
+ * One stored turn of the transcript. The book records WHAT WAS SAID; the truth about the
+ * park is the reading, always re-read. A stored answer keeps its task card and its draft,
+ * but not the spend breakdown — those figures are re-read from «Расходы», never replayed.
+ */
+export interface ChatTurn {
+  ts: string | null
+  conversationId: string | null
+  role: 'user' | 'assistant'
+  kind: string | null
+  text: string
+  taskRef?: ChatTaskRef
+  draft?: ChatDraft
 }
 
 export interface ChatHistory {

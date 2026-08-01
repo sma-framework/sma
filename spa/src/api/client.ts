@@ -12,7 +12,7 @@ import type {
   OkResult,
   OnboardingResult,
   OnboardingState,
-  PairingCode,
+  PairingInvitation,
   ProjectsPayload,
   ReturnResult,
   StatePayload,
@@ -258,9 +258,16 @@ export function getMachines(): Promise<MachinesPayload> {
   return getJson<MachinesPayload>('/api/machines')
 }
 
-/** Mint the short-lived code a person carries to the machine being connected. */
-export function pairMachine(input: { title: string }): Promise<PairingCode> {
-  return postJson<PairingCode>('/api/machine/pair', { title: input.title })
+/**
+ * Mint the ONE short-lived invitation a person carries to the machine being connected.
+ *
+ * It takes nothing, and the daemon refuses a body with any field in it at all. Rightly so:
+ * an invitation is minted by this household for this household, so there is nothing a
+ * caller could have to say about it. The joining machine gets its name on its own side,
+ * when it introduces itself.
+ */
+export function pairMachine(): Promise<PairingInvitation> {
+  return postJson<PairingInvitation>('/api/machine/pair', {})
 }
 
 /** Take a machine that answered the code into the household. */
@@ -275,9 +282,16 @@ export function removeMachine(id: string): Promise<OkResult> {
 
 // ── the conversation ────────────────────────────────────────────────────────────────
 
-/** Say something to the team lead. It reads and suggests; it starts nothing by itself. */
-export function sendChat(input: { text: string; project?: string }): Promise<ChatReply> {
-  return postJson<ChatReply>('/api/chat', withOptional({ text: input.text }, { project: input.project }))
+/**
+ * Say something to the team lead. It reads and suggests; it starts nothing by itself.
+ *
+ * The turn carries the conversation it belongs to and nothing else. It does NOT carry the
+ * project: a conversation is about the household, the daemon accepts no such field, and a
+ * question narrowed by the window's current filter would answer about half the park while
+ * looking like it answered about all of it.
+ */
+export function sendChat(input: { text: string; conversationId?: string }): Promise<ChatReply> {
+  return postJson<ChatReply>('/api/chat', withOptional({ text: input.text }, { conversationId: input.conversationId }))
 }
 
 /** What has been said so far. */
