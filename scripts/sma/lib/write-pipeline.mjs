@@ -942,8 +942,10 @@ const ERASE_REFUSAL =
   'copies and indexes verified, and a module that writes markdown into a git working tree cannot promise ' +
   'that — deleting the file would leave the history intact and the promise false. See docs/MEMORY-MODEL.md ' +
   '§6 (lifecycle: after erasure there is no record, at most a tombstone where policy requires one) and §7 ' +
-  '(storage classes: what each class may hold, and what git can never guarantee). No deletion code path ' +
-  'exists in the write pipeline for a caller to reach.'
+  '(storage classes: what each class may hold, and what git can never guarantee), and ' +
+  'docs/MEMORY-THREAT-MODEL.md for the policy itself — §2 (what each class may hold and where it may sit) ' +
+  'and §7 (why physical erasure is a stated non-goal of this substrate rather than a missing feature). ' +
+  'No deletion code path exists in the write pipeline for a caller to reach.'
 
 /**
  * applyLifecycle({corpusDir, id, action, by, reason, now, journalDir, terminalId})

@@ -876,6 +876,9 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
 
     expect(res.applied).toBe(false)
     expect(res.refusal).toMatch(/MEMORY-MODEL/)
+    // the policy the refusal defers to lives in the threat model — the pointer
+    // must name it, or the reader is sent to the schema for a governance answer
+    expect(res.refusal).toMatch(/MEMORY-THREAT-MODEL/)
     expect(res.refusal).toMatch(/polic/i)
     expect(existsSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))).toBe(true)
     expect(readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')).toBe(before)
