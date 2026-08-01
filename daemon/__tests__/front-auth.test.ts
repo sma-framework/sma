@@ -112,12 +112,10 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
  * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
  * own plan lands: import + onboarding in 9.7-20. Delete an entry here in the SAME commit
  * that fills its handler; the table itself does NOT change (no route is added or removed
- * by a fill plan). The static + project group left this list when their handlers landed,
- * and the four machine doors left it with the introduction wizard (9.7-15).
+ * by a fill plan). The static + project group left this list when their handlers landed;
+ * the four machine doors and the two chat doors left it with 9.7-15.
  */
 const UNFILLED_ROUTES = [
-  'POST /api/chat',
-  'GET /api/chat/history',
   'POST /api/import/scan',
   'POST /api/import/enroll',
   'GET /api/onboarding',
@@ -617,7 +615,7 @@ describe('server.mjs — the optional machine field on enqueue/approve/return', 
     }
   })
 
-  it('a well-formed machine id → 501 (the door exists, the peer is wired in 9.7-15) — never a silent local run', async () => {
+  it('a well-formed machine id with NO federation wired → 501 — never a silent local run', async () => {
     const enqueued: any[] = []
     const front = createFrontServer({
       config: { token: TOKEN },
@@ -641,6 +639,139 @@ describe('server.mjs — the optional machine field on enqueue/approve/return', 
       body: { title: 'x', lane: 'prod', machines: 'mac-mini' },
     })
     expect(res.statusCode).toBe(400)
+  })
+})
+
+// ── Plan 9.7-15 Task 2: the machine field goes LIVE (D-9.7-07) ──
+//
+// The hub RE-ISSUES the founder's action against the machine that owns the task and relays
+// that machine's answer verbatim. It re-implements nothing: the peer's own DoR gate, its own
+// CAS and its own merge run where the work actually lives. Three properties are proved here
+// because all three are load-bearing: the `machine` field is STRIPPED before the request is
+// forwarded (a peer must never re-proxy), the peer's status and body arrive unmodified, and
+// the local path — machine absent — is untouched.
+
+/** A federation stand-in that records what it was asked to proxy and answers to order. */
+function fakeFederation(answer: any = { status: 200, body: { ok: true, from: 'peer' } }) {
+  const calls: any[] = []
+  return {
+    calls,
+    proxyAction: async (o: any) => {
+      calls.push(o)
+      if (answer instanceof Error) throw answer
+      return answer
+    },
+  }
+}
+
+function namedError(name: string) {
+  const e = new Error(`${name} for the test`)
+  e.name = name
+  return e
+}
+
+describe('server.mjs — the machine field is LIVE: the hub proxies, it never re-plays', () => {
+  const localAdapter = () => {
+    const enqueued: any[] = []
+    return { enqueued, list: async () => [], enqueue: async (t: any) => (enqueued.push(t), { id: t.id }) }
+  }
+
+  it('an addressed enqueue goes to the peer with `machine` STRIPPED — a peer must not re-proxy', async () => {
+    const adapter = localAdapter()
+    const federation = fakeFederation()
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, federation, clock: () => 1 } })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/enqueue',
+      headers: jsonHeaders(),
+      body: { title: 'сделай отчёт', lane: 'prod', machine: 'mac-mini' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(federation.calls).toHaveLength(1)
+    expect(federation.calls[0]).toMatchObject({ machineId: 'mac-mini', path: '/api/enqueue' })
+    expect(federation.calls[0].body).toEqual({ title: 'сделай отчёт', lane: 'prod' })
+    expect(federation.calls[0].body.machine).toBeUndefined()
+    expect(adapter.enqueued).toHaveLength(0) // the hub did NOT also run it locally
+  })
+
+  it("the peer's answer is relayed VERBATIM — status and body, for all three actions", async () => {
+    const cases: any[] = [
+      ['/api/enqueue', { title: 'x', lane: 'prod' }, { status: 200, body: { ok: true, id: 'R-9', coalesced: false } }],
+      ['/api/approve', { taskId: 'R-5' }, { status: 409, body: 'approve race lost (already handled)' }],
+      ['/api/return', { taskId: 'R-5', note: 'переделай' }, { status: 200, body: { ok: true, taskId: 'R-5', attempt: 3 } }],
+    ]
+    for (const [url, body, answer] of cases) {
+      const federation = fakeFederation(answer)
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: { adapter: localAdapter(), federation, casExec: makeCasExec('awaiting_approval'), verbRunner: async () => ({ merged: true }), clock: () => 1 },
+      })
+      const res = await call(front, {
+        method: 'POST',
+        url,
+        headers: jsonHeaders(),
+        body: { ...body, machine: 'mac-mini' },
+      })
+      expect(res.statusCode, url).toBe(answer.status)
+      const expected = typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body)
+      expect(res.body, url).toBe(expected)
+    }
+  })
+
+  it('an unknown machine → 404; an unreachable one → 502 (an honest gateway failure)', async () => {
+    const cases: Array<[string, number]> = [
+      ['UnknownPeerError', 404],
+      ['PeerUnreachableError', 502],
+      ['ProxyPathNotAllowedError', 400],
+    ]
+    for (const [name, status] of cases) {
+      const federation = fakeFederation(namedError(name))
+      const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter: localAdapter(), federation, clock: () => 1 } })
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/enqueue',
+        headers: jsonHeaders(),
+        body: { title: 'x', lane: 'prod', machine: 'ghost' },
+      })
+      expect(res.statusCode, name).toBe(status)
+    }
+  })
+
+  it("a peer's failure message never rides out — the founder sees a status, not the peer's words", async () => {
+    const federation = fakeFederation(namedError('PeerUnreachableError'))
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter: localAdapter(), federation, clock: () => 1 } })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/enqueue',
+      headers: jsonHeaders(),
+      body: { title: 'x', lane: 'prod', machine: 'ghost' },
+    })
+    expect(res.body).not.toContain('for the test')
+  })
+
+  it('REGRESSION: with no machine field the local path runs exactly as before — the federation is never touched', async () => {
+    const adapter = localAdapter()
+    const federation = fakeFederation()
+    const mergeCalls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter,
+        federation,
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => (mergeCalls.push(o), { merged: true, testsPassed: true }),
+        clock: () => 1234,
+      },
+    })
+    const queued = await call(front, { method: 'POST', url: '/api/enqueue', headers: jsonHeaders(), body: { title: 'дома', lane: 'prod' } })
+    expect(queued.statusCode).toBe(200)
+    expect(JSON.parse(queued.body).id).toBe('R-1234')
+    expect(adapter.enqueued[0]).toMatchObject({ id: 'R-1234', source: 'roster', title: 'дома' })
+
+    const approved = await call(front, { method: 'POST', url: '/api/approve', headers: jsonHeaders(), body: { taskId: 'R-77' } })
+    expect(approved.statusCode).toBe(200)
+    expect(mergeCalls[0].branch).toBe('wt/R-77') // the merge verb ran HERE, locally
+    expect(federation.calls).toHaveLength(0) // and nothing was proxied anywhere
   })
 })
 
