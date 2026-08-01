@@ -76,6 +76,7 @@ import { join } from 'node:path'
 
 import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
 import { APPROACH_MARKERS } from '../front/journal.mjs'
+import { fencedBlock } from './prompt-fence.mjs'
 
 /** Named error for any attempt to reach the permissions-skip flag (both guard vectors). */
 export class ForbiddenFlagError extends Error {
@@ -399,27 +400,6 @@ export function buildAccountEnv({
 }
 
 // ── task-prompt DoD builder (D-9.5-11 item 1) ───────────────────────────────────
-
-/**
- * fencedBlock(label, content) → a fenced code block whose fence is STRICTLY longer than
- * any backtick run inside `content`, so untrusted text can never break out of the fence
- * (prompt-injection containment). Content stays verbatim DATA.
- */
-function fencedBlock(label, content) {
-  const text = String(content ?? '')
-  let maxRun = 0
-  let cur = 0
-  for (const ch of text) {
-    if (ch === '`') {
-      cur += 1
-      if (cur > maxRun) maxRun = cur
-    } else {
-      cur = 0
-    }
-  }
-  const fence = '`'.repeat(Math.max(3, maxRun + 1))
-  return `${fence}${label}\n${text}\n${fence}`
-}
 
 /**
  * buildTaskPrompt({task}) → the worker prompt for the prod/research/paperwork lanes

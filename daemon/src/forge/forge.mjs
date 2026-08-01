@@ -45,6 +45,8 @@
 
 import { createHash } from 'node:crypto'
 
+import { fencedBlock } from '../runner/prompt-fence.mjs'
+
 /** The three draft classes the «Создатель» forges (frozen — the closed vocabulary). */
 export const DRAFT_KINDS = Object.freeze(['agent', 'skill', 'mcp'])
 
@@ -129,26 +131,8 @@ function slugFromPath(kind, filePath) {
 
 // ── prompt builder (the creator's system prompt) ──────────────────────────────────
 
-/**
- * fencedBlock(label, content) → a fenced block whose fence is STRICTLY longer than any
- * backtick run inside `content`, so untrusted founder text can never break out (the
- * containment idiom shared with runner/args.mjs + excavate.mjs). Content stays verbatim DATA.
- */
-function fencedBlock(label, content) {
-  const text = String(content ?? '')
-  let maxRun = 0
-  let cur = 0
-  for (const ch of text) {
-    if (ch === '`') {
-      cur += 1
-      if (cur > maxRun) maxRun = cur
-    } else {
-      cur = 0
-    }
-  }
-  const fence = '`'.repeat(Math.max(3, maxRun + 1))
-  return `${fence}${label}\n${text}\n${fence}`
-}
+// The fence that contains untrusted founder text is IMPORTED, never re-typed here — one
+// copy of the rule, in runner/prompt-fence.mjs (see that module's header for the law).
 
 /** Human noun per kind for the prompt copy. */
 const KIND_NOUN = Object.freeze({ agent: 'агента (работника)', skill: 'навык (skill)', mcp: 'заявку на MCP-инструмент' })
