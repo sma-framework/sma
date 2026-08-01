@@ -1195,3 +1195,203 @@ describe('MEM-FPDRIFT + MEM-EXPIRE — the trust checks', () => {
     }
   })
 })
+
+// ── placement + episodes: MEM-SENSPLACE · MEM-PRIVFACET · MEM-EPISODE ────────
+//
+// Every string below is invented. The point of a fixture here is the SHAPE a
+// scanner can see — an admission about a security posture, an address-shaped
+// token, an absolute home path — never the content of anyone's real corpus.
+
+/** Write one episode into a corpus dir through the shared serializer. */
+function writeEpisodeFixture(dir: string, id: string, over: Record<string, unknown> = {}, body = 'what happened\n') {
+  mkdirSync(join(dir, 'episodes'), { recursive: true })
+  const frontmatter: Record<string, unknown> = {
+    id,
+    schema_version: '2',
+    status: 'archived',
+    memory_type: 'episodic',
+    language: 'en',
+    sensitivity: 'internal',
+    recorded_at: '2026-02-11',
+    ...over,
+  }
+  for (const [k, v] of Object.entries(frontmatter)) if (v === null) delete frontmatter[k]
+  writeFileSync(
+    join(dir, 'episodes', `${id}.md`),
+    serializeNote({ frontmatter: frontmatter as never, body, schemaVersion: 2 }),
+    'utf8',
+  )
+}
+
+describe('MEM-SENSPLACE + MEM-PRIVFACET + MEM-EPISODE — placement and history', () => {
+  it('Test 1 (declared contradiction): a sensitive-class record carrying a public marker → CRITICAL', () => {
+    const res = lintV2([
+      {
+        frontmatter: v2Record('semantic_restricted_fact', {
+          sensitivity: 'sensitive',
+          scope: { audience: 'public' },
+        }),
+      },
+    ])
+    const place = findingsOf(res, 'MEM-SENSPLACE')
+    expect(place.some((f) => f.tier === 'critical')).toBe(true)
+    expect(place.some((f) => f.message.includes('sensitive') && f.message.includes('public'))).toBe(true)
+    expect(res.critical).toBeGreaterThanOrEqual(1)
+
+    // The same record with no public marker is silent — the finding is about
+    // PLACEMENT, not about being sensitive.
+    const quiet = lintV2([
+      { frontmatter: v2Record('semantic_restricted_kept', { sensitivity: 'sensitive' }) },
+    ])
+    expect(findingsOf(quiet, 'MEM-SENSPLACE')).toHaveLength(0)
+  })
+
+  it('Test 2 (the retrofit scan): a schema-v1 note with NO sensitivity field still fires on sensitive-shaped content', () => {
+    // (a) a security-posture admission
+    const posture = findingsOf(
+      lintBody('The shared deployment account has no two-factor authentication enabled yet.\n'),
+      'MEM-SENSPLACE',
+    )
+    expect(posture.length).toBeGreaterThanOrEqual(1)
+    expect(posture.every((f) => f.tier === 'warn')).toBe(true)
+    expect(posture[0].file).toBe('reference_probe.md')
+
+    // (b) a personal address shape
+    const address = findingsOf(
+      lintBody('Escalations went to a.person@example-mail.test during the incident.\n'),
+      'MEM-SENSPLACE',
+    )
+    expect(address.length).toBeGreaterThanOrEqual(1)
+    expect(address.every((f) => f.tier === 'warn')).toBe(true)
+
+    // (c) an absolute home-directory path
+    const path = findingsOf(
+      lintBody('The fixture corpus was copied to /home/someuser/projects/gate before the run.\n'),
+      'MEM-SENSPLACE',
+    )
+    expect(path.length).toBeGreaterThanOrEqual(1)
+    expect(path.every((f) => f.tier === 'warn')).toBe(true)
+  })
+
+  it('Test 3 (false-positive floor): ordinary prose in a v1 note raises no placement finding', () => {
+    const res = lintBody('The dispatcher resolves the preferred channel by country before sending a message.\n')
+    expect(findingsOf(res, 'MEM-SENSPLACE')).toHaveLength(0)
+  })
+
+  it('Test 4 (declared public + sensitive content): a public-class v2 record with the same shape → WARN', () => {
+    const res = lintV2([
+      {
+        frontmatter: v2Record('semantic_public_leak', { sensitivity: 'public' }),
+        body: 'The shared build account has no two-factor authentication enabled.\n',
+      },
+    ])
+    const place = findingsOf(res, 'MEM-SENSPLACE')
+    expect(place.length).toBeGreaterThanOrEqual(1)
+    expect(place.every((f) => f.tier === 'warn')).toBe(true)
+
+    // An internal-class record is out of scope for the heuristic: it is already
+    // stored where such material belongs, and warning about it would be noise.
+    const internal = lintV2([
+      {
+        frontmatter: v2Record('semantic_internal_ok'),
+        body: 'The shared build account has no two-factor authentication enabled.\n',
+      },
+    ])
+    expect(findingsOf(internal, 'MEM-SENSPLACE')).toHaveLength(0)
+  })
+
+  it('Test 5 (private facets): an installation-private facet in a PUBLIC record → CRITICAL; an internal record may carry it', () => {
+    const leaked = lintV2([
+      {
+        frontmatter: v2Record('semantic_public_faceted', {
+          sensitivity: 'public',
+          retrieval: { areas: ['tech', 'phase:12.3'] },
+        }),
+      },
+    ])
+    const facet = findingsOf(leaked, 'MEM-PRIVFACET')
+    expect(facet.length).toBe(1)
+    expect(facet[0].tier).toBe('critical')
+    expect(facet[0].message).toContain('phase:12.3')
+
+    const viaAppliesTo = lintV2([
+      {
+        frontmatter: v2Record('semantic_public_applied', {
+          sensitivity: 'public',
+          applies_to: ['phase:12.3'],
+        }),
+      },
+    ])
+    expect(findingsOf(viaAppliesTo, 'MEM-PRIVFACET').length).toBe(1)
+
+    const internal = lintV2([
+      {
+        frontmatter: v2Record('semantic_internal_faceted', {
+          retrieval: { areas: ['tech', 'phase:12.3'] },
+        }),
+      },
+    ])
+    expect(findingsOf(internal, 'MEM-PRIVFACET')).toHaveLength(0)
+  })
+
+  it('Test 6 (episodes, lightly): a well-formed episode is clean; a field-missing one warns per field', () => {
+    const clean = lintV2([{ frontmatter: v2Record('semantic_release_gate') }], {}, (dir) => {
+      writeEpisodeFixture(dir, 'episode_release_night')
+    })
+    expect(findingsOf(clean, 'MEM-EPISODE')).toHaveLength(0)
+
+    const missing = lintV2([{ frontmatter: v2Record('semantic_release_gate') }], {}, (dir) => {
+      writeEpisodeFixture(dir, 'episode_partial', { language: null, recorded_at: null })
+    })
+    const eps = findingsOf(missing, 'MEM-EPISODE')
+    expect(eps.length).toBe(2)
+    expect(eps.every((f) => f.tier === 'warn')).toBe(true)
+    expect(eps.some((f) => f.message.includes('language'))).toBe(true)
+    expect(eps.some((f) => f.message.includes('recorded_at'))).toBe(true)
+    expect(eps.every((f) => f.file.includes('episode_partial'))).toBe(true)
+  })
+
+  it('Test 7 (episodes are NOT held to record discipline): a claim-less multi-claim episode raises no record finding', () => {
+    const res = lintV2([{ frontmatter: v2Record('semantic_release_gate') }], {}, (dir) => {
+      writeEpisodeFixture(dir, 'episode_many_claims', {}, [
+        '2026-02-11 the checksum step was added',
+        '2026-02-11 the manifest reader was rewritten',
+        '2026-02-11 the gate was switched on for every branch',
+        '',
+      ].join('\n'))
+    })
+    expect(findingsOf(res, 'MEM-EPISODE')).toHaveLength(0)
+    expect(findingsOf(res, 'MEM-V2SCHEMA')).toHaveLength(0)
+    expect(findingsOf(res, 'MEM-ONECLAIM')).toHaveLength(0)
+  })
+
+  it('Test 8 (fail-soft): an unreadable episode becomes a WARN naming the file, never a crashed run', () => {
+    const res = lintV2([{ frontmatter: v2Record('semantic_release_gate') }], {}, (dir) => {
+      mkdirSync(join(dir, 'episodes'), { recursive: true })
+      writeFileSync(join(dir, 'episodes', 'episode_broken.md'), '---\nid: episode_broken\n', 'utf8')
+    })
+    const eps = findingsOf(res, 'MEM-EPISODE')
+    expect(eps.length).toBe(1)
+    expect(eps[0].tier).toBe('warn')
+    expect(eps[0].message).toContain('episode_broken')
+    // The rest of the report is intact — one bad episode is not a dead checker.
+    expect(res.summary).toMatch(/critical/)
+  })
+
+  it('Test 9: all seven schema-v2 checks are registered, at the tiers the discipline assigns', () => {
+    const expected: Record<string, string> = {
+      'MEM-V2SCHEMA': 'critical',
+      'MEM-ONECLAIM': 'critical',
+      'MEM-FPDRIFT': 'warn',
+      'MEM-EXPIRE': 'warn',
+      'MEM-SENSPLACE': 'critical',
+      'MEM-PRIVFACET': 'critical',
+      'MEM-EPISODE': 'warn',
+    }
+    for (const [id, tier] of Object.entries(expected)) {
+      const c = LINT_CHECKS.find((x) => x.id === id)
+      expect(c, `${id} must be registered in LINT_CHECKS`).toBeTruthy()
+      expect(c!.tier, `${id} tier`).toBe(tier)
+    }
+  })
+})
