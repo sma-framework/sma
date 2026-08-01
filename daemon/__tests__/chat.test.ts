@@ -37,9 +37,11 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 
 import { describe, it, expect } from 'vitest'
 
+import { createFrontServer, ROUTES, CHAT_BODY_CAP } from '../src/front/server.mjs'
 import {
   classifyTurn,
   answerFailReason,
@@ -466,5 +468,248 @@ describe('the free branch (outside the queue — D-9.7-15)', () => {
     const res = await handleChatTurn({ text: 'Что думаешь про перенос?', deps: d })
     expect(res.answer).toMatchObject({ kind: 'text', text: CHAT_FALLBACK_TEXT })
     expect(res.answer.error).toBeTruthy()
+  })
+})
+
+// ═══════ Plan 9.7-15 Task 2: the conversation reached THROUGH THE FRONT ═══════
+//
+// The two chat routes fill their FROZEN slots (the table stays at thirty). They are
+// DELEGATES: the door checks the shape, the engine answers, the door explicit-picks what
+// leaves. Three things are load-bearing and are proved here rather than asserted in prose:
+//
+//   THE FACT BRANCH STAYS FREE THROUGH THE ROUTE. A factual question answered over HTTP
+//   must still reach no model — the spawner spy is injected through the front's own deps
+//   and must stay untouched. The hybrid split is worth nothing if the transport bypasses it.
+//
+//   THE EVENT CARRIES NO WORDS. `chat.reply` is a HINT: a turn id and a status. The
+//   question and the answer ride the response the caller is already holding, never the
+//   broadcast every open screen receives.
+//
+//   THE BODY IS BOUNDED, THE ANSWER IS PICKED. CHAT_BODY_CAP stops a blob at the transport;
+//   the engine's internal `error` (a spawn message, a timeout code) never reaches the wire.
+
+const FRONT_TOKEN = 'c'.repeat(64)
+
+function chatReq(o: any = {}) {
+  const { method = 'GET', url = '/', headers = {}, body } = o
+  const payload = body == null ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
+  const req: any = Readable.from(payload)
+  req.method = method
+  req.url = url
+  req.headers = { ...headers }
+  req.socket = { remoteAddress: '10.9.0.1' }
+  return req
+}
+
+function chatRes() {
+  const res: any = {
+    statusCode: 0,
+    headers: {} as Record<string, any>,
+    body: '',
+    headersSent: false,
+    writeHead(code: number, h?: any) {
+      res.statusCode = code
+      res.headersSent = true
+      if (h) for (const [k, v] of Object.entries(h)) res.headers[k.toLowerCase()] = v
+      return res
+    },
+    write(c: any) {
+      res.body += String(c)
+      return true
+    },
+    end(c?: any) {
+      if (c != null) res.body += String(c)
+      return res
+    },
+  }
+  return res
+}
+
+const chatHeaders = () => ({ authorization: `Bearer ${FRONT_TOKEN}`, 'content-type': 'application/json' })
+
+async function hit(front: any, o: any) {
+  const req = chatReq(o)
+  const res = chatRes()
+  await front.handle(req, res)
+  return res
+}
+
+/** The front wired for the conversation exactly as the composition root wires it. */
+function chatFront(dir: string, extra: any = {}) {
+  const spawner = spawnerSpy()
+  const q = adapterSpy(ROWS)
+  const events: any[] = []
+  const front = createFrontServer({
+    config: { token: FRONT_TOKEN, workers: WORKERS },
+    deps: {
+      clock: () => 1_700_000_900_000,
+      adapter: q.adapter,
+      hub: { emit: (e: any) => events.push(e) },
+      handleChatTurn,
+      readChatHistory: readHistory,
+      chatDir: dir,
+      spawnWorker: spawner.fn,
+      readUsageRows: () => USAGE,
+      ...extra,
+    },
+  })
+  return { front, spawner, q, events }
+}
+
+describe('POST /api/chat — the conversation, reached through the front', () => {
+  it('a factual question is answered through the route with NO session spawned', async () => {
+    const dir = tmp()
+    const { front, spawner, q, events } = chatFront(dir)
+    const res = await hit(front, {
+      method: 'POST',
+      url: '/api/chat',
+      headers: chatHeaders(),
+      body: { text: 'Почему упала задача про значок тестов?' },
+    })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.conversationId).toMatch(/^conv-/)
+    expect(out.kind).toBe('fail-reason')
+    expect(out.answer.kind).toBe('fact')
+    expect(out.answer.text).toBeTruthy()
+    expect(out.answer.taskRef).toMatchObject({ id: 'b-11' })
+    expect(spawner.calls).toHaveLength(0) // instant and free over HTTP too
+    expect(q.enqueued).toHaveLength(0) // and the hands stay tied
+
+    // the hint carries a turn id and a status — never the founder's words
+    const reply = events.find((e) => e.event === 'chat.reply')
+    expect(reply).toBeTruthy()
+    expect(Object.keys(reply).sort()).toEqual(['event', 'status', 'turnId'])
+    expect(JSON.stringify(reply)).not.toContain('значок')
+  })
+
+  it('both turns are on the record before the answer leaves', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir)
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Что с задачей про импорт?' } })
+    const { conversationId } = JSON.parse(res.body)
+    const turns = readHistory({ dir, conversationId })
+    expect(turns).toHaveLength(2)
+    expect(turns[0].role).toBe('user')
+    expect(turns[1].role).toBe('assistant')
+  })
+
+  it('a continued conversation keeps its id', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir)
+    const first = JSON.parse(
+      (await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Что съело лимит?' } })).body,
+    )
+    const second = JSON.parse(
+      (
+        await hit(front, {
+          method: 'POST',
+          url: '/api/chat',
+          headers: chatHeaders(),
+          body: { text: 'А статус задачи про импорт?', conversationId: first.conversationId },
+        })
+      ).body,
+    )
+    expect(second.conversationId).toBe(first.conversationId)
+  })
+
+  it('a body over CHAT_BODY_CAP is refused at the transport — the engine never sees it', async () => {
+    const dir = tmp()
+    const { front, q } = chatFront(dir)
+    const res = await hit(front, {
+      method: 'POST',
+      url: '/api/chat',
+      headers: chatHeaders(),
+      body: { text: 'я'.repeat(CHAT_BODY_CAP) },
+    })
+    expect(res.statusCode).toBe(413)
+    expect(q.enqueued).toHaveLength(0)
+    expect(readHistory({ dir })).toHaveLength(0) // nothing reached the transcript either
+  })
+
+  it('an unknown key, an empty text and a malformed conversation id are all 400', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir)
+    for (const body of [
+      { text: 'привет', command: 'rm -rf /' },
+      { text: '   ' },
+      {},
+      { text: 'привет', conversationId: '../../etc/passwd' },
+    ]) {
+      const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body })
+      expect(res.statusCode, JSON.stringify(body)).toBe(400)
+    }
+  })
+
+  it("the engine's internal error code never rides out — the founder gets the honest sentence only", async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir, {
+      handleChatTurn: async () => ({
+        conversationId: 'conv-1',
+        kind: 'free',
+        answer: { kind: 'text', text: CHAT_FALLBACK_TEXT, error: 'spawn-failed: /usr/local/bin/claude ENOENT' },
+      }),
+    })
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Как лучше подойти?' } })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain(CHAT_FALLBACK_TEXT)
+    expect(res.body).not.toContain('ENOENT')
+    expect(res.body).not.toContain('spawn-failed')
+  })
+
+  it('an unwired chat engine → 501, never a silent no-op', async () => {
+    const front = createFrontServer({ config: { token: FRONT_TOKEN }, deps: {} })
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'привет' } })
+    expect(res.statusCode).toBe(501)
+  })
+
+  it('a draft leaves the engine intact — the card the «Создать» button is built from', async () => {
+    const dir = tmp()
+    const draft = { title: 'Перенести письма о сбоях', worker: 'max-1', mode: 'обычный' }
+    const { front } = chatFront(dir, {
+      handleChatTurn: async () => ({
+        conversationId: 'conv-7',
+        kind: 'free',
+        answer: { kind: 'draft', text: 'Предлагаю так.', draft },
+      }),
+    })
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Поставь задачу' } })
+    expect(JSON.parse(res.body).answer.draft).toEqual(draft)
+  })
+})
+
+describe('GET /api/chat/history — the transcript, read back as data', () => {
+  it('returns the turns of one conversation, oldest first, with no internal error code', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir)
+    const post = JSON.parse(
+      (await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Что съело лимит?' } })).body,
+    )
+    appendTurn({ dir, turn: { conversationId: post.conversationId, role: 'assistant', kind: 'text', text: 'ой', error: 'timeout' } })
+
+    const res = await hit(front, {
+      url: `/api/chat/history?conversationId=${post.conversationId}`,
+      headers: { authorization: `Bearer ${FRONT_TOKEN}` },
+    })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.turns).toHaveLength(3)
+    expect(out.turns[0].role).toBe('user')
+    expect(out.turns[2].text).toBe('ой')
+    expect(res.body).not.toContain('timeout') // the diagnostic stays in the book, off the wire
+  })
+
+  it('an unwired history reader → 501', async () => {
+    const front = createFrontServer({ config: { token: FRONT_TOKEN }, deps: {} })
+    const res = await hit(front, { url: '/api/chat/history', headers: { authorization: `Bearer ${FRONT_TOKEN}` } })
+    expect(res.statusCode).toBe(501)
+  })
+})
+
+describe('the chat routes filled a FROZEN slot', () => {
+  it('the table is still exactly thirty routes and both chat routes are real handlers', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(30)
+    expect(ROUTES['POST /api/chat']).toBe('handleChat')
+    expect(ROUTES['GET /api/chat/history']).toBe('handleChatHistory')
   })
 })
