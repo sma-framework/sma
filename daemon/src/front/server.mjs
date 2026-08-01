@@ -60,6 +60,14 @@ import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
+import { scanEstate, enrollSelections } from './import-scanner.mjs'
+import { createOnboarding } from './onboarding.mjs'
+// NOTE: the import scanner and the onboarding interview are STATICALLY imported — unlike
+// the appliers and the chat engine — because neither holds a capability worth gating: both
+// are pure over an INJECTED fs, neither reaches a model or a spawn (their suites prove it
+// by grep), and every byte either writes goes through a door that already exists — the
+// forge's (draftPathFor → lintDraft → receipt → awaiting_approval) and the profile
+// writer's. There is nothing here to switch off, because no enable path exists to switch.
 // NOTE: only the pairing INSTRUCTION BUILDER is imported from federation.mjs — a pure text
 // function with no fetch and no state. The federation ENGINE (poll/aggregate/proxy/pairing
 // book) is injected via deps.federation, so no request path can open an outbound daemon→
@@ -1397,14 +1405,153 @@ function handleChatHistory({ res, query, deps }) {
   return sendJson(res, 200, { turns: turns.map(pickTurn) })
 }
 
-/** POST /api/import/scan — scan a foreign agent tree into candidates → plan 9.7-20. */
-function handleImportScan({ res }) {
-  send501(res)
+// ── the import door: a foreign estate becomes DRAFTS, never a running worker ──
+//
+// «Переезд за минуты, а не переписывание». The two routes below are a thin door in front
+// of import-scanner.mjs and they re-implement NOTHING of it: the collision policy, the
+// mapping and the forge's lint all live in the engine. What the door owns is the SHAPE of
+// the request — and it owns it strictly, because a foreign definition is THIRD-PARTY TEXT:
+//   - NO PATH EVER COMES FROM THE REQUEST. `scan` takes an EMPTY body and `enroll` takes
+//     selections only; the estate that is read and the tree drafts land in are BOTH the
+//     project this daemon serves. No caller can point the scanner at another directory
+//     (T-9.7-50), so «прочитай мне /etc» is not a validation failure — it has no field.
+//   - A BATCH IS BOUNDED AND ITEM-WISE. SELECTIONS_CAP bounds the party; a refusal (a taken
+//     name with no rename) travels in the RESPONSE BODY as that item's status, so one bad
+//     item can neither bury the batch in a 500 nor stop the rest from landing.
+//   - THE HINT SAYS NOTHING. `import.updated` carries a batch id and a count — never a
+//     name, never a slug: an open screen learns THAT the drafts moved, not what was in
+//     them (T-9.7-51). What was found is read back through the authed route.
+//   - NOTHING IS ENABLED. The engine writes drafts and a forge receipt and touches neither
+//     the roster config nor the tool registry; activation stays two deliberate human steps.
+
+/** How many definitions ONE enroll may carry — a party of choices, never a bulk channel. */
+const SELECTIONS_CAP = 50
+
+/** A selection names an existing candidate: two short identifiers and, at most, a rename. */
+const IMPORT_NAME_CAP = 64
+const IMPORT_KIND_CAP = 32
+
+/** A body that is EMPTY by contract — the allowlist of a route that takes no input. */
+const NO_FIELDS = new Set()
+
+/**
+ * Where an import reads from and where it writes to. Both are the project this daemon
+ * serves, so a candidate whose name is already taken collides with the founder's OWN file
+ * and is refused rather than silently rewritten — the reason `targetDir` exists at all.
+ * The roster is handed over as the taken-name index; definitions already on disk are
+ * covered by the engine's own path check, so no second registry read is needed.
+ */
+function importDirs(config, deps) {
+  const repoDir = deps.repoDir ?? config.repoDir
+  return {
+    repoDir,
+    targetDir: repoDir,
+    fsImpl: deps.fsImpl,
+    registries: { workers: Array.isArray(config.workers) ? config.workers : [] },
+  }
 }
 
-/** POST /api/import/enroll — write the candidates as drafts (same DoR door) → plan 9.7-20. */
-function handleImportEnroll({ res }) {
-  send501(res)
+/** A candidate as it leaves the process: meaning for the screen, no path to a foreign file. */
+function pickCandidate(c) {
+  return {
+    kind: c.kind,
+    slug: c.slug ?? null,
+    name: c.name,
+    summary: c.summary ?? '',
+    source: c.source ?? '',
+    ...(c.reason ? { reason: c.reason } : {}),
+    ...(c.collision
+      ? { collision: { existingKind: c.collision.existingKind, suggestion: c.collision.suggestion ?? null } }
+      : {}),
+  }
+}
+
+/** One enrolment result, explicit-picked: what happened to THIS item and why. */
+function pickDraft(r) {
+  return {
+    kind: r.kind ?? null,
+    slug: r.slug ?? null,
+    status: r.status,
+    ...(r.path ? { path: r.path } : {}),
+    ...(r.reason ? { reason: r.reason } : {}),
+    ...(r.renamedFrom ? { renamedFrom: r.renamedFrom } : {}),
+    ...(r.lint
+      ? {
+          lint: {
+            ok: !!r.lint.ok,
+            findings: (Array.isArray(r.lint.findings) ? r.lint.findings : []).map((f) => ({
+              name: f.name,
+              detail: f.detail,
+            })),
+          },
+        }
+      : {}),
+    ...(r.receiptRef ? { receiptRef: String(r.receiptRef) } : {}),
+  }
+}
+
+/**
+ * POST /api/import/scan — what this project already has, and what it collides with.
+ * The body is EMPTY by contract; the scan writes nothing at all, so calling it twice is
+ * calling it once. A broken foreign file is a candidate with a reason, never a 500.
+ */
+async function handleImportScan({ req, res, config, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  if (rejectUnknownKeys(res, body.value || {}, NO_FIELDS)) return undefined
+
+  const found = scanEstate(importDirs(config, deps))
+  return sendJson(res, 200, {
+    format: found.format,
+    candidates: (found.candidates || []).map(pickCandidate),
+    notReady: (found.notReady || []).map((n) => ({ id: n.id, title: n.title, reason: n.reason })),
+  })
+}
+
+/**
+ * POST /api/import/enroll — the chosen definitions become drafts behind the forge's door.
+ * Body {selections:[{slug, kind, overrideSlug?}]}, bounded by SELECTIONS_CAP. The shape is
+ * checked to the last field BEFORE the engine runs (an unknown key inside one selection is
+ * a 400 with zero writes); everything after that is the engine's verdict per item.
+ */
+async function handleImportEnroll({ req, res, config, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['selections']))) return undefined
+  if (!Array.isArray(b.selections)) return send400(res, 'selections must be an array')
+  if (b.selections.length === 0) return send400(res, 'selections required')
+  if (b.selections.length > SELECTIONS_CAP) return send400(res, `selections exceeds ${SELECTIONS_CAP} entries`)
+
+  const selections = []
+  for (const s of b.selections) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return send400(res, 'invalid selection')
+    if (rejectUnknownKeys(res, s, new Set(['slug', 'kind', 'overrideSlug']))) return undefined
+    if (typeof s.slug !== 'string' || s.slug === '' || s.slug.length > IMPORT_NAME_CAP) {
+      return send400(res, 'invalid selection slug')
+    }
+    if (typeof s.kind !== 'string' || s.kind === '' || s.kind.length > IMPORT_KIND_CAP) {
+      return send400(res, 'invalid selection kind')
+    }
+    if (s.overrideSlug !== undefined) {
+      if (typeof s.overrideSlug !== 'string' || s.overrideSlug === '' || s.overrideSlug.length > IMPORT_NAME_CAP) {
+        return send400(res, 'invalid overrideSlug')
+      }
+    }
+    selections.push({ slug: s.slug, kind: s.kind, ...(s.overrideSlug ? { overrideSlug: s.overrideSlug } : {}) })
+  }
+
+  const { results } = enrollSelections({ selections, ...importDirs(config, deps), dataDir: deps.dataDir })
+  const drafts = (results || []).map(pickDraft)
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  // AFTER the drafts are on disk: a screen that re-reads on the hint can never find the
+  // door still empty. The frame is the batch id and the count — and nothing else.
+  emitSafe(deps, {
+    event: 'import.updated',
+    batchId: `import-${clock()}`,
+    count: drafts.filter((d) => d.status === 'awaiting_approval').length,
+  })
+  return sendJson(res, 200, { drafts })
 }
 
 /** GET /api/onboarding — the onboarding progress read model → plan 9.7-20. */
