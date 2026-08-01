@@ -134,6 +134,29 @@ describe('captureRetrieval — report shape and recall math (Tests 1-2)', () => 
     expect(r.forbidden_hits).toEqual([{ case: 'fix the crm handler', forbidden_notes: ['core-rule.md'] }])
     expect(r.summary.critical_miss_rate).toBe(0)
   })
+
+  /**
+   * Test 21 — THE DEFAULT TAG REGISTRY. Every other test in this file hands the capture an
+   * explicit tagsPath, so the documented default («defaults to <corpusDir>/TAGS.md») was
+   * never exercised. Without a registry the loader derives no task tags AND selects no core,
+   * so the pack comes back empty and the capture reports recall 0 — a fabricated number that
+   * looks exactly like a genuinely blind retrieval layer. A measurement that silently
+   * measures nothing is worse than no measurement, so the default is pinned by a test.
+   */
+  it('resolves the corpus TAGS.md by default — an omitted tagsPath measures the same thing', () => {
+    writeCases([{ task: 'fix the crm handler', expected_notes: ['core-rule.md', 'crm-detail.md'], critical_notes: [], forbidden_notes: [] }])
+
+    const withPath = captureRetrieval(opts())
+    const { tagsPath: _omitted, ...withoutPath } = opts()
+    const defaulted = captureRetrieval(withoutPath)
+
+    expect(defaulted.hits).toBe(withPath.hits)
+    expect(defaulted.core_loaded).toEqual(withPath.core_loaded)
+    expect(defaulted.summary.recall).toBe(withPath.summary.recall)
+    // and the shared number is a real one, not the empty-pack zero
+    expect(defaulted.summary.recall).toBeGreaterThan(0)
+    expect(defaulted.core_loaded).toEqual(['core-rule.md'])
+  })
 })
 
 describe('determinism (Test 3)', () => {
