@@ -22,11 +22,20 @@
  *     lists (the project switcher must see all of them),
  *   - a config with no federation block derives role standalone and exactly one machine,
  *   - no new field carries a peer url or a peer token.
+ *
+ * V5.1 settings read models (the «Правила» / «Аккаунты» screens ride the SAME route —
+ * the frozen table is the ROUTES, not the shape of a payload):
+ *   - rules[] is a pure derive of the config: lanes with their workers, the worker
+ *     profiles, the budget stops, the sub→API mode the spend strip already computed,
+ *   - accounts[] dedupes by account, attaches every worker riding it, and makes the
+ *     machine binding visible («one account lives on exactly one machine»),
+ *   - neither section may carry a secret VALUE, a credential env-var NAME or an
+ *     account's local config path.
  */
 
 import { describe, it, expect } from 'vitest'
 
-import { deriveState, derivePresence, parseReceiptSummary } from '../src/front/state.mjs'
+import { deriveState, derivePresence, parseReceiptSummary, deriveRules, deriveAccounts } from '../src/front/state.mjs'
 import { REASON_LABELS } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
@@ -105,6 +114,7 @@ describe('deriveState — the one-poll payload', () => {
     const payload = await deriveState({ adapter: mkAdapter(rows), windows, config, usageReader, clock: () => NOW })
 
     expect(Object.keys(payload).sort()).toEqual([
+      'accounts',
       'activeProject',
       'costs',
       'done',
@@ -113,6 +123,7 @@ describe('deriveState — the one-poll payload', () => {
       'machines',
       'projects',
       'queue',
+      'rules',
       'spend',
       'workers',
     ])
@@ -344,6 +355,7 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
     expect(payload.kpis.queued).toBe(3)
     // the KEY SET is untouched — the 9.7-02 contract the SPA types once
     expect(Object.keys(payload).sort()).toEqual([
+      'accounts',
       'activeProject',
       'costs',
       'done',
@@ -352,6 +364,7 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
       'machines',
       'projects',
       'queue',
+      'rules',
       'spend',
       'workers',
     ])
@@ -389,5 +402,147 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
     })
     expect(payload.machines).toHaveLength(1)
     expect(payload.kpis.queued).toBe(2)
+  })
+})
+
+// ── the settings read models: rules + accounts (the «Правила» / «Аккаунты» screens) ──
+//
+// Both are PURE derives of the config (plus the same window seam the roster already rides).
+// The load-bearing invariant is negative: neither section may carry a secret VALUE, a
+// credential env-var NAME, or an account's local config path — the payload leaves the
+// machine over the LAN, the config never does.
+
+const TOKEN_ENV = 'SMA_MAX_1_TOKEN'
+const ACCOUNT_DIR = '/home/founder/.sma-accounts/max-1'
+
+const maxOne = { name: 'max-1', configDir: ACCOUNT_DIR, oauthTokenEnv: TOKEN_ENV }
+const maxTwo = { name: 'max-2', configDir: '/home/founder/.sma-accounts/max-2', oauthTokenEnv: 'SMA_MAX_2_TOKEN' }
+
+const rulesConfig = {
+  agingHours: 24,
+  machineId: 'workstation',
+  budget: { monthlyApiCapEur: 50, warnPct: [70, 90] },
+  workers: [
+    { id: 'max-1', lane: 'prod', provider: 'claude', model: 'opus', effort: 'high', account: maxOne, dayPriorityOwner: true, enabled: true },
+    { id: 'max-2', lane: 'prod', provider: 'claude', model: 'sonnet', effort: 'medium', account: maxTwo, enabled: false },
+    { id: 'creator', lane: 'forge', provider: 'claude', account: maxOne, enabled: true }, // rides max-1's account
+  ],
+}
+
+describe('deriveRules — the «Правила» screen rides the config, never a stored field', () => {
+  it('groups the lanes with their workers, in config order', () => {
+    const rules = deriveRules(rulesConfig)
+    expect(rules.lanes).toEqual([
+      { lane: 'prod', workers: ['max-1', 'max-2'] },
+      { lane: 'forge', workers: ['creator'] },
+    ])
+  })
+
+  it('carries the worker profile — provider/model/effort/enabled — and the account by NAME', () => {
+    const rules = deriveRules(rulesConfig)
+    const byId = Object.fromEntries(rules.workers.map((w: any) => [w.id, w]))
+    expect(byId['max-1']).toEqual({
+      id: 'max-1',
+      lane: 'prod',
+      account: 'max-1',
+      provider: 'claude',
+      model: 'opus',
+      effort: 'high',
+      enabled: true,
+    })
+    expect(byId['max-2'].enabled).toBe(false) // the roster toggle is visible, not guessed
+    // a profile the config does not carry is OMITTED, never invented as null
+    expect('model' in byId['creator']).toBe(false)
+    expect('effort' in byId['creator']).toBe(false)
+  })
+
+  it('carries the budget stops when the config has them, and omits the section when it does not', () => {
+    expect(deriveRules(rulesConfig).budgetStops).toEqual({ monthlyApiCapEur: 50, warnPct: [70, 90] })
+    expect('budgetStops' in deriveRules({ workers: [] })).toBe(false)
+  })
+
+  it('the sub→API switch reports the mode the spend strip already computed — one truth', () => {
+    expect(deriveRules(rulesConfig, { switchMode: 'subscription' }).subApiSwitch).toEqual({
+      mode: 'subscription',
+      capEur: 50,
+      budgeted: true,
+    })
+    expect(deriveRules(rulesConfig, { switchMode: 'api' }).subApiSwitch.mode).toBe('api')
+    // no cap set → no API fallback is budgeted at all
+    expect(deriveRules({ workers: [] }).subApiSwitch).toEqual({ mode: 'subscription', capEur: 0, budgeted: false })
+  })
+})
+
+describe('deriveAccounts — an account lives on exactly ONE machine, and it is visible', () => {
+  const windows = makeWindows({
+    'max-1': { pct5h: 40, pctWeek: 55, estimated: true },
+    'max-2': { pct5h: 100, pctWeek: 90, estimated: false, closedUntil: NOW + HOUR },
+  })
+
+  it('dedupes by account and attaches every worker riding it, with the machine binding', () => {
+    const accounts = deriveAccounts(rulesConfig, windows)
+    expect(accounts.map((a: any) => a.name)).toEqual(['max-1', 'max-2']) // creator rides max-1
+    expect(accounts[0]).toEqual({
+      name: 'max-1',
+      machineId: 'workstation',
+      dayPriorityOwner: true,
+      windows: { pct5h: 40, pctWeek: 55, estimated: true },
+      workers: ['max-1', 'creator'],
+    })
+    expect(accounts[1].windows).toEqual({ pct5h: 100, pctWeek: 90, estimated: false, closedUntil: NOW + HOUR })
+    expect('dayPriorityOwner' in accounts[1]).toBe(false)
+  })
+
+  it('falls back to the self machine id when the config names none', () => {
+    const accounts = deriveAccounts({ workers: rulesConfig.workers }, windows)
+    for (const a of accounts) expect(a.machineId).toBe('self')
+  })
+})
+
+describe('deriveState — rules and accounts ride the EXISTING /api/state route (D-9.7-09)', () => {
+  it('the payload carries both sections, and the spend strip stays byte-identical', async () => {
+    const windows = makeWindows({ 'max-1': { pct5h: 40, pctWeek: 55, estimated: true } })
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows,
+      config: rulesConfig,
+      clock: () => NOW,
+    })
+    expect(payload.rules.lanes.map((l: any) => l.lane)).toEqual(['prod', 'forge'])
+    expect(payload.accounts.map((a: any) => a.name)).toEqual(['max-1', 'max-2'])
+    // the spend strip is derived from the SAME deduped account list — same names, same order
+    expect(payload.spend.accounts).toEqual([
+      { name: 'max-1', pct5h: 40, pctWeek: 55 },
+      { name: 'max-2', pct5h: 10, pctWeek: 20 },
+    ])
+    // the switch mode the rules report is the one the spend strip reports
+    expect(payload.rules.subApiSwitch.mode).toBe(payload.spend.apiFallback.switchMode)
+  })
+
+  it('a CLOSED window flips the reported sub→API mode in BOTH places at once', async () => {
+    const windows = makeWindows({
+      'max-1': { pct5h: 100, pctWeek: 90, estimated: true, closedUntil: NOW + HOUR },
+      'max-2': { pct5h: 100, pctWeek: 90, estimated: true, closedUntil: NOW + HOUR },
+    })
+    const payload = await deriveState({ adapter: mkAdapter([]), windows, config: rulesConfig, clock: () => NOW })
+    expect(payload.spend.apiFallback.switchMode).toBe('api')
+    expect(payload.rules.subApiSwitch.mode).toBe('api')
+  })
+
+  it('NO secret value, credential env-var NAME or account path reaches the payload (T-9.7-36)', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: { ...rulesConfig, token: 'front-token-secret-value' },
+      clock: () => NOW,
+    })
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain('front-token-secret-value')
+    expect(serialized).not.toContain(TOKEN_ENV) // the env-var NAME is a secret too (T-9.5-01)
+    expect(serialized).not.toContain(ACCOUNT_DIR)
+    expect(serialized).not.toContain('.sma-accounts')
+    // …and the sections are genuinely populated, so the assertion above is not vacuous
+    expect(payload.rules.workers).toHaveLength(3)
+    expect(payload.accounts).toHaveLength(2)
   })
 })
