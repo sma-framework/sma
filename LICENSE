@@ -13,7 +13,7 @@ TERMS AND CONDITIONS
    "Licensor" means the copyright holder named above.
 
    "You" means the individual or legal entity exercising rights under this
-   License.
+   License, or making any use of the Software.
 
    "Noncommercial Use" means use that does not, directly or indirectly,
    generate revenue or other commercial advantage: personal use; use inside
@@ -28,6 +28,10 @@ TERMS AND CONDITIONS
    development services in which the Software is part of what the customer
    pays for; and any use in a product, service, or offering that is monetized
    in any form, including through advertising.
+
+   "Unlicensed Commercial Use" means Commercial Use made without a written
+   commercial agreement with the Licensor in force, or outside the terms of
+   such an agreement.
 
    "Gross Revenue" means all amounts received by You that are attributable to
    the product, service, or offering that makes Commercial Use of the
@@ -44,8 +48,9 @@ TERMS AND CONDITIONS
 3. Commercial Use requires a written agreement
 
    Commercial Use of the Software, in whole or in part, is NOT licensed under
-   Section 2. To make Commercial Use of the Software You must first obtain a
-   commercial license from the Licensor. Contact: matvey.maslov99@gmail.com.
+   Section 2. To make Commercial Use of the Software You must first contact
+   the Licensor and obtain a written commercial license:
+   matvey.maslov99@gmail.com.
 
    Unless a separate written agreement between You and the Licensor states
    otherwise, the default commercial terms offered by the Licensor are: You
@@ -53,32 +58,88 @@ TERMS AND CONDITIONS
    product, service, or offering that makes Commercial Use of the Software,
    payable quarterly, together with reasonable revenue reporting.
 
-   These default terms are an offer, not an automatic grant: Commercial Use
-   without a written agreement with the Licensor (or outside the terms of
-   such an agreement) is unlicensed use and constitutes copyright
-   infringement.
+   These default terms are an offer to contract, not an automatic grant of
+   rights: Unlicensed Commercial Use is not permitted by anything in this
+   Section, and Section 4 applies to it in full.
 
-4. Redistribution
+4. Unlicensed Commercial Use — deemed acceptance and remedies
+
+   (a) Acceptance by conduct. By making any Commercial Use of the Software
+   without a written agreement with the Licensor, You thereby accept this
+   License in its entirety, including this Section 4, by Your conduct alone.
+   No notification from You to the Licensor, and no notification from the
+   Licensor to You, is required for these terms to bind You. If You do not
+   agree to this Section, You must not make Commercial Use of the Software.
+
+   (b) Dual basis. Unlicensed Commercial Use is simultaneously (i) copyright
+   infringement, because no license for Commercial Use has been granted, and
+   (ii) a breach of the terms accepted under Section 4(a). The Licensor may
+   proceed on either basis or both.
+
+   (c) Agreed minimum compensation. For the entire period of Unlicensed
+   Commercial Use, You owe the Licensor, as a deemed running royalty and
+   agreed minimum compensation — a genuine pre-estimate of the Licensor's
+   loss reflecting the default commercial terms in Section 3, and not a
+   penalty — an amount equal to no less than thirty percent (30%) of the
+   Gross Revenue of each product, service, or offering that made Unlicensed
+   Commercial Use of the Software, together with:
+
+      (i)   interest at the applicable statutory rate from the date each
+            amount would have fallen due under Section 3; and
+      (ii)  the Licensor's costs of enforcement and collection, including
+            reasonable attorneys' fees, to the maximum extent permitted by
+            applicable law.
+
+   Where the Licensor's provable damages, or the remedies available for
+   copyright infringement (including statutory damages where available),
+   exceed this minimum, the Licensor may elect the higher amount. Remedies
+   under this Section are cumulative with, not in place of, injunctive
+   relief and every other remedy available at law or in equity.
+
+   (d) No notice, demand, or cure required. The Licensor may enforce this
+   License — including by commencing legal proceedings — at any time and
+   without cause shown beyond the Unlicensed Commercial Use itself, without
+   prior notice, warning, demand, or opportunity to cure, and without any
+   obligation to first offer or negotiate a commercial agreement. Any cure
+   period in Section 7 (Termination) applies only to Noncommercial Use and
+   does not limit this Section.
+
+   (e) Records and audit. If You make Commercial Use of the Software, You
+   must keep complete and accurate records sufficient to determine the Gross
+   Revenue of each product, service, or offering concerned, and retain them
+   for at least six (6) years. On fourteen (14) days' written notice, and
+   not more than once per calendar year absent discovered underpayment, the
+   Licensor (or an independent auditor bound to confidentiality) may audit
+   those records. If an audit reveals a shortfall exceeding five percent
+   (5%), You bear the reasonable cost of the audit in addition to the
+   shortfall.
+
+   (f) No waiver. The Licensor's delay or failure to enforce this License
+   against You or anyone else is not a waiver of any right and does not
+   license anything.
+
+5. Redistribution
 
    Redistribution of the Software, in original or modified form, is permitted
    only for Noncommercial Use, must be free of charge, and must carry this
    License unmodified, so that every downstream recipient receives the same
    terms.
 
-5. No other rights
+6. No other rights
 
    No trademark rights are granted. No rights are granted beyond those
    expressly stated in this License; all other rights are reserved by the
    Licensor.
 
-6. Termination
+7. Termination
 
    Any breach of this License automatically terminates Your rights under it.
-   Your rights are reinstated if the breach is fully cured within thirty (30)
-   days of You becoming aware of it, unless the Licensor states otherwise in
-   writing.
+   For Noncommercial Use only, Your rights are reinstated if the breach is
+   fully cured within thirty (30) days of You becoming aware of it, unless
+   the Licensor states otherwise in writing. Termination does not extinguish
+   any payment obligation that has arisen under Section 4.
 
-7. Prior versions
+8. Prior versions
 
    Versions of the Software published before this License was adopted remain
    available under the license they were published with: v4.0.2 and earlier
@@ -87,20 +148,42 @@ TERMS AND CONDITIONS
    each of those versions to MIT two years after its release. This License
    applies to every version that ships with it.
 
-8. Third-party components
+9. Third-party components
 
    Third-party components remain under their own licenses; see
-   THIRD-PARTY-LICENSES.md.
+   THIRD-PARTY-LICENSES.md. Nothing in this License re-licenses upstream
+   material.
 
-9. Disclaimer of warranty
+10. Governing law and venue
+
+   This License, and any dispute arising out of or in connection with it or
+   with Unlicensed Commercial Use of the Software, is governed by the laws of
+   the Federal Republic of Germany, excluding its conflict-of-law rules and
+   the United Nations Convention on Contracts for the International Sale of
+   Goods (CISG). To the maximum extent permitted by applicable law, the
+   exclusive venue is the competent court at the Licensor's seat. Mandatory
+   consumer-protection and copyright provisions of other jurisdictions that
+   cannot be derogated from by agreement remain unaffected.
+
+11. Severability
+
+   If any provision of this License — including the agreed minimum in
+   Section 4(c) — is held invalid, excessive, or unenforceable in a given
+   jurisdiction, it shall not be void but shall be reduced or adjusted to the
+   maximum measure enforceable there, and the remainder of this License
+   remains in full force. What is held unenforceable in one jurisdiction
+   remains fully effective in every other.
+
+12. Disclaimer of warranty
 
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
-10. Limitation of liability
+13. Limitation of liability
 
    IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-   DEALINGS IN THE SOFTWARE.
+   DEALINGS IN THE SOFTWARE. THIS SECTION LIMITS THE LICENSOR'S LIABILITY
+   ONLY; IT DOES NOT LIMIT ANY OBLIGATION OF YOURS UNDER SECTION 4.
