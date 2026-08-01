@@ -744,7 +744,26 @@ const styleFiles: Record<string, string> = {
     decision: 'Каждое обновление правит README, обязательно.',
     why: '',
   }),
-  // a HAND-WRITTEN decision note: no distillation fence, therefore nothing to publish
+  // a HAND-EDITED draft: the fences are gone, so the scrubber never touched this text
+  [`${MEM}/drafts/decision-20260729-unfenced-cccc3333.md`]: [
+    '---',
+    'description: Решение основателя: правленный вручную черновик',
+    'kind: founder-decision',
+    'tags: [workflow]',
+    'use-when: при похожей ситуации',
+    'importance: 8',
+    '---',
+    '',
+    '## Ситуация (order)',
+    '',
+    UNFENCED_MARKER,
+    '',
+    '## Решение основателя',
+    '',
+    UNFENCED_MARKER,
+    '',
+  ].join('\n'),
+  // a HAND-WRITTEN decision note in the corpus root: not a distillation artifact at all
   [`${MEM}/decision-handwritten.md`]: [
     '---',
     'description: Рукописное решение',
@@ -796,11 +815,15 @@ describe('deriveStyle — metrics plus already-redacted drafts; the raw corpus s
     ])
   })
 
-  it('publishes ONLY already-redacted evidence: an unfenced hand-written note contributes nothing', () => {
+  it('publishes ONLY already-redacted evidence — unfenced text is not a distillation artifact', () => {
     const fs = mkFs(styleFiles, corpusMtimes)
     const style = deriveStyle({ memoryDir: MEM, fsImpl: fs.impl })
     expect(JSON.stringify(style)).not.toContain(UNFENCED_MARKER)
-    expect(style.decisions.map((d: any) => d.id)).not.toContain('decision-handwritten')
+    // neither the hand-EDITED draft nor the hand-WRITTEN corpus note reaches the screen
+    expect(style.decisions.map((d: any) => d.id)).toEqual([
+      'decision-20260731-readme-bbbb2222',
+      'decision-20260730-identity-aaaa1111',
+    ])
   })
 
   it('NEVER opens the exam answer key — nor the exam items (the blind-exam invariant)', () => {

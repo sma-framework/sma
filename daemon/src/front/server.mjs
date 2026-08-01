@@ -377,6 +377,12 @@ function stateDeps(config, deps, project) {
     readReceipt: deps.readReceipt,
     execGit: deps.execGit,
     clock: deps.clock,
+    // the corpus surfaces («Память» / «Мой стиль») read the repository this daemon serves.
+    // Without the forward they would be structurally absent on every real install — the
+    // derive already defaults them to {absent:true} when nothing is wired.
+    repoDir: deps.repoDir,
+    memoryDir: deps.memoryDir,
+    fsImpl: deps.fsImpl,
     // hub-only: the federation merge that fills machines[] and pours in the peers' rows.
     // Absent on a standalone daemon, where the derive is byte-identical to before.
     aggregator: deps.aggregator,

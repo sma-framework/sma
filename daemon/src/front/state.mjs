@@ -65,14 +65,25 @@
  * Neither section carries a secret VALUE, a credential env-var NAME, or an account's local
  * config path: they carry an account by NAME and nothing else.
  *
+ * `memory` and `style` join them as SURFACES over local artifacts: counters, tags and
+ * pointers for the corpus (never a note's body), metrics and already-redacted quotes for the
+ * snapshot (never a transcript, never the exam's answer key). Both degrade to {absent:true}
+ * on a machine that has none of it — a fresh install with no style is the normal case, not
+ * an error case.
+ *
  * Every collaborator (adapter, ledger reader, the window-state function, usageReader,
  * the git/receipt readers, clock) is dependency-injected, so tests derive from fixtures
  * with no real Postgres / git / fs. Node built-ins only; zero deps; zero network.
  */
 
+import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { isOpen } from '../policy/windows.mjs'
 import { REASON_LABELS } from '../queue/adapter.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
+import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
+import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
@@ -80,6 +91,16 @@ const MONTH_MS = 30 * DAY_MS
 /** Touch freshness for the «работает» presence: a claimed task touched within this. */
 const FRESH_TOUCH_SEC = 180
 const DONE_COMMIT_CAP = 10
+
+/** Generated / registry artifacts of the corpus — structural files, not notes. */
+const MEMORY_STRUCTURAL = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
+/** How many corpus pointers the «Память» screen gets — a surface, not a feed. */
+const MEMORY_RECENT_CAP = 10
+/** How much of the training history and how many drafts travel on one poll. */
+const STYLE_TRAININGS_CAP = 20
+const STYLE_DECISIONS_CAP = 20
+/** Each redacted excerpt is a quote on a card, not a document. */
+const STYLE_TEXT_CAP = 400
 
 /** Coerce an epoch-ms number or an ISO string to ms, or NaN. */
 function toMs(v) {
@@ -346,6 +367,232 @@ export function deriveAccounts(config = {}, windows) {
   return out
 }
 
+// ══════════════════ the corpus read models: memory + style ══════════════════════
+//
+// Both are READERS of artifacts that already exist on this machine, through an injectable
+// fs seam, and both are fail-soft to the last line: an unreadable directory, an unparsable
+// note and a malformed ledger row are ALL normal states of a working install. A settings
+// screen that 500s because a note has a typo in its frontmatter is worse than a screen
+// that shows one note fewer.
+
+/** The three fs calls these readers make, defaulted to node:fs and injectable for tests. */
+function fsSeam(fsImpl) {
+  const io = fsImpl ?? {}
+  return {
+    readdirSync: io.readdirSync ?? fsReaddirSync,
+    readFileSync: io.readFileSync ?? fsReadFileSync,
+    statSync: io.statSync ?? fsStatSync,
+  }
+}
+
+/** Sorted *.md in a directory; an absent/unreadable directory is an empty list. */
+function listMarkdown(io, dir) {
+  try {
+    const entries = io.readdirSync(dir) || []
+    return entries.filter((f) => typeof f === 'string' && f.endsWith('.md')).sort()
+  } catch {
+    return []
+  }
+}
+
+/** Read a file as text, or null. Never throws. */
+function readTextOrNull(io, path) {
+  try {
+    const text = io.readFileSync(path, 'utf8')
+    return text == null ? null : String(text)
+  } catch {
+    return null
+  }
+}
+
+/** A note file is anything that is not a generated index or the tag registry. */
+function isNoteFile(file) {
+  return !MEMORY_STRUCTURAL.has(file) && !/^INDEX-.+\.md$/.test(file)
+}
+
+/** Frontmatter of a note, or null when it is missing / unparsable (lint owns schema errors). */
+function noteFrontmatter(text, file) {
+  try {
+    return parseNote(text, { file }).frontmatter
+  } catch {
+    return null
+  }
+}
+
+/** Last-modified ms, or 0 when the platform / seam cannot say. */
+function mtimeOf(io, path) {
+  try {
+    const st = io.statSync(path)
+    const ms = Number(st && st.mtimeMs)
+    return Number.isFinite(ms) ? ms : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * deriveMemory({memoryDir, fsImpl}) → {noteCount, coreSize, tags, recent} | {absent:true}.
+ *
+ * THE CORPUS AS A SURFACE, NOT A WINDOW. The «Память» screen answers how much there is,
+ * what it is about, and what moved recently — a note's BODY is deliberately not in the
+ * contract. Reading a note is a terminal's job with the whole loader behind it; a LAN
+ * payload that carried note bodies would be a copy of the memory tree leaving the machine
+ * every few seconds for no screen that needed it (T-9.7-35).
+ *
+ * The cost is bounded by the note count, and notes are small by budget (the corpus lint
+ * caps them), so this stays a few milliseconds on a poll that already talks to Postgres.
+ *
+ * @param {{memoryDir?:string, fsImpl?:object}} [args]
+ * @returns {object}
+ */
+export function deriveMemory({ memoryDir, fsImpl } = {}) {
+  if (!memoryDir) return { absent: true } // nothing wired — a valid state, not an error
+  const io = fsSeam(fsImpl)
+
+  const index = readTextOrNull(io, join(memoryDir, 'MEMORY.md'))
+  const coreSize = index == null ? 0 : Buffer.byteLength(index, 'utf8')
+
+  const tagCounts = new Map()
+  const notes = []
+  for (const file of listMarkdown(io, memoryDir)) {
+    if (!isNoteFile(file)) continue
+    const path = join(memoryDir, file)
+    const text = readTextOrNull(io, path)
+    if (text == null) continue
+    const fm = noteFrontmatter(text, file)
+    if (!fm) continue
+    for (const tag of Array.isArray(fm.tags) ? fm.tags : []) {
+      if (typeof tag !== 'string' || tag === '') continue
+      tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
+    }
+    notes.push({
+      id: file.replace(/\.md$/, ''),
+      title: typeof fm.description === 'string' ? fm.description.trim() : '',
+      mtimeMs: mtimeOf(io, path),
+    })
+  }
+
+  if (notes.length === 0 && coreSize === 0) return { absent: true } // a fresh install
+
+  const tags = [...tagCounts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0))
+  const recent = notes
+    .slice()
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+    .slice(0, MEMORY_RECENT_CAP)
+    .map(({ id, title }) => ({ id, title }))
+
+  return { noteCount: notes.length, coreSize, tags, recent }
+}
+
+/**
+ * fencedEvidence(section) → the concatenated content of the section's fenced blocks, or ''.
+ *
+ * THIS IS THE REDACTION BOUNDARY, and it is a whitelist. The distillation writes its mined
+ * material inside fenced `untrusted-evidence` blocks AFTER running it through the secret
+ * scrubber; anything a human typed around those fences went through no scrubber at all.
+ * Publishing only what is inside a fence means the payload can carry a decision the miner
+ * produced and can NEVER carry a sentence nobody redacted (D-9.5-08, T-9.7-35).
+ */
+function fencedEvidence(section) {
+  const text = String(section ?? '')
+  const re = /```[^\n]*\n([\s\S]*?)```/g
+  const blocks = []
+  let m
+  while ((m = re.exec(text)) !== null) blocks.push(m[1].trim())
+  return blocks.join('\n').slice(0, STYLE_TEXT_CAP).trim()
+}
+
+/** The exam score ledger, oldest first. A malformed row is skipped, never thrown on. */
+function readScoreLedger(io, memoryDir) {
+  const raw = readTextOrNull(io, join(memoryDir, 'exam', 'scores.jsonl'))
+  if (raw == null) return []
+  const rows = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const row = JSON.parse(line)
+      if (row && typeof row === 'object') rows.push(row)
+    } catch {
+      /* a ledger line that will not parse is a skipped row, not a broken screen */
+    }
+  }
+  return rows
+}
+
+/** One training row of the history: when, over how many situations, and how it scored. */
+function toTraining(row) {
+  const n = (v) => Number(v) || 0
+  return {
+    date: String(row.ts ?? '').slice(0, 10),
+    decisionsCount: n(row.total),
+    ...(row.policyVersion != null ? { policyVersion: row.policyVersion } : {}),
+    summary: `совпадение ${n(row.matchRate)}% · ${n(row.match)} / ${n(row.partial)} / ${n(row.miss)}`,
+  }
+}
+
+/** The distillation drafts, newest id first, as redacted situation → decision → why. */
+function readDecisionDrafts(io, memoryDir) {
+  const draftsDir = join(memoryDir, 'drafts')
+  const out = []
+  for (const file of listMarkdown(io, draftsDir)) {
+    if (!isNoteFile(file)) continue
+    const text = readTextOrNull(io, join(draftsDir, file))
+    if (text == null) continue
+    const fm = noteFrontmatter(text, file)
+    if (!fm || fm.kind !== 'founder-decision') continue
+    const id = file.replace(/\.md$/, '')
+    const pair = parseNoteToPair(id, text) // the SAME split the exam builder uses
+    const situation = fencedEvidence(pair.situation)
+    const decision = fencedEvidence(pair.decision)
+    if (!situation && !decision) continue // nothing redacted to show — publish nothing
+    out.push({ id, situation, decision, why: fencedEvidence(pair.why) })
+  }
+  return out.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)).slice(0, STYLE_DECISIONS_CAP)
+}
+
+/**
+ * deriveStyle({memoryDir, fsImpl}) → {policyVersion?, matchRate?, trainings, decisions}
+ * | {absent:true}.
+ *
+ * THE SNAPSHOT AS METRICS AND ALREADY-REDACTED QUOTES. Two artifacts feed it and no third:
+ * the exam score ledger (the training history keyed by policy version, and the latest match
+ * rate — fidelity is MEASURED, not asserted) and the distillation's own drafts.
+ *
+ * WHAT IT NEVER OPENS, BY CONSTRUCTION:
+ *   - the session transcripts. The raw material of the corpus never leaves the disk; this
+ *     reader does not know where it lives and has no code path to it.
+ *   - the exam ANSWER KEY (`exam-<date>-key.jsonl`). The blind-exam invariant is a path
+ *     convention, and a payload that quietly read the key would dissolve it. This reader
+ *     opens exactly one file under `exam/`: the score ledger.
+ *   - the corpus root. A promoted, hand-written decision note went through no scrubber;
+ *     only the miner's drafts are redacted artifacts.
+ *
+ * A metric the artifacts do not carry is OMITTED rather than invented: an install that has
+ * never been graded has no matchRate, and a fresh machine has no style at all.
+ *
+ * @param {{memoryDir?:string, fsImpl?:object}} [args]
+ * @returns {object}
+ */
+export function deriveStyle({ memoryDir, fsImpl } = {}) {
+  if (!memoryDir) return { absent: true }
+  const io = fsSeam(fsImpl)
+
+  const scores = readScoreLedger(io, memoryDir)
+  const decisions = readDecisionDrafts(io, memoryDir)
+  if (scores.length === 0 && decisions.length === 0) return { absent: true } // never taught
+
+  const last = scores.length ? scores[scores.length - 1] : null
+  const matchRate = last == null ? null : Number(last.matchRate)
+  return {
+    ...(last && last.policyVersion != null ? { policyVersion: last.policyVersion } : {}),
+    ...(Number.isFinite(matchRate) ? { matchRate } : {}),
+    trainings: scores.slice().reverse().slice(0, STYLE_TRAININGS_CAP).map(toTraining),
+    decisions,
+  }
+}
+
 /** A payload window bar — ALWAYS carries estimated (honest labels, A3). */
 function windowBar(win) {
   return {
@@ -510,6 +757,11 @@ export async function deriveState(deps = {}) {
 
   // ── the settings read models — the SAME route, a fuller payload (D-9.7-09) ──
   const rules = deriveRules(config, { switchMode })
+  // The corpus lives in the repository the daemon serves; an explicit memoryDir wins, so a
+  // test (and a future multi-repo wiring) never has to own the layout convention.
+  const memoryDir = deps.memoryDir ?? (deps.repoDir ? join(deps.repoDir, '.claude', 'memory') : null)
+  const memory = deriveMemory({ memoryDir, fsImpl: deps.fsImpl })
+  const style = deriveStyle({ memoryDir, fsImpl: deps.fsImpl })
 
   const payload = {
     kpis,
@@ -524,6 +776,8 @@ export async function deriveState(deps = {}) {
     federation,
     rules,
     accounts,
+    memory,
+    style,
   }
 
   // ── the federation merge (hub only) — FILLS this payload, never redefines it ──
