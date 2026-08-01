@@ -1,5 +1,8 @@
 node_modules/
 .sma/
 
+# The built window. A release builds it from spa/; the repository never carries it.
+daemon/static/app/
+
 .claude/
 CLAUDE.md
