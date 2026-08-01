@@ -28,6 +28,36 @@
  *     their own CLAUDE_CONFIG_DIR; Codex tasks get a FRESH per-task CODEX_HOME (never
  *     account-shared) seeded with native memories OFF.
  *
+ * ═══════════════════ TERMINAL PARITY — THE AUDITED CHAIN ════════════════════════
+ * The founder's invariant: a headless worker session must be the SAME session the founder
+ * gets in his own terminal — same hooks, same memory, same skills, same rules. That is NOT
+ * a new subsystem; it is a PROPERTY of the substrate (files + git), and this is the chain,
+ * verified by reading the code, not assumed:
+ *
+ *   1. cwd = the per-task WORKTREE (loop.mjs spawns with `cwd: worktreePath`, provisioned by
+ *      the `worktree` verb from the project checkout). A git worktree materializes every
+ *      TRACKED file — so `.claude/**` and `CLAUDE.md` are physically there, not symlinked,
+ *      not inherited from the daemon's own directory. spawn.mjs now REFUSES an absent cwd:
+ *      a child that falls back to the daemon's process cwd would silently run against a
+ *      different checkout — parity lost with no error (the hole this revision closed).
+ *   2. HOOKS are executed BY THE CLI ITSELF from `<cwd>/.claude/settings*` — the daemon does
+ *      not install, forward or emulate them. Therefore parity needs no wiring, only the
+ *      absence of sabotage: the forbidden-flag guard below refuses every flag that would
+ *      replace or bypass the checkout's settings (hooks, permission mode, tool policy).
+ *   3. MEMORY is files under `<cwd>/.claude/memory/`, reachable because of (1). Reachable is
+ *      not the same as READ — the founder's terminal reads the index because CLAUDE.md tells
+ *      it to, so buildTaskPrompt states the same instruction to the worker (the gap this
+ *      revision closed: the prompt never named the index).
+ *   4. SKILLS live under `<cwd>/.claude/skills/`, likewise reachable because of (1); the
+ *      harness preamble (loop.mjs resolveWorkerContext) names the enabled ones.
+ *   5. MODEL/EFFORT are the one thing that does NOT come from the checkout — they come from
+ *      the worker profile in the config. assertProfileParity is the guard that a spawn never
+ *      quietly runs a different model than the one the founder assigned (T-9-15).
+ *
+ * The ONLY accepted differences from the founder's terminal are procedural, not
+ * environmental: his steering moves BEFORE the task (acceptance, DoR) and AFTER it (the
+ * approval queue); a task that needs a judgment mid-flight is RETURNED, never guessed.
+ *
  * FRESH-SESSION DISCIPLINE (Paperclip PF-4, Pitfall 11): a resumeId must be a valid
  * UUID (Multica resolveSessionID lesson) AND is refused outright for timer/new-task
  * wakes — resume is only for event-continuation of the SAME task, never a fresh wake
@@ -55,13 +85,50 @@ export class ForbiddenFlagError extends Error {
   }
 }
 
+/** Named error for a spawn whose model/effort does not match the worker profile (T-9-15). */
+export class ProfileParityError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'ProfileParityError'
+  }
+}
+
+// ── terminal-parity surface (documentation constants, chain step 1) ────────────
+
+/**
+ * The repo-relative surface a worker session inherits from the checkout it runs in, purely
+ * by standing in it. Nothing copies these; the worktree materializes them. Named here so a
+ * test can assert the claim from the spawn cwd instead of trusting the prose above.
+ */
+export const TERMINAL_PARITY_PATHS = Object.freeze([
+  '.claude/settings.json', // hooks + permissions — read and executed by the CLI itself
+  '.claude/memory', // the corpus and its generated index
+  '.claude/skills', // the reflexes a session may invoke
+  'CLAUDE.md', // the project's operating rules
+])
+
+/** The memory index every session reads first — the prompt names it by this exact path. */
+export const MEMORY_INDEX_PATH = '.claude/memory/MEMORY.md'
+
 // ── guard primitives ───────────────────────────────────────────────────────────
 
-/** An option key that reads as a permissions-skip / danger request (guard vector A). */
-const FORBIDDEN_KEY_RE = /danger|skip[-_]?permission|bypass[-_]?permission|no[-_]?permission/i
+/**
+ * An option key that reads as a permissions-skip / settings-bypass request (guard vector A).
+ * `hook` / `setting` / `permission-mode` join the original danger family for one reason: the
+ * Claude lane's whole value is that the CHECKOUT's hooks run in the worker session, so an
+ * option that would point the session at other settings is the same class of smuggle as a
+ * permissions-skip — it reads as a bypass, not as a typo, and gets the named error.
+ */
+const FORBIDDEN_KEY_RE = /danger|skip[-_]?permission|bypass[-_]?permission|no[-_]?permission|hook|setting|permission[-_]?mode/i
 
-/** A produced argument string that starts with the forbidden flag family (guard vector B). */
-const FORBIDDEN_ARG_RE = /^--dangerous/i
+/**
+ * A produced argument string that starts with a forbidden flag family (guard vector B).
+ * Beyond the permissions-skip family: any flag that would REPLACE or BYPASS the checkout's
+ * `.claude/settings` — hooks off, a substituted settings file or source, a permission mode
+ * override, a tool allow/deny list, or MCP strictness that ignores the project config. Every
+ * one of them silently de-parities the session while the run still looks green.
+ */
+const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-mode|allowed-tools|disallowed-tools|strict-mcp-config)/i
 
 /** Strict RFC-4122-ish UUID shape — resume only ever accepts this (resolveSessionID lesson). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -95,6 +162,83 @@ function assertCleanArgs(args) {
     }
   }
   return args
+}
+
+// ── model/effort parity with the worker profile (chain step 5, T-9-15) ─────────
+
+/** Codex encodes effort as a `-c model_reasoning_effort=<E>` pair rather than a flag. */
+const CODEX_EFFORT_PREFIX = 'model_reasoning_effort='
+
+/**
+ * modelEffortOf(args) → {model, effort} as they actually appear in a PRODUCED argument
+ * array (either lane), or null per field when the array carries none. PURE reader — the
+ * parity check tool consumes exactly this so «what the spawn ran» is never re-derived by a
+ * second parser that could drift from the builders above.
+ *
+ * @param {string[]} args
+ * @returns {{model:(string|null), effort:(string|null)}}
+ */
+export function modelEffortOf(args) {
+  const list = (Array.isArray(args) ? args : []).map((a) => String(a))
+  const flagValue = (flag) => {
+    const i = list.indexOf(flag)
+    return i >= 0 && i + 1 < list.length ? list[i + 1] : null
+  }
+  let effort = flagValue('--effort')
+  if (effort === null) {
+    const codex = list.find((a) => a.startsWith(CODEX_EFFORT_PREFIX))
+    if (codex) effort = codex.slice(CODEX_EFFORT_PREFIX.length)
+  }
+  return { model: flagValue('--model'), effort }
+}
+
+/**
+ * expectedModelEffort({worker, task}) → what a spawn's model/effort MUST be, per the routing
+ * precedence, PER FIELD: a per-task override wins, else the worker profile, else null.
+ *
+ * Why the lane default is not a third source here: DEFAULT_LANE_ROUTING declares `provider`
+ * only — no lane in it carries a model or an effort — so for THESE two fields the precedence
+ * bottoms out at the profile. null therefore means «the CLI's own default», and it is a real
+ * expectation: an args array that names a model while neither the task nor the profile does
+ * is a substitution, not a default.
+ *
+ * @param {{worker?:object, task?:object}} [args]
+ * @returns {{model:(string|null), effort:(string|null)}}
+ */
+export function expectedModelEffort({ worker, task } = {}) {
+  const pick = (...vals) => {
+    for (const v of vals) if (v !== undefined && v !== null) return String(v)
+    return null
+  }
+  return {
+    model: pick(task && task.model, worker && worker.model),
+    effort: pick(task && task.effort, worker && worker.effort),
+  }
+}
+
+/**
+ * assertProfileParity({args, worker, task}) → the observed {model, effort}, or throws
+ * ProfileParityError naming the field that diverged. THE GUARD THAT SCREAMS (T-9-15): a
+ * profile that says «sonnet» and an arg array that says «opus» is a silent substitution —
+ * the run would look green while the founder's assignment was ignored. Model and effort are
+ * the ONE part of the session that does not come from the checkout, so they are the one part
+ * that needs an explicit assertion.
+ *
+ * @param {{args:string[], worker?:object, task?:object}} [o]
+ * @returns {{model:(string|null), effort:(string|null)}}
+ */
+export function assertProfileParity({ args, worker, task } = {}) {
+  const observed = modelEffortOf(args)
+  const expected = expectedModelEffort({ worker, task })
+  for (const field of ['model', 'effort']) {
+    if (observed[field] !== expected[field]) {
+      throw new ProfileParityError(
+        `spawn ${field} "${observed[field] ?? '(none)'}" does not match the worker profile "${expected[field] ?? '(none)'}"` +
+          ' — terminal parity refuses a silent model/effort substitution',
+      )
+    }
+  }
+  return observed
 }
 
 // ── Claude lane (D-9.5-04a — prod code, hooks enforced in-session) ──────────────
@@ -286,6 +430,13 @@ function fencedBlock(label, content) {
  * D-9.5-10) → the block is omitted with no placeholder. Acceptance content is DATA in
  * the fence, NEVER an instruction to the daemon.
  *
+ * THE MEMORY DIRECTIVE (terminal parity, chain step 3): the corpus is REACHABLE in the
+ * worktree by construction, but reachable is not read. The founder's terminal reads the index
+ * first because CLAUDE.md instructs it to; the worker gets the identical instruction here, by
+ * the exact path, so the two sessions start from the same knowledge instead of the same
+ * opportunity. This is also what makes the memory receipt of the parity check observable: an
+ * instructed read leaves a trace in the session transcript.
+ *
  * THE APPROACH NOTE (D-9.7-14): the prompt states the note requirement explicitly and names
  * the exact markers the worker must print at the end of the attempt. An attempt without a
  * note is INCOMPLETE by the same law that makes it incomplete without a receipt — so the
@@ -325,6 +476,11 @@ export function buildTaskPrompt({ task } = {}) {
   }
 
   parts.push(
+    '',
+    '## Память проекта (прочитать в начале сессии)',
+    `Перед первым действием прочитайте индекс памяти \`${MEMORY_INDEX_PATH}\` — это та же дисциплина,`,
+    'которую CLAUDE.md предписывает терминалу; сессия работника не начинается с чистого листа.',
+    'Заметки по теме подтягивайте адресно: `node scripts/sma/cli.mjs load --tags <a,b>`.',
     '',
     '## Записка о подходе (обязательна)',
     'Попытка без записки о подходе НЕ полна — ровно так же, как попытка без квитанции.',
