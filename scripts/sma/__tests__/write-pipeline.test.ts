@@ -16,6 +16,14 @@
  *     memory_type is a rejection naming the offending value, never a guess.
  *   - ONE DURABLE CLAIM. A list of claims is several records; the pipeline says
  *     so and refuses, with the split instruction in the trace.
+ *   - THE WALK DOES NOT STOP AT THE CORPUS DOOR. A persisted record continues
+ *     through index (the SAME generator path the build-index verb uses), measure
+ *     (one retrieval-trace hook point in the journal), consolidate and lifecycle.
+ *   - CONSOLIDATION PROPOSES, NEVER MERGES. A flagged contradiction produces a
+ *     draft proposal and zero corpus mutations.
+ *   - A SUPERSESSION IS SYMMETRIC OR IT IS NOTHING. Both pointers are rendered
+ *     before either is written, and ERASE is refused with a policy pointer —
+ *     there is no deletion code path in this module to reach.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -26,6 +34,8 @@ import { join } from 'node:path'
 import {
   PIPELINE_STEPS,
   PIPELINE_DRAFT_KIND,
+  CONSOLIDATION_DRAFT_KIND,
+  LIFECYCLE_ACTIONS,
   STEPS,
   createPipelineState,
   observe,
@@ -36,9 +46,11 @@ import {
   attachEvidence,
   assignRisk,
   persist,
+  applyLifecycle,
   runPipeline,
 } from '../lib/write-pipeline.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
+import { buildIndex } from '../lib/generator.mjs'
 import { validateRecord } from '../lib/schema-v2.mjs'
 
 let root: string
@@ -78,6 +90,24 @@ function makeEvent(recordOverrides: Record<string, unknown> = {}, body = '\nObse
 
 function opts() {
   return { corpusDir, draftsDir, journalDir, terminalId: 'test-pipeline', now: '2026-08-01T12:00:00.000Z' }
+}
+
+/** Every journal line this pipeline appended, parsed. */
+function journalEvents(): any[] {
+  const path = join(journalDir, 'test-pipeline.jsonl')
+  if (!existsSync(path)) return []
+  const raw = readFileSync(path, 'utf8').trim()
+  return raw === '' ? [] : raw.split('\n').map((l) => JSON.parse(l))
+}
+
+/** The generated index as it stands on disk. */
+function indexText(): string {
+  return readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')
+}
+
+/** The index the build-index verb would produce RIGHT NOW over the fixture corpus. */
+function freshIndex(commitHash = '0000000'): string {
+  return buildIndex({ corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commitHash, dateMap: {} })
 }
 
 /** Every regular file under a directory (the "nothing was written" assertion). */
@@ -161,10 +191,10 @@ describe('PIPELINE_STEPS — the canon order is law', () => {
     }
   })
 
-  it('Test 3: the four unbuilt steps throw not-implemented rather than silently passing', () => {
-    const state = createPipelineState(makeEvent(), opts())
-    for (const name of ['index', 'measure', 'consolidate', 'lifecycle']) {
-      expect(() => STEPS[name](state)).toThrow(/not implemented/i)
+  it('Test 3: NO step is a not-implemented boundary any more — the canon sequence is fully built', () => {
+    for (const name of PIPELINE_STEPS) {
+      const state = createPipelineState(makeEvent(), opts())
+      expect(() => STEPS[name](state)).not.toThrow()
     }
   })
 })
@@ -571,11 +601,11 @@ describe('step 7 risk — only one class of record may be written without a huma
 })
 
 describe('step 8 persist — the only door into the corpus', () => {
-  it('Test 34: the happy path persists, with one trace entry for each of the eight steps', () => {
+  it('Test 34: the happy path persists — the record is the only NOTE in the corpus, and the walk goes on', () => {
     const result = runPipeline(makeEvent(), opts())
 
     expect(result.outcome).toBe('persisted-active')
-    expect(stepsOf(result.trace)).toEqual([
+    expect(stepsOf(result.trace).slice(0, 8)).toEqual([
       'observe',
       'classify',
       'redact',
@@ -585,7 +615,12 @@ describe('step 8 persist — the only door into the corpus', () => {
       'risk',
       'persist',
     ])
-    expect(filesIn(corpusDir)).toEqual(['working-queue-adapter-drain-window.md'])
+    expect(traceStep(result.trace, 'persist').outcome).toBe('persisted')
+    // persist no longer ENDS the walk (steps 9-12 run on the persisted path), so the
+    // corpus also carries the generated index artifacts that step 9 rebuilds.
+    expect(filesIn(corpusDir).filter((f) => f !== 'MEMORY.md' && !f.startsWith('INDEX-'))).toEqual([
+      'working-queue-adapter-drain-window.md',
+    ])
     expect(filesIn(draftsDir)).toEqual([])
     expect(result.path).toBe(join(corpusDir, 'working-queue-adapter-drain-window.md'))
   })
@@ -640,5 +675,354 @@ describe('step 8 persist — the only door into the corpus', () => {
       .map((l) => JSON.parse(l))
 
     expect(events.some((e) => e.detail?.stage === 'persist' && e.detail?.outcome === 'persisted-active')).toBe(true)
+  })
+})
+
+describe('steps 9-12 — the walk continues past the corpus door', () => {
+  it('Test 40: the happy path walks ALL TWELVE canon steps and still ends persisted-active', () => {
+    const result = runPipeline(makeEvent(), opts())
+
+    expect(result.outcome).toBe('persisted-active')
+    expect(stepsOf(result.trace)).toEqual([...PIPELINE_STEPS])
+    expect(result.trace).toHaveLength(12)
+  })
+
+  it('Test 41: step 9 rebuilds the index through the SAME buildIndex path the build-index verb uses', () => {
+    runPipeline(makeEvent(), opts())
+
+    // byte identity with the generator's own output — not a second renderer
+    expect(indexText()).toBe(freshIndex())
+    // the per-area catalog is rebuilt too, and it names the record that just landed
+    expect(existsSync(join(corpusDir, 'INDEX-misc.md'))).toBe(true)
+    expect(readFileSync(join(corpusDir, 'INDEX-misc.md'), 'utf8')).toContain(
+      'working-queue-adapter-drain-window.md',
+    )
+  })
+
+  it('Test 42: the build anchor comes from an INJECTED git runner; a broken one degrades, never fails the write', () => {
+    const withGit = runPipeline(makeEvent(), {
+      ...opts(),
+      execGit: (args: string[]) => (args[0] === 'rev-parse' ? 'abc1234\n' : ''),
+    })
+    expect(withGit.outcome).toBe('persisted-active')
+    expect(indexText()).toContain('abc1234')
+
+    rmSync(corpusDir, { recursive: true, force: true })
+    mkdirSync(corpusDir, { recursive: true })
+    const broken = runPipeline(makeEvent(), {
+      ...opts(),
+      execGit: () => {
+        throw new Error('git is not available here')
+      },
+    })
+    expect(broken.outcome).toBe('persisted-active')
+    expect(existsSync(join(corpusDir, 'MEMORY.md'))).toBe(true)
+  })
+
+  it('Test 43: step 10 leaves exactly ONE retrieval-trace record — the measurement hook point', () => {
+    runPipeline(makeEvent(), opts())
+
+    const traces = journalEvents().filter((e) => e.detail?.kind === 'retrieval-trace')
+    expect(traces).toHaveLength(1)
+    expect(traces[0].detail.record_id).toBe('working-queue-adapter-drain-window')
+    expect(traces[0].detail.written_at).toBe('2026-08-01T12:00:00.000Z')
+    expect(traces[0].detail.trace_summary).toContain('persist:persisted')
+    // a hook point carries the SHAPE of the write, never its content
+    expect(JSON.stringify(traces[0])).not.toContain(validRecord().claim)
+  })
+})
+
+describe('step 11 consolidate — proposals only, never a merge', () => {
+  /** Seed the contradicting neighbour and write the opposing claim through the pipeline. */
+  function contradictingRun(extra: Record<string, unknown> = {}) {
+    seedCorpus(NEIGHBOUR)
+    const before = readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')
+    const result = runPipeline(
+      makeEvent({ claim: 'The queue adapter never drains the nightly backlog on this machine', ...extra }),
+      opts(),
+    )
+    return { result, before }
+  }
+
+  it('Test 44: a flagged contradiction produces a consolidation PROPOSAL draft naming both records', () => {
+    const { result } = contradictingRun()
+
+    expect(result.outcome).toBe('persisted-active')
+    const proposalPath = join(draftsDir, 'consolidation-working-queue-adapter-drain-window.md')
+    expect(existsSync(proposalPath)).toBe(true)
+
+    const proposal = readNote(proposalPath)
+    expect(proposal.frontmatter.draft_kind).toBe(CONSOLIDATION_DRAFT_KIND)
+    expect(proposal.frontmatter.status).toBe('draft')
+    expect(proposal.frontmatter.proposal_records).toEqual(
+      expect.arrayContaining(['working-queue-adapter-drain-window', 'working-queue-adapter-nightly-drain']),
+    )
+    expect(String(proposal.frontmatter.proposal_action)).not.toBe('')
+
+    const step = traceStep(result.trace, 'consolidate')
+    expect(step.outcome).toBe('proposed')
+    expect(step.detail.path).toBe(proposalPath)
+  })
+
+  it('Test 45: the proposal changes NOTHING — both records survive, both untouched, nothing merged', () => {
+    const { before } = contradictingRun()
+
+    // the flagged neighbour is byte-identical: step 11 has no corpus write path
+    expect(readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')).toBe(before)
+    // and both records are still there, both still active
+    const notes = filesIn(corpusDir).filter((f) => f !== 'MEMORY.md' && !f.startsWith('INDEX-'))
+    expect(notes).toEqual([
+      'working-queue-adapter-drain-window.md',
+      'working-queue-adapter-nightly-drain.md',
+    ])
+    for (const f of notes) {
+      expect(readNote(join(corpusDir, f)).frontmatter.status).toBe('active')
+    }
+  })
+
+  it('Test 46: a clean write proposes nothing — no draft, no noise', () => {
+    const result = runPipeline(makeEvent(), opts())
+
+    expect(traceStep(result.trace, 'consolidate').outcome).toBe('ok')
+    expect(filesIn(draftsDir)).toEqual([])
+  })
+
+  it('Test 47: an existing proposal is never clobbered — a human may already have edited it', () => {
+    const proposalPath = join(draftsDir, 'consolidation-working-queue-adapter-drain-window.md')
+    writeFileSync(proposalPath, 'a human edited this proposal\n')
+
+    const { result } = contradictingRun()
+
+    expect(readFileSync(proposalPath, 'utf8')).toBe('a human edited this proposal\n')
+    expect(traceStep(result.trace, 'consolidate').detail.draft).toBe('proposal-exists')
+  })
+})
+
+describe('applyLifecycle — the transitions, and the one it refuses', () => {
+  const NOW = '2026-08-01T12:00:00.000Z'
+
+  /** A second corpus record to supersede the neighbour with. */
+  const SUCCESSOR = {
+    ...NEIGHBOUR,
+    id: 'working-queue-adapter-drain-window',
+    claim: 'The queue adapter drains the nightly backlog in under two minutes on this machine',
+  }
+
+  it('Test 48: supersede sets SYMMETRIC pointers on BOTH records', () => {
+    seedCorpus(NEIGHBOUR)
+    seedCorpus(SUCCESSOR)
+
+    const res = applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'supersede',
+      by: 'working-queue-adapter-drain-window',
+      now: NOW,
+    })
+
+    expect(res.applied).toBe(true)
+    const old = readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter
+    const fresh = readNote(join(corpusDir, 'working-queue-adapter-drain-window.md')).frontmatter
+
+    expect(old.status).toBe('superseded')
+    expect(old.superseded_by).toBe('working-queue-adapter-drain-window')
+    expect(old.superseded_at).toBe('2026-08-01')
+    // the other half of the pointer — a chain readable from either end
+    expect([].concat(fresh.supersedes as any)).toContain('working-queue-adapter-nightly-drain')
+    expect(res.changed).toHaveLength(2)
+  })
+
+  it('Test 49: a superseded record drops OUT of CORE on the next index build', () => {
+    seedCorpus({ ...NEIGHBOUR, context_priority: 'always' })
+    seedCorpus(SUCCESSOR)
+
+    expect(freshIndex()).toContain('working-queue-adapter-nightly-drain.md')
+
+    applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'supersede',
+      by: 'working-queue-adapter-drain-window',
+      now: NOW,
+    })
+
+    // MEMORY.md names a note only when it is CORE; the hard filter drops it
+    expect(freshIndex()).not.toContain('working-queue-adapter-nightly-drain.md')
+  })
+
+  it('Test 50: erase is REFUSED with a policy pointer — nothing is deleted, ever', () => {
+    seedCorpus(NEIGHBOUR)
+    const before = readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')
+
+    const res = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'erase', now: NOW })
+
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/MEMORY-MODEL/)
+    expect(res.refusal).toMatch(/polic/i)
+    expect(existsSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))).toBe(true)
+    expect(readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')).toBe(before)
+    // erase is not even in the vocabulary of things this module can do
+    expect(LIFECYCLE_ACTIONS).not.toContain('erase')
+  })
+
+  it('Test 51: expire refuses a record whose window has not run out, and applies when it has', () => {
+    seedCorpus(NEIGHBOUR)
+    const noWindow = applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'expire',
+      now: NOW,
+    })
+    expect(noWindow.applied).toBe(false)
+    expect(noWindow.refusal).toMatch(/valid_until/)
+
+    seedCorpus({ ...NEIGHBOUR, valid_until: '2026-12-31' })
+    const future = applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'expire',
+      now: NOW,
+    })
+    expect(future.applied).toBe(false)
+    expect(future.refusal).toMatch(/2026-12-31/)
+    expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('active')
+
+    seedCorpus({ ...NEIGHBOUR, valid_until: '2026-07-01' })
+    const passed = applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'expire',
+      now: NOW,
+    })
+    expect(passed.applied).toBe(true)
+    expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('expired')
+  })
+
+  it('Test 52: revoke demands a stated reason, and the reason lands in the journal, not in the record', () => {
+    seedCorpus(NEIGHBOUR)
+
+    const bare = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'revoke', now: NOW })
+    expect(bare.applied).toBe(false)
+    expect(bare.refusal).toMatch(/reason/i)
+    expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('active')
+
+    const res = applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'revoke',
+      reason: 'the drill it was drawn from was invalid',
+      now: NOW,
+      journalDir,
+      terminalId: 'test-pipeline',
+    })
+    expect(res.applied).toBe(true)
+    expect(readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter.status).toBe('revoked')
+
+    const events = journalEvents().filter((e) => e.detail?.stage === 'lifecycle')
+    expect(events).toHaveLength(1)
+    expect(events[0].detail.action).toBe('revoke')
+    expect(events[0].detail.reason).toMatch(/drill it was drawn from/)
+  })
+
+  it('Test 53: archive takes a record out of active retrieval without touching a byte of history', () => {
+    seedCorpus(NEIGHBOUR)
+    const res = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'archive', now: NOW })
+
+    expect(res.applied).toBe(true)
+    const note = readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))
+    expect(note.frontmatter.status).toBe('archived')
+    expect(note.frontmatter.claim).toBe(NEIGHBOUR.claim)
+  })
+
+  it('Test 54: an unknown action, an unknown record and a v1 note are refused — never guessed', () => {
+    seedCorpus(NEIGHBOUR)
+
+    const unknownAction = applyLifecycle({
+      corpusDir,
+      id: 'working-queue-adapter-nightly-drain',
+      action: 'forget',
+      now: NOW,
+    })
+    expect(unknownAction.applied).toBe(false)
+    expect(unknownAction.refusal).toContain('archive')
+
+    const unknownRecord = applyLifecycle({ corpusDir, id: 'a-record-that-never-existed', action: 'archive', now: NOW })
+    expect(unknownRecord.applied).toBe(false)
+    expect(filesIn(corpusDir)).toEqual(['working-queue-adapter-nightly-drain.md'])
+
+    // a v1 note has no `status` field in its grammar: a transition would be written
+    // and then silently dropped by the serializer — so it is refused instead.
+    writeFileSync(
+      join(corpusDir, 'reference_legacy.md'),
+      serializeNote({
+        frontmatter: { description: 'A legacy note', kind: 'reference', tags: ['queue'], importance: 3 },
+        body: '\nLegacy.\n',
+      }),
+    )
+    const v1 = applyLifecycle({ corpusDir, id: 'reference_legacy', action: 'archive', now: NOW })
+    expect(v1.applied).toBe(false)
+    expect(v1.refusal).toMatch(/schema[- ]v2|migrate/i)
+  })
+
+  it('Test 55: a record the GRAMMAR cannot re-emit is refused — the transition is never half-written', () => {
+    // the disagreement the corpus lint pins as critical: the validator accepts a
+    // bare `evidence` scalar, the v2 grammar refuses to write it back.
+    writeFileSync(
+      join(corpusDir, 'working-queue-adapter-nightly-drain.md'),
+      ['---', 'id: working-queue-adapter-nightly-drain', 'schema_version: 2', 'status: active',
+       'memory_type: working', 'truth_mode: observed', 'claim: An unwritable record',
+       'language: en', 'evidence: none-recorded', 'sensitivity: internal', '---', '', 'Body.', ''].join('\n'),
+    )
+    const before = readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')
+
+    const res = applyLifecycle({ corpusDir, id: 'working-queue-adapter-nightly-drain', action: 'archive', now: NOW })
+
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/evidence/)
+    expect(readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')).toBe(before)
+  })
+})
+
+describe('step 12 lifecycle — a declared supersession leaves no one-sided pointer', () => {
+  it('Test 56: the corpus never holds half a supersession after a declared write', () => {
+    seedCorpus(NEIGHBOUR)
+
+    const result = runPipeline(makeEvent({ supersedes: 'working-queue-adapter-nightly-drain' }), opts())
+
+    expect(result.outcome).toBe('persisted-active')
+    const old = readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter
+    expect(old.status).toBe('superseded')
+    expect(old.superseded_by).toBe('working-queue-adapter-drain-window')
+    expect(old.superseded_at).toBe('2026-08-01')
+
+    const step = traceStep(result.trace, 'lifecycle')
+    expect(step.detail.superseded).toContain('working-queue-adapter-nightly-drain')
+  })
+
+  it('Test 57: the index is rebuilt AFTER the transition that invalidated it', () => {
+    seedCorpus({ ...NEIGHBOUR, context_priority: 'always' })
+
+    runPipeline(makeEvent({ supersedes: 'working-queue-adapter-nightly-drain' }), opts())
+
+    // step 9 built an index in which the neighbour was still CORE; step 12 retired it
+    // and rebuilt — the file on disk must match the post-transition corpus, not the pre.
+    expect(indexText()).toBe(freshIndex())
+    expect(indexText()).not.toContain('working-queue-adapter-nightly-drain.md')
+  })
+
+  it('Test 58: a supersession that would break an existing chain is refused, not overwritten', () => {
+    seedCorpus({
+      ...NEIGHBOUR,
+      status: 'superseded',
+      superseded_by: 'working-queue-adapter-some-other-record',
+      superseded_at: '2026-05-01',
+    })
+
+    const result = runPipeline(makeEvent({ supersedes: 'working-queue-adapter-nightly-drain' }), opts())
+
+    const old = readNote(join(corpusDir, 'working-queue-adapter-nightly-drain.md')).frontmatter
+    expect(old.superseded_by).toBe('working-queue-adapter-some-other-record')
+    const step = traceStep(result.trace, 'lifecycle')
+    expect(JSON.stringify(step.detail.refused)).toMatch(/already superseded/i)
   })
 })
