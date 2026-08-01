@@ -86,8 +86,13 @@ export const episodeArchiveFields = Object.freeze([
  * event whose date is genuinely unknown, `valid_until` for one that has not
  * stopped being true) are "as applicable"; identity, lifecycle state, storage
  * class, language and the recording date are not.
+ *
+ * EXPORTED as `episodeRequiredFields` because the corpus lint holds episodes
+ * already on disk to exactly this rule. A lint that re-derived "which fields are
+ * really required" would be a second answer to a question this module already
+ * answers at the write path — and the two would part company silently.
  */
-const REQUIRED_ARCHIVE_FIELDS = Object.freeze([
+export const episodeRequiredFields = Object.freeze([
   'status',
   'recorded_at',
   'sensitivity',
@@ -234,7 +239,7 @@ export function writeEpisode({ corpusDir, id, frontmatter = {}, body = '', allow
     memory_type: EPISODE_MEMORY_TYPE,
   }
 
-  const missing = REQUIRED_ARCHIVE_FIELDS.filter(
+  const missing = episodeRequiredFields.filter(
     (f) => record[f] == null || String(record[f]).trim() === '',
   )
   if (missing.length) {

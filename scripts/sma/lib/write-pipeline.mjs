@@ -246,8 +246,15 @@ export function classify(state) {
  * removed, not evidence of a compromise. Credential shapes come from
  * flight.mjs's SECRET_PATTERNS — the codebase's one redaction vocabulary — and
  * a hit there is a hard stop instead.
+ *
+ * EXPORTED because the corpus lint asks the same question about material that is
+ * ALREADY on disk (this module screens material on its way in). Two copies of
+ * these two shapes would drift the first time either side learned a third one.
+ * The patterns are global (/g) for the scrubber's sake — a reader that only wants
+ * a yes/no must build its own non-global copy, or lastIndex will make the answer
+ * depend on call order.
  */
-const PERSONAL_PATTERNS = Object.freeze([
+export const PERSONAL_PATTERNS = Object.freeze([
   { rule: 'personal-email', re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
   { rule: 'home-directory-path', re: /(?:\/(?:home|Users)\/[^\s"'`]+|[A-Za-z]:\\Users\\[^\s"'`]+)/g },
 ])
