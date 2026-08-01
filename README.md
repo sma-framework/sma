@@ -209,6 +209,7 @@ Underneath runs the coordination + accountability CLI (`pnpm sma`) — 89 verbs,
 |---|---|
 | `pnpm sma baseline capture` | Measure what the layer costs you today — retrieval recall, context cost, hook latency, worker recovery, a clean install — and with `--record`, store each number as a re-runnable receipt |
 | `pnpm sma baseline replay` | Re-run those recorded receipts later, so «it got better» is a diff and not a memory |
+| `pnpm sma memory migrate` | Propose a richer schema for every note as a reviewable draft — preview-only: it never rewrites a note, and each proposal is applied by hand with `--apply <draft> --confirm <note> --yes` |
 
 ---
 

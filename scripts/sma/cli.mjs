@@ -2505,14 +2505,19 @@ async function cmdSpendSelfCost({ flags, dirs }) {
  *   evidence gate — no corpus rewrite in this plan). Fail-open.
  */
 async function cmdMemory({ positionals, flags, dirs }) {
-  const economy = await import('./lib/economy.mjs')
   const sub = positionals[0]
 
+  if (sub === 'migrate') return cmdMemoryMigrate({ flags, dirs })
+
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
+    process.stdout.write('usage: sma memory <stats|migrate>\n')
+    process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
+    process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
   }
+
+  const economy = await import('./lib/economy.mjs')
 
   if (flags.selftest === true) {
     const ok = economy.memoryStatsSelftest()
@@ -2544,6 +2549,98 @@ async function cmdMemory({ positionals, flags, dirs }) {
   for (const n of stats.top) process.stdout.write(`  ${n.file}: ~${n.tokens}\n`)
   process.stdout.write(`  ${stats.caveat}\n`)
   process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
+  return 0
+}
+
+const MEMORY_MIGRATE_USAGE = [
+  'usage: sma memory migrate [--preview] [--corpus <dir>] [--json]',
+  '       sma memory migrate --apply <draft> --confirm <source-file> --yes [--corpus <dir>]',
+  '',
+  '  --preview (default)  propose a schema-v2 rendering of every v1 note into',
+  '                       .claude/memory/drafts/ and print the report. PREVIEW-ONLY:',
+  '                       not one byte of the corpus is written. Nothing is applied.',
+  '  --apply <draft>      apply exactly ONE staged proposal. --confirm must name the',
+  '                       proposal\'s own source file and --yes must be present:',
+  '                       acceptance is per-file, by hand. There is no bulk apply.',
+].join('\n')
+
+/**
+ * memory migrate — the preview-only v1 -> v2 migration verb.
+ *
+ * Default action is a REPORT: what each note would become, whether the proposal
+ * validates, and where its diff is staged. The corpus is not touched. Applying
+ * is a separate, explicit, one-file-at-a-time act (--apply + --confirm + --yes),
+ * because the migration law says a human accepts each rendering individually.
+ */
+async function cmdMemoryMigrate({ flags, dirs }) {
+  const migrate = await import('./lib/migrate-v1-v2.mjs')
+
+  if (flags.help === true) {
+    process.stdout.write(`${MEMORY_MIGRATE_USAGE}\n`)
+    return 0
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+
+  if (!existsSync(corpusDir)) {
+    process.stderr.write(`SMA memory migrate: корпус не найден — ${corpusDir}\n`)
+    return 1
+  }
+
+  // ── apply: one draft, one confirmation, one explicit yes ───────────────────
+  if (flags.apply != null && flags.apply !== true) {
+    const draftPath = String(flags.apply)
+    const confirmFile = typeof flags.confirm === 'string' ? flags.confirm : ''
+    if (!confirmFile || flags.yes !== true) {
+      process.stdout.write(`${MEMORY_MIGRATE_USAGE}\n`)
+      process.stderr.write(
+        'SMA memory migrate: --apply требует --confirm <source-file> И --yes — приёмка пофайловая, по одному предложению\n',
+      )
+      return 1
+    }
+    const res = migrate.applyProposal({ draftPath, corpusDir, confirmFile })
+    if (wantsJson(flags)) printJson(res)
+    else if (res.applied) process.stdout.write(`SMA memory migrate: применено → ${res.target_path}\n`)
+    else process.stdout.write(`SMA memory migrate: ОТКАЗ — ${res.reason}\n`)
+    return res.applied ? 0 : 1
+  }
+
+  // ── preview (default) ──────────────────────────────────────────────────────
+  const report = migrate.previewMigration({ corpusDir })
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+
+  const s = report.summary
+  process.stdout.write(
+    `SMA memory migrate [PREVIEW — ни один байт корпуса не изменён]: ${s.total} заметок · черновики в ${s.drafts_dir}\n`,
+  )
+  for (const p of report.proposals) {
+    const v = p.validation
+    const verdict = v == null ? '—' : v.errors.length ? `ОШИБОК ${v.errors.length}` : v.warnings.length ? `предупр. ${v.warnings.length}` : 'ok'
+    process.stdout.write(`  ${p.source_file}  →  ${p.disposition}  [${verdict}]${p.draft_path ? ` · ${p.draft_path}` : ` · ${p.reason}`}\n`)
+    if (p.stub) {
+      const sv = p.stub.validation
+      process.stdout.write(
+        `      + claim-stub [${sv.errors.length ? `ОШИБОК ${sv.errors.length} — заполните claim` : 'ok'}] · ${p.stub.draft_path}\n`,
+      )
+    }
+    if ((p.sensitivity_reasons ?? []).length) {
+      process.stdout.write(`      ! sensitivity повышена до sensitive: ${p.sensitivity_reasons.join(', ')}\n`)
+    }
+    if ((p.dropped_keys ?? []).length) {
+      process.stdout.write(`      ! поля БЕЗ назначения (смотрите диф): ${p.dropped_keys.join(', ')}\n`)
+    }
+  }
+  process.stdout.write(
+    `  итог: ${Object.entries(s.by_disposition).sort().map(([k, n]) => `${k}=${n}`).join(', ') || '(нет)'}` +
+      ` · с ошибками ${s.with_errors} · заготовок claim ${s.stubs_awaiting_extraction}\n`,
+  )
+  process.stdout.write(
+    '  применить: sma memory migrate --apply <draft> --confirm <source-file> --yes (по одному файлу, массового применения нет)\n',
+  )
   return 0
 }
 
@@ -8900,12 +8997,20 @@ const HANDLERS = {
   update: cmdUpdate, // v5 — consumer-side updater: version report (installed vs npm vs local source) | --yes re-runs the standard installer | --selftest; memory corpus + .sma state PRESERVED (installer guarantee)
 }
 
+/**
+ * Verbs that print their OWN `--help`. The global intercept below hands `--help`
+ * to these handlers instead of printing the verb list, so a subcommand can
+ * document its own flags. Deliberately an opt-in allow-list: 88 other verbs keep
+ * the existing behaviour untouched.
+ */
+const OWN_HELP = new Set(['memory'])
+
 async function main() {
   const argv = process.argv.slice(2)
   const cmd = argv[0]
   const { positionals, flags } = parseArgs(argv.slice(1))
 
-  if (!cmd || flags.help === true || cmd === 'help') {
+  if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
       'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
