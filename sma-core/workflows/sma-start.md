@@ -279,6 +279,12 @@ gates and reflexes are. Then ask six questions (Stage D of the profile):
 
 **Write the profile:**
 
+**The schema and the write path are `scripts/sma/lib/profile-writer.mjs` — the single
+source (D-9.7-16).** Field set, stable serialization, secret rejection and the starter
+notes live in that module; the first-run screen calls the SAME `writeProfile` /
+`seedCorpusNotes`. This terminal flow MUST produce the byte-identical result — read the
+module for the shape, and never hand-roll a second writer of it.
+
 - `.sma/profile.json` — the machine-readable copy (create `.sma/` if absent). Only the
   fields the user actually answered; never write placeholder defaults. Add
   `"profileVersion": 2`. Capture env-var NAMES and tool FACTS only — NEVER a secret value.
