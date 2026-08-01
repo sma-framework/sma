@@ -2508,11 +2508,13 @@ async function cmdMemory({ positionals, flags, dirs }) {
   const sub = positionals[0]
 
   if (sub === 'migrate') return cmdMemoryMigrate({ flags, dirs })
+  if (sub === 'write') return cmdMemoryWrite({ flags, dirs })
 
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory <stats|migrate>\n')
+    process.stdout.write('usage: sma memory <stats|migrate|write>\n')
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
+    process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
   }
@@ -2651,6 +2653,226 @@ async function cmdMemoryMigrate({ flags, dirs }) {
     '  применить: sma memory migrate --apply <draft> --confirm <source-file> --yes (по одному файлу, массового применения нет)\n',
   )
   return 0
+}
+
+/** The usage block, built from the schema's own closed vocabularies — never a second list. */
+function memoryWriteUsage(schema) {
+  return [
+    'usage: sma memory write --type <memory_type> --truth <truth_mode> --claim <text> [options]',
+    '',
+    '  Run ONE candidate memory through the twelve-step write pipeline and print what',
+    '  each step decided. Classification is YOURS: --type and --truth are never guessed,',
+    '  and a value outside the closed vocabulary is refused with the allowed list.',
+    '',
+    `  --type <v>            ${schema.MEMORY_TYPES.join(' | ')}`,
+    `  --truth <v>           ${schema.TRUTH_MODES.join(' | ')}`,
+    '  --claim <text>        the ONE durable claim (a list of claims is several records)',
+    '  --id <id>             record id; default: derived from --type and --claim',
+    '  --body <text>         the note body',
+    '  --areas <a,b>         retrieval areas',
+    '  --evidence <t>:<ref>  evidence entries, comma-separated (e.g. test:my-case,doc:README.md)',
+    `  --authority <v>       ${schema.AUTHORITY_LEVELS.join(' | ')}`,
+    `  --sensitivity <v>     ${schema.SENSITIVITY_CLASSES.join(' | ')} (default: internal)`,
+    `  --risk <v>            ${schema.RISK_LEVELS.join(' | ')} (default: low)`,
+    '  --retention <window>  e.g. P30D — REQUIRED for the one automatic path',
+    '  --valid-until <date>  end of the claim\'s validity window',
+    '  --supersedes <id,..>  records this one replaces (the pointer is completed on both ends)',
+    '  --product-version <v> the fingerprint a re-derivable claim is checked against',
+    '  --language <code>     default: en',
+    '  --corpus <dir>        default: .claude/memory',
+    '',
+    '  Outcomes: persisted-active (written to the corpus) · staged-draft (written to',
+    '  drafts/ for review — the normal outcome for anything but a low-risk working',
+    '  observation with an expiry) · rejected (nothing written; exit 1).',
+  ].join('\n')
+}
+
+/**
+ * memory write — the memory-write surface of the canon pipeline.
+ *
+ * One event in, one traced verdict out. The verb itself decides NOTHING about
+ * the record: it parses flags, refuses values outside the schema's own closed
+ * vocabularies, and hands the candidate to `runPipeline`. Whether the record
+ * reaches the corpus, a draft or neither is the pipeline's answer, printed step
+ * by step so the verdict is readable rather than merely reported.
+ */
+async function cmdMemoryWrite({ flags, dirs }) {
+  const schema = await import('./lib/schema-v2.mjs')
+  const pipeline = await import('./lib/write-pipeline.mjs')
+  const usage = memoryWriteUsage(schema)
+
+  if (flags.help === true) {
+    process.stdout.write(`${usage}\n`)
+    return 0
+  }
+
+  const problems = []
+  /** A closed-vocabulary flag: an unreadable value names the allowed list, never a default. */
+  const pick = (name, raw, allowed, { required = false, fallback = null } = {}) => {
+    const value = typeof raw === 'string' ? raw.trim() : raw === true ? '' : null
+    if (value == null || value === '') {
+      if (required && fallback == null) {
+        problems.push(`--${name}: required — allowed: ${allowed.join(' | ')}`)
+        return null
+      }
+      return fallback
+    }
+    if (!allowed.includes(value)) {
+      problems.push(`--${name}: unknown value "${value}" — allowed: ${allowed.join(' | ')}`)
+      return null
+    }
+    return value
+  }
+
+  const memoryType = pick('type', flags.type, schema.MEMORY_TYPES, { required: true })
+  const truthMode = pick('truth', flags.truth, schema.TRUTH_MODES, { required: true })
+  const sensitivity = pick('sensitivity', flags.sensitivity, schema.SENSITIVITY_CLASSES, { fallback: 'internal' })
+  const risk = pick('risk', flags.risk, schema.RISK_LEVELS, { fallback: 'low' })
+  const authority = pick('authority', flags.authority, schema.AUTHORITY_LEVELS)
+
+  const claim = typeof flags.claim === 'string' ? flags.claim.trim() : ''
+  if (claim === '') problems.push('--claim <text>: required — one durable claim per record')
+
+  const evidence = []
+  for (const entry of csvFlag(flags.evidence)) {
+    const at = entry.indexOf(':')
+    if (at <= 0 || at === entry.length - 1) {
+      problems.push(`--evidence: "${entry}" is not <type>:<ref>`)
+      continue
+    }
+    evidence.push({ type: entry.slice(0, at).trim(), ref: entry.slice(at + 1).trim() })
+  }
+
+  const id = typeof flags.id === 'string' && flags.id.trim() !== ''
+    ? flags.id.trim()
+    : deriveRecordId(memoryType, claim)
+  // Only ask for an id when the inputs it is derived FROM were readable —
+  // otherwise a bad --type would also report a missing --id, and the second
+  // message would send the reader after the wrong flag.
+  if (!id && memoryType && claim !== '') {
+    problems.push('--id <id>: required — an id could not be derived from this claim')
+  }
+
+  if (problems.length) {
+    process.stdout.write(`${usage}\n`)
+    for (const p of problems) process.stderr.write(`SMA memory write: ${p}\n`)
+    return 1
+  }
+
+  const areas = csvFlag(flags.areas)
+  const supersedes = csvFlag(flags.supersedes)
+  const record = {
+    id,
+    schema_version: '2',
+    status: 'active',
+    memory_type: memoryType,
+    truth_mode: truthMode,
+    claim,
+    language: typeof flags.language === 'string' ? flags.language.trim() : 'en',
+    sensitivity,
+    risk,
+    ...(authority ? { source: { authority } } : {}),
+    ...(evidence.length ? { evidence } : {}),
+    ...(typeof flags['product-version'] === 'string'
+      ? { fingerprint: { product_version: flags['product-version'].trim() } }
+      : {}),
+    ...(typeof flags.retention === 'string' ? { retention: flags.retention.trim() } : {}),
+    ...(typeof flags['valid-until'] === 'string' ? { valid_until: flags['valid-until'].trim() } : {}),
+    ...(areas.length ? { retrieval: { areas } } : {}),
+    ...(supersedes.length ? { supersedes: supersedes.length === 1 ? supersedes[0] : supersedes } : {}),
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+  const body = typeof flags.body === 'string' ? `\n${flags.body.trim()}\n` : '\n'
+
+  // The read-only git runner the index rebuild takes its build anchor from — the
+  // same one build-index uses. The pipeline never shells out on its own.
+  let execGit = null
+  try {
+    const { execFileSync } = await import('node:child_process')
+    execGit = (args) => execFileSync('git', args, { encoding: 'utf8' })
+  } catch {
+    /* fail-open — the index is stamped with the deterministic epoch anchor */
+  }
+
+  let terminalId
+  try {
+    const registry = await import('./lib/registry.mjs')
+    terminalId = registry.resolveTerminalIdentity({})?.terminalId
+  } catch {
+    /* fail-open — the pipeline falls back to its own terminal name */
+  }
+
+  const result = pipeline.runPipeline(
+    { record, body },
+    { corpusDir, journalDir: dirs?.journalDir, terminalId, execGit },
+  )
+
+  if (wantsJson(flags)) {
+    printJson({ outcome: result.outcome, id, path: result.path, trace: result.trace })
+    return result.outcome === 'rejected' ? 1 : 0
+  }
+
+  process.stdout.write(`SMA memory write: ${result.outcome} · ${id}\n`)
+  result.trace.forEach((t, i) => {
+    const n = String(i + 1).padStart(2, ' ')
+    process.stdout.write(`  ${n} ${String(t.step).padEnd(11)} ${String(t.outcome).padEnd(12)} ${traceDetail(t.detail)}\n`)
+  })
+  const last = result.trace[result.trace.length - 1]
+  if (result.outcome === 'persisted-active') {
+    process.stdout.write(`  → записано в корпус: ${result.path}\n`)
+  } else if (result.outcome === 'staged-draft') {
+    process.stdout.write(`  → отложено черновиком (в корпус НЕ попало): ${result.path}\n`)
+  } else {
+    process.stdout.write(`  → ОТКАЗ: ${last?.detail?.reason ?? 'см. трассировку выше'}\n`)
+  }
+  return result.outcome === 'rejected' ? 1 : 0
+}
+
+/** A comma-separated flag value as a list of non-empty trimmed strings. */
+function csvFlag(raw) {
+  if (typeof raw !== 'string') return []
+  return raw.split(',').map((s) => s.trim()).filter((s) => s !== '')
+}
+
+/**
+ * A record id derived from the classification and the claim. Deriving an
+ * IDENTIFIER is not classifying: the two fields that decide what the record MEANS
+ * still come from the caller. An id that cannot be derived (a claim with no
+ * ascii-slugable words) is asked for, never invented.
+ */
+function deriveRecordId(memoryType, claim) {
+  const slug = String(claim ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter(Boolean)
+    .slice(0, 8)
+    .join('-')
+  return memoryType && slug ? `${memoryType}-${slug}` : ''
+}
+
+/** One trace entry's detail as a short line: the reason if there is one, else the scalars. */
+function traceDetail(detail) {
+  if (detail == null) return ''
+  if (typeof detail.reason === 'string') return truncate(detail.reason, 96)
+  const parts = []
+  for (const [k, v] of Object.entries(detail)) {
+    if (v == null) continue
+    if (Array.isArray(v)) {
+      if (v.length) parts.push(`${k}=${v.length}`)
+    } else if (typeof v !== 'object') {
+      parts.push(`${k}=${v}`)
+    }
+  }
+  return truncate(parts.join(' · '), 96)
+}
+
+function truncate(s, n) {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
 
 /**
