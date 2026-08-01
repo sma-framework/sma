@@ -1,4 +1,4 @@
-import { accentFor, initialOf } from '../today/format'
+import { accentFor, initialOf } from '../../shell/format'
 import type { BoardCard } from './Board'
 
 /**

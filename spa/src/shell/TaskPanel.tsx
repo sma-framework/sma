@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
-import { isNotReady, isRaceLost } from '../../api/client'
-import { useApprove, useReturnTask, useTaskQuery } from '../../api/queries'
-import type { TaskAttempt, TaskStatus } from '../../api/types'
-import type { ScreenId } from '../registry'
+import { isNotReady, isRaceLost } from '../api/client'
+import { useApprove, useReturnTask, useTaskQuery } from '../api/queries'
+import type { TaskAttempt, TaskStatus } from '../api/types'
 import { attemptsLabel, clockLabel } from './format'
+import { openScreen } from './navigation'
 
 /**
  * TaskPanel — one task, opened beside the day's work rather than in place of it.
  *
- * ═══════════════════════════ ONE PANEL, TWO SCREENS ═══════════════════════════
+ * ═══════════════════════════ ONE PANEL, EVERY SCREEN ══════════════════════════
  *
  * This panel is written once and BORROWED, never copied. «Сегодня» opens it from a card in
- * the feed; «Разговор» opens the very same component from a task the answer pointed at, by
- * importing it from here. A person meets one panel with one set of habits, and a change to
- * it is a change in both places on the same day.
+ * the feed; «Задачи» opens the very same component from a card on the board. A person meets
+ * one panel with one set of habits, and a change to it is a change everywhere on the same
+ * day. It lives in the shell for the reason the registry gives: a thing two screens both
+ * need is not a screen.
  *
  * It is a SHORT read: what was promised, what the checks said, how many runs at it were
  * taken, and the two decisions only a person can make. The full card — the three layers of
@@ -24,17 +25,6 @@ import { attemptsLabel, clockLabel } from './format'
  * and returning go through the same actions every other screen uses, so the picture is
  * re-read once, in the one place that knows something changed.
  */
-
-/**
- * Asking for another screen. The name is taken from the registry's own type, so a screen
- * that does not exist cannot be asked for; the shell is what hears this and moves.
- */
-export const OPEN_SCREEN_EVENT = 'sma:open-screen'
-
-export interface OpenScreenDetail {
-  screen: ScreenId
-  taskId?: string
-}
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
   queued: 'в очереди',
@@ -142,8 +132,7 @@ export function TaskPanel({
       onOpenCard(taskId)
       return
     }
-    const detailPayload: OpenScreenDetail = { screen: 'task-card', taskId }
-    window.dispatchEvent(new CustomEvent<OpenScreenDetail>(OPEN_SCREEN_EVENT, { detail: detailPayload }))
+    openScreen({ screen: 'task-card', taskId })
   }
 
   const doApprove = () => {

@@ -1,5 +1,5 @@
 import type { Presence, WorkerRow } from '../../api/types'
-import { accentFor, initialOf } from '../today/format'
+import { accentFor, initialOf } from '../../shell/format'
 
 /**
  * WorkerCard — one worker, and the honest answer to «can this one take work right now».

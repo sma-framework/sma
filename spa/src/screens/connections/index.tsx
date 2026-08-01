@@ -3,8 +3,8 @@ import { isNotReady } from '../../api/client'
 import { useHarnessQuery, useToggleMcp } from '../../api/queries'
 import type { McpCard } from '../../api/types'
 import { ForgeDialog } from '../agents/ForgeDialog'
-import { OPEN_SCREEN_EVENT } from '../today/TaskPanel'
-import type { OpenScreenDetail } from '../today/TaskPanel'
+import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
+import type { OpenScreenDetail } from '../../shell/navigation'
 
 /**
  * «Подключения» — the tools the workers may reach for, and the one boolean we own.

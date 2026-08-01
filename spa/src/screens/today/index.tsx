@@ -3,8 +3,8 @@ import { useStateQuery } from '../../api/queries'
 import type { DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
 import { KpiStrip } from './KpiStrip'
-import { TaskPanel } from './TaskPanel'
-import { accentFor, initialOf, plural } from './format'
+import { TaskPanel } from '../../shell/TaskPanel'
+import { accentFor, initialOf, plural } from '../../shell/format'
 
 /**
  * «Сегодня» — the screen a person opens in the morning to find out what happened while

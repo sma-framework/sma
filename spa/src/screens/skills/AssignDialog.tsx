@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { isNotReady } from '../../api/client'
 import { useAssignSkill } from '../../api/queries'
 import type { AgentCard, SkillCard } from '../../api/types'
-import { accentFor, initialOf } from '../today/format'
+import { accentFor, initialOf } from '../../shell/format'
 
 /**
  * AssignDialog — «Кому дать»: the whole of what a person decides about a skill.
