@@ -104,6 +104,17 @@ const RULE_STRENGTH_MARKERS = /\b(must|never|always|forbidden|required|hard rule
 /** Lifecycle states that mean "this is history now". */
 const RETIRED_STATUSES = new Set(['superseded', 'revoked', 'expired', 'archived'])
 
+/**
+ * A draft is UNTRUSTED INPUT on a filesystem boundary. It may have been
+ * hand-edited before acceptance (that is the whole point of a preview), pasted
+ * in, or produced by a future tool. Both values that reach `join(corpusDir, …)`
+ * are therefore charset-gated before any write, the same posture episodes.mjs
+ * takes with an episode id: no separators, no leading dot, no whitespace, so a
+ * proposal can only ever resolve INSIDE the corpus.
+ */
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const SAFE_SOURCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/
+
 /** v1 fields the transform consumes explicitly — anything else is reported, never guessed at. */
 const CONSUMED_V1_KEYS = new Set([
   'description',
@@ -713,6 +724,18 @@ export function applyProposal({ draftPath, corpusDir, confirmFile } = {}) {
   }
 
   const declaredSource = str(fm.draft_source)
+  if (!SAFE_SOURCE_PATTERN.test(declaredSource)) {
+    return refuse(
+      `draft_source "${declaredSource}" is not a plain corpus filename — a proposal may only address a note INSIDE the corpus directory`,
+    )
+  }
+  const recordId = str(fm.id)
+  if (!SAFE_ID_PATTERN.test(recordId)) {
+    return refuse(
+      `id "${recordId}" is not a legal record id — letters, digits, dot, dash and underscore only, and it must address a file INSIDE the corpus`,
+    )
+  }
+
   const confirmed = basename(str(confirmFile))
   if (confirmed === '' || confirmed !== declaredSource) {
     return refuse(
@@ -723,6 +746,16 @@ export function applyProposal({ draftPath, corpusDir, confirmFile } = {}) {
   const disposition = str(fm.draft_disposition)
   const record = stripDraftMarkers(fm)
   const body = parsed.body
+
+  // The id law, at the boundary it actually matters: a proposal that renames the
+  // record while writing over (or moving) a differently-named note would leave a
+  // file whose identity and filename disagree — and a record whose identity does
+  // not survive a grep is the failure the law exists to prevent. A claim stub is
+  // exempt: it names its own new file, so the law holds by construction.
+  if (disposition === 'v2-markup' || disposition === 'episode-archive') {
+    const idError = validateId(recordId, declaredSource)
+    if (idError) return refuse(idError)
+  }
 
   const validation =
     disposition === 'episode-archive'
