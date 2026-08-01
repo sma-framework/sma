@@ -165,32 +165,28 @@ export function bookUsage({ dataDir, event = {}, clock = Date.now, fsImpl } = {}
 }
 
 /**
- * readUsage({dataDir, accountName, windowMs, clock, fsImpl}) → per-account rolling-window
- * totals. Sums input/output tokens + cost over rows for `accountName` whose `ts` falls
- * inside [now - windowMs, now]. A missing book → all-zero totals (fail-open, never throws).
- * This is the input for plan 9.5-05's window bars.
+ * readUsageRows({dataDir, accountName, windowMs, clock, fsImpl}) → the raw canonical rows,
+ * filtered by account and/or rolling window. THE ONE PARSER of the book's format: every
+ * consumer that needs rows (the window totals below, the spend screen, the conversation's
+ * «что съело лимит» answer) goes through this function, so the book is never re-parsed by a
+ * second reader that could drift from the writer above. A missing/corrupt book yields fewer
+ * rows, never an error (fail-open — a spend view must not take the daemon down).
  *
  * @param {{dataDir:string, accountName?:string, windowMs?:number, clock?:Function, fsImpl?:object}} opts
- * @returns {{accountName:string|undefined, inputTokens:number, outputTokens:number, costUsd:number, rows:number, windowMs:number|undefined}}
+ * @returns {object[]}
  */
-export function readUsage({ dataDir, accountName, windowMs, clock = Date.now, fsImpl } = {}) {
+export function readUsageRows({ dataDir, accountName, windowMs, clock = Date.now, fsImpl } = {}) {
   const readFileSync = fsImpl?.readFileSync ?? fsRead
-  const empty = { accountName, inputTokens: 0, outputTokens: 0, costUsd: 0, rows: 0, windowMs }
 
   let text = ''
   try {
     text = readFileSync(join(dataDir, 'usage', 'usage.jsonl'), 'utf8')
   } catch {
-    return empty // no book yet → an empty window, never an error
+    return [] // no book yet → nothing spent, never an error
   }
 
-  const now = clock()
-  const cutoff = windowMs ? now - windowMs : Number.NEGATIVE_INFINITY
-  let inputTokens = 0
-  let outputTokens = 0
-  let costUsd = 0
-  let rows = 0
-
+  const cutoff = windowMs ? clock() - windowMs : Number.NEGATIVE_INFINITY
+  const out = []
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     let r
@@ -204,6 +200,27 @@ export function readUsage({ dataDir, accountName, windowMs, clock = Date.now, fs
       const t = Date.parse(r.ts)
       if (Number.isFinite(t) && t < cutoff) continue
     }
+    out.push(r)
+  }
+  return out
+}
+
+/**
+ * readUsage({dataDir, accountName, windowMs, clock, fsImpl}) → per-account rolling-window
+ * totals. Sums input/output tokens + cost over rows for `accountName` whose `ts` falls
+ * inside [now - windowMs, now]. A missing book → all-zero totals (fail-open, never throws).
+ * This is the input for plan 9.5-05's window bars.
+ *
+ * @param {{dataDir:string, accountName?:string, windowMs?:number, clock?:Function, fsImpl?:object}} opts
+ * @returns {{accountName:string|undefined, inputTokens:number, outputTokens:number, costUsd:number, rows:number, windowMs:number|undefined}}
+ */
+export function readUsage({ dataDir, accountName, windowMs, clock = Date.now, fsImpl } = {}) {
+  let inputTokens = 0
+  let outputTokens = 0
+  let costUsd = 0
+  let rows = 0
+
+  for (const r of readUsageRows({ dataDir, accountName, windowMs, clock, fsImpl })) {
     inputTokens += num(r.inputTokens)
     outputTokens += num(r.outputTokens)
     if (Number.isFinite(Number(r.costUsd))) costUsd += Number(r.costUsd)
