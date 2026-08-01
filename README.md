@@ -141,7 +141,8 @@ your-project/
 ├─ package.json    ← untouched
 │
 ├─ .claude/
-│  ├─ memory/      ← the memory corpus (markdown notes you can read & diff)
+│  ├─ memory/      ← the memory corpus (markdown notes you can read & diff);
+│  │                 installed EMPTY — you get the system, the notes stay yours
 │  ├─ agents/      ← the /sma-* workflow agents
 │  └─ settings.json← the hooks that wire SMA into your agent
 ├─ .sma/           ← coordination + accountability state
