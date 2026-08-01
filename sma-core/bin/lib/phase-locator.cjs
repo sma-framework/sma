@@ -12,7 +12,7 @@
  *
  * Dependencies (leaf modules only — no loadConfig):
  *   - node:fs / node:path (stdlib)
- *   - ./phase-id.cjs       (normalizePhaseName, phaseTokenMatches, extractPhaseToken)
+ *   - ./phase-id.cjs       (normalizePhaseName, phaseTokenMatches, splitPhaseDirName)
  *   - ./core-utils.cjs     (readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath)
  *   - ./planning-workspace.cjs (planningDir)
  */
@@ -23,7 +23,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdModule = require("./phase-id.cjs");
-const { normalizePhaseName, phaseTokenMatches, extractPhaseToken } = phaseIdModule;
+const { normalizePhaseName, phaseTokenMatches, splitPhaseDirName } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const coreUtilsModule = require("./core-utils.cjs");
 const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath } = coreUtilsModule;
@@ -37,9 +37,8 @@ function searchPhaseInDir(baseDir, relBase, normalized) {
         const match = dirs.find(d => phaseTokenMatches(d, normalized));
         if (!match)
             return null;
-        const phaseToken = extractPhaseToken(match);
+        const { token: phaseToken, slug: afterToken } = splitPhaseDirName(match);
         const phaseNumber = phaseToken || normalized;
-        const afterToken = match.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
         const phaseName = afterToken || null;
         const phaseDir = node_path_1.default.join(baseDir, match);
         const { plans: unsortedPlans, summaries: unsortedSummaries, hasResearch, hasContext, hasVerification, hasReviews } = getPhaseFileStats(phaseDir);

@@ -24,7 +24,7 @@ const coreUtilsMod = require("./core-utils.cjs");
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken } = phaseIdMod;
+const { normalizePhaseName, comparePhaseNum, splitPhaseDirName } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseLocatorMod = require("./phase-locator.cjs");
 const { getArchivedPhaseDirs, findPhaseInternal } = phaseLocatorMod;
@@ -1324,11 +1324,10 @@ function cmdStats(cwd, format, raw) {
             .filter(isDirInMilestone)
             .sort((a, b) => comparePhaseNum(a, b));
         for (const dir of dirs) {
-            // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.
-            const phaseToken = extractPhaseToken(dir);
+            // splitPhaseDirName parses M-NN-style, code-prefixed and `phase-N-` dir
+            // names, and returns the slug that follows the token.
+            const { token: phaseToken, slug: afterToken } = splitPhaseDirName(dir);
             const phaseNum = phaseToken || dir;
-            // phaseName is everything after the token (strip leading '-')
-            const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
             const phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
             const phaseFiles = node_fs_1.default.readdirSync(node_path_1.default.join(phasesDir, dir));
             const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
