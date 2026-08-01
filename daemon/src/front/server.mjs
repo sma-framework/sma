@@ -49,6 +49,9 @@
  */
 
 import { createServer } from 'node:http'
+import { readFileSync as fsReadFileSync } from 'node:fs'
+import { join, extname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { REASON_LABELS, validateTask } from '../queue/adapter.mjs'
@@ -80,6 +83,50 @@ const COMMIT_CAP = 50
  *  and every separator are excluded by construction, so `..`, `../x` and `a/b` cannot
  *  match — directory traversal dies at the name parse, before any handler runs. */
 const ASSET_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/
+
+/**
+ * Where `cd spa && npm run build` puts the app: daemon/static/app/{index.html,assets/*}.
+ * Resolved from THIS module's own url, so the daemon serves its build wherever the package
+ * was installed — never from the process cwd. Injectable as `deps.staticDir` (tests read no
+ * real tree; the one smoke that does is opt-in).
+ */
+const STATIC_APP_DIR = fileURLToPath(new URL('../../static/app/', import.meta.url))
+
+/**
+ * The content types a Vite build actually emits — a small frozen map next to the handler,
+ * not a library: an unknown extension is served as an opaque stream rather than guessed at
+ * (`nosniff` rides every response, so the browser never re-decides).
+ */
+const ASSET_TYPES = Object.freeze({
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+})
+const ASSET_FALLBACK_TYPE = 'application/octet-stream'
+
+/** Hashed file names are content-addressed — an immutable year is honest for them. */
+const ASSET_CACHE = 'public, max-age=31536000, immutable'
+/** index.html is NOT content-addressed: a stale one would strand the founder on an old
+ *  app until a manual cache purge, so it is revalidated every load. */
+const INDEX_CACHE = 'no-cache'
+
+/**
+ * The page GET / answers with when there is no build yet. An honest single line beats a
+ * 500 and beats a blank screen: the reader learns the ONE command that fixes it.
+ */
+const BUILD_INSTRUCTION_HTML =
+  '<!doctype html><html lang="ru"><head><meta charset="utf-8">' +
+  '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+  '<title>SMA</title></head><body>' +
+  '<main><h1>SMA</h1><p>Соберите приложение: cd spa &amp;&amp; npm run build</p></main>' +
+  '</body></html>'
 
 /**
  * ROUTES — THE FINAL FROZEN TABLE (D-9.7-09, re-frozen 2026-08-01; the single freeze
@@ -147,6 +194,19 @@ function sendJson(res, status, obj) {
 function sendText(res, status, text, contentType = 'text/plain; charset=utf-8') {
   res.writeHead(status, baseHeaders(contentType))
   res.end(text)
+}
+
+/**
+ * sendStatic — the ONE response path that is allowed a cache header other than no-store:
+ * a build artefact is public, versioned content, not roster truth. `nosniff` still rides.
+ */
+function sendStatic(res, body, contentType, cacheControl) {
+  res.writeHead(200, {
+    'content-type': contentType,
+    'cache-control': cacheControl,
+    'x-content-type-options': 'nosniff',
+  })
+  res.end(body)
 }
 
 /** The 401 body is a CONSTANT — no reason, no route, no oracle (T-9.5-24). */
@@ -249,15 +309,49 @@ function readJsonBody(req, { cap = JSON_BODY_CAP } = {}) {
 
 // ── handlers (each: (ctx) => void|Promise; ctx = {req,res,params,query,config,deps}) ──
 
-function handleIndex({ res }) {
-  // The rich page is plan 9.5-09; this authed bootstrap placeholder is replaced there.
-  const html =
-    '<!doctype html><html lang="ru"><head><meta charset="utf-8">' +
-    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<title>SMA · ростер</title></head><body>' +
-    '<main><h1>SMA ростер</h1><p>Страница появится в плане 9.5-09.</p></main>' +
-    '</body></html>'
-  sendText(res, 200, html, 'text/html; charset=utf-8')
+/** The file reader for the two static routes — injected in tests, real fs in production. */
+function staticReader(deps) {
+  return (deps.fsImpl && deps.fsImpl.readFileSync) || fsReadFileSync
+}
+
+/**
+ * GET / — THE APP RIDES WITH THE DAEMON (D-9.7-04). The built index.html is read off disk
+ * and served behind the SAME token as every other route: no second web server, no second
+ * port, no second auth story. A missing build is a normal state, not a fault — it answers
+ * 200 with the one command that fixes it (a 500 would tell the founder nothing).
+ */
+function handleIndex({ res, deps }) {
+  const dir = deps.staticDir || STATIC_APP_DIR
+  let html
+  try {
+    html = String(staticReader(deps)(join(dir, 'index.html'), 'utf8'))
+  } catch {
+    html = BUILD_INSTRUCTION_HTML // no build yet — say so in one line
+  }
+  sendStatic(res, html, 'text/html; charset=utf-8', INDEX_CACHE)
+}
+
+/**
+ * GET /assets/:file — the hashed bundles of that same build.
+ *
+ * TRAVERSAL IS IMPOSSIBLE BY CONSTRUCTION (T-9.7-21): the name was already matched against
+ * ASSET_RE by matchRoute — a name carrying a separator, a `..`, a percent-escape or a
+ * leading dot is a 400 BEFORE this function is entered, so the disk is never touched for a
+ * hostile name. The re-test below is defence in depth for a direct handler call; the
+ * name is then joined to the build's assets/ directory and to nothing else.
+ */
+function handleAsset({ res, params, deps }) {
+  const file = String((params && params.file) || '')
+  if (!ASSET_RE.test(file)) return send400(res, 'invalid asset name')
+  const dir = deps.staticDir || STATIC_APP_DIR
+  let body
+  try {
+    body = staticReader(deps)(join(dir, 'assets', file))
+  } catch {
+    return send404(res)
+  }
+  const type = ASSET_TYPES[extname(file).toLowerCase()] || ASSET_FALLBACK_TYPE
+  return sendStatic(res, body, type, ASSET_CACHE)
 }
 
 /** Assemble the full deriveState collaborator set from the injected front deps. */
@@ -724,18 +818,13 @@ async function handleMcpToggle({ req, res, deps }) {
   }
 }
 
-// ── the sixteen D-9.7-09 stubs (the route table stays FROZEN at 30) ──
+// ── the remaining D-9.7-09 stubs (the route table stays FROZEN at 30) ──
 //
 // Declared once, filled later. Each is a named handler that answers 501 and NOTHING else:
 // it never touches `req`, so a stub cannot read a body, cannot be probed for a field name,
 // and cannot grow a side effect by accident (T-9.7-01). The dispatcher runs authed() BEFORE
 // any handler, so an unauthenticated call to any of these is a 401 — never a 501 that would
 // betray which routes exist. Their fill plans are named per group below.
-
-/** GET /assets/:file — the built SPA bundles (flat, hashed names) → plan 9.7-09. */
-function handleAsset({ res }) {
-  send501(res)
-}
 
 /** GET /api/projects — the project registry read model → plan 9.7-09. */
 function handleProjects({ res }) {
