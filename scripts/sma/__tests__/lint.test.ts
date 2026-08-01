@@ -20,7 +20,7 @@ import { mkdtempSync, cpSync, rmSync, appendFileSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
-import { LINT_CHECKS, runLint } from '../lib/lint.mjs'
+import { LINT_CHECKS, runLint, computeTreeHash } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 import { GRACE_HORIZON } from '../lib/schema-v2.mjs'
 
@@ -1031,6 +1031,167 @@ describe('MEM-V2SCHEMA + MEM-ONECLAIM — the record discipline', () => {
       const c = LINT_CHECKS.find((x) => x.id === id)
       expect(c, `${id} must be registered in LINT_CHECKS`).toBeTruthy()
       expect(c!.tier).toBe('critical')
+    }
+  })
+})
+
+// ── the trust checks: MEM-FPDRIFT · MEM-EXPIRE ───────────────────────────────
+//
+// Both answer the same question from opposite ends: is this claim still about
+// the world it was written about? Both are WARN and neither writes anything —
+// a stale claim is a review trigger, never an automatic deletion.
+
+describe('MEM-FPDRIFT + MEM-EXPIRE — the trust checks', () => {
+  it('Test 1 (stale epoch): a fingerprint stamped with an older product version → exactly one WARN naming BOTH versions', () => {
+    const res = lintV2(
+      [
+        {
+          frontmatter: v2Record('semantic_stamped_fact', {
+            fingerprint: { product_version: '3.1.0' },
+          }),
+        },
+      ],
+      { productVersion: '4.2.0' },
+    )
+    const drift = findingsOf(res, 'MEM-FPDRIFT')
+    expect(drift.length).toBe(1)
+    expect(drift[0].tier).toBe('warn')
+    expect(drift[0].message).toContain('3.1.0')
+    expect(drift[0].message).toContain('4.2.0')
+    expect(drift[0].file).toBe('semantic_stamped_fact.md')
+  })
+
+  it('Test 2 (current epoch): a fingerprint stamped with the current version is silent', () => {
+    const res = lintV2(
+      [
+        {
+          frontmatter: v2Record('semantic_current_fact', {
+            fingerprint: { product_version: '4.2.0' },
+          }),
+        },
+      ],
+      { productVersion: '4.2.0' },
+    )
+    expect(findingsOf(res, 'MEM-FPDRIFT')).toHaveLength(0)
+  })
+
+  it('Test 3 (honest degradation): no git runner → a WARN naming the reason, never a silent pass', () => {
+    const res = lintV2(
+      [
+        {
+          frontmatter: v2Record('semantic_file_bound_fact', {
+            fingerprint: {
+              product_version: '4.2.0',
+              tree_paths: ['src/gate.mjs'],
+              tree_hash: 'aaaabbbbccccddddeeeeffff0000111122223333',
+            },
+          }),
+        },
+      ],
+      { productVersion: '4.2.0', execGit: undefined },
+    )
+    const drift = findingsOf(res, 'MEM-FPDRIFT')
+    expect(drift.length).toBe(1)
+    expect(drift[0].tier).toBe('warn')
+    expect(drift[0].message).toMatch(/unverified/i)
+  })
+
+  it('Test 4 (tree drift): a tree_hash that no longer matches the files it names → WARN; the matching one is silent', () => {
+    // A fake read-only git runner: the "blob hash" of a path is whatever this map
+    // says. Nothing here shells out — the check must ask its runner, not the OS.
+    const blobs: Record<string, string> = { 'src/gate.mjs': '1'.repeat(40) }
+    const execGit = (args: string[]) => {
+      const path = args[args.length - 1]
+      if (args[0] !== 'hash-object') throw new Error(`unexpected git call: ${args.join(' ')}`)
+      const blob = blobs[path]
+      if (!blob) throw new Error(`no such path: ${path}`)
+      return `${blob}\n`
+    }
+    const current = computeTreeHash({ paths: ['src/gate.mjs'], execGit })
+    expect(current).toMatch(/^[0-9a-f]{64}$/)
+
+    const matched = lintV2(
+      [
+        {
+          frontmatter: v2Record('semantic_bound_ok', {
+            fingerprint: { product_version: '4.2.0', tree_paths: ['src/gate.mjs'], tree_hash: current },
+          }),
+        },
+      ],
+      { productVersion: '4.2.0', execGit },
+    )
+    expect(findingsOf(matched, 'MEM-FPDRIFT')).toHaveLength(0)
+
+    // The same claim after the file it describes moved on.
+    blobs['src/gate.mjs'] = '2'.repeat(40)
+    const drifted = lintV2(
+      [
+        {
+          frontmatter: v2Record('semantic_bound_stale', {
+            fingerprint: { product_version: '4.2.0', tree_paths: ['src/gate.mjs'], tree_hash: current },
+          }),
+        },
+      ],
+      { productVersion: '4.2.0', execGit },
+    )
+    const drift = findingsOf(drifted, 'MEM-FPDRIFT')
+    expect(drift.length).toBe(1)
+    expect(drift[0].tier).toBe('warn')
+    expect(drift[0].message).toContain('src/gate.mjs')
+  })
+
+  it('Test 5 (expiry): an ACTIVE claim past its horizon → exactly one WARN; a future one and an absent one are silent', () => {
+    const expired = lintV2(
+      [{ frontmatter: v2Record('normative_waiver_expired', { valid_until: '2026-01-31' }) }],
+      { now: '2026-03-01T09:00:00Z' },
+    )
+    const stale = findingsOf(expired, 'MEM-EXPIRE')
+    expect(stale.length).toBe(1)
+    expect(stale[0].tier).toBe('warn')
+    expect(stale[0].message).toContain('2026-01-31')
+
+    const future = lintV2(
+      [{ frontmatter: v2Record('normative_waiver_live', { valid_until: '2026-12-31' }) }],
+      { now: '2026-03-01T09:00:00Z' },
+    )
+    expect(findingsOf(future, 'MEM-EXPIRE')).toHaveLength(0)
+
+    const undated = lintV2([{ frontmatter: v2Record('semantic_no_horizon') }], {
+      now: '2026-03-01T09:00:00Z',
+    })
+    expect(findingsOf(undated, 'MEM-EXPIRE')).toHaveLength(0)
+  })
+
+  it('Test 6 (expiry is about ACTIVE claims): an already-expired STATUS is not re-reported', () => {
+    const res = lintV2(
+      [
+        {
+          frontmatter: v2Record('normative_waiver_retired', {
+            status: 'expired',
+            valid_until: '2026-01-31',
+          }),
+        },
+      ],
+      { now: '2026-03-01T09:00:00Z' },
+    )
+    expect(findingsOf(res, 'MEM-EXPIRE')).toHaveLength(0)
+  })
+
+  it('Test 7 (read-only law): neither trust check contains a write path', () => {
+    const src = readFileSync(join(__dirname, '..', 'lib', 'lint.mjs'), 'utf8')
+    const family = src.slice(src.indexOf('const MEM_FPDRIFT'), src.indexOf('export const LINT_CHECKS'))
+    expect(family).not.toMatch(/writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|atomicWrite/)
+    // The module as a whole imports no write API from node:fs — the invariant the
+    // whole checker rests on, re-asserted here because this family reads a clock
+    // and shells to git, which is where a "just fix it" patch would land first.
+    expect(src).not.toMatch(/from 'node:fs'[\s\S]{0,200}writeFileSync/)
+  })
+
+  it('Test 8: both trust checks are registered in LINT_CHECKS as warn classes', () => {
+    for (const id of ['MEM-FPDRIFT', 'MEM-EXPIRE']) {
+      const c = LINT_CHECKS.find((x) => x.id === id)
+      expect(c, `${id} must be registered in LINT_CHECKS`).toBeTruthy()
+      expect(c!.tier).toBe('warn')
     }
   })
 })
