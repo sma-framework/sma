@@ -1,0 +1,169 @@
+@import 'tailwindcss';
+
+/*
+ * tokens.css — the ONE place a colour, a radius or a shadow is decided.
+ *
+ * Every value below is lifted verbatim from the accepted screen designs, so a screen
+ * built here looks like the screen that was approved. A screen author uses the token,
+ * never the hex: a hex typed into a component is how two screens start disagreeing.
+ *
+ * LIGHT IS THE DEFAULT. The light values live in @theme (which Tailwind emits at the
+ * document root), the dark values override them under [data-sma-theme="dark"] on <html>.
+ * The override is deliberately unlayered, so it wins over the theme layer without a
+ * specificity trick, and one attribute flips the whole window.
+ */
+
+@custom-variant dark (&:where([data-sma-theme=dark], [data-sma-theme=dark] *));
+
+@theme {
+  /* ── surfaces ── */
+  --color-bg: #f8fbfd;
+  --color-card: #ffffff;
+  --color-surf: #f2f7fa;
+  --color-head: rgba(255, 255, 255, 0.66);
+  --color-input: #ffffff;
+  --color-card-hov: #f2f7fa;
+  --color-row-hover: rgba(13, 23, 38, 0.028);
+  --color-track: rgba(13, 23, 38, 0.09);
+  --color-scrim: rgba(13, 23, 38, 0.3);
+
+  /* ── borders ── */
+  --color-bd: rgba(13, 23, 38, 0.09);
+  --color-bd2: rgba(13, 23, 38, 0.18);
+
+  /* ── text ── */
+  --color-tx: #0f1b2d;
+  --color-tx2: #4a6072;
+  --color-tx3: #7e93a4;
+
+  /* ── the sidebar is dark in BOTH themes (design 19) ── */
+  --color-side: #0e1726;
+  --color-side-bd: rgba(240, 246, 252, 0.1);
+  --color-side-tx: #e6edf3;
+  --color-side-tx2: #8ca3b8;
+  --color-side-tx3: rgba(240, 246, 252, 0.38);
+  --color-side-hover: rgba(240, 246, 252, 0.06);
+  --color-side-act: rgba(240, 246, 252, 0.1);
+  --color-side-surf: rgba(240, 246, 252, 0.05);
+  --color-side-menu: #152134;
+
+  /* ── accents ── */
+  --color-blue: #3b82f6;
+  --color-blue-d: #2e6fd9;
+  --color-blue-s: rgba(59, 130, 246, 0.1);
+  --color-teal: #1fa0a6;
+  --color-green: #3cc0a0;
+  --color-mint: #74dba0;
+
+  /* ── states ── */
+  --color-ok-tx: #25856f;
+  --color-ok-s: rgba(60, 192, 160, 0.13);
+  --color-warn: #e0b25b;
+  --color-warn-tx: #96731f;
+  --color-warn-s: rgba(224, 178, 91, 0.16);
+  --color-err: #e05b5b;
+  --color-err-tx: #c24747;
+  --color-err-s: rgba(224, 91, 91, 0.07);
+  --color-err-bd: rgba(224, 91, 91, 0.3);
+  --color-idle-tx: #7e93a4;
+  --color-idle-s: rgba(13, 23, 38, 0.06);
+
+  /* ── ambient light behind the page ── */
+  --color-g1: rgba(59, 130, 246, 0.16);
+  --color-g2: rgba(31, 160, 166, 0.14);
+  --color-g3: rgba(60, 192, 160, 0.12);
+
+  /* ── type & depth ── */
+  --font-sans: Inter, 'Segoe UI', system-ui, sans-serif;
+  --shadow-panel: 0 2px 10px rgba(13, 23, 38, 0.06);
+  --shadow-menu: 0 14px 34px rgba(13, 23, 38, 0.18);
+}
+
+/*
+ * The dark half of every token above. Same names, other values — a component never
+ * learns which theme it is in.
+ */
+[data-sma-theme='dark'] {
+  --color-bg: #0d1117;
+  --color-card: #161b22;
+  --color-surf: #11161d;
+  --color-head: rgba(13, 17, 23, 0.66);
+  --color-input: #0d1117;
+  --color-card-hov: #1c232c;
+  --color-row-hover: rgba(240, 246, 252, 0.035);
+  --color-track: rgba(240, 246, 252, 0.11);
+  --color-scrim: rgba(0, 0, 0, 0.46);
+
+  --color-bd: rgba(240, 246, 252, 0.09);
+  --color-bd2: rgba(240, 246, 252, 0.16);
+
+  --color-tx: #e6edf3;
+  --color-tx2: #8ca3b8;
+  --color-tx3: #5a7186;
+
+  --color-side: #11161d;
+  --color-side-bd: rgba(240, 246, 252, 0.09);
+  --color-side-menu: #1b2230;
+
+  --color-blue-s: rgba(59, 130, 246, 0.17);
+
+  --color-ok-tx: #3cc0a0;
+  --color-ok-s: rgba(60, 192, 160, 0.14);
+  --color-warn-tx: #e0b25b;
+  --color-warn-s: rgba(224, 178, 91, 0.14);
+  --color-err-tx: #e05b5b;
+  --color-err-s: rgba(224, 91, 91, 0.09);
+  --color-err-bd: rgba(224, 91, 91, 0.28);
+  --color-idle-tx: #5a7186;
+  --color-idle-s: rgba(240, 246, 252, 0.07);
+
+  --color-g1: rgba(59, 130, 246, 0.1);
+  --color-g2: rgba(31, 160, 166, 0.09);
+  --color-g3: rgba(60, 192, 160, 0.07);
+
+  --shadow-panel: 0 2px 10px rgba(0, 0, 0, 0.36);
+  --shadow-menu: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+
+/*
+ * The page itself: the ambient light of the accepted designs, painted once here so no
+ * screen has to repaint it. Numbers line up in columns everywhere (tabular figures) —
+ * a table of costs that jitters is a table nobody trusts.
+ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 1360px;
+  background:
+    radial-gradient(880px 520px at 14% -10%, var(--color-g1), transparent 70%),
+    radial-gradient(720px 460px at 86% -6%, var(--color-g2), transparent 72%),
+    radial-gradient(900px 600px at 62% 108%, var(--color-g3), transparent 70%), var(--color-bg);
+  background-attachment: fixed;
+  color: var(--color-tx);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-bd2);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
