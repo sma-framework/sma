@@ -1,9 +1,9 @@
 # Third-Party Licenses
 
-> **Scope note (license change):** SMA itself is licensed under **FSL-1.1-MIT**
+> **Scope note (license change):** SMA itself is licensed under the **SMA Source-Available License v1.0**
 > (see [LICENSE](LICENSE)). The third-party components listed in this file keep
 > their own original licenses (MIT), and their copyright and permission notices
-> are preserved as required. The FSL terms apply to the SMA work as a whole and
+> are preserved as required. These terms apply to the SMA work as a whole and
 > to SMA's own code; they do not re-license the upstream MIT material.
 
 The SMA engine is derived from gsd-core (MIT), github.com/open-gsd/gsd-core.
