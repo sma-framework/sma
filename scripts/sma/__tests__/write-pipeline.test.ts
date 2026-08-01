@@ -479,7 +479,10 @@ describe('step 6 evidence — a judgment without provenance never becomes active
   it('Test 29: authority WITH none-recorded evidence is still staged — an honest nothing is nothing', () => {
     const result = runPipeline(
       {
-        record: interpretation({ source: { authority: 'self-observed' }, evidence: 'none-recorded' }),
+        record: interpretation({
+          source: { authority: 'self-observed' },
+          evidence: [{ type: 'note', ref: 'none-recorded' }],
+        }),
         body: '\nA judgment.\n',
       },
       opts(),
@@ -488,6 +491,23 @@ describe('step 6 evidence — a judgment without provenance never becomes active
     expect(result.outcome).toBe('staged-draft')
     expect(JSON.stringify(traceStep(result.trace, 'evidence').detail)).toMatch(/evidence/)
     expect(filesIn(corpusDir)).toEqual([])
+  })
+
+  it('Test 29b: a record the GRAMMAR refuses is refused with the reason — never an exception, never a file', () => {
+    // `evidence` as a bare scalar: the validator's none-recorded rule reads it,
+    // the v2 grammar does not accept it. The write boundary must say so.
+    const result = runPipeline(
+      {
+        record: interpretation({ source: { authority: 'self-observed' }, evidence: 'none-recorded' }),
+        body: '\nA judgment.\n',
+      },
+      opts(),
+    )
+
+    expect(result.outcome).toBe('rejected')
+    expect(JSON.stringify(result.trace.at(-1).detail)).toMatch(/evidence/)
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([])
   })
 
   it('Test 30: a fact-mode record passes the evidence step untouched', () => {
