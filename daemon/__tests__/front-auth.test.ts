@@ -109,18 +109,13 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 })
 
 /**
- * The routes declared by the V5.1 freeze and not yet filled — each answers 501 until its
- * own plan lands: onboarding in 9.7-20. Delete an entry here in the SAME commit that fills
- * its handler; the table itself does NOT change (no route is added or removed by a fill
- * plan). The static + project group left this list when their handlers landed; the four
- * machine doors and the two chat doors left it with 9.7-15; the two import doors left it
- * with the first task of 9.7-20.
+ * The bare-stub shape a declared-but-unfilled route used to have: a handler whose whole
+ * body is `send501(res)`. The V5.1 freeze declared sixteen of them at once so every screen
+ * was built against the final contract; the last five (import + onboarding) were filled by
+ * 9.7-20 and the list of unfilled routes is now EMPTY — which is why it is a shape, not a
+ * list, that guards the table from here on.
  */
-const UNFILLED_ROUTES = [
-  'GET /api/onboarding',
-  'POST /api/onboarding/answer',
-  'POST /api/onboarding/complete',
-]
+const BARE_STUB = /\)\s*\{\s*(return\s+)?send501\(res\)\s*;?\s*\}\s*$/
 
 // ── auth.mjs unit invariants ──
 
@@ -189,9 +184,19 @@ describe('server.mjs — the closed THIRTY-route table', () => {
     expect(Object.isFrozen(HANDLERS)).toBe(true)
   })
 
-  it('the still-unfilled routes are all real entries of the frozen table', () => {
-    for (const key of UNFILLED_ROUTES) expect(ROUTES[key], key).toBeTruthy()
-    expect(UNFILLED_ROUTES).toHaveLength(new Set(UNFILLED_ROUTES).size)
+  it('ZERO STUBS: not one handler of the table is a bare 501 any more', () => {
+    const stubs = Object.entries(HANDLERS)
+      .filter(([, fn]) => BARE_STUB.test(String(fn)))
+      .map(([name]) => name)
+    expect(stubs).toEqual([])
+  })
+
+  it('the five last-filled handlers delegate to their engines, they do not re-implement them', () => {
+    expect(String(HANDLERS.handleImportScan)).toMatch(/scanEstate/)
+    expect(String(HANDLERS.handleImportEnroll)).toMatch(/enrollSelections/)
+    for (const name of ['handleOnboarding', 'handleOnboardingAnswer', 'handleOnboardingComplete']) {
+      expect(String(HANDLERS[name]), name).toMatch(/onboardingEngine|createOnboarding/)
+    }
   })
 
   it('matchRoute resolves the dynamic segments and rejects a bad shape', () => {
@@ -217,14 +222,15 @@ describe('server.mjs — the closed THIRTY-route table', () => {
 describe('server.mjs — auth gate on every route', () => {
   const front = createFrontServer({ config: { token: TOKEN } })
 
-  it('EVERY route of the frozen table returns 401 unauthenticated — stubs included, 401 BEFORE 501', async () => {
+  it('EVERY route of the frozen table returns 401 unauthenticated — the gate runs first', async () => {
     // A distinct remote per call so the failure-window limiter never masks a 401 as a 429.
     let n = 0
     const swept: string[] = []
     for (const r of ALL_ROUTES) {
       const res = await call(front, { method: r.method, url: r.path, remote: `10.1.0.${n++}` })
-      // An unfilled route must NOT answer 501 here: authorization runs before the stub, so
-      // an anonymous caller cannot map which routes exist by their status code.
+      // Authorization runs BEFORE any handler — including the ones that would answer 501
+      // for a missing collaborator — so an anonymous caller cannot map the surface by
+      // status code: every route of the table looks exactly the same from outside.
       expect(res.statusCode, `${r.method} ${r.path}`).toBe(401)
       swept.push(r.key)
     }
@@ -562,33 +568,26 @@ describe('server.mjs — POST /api/mcp/toggle (RCE-closed)', () => {
   })
 })
 
-// ── the D-9.7-09 sixteen: declared, gated, and honestly 501 until their own plan ──
+// ── the D-9.7-09 sixteen: declared ONCE, filled by their own plans, none left ──
 //
-// Every case below is DELETED (one line at a time) by the plan that fills its handler:
-// static + projects in 9.7-09, machines + chat in 9.7-15, import + onboarding in 9.7-20.
-// The table itself never changes — a fill plan replaces a stub, it does not add a route.
+// The group of 501 cases that stood here is gone: the freeze declared sixteen routes in one
+// revision, and every one of them now answers for real (static + projects in 9.7-09,
+// machines + chat in 9.7-15, import + onboarding in 9.7-20). The table never changed —
+// a fill plan replaces a stub, it does not add a route. What guards that promise from here
+// on is the ZERO STUBS case in the table describe above, plus the 501 that remains for an
+// honest reason: a collaborator this daemon was not wired with (the case below).
 
-describe('server.mjs — the unfilled routes answer 501 when authenticated', () => {
-  const front = createFrontServer({ config: { token: TOKEN } })
+describe('server.mjs — a 501 now means «not wired here», never «not written yet»', () => {
+  it('every remaining 501 is a capability answer: with the deps wired, the route answers', async () => {
+    const bare = createFrontServer({ config: { token: TOKEN } })
+    // no deriveState wired → the read model is genuinely absent on THIS daemon
+    expect((await call(bare, { url: '/api/state', headers: bearer() })).statusCode).toBe(501)
 
-  it('an AUTHED request to each still-unfilled route → 501', async () => {
-    for (const key of UNFILLED_ROUTES) {
-      const [method, pattern] = key.split(' ')
-      const path = pattern.replace(':file', 'app-abc123.js')
-      const res = await call(front, { method, url: path, headers: jsonHeaders() })
-      expect(res.statusCode, key).toBe(501)
-    }
-  })
-
-  it('a stub never reads the request body: a hostile POST body still yields a bare 501', async () => {
-    const res = await call(front, {
-      method: 'POST',
-      url: '/api/onboarding/answer',
-      headers: jsonHeaders(),
-      body: { command: 'rm -rf /', path: '../../etc/passwd' },
+    const wired = createFrontServer({
+      config: { token: TOKEN },
+      deps: { deriveState: async () => ({ queue: [], done: [] }) },
     })
-    expect(res.statusCode).toBe(501)
-    expect(res.body).toBe('not implemented') // no echo, no field name, no oracle
+    expect((await call(wired, { url: '/api/state', headers: bearer() })).statusCode).toBe(200)
   })
 })
 
