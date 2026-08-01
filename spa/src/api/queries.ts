@@ -3,7 +3,15 @@ import type { UseMutationResult } from '@tanstack/react-query'
 import * as api from './client'
 import { ApiError } from './client'
 import type { EnqueueInput } from './client'
-import type { ChatHistory, DraftKind, HarnessPayload, OnboardingState, StatePayload, TaskDetail } from './types'
+import type {
+  ChatHistory,
+  DraftKind,
+  HarnessPayload,
+  ImportSelection,
+  OnboardingState,
+  StatePayload,
+  TaskDetail,
+} from './types'
 
 /**
  * queries.ts — how the window asks, and how often.
@@ -246,11 +254,11 @@ export function useSendChat() {
 
 /** Look through the project for helpers that already live there, and take them in. */
 export function useScanImport() {
-  return useAction<{ project?: string }, Awaited<ReturnType<typeof api.scanImport>>>((input) => api.scanImport(input))
+  return useAction<void, Awaited<ReturnType<typeof api.scanImport>>>(() => api.scanImport())
 }
 
 export function useEnrollImport() {
-  return useAction<{ batchId: string; keys: string[] }, Awaited<ReturnType<typeof api.enrollImport>>>(
+  return useAction<{ selections: ImportSelection[] }, Awaited<ReturnType<typeof api.enrollImport>>>(
     (input) => api.enrollImport(input),
     [HARNESS_KEY],
   )

@@ -627,26 +627,83 @@ export interface ChatHistory {
 
 // ── bringing your own helpers in (declared routes, filled by their own work) ────────
 
+/**
+ * What the scanner found a thing to BE. Only the first two can be taken automatically;
+ * `unknown` and `rules` travel with a reason and are moved by hand, on purpose.
+ */
+export type ImportKind = 'agent' | 'skill' | 'unknown' | 'rules'
+
+/** Something already answers to this name here — and it is never quietly overwritten. */
+export interface ImportCollision {
+  /** What holds the name: a roster worker, a definition of the park, or a file on the path. */
+  existingKind: string
+  /** A free name the scanner checked for us. Null when even the suffixes are taken. */
+  suggestion: string | null
+}
+
 export interface ImportCandidate {
-  key: string
-  kind: DraftKind
-  title: string
+  kind: ImportKind
+  /** Null when the foreign file's name does not reduce to a usable one. */
+  slug: string | null
+  name: string
   summary: string
   /** Where it came from, in plain words — never a path. */
-  origin: string
-  /** Set when something with this name already lives here. */
-  collision?: string
+  source: string
+  /** Why it cannot be taken automatically. Carried by `unknown` and `rules`. */
+  reason?: string
+  collision?: ImportCollision
+}
+
+/** A part of the estate that has nothing to offer, and says why in words. */
+export interface ImportNotReady {
+  id: string
+  title: string
+  reason: string
 }
 
 export interface ImportScanResult {
-  batchId: string
+  format: string
   candidates: ImportCandidate[]
+  notReady: ImportNotReady[]
+}
+
+/**
+ * ONE chosen candidate. `overrideSlug` is accepted ONLY for a candidate the scan marked
+ * with a collision, and the daemon checks the name again at the moment of writing — a
+ * rename that arrived on anything else is a refusal, not a silent rewrite.
+ */
+export interface ImportSelection {
+  slug: string
+  kind: string
+  overrideSlug?: string
+}
+
+/** One thing the forge's own lint had to say about an imported definition. */
+export interface ImportLintFinding {
+  name: string
+  detail: string
+}
+
+/**
+ * What happened to ONE chosen definition. A refusal travels here, per item: one taken name
+ * neither buries the batch nor stops the rest from landing.
+ */
+export interface ImportDraftResult {
+  kind: string | null
+  slug: string | null
+  /** `awaiting_approval` when it landed as a draft; `refused` or `manual` when it did not. */
+  status: string
+  /** Where the draft now lives in the project, relative to its root. */
+  path?: string
+  reason?: string
+  /** Present when the item was taken in under another name. */
+  renamedFrom?: string
+  lint?: { ok: boolean; findings: ImportLintFinding[] }
+  receiptRef?: string
 }
 
 export interface ImportEnrollResult {
-  batchId: string
-  enrolled: number
-  drafts: DraftCard[]
+  drafts: ImportDraftResult[]
 }
 
 // ── the first run (declared routes, filled by their own work) ───────────────────────
