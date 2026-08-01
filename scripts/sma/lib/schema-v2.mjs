@@ -20,6 +20,8 @@
  * Exports (consumed by the corpus lint, the migration and the write pipeline):
  *   - MEMORY_TYPES · TRUTH_MODES · SENSITIVITY_CLASSES · AUTHORITY_LEVELS ·
  *     STATUS_VALUES · RISK_LEVELS · CONTEXT_PRIORITIES — frozen closed vocabularies
+ *   - validateRecord(frontmatter, {migratedFromV1}) -> {errors, warnings}
+ *   - validateFingerprint(fingerprint) -> string[]
  *   - validateId(id, filePath) -> string|null
  *   - PRIVATE_FACET_PATTERN · isPrivateFacet(value)
  *
@@ -27,6 +29,8 @@
  * Expiry ("is this valid_until in the past?") is a LINT concern precisely
  * because it needs a clock; this module must stay replayable and testable.
  */
+
+import { V2_KEY_ORDER } from './frontmatter.mjs'
 
 /**
  * What kind of knowledge the record carries (docs/MEMORY-MODEL.md §2).
@@ -147,4 +151,214 @@ function fileStem(filePath) {
   const base = segments[segments.length - 1] ?? ''
   const dot = base.lastIndexOf('.')
   return dot > 0 ? base.slice(0, dot) : base
+}
+
+/** Fields every schema-v2 record must carry, whatever else it says. */
+const REQUIRED_FIELDS = Object.freeze([
+  'id',
+  'schema_version',
+  'status',
+  'memory_type',
+  'truth_mode',
+  'claim',
+  'language',
+  'sensitivity',
+])
+
+/** Truth modes that are machine-rederivable: the record must carry its check. */
+const FACT_MODES = Object.freeze(['observed', 'factual'])
+
+/** Truth modes that are authored judgment: the record must carry its provenance. */
+const INTERPRETATION_MODES = Object.freeze(['inferred', 'hypothesis', 'decision', 'normative'])
+
+/** The honest "nothing recorded" value — legal, but it caps a record at draft. */
+const NO_EVIDENCE = 'none-recorded'
+
+/**
+ * validateRecord(frontmatter, {migratedFromV1}) -> {errors, warnings}
+ *
+ * The legality pass over a parsed v2 record. Two tiers, by provenance:
+ *   - STRUCTURE (required fields, one-claim law, closed vocabularies, fingerprint
+ *     shape, external-artifact freshness) is always an ERROR — a record that
+ *     breaks it is not a v2 record at all;
+ *   - DISCIPLINE (fact carries its check, interpretation carries its provenance)
+ *     is an ERROR for a record authored as v2 and a WARNING for one migrated from
+ *     v1, which gets a grace period to grow the missing fields rather than being
+ *     locked out of the corpus it already lives in.
+ * Either signal engages the grace: the caller's `migratedFromV1` option or the
+ * record's own `migrated_from: v1` field.
+ *
+ * PURE by construction — no fs, no clock. "Is this valid_until in the past?" is
+ * a lint question because it needs today's date; everything here is replayable.
+ *
+ * @param {object} frontmatter — a parsed v2 frontmatter object (parseNote output)
+ * @param {{migratedFromV1?: boolean}} [opts]
+ * @returns {{errors: string[], warnings: string[]}}
+ */
+export function validateRecord(frontmatter, opts = {}) {
+  const errors = []
+  const warnings = []
+
+  if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
+    errors.push('record: expected a parsed v2 frontmatter object')
+    return { errors, warnings }
+  }
+
+  const record = frontmatter
+  const migrated = opts.migratedFromV1 === true || String(record.migrated_from ?? '').trim() === 'v1'
+  /** A discipline finding: error for a native v2 record, warning under the migration grace. */
+  const discipline = (message) => (migrated ? warnings : errors).push(message)
+
+  // ── Structure: required fields ────────────────────────────────────────────
+  for (const field of REQUIRED_FIELDS) {
+    if (!isPresent(record[field])) {
+      errors.push(`${field}: required — every schema-v2 record must carry it`)
+    }
+  }
+
+  if (isPresent(record.schema_version) && Number(record.schema_version) !== 2) {
+    errors.push(`schema_version: must be 2 for a schema-v2 record (got "${record.schema_version}")`)
+  }
+
+  // One durable claim per record: a list of claims is several records.
+  if (isPresent(record.claim) && typeof record.claim !== 'string') {
+    errors.push('claim: must be a single string — one durable claim per record')
+  }
+
+  // ── Structure: closed vocabularies ────────────────────────────────────────
+  checkEnum(errors, record, 'memory_type', MEMORY_TYPES)
+  checkEnum(errors, record, 'truth_mode', TRUTH_MODES)
+  checkEnum(errors, record, 'status', STATUS_VALUES)
+  checkEnum(errors, record, 'sensitivity', SENSITIVITY_CLASSES)
+  checkEnum(errors, record, 'risk', RISK_LEVELS)
+  checkEnum(errors, record, 'context_priority', CONTEXT_PRIORITIES)
+
+  const source = isPlainObject(record.source) ? record.source : null
+  if (source && isPresent(source.authority) && !AUTHORITY_LEVELS.includes(source.authority)) {
+    errors.push(
+      `source.authority: "${source.authority}" is outside the closed vocabulary (${AUTHORITY_LEVELS.join(' · ')})`,
+    )
+  }
+
+  // ── Structure: the composite fingerprint ──────────────────────────────────
+  if (isPresent(record.fingerprint)) errors.push(...validateFingerprint(record.fingerprint))
+
+  // ── Structure: claims about external artifacts need a horizon ─────────────
+  if (!isPresent(record.valid_until) && collectRefs(record).some(isUrlRef)) {
+    errors.push(
+      'valid_until: required when a source or evidence ref points at an external artifact (URL) — an outside artifact moves without telling us',
+    )
+  }
+
+  // ── Structure: the field universe (unknown keys survive, but are reported) ─
+  for (const key of Object.keys(record)) {
+    if (!V2_KEY_ORDER.includes(key)) {
+      warnings.push(`${key}: not part of the schema-v2 field universe — kept as-is, but nothing validates it`)
+    }
+  }
+
+  // ── Discipline: FACT carries its check ────────────────────────────────────
+  const truthMode = record.truth_mode
+  if (FACT_MODES.includes(truthMode) && !isPresent(record.fingerprint) && !isPresent(record.verification)) {
+    discipline(
+      `truth_mode: a "${truthMode}" claim is machine-rederivable and must carry verification and/or fingerprint — otherwise it goes stale in silence`,
+    )
+  }
+
+  // ── Discipline: INTERPRETATION carries its provenance ─────────────────────
+  if (INTERPRETATION_MODES.includes(truthMode)) {
+    if (!source || !isPresent(source.authority)) {
+      discipline(
+        `source.authority: a "${truthMode}" claim is authored judgment and must name the authority behind it (${AUTHORITY_LEVELS.join(' · ')})`,
+      )
+    }
+    if (record.status === 'active' && !hasEvidence(record)) {
+      discipline(
+        `evidence: an active "${truthMode}" claim must carry evidence — without it the record belongs in status draft`,
+      )
+    }
+  }
+
+  return { errors, warnings }
+}
+
+/**
+ * validateFingerprint(fingerprint) -> string[]
+ *
+ * The composite stamp: a human-readable product version (which epoch of the
+ * product the claim describes) plus, when the claim is bound to files, the paths
+ * and a hash over them. A hash without its paths cannot be recomputed, so it
+ * cannot detect drift — that combination is rejected rather than trusted.
+ *
+ * @param {unknown} fingerprint
+ * @returns {string[]} error messages (empty when the shape holds)
+ */
+export function validateFingerprint(fingerprint) {
+  const errors = []
+  if (!isPlainObject(fingerprint)) {
+    return ['fingerprint: must be a block with product_version and optional tree_paths/tree_hash']
+  }
+  if (typeof fingerprint.product_version !== 'string' || !fingerprint.product_version.trim()) {
+    errors.push('fingerprint.product_version: required whenever a fingerprint is present — it names the epoch the claim describes')
+  }
+  const paths = fingerprint.tree_paths
+  if (isPresent(paths) && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim()))) {
+    errors.push('fingerprint.tree_paths: must be an array of path strings')
+  }
+  if (isPresent(fingerprint.tree_hash) && !isPresent(paths)) {
+    errors.push('fingerprint.tree_hash: requires tree_paths — a hash with no paths cannot be recomputed, so it can never prove drift')
+  }
+  return errors
+}
+
+/** Present = not null/undefined, not blank string, not empty array/object. */
+function isPresent(value) {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') return value.trim() !== ''
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') return Object.keys(value).length > 0
+  return true
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Enum membership for an optional field: absence is someone else's rule. */
+function checkEnum(errors, record, field, registry) {
+  const value = record[field]
+  if (!isPresent(value)) return
+  if (!registry.includes(value)) {
+    errors.push(`${field}: "${value}" is outside the closed vocabulary (${registry.join(' · ')})`)
+  }
+}
+
+/** Every ref the record points at, from source.refs and evidence[]. */
+function collectRefs(record) {
+  const refs = []
+  const source = isPlainObject(record.source) ? record.source : null
+  if (source && Array.isArray(source.refs)) refs.push(...source.refs)
+  if (Array.isArray(record.evidence)) {
+    for (const item of record.evidence) {
+      if (typeof item === 'string') refs.push(item)
+      else if (isPlainObject(item) && typeof item.ref === 'string') refs.push(item.ref)
+    }
+  }
+  return refs.filter((ref) => typeof ref === 'string')
+}
+
+function isUrlRef(ref) {
+  return /^https?:\/\//i.test(ref.trim())
+}
+
+/** Evidence that would actually re-verify something — none-recorded is honest, not evidence. */
+function hasEvidence(record) {
+  const evidence = record.evidence
+  if (typeof evidence === 'string') return evidence.trim() !== '' && evidence.trim() !== NO_EVIDENCE
+  if (!Array.isArray(evidence)) return false
+  return evidence.some((item) =>
+    typeof item === 'string'
+      ? item.trim() !== '' && item.trim() !== NO_EVIDENCE
+      : isPlainObject(item) && isPresent(item.ref) && String(item.ref).trim() !== NO_EVIDENCE,
+  )
 }
