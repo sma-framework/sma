@@ -125,8 +125,12 @@ function sectionBody(text, titleRe) {
  * founder-decision note into the visible situation and the hidden answer (the
  * decision + why that get stripped into the key). Situation text is DATA, copied
  * verbatim (never interpreted).
+ *
+ * Exported because the «Мой стиль» read model shows the same three parts of the
+ * same drafts: ONE rule for where a decision note is cut, or the two copies drift
+ * and one of them starts publishing the wrong section.
  */
-function parseNoteToPair(id, text) {
+export function parseNoteToPair(id, text) {
   return {
     id,
     situation: sectionBody(text, 'Ситуация') || '(контекст не зафиксирован)',
