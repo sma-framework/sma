@@ -170,8 +170,14 @@ const REQUIRED_FIELDS = Object.freeze([
 /** Truth modes that are machine-rederivable: the record must carry its check. */
 const FACT_MODES = Object.freeze(['observed', 'factual'])
 
-/** Truth modes that are authored judgment: the record must carry its provenance. */
-const INTERPRETATION_MODES = Object.freeze(['inferred', 'hypothesis', 'decision', 'normative'])
+/**
+ * Truth modes that are authored judgment: the record must carry its provenance.
+ * EXPORTED because the write pipeline gates on exactly this set (its step 6
+ * refuses to let a provenance-free judgment become active memory) — a second
+ * list of interpretation modes in another module is precisely the drift this
+ * vocabulary module exists to prevent.
+ */
+export const INTERPRETATION_MODES = Object.freeze(['inferred', 'hypothesis', 'decision', 'normative'])
 
 /** The honest "nothing recorded" value — legal, but it caps a record at draft. */
 const NO_EVIDENCE = 'none-recorded'
@@ -430,8 +436,13 @@ export function resolveApprovalPath(record) {
   return 'evidence-review'
 }
 
-/** Evidence that would actually re-verify something — none-recorded is honest, not evidence. */
-function hasEvidence(record) {
+/**
+ * Evidence that would actually re-verify something — none-recorded is honest,
+ * not evidence. EXPORTED for the same reason as INTERPRETATION_MODES: the write
+ * pipeline asks this exact question at its evidence step, and the
+ * `none-recorded` rule must have one implementation, not two.
+ */
+export function hasEvidence(record) {
   const evidence = record.evidence
   if (typeof evidence === 'string') return evidence.trim() !== '' && evidence.trim() !== NO_EVIDENCE
   if (!Array.isArray(evidence)) return false
