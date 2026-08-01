@@ -43,7 +43,7 @@
  * Node built-ins only; io and runners injectable; zero npm deps, zero LLM, zero network.
  */
 
-import { readFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { execSync, execFileSync } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -51,7 +51,7 @@ import { join } from 'node:path'
 
 import { scoreNoteCases } from './context-pack.mjs'
 import { corpusStats } from './economy.mjs'
-import { freshClone } from './receipts.mjs'
+import { freshClone, recordReceipt, verifyReceipts } from './receipts.mjs'
 
 /**
  * The re-run commands. Both are bare verb forms on purpose: a check_command must pass
@@ -760,4 +760,153 @@ export function captureCleanInstall(opts = {}) {
     steps,
     check_command: checkCommand,
   }
+}
+
+// ── the whole baseline: capture -> record -> replay ────────────────────────────
+
+/** The five measurements, in the order they are captured and reported. */
+export const BASELINE_METRICS = ['retrieval', 'context-cost', 'hook-latency', 'worker-recovery', 'clean-install']
+
+/**
+ * Which metrics are PURE over their inputs, and therefore whose stdout can be bound into a
+ * receipt digest. The wall-clock metrics are deliberately absent: their output changes on
+ * every honest re-run, so binding stdout would manufacture a divergence at every replay and
+ * teach a reader to ignore the one signal that matters. For those, the receipt binds the
+ * command and its exit code — what is re-verified is that the measurement STILL RUNS; the
+ * numbers themselves are compared by reading the reports side by side.
+ */
+export const DETERMINISTIC_METRICS = ['retrieval', 'context-cost']
+
+/** The claim each receipt carries in words, so a verdict is readable without the code. */
+const METRIC_ASSERTIONS = {
+  retrieval: 'the retrieval-recall baseline re-runs over the corpus and the gold cases',
+  'context-cost': 'the context-cost baseline re-runs over the corpus',
+  'hook-latency': 'the hook-latency baseline re-runs: the installed hook entry is spawned and timed',
+  'worker-recovery': 'the worker-recovery baseline re-runs: either a drilled recovery time or a recorded unavailable environment',
+  'clean-install': 'the clean-install baseline re-runs: a fresh clone is installed into an empty directory and timed',
+}
+
+/** The receipt id for one metric — stable across re-measurements, so verdicts line up. */
+export const receiptIdFor = (metric) => `baseline-${metric}`
+
+/**
+ * captureAll(opts) → {reports:[{metric, report}], skipped:[{metric, reason}]}.
+ *
+ * The one entry that produces the whole baseline. `only` narrows it to a single metric (the
+ * form each recorded check_command re-runs). A metric whose input is absent is SKIPPED WITH
+ * A REASON rather than reported as a zero — an unmeasured thing and a measured-nothing are
+ * different facts, and a baseline that blurs them is worthless a month later.
+ *
+ * @param {object} opts
+ * @returns {Promise<{reports: object[], skipped: object[]}>}
+ */
+export async function captureAll(opts = {}) {
+  const {
+    only,
+    corpusDir,
+    casesPath,
+    settingsPath,
+    repoRoot,
+    queueUrl,
+    runs,
+    exists = existsSync,
+    capture = {},
+  } = opts
+
+  const wanted = only ? [String(only)] : BASELINE_METRICS
+  const reports = []
+  const skipped = []
+  const unknown = wanted.filter((m) => !BASELINE_METRICS.includes(m))
+  for (const m of unknown) skipped.push({ metric: m, reason: `unknown metric (known: ${BASELINE_METRICS.join(', ')})` })
+
+  for (const metric of wanted.filter((m) => BASELINE_METRICS.includes(m))) {
+    if (metric === 'retrieval') {
+      if (!corpusDir || !exists(corpusDir)) {
+        skipped.push({ metric, reason: 'no memory corpus directory to score against' })
+        continue
+      }
+      if (!casesPath || !exists(casesPath)) {
+        skipped.push({ metric, reason: 'no gold-cases file (pass --cases <path> to score retrieval)' })
+        continue
+      }
+      reports.push({ metric, report: (capture.retrieval ?? captureRetrieval)({ corpusDir, casesPath }) })
+      continue
+    }
+    if (metric === 'context-cost') {
+      if (!corpusDir || !exists(corpusDir)) {
+        skipped.push({ metric, reason: 'no memory corpus directory to price' })
+        continue
+      }
+      reports.push({ metric, report: (capture.contextCost ?? captureContextCost)({ corpusDir }) })
+      continue
+    }
+    if (metric === 'hook-latency') {
+      reports.push({
+        metric,
+        report: (capture.hookLatency ?? captureHookLatency)({ settingsPath, cwd: repoRoot, ...(runs == null ? {} : { runs }) }),
+      })
+      continue
+    }
+    if (metric === 'worker-recovery') {
+      reports.push({ metric, report: await (capture.workerRecovery ?? captureWorkerRecovery)({ queueUrl }) })
+      continue
+    }
+    if (metric === 'clean-install') {
+      if (!repoRoot) {
+        skipped.push({ metric, reason: 'no repository root to clone from' })
+        continue
+      }
+      reports.push({ metric, report: (capture.cleanInstall ?? captureCleanInstall)({ repoRoot }) })
+    }
+  }
+
+  return { reports, skipped }
+}
+
+/**
+ * recordBaselineReceipts({reports, runCommand, cwd}) → {receipts, errors}.
+ *
+ * Turns each captured report into a structural receipt: the claim in words, the exact
+ * command that reproduces it, and the digest of running that command NOW. recordReceipt
+ * gates on the SAFE_COMMAND allowlist first, so a measurement whose check_command is not
+ * re-runnable cannot be recorded at all — which is the whole point of shaping the reports
+ * this way in the first place.
+ *
+ * @param {{reports:object[], runCommand:Function, cwd?:string}} args
+ * @returns {{receipts: object[], errors: object[]}}
+ */
+export function recordBaselineReceipts({ reports = [], runCommand, cwd } = {}) {
+  const receipts = []
+  const errors = []
+  for (const { metric, report } of reports) {
+    const res = recordReceipt({
+      entry: {
+        id: receiptIdFor(metric),
+        assertion: METRIC_ASSERTIONS[metric] ?? `the ${metric} baseline re-runs`,
+        check_command: report.check_command,
+        hash_stdout: DETERMINISTIC_METRICS.includes(metric),
+      },
+      runCommand,
+      cwd,
+    })
+    if (res.error) errors.push({ metric, error: res.error })
+    else receipts.push(res.receipt)
+  }
+  return { receipts, errors }
+}
+
+/**
+ * replayBaselineReceipts({receipts, runCommand, cwd, now}) → {records, invalid, divergent}.
+ *
+ * Re-runs previously recorded baseline receipts through the SAME verification path the rest
+ * of the product uses, and counts the ones that no longer reproduce. Replay is what makes a
+ * baseline a contract rather than a note: a number nobody can re-derive months later never
+ * had any authority to begin with.
+ *
+ * @param {{receipts:object[], runCommand:Function, cwd?:string, now?:string}} args
+ */
+export function replayBaselineReceipts({ receipts = [], runCommand, cwd, now } = {}) {
+  const { records, invalid } = verifyReceipts({ receipts, runCommand, cwd, now })
+  const divergent = records.filter((r) => r.verdict !== 'verified')
+  return { records, invalid, divergent }
 }

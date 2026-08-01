@@ -380,3 +380,48 @@ describe('cli.mjs status — collision counter is bounded to today (WR-04)', () 
     expect(parsed.collisions).toBe(1) // ONLY today's collision, not 3
   })
 })
+
+describe('cli.mjs baseline — the measurement verb (capture | replay)', () => {
+  it('names both subcommands in its usage and never crashes without one', () => {
+    const { stdout } = runCli(['baseline'])
+    expect(stdout).toMatch(/baseline capture/)
+    expect(stdout).toMatch(/baseline replay/)
+    expect(stdout).toMatch(/--record/)
+  })
+
+  it('captures a metric against an EMPTY project without inventing numbers', () => {
+    // the temp root has no corpus, no settings, no queue — every branch must be honest
+    const cost = runCli(['baseline', 'capture', '--only', 'context-cost', '--json'])
+    expect(cost.status).toBe(0)
+    expect(JSON.parse(cost.stdout).skipped[0]).toMatchObject({ metric: 'context-cost' })
+
+    const hook = runCli(['baseline', 'hook-latency', '--json'])
+    expect(hook.status).toBe(0)
+    const report = JSON.parse(hook.stdout).reports[0]
+    expect(report.metric).toBe('hook-latency')
+    expect(report.runs).toBe(0) // no wired hook here
+    expect(report.p95_ms).toBeNull() // and therefore no fabricated milliseconds
+    expect(report.check_command).toMatch(/^node scripts\/sma\/cli\.mjs baseline/)
+
+    const recovery = runCli(['baseline', 'worker-recovery', '--json'])
+    expect(recovery.status).toBe(0)
+    const rec = JSON.parse(recovery.stdout).reports[0]
+    expect(rec.status).toBe('environment-unavailable')
+    expect('recovery_ms' in rec).toBe(false)
+  })
+
+  it('replays an empty receipt store as an honest empty, not a failure', () => {
+    const { stdout, status } = runCli(['baseline', 'replay', '--json'])
+    expect(status).toBe(0)
+    expect(JSON.parse(stdout)).toMatchObject({ replayed: 0, divergent: 0 })
+  })
+
+  it('is documented in both READMEs — the same change, both languages', () => {
+    const repoRoot = join(__dirname, '..', '..', '..')
+    for (const file of ['README.md', 'README.ru.md']) {
+      const text = readFileSync(join(repoRoot, file), 'utf8')
+      const commands = text.slice(text.indexOf('## Commands') === -1 ? text.indexOf('## Команды') : text.indexOf('## Commands'))
+      expect(commands).toContain('baseline')
+    }
+  })
+})

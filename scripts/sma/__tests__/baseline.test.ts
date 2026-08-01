@@ -30,6 +30,12 @@
  *   - Test 15 (recovery kills nothing): the module signals no pid at all (source assertion).
  *   - Test 16 (clean install): wall_ms + per-step timings through an injected step runner.
  *   - Test 17 (clean install, failing step): reported incomplete, never as an install time.
+ *   - Test 18 (capture-all): the five metrics under one entry; a metric whose input is
+ *     absent is SKIPPED WITH A REASON, never reported as a zero.
+ *   - Test 19 (record): every captured report becomes a receipt; the wall-clock metrics
+ *     bind command+exit only, the pure ones bind stdout too.
+ *   - Test 20 (replay): recorded receipts re-verify, and a changed deterministic output
+ *     surfaces as divergent rather than passing quietly.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -44,7 +50,13 @@ import {
   captureHookLatency,
   captureWorkerRecovery,
   captureCleanInstall,
+  captureAll,
+  recordBaselineReceipts,
+  replayBaselineReceipts,
   discoverHookEntry,
+  BASELINE_METRICS,
+  DETERMINISTIC_METRICS,
+  receiptIdFor,
   HOOK_LATENCY_CHECK_COMMAND,
   WORKER_RECOVERY_CHECK_COMMAND,
   CLEAN_INSTALL_CHECK_COMMAND,
@@ -468,5 +480,97 @@ describe('captureCleanInstall — the timed fresh install (Tests 16-17)', () => 
     expect(r.steps[1].ok).toBe(false)
     expect(r.steps[1].detail).toMatch(/exploded/)
     expect(Number.isFinite(r.wall_ms)).toBe(true)
+  })
+})
+
+describe('the whole baseline: capture -> record -> replay (Tests 18-20)', () => {
+  // The two wall-clock captures are doubled here ON PURPOSE: this suite is about the
+  // orchestration, and spawning an installer to prove a list has five entries would be
+  // paying minutes for nothing. Their own behavior is Tests 8-17.
+  const doubles = {
+    hookLatency: () => ({ metric: 'hook-latency', runs: 20, p50_ms: 41, p95_ms: 88, mean_ms: 47, entry_command: 'node -e 0', hook_event: 'PreToolUse', nonzero_exits: 0, check_command: HOOK_LATENCY_CHECK_COMMAND }),
+    workerRecovery: async () => ({ metric: 'worker-recovery', status: 'environment-unavailable', detail: 'no queue here', check_command: WORKER_RECOVERY_CHECK_COMMAND }),
+    cleanInstall: () => ({ metric: 'clean-install', status: 'measured', wall_ms: 9000, steps: [], check_command: CLEAN_INSTALL_CHECK_COMMAND }),
+  }
+
+  const allOpts = () => ({ corpusDir, casesPath, settingsPath: join(dir, 'settings.json'), repoRoot: dir, capture: doubles })
+
+  beforeEach(() => {
+    writeCases([{ task: 'fix the crm handler', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }])
+  })
+
+  it('captures the five metrics, and SKIPS a metric whose input is absent (Test 18)', async () => {
+    const all = await captureAll(allOpts())
+    expect(all.reports.map((r: { metric: string }) => r.metric)).toEqual(BASELINE_METRICS)
+    expect(all.skipped).toEqual([])
+    expect(all.reports.every((r: { report: { check_command: string } }) => isSafeCommand(r.report.check_command))).toBe(true)
+
+    // no gold cases -> retrieval is skipped WITH A REASON, never scored as 0 recall
+    const noCases = await captureAll({ ...allOpts(), casesPath: join(dir, 'no-such.jsonl') })
+    expect(noCases.reports.map((r: { metric: string }) => r.metric)).not.toContain('retrieval')
+    expect(noCases.skipped).toEqual([{ metric: 'retrieval', reason: expect.stringContaining('gold-cases') }])
+
+    // --only narrows to the exact form a recorded check_command re-runs
+    const one = await captureAll({ ...allOpts(), only: 'context-cost' })
+    expect(one.reports).toHaveLength(1)
+    expect(one.reports[0].report.metric).toBe('context-cost')
+
+    // an unknown metric is a named skip, not a silent empty run
+    const bogus = await captureAll({ ...allOpts(), only: 'latency' })
+    expect(bogus.reports).toEqual([])
+    expect(bogus.skipped[0]).toMatchObject({ metric: 'latency' })
+  })
+
+  it('records one receipt per metric; only the pure metrics bind stdout (Test 19)', async () => {
+    const { reports } = await captureAll(allOpts())
+    const { receipts, errors } = recordBaselineReceipts({
+      reports,
+      runCommand: (cmd: string) => ({ stdout: `report for ${cmd}\n`, exitCode: 0 }),
+    })
+
+    expect(errors).toEqual([])
+    expect(receipts.map((r: { id: string }) => r.id)).toEqual(BASELINE_METRICS.map(receiptIdFor))
+    for (const r of receipts) {
+      expect(r.expected_sha256).toMatch(/^[0-9a-f]{64}$/)
+      expect(r.expected_exit).toBe(0)
+      expect(r.assertion.length).toBeGreaterThan(0)
+    }
+
+    // a wall-clock measurement re-runs to DIFFERENT milliseconds by nature: binding its
+    // stdout would manufacture a divergence at every honest replay
+    const boundStdout = receipts.filter((r: { hash_stdout: boolean }) => r.hash_stdout).map((r: { id: string }) => r.id)
+    expect(boundStdout).toEqual(DETERMINISTIC_METRICS.map(receiptIdFor))
+
+    // a command off the allowlist is refused, never recorded
+    const refused = recordBaselineReceipts({
+      reports: [{ metric: 'retrieval', report: { check_command: 'rm -rf /' } }],
+      runCommand: () => ({ stdout: '', exitCode: 0 }),
+    })
+    expect(refused.receipts).toEqual([])
+    expect(refused.errors[0].metric).toBe('retrieval')
+  })
+
+  it('replays recorded receipts and reports what no longer reproduces (Test 20)', async () => {
+    const { reports } = await captureAll(allOpts())
+    const stable = (cmd: string) => ({ stdout: `report for ${cmd}\n`, exitCode: 0 })
+    const { receipts } = recordBaselineReceipts({ reports, runCommand: stable })
+
+    const clean = replayBaselineReceipts({ receipts, runCommand: stable, now: 'T' })
+    expect(clean.invalid).toEqual([])
+    expect(clean.divergent).toEqual([])
+    expect(clean.records.every((r: { verdict: string }) => r.verdict === 'verified')).toBe(true)
+
+    // the corpus changed: the DETERMINISTIC metrics diverge, the wall-clock ones (command
+    // + exit bound only) still verify — exactly the signal a re-measurement wants
+    const drifted = replayBaselineReceipts({
+      receipts,
+      runCommand: (cmd: string) => ({ stdout: `DIFFERENT report for ${cmd}\n`, exitCode: 0 }),
+      now: 'T',
+    })
+    expect(drifted.divergent.map((r: { id: string }) => r.id)).toEqual(DETERMINISTIC_METRICS.map(receiptIdFor))
+
+    // a check that stops running at all is divergent too (exit code is always bound)
+    const broken = replayBaselineReceipts({ receipts, runCommand: () => ({ stdout: '', exitCode: 1 }), now: 'T' })
+    expect(broken.divergent).toHaveLength(receipts.length)
   })
 })

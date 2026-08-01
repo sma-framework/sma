@@ -33,7 +33,7 @@ through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
 `gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|`
 `gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|`
 `build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|`
-`state|exec-journal|metrics|report|bench|reverify|receipt-hash|chain-tip|chain-verify|`
+`state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|`
 `pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
 `grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|manifest|`
 `worktree|merge|explain|doc-audit|deleteme|memory-preview|vendor|memory|ship-lane|decisions|exam|update>`
@@ -99,6 +99,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `build-index` | (re)generate MEMORY.md | `--write` (DRY by default) |
 | `load` | resolve a tag set into CORE + periphery notes | `--tags <csv> [--json]` |
 | `snapshot` | push a bounded, allowlisted state view to the CRM cockpit | `--json` |
+| `baseline` | measure what the memory layer costs and misses TODAY, as receipt-shaped reports: retrieval recall against gold cases, corpus context cost, hook latency over the INSTALLED hook entry (discovered from the settings hooks block, nothing hardcoded), worker recovery drilled against a real queue, and a timed clean install from a fresh clone. `--record` stores one structural receipt per metric (wall-clock metrics bind command + exit only — their output changes on every honest re-run); `replay` re-verifies the stored receipts and exits non-zero on anything that no longer reproduces. An unreachable queue is a RECORDED `environment-unavailable` result, never a fabricated number. NOT hook-facing. | `capture [--only <metric>] [--cases <path>] [--queue-url <url>] [--runs N] [--record]` \| `replay` \| `<retrieval\|context-cost\|hook-latency\|worker-recovery\|clean-install>` \| `--json` |
 | `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (9.2-03). The footprint receipt (9.4-07) compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
 | `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block). The digest binds the exact command + exit code + normalized stdout; `--exit-only` drops stdout for nondeterministic outputs (command and exit stay bound) | `<command> [--exit-only] [--cwd <path>]` |
 | `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
