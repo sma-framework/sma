@@ -421,6 +421,137 @@ export function growExam({ contextDir } = {}) {
   return { added: toAdd.length, total: existing.size }
 }
 
+// ─────────────────────────── note-level gold cases ──────────────────────────
+
+/**
+ * A NOTE-level gold case — the retrieval-recall unit of the measurement baseline:
+ *   {task, expected_notes[], critical_notes[], forbidden_notes[]}
+ *
+ * WHY A SEPARATE SCORER, NOT AN EXTENDED runExam: the exam harness above is a
+ * FILE-level pass/fail counter over a growing question log — its case model is one
+ * {query, expected} pair per line, its ground truth is the manifest's files[] (notes,
+ * cards AND fragment files together), and its {count,total,failures} return is what
+ * the CLI's exam replay prints. A gold case asks a different question — which NOTES
+ * arrive, which of them are critical, and which must NOT arrive — and needs the
+ * core/periphery split that files[] deliberately flattens. Widening runExam's return
+ * would have bent an existing consumer's contract for a second purpose; this helper
+ * sits beside it and reuses the same substrate instead.
+ *
+ * GROUND TRUTH IS THE REAL LOADER: the loaded set comes from compilePack — task text
+ * → deriveTaskTags → resolvePeriphery (generator CORE rule + tag-matched periphery)
+ * → budget prefix. Nothing about «what loads» is re-derived here, so the score can
+ * never drift from the behavior it claims to measure.
+ */
+
+/** Unique + sorted (stable report bytes regardless of input order). */
+function uniqSorted(list) {
+  return [...new Set((Array.isArray(list) ? list : []).map((s) => String(s)))].sort()
+}
+
+/**
+ * scoreNoteCases(opts) → {coreLoaded, cases[], totals}. PURE over its inputs (reads the
+ * corpus, writes nothing, no clock, no randomness): the same corpus + the same cases
+ * always produce the identical object.
+ *
+ * Per case: {task, loaded, expected, hits, missing, criticalMissing, forbiddenPresent}
+ *   - loaded          the note files that actually arrived in the pack, in pack order
+ *   - hits/missing    expected_notes split by presence in `loaded`
+ *   - criticalMissing critical_notes absent from `loaded` (scored independently of
+ *                     expected_notes — a critical note is critical whether or not the
+ *                     case bothered to list it twice)
+ *   - forbiddenPresent forbidden_notes that loaded anyway
+ * A case with no `task` string is skipped (never a fabricated score); non-array note
+ * fields degrade to [] rather than throwing.
+ *
+ * @param {object} opts
+ * @param {object[]} opts.cases     gold cases (see the block comment above)
+ * @param {string} [opts.corpusDir]
+ * @param {string} [opts.tagsPath]
+ * @param {object} [opts.dateMap]
+ * @param {string} [opts.commit]    injected (affects packId only, never the score)
+ * @param {number} [opts.budget]
+ * @param {object} [opts.catalog]
+ * @param {object} [opts.profile]
+ * @param {Function} [opts.resolve] resolvePeriphery double
+ * @param {Function} [opts.compile] (taskText) → a compilePack result (default: the real one)
+ */
+export function scoreNoteCases(opts = {}) {
+  const {
+    cases = [],
+    corpusDir,
+    tagsPath,
+    dateMap = {},
+    commit = '',
+    budget = PACK_BUDGET,
+    catalog = null,
+    profile = null,
+    resolve = resolvePeriphery,
+    compile,
+  } = opts
+
+  const compileOne =
+    typeof compile === 'function'
+      ? compile
+      : (taskText) => compilePack({ taskText, commit, corpusDir, tagsPath, dateMap, catalog, profile, budget, resolve })
+
+  const coreLoaded = new Set()
+  const scored = []
+  let expectedTotal = 0
+  let hitTotal = 0
+  let missingTotal = 0
+  let criticalMissingTotal = 0
+  let casesWithCriticalMiss = 0
+  let forbiddenPresentTotal = 0
+
+  for (const gold of Array.isArray(cases) ? cases : []) {
+    if (!gold || typeof gold.task !== 'string' || gold.task.trim() === '') continue
+
+    let packMembers = []
+    try {
+      const res = compileOne(gold.task)
+      packMembers = res && Array.isArray(res.members) ? res.members : []
+    } catch {
+      packMembers = [] // fail-soft — a broken compile scores as «nothing loaded», never a throw
+    }
+    const notes = packMembers.filter((m) => m && m.type === 'note')
+    const loaded = notes.map((m) => String(m.id))
+    const loadedSet = new Set(loaded)
+    for (const m of notes) if (m.sub === 'core') coreLoaded.add(String(m.id))
+
+    const expected = uniqSorted(gold.expected_notes)
+    const critical = uniqSorted(gold.critical_notes)
+    const forbidden = uniqSorted(gold.forbidden_notes)
+
+    const hits = expected.filter((f) => loadedSet.has(f))
+    const missing = expected.filter((f) => !loadedSet.has(f))
+    const criticalMissing = critical.filter((f) => !loadedSet.has(f))
+    const forbiddenPresent = forbidden.filter((f) => loadedSet.has(f))
+
+    expectedTotal += expected.length
+    hitTotal += hits.length
+    missingTotal += missing.length
+    criticalMissingTotal += criticalMissing.length
+    if (criticalMissing.length) casesWithCriticalMiss += 1
+    forbiddenPresentTotal += forbiddenPresent.length
+
+    scored.push({ task: gold.task, loaded, expected, hits, missing, criticalMissing, forbiddenPresent })
+  }
+
+  return {
+    coreLoaded: [...coreLoaded].sort(),
+    cases: scored,
+    totals: {
+      cases: scored.length,
+      expected: expectedTotal,
+      hits: hitTotal,
+      missing: missingTotal,
+      criticalMissing: criticalMissingTotal,
+      casesWithCriticalMiss,
+      forbiddenPresent: forbiddenPresentTotal,
+    },
+  }
+}
+
 /**
  * appendMiss({query, expected, contextDir}) → {added}. Records a manual «not found in
  * time» case as an exam question (dedup on query+expected, append-only).
