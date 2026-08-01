@@ -56,7 +56,8 @@ import { fileURLToPath } from 'node:url'
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { REASON_LABELS, validateTask } from '../queue/adapter.mjs'
 import { casTransition } from '../queue/cas.mjs'
-import { readAttempts } from '../queue/attempt-ledger.mjs'
+import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
+import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 // NOTE: readHarness + the appliers (harness.mjs) are INJECTED via deps — never statically
 // imported here — so each per-task commit stays independently green and no request path can
@@ -354,9 +355,18 @@ function handleAsset({ res, params, deps }) {
   return sendStatic(res, body, type, ASSET_CACHE)
 }
 
+/** The project id a read may be narrowed by: a bounded identifier from the query string,
+ *  used for an in-memory equality compare and nothing else. Anything longer is DROPPED
+ *  rather than carried (an unbounded filter is a body in disguise). */
+function projectFilter(query) {
+  const p = query && query.project
+  return typeof p === 'string' && p.length > 0 && p.length <= 64 ? p : undefined
+}
+
 /** Assemble the full deriveState collaborator set from the injected front deps. */
-function stateDeps(config, deps) {
+function stateDeps(config, deps, project) {
   return {
+    ...(project ? { project } : {}),
     adapter: deps.adapter,
     ledger: deps.ledger,
     ledgerDir: deps.ledgerDir,
@@ -373,18 +383,70 @@ function stateDeps(config, deps) {
   }
 }
 
-/** GET /api/state — the one-poll roster payload (deriveState; Task 2 + costs in Task 4). */
-async function handleState({ res, config, deps }) {
+/**
+ * GET /api/state — the one-poll roster payload (deriveState; Task 2 + costs in Task 4).
+ * The optional `?project=` narrows the TASKS of the payload and nothing else — the project
+ * switcher itself has to keep seeing every project (D-9.7-01).
+ */
+async function handleState({ res, query, config, deps }) {
   if (typeof deps.deriveState !== 'function') return send501(res)
-  const payload = await deps.deriveState(stateDeps(config, deps))
+  const payload = await deps.deriveState(stateDeps(config, deps, projectFilter(query)))
   sendJson(res, 200, payload)
 }
 
 /** GET /api/done — the «сделано за ночь» feed (the done[] slice of the state derive). */
-async function handleDone({ res, config, deps }) {
+async function handleDone({ res, query, config, deps }) {
   if (typeof deps.deriveState !== 'function') return send501(res)
-  const payload = await deps.deriveState(stateDeps(config, deps))
+  const payload = await deps.deriveState(stateDeps(config, deps, projectFilter(query)))
   sendJson(res, 200, { done: Array.isArray(payload.done) ? payload.done : [] })
+}
+
+/** How many journal rows one card may carry — a response is bounded like every other. */
+const JOURNAL_ROW_CAP = 200
+
+/**
+ * readTaskJournal(id, deps) → the three layers of ONE task, shaped for the card:
+ * `dispatcher[]` (code + its human подпись + when), `memoryTrace` (IDS only, de-duplicated)
+ * and the per-attempt approach notes. The ledger is the SAME injected seam the attempts
+ * use (fn-object / ledgerDir), and every failure path yields EMPTY layers — a card must
+ * open for a task that predates the journal.
+ */
+function readTaskJournal(id, deps) {
+  let rows = []
+  try {
+    if (deps.ledger && typeof deps.ledger.readJournalEntries === 'function') {
+      rows = deps.ledger.readJournalEntries(id) || []
+    } else if (deps.ledgerDir) {
+      rows = readJournalEntries(deps.ledgerDir, id)
+    }
+  } catch {
+    rows = [] // an unreadable journal is an EMPTY journal (fail-open)
+  }
+
+  const { entries } = readJournal({ taskId: id, entries: rows })
+  const dispatcher = []
+  const notes = new Set()
+  const reflexes = new Set()
+  const approachByAttempt = new Map()
+
+  for (const row of entries.slice(0, JOURNAL_ROW_CAP)) {
+    const payload = (row && row.payload) || {}
+    if (row.layer === 'dispatcher') {
+      dispatcher.push({
+        code: payload.code ?? null,
+        label: DISPATCH_REASONS[payload.code] ?? null, // the code is what is stored; this is its подпись
+        ts: row.recordedAt ?? null,
+      })
+    } else if (row.layer === 'memory') {
+      for (const n of Array.isArray(payload.notes) ? payload.notes : []) notes.add(n)
+      for (const r of Array.isArray(payload.reflexes) ? payload.reflexes : []) reflexes.add(r)
+    } else if (row.layer === 'approach' && payload.approach) {
+      const attempt = Number.isFinite(Number(row.attempt)) ? Number(row.attempt) : 1
+      approachByAttempt.set(attempt, String(payload.approach))
+    }
+  }
+
+  return { dispatcher, memoryTrace: { notes: [...notes], reflexes: [...reflexes] }, approachByAttempt }
 }
 
 /**
@@ -418,6 +480,11 @@ async function handleTask({ res, params, config, deps }) {
   } catch {
     rawAttempts = []
   }
+  // THE THREE LAYERS (D-9.7-14). The journal rides the SAME ledger seam as the attempts —
+  // no second store — and a task created before the journal existed reads as empty layers,
+  // never as an error: backward compatibility is a hard requirement, not a nicety.
+  const journal = readTaskJournal(id, deps)
+
   const parseReceipt = typeof deps.parseReceiptSummary === 'function' ? deps.parseReceiptSummary : () => null
   const attempts = rawAttempts.map((a) => ({
     attempt: a.attempt ?? null,
@@ -429,6 +496,8 @@ async function handleTask({ res, params, config, deps }) {
     failureReason: a.failureReason ?? null,
     reasonLabel: a.failureReason ? REASON_LABELS[a.failureReason] ?? null : null,
     receipt: parseReceipt(a.receiptRef, { execGit: deps.execGit }),
+    // (b) of the three layers: the worker's own note rides ITS attempt, not the task
+    ...(journal.approachByAttempt.has(a.attempt) ? { approachNote: journal.approachByAttempt.get(a.attempt) } : {}),
   }))
 
   const branch = `wt/${id}`
@@ -463,6 +532,7 @@ async function handleTask({ res, params, config, deps }) {
     branch,
     commits,
     returnedNotes,
+    journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace },
   })
 }
 
@@ -826,24 +896,127 @@ async function handleMcpToggle({ req, res, deps }) {
 // any handler, so an unauthenticated call to any of these is a 401 — never a 501 that would
 // betray which routes exist. Their fill plans are named per group below.
 
-/** GET /api/projects — the project registry read model → plan 9.7-09. */
-function handleProjects({ res }) {
-  send501(res)
+// ── the four project doors (D-9.7-01/08; the route table stays FROZEN at 30) ──
+//
+// A registry WRITE is a config write, so — exactly like the harness appliers — the three
+// config.mjs doors (addProject / renameProject / selectProject) arrive through INJECTED
+// deps and are never statically imported here: no request path reaches the config except
+// through a wired door. The handlers re-implement NOTHING of the registry's rules. They
+// reject unknown keys, hand the body over, map the named error (Unknown* → 404, invalid →
+// 400) and emit the `project.updated` hint the app re-reads on. The id is minted by the
+// door and NEVER moves on a rename — it is the key tasks and workers reference.
+
+/** The write-seam options every config.mjs door takes (all three are DI). */
+function configIo(deps) {
+  return {
+    ...(deps.env ? { env: deps.env } : {}),
+    ...(deps.homedir ? { homedir: deps.homedir } : {}),
+    ...(deps.fsImpl ? { fsImpl: deps.fsImpl } : {}),
+  }
 }
 
-/** POST /api/project/add — register a project directory → plan 9.7-09. */
-function handleProjectAdd({ res }) {
-  send501(res)
+/**
+ * The process holds ONE config object (the composition root hands the same reference to the
+ * front and to the tick). A door returns a NEW config after its atomic write, so the two
+ * registry fields are refreshed in place here — otherwise the very next read would serve
+ * the state the founder just changed. Only these two fields move; nothing else is touched.
+ */
+function refreshRegistry(config, next) {
+  if (!next || typeof next !== 'object') return
+  config.projects = next.projects
+  config.activeProject = next.activeProject
 }
 
-/** POST /api/project/rename — rename a registered project → plan 9.7-09. */
-function handleProjectRename({ res }) {
-  send501(res)
+/** The name a folder suggests when the founder did not type one (never a path). */
+function nameFromPath(path) {
+  const parts = String(path).split(/[/\\]+/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : ''
 }
 
-/** POST /api/project/select — switch the active project → plan 9.7-09. */
-function handleProjectSelect({ res }) {
-  send501(res)
+/** A registry entry as it leaves the process: the two fields a human sees, nothing else. */
+function pickProject(entry) {
+  return { id: entry.id, name: entry.name }
+}
+
+/**
+ * GET /api/projects — the switcher's read model: every project with its per-project task
+ * counts, plus the active one. It is a SLICE of the same derive /api/state serves (the
+ * counts are derived, never stored), explicit-picked to two fields — so no token of the
+ * config and no token of a peer can ride out of here by construction (T-9.7-23).
+ */
+async function handleProjects({ res, config, deps }) {
+  if (typeof deps.deriveState !== 'function') return send501(res)
+  const payload = await deps.deriveState(stateDeps(config, deps))
+  sendJson(res, 200, {
+    projects: Array.isArray(payload.projects) ? payload.projects : [],
+    activeProject: payload.activeProject ?? null,
+  })
+}
+
+/**
+ * POST /api/project/add — take a folder into the register. Body {path, name?}: the folder
+ * the founder picked, and optionally what to call it (absent → the folder's own name). The
+ * id is minted BY THE DOOR from that name; the path is stored as opaque data.
+ */
+async function handleProjectAdd({ req, res, config, deps }) {
+  if (typeof deps.addProject !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['path', 'name']))) return undefined
+  const path = b.path === undefined || b.path === null ? '' : String(b.path)
+  if (path.length > 4096 || path.includes('\0')) return send400(res, 'invalid path')
+  const name = b.name === undefined || b.name === null || String(b.name).trim() === '' ? nameFromPath(path) : String(b.name).trim()
+  if (!name) return send400(res, 'a project needs a name or a path')
+  try {
+    const next = deps.addProject(config, { name, ...(path ? { path } : {}) }, configIo(deps))
+    refreshRegistry(config, next)
+    const entry = next.projects[next.projects.length - 1]
+    emitSafe(deps, { event: 'project.updated', projectId: entry.id })
+    return sendJson(res, 200, { ok: true, project: pickProject(entry) })
+  } catch (err) {
+    return applierError(res, err)
+  }
+}
+
+/**
+ * POST /api/project/rename — body {id, name}. The NAME moves; the id does not, because the
+ * id is what rows and worker profiles reference (D-9.7-08). Unknown id → 404.
+ */
+async function handleProjectRename({ req, res, config, deps }) {
+  if (typeof deps.renameProject !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id', 'name']))) return undefined
+  if (typeof b.id !== 'string' || !b.id) return send400(res, 'invalid id')
+  try {
+    const next = deps.renameProject(config, { id: b.id, name: b.name }, configIo(deps))
+    refreshRegistry(config, next)
+    const entry = next.projects.find((p) => p && p.id === b.id)
+    emitSafe(deps, { event: 'project.updated', projectId: b.id })
+    return sendJson(res, 200, { ok: true, project: pickProject(entry) })
+  } catch (err) {
+    return applierError(res, err)
+  }
+}
+
+/** POST /api/project/select — body {id}. Move the active project; unknown id → 404. */
+async function handleProjectSelect({ req, res, config, deps }) {
+  if (typeof deps.selectProject !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id']))) return undefined
+  if (typeof b.id !== 'string' || !b.id) return send400(res, 'invalid id')
+  try {
+    const next = deps.selectProject(config, { id: b.id }, configIo(deps))
+    refreshRegistry(config, next)
+    emitSafe(deps, { event: 'project.updated', projectId: b.id })
+    return sendJson(res, 200, { ok: true, activeProject: next.activeProject ?? null })
+  } catch (err) {
+    return applierError(res, err)
+  }
 }
 
 /** GET /api/machines — the peers read model (presence + last snapshot) → plan 9.7-15. */
