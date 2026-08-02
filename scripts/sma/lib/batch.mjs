@@ -121,7 +121,7 @@ export function selectBatch(ids, backlog) {
     if (!found) return { ok: false, items: [], reason: `backlog item ${id} not found` }
     items.push(found)
   }
-  if (items.length < 2) return { ok: false, items, reason: 'a batch needs at least 2 items (use /sma-fix for one)' }
+  if (items.length < 2) return { ok: false, items, reason: 'a batch needs at least 2 items (use /sma-quick for one)' }
   if (items.length > 4) return { ok: false, items, reason: 'a batch caps at 4 items (split it)' }
   if (anyOverlap(items)) return { ok: false, items, reason: 'items overlap on a declared file — they must be sequenced, not batched' }
   return { ok: true, items, reason: '' }

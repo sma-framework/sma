@@ -21,17 +21,16 @@
  * triggered follow-up documented in setup-windows.md; Telegram report-back + spend
  * economics ride THAT run, not this smoke.
  *
- * The daemon core is never patched here. Two production wiring gaps in main.mjs are
- * OBSERVED and recorded (parked plan 9.5-10), never fixed:
- *   (a) tickDeps omits `buildArgs`, so a real non-'built' task cannot reach spawn from the
- *       production composition root yet (irrelevant to this smoke — the preflight door
- *       skips spawn);
- *   (b) `ledger` is handed to the tick as the ledgerDir STRING, so the tick-side
- *       recordAttempt is a silent no-op — BUT the pg-boss adapter's own complete() writes
- *       the attempt-ledger row directly (ledgerDir is wired into createPgBossQueue), so the
- *       ledger IS populated by the adapter path.
- * A THIRD observation: createDaemon().start() does NOT call adapter.start(), so this
- * harness starts the pg-boss connection itself (a deploy-wave wiring item).
+ * The daemon core is never patched here. Production wiring observations from the first
+ * pilot run — kept as history, with their current status:
+ *   (a) STILL PARKED: tickDeps omits `buildArgs`, so a real non-'built' task cannot reach
+ *       spawn from the production composition root yet (irrelevant to this smoke — the
+ *       preflight door skips spawn; a refused attempt now says why on the task card);
+ *   (b) RESOLVED since: the tick receives a real ledger writer (recordAttempt is no longer
+ *       a silent no-op); the pg-boss adapter's own complete() still writes the
+ *       attempt-ledger row directly as well.
+ *   (c) RESOLVED since: createDaemon().start() now starts the queue adapter; this harness
+ *       still starts the pg-boss connection itself, defensively.
  *
  * Node built-ins + the daemon's own modules + pg (for the DB ensure/asserts) only.
  */

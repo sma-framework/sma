@@ -11,7 +11,7 @@
  * /sma-ship sole-push-path boundary, D-9.3-24d). Four surfaces:
  *   1. checkQuickPrecondition — the deterministic entry gate: origin-delta <= maxDelta
  *      commits AND no migrations in the delta AND no FOREIGN push-claim. Any failing leg
- *      refuses «this is a full /sma-ship: <legs>» (the batch.mjs {allowed, reason} refusal
+ *      refuses «this is a full release ritual: <legs>» (the batch.mjs {allowed, reason} refusal
  *      shape). Over-refusal is the SAFE direction (a false refuse just routes to the full
  *      lane, exactly the guard's intent).
  *   2. draftChangelog — a PURE function that groups the origin-delta commits by
@@ -108,7 +108,7 @@ function parseDiffPaths(text) {
  *   1. delta count  — commits in `origin/<base>..HEAD` must be <= maxDelta.
  *   2. migration    — no delta path may match a migration glob.
  *   3. push-claim   — no LIVE FOREIGN push-claim (own/absent is fine).
- * A refusal's reasons all carry the «this is a full /sma-ship: <leg>» prefix (batch.mjs
+ * A refusal's reasons all carry the «this is a full release ritual: <leg>» prefix (batch.mjs
  * refusal shape). execGit + checkPushClaim are injected; this function spawns nothing.
  *
  * @param {object} o
@@ -130,7 +130,7 @@ export function checkQuickPrecondition(o = {}) {
     migrationsGlobs = DEFAULT_MIGRATIONS_GLOBS,
   } = o
   const range = `origin/${base}..HEAD`
-  const REFUSE = 'this is a full /sma-ship'
+  const REFUSE = 'this is a full release ritual'
   const reasons = []
 
   // leg 1 — delta count.

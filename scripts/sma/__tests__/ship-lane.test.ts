@@ -2,7 +2,7 @@
  * Tests for scripts/sma/lib/ship-lane.mjs (9.4-08 — the ship lanes).
  *
  * The five load-bearing behaviors of the quick-ship substrate:
- *   Test 1 — delta count leg: a 6-commit origin-delta refuses «this is a full /sma-ship»
+ *   Test 1 — delta count leg: a 6-commit origin-delta refuses «this is a full release ritual»
  *            naming the delta leg; a 3-commit delta passes that leg.
  *   Test 2 — migration leg: a migrations-glob-matching path in the diff refuses naming the
  *            migration leg; the same delta without migration paths passes.
@@ -52,7 +52,7 @@ describe('ship-lane — delta count leg (Test 1)', () => {
     })
     expect(over.allowed).toBe(false)
     expect(over.delta).toBe(6)
-    expect(over.reasons.join(' ')).toContain('this is a full /sma-ship')
+    expect(over.reasons.join(' ')).toContain('this is a full release ritual')
     expect(over.reasons.join(' ').toLowerCase()).toContain('delta')
 
     const ok = checkQuickPrecondition({
