@@ -170,6 +170,14 @@ scores `skipped-unsafe`, now carrying the visible `unsafe_ack` marker. A command
 that is genuinely deterministic belongs on the allowlist instead; the ack is for
 what will never be.
 
+RECEIPT-PROSE reads the stamp the same way. An off-allowlist command with no ack
+is **critical**: the boundary was evaded. The same command WITH the ack is a
+**warning** that names the waiver — the boundary was crossed on the record, by a
+person, in writing, and the one thing a waiver must never be is invisible. What
+the ack does not do is stand in for proof: a coverage item whose only receipt is
+an acked one still has no re-runnable command behind it, so that finding stays
+critical. The ack speaks for the receipt, never for the claim it backs.
+
 ---
 
 ## V3 trust-spine subcommands

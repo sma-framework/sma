@@ -105,6 +105,18 @@ function coerceUnsafeAck(v) {
 }
 
 /**
+ * isAckedReceipt(entry) — does this receipt carry the visible waiver stamp?
+ *
+ * Exported so the lint asks the SAME question the verifier asks, through the
+ * same coercion, instead of re-reading the field and drifting on what counts as
+ * a stamp. It answers only "was the waiver written"; it never says the command
+ * is safe — verifyReceipt still refuses to run one (see the boundary note there).
+ */
+export function isAckedReceipt(entry) {
+  return coerceUnsafeAck(entry == null ? undefined : entry.unsafe_ack)
+}
+
+/**
  * parseReceipts(summaryPath, {readFn?}) -> {receipts, error?}.
  *
  * Delegates the fence scan + dash-list walk to predict.mjs's shared
