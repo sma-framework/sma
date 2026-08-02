@@ -103,7 +103,7 @@ function oneLine(s, max = 120) {
 /**
  * Best-effort note description for a pointer line (fail-soft → '').
  *
- * The one-line claim is read through the SHARED projection (SB-026), so a
+ * The one-line claim is read through the SHARED projection, so a
  * schema-v2 record's `claim` fills the same slot a v1 note's `description` does —
  * otherwise every migrated record would enter the pack as a nameless pointer.
  */

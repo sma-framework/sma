@@ -15,7 +15,7 @@
  *   - Test 6 (D-9-15): the set-query «bug-lesson + parser» returns exactly the
  *     fixture's bug-lesson notes carrying the parser topic tag.
  *
- * SCHEMA-V2 VISIBILITY (SB-026): the loader used to read v1 field names only
+ * SCHEMA-V2 VISIBILITY: the loader used to read v1 field names only
  * (tags/kind/importance), so a schema-v2 record — which carries retrieval.areas,
  * memory_type and context_priority instead — resolved as importance 0 with no
  * tags and was invisible to BOTH core and facet matching. The v2 block below
@@ -197,7 +197,7 @@ describe('loader.mjs — resolvePeriphery (R4)', () => {
   })
 })
 
-describe('loader.mjs — v1 selection is pinned (SB-026 regression guard)', () => {
+describe('loader.mjs — v1 selection is pinned (regression guard)', () => {
   it('the v1 fixture resolves to the exact same core + periphery as before the v2 fix', () => {
     const res = resolvePeriphery({ tags: ['tech'], corpusDir, tagsPath, dateMap })
     expect(res.core).toEqual(['core1.md'])
@@ -208,7 +208,7 @@ describe('loader.mjs — v1 selection is pinned (SB-026 regression guard)', () =
   })
 })
 
-// ── schema v2 (SB-026) ──────────────────────────────────────────────────────
+// ── schema v2 ──────────────────────────────────────────────────────────────
 
 const V2_TAGS_MD = `# TAGS
 
@@ -246,7 +246,7 @@ function v2note(
   writeFileSync(join(dir, name), lines.join('\n') + '\nbody\n', 'utf8')
 }
 
-describe('loader.mjs — schema-v2 records are visible (SB-026)', () => {
+describe('loader.mjs — schema-v2 records are visible', () => {
   let v2Dir: string
   let v2TagsPath: string
 
