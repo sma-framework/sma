@@ -361,6 +361,43 @@ describe('cli.mjs session-start — budgeted pre-act injection (9.1-11 T2, B1)',
     expect(Buffer.byteLength(ctx.slice(idx), 'utf8')).toBeLessThanOrEqual(2048)
   })
 
+  // A schema-v2 record states its one-line claim as `claim` and its load
+  // priority as `context_priority`, not as `description` + `importance`. Read by
+  // the v1 names alone, a migrated record entered this digest as a NAMELESS
+  // zero-importance line — occupying the budget, useless to the reader.
+  it('names schema-v2 records in the digest instead of listing them blank', () => {
+    // `on-demand` is the periphery case this digest is built from — an
+    // always-load record is CORE and reaches the session by the other door.
+    writeFileSync(
+      join(realCorpus, 'tech-v2.md'),
+      `---
+schema_version: 2
+claim: A migrated tech rule that still has a name
+memory_type: procedural
+truth_mode: normative
+context_priority: on-demand
+retrieval:
+  areas: [tech]
+  hint: building
+---
+body
+`,
+      'utf8',
+    )
+    seedOwnClaim('tech work')
+
+    const { stdout, status } = runCli(smaRoot, ['session-start'], '{}')
+    expect(status).toBe(0)
+    const ctx: string = JSON.parse(stdout.trim()).hookSpecificOutput.additionalContext
+    const idx = ctx.indexOf('Релевантная память (pre-act):')
+    expect(idx).toBeGreaterThan(-1)
+    const section = ctx.slice(idx)
+    expect(section).toContain('tech-v2.md: A migrated tech rule that still has a name')
+    // The precise regression: the file was listed with an EMPTY claim after it.
+    expect(section).not.toContain('tech-v2.md: \n')
+    expect(section).not.toMatch(/tech-v2\.md:\s*$/m)
+  })
+
   it('fail-open: empty stdin, no claim, no corpus — still exit 0', () => {
     rmSync(realCorpus, { recursive: true, force: true })
     const { status } = runCli(smaRoot, ['session-start'], '')

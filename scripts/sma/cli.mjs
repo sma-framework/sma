@@ -753,16 +753,23 @@ async function buildPreActInjection({ dirs, ownScope, terminalId, sessionToken }
   if (!files.size) return ''
 
   // (4) parse descriptions + importance; order importance desc → name asc.
+  // Through the SHARED projection: a schema-v2 record states its one-line claim
+  // and its weight under different field names, and reading the v1 names alone
+  // entered it in this digest as a NAMELESS, zero-importance line.
+  const { projectNoteAxis } = await import('./lib/generator.mjs')
   const notes = []
   for (const f of files) {
     try {
       const parsed = frontmatter.parseNote(readFileSync(join(corpusDir, f), 'utf8'), { file: f })
       if (!parsed.frontmatter) continue
-      const importance = Number(parsed.frontmatter.importance)
+      const axis = projectNoteAxis(parsed.frontmatter, {
+        file: f,
+        schemaVersion: parsed.schemaVersion,
+      })
       notes.push({
         file: f,
-        description: collapseTruncate(parsed.frontmatter.description, PRE_ACT_DESC_MAX),
-        importance: Number.isFinite(importance) ? importance : 0,
+        description: collapseTruncate(axis.description, PRE_ACT_DESC_MAX),
+        importance: axis.weight,
         body: parsed.body,
       })
     } catch {
@@ -6619,18 +6626,25 @@ async function readSpawnRecords(subagentsDir) {
 async function buildPackSources({ dirs, repoRoot }) {
   const corpusDir = join(repoRoot, '.claude', 'memory')
   const tagsPath = join(corpusDir, 'TAGS.md')
-  let loader, frontmatter, claimsMod, registry, execJournal
+  let loader, frontmatter, claimsMod, registry, execJournal, generator
   try { loader = await import('./lib/loader.mjs') } catch { /* no loader → no digest/lessons */ }
   try { frontmatter = await import('./lib/frontmatter.mjs') } catch { /* no parser → no notes */ }
+  try { generator = await import('./lib/generator.mjs') } catch { /* no projection → v1 names only */ }
   try { claimsMod = await import('./lib/claims.mjs') } catch { /* no claims */ }
   try { registry = await import('./lib/registry.mjs') } catch { /* no sessions */ }
   try { execJournal = await import('./lib/exec-journal.mjs') } catch { /* no exec tail */ }
 
+  // The digest one-liner comes from the SHARED projection: a schema-v2 record
+  // says `claim` where a v1 note says `description`, so reading the v1 name
+  // alone listed every migrated record in the pack with an EMPTY one-liner.
   const readNoteMeta = (file) => {
     try {
       const parsed = frontmatter.parseNote(readFileSync(join(corpusDir, file), 'utf8'), { file })
       const fm = parsed.frontmatter || {}
-      return { title: String(file).replace(/\.md$/, ''), oneLiner: typeof fm.description === 'string' ? fm.description : '' }
+      const oneLiner = generator
+        ? generator.projectNoteAxis(fm, { file, schemaVersion: parsed.schemaVersion }).description
+        : typeof fm.description === 'string' ? fm.description : ''
+      return { title: String(file).replace(/\.md$/, ''), oneLiner }
     } catch {
       return null
     }
