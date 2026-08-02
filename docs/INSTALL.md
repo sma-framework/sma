@@ -211,8 +211,8 @@ exists.
 
 The package uses a **files allowlist** (never a denylist) in `package.json`, so
 nothing ships by accident. The composition below is `npm pack --dry-run` for
-`sma-framework@5.1.0` (audited 2026-08-02) — **1106 files, 4.4 MB packed /
-16.7 MB unpacked**. Reproduce it yourself in a clone with:
+`sma-framework@5.1.1` (audited 2026-08-02) — **1111 files, 4.7 MB packed /
+17.6 MB unpacked**. Reproduce it yourself in a clone with:
 
 ```bash
 npm pack --dry-run
