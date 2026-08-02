@@ -39,6 +39,7 @@
  * Node built-ins + the daemon's own modules only. Zero new deps.
  */
 
+import { execFileSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -58,7 +59,7 @@ import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
-import { runMerge, defaultExecGit } from '../../scripts/sma/lib/merge-gate.mjs'
+import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
 
 /**
  * createDaemon(overrides) — wire the whole daemon and return its handles WITHOUT starting
@@ -92,9 +93,15 @@ export function createDaemon(o = {}) {
   const hub = o.hub ?? createEventHub({ clock })
   const adapter = wrapAdapterWithEvents(durable, hub, { clock })
 
-  // (2b) the read-only git runner. ONE instance, handed to every consumer that needs git
-  // (the front's diff/timeline, the merge verb approve runs) — never a shell.
-  const execGit = o.execGit ?? defaultExecGit
+  // (2b) the git runner. ONE instance, handed to every consumer that needs git (the
+  // front's diff/timeline, the merge verb approve runs): an args ARRAY, no shell, and the
+  // child's stderr CAPTURED rather than inherited. That last part is not cosmetic — asking
+  // for the diff of a branch that does not exist is an ordinary 404, and without it git's
+  // «fatal: ambiguous argument 'wt/…'» lands in the daemon log as if something broke. The
+  // message still reaches the caller on the thrown error, where it belongs.
+  const execGit =
+    o.execGit ??
+    ((args, opts = {}) => execFileSync('git', args, { cwd: opts.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
 
   // (3) read seams for the front derive (windows state + usage), thin wiring only.
   const usageReader = (args) => readUsage({ dataDir, ...args })
