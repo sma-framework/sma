@@ -24,9 +24,17 @@
  * to origin. SMA-3: the push literal appears in no daemon source.
  *
  * Importing this module is SIDE-EFFECT-FREE — `createDaemon()` only wires, and the
- * process only starts under the `isMain` guard at the bottom. NO test imports this file
- * (it is verified by grep only — the same same-wave signature-coding posture the plan
- * uses for loop.mjs); the front modules are unit-tested directly.
+ * process only starts under the `isMain` guard at the bottom.
+ *
+ * ═══════════════ THE COMPOSITION ROOT IS ITSELF UNDER TEST ═══════════════════════
+ * This file used to be verified by GREP ONLY, and grep cannot see an ABSENCE: five
+ * collaborators (execGit, casExec, readHarness and the two appliers) were simply never
+ * wired, so on every real install approve/return/diff/harness answered «not implemented»
+ * while a test suite that assembled its OWN server stayed green (the install-layout class
+ * of hole: a test against an artificial build is silent about the real one). So
+ * `composition-root.test.ts` now drives THIS factory — the production one, with no
+ * collaborator overrides — across the whole route table and fails on any 501. A route
+ * added without its wiring cannot survive a commit.
  *
  * Node built-ins + the daemon's own modules only. Zero new deps.
  */
@@ -35,10 +43,12 @@ import { fileURLToPath } from 'node:url'
 
 import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
+import { APPROVAL_TABLE } from './queue/approval-store.mjs'
 import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
 import { handleChatTurn, readHistory } from './front/chat.mjs'
+import { readHarness, loadMcpRegistry, applyAgentToggle, applySkillAssign, applyMcpToggle } from './front/harness.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
 import { deriveState, parseReceiptSummary } from './front/state.mjs'
@@ -46,7 +56,7 @@ import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
-import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
+import { runMerge, defaultExecGit } from '../../scripts/sma/lib/merge-gate.mjs'
 
 /**
  * createDaemon(overrides) — wire the whole daemon and return its handles WITHOUT starting
@@ -79,6 +89,10 @@ export function createDaemon(o = {}) {
   // (2) the SSE hint hub + the event-wrapped adapter handed to BOTH sides.
   const hub = o.hub ?? createEventHub({ clock })
   const adapter = wrapAdapterWithEvents(durable, hub, { clock })
+
+  // (2b) the read-only git runner. ONE instance, handed to every consumer that needs git
+  // (the front's diff/timeline, the merge verb approve runs) — never a shell.
+  const execGit = o.execGit ?? defaultExecGit
 
   // (3) read seams for the front derive (windows state + usage), thin wiring only.
   const usageReader = (args) => readUsage({ dataDir, ...args })
@@ -139,10 +153,26 @@ export function createDaemon(o = {}) {
         windows: windowsForState,
         usageReader,
         usageSeries: usageSeriesReader,
-        execGit: o.execGit,
-        casExec: o.casExec, // read-only SQL seam (same as pg-boss list()); wired at deploy
+        // The read-only git runner behind /api/diff and the task timeline: the SAME
+        // execFileSync-with-an-args-array runner the merge gate uses (no shell, ever).
+        execGit,
+        // The SQL seam behind approve/return: the durable queue's own executor, so the
+        // front CASes through the one connection that already knows the queue database.
+        casExec: o.casExec ?? (typeof durable.execSql === 'function' ? durable.execSql : undefined),
+        taskTable: o.taskTable ?? APPROVAL_TABLE,
+        // The harness read model + the three appliers (agents / skills / MCP screens).
+        // Injected, never statically imported by the front (T-9.5-38/39) — this is the
+        // wiring that makes «включить агента» a real switch instead of a 501.
+        // The harness read model + the three appliers (agents / skills / MCP screens).
+        // Injected, never statically imported by the front (T-9.5-38/39) — this is the
+        // wiring that makes «включить агента» a real switch instead of a 501.
+        readHarness,
+        loadMcpRegistry: o.loadMcpRegistry ?? (() => loadMcpRegistry({})),
+        applyAgentToggle,
+        applySkillAssign,
+        applyMcpToggle,
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
-        verbRunner: (m) => runMerge({ ...m, execGit: o.execGit, runTests: o.runTests }),
+        verbRunner: (m) => runMerge({ ...m, execGit, runTests: o.runTests }),
       },
     })
 
