@@ -108,6 +108,23 @@ Verify the work is ready to ship:
      ```
 
    If no active security `ship:pre` gate hook is present (security enforcement off), skip this check silently.
+
+7. **Every «Issues Encountered» item accounted for.**
+
+   An executor writes what actually went wrong into its SUMMARY's `## Issues Encountered`. A checklist assembled only from what was *planned* never reads that section, so an honest note about something left broken can ride through a green gate untouched. Read it before shipping:
+
+   ```bash
+   ls "${PHASE_DIR}"/*-SUMMARY.md
+   ```
+
+   For **each** SUMMARY in the ship scope, read its `## Issues Encountered` section. Every item there takes exactly one of two paths:
+
+   - **(a) it becomes a line item in this gate** — it is resolved before the PR opens, or it is a known limitation named explicitly in the PR body's Verification section, so a reviewer sees it without opening a SUMMARY; or
+   - **(b) it is written off in `${PHASE_DIR}/deferred-items.md`** with a reason and, where one exists, the follow-up it was filed under.
+
+   There is no third path. An item that is neither raised nor written off blocks the ship with `SUMMARY_ISSUES_UNACCOUNTED`: list the unaccounted items with their source SUMMARY and ask the user to choose (a) or (b) for each.
+
+   `## Issues Encountered` reading `None` (or absent) counts as accounted for. This check is about disposition, not severity — a small item takes the write-off path in one line; deciding an item is minor is itself one of the two paths, and doing it silently is not.
 </step>
 
 <step name="load_infra_profile">
@@ -256,6 +273,7 @@ For each SUMMARY.md in the phase directory:
 
 - [x] Automated verification: {pass/fail from VERIFICATION.md}
 - {human verification items from VERIFICATION.md, if any}
+- {known limitations carried in: each SUMMARY «Issues Encountered» item that preflight check 7 raised rather than wrote off}
 ```
 
 **6. Decisions section:**
@@ -546,6 +564,7 @@ After shipping:
 
 <success_criteria>
 - [ ] Preflight checks passed (verification, clean tree, branch, remote, gh)
+- [ ] Every «Issues Encountered» item in every SUMMARY of the ship scope either raised as a gate line item or written off in deferred-items.md — none left silent
 - [ ] Infra profile read (.sma/profile.json) — missing fields asked and offered for save, never defaulted
 - [ ] Full gate green before push (profile-supplied command, echoed before running) + origin-diff reviewed
 - [ ] Full-gate evidence marker written after the gate passed (`pnpm sma gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-9.1-13)
