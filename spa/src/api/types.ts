@@ -56,8 +56,14 @@ export interface WorkerRow {
   id: string
   lane: string | null
   account: string
-  /** Present only while the worker holds a task. */
+  /**
+   * Present only while the worker holds a task — the roster is the only list that names a
+   * claimed one, so it carries what a screen needs to PLACE that task: its id, its own
+   * name, and the project it belongs to. All three arrive together or not at all.
+   */
   taskId?: string
+  taskTitle?: string | null
+  project?: string
   branch?: string
   window: WindowBar
   /** Seconds since the running task last showed a sign of life. */

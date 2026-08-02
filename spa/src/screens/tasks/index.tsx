@@ -108,30 +108,31 @@ export function Screen() {
     // is named is the worker holding it (workers[].taskId, with `wt/<id>` for its branch).
     // So «В РАБОТЕ» is built from the roster, and `live` — the pulse down the card's edge —
     // is exactly «a worker holds this task», which is the only in-progress signal the payload
-    // has. The task's own name is not on a worker row, so the card carries the id the daemon
-    // routes by; the panel behind one click has the rest.
-    //
-    // The project filter cannot narrow these: a worker row carries no project. Showing them
-    // is the lesser lie — the task IS running, and hiding it would leave the column claiming
-    // nobody is working.
+    // has. The worker row names that task's own title and project beside its id, so a running
+    // card is titled and sieved by exactly the same two facts as every other column's — the
+    // sieve is `mine` written out, because a worker's machine is stated only once there is
+    // more than one to tell apart.
     const running: BoardCard[] = (data?.workers ?? [])
-      .filter((w) => !!w.taskId)
-      .map((w): BoardCard => {
-        const on = w.machine ?? selfMachine
-        return {
+      .filter(
+        (w) =>
+          !!w.taskId &&
+          (!activeProject || w.project === activeProject) &&
+          (!machine || (w.machine ?? selfMachine) === machine),
+      )
+      .map(
+        (w): BoardCard => ({
           id: w.taskId as string,
           column: 'working',
-          title: w.taskId as string,
+          title: w.taskTitle ?? 'Без названия',
           role: w.id,
-          machine: on,
+          machine: w.machine ?? selfMachine,
           reason: null,
           note: null,
           live: true,
           decision: false,
           past: false,
-        }
-      })
-      .filter((c) => !machine || c.machine === machine)
+        }),
+      )
 
     const finished: BoardCard[] = mine(data?.done ?? []).map((r: DoneRow) => ({
       id: r.id,
