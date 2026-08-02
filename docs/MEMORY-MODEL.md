@@ -331,10 +331,25 @@ The block's grammar is checked (one level of nesting, scalars and inline arrays)
 its sub-key *names* are not a closed vocabulary. Additional facets are legal and
 survive round-trips, but nothing validates or reads them until some tool does.
 
-Deterministic facets are the first and always-available retrieval layer. Hard
-filters run before any ranking: permission, sensitivity, `status`, valid time,
-repo/environment scope. Optional lexical or dense indexes are derived layers on top —
-rebuildable, removable, never a source of truth.
+Deterministic facets are the first and always-available retrieval layer. The
+**contract** for retrieval is that hard filters run before any ranking:
+permission, sensitivity, `status`, valid time, repo/environment scope. Optional
+lexical or dense indexes are derived layers on top — rebuildable, removable,
+never a source of truth.
+
+**What of that is implemented today.** One filter is: `status` is applied where
+CORE membership is decided, so a `superseded` or `revoked` record never reaches
+the always-load payload — it stays catalogued in its area index, with the state
+named, and out of CORE. The others — permission, sensitivity, valid time,
+repo/environment scope — are **not implemented**. The walk that resolves a task's
+notes reads facets and importance and filters by no class at all. Until read-time
+class filtering lands with the retrieval-accuracy work, **the defense is
+placement, not filtering at load time**: material that must not be seen must not
+be in the corpus, because nothing downstream will catch it later. That is the
+same reading as
+[`MEMORY-THREAT-MODEL.md` §2.4](MEMORY-THREAT-MODEL.md#24-what-is-enforced-where--an-honest-map)
+and non-goal 5 in [§7](MEMORY-THREAT-MODEL.md#7-non-goals) — this section states
+the target the filters are being built toward, those state where the build is.
 
 ### 9.2 scope and applies_to
 
@@ -605,5 +620,6 @@ validator reports it: kept as-is, with nothing validating it.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.0 (correction) | 2026-08-02 | §9.1 corrected, not extended: the hard retrieval filters were written as if they ran, and only the `status` filter on CORE membership does. The paragraph now separates the contract from the implementation and names placement as the defense until read-time class filtering lands, which is what `MEMORY-THREAT-MODEL.md` §2.4 and non-goal 5 have said all along. No schema or behavior changed. |
 | 1.0 | 2026-08-02 | First landed version. Reconciled with the shipped code throughout: the authority scale (`owner-instruction` · `external-review` · `self-observed` · `inferred`), the composite fingerprint (`product_version` + optional `tree_paths`/`tree_hash`) and its single hash definition, the external-artifact horizon, six lifecycle statuses including `draft`, four sensitivity classes ending in `encrypted-required`, `context_priority: always/on-demand` and `risk: low…critical`, the required field set including `language`, `applies_to` and the private-facet ban, the one-claim law, the episodes dual representation, the real lint check ids and tiers with the migration grace and its horizon, the landed v1→v2 transform table, the migration verb syntax with per-file acceptance, and a worked example in the schema's fixed emit order. |
 | 0.1 | 2026-07-31 | Initial draft: types, truth modes + FACT/INTERPRETATION disciplines, provenance incl. fingerprint, temporal model, lifecycle, sensitivity/storage classes, importance split, retrieval block, typed links, integrity lint, v1→v2 mapping + migration law. |
