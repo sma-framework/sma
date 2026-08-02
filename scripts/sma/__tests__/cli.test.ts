@@ -468,7 +468,7 @@ describe('status — the honest active count (a dead pid never impersonates a li
 // commands take one read-only git pass for note dates and are fail-open about it — but
 // execFileSync inherits the child's stderr, so git's «fatal: your current branch 'master'
 // does not have any commits yet» landed on the terminal of a person whose very first
-// command had in fact just succeeded (T-QA-2026-08-02 minor #6).
+// command had in fact just succeeded.
 
 describe('cli.mjs memory commands in a repository with no commits yet', () => {
   it('says nothing on stderr — the fail-open git probe keeps its complaints to itself', () => {

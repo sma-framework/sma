@@ -407,7 +407,7 @@ function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl } 
 
 /**
  * withDerivedDirs(config, {configPath, repoDir}) — the three working directories the
- * daemon cannot run without, DERIVED rather than demanded (T-QA-2026-08-02).
+ * daemon cannot run without, DERIVED rather than demanded.
  *
  * WHY DERIVED, NOT DEFAULTED IN THE FILE: `ledgerDir` and `dataDir` were never part of
  * the shipped default, so a fresh install ran with both undefined — the attempt ledger
