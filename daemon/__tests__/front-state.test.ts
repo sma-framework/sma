@@ -276,6 +276,49 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
     }
   })
 
+  it('a worker names the project and the title of the task it holds — the roster filters too', async () => {
+    const rows = [
+      { id: 'BL-1', status: 'queued', lane: 'prod', title: 'a', priority: 0, project: 'acme-clinic', enqueuedAt: NOW - 1000 },
+      {
+        id: 'R-2',
+        status: 'claimed',
+        lane: 'prod',
+        title: 'сверить прайс',
+        project: 'other-shop',
+        workerId: 'max-1',
+        claimedAt: NOW - 2000,
+        lastTouch: NOW - 2000,
+      },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    const holder = payload.workers.find((w: any) => w.id === 'max-1')
+    expect(holder.taskId).toBe('R-2')
+    expect(holder.taskTitle).toBe('сверить прайс')
+    expect(holder.project).toBe('other-shop')
+    // a worker holding nothing says nothing about a task — no null placeholders to filter on
+    const idle = payload.workers.find((w: any) => w.id === 'max-2')
+    expect('taskTitle' in idle).toBe(false)
+    expect('project' in idle).toBe(false)
+  })
+
+  it('a held task with no project of its own falls back to the active one; a nameless one reads null', async () => {
+    const rows = [{ id: 'R-9', status: 'claimed', lane: 'prod', workerId: 'max-1', claimedAt: NOW, lastTouch: NOW }]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    const holder = payload.workers.find((w: any) => w.id === 'max-1')
+    expect(holder.project).toBe('acme-clinic')
+    expect(holder.taskTitle).toBeNull()
+  })
+
   it('a row with no project falls back to the active project (the quiet migration, D-9.7-08)', async () => {
     const legacy = [{ id: 'BL-old', status: 'queued', lane: 'prod', title: 'old', priority: 0, enqueuedAt: NOW }]
     const payload = await deriveState({

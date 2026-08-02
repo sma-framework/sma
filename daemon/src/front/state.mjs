@@ -700,7 +700,13 @@ export async function deriveState(deps = {}) {
     .sort((a, b) => (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0))
     .map(toTaskRow)
 
-  // ── workers[] — presence is a PURE derive (Pitfall 2) ──
+  // ── workers[] — presence is a PURE derive (Pitfall 2). The roster is ALSO the only list
+  // that names a claimed task, so the three facts a screen needs to place that task travel
+  // with it: its id, its NAME and its PROJECT. Without the last two a board can only print
+  // the routing id where a title belongs, and its project filter has to let every running
+  // card through — a column that answers a narrowed question with unnarrowed rows. All
+  // three ride the same conditional: a worker holding nothing states nothing about a task,
+  // rather than carrying nulls a filter would then have to special-case. ──
   const workers = workersCfg.map((w) => {
     const accountName = accountNameOf(w.account, w.id)
     const win = windowFor(windows, w.account ?? accountName)
@@ -716,7 +722,14 @@ export async function deriveState(deps = {}) {
       id: w.id,
       lane: w.lane,
       account: accountName,
-      ...(active ? { taskId: active.id, branch: `wt/${active.id}` } : {}),
+      ...(active
+        ? {
+            taskId: active.id,
+            taskTitle: active.title ?? null,
+            project: projectOf(active, activeProject),
+            branch: `wt/${active.id}`,
+          }
+        : {}),
       window: bar,
       ...(pulseAgeSec !== undefined ? { pulseAgeSec } : {}),
       presence,
