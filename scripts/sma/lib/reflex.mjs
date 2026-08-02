@@ -39,6 +39,7 @@ import { join } from 'node:path'
 
 import { normalizePath, relativizePath, compileGlob } from './collision.mjs'
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
+import { projectNoteAxis } from './generator.mjs'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { REFLEX_DIR } from './constants.mjs'
 
@@ -122,6 +123,15 @@ export function deriveTags(toolInput, root) {
  *   4. `use-when-pattern` glob (compileGlob — the SAME subset collision.mjs
  *      uses), matched against the RELATIVIZED target path, narrows only.
  *
+ * TWO SCHEMA VERSIONS, ONE READ: steps 2-4 ask the record questions ("are you a
+ * bug-lesson", "what is your trigger", "did you opt out") that v1 and schema-v2
+ * answer under different field names — and the reflex is the one consumer where
+ * getting that wrong is SILENT: the hook simply never fires, and nothing in the
+ * session says a lesson was skipped. So every field here comes from the SHARED
+ * projection (generator.projectNoteAxis), never from raw frontmatter. In
+ * particular the v2 kind is the (memory_type, truth_mode) pair — `procedural`
+ * alone cannot tell a burn from a rule, and only burns fire pre-act.
+ *
  * Fail-open: any error → []. Never throws.
  *
  * @param {{tags?:string[], target?:string, corpusDir:string, tagsPath:string, loader:{resolvePeriphery:Function}, dateMap?:object}} opts
@@ -152,21 +162,24 @@ export function matchReflexes(opts = {}) {
     const out = []
     const targetNorm = normalizePath(target)
     for (const file of files) {
-      let fm, body
+      let note, body
       try {
         const parsed = parseNote(readFileSync(join(corpusDir, file), 'utf8'), { file })
-        fm = parsed.frontmatter
+        if (!parsed.frontmatter) continue
+        note = projectNoteAxis(parsed.frontmatter, {
+          file,
+          schemaVersion: parsed.schemaVersion,
+        })
         body = parsed.body
       } catch {
         continue // fail-soft per note
       }
-      if (!fm || String(fm.kind ?? '').trim() !== 'bug-lesson') continue
+      // Only a BURN fires pre-act. A v1 note says so in `kind`; a migrated one in
+      // the (procedural, factual) pair — the projection answers for both.
+      if (note.kind !== 'bug-lesson') continue
 
       // (4) precision hint: narrows, never widens.
-      const pattern =
-        typeof fm['use-when-pattern'] === 'string' && fm['use-when-pattern'].trim()
-          ? fm['use-when-pattern'].trim()
-          : null
+      const pattern = note.pathPattern || null
       if (pattern) {
         let hit = false
         try {
@@ -177,14 +190,18 @@ export function matchReflexes(opts = {}) {
         if (!hit) continue
       }
 
-      const importance = Number(fm.importance)
       out.push({
         noteId: file.replace(/\.md$/i, ''),
         file,
-        importance: Number.isFinite(importance) ? importance : 0,
-        useWhen: String(fm['use-when'] ?? ''),
-        description: String(fm.description ?? ''),
-        reflexOptOut: String(fm.reflex ?? '').trim().toLowerCase() === 'off',
+        // The fatigue battery tiers verbosity by importance. A v2 record carries
+        // no importance number (the migration split it into criticality +
+        // context_priority), so the axis WEIGHT is the number here: identical to
+        // importance for every v1 note, and the migration's own inverse for a
+        // record that says `context_priority: always`.
+        importance: note.weight,
+        useWhen: note.hint,
+        description: note.description,
+        reflexOptOut: note.reflexOptOut,
         body: body ?? '',
       })
     }
