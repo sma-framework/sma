@@ -1,6 +1,6 @@
 # SMA — the full deep dive
 
-*Everything the lean [README](../README.md) points to: the side-by-side comparison, the accountable loop in detail, the full CLI reference tables, the demo gallery, the hook integration, and the complete version history V1 → V4 with the trust spine process by process. The [ROADMAP](../ROADMAP.md) covers what comes next.*
+*Everything the lean [README](../README.md) points to: the side-by-side comparison, the accountable loop in detail, the full CLI reference tables, the demo gallery, the hook integration, and the complete version history V1 → V5.1 with the trust spine process by process. The [ROADMAP](../ROADMAP.md) covers what comes next.*
 
 [Русская версия → DETAILS.ru.md](DETAILS.ru.md)
 
@@ -75,7 +75,7 @@ Each note carries a `use-when` trigger — that single line is what lets SMA del
 
 ## The full CLI reference, by version layer
 
-The coordination + accountability CLI runs underneath (`node scripts/sma/cli.mjs` or `pnpm sma`) — 82 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly, and every one has an in-product explainer (`pnpm sma explain <verb>`).
+The coordination + accountability CLI runs underneath — 89 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`).
 
 ### Core (V1–V2): memory, coordination, slots
 
@@ -122,11 +122,11 @@ The coordination + accountability CLI runs underneath (`node scripts/sma/cli.mjs
 | `manifest` | The PR evidence passport: predictions, receipts, and verdicts for a commit range, as JSON/Markdown |
 | `preflight` | The already-built gate: check a plan's claims against the real tree before any executor spawns |
 | `arena` | The comparative benchmark arena scorer + static graphs page (raw data and negative results published) |
-| `batch` | The `/sma-batch` middle lane: risk filter, grill-lite, mandatory receipts |
-| `worktree` · `merge` | Per-terminal worktree isolation, and the serialized local-only merge gate (push stays founder-ordered via `/sma-ship`) |
+| `batch` | The `sma batch` middle lane: risk filter, grill-lite, mandatory receipts |
+| `worktree` · `merge` | Per-terminal worktree isolation, and the serialized local-only merge gate (the push itself stays a human-ordered ritual) |
 | `session-end` | SessionEnd hook: release this terminal's own claims so stale leases never haunt teammates |
 | `ask` | *(experimental stub)* — the fingerprint demand surface (`--unmet-count`); the full feature matures in a later release |
-| `explain` · `doc-audit` | 18 plain-language explainer topics with a command-coverage tripwire; the deterministic docs honesty audit |
+| `explain` · `doc-audit` | 26 plain-language explainer topics with a command-coverage tripwire (every verb resolves to one); the deterministic docs honesty audit |
 
 ### NEW in V3.6 — the one-command door
 
@@ -269,7 +269,7 @@ flowchart TD
 | **SubagentStop** | `subagent-verify` | Verifies every claimed file write against the real tree; phantom writes are flagged. |
 | **PreCompact** | `precompact-capsule` | Deterministically writes the flight capsule *before* compaction deletes the working state. |
 
-That is the entire integration surface. The hooks call the same CLI you can run by hand (`pnpm sma …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is now a **single** `pre` entry; the old per-stream commands remain as deprecated aliases for back-compat.
+That is the entire integration surface. The hooks call the same CLI you can run by hand (`node scripts/sma/cli.mjs …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is now a **single** `pre` entry; the old per-stream commands remain as deprecated aliases for back-compat.
 
 ## What's new in V4 — grade the grader
 
@@ -298,7 +298,7 @@ Per-lane USD and minute budgets are derived from *your* project's own spend-ledg
 |---|---|
 | **Standing vendor triage** (`sma vendor`) | An append-only `VENDOR-LEDGER.md` (14 rows seeded, negative verdicts included) triages every upstream vendor capability as CORE or BRIDGE; `lint`/`count` verbs and a product release gate refuse to ship on an untriaged row. The vendor is watched in the open, not chased. |
 | **Footprint ladder** (`reverify --footprint`) | A plan declares its footprint up front in frontmatter (files, new files, ~LOC, new deps); the grill asks «which ladder rung?»; a receipt checks the claim against `git diff --numstat` actuals — an overrun is a flagged calibration row. Ideology absorbed from two MIT sources (credited in THIRD-PARTY-LICENSES.md); their LLM judge was rejected and rebuilt as a deterministic receipt. |
-| **Quick-ship lane** (`/sma-quick-ship`) | A deterministic entry precondition — origin delta ≤ 5 commits, no migrations, no foreign push-claim — or it REFUSES back into the full ritual. The gate is identical, never weaker; the lane only buys a small reviewed delta a deterministic conventional-commit changelog, plus pending-run orphan visibility. |
+| **Quick-ship lane** (`sma ship-lane check`) | A deterministic entry precondition — origin delta ≤ 5 commits, no migrations, no foreign push-claim — or it REFUSES back into the full ritual. The gate is identical, never weaker; the lane only buys a small reviewed delta a deterministic conventional-commit changelog, plus pending-run orphan visibility. |
 | **Phantom-instrument precision** (`--stat phantomsAsserted`) | S4 receipt forensics: dedupe, basename cross-match kill, a negation stoplist, and an honest unknown-key error path. Nine forensic rows are frozen as permanent regression fixtures. |
 | **Quick profile update** (`sma profile --quick`) | An existing install no longer re-interviews from scratch: `--quick` plans an interview over unset fields only, with `--selftest` and `--profile`; `sma-start` routes existing installs there. |
 | **Positioning, re-anchored** | The README positioning region (EN + RU) is rebuilt around the Outcomes row, the audit-gap thesis, and the economy pillar; 'Outcomes' joins the doc-audit ANALOGS honesty guard, and falsified claims were dropped. |
@@ -361,7 +361,7 @@ flowchart LR
 | **`sma emit`** | Compiles the corpus into `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `GEMINI.md` via managed blocks. Your text outside the block is never touched; re-emits are byte-identical. Anti-lock-in by construction. |
 | **Fragment catalog + `sma context`** | A deterministic one-line card per repo file (symbols, imports, git stats), then a budgeted, byte-deterministic task context pack — catalog before grep, same input → same pack. |
 | **Already-built preflight** | A millisecond, zero-token check of a plan's claims against the real tree before any executor spawns — nothing is rebuilt for pay. |
-| **`sma explain` + `sma doc-audit`** | 18 plain-language topics covering every concept *and every CLI verb* (a coverage tripwire scores a miss if a command ships undocumented); a deterministic audit proves the manual and this README stay complete, fresh, and honest. |
+| **`sma explain` + `sma doc-audit`** | 26 plain-language topics covering every concept *and every CLI verb* (a coverage tripwire scores a miss if a command ships undocumented); a deterministic audit proves the manual and this README stay complete, fresh, and honest. |
 
 ### Self-tuning enforcement ladder
 
@@ -386,7 +386,7 @@ The attention pulse marks each window *working* or *waiting-for-human* (idle is 
 
 `sma manifest` assembles the evidence passport for a commit range — registered predictions and how they scored, a receipt per claim, blind-verify verdicts — so the reviewer starts from evidence, not diff archaeology. `sma arena` scores comparative 4-arm benchmark runs deterministically and publishes raw data **including negative results**; the claim under test is cost-per-*result*, not cost-per-task.
 
-### `/sma-batch` — the middle lane
+### `sma batch` — the middle lane
 
 Between an inline fix and a full phase: 2–4 compatible backlog items, one executor, receipts and re-verification still mandatory. Two hard guards keep the lane honest:
 
@@ -410,7 +410,7 @@ flowchart LR
     F["live fingerprint<br>holder verifiably alive"] --> CT["claim-trust<br>a stale lease is never enforced"]
     CT --> WT["per-terminal worktree<br>separate tree + branch — no overwrites"]
     WT --> MG["sma merge — serialized gate:<br>slot → LOCAL merge → tests on the RESULT → receipt"]
-    MG --> SHIP["push stays founder-ordered<br>/sma-ship"]
+    MG --> SHIP["push stays human-ordered<br>the ship ritual + sma preship"]
 ```
 
 `sma merge` never pushes and never deploys: it acquires the merge slot (a concurrent merge gets a soft-deny), merges **locally**, runs targeted tests on the *merged* tree — because two individually green branches can be red together — journals a receipt, and releases the slot.
@@ -425,7 +425,7 @@ Everything below is a plain script on the V2 files+git substrate — no daemon, 
 
 ```mermaid
 flowchart LR
-    P["1 · Plan<br>/sma-plan-phase"] --> G["2 · Grill<br>/sma-grill"]
+    P["1 · Plan<br>/sma-plan-phase"] --> G["2 · Grill<br>sma grill --gate"]
     G -->|"challenge → registered<br>prediction, or no build"| B["3 · Build<br>/sma-execute-phase"]
     B --> R["4 · Receipts<br>every done = a re-runnable check"]
     R --> BV["5 · Blind verify<br>re-derive done from the tree alone"]
@@ -441,7 +441,7 @@ flowchart LR
 | **Tamper-evident journal** | every journal line is hash-chained; the chain tip is pinned in the release tag, so editing history is detectable by anyone holding the tag | `sma chain-verify` |
 | **Blind verifier** | re-derives every "done" from the code tree alone; structurally refuses the executor's self-report as input | `sma blind-verify` |
 | **Consequences-as-LAW** | a trust-class miss or divergence auto-blocks shipping until the human owner records an explicit disposition — the agent cannot forgive itself | `sma preship` / `sma disposition` |
-| **`/sma-grill`** | every plan promise is cross-examined before the build; an unresolved challenge must become a registered prediction or the build does not start | `sma grill` |
+| **`sma grill`** | every plan promise is cross-examined before the build; an unresolved challenge must become a registered prediction or the build does not start | `sma grill` |
 | **`sma pre` multiplexer** | ONE node spawn per tool call for all hook streams, replacing 3–4: measured p95 **152–157 ms** vs a **1268.6 ms** V2 base | `sma pre-bench` |
 | **Subagent write-receipts** | every claimed file write is verified against the real tree on SubagentStop; phantom writes flagged deterministically | `sma subagent-verify` |
 | **Integrity guards** | skeptic countersign, seeded 5% receipt audit, planted canary false-dones, STPA disarm-path guard — so the published numbers stay honest | `sma skeptic` / `sma canary` / `sma integrity` |
@@ -505,7 +505,7 @@ flowchart LR
     E -.->|"on divergence"| RB["rollback candidate branch opened"]
 ```
 
-#### 5 · `/sma-grill` — the adversarial pre-build gate
+#### 5 · `sma grill` — the adversarial pre-build gate
 
 The founder's own *grillme* ritual, absorbed into architecture instead of rhetoric. Every promise of a plan is cross-examined **before** the build. An unresolved challenge must become a registered falsifiable prediction, be withdrawn, or be founder-accepted — otherwise `--gate` **blocks the build**. Pre-push, a **budget-aware** grill inspects `origin..main` and spends review depth precisely where the calibration ledger proves the project has historically been miscalibrated.
 
@@ -673,9 +673,9 @@ ui          9/12  (75%)   ← this area keeps over-promising; SMA escalates it
 
 ```text
 ⚠ SMA: src/api/** is claimed by t-4821 (phase 12 exec) since 14:07.
-  You are about to Edit src/api/routes.ts — coordinate first (`pnpm sma status`).
+  You are about to Edit src/api/routes.ts — coordinate first (`node scripts/sma/cli.mjs status`).
 
-$ pnpm sma next-slot migration
+$ node scripts/sma/cli.mjs next-slot migration
 0007          # yours. A parallel terminal asking now gets 0008 — they never collide.
 ```
 
@@ -688,7 +688,7 @@ SMA is not only memory — it is a full working rhythm for shipping real changes
 ```mermaid
 flowchart LR
     D["1 · Discuss<br>/sma-discuss-phase"] --> P["2 · Plan<br>/sma-plan-phase"]
-    P --> G["3 · Grill<br>/sma-grill"]
+    P --> G["3 · Grill<br>sma grill --gate"]
     G --> B["4 · Build<br>/sma-execute-phase"]
     B --> V["5 · Verify<br>/sma-verify-work"]
     V --> S["6 · Ship<br>push ritual + preship gate"]
@@ -740,6 +740,7 @@ sequenceDiagram
     A->>FS: next-slot migration → 0007
     B->>FS: next-slot migration → 0008
     Note over FS: shared counters never collide<br>the journal records who did what
+```
 
 ## V1 — The memory foundation (why SMA exists)
 
@@ -754,7 +755,7 @@ If you run Claude Code (or any coding agent) on a real project every day, you al
 3. **Lessons get re-learned, expensively.** The same mistake — the same footgun in your build, the same API quirk — burns you again next month, because nothing turned the first burn into a permanent avoidance.
 4. **Parallel sessions collide.** Two terminals on one checkout silently overwrite each other; session B "fixes" what session A finished an hour ago.
 
-SMA is a layer on top of the agent that attacks all four with the same design bet: **small files in your git repo + deterministic scripts + the agent-harness hook system**. No daemon, no database, no embeddings, no cloud. Everything it knows is a markdown file you can read, diff, and revert; everything it enforces is a script you can run yourself.
+SMA is a layer on top of the agent that attacks all four with the same design bet: **small files in your git repo + deterministic scripts + the agent-harness hook system**. The memory and accountability layer needs no daemon, no database, no embeddings and no cloud — that bet still holds today, and the optional V5 worker fleet is a separate layer bolted on top of it, never underneath it. Everything SMA knows is a markdown file you can read, diff, and revert; everything it enforces is a script you can run yourself.
 
 > **A 700-line instructions file is not a process.** It is one big note the model skims once and forgets. SMA's bet is the opposite: keep the always-loaded rules tiny, and deliver each *specific* rule as a warning at the precise tool call it governs. Presence beats length. That is the difference between "I told the agent" and "the agent could not miss it."
 
@@ -797,6 +798,8 @@ flowchart LR
     V2 --> V3["V3<br>the trust spine:<br>receipts · blind verify · consequences"]
     V3 --> V35["V3.5<br>adoption & trust telemetry"]
     V35 --> V36["V3.6<br>the one-command door:<br>npm install · off-ramp · memory preview"]
-    V36 --> V4["V4 — current<br>grade the grader:<br>graded verdicts · economy meters · vendor triage"]
-    V4 -.-> V5["V5 — planned<br>orchestration:<br>a 24/7 worker fleet"]
+    V36 --> V4["V4<br>grade the grader:<br>graded verdicts · economy meters · vendor triage"]
+    V4 --> V5["V5<br>orchestration:<br>a 24/7 worker fleet"]
+    V5 --> V51["V5.1 — current<br>works with what you have:<br>the app the daemon serves"]
+    V51 -.-> V52["V5.2 → V5.3 — next<br>measured memory ·<br>governance · a hardened fleet"]
 ```
