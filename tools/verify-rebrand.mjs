@@ -34,6 +34,10 @@
  *   - bare plan/phase numbering (`9.4-01`) — the sanctioned public numbering used
  *     across docs/DETAILS*.md history sections. Only the `T-`/`D-` register
  *     shapes are internal.
+ *   - prediction ids (`P9.3-12-A`) IN PROSE — they are legitimate data in the
+ *     documented `prediction` / `tripwire` table columns, where removing them
+ *     would break the traceability that makes a prediction checkable. They are
+ *     banned from string literals only, where they are noise.
  *
  * Exit 0 = rebrand intact. Exit 1 = violations listed on stderr.
  */
@@ -117,6 +121,15 @@ for (const file of walk(CORE)) {
 // ---- (d) internal register ids in user-facing surfaces ----------------------
 /** Threat / decision register id. NOT bare plan numbering (`9.4-01`), which is public. */
 const INTERNAL_ID = /\b[TD]-\d+(?:\.\d+)?-\d+[a-z]?\b/
+/**
+ * Prediction register id (`P9.3-12-A`). Applied to CODE STRING LITERALS ONLY, not
+ * to docs: a prediction id is legitimate DATA in a documented table column (the
+ * `prediction` column of the instruments table, the `tripwire` column of
+ * docs/VENDOR-LEDGER.md), where deleting it would destroy the traceability that
+ * makes the prediction checkable. In printed output it is pure noise, and the
+ * count there is currently zero — this rule keeps it zero.
+ */
+const PREDICTION_ID = /\bP\d+\.\d+-\d+(?:-[A-Za-z0-9]+)?\b/
 
 /** Shipped runtime trees whose STRING LITERALS reach an adopter's terminal. */
 const USER_FACING_CODE = ['scripts/sma', 'daemon/src', 'bin', 'tools', 'supervisor']
@@ -133,13 +146,15 @@ const inTree = (relPath, roots) => roots.some((r) => relPath === r || relPath.st
  */
 function idsInStringLiterals(text) {
   const hits = []
+  const LITERAL = /(['"`])[^'"`]*(?:[TD]-\d+(?:\.\d+)?-\d+[a-z]?|P\d+\.\d+-\d+(?:-[A-Za-z0-9]+)?)[^'"`]*\1/
   text.split('\n').forEach((line, i) => {
-    if (!INTERNAL_ID.test(line)) return
+    if (!INTERNAL_ID.test(line) && !PREDICTION_ID.test(line)) return
     const t = line.trim()
     if (/^(\/\/|\*|\/\*|#)/.test(t)) return // whole-line comment
     const c = t.indexOf('//')
-    if (c > -1 && !INTERNAL_ID.test(t.slice(0, c))) return // id lives in a trailing comment
-    if (!/(['"`])[^'"`]*[TD]-\d+(?:\.\d+)?-\d+[a-z]?[^'"`]*\1/.test(t)) return // not in a literal
+    const head = t.slice(0, c)
+    if (c > -1 && !INTERNAL_ID.test(head) && !PREDICTION_ID.test(head)) return // id lives in a trailing comment
+    if (!LITERAL.test(t)) return // not in a literal
     hits.push({ n: i + 1, line: t.slice(0, 120) })
   })
   return hits

@@ -63,8 +63,8 @@ The V3.5 docs / teaching surfaces:
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (P9.3-09-A scorer). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
-| `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (P9.3-09-B/C scorer). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
+| `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (scorer contract). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
+| `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (scorer contract). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
 | `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (9.3-01) plus the quick-update path (9.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
@@ -531,8 +531,8 @@ accountability floor**: «light» means fewer AGENTS, never fewer RECEIPTS.
 sma batch <BL-ids...>          # select 2-4 named backlog items, risk-filter, prepare the ordered run
 sma batch --assemble          # auto-pick a compatible set (same area, S/M, non-overlapping files)
 sma batch ... --json          # the prepared batch object (ordered items + guard status)
-sma batch --selftest-riskfilter  # classify a bundled fixture set → prints 1 (P9.3-12-A)
-sma batch --selftest-checkoff    # surgical single-line [ ]→[x] over a fixture → prints 1 (P9.3-12-C)
+sma batch --selftest-riskfilter  # classify a bundled fixture set → prints 1
+sma batch --selftest-checkoff    # surgical single-line [ ]→[x] over a fixture → prints 1
 ```
 
 **The two hard guards** (both deterministic, `batch.mjs`):
@@ -1150,7 +1150,7 @@ stand-down. Bash marks record a command SLUG only, never the full arg line.
 | `SMA_FLIGHT_NATIVE=1` | the capability probe reports native — the whole bridge STANDS DOWN (writeCapsule → `{skipped:'native'}`). This is the demolition-clause seam: the day the vendor ships a sufficient native pre-compaction preservation mechanism, this stream retires. |
 
 **Bridge posture:** the flight recorder is a BRIDGE, not a headline. It is
-probe-gated, registers a falsifiable prediction of its own removal (P9.2-06-03), and is
+probe-gated, registers a falsifiable prediction of its own removal, and is
 never positioned as a defensible feature — the accountability layer is the core, this is
 a bridge that retires when a sufficient native equivalent arrives.
 
