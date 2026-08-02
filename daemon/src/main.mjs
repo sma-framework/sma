@@ -254,6 +254,40 @@ function describeTickEvent(entry) {
   return parts.join(' · ')
 }
 
+/** `host:port` of the queue url, with credentials and database name left out. */
+function queueEndpoint(queueUrl) {
+  try {
+    const u = new URL(String(queueUrl))
+    return `${u.hostname}:${u.port || '5432'}`
+  } catch {
+    return 'the configured queue host'
+  }
+}
+
+/**
+ * describeBootFailure(err, config) → the operator sentence for a boot that did not happen.
+ *
+ * WHY: node's dual-stack connect rejects with an AggregateError whose OWN message is
+ * EMPTY, so the entire diagnosis of «Postgres is not running» read
+ * `fatal boot error: AggregateError` — no cause, no address, no next step. The first real
+ * error inside it carries both the code and the address; a person needs those plus what to
+ * do about them. The connection string never appears (maskSecrets), only host:port.
+ */
+export function describeBootFailure(err, config = {}) {
+  const causes = err && Array.isArray(err.errors) && err.errors.length ? err.errors : [err]
+  const first = causes.find((c) => c && (c.code || c.message)) || err
+  const code = (first && first.code) || (err && err.code) || ''
+  const raw = maskSecrets((first && first.message) || (err && err.message) || String(err))
+  if (['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'EHOSTUNREACH', 'ECONNRESET'].includes(code)) {
+    return [
+      `the task queue needs PostgreSQL at ${queueEndpoint(config.queueUrl)} and it did not answer (${code}).`,
+      'Start PostgreSQL and create the queue database, or point "queueUrl" in the daemon config at a running one.',
+      'How to set one up: docs/INSTALL.md.',
+    ].join(' ')
+  }
+  return raw || String(code || 'unknown error')
+}
+
 // ── process entrypoint (the plist target). Import stays side-effect-free. ──
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
@@ -285,9 +319,9 @@ if (isMain) {
       )
     })
     .catch((err) => {
-      // fail loud for the supervisor (KeepAlive restarts); mask any connection string.
-      const msg = String((err && err.message) || err).replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
-      console.error(`[SmaDaemon] fatal boot error: ${msg}`)
+      // fail loud for the supervisor (KeepAlive restarts), and fail USEFULLY: the cause,
+      // the address and the next step, with no connection string in sight.
+      console.error(`[SmaDaemon] cannot start: ${describeBootFailure(err, park.config)}`)
       process.exit(1)
     })
 }
