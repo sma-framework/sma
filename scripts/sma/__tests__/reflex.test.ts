@@ -190,6 +190,145 @@ describe('reflex.mjs — deriveTags + matchReflexes (B2)', () => {
   })
 })
 
+// ── schema v2: a migrated bug-lesson still fires ─────────────────────────────
+//
+// The migration collapses two v1 kinds onto one memory_type: `bug-lesson` and
+// `procedural-rule` BOTH become `memory_type: procedural`, told apart only by
+// `truth_mode` (factual vs normative). The reflex asks the corpus for the facet
+// `bug-lesson`, so on a migrated corpus it asked for a word nothing answers to
+// any more and every promoted lesson went silent pre-act. The inverse is the
+// documented pair, so it is resolved on the SHARED axis (projectNoteAxis) — no
+// new frontmatter field, no second vocabulary.
+
+/** Write a schema-v2 record (nested `retrieval` block) as raw YAML. */
+function v2Record(dir: string, name: string, yaml: string, body = 'body\n') {
+  writeFileSync(join(dir, name), `---\n${yaml.trim()}\n---\n${body}`, 'utf8')
+}
+
+describe('reflex.mjs — schema-v2 records fire pre-act', () => {
+  it('a migrated bug-lesson (procedural + factual) is a candidate', () => {
+    v2Record(
+      corpusDir,
+      'lesson-v2-migration.md',
+      `
+schema_version: 2
+claim: A migrated schema change still needs a registered migration
+memory_type: procedural
+truth_mode: factual
+criticality: high
+context_priority: always
+retrieval:
+  areas: [payload]
+  hint: touching migrations
+`,
+      '## How to apply\nRegister the migration before pushing.\n',
+    )
+
+    const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    const { tags, target } = deriveTags(evt.tool_input, evt.cwd)
+    const candidates = matchReflexes({ tags, target, corpusDir, tagsPath, loader })
+
+    const v2 = candidates.find((c) => c.noteId === 'lesson-v2-migration')
+    expect(v2).toBeDefined()
+    // Named, not blank: the claim fills the description slot, retrieval.hint the
+    // trigger slot, and context_priority `always` carries the weight the
+    // migration took the importance number away from.
+    expect(v2!.description).toBe('A migrated schema change still needs a registered migration')
+    expect(v2!.useWhen).toBe('touching migrations')
+    expect(v2!.importance).toBeGreaterThanOrEqual(8)
+    expect(v2!.reflexOptOut).toBe(false)
+    // The v1 lesson in the base corpus is untouched by the fix.
+    expect(candidates.some((c) => c.noteId === 'lesson-migration')).toBe(true)
+  })
+
+  it('a migrated procedural-rule (procedural + normative) does NOT fire', () => {
+    v2Record(
+      corpusDir,
+      'rule-v2-style.md',
+      `
+schema_version: 2
+claim: Rules are not burns and never fire pre-act
+memory_type: procedural
+truth_mode: normative
+context_priority: always
+retrieval:
+  areas: [payload]
+`,
+    )
+    const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    const { tags, target } = deriveTags(evt.tool_input, evt.cwd)
+    const candidates = matchReflexes({ tags, target, corpusDir, tagsPath, loader })
+    expect(candidates.some((c) => c.noteId === 'rule-v2-style')).toBe(false)
+  })
+
+  it('the v2 opt-out (retrieval.reflex: off) silences the record', () => {
+    v2Record(
+      corpusDir,
+      'lesson-v2-optout.md',
+      `
+schema_version: 2
+claim: An opted-out lesson is still findable but never pre-act
+memory_type: procedural
+truth_mode: factual
+context_priority: always
+retrieval:
+  areas: [payload]
+  reflex: off
+`,
+    )
+    const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    const { tags, target } = deriveTags(evt.tool_input, evt.cwd)
+    const candidates = matchReflexes({ tags, target, corpusDir, tagsPath, loader })
+    const optout = candidates.find((c) => c.noteId === 'lesson-v2-optout')
+    expect(optout).toBeDefined()
+    expect(optout!.reflexOptOut).toBe(true)
+  })
+
+  // The v2 twin of Test 5: same area, same event, ONE difference — the scoped
+  // record carries retrieval.paths. The unscoped twin is the positive control,
+  // so a green here means the PATTERN narrowed, not that nothing matched.
+  it('the v2 precision hint (retrieval.paths) narrows exactly like use-when-pattern', () => {
+    v2Record(
+      corpusDir,
+      'lesson-v2-narrow.md',
+      `
+schema_version: 2
+claim: A crm-area lesson scoped to migrations only
+memory_type: procedural
+truth_mode: factual
+context_priority: always
+retrieval:
+  areas: [crm]
+  paths: ['src/migrations/**']
+`,
+    )
+    v2Record(
+      corpusDir,
+      'lesson-v2-wide.md',
+      `
+schema_version: 2
+claim: A crm-area lesson with no path scope
+memory_type: procedural
+truth_mode: factual
+context_priority: always
+retrieval:
+  areas: [crm]
+`,
+    )
+    const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    const crmPath = String(evt.tool_input.file_path).replace(
+      'src\\migrations\\index.ts',
+      'src\\crm\\foo.ts',
+    )
+    const { tags, target } = deriveTags({ file_path: crmPath }, evt.cwd)
+    expect(target).toBe('src/crm/foo.ts')
+    const ids = matchReflexes({ tags, target, corpusDir, tagsPath, loader }).map((c) => c.noteId)
+
+    expect(ids).toContain('lesson-v2-wide') // retrieval reached the area
+    expect(ids).not.toContain('lesson-v2-narrow') // …and the path scope excluded it
+  })
+})
+
 describe('reflex.mjs — applyFatigue (launch-blocking battery, Pitfall 2)', () => {
   it('Test 2: same event twice in one session -> second call returns ZERO warns (dedup)', () => {
     const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))

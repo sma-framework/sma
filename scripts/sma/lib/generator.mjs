@@ -26,7 +26,7 @@
  * records side by side, and both are read through the same parser. Where the two
  * grammars name the same thing differently, this module maps them onto one axis
  * rather than growing a second rendering path:
- *   description ~ claim · kind ~ memory_type · tags ~ retrieval.areas ·
+ *   description ~ claim · kind ~ (memory_type, truth_mode) · tags ~ retrieval.areas ·
  *   importance≥threshold ~ context_priority: always.
  * On top of that sits ONE filter that outranks all of it: a record whose status
  * is superseded or revoked never reaches CORE (see CORE_EXCLUDED_STATUSES).
@@ -165,8 +165,10 @@ export function readNotes(corpusDir) {
  * Every consumer that asks a corpus record "what is your claim / your kind / your
  * areas / are you always-load" goes through this function, so the two grammars
  * can never grow two answers. The mapping (also stated in the module header):
- *   description ~ claim · kind ~ memory_type · tags ~ retrieval.areas ·
- *   importance≥CORE_THRESHOLD ~ context_priority: always.
+ *   description ~ claim · kind ~ (memory_type, truth_mode) · tags ~ retrieval.areas ·
+ *   importance≥CORE_THRESHOLD ~ context_priority: always ·
+ *   use-when ~ retrieval.hint · use-when-pattern ~ retrieval.paths[0] ·
+ *   reflex ~ retrieval.reflex.
  *
  * The last pair is the migration's own inverse, not a new invention:
  * migrate-v1-v2.mjs writes `context_priority: importance >= 9 ? always : on-demand`,
@@ -181,20 +183,23 @@ export function readNotes(corpusDir) {
  * @param {object} fm  parsed frontmatter (v1 or v2)
  * @param {{file?:string, schemaVersion?:1|2}} [meta]
  * @returns {{file:string, description:string, kind:string, tags:string[], useWhen:string,
- *            importance:number, status:string, contextPriority:string, schemaVersion:1|2, weight:number}}
+ *            importance:number, status:string, contextPriority:string, schemaVersion:1|2,
+ *            weight:number, hint:string, pathPattern:string, reflexOptOut:boolean}}
  */
 export function projectNoteAxis(fm, meta = {}) {
   const source = fm ?? {}
   const importance = Number(source.importance)
   const imp = Number.isFinite(importance) ? importance : 0
   const contextPriority = String(source.context_priority ?? '').trim()
+  const retrieval = retrievalBlock(source)
   return {
     file: meta.file ?? '',
     // v1 says `description`, v2 says `claim` — one line about one fact, under
     // two names. Same slot in the rendered index either way.
     description: renderableText(source.description ?? source.claim),
-    // v1 `kind` and v2 `memory_type` both answer "what sort of knowledge is this".
-    kind: renderableText(source.kind ?? source.memory_type),
+    // v1 `kind` and v2 (memory_type, truth_mode) both answer "what sort of
+    // knowledge is this" — see projectKind for the one collapsed pair.
+    kind: projectKind(source),
     // v1 `tags` and v2 `retrieval.areas` are the SAME membership axis (1:1),
     // so the area grouping (and the loader's facet matching) needs no second path.
     tags: mergeAreas(source),
@@ -206,7 +211,56 @@ export function projectNoteAxis(fm, meta = {}) {
     // The ordering key. v2 carries no importance, so `always` is mapped onto
     // the same axis the comparator already sorts by — one chain, two grammars.
     weight: contextPriority === 'always' ? Math.max(imp, CORE_THRESHOLD) : imp,
+    // ── trigger fields (read by the reflex consumer, never rendered) ──────
+    // v1 `use-when` prose survives migration as `retrieval.hint`; the
+    // `use-when-pattern` precision glob as `retrieval.paths[0]`; the per-note
+    // opt-out `reflex: off` as `retrieval.reflex`. They sit here, beside the
+    // rest of the axis, so no consumer has to learn the v2 grammar twice.
+    hint: renderableText(source['use-when'] ?? retrieval.hint),
+    pathPattern: renderableText(source['use-when-pattern'] ?? firstPath(retrieval)),
+    reflexOptOut:
+      renderableText(source.reflex ?? retrieval.reflex).toLowerCase() === 'off',
   }
+}
+
+/**
+ * The v1 `kind` of a record, whichever grammar it is written in.
+ *
+ * v1 `kind` is a single word; v2 splits the same question across `memory_type`
+ * (what sort of knowledge) and `truth_mode` (in what sense it is true). One v1
+ * word collapsed onto a shared memory_type in that split — `bug-lesson` and
+ * `procedural-rule` are BOTH `procedural` — so reading memory_type alone loses
+ * the distinction that the corpus is asked for by name (the reflex consumer
+ * asks for `bug-lesson`; nothing answers to `procedural`).
+ *
+ * The inverse is not a guess: migrate-v1-v2's KIND_TRANSFORM writes exactly
+ * `bug-lesson -> procedural + factual` and `procedural-rule -> procedural +
+ * normative`, so the pair reads back the word it came from. No new frontmatter
+ * field, no data migration, one vocabulary. Every other memory_type is its own
+ * answer and passes through untouched.
+ */
+const PROCEDURAL_BY_TRUTH_MODE = { factual: 'bug-lesson', normative: 'procedural-rule' }
+
+function projectKind(fm) {
+  const v1 = renderableText(fm.kind)
+  if (v1) return v1
+  const memoryType = renderableText(fm.memory_type)
+  if (memoryType !== 'procedural') return memoryType
+  const truthMode = renderableText(fm.truth_mode).toLowerCase()
+  return PROCEDURAL_BY_TRUTH_MODE[truthMode] ?? memoryType
+}
+
+/** The v2 `retrieval` block as a plain object ({} when absent or malformed). */
+function retrievalBlock(fm) {
+  const r = fm.retrieval
+  return r != null && typeof r === 'object' && !Array.isArray(r) ? r : {}
+}
+
+/** The first entry of `retrieval.paths` (the migrated precision glob), or ''. */
+function firstPath(retrieval) {
+  const raw = retrieval.paths
+  if (Array.isArray(raw)) return raw.length ? raw[0] : ''
+  return raw ?? ''
 }
 
 /** A frontmatter value as trimmed text; anything absent renders as empty. */
