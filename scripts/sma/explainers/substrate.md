@@ -1,9 +1,11 @@
 # The substrate: files and git, nothing else
 
-Why SMA is only deterministic scripts over your repo, with no daemon or cloud.
+Why the core of SMA is only deterministic scripts over your repo, with no daemon or cloud.
 
 ## en
-Every part of SMA is a plain script reading and writing files in your repository, coordinated through git. There is deliberately no background daemon, no database, no embedding index, no network call, and no LLM in the enforcement path.
+The core of SMA — memory, coordination, accountability — is plain scripts reading and writing files in your repository, coordinated through git. There is deliberately no background daemon, no database, no embedding index, no network call, and no LLM in the enforcement path.
+
+The V5 worker fleet and its app are a separate, optional layer on top: that one does run a local daemon and keeps its queue in a local PostgreSQL, both on your own machines. Switch it off and everything described here is untouched.
 
 Why this matters:
 - It travels with `git clone`. The knowledge is yours, not a vendor cache that disappears.
@@ -14,7 +16,9 @@ Why this matters:
 Example: the calibration ledger, the reflex rules, and the coordination claims are all files under `.sma/` and `.claude/memory/`. Delete the folder and SMA forgets; commit it and the next clone remembers.
 
 ## ru
-Каждая часть SMA это обычный скрипт, который читает и пишет файлы в Вашем репозитории, а согласуется всё через git. Здесь намеренно нет фонового демона, нет базы данных, нет индекса эмбеддингов, нет сетевых вызовов и нет LLM в пути принуждения.
+Ядро SMA (память, координация, подотчётность) это обычные скрипты, которые читают и пишут файлы в Вашем репозитории, а согласуется всё через git. Здесь намеренно нет фонового демона, нет базы данных, нет индекса эмбеддингов, нет сетевых вызовов и нет LLM в пути принуждения.
+
+Парк работников V5 и его приложение это отдельный необязательный слой сверху: он действительно поднимает локальный демон и держит очередь в локальном PostgreSQL, и то и другое на Ваших машинах. Выключите его, и всё описанное здесь не изменится.
 
 Почему это важно:
 - Оно едет вместе с `git clone`. Знание Ваше, а не кэш поставщика, который исчезает.
