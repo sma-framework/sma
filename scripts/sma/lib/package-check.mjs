@@ -19,27 +19,35 @@
  *      (`test-receipt.json`) — the badge number is written from a suite run by
  *      `badge.mjs`, never typed by hand, so a stale badge cannot reach the shop
  *      window the way `tests-876/876` once did
+ *   7. a generated daemon-license section that no longer matches the vendored
+ *      tree on disk (`daemon-licenses.mjs`) — the tarball carries other people's
+ *      packages, and the install page PROMISES their licences are tracked here
+ *   8. a vendored package whose license sits outside the permissive allowlist —
+ *      that is a decision a human makes BEFORE it rides in a published package
  *
  * Honest sentinel: run in a tree that is NOT the product package (no
  * capability.json next to the runtime — e.g. a consumer mirror of scripts/sma),
- * the check prints `-1` (not applicable), never a fake 0.
+ * the check prints `-1` (not applicable), never a fake 0. The daemon-license
+ * checks carry their own narrower sentinel: a tree with no `daemon/node_modules`
+ * has nothing vendored, so they produce no verdict rather than a fake one.
  *
  * Self-runnable (safe-command allowlisted): `node scripts/sma/lib/package-check.mjs
  * --count`; `--strict` exits 1 on any violation (the prepublishOnly gate).
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { checkBadge } from './badge.mjs'
+import { checkDaemonLicenses } from './daemon-licenses.mjs'
 
 /**
  * checkPackage({pkgRoot, io}) — pure given an io; returns
  * {applicable:boolean, violations:Array<{code,detail}>}.
  */
 export function checkPackage({ pkgRoot, io } = {}) {
-  const read = io ?? { exists: existsSync, readFile: (p) => readFileSync(p, 'utf8') }
+  const read = io ?? { exists: existsSync, readFile: (p) => readFileSync(p, 'utf8'), readdir: (p) => readdirSync(p) }
   const violations = []
 
   const pkgPath = join(pkgRoot, 'package.json')
@@ -72,6 +80,11 @@ export function checkPackage({ pkgRoot, io } = {}) {
   // No `head` on purpose: whether the receipt is FRESH is a `badge --check` question
   // (it needs git), and publishability — this count — must stay a pure file check.
   violations.push(...checkBadge({ pkgRoot, io: read }).violations)
+
+  // 7-8. the vendored daemon tree must be described by the generated section it
+  // ships with, and every license in it must be one we may vendor. Re-rendered
+  // from disk each time: the ledger is compared, never trusted.
+  violations.push(...checkDaemonLicenses({ pkgRoot, io: read }).violations)
 
   return { applicable: true, violations }
 }
