@@ -17,12 +17,17 @@
  *   - Test 10 (note-level gold cases): scoreNoteCases scores {task, expected_notes, critical_notes,
  *     forbidden_notes} against the REAL loader selection (CORE rules + tag-matched periphery) —
  *     hit / miss / critical miss / forbidden, deterministic across runs.
+ *   - Test 11 (canon-format extension, Phase 10 Plan 03): the case grammar grows ADDITIVELY —
+ *     class / schema_version / should_abstain / expected_action / repo_state are OPTIONAL keys,
+ *     an old case scores byte-for-byte as before, abstention is scored by the SELECTED set
+ *     (never by the unconditional CORE), a repo_state case scores against its fixture corpus,
+ *     and a repo_state resolving INTO the live corpus is refused instead of scored.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 
 import {
   deriveTaskTags,
@@ -36,6 +41,10 @@ import {
 } from '../lib/context-pack.mjs'
 import { buildCatalog, readCatalog } from '../lib/catalog.mjs'
 import { loadTagsRegistry } from '../lib/frontmatter.mjs'
+// The gold-case READER lives in the measurement module; Test 11 exercises the real
+// read → score pipeline (a case file on disk, not a hand-built array), because the
+// claim under test is precisely that an EXTENDED line survives BOTH halves of it.
+import { readGoldCases } from '../lib/baseline.mjs'
 
 const EMDASH = String.fromCharCode(0x2014)
 
@@ -301,5 +310,186 @@ describe('scoreNoteCases — note-level gold cases (Test 10)', () => {
     const missing = scoreNoteCases({ cases: [{ task: 'crm', expected_notes: ['a.md'] }], corpusDir: join(dir, 'nope'), tagsPath: join(dir, 'nope', 'TAGS.md'), commit: 'c' })
     expect(missing.coreLoaded).toEqual([])
     expect(missing.cases[0].missing).toEqual(['a.md'])
+  })
+})
+
+// ── canon-format extension: class / abstention / repo_state (Test 11) ────────
+
+/** A note fixture in an arbitrary corpus directory (the fixture corpora of Test 11). */
+function writeNoteIn(target: string, file: string, description: string, tags: string[], importance: number) {
+  mkdirSync(target, { recursive: true })
+  const fm = ['---', `description: ${description}`, 'kind: reference', `tags: [${tags.join(', ')}]`, `importance: ${importance}`, '---', 'body']
+  writeFileSync(join(target, file), fm.join('\n') + '\n', 'utf8')
+}
+
+/** A fixture corpus: its OWN TAGS.md (a fixture vocabulary never enters the live registry). */
+function makeFixtureCorpus(target: string) {
+  mkdirSync(target, { recursive: true })
+  writeFileSync(join(target, 'TAGS.md'), TAGS, 'utf8')
+  return target
+}
+
+describe('scoreNoteCases — canon-format extension (Test 11)', () => {
+  it('reads and scores a case carrying the new canon keys without moving the old score (A5)', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+
+    // the case file lives BESIDE the corpus, exactly as it does in production
+    const casesPath = join(corpusDir, 'gold-cases.jsonl')
+    const legacy = { task: 'fix the crm handler', expected_notes: ['crm-detail.md'], critical_notes: [], forbidden_notes: [] }
+    const extended = {
+      ...legacy,
+      class: 'exact',
+      schema_version: 2,
+      should_abstain: false,
+      expected_action: 'cite the crm rule',
+      a_key_from_a_future_schema: 'ignored, never fatal',
+    }
+    writeFileSync(casesPath, [JSON.stringify(legacy), JSON.stringify(extended)].join('\n') + '\n', 'utf8')
+
+    const { cases, corrupt } = readGoldCases(casesPath)
+    expect(corrupt).toBe(0)
+    expect(cases).toHaveLength(2)
+
+    const res = scoreNoteCases({ cases, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), casesDir: corpusDir, commit: 'c' })
+    const [plain, rich] = res.cases
+
+    // the new keys change NOTHING about how the old fields score
+    expect(rich.loaded).toEqual(plain.loaded)
+    expect(rich.hits).toEqual(plain.hits)
+    expect(rich.missing).toEqual(plain.missing)
+    expect(rich.criticalMissing).toEqual(plain.criticalMissing)
+    expect(rich.forbiddenPresent).toEqual(plain.forbiddenPresent)
+
+    // ...and they are REPORTED, not swallowed
+    expect(plain.class).toBeNull()
+    expect(plain.schemaVersion).toBe(1)
+    expect(plain.abstain).toBeNull()
+    expect(plain.expectedAction).toBeNull()
+    expect(rich.class).toBe('exact')
+    expect(rich.schemaVersion).toBe(2)
+    expect(rich.expectedAction).toBe('cite the crm rule')
+    expect(rich.abstain).toBeNull() // should_abstain: false is not an abstention case
+
+    expect(res.totals).toMatchObject({ cases: 2, rejected: 0, abstainPass: 0, abstainFail: 0 })
+  })
+
+  it('scores should_abstain by the SELECTED set, distinguishably from a recall miss', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9) // unconditional CORE
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+
+    const cases = [
+      { task: 'auth', class: 'abstention', should_abstain: true, expected_notes: [], critical_notes: [], forbidden_notes: [] },
+      { task: 'crm', class: 'abstention', should_abstain: true, expected_notes: [], critical_notes: [], forbidden_notes: [] },
+    ]
+    const res = scoreNoteCases({ cases, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), casesDir: corpusDir, commit: 'c' })
+    const [held, spoke] = res.cases
+
+    // holding back is a PASS even though unconditional CORE still arrived —
+    // the selected set is what the retrieval layer CHOSE, never the always-load frame
+    expect(held.loaded).toEqual(['core-rule.md'])
+    expect(held.selected).toEqual([])
+    expect(held.abstain).toBe('pass')
+
+    // answering when it should have held back is a FAIL — and NOT a recall miss
+    expect(spoke.selected).toEqual(['crm-detail.md'])
+    expect(spoke.abstain).toBe('fail')
+    expect(spoke.missing).toEqual([])
+    expect(spoke.criticalMissing).toEqual([])
+
+    expect(res.totals).toMatchObject({ cases: 2, abstainPass: 1, abstainFail: 1, missing: 0 })
+  })
+
+  it('scores a repo_state case against its fixture corpus, not the default one', () => {
+    writeNote('live-only.md', 'a note of the LIVE corpus', ['crm'], 9)
+    const fixture = makeFixtureCorpus(join(dir, 'fixtures', 'poisoned-memory'))
+    writeNoteIn(fixture, 'fixture-note.md', 'a neutral fixture note', ['crm'], 5)
+
+    const cases = [
+      {
+        task: 'crm',
+        class: 'poisoned-memory',
+        repo_state: '../fixtures/poisoned-memory',
+        expected_notes: ['fixture-note.md'],
+        critical_notes: [],
+        forbidden_notes: ['live-only.md'], // the live corpus must not leak into a fixture run
+      },
+    ]
+    const res = scoreNoteCases({ cases, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), casesDir: corpusDir, commit: 'c' })
+    const c = res.cases[0]
+
+    expect(c.error).toBeUndefined()
+    expect(c.loaded).toEqual(['fixture-note.md'])
+    expect(c.hits).toEqual(['fixture-note.md'])
+    expect(c.forbiddenPresent).toEqual([])
+    expect(res.totals).toMatchObject({ cases: 1, rejected: 0 })
+  })
+
+  it('refuses a repo_state that resolves INTO the live corpus, instead of scoring it', () => {
+    writeNote('live-only.md', 'a note of the LIVE corpus', ['crm'], 9)
+    const sneaky = makeFixtureCorpus(join(corpusDir, 'fixtures', 'sneaky'))
+    writeNoteIn(sneaky, 'sneaky.md', 'adversarial content parked in the live corpus', ['crm'], 5)
+
+    const res = scoreNoteCases({
+      cases: [{ task: 'crm', class: 'cross-repo-contamination', repo_state: 'fixtures/sneaky', expected_notes: ['sneaky.md'], critical_notes: ['sneaky.md'], forbidden_notes: [] }],
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      casesDir: corpusDir,
+      commit: 'c',
+    })
+    const c = res.cases[0]
+
+    expect(c.error).toBe('repo-state-contamination')
+    expect(c.loaded).toEqual([])
+    // a refused case is NOT a recall miss and NOT a critical miss — it is refused
+    expect(c.missing).toEqual([])
+    expect(c.criticalMissing).toEqual([])
+    expect(res.totals).toMatchObject({ cases: 0, rejected: 1, casesWithCriticalMiss: 0 })
+
+    // an absolute path is refused the same way (a case file must stay portable)
+    const abs = scoreNoteCases({
+      cases: [{ task: 'crm', repo_state: resolvePath(dir, 'fixtures', 'poisoned-memory') }],
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      casesDir: corpusDir,
+      commit: 'c',
+    })
+    expect(abs.cases[0].error).toBe('repo-state-not-relative')
+
+    // a repo_state pointing nowhere is an honest error, never a fabricated set of misses
+    const gone = scoreNoteCases({
+      cases: [{ task: 'crm', repo_state: '../fixtures/never-created', expected_notes: ['x.md'] }],
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      casesDir: corpusDir,
+      commit: 'c',
+    })
+    expect(gone.cases[0].error).toBe('repo-state-missing')
+    expect(gone.cases[0].missing).toEqual([])
+  })
+
+  it('scores the four legacy fields exactly as before on a minimal case (regression)', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+    writeNote('auth-detail.md', 'an auth note the crm task never names', ['auth'], 3)
+
+    const cases = [
+      {
+        task: 'fix the crm handler',
+        expected_notes: ['core-rule.md', 'crm-detail.md', 'auth-detail.md'],
+        critical_notes: ['auth-detail.md'],
+        forbidden_notes: ['auth-detail.md'],
+      },
+    ]
+    const res = scoreNoteCases({ cases, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commit: 'c' })
+    const c = res.cases[0]
+
+    expect(res.coreLoaded).toEqual(['core-rule.md'])
+    expect(c.loaded).toEqual(['core-rule.md', 'crm-detail.md'])
+    expect(c.hits).toEqual(['core-rule.md', 'crm-detail.md'])
+    expect(c.missing).toEqual(['auth-detail.md'])
+    expect(c.criticalMissing).toEqual(['auth-detail.md'])
+    expect(c.forbiddenPresent).toEqual([])
+    expect(res.totals).toMatchObject({ cases: 1, expected: 3, hits: 2, missing: 1, criticalMissing: 1, casesWithCriticalMiss: 1, forbiddenPresent: 0 })
   })
 })
