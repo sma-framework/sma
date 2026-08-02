@@ -28,7 +28,9 @@
  * for touch/complete/fail is likewise a read-only SELECT. This backend NEVER UPDATEs
  * boss tables directly — every MUTATION goes through the boss API (send / fetch /
  * touch / complete / fail). stats() stays API-first via getQueueStats summed over the
- * four lane queues.
+ * four lane queues. The ONE table this backend does write is not pg-boss's: the daemon's
+ * own approval row (approval-store.mjs), provisioned at start() and stamped at complete()
+ * so the front's approve/return have a durable state to compare-and-set against.
  *
  * STATELESSNESS NOTE: the only in-process state is a SOFT coalesce-display counter
  * (how many times a still-pending item was re-requested). It is NOT task truth —
@@ -58,6 +60,7 @@ import {
   UnknownTaskError,
 } from './adapter.mjs'
 import { recordAttempt } from './attempt-ledger.mjs'
+import { ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
 
 /** The four execution lanes, in the documented stable claim order (grill CH-9.5-07-1). */
 export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
@@ -147,6 +150,11 @@ export function createPgBossQueue({
     for (const lane of TASK_QUEUE_LANES) {
       await bossInstance.createQueue(laneQueue(lane), { deadLetter: DEAD_LETTER_QUEUE })
     }
+    // The daemon's OWN approval row (approval-store.mjs) — provisioned in the same breath
+    // as the queues, because the front's approve/return CAS against it from the first
+    // request. Fail-open by construction: a database that refuses the CREATE logs and
+    // boots anyway (the queue itself is what a boot cannot do without).
+    await ensureApprovalTable(runSql, { log })
     if (ownBoss) startedUrls.add(queueUrl)
     return true
   }
@@ -227,6 +235,10 @@ export function createPgBossQueue({
     if (!job) throw new UnknownTaskError(`complete: no active task "${taskId}"`)
     await bossInstance.complete(job.name, job.id, { receiptRef: result.receiptRef })
     coalesce.delete(taskId)
+    // Finished work is not finished business: the task now owes a human a word, and the
+    // front's approve/return CAS from exactly this state (events.mjs already ANNOUNCES
+    // `task.awaiting_approval` here — this is the durable half of that announcement).
+    await markAwaitingApproval(runSql, taskId, { log })
     if (ledgerDir) {
       recordAttempt(ledgerDir, {
         taskId,
@@ -314,5 +326,9 @@ export function createPgBossQueue({
     return agg
   }
 
-  return { start, stop, enqueue, claimNext, touch, complete, fail, list, stats }
+  // `execSql` is exposed so the composition root can hand the FRONT the same read/write
+  // SQL seam this backend already owns (one pool, one connection string, one place that
+  // knows how to reach the queue database) — that is what fills deps.casExec in production
+  // instead of leaving approve/return answering «not implemented».
+  return { start, stop, enqueue, claimNext, touch, complete, fail, list, stats, execSql: runSql }
 }

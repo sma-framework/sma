@@ -1758,12 +1758,14 @@ async function dispatch(req, res, ctx) {
 
 /**
  * createFrontServer({config, deps}) — wire the closed route table to the auth-gated
- * dispatcher. Returns { server, handle, routes, listen }. `handle(req, res)` is the raw
- * request listener (fail-closed: any throw → 500, never a leak); tests call it directly
- * with fake req/res. `server` is the node:http.Server for the real-listen smoke.
+ * dispatcher. Returns { server, handle, routes, listen, deps }. `handle(req, res)` is the
+ * raw request listener (fail-closed: any throw → 500, never a leak); tests call it directly
+ * with fake req/res. `server` is the node:http.Server for the real-listen smoke. `deps` is
+ * the collaborator set EXACTLY as it was handed in — echoed back so the composition-root
+ * test can name what a real boot wired (it grants nothing: the caller already owns it).
  *
  * @param {{config?:object, deps?:object}} [opts]
- * @returns {{server:object, handle:Function, routes:object, listen:Function}}
+ * @returns {{server:object, handle:Function, routes:object, listen:Function, deps:object}}
  */
 export function createFrontServer({ config = {}, deps = {} } = {}) {
   const expectedToken = config.token || ''
@@ -1792,6 +1794,7 @@ export function createFrontServer({ config = {}, deps = {} } = {}) {
     server,
     handle,
     routes: ROUTES,
+    deps,
     listen(cb) {
       server.listen(config.port, config.bind, cb)
       return server
