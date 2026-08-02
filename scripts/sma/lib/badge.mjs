@@ -8,19 +8,33 @@
  * failure mode that let `tests-876/876` sit in the shop window while the real
  * suite had grown past it.
  *
- * Two ways in, one of them measured by construction:
- *   --from-vitest <file>   parse `vitest run --reporter=json --outputFile=<file>`
- *                          and take numTotalTests / numTotalTestSuites from it.
- *                          Refuses to stamp anything but a fully green run.
- *   --from-suite <t>/<f>   explicit numbers, for a runner whose JSON is already
- *                          summarised. Still routed through the receipt.
- *   --check                compare both READMEs against the receipt; exit 1 on a
- *                          mismatch. This is what the release gate calls.
+ * ONE door in, measured by construction:
+ *   --from-vitest <file>   parse a runner's final JSON report (`vitest run
+ *                          --reporter=json --outputFile=<file>`; jest's reporter
+ *                          has the same shape) and take the counts from it.
+ *                          Refuses anything but a finished, fully green run, and
+ *                          refuses a report that predates HEAD — a leftover report
+ *                          measured older code. There is no argv path for a number:
+ *                          a provisional total written into the receipt makes the
+ *                          badge and the receipt agree with each other and with
+ *                          nothing that was ever run.
+ *   --check [--strict]     compare both READMEs against the receipt; exit 1 on a
+ *                          mismatch. This is what the release gate calls. Because
+ *                          both sides can be wrong TOGETHER, --check also reads the
+ *                          receipt's provenance (the commit it measured) and reports
+ *                          drift from the live HEAD — a warning by default, a
+ *                          failure under --strict.
+ *   --verify-live [<file>] the conclusive one: re-measure and compare the receipt AND
+ *                          the READMEs against a THIRD number from a fresh run.
+ *                          Given a report file it uses that; given none it runs the
+ *                          suite itself.
  *
  * The receipt is the single source; the two READMEs are projections of it.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -34,33 +48,96 @@ const BADGE_URL_RE = /(badge\/tests-)(\d+)(%2F)(\d+)(-)/g
 const BADGE_ALT_RE = /(alt="(?:tests|тесты) )(\d+)(\/)(\d+)(")/g
 
 /**
- * parseVitestJson(text) -> {tests, files} | throws.
- * Reads vitest's JSON reporter shape. A run with ANY failure is refused: a badge
- * that says "1512/1512" on a red suite is exactly the lie this module exists to
- * prevent.
+ * parseVitestJson(text) -> {tests, files, startedAt} | throws.
+ * Reads vitest's JSON reporter shape. A run that is not finished and fully green is
+ * refused: a badge that says "1512/1512" on a red suite is exactly the lie this
+ * module exists to prevent.
  */
 export function parseVitestJson(text) {
   const r = JSON.parse(text)
   const tests = Number(r.numTotalTests)
-  // NOT numTotalTestSuites — that counts `describe` blocks (743 here), not files.
+  // NOT numTotalTestSuites — that counts `describe` blocks (740 here), not files.
   // The file count is the length of the per-file results array.
   const files = Array.isArray(r.testResults) ? r.testResults.length : Number(r.numTotalTestSuites)
   if (!Number.isFinite(tests) || !Number.isFinite(files)) {
     throw new Error('vitest json carries no numTotalTests / test file results')
+  }
+  if (tests <= 0 || files <= 0) {
+    throw new Error(`refusing to stamp a badge from a run that collected no tests: ${tests} tests across ${files} files`)
   }
   const failed = Number(r.numFailedTests ?? 0)
   const passed = Number(r.numPassedTests ?? tests)
   if (failed > 0 || passed !== tests) {
     throw new Error(`refusing to stamp a badge from a non-green run: ${passed}/${tests} passed, ${failed} failed`)
   }
-  return { tests, files }
+  // A file that fails to LOAD (syntax error, bad import) reports status "failed" with
+  // zero assertions, so its tests never enter numTotalTests at all: the counters above
+  // read green while the badge SHRINKS by however many tests that file held. The
+  // per-file status and the runner's own success flag are the honest signals.
+  const broken = (Array.isArray(r.testResults) ? r.testResults : []).filter((t) => t && t.status !== 'passed')
+  if (broken.length > 0) {
+    const first = broken[0]
+    throw new Error(`refusing to stamp a badge: ${broken.length} test file(s) did not pass — ${first.name ?? 'unknown file'}: ${String(first.message ?? first.status).split('\n')[0]}`)
+  }
+  if (r.success === false) {
+    throw new Error('refusing to stamp a badge from a run the runner itself marked failed (success: false)')
+  }
+  const startedAt = Number(r.startTime)
+  return { tests, files, startedAt: Number.isFinite(startedAt) ? startedAt : null }
 }
 
-/** parseSuiteSpec("1318/91") -> {tests, files}. */
-export function parseSuiteSpec(spec) {
-  const m = /^(\d+)\/(\d+)$/.exec(String(spec).trim())
-  if (!m) throw new Error(`--from-suite expects <tests>/<files>, got "${spec}"`)
-  return { tests: Number(m[1]), files: Number(m[2]) }
+/**
+ * readHead({cwd, exec}) -> {sha, dirty, committedAt} | null.
+ * The tree the numbers belong to. `null` when git cannot answer (no repo, no git) —
+ * an unverifiable provenance is reported as unverifiable, never faked.
+ */
+export function readHead({ cwd, exec } = {}) {
+  const run = exec ?? ((args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))
+  try {
+    const sha = String(run(['rev-parse', 'HEAD'])).trim()
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) return null
+    const seconds = Number(String(run(['log', '-1', '--format=%ct'])).trim())
+    const dirty = String(run(['status', '--porcelain'])).trim().length > 0
+    return { sha, dirty, committedAt: Number.isFinite(seconds) ? seconds * 1000 : null }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * assertReportIsLive({startedAt, head}) -> void | throws.
+ * A report only measures the code it ran over. A JSON file left over from an earlier
+ * tree is how a provisional number reaches the receipt: a report started at 02:08
+ * stamped at 10:41, by which time the suite had moved. If the run started BEFORE the
+ * current HEAD commit was made, it measured older code. Unknown times -> no verdict.
+ */
+export function assertReportIsLive({ startedAt, head } = {}) {
+  if (!head || !head.committedAt || !startedAt) return
+  if (startedAt < head.committedAt) {
+    throw new Error(
+      `refusing to stamp from a report that predates HEAD: the run started ${new Date(startedAt).toISOString()} but HEAD (${head.sha.slice(0, 8)}) was committed ${new Date(head.committedAt).toISOString()} — re-run the suite and stamp from THAT report`,
+    )
+  }
+}
+
+/**
+ * resolveMeasurement({argv, readFile, head}) -> {tests, files, startedAt} | throws.
+ * The ONLY way a number reaches the receipt, and the whole bootstrap is this: a
+ * runner's final JSON, from a run no older than HEAD. `--from-suite <tests>/<files>`
+ * used to take totals straight off the command line; it is refused by name so the
+ * old habit gets an explanation instead of a usage line.
+ */
+export function resolveMeasurement({ argv = [], readFile, head } = {}) {
+  if (argv.includes('--from-suite')) {
+    throw new Error('--from-suite is gone: the receipt is written only from a runner\'s final JSON (--from-vitest <file>), never from a number typed on the command line')
+  }
+  const i = argv.indexOf('--from-vitest')
+  const file = i > -1 ? argv[i + 1] : undefined
+  if (!file) throw new Error('usage: badge.mjs --from-vitest <json> | --check [--strict] | --verify-live [<json>]')
+  const read = readFile ?? ((p) => readFileSync(p, 'utf8'))
+  const measured = parseVitestJson(read(resolve(file)))
+  assertReportIsLive({ startedAt: measured.startedAt, head })
+  return measured
 }
 
 /**
@@ -86,18 +163,60 @@ export function readBadge(readmeText) {
   return m ? { shown: Number(m[1]), total: Number(m[2]) } : null
 }
 
-/** The receipt shape written to disk. */
-export function buildReceipt({ tests, files }) {
-  return { tests, files, measuredAt: new Date().toISOString(), source: 'vitest' }
+/**
+ * The receipt shape written to disk. `commit`/`dirty` are the provenance: WHICH tree
+ * the number was measured on. Without them a stale receipt and a stale badge agree
+ * with each other forever and nothing can tell.
+ */
+export function buildReceipt({ tests, files, startedAt, head } = {}) {
+  return {
+    tests,
+    files,
+    measuredAt: new Date().toISOString(),
+    source: 'vitest',
+    commit: head?.sha ?? null,
+    dirty: head?.dirty ?? null,
+    runStartedAt: startedAt ? new Date(startedAt).toISOString() : null,
+  }
 }
 
 /**
- * checkBadge({pkgRoot, io}) -> {ok, violations}. Pure given an io. The receipt is
- * authoritative; a README that disagrees with it is stale.
+ * checkReceiptFreshness({receipt, head}) -> [{code, detail}].
+ * The cheap guard. Comparing README to receipt only proves they were written by the
+ * same command; comparing the receipt's commit to the live HEAD asks whether the
+ * number still describes THIS tree.
  */
-export function checkBadge({ pkgRoot, io } = {}) {
+export function checkReceiptFreshness({ receipt, head } = {}) {
+  if (!head) {
+    return [{ code: 'badge-head-unknown', detail: 'cannot read git HEAD — the receipt\'s freshness is unverified (run --verify-live to re-measure)' }]
+  }
+  if (!receipt || !receipt.commit) {
+    return [{ code: 'badge-receipt-no-provenance', detail: `${RECEIPT_FILE} records no commit, so nothing can say whether its number still fits this tree — re-stamp it (badge.mjs --from-vitest <report>)` }]
+  }
+  if (receipt.commit !== head.sha) {
+    return [{ code: 'badge-receipt-drifted', detail: `${RECEIPT_FILE} was measured at ${receipt.commit.slice(0, 8)} but HEAD is ${head.sha.slice(0, 8)} — the suite may have moved since; re-stamp, or confirm with --verify-live` }]
+  }
+  if (receipt.dirty) {
+    return [{ code: 'badge-receipt-dirty', detail: `${RECEIPT_FILE} was measured on a dirty worktree at ${receipt.commit.slice(0, 8)}: HEAD matches but the files it ran over may not — confirm with --verify-live` }]
+  }
+  return []
+}
+
+/**
+ * checkBadge({pkgRoot, io, head, strict}) -> {ok, violations, warnings}. Pure given
+ * an io. The receipt is authoritative for the READMEs; a README that disagrees with
+ * it is stale. Pass `head` (from readHead) to also judge the receipt itself: without
+ * it no freshness verdict is produced at all, which is what package-check wants — its
+ * violation count is a publishability contract and must not depend on git.
+ */
+export function checkBadge({ pkgRoot, io, head, strict } = {}) {
   const read = io ?? { exists: existsSync, readFile: (p) => readFileSync(p, 'utf8') }
   const violations = []
+  const warnings = []
+  const freshness = (receipt) => {
+    if (head === undefined) return // freshness not requested
+    for (const f of checkReceiptFreshness({ receipt, head })) (strict ? violations : warnings).push(f)
+  }
 
   // The law binds only a project that MAKES the claim. No badge anywhere -> there
   // is no public number to keep honest, and demanding a receipt would be noise.
@@ -108,24 +227,94 @@ export function checkBadge({ pkgRoot, io } = {}) {
     const badge = readBadge(read.readFile(p))
     if (badge) badged.push({ name, badge })
   }
-  if (badged.length === 0) return { ok: true, violations: [] }
+  if (badged.length === 0) return { ok: true, violations: [], warnings: [] }
 
   const receiptPath = join(pkgRoot, RECEIPT_FILE)
   if (!read.exists(receiptPath)) {
-    return { ok: false, violations: [{ code: 'badge-no-receipt', detail: `README carries a test badge but ${RECEIPT_FILE} is missing — the number must come from a measured run (badge.mjs --from-vitest)` }] }
+    return { ok: false, warnings, violations: [{ code: 'badge-no-receipt', detail: `README carries a test badge but ${RECEIPT_FILE} is missing — the number must come from a measured run (badge.mjs --from-vitest)` }] }
   }
   let receipt
   try {
     receipt = JSON.parse(read.readFile(receiptPath))
   } catch (err) {
-    return { ok: false, violations: [{ code: 'badge-bad-receipt', detail: `${RECEIPT_FILE} unparseable: ${err && err.message}` }] }
+    return { ok: false, warnings, violations: [{ code: 'badge-bad-receipt', detail: `${RECEIPT_FILE} unparseable: ${err && err.message}` }] }
   }
+  freshness(receipt)
   for (const { name, badge } of badged) {
     if (badge.total !== receipt.tests || badge.shown !== receipt.tests) {
       violations.push({ code: 'badge-stale', detail: `${name} badge says ${badge.shown}/${badge.total} but the measured receipt says ${receipt.tests} — rewrite it from the receipt, never by hand` })
     }
   }
-  return { ok: violations.length === 0, violations }
+  return { ok: violations.length === 0, violations, warnings }
+}
+
+/**
+ * defaultRunSuite({pkgRoot, exec, io}) -> the runner's JSON text.
+ * The live seam for --verify-live: ask the project's own vitest for a JSON report.
+ * A red suite exits non-zero and the report still tells the truth — parseVitestJson
+ * refuses it downstream, which is the point.
+ */
+export function defaultRunSuite({ pkgRoot, exec, io } = {}) {
+  const outFile = join(tmpdir(), `sma-badge-verify-${process.pid}-${Date.now()}.json`)
+  const run = exec ?? ((cmd, args, opts) => execFileSync(cmd, args, opts))
+  const files = io ?? { readFile: (p) => readFileSync(p, 'utf8'), remove: (p) => rmSync(p, { force: true }) }
+  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+  try {
+    run(npx, ['vitest', 'run', '--reporter=json', `--outputFile=${outFile}`], { cwd: pkgRoot, stdio: ['ignore', 'ignore', 'inherit'], shell: process.platform === 'win32' })
+  } catch {
+    /* non-zero exit = a red suite; the report is what we judge, not the exit code */
+  }
+  try {
+    return files.readFile(outFile)
+  } finally {
+    try {
+      files.remove(outFile)
+    } catch {
+      /* a leftover temp report is not a failure */
+    }
+  }
+}
+
+/**
+ * verifyLive({pkgRoot, io, reportText, runSuite}) -> {ok, violations, measured}.
+ * The conclusive check. `checkBadge` compares two copies of one number, so it is
+ * silent when both are wrong together; this brings a THIRD number from a fresh run
+ * and lets it break the tie.
+ */
+export function verifyLive({ pkgRoot, io, reportText, runSuite } = {}) {
+  const read = io ?? { exists: existsSync, readFile: (p) => readFileSync(p, 'utf8') }
+  const text = reportText ?? (typeof runSuite === 'function' ? runSuite() : undefined)
+  if (text === undefined) throw new Error('verify-live needs a fresh runner report: pass one (--verify-live <json>) or let it run the suite')
+  const measured = parseVitestJson(text) // same green law: a red run proves nothing
+  const violations = []
+
+  const receiptPath = join(pkgRoot, RECEIPT_FILE)
+  if (!read.exists(receiptPath)) {
+    violations.push({ code: 'badge-no-receipt', detail: `a fresh run measured ${measured.tests} tests but ${RECEIPT_FILE} is missing — stamp it (badge.mjs --from-vitest)` })
+  } else {
+    let receipt
+    try {
+      receipt = JSON.parse(read.readFile(receiptPath))
+    } catch (err) {
+      receipt = null
+      violations.push({ code: 'badge-bad-receipt', detail: `${RECEIPT_FILE} unparseable: ${err && err.message}` })
+    }
+    if (receipt && (receipt.tests !== measured.tests || receipt.files !== measured.files)) {
+      violations.push({ code: 'badge-live-mismatch', detail: `${RECEIPT_FILE} says ${receipt.tests} tests / ${receipt.files} files but a fresh run measured ${measured.tests}/${measured.files} — the receipt is stale, re-stamp it from this run` })
+    }
+  }
+
+  for (const name of BADGE_READMES) {
+    const p = join(pkgRoot, name)
+    if (!read.exists(p)) continue
+    const badge = readBadge(read.readFile(p))
+    if (!badge) continue
+    if (badge.shown !== measured.tests || badge.total !== measured.tests) {
+      violations.push({ code: 'badge-live-mismatch', detail: `${name} badge says ${badge.shown}/${badge.total} but a fresh run measured ${measured.tests} — re-stamp the badge from this run` })
+    }
+  }
+
+  return { ok: violations.length === 0, violations, measured }
 }
 
 // ── direct run ───────────────────────────────────────────────────────────────
@@ -140,32 +329,46 @@ const invokedDirectly = (() => {
 if (invokedDirectly) {
   const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
   const argv = process.argv.slice(2)
-  const flag = (name) => {
-    const i = argv.indexOf(name)
-    return i > -1 ? argv[i + 1] : undefined
-  }
+  const strict = argv.includes('--strict')
 
   if (argv.includes('--check')) {
-    const { ok, violations } = checkBadge({ pkgRoot })
+    const head = readHead({ cwd: pkgRoot })
+    const { ok, violations, warnings } = checkBadge({ pkgRoot, head, strict })
+    for (const w of warnings) process.stderr.write(`  [warn ${w.code}] ${w.detail}\n`)
     for (const v of violations) process.stderr.write(`  [${v.code}] ${v.detail}\n`)
     process.stdout.write(`${violations.length}\n`)
     process.exit(ok ? 0 : 1)
   }
 
+  if (argv.includes('--verify-live')) {
+    const at = argv.indexOf('--verify-live') + 1
+    const file = argv[at] && !argv[at].startsWith('--') ? argv[at] : undefined
+    try {
+      const { ok, violations, measured } = verifyLive({
+        pkgRoot,
+        reportText: file ? readFileSync(resolve(file), 'utf8') : undefined,
+        runSuite: file ? undefined : () => defaultRunSuite({ pkgRoot }),
+      })
+      for (const v of violations) process.stderr.write(`  [${v.code}] ${v.detail}\n`)
+      process.stdout.write(`live: ${measured.tests} tests / ${measured.files} files\n`)
+      process.stdout.write(`${violations.length}\n`)
+      process.exit(ok ? 0 : 1)
+    } catch (err) {
+      process.stderr.write(`badge: ${err && err.message}\n`)
+      process.exit(1)
+    }
+  }
+
+  const head = readHead({ cwd: pkgRoot })
   let measured
   try {
-    if (flag('--from-vitest')) measured = parseVitestJson(readFileSync(resolve(flag('--from-vitest')), 'utf8'))
-    else if (flag('--from-suite')) measured = parseSuiteSpec(flag('--from-suite'))
-    else {
-      process.stderr.write('usage: badge.mjs --from-vitest <json> | --from-suite <tests>/<files> | --check\n')
-      process.exit(2)
-    }
+    measured = resolveMeasurement({ argv, head })
   } catch (err) {
     process.stderr.write(`badge: ${err && err.message}\n`)
     process.exit(1)
   }
 
-  writeFileSync(join(pkgRoot, RECEIPT_FILE), JSON.stringify(buildReceipt(measured), null, 2) + '\n')
+  writeFileSync(join(pkgRoot, RECEIPT_FILE), JSON.stringify(buildReceipt({ ...measured, head }), null, 2) + '\n')
   for (const name of BADGE_READMES) {
     const p = join(pkgRoot, name)
     if (!existsSync(p)) continue
@@ -173,5 +376,5 @@ if (invokedDirectly) {
     writeFileSync(p, text)
     process.stdout.write(`${name}: ${replaced} badge site(s) -> ${measured.tests}\n`)
   }
-  process.stdout.write(`receipt: ${measured.tests} tests / ${measured.files} files\n`)
+  process.stdout.write(`receipt: ${measured.tests} tests / ${measured.files} files${head ? ` @ ${head.sha.slice(0, 8)}${head.dirty ? ' (dirty)' : ''}` : ' (no git provenance)'}\n`)
 }

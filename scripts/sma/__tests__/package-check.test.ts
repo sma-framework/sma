@@ -69,6 +69,37 @@ describe('package-check — violation classes (Test 2)', () => {
   })
 })
 
+describe('package-check — the badge law, and only the badge law (Test 4)', () => {
+  const ROOT = 'C:\\pkg'
+  function io(receipt: object, badge = 1866) {
+    const files = new Map<string, string>([
+      [resolve(ROOT, 'package.json'), JSON.stringify({ version: '3.6.0', license: 'MIT', repository: { url: 'x' }, files: ['bin'] })],
+      [resolve(ROOT, 'sma-core', 'capabilities', 'sma', 'capability.json'), JSON.stringify({ version: '3.6.0' })],
+      [resolve(ROOT, 'README.md'), `<img src="https://img.shields.io/badge/tests-${badge}%2F${badge}-3CC0A0" alt="tests ${badge}/${badge}">`],
+      [resolve(ROOT, 'test-receipt.json'), JSON.stringify(receipt)],
+      [resolve(ROOT, 'bin'), ''],
+    ])
+    return {
+      exists: (p: string) => files.has(resolve(p)),
+      readFile: (p: string) => {
+        const v = files.get(resolve(p))
+        if (v === undefined) throw new Error('ENOENT')
+        return v
+      },
+    }
+  }
+
+  it('flags a badge that disagrees with the receipt, and nothing about its freshness', () => {
+    // Publishability must not depend on git: a receipt measured at some other commit
+    // (or carrying no provenance at all) is a badge --check concern, never a violation
+    // here — this count is the scorer contract and must not grow behind its back.
+    expect(checkPackage({ pkgRoot: ROOT, io: io({ tests: 1866, files: 116 }) }).violations).toEqual([])
+    expect(checkPackage({ pkgRoot: ROOT, io: io({ tests: 1866, files: 116, commit: 'a'.repeat(40), dirty: true }) }).violations).toEqual([])
+    const stale = checkPackage({ pkgRoot: ROOT, io: io({ tests: 1880, files: 116 }) })
+    expect(stale.violations.map((v: { code: string }) => v.code)).toEqual(['badge-stale'])
+  })
+})
+
 describe('package-check — honest sentinel (Test 3)', () => {
   it('a tree without capability.json is not applicable, never a fake 0', () => {
     const res = checkPackage({

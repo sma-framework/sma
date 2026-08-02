@@ -68,7 +68,9 @@ export function checkPackage({ pkgRoot, io } = {}) {
   if (!pkg.repository) violations.push({ code: 'no-repository', detail: 'package.json has no repository field' })
   if (!pkg.license) violations.push({ code: 'no-license', detail: 'package.json has no license field' })
 
-  // 6. the README test badge must equal the measured suite receipt (badge.mjs)
+  // 6. the README test badge must equal the measured suite receipt (badge.mjs).
+  // No `head` on purpose: whether the receipt is FRESH is a `badge --check` question
+  // (it needs git), and publishability — this count — must stay a pure file check.
   violations.push(...checkBadge({ pkgRoot, io: read }).violations)
 
   return { applicable: true, violations }
