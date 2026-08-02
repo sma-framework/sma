@@ -161,6 +161,5 @@ spoken in the conversation, never silently written into the profile:
 
 Any specific team's process — a particular deploy host, a particular tag series, a
 particular full-gate sequence — is exactly ONE possible profile. At dogfood time a team
-writes ITS values into ITS `.sma/profile.json` (for this framework's home platform that
-happens in phase 9.1-26). Nothing in sma-core may treat any team's values as the
-built-in behavior.
+writes ITS values into ITS `.sma/profile.json` — this framework's own home platform is
+no exception. Nothing in sma-core may treat any team's values as the built-in behavior.
