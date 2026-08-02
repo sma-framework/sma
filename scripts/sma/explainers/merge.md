@@ -16,7 +16,7 @@ Push is explicitly out of scope: shipping stays founder-ordered via `/sma-ship`;
 
 The posture is fail-open: any error degrades to an honest failure that releases the held slot, so a gate bug can never wedge a session or leave a slot stuck. The soft-deny is the mayDeny tier only; hard deny remains the security guard's alone, and a force-cleared scope is never enforced against the founder's word.
 
-Example: `pnpm sma merge worktree-agent-7` reports "merged into main LOCALLY (a1b2c3d); tests on the merge result: green" and reminds you that push happens via `/sma-ship`.
+Example: `node scripts/sma/cli.mjs merge worktree-agent-7` reports "merged into main LOCALLY (a1b2c3d); tests on the merge result: green" and reminds you that push happens via `/sma-ship`.
 
 ## ru
 `sma merge <ветка>` это ЕДИНСТВЕННЫЙ путь, которым ветка воркдерева (смотрите `sma worktree`) попадает в main. Он убивает классический сбой нескольких терминалов: «Ваш пуш увёз мою недостроенную работу».
@@ -32,4 +32,4 @@ Example: `pnpm sma merge worktree-agent-7` reports "merged into main LOCALLY (a1
 
 Осанка с открытым отказом: любая ошибка вырождается в честный отказ с освобождением занятого слота, поэтому баг ворот не может повесить сессию или оставить слот застрявшим. Мягкий запрет это только уровень mayDeny; жёсткий запрет остаётся за стражем безопасности, а принудительно очищенный охват никогда не принуждается против слова основателя.
 
-Пример: `pnpm sma merge worktree-agent-7` сообщает «влит в main ЛОКАЛЬНО (a1b2c3d); тесты на результате слияния: зелёные» и напоминает, что пуш происходит через `/sma-ship`.
+Пример: `node scripts/sma/cli.mjs merge worktree-agent-7` сообщает «влит в main ЛОКАЛЬНО (a1b2c3d); тесты на результате слияния: зелёные» и напоминает, что пуш происходит через `/sma-ship`.

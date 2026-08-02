@@ -53,7 +53,7 @@ Also read:
   project-specific value comes from the user's answers and lands in their profile.
 - NEVER write a secret VALUE into the profile. Capture env-var NAMES and tool FACTS only;
   the validator rejects secret-shaped values deterministically (T-9.3-06).
-- Everything this workflow writes must pass `pnpm sma lint` immediately — the starter
+- Everything this workflow writes must pass `node scripts/sma/cli.mjs lint` immediately — the starter
   notes use the exact frontmatter schema the linter enforces.
 </hard_rules>
 
@@ -75,14 +75,14 @@ ls .sma/profile.json 2>/dev/null && echo "EXISTING — profile present" || echo 
   path instead:
 
   > You already have a profile. Two options: a full re-onboarding (all stages, with
-  > teaching), or the quick path — `pnpm sma profile --quick` prints exactly the
+  > teaching), or the quick path — `node scripts/sma/cli.mjs profile --quick` prints exactly the
   > fields that are still unset, in order, with zero teaching modules. Answer only
   > those; I write them straight to `.sma/profile.json` through the same validation
   > (secret-shaped values are still rejected, T-9.3-06). Which do you want?
 
-  On the quick path: run `pnpm sma profile --quick`, ask ONLY the fields it lists
+  On the quick path: run `node scripts/sma/cli.mjs profile --quick`, ask ONLY the fields it lists
   (each carries its one-line description), and write the answers through the Stage D
-  profile-write step (`pnpm sma profile --lint` clean, then commit). If it prints
+  profile-write step (`node scripts/sma/cli.mjs profile --lint` clean, then commit). If it prints
   «nothing to ask», the profile is already complete — say so and stop. NEVER re-ask
   an answered field; NEVER deliver a TEACH module on the quick path. A full
   re-onboarding stays available on request and remains the default for fresh installs.
@@ -217,8 +217,8 @@ tool (the auto-memory feature re-nests editor-written notes).
 **Build the index and prove it lints clean** — a fresh install must lint clean:
 
 ```bash
-pnpm sma build-index --write
-pnpm sma lint
+node scripts/sma/cli.mjs build-index --write
+node scripts/sma/cli.mjs lint
 ```
 
 If lint reports anything, fix the notes or TAGS.md NOW — never hand the user a corpus that
@@ -298,8 +298,8 @@ schema field):
 ```bash
 mkdir -p .sma
 # write .sma/profile.json with the answered fields (see references/infra-profile.md)
-pnpm sma profile --lint
-pnpm sma build-index --write && pnpm sma lint
+node scripts/sma/cli.mjs profile --lint
+node scripts/sma/cli.mjs build-index --write && node scripts/sma/cli.mjs lint
 sma_run query commit "onboarding: infra profile v2 + mirror notes" --files .sma/profile.json .claude/memory/
 ```
 
@@ -316,7 +316,7 @@ user next (pre-registered predictions on every plan). Then render the durable on
 recap and commit it:
 
 ```bash
-pnpm sma profile --recap
+node scripts/sma/cli.mjs profile --recap
 sma_run query commit "onboarding: deterministic recap artifact" --files .sma/onboarding-recap.md
 ```
 
@@ -346,10 +346,10 @@ Next step:
 - [ ] Starter corpus created: TAGS.md + 2-4 CORE notes with the exact lint-enforced
       frontmatter (description, kind, tags, use-when, importance); bug-lesson notes carry
       **Why:** + **How to apply:**
-- [ ] `pnpm sma lint` passes clean on the fresh corpus
+- [ ] `node scripts/sma/cli.mjs lint` passes clean on the fresh corpus
 - [ ] Infra + working-style profile captured: `.sma/profile.json` (profileVersion 2, only
       user-answered fields, NO secret values) + mirror reference notes
-- [ ] `pnpm sma profile --lint` clean (no schema / secret / dead-field violation)
+- [ ] `node scripts/sma/cli.mjs profile --lint` clean (no schema / secret / dead-field violation)
 - [ ] `.sma/onboarding-recap.md` rendered and committed
 - [ ] User knows the next command to run
 </success_criteria>

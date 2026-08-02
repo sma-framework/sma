@@ -99,7 +99,7 @@ predictions:
   - id: P1
     claim: "after the reap pass, zero stale sessions remain in the registry"
     metric: stale_session_count
-    check_command: "pnpm sma status --stale-count"
+    check_command: "node scripts/sma/cli.mjs status --stale-count"
     comparator: "=="
     threshold: 0
     horizon: "next session-start"

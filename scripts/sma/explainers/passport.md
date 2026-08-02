@@ -7,7 +7,7 @@ The passport is how SMA publishes its own honesty. It builds a PASSPORT.md and a
 
 The subtle part is the model-version guard. When the underlying model changes, the old hit rate no longer describes the new model, so the badge hides itself until enough new data exists (n at or above 20). That is honesty about statistics, not modesty: a badge that kept showing pre-change numbers would be quietly lying.
 
-The commands: `pnpm sma passport --build` and `--verify` and `--check-badge`, with `pnpm sma model` tracking model-version sightings.
+The commands: `node scripts/sma/cli.mjs passport --build` and `--verify` and `--check-badge`, with `node scripts/sma/cli.mjs model` tracking model-version sightings.
 
 Example: you switch models on Tuesday. The badge disappears from the README until twenty fresh predictions accumulate, then returns with a number that actually describes the new model.
 
@@ -16,6 +16,6 @@ Example: you switch models on Tuesday. The badge disappears from the README unti
 
 Тонкость это страж версии модели. Когда нижележащая модель меняется, старый процент попаданий больше не описывает новую модель, поэтому значок прячется, пока не накопится достаточно новых данных (n не меньше 20). Это честность в статистике, а не скромность: значок, продолжающий показывать числа до смены, тихо лгал бы.
 
-Команды: `pnpm sma passport --build`, `--verify` и `--check-badge`, а `pnpm sma model` отслеживает замеченные версии модели.
+Команды: `node scripts/sma/cli.mjs passport --build`, `--verify` и `--check-badge`, а `node scripts/sma/cli.mjs model` отслеживает замеченные версии модели.
 
 Пример: Вы меняете модель во вторник. Значок исчезает из README, пока не наберётся двадцать свежих предсказаний, затем возвращается с числом, которое действительно описывает новую модель.

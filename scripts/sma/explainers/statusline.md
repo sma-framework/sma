@@ -9,7 +9,7 @@ Alongside it, an attention pulse marks whether a window is working or waiting fo
 
 One thing is deliberate and worth stating plainly: the webhook is outbound only. SMA sends a notification out; there is no inbound path, nothing listens, nothing can be told to act from the outside.
 
-The commands: `pnpm sma statusline render` and `install` / `uninstall` / `set-webhook`, with `pnpm sma pulse` marking working or waiting.
+The commands: `node scripts/sma/cli.mjs statusline render` and `install` / `uninstall` / `set-webhook`, with `node scripts/sma/cli.mjs pulse` marking working or waiting.
 
 Example: you glance at the status line and see "2 windows, 0 collisions, next migration 072", so you start work already knowing the shared state.
 
@@ -20,6 +20,6 @@ Example: you glance at the status line and see "2 windows, 0 collisions, next mi
 
 Одно сделано намеренно и стоит сказать прямо: вебхук работает только на выход. SMA отправляет уведомление наружу; входящего пути нет, ничто не слушает, ничему нельзя велеть действовать снаружи.
 
-Команды: `pnpm sma statusline render`, `install`, `uninstall`, `set-webhook`, а `pnpm sma pulse` отмечает работу или ожидание.
+Команды: `node scripts/sma/cli.mjs statusline render`, `install`, `uninstall`, `set-webhook`, а `node scripts/sma/cli.mjs pulse` отмечает работу или ожидание.
 
 Пример: Вы бросаете взгляд на статусную строку и видите «2 окна, 0 коллизий, следующая миграция 072», поэтому начинаете работу, уже зная общее состояние.

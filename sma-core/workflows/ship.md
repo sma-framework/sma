@@ -173,14 +173,14 @@ commands implement them, never WHETHER they run:
    soft-deny tier checks before it will allow a push:
 
    ```bash
-   pnpm sma gates mark-fullgate
+   node scripts/sma/cli.mjs gates mark-fullgate
    ```
 
    The marker lands at `.sma/gates/fullgate-<sha>.json {sha, at, gate:'full', terminal}`
    (TTL 6h). When GATE-PUSH soft-deny is armed (`SMA_GATE_PUSH_DENY=1`), a push without a
    fresh marker for HEAD is denied — so this step is what lets the sanctioned /sma-ship
    path push without tripping its own gate. Arming the gate at all is a founder action
-   justified by `pnpm sma gates-report --promotion-readiness`; it ships DORMANT.
+   justified by `node scripts/sma/cli.mjs gates-report --promotion-readiness`; it ships DORMANT.
 
 2. **Vendor untriaged gate (9.4-01).** No release ships past an untriaged Anthropic
    capability sighting. Run the vendor-ledger linter in the product repo and block on a
@@ -265,7 +265,7 @@ Report: "Pushed `{branch}` to origin ({commit_count} commits ahead of ${BASE_BRA
 carries it; absent field = skip or ask, per `load_infra_profile`):
 
 - **Tag:** if `releaseRitual.tagPattern` is set, compute the next version per the
-  pattern (numeric increment, never lexicographic — use `pnpm sma next-slot release`
+  pattern (numeric increment, never lexicographic — use `node scripts/sma/cli.mjs next-slot release`
   when `"release"` is listed in `sharedCounters`, so parallel sessions cannot grab the
   same number), create an annotated tag with a short changelog of what ships, and push
   with `--follow-tags`.
@@ -616,7 +616,7 @@ After shipping:
 - [ ] «Issues Encountered» scan run over every SUMMARY in the ship scope, and every item it printed either raised as a gate line item or written off in deferred-items.md — none left silent
 - [ ] Infra profile read (.sma/profile.json) — missing fields asked and offered for save, never defaulted
 - [ ] Full gate green before push (profile-supplied command, echoed before running) + origin-diff reviewed
-- [ ] Full-gate evidence marker written after the gate passed (`pnpm sma gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-9.1-13)
+- [ ] Full-gate evidence marker written after the gate passed (`node scripts/sma/cli.mjs gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-9.1-13)
 - [ ] Branch pushed to remote
 - [ ] PR created with rich auto-generated body
 - [ ] STATE.md updated with shipping status

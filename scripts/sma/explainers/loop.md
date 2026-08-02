@@ -8,9 +8,9 @@ The accountable loop is the heart of SMA. Every plan states up front what its wo
 This is what turns "I told the agent" into "the agent could not miss it, and a script checked it".
 
 The commands along the loop:
-- `pnpm sma state` and `pnpm sma exec-journal` track where a plan stands.
-- `pnpm sma predict-score` settles the predictions.
-- `pnpm sma metrics` and `pnpm sma report` show the whole picture.
+- `node scripts/sma/cli.mjs state` and `node scripts/sma/cli.mjs exec-journal` track where a plan stands.
+- `node scripts/sma/cli.mjs predict-score` settles the predictions.
+- `node scripts/sma/cli.mjs metrics` and `node scripts/sma/cli.mjs report` show the whole picture.
 
 Example: a plan predicts "uncovered command count == 0". After the build, `predict-score` runs that check. If a later command shipped without a doc, the count is 1, the prediction misses, and the miss is recorded rather than quietly forgotten.
 
@@ -20,8 +20,8 @@ Example: a plan predicts "uncovered command count == 0". After the build, `predi
 Именно это превращает «я сказал агенту» в «агент не мог промахнуться, и скрипт это проверил».
 
 Команды вдоль цикла:
-- `pnpm sma state` и `pnpm sma exec-journal` показывают, на какой стадии план.
-- `pnpm sma predict-score` сводит предсказания.
-- `pnpm sma metrics` и `pnpm sma report` показывают всю картину.
+- `node scripts/sma/cli.mjs state` и `node scripts/sma/cli.mjs exec-journal` показывают, на какой стадии план.
+- `node scripts/sma/cli.mjs predict-score` сводит предсказания.
+- `node scripts/sma/cli.mjs metrics` и `node scripts/sma/cli.mjs report` показывают всю картину.
 
 Пример: план предсказывает «число непокрытых команд равно 0». После сборки `predict-score` запускает эту проверку. Если более поздняя команда вышла без документации, число равно 1, предсказание промахивается, и промах записывается, а не тихо забывается.

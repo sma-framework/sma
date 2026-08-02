@@ -98,7 +98,7 @@ the user AT THAT MOMENT and offers to save the answer back into the profile.
 | Consumer | What it reads | On a missing profile/field |
 |---|---|---|
 | `workflows/ship.md` | `releaseRitual` (tagPattern, fullGateCommand, ciWatchCommand), `autoDeployBranch`, `pushTarget`, `envVarNames` (ship preflight) | Ask the user for the missing piece, offer to save it into `.sma/profile.json`. Never substitute another project's ritual. |
-| `next-slot` (`scripts/sma/lib/slots.mjs` via `pnpm sma next-slot`) | `sharedCounters` — which counters are coordination-worthy in this project | Counter not listed = no slot coordination claimed for it; ask before assuming a counter is shared. |
+| `next-slot` (`scripts/sma/lib/slots.mjs` via `node scripts/sma/cli.mjs next-slot`) | `sharedCounters` — which counters are coordination-worthy in this project | Counter not listed = no slot coordination claimed for it; ask before assuming a counter is shared. |
 | Push-safety gates (pre-push hooks, push-claim checks) | `autoDeployBranch` (a push to it is a deploy), `releaseRitual.fullGateCommand` | Ask; a gate never invents a command to run. |
 | `sma emit` headers + planner context (9.3-04/05) | `stack` (languages, frameworks, packageManager) | Omit the stack header; the planner asks when it matters. |
 | Executor targeted-test rule + ship full gate | `testRunner.targetedCommand` (per-edit), `testRunner.fullSuiteCommand` / `typeCheckCommand` (push gate) | Ask for the command; never invent a test invocation. |
