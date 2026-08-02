@@ -9,7 +9,7 @@ For each pattern it prints a CATCHES line: what happened, and which reflex would
 
 Because it is read-only over git, it is safe to run on any repository, including one you do not own.
 
-The command: `pnpm sma excavate` with `--stats` as its instrument.
+The command: `node scripts/sma/cli.mjs excavate` with `--stats` as its instrument.
 
 Example: run it on a project and it reports "3 commit-revert pairs, 5 typo-fix chains; a reflex on migration edits would have fired before 2 of them" — concrete evidence in the first five minutes.
 
@@ -20,6 +20,6 @@ Example: run it on a project and it reports "3 commit-revert pairs, 5 typo-fix c
 
 Поскольку это только чтение поверх git, его безопасно запускать на любом репозитории, включая тот, которым Вы не владеете.
 
-Команда: `pnpm sma excavate` со спутником `--stats` как измерителем.
+Команда: `node scripts/sma/cli.mjs excavate` со спутником `--stats` как измерителем.
 
 Пример: запустите его на проекте, и он сообщит «3 пары коммит-откат, 5 цепочек правок-опечаток; рефлекс на правки миграций сработал бы перед 2 из них», то есть конкретное свидетельство в первые пять минут.

@@ -375,7 +375,7 @@ numbered behaviors, in order:
    report below, and append it to the phase exec-journal so a resume session sees the
    same computed grouping:
    ```bash
-   pnpm sma exec-journal append --phase {N} --plan 00 --event wave_table --reason "{compact computed-wave table}"
+   node scripts/sma/cli.mjs exec-journal append --phase {N} --plan 00 --event wave_table --reason "{compact computed-wave table}"
    ```
 
 All subsequent steps (wave grouping, `WAVE_FILTER` matching, the execute_waves loop) use
@@ -1098,8 +1098,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    1. **PARK** — record the block in BOTH machine-readable surfaces, by exact command:
       ```bash
-      pnpm sma exec-journal append --phase {N} --plan {NN} --event blocked --reason "{what was denied/blocked}"
-      pnpm sma state add-blocker --phase {N} --text "{plan NN} parked: {what is blocked} — {how the founder clears it}" --kind ops
+      node scripts/sma/cli.mjs exec-journal append --phase {N} --plan {NN} --event blocked --reason "{what was denied/blocked}"
+      node scripts/sma/cli.mjs state add-blocker --phase {N} --text "{plan NN} parked: {what is blocked} — {how the founder clears it}" --kind ops
       ```
       (`--kind external` when the blocker is a third party, not the founder.)
       The blocker text names the phase literally and states the clearing action
@@ -1121,7 +1121,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
       `blocked` event's `--reason` plus the last `task_complete` events give the
       continuation agent its exact resume point. On resume, close the loop:
       ```bash
-      pnpm sma state resolve-blocker --match "{plan NN} parked"
+      node scripts/sma/cli.mjs state resolve-blocker --match "{plan NN} parked"
       ```
 
    A parked plan costs minutes of wave throughput, not a day of silence.

@@ -11,12 +11,12 @@ Your project's knowledge lives as small notes, one fact per note, each carrying 
 The index is machine-built by a script from the notes, so a manual edit is caught by the checker immediately.
 
 The commands:
-- `pnpm sma load --tags <area>` pulls the relevant notes for a task.
-- `pnpm sma lint` finds untagged, mistyped, broken-link or stale notes.
-- `pnpm sma build-index` regenerates the table of contents.
-- `pnpm sma consolidate` and `pnpm sma trim` keep the corpus sharp at scale.
+- `node scripts/sma/cli.mjs load --tags <area>` pulls the relevant notes for a task.
+- `node scripts/sma/cli.mjs lint` finds untagged, mistyped, broken-link or stale notes.
+- `node scripts/sma/cli.mjs build-index` regenerates the table of contents.
+- `node scripts/sma/cli.mjs consolidate` and `node scripts/sma/cli.mjs trim` keep the corpus sharp at scale.
 
-Example: `pnpm sma load --tags security` returns only the security notes, so the assistant is briefed without loading hundreds of unrelated facts.
+Example: `node scripts/sma/cli.mjs load --tags security` returns only the security notes, so the assistant is briefed without loading hundreds of unrelated facts.
 
 ## ru
 Знание Вашего проекта живёт как маленькие заметки, один факт на заметку, каждая с ярлыками из строгого словаря. Слоёв три:
@@ -27,9 +27,9 @@ Example: `pnpm sma load --tags security` returns only the security notes, so the
 Индекс строит скрипт из заметок, поэтому ручную правку проверяющий ловит сразу.
 
 Команды:
-- `pnpm sma load --tags <область>` тянет нужные заметки под задачу.
-- `pnpm sma lint` находит заметки без ярлыков, с опечатками, с битыми ссылками или устаревшие.
-- `pnpm sma build-index` пересобирает оглавление.
-- `pnpm sma consolidate` и `pnpm sma trim` держат корпус острым на масштабе.
+- `node scripts/sma/cli.mjs load --tags <область>` тянет нужные заметки под задачу.
+- `node scripts/sma/cli.mjs lint` находит заметки без ярлыков, с опечатками, с битыми ссылками или устаревшие.
+- `node scripts/sma/cli.mjs build-index` пересобирает оглавление.
+- `node scripts/sma/cli.mjs consolidate` и `node scripts/sma/cli.mjs trim` держат корпус острым на масштабе.
 
-Пример: `pnpm sma load --tags security` вернёт только заметки по безопасности, поэтому ассистент введён в курс, не загружая сотни несвязанных фактов.
+Пример: `node scripts/sma/cli.mjs load --tags security` вернёт только заметки по безопасности, поэтому ассистент введён в курс, не загружая сотни несвязанных фактов.

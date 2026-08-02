@@ -9,7 +9,7 @@ It is like a child who touches boiling water once and never again. Noise control
 
 The rules do not only accumulate. A self-tuning ladder promotes rules that keep proving useful and demotes noisy ones, always on journal evidence and always as a reviewable diff.
 
-The commands: `pnpm sma reflex-check` fires the check (usually via the hook), and `pnpm sma ladder`, `pnpm sma tune` and `pnpm sma curriculum` manage how rules mature.
+The commands: `node scripts/sma/cli.mjs reflex-check` fires the check (usually via the hook), and `node scripts/sma/cli.mjs ladder`, `node scripts/sma/cli.mjs tune` and `node scripts/sma/cli.mjs curriculum` manage how rules mature.
 
 Example: after a migration was once forgotten, a reflex fires "did you add the migration?" the next time a collection schema is edited.
 
@@ -20,6 +20,6 @@ Example: after a migration was once forgotten, a reflex fires "did you add the m
 
 Правила не просто накапливаются. Самонастраивающаяся лестница повышает правила, которые продолжают приносить пользу, и понижает шумные, всегда по свидетельству журнала и всегда обозримым диффом.
 
-Команды: `pnpm sma reflex-check` запускает проверку (обычно через хук), а `pnpm sma ladder`, `pnpm sma tune` и `pnpm sma curriculum` управляют тем, как правила взрослеют.
+Команды: `node scripts/sma/cli.mjs reflex-check` запускает проверку (обычно через хук), а `node scripts/sma/cli.mjs ladder`, `node scripts/sma/cli.mjs tune` и `node scripts/sma/cli.mjs curriculum` управляют тем, как правила взрослеют.
 
 Пример: после того как миграцию однажды забыли, рефлекс срабатывает «Вы добавили миграцию?» в следующий раз при правке схемы коллекции.

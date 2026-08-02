@@ -11,7 +11,7 @@ An already-built preflight (`preflight`) checks a plan's claims against the real
 
 The core principle stays fail-open: hard blocking is reserved for security and for a consequences law you opt into.
 
-Example: `pnpm sma undo` restores the last airbag snapshot, HEAD plus dirty and untracked files, in a single reversible step.
+Example: `node scripts/sma/cli.mjs undo` restores the last airbag snapshot, HEAD plus dirty and untracked files, in a single reversible step.
 
 ## ru
 Ворота это проверяемые правила проекта, которые вырастают из просьбы в прозе до автоматической проверки. По умолчанию ворота совещательны: они предупреждают и записывают, но не блокируют. Для горячего файла или по-настоящему опасного действия можно включить мягкий запрет, пока держится свежая заявка, и у каждых ворот есть выключатель, чтобы их всегда можно было отключить.
@@ -22,4 +22,4 @@ Example: `pnpm sma undo` restores the last airbag snapshot, HEAD plus dirty and 
 
 Ключевой принцип остаётся с открытым отказом: жёсткая блокировка остаётся за безопасностью и за законом последствий, который Вы включаете сами.
 
-Пример: `pnpm sma undo` восстанавливает последний снимок подушки, HEAD плюс изменённые и неотслеживаемые файлы, одним обратимым шагом.
+Пример: `node scripts/sma/cli.mjs undo` восстанавливает последний снимок подушки, HEAD плюс изменённые и неотслеживаемые файлы, одним обратимым шагом.
