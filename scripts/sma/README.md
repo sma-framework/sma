@@ -864,6 +864,11 @@ as a runtime; an entry naming an agent SMA does not know is a **no-op** — it i
 that agent keeps resolving through the profile, so a typo silently changes nothing instead
 of failing a dispatch.
 
+`null` is the clear verb for any config key, not a value: the key is **deleted**, so the
+setting falls back to its default instead of resolving to the literal string `"null"`.
+Clearing a key that was never set is a successful no-op — `updated: false`, and the file is
+left untouched rather than rewritten with the parent objects on the way to it.
+
 ---
 
 ## Multi-terminal conventions

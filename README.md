@@ -189,7 +189,13 @@ By default a model *profile* answers one question — how heavy is this kind of 
 sma-tools query config-set model_profile_overrides.agents.sma-executor opus
 ```
 
-The pin wins over the profile for that agent only; every other agent stays where it was, and it holds against automatic tier escalation. A name SMA does not recognise is ignored — a typo changes nothing rather than failing a run. Full resolution order and the per-runtime tier map: [scripts/sma/README.md](scripts/sma/README.md).
+The pin wins over the profile for that agent only; every other agent stays where it was, and it holds against automatic tier escalation. A name SMA does not recognise is ignored — a typo changes nothing rather than failing a run. To lift a pin, set it to `null`: the key is removed and the agent goes back to the profile.
+
+```bash
+sma-tools query config-set model_profile_overrides.agents.sma-executor null
+```
+
+`null` is how you clear *any* setting — the key is deleted rather than set to the word "null". Full resolution order and the per-runtime tier map: [scripts/sma/README.md](scripts/sma/README.md).
 
 ## Commands
 

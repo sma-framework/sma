@@ -409,6 +409,43 @@ function _setNestedValue(config, keyPath, parsedValue) {
     return previousValue;
 }
 /**
+ * Shared helper: remove a single key-path from an in-memory config object.
+ *
+ * The mirror of `_setNestedValue` for the documented "clear this key" spelling
+ * (`config-set <key> null`). Unlike the setter it never creates the path it
+ * walks — clearing a key that was never set must not invent the parent objects
+ * on the way to it.
+ *
+ * Returns { existed, previousValue }. Never writes to disk.
+ * Calls error() (process.exit(1)) on prototype-pollution attempts.
+ */
+function _unsetNestedValue(config, keyPath) {
+    const keys = keyPath.split('.');
+    let current = config;
+    for (let i = 0; i < keys.length - 1; i++) {
+        const key = keys[i];
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
+            error('Invalid config key (prototype pollution guard): ' + keyPath, ERROR_REASON.CONFIG_PARSE_FAILED);
+        }
+        const existingChild = current[key];
+        // Nothing to clear along this path — a no-op, not a write.
+        if (!existingChild || typeof existingChild !== 'object' || Array.isArray(existingChild)) {
+            return { existed: false, previousValue: undefined };
+        }
+        current = existingChild;
+    }
+    const lastKey = keys[keys.length - 1];
+    if (lastKey === '__proto__' || lastKey === 'prototype' || lastKey === 'constructor') {
+        error('Invalid config key (prototype pollution guard): ' + keyPath, ERROR_REASON.CONFIG_PARSE_FAILED);
+    }
+    if (!Object.hasOwn(current, lastKey)) {
+        return { existed: false, previousValue: undefined };
+    }
+    const previousValue = current[lastKey];
+    delete current[lastKey];
+    return { existed: true, previousValue };
+}
+/**
  * Sets a value in the config file, allowing nested values via dot notation (e.g.,
  * "workflow.research").
  *
@@ -433,6 +470,42 @@ function setConfigValue(cwd, keyPath, parsedValue) {
         try {
             (0, shell_command_projection_cjs_1.platformWriteSync)(configPath, JSON.stringify(config, null, 2));
             return { updated: true, key: keyPath, value: parsedValue, previousValue };
+        }
+        catch (err) {
+            error('Failed to write config.json: ' + err.message);
+        }
+    });
+}
+/**
+ * Removes a key from the config file — the write half of `config-set <key> null`.
+ *
+ * `null` is the spelling every settings workflow hands the user for "Clear
+ * override" / "Clear". It has to REMOVE the key: storing it would leave the
+ * string "null" behind, which downstream readers take at face value (a model
+ * pin of "null", an API key of "null") — a setting you could apply but not lift.
+ *
+ * Clearing an absent key is a successful no-op: `updated` is false and the file
+ * is left untouched rather than rewritten with invented parent objects.
+ */
+function unsetConfigValue(cwd, keyPath) {
+    const configPath = node_path_1.default.join(planningDir(cwd), 'config.json');
+    return withPlanningLock(cwd, () => {
+        let config = {};
+        try {
+            if (node_fs_1.default.existsSync(configPath)) {
+                config = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf-8'));
+            }
+        }
+        catch (err) {
+            error('Failed to read config.json: ' + err.message, ERROR_REASON.CONFIG_PARSE_FAILED);
+        }
+        const { existed, previousValue } = _unsetNestedValue(config, keyPath);
+        if (!existed) {
+            return { updated: false, key: keyPath, value: null, previousValue: undefined, unset: true };
+        }
+        try {
+            (0, shell_command_projection_cjs_1.platformWriteSync)(configPath, JSON.stringify(config, null, 2));
+            return { updated: true, key: keyPath, value: null, previousValue, unset: true };
         }
         catch (err) {
             error('Failed to write config.json: ' + err.message);
@@ -524,6 +597,26 @@ function cmdConfigSet(cwd, keyPath, value, raw) {
     validateKnownConfigKeyPath(kp);
     if (!isValidConfigKey(kp, cwd)) {
         error(`Unknown config key: "${kp}". Valid keys: ${[...VALID_CONFIG_KEYS].sort().join(', ')}, agent_skills.<agent-type>, features.<feature_name>`, ERROR_REASON.CONFIG_INVALID_KEY);
+    }
+    // `null` clears the key (the "Clear override" / "Clear" spelling in every
+    // settings workflow). It is a REMOVAL, not a value, so it returns here
+    // before the per-key type guards below — those validate what may be
+    // stored, and nothing is being stored.
+    if (val === 'null') {
+        const unsetResult = unsetConfigValue(cwd, kp);
+        // Clearing a secret must not echo the secret being cleared.
+        if ((0, secrets_cjs_1.isSecretKey)(kp)) {
+            output({
+                ...unsetResult,
+                previousValue: unsetResult.previousValue === undefined
+                    ? undefined
+                    : (0, secrets_cjs_1.maskSecret)(unsetResult.previousValue),
+                masked: true,
+            }, raw, `${kp}=(cleared)`);
+            return;
+        }
+        output(unsetResult, raw, `${kp}=(cleared)`);
+        return;
     }
     // Parse value (handle booleans, numbers, and JSON arrays/objects)
     let parsedValue = val;
@@ -842,4 +935,5 @@ module.exports = {
     // Exported for programmatic use by capability-writer and tests
     setConfigValue,
     setConfigValues,
+    unsetConfigValue,
 };
