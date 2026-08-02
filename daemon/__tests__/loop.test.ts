@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest'
 import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
+import { workerReadiness, poolReadiness } from '../src/runner/readiness.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
   const s = { now: start }
@@ -204,6 +205,130 @@ describe('tick — the stateless composed tick', () => {
     expect(res.completed).toBe('BL-K')
     const [row] = await adapter.list({})
     expect(row.status).toBe('completed')
+  })
+})
+
+// ── an attempt that cannot start says so — the QA «первая задача умирает молча» class ──
+//
+// A fresh install ships PLACEHOLDER accounts and (until the executor wave) no buildArgs.
+// Before these gates the tick died on the way to the spawn, the fail-open catch swallowed
+// it, the ledger write threw on an unconfigured ledgerDir and the card showed «failed,
+// attempt 3» with attempts:[] and not one line in the log. Every test below pins one half
+// of «каждая карточка отвечает ПОЧЕМУ».
+
+describe('an attempt that cannot start is REFUSED, loudly and on the record', () => {
+  it('a routed worker whose account was never set up fails with missing_access on the card', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps, attempts, journalled, order } = makeDeps({
+      adapter,
+      clockObj: c,
+      deps: { workerReady: (w: any) => workerReadiness(w, {}) }, // the REAL check, on '/x'
+    })
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'BL-1', reason: 'missing_access' })
+    expect(String(res.failed.detail)).toContain('не настроен')
+    // the card's «почему»: an attempt row carrying the reason code the roster renders
+    expect(attempts.at(-1)).toMatchObject({ taskId: 'BL-1', outcome: 'failed', failureReason: 'missing_access' })
+    expect(journalled.some((e: any) => e.type === 'task.refused' && e.reason === 'missing_access')).toBe(true)
+    expect(order).not.toContain('spawn') // refused BEFORE any verb ran
+    expect(order).not.toContain('preflight')
+  })
+
+  it('a daemon wired with no executor refuses before provisioning a worktree', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps, attempts, order, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) } },
+      deps: { buildArgs: undefined },
+    })
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'BL-1', reason: 'runtime_offline' })
+    expect(attempts.at(-1)).toMatchObject({ outcome: 'failed', failureReason: 'runtime_offline' })
+    expect(journalled.some((e: any) => e.type === 'task.refused')).toBe(true)
+    expect(order).toEqual(['preflight']) // no worktree, no spawn
+  })
+
+  it('the preflight-«built» door still completes without any executor (the pilot smoke path)', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps, order } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built', receiptRef: 'preflight:BL-1' }) } },
+      deps: { buildArgs: undefined },
+    })
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    expect(order).toEqual(['preflight'])
+  })
+
+  it('a ledger that cannot be written reports itself instead of swallowing the failure', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      deps: {
+        workerReady: () => ({ ready: false, reason: 'missing_access', detail: 'нет каталога' }),
+        ledger: {
+          recordAttempt: () => {
+            throw new Error('recordAttempt requires a ledgerDir') // the unconfigured-dir throw
+          },
+          readAttempts: () => [],
+        },
+      },
+    })
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ reason: 'missing_access' })
+    expect(journalled.some((e: any) => e.type === 'ledger-error')).toBe(true)
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('failed') // the durable transition still happened
+  })
+})
+
+describe('readiness — can this worker start at all? (runner/readiness.mjs)', () => {
+  it('an account directory that does not exist is missing_access, with the path in the detail', () => {
+    const r = workerReadiness({ id: 'max-1', account: { name: 'max-1', configDir: '/nope/max-1' } }, {})
+    expect(r.ready).toBe(false)
+    expect(r.reason).toBe('missing_access')
+    expect(r.detail).toContain('max-1')
+  })
+
+  it('expands ~ against the injected home before asking the filesystem', () => {
+    const seen: string[] = []
+    const fsImpl = { existsSync: (p: string) => (seen.push(p), true) }
+    const r = workerReadiness({ id: 'max-1', account: { configDir: '~/.sma-accounts/max-1' } }, {
+      fsImpl,
+      homedir: () => '/home/x',
+    })
+    expect(r.ready).toBe(true)
+    expect(seen[0].replace(/\\/g, '/')).toBe('/home/x/.sma-accounts/max-1')
+  })
+
+  it('poolReadiness counts only enabled workers and names every blocked one', () => {
+    const config = {
+      workers: [
+        { id: 'a', enabled: true, account: { configDir: '/nope/a' } },
+        { id: 'b', enabled: false, account: { configDir: '/nope/b' } },
+        { id: 'c', enabled: true, account: { configDir: '/here/c' } },
+      ],
+    }
+    const fsImpl = { existsSync: (p: string) => String(p).includes('here') }
+    const out = poolReadiness(config, { fsImpl })
+    expect(out.total).toBe(2)
+    expect(out.ready).toEqual(['c'])
+    expect(out.blocked.map((b: any) => b.id)).toEqual(['a'])
   })
 })
 

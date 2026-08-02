@@ -39,6 +39,7 @@
  * Node built-ins + the daemon's own modules only. Zero new deps.
  */
 
+import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer } from './config.mjs'
@@ -56,6 +57,7 @@ import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
+import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge, defaultExecGit } from '../../scripts/sma/lib/merge-gate.mjs'
 
 /**
@@ -187,7 +189,12 @@ export function createDaemon(o = {}) {
     spawnWorker,
     verbRunner: o.verbRunner,
     report: o.report,
-    journal: o.journal,
+    // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
+    // refused task became a silence — every reason the tick names has to reach a log.
+    journal: o.journal ?? ((entry) => console.log(`[SmaDaemon] ${describeTickEvent(entry)}`)),
+    // «Can this worker start at all?» — asked BEFORE the attempt, so a placeholder account
+    // produces a named, recorded refusal instead of three silent burnt attempts.
+    workerReady: o.workerReady ?? ((worker) => workerReadiness(worker, { fsImpl: o.fsImpl })),
     // the DECISION journal sink (three layers per attempt) — distinct from `journal`,
     // which is the daemon's own event log
     decisionJournal:
@@ -203,6 +210,16 @@ export function createDaemon(o = {}) {
     front,
     daemon,
     async start() {
+      // The daemon makes its OWN home before anything writes into it: a ledger dir that
+      // does not exist is how an attempt's «почему» used to be thrown away (the writer
+      // creates the dir per row, but the readers and the spend book do not).
+      for (const dir of [dataDir, ledgerDir]) {
+        try {
+          if (dir) mkdirSync(dir, { recursive: true })
+        } catch (err) {
+          console.error(`[SmaDaemon] could not create ${dir}: ${String((err && err.message) || err)}`)
+        }
+      }
       // the durable adapter owns its connection + queue provisioning — it must come up
       // BEFORE the tick can claim or the front can enqueue (the pilot finding).
       if (typeof durable.start === 'function') await durable.start()
@@ -218,6 +235,25 @@ export function createDaemon(o = {}) {
   }
 }
 
+// ── log helpers (the only formatting this file does; every line is operator-facing) ──
+
+/** Mask any connection string before it reaches a log line (the queue url carries creds). */
+function maskSecrets(text) {
+  return String(text ?? '').replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
+}
+
+/** One tick-journal entry as ONE operator line: ids + reasons, never a task payload (T-9.5-09). */
+function describeTickEvent(entry) {
+  const e = entry && typeof entry === 'object' ? entry : { type: String(entry ?? 'event') }
+  const parts = [String(e.type ?? 'event')]
+  if (e.taskId) parts.push(`task=${e.taskId}`)
+  if (e.workerId) parts.push(`worker=${e.workerId}`)
+  if (e.reason) parts.push(`reason=${e.reason}`)
+  if (e.detail) parts.push(String(e.detail))
+  if (e.error) parts.push(maskSecrets(e.error))
+  return parts.join(' · ')
+}
+
 // ── process entrypoint (the plist target). Import stays side-effect-free. ──
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
@@ -225,9 +261,27 @@ if (isMain) {
   park
     .start()
     .then(() => {
-      // succeed loud too: a silent boot reads as a hang from the operator's chair.
+      // succeed loud too: a silent boot reads as a hang from the operator's chair — but
+      // «green» is a CLAIM, and it is only made when the pool can actually run a task.
+      const where = `http://${park.config.bind}:${park.config.port}`
+      const pool = poolReadiness(park.config)
+      if (pool.total > 0 && pool.blocked.length === 0) {
+        console.log(
+          `[SmaDaemon] All systems green: queue up, front armed at ${where}, loop ticking. Buckle up, soldier — the park is live.`
+        )
+        return
+      }
+      console.log(`[SmaDaemon] Queue up, front armed at ${where}, loop ticking.`)
+      if (pool.total === 0) {
+        console.log('[SmaDaemon] NOT green: no enabled worker in the config, so no task can be run.')
+        return
+      }
       console.log(
-        `[SmaDaemon] All systems green: queue up, front armed at http://${park.config.bind}:${park.config.port}, loop ticking. Buckle up, soldier — the park is live.`
+        `[SmaDaemon] NOT green: ${pool.blocked.length} of ${pool.total} workers cannot start an attempt yet -`
+      )
+      for (const b of pool.blocked) console.log(`[SmaDaemon]   - ${b.id}: ${b.detail}`)
+      console.log(
+        '[SmaDaemon] Tasks routed to them will be refused with a recorded reason on the card ("missing_access"), never silently.'
       )
     })
     .catch((err) => {

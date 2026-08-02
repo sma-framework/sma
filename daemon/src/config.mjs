@@ -72,7 +72,7 @@
 
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync, chmodSync as fsChmodSync } from 'node:fs'
 import { homedir as osHomedir } from 'node:os'
-import { join, basename } from 'node:path'
+import { join, basename, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { atomicWriteJson } from '../../scripts/sma/lib/fs-atomics.mjs'
@@ -406,11 +406,38 @@ function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl } 
 }
 
 /**
+ * withDerivedDirs(config, {configPath, repoDir}) — the three working directories the
+ * daemon cannot run without, DERIVED rather than demanded (T-QA-2026-08-02).
+ *
+ * WHY DERIVED, NOT DEFAULTED IN THE FILE: `ledgerDir` and `dataDir` were never part of
+ * the shipped default, so a fresh install ran with both undefined — the attempt ledger
+ * silently no-op'd, every «почему» a failed task owed a person was thrown away, and the
+ * card came back empty. A config file the founder never wrote a line into must still be
+ * a WORKING config: the daemon's own directory (the one its config.json lives in) is
+ * where its own data belongs, so `~/.sma-daemon/{data,ledger}` fall out of the config
+ * path itself, and `repoDir` falls back to the directory the daemon was started in.
+ *
+ * DERIVED AT READ TIME, NEVER PERSISTED: an explicit value in the file always wins and is
+ * returned untouched, and a file that omits them is NOT rewritten — the same config stays
+ * portable between machines whose homes differ.
+ */
+function withDerivedDirs(config, { configPath, repoDir }) {
+  const root = dirname(configPath)
+  return {
+    ...config,
+    dataDir: config.dataDir || join(root, 'data'),
+    ledgerDir: config.ledgerDir || join(root, 'ledger'),
+    repoDir: config.repoDir || repoDir,
+  }
+}
+
+/**
  * loadConfig({env, homedir, fsImpl, repoDir}) — read the daemon config, creating a 0600
  * default (with a fresh 64-hex token) on first boot. Existing files are parsed and
  * validated, then run through the D-9.7-08 quiet migration: a config with no project
  * registry gains one and is persisted, in place, with no manual action. The migration is
- * idempotent, so every later load is a pure read.
+ * idempotent, so every later load is a pure read. The returned object always carries the
+ * three working directories (withDerivedDirs) whether or not the file names them.
  *
  * @param {{env?:object, homedir?:Function, fsImpl?:object, repoDir?:string}} [opts]
  * @returns {object} the normalized config
@@ -427,14 +454,14 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
     const config = validateConfig(raw)
     const migrated = ensureDefaultProject(config, { repoDir, fsImpl })
     if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl })
-    return migrated
+    return withDerivedDirs(migrated, { configPath: path, repoDir })
   }
 
   // Bootstrap: fresh token, the default pool, its project registry, atomic write, 0600.
   const token = randomBytes(32).toString('hex')
   const config = ensureDefaultProject(validateConfig(defaultConfig(token)), { repoDir, fsImpl })
   writeConfig(config, { env, homedir, fsImpl })
-  return config
+  return withDerivedDirs(config, { configPath: path, repoDir })
 }
 
 /**

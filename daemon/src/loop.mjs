@@ -98,6 +98,64 @@ export function classifyFailure({ spawnError, exitCode, receipt, workerMarker, j
 }
 
 /**
+ * writeLog(deps, entry) — one line into the daemon's OWN event log (deps.journal), the
+ * sink an operator reads. Fail-open like every other narration path.
+ */
+function writeLog(deps, entry) {
+  if (typeof deps.journal !== 'function') return
+  try {
+    deps.journal(entry)
+  } catch {
+    /* narration never wedges a tick */
+  }
+}
+
+/**
+ * attemptBlocker(deps, task, route) → {reason, detail} when this attempt CANNOT START, or
+ * null when it can. Two questions, asked in the order a person would ask them:
+ *
+ *   1. is there an executor at all? Without `buildArgs` no spawn can ever be assembled —
+ *      the composition root did not wire one, and pretending otherwise costs the task
+ *      three retries and gives the card nothing to show;
+ *   2. is the routed worker's account actually set up on this machine (deps.workerReady)?
+ *
+ * Both answers are DI-guarded, so a caller that wires neither seam keeps today's behaviour
+ * byte for byte. The reason codes come from the EXISTING closed vocabulary, so every card
+ * and label already knows how to render them.
+ */
+function attemptBlocker(deps, task, route) {
+  if (typeof deps.workerReady === 'function' && route && route.workerId) {
+    const worker = ((deps.config && deps.config.workers) || []).find((w) => w && w.id === route.workerId)
+    let verdict
+    try {
+      verdict = deps.workerReady(worker)
+    } catch (err) {
+      verdict = { ready: false, reason: 'missing_access', detail: String((err && err.message) || err) }
+    }
+    if (verdict && verdict.ready === false) {
+      return { reason: verdict.reason || 'missing_access', detail: verdict.detail || 'работник не настроен' }
+    }
+  }
+  return null
+}
+
+/**
+ * executorBlocker(deps) → {reason, detail} when the process holds no way to START a
+ * worker. Checked AFTER the preflight door on purpose: a task whose work already exists
+ * completes on the preflight receipt without any executor, and that legitimate path must
+ * stay open (the pilot smoke rides it).
+ */
+function executorBlocker(deps) {
+  if (typeof deps.buildArgs !== 'function' || typeof deps.spawnWorker !== 'function') {
+    return {
+      reason: 'runtime_offline',
+      detail: 'этот демон не собран с исполнителем (buildArgs/spawnWorker не вшиты) — задачу некому запустить',
+    }
+  }
+  return null
+}
+
+/**
  * writeJournal(deps, entry) — append one decision-journal layer through the injected sink.
  * FAIL-OPEN by construction: an unwritable or absent journal never changes an outcome.
  */
@@ -267,7 +325,7 @@ async function runIntake(deps, now, result) {
 
 /**
  * tick(deps) — ONE stateless pass. deps: {adapter, ledger, config, routing, windows,
- * buildArgs, spawnWorker, verbRunner, report, clock, journal, intake?}.
+ * buildArgs, spawnWorker, verbRunner, report, clock, journal, intake?, workerReady?}.
  * Returns a summary {idle, sweep?, claimed?, completed?, failed?, intake?}.
  */
 export async function tick(deps = {}) {
@@ -322,6 +380,19 @@ export async function tick(deps = {}) {
         return result
       }
 
+      // (3a) CAN THIS ATTEMPT START AT ALL? A routed worker whose account was never set up
+      // on this machine (the shipped pool is placeholders) can never reach a spawn. Asking
+      // BEFORE the attempt turns three silently burnt retries into one named refusal that
+      // the card carries: «нужен человек: не хватает доступа» (readiness.mjs). DI-guarded —
+      // a caller that injects no `workerReady` keeps the previous behaviour exactly.
+      const blocker = attemptBlocker(deps, task, route)
+      if (blocker) {
+        writeLog(deps, { type: 'task.refused', taskId: task.id, workerId: route.workerId, reason: blocker.reason, detail: blocker.detail })
+        await failTask(deps, task, { reason: blocker.reason, route, now: now() })
+        result.failed = { taskId: task.id, reason: blocker.reason, detail: blocker.detail }
+        return result
+      }
+
       // (3b) FORGE LANE (D-9.5-09) — a described-in-words draft. Same claim/route/worktree/
       // spawn as code work, but preflight is SKIPPED (nothing to already-build) and the exit
       // gate is a DETERMINISTIC draft lint, not reverify (a draft is a definition file). The
@@ -336,6 +407,16 @@ export async function tick(deps = {}) {
         const receiptRef = pf.receiptRef || `preflight:${task.id}`
         await completeTask(deps, task, { receiptRef, branch: null, diffStat: pf.diffStat, route, now: now() })
         result.completed = task.id
+        return result
+      }
+
+      // (4b) the work does not already exist, so from here an EXECUTOR is required. Say so
+      // now — before a worktree is provisioned — instead of dying on the way to the spawn.
+      const noExecutor = executorBlocker(deps)
+      if (noExecutor) {
+        writeLog(deps, { type: 'task.refused', taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail })
+        await failTask(deps, task, { reason: noExecutor.reason, route, now: now() })
+        result.failed = { taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail }
         return result
       }
 
@@ -461,6 +542,15 @@ function listCommittedDrafts(execGit, branch, cwd, kind) {
 async function runForgeTask(deps, task, route, result, now) {
   const { verbRunner, spawnWorker, buildArgs, config, adapter } = deps
 
+  // The forge lane has no preflight door, so the executor question is asked first thing.
+  const noExecutor = executorBlocker(deps)
+  if (noExecutor) {
+    writeLog(deps, { type: 'task.refused', taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail })
+    await failTask(deps, task, { reason: noExecutor.reason, route, now: now() })
+    result.failed = { taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail }
+    return result
+  }
+
   // (5) worktree provision — per-task branch `wt/<taskId>` (EXPECTED_BASE guard on).
   const branch = `wt/${task.id}`
   const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch], config.repoDir)
@@ -563,15 +653,23 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now }) 
   const { adapter, ledger, report } = deps
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
-    ledger.recordAttempt({
-      taskId: task.id,
-      attempt: task.attempt,
-      provider: route && route.provider,
-      outcome: 'failed',
-      failureReason: reason,
-      receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row (D-9.5-11)
-      endedAt: new Date(now).toISOString(),
-    })
+    // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
+    // down with it: the row is attempted, and a refusing ledger says so out loud instead
+    // of leaving the card blank (an unconfigured ledgerDir used to throw right here, and
+    // the caller's fail-open catch turned the whole failure into a silence).
+    try {
+      ledger.recordAttempt({
+        taskId: task.id,
+        attempt: task.attempt,
+        provider: route && route.provider,
+        outcome: 'failed',
+        failureReason: reason,
+        receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row (D-9.5-11)
+        endedAt: new Date(now).toISOString(),
+      })
+    } catch (err) {
+      writeLog(deps, { type: 'ledger-error', taskId: task.id, reason, error: String((err && err.message) || err) })
+    }
   }
   if (typeof report === 'function') {
     await report({ event: 'task.failed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: receiptRef ? 'red' : undefined, branch, attempt: task.attempt })
