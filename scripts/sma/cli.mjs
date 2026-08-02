@@ -5092,6 +5092,99 @@ function summarizeBaseline(metric, r) {
   return JSON.stringify(r)
 }
 
+const EVAL_USAGE = [
+  'usage: node scripts/sma/cli.mjs eval memory [--json] [--stat <name>] [--k 3,5,10] [--cases <path>]',
+  '',
+  '  memory  the gold-set benchmark of the memory layer: recall@k, precision@k, MRR, nDCG,',
+  '          critical-miss rate, superseded selection, contradiction exposure, forbidden hits.',
+  '          Deterministic floors give a red/green verdict with no model in the loop — a floor',
+  '          violation exits non-zero. --stat prints one bare value (honestly `null` when the set',
+  '          asked no such question); --k names the cutoffs; --cases overrides the gold-case file.',
+].join('\n')
+
+/**
+ * eval memory — the memory benchmark verb (canon §8).
+ *
+ * Deliberately its OWN namespace and not a `baseline` subcommand: baseline measures what
+ * the layer COSTS and re-runs as a receipt; this measures what retrieval GETS RIGHT and is
+ * the gate a later retriever has to pass. Sharing a namespace would eventually share a
+ * number. The report itself is receipt-shaped all the same — every run carries the bare,
+ * path-free command that reproduces it.
+ *
+ * EXIT CODE IS THE VERDICT: non-zero when any floor is violated. That is the point of the
+ * floors — a benchmark that always exits 0 is a report nobody reads.
+ */
+async function cmdEval({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  if (sub !== 'memory') {
+    process.stdout.write(`${EVAL_USAGE}\n`)
+    if (sub) process.stderr.write(`SMA eval: неизвестная подкоманда «${sub}» — известна одна: memory\n`)
+    return sub ? 1 : 0
+  }
+
+  const memoryEval = await import('./lib/memory-eval.mjs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+  const casesFlag = typeof flags.cases === 'string' ? flags.cases : null
+  const casesPath = casesFlag ? (isAbsolute(casesFlag) ? casesFlag : join(repoRoot, casesFlag)) : join(corpusDir, 'gold-cases.jsonl')
+
+  const report = memoryEval.captureMemoryEval({
+    corpusDir,
+    casesPath,
+    ...(typeof flags.k === 'string' ? { k: flags.k } : {}),
+  })
+
+  // --stat: one bare value, scriptable. The legal names come from the summary ITSELF
+  // (flattenSummary) — a second hand-written list of field names is a list that goes stale.
+  if (flags.stat != null) {
+    const flat = memoryEval.flattenSummary(report.summary)
+    const name = flags.stat === true ? '' : String(flags.stat)
+    if (!Object.prototype.hasOwnProperty.call(flat, name)) {
+      process.stderr.write(
+        `SMA eval memory: неизвестный --stat «${name}» — допустимые: ${Object.keys(flat).join(', ')}\n`,
+      )
+      return 1
+    }
+    const value = flat[name]
+    // `null`, not 0: a metric the set never asked for has no number, and printing one
+    // would be the exact fabrication the honest-empties law exists to forbid.
+    process.stdout.write(`${value == null ? 'null' : value}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(report)
+    return report.floor_failures.length ? 1 : 0
+  }
+
+  const s = report.summary
+  const show = (v) => (v == null ? 'нет данных' : v)
+  process.stdout.write(`SMA eval memory — бенчмарк памяти по золотому набору (кейсов ${s.cases_total}, ранжируемых ${s.rankable_cases}):\n`)
+  process.stdout.write(`  отдача@k: ${report.k.map((k) => `${k}:${show(s.recall_at[k])}`).join(' · ')}\n`)
+  process.stdout.write(`  точность@k: ${report.k.map((k) => `${k}:${show(s.precision_at[k])}`).join(' · ')}\n`)
+  process.stdout.write(`  MRR ${show(s.mrr)} · nDCG ${show(s.ndcg)}\n`)
+  process.stdout.write(
+    `  критические промахи ${show(s.critical_miss_rate)} · запрещённые попадания ${s.forbidden_hits} · ` +
+      `отставленные в выдаче ${show(s.superseded_selection_rate)} · противоречия в пакете ${show(s.contradiction_exposure)}\n`,
+  )
+  process.stdout.write(
+    `  воздержание: прошло ${s.abstain_pass}, провалено ${s.abstain_fail} · битых строк ${s.corrupt_lines} · отказано кейсов ${s.refused_cases}\n`,
+  )
+  for (const c of report.by_class) {
+    process.stdout.write(`  класс ${c.class}: кейсов ${c.cases}, попаданий ${c.hits}/${c.expected}, запрещённых ${c.forbidden_hits}\n`)
+  }
+  if (report.floor_failures.length) {
+    process.stdout.write(`  ✗ полы нарушены (${report.floor_failures.length}):\n`)
+    for (const f of report.floor_failures) {
+      process.stdout.write(`    ${f.metric}: ${f.value} — требуется ${f.comparator} ${f.threshold}\n`)
+    }
+  } else {
+    process.stdout.write('  ✓ все полы соблюдены\n')
+  }
+  process.stdout.write(`  проверка: ${report.check_command}\n`)
+  return report.floor_failures.length ? 1 : 0
+}
+
 /** chain-tip [--json] — the deterministic merged journal chain tip (last line). */
 async function cmdChainTip({ flags, dirs }) {
   const journal = await import('./lib/journal.mjs')
@@ -9288,6 +9381,7 @@ const HANDLERS = {
   report: cmdReport,
   bench: cmdBench,
   baseline: cmdBaseline, // v5.1 — the memory-track measurement instrument (capture|replay + one verb per metric)
+  eval: cmdEval, // v5.2 — the gold-set memory benchmark (memory: canon §8 metrics + deterministic floors; exit code IS the verdict)
   reverify: cmdReverify, // 9.2-03 (D-9.2-06) — re-verify structural receipts
   'receipt-hash': cmdReceiptHash, // 9.2-03 — the receipt emit path
   'chain-tip': cmdChainTip, // 9.2-03 (D-9.2-07) — merged journal chain tip (release-tag pin)
@@ -9349,7 +9443,7 @@ async function main() {
 
   if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }

@@ -75,7 +75,7 @@ Each note carries a `use-when` trigger — that single line is what lets SMA del
 
 ## The full CLI reference, by version layer
 
-The coordination + accountability CLI runs underneath — 89 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`).
+The coordination + accountability CLI runs underneath — 90 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`).
 
 ### Core (V1–V2): memory, coordination, slots
 
