@@ -93,6 +93,18 @@ function coerceHashStdout(v) {
 }
 
 /**
+ * True only for an explicit `unsafe_ack: true`. The frontmatter extractor hands
+ * back scalars as strings, so the literal `true` and the string `"true"` are the
+ * same waiver; anything else — absent, empty, `false`, a stray word — is not.
+ * Defaults to NOT waived: a stamp has to be written on purpose.
+ */
+function coerceUnsafeAck(v) {
+  if (v === true) return true
+  if (v == null || v === '' || v === false) return false
+  return String(v).trim().replace(/\s+#.*$/, '').replace(/^['"]|['"]$/g, '') === 'true'
+}
+
+/**
  * parseReceipts(summaryPath, {readFn?}) -> {receipts, error?}.
  *
  * Delegates the fence scan + dash-list walk to predict.mjs's shared
@@ -270,9 +282,15 @@ export function verifyReceipt(entry, { runCommand, cwd, now, summary } = {}) {
   }
 
   // T-9.2-03-01: allowlist BEFORE any run — the runner is never invoked for a
-  // non-matching command.
+  // non-matching command. An `unsafe_ack` stamp does NOT re-open the boundary
+  // here: the ack was a human's one-time waiver at emit time, and verification
+  // runs unattended over receipts that may have arrived from anywhere. The
+  // stamp is carried into the record so the waiver is visible in the ledger
+  // instead of the skip looking anonymous.
   if (!isSafeCommand(entry.check_command)) {
-    return { ...base, verdict: 'skipped-unsafe' }
+    return coerceUnsafeAck(entry.unsafe_ack)
+      ? { ...base, unsafe_ack: true, verdict: 'skipped-unsafe' }
+      : { ...base, verdict: 'skipped-unsafe' }
   }
 
   let observed
@@ -326,12 +344,21 @@ export function verifyReceipts({ summaryPath, receipts, runCommand, cwd, now, re
  * impossible (T-9.2-03-03). recordReceipt is the programmatic twin of the
  * `sma receipt-hash` CLI.
  *
- * @param {{entry:object, runCommand:Function, cwd?:string}} args
+ * `unsafeAck: true` is the explicit, human-supplied waiver (`receipt-hash
+ * --unsafe-ack`): it admits ONE arbitrary command at emit time and stamps
+ * `unsafe_ack: true` on the resulting receipt, so the waiver stays legible for
+ * the life of the record. It is deliberately not a way to widen the allowlist —
+ * an acked receipt is a signed note that a human ran something, not machine
+ * re-verifiable evidence: `verifyReceipt` still refuses to re-run it. Prefer
+ * putting a genuinely deterministic command on the allowlist instead.
+ *
+ * @param {{entry:object, runCommand:Function, cwd?:string, unsafeAck?:boolean}} args
  * @returns {{receipt?:object, error?:string}}
  */
-export function recordReceipt({ entry, runCommand, cwd } = {}) {
+export function recordReceipt({ entry, runCommand, cwd, unsafeAck } = {}) {
   const e = entry ?? {}
-  if (!isSafeCommand(e.check_command)) {
+  const acked = unsafeAck === true
+  if (!isSafeCommand(e.check_command) && !acked) {
     return { error: `check_command "${e.check_command}" is not on the SAFE_COMMAND allowlist — refusing to record` }
   }
   let observed
@@ -344,7 +371,12 @@ export function recordReceipt({ entry, runCommand, cwd } = {}) {
   const expected_sha256 = sha256(
     observationOf({ command: e.check_command, exitCode: observed.exitCode, stdout: observed.stdout, hashStdout }),
   )
-  return { receipt: { ...e, hash_stdout: hashStdout, expected_sha256, expected_exit: observed.exitCode } }
+  // The stamp records a waiver that was actually USED — an ack on a command the
+  // allowlist already admits is a no-op and leaves no mark.
+  const waived = acked && !isSafeCommand(e.check_command)
+  const receipt = { ...e, hash_stdout: hashStdout, expected_sha256, expected_exit: observed.exitCode }
+  if (waived) receipt.unsafe_ack = true
+  return { receipt }
 }
 
 /**

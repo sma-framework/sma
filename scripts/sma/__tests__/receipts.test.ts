@@ -260,3 +260,85 @@ describe('digest degeneracy is fixed (Test 8) — a receipt binds WHAT ran and W
     expect(records[0].verdict).toBe('verified')
   })
 })
+
+describe('release-gate commands and the --unsafe-ack waiver', () => {
+  const runnerWith = (stdout: string) => () => ({ stdout, exitCode: 0 })
+
+  it('records a receipt for a release-gate command without any ack', () => {
+    const runCommand = runnerWith('ok\n')
+    const rec = recordReceipt({
+      entry: { id: 'R1', assertion: 'the suite passes', check_command: 'npm test' },
+      runCommand,
+    })
+    expect(rec.error).toBeUndefined()
+    expect(rec.receipt.unsafe_ack).toBeUndefined()
+    const { records } = verifyReceipts({ receipts: [rec.receipt], runCommand, now: 'T' })
+    expect(records[0].verdict).toBe('verified')
+  })
+
+  it('refuses an off-allowlist command without the ack, and stamps it with one', () => {
+    const runCommand = runnerWith('done\n')
+    const entry = { id: 'R2', assertion: 'the artifact was produced', check_command: 'make release' }
+
+    const refused = recordReceipt({ entry: { ...entry }, runCommand })
+    expect(refused.error).toMatch(/not on the SAFE_COMMAND allowlist/)
+    expect(refused.receipt).toBeUndefined()
+
+    const acked = recordReceipt({ entry: { ...entry }, runCommand, unsafeAck: true })
+    expect(acked.error).toBeUndefined()
+    expect(acked.receipt.unsafe_ack).toBe(true)
+    expect(acked.receipt.expected_sha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('leaves no stamp when the ack was not needed', () => {
+    const rec = recordReceipt({
+      entry: { id: 'R3', assertion: 'a', check_command: 'pnpm sma chain-tip' },
+      runCommand: runnerWith('tip\n'),
+      unsafeAck: true,
+    })
+    expect(rec.receipt.unsafe_ack).toBeUndefined()
+  })
+
+  it('an acked receipt is still never re-run at verify time — the waiver is carried, not honoured', () => {
+    const runCommand = vi.fn(() => ({ stdout: 'x\n', exitCode: 0 }))
+    const acked = recordReceipt({
+      entry: { id: 'R4', assertion: 'a', check_command: 'make release' },
+      runCommand,
+      unsafeAck: true,
+    })
+    runCommand.mockClear()
+
+    const { records } = verifyReceipts({ receipts: [acked.receipt], runCommand, now: 'T' })
+    expect(records[0].verdict).toBe('skipped-unsafe')
+    expect(records[0].unsafe_ack).toBe(true)
+    expect(runCommand).not.toHaveBeenCalled()
+
+    // Without the stamp the skip is anonymous, exactly as before.
+    const plain = verifyReceipts({
+      receipts: [{ ...acked.receipt, unsafe_ack: undefined }],
+      runCommand,
+      now: 'T',
+    })
+    expect(plain.records[0].verdict).toBe('skipped-unsafe')
+    expect(plain.records[0].unsafe_ack).toBeUndefined()
+  })
+
+  it('reads the stamp as frontmatter delivers it — the string "true" waives, anything else does not', () => {
+    const runCommand = vi.fn(() => ({ stdout: 'x\n', exitCode: 0 }))
+    const base = {
+      id: 'R5',
+      assertion: 'a',
+      check_command: 'make release',
+      expected_sha256: 'a'.repeat(64),
+    }
+    const verdictFor = (unsafe_ack: unknown) =>
+      verifyReceipts({ receipts: [{ ...base, unsafe_ack }], runCommand, now: 'T' }).records[0]
+
+    expect(verdictFor('true').unsafe_ack).toBe(true)
+    expect(verdictFor(true).unsafe_ack).toBe(true)
+    expect(verdictFor('false').unsafe_ack).toBeUndefined()
+    expect(verdictFor('').unsafe_ack).toBeUndefined()
+    expect(verdictFor(undefined).unsafe_ack).toBeUndefined()
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+})

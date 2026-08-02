@@ -101,7 +101,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `snapshot` | push a bounded, allowlisted state view to the CRM cockpit | `--json` |
 | `baseline` | measure what the memory layer costs and misses TODAY, as receipt-shaped reports: retrieval recall against gold cases, corpus context cost, hook latency over the INSTALLED hook entry (discovered from the settings hooks block, nothing hardcoded), worker recovery drilled against a real queue, and a timed clean install from a fresh clone. `--record` stores one structural receipt per metric (wall-clock metrics bind command + exit only — their output changes on every honest re-run); `replay` re-verifies the stored receipts and exits non-zero on anything that no longer reproduces. An unreachable queue is a RECORDED `environment-unavailable` result, never a fabricated number. Gold cases default to `.claude/memory/gold-cases.jsonl` — a recorded receipt re-runs the bare verb form (a check command may carry no path), so the cases a receipt binds are always the ones at that default. NOT hook-facing. | `capture [--only <metric>] [--cases <path>] [--queue-url <url>] [--runs N] [--record]` \| `replay` \| `<retrieval\|context-cost\|hook-latency\|worker-recovery\|clean-install>` \| `--json` |
 | `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger (9.2-03). The footprint receipt (9.4-07) compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
-| `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block). The digest binds the exact command + exit code + normalized stdout; `--exit-only` drops stdout for nondeterministic outputs (command and exit stay bound) | `<command> [--exit-only] [--cwd <path>]` |
+| `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block). The digest binds the exact command + exit code + normalized stdout; `--exit-only` drops stdout for nondeterministic outputs (command and exit stay bound); `--unsafe-ack` admits one off-allowlist command and stamps `unsafe_ack: true` on the receipt | `<command> [--exit-only] [--unsafe-ack] [--cwd <path>]` |
 | `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
 | `chain-verify` | verify the tamper-evident journal chain; list breaks | `--count breaks` \| `--json` |
 
@@ -134,6 +134,41 @@ predictions; `--fresh-clone` runs on a `git clone --no-hardlinks` so only
 COMMITTED evidence counts. The RECEIPT-PROSE lint fails any 9.2+ SUMMARY whose
 machine-verifiable coverage item (`human_judgment: false`) carries no receipt —
 a prose-only «done» cannot pass lint.
+
+#### What a `check_command` may be
+
+The boundary is `isSafeCommand` in `lib/predict.mjs` — one anchored allowlist
+plus a charset guard that admits no shell metacharacter (`;`, `&`, `|`, backtick,
+`$`, redirects, quotes, newlines). The admitted shapes:
+
+| Shape | Example |
+|---|---|
+| `node scripts/sma/…` | `node scripts/sma/cli.mjs chain-verify --count breaks` |
+| `pnpm vitest run …` | `pnpm vitest run scripts/sma/__tests__/receipts.test.ts` |
+| `pnpm sma …` | `pnpm sma reverify --all --count divergent` |
+| `npm`/`pnpm`/`yarn` + `test` or `pack` | `npm test`, `pnpm pack` |
+| `npm`/`pnpm`/`yarn` + `run <script>` | `npm run build`, `pnpm run test:unit` |
+
+The release-gate row exists because a gate that runs the build, the suite and the
+pack had to record them as bare exit codes — no hash, nothing to re-verify later.
+`run` takes a script NAME, which resolves in the LOCAL `package.json`: the same
+trust class as the local `scripts/` tree. `install` / `add` / `exec` / `npx` /
+`dlx` are deliberately absent and stay absent — they fetch and execute registry
+code the local tree never vouched for.
+
+#### `--unsafe-ack` — a visible waiver, not a wider door
+
+For the command that genuinely cannot be expressed above, `receipt-hash
+--unsafe-ack "<command>"` runs it and stamps `unsafe_ack: true` on the receipt.
+The stamp is the point: a waiver a human granted once stays readable for the life
+of the record instead of vanishing into a prose «I ran it».
+
+It buys a signed note, not evidence. `reverify` still refuses to re-run an acked
+command — the ack was one human's decision at emit time, while verification runs
+unattended over receipts that may have arrived from anywhere — so the record
+scores `skipped-unsafe`, now carrying the visible `unsafe_ack` marker. A command
+that is genuinely deterministic belongs on the allowlist instead; the ack is for
+what will never be.
 
 ---
 
