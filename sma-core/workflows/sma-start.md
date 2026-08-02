@@ -124,7 +124,7 @@ NOT its questioning flow:
   key decisions from the conversation, evolution section, last-updated footer.
 - Write a first `.planning/ROADMAP.md` skeleton: 2-4 phases maximum, derived from what
   they said success looks like. This is a starting sketch the user will refine with
-  `/sma-plan` — say so explicitly.
+  `/sma-plan-phase` — say so explicitly.
 - Commit both:
 
 ```bash
@@ -311,7 +311,7 @@ ask the user at that moment — they never fall back to some other project's rit
 
 > TEACH(receipts-vs-prose)
 
-Deliver Module 5 (receipts, not prose) here — it frames what `/sma-plan` will ask of the
+Deliver Module 5 (receipts, not prose) here — it frames what `/sma-plan-phase` will ask of the
 user next (pre-registered predictions on every plan). Then render the durable onboarding
 recap and commit it:
 
@@ -333,7 +333,7 @@ Setup complete. You now have:
 
 Next step:
 - /sma-discuss 1 — talk through the first phase before planning it
-- /sma-plan 1 — plan the first phase directly if it is already clear
+- /sma-plan-phase 1 — plan the first phase directly if it is already clear
 ```
 
 </process>

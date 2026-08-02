@@ -14,7 +14,7 @@ A sighting is any capability you read about in the docs, changelog, or blog. Eac
 
 The disposition is a backlog id, a tripwire prediction id, or `none`. The negative verdicts are the point: an `IRRELEVANT` or `WATCH` row is what stops the same vendor feature from being re-litigated every quarter.
 
-`sma vendor` is a reader/linter only — zero network, zero LLM. It fails any row missing a verdict or disposition; `--count untriaged` prints the bare number the `/sma-ship` gate blocks on; `--selftest` proves the linter against a fixture pair. It never writes a verdict — that judgment stays human.
+`sma vendor` is a reader/linter only — zero network, zero LLM. It fails any row missing a verdict or disposition; `--count untriaged` prints the bare number the release gate blocks on; `--selftest` proves the linter against a fixture pair. It never writes a verdict — that judgment stays human.
 
 ## ru
 Вендор выпускает возможности быстрее, чем окупается любая отдельная интеграция: инструменты появляются и удаляются за считанные недели. Ответ SMA это процесс, а не разовая задача. Файл `docs/VENDOR-LEDGER.md` это журнал, куда только добавляют строки: каждое обновление от разработчиков Anthropic превращается ровно в одну строку.
@@ -28,4 +28,4 @@ The disposition is a backlog id, a tripwire prediction id, or `none`. The negati
 
 Распоряжение это идентификатор из бэклога, идентификатор предсказания или слово `none`. Отрицательные вердикты и есть суть: строка `IRRELEVANT` или `WATCH` не даёт заново спорить об одной и той же возможности вендора каждый квартал.
 
-`sma vendor` это только читатель и линтер: без сети, без модели. Он отбраковывает любую строку без вердикта или распоряжения; `--count untriaged` печатает голое число, на котором блокируется гейт `/sma-ship`; `--selftest` проверяет сам линтер на паре образцов. Он никогда не пишет вердикт сам: это суждение остаётся за человеком.
+`sma vendor` это только читатель и линтер: без сети, без модели. Он отбраковывает любую строку без вердикта или распоряжения; `--count untriaged` печатает голое число, на котором блокируется релизный гейт; `--selftest` проверяет сам линтер на паре образцов. Он никогда не пишет вердикт сам: это суждение остаётся за человеком.
