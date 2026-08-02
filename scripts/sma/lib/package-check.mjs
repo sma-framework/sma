@@ -15,6 +15,10 @@
  *   3. a `bin` entry whose target file is missing
  *   4. a `files[]` entry missing on disk
  *   5. missing `repository`/`license` metadata (the npm page is the shop window)
+ *   6. a README test badge that disagrees with the measured suite receipt
+ *      (`test-receipt.json`) — the badge number is written from a suite run by
+ *      `badge.mjs`, never typed by hand, so a stale badge cannot reach the shop
+ *      window the way `tests-876/876` once did
  *
  * Honest sentinel: run in a tree that is NOT the product package (no
  * capability.json next to the runtime — e.g. a consumer mirror of scripts/sma),
@@ -27,6 +31,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { checkBadge } from './badge.mjs'
 
 /**
  * checkPackage({pkgRoot, io}) — pure given an io; returns
@@ -61,6 +67,9 @@ export function checkPackage({ pkgRoot, io } = {}) {
   }
   if (!pkg.repository) violations.push({ code: 'no-repository', detail: 'package.json has no repository field' })
   if (!pkg.license) violations.push({ code: 'no-license', detail: 'package.json has no license field' })
+
+  // 6. the README test badge must equal the measured suite receipt (badge.mjs)
+  violations.push(...checkBadge({ pkgRoot, io: read }).violations)
 
   return { applicable: true, violations }
 }

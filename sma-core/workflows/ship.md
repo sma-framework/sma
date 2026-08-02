@@ -186,7 +186,29 @@ commands implement them, never WHETHER they run:
    (or the founder dispositions the miss). A missing ledger is fail-open (counts 0) — the
    gate can only block on an HONEST non-zero count.
 
-3. **Origin-diff review.** Review every commit that would ride along with this ship —
+3. **Test badge from the measured receipt — never typed by hand.** If the project's
+   README carries a test badge, it is a PUBLIC CLAIM about the suite, and a claim that
+   drifts is a lie in the shop window (this badge once read `tests-876/876` while the
+   suite had grown far past it). The gate in invariant 1 just measured the real suite;
+   stamp the badge from THAT measurement, before the release commit:
+
+   ```bash
+   npx vitest run --reporter=json --outputFile=.vitest-report.json \
+     && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json
+   ```
+
+   `badge.mjs` writes `test-receipt.json` and rewrites the badge in EVERY README that
+   carries one (EN + RU together — the README law). It REFUSES to stamp anything but a
+   fully green run, so the badge can never claim a number a red suite did not earn. If
+   the runner's JSON is already summarised, `--from-suite <tests>/<files>` takes the
+   numbers directly; either way they pass through the receipt.
+
+   Commit the rewritten READMEs + `test-receipt.json` with the release. The gate side of
+   this law is `package-check --strict` (the `prepublishOnly` hook), which fails the
+   release when a README badge and the receipt disagree — so a hand-edited badge cannot
+   ship.
+
+4. **Origin-diff review.** Review every commit that would ride along with this ship —
    on a shared checkout your push carries other sessions' local commits too:
 
    ```bash
