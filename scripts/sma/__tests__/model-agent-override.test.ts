@@ -19,17 +19,24 @@
  *     carries a pin emits no unknown-runtime / unknown-tier warning.
  *   - Test 7: config-set accepts the pin key path; malformed variants and an
  *     unknown key are still rejected.
+ *   - Test 8: clearing a pin with the documented `null` spelling REMOVES the key
+ *     instead of writing the string "null" (which resolved as a model named
+ *     "null" — a pin you could set but not lift).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
 const require_ = createRequire(import.meta.url)
 const modelResolver = require_('../../../sma-core/bin/lib/model-resolver.cjs')
 const configSchema = require_('../../../sma-core/bin/lib/config-schema.cjs')
+
+const SMA_TOOLS = fileURLToPath(new URL('../../../sma-core/bin/sma-tools.cjs', import.meta.url))
 
 const { resolveModelInternal, resolveTierEntry, resolveAgentModelOverride } = modelResolver
 
@@ -38,6 +45,17 @@ let cwd: string
 function writeConfig(config: Record<string, unknown>): void {
   mkdirSync(join(cwd, '.planning'), { recursive: true })
   writeFileSync(join(cwd, '.planning', 'config.json'), JSON.stringify(config, null, 2), 'utf8')
+}
+
+function readConfig(): Record<string, any> {
+  return JSON.parse(readFileSync(join(cwd, '.planning', 'config.json'), 'utf8'))
+}
+
+/** Drive the real `query config-set` verb the docs tell users to run. */
+function configSet(key: string, value: string): string {
+  return execFileSync(process.execPath, [SMA_TOOLS, 'query', 'config-set', key, value, '--cwd', cwd], {
+    encoding: 'utf8',
+  })
 }
 
 beforeEach(() => {
@@ -135,5 +153,36 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
     expect(configSchema.isValidConfigKey('model_profile_overrides.agents.a.b')).toBe(false)
     expect(configSchema.isValidConfigKey('model_profile_overrides_agents.sma-executor')).toBe(false)
     expect(configSchema.isValidConfigKey('not_a_config_key')).toBe(false)
+  })
+
+  it('Test 8: `null` clears a pin — the key is removed, not set to the string "null"', () => {
+    writeConfig({ model_profile: 'balanced' })
+
+    configSet('model_profile_overrides.agents.sma-executor', 'opus')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+
+    // The documented way to lift a pin (scripts/sma/README.md, settings-advanced.md).
+    configSet('model_profile_overrides.agents.sma-executor', 'null')
+
+    // The key is gone — not present with a bogus string value.
+    expect(readConfig().model_profile_overrides?.agents ?? {}).not.toHaveProperty('sma-executor')
+    // ...so the agent is back on the profile, not pinned to a model named "null".
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+  })
+
+  it('Test 9: clearing is a no-op on an absent key and works for the runtime tier namespace', () => {
+    writeConfig({ model_profile: 'balanced' })
+
+    // Clearing a key that was never set must not error or invent structure.
+    expect(() => configSet('model_profile_overrides.agents.sma-planner', 'null')).not.toThrow()
+    expect(readConfig()).not.toHaveProperty('model_profile_overrides')
+    // Still the plain profile answer for the planner under `balanced`.
+    expect(resolveModelInternal(cwd, 'sma-planner')).toBe('opus')
+
+    // The runtime tier half of the same object clears the same documented way.
+    configSet('model_profile_overrides.gemini.opus', 'gemini-3-ultra')
+    expect(readConfig().model_profile_overrides.gemini.opus).toBe('gemini-3-ultra')
+    configSet('model_profile_overrides.gemini.opus', 'null')
+    expect(readConfig().model_profile_overrides.gemini ?? {}).not.toHaveProperty('opus')
   })
 })
