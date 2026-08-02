@@ -4834,24 +4834,32 @@ async function cmdReverify({ flags, dirs }) {
 }
 
 /**
- * receipt-hash <command> [--exit-only] [--cwd <path>] — the EMIT path. Gates on
- * isSafeCommand (refuses anything else with exit 1 + a usage hint), runs the
- * command, and prints the observation sha256 as the LAST line. The digest binds
- * the exact command string + exit code + normalized stdout; --exit-only drops
- * stdout (for outputs nondeterministic across honest re-runs) but the command
- * and exit stay bound. Executors paste that hash into a SUMMARY receipts block;
- * recordReceipt is the programmatic twin.
+ * receipt-hash <command> [--exit-only] [--unsafe-ack] [--cwd <path>] — the EMIT
+ * path. Gates on isSafeCommand (refuses anything else with exit 1 + a usage
+ * hint), runs the command, and prints the observation sha256 as the LAST line.
+ * The digest binds the exact command string + exit code + normalized stdout;
+ * --exit-only drops stdout (for outputs nondeterministic across honest re-runs)
+ * but the command and exit stay bound. Executors paste that hash into a SUMMARY
+ * receipts block; recordReceipt is the programmatic twin.
+ *
+ * --unsafe-ack admits ONE off-allowlist command and stamps `unsafe_ack: true`
+ * on the receipt, so a waiver a human granted once stays readable forever. It
+ * buys a signed note, not evidence: `reverify` still refuses to re-run an acked
+ * command, so a command that is genuinely deterministic belongs on the
+ * allowlist instead.
  */
 async function cmdReceiptHash({ positionals, flags, dirs }) {
   const command = positionals[0]
   if (!command) {
-    process.stderr.write('usage: pnpm sma receipt-hash "<command>" [--exit-only] [--cwd <path>]\n')
+    process.stderr.write('usage: pnpm sma receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>]\n')
     return 1
   }
   const predict = await import('./lib/predict.mjs')
-  if (!predict.isSafeCommand(command)) {
+  const unsafeAck = flags['unsafe-ack'] === true
+  const offAllowlist = !predict.isSafeCommand(command)
+  if (offAllowlist && !unsafeAck) {
     process.stderr.write(
-      `SMA receipt-hash: «${command}» не на SAFE_COMMAND allowlist (node scripts/sma/… | pnpm vitest run … | pnpm sma …) — ничего не выполнено.\n`,
+      `SMA receipt-hash: «${command}» не на SAFE_COMMAND allowlist (node scripts/sma/… | pnpm vitest run … | pnpm sma … | npm|pnpm|yarn test|pack|run <script>) — ничего не выполнено. Осознанный обход: --unsafe-ack (пометка unsafe_ack остаётся в квитанции; reverify такую команду не перезапустит).\n`,
     )
     return 1
   }
@@ -4871,14 +4879,27 @@ async function cmdReceiptHash({ positionals, flags, dirs }) {
     entry: { id: 'adhoc', assertion: '', check_command: command, hash_stdout: hashStdout },
     runCommand,
     cwd,
+    unsafeAck,
   })
   if (rec.error) {
     process.stderr.write(`SMA receipt-hash: ${rec.error}\n`)
     return 1
   }
+  const waived = rec.receipt.unsafe_ack === true
   if (wantsJson(flags)) {
-    printJson({ command, expected_sha256: rec.receipt.expected_sha256, expected_exit: rec.receipt.expected_exit, hash_stdout: hashStdout })
+    printJson({
+      command,
+      expected_sha256: rec.receipt.expected_sha256,
+      expected_exit: rec.receipt.expected_exit,
+      hash_stdout: hashStdout,
+      unsafe_ack: waived,
+    })
     return 0
+  }
+  if (waived) {
+    process.stderr.write(
+      'SMA receipt-hash: команда вне allowlist выполнена по --unsafe-ack; впишите `unsafe_ack: true` в квитанцию — reverify её не перезапустит.\n',
+    )
   }
   process.stdout.write(`exit:${rec.receipt.expected_exit}${hashStdout ? ' (cmd+exit+stdout hashed)' : ' (exit-only: cmd+exit hashed)'}\n`)
   process.stdout.write(`${rec.receipt.expected_sha256}\n`) // sha256 as the LAST line

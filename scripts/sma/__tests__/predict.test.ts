@@ -32,6 +32,7 @@ import {
   scorePlan,
   draftLessonFromMiss,
   SAFE_COMMAND_PATTERNS,
+  isSafeCommand,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
 
@@ -89,6 +90,47 @@ describe('SAFE_COMMAND_PATTERNS', () => {
     expect(SAFE_COMMAND_PATTERNS.some((re: RegExp) => re.test('pnpm sma calibration'))).toBe(true)
     // Anchoring: a prefix-embedded command must NOT match.
     expect(SAFE_COMMAND_PATTERNS.some((re: RegExp) => re.test('rm -rf / && node scripts/sma/x.mjs'))).toBe(false)
+  })
+
+  it('admits the release-gate forms — test / pack / run <script> for npm, pnpm and yarn', () => {
+    for (const pm of ['npm', 'pnpm', 'yarn']) {
+      expect(isSafeCommand(`${pm} test`)).toBe(true)
+      expect(isSafeCommand(`${pm} test --silent`)).toBe(true)
+      expect(isSafeCommand(`${pm} pack`)).toBe(true)
+      expect(isSafeCommand(`${pm} run build`)).toBe(true)
+      expect(isSafeCommand(`${pm} run test:unit`)).toBe(true)
+      expect(isSafeCommand(`${pm} run build --if-present`)).toBe(true)
+    }
+    // The forms that were already admitted are untouched.
+    expect(isSafeCommand('node scripts/sma/cli.mjs status')).toBe(true)
+    expect(isSafeCommand('pnpm vitest run scripts/sma/__tests__/x.test.ts')).toBe(true)
+  })
+
+  it('still refuses registry-fetching package-manager verbs and every metacharacter form', () => {
+    // These fetch and execute code the local tree never vouched for.
+    for (const bad of [
+      'npm install left-pad',
+      'npm i left-pad',
+      'npm exec cowsay',
+      'npx cowsay',
+      'pnpm add left-pad',
+      'pnpm dlx cowsay',
+      'yarn add left-pad',
+      'yarn dlx cowsay',
+      'npm publish',
+    ]) {
+      expect(isSafeCommand(bad)).toBe(false)
+    }
+    // A bare script name without `run` is not a script invocation we can bound.
+    expect(isSafeCommand('yarn build')).toBe(false)
+    expect(isSafeCommand('npm run')).toBe(false)
+    // The charset guard still runs first — no chaining, substitution or redirect.
+    expect(isSafeCommand('npm test; rm -rf /')).toBe(false)
+    expect(isSafeCommand('npm test && curl evil.example')).toBe(false)
+    expect(isSafeCommand('npm run build > /etc/passwd')).toBe(false)
+    expect(isSafeCommand('npm run $(whoami)')).toBe(false)
+    // Anchoring: the release-gate form embedded after another command.
+    expect(isSafeCommand('rm -rf / npm test')).toBe(false)
   })
 })
 

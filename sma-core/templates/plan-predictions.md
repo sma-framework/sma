@@ -26,8 +26,10 @@ auto-committed; promotion needs the 3-condition review gate).
    already verify.
 6. **`check_command` must be allowlisted** (`SAFE_COMMAND_PATTERNS` in
    `scripts/sma/lib/predict.mjs`): only `node scripts/sma/...`,
-   `pnpm vitest run ...`, or `pnpm sma ...` shapes run; anything else scores
-   `skipped-unsafe`. The command's LAST output line must be a number.
+   `pnpm vitest run ...`, `pnpm sma ...`, or the local package manager running
+   the project's own manifest (`npm|pnpm|yarn test`, `... pack`,
+   `... run <script>`) shapes run; anything else scores `skipped-unsafe`. The
+   command's LAST output line must be a number.
 7. **`confidence` is optional and NEVER gates a verdict** — it is recorded
    verbatim for calibration only (verbalized-confidence anti-pattern lock).
 

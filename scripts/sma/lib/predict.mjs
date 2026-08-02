@@ -43,6 +43,15 @@ export const SAFE_COMMAND_PATTERNS = [
   /^node scripts\/sma\//,
   /^pnpm vitest run /,
   /^pnpm sma /,
+  // Release-gate forms: the package manager running the LOCAL project's own
+  // manifest. `test` and `pack` are fixed verbs; `run` takes a script NAME,
+  // which resolves in the local package.json — the same trust class as the
+  // local scripts/ tree the first pattern already admits (a hostile plan file
+  // controls the command string, never the manifest it names). Deliberately
+  // absent, and never to be added here: `install`/`add`/`exec`/`npx`/`dlx` —
+  // those fetch and execute registry code the local tree never vouched for.
+  /^(npm|pnpm|yarn) (test|pack)( |$)/,
+  /^(npm|pnpm|yarn) run [\w.:-]+( |$)/,
 ]
 
 /** The fixed comparator set — anything else fails validation. */
