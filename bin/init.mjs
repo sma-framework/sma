@@ -346,7 +346,7 @@ async function main() {
         aliasCount += 1;
       }
     }
-    console.log(`  + aliases       ${aliasCount} transitional /gsd-* skills (remove after phases 51/52 close)`);
+    console.log(`  + aliases       ${aliasCount} transitional /gsd-* skills (remove once the transition window closes)`);
   }
 
   // 6. Hooks merge into <config>/settings.json — additive + idempotent for
