@@ -1,0 +1,11 @@
+# One rule, one purpose: the shebang fixture must arrive with CRLF line endings
+# on EVERY checkout, on every platform.
+#
+# An interpreter line that ends `\r\n` is what actually breaks the test runner's
+# inline transform (`SyntaxError: Invalid or unexpected token`, charged to the
+# importing test file, which then collects zero tests). The same line ending `\n`
+# happens to survive. On Windows, with core.autocrlf=true, every shebanged file in
+# the tree already has the breaking shape — so the fixture that proves the cure
+# must have it too, deterministically, instead of depending on whose machine
+# checked it out.
+scripts/sma/__tests__/fixtures/shebang-module.mjs eol=crlf
