@@ -118,6 +118,11 @@ of it starts by itself** — `bin/init.mjs` only lays down the memory and
 coordination layer described above, and that layer never needs a running
 process.
 
+The daemon also brings its own dependencies with it: nineteen packages, about
+6 MB, vendored under `daemon/node_modules`, so there is no second
+`npm install` to run for it — the list, with the licence each one carries, is
+generated into `THIRD-PARTY-LICENSES.md`.
+
 To bring the app up, from the SMA package or checkout directory:
 
 1. **Run a local PostgreSQL.** The daemon keeps its task queue there
