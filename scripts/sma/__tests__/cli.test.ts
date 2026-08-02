@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import {
   mkdtempSync,
   mkdirSync,
@@ -423,5 +423,41 @@ describe('cli.mjs baseline — the measurement verb (capture | replay)', () => {
       const commands = text.slice(text.indexOf('## Commands') === -1 ? text.indexOf('## Команды') : text.indexOf('## Commands'))
       expect(commands).toContain('baseline')
     }
+  })
+})
+
+describe('status — the honest active count (a dead pid never impersonates a live terminal)', () => {
+  /** A pid that is guaranteed to have existed and to be gone: spawnSync returns AFTER exit. */
+  function deadPid(): number {
+    const child = spawnSync('node', ['-e', ''])
+    return Number(child.pid)
+  }
+
+  it('counts a live named lease as active and a dead-pid lease as stale, not working', () => {
+    const gone = deadPid()
+    seedSession('fabrika', freshForeignLease())
+    // The graveyard shape: a one-shot token-less CLI invocation registered `T-<pid>` and
+    // exited. Its renewTime is YOUNG (so the age ladder calls it fresh) but the process it
+    // names is gone — pre-fix this was reported as a live working terminal.
+    seedSession(`t-${gone}`, { ...freshForeignLease(), holderIdentity: `T-${gone}`, pid: gone })
+
+    const { stdout, status } = runCli(['status', '--json'])
+    expect(status).toBe(0)
+    const parsed = JSON.parse(stdout)
+    expect(parsed.activeSessions).toBe(1) // ONLY the named live window
+    expect(parsed.staleSessions).toBe(1) // the graveyard entry stays visible, separately
+  })
+
+  it('the human line reports both counts and lists only the live window', () => {
+    const gone = deadPid()
+    seedSession('fabrika', freshForeignLease())
+    seedSession(`t-${gone}`, { ...freshForeignLease(), holderIdentity: `T-${gone}`, pid: gone })
+
+    const { stdout, status } = runCli(['status'])
+    expect(status).toBe(0)
+    expect(stdout).toContain('активных сессий 1')
+    expect(stdout).toContain('устаревших 1')
+    expect(stdout).toContain('Фабрика') // the live window is listed
+    expect(stdout).not.toContain(`T-${gone}`) // the dead one is never listed as working
   })
 })

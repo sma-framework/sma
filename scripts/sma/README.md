@@ -80,7 +80,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `status` | statusline/hook JSON: active sessions, collisions, next slots | `--json` |
+| `status` | statusline/hook JSON: active sessions (live only) + stale sessions, collisions, next slots | `--json` |
 | `heartbeat` | renew this session's lease (cadence: every 3 min) | — |
 | `session-start` | register this terminal's session lease | — |
 | `pre` | **the PreToolUse multiplexer (9.2-02) — ONE spawn per Edit/Write/Bash** dispatching collision → reflex → gates | — |
@@ -706,6 +706,17 @@ Session liveness is graduated by age since the last heartbeat renew:
 | `reap-clean` | past TTL+grace, claimed globs have NO fresh mtimes → auto-reapable | age > 30 min + 15 min |
 | `needs-human` | reap-eligible but a claimed file changed after the last renew (DIRTY) → NEVER auto-deleted (P3) | — |
 
+One exception to the dirty split: a lease whose IDENTITY is the volatile pid fallback
+(`T-<pid>`) and whose pid no longer exists is `reap-clean` regardless of scope mtimes —
+that lease can only ever be renewed by the very process named in it, so a dead pid means
+the terminal is physically gone. Liveness is probed with signal 0 and fails OPEN (`EPERM`
+= alive, only `ESRCH` = dead). Named / window-token identities are never judged by pid:
+their `pid` field is a one-shot stamp that goes stale while the window lives on.
+
+`status` counts as **active** only leases that can still be working (fresh/attention AND
+not a dead-pid lease); everything else is reported separately as **stale** («устаревших»),
+so a graveyard of dead leases stays visible but never impersonates live terminals.
+
 | Constant | Value |
 |---|---|
 | `HEARTBEAT_INTERVAL_MS` | 180000 (3 min) |
@@ -741,6 +752,13 @@ outside the allowlist is stripped defensively before send.
 | `SMA_TERMINAL_NAME` | the stable per-window human name (e.g. «Мозг»); falls back to `T-<pid>` |
 | `SMA_SNAPSHOT_TOKEN` | auth token for the CRM receiver route (operator-provisioned) |
 | `SMA_SNAPSHOT_URL` | receiver URL; REQUIRED alongside the token — there is no built-in default (without it the sender no-ops with reason `no-url`) |
+| `SMA_DISABLE_SNAPSHOT_SPAWN` | kill-switch: never launch the detached reporter child |
+
+**No receiver, no child.** A heartbeat spawns the detached one-shot reporter ONLY when
+BOTH `SMA_SNAPSHOT_TOKEN` and `SMA_SNAPSHOT_URL` are set — on an unprovisioned checkout
+the child could only build a payload and drop it, so it is never born. When it does run
+it is launched with `windowsHide`, because a `detached` console child on Windows
+otherwise opens its own console window on every beat.
 
 Statusline pointer: the machine-local statusline snippet lives at
 `scripts/sma/statusline-snippet.md` (added by 9-12) and edits `~/.claude/statusline.js`

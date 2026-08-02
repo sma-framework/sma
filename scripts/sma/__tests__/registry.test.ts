@@ -32,6 +32,9 @@ import {
   resolveWorkLabel,
   displayIdentity,
   buildJournalActors,
+  hasSnapshotReceiver,
+  isPidAlive,
+  isDeadPidLease,
 } from '../lib/registry.mjs'
 import { appendEvent, journalTail } from '../lib/journal.mjs'
 import {
@@ -52,6 +55,9 @@ const B15_KEYS = [
   'leaseDurationSeconds',
   'transitions',
 ]
+
+/** A fully provisioned snapshot receiver (token + URL) — the only state that may spawn. */
+const RECEIVER_ENV = { SMA_SNAPSHOT_TOKEN: 'tok', SMA_SNAPSHOT_URL: 'https://receiver.example/api' }
 
 let sessionsDir: string
 
@@ -406,7 +412,7 @@ describe('heartbeat snapshot spawn — suppressed under the test runner (WR-10)'
     const identity = { holderIdentity: 'Мозг', terminalId: 'wr10b', pid: 222 }
     heartbeat(
       { scope: { globs: ['src/**'], description: 'y' }, status: 'working' },
-      { sessionsDir, identity, spawnFn: fakeSpawn },
+      { sessionsDir, identity, spawnFn: fakeSpawn, env: RECEIVER_ENV },
     )
     expect(spawnCalls).toBe(1) // injected spawn still runs — behavior stays assertable
   })
@@ -420,9 +426,150 @@ describe('heartbeat snapshot spawn — suppressed under the test runner (WR-10)'
     const identity = { holderIdentity: 'Мозг', terminalId: 'wr10c', pid: 333 }
     heartbeat(
       { scope: { globs: ['src/**'], description: 'z' }, status: 'working' },
-      { sessionsDir, identity, spawnFn: fakeSpawn, spawnSnapshot: false },
+      { sessionsDir, identity, spawnFn: fakeSpawn, spawnSnapshot: false, env: RECEIVER_ENV },
     )
     expect(spawnCalls).toBe(0)
+  })
+})
+
+describe('snapshot child — never born without a configured receiver, never a console window', () => {
+  /** Capture the (cmd, args, options) triple an injected spawn receives. */
+  function capturingSpawn() {
+    const calls: Array<{ cmd: string; args: string[]; opts: Record<string, unknown> }> = []
+    const fn = (cmd: string, args: string[], opts: Record<string, unknown>) => {
+      calls.push({ cmd, args, opts })
+      return { unref() {} }
+    }
+    return { calls, fn }
+  }
+
+  function beat(env: Record<string, string>, terminalId: string, spawnFn: unknown) {
+    return heartbeat(
+      { scope: { globs: ['src/**'], description: 'x' }, status: 'working' },
+      { sessionsDir, identity: { holderIdentity: 'Мозг', terminalId, pid: 111 }, spawnFn, env },
+    )
+  }
+
+  it('hasSnapshotReceiver requires BOTH the token and the URL, non-blank', () => {
+    expect(hasSnapshotReceiver({})).toBe(false)
+    expect(hasSnapshotReceiver({ SMA_SNAPSHOT_TOKEN: 't' })).toBe(false)
+    expect(hasSnapshotReceiver({ SMA_SNAPSHOT_URL: 'https://x' })).toBe(false)
+    expect(hasSnapshotReceiver({ SMA_SNAPSHOT_TOKEN: '  ', SMA_SNAPSHOT_URL: 'https://x' })).toBe(false)
+    expect(hasSnapshotReceiver(RECEIVER_ENV)).toBe(true)
+  })
+
+  it('NO receiver configured -> the beat still writes its lease but spawns NOTHING', () => {
+    const { calls, fn } = capturingSpawn()
+    const res = beat({}, 'nosnap', fn)
+    expect(res.skipped).toBeFalsy()
+    expect(readdirSync(sessionsDir)).toContain('nosnap.json') // the lease is unaffected
+    expect(calls).toHaveLength(0) // no child: the reporter would have had nowhere to report
+  })
+
+  it('token WITHOUT a receiver URL is still "unconfigured" -> no child', () => {
+    const { calls, fn } = capturingSpawn()
+    beat({ SMA_SNAPSHOT_TOKEN: 'tok' }, 'halfsnap', fn)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('receiver configured -> ONE detached child, launched with windowsHide (no console window)', () => {
+    const { calls, fn } = capturingSpawn()
+    beat(RECEIVER_ENV, 'yessnap', fn)
+    expect(calls).toHaveLength(1)
+    const { args, opts } = calls[0]
+    expect(args[args.length - 1]).toBe('snapshot')
+    expect(opts.detached).toBe(true)
+    expect(opts.stdio).toBe('ignore')
+    // THE Windows root cause: a detached console child without windowsHide ALWAYS opens
+    // its own console window — hundreds of them across one execute-phase session.
+    expect(opts.windowsHide).toBe(true)
+  })
+})
+
+describe('dead-pid leases — a gone terminal is reap-clean, dirty scope or not', () => {
+  const now = Date.parse('2026-08-02T12:00:00.000Z')
+  const staleAge = SESSION_TTL_MS + GRACE_MS + 1000
+  const errWith = (code: string) => () => {
+    const e: NodeJS.ErrnoException = new Error(code)
+    e.code = code
+    throw e
+  }
+  const DEAD = errWith('ESRCH')
+  const ALIVE = () => 0
+
+  const lease = (holderIdentity: string, ageMs: number, globs: string[] = ['src/**']) => ({
+    holderIdentity,
+    pid: 4242,
+    scope: { globs, description: 'edit' },
+    status: 'working',
+    blockers: [],
+    acquireTime: '2026-08-02T10:00:00.000Z',
+    renewTime: new Date(now - ageMs).toISOString(),
+    leaseDurationSeconds: SESSION_TTL_MS / 1000,
+    transitions: 0,
+  })
+
+  it('isPidAlive: ESRCH is the ONLY dead verdict; EPERM and surprises fail open to alive', () => {
+    expect(isPidAlive(4242, { killFn: DEAD })).toBe(false)
+    expect(isPidAlive(4242, { killFn: ALIVE })).toBe(true)
+    expect(isPidAlive(4242, { killFn: errWith('EPERM') })).toBe(true) // exists, another user
+    expect(isPidAlive(4242, { killFn: errWith('EINVAL') })).toBe(true) // unexpected -> alive
+    expect(isPidAlive(0, { killFn: DEAD })).toBe(true) // unusable pid -> alive
+    expect(isPidAlive(NaN as unknown as number, { killFn: DEAD })).toBe(true)
+  })
+
+  it('isDeadPidLease: ONLY the `T-<pid>` identity shape is judged by pid', () => {
+    expect(isDeadPidLease(lease('T-4242', staleAge), { killFn: DEAD })).toBe(true)
+    expect(isDeadPidLease(lease('T-4242', staleAge), { killFn: ALIVE })).toBe(false)
+    // A human-named window: its `pid` field goes stale across Claude restarts while the
+    // window lives on — judging it by pid is the documented trap. Never dead.
+    expect(isDeadPidLease(lease('Мозг', staleAge), { killFn: DEAD })).toBe(false)
+    // A token-hash identity (`T-<8 hex>`) is renewable by any future process -> not pid-shaped.
+    expect(isDeadPidLease(lease('T-3bbdef7f', staleAge), { killFn: DEAD })).toBe(false)
+    expect(isDeadPidLease({}, { killFn: DEAD })).toBe(false)
+  })
+
+  it('a reap-eligible dead-pid lease is reap-clean EVEN WITH a dirty claimed scope', () => {
+    const s = lease('T-4242', staleAge)
+    const dirtyProbe = () => now - 1000 // fresh edits inside the claimed globs
+    // Pre-fix this was needs-human forever: on a live repo the scope is always dirtier
+    // than a quiet lease's renewTime, so the graveyard could never be reaped.
+    const r = classifyStaleness(s, { now, scopeMtimeProbe: dirtyProbe, killFn: DEAD })
+    expect(r.state).toBe('reap-clean')
+    expect(r.deadPid).toBe(true)
+  })
+
+  it('the SAME lease with a LIVE pid keeps the graduated needs-human policy (P3 intact)', () => {
+    const s = lease('T-4242', staleAge)
+    const r = classifyStaleness(s, { now, scopeMtimeProbe: () => now - 1000, killFn: ALIVE })
+    expect(r.state).toBe('needs-human')
+  })
+
+  it('a NAMED lease with a dirty scope stays needs-human even when its pid is gone', () => {
+    const s = lease('Мозг', staleAge)
+    const r = classifyStaleness(s, { now, scopeMtimeProbe: () => now - 1000, killFn: DEAD })
+    expect(r.state).toBe('needs-human')
+  })
+
+  it('the age gate still holds: a YOUNG dead-pid lease is fresh, not reaped', () => {
+    const r = classifyStaleness(lease('T-4242', 1000), { now, killFn: DEAD })
+    expect(r.state).toBe('fresh')
+  })
+
+  it('reapStale deletes the dead-pid graveyard entry and keeps the live one', () => {
+    writeFileSync(join(sessionsDir, 'dead.json'), JSON.stringify(lease('T-4242', staleAge)))
+    writeFileSync(join(sessionsDir, 'named.json'), JSON.stringify(lease('Мозг', staleAge)))
+    const res = reapStale({
+      sessionsDir,
+      now,
+      dryRun: false,
+      scopeMtimeProbe: () => now - 1000, // dirty for BOTH
+      killFn: DEAD,
+    })
+    const remaining = readdirSync(sessionsDir).filter((f) => f.endsWith('.json'))
+    expect(res.reaped).toContain('T-4242')
+    expect(remaining).toContain('named.json') // dirty + named -> needs-human, never auto-deleted
+    expect(remaining).not.toContain('dead.json')
   })
 })
 
