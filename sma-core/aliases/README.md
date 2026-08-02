@@ -35,11 +35,11 @@ Deletion command (run from the repo root, one commit):
 git rm -r sma-core/aliases && git commit -m "aliases: remove transitional /gsd-* layer (D-9.1-02 condition met: phases 51/52 closed)"
 ```
 
-## Installer contract (9.1-04)
+## Installer contract
 
 The installer (`npx sma-framework init`) installs this directory ONLY when the
 `--with-gsd-aliases` flag is passed. Default installs get the `/sma-*` surface
-only. This contract is binding on plan 9.1-04.
+only. This contract is binding on the installer.
 
 ## Note on the zero-residue gate
 
