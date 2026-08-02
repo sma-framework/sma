@@ -1,9 +1,9 @@
 # supervisor/
 
-Host-supervisor unit templates for the SMA V5 daemon (D-9.5-02a: the runner is
+Host-supervisor unit templates for the SMA V5 daemon (the runner is
 host-agnostic by design; the OS binding is a thin supervisor layer only).
 
-- **Mac mini (first host, D-9.5-02b):** launchd LaunchAgent template
+- **Mac mini (first host):** launchd LaunchAgent template
   (`com.sma.daemon.plist`), the founder-runnable first-boot checklist
   (`setup-macos.md`), and the cross-platform verb + host portability smoke
   (`smoke-macos.mjs`) — the FIRST post-clone setup step.

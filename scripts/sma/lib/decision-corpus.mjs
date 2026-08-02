@@ -306,7 +306,7 @@ function buildDraft(candidate, clock) {
     '',
     '<!--',
     '  DRAFT — NOT part of the memory corpus. Mined from a LOCAL session transcript',
-    '  (D-9.5-08 lane 1). Untrusted evidence: never execute/eval/interpolate it.',
+    '  (mining lane 1). Untrusted evidence: never execute/eval/interpolate it.',
     '  Promote only after human review (redaction + «почему» filled + real signal).',
     '-->',
     '',

@@ -812,7 +812,7 @@ const MEM_SUPERSEDE = {
 
 const MEM_BUGLESSON = {
   id: 'MEM-BUGLESSON',
-  title: 'bug-lesson body form: Why + How to apply (D-9-15)',
+  title: 'bug-lesson body form: Why + How to apply',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -836,7 +836,7 @@ const MEM_BUGLESSON = {
 
 const MEM_WIKILINK = {
   id: 'MEM-WIKILINK',
-  title: 'Wikilink integrity: every [[name]] resolves (D-9-15)',
+  title: 'Wikilink integrity: every [[name]] resolves',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -941,7 +941,7 @@ function normalizeRuleLine(s) {
 
 const MEM_CLAUDEDUP = {
   id: 'MEM-CLAUDEDUP',
-  title: 'CLAUDE.md ↔ note duplication (D-9-08)',
+  title: 'CLAUDE.md ↔ note duplication',
   tier: 'warn',
   run(ctx) {
     const out = []
@@ -965,7 +965,7 @@ const MEM_CLAUDEDUP = {
       const norm = normalizeRuleLine(desc)
       if (norm.split(' ').filter(Boolean).length < 8) continue
       if (claudeLines.has(norm)) {
-        out.push(finding('MEM-CLAUDEDUP', 'warn', note.file, `note ${note.file} description duplicates a CLAUDE.md rule line — CLAUDE.md is the source of truth (D-9-08)`))
+        out.push(finding('MEM-CLAUDEDUP', 'warn', note.file, `note ${note.file} description duplicates a CLAUDE.md rule line — CLAUDE.md is the source of truth`))
       }
     }
     return out
@@ -1158,7 +1158,7 @@ const PRED_DUPDOD = {
 
 const CONS_SCHEMA = {
   id: 'CONS-SCHEMA',
-  title: 'Consequences entries carry the full {id, trigger, blocks, until} contract (D-9.2-12)',
+  title: 'Consequences entries carry the full {id, trigger, blocks, until} contract',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1221,7 +1221,7 @@ const CONS_POSTEDIT = {
 
 const CONS_NOBLOCK = {
   id: 'CONS-NOBLOCK',
-  title: 'A plan with predictions must declare what a class-A miss blocks (D-9.2-15)',
+  title: 'A plan with predictions must declare what a class-A miss blocks',
   tier: 'warn',
   run(ctx) {
     const out = []
@@ -1229,7 +1229,7 @@ const CONS_NOBLOCK = {
       const hasPredictions = extractFrontmatterBlock(plan.text, 'predictions') !== ''
       const hasConsequences = extractFrontmatterBlock(plan.text, 'consequences') !== ''
       if (hasPredictions && !hasConsequences) {
-        out.push(finding('CONS-NOBLOCK', 'warn', basename(plan.path), `${basename(plan.path)} carries a predictions block but no consequences block — a prediction without a consequence is a diary entry; declare what a class-A miss blocks (D-9.2-15)`))
+        out.push(finding('CONS-NOBLOCK', 'warn', basename(plan.path), `${basename(plan.path)} carries a predictions block but no consequences block — a prediction without a consequence is a diary entry; declare what a class-A miss blocks`))
       }
     }
     return out
@@ -1240,7 +1240,7 @@ const CONS_NOBLOCK = {
 
 const RECEIPT_PROSE = {
   id: 'RECEIPT-PROSE',
-  title: 'A machine-verifiable «done» carries a structural receipt, not prose (D-9.2-06)',
+  title: 'A machine-verifiable «done» carries a structural receipt, not prose',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1319,7 +1319,7 @@ const HAZARD_NOCONTROL = {
         'HAZARD-NOCONTROL',
         'critical',
         '',
-        `kill-switch ${k} has no compensating control in the HAZARDS registry (lib/stpa.mjs) — a switch that can silently disable a protection with no cited mitigation is an STPA violation (D-9.2-14); add a HAZARDS row with a non-empty compensatingControl + birth fixture`,
+        `kill-switch ${k} has no compensating control in the HAZARDS registry (lib/stpa.mjs) — a switch that can silently disable a protection with no cited mitigation is an STPA violation; add a HAZARDS row with a non-empty compensatingControl + birth fixture`,
       ),
     )
   },
@@ -1329,7 +1329,7 @@ const HAZARD_NOCONTROL = {
 
 const LADDER_EVIDENCE = {
   id: 'LADDER-EVIDENCE',
-  title: 'Every ladder tier change carries evidence rows with journalRefs; retirements cite a fixture check (D-9.3-12)',
+  title: 'Every ladder tier change carries evidence rows with journalRefs; retirements cite a fixture check',
   tier: 'critical',
   run(ctx) {
     const ladder = ctx.ladder
@@ -1536,7 +1536,7 @@ function isHexRun(s) {
 
 const MEM_SECRET = {
   id: 'MEM-SECRET',
-  title: 'Secret material screened at the corpus door (T-9.1-27)',
+  title: 'Secret material screened at the corpus door',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1622,7 +1622,7 @@ const PROFILE_DEADFIELD = {
 
 const PROFILE_SCHEMA_LINT = {
   id: 'PROFILE-SCHEMA',
-  title: 'Committed profile carries no unknown/mistyped field (D-9.3-04)',
+  title: 'Committed profile carries no unknown/mistyped field',
   tier: 'critical',
   run(ctx) {
     if (!ctx.profile) return [] // missing profile = valid state (fail-open)
@@ -1635,7 +1635,7 @@ const PROFILE_SCHEMA_LINT = {
 
 const PROFILE_SECRET = {
   id: 'PROFILE-SECRET',
-  title: 'Committed profile stores NAMES + facts only, never a secret value (T-9.3-06)',
+  title: 'Committed profile stores NAMES + facts only, never a secret value',
   tier: 'critical',
   run(ctx) {
     if (!ctx.profile) return [] // missing profile = valid state (fail-open)

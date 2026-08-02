@@ -25,7 +25,7 @@ Ponytail's LLM-based `/review` delete-list mechanism is explicitly NOT adopted �
 SMA's footprint receipt is deterministic `git diff --numstat` arithmetic against a
 written claim, with zero LLM in the path.
 
-## Paperclip — code pattern + spec absorbed (9.5-03, D-9.5-07)
+## Paperclip — code pattern + spec absorbed (9.5-03)
 
 The compare-and-set (CAS-UPDATE) checkout pattern in `daemon/src/queue/cas.mjs` is
 absorbed **as a code pattern** from **Paperclip**

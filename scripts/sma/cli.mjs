@@ -4001,7 +4001,7 @@ async function cmdGatesReport({ flags, dirs }) {
     const RULE =
       'READY = >=7 дней наблюдения AND >=5 срабатываний AND 0 ложноположительных. ' +
       'Арминг soft-deny (SMA_GATE_*_DENY) — действие основателя/оператора, обоснованное ЭТИМ ' +
-      'отчётом; промоушн ТОЛЬКО по журнальным данным (D-9.1-13).'
+      'отчётом; промоушн ТОЛЬКО по журнальным данным.'
     const report = SOFT_DENY_GATES.map((id) => {
       const g = soft[id]
       const observationDays = g.firstFireAt ? Math.floor((now - Date.parse(g.firstFireAt)) / 86400000) : 0
@@ -4022,7 +4022,7 @@ async function cmdGatesReport({ flags, dirs }) {
       printJson({ promotionReadiness: report, rule: RULE, corrupt })
       return 0
     }
-    process.stdout.write('SMA gates — готовность к промоушену soft-deny (D-9.1-13):\n')
+    process.stdout.write('SMA gates — готовность к промоушену soft-deny:\n')
     for (const r of report) {
       const pad = r.verdict === 'READY' ? 'READY    ' : 'NOT-READY'
       process.stdout.write(
@@ -7423,7 +7423,7 @@ async function cmdGrill({ positionals, flags, dirs }) {
     else if (!res.allowed) {
       process.stdout.write(`SMA grill [${planId}]: BLOCKED — ${res.open.length} нерешённых вызова(ов):\n`)
       for (const c of res.open) process.stdout.write(`  ${c.id}: «${c.promise}» ⟵ ${c.attack}\n`)
-      process.stdout.write('Каждый вызов ДОЛЖЕН стать зарегистрированным предсказанием (--resolve --as converted --prediction <P-id>), быть отозван (--as withdrawn) или принят основателем (--as accepted-risk). До этого билд не стартует (D-9.2-11).\n')
+      process.stdout.write('Каждый вызов ДОЛЖЕН стать зарегистрированным предсказанием (--resolve --as converted --prediction <P-id>), быть отозван (--as withdrawn) или принят основателем (--as accepted-risk). До этого билд не стартует.\n')
     } else if (!res.grilled) {
       process.stdout.write(`SMA grill [${planId}]: WARN — план не проходил grill (ungrilled). Билд продолжается (fail-open), но ритуал /sma-grill рекомендуется.\n`)
     } else {

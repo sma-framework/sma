@@ -310,7 +310,7 @@ export function measureFalseDoneRate(opts = {}) {
       unit: 'percent',
       n,
       method:
-        'blind retro re-verify of completed plans: contains-grep each must_haves artifact + run each allowlisted <verify> command on the tree; SUMMARY body never read (D-9.2-11)',
+        'blind retro re-verify of completed plans: contains-grep each must_haves artifact + run each allowlisted <verify> command on the tree; SUMMARY body never read',
       status,
     }),
     detail,

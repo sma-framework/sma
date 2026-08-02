@@ -227,7 +227,7 @@ function step8_configDirIsolation() {
 }
 
 async function main() {
-  console.log('=== SMA V5 — macOS verb + host portability smoke (D-9.5-02b, FIRST setup step) ===')
+  console.log('=== SMA V5 — macOS verb + host portability smoke (FIRST setup step) ===')
   console.log(`repo root: ${REPO_ROOT}`)
   console.log(`platform: ${process.platform} · node ${process.versions.node}\n`)
 
