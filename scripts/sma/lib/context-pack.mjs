@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto'
 
 import { loadTagsRegistry, resolveAlias, parseNote } from './frontmatter.mjs'
 import { resolvePeriphery } from './loader.mjs'
+import { projectNoteAxis } from './generator.mjs'
 import { findCards } from './catalog.mjs'
 import { listFragments, parseTrigger } from './fragments.mjs'
 import { PACK_BUDGET } from './constants.mjs'
@@ -99,12 +100,19 @@ function oneLine(s, max = 120) {
   return String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
 }
 
-/** Best-effort note description for a pointer line (fail-soft → ''). */
+/**
+ * Best-effort note description for a pointer line (fail-soft → '').
+ *
+ * The one-line claim is read through the SHARED projection (SB-026), so a
+ * schema-v2 record's `claim` fills the same slot a v1 note's `description` does —
+ * otherwise every migrated record would enter the pack as a nameless pointer.
+ */
 function noteDescription(corpusDir, file) {
   if (!corpusDir) return ''
   try {
     const { frontmatter } = parseNote(readFileSync(join(corpusDir, file), 'utf8'), { file })
-    return frontmatter && typeof frontmatter.description === 'string' ? oneLine(frontmatter.description) : ''
+    if (frontmatter == null) return ''
+    return oneLine(projectNoteAxis(frontmatter, { file }).description)
   } catch {
     return ''
   }
