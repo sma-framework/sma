@@ -1,42 +1,190 @@
-# SMA — Shared Memory & Automation (Phase 9, V1)
+# SMA — the CLI reference
 
-> **This is the CANONICAL copy of the SMA runtime layer** (sma-framework product
-> repo, migrated in 9.1-03). The origin project's
-> `scripts/sma/` copy is FROZEN for the duration of phase 9.1: all V2 pillar
-> work (P1-P6, plans 9.1-07..24) extends THIS tree. The origin project re-syncs from
-> here at the dogfood step (9.1-26). Path parity is deliberate: hook commands
-> (`node scripts/sma/cli.mjs ...`) stay valid unchanged in any install target.
+Every subcommand of SMA's coordination and accountability runtime, its flags,
+the hook events that call it, and the switch that turns it off. The narrative
+version of the same material is in [README.md](../../README.md) ([по-русски](../../README.ru.md));
+the engineering deep dive is [docs/DETAILS.md](../../docs/DETAILS.md).
 
-SMA is the layered-memory + multi-terminal coordination framework that sits on top
-of gsd-core in this repo. It has two pillars:
+## How to call it
 
-1. **Layered memory (R1–R4)** — `.claude/memory/MEMORY.md` is a *generated* build
-   artifact: an always-loaded CORE section plus a sparse one-line-per-fact index,
-   built from the memory corpus. Peripheral facts are pulled on demand by facet tags.
-2. **Multi-terminal coordination (R7–R11)** — local `.sma/` files are the sole
-   source of coordination truth: session leases, scope claims, a shared journal,
-   and three external-state slots (migration number, V1.N release, deploy signal).
+The runtime is installed at `scripts/sma/` inside your own project, so every
+verb runs from the project root:
 
-Everything is deterministic Node (built-ins only, zero npm deps). All CLI verbs run
-through `pnpm sma <subcommand>` (`scripts/sma/cli.mjs`).
+```bash
+node scripts/sma/cli.mjs <verb> [flags]
+```
 
-> **CLAUDE.md is frozen for V1.** The agent-facing protocol lives in the
-> CORE-bound memory note `.claude/memory/reference_sma_protocol.md` and in this
-> README, not in CLAUDE.md. The SPEC's in-scope wording ("a CLAUDE.md section") is
-> satisfied this way; the founder may relocate it into CLAUDE.md in a later version.
+That is exactly how the installed hooks call it: there is no package script to
+add and nothing to put on your `PATH`. **For brevity this page writes that as
+`sma <verb>`.** Everything is deterministic Node on built-ins only, with zero
+npm dependencies, resting on two pillars:
+
+1. **Layered memory** — `.claude/memory/MEMORY.md` is a *generated* build
+   artifact: an always-loaded CORE section plus a sparse one-line-per-fact
+   index, built from the memory corpus. Peripheral facts are pulled on demand
+   by facet tags.
+2. **Multi-terminal coordination** — the local `.sma/` files are the sole
+   source of coordination truth: session leases, scope claims, a shared
+   journal, and the shared counters (migration number, release version,
+   deploy signal) that two terminals could otherwise race on.
+
+Every subcommand accepts `--json` for a single-line JSON object (the
+statusline / hook contract). Hook-facing subcommands (`session-start`,
+`session-end`, `pre`, `heartbeat`, `pretask-pack`, `subagent-verify`,
+`precompact-capsule`, `airbag-check`, `spend-check`, `stall-check`, `pulse`,
+`statusline`) ALWAYS exit 0 — fail-open, see the contract at the end of this
+page; direct-CLI subcommands return meaningful exit codes.
+
+## Every verb at a glance
+
+All 89, grouped by what they are for. The sections after this table go deeper
+on the ones with real surface area; `sma explain <verb>` answers for any of
+them in plain language, in English or Russian.
+
+### Sessions, claims and shared counters
+
+| Verb | One line |
+|---|---|
+| `status` | Who is working on what right now: live sessions, stale leases, collisions, next free slots |
+| `heartbeat` | Renew this session's lease (cadence: every 3 minutes) |
+| `session-start` | Register this terminal's session lease — the SessionStart hook |
+| `session-end` | Release every claim this window still holds, so a closed terminal never haunts a teammate |
+| `claim` | Take a work scope: `claim <name> --globs "<glob>" --desc "<text>"` |
+| `release` | Release your OWN claim |
+| `force-clear` | Clear a stale or foreign claim, with confirmation and recorded provenance |
+| `next-slot` | Allocate the next migration number or release version — the only sanctioned way to pick one |
+| `consume` | Mark an allocated slot number as actually used, so reconcile leaves it alone |
+| `ask` | Print another terminal's fingerprint and journal the unanswered question, so demand is measured rather than assumed |
+| `worktree` | Provision, list and remove this terminal's own git worktree |
+| `merge` | The serialized local-only merge of a worktree branch into `main` — never a push |
+
+### Hook streams and guards
+
+| Verb | One line |
+|---|---|
+| `pre` | The PreToolUse multiplexer: ONE spawn per Edit/Write/Bash, dispatching collision → reflex → gates → airbag → spend |
+| `pre-bench` | The SLO instrument for `pre`: full-spawn p95, spawn count, dispatch parity |
+| `collision-check` · `reflex-check` · `gates-check` · `airbag-check` | Deprecated single-stream aliases, kept for back-compat; the canonical wiring is `pre` |
+| `stall-check` | The PostToolUse stall and loop detector; drops a flight mark, never blocks |
+| `spend-check` | The spend stream on its own: warns as a window fills, soft-denies only against a cap you set |
+| `pulse` | Working / waiting-for-human transitions for the statusline and the optional webhook |
+| `statusline` | Render the statusline segment, install or uninstall the managed settings entry, set the webhook |
+
+### Checkable project rules
+
+| Verb | One line |
+|---|---|
+| `gates` | The rule surface: advisory warnings, evidence-gated soft-denies, and the explicit override path |
+| `gates-report` | Per-gate fire and acknowledgement counts — the evidence for promoting a gate, or not |
+| `gates-ack` | Record a gate fire as a false positive, so a noisy rule is visible instead of quietly ignored |
+
+### The memory corpus
+
+| Verb | One line |
+|---|---|
+| `lint` | Run memory-lint over the corpus (schema, duplicates, contradictions, tag vocabulary, size) |
+| `build-index` | Regenerate `MEMORY.md`; dry by default, `--write` to apply |
+| `load` | Resolve a tag set into CORE + the periphery notes it selects |
+| `emit` | Compile the corpus into `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `GEMINI.md` under per-format byte budgets |
+| `usage` | Per-note citation counts and the dead-weight list — the data demotion ordering reads |
+| `consolidate` | Propose merges, promotions and contradiction fixes; proposes only, never writes |
+| `trim` | The demotion-only trimmer: shrink the always-loaded budget without deleting a fact |
+| `memory` | The corpus verbs proper: `stats`, the preview-only `migrate`, and the twelve-step `write` pipeline |
+| `memory-preview` | An ASCII preview of how SMA would lay out THIS repository's memory, before anything is written |
+| `excavate` | Mine the repository's own history for the lessons and reflex candidates already buried in it |
+| `catalog` | The deterministic file catalog: `refresh`, `find`, and a drift check — search this before reaching for grep |
+| `context` | Compile one budgeted, deterministic context pack for a task, with a manifest and a purity score |
+
+### Predictions, calibration and learning
+
+| Verb | One line |
+|---|---|
+| `predict-score` | Settle a plan's registered predictions against reality with a script, not a judgement |
+| `calibration` | The per-domain promise-versus-fact ledger, including the graded verdicts of the graders |
+| `curriculum` | Assemble the week's miss-curriculum: clustered misses → prediction templates → a weak-spots brief |
+| `ladder` | The reflex tier table and the benefit statistics behind each rung |
+| `tune` | Propose, apply or measure per-rule tuning; it never commits and never pushes |
+
+### The trust spine
+
+| Verb | One line |
+|---|---|
+| `grill` | Cross-examine every plan promise before the build; `--gate` blocks while any challenge is open |
+| `blind-verify` | Re-derive "done" from the code tree alone; structurally refuses the executor's own report |
+| `reverify` | Re-run every SUMMARY receipt, diff observed against expected hashes, and record the verdicts |
+| `receipt-hash` | Run one allowlisted check command and print the observation digest that binds it |
+| `evidence` | The burden-of-proof record required before a risky operation is allowed to proceed |
+| `preship` | The release gate: an open trust-class event blocks the ship |
+| `disposition` | The append-only human ruling that clears such an event — the agent cannot forgive itself |
+| `chain-tip` · `chain-verify` | Emit the tamper-evident journal chain tip (pinned into release tags); detect any edit to history |
+| `pretask-pack` | Hand a subagent its inherited context by construction rather than by hope |
+| `subagent-verify` · `subagent-receipts` | Check every claimed file write against the real tree; surface the phantom ones |
+| `integrity` · `skeptic` · `canary` · `nearmiss` | The guards that keep the published numbers honest: audits, countersignatures, planted false-dones, near-miss capture |
+
+### Recovery and continuity
+
+| Verb | One line |
+|---|---|
+| `airbag` | Snapshot administration: list, prune, probe, stats |
+| `undo` | Restore the newest airbag snapshot — tracked, untracked and HEAD — in one action |
+| `precompact-capsule` | Write the pre-compaction flight recorder, so a compacted session can pick itself back up |
+| `resume` | Assemble a continuation brief for this terminal from the journal and the flight recorder |
+| `handoff` | Write the same brief for a teammate instead of for yourself |
+| `flight` | The flight-recorder marks themselves: what was in progress when the lights went out |
+
+### Economy
+
+| Verb | One line |
+|---|---|
+| `spend` | The spend book: window totals by session, lane and account, and the caps you set on them |
+| `breaker` | The circuit breaker that stops a runaway lane instead of watching it burn |
+| `model` | Which model a given agent resolves to, and why — profile tiers and per-agent pins |
+
+### Reporting and the evidence trail
+
+| Verb | One line |
+|---|---|
+| `state` | The machine-managed region of `STATE.md`: current position, open blockers, active sessions |
+| `exec-journal` | The per-plan execution progress journal — what turns a dead executor into a five-minute resumption |
+| `metrics` | Read-only process telemetry: lead time, rework rate, deviation counts |
+| `report` | One local, self-contained HTML report over every source, each read fail-open |
+| `passport` | Build and read `PASSPORT.md`: the real hit rate and sample size, reproducible on a fresh clone |
+| `manifest` | The evidence passport for a pull request, rendered `--md` for a human, `--json` for a tool, `--dense` for an agent |
+| `decisions` | Mine the human decisions already recorded in local transcripts into reviewable draft notes |
+| `exam` | The replay exam: hold out recorded decisions, hide the answers, and score the policy against them |
+
+### Measurement
+
+| Verb | One line |
+|---|---|
+| `bench` | The eight-metric scorecard harness, its baseline frozen before the spine was built |
+| `baseline` | What the layer costs you today — retrieval recall, context cost, hook latency, worker recovery, clean install — recordable as receipts and replayable later |
+| `arena` | The comparative benchmark arena scorer and its static graphs page, negative results included |
+| `preflight` | The already-built gate: check a plan's claims against the real tree before an executor is spawned |
+
+### Lanes and sizing
+
+| Verb | One line |
+|---|---|
+| `batch` | The middle lane: 2-4 compatible items, one executor, grill-lite per item, receipts still mandatory |
+| `ship-lane` | The quick-ship precondition, the conventional-commit changelog drafter, and the lane-outcome ledger |
+| `tia` | Regex test-impact analysis: which tests a change actually touches |
+
+### Documentation, profile and lifecycle
+
+| Verb | One line |
+|---|---|
+| `explain` | The in-product explainer for any concept or verb, in English or Russian |
+| `doc-audit` | The deterministic honesty audit over the manual and the README positioning region |
+| `vendor` | The vendor capability ledger linter: no row ships untriaged |
+| `profile` | Read, validate, recap or quick-update `.sma/profile.json` |
+| `snapshot` | Push a bounded, allowlisted view of local state to an external cockpit |
+| `deleteme` | The one-action off-ramp: reverse every installer artifact, PRESERVING `.claude/memory/**` |
+| `update` | Compare the installed version against npm and a detected local checkout, then re-run the one standard installer |
 
 ---
 
-## CLI subcommands
-
-`pnpm sma <status|heartbeat|session-start|pre|pre-bench|collision-check|reflex-check|`
-`gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|`
-`gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|`
-`build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|`
-`state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|`
-`pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|`
-`grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|manifest|`
-`worktree|merge|explain|doc-audit|deleteme|memory-preview|vendor|memory|ship-lane|decisions|exam|update>`
+## Subcommands in depth
 
 The v3.6 surfaces:
 
@@ -55,9 +203,9 @@ The V4 maintainer-process surface:
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `vendor` | Anthropic capability ledger linter (9.4-01): parses `docs/VENDOR-LEDGER.md`, fails rows missing a verdict or disposition; `--count untriaged` prints the bare number as a last line (scorer contract) that the `/sma-ship` gate blocks on; `--selftest` proves the linter against a fixture pair. Read-only, zero network, never writes a verdict. NOT hook-facing. | `[--count untriaged]` \| `--selftest` \| `--json` |
+| `vendor` | Anthropic capability ledger linter (9.4-01): parses `docs/VENDOR-LEDGER.md`, fails rows missing a verdict or disposition; `--count untriaged` prints the bare number as a last line (scorer contract) that the release gate blocks on; `--selftest` proves the linter against a fixture pair. Read-only, zero network, never writes a verdict. NOT hook-facing. | `[--count untriaged]` \| `--selftest` \| `--json` |
 | `memory` | The corpus verbs. `memory stats` — deterministic token-cost report (9.4-06): prices the MEMORY.md core load, every note, every INDEX file, and the top-N heaviest with a VERSIONED estimator (`ESTIMATOR_VERSION` stamped, approximation not billing truth); `--stat core-tokens\|corpus-tokens` prints the bare number (scorer contract); `--selftest` proves determinism. Compress is deliberately absent — deferred until stats shows measured pain. `memory migrate` — preview-only v1→v2 migration: every proposal is staged in `drafts/` and applied by hand, one file at a time (`--apply <draft> --confirm <source> --yes`); there is no bulk apply. `memory write` — one candidate memory through the twelve-step write pipeline, printing each step's verdict and the outcome (`persisted-active` \| `staged-draft` \| `rejected`, the last exiting non-zero); classification is the caller's, and a value outside the closed vocabulary is refused with the allowed list. NOT hook-facing. | `stats [--top N]` \| `--stat core-tokens\|corpus-tokens` \| `--selftest` \| `migrate [--preview]` \| `migrate --apply <draft> --confirm <source> --yes` \| `write --type <t> --truth <t> --claim <text> [--help]` \| `--json` |
-| `ship-lane` | The ship lanes (9.4-08): a DETERMINISTIC quick-ship precondition (`check` — origin-delta <= 5 commits AND no migrations AND no foreign push-claim, else refuses «this is a full /sma-ship» naming every failing leg), a deterministic conventional-commit changelog drafter (`changelog`, the full lane consumes it too), and a lane-outcome ledger (`record`/`report`, pending runs listed first + >24h orphaned-watch flag). `--stat quick-active-p50-min\|quick-red-minus-full-red-pct` prints the bare number (scorer contract); `--selftest` proves the fixture pack. READ-ONLY — never pushes, tags, or deploys. NOT hook-facing. | `check [--base <b>] [--max-delta N]` \| `changelog [--base <b>]` \| `record --lane quick\|full --outcome green\|red\|pending --started <iso> [--ended <iso>]` \| `report` \| `--stat <name>` \| `--selftest` \| `--json` |
+| `ship-lane` | The ship lanes (9.4-08): a DETERMINISTIC quick-ship precondition (`check` — origin-delta <= 5 commits AND no migrations AND no foreign push-claim, else it refuses back into the full ship ritual, naming every failing leg), a deterministic conventional-commit changelog drafter (`changelog`, the full lane consumes it too), and a lane-outcome ledger (`record`/`report`, pending runs listed first + >24h orphaned-watch flag). `--stat quick-active-p50-min\|quick-red-minus-full-red-pct` prints the bare number (scorer contract); `--selftest` proves the fixture pack. READ-ONLY — never pushes, tags, or deploys. NOT hook-facing. | `check [--base <b>] [--max-delta N]` \| `changelog [--base <b>]` \| `record --lane quick\|full --outcome green\|red\|pending --started <iso> [--ended <iso>]` \| `report` \| `--stat <name>` \| `--selftest` \| `--json` |
 
 The V3.5 docs / teaching surfaces:
 
@@ -145,7 +293,7 @@ plus a charset guard that admits no shell metacharacter (`;`, `&`, `|`, backtick
 |---|---|
 | `node scripts/sma/…` | `node scripts/sma/cli.mjs chain-verify --count breaks` |
 | `pnpm vitest run …` | `pnpm vitest run scripts/sma/__tests__/receipts.test.ts` |
-| `pnpm sma …` | `pnpm sma reverify --all --count divergent` |
+| `pnpm sma …` | `pnpm sma reverify --all --count divergent` (this prefix is matched literally — a project without a `sma` package script uses the `node scripts/sma/…` shape above) |
 | `npm`/`pnpm`/`yarn` + `test` or `pack` | `npm test`, `pnpm pack` |
 | `npm`/`pnpm`/`yarn` + `run <script>` | `npm run build`, `pnpm run test:unit` |
 
@@ -182,9 +330,9 @@ critical. The ack speaks for the receipt, never for the claim it backs.
 
 ## V3 trust-spine subcommands
 
-The accountability layer (Phase 9.2). Every verb here is a deterministic script on
-the same files+git substrate — no LLM in the hot path. The narrative overview, with
-diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-by-process).
+The accountability layer. Every verb here is a deterministic script on the same
+files+git substrate — no LLM in the hot path. The narrative overview, with
+diagrams, lives in [docs/DETAILS.md](../../docs/DETAILS.md#the-trust-spine-process-by-process).
 
 ### Verification + consequences
 
@@ -198,16 +346,16 @@ diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-
 
 ```bash
 # a plan promise → a registered prediction, else the build does not start
-pnpm sma grill .planning/phases/12-x/12-01-PLAN.md --challenge "rejects 101st::burst at t=0 slips through"
-pnpm sma grill .planning/phases/12-x/12-01-PLAN.md --resolve CH-1 --as converted --prediction PRED-03
-pnpm sma grill .planning/phases/12-x/12-01-PLAN.md --gate            # blocks while any challenge is open
+sma grill .planning/phases/12-x/12-01-PLAN.md --challenge "rejects 101st::burst at t=0 slips through"
+sma grill .planning/phases/12-x/12-01-PLAN.md --resolve CH-1 --as converted --prediction PRED-03
+sma grill .planning/phases/12-x/12-01-PLAN.md --gate            # blocks while any challenge is open
 
 # blind pass — re-derives «done» from the tree; refuses the executor's own report
-pnpm sma blind-verify .planning/phases/12-x/12-01-PLAN.md
+sma blind-verify .planning/phases/12-x/12-01-PLAN.md
 
 # the ship gate + the founder's disposition
-pnpm sma preship
-pnpm sma disposition blind-divergence:sma.receipts:R-01 --verdict fix-forward --reason "regression fixed in <sha>" --yes
+sma preship
+sma disposition blind-divergence:sma.receipts:R-01 --verdict fix-forward --reason "regression fixed in <sha>" --yes
 ```
 
 #### Horizons — a claim that is not due yet is not scored
@@ -235,8 +383,8 @@ before. The comparison version comes from `--current-version <v>`, or from the
 project's own `package.json` when the flag is absent:
 
 ```bash
-pnpm sma predict-score .planning/phases/12-x/12-01-PLAN.md                      # version from package.json
-pnpm sma predict-score .planning/phases/12-x/12-01-PLAN.md --current-version 3.1 # explicit
+sma predict-score .planning/phases/12-x/12-01-PLAN.md                      # version from package.json
+sma predict-score .planning/phases/12-x/12-01-PLAN.md --current-version 3.1 # explicit
 ```
 
 ### Subagent honesty
@@ -272,8 +420,8 @@ target). Each metric emits exactly one numeric last line (the scorer contract).
 | `bench ab …` \| `--timing` \| `--json` | A/B + timing helpers |
 
 ```bash
-pnpm sma bench --metric self-cost      # S7 — measured ms-per-tool-call
-pnpm sma bench --metric canary-catch   # S8 — planted-canary catch rate
+sma bench --metric self-cost      # S7 — measured ms-per-tool-call
+sma bench --metric canary-catch   # S8 — planted-canary catch rate
 ```
 
 ### Integrity guards
@@ -460,7 +608,7 @@ blind-verify.mjs reconciles — `preflight` composes, it writes no second frontm
 parser, allowlist, or tree-comparison engine.
 
 **Integration recipe** — `/sma-execute-phase` gates each plan before spawning an
-executor, and 9.3-12 `/sma-batch` runs it on every item first. Both invoke
+executor, and `sma batch` runs it on every item first. Both invoke
 it across the CLI boundary and branch on the exit code:
 
 ```sh
@@ -519,11 +667,11 @@ There are now **three** ways to move work, and the lane is picked by the task, n
 
 | Lane | When | Ceremony | Receipts |
 |---|---|---|---|
-| **`/sma-fix`** (inline) | ONE change to existing code — a bug, a copy tweak, a small logic fix; no new route/collection/migration/agent | inline in the session, no subagents, targeted tests only | none required |
-| **`/sma-batch`** (middle) | 2-4 backlog items that are not small but do not warrant a phase — same area, size S/M, non-overlapping files | grill-lite per item (must_haves + ONE falsifiable check, **no** research/plan-checker/discuss), ONE executor with an atomic commit per item, ONE batch note | **mandatory** — every item is `sma reverify`-blind-reverified before its backlog box flips |
+| **inline fix** (`/sma-fast`) | ONE change to existing code — a bug, a copy tweak, a small logic fix; no new route/collection/migration/agent | inline in the session, no subagents, targeted tests only | none required |
+| **`sma batch`** (middle) | 2-4 backlog items that are not small but do not warrant a phase — same area, size S/M, non-overlapping files | grill-lite per item (must_haves + ONE falsifiable check, **no** research/plan-checker/discuss), ONE executor with an atomic commit per item, ONE batch note | **mandatory** — every item is `sma reverify`-blind-reverified before its backlog box flips |
 | **full phase** | a new route / page / CRM surface / collection / migration / AI agent / cron / webhook / external integration, or genuine multi-wave work | discuss → plan → grill → execute → verify, wave-parallel subagents | full receipts + consequences ledger |
 
-`/sma-batch` is the founder's gap-filler (verbatim: «tasks which are not small,
+`sma batch` is the gap-filler (verbatim: «tasks which are not small,
 but not phase oriented … 2-3-4 backlog items»). It fills the gap **without dropping the
 accountability floor**: «light» means fewer AGENTS, never fewer RECEIPTS.
 
@@ -576,24 +724,24 @@ table above for the git airbag (`undo` / `airbag`).
 | `flight` | Flight instruments. | `flight <probe\|determinism-check\|tail [n]>` \| `--json` |
 
 ```bash
-pnpm sma spend --by session            # window totals grouped by session
-pnpm sma spend set-cap 25 --window-hours 5   # a founder cap (a soft-deny needs one)
-pnpm sma spend --stat bench-check-p95-ms     # the S7 self-cost scorer line
+sma spend --by session            # window totals grouped by session
+sma spend set-cap 25 --window-hours 5   # a founder cap (a soft-deny needs one)
+sma spend --stat bench-check-p95-ms     # the S7 self-cost scorer line
 ```
 
 ### Memory (pillar 1)
 
-- `pnpm sma build-index` — DRY by default (prints the artifact); add `--write` to
+- `sma build-index` — DRY by default (prints the artifact); add `--write` to
   overwrite `.claude/memory/MEMORY.md`. Output is byte-deterministic: the build-anchor
   commit hash and per-file last-commit dates are injected, never read from the clock,
   so a re-build is byte-identical and lint's MEM-REGEN can byte-compare.
-- `pnpm sma load --tags <a,b>` — facet intersection over TAGS.md; returns the ordered
+- `sma load --tags <a,b>` — facet intersection over TAGS.md; returns the ordered
   CORE + periphery notes. Example bug-lesson recall: `--tags bug-lesson,payload`.
-- `pnpm sma lint` — see the memory-lint checks below. `--json` emits `{findings:[...]}`.
+- `sma lint` — see the memory-lint checks below. `--json` emits `{findings:[...]}`.
 
 #### `sma emit` — one corpus, any agent
 
-`pnpm sma emit` compiles the learned memory corpus into a **managed export block**
+`sma emit` compiles the learned memory corpus into a **managed export block**
 inside each of `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `GEMINI.md`, every block
 under a per-format byte budget (`EMIT_BUDGETS`: 8 KiB / 8 KiB / 6 KiB / 8 KiB).
 Selection is deterministic — the SAME importance-ordered comparator MEMORY.md and the
@@ -615,14 +763,14 @@ The **managed-block law** (three bullets):
   corpus; editing inside it is overwritten on the next emit. emit performs git READ
   ops only and NEVER commits or pushes — the output is a reviewable working-tree diff.
 
-`pnpm sma emit --check` writes nothing and prints machine-countable
+`sma emit --check` writes nothing and prints machine-countable
 drift / over-budget / corrupt / missing counts; `--count <drift|over-budget|corrupt|missing>`
 prints the bare number as the last line (the prediction-scorer contract). The re-emit is
 idempotent: at the same commit over an already-emitted tree it reports `unchanged` for
 every format and performs zero writes.
 
-**Workflow:** run `pnpm sma emit` after the corpus changes (a consolidation or a
-`build-index`) so `pnpm sma emit --check --count drift` stays at zero.
+**Workflow:** run `sma emit` after the corpus changes (a consolidation or a
+`build-index`) so `sma emit --check --count drift` stays at zero.
 
 **The installer's sibling block (v3.6):** `npx sma-framework init` embeds a
 SECOND managed block — the SMA operating rules — into the project's CLAUDE.md via
@@ -631,10 +779,10 @@ corrupt=refuse), its OWN anchor family (`SMA:RULES`), so the corpus block and th
 rules block never fight over one span. `deleteme` removes both.
 
 ```
-pnpm sma emit                       # write the managed blocks (reviewable diff)
-pnpm sma emit --check               # counts only, writes nothing
-pnpm sma emit --check --count drift # the bare drift number (scorer contract)
-pnpm sma emit --formats claude,gemini --target-dir ./somewhere
+sma emit                       # write the managed blocks (reviewable diff)
+sma emit --check               # counts only, writes nothing
+sma emit --check --count drift # the bare drift number (scorer contract)
+sma emit --formats claude,gemini --target-dir ./somewhere
 ```
 
 #### How notes are written (sanctioned write path, B6)
@@ -664,12 +812,12 @@ would silently fall out of the index.
 
 ### Coordination (pillar 2)
 
-- `pnpm sma claim memory-flip --globs ".claude/memory/**" --desc "memory flip prep"`
-- `pnpm sma release memory-flip`
-- `pnpm sma next-slot migration` — the ONLY sanctioned way to pick a migration number.
-- `pnpm sma next-slot release` — the ONLY sanctioned way to pick the next V1.N; re-check
+- `sma claim memory-flip --globs ".claude/memory/**" --desc "memory flip prep"`
+- `sma release memory-flip`
+- `sma next-slot migration` — the ONLY sanctioned way to pick a migration number.
+- `sma next-slot release` — the ONLY sanctioned way to pick the next V1.N; re-check
   freedom immediately before deploy (`verifyReleaseStillFree`).
-- `pnpm sma force-clear <name>` — clears a foreign/stale claim; requires confirmation.
+- `sma force-clear <name>` — clears a foreign/stale claim; requires confirmation.
 
 ---
 
@@ -685,7 +833,7 @@ re-cards only the changed files when HEAD moves past the catalog's commit).
 
 **The rule — FIRST the catalog, THEN grep:**
 
-1. `pnpm sma catalog find "<query>"` — deterministically-ranked cards (whole-token match
+1. `sma catalog find "<query>"` — deterministically-ranked cards (whole-token match
    count desc → last-commit desc → path asc). This answers «which file declares/​imports X»
    from symbols + import specifiers + git stats.
 2. `grep` **only** for what a card cannot answer — string literals, values, comment text.
@@ -694,9 +842,9 @@ re-cards only the changed files when HEAD moves past the catalog's commit).
    copies).
 
 ```bash
-pnpm sma catalog refresh --full     # build/rebuild every card (explicit; the stream keeps it fresh on commit)
-pnpm sma catalog find "webhook handler"
-pnpm sma catalog --check --count    # drift count: 0 clean, -1 = never built (honest not-built sentinel)
+sma catalog refresh --full     # build/rebuild every card (explicit; the stream keeps it fresh on commit)
+sma catalog find "webhook handler"
+sma catalog --check --count    # drift count: 0 clean, -1 = never built (honest not-built sentinel)
 ```
 
 ### `sma context "<task>"` — the deterministic budgeted pack
@@ -709,11 +857,11 @@ what makes pack purity falsifiable). The manifest carries the pack's OWN predict
 («the session touches no file outside `files[]`»), which is what makes purity auto-checkable.
 
 ```bash
-pnpm sma context "wire the crm inbox webhook"   # compile → .sma/context/packs/<packId>/{PACK.md,MANIFEST.json} + active.json
-pnpm sma context score --count                  # purity % of settled packs (-1 until >= 5 settle); ALSO grows the exam
-pnpm sma context miss "<query>" --expected <path>   # record a «not found in time» case by hand
-pnpm sma context exam --count                   # replay every exam question through the compiler → failure count
-pnpm sma context --selftest                     # double-compile the committed fixture in-process → prints 1 (deterministic)
+sma context "wire the crm inbox webhook"   # compile → .sma/context/packs/<packId>/{PACK.md,MANIFEST.json} + active.json
+sma context score --count                  # purity % of settled packs (-1 until >= 5 settle); ALSO grows the exam
+sma context miss "<query>" --expected <path>   # record a «not found in time» case by hand
+sma context exam --count                   # replay every exam question through the compiler → failure count
+sma context --selftest                     # double-compile the committed fixture in-process → prints 1 (deterministic)
 ```
 
 Work → `context score` closes the loop: every settled pack's out-of-pack touches AUTOMATICALLY
@@ -742,7 +890,7 @@ source: feedback_payload_relationship_column_naming.md
 A Payload single relationship field is stored as an inline FK column `<field>_id`.
 ```
 
-`pnpm sma lint` enforces the fragment corpus in the SAME run that guards notes:
+`sma lint` enforces the fragment corpus in the SAME run that guards notes:
 **FRAG-SCHEMA** (frontmatter + `id == filename stem`), **FRAG-BYTES** (body ≤ 400 bytes), and
 **FRAG-TRIGGER** (a parseable trigger). A missing/empty `fragments/` dir is a valid state.
 
@@ -881,10 +1029,10 @@ other's half-built work — the recurring red-`main`. Per-terminal worktrees mak
 physically impossible: each session gets its OWN working directory + branch.
 
 ```bash
-pnpm sma worktree provision [--branch <name>] [--path <dir>]   # reuse-or-create THIS terminal's worktree
-pnpm sma worktree list                                         # all active working trees
-pnpm sma worktree remove <path> [--force]                      # remove one (refuses a dirty tree without --force)
-pnpm sma worktree sibling                                      # resolved path of the sibling product repo (../sma)
+sma worktree provision [--branch <name>] [--path <dir>]   # reuse-or-create THIS terminal's worktree
+sma worktree list                                         # all active working trees
+sma worktree remove <path> [--force]                      # remove one (refuses a dirty tree without --force)
+sma worktree sibling                                      # resolved path of the sibling product repo (../sma)
 ```
 
 **The model is per-TERMINAL, not per-phase or executor-only.** Three
@@ -917,7 +1065,7 @@ Every git command passes an EXPLICIT cwd via the injected runner — never a bar
 
 **Integration path.** A worktree branch enters `main` ONLY through 9.3-15's
 `sma merge` (serialized, local only). This command NEVER runs `git push` or
-`git merge`; push stays founder-ordered via /sma-ship.
+`git merge`; the push itself stays a human-ordered ritual.
 
 `worktree --selftest` proves the base + teleport guards over a mock-git recorder;
 `worktree --selftest-sibling` proves the resolution order — each prints a bare `1`.
@@ -929,9 +1077,9 @@ is the integration path that keeps `main` honest. A worktree branch enters `main
 through this ritual, under a merge-claim slot:
 
 ```
-pnpm sma merge <branch>            # serialized local merge of a worktree branch into main
-pnpm sma merge --selftest          # mock-recorder ritual + concurrent soft-deny (prints 1)
-pnpm sma merge --selftest-enforce  # verified-live soft-deny / stale warn / error allow (prints 1)
+sma merge <branch>            # serialized local merge of a worktree branch into main
+sma merge --selftest          # mock-recorder ritual + concurrent soft-deny (prints 1)
+sma merge --selftest-enforce  # verified-live soft-deny / stale warn / error allow (prints 1)
 ```
 
 The ritual, in order: acquire the `merge-in-progress` slot (a concurrent merge is
@@ -941,7 +1089,7 @@ journal a receipt (pass OR fail, honestly) → release the slot. The merge-claim
 the push-claim on `claimSlot` (mkdir-EEXIST) — no bespoke lockfile.
 
 **`sma merge` never pushes and never deploys.** Integration is local; push stays
-founder-ordered via `/sma-ship` (slots.mjs header law). A red merge is surfaced honestly
+a human-ordered ritual (slots.mjs header law). A red merge is surfaced honestly
 (the receipt records the failure), never silently blessed.
 
 **Enforcing scopes** (opt-in, default OFF behind `SMA_ENFORCE_SCOPES`) turn the collision
@@ -1004,7 +1152,7 @@ now carries, alongside the work-axis `status`:
 - `filesRecent[]` — the files touched in the last ~9 min ({path, ts}, windowed + capped);
 - `fpStatus` — the attention axis (`working` | `waiting-for-human` | `idle`).
 
-`buildFingerprint` reads these back; `pnpm sma status`, the pre-injection, and plan-07's
+`buildFingerprint` reads these back; `sma status`, the pre-injection, and plan-07's
 statusline all render this ONE fingerprint.
 
 **Injection is two channels, never per-tool-call spam:** (1) an ambient digest of all live
@@ -1036,12 +1184,12 @@ Claude restarts).
 
 ### Instruments + the `sma ask` demand stub
 
-- `pnpm sma status --stale-warn-share` — the deterministic % of shown collision warns that
+- `sma status --stale-warn-share` — the deterministic % of shown collision warns that
   were noise over 7 days (a WARN whose claim then auto-released with zero further touches).
-- `pnpm sma status --stale-count` — dead/stale sessions still surviving the reap (0 = clean).
-- `pnpm sma status --cleanup-stale` — the one-time sweep of accumulated dead claims + stale
+- `sma status --stale-count` — dead/stale sessions still surviving the reap (0 = clean).
+- `sma status --cleanup-stale` — the one-time sweep of accumulated dead claims + stale
   sessions (provenance kept).
-- `pnpm sma ask <терминал> "<вопрос>"` — a DEMAND STUB: prints the target's fingerprint and
+- `sma ask <терминал> "<вопрос>"` — a DEMAND STUB: prints the target's fingerprint and
   journals the unmet question. The ask-bus is DEFERRED to V3.1, gated on ≥10 journaled cases
   the fingerprint could not answer (`ask --unmet-count`) — demand is measured, not assumed.
   Multi-terminal coordination is vendor-absorbable (OpenAI acquired Multi in 2024), so the
@@ -1117,9 +1265,9 @@ spend tokens). It generalizes the V2 per-executor exec-journal to ALL sessions.
 - **Restore reflex**: the EXISTING `session-start` hook detects stdin `source: "compact"`
   and re-injects the capsule as the FIRST `additionalContext` part — the session resumes
   knowing its task, constraints, and recent decisions. NO new hook spawn for restore.
-- **`resume` / `handoff`**: `pnpm sma resume` assembles a continuation brief from the
+- **`resume` / `handoff`**: `sma resume` assembles a continuation brief from the
   flight recorder alone (works after a terminal death, not only after compaction);
-  `pnpm sma handoff` writes a teammate brief (`.sma/flight/handoff-<terminalId>.md`) with
+  `sma handoff` writes a teammate brief (`.sma/flight/handoff-<terminalId>.md`) with
   claim-transfer steps.
 - **Flight marks**: every PostToolUse appends one mark via the EXISTING `stall-check`
   spawn (zero new per-tool-call process) to `.sma/flight/marks/<terminalId>.jsonl`.
