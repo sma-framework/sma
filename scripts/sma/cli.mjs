@@ -198,12 +198,17 @@ function truncateRestore(body, maxBytes) {
 // ── shared read: sessions + collisions summary (status / session-start) ───────
 
 /**
- * gatherSummary(dirs) → {activeSessions, collisions, claims, warnings, sessions,
- * needsHuman, pushClaim}. READ-ONLY over the .sma snapshot; fail-open per source.
+ * gatherSummary(dirs) → {activeSessions, staleSessions, collisions, claims, warnings,
+ * sessions, needsHuman, pushClaim}. READ-ONLY over the .sma snapshot; fail-open per source.
+ *
+ * activeSessions counts ONLY leases that can still be working (fresh/attention renewTime,
+ * and not a dead-pid lease); everything else is counted separately as staleSessions. A
+ * graveyard entry stays VISIBLE but never impersonates a live terminal.
  */
 async function gatherSummary(dirs) {
   const out = {
     activeSessions: 0,
+    staleSessions: 0,
     collisions: 0,
     claims: 0,
     warnings: [],
@@ -241,7 +246,13 @@ async function gatherSummary(dirs) {
     for (const w of warnings) out.warnings.push(w)
     for (const s of sessions) {
       const cls = registry.classifyStaleness(s, {})
-      if (cls.state === 'fresh' || cls.state === 'attention') out.activeSessions += 1
+      // A dead-pid lease (`T-<pid>` whose pid is gone) is never "active" no matter how
+      // young its renewTime is: those are the one-shot CLI leases that die the moment the
+      // command exits, and counting them as working terminals is what turned the graveyard
+      // into a headline number.
+      const live = (cls.state === 'fresh' || cls.state === 'attention') && !registry.isDeadPidLease(s)
+      if (live) out.activeSessions += 1
+      else out.staleSessions += 1
       if (cls.state === 'needs-human') {
         out.needsHuman.push({ who: s.holderIdentity ?? '—', ageMs: cls.ageMs })
       }
@@ -317,7 +328,9 @@ async function cmdStatus({ flags, dirs }) {
       const { sessions } = registry.readSessions(dirs)
       for (const sess of sessions) {
         const st = registry.classifyStaleness(sess, {}).state
-        if (st === 'reap-clean' || st === 'needs-human') n += 1
+        // Same predicate as the human line: aged-out entries AND dead-pid leases (which
+        // survive with a young renewTime) both count as dead sessions that are still here.
+        if (st === 'reap-clean' || st === 'needs-human' || registry.isDeadPidLease(sess)) n += 1
       }
     } catch {
       /* fail-open -> 0 */
@@ -362,6 +375,7 @@ async function cmdStatus({ flags, dirs }) {
   if (wantsJson(flags)) {
     printJson({
       activeSessions: s.activeSessions,
+      staleSessions: s.staleSessions,
       collisions: s.collisions,
       claims: s.claims,
       warnings: s.warnings,
@@ -369,7 +383,8 @@ async function cmdStatus({ flags, dirs }) {
     return 0
   }
   process.stdout.write(
-    `SMA: активных сессий ${s.activeSessions} · коллизий ${s.collisions} · claim-слотов ${s.claims}\n`,
+    `SMA: активных сессий ${s.activeSessions} · устаревших ${s.staleSessions} · ` +
+      `коллизий ${s.collisions} · claim-слотов ${s.claims}\n`,
   )
   // FI-10 — one founder-readable «P<phase> <Name> — <label>» line per LIVE session.
   try {
@@ -377,6 +392,7 @@ async function cmdStatus({ flags, dirs }) {
     for (const sess of s.sessions || []) {
       const cls = registry.classifyStaleness(sess, {})
       if (cls.state !== 'fresh' && cls.state !== 'attention') continue
+      if (registry.isDeadPidLease(sess)) continue // dead pid -> counted as stale, never listed as working
       const id = registry.displayIdentity({ holderIdentity: sess.holderIdentity, label: sess.label })
       const label = sess.label ? ` — ${sess.label}` : ''
       process.stdout.write(`  · ${id}${label}\n`)
@@ -484,7 +500,10 @@ async function cmdSessionStart({ dirs }) {
 
   const s = await gatherSummary(dirs)
   const lines = []
-  lines.push(`SMA: активных сессий ${s.activeSessions}, открытых коллизий ${s.collisions}.`)
+  lines.push(
+    `SMA: активных сессий ${s.activeSessions}, устаревших ${s.staleSessions}, ` +
+      `открытых коллизий ${s.collisions}.`,
+  )
   if (s.pushClaim && s.pushClaim.live) lines.push(`отправка в origin уже идёт: ${s.pushClaim.who}`)
   for (const nh of s.needsHuman) {
     lines.push(`устаревшая сессия ${nh.who} со свежими правками в scope — требуется решение человека`)

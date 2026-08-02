@@ -286,14 +286,33 @@ export function heartbeat(beat, opts = {}) {
 }
 
 /**
+ * hasSnapshotReceiver(env) — true only when BOTH halves of the reporter's destination
+ * are provisioned: the auth token AND the receiver URL. The engine ships with neither
+ * (there is no built-in endpoint), so on an unprovisioned checkout the detached child
+ * could only ever build a payload and drop it — pure overhead per beat. This is the
+ * predicate that keeps that child from being born at all.
+ * @param {Object} [env]
+ * @returns {boolean}
+ */
+export function hasSnapshotReceiver(env) {
+  const nonBlank = (v) => typeof v === 'string' && v.trim() !== ''
+  return Boolean(env) && nonBlank(env.SMA_SNAPSHOT_TOKEN) && nonBlank(env.SMA_SNAPSHOT_URL)
+}
+
+/**
  * spawnDetachedSnapshot(opts) — fire-and-forget `node scripts/sma/cli.mjs snapshot`.
  * detached + stdio:'ignore' + unref so it outlives the short-lived hook process and
  * the parent never blocks on it (a short-lived child is NOT a daemon, D-9-11).
  * Fully fail-open: a spawn error is swallowed. Injectable via opts.spawnFn for tests.
- * @param {{spawnFn?:Function, cliPath?:string, sessionToken?:string|null}} [opts]
+ * @param {{spawnFn?:Function, cliPath?:string, sessionToken?:string|null, env?:Object}} [opts]
  */
 function spawnDetachedSnapshot(opts = {}) {
   try {
+    // NO RECEIVER -> NO CHILD. Checked FIRST (and for injected spawnFn too, so the
+    // behavior is assertable): without a provisioned receiver the child's own entry point
+    // returns 'no-token' immediately, so spawning it buys nothing and costs a process per
+    // beat — on Windows, historically a process AND a console window.
+    if (!hasSnapshotReceiver(opts.env ?? process.env)) return
     // WR-10: never launch a real detached snapshot child under a test runner or when the
     // kill-switch is set. Otherwise every non-throttled beat in the suite spawns a stray
     // unref'd Node child that reads the real repo .sma/ and (if a token is present) POSTs
@@ -313,12 +332,16 @@ function spawnDetachedSnapshot(opts = {}) {
     // Carry the window token to the child (SMA_WINDOW_TOKEN) so it resolves the SAME
     // stable terminalId as this window — a fresh detached process has no hook stdin to
     // read session_id from.
-    const childEnv = { ...process.env }
+    const childEnv = { ...(opts.env ?? process.env) }
     if (opts.sessionToken) childEnv.SMA_WINDOW_TOKEN = opts.sessionToken
     const child = spawnFn(process.execPath, [cliPath, 'snapshot'], {
       detached: true,
       stdio: 'ignore',
       env: childEnv,
+      // WINDOWS: a `detached` console child ALWAYS gets its OWN console window unless this
+      // is set. Without it every non-throttled beat flashed a new window on the founder's
+      // desktop; a session with hundreds of tool calls buried the machine under them.
+      windowsHide: true,
     })
     if (child && typeof child.unref === 'function') child.unref()
   } catch {
@@ -367,6 +390,58 @@ export function readSessions(opts = {}) {
   return { sessions, corrupt, warnings }
 }
 
+/** A pid-identity lease: the auto fallback name is literally `T-<pid>` (D-9-01). */
+const RE_PID_IDENTITY = /^T-(\d+)$/
+
+/**
+ * isPidAlive(pid, {killFn}) — signal-0 liveness probe, FAIL-OPEN toward "alive".
+ *   - the process answers            -> alive
+ *   - ESRCH (no such process)        -> dead (the ONLY dead verdict)
+ *   - EPERM (exists, another user)   -> alive
+ *   - anything unexpected / bad pid  -> alive
+ * A false "dead" would delete a live terminal's lease, so every ambiguity resolves the
+ * safe way. Injectable killFn for tests.
+ * @param {number} pid
+ * @param {{killFn?:Function}} [opts]
+ * @returns {boolean}
+ */
+export function isPidAlive(pid, opts = {}) {
+  const n = Number(pid)
+  if (!Number.isInteger(n) || n <= 0) return true // unknowable -> assume alive
+  const kill = opts.killFn ?? ((p, sig) => process.kill(p, sig))
+  try {
+    kill(n, 0)
+    return true
+  } catch (err) {
+    if (err && err.code === 'ESRCH') return false
+    return true // EPERM and every unexpected error -> assume alive
+  }
+}
+
+/**
+ * isDeadPidLease(session, {killFn}) — true when the lease's IDENTITY is the volatile
+ * pid fallback (`T-<pid>`) AND that pid no longer exists.
+ *
+ * This narrow shape is the one case where a pid IS authoritative: such a lease can only
+ * ever be renewed by the very process whose pid names it (any other process resolves a
+ * different terminalId), so a dead pid means the lease is unrenewable — the terminal is
+ * physically gone. NAMED / token-hash identities are deliberately excluded: their `pid`
+ * field is a one-shot stamp that goes stale across restarts while the window lives on.
+ * @param {Object} session
+ * @param {{killFn?:Function}} [opts]
+ * @returns {boolean}
+ */
+export function isDeadPidLease(session, opts = {}) {
+  try {
+    const holder = session && typeof session.holderIdentity === 'string' ? session.holderIdentity.trim() : ''
+    const m = RE_PID_IDENTITY.exec(holder)
+    if (!m) return false
+    return !isPidAlive(Number(m[1]), opts)
+  } catch {
+    return false // fail-open — an unreadable lease is never declared dead
+  }
+}
+
 /**
  * classifyStaleness(session, {now, scopeMtimeProbe}) — graduated grading (D-9-11):
  *   fresh          renewTime younger than ATTENTION window
@@ -375,9 +450,13 @@ export function readSessions(opts = {}) {
  *   needs-human    reap-eligible but DIRTY (a claimed file changed after renewTime) — P3
  * scopeMtimeProbe(session) -> the max mtime (ms) across the session's claimed globs; a
  * value newer than renewTime means real work happened after the lease went quiet -> dirty.
+ *
+ * ONE exception to the dirty split: a reap-eligible PID-IDENTITY lease (`T-<pid>`) whose
+ * pid is gone is reap-clean regardless of scope mtimes (isDeadPidLease) — a dead pid means
+ * that terminal is physically gone, and nothing can ever renew that lease again.
  * @param {Object} session
- * @param {{now?:number, scopeMtimeProbe?:Function}} [opts]
- * @returns {{state:string, ageMs:number, dirty:boolean}}
+ * @param {{now?:number, scopeMtimeProbe?:Function, killFn?:Function}} [opts]
+ * @returns {{state:string, ageMs:number, dirty:boolean, deadPid?:boolean}}
  */
 export function classifyStaleness(session, opts = {}) {
   const now = opts.now ?? Date.now()
@@ -390,8 +469,15 @@ export function classifyStaleness(session, opts = {}) {
   if (ageMs < attentionThreshold) return { state: 'fresh', ageMs, dirty: false }
   if (ageMs < reapThreshold) return { state: 'attention', ageMs, dirty: false }
 
-  // Reap-eligible by age. Split clean vs dirty (P3): a fresh mtime inside a claimed
-  // glob means work is still happening — flag for a human, never auto-reap.
+  // Reap-eligible by age. A pid-identity lease whose pid is GONE is reap-clean outright:
+  // the terminal it named cannot exist any more, so a dirty claimed scope is not evidence
+  // that IT is still working (on a live shared repo the scope is almost always dirtier
+  // than the lease's renewTime, which is exactly why these leases used to accumulate as
+  // permanent needs-human graveyard entries).
+  if (isDeadPidLease(session, opts)) return { state: 'reap-clean', ageMs, dirty: false, deadPid: true }
+
+  // Split clean vs dirty (P3): a fresh mtime inside a claimed glob means work is still
+  // happening — flag for a human, never auto-reap.
   let dirty = false
   const globs = session && session.scope && Array.isArray(session.scope.globs) ? session.scope.globs : []
   if (opts.scopeMtimeProbe && globs.length) {
@@ -421,7 +507,7 @@ export function reapStale(opts = {}) {
   const candidates = []
 
   for (const s of sessions) {
-    const cls = classifyStaleness(s, { now, scopeMtimeProbe: opts.scopeMtimeProbe })
+    const cls = classifyStaleness(s, { now, scopeMtimeProbe: opts.scopeMtimeProbe, killFn: opts.killFn })
     if (cls.state !== 'reap-clean') continue
     candidates.push(s.holderIdentity)
     if (opts.dryRun) continue
