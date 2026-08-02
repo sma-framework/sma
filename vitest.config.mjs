@@ -12,12 +12,14 @@ export default defineConfig({
     // drills, CLI round-trips). The vitest 5s default trips on cold-boot variance
     // under multi-terminal machine load; 30s bounds a hang without flaking.
     testTimeout: 30000,
-    // bin/init.mjs starts with a `#!` shebang the module runner's inline
-    // transform cannot parse — externalize it so init-hooks.test.ts imports it
-    // through native Node ESM (where the shebang is legal).
+    // Executable entry points start with a `#!` shebang the module runner's
+    // inline transform cannot parse — it throws `SyntaxError: Invalid or
+    // unexpected token` and blames the IMPORTING test file, which then
+    // collects zero tests. Externalize them so the suites import them through
+    // native Node ESM (where the shebang is legal).
     server: {
       deps: {
-        external: [/bin[\\/]+init\.mjs$/],
+        external: [/bin[\\/]+init\.mjs$/, /tools[\\/]+terminal-parity-check\.mjs$/],
       },
     },
   },
