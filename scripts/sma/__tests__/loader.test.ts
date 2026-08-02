@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolvePeriphery, orderNotes } from '../lib/loader.mjs'
+import { buildAreaIndexes } from '../lib/generator.mjs'
 
 const TAGS_MD = `# TAGS
 
@@ -296,10 +297,22 @@ describe('loader.mjs — schema-v2 records are visible', () => {
     expect(alias.periphery).toEqual(canonical.periphery)
   })
 
-  it('status superseded never reaches CORE, yet stays findable by its area', () => {
+  // CHANGED with the read-time hard filters: `status` used to be enforced only at
+  // CORE membership, so a superseded record still rode into the DELIVERED periphery
+  // — the very shape the retrieval baseline caught as a forbidden hit («a rule known
+  // to be wrong, quoted back at the task»). §9.1's contract is that status is decided
+  // before any ranking, on every output point. Findability is unchanged and lives
+  // where the doc always said it does: the area index catalogues it with the state
+  // named — a map, not a payload.
+  it('status superseded reaches NEITHER core NOR periphery, yet stays findable via its area index', () => {
     const res = resolvePeriphery({ tags: ['tech'], corpusDir: v2Dir, tagsPath: v2TagsPath })
     expect(res.core).not.toContain('v2-superseded.md')
-    expect(res.periphery).toContain('v2-superseded.md')
+    expect(res.periphery).not.toContain('v2-superseded.md')
+
+    const areas = buildAreaIndexes({ corpusDir: v2Dir, tagsPath: v2TagsPath, commitHash: 'x', dateMap: {} })
+    const techIndex = areas.find((a: { file: string }) => a.file === 'INDEX-tech.md')
+    expect(techIndex?.content).toContain('(v2-superseded.md)')
+    expect(techIndex?.content).toContain('status: superseded')
   })
 
   it('coreThreshold Infinity empties CORE even for an always-priority record (reflex contract)', () => {
