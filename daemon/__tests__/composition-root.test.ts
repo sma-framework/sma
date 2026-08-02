@@ -29,7 +29,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createDaemon } from '../src/main.mjs'
+import { createDaemon, describeBootFailure } from '../src/main.mjs'
 import { ROUTES } from '../src/front/server.mjs'
 
 const TOKEN = 'c'.repeat(64)
@@ -203,6 +203,26 @@ describe('the production composition root is COMPLETE', () => {
       if (res.statusCode === 501) stubs.push(r.key)
     }
     expect(stubs, `these routes answered «not implemented» from the PRODUCTION build: ${stubs.join(', ')}`).toEqual([])
+  })
+
+  it('names the cause when the boot dies on an unreachable queue', () => {
+    // node's dual-stack connect rejects with an AggregateError whose own message is EMPTY:
+    // the whole diagnosis used to read «fatal boot error: AggregateError».
+    const inner: any = new Error('connect ECONNREFUSED 127.0.0.1:5432')
+    inner.code = 'ECONNREFUSED'
+    const agg: any = new AggregateError([inner])
+    const said = describeBootFailure(agg, { queueUrl: 'postgres://sma:secret@127.0.0.1:5432/sma_daemon' })
+
+    expect(said).toContain('PostgreSQL')
+    expect(said).toContain('127.0.0.1:5432')
+    expect(said).toContain('ECONNREFUSED')
+    expect(said).toContain('docs/INSTALL.md')
+    expect(said).not.toContain('secret') // the connection string never rides a log line
+    expect(said).not.toBe('AggregateError')
+  })
+
+  it('passes a plain error through unchanged (masked)', () => {
+    expect(describeBootFailure(new Error('queue url is malformed'), {})).toBe('queue url is malformed')
   })
 
   it('derives a working data/ledger dir even from a config that names neither', () => {
