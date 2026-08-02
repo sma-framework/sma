@@ -57,14 +57,43 @@ const reGitAddAll = new RegExp('\\bgit\\s+' + ADD_VERB + '\\s+(-A\\b|--all\\b|\\
 // blanket checkout-of-paths (`git checkout -- ...`) or any `git restore`
 const reGitCheckout = new RegExp('\\bgit\\s+' + CHECKOUT_VERB + '\\s+--\\s')
 const reGitRestore = new RegExp('\\bgit\\s+' + RESTORE_VERB + '\\b')
-// local build: `next build` or `(pnpm|npm|yarn) [run] build` (NOT `pnpm sma build-index`)
-const reNextBuild = new RegExp(
-  '(\\bnext\\s+' + BUILD_VERB + '\\b)|(\\b(pnpm|npm|yarn)\\s+(run\\s+)?' + BUILD_VERB + '\\b)',
-)
+// the literal framework invocation this gate is actually about — always a match
+const reNextBuildLiteral = new RegExp('\\bnext\\s+' + BUILD_VERB + '\\b')
+// a GENERIC package-manager build: `(pnpm|npm|yarn) [run] build` (NOT `pnpm sma build-index`).
+// Only a match when the repo it runs in is a Next project — see nextProjectRoot below.
+const reGenericBuild = new RegExp('\\b(pnpm|npm|yarn)\\s+(run\\s+)?' + BUILD_VERB + '\\b')
+// Next-project markers: a next.config.* at the root, or an existing .next build dir.
+const NEXT_CONFIG_NAMES = [
+  'next.config.js',
+  'next.config.mjs',
+  'next.config.cjs',
+  'next.config.ts',
+  'next.config.mts',
+  'next.config.cts',
+]
 // force-push flag: --force / --force-with-lease / a bare -f (9.2-07, GATE-FORCEPUSH).
 const reForceFlag = new RegExp('(--' + FORCE_VERB + '(-with-lease)?\\b)|(\\s-f\\b)')
 // the allowlist source file — any target ending with lib/predict.mjs (SAFE_COMMAND lives here).
 const reAllowlistFile = /(^|\/)lib\/predict\.mjs$/i
+
+/**
+ * isNextProject(root) — true when `root` carries a Next project marker (a next.config.*
+ * or an existing .next dir). This is what keeps the slow-build gate off every OTHER
+ * ecosystem's `build` script: a Vite/tsup/esbuild build is typically sub-second and holds
+ * no lock, so warning about it is pure noise that teaches agents to ignore the gate.
+ * Fail-open toward SILENCE — an unreadable/absent root yields false (no WARN).
+ * @param {string} root
+ * @returns {boolean}
+ */
+function isNextProject(root) {
+  try {
+    if (!root || typeof root !== 'string') return false
+    if (existsSync(join(root, '.next'))) return true
+    return NEXT_CONFIG_NAMES.some((name) => existsSync(join(root, name)))
+  } catch {
+    return false
+  }
+}
 
 /**
  * forcePushTarget(command) — the non-flag destination tokens after `git push`
@@ -218,10 +247,15 @@ export const GATES = [
     id: 'GATE-NEXTBUILD',
     tools: ['Bash'],
     killEnv: 'SMA_GATE_NEXTBUILD_OFF',
-    match: (ctx) => reNextBuild.test(ctx.command),
+    // The literal invocation always matches; a generic `pnpm build` only inside a Next
+    // project. Elsewhere (a Vite SPA, a library bundle) the build is fast and lock-free,
+    // and a WARN there is the noise that trains agents to ignore gates.
+    match: (ctx) =>
+      reNextBuildLiteral.test(ctx.command) || (reGenericBuild.test(ctx.command) && isNextProject(ctx.root)),
     warn:
-      'SMA-гейт [GATE-NEXTBUILD]: локальный next build / pnpm build запрещён (медленно, держит ' +
-      '.next lock). Запушьте и дайте собрать вашему деплой-хосту; правьте по факту сборки в CI.',
+      'SMA-гейт [GATE-NEXTBUILD]: локальная production-сборка next в этом репозитории запрещена ' +
+      '(медленно, держит .next lock). Запушьте и дайте собрать вашему деплой-хосту; правьте по ' +
+      'факту сборки в CI.',
   },
   {
     id: 'GATE-CHECKOUT',
@@ -427,10 +461,13 @@ function evaluateSoftDeny(gate, opts = {}) {
  * buildCtx(toolName, input, root) — the relativized evaluation context (CR-01).
  * Edit/Write: relativize the ABSOLUTE hook path; content = new content or the
  * Edit new_string (what the tool is about to WRITE). Bash: the raw command.
- * @returns {{toolName:string, target:string, command:string, content:string}}
+ * `root` is carried verbatim for matchers that need the repo context.
+ * @returns {{toolName:string, target:string, command:string, content:string, root:string}}
  */
 function buildCtx(toolName, input, root) {
-  const ctx = { toolName, target: '', command: '', content: '' }
+  // `root` rides along so a matcher can ask about the REPO the command runs in (the
+  // Next-project probe), not just the command string.
+  const ctx = { toolName, target: '', command: '', content: '', root: typeof root === 'string' ? root : '' }
   try {
     if (toolName === 'Bash' && typeof input.command === 'string') {
       ctx.command = input.command
