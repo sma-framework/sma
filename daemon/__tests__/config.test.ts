@@ -128,6 +128,30 @@ describe('loadConfig — bootstrap (default write)', () => {
   })
 })
 
+describe('loadConfig — the working directories are self-sufficient', () => {
+  it('derives dataDir/ledgerDir from the config root and repoDir from the caller', () => {
+    // The shipped default names none of the three, and an undefined ledgerDir is how a
+    // failed attempt lost its reason: the ledger write threw and the card came back empty.
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const root = join(home, '.sma-daemon')
+    expect(cfg.dataDir).toBe(join(root, 'data'))
+    expect(cfg.ledgerDir).toBe(join(root, 'ledger'))
+    expect(cfg.repoDir).toBe(repo)
+  })
+
+  it('honours explicit directories and does not persist the derived ones', () => {
+    loadConfig({ env: {}, homedir, repoDir: repo }) // bootstrap the file
+    const path = resolveConfigPath({ env: {}, homedir })
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    expect(raw.dataDir).toBeUndefined() // derived at read time — the file stays portable
+    raw.dataDir = join(repo, 'my-data')
+    writeFileSync(path, JSON.stringify(raw), 'utf8')
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.dataDir).toBe(join(repo, 'my-data'))
+    expect(cfg.ledgerDir).toBe(join(home, '.sma-daemon', 'ledger')) // still derived
+  })
+})
+
 describe('loadConfig — existing file', () => {
   it('parses and returns an existing config; the token round-trips (persisted, not regenerated)', () => {
     const first = loadConfig({ env: {}, homedir })
