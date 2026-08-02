@@ -1,127 +1,139 @@
-# SMA V5 — запуск парка работников 24/7 на Mac mini (launchd)
+# SMA V5 — running a 24/7 worker fleet on a Mac mini (launchd)
 
-Это первичная настройка выделенного хоста для парка работников. Ядро демона
-host-agnostic; здесь только тонкая привязка к macOS через launchd. Это
-macOS-двойник `setup-windows.md`: тот же порядок, тот же смоук-принцип, другой супервизор.
+*Русская версия: [`setup-macos.ru.md`](setup-macos.ru.md).*
 
-Порядок ниже расчитан на ЛЮБОЙ хост с macOS, не только на этот дом или эти устройства.
-Первый внешний прогон этой инструкции, скорее всего, сделает бета-тестер (друг основателя)
-на СВОЁМ Mac mini со СВОИМИ учётными записями. Поэтому:
+This is the first-time setup of a dedicated host for a worker fleet. The daemon
+core is host-agnostic; only the thin macOS binding through launchd lives here.
+This is the macOS twin of [`setup-windows.md`](setup-windows.md): the same order,
+the same smoke principle, a different supervisor.
 
-- Шаги 1-8 (базовая настройка + смоук + локальный демон + ростер) должны пройти на любом
-  Mac mini: их выполняет и основатель, и бета-тестер одинаково.
-- Шаг 9 «Возврат работы к основателю» — это ОТДЕЛЬНЫЙ путь park-host: он нужен, только
-  когда mini держит у себя основателя (его клон, его задачи). Бета-тестеру, который просто
-  гоняет смоук и локального демона у себя, шаг 9 не нужен.
+The procedure targets ANY macOS host, not one particular machine or household.
+The first external run of this checklist will most likely be done by a beta
+tester, on THEIR own Mac mini with THEIR own accounts. So:
 
-Шаги, которые выполняет человек руками, написаны простым языком, формально на «Вы».
-Инженерные детали идут ниже отдельными блоками.
+- Steps 1-8 (base setup + smoke + local daemon + roster) must pass on any Mac
+  mini: the owner and a beta tester run them the same way.
+- Step 9, «Handing work back to the owner», is a SEPARATE park-host path: it is
+  needed only when the mini holds the owner's own work (their clone, their
+  tasks). A beta tester who just runs the smoke and a local daemon does not need
+  step 9.
 
-> Про безопасность. Демон никогда не обращается к origin: у него нет пути к глаголу
-> публикации (SMA-3). Публикацию в main всегда делает основатель со своей машины
-> (`/sma-ship`). Одобренная на mini работа возвращается тем, что основатель добавляет mini
-> как git-remote и подтягивает её сам (шаг 9). Клон на mini физически не может опубликовать:
-> его push-адрес отключён (шаг 4).
+The steps a human runs by hand are written in plain language. The engineering
+detail follows in separate blocks.
+
+> **About security.** The daemon never reaches origin: it has no path to the
+> publish verb. Publishing to main is always done by the owner, from their own
+> machine (`/sma-ship`). Work approved on the mini comes back the other way — the
+> owner adds the mini as a git remote and pulls it themselves (step 9). The clone
+> on the mini physically cannot publish: its push address is disabled (step 4).
 
 ---
 
-## 1. Пользователь с автологином
+## 1. A user with automatic login
 
-Заведите на Mac mini ОТДЕЛЬНОГО пользователя для работника (например `worker`) и включите
-для него автоматический вход в систему: **Системные настройки -> Пользователи и группы ->
-Автоматический вход -> выберите этого пользователя**. Так mini после перезагрузки сам входит
-в сессию работника, launchd поднимает демона (RunAtLoad), и все учётные записи работают под
-этим пользователем.
+Create a SEPARATE user on the Mac mini for the worker (`worker`, say) and turn on
+automatic login for it: **System Settings → Users & Groups → Automatic login →
+pick that user**. That way the mini logs into the worker's session by itself
+after a reboot, launchd brings the daemon up (RunAtLoad), and every account works
+under that user.
 
-> Почему автологин, а не запуск при загрузке без пользователя. Работники запускают `claude`
-> и `codex`, а их авторизация ПРИВЯЗАНА К ПОЛЬЗОВАТЕЛЮ (токены `claude setup-token`, папка
-> `~/.claude`, отдельный `CLAUDE_CONFIG_DIR` на каждый аккаунт). Фоновая служба без сессии
-> (LaunchDaemon) этой авторизации и Keychain может не получить. Поэтому 24/7-форма — это
-> LaunchAgent под автологин-пользователем (assumptions A2/A7, портируемость, строки 10/11).
+> Why automatic login and not a boot-time service with no user. Workers launch
+> `claude` and `codex`, and their authorization is TIED TO A USER (`claude
+> setup-token` tokens, the `~/.claude` directory, a separate `CLAUDE_CONFIG_DIR`
+> per account). A background service with no session (a LaunchDaemon) may not
+> reach that authorization or the Keychain at all. So the 24/7 form is a
+> LaunchAgent under an automatic-login user.
 
-## 2. Homebrew и базовые пакеты
+## 2. Homebrew and the base packages
 
-Установите Homebrew (если ещё нет), затем node, git и Postgres:
+Install Homebrew (if it is not there yet), then node, git and Postgres:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 brew install node git postgresql@16
-brew services start postgresql@16     # локальная база очереди на хосте
-which node                            # запомните путь: Apple Silicon -> /opt/homebrew/bin/node
+brew services start postgresql@16     # the local queue database on the host
+which node                            # note the path: Apple Silicon → /opt/homebrew/bin/node
 ```
 
-> Путь к node важен для plist (шаг 7). На Apple Silicon это `/opt/homebrew/bin/node`, на
-> Intel-mini — `/usr/local/bin/node`. Возьмите то, что показал `which node`.
+> The path to node matters for the plist (step 7). On Apple Silicon it is
+> `/opt/homebrew/bin/node`, on an Intel mini `/usr/local/bin/node`. Take whatever
+> `which node` printed.
 
-## 3. Глобальные CLI работников (проверьте точные имена пакетов, A8)
+## 3. The workers' global CLIs (check the exact package names)
 
 ```bash
 npm install -g @anthropic-ai/claude-code
 npm install -g @openai/codex
-claude --version && codex --version   # обе команды должны напечатать версию
+claude --version && codex --version   # both commands must print a version
 ```
 
-> Точные имена пакетов не перепроверялись в этой сессии (обе CLI уже работают на
-> референс-машине Windows). Если `claude`/`codex` не находятся после установки — сверьте актуальное имя
-> пакета у вендора и поправьте команду. Смоук (шаг 5) проверит, что обе команды отвечают.
+> The exact package names are not re-verified here (both CLIs already work on the
+> reference Windows machine). If `claude`/`codex` are not found after the install,
+> check the vendor's current package name and fix the command. The smoke (step 5)
+> checks that both commands answer.
 
-## 4. Клоны репозиториев (origin — только на чтение)
+## 4. Repository clones (origin is read-only)
 
-Работник получает СВОИ клоны — он никогда не делит рабочую копию основателя. Клонируйте
-продукт SMA и, если этот mini будет держать задачи основателя, ваш рабочий репозиторий. Сразу
-после клона ОТКЛЮЧИТЕ у origin адрес публикации, чтобы клон физически не мог опубликовать:
+The worker gets ITS OWN clones — it never shares the owner's working copy. Clone
+the SMA product and, if this mini is going to hold the owner's tasks, your work
+repository. Right after cloning, DISABLE origin's publish address, so the clone
+physically cannot publish:
 
 ```bash
 cd ~
 git clone <SMA_REPO_URL> sma
-git clone <YOUR_REPO_URL> project          # только если mini держит задачи основателя
+git clone <YOUR_REPO_URL> project          # only if the mini holds the owner's tasks
 
-# сделать origin доступным ТОЛЬКО на чтение (fetch-only) в каждом клоне:
+# make origin READ-ONLY (fetch-only) in every clone:
 cd ~/sma       && git remote set-url --push origin DISABLED
 cd ~/project   && git remote set-url --push origin DISABLED
-git remote -v                              # у origin должен стоять (fetch), а push -> DISABLED
+git remote -v                              # origin must show (fetch), and push → DISABLED
 ```
 
-> `DISABLED` — это заведомо нерабочий адрес: любая попытка публикации из клона немедленно
-> падает. Это третий слой закона основателя-публикатора (первые два — отсутствие пути к
-> глаголу публикации в исходниках демона и локальный-только глагол слияния).
+> `DISABLED` is a deliberately broken address: any attempt to publish from the
+> clone fails immediately. This is the third layer of the owner-publishes law (the
+> first two are the absence of a path to the publish verb in the daemon's sources,
+> and a merge verb that is local-only).
 
-## 5. Смоук кроссплатформенности — ЭТО ПЕРВЫЙ ШАГ ПОСЛЕ КЛОНОВ
+## 5. The cross-platform smoke — THE FIRST STEP AFTER THE CLONES
 
-Прежде чем настраивать демона, докажите, что вербы SMA и хост-предпосылки работают на macOS.
-Вся обвязка до сих пор гонялась ТОЛЬКО на Windows — этот смоук её принимает на macOS:
+Before you configure the daemon, prove that the SMA verbs and the host
+prerequisites work on macOS. The harness has so far run ONLY on Windows — this
+smoke accepts it on macOS:
 
 ```bash
 cd ~/sma
 node supervisor/smoke-macos.mjs
 ```
 
-Смоук — это последовательный чек-лист: каждый шаг печатает `PASS` или `FAIL` и идёт дальше,
-а в конце процесс завершается числом падений (выход 0 = всё зелено). Он проверяет:
+The smoke is a sequential checklist: every step prints `PASS` or `FAIL` and moves
+on, and at the end the process exits with the number of failures (exit 0 =
+everything green). It checks:
 
-1. node >= 18.17 + git в PATH.
-2. полный прогон `pnpm test` в `~/sma` (единоразовая приёмка всей сьюты на этой машине).
-3. живой круг `worktree provision` -> проверка базы -> `worktree remove`.
-4. круг `statusline install` -> render -> uninstall.
-5. POSIX-ветку установки хуков (строка 4 аудита — на настоящем macOS не запускалась ни разу).
-6. `claude --version` + `codex --version` (проверка имён пакетов из шага 3).
-7. поднятый postgresql@16 + `psql -c 'select 1'`.
-8. изоляцию `CLAUDE_CONFIG_DIR` на два аккаунта (A1).
+1. node >= 18.17 + git on PATH.
+2. a full `pnpm test` run in `~/sma` (a one-time acceptance of the whole suite on
+   this machine).
+3. a live `worktree provision` → base check → `worktree remove` round.
+4. a `statusline install` → render → uninstall round.
+5. the POSIX branch of hook installation (never once exercised on real macOS).
+6. `claude --version` + `codex --version` (a check of the package names from step 3).
+7. postgresql@16 up + `psql -c 'select 1'`.
+8. `CLAUDE_CONFIG_DIR` isolation across two accounts.
 
-Пришлите основателю итог смоука (сколько PASS из скольких). Красные шаги — это список того,
-что надо доустановить/поправить перед следующими шагами.
+Report the smoke result to the owner (how many PASS out of how many). The red
+steps are the list of what has to be installed or fixed before the next steps.
 
-## 6. Токены аккаунтов и конфиг демона
+## 6. Account tokens and the daemon config
 
-На каждый Max/Pro-аккаунт из пула сделайте headless-токен и положите его в переменную
-окружения того пользователя, под которым работает демон:
+For every Max/Pro account in the pool, make a headless token and put it in an
+environment variable of the user the daemon runs as:
 
 ```bash
-claude setup-token                    # повторить на каждый аккаунт, под его CLAUDE_CONFIG_DIR
+claude setup-token                    # repeat per account, under its CLAUDE_CONFIG_DIR
 ```
 
-Токены храните в env-файле с правами 0600 (только владелец читает), НИКОГДА не в git и не в
-самом конфиге демона:
+Keep the tokens in an env file with mode 0600 (owner-readable only), NEVER in git
+and never in the daemon config itself:
 
 ```bash
 umask 077
@@ -129,85 +141,91 @@ printf 'export SMA_MAX_1_TOKEN=...\nexport SMA_MAX_2_TOKEN=...\nexport SMA_MAX_3
 chmod 600 ~/.sma-daemon/tokens.env
 ```
 
-Конфиг демона создаётся при первой загрузке со свежим 64-символьным токеном фронта. Создайте
-его заранее и заполните:
+The daemon config is written on the first boot, with a fresh 64-character front
+token. Create it ahead of time and fill it in:
 
 ```bash
 cd ~/sma
 node --input-type=module -e "import('./daemon/src/config.mjs').then(m=>m.loadConfig())"
 ```
 
-В `~/.sma-daemon/config.json` задайте:
+In `~/.sma-daemon/config.json` set:
 
-- `queueUrl` = `postgres://localhost:5432/sma_daemon` — локальная база очереди на хосте.
-  НИКОГДА не рабочая база вашего проекта и НИКОГДА не продакшн-база.
-- `bind` — `127.0.0.1` для проверки локально; `0.0.0.0` только осознанно, чтобы ростер
-  открывался с других устройств по LAN.
-- `workers` — аккаунты пула: у каждого свой `account.configDir` и имя env-переменной с
-  токеном в `account.oauthTokenEnv` (значение токена живёт только в окружении, не на диске).
-- `token` (фронт-токен) остаётся как сгенерирован — им вы откроете ростер.
+- `queueUrl` = `postgres://localhost:5432/sma_daemon` — the local queue database
+  on the host. NEVER your project's working database and NEVER a production
+  database.
+- `bind` — `127.0.0.1` to check it locally; `0.0.0.0` only deliberately, so that
+  the roster opens from other devices over the LAN.
+- `workers` — the pool's accounts: each with its own `account.configDir` and the
+  name of the environment variable holding its token in `account.oauthTokenEnv`
+  (the token value lives only in the environment, never on disk).
+- `token` (the front token) stays as generated — it is what opens the roster.
 
-> Про режим 0600. Конфиг демона несёт фронт-токен и пишется в режиме 0600. Env-файл с
-> OAuth-токенами — тоже 0600. Ни токен, ни имена env-переменных никогда не печатаются: всё
-> логируемое проходит через `secretsView`, который сворачивает секреты в `[set]`/`[unset]`.
+> **About mode 0600.** The daemon config carries the front token and is written
+> with mode 0600. The env file with the OAuth tokens is 0600 too. Neither a token
+> nor the names of the environment variables are ever printed: everything logged
+> passes through `secretsView`, which folds secrets down to `[set]`/`[unset]`.
 
-## 7. Установка LaunchAgent
+## 7. Installing the LaunchAgent
 
-Скопируйте шаблон plist в `~/Library/LaunchAgents`, замените в КОПИИ два плейсхолдера и
-загрузите агент:
+Copy the plist template into `~/Library/LaunchAgents`, replace the two
+placeholders IN THE COPY, and load the agent:
 
 ```bash
 cp ~/sma/supervisor/com.sma.daemon.plist ~/Library/LaunchAgents/com.sma.daemon.plist
-# в копии заменить:
-#   <SMA_HOME>    -> абсолютный путь клона (например /Users/worker/sma)
-#   <WORKER_HOME> -> домашняя папка пользователя (например /Users/worker)
-# и при необходимости путь к node (Intel: /usr/local/bin/node)
+# in the copy, replace:
+#   <SMA_HOME>    -> the absolute path of the clone (e.g. /Users/worker/sma)
+#   <WORKER_HOME> -> the user's home directory (e.g. /Users/worker)
+# and the path to node if needed (Intel: /usr/local/bin/node)
 
 launchctl load -w ~/Library/LaunchAgents/com.sma.daemon.plist
-launchctl list | grep com.sma.daemon           # демон должен быть в списке
-tail -f ~/Library/Logs/sma-daemon.log          # логи демона
+launchctl list | grep com.sma.daemon           # the daemon must be in the list
+tail -f ~/Library/Logs/sma-daemon.log          # the daemon's log
 ```
 
-Агент стоит с `KeepAlive` — launchd перезапустит демона при любом падении. Снять агент:
+The agent is set with `KeepAlive` — launchd restarts the daemon after any crash.
+To remove the agent:
 `launchctl unload -w ~/Library/LaunchAgents/com.sma.daemon.plist`.
 
-## 8. Проверка ростера со второго устройства
+## 8. Checking the roster from a second device
 
-Если `bind` = `0.0.0.0`, откройте ростер с телефона/ноутбука в той же сети:
-`http://<IP_МИНИ>:7777/?token=<ФРОНТ_ТОКЕН_ИЗ_КОНФИГА>`. Ростер должен показать полосу
-состояния парка, очередь и карточки работников. Первое открытие с `?token=` ставит
-HttpOnly-cookie — дальше токен в адресе не нужен.
+If `bind` = `0.0.0.0`, open the roster from a phone or laptop on the same
+network: `http://<MINI_IP>:7777/?token=<FRONT_TOKEN_FROM_THE_CONFIG>`. The roster
+must show the fleet's status bar, the queue and the worker cards. The first visit
+with `?token=` sets an HttpOnly cookie — after that the token is not needed in
+the address.
 
-> Отложенное усиление (не для пилота): по LAN сейчас обычный HTTP — это допустимо, потому что
-> ростер несёт только метаданные задач, никогда не код-диффы без токена, никогда не токены
-> подписок. Позже — mkcert/TLS или tailscale serve.
+> Deferred hardening (not required for a first run): over the LAN this is plain
+> HTTP today, which is acceptable because the roster carries task metadata only,
+> never code diffs without a token, never subscription tokens. Later: mkcert/TLS
+> or `tailscale serve`.
 
-## 9. Возврат работы к основателю (путь park-host, ПРЕДПОЛОЖЕНИЕ Q1 — ждёт подтверждения)
+## 9. Handing work back to the owner (the park-host path)
 
-> ⚠ Этот шаг нужен ТОЛЬКО когда mini держит задачи основателя (его клон рабочего репозитория). Бете,
-> которая гоняет смоук и локального демона у себя, шаг 9 пропустить.
+> ⚠ This step is needed ONLY when the mini holds the owner's tasks (their clone of
+> the work repository). A beta tester who runs the smoke and a local daemon at
+> home should skip step 9.
 
-Схема возврата (Q1, рекомендация ресёрча, ПРЕДПОЛОЖЕНИЕ до подтверждения основателем на
-grill): одобренная на mini работа лежит в локальном main его клона; **основатель добавляет
-mini как git-remote на СВОЕЙ машине и подтягивает её сам** — у демона/работника пути к origin
-нет вовсе.
+The hand-back scheme: work approved on the mini sits in the local main of its
+clone; **the owner adds the mini as a git remote on THEIR machine and pulls it
+themselves** — the daemon and the worker have no path to origin at all.
 
 ```bash
-# выполняет ОСНОВАТЕЛЬ на СВОЕЙ машине:
-git remote add mini worker@<IP_МИНИ>:/Users/worker/project
+# run by the OWNER on THEIR machine:
+git remote add mini worker@<MINI_IP>:/Users/worker/project
 git fetch mini
-git log mini/main --oneline           # одобренные коммиты работника
-# дальше основатель сам решает, что влить и опубликовать через свой /sma-ship
+git log mini/main --oneline           # the worker's approved commits
+# then the owner decides what to merge and publish, through their own /sma-ship
 ```
 
-Альтернатива «демон сам публикует ветки wt/*» ОТКЛОНЕНА по умолчанию: она требует явного
-исключения из закона основателя-публикатора. Если основатель на grill выберет другую схему —
-поправьте этот шаг под неё.
+The alternative — «the daemon publishes `wt/*` branches itself» — is REJECTED by
+default: it would require an explicit exception to the owner-publishes law. If the
+owner picks a different scheme, adjust this step to match it.
 
 ---
 
-## Первый прогон
+## First run
 
-_(Заполняется в волне развёртывания, план 9.5-10 task 3, после покупки Mac mini.
-Сюда попадут: итог смоука N/N, результат kill-drill под launchd, сквозной прогон
-enqueue -> approve -> pull и подтверждение схемы Q1.)_
+_(To be filled in after the first run on a dedicated Mac mini. It will carry: the
+smoke result N/N, the kill-drill result under launchd, an end-to-end
+enqueue → approve → pull run, and confirmation of the hand-back scheme.)_
