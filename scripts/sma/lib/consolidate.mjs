@@ -89,8 +89,15 @@ function listNoteFiles(corpusDir) {
     .sort()
 }
 
-/** Read + parse every note (fail-soft: a bad note is skipped, not thrown). */
-function readCorpus(corpusDir) {
+/**
+ * Read + parse every note (fail-soft: a bad note is skipped, not thrown).
+ *
+ * EXPORTED (v5.2): the memory benchmark asks this module what a corpus states about
+ * ITSELF — which records are retired, which pairs it already calls a contradiction.
+ * A measurer that opened the corpus with its own reader would be a second read path,
+ * which is a second answer that drifts unnoticed. One reader, one answer.
+ */
+export function readCorpus(corpusDir) {
   const notes = []
   for (const file of listNoteFiles(corpusDir)) {
     let text
