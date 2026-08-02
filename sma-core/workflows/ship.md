@@ -203,14 +203,32 @@ commands implement them, never WHETHER they run:
 
    ```bash
    npx vitest run --reporter=json --outputFile=.vitest-report.json \
-     && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json
+     && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json \
+     && node scripts/sma/lib/badge.mjs --check --strict
    ```
 
    `badge.mjs` writes `test-receipt.json` and rewrites the badge in EVERY README that
-   carries one (EN + RU together — the README law). It REFUSES to stamp anything but a
-   fully green run, so the badge can never claim a number a red suite did not earn. If
-   the runner's JSON is already summarised, `--from-suite <tests>/<files>` takes the
-   numbers directly; either way they pass through the receipt.
+   carries one (EN + RU together — the README law). A runner's final JSON is the ONLY
+   door: there is no flag that takes a number off the command line, because a
+   provisional total written into the receipt makes the badge and the receipt agree
+   with each other and with nothing that was ever run. It refuses a run that is not
+   finished and fully green (including a test FILE that failed to load — its tests
+   silently vanish from the count), and it refuses a report that predates HEAD, which
+   is how a leftover `.vitest-report.json` measures yesterday's tree.
+
+   The receipt records the commit it was measured at, so `--check --strict` can judge
+   the receipt itself and not just the READMEs against it: it fails when the receipt
+   carries no provenance or was measured at another commit. Plain `--check` reports the
+   same as warnings. When you need certainty rather than a warning — a release you did
+   not stamp yourself, a receipt from another machine — re-measure:
+
+   ```bash
+   node scripts/sma/lib/badge.mjs --verify-live          # runs the suite itself
+   node scripts/sma/lib/badge.mjs --verify-live <report> # or judges a fresh report
+   ```
+
+   It compares the receipt AND both badges against a THIRD number from a live run, so a
+   pair that is wrong together cannot stay quiet.
 
    Commit the rewritten READMEs + `test-receipt.json` with the release. The gate side of
    this law is `package-check --strict` (the `prepublishOnly` hook), which fails the
