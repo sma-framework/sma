@@ -248,7 +248,7 @@ export function validateProfile(profile) {
       for (const name of p[key]) {
         if (isEnvVarName(name)) continue // a NAME is a fact — allowed
         if (secretShaped(name)) {
-          violations.push({ rule: 'PROFILE-SECRET', field: key, message: `envVarNames entry is secret-shaped — store NAMES only, never a value (T-9.3-06)` })
+          violations.push({ rule: 'PROFILE-SECRET', field: key, message: `envVarNames entry is secret-shaped — store NAMES only, never a value` })
         }
       }
       continue

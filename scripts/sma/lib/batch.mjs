@@ -341,7 +341,7 @@ export function writeBatchNote(results) {
   return [
     `# SMA batch note`,
     ``,
-    `Middle lane (/sma-batch, D-9.3-19). ${pass}/${total} items passed. Receipts are mandatory — each pass carries a reproduced reverify receipt.`,
+    `Middle lane (/sma-batch). ${pass}/${total} items passed. Receipts are mandatory — each pass carries a reproduced reverify receipt.`,
     ``,
     ...rows,
     ``,

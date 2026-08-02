@@ -20,7 +20,7 @@ Every row's `verdict` cell is exactly one of:
 | Verdict | Meaning |
 |---|---|
 | `CORE-threat` | The vendor is moving into a lane SMA claims as its own. This creates SMA surface — a build. |
-| `BRIDGE-candidate` | Worth a thin adapter behind a seam, with a self-removal tripwire prediction (D-9.2-05). Never headlined. |
+| `BRIDGE-candidate` | Worth a thin adapter behind a seam, with a self-removal tripwire prediction. Never headlined. |
 | `ABSORB` | The idea is good and already fits an existing SMA mechanism — fold it in, no new surface. |
 | `IRRELEVANT` | Does not touch SMA's problem (or is API-runtime-only with no SMA hook). Recorded so it is not re-litigated. |
 | `WATCH` | Not actionable yet, but might become so. Carries a tripwire disposition to re-check when a named condition flips. |

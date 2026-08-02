@@ -11,6 +11,29 @@
  *       anywhere in sma-core/** contents or filenames, outside the fixed
  *       exclusions (the aliases/ layer intentionally carries the old prefix).
  *   (c) COLORS: every sma-core/agents/sma-*.md frontmatter carries a color field.
+ *   (d) INTERNAL IDS: no internal register id (threat `T-<phase>-<n>` / decision
+ *       `D-<phase>-<n>`) survives in a USER-FACING surface. These ids are house
+ *       bookkeeping; printed at an adopter they are noise that references a
+ *       register the adopter cannot read.
+ *
+ * SCOPE BOUNDARY of check (d) — stated honestly, because "is this string printed
+ * to a user?" is not statically decidable. What IS scanned:
+ *   - string literals in shipped runtime JS (USER_FACING_CODE below), i.e. the
+ *     lint/check titles, warn+error texts and CLI output that reach a terminal;
+ *   - shipped user-facing prose (USER_FACING_DOCS): the READMEs, docs/*.md, the
+ *     engine README, the statusline snippet an adopter pastes into a config;
+ *   - `description` fields in any package.json (the npm shop window).
+ * What is deliberately NOT scanned, and why:
+ *   - CODE COMMENTS. They ship in source but never print. Scanning them would
+ *     force ~980 rewrites across 168 files and would delete the design rationale
+ *     that makes the code auditable. Tracked as a known, accepted residue.
+ *   - `sma-core/**` workflow/agent/reference prompts — agent-facing instructions,
+ *     not adopter-facing output.
+ *   - `__tests__/`, `fixtures/`, `assets/demos/` — synthetic and sample ids are
+ *     sanctioned there (a demo of decision-locking must show decision ids).
+ *   - bare plan/phase numbering (`9.4-01`) — the sanctioned public numbering used
+ *     across docs/DETAILS*.md history sections. Only the `T-`/`D-` register
+ *     shapes are internal.
  *
  * Exit 0 = rebrand intact. Exit 1 = violations listed on stderr.
  */
@@ -40,6 +63,18 @@ function walk(dir, out = []) {
 }
 
 const rel = (p) => path.relative(ROOT, p).split(path.sep).join('/')
+
+/** Unfiltered recursive walk (check (d) does its own exclusions). */
+function walkAll(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const p = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      walkAll(p, out)
+    } else if (entry.isFile()) out.push(p)
+  }
+  return out
+}
 
 // ---- (a) dispatch integrity -------------------------------------------------
 const agentFiles = new Set(fs.readdirSync(AGENTS).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, '')))
@@ -79,6 +114,71 @@ for (const file of walk(CORE)) {
   })
 }
 
+// ---- (d) internal register ids in user-facing surfaces ----------------------
+/** Threat / decision register id. NOT bare plan numbering (`9.4-01`), which is public. */
+const INTERNAL_ID = /\b[TD]-\d+(?:\.\d+)?-\d+[a-z]?\b/
+
+/** Shipped runtime trees whose STRING LITERALS reach an adopter's terminal. */
+const USER_FACING_CODE = ['scripts/sma', 'daemon/src', 'bin', 'tools', 'supervisor']
+/** Shipped prose an adopter reads. */
+const USER_FACING_DOCS = ['README.md', 'README.ru.md', 'ROADMAP.md', 'ROADMAP.ru.md', 'PASSPORT.md', 'THIRD-PARTY-LICENSES.md', 'docs', 'scripts/sma/README.md', 'scripts/sma/statusline-snippet.md']
+/** Sanctioned: synthetic ids belong here. */
+const ID_EXCLUDED = /(^|\/)(node_modules|__tests__|fixtures|assets\/demos)(\/|$)/
+
+const inTree = (relPath, roots) => roots.some((r) => relPath === r || relPath.startsWith(r + '/'))
+
+/**
+ * Lines of `text` whose id sits inside a quoted literal (not a comment). Keeps
+ * check (d) off the comment class, which is out of scope by design.
+ */
+function idsInStringLiterals(text) {
+  const hits = []
+  text.split('\n').forEach((line, i) => {
+    if (!INTERNAL_ID.test(line)) return
+    const t = line.trim()
+    if (/^(\/\/|\*|\/\*|#)/.test(t)) return // whole-line comment
+    const c = t.indexOf('//')
+    if (c > -1 && !INTERNAL_ID.test(t.slice(0, c))) return // id lives in a trailing comment
+    if (!/(['"`])[^'"`]*[TD]-\d+(?:\.\d+)?-\d+[a-z]?[^'"`]*\1/.test(t)) return // not in a literal
+    hits.push({ n: i + 1, line: t.slice(0, 120) })
+  })
+  return hits
+}
+
+let idScanned = 0
+const idRoots = [...new Set([...USER_FACING_CODE, ...USER_FACING_DOCS])]
+for (const root of idRoots) {
+  const abs = path.join(ROOT, root)
+  if (!fs.existsSync(abs)) continue
+  const files = fs.statSync(abs).isDirectory() ? walkAll(abs) : [abs]
+  for (const file of files) {
+    const r = rel(file)
+    if (ID_EXCLUDED.test(r)) continue
+    const isDoc = file.endsWith('.md')
+    const isCode = /\.(mjs|js|cjs|ts)$/.test(file)
+    const isPkg = path.basename(file) === 'package.json'
+    if (!isDoc && !isCode && !isPkg) continue
+    const buf = fs.readFileSync(file)
+    if (buf.includes(0)) continue
+    const text = buf.toString('utf8')
+    idScanned++
+    if (!INTERNAL_ID.test(text)) continue
+    if (isDoc) {
+      text.split('\n').forEach((line, i) => {
+        if (INTERNAL_ID.test(line)) errors.push(`INTERNAL-ID: ${r}:${i + 1}: ${line.trim().slice(0, 120)}`)
+      })
+    } else if (isPkg) {
+      let pkg
+      try { pkg = JSON.parse(text) } catch { continue }
+      if (typeof pkg.description === 'string' && INTERNAL_ID.test(pkg.description)) {
+        errors.push(`INTERNAL-ID: ${r}: package description carries an internal register id`)
+      }
+    } else {
+      for (const h of idsInStringLiterals(text)) errors.push(`INTERNAL-ID: ${r}:${h.n}: ${h.line}`)
+    }
+  }
+}
+
 // ---- (c) colors -------------------------------------------------------------
 let colorCount = 0
 for (const name of fs.readdirSync(AGENTS).sort()) {
@@ -94,9 +194,10 @@ for (const name of fs.readdirSync(AGENTS).sort()) {
 console.log(`dispatch sites checked: ${dispatchCount}`)
 console.log(`agents with color: ${colorCount}/${[...fs.readdirSync(AGENTS)].filter((f) => f.endsWith('.md')).length}`)
 console.log(`residue hits: ${residueHits}`)
+console.log(`user-facing files scanned for internal ids: ${idScanned}`)
 if (errors.length) {
   console.error(`\nFAIL — ${errors.length} violation(s):`)
   for (const e of errors) console.error('  ' + e)
   process.exit(1)
 }
-console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied)')
+console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in user-facing strings)')
