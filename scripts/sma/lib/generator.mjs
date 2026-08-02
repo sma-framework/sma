@@ -160,7 +160,7 @@ export function readNotes(corpusDir) {
 
 /**
  * projectNoteAxis(frontmatter, {file, schemaVersion}) — THE one-axis projection,
- * in ONE place (SB-026).
+ * in ONE place.
  *
  * Every consumer that asks a corpus record "what is your claim / your kind / your
  * areas / are you always-load" goes through this function, so the two grammars

@@ -23,7 +23,7 @@
  *   - resolvePeriphery({tags, corpusDir, tagsPath, dateMap}) → {core, periphery, matched, warnings, meta}
  *   - orderNotes(notes, dateMap) — the shared comparator applied to a note list.
  *
- * TWO SCHEMA VERSIONS, ONE READ (SB-026): the corpus may hold v1 notes and
+ * TWO SCHEMA VERSIONS, ONE READ: the corpus may hold v1 notes and
  * schema-v2 records side by side. This module reads NEITHER grammar itself — the
  * corpus walk (generator.readNotes), the field projection (projectNoteAxis:
  * claim~description, memory_type~kind, retrieval.areas~tags, context_priority
@@ -138,7 +138,7 @@ export function resolvePeriphery(opts) {
   // CORE: always included first, ordered by the shared comparator. Membership is
   // the GENERATOR's question (isCoreNote), never re-derived here — so what loads
   // at read time is exactly what the index promised at write time, superseded and
-  // revoked records excluded from always-load in both (SB-026).
+  // revoked records excluded from always-load in both.
   const coreNotes = orderNotes(
     notes.filter((n) => isCoreNote(n, coreThreshold)),
     dateMap,
