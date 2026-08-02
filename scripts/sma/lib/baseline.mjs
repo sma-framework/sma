@@ -47,7 +47,7 @@ import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:f
 import { execSync, execFileSync } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 import { scoreNoteCases } from './context-pack.mjs'
 import { corpusStats } from './economy.mjs'
@@ -183,6 +183,10 @@ export function captureRetrieval(opts = {}) {
   const scored = scoreNoteCases({
     cases,
     corpusDir,
+    // A case's `repo_state` fixture path is relative to the CASE FILE, so the scorer is
+    // told where that file lives — the one piece of the gate this module owns, because
+    // it is the only side that knows the path at all.
+    ...(casesPath ? { casesDir: dirname(casesPath) } : {}),
     tagsPath: resolvedTagsPath,
     dateMap,
     commit,
@@ -193,13 +197,23 @@ export function captureRetrieval(opts = {}) {
   const misses = []
   const criticalMisses = []
   const forbiddenHits = []
+  const abstainFailures = []
+  const refused = []
   for (const c of scored.cases) {
+    // A refused case (a contaminating / unportable / absent `repo_state` fixture) is
+    // reported as itself and counted nowhere else: not a miss, not a hit, not a zero.
+    if (c.error) {
+      refused.push({ case: c.task, repo_state: c.repoState ?? null, error: c.error })
+      continue
+    }
     if (c.missing.length) misses.push({ case: c.task, missing_notes: c.missing })
     if (c.criticalMissing.length) criticalMisses.push({ case: c.task, missing_notes: c.criticalMissing })
     if (c.forbiddenPresent.length) forbiddenHits.push({ case: c.task, forbidden_notes: c.forbiddenPresent })
+    if (c.abstain === 'fail') abstainFailures.push({ case: c.task, selected_notes: c.selected })
   }
 
   const t = scored.totals
+  const abstainCases = t.abstainPass + t.abstainFail
   return {
     metric: 'retrieval-recall',
     cases: t.cases,
@@ -209,10 +223,14 @@ export function captureRetrieval(opts = {}) {
     misses,
     critical_misses: criticalMisses,
     forbidden_hits: forbiddenHits,
+    abstain_failures: abstainFailures,
+    refused_cases: refused,
     core_loaded: scored.coreLoaded,
     summary: {
       recall: rate(t.hits, t.expected),
       critical_miss_rate: rate(t.casesWithCriticalMiss, t.cases),
+      // null, not 1.0, when the set asks no abstention question (honest empties).
+      abstain_rate: rate(t.abstainPass, abstainCases),
     },
     check_command: checkCommand,
   }
