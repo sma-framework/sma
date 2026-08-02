@@ -120,6 +120,14 @@ export function Screen() {
     const out = new Map<string, string>()
     for (const row of data?.queue ?? []) out.set(row.id, row.project)
     for (const row of data?.done ?? []) out.set(row.id, row.project)
+    // A CLAIMED task has left the queue and has not reached `done`, so the roster is the
+    // only list that still names it — and it carries the project for exactly this reason.
+    // Without this line «мои» dropped every event of a running task: the filter fell
+    // through to `return false` precisely while the work was live, which is when a person
+    // is watching. The roster is the current holder, so it wins over the older snapshots.
+    for (const w of data?.workers ?? []) {
+      if (w.taskId && w.project) out.set(w.taskId, w.project)
+    }
     return out
   }, [data])
 
