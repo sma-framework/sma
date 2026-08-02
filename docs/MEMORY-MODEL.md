@@ -124,7 +124,7 @@ evidence:
   - type: incident
     ref: incident:2026-03-12-double-charge
 fingerprint:
-  product_version: 5.0.4
+  product_version: 5.1.0
   tree_paths: [src/checkout/retry.ts, src/payments/client.ts]
   tree_hash: 9f2c41d7a1b3…
 ```
@@ -573,7 +573,7 @@ evidence:
   - type: test
     ref: test:checkout-retry-idempotency
 fingerprint:
-  product_version: 5.0.4
+  product_version: 5.1.0
   tree_paths: [src/checkout/retry.ts, src/payments/client.ts]
   tree_hash: 9f2c41d7a1b3
 observed_at: 2026-03-12T22:41:00Z

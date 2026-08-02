@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.0.4-3B82F6" alt="version 5.0.4">
-  <img src="https://img.shields.io/badge/tests-1880%2F1880-3CC0A0" alt="tests 1880/1880">
+  <img src="https://img.shields.io/badge/version-5.1.0-3B82F6" alt="version 5.1.0">
+  <img src="https://img.shields.io/badge/tests-1866%2F1866-3CC0A0" alt="tests 1866/1866">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">

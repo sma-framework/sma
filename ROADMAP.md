@@ -27,8 +27,8 @@ flowchart LR
 | V3.5 | Adoption & trust telemetry | ✅ shipped |
 | V3.6 | The one-command door: npm install, off-ramp, memory preview | ✅ shipped |
 | V4 | Grade the grader: graded verdicts, economy meters, vendor triage | ✅ shipped |
-| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.0.4, July 2026) |
-| V5.1 | Works with what you have + the working front | 🟢 built — release pending |
+| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.1.0, July–August 2026) |
+| V5.1 | Works with what you have + the working front | ✅ **shipped** (v5.1.0, August 2026) |
 | V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | 🔵 planned |
 | V5.3 | Memory governance, hardened fleet, external validation | 🔵 planned |
 
@@ -51,7 +51,7 @@ Two honesty notes. The **rich daily-driver app** on top of this engine was the f
 
 ## V5.1 — Works with what you have
 
-> **Status: built, release pending.** Everything described in this section except Memory Model 1.0 now exists in the repository and is covered by the suite: the app and its seventeen screens, multi-project and hub↔peer federation, the conversation, the import door, first-run onboarding through the app, and the decision journal. V5.1 releases as one whole — all of it or none of it — and cutting the release (the tag, the publish) is a separate, deliberate act, not a consequence of this line turning green. Memory Model 1.0 is the one half still in progress; it belongs to the memory-foundation program below and does not gate the rest.
+> **Status: shipped as v5.1.0 (August 2026), as one whole.** Everything described in this section is in the release and covered by the suite: the app and its seventeen screens, multi-project and hub↔peer federation, the conversation, the import door, first-run onboarding through the app, the decision journal — and Memory Model 1.0, which shipped with its three canonical documents (the model, the lifecycle, the threat model).
 
 Orchestration is only useful when it runs YOUR setup, not a naked model. V5.1 makes that true in three steps: the fleet's workers operate with the estate the repository already carries (its agents, skills, rules, and the layered memory); a fresh install ships the SMA preset out of the box — the standard agents, skills, and the memory system itself (the architecture and its rituals, with your own empty corpus; nobody's memories are ever bundled); and an import door reads the agents and skills you built elsewhere (`.claude/agents`, `.claude/skills`, rules files; other tools' formats as demand appears) and enrolls them into the fleet through the same door the Creator uses — draft, lint receipt, approval queue. Imported definitions are third-party text: nothing activates without the owner's explicit yes. The bar the fleet has to clear is **terminal parity**: a worker session must be able to do what your own terminal session does — same hooks, same memory, same skills — proven by receipts on a real run, not asserted.
 
