@@ -15,6 +15,10 @@
  *       `D-<phase>-<n>`) survives in a USER-FACING surface. These ids are house
  *       bookkeeping; printed at an adopter they are noise that references a
  *       register the adopter cannot read.
+ *   (e) INTERNAL PLAN SHAPES: no bare house plan id (a plan/phase word followed
+ *       by a compound `9.5-10` id, or by a wildcard `49.x` id) survives in a
+ *       markdown file the PACKAGE SHIPS (root package.json `files[]`). Same
+ *       reason as (d): it points at a register the adopter cannot read.
  *
  * SCOPE BOUNDARY of check (d) — stated honestly, because "is this string printed
  * to a user?" is not statically decidable. What IS scanned:
@@ -31,9 +35,8 @@
  *     not adopter-facing output.
  *   - `__tests__/`, `fixtures/`, `assets/demos/` — synthetic and sample ids are
  *     sanctioned there (a demo of decision-locking must show decision ids).
- *   - bare plan/phase numbering (`9.4-01`) — the sanctioned public numbering used
- *     across docs/DETAILS*.md history sections. Only the `T-`/`D-` register
- *     shapes are internal.
+ *   - bare plan/phase numbering (`9.4-01`) STANDING ALONE — check (e) below picks
+ *     up only the narrower case where a plan/phase word introduces it.
  *   - prediction ids (`P9.3-12-A`) IN PROSE — they are legitimate data in the
  *     documented `prediction` / `tripwire` table columns, where removing them
  *     would break the traceability that makes a prediction checkable. They are
@@ -194,6 +197,50 @@ for (const root of idRoots) {
   }
 }
 
+// ---- (e) internal plan shapes in shipped markdown ---------------------------
+/**
+ * A house plan id in a doc the PACKAGE SHIPS. The leak shape is a plan/phase word
+ * introducing either a compound id (`plan 9.5-10`, `плана 9.1-04`, `phase 9.1-26`)
+ * or a wildcard one (`plan 49.x`). The number names a register no adopter can read.
+ *
+ * The match is CONTEXTUAL — the word has to introduce the number — which is what
+ * keeps the false-positive floor honest. Deliberately NOT flagged:
+ *   - semver (`5.1.0`), dates (`20.07.2026`), ports (`:5433`): none of them carry
+ *     the `N.N-NN` / `N.x` shape, and none is introduced by a plan word;
+ *   - bare `Phase 2.1`, `/sma-plan-phase 5.1`: the ADOPTER'S OWN numbering, which
+ *     is documented product vocabulary in the templates, workflows and help;
+ *   - a bare id nobody introduces (`- [ ] 02.1-01: [Description]`, the documented
+ *     plan-file naming convention) — same reason.
+ */
+const PLAN_WORD = String.raw`(?:plans?|phases?|план\p{L}*|фаз\p{L}*)`
+const PLAN_SHAPE = String.raw`(?:\d{1,2}\.\d{1,2}-\d{1,3}|\d{1,2}\.x)`
+const INTERNAL_PLAN = new RegExp(
+  // trailing guard: not a longer number, and not the `02.1-01-PLAN.md` file name
+  String.raw`(?<![\p{L}\p{N}])${PLAN_WORD}\s*[№#]?\s*${PLAN_SHAPE}(?![\p{L}\p{N}]|-[A-Za-z])`,
+  'iu',
+)
+
+/** Markdown the npm package ships, per the root `files[]` allowlist. */
+const SHIPPED = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).files ?? []
+
+let shippedDocsScanned = 0
+for (const entry of SHIPPED) {
+  const abs = path.join(ROOT, entry)
+  if (!fs.existsSync(abs)) continue
+  const files = fs.statSync(abs).isDirectory() ? walkAll(abs) : [abs]
+  for (const file of files) {
+    if (!file.endsWith('.md')) continue
+    const r = rel(file)
+    if (ID_EXCLUDED.test(r)) continue
+    shippedDocsScanned++
+    const text = fs.readFileSync(file, 'utf8')
+    if (!INTERNAL_PLAN.test(text)) continue
+    text.split('\n').forEach((line, i) => {
+      if (INTERNAL_PLAN.test(line)) errors.push(`PLAN-ID: ${r}:${i + 1}: ${line.trim().slice(0, 120)}`)
+    })
+  }
+}
+
 // ---- (c) colors -------------------------------------------------------------
 let colorCount = 0
 for (const name of fs.readdirSync(AGENTS).sort()) {
@@ -210,9 +257,10 @@ console.log(`dispatch sites checked: ${dispatchCount}`)
 console.log(`agents with color: ${colorCount}/${[...fs.readdirSync(AGENTS)].filter((f) => f.endsWith('.md')).length}`)
 console.log(`residue hits: ${residueHits}`)
 console.log(`user-facing files scanned for internal ids: ${idScanned}`)
+console.log(`shipped markdown scanned for internal plan shapes: ${shippedDocsScanned}`)
 if (errors.length) {
   console.error(`\nFAIL — ${errors.length} violation(s):`)
   for (const e of errors) console.error('  ' + e)
   process.exit(1)
 }
-console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in user-facing strings)')
+console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in user-facing strings, no internal plan shapes in shipped docs)')
