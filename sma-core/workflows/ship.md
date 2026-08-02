@@ -111,20 +111,29 @@ Verify the work is ready to ship:
 
 7. **Every «Issues Encountered» item accounted for.**
 
-   An executor writes what actually went wrong into its SUMMARY's `## Issues Encountered`. A checklist assembled only from what was *planned* never reads that section, so an honest note about something left broken can ride through a green gate untouched. Read it before shipping:
+   An executor writes what actually went wrong into its SUMMARY's `## Issues Encountered`. A checklist assembled only from what was *planned* never reads that section, so an honest note about something left broken can ride through a green gate untouched. Assembling this gate therefore BEGINS by extracting that section from every SUMMARY in the ship scope — mechanically, so the same input is produced for anyone who re-runs the gate:
 
    ```bash
-   ls "${PHASE_DIR}"/*-SUMMARY.md
+   for f in "${PHASE_DIR}"/*-SUMMARY.md; do
+     [ -e "$f" ] || continue
+     awk -v F="$(basename "$f")" '
+       /^#+ Issues Encountered/ { inside = 1; next }
+       /^#+ / { inside = 0 }
+       inside && NF { print F ": " $0 }
+     ' "$f"
+   done
    ```
 
-   For **each** SUMMARY in the ship scope, read its `## Issues Encountered` section. Every item there takes exactly one of two paths:
+   Every line this prints is an item awaiting disposition, and the printed list — not a recollection of what the SUMMARYs said — is what the checklist is built against. A line whose content is just `None`, and a SUMMARY with no such section, count as already accounted for. Empty output means there is nothing to disposition; skipping the scan is not the same thing as empty output.
+
+   Every remaining item takes exactly one of two paths:
 
    - **(a) it becomes a line item in this gate** — it is resolved before the PR opens, or it is a known limitation named explicitly in the PR body's Verification section, so a reviewer sees it without opening a SUMMARY; or
    - **(b) it is written off in `${PHASE_DIR}/deferred-items.md`** with a reason and, where one exists, the follow-up it was filed under.
 
    There is no third path. An item that is neither raised nor written off blocks the ship with `SUMMARY_ISSUES_UNACCOUNTED`: list the unaccounted items with their source SUMMARY and ask the user to choose (a) or (b) for each.
 
-   `## Issues Encountered` reading `None` (or absent) counts as accounted for. This check is about disposition, not severity — a small item takes the write-off path in one line; deciding an item is minor is itself one of the two paths, and doing it silently is not.
+   This check is about disposition, not severity — a small item takes the write-off path in one line; deciding an item is minor is itself one of the two paths, and doing it silently is not.
 </step>
 
 <step name="load_infra_profile">
@@ -586,7 +595,7 @@ After shipping:
 
 <success_criteria>
 - [ ] Preflight checks passed (verification, clean tree, branch, remote, gh)
-- [ ] Every «Issues Encountered» item in every SUMMARY of the ship scope either raised as a gate line item or written off in deferred-items.md — none left silent
+- [ ] «Issues Encountered» scan run over every SUMMARY in the ship scope, and every item it printed either raised as a gate line item or written off in deferred-items.md — none left silent
 - [ ] Infra profile read (.sma/profile.json) — missing fields asked and offered for save, never defaulted
 - [ ] Full gate green before push (profile-supplied command, echoed before running) + origin-diff reviewed
 - [ ] Full-gate evidence marker written after the gate passed (`pnpm sma gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-9.1-13)
