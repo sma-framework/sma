@@ -11,10 +11,20 @@ import { NewTaskForm } from './NewTaskForm'
  * «Задачи» — the whole of the work in one look, each task standing in the stage it is
  * actually in.
  *
- * The board is a PROJECTION of the one reading and nothing else: the queue and the finished
- * rows the window already has, sorted into five columns by their own status. It asks the
- * daemon nothing of its own — a second question would be a second version of the truth, and
- * a board that disagrees with «Сегодня» is a board nobody trusts.
+ * The board is a PROJECTION of the one reading and nothing else: the rows the window already
+ * has, sorted into five columns. It asks the daemon nothing of its own — a second question
+ * would be a second version of the truth, and a board that disagrees with «Сегодня» is a
+ * board nobody trusts.
+ *
+ * Each column is fed from the list that ACTUALLY carries its stage, because the payload
+ * keeps the stages apart on purpose:
+ *   - «ЖДУТ»          ← queue[]    — waiting for a WORKER;
+ *   - «В РАБОТЕ»      ← workers[]  — the tasks the workers hold right now (taskId);
+ *   - «ЖДУТ РЕШЕНИЯ»  ← awaiting[] — waiting for a PERSON;
+ *   - «ГОТОВО»/«НЕ ПОЛУЧИЛОСЬ» ← done[].
+ * Sifting one stage out of another's list is how a column goes quietly empty forever: the
+ * queue never carried a claimed or an awaiting row, so asking it for one only ever answered
+ * «пусто» — exactly the way this board used to lose both its middle columns.
  *
  * Two filters narrow it, and both narrow rows the window ALREADY HOLDS. The project comes
  * from the selector in the shell; the machine appears as a control only when there is more
@@ -62,6 +72,9 @@ export function Screen() {
   const activeProject = data?.activeProject ?? null
   const machines = data?.machines ?? []
   const showMachine = machines.length > 1
+  // A worker row is tagged with its machine only once the hub merges more than one; on a
+  // single machine the reading says nothing, because there is nothing to tell apart.
+  const selfMachine = machines.find((m) => m.role === 'self')?.id ?? ''
 
   const cards: BoardCard[] = useMemo(() => {
     // Every row carries its project and its machine, so both filters are a sieve over the
@@ -69,7 +82,9 @@ export function Screen() {
     const mine = <T extends { project: string; machine: string }>(rows: T[]): T[] =>
       rows.filter((r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine))
 
-    const queued: BoardCard[] = mine(data?.queue ?? []).map((r: QueueRow) => ({
+    // One task row, one card — the column comes from the row's OWN status, so a row lands
+    // where the board says its stage lands and nowhere else.
+    const toCard = (r: QueueRow): BoardCard => ({
       id: r.id,
       column: columnOfStatus(r.status),
       title: r.title ?? 'Без названия',
@@ -78,10 +93,45 @@ export function Screen() {
       reason: null,
       agedForHours: r.agedForHours,
       note: queueNote(r),
-      live: r.status === 'claimed' || r.status === 'running',
-      decision: r.status === 'awaiting_approval',
+      live: false,
+      decision: r.status === 'awaiting_approval' || r.status === 'approving',
       past: false,
-    }))
+    })
+
+    const queued: BoardCard[] = mine(data?.queue ?? []).map(toCard)
+
+    // The work that owes a person a word rides its own list — same row shape, longest wait
+    // first. It is NOT in the queue and never was.
+    const decisions: BoardCard[] = mine(data?.awaiting ?? []).map(toCard)
+
+    // The work in flight has no list of its own in the reading: the one place a claimed task
+    // is named is the worker holding it (workers[].taskId, with `wt/<id>` for its branch).
+    // So «В РАБОТЕ» is built from the roster, and `live` — the pulse down the card's edge —
+    // is exactly «a worker holds this task», which is the only in-progress signal the payload
+    // has. The task's own name is not on a worker row, so the card carries the id the daemon
+    // routes by; the panel behind one click has the rest.
+    //
+    // The project filter cannot narrow these: a worker row carries no project. Showing them
+    // is the lesser lie — the task IS running, and hiding it would leave the column claiming
+    // nobody is working.
+    const running: BoardCard[] = (data?.workers ?? [])
+      .filter((w) => !!w.taskId)
+      .map((w): BoardCard => {
+        const on = w.machine ?? selfMachine
+        return {
+          id: w.taskId as string,
+          column: 'working',
+          title: w.taskId as string,
+          role: w.id,
+          machine: on,
+          reason: null,
+          note: null,
+          live: true,
+          decision: false,
+          past: false,
+        }
+      })
+      .filter((c) => !machine || c.machine === machine)
 
     const finished: BoardCard[] = mine(data?.done ?? []).map((r: DoneRow) => ({
       id: r.id,
@@ -96,8 +146,8 @@ export function Screen() {
       past: true,
     }))
 
-    return [...queued, ...finished]
-  }, [data, activeProject, machine])
+    return [...queued, ...running, ...decisions, ...finished]
+  }, [data, activeProject, machine, selfMachine])
 
   const counts = (key: ColumnKey) => cards.filter((c) => c.column === key).length
   const nothingAtAll = cards.length === 0
