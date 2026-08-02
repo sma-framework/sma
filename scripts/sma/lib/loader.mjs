@@ -23,72 +23,28 @@
  *   - resolvePeriphery({tags, corpusDir, tagsPath, dateMap}) → {core, periphery, matched, warnings, meta}
  *   - orderNotes(notes, dateMap) — the shared comparator applied to a note list.
  *
+ * TWO SCHEMA VERSIONS, ONE READ (SB-026): the corpus may hold v1 notes and
+ * schema-v2 records side by side. This module reads NEITHER grammar itself — the
+ * corpus walk (generator.readNotes), the field projection (projectNoteAxis:
+ * claim~description, memory_type~kind, retrieval.areas~tags, context_priority
+ * 'always'~CORE) and the CORE membership question (isCoreNote, which keeps
+ * superseded/revoked out of always-load) are all IMPORTED from generator.mjs.
+ * That is deliberate: the loader used to re-derive tags/kind/importance from v1
+ * field names, which made every migrated record invisible to both CORE and facet
+ * matching while the written index showed it fine. One axis, one implementation —
+ * do not re-introduce a local readNotes here.
+ *
  * Corpus + registry access is ONLY through frontmatter.mjs (parseNote +
  * loadTagsRegistry + resolveAlias) — the single shared read path (9-04). The
- * ordering comparator is imported from generator.mjs. Node built-ins; zero deps.
+ * ordering comparator, the corpus read and the CORE rule come from generator.mjs.
+ * Node built-ins; zero deps.
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
-import { makeComparator, CORE_THRESHOLD } from './generator.mjs'
-
-/** Structural files that are not notes. */
-const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
-
-/** The FI-11 per-area index files (INDEX-<area>.md) are structural, not notes. */
-function isStructuralFile(f) {
-  return STRUCTURAL_FILES.has(f) || /^INDEX-[^/\\]+\.md$/.test(f)
-}
-
-/** List note files (*.md, non-structural), sorted for a stable base order. */
-function listNoteFiles(corpusDir) {
-  let entries
-  try {
-    entries = readdirSync(corpusDir)
-  } catch {
-    return []
-  }
-  return entries
-    .filter((f) => f.endsWith('.md') && !isStructuralFile(f))
-    .filter((f) => {
-      try {
-        return statSync(join(corpusDir, f)).isFile()
-      } catch {
-        return false
-      }
-    })
-    .sort()
-}
-
-/** Read + parse every note (fail-soft: a bad note is skipped, not thrown). */
-function readNotes(corpusDir) {
-  const notes = []
-  for (const file of listNoteFiles(corpusDir)) {
-    let text
-    try {
-      text = readFileSync(join(corpusDir, file), 'utf8')
-    } catch {
-      continue
-    }
-    let fm
-    try {
-      fm = parseNote(text, { file }).frontmatter
-    } catch {
-      continue
-    }
-    if (fm == null) continue
-    const importance = Number(fm.importance)
-    notes.push({
-      file,
-      tags: Array.isArray(fm.tags) ? fm.tags : [],
-      kind: String(fm.kind ?? '').trim(),
-      importance: Number.isFinite(importance) ? importance : 0,
-    })
-  }
-  return notes
-}
+import { loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
+import { makeComparator, readNotes, isCoreNote, CORE_THRESHOLD } from './generator.mjs'
 
 /**
  * Group the resolved query tags into facet buckets using the registry.
@@ -179,17 +135,22 @@ export function resolvePeriphery(opts) {
   const notes = readNotes(corpusDir)
   const { buckets, warnings } = groupQueryByFacet(tags, registry)
 
-  // CORE: always included first, ordered by the shared comparator.
+  // CORE: always included first, ordered by the shared comparator. Membership is
+  // the GENERATOR's question (isCoreNote), never re-derived here — so what loads
+  // at read time is exactly what the index promised at write time, superseded and
+  // revoked records excluded from always-load in both (SB-026).
   const coreNotes = orderNotes(
-    notes.filter((n) => n.importance >= coreThreshold),
+    notes.filter((n) => isCoreNote(n, coreThreshold)),
     dateMap,
   )
   const coreSet = new Set(coreNotes.map((n) => n.file))
 
-  // Periphery: notes below the CORE threshold that match the facet intersection.
+  // Periphery: everything CORE did not take that matches the facet intersection.
+  // A superseded record is kept findable here — it is out of always-load, not out
+  // of the corpus (the generator catalogues it in its area index for the same reason).
   // Dedup by file path AFTER resolution (a note matched via several tags loads once).
   const matched = notes.filter(
-    (n) => n.importance < coreThreshold && noteMatches(n, buckets, registry),
+    (n) => !isCoreNote(n, coreThreshold) && noteMatches(n, buckets, registry),
   )
   const periphery = orderNotes(matched, dateMap).map((n) => n.file)
   // A CORE note is never repeated in periphery (threshold split already ensures it).

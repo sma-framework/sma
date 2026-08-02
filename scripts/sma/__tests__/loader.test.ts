@@ -14,6 +14,13 @@
  *     (AND across facets, OR within a facet — B1 intersection).
  *   - Test 6 (D-9-15): the set-query «bug-lesson + parser» returns exactly the
  *     fixture's bug-lesson notes carrying the parser topic tag.
+ *
+ * SCHEMA-V2 VISIBILITY (SB-026): the loader used to read v1 field names only
+ * (tags/kind/importance), so a schema-v2 record — which carries retrieval.areas,
+ * memory_type and context_priority instead — resolved as importance 0 with no
+ * tags and was invisible to BOTH core and facet matching. The v2 block below
+ * pins the projection the generator already writes with (one axis, no second
+ * vocabulary), and the v1 block above stays byte-identical.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -187,6 +194,123 @@ describe('loader.mjs — resolvePeriphery (R4)', () => {
     })
     expect(res.periphery).toEqual(['lesson-parser.md'])
     expect(res.periphery).not.toContain('lesson-other.md')
+  })
+})
+
+describe('loader.mjs — v1 selection is pinned (SB-026 regression guard)', () => {
+  it('the v1 fixture resolves to the exact same core + periphery as before the v2 fix', () => {
+    const res = resolvePeriphery({ tags: ['tech'], corpusDir, tagsPath, dateMap })
+    expect(res.core).toEqual(['core1.md'])
+    // weight desc → date desc → name asc: lesson-parser (7, 06-15) then the two
+    // importance-6 notes on the same date, name-asc.
+    expect(res.periphery).toEqual(['lesson-parser.md', 'tech-ref.md', 'tech-rule.md'])
+    expect(res.matched).toBe(3)
+  })
+})
+
+// ── schema v2 (SB-026) ──────────────────────────────────────────────────────
+
+const V2_TAGS_MD = `# TAGS
+
+## area
+- tech — infra, build, migrations. · aliases: infra
+- memory — memory system: notes, index. · aliases: sma, notes
+
+## kind
+- procedural-rule — a how-to rule.
+- bug-lesson — a lesson from a bug.
+`
+
+/** Write a raw schema-v2 record (nested retrieval block — not the v1 helper's shape). */
+function v2note(
+  dir: string,
+  name: string,
+  fm: { claim: string; memoryType?: string; status?: string; priority?: string; areas?: string[] },
+) {
+  const lines = [
+    '---',
+    `id: ${name.replace(/\.md$/, '')}`,
+    'schema_version: 2',
+    `status: ${fm.status ?? 'active'}`,
+    'migrated_from: v1',
+    `memory_type: ${fm.memoryType ?? 'procedural'}`,
+    'truth_mode: normative',
+    `claim: ${fm.claim}`,
+    `context_priority: ${fm.priority ?? 'on-demand'}`,
+  ]
+  if (fm.areas && fm.areas.length) {
+    lines.push('retrieval:')
+    lines.push(`  areas: [${fm.areas.join(', ')}]`)
+  }
+  lines.push('---')
+  writeFileSync(join(dir, name), lines.join('\n') + '\nbody\n', 'utf8')
+}
+
+describe('loader.mjs — schema-v2 records are visible (SB-026)', () => {
+  let v2Dir: string
+  let v2TagsPath: string
+
+  beforeEach(() => {
+    v2Dir = mkdtempSync(join(tmpdir(), 'sma-loader-v2-'))
+    v2TagsPath = join(v2Dir, 'TAGS.md')
+    writeFileSync(v2TagsPath, V2_TAGS_MD, 'utf8')
+
+    // context_priority: always — the v2 way of saying «CORE» (v2 has no importance).
+    v2note(v2Dir, 'v2-always.md', {
+      claim: 'A v2 always-load rule',
+      priority: 'always',
+      areas: ['tech'],
+    })
+    // on-demand, area memory — must arrive through a facet query, never in core.
+    v2note(v2Dir, 'v2-ondemand.md', {
+      claim: 'A v2 on-demand fact about the memory system',
+      areas: ['memory'],
+    })
+    // superseded + always — the hard filter outranks the priority.
+    v2note(v2Dir, 'v2-superseded.md', {
+      claim: 'A v2 rule that has been superseded',
+      status: 'superseded',
+      priority: 'always',
+      areas: ['tech'],
+    })
+  })
+
+  afterEach(() => {
+    rmSync(v2Dir, { recursive: true, force: true })
+  })
+
+  it('context_priority: always puts a v2 record in CORE', () => {
+    const res = resolvePeriphery({ tags: [], corpusDir: v2Dir, tagsPath: v2TagsPath })
+    expect(res.core).toContain('v2-always.md')
+  })
+
+  it('retrieval.areas answer an area facet query (on-demand → periphery)', () => {
+    const res = resolvePeriphery({ tags: ['memory'], corpusDir: v2Dir, tagsPath: v2TagsPath })
+    expect(res.periphery).toContain('v2-ondemand.md')
+    expect(res.core).not.toContain('v2-ondemand.md')
+  })
+
+  it('an area alias resolves for a v2 record exactly as for a v1 note', () => {
+    const canonical = resolvePeriphery({ tags: ['memory'], corpusDir: v2Dir, tagsPath: v2TagsPath })
+    const alias = resolvePeriphery({ tags: ['sma'], corpusDir: v2Dir, tagsPath: v2TagsPath })
+    expect(alias.periphery).toEqual(canonical.periphery)
+  })
+
+  it('status superseded never reaches CORE, yet stays findable by its area', () => {
+    const res = resolvePeriphery({ tags: ['tech'], corpusDir: v2Dir, tagsPath: v2TagsPath })
+    expect(res.core).not.toContain('v2-superseded.md')
+    expect(res.periphery).toContain('v2-superseded.md')
+  })
+
+  it('coreThreshold Infinity empties CORE even for an always-priority record (reflex contract)', () => {
+    const res = resolvePeriphery({
+      tags: ['tech'],
+      corpusDir: v2Dir,
+      tagsPath: v2TagsPath,
+      coreThreshold: Infinity,
+    })
+    expect(res.core).toEqual([])
+    expect(res.periphery).toContain('v2-always.md')
   })
 })
 

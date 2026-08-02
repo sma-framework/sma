@@ -70,6 +70,11 @@ export const CORE_EXCLUDED_STATUSES = new Set(['superseded', 'revoked'])
  */
 export function isCoreNote(n, coreThreshold = CORE_THRESHOLD) {
   if (CORE_EXCLUDED_STATUSES.has(n.status)) return false
+  // A caller may raise the bar out of reach on purpose (`coreThreshold:
+  // Infinity` — the reflex matcher's way of saying «there is no CORE here, route
+  // every record through facet matching»). An unreachable bar means an EMPTY
+  // core, so the v2 shortcut below must not smuggle records past it.
+  if (!Number.isFinite(coreThreshold)) return n.importance >= coreThreshold
   if (n.contextPriority === 'always') return true
   if (n.contextPriority === 'on-demand') return false
   return n.importance >= coreThreshold
@@ -148,30 +153,60 @@ export function readNotes(corpusDir) {
     }
     const fm = parsed.frontmatter
     if (fm == null) continue
-    const importance = Number(fm.importance)
-    const imp = Number.isFinite(importance) ? importance : 0
-    const contextPriority = String(fm.context_priority ?? '').trim()
-    notes.push({
-      file,
-      // v1 says `description`, v2 says `claim` — one line about one fact, under
-      // two names. Same slot in the rendered index either way.
-      description: renderableText(fm.description ?? fm.claim),
-      // v1 `kind` and v2 `memory_type` both answer "what sort of knowledge is this".
-      kind: renderableText(fm.kind ?? fm.memory_type),
-      // v1 `tags` and v2 `retrieval.areas` are the SAME membership axis (1:1),
-      // so the area grouping below needs no second code path.
-      tags: mergeAreas(fm),
-      useWhen: renderableText(fm['use-when']),
-      importance: imp,
-      status: renderableText(fm.status),
-      contextPriority,
-      schemaVersion: parsed.schemaVersion,
-      // The ordering key. v2 carries no importance, so `always` is mapped onto
-      // the same axis the comparator already sorts by — one chain, two grammars.
-      weight: contextPriority === 'always' ? Math.max(imp, CORE_THRESHOLD) : imp,
-    })
+    notes.push(projectNoteAxis(fm, { file, schemaVersion: parsed.schemaVersion }))
   }
   return notes
+}
+
+/**
+ * projectNoteAxis(frontmatter, {file, schemaVersion}) — THE one-axis projection,
+ * in ONE place (SB-026).
+ *
+ * Every consumer that asks a corpus record "what is your claim / your kind / your
+ * areas / are you always-load" goes through this function, so the two grammars
+ * can never grow two answers. The mapping (also stated in the module header):
+ *   description ~ claim · kind ~ memory_type · tags ~ retrieval.areas ·
+ *   importance≥CORE_THRESHOLD ~ context_priority: always.
+ *
+ * The last pair is the migration's own inverse, not a new invention:
+ * migrate-v1-v2.mjs writes `context_priority: importance >= 9 ? always : on-demand`,
+ * so reading `always` back as CORE-eligible weight CORE_THRESHOLD round-trips a
+ * migrated note to where it started. A v2 record carries no importance at all, so
+ * an `on-demand` record weighs 0 and sorts at the tail — findable by facet, never
+ * ahead of a note that states a number.
+ *
+ * Exported for loader.mjs (retrieval) and context-pack.mjs (pointer lines): the
+ * read engine and the compiler read the SAME axis the index is written with.
+ *
+ * @param {object} fm  parsed frontmatter (v1 or v2)
+ * @param {{file?:string, schemaVersion?:1|2}} [meta]
+ * @returns {{file:string, description:string, kind:string, tags:string[], useWhen:string,
+ *            importance:number, status:string, contextPriority:string, schemaVersion:1|2, weight:number}}
+ */
+export function projectNoteAxis(fm, meta = {}) {
+  const source = fm ?? {}
+  const importance = Number(source.importance)
+  const imp = Number.isFinite(importance) ? importance : 0
+  const contextPriority = String(source.context_priority ?? '').trim()
+  return {
+    file: meta.file ?? '',
+    // v1 says `description`, v2 says `claim` — one line about one fact, under
+    // two names. Same slot in the rendered index either way.
+    description: renderableText(source.description ?? source.claim),
+    // v1 `kind` and v2 `memory_type` both answer "what sort of knowledge is this".
+    kind: renderableText(source.kind ?? source.memory_type),
+    // v1 `tags` and v2 `retrieval.areas` are the SAME membership axis (1:1),
+    // so the area grouping (and the loader's facet matching) needs no second path.
+    tags: mergeAreas(source),
+    useWhen: renderableText(source['use-when']),
+    importance: imp,
+    status: renderableText(source.status),
+    contextPriority,
+    schemaVersion: meta.schemaVersion ?? 1,
+    // The ordering key. v2 carries no importance, so `always` is mapped onto
+    // the same axis the comparator already sorts by — one chain, two grammars.
+    weight: contextPriority === 'always' ? Math.max(imp, CORE_THRESHOLD) : imp,
+  }
 }
 
 /** A frontmatter value as trimmed text; anything absent renders as empty. */
