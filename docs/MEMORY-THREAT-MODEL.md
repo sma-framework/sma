@@ -148,11 +148,17 @@ there is no class that may hold a live credential.
 | An installation-private facet never ships in a public-class record | `MEM-PRIVFACET` (critical) | **enforced** |
 | A restricted class routes to the strictest approval path | the approval ladder | **enforced** |
 | `encrypted-required` content is encrypted at rest | — | **policy only** (§6): the class is refused a git-backed home; no cipher exists |
-| Retrieval filters by class at load time | — | **not yet**: the corpus walk is a file walk. The hard-filter design is stated in [`MEMORY-MODEL.md` §9.1](MEMORY-MODEL.md#91-the-retrieval-block); nothing implements it today, so placement — not filtering — is what keeps restricted material out of a compiled context |
+| Retrieval filters by `status` and valid time at load time | the read engine (`isVisibleNow`, before ranking) | **enforced** — a retired or out-of-window record is out of the delivery, on both output points of a pack; it stays catalogued in its area index with the state named |
+| Retrieval filters by class at load time | the read engine (`isVisibleNow`, before ranking) | **enforced for a declared audience**: the caller states the consumer class and a record above its ceiling is not delivered (unregistered audience → narrowest ceiling; undeclared class → treated as internal). The default consumer is the local owner, who is withheld nothing |
+| The consumer's audience is *verified* rather than declared | — | **not yet**: this layer knows nothing about who runs the agent. `audience` is an argument, not an identity — a caller that mis-declares it is not caught here |
 
-The last row is the one worth reading twice. **The defense is placement, not
-redaction at read time.** Material that must not be seen must not be in the
-corpus; nothing downstream will catch it later.
+The last two rows are the ones worth reading twice. Read-time filtering is now
+real, and it is **structural**: it reads typed fields — never a note's body — so
+it removes what is retired, out of its window or above the stated audience's
+ceiling. It cannot remove what should never have been stored, and it cannot
+detect a caller that names the wrong audience. For that half **the defense is
+still placement, not redaction at read time**: material that must not be seen must
+not be in the corpus; nothing downstream will catch it later.
 
 ## 3. Failure semantics
 
@@ -388,9 +394,12 @@ Stated explicitly, because an unstated non-goal reads as an oversight.
    Deciding what a tool may touch belongs to the harness that runs the agent.
 4. **This is not a secret manager.** The only thing this layer does with a
    credential is refuse it, at both doors.
-5. **There is no retrieval-time access-control layer yet** (§2.4). The class-based
-   hard filters described in the model document are the design for whoever builds
-   ranked retrieval; today, placement is the whole defense.
+5. **Retrieval-time filtering is not access control** (§2.4). The class-based hard
+   filters described in the model document now run before ranking, but they act on
+   what the *caller declares* it is: this layer has no way to verify an audience,
+   authenticate a consumer or revoke one. It narrows a delivery; it does not
+   control access. Placement remains the defense against material that must not be
+   seen at all.
 6. **No threat here is defended by a model call.** Every guard named in this
    document is a deterministic check. That is a constraint on what can be
    defended, and it is chosen deliberately: a defense that depends on a model
@@ -400,4 +409,5 @@ Stated explicitly, because an unstated non-goal reads as an oversight.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.1 | 2026-08-03 | §2.4 and non-goal 5 updated to the landed read-time filters: `status`, valid time and `sensitivity`-by-audience are now enforced by the read engine before ranking (`MEMORY-MODEL.md` §9.1), so the «not yet» row became two enforced rows — and one new honest «not yet»: an audience is *declared* by the caller, never verified here. Filtering narrows a delivery; it is not access control, and placement stays the defense against material that must not be stored at all. No new guard is defended by a model call. |
 | 1.0 | 2026-08-02 | First version. The five storage classes mapped onto the four-value `sensitivity` vocabulary with the two deliberate omissions and their reasons; what each class forbids; the placement rules exactly as the corpus checks enforce them, with tiers; an honest enforced/policy/not-yet map; the fail-open / fail-closed table with the landed write-path behavior behind it; the six untrusted-retrieval rules with their honest state; three provenance threats (quote-as-authority, stale facts, expired claims) with the typed fields and checks that counter them and the read-only law that keeps the counters advisory; the encryption policy — two candidate families, six selection criteria, and an explicit deferral with zero dependencies added; and six stated non-goals. |

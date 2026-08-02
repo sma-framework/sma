@@ -337,19 +337,49 @@ permission, sensitivity, `status`, valid time, repo/environment scope. Optional
 lexical or dense indexes are derived layers on top — rebuildable, removable,
 never a source of truth.
 
-**What of that is implemented today.** One filter is: `status` is applied where
-CORE membership is decided, so a `superseded` or `revoked` record never reaches
-the always-load payload — it stays catalogued in its area index, with the state
-named, and out of CORE. The others — permission, sensitivity, valid time,
-repo/environment scope — are **not implemented**. The walk that resolves a task's
-notes reads facets and importance and filters by no class at all. Until read-time
-class filtering lands with the retrieval-accuracy work, **the defense is
-placement, not filtering at load time**: material that must not be seen must not
-be in the corpus, because nothing downstream will catch it later. That is the
-same reading as
+**What of that is implemented today.** The structural filters run, in code, as one
+predicate: `isVisibleNow(record, {now, audience, scope})`, exported from the
+generator beside the CORE-membership rule and applied by the read engine as a
+filter chain **before** CORE membership, facet matching and ordering are asked —
+so a record that may not be shown never enters a comparison it should not have
+been in. The chain covers both output points of a delivered pack, CORE and
+periphery. What it decides:
+
+- **`status`** — a `superseded` or `revoked` record is out of the delivery
+  entirely. (It used to be excluded from CORE only and still rode into the matched
+  periphery; that is the shape the retrieval measurement caught as a forbidden
+  hit — a rule known to be wrong, quoted back at the task.)
+- **Valid time** — a record outside its own `valid_from` … `valid_until` window is
+  not delivered. A date-only stamp is read as the whole day, so a claim valid
+  *until* the 18th is still valid **on** the 18th. Nothing is mutated: the record
+  keeps its `status`, and `MEM-EXPIRE` stays the advisory, human-facing reader of
+  the same field (§11).
+- **`sensitivity`** — by **audience**, and only by audience. The default consumer
+  is the local owner reading their own corpus, and nothing is withheld from them;
+  filtering there would cost recall while protecting nobody. A delegated agent
+  sees public and internal; anything leaving the machine sees public only. An
+  audience nobody registered is fail-closed to the narrowest ceiling, and a record
+  that declares no class is treated as internal — absence is never `public`.
+- **`scope`** — a record that names the repos or environments it holds in is out
+  of delivery in every other one; a record that names none constrains nothing, and
+  a caller that states no world asks no question (§9.2).
+
+Three things this deliberately is **not**. It is not the write-time approval
+ladder: that answers «may this record exist», this answers «may it be shown», and
+the two read some of the same fields without being the same question. It is not a
+content filter — it reads typed fields only, never the note's body, so nothing a
+record says in prose can argue its way into a payload. And it does not touch the
+index: a hidden record is out of the **delivery**, not out of the corpus, and its
+area index still catalogues it with the state named — an index is a map, not a
+payload.
+
+What remains unenforced is **permission** in the harness sense: this layer knows
+nothing about who is running the agent, so `audience` is a parameter its caller
+states, not an identity it verifies. For that half — and for anything a caller
+mis-declares — the defense is still placement: material that must not be seen at
+all must not be in the corpus. That is the same reading as
 [`MEMORY-THREAT-MODEL.md` §2.4](MEMORY-THREAT-MODEL.md#24-what-is-enforced-where--an-honest-map)
-and non-goal 5 in [§7](MEMORY-THREAT-MODEL.md#7-non-goals) — this section states
-the target the filters are being built toward, those state where the build is.
+and non-goal 5 in [§7](MEMORY-THREAT-MODEL.md#7-non-goals).
 
 ### 9.2 scope and applies_to
 
@@ -620,6 +650,7 @@ validator reports it: kept as-is, with nothing validating it.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.1 | 2026-08-03 | §9.1 now describes an implementation instead of a target: the read-time hard filters are code (`isVisibleNow` — status, valid time, sensitivity by audience, repo/environment scope), executed as a filter chain before ranking on both output points of a pack. One behavior changed with it: a `superseded`/`revoked` record no longer reaches the delivered periphery, only its area index. Still unenforced and named as such: permission — `audience` is a parameter the caller states, not an identity this layer verifies. No schema change. |
 | 1.0 (correction) | 2026-08-02 | §9.1 corrected, not extended: the hard retrieval filters were written as if they ran, and only the `status` filter on CORE membership does. The paragraph now separates the contract from the implementation and names placement as the defense until read-time class filtering lands, which is what `MEMORY-THREAT-MODEL.md` §2.4 and non-goal 5 have said all along. No schema or behavior changed. |
 | 1.0 | 2026-08-02 | First landed version. Reconciled with the shipped code throughout: the authority scale (`owner-instruction` · `external-review` · `self-observed` · `inferred`), the composite fingerprint (`product_version` + optional `tree_paths`/`tree_hash`) and its single hash definition, the external-artifact horizon, six lifecycle statuses including `draft`, four sensitivity classes ending in `encrypted-required`, `context_priority: always/on-demand` and `risk: low…critical`, the required field set including `language`, `applies_to` and the private-facet ban, the one-claim law, the episodes dual representation, the real lint check ids and tiers with the migration grace and its horizon, the landed v1→v2 transform table, the migration verb syntax with per-file acceptance, and a worked example in the schema's fixed emit order. |
 | 0.1 | 2026-07-31 | Initial draft: types, truth modes + FACT/INTERPRETATION disciplines, provenance incl. fingerprint, temporal model, lifecycle, sensitivity/storage classes, importance split, retrieval block, typed links, integrity lint, v1→v2 mapping + migration law. |
