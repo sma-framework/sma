@@ -136,8 +136,8 @@ describe('events.mjs — the four D-9.7-09 hint types leak nothing', () => {
   })
 
   it('project.updated carries the project id; import.updated carries the batch id + count', () => {
-    const p = emitOne({ event: 'project.updated', projectId: 'institut', path: '/home/me/secret-dir' })
-    expect(p.payload.projectId).toBe('institut')
+    const p = emitOne({ event: 'project.updated', projectId: 'postgres', path: '/home/me/secret-dir' })
+    expect(p.payload.projectId).toBe('postgres')
     expect(p.raw).not.toContain('secret-dir')
 
     const i = emitOne({ event: 'import.updated', batchId: 'IMP-3', count: 7, files: ['/home/me/.claude/agents/x.md'] })
