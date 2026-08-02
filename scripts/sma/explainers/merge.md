@@ -12,11 +12,11 @@ The ritual runs in strict order:
 4. Journal a receipt: the branch, the result sha, and the test verdict, pass or fail, honestly.
 5. Release the slot.
 
-Push is explicitly out of scope: shipping stays founder-ordered via `/sma-ship`; `sma merge` does not push and does not deploy.
+Push is explicitly out of scope: shipping stays founder-ordered through the release ritual; `sma merge` does not push and does not deploy.
 
 The posture is fail-open: any error degrades to an honest failure that releases the held slot, so a gate bug can never wedge a session or leave a slot stuck. The soft-deny is the mayDeny tier only; hard deny remains the security guard's alone, and a force-cleared scope is never enforced against the founder's word.
 
-Example: `node scripts/sma/cli.mjs merge worktree-agent-7` reports "merged into main LOCALLY (a1b2c3d); tests on the merge result: green" and reminds you that push happens via `/sma-ship`.
+Example: `node scripts/sma/cli.mjs merge worktree-agent-7` reports "merged into main LOCALLY (a1b2c3d); tests on the merge result: green" and reminds you that push happens through the release ritual.
 
 ## ru
 `sma merge <ветка>` это ЕДИНСТВЕННЫЙ путь, которым ветка воркдерева (смотрите `sma worktree`) попадает в main. Он убивает классический сбой нескольких терминалов: «Ваш пуш увёз мою недостроенную работу».
@@ -28,8 +28,8 @@ Example: `node scripts/sma/cli.mjs merge worktree-agent-7` reports "merged into 
 4. Записать квитанцию в журнал: ветка, sha результата и вердикт тестов, прошли или нет, честно.
 5. Отпустить слот.
 
-Пуш намеренно вне охвата: отгрузка остаётся по команде основателя через `/sma-ship`; `sma merge` не пушит и не деплоит.
+Пуш намеренно вне охвата: отгрузка остаётся по команде основателя, через релизный ритуал; `sma merge` не пушит и не деплоит.
 
 Осанка с открытым отказом: любая ошибка вырождается в честный отказ с освобождением занятого слота, поэтому баг ворот не может повесить сессию или оставить слот застрявшим. Мягкий запрет это только уровень mayDeny; жёсткий запрет остаётся за стражем безопасности, а принудительно очищенный охват никогда не принуждается против слова основателя.
 
-Пример: `node scripts/sma/cli.mjs merge worktree-agent-7` сообщает «влит в main ЛОКАЛЬНО (a1b2c3d); тесты на результате слияния: зелёные» и напоминает, что пуш происходит через `/sma-ship`.
+Пример: `node scripts/sma/cli.mjs merge worktree-agent-7` сообщает «влит в main ЛОКАЛЬНО (a1b2c3d); тесты на результате слияния: зелёные» и напоминает, что пуш происходит через релизный ритуал.

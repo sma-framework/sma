@@ -39,7 +39,7 @@ the reflex fatigue store under a `gate:` key prefix (a gate fires once per sessi
 | Design-prompt-first for front-facing work | "Is this surface front-facing?" is a judgment about the change's intent, not a matchable path/command | prose HARD RULE + the design-SoT lockstep |
 | Plain-language for non-tech audience | Whether prose reads clearly to a non-engineer is a semantic quality call, not a regex | prose HARD RULE (rewrite-on-review) |
 | Compliance-defer / regulated-data handling | "Is this field/route regulated data?" is semantic; a security-regression guard owns its concrete sub-checks (never-log, encryption-at-rest, fail-closed routing) | security-regression-guard skill |
-| Versioned-release changelog quality | Whether a changelog is "plain enough for the founder" is a judgment; the mechanical `V1.N` tag steps live in the ship ritual | `/sma-ship` workflow |
+| Versioned-release changelog quality | Whether a changelog is "plain enough for the founder" is a judgment; the mechanical `V1.N` tag steps live in the ship ritual | the ship workflow (`sma-core/workflows/ship.md`) |
 
 ## Evidence loop (D-9.1-13 promotion)
 

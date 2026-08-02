@@ -300,7 +300,7 @@ Next steps:
   git push origin {PR_BRANCH}
   gh pr create --base {TARGET} --head {PR_BRANCH}
 
-Or use /sma-ship to create the PR automatically.
+Or run the release ritual (/sma-help ship) to create the PR automatically.
 ```
 </step>
 

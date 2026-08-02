@@ -15,7 +15,7 @@ copy lives exactly once.
 
 Order is locked (the workflow's staging map depends on it): `accountable-loop` opens the
 conversation (it is the thesis), `receipts-vs-prose` closes it (it frames what
-`/sma-plan` asks next).
+`/sma-plan-phase` asks next).
 
 ---
 

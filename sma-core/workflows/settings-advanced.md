@@ -815,7 +815,7 @@ Display:
 | model_policy.low                           | {model-id/null} |
 
 These settings apply to future /sma-plan-phase, /sma-execute-phase, /sma-discuss-phase,
-and /sma-ship runs.
+and release-ritual runs.
 
 For common-case toggles (model profile, research/plan_check/verifier, branching strategy,
 UI/AI phase gates), use /sma-settings.

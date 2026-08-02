@@ -15,7 +15,7 @@ One-liner refresher for returning users. Output ONLY the `<reference>` content b
 /sma-fast "<task>"         Trivial inline task — no subagents
 /sma-debug "<symptom>"     Persistent debug session (survives /clear)
 /sma-capture               Save an idea / todo / note
-/sma-ship <N>              Open a PR from a completed phase
+/sma-help ship             The release ritual: open a PR from a completed phase
 ```
 
 More: `/sma-help` (default tour) · `/sma-help --full` (everything) · `/sma-help <topic>` (one section)

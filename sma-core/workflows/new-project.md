@@ -280,7 +280,7 @@ AskUserQuestion([
 
 **Round 3 — PR body onboarding:**
 
-Ask which optional PRD-style sections `/sma-ship` should append to generated PR bodies. These map to `ship.pr_body_sections`; selected sections are written with `"enabled": true`, unselected seeded sections are written with `"enabled": false` so the project can enable them later without editing `ship.md`.
+Ask which optional PRD-style sections the release ritual should append to generated PR bodies. These map to `ship.pr_body_sections`; selected sections are written with `"enabled": true`, unselected seeded sections are written with `"enabled": false` so the project can enable them later without editing `ship.md`.
 
 Prefer lean/agile PRD sections that make the delivered increment clear: user stories, acceptance criteria, Definition of Done or release criteria, risks, dependencies, and stakeholder review.
 
@@ -288,7 +288,7 @@ Prefer lean/agile PRD sections that make the delivered increment clear: user sto
 AskUserQuestion([
   {
     header: "PR Body",
-    question: "Which optional PRD-style sections should /sma-ship include in PR bodies?",
+    question: "Which optional PRD-style sections should the release ritual include in PR bodies?",
     multiSelect: true,
     options: [
       { label: "User Stories & Acceptance Criteria", description: "Append user-facing stories and acceptance checks from REQUIREMENTS.md" },
@@ -826,7 +826,7 @@ questions: [
 //   Q1 "Standard tier…" + Q2 "Budget"   → model_profile = "budget"
 ```
 
-**PR body onboarding:** Ask which optional PRD-style sections `/sma-ship` should append to generated PR bodies. Use the same `ship.pr_body_sections` mapping as Step 2a: selected sections get `enabled: true`, seeded-but-unselected sections get `enabled: false`, and selecting none writes an empty list. Prefer lean/agile PRD sections that make user value, acceptance criteria, Definition of Done, and stakeholder traceability explicit.
+**PR body onboarding:** Ask which optional PRD-style sections the release ritual should append to generated PR bodies. Use the same `ship.pr_body_sections` mapping as Step 2a: selected sections get `enabled: true`, seeded-but-unselected sections get `enabled: false`, and selecting none writes an empty list. Prefer lean/agile PRD sections that make user value, acceptance criteria, Definition of Done, and stakeholder traceability explicit.
 
 Recommended options:
 

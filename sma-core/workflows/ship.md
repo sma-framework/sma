@@ -47,7 +47,7 @@ BASE_BRANCH=$(sma_run query git.base-branch)
 <step name="preflight_checks">
 Verify the work is ready to ship:
 
-**Ship lane (9.4-08):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick ritual (`/sma-quick-ship`) — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal («this is a full /sma-ship») means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background watch over CI and the deploy host, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
+**Ship lane (9.4-08):** when the origin delta is small, `node scripts/sma/cli.mjs ship-lane check` decides eligibility for the quick lane — origin-delta <= 5 commits, no migrations in the delta, no foreign push-claim. A refusal from `ship-lane check` means the FULL ritual below. The gates are IDENTICAL in both lanes — the quick lane only buys a small reviewed delta and a background watch over CI and the deploy host, never a weaker gate. `node scripts/sma/cli.mjs ship-lane changelog` drafts the deterministic conventional-commit changelog that the full lane consumes too.
 
 1. **Verification passed?**
    ```bash
@@ -178,7 +178,7 @@ commands implement them, never WHETHER they run:
 
    The marker lands at `.sma/gates/fullgate-<sha>.json {sha, at, gate:'full', terminal}`
    (TTL 6h). When GATE-PUSH soft-deny is armed (`SMA_GATE_PUSH_DENY=1`), a push without a
-   fresh marker for HEAD is denied — so this step is what lets the sanctioned /sma-ship
+   fresh marker for HEAD is denied — so this step is what lets the sanctioned release-ritual
    path push without tripping its own gate. Arming the gate at all is a founder action
    justified by `node scripts/sma/cli.mjs gates-report --promotion-readiness`; it ships DORMANT.
 
@@ -341,7 +341,7 @@ CUSTOM_PR_SECTIONS=$(sma_run query config-get ship.pr_body_sections --default '[
 
 `ship.pr_body_sections` is an onboarding-time extension point for teams that need extra PRD-style sections such as `User Stories & Acceptance Criteria`, `Risks & Dependencies`, `Success Metrics`, `Release Criteria`, or `Stakeholder Review & Approval`.
 
-Use these sections for lean/agile PRD material that should travel with the PR without making the core `/sma-ship` body configurable:
+Use these sections for lean/agile PRD material that should travel with the PR without making the core ritual body configurable:
 
 - User stories and acceptance criteria that explain the functional increment from the user's point of view.
 - Definition of Done or release criteria that make the completion standard explicit.

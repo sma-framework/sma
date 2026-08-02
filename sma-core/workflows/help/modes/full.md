@@ -418,17 +418,18 @@ Usage: `/sma-verify-work 3`
 
 ### Ship Work
 
-**`/sma-ship [phase]`**
-Create a PR from completed phase work with an auto-generated body.
+**The release ritual** — a workflow, not a slash command.
+Creates a PR from completed phase work with an auto-generated body.
 
 - Pushes branch to remote
 - Creates PR with summary from SUMMARY.md, VERIFICATION.md, REQUIREMENTS.md
 - Optionally requests code review
 - Updates STATE.md with shipping status
 
-Prerequisites: Phase verified, `gh` CLI installed and authenticated.
+Prerequisites: Phase verified, `gh` CLI installed and authenticated. The blocking
+consequences gate is a CLI verb: `node scripts/sma/cli.mjs preship`.
 
-Usage: `/sma-ship 4` or `/sma-ship 4 --draft`
+Usage: ask for it by name — "run the release ritual for phase 4", or "… as a draft PR".
 
 ---
 

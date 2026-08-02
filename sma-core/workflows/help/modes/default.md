@@ -28,8 +28,11 @@ Existing codebase? Run `/sma-map-codebase` first to ground SMA in your code.
 | `/sma-debug "<symptom>"` | Persistent debug session, survives `/clear` |
 | `/sma-capture` | Save an idea, todo, note, seed, or backlog item |
 | `/sma-verify-work <N>` | Conversational UAT for a completed phase |
-| `/sma-ship <N>` | Open a PR from a completed phase |
+| `/sma-help ship` | The release ritual — how a completed phase becomes a PR |
 | `/sma-help --full` | Complete reference (every command, every flag) |
+
+Shipping is a ritual, not a slash command: ask for it by name and the ship workflow
+runs it. Its blocking gate is a CLI verb — `node scripts/sma/cli.mjs preship`.
 
 ## Want more?
 
