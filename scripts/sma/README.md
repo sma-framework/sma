@@ -766,6 +766,34 @@ to surface active sessions / collisions / next slots.
 
 ---
 
+## Model selection — profile tiers and per-agent pins
+
+Which model an agent runs on is resolved by `sma-tools query resolve-model` and by every
+workflow that dispatches a subagent. The order, first match wins:
+
+1. `model_overrides.<agent>` — the legacy per-agent escape hatch;
+2. `model_profile_overrides.agents.<agent-name>` — the **per-agent pin**;
+3. the phase-type tier (`models.<phase-type>`) or the `model_profile` tier for that agent;
+4. the runtime tier map (`model_profile_overrides.<runtime>.<opus|sonnet|haiku>`) and the
+   built-in default for the runtime.
+
+A *profile* is a per-TIER statement — how heavy is this kind of work — so raising one agent
+by switching profiles moves every other agent with it. A pin is the per-AGENT statement:
+
+```bash
+sma-tools query config-set model_profile_overrides.agents.sma-executor opus
+sma-tools query config-set model_profile_overrides.agents.sma-executor null   # remove it
+```
+
+The value is a model alias or a full model ID (the object form `{"model": "…"}` is accepted
+too). A pin also holds against dynamic-routing escalation — the point of a pin is that this
+agent's model does not move with the tier. `agents` is a reserved sub-key and is never read
+as a runtime; an entry naming an agent SMA does not know is a **no-op** — it is ignored and
+that agent keeps resolving through the profile, so a typo silently changes nothing instead
+of failing a dispatch.
+
+---
+
 ## Multi-terminal conventions
 
 ### Per-terminal worktrees — `sma worktree` (9.3-14, D-9.3-24a/b)

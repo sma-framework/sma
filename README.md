@@ -181,6 +181,16 @@ your-project/
 
 Delete the folders and your project is exactly as it was.
 
+## Which model runs which agent
+
+By default a model *profile* answers one question — how heavy is this kind of work — and every agent follows it. When you need a single agent on a specific model, pin that agent instead of switching the whole profile:
+
+```bash
+sma-tools query config-set model_profile_overrides.agents.sma-executor opus
+```
+
+The pin wins over the profile for that agent only; every other agent stays where it was, and it holds against automatic tier escalation. A name SMA does not recognise is ignored — a typo changes nothing rather than failing a run. Full resolution order and the per-runtime tier map: [scripts/sma/README.md](scripts/sma/README.md).
+
 ## Commands
 
 The `/sma-*` workflow family (run inside a Claude Code session):

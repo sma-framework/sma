@@ -27,10 +27,53 @@ const modelProfiles = require("./model-profiles.cjs");
 const { MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier } = modelProfiles;
 const model_catalog_cjs_1 = require("./model-catalog.cjs");
 /**
+ * Reserved sub-key of `model_profile_overrides`. Every other sub-key of that
+ * object names a RUNTIME and maps tiers to models; `agents` names AGENTS and
+ * maps an agent to the model it must run on, whatever the tier profile says.
+ * The two namespaces share one config object, so the reserved name is excluded
+ * from every runtime-shaped read.
+ */
+const AGENT_OVERRIDE_KEY = 'agents';
+/**
+ * Read `model_profile_overrides.agents.<agent-name>`.
+ *
+ * The tier profile answers "how heavy is this KIND of work"; this answers "which
+ * model must THIS agent run on" — a per-agent choice the per-tier profile cannot
+ * express (an agent-level pin used to force the whole profile up or down, moving
+ * unrelated agents with it). Returns the model string, or null when there is no
+ * entry for this agent — an unknown or misspelled agent name is a no-op, and
+ * resolution falls through to the profile exactly as before.
+ *
+ * The value may be a bare model/alias string or an object with a `model` field
+ * (the same two spellings a runtime tier entry accepts).
+ */
+function resolveAgentModelOverride(overrides, agentType) {
+    if (!agentType)
+        return null;
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides))
+        return null;
+    const agentsMap = overrides[AGENT_OVERRIDE_KEY];
+    if (!agentsMap || typeof agentsMap !== 'object' || Array.isArray(agentsMap))
+        return null;
+    if (!Object.hasOwn(agentsMap, agentType))
+        return null;
+    const raw = agentsMap[agentType];
+    const value = typeof raw === 'string'
+        ? raw
+        : (raw && typeof raw === 'object' && typeof raw['model'] === 'string' ? raw['model'] : null);
+    if (typeof value !== 'string' || value.trim() === '')
+        return null;
+    return value.trim();
+}
+/**
  * #2517 — Resolve the runtime-aware tier entry for (runtime, tier).
  */
 function resolveTierEntry({ runtime, tier, overrides }) {
     if (!runtime || !tier)
+        return null;
+    // `agents` is the per-agent namespace, never a runtime — a config that pins
+    // an agent must not be read as a runtime tier map.
+    if (runtime === AGENT_OVERRIDE_KEY)
         return null;
     const runtimeMap = model_catalog_cjs_1.RUNTIME_PROFILE_MAP;
     const builtin = runtimeMap[runtime]?.[tier] || null;
@@ -139,6 +182,12 @@ function resolveModelInternal(cwd, agentType) {
     const override = modelOverrides?.[agentType];
     if (override) {
         return override;
+    }
+    // 1b. Per-agent pin inside model_profile_overrides — wins over the tier
+    // profile for THIS agent and leaves every other agent on the profile.
+    const agentPin = resolveAgentModelOverride(config['model_profile_overrides'], agentType);
+    if (agentPin) {
+        return agentPin;
     }
     // 2. Compute the tier
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
@@ -254,6 +303,11 @@ function resolveModelForTier(cwd, agentType, attempt) {
     const override = modelOverrides?.[agentType];
     if (override)
         return override;
+    // A per-agent pin outranks the escalation ladder too — the point of the pin
+    // is that this agent's model does not move with the tier.
+    const agentPin = resolveAgentModelOverride(config['model_profile_overrides'], agentType);
+    if (agentPin)
+        return agentPin;
     if (config['model_policy'] && config['runtime'] && config['runtime'] !== 'claude') {
         return resolveModelInternal(cwd, agentType);
     }
@@ -450,6 +504,8 @@ function resolveEffortForTier(cwd, agentType, attempt) {
     return current;
 }
 module.exports = {
+    AGENT_OVERRIDE_KEY,
+    resolveAgentModelOverride,
     resolveTierEntry,
     resolveModelPolicy,
     resolveModelInternal,

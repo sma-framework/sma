@@ -188,6 +188,12 @@ function _warnUnknownProfileOverrides(parsed, configLabel) {
     const overrides = parsed['model_profile_overrides'];
     if (overrides && typeof overrides === 'object' && !Array.isArray(overrides)) {
         for (const [overrideRuntime, tierMap] of Object.entries(overrides)) {
+            // `agents` is the reserved per-agent namespace of the same object
+            // (model_profile_overrides.agents.<agent-name>), not a runtime —
+            // skip it so a valid agent pin never warns about an unknown runtime
+            // or an unknown tier.
+            if (overrideRuntime === 'agents')
+                continue;
             if (!(model_catalog_cjs_1.KNOWN_RUNTIMES).has(overrideRuntime)) {
                 const key = `${configLabel}::override-runtime::${overrideRuntime}`;
                 if (!_warnedConfigKeys.has(key)) {
