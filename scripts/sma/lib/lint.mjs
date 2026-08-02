@@ -40,7 +40,7 @@ import { parseConsequences, validateConsequence } from './consequences.mjs'
 // 9.2-03 (D-9.2-06): RECEIPT-PROSE delegates ALL parsing/validation to the
 // receipts lib (parseReceipts + parseCoverage + validateReceipt) — lint renders
 // findings, it NEVER re-implements a parser (same lock as PRED → predict.mjs).
-import { parseReceipts, parseCoverage, validateReceipt } from './receipts.mjs'
+import { parseReceipts, parseCoverage, validateReceipt, isAckedReceipt } from './receipts.mjs'
 // 9.2-10 (D-9.2-14): PRED-SKEPTIC delegates the countersign verdict to the
 // Goodhart guard (verifySkeptic) — lint renders the advisory, it never re-checks
 // the hash. goodhart.mjs imports extractPredictionsBlock BACK from this module
@@ -1263,18 +1263,36 @@ const RECEIPT_PROSE = {
       // A malformed receipt, or one whose check_command evades the SAFE_COMMAND
       // boundary, is its OWN critical finding — the lint cannot claim to enforce
       // a boundary receipts routinely evade (CONS-9.2-03-B).
+      //
+      // THE WAIVER: a receipt may carry `unsafe_ack: true` — the stamp
+      // `receipt-hash --unsafe-ack` writes when a human deliberately admits one
+      // off-allowlist command. That is not the failure this check exists to
+      // catch: the boundary was not evaded, it was crossed on the record, by a
+      // person, in writing. So an acked receipt is a WARNING, not critical —
+      // and the warning names the waiver, because the one thing a waiver must
+      // never be is invisible. It stays a finding for exactly that reason.
       for (const r of receipts) {
         const v = validateReceipt(r)
         if (!v.valid) {
+          // An ack cannot rescue a malformed receipt: the waiver speaks about
+          // the command, and there is no valid receipt here to speak for.
           const why = [...v.missing.map((m) => `missing ${m}`), ...v.errors].join('; ')
           out.push(finding('RECEIPT-PROSE', 'critical', basename(s.path), `receipt "${r.id ?? '<no id>'}" in ${basename(s.path)} is malformed: ${why} — a receipt that cannot be validated cannot re-verify a claim`))
         } else if (!isSafeCommand(r.check_command)) {
-          out.push(finding('RECEIPT-PROSE', 'critical', basename(s.path), `receipt "${r.id}" in ${basename(s.path)} has a non-allowlisted check_command — it can never be re-verified across the SAFE_COMMAND boundary`))
+          if (isAckedReceipt(r)) {
+            out.push(finding('RECEIPT-PROSE', 'warning', basename(s.path), `receipt "${r.id}" in ${basename(s.path)} has a non-allowlisted check_command admitted by an explicit waiver (unsafe_ack: true) — reverify will SKIP it (verdict skipped-unsafe), so this claim rests on the acking human, not on a re-runnable command`))
+          } else {
+            out.push(finding('RECEIPT-PROSE', 'critical', basename(s.path), `receipt "${r.id}" in ${basename(s.path)} has a non-allowlisted check_command — it can never be re-verified across the SAFE_COMMAND boundary`))
+          }
         }
       }
 
       // Every machine-verifiable coverage item (human_judgment: false) MUST bind
       // a valid, allowlisted receipt by coverage_id — else it is prose, not proof.
+      // The waiver does NOT widen `usable`: an acked command is still one
+      // reverify refuses to run, so a coverage item bound only to an acked
+      // receipt has no re-runnable proof and stays critical. The ack downgrades
+      // the finding about the RECEIPT, never the one about the claim it backs.
       const usable = receipts.filter((r) => validateReceipt(r).valid && isSafeCommand(r.check_command))
       for (const item of coverage) {
         if (item.human_judgment) continue

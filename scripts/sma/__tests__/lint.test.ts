@@ -643,6 +643,50 @@ describe('RECEIPT-PROSE lint (9.2-03 task 3)', () => {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }
   })
+
+  // The waiver: `receipt-hash --unsafe-ack` stamps `unsafe_ack: true` when a
+  // human deliberately admits one off-allowlist command. That is not a boundary
+  // EVASION — it is a boundary crossed on the record, in writing — so the
+  // receipt finding drops to a warning that NAMES the waiver. It never
+  // disappears: the one thing a waiver must not be is invisible.
+  it('Case 6: the same non-allowlisted command WITH unsafe_ack → WARNING naming the waiver', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-6-'))
+    try {
+      const receipts =
+        '  - id: R1\n    assertion: crosses the boundary on the record\n' +
+        '    check_command: git push --force origin main\n' +
+        `    expected_sha256: ${HEX64}\n    unsafe_ack: true\n`
+      writeFileSync(join(tmp, '9.2-03-SUMMARY.md'), summaryWith({ receipts }))
+      const f = findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('warning')
+      expect(f[0].message).toContain('unsafe_ack: true')
+      // Case 4 is the control: the SAME command without the stamp is critical.
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Case 7: the ack speaks for the receipt, not for the claim — the coverage item stays CRITICAL', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-7-'))
+    try {
+      const coverage = '  - id: cov-1\n    human_judgment: false\n'
+      const receipts =
+        '  - id: R1\n    assertion: crosses the boundary on the record\n' +
+        '    check_command: git push --force origin main\n' +
+        `    expected_sha256: ${HEX64}\n    coverage_id: cov-1\n    unsafe_ack: true\n`
+      writeFileSync(join(tmp, '9.2-03-SUMMARY.md'), summaryWith({ coverage, receipts }))
+      const f = findingsOf(runPredLint(tmp), 'RECEIPT-PROSE')
+      // An acked command is still one reverify refuses to run, so the machine
+      // «done» it was supposed to back has no re-runnable proof behind it.
+      expect(f.filter((x: any) => x.tier === 'warning')).toHaveLength(1)
+      const crit = f.filter((x: any) => x.tier === 'critical')
+      expect(crit).toHaveLength(1)
+      expect(crit[0].message).toContain('cov-1')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
 })
 
 // ── 9.1-13 Task 1: FI-9/FI-11 size lints (budgets are law) ──────────────────
