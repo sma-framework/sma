@@ -32,6 +32,13 @@ auto-committed; promotion needs the 3-condition review gate).
    command's LAST output line must be a number.
 7. **`confidence` is optional and NEVER gates a verdict** — it is recorded
    verbatim for calibration only (verbalized-confidence anti-pattern lock).
+8. **`horizon` is read, not decorative.** A horizon written as a date
+   (`2026-11-01`) or a version (`V3.2`) that has not arrived makes the entry
+   `not-due`: both `predict-score` and `blind-verify` register it, run nothing,
+   and write no verdict — a claim about a future nobody can observe is not
+   settled by guessing at it. It becomes scoreable the moment the horizon
+   arrives. A prose horizon (`plan close`, `next session-start`) is scored
+   immediately, exactly as before.
 
 ## Schema
 
@@ -43,7 +50,7 @@ predictions:
     check_command: "node scripts/sma/cli.mjs lint --json"  # allowlisted; numeric last line
     comparator: "=="           # one of == != >= <= > <
     threshold: 0               # numeric
-    horizon: "plan close"      # when it is scored
+    horizon: "plan close"      # when it is scored — see rule 8
     domain: tech.memory        # calibration-ledger domain
     confidence: 0.8            # OPTIONAL — recorded, never gates
 ```

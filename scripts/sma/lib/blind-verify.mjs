@@ -35,7 +35,7 @@
 
 import { isAbsolute, join, dirname, basename } from 'node:path'
 
-import { isSafeCommand, parsePredictions, parseFrontmatterEntries } from './predict.mjs'
+import { isSafeCommand, parsePredictions, parseFrontmatterEntries, horizonReached } from './predict.mjs'
 import { appendVerdict, readLedger } from './calibration.mjs'
 import { resolveModelId, JUDGE_MODEL_FIELD } from './model-version.mjs'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
@@ -169,6 +169,7 @@ export function deriveChecks({ planPath, readFn, rootDir } = {}) {
       check_command: p.check_command,
       comparator: p.comparator,
       threshold: Number(p.threshold),
+      horizon: p.horizon ?? null,
       domain: p.domain ?? DEFAULT_DOMAIN,
     })
   }
@@ -240,7 +241,13 @@ function verifyArtifact(check, readFn) {
  * a non-matching command scores 'skipped-unsafe' with runCommand NEVER invoked. A safe
  * command runs; non-numeric output or a throwing runner → 'error'; else numeric compare.
  */
-function verifyCommand(check, runCommand) {
+function verifyCommand(check, runCommand, { now, currentVersion } = {}) {
+  // The horizon gate runs FIRST and on the same rule as the scorer: a claim due
+  // at a version or date that has not arrived is not verifiable yet, so it gets
+  // 'not-due' and the runner is never invoked. Both sides of the ledger reaching
+  // the same non-verdict is the point — independently inventing verdicts about
+  // an un-arrived horizon is what once produced a false divergence.
+  if (horizonReached(check.horizon, { now, currentVersion }) === false) return 'not-due'
   if (!isSafeCommand(check.check_command)) return 'skipped-unsafe'
   let output
   try {
@@ -259,13 +266,14 @@ function verifyCommand(check, runCommand) {
  * verdicts to .sma/blind/<planId>.json (atomicWriteJson). Accepts NO claimed input.
  * Never throws (fail-open C9).
  *
- * verdict ∈ 'pass' | 'fail' | 'skipped-unsafe' | 'error' | 'refused-blind'.
+ * verdict ∈ 'pass' | 'fail' | 'skipped-unsafe' | 'error' | 'refused-blind' |
+ * 'not-due' (the horizon has not arrived — nothing was run, nothing compared).
  *
  * @param {{planPath:string, runCommand:Function, readFn:Function, dirs:{blindDir:string},
- *          rootDir?:string, planId?:string, now?:string}} args
+ *          rootDir?:string, planId?:string, now?:string, currentVersion?:string}} args
  * @returns {{planId:string, verdicts:object[], frozenPath:string}}
  */
-export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, planId, now, env } = {}) {
+export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, planId, now, env, currentVersion } = {}) {
   const pid = planId ?? planIdFromPath(planPath)
   const verdicts = []
 
@@ -288,7 +296,7 @@ export function blindVerify({ planPath, runCommand, readFn, dirs = {}, rootDir, 
       if (check.source === 'artifact') {
         verdict = verifyArtifact(check, readFn)
       } else {
-        verdict = verifyCommand(check, runCommand)
+        verdict = verifyCommand(check, runCommand, { now, currentVersion })
       }
       verdicts.push({
         id: check.id,
@@ -356,7 +364,7 @@ export function compareToClaimed({ claimed, planId, dirs = {}, lastGoodSha, now 
   for (const v of frozen.verdicts) {
     const blindPass = v.verdict === 'pass'
     const blindFail = v.verdict === 'fail'
-    if (!blindPass && !blindFail) continue // skipped-unsafe / error / refused-blind carry no comparison
+    if (!blindPass && !blindFail) continue // skipped-unsafe / error / refused-blind / not-due carry no comparison
     if (!claims.has(v.id)) continue
     const claimedPass = claims.get(v.id) === 'pass'
     const claimedFail = claims.get(v.id) === 'fail'

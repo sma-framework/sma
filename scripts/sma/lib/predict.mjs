@@ -249,8 +249,65 @@ export function isSafeCommand(command) {
   return SAFE_COMMAND_CHARSET.test(cmd) && SAFE_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
 
+/** A calendar horizon: `2026-08-01`, with or without a trailing time part. */
+const DATE_HORIZON_RE = /^(\d{4}-\d{2}-\d{2})(?:[T ].*)?$/
+/** A version horizon in the release-tag spelling: `V3.2`, `v3.2.1`, `3.2`. */
+const VERSION_HORIZON_RE = /^[Vv]?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/
+
+/** Parse a version horizon into comparable parts, or null when it is not one. */
+function versionParts(s) {
+  const m = VERSION_HORIZON_RE.exec(String(s ?? '').trim())
+  if (!m) return null
+  return [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)]
+}
+
 /**
- * scorePlan({planPath, runCommand, now}) -> {records, invalid, excluded}.
+ * horizonReached(horizon, {now, currentVersion}) -> true | false | null.
+ *
+ * A prediction states WHEN its claim comes due. Scoring one whose horizon has
+ * not arrived manufactures a verdict about a future the check cannot see — and
+ * two scorers doing it independently manufacture a DISAGREEMENT about it, which
+ * is how a not-yet-due claim once blocked a release as a false divergence.
+ *
+ * The gate is deliberately timid, because a wrong skip hides a real miss:
+ *   - `false` ONLY when the horizon is unambiguously ahead — a calendar date
+ *     later than today, or a version greater than the current one;
+ *   - `true` when it is parseable and has arrived;
+ *   - `null` for everything else — no horizon, prose («after the next release»),
+ *     or a version horizon with no current version to compare against. `null`
+ *     means "cannot tell", and the caller keeps its existing behaviour: score it.
+ *
+ * @param {string} horizon
+ * @param {{now?:string, currentVersion?:string}} [ctx]
+ * @returns {boolean|null}
+ */
+export function horizonReached(horizon, { now, currentVersion } = {}) {
+  const h = String(horizon ?? '').trim()
+  if (h === '') return null
+
+  const dm = DATE_HORIZON_RE.exec(h)
+  if (dm) {
+    const today = String(now ?? new Date().toISOString()).slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) return null
+    return dm[1] <= today
+  }
+
+  const hv = versionParts(h)
+  if (hv) {
+    const cv = versionParts(currentVersion)
+    if (!cv) return null // nothing to compare against — not a skip, just unknown
+    for (let i = 0; i < 3; i += 1) {
+      if (hv[i] !== cv[i]) return hv[i] < cv[i]
+    }
+    return true // the horizon IS the current version — it has arrived
+  }
+
+  return null // prose horizon — unchanged behaviour
+}
+
+/**
+ * scorePlan({planPath, runCommand, now, currentVersion}) -> {records, invalid,
+ * excluded, notDue}.
  *
  * Scores plan-frontmatter `predictions:` entries ONLY — the `receipts:` block
  * (a SUMMARY's build-time structural claims, D-9.2-06) is NEVER consumed
@@ -265,19 +322,24 @@ export function isSafeCommand(command) {
  * scorePlan itself NEVER throws — a throwing runner or non-numeric output
  * becomes verdict 'error' on that record (fail-open C9).
  *
+ * An entry whose `horizon` has not arrived (see horizonReached) lands in
+ * `notDue` with NO verdict and the runner never invoked — it is registered and
+ * awaiting its horizon, which is a different thing from having been checked.
+ *
  * Record shape: {id, domain, metric, claim, check_command, actual, expected,
  * comparator, hit, verdict: 'hit'|'miss'|'skipped-unsafe'|'error',
  * confidence, scoredAt, plan, error?}
  *
- * @param {{planPath: string, runCommand: Function, now?: string}} args
- * @returns {{records: object[], invalid: object[], excluded: object[]}}
+ * @param {{planPath: string, runCommand: Function, now?: string, currentVersion?: string}} args
+ * @returns {{records: object[], invalid: object[], excluded: object[], notDue: object[]}}
  */
-export function scorePlan({ planPath, runCommand, now }) {
+export function scorePlan({ planPath, runCommand, now, currentVersion }) {
   const { predictions, error } = parsePredictions(planPath)
   const records = []
   const invalid = []
   const excluded = []
-  if (error) return { records, invalid: [{ id: null, missing: [], errors: [error] }], excluded }
+  const notDue = []
+  if (error) return { records, invalid: [{ id: null, missing: [], errors: [error] }], excluded, notDue }
 
   for (const entry of predictions) {
     // Receipts are reverify's territory — excluded BEFORE validation so no
@@ -308,6 +370,19 @@ export function scorePlan({ planPath, runCommand, now }) {
       confidence: entry.confidence ?? null, // recorded verbatim — NEVER gates
       scoredAt: now ?? new Date().toISOString(),
       plan: planPath,
+    }
+
+    // Horizon gate BEFORE any run: a claim whose due date has not arrived gets
+    // no verdict at all — not a hit, not a miss, not an error. It stays
+    // registered and becomes scoreable the moment the horizon does arrive.
+    if (horizonReached(entry.horizon, { now: base.scoredAt, currentVersion }) === false) {
+      notDue.push({
+        id: entry.id,
+        horizon: entry.horizon,
+        claim: entry.claim ?? null,
+        reason: 'horizon-not-reached',
+      })
+      continue
     }
 
     // T-9.1-14: allowlist BEFORE any run — the runner is never invoked for a
@@ -347,7 +422,7 @@ export function scorePlan({ planPath, runCommand, now }) {
     records.push({ ...base, actual, hit, verdict: hit ? 'hit' : 'miss' })
   }
 
-  return { records, invalid, excluded }
+  return { records, invalid, excluded, notDue }
 }
 
 /**
