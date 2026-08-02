@@ -12,7 +12,9 @@
  *     performs ZERO writes.
  *   - Test 4: branch-delete recovery — the pinned tip resurrects the branch after -D.
  *   - Test 5: prune keeps the newest KEEP groups and unpins the rest.
- *   - Test 6: latency tripwire — a snapshot completes under a generous CI bound.
+ *   - Test 6: latency tripwire — a snapshot stays within a multiple of the host's
+ *     OWN measured git-spawn cost (a fixed wall-clock bound measured the host,
+ *     not the code, and went flaky on a shared Windows box).
  */
 
 import { describe, it, expect } from 'vitest'
@@ -147,13 +149,35 @@ describe('sma undo (real git)', () => {
     expect(listSnapshots({ runGit: g }).length).toBe(2)
   })
 
-  it('Test 6: latency tripwire — a snapshot completes under a generous CI bound', () => {
+  it('Test 6: latency tripwire — a snapshot stays within a multiple of this host\'s own git cost', () => {
     const { dir, g } = newRepo()
     writeFileSync(join(dir, 'tracked.ts'), 'dirty\n')
     writeFileSync(join(dir, 'u.txt'), 'x\n')
+
+    // WHY A DERIVED BOUND: takeSnapshot spawns ~12 git processes. A fixed
+    // wall-clock bound therefore measures PROCESS SPAWN COST — i.e. the host —
+    // not this code. On a shared Windows box (contention + AV scanning the temp
+    // tree) a spawn costs many times what CI sees, and the tripwire fires on a
+    // machine that is merely busy. So we first measure what ONE git round-trip
+    // costs on THIS host, right now, in THIS temp repo, and scale the budget by
+    // it. A real regression (an added scan, a network call, an accidental O(n))
+    // still trips the wire; a loaded host no longer does.
+    const warm: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const w0 = Date.now()
+      g(['rev-parse', 'HEAD'])
+      warm.push(Date.now() - w0)
+    }
+    const perGit = Math.max(1, Math.min(...warm)) // cheapest observed spawn = the host's floor
+    const SPAWNS = 12 // git invocations inside takeSnapshot
+    const SAFETY = 4 // headroom for the non-git work + scheduling jitter
+    const budget = Math.max(2000, perGit * SPAWNS * SAFETY)
+
     const t0 = Date.now()
     const r = takeSnapshot({ cmdClass: 'reset-hard', meta: {} }, { runGit: g, repoRoot: dir })
+    const elapsed = Date.now() - t0
     expect(r.ok).toBe(true)
-    expect(Date.now() - t0).toBeLessThan(2000) // regression tripwire only; SLO is bench over live receipts
+    // regression tripwire only; the SLO is bench over live receipts
+    expect({ elapsed, budget, perGit, within: elapsed < budget }).toMatchObject({ within: true })
   })
 })
