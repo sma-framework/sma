@@ -197,14 +197,14 @@ function windowTokenFrom(evt) {
 
 /**
  * truncateRestore(body, maxBytes) — cap the restored capsule to maxBytes (UTF-8),
- * appending a `pnpm sma resume` pointer line when it had to be cut. Byte-safe: the
+ * appending a `node scripts/sma/cli.mjs resume` pointer line when it had to be cut. Byte-safe: the
  * Buffer slice may drop a partial multibyte char at the boundary (rendered as the
  * replacement char), never a torn sequence. 9.2-06 restore reflex.
  */
 function truncateRestore(body, maxBytes) {
   const text = String(body ?? '')
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
-  const pointer = '\n\nПолный бриф: `pnpm sma resume`'
+  const pointer = '\n\nПолный бриф: `node scripts/sma/cli.mjs resume`'
   const room = Math.max(0, maxBytes - Buffer.byteLength(pointer, 'utf8'))
   const cut = Buffer.from(text, 'utf8').subarray(0, room).toString('utf8')
   return cut + pointer
@@ -523,7 +523,7 @@ async function cmdSessionStart({ dirs }) {
   for (const nh of s.needsHuman) {
     lines.push(`устаревшая сессия ${nh.who} со свежими правками в scope — требуется решение человека`)
   }
-  lines.push('Подробнее: `pnpm sma status`.')
+  lines.push('Подробнее: `node scripts/sma/cli.mjs status`.')
 
   // 9.1-11 (B1): budgeted pre-act periphery injection — relevant memory arrives
   // BEFORE the first act, matched to the session's live context (claimed scope /
@@ -602,7 +602,7 @@ async function cmdSessionStart({ dirs }) {
   try {
     const curriculum = await import('./lib/curriculum.mjs')
     const latest = curriculum.latestBrief({ dirs, now: Date.now() })
-    if (latest.stale) curriculumLine = 'SMA: недельная miss-curriculum устарела — обновите: `pnpm sma curriculum`.'
+    if (latest.stale) curriculumLine = 'SMA: недельная miss-curriculum устарела — обновите: `node scripts/sma/cli.mjs curriculum`.'
   } catch {
     /* fail-open — the curriculum nudge never wedges session-start */
   }
@@ -832,7 +832,7 @@ async function buildPreActInjection({ dirs, ownScope, terminalId, sessionToken }
 async function cmdClaim({ positionals, flags, dirs }) {
   const name = positionals[0]
   if (!name) {
-    process.stderr.write('usage: pnpm sma claim <name> --globs <csv> --desc <text>\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs claim <name> --globs <csv> --desc <text>\n')
     return 1
   }
   const globs = typeof flags.globs === 'string' ? flags.globs.split(',').map((g) => g.trim()).filter(Boolean) : []
@@ -875,7 +875,7 @@ async function cmdClaim({ positionals, flags, dirs }) {
     printJson({ claimed: name, slug, globs, by: identity.holderIdentity })
     return 0
   }
-  process.stdout.write(`SMA: claim «${name}» зафиксирован (${globs.join(', ') || 'без globs'}); снять: pnpm sma force-clear ${slug}\n`)
+  process.stdout.write(`SMA: claim «${name}» зафиксирован (${globs.join(', ') || 'без globs'}); снять: node scripts/sma/cli.mjs force-clear ${slug}\n`)
   return 0
 }
 
@@ -886,7 +886,7 @@ async function cmdClaim({ positionals, flags, dirs }) {
 async function cmdRelease({ positionals, flags, dirs }) {
   const name = positionals[0]
   if (!name) {
-    process.stderr.write('usage: pnpm sma release <name>\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs release <name>\n')
     return 1
   }
   const registry = await import('./lib/registry.mjs')
@@ -992,7 +992,7 @@ async function cmdNextSlot({ positionals, flags, dirs }) {
     return res.won ? 0 : 1
   }
 
-  process.stderr.write('usage: pnpm sma next-slot <migration|release|bl|action|decision --phase N|phase>\n')
+  process.stderr.write('usage: node scripts/sma/cli.mjs next-slot <migration|release|bl|action|decision --phase N|phase>\n')
   return 1
 }
 
@@ -1044,7 +1044,7 @@ async function cmdConsume({ positionals, flags, dirs }) {
   const kind = positionals[0]
   const n = positionals[1]
   if (!kind || n == null) {
-    process.stderr.write('usage: pnpm sma consume <migration|bl|action|phase|decision> <n> [--phase P]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs consume <migration|bl|action|phase|decision> <n> [--phase P]\n')
     return 1
   }
   const slots = await import('./lib/slots.mjs')
@@ -1334,7 +1334,7 @@ async function cmdExplain({ positionals, flags }) {
       printJson({ topics })
       return 0
     }
-    process.stdout.write('SMA explainers — pnpm sma explain <topic>:\n')
+    process.stdout.write('SMA explainers — node scripts/sma/cli.mjs explain <topic>:\n')
     for (const t of topics) process.stdout.write(`  ${t.id.padEnd(15)}${t.summary}\n`)
     return 0
   }
@@ -2102,7 +2102,7 @@ async function cmdUndo({ flags, dirs }) {
       `SMA undo (превью): снимок ${r.plan.snapshotId} — head:${r.plan.head} stash:${r.plan.stash} untracked:${r.plan.untracked}` +
         `${r.plan.untracked && !r.plan.untrackedMapKnown ? ' (карта имён недоступна — untracked не восстановится)' : ''}\n`,
     )
-    if (!dryRun) process.stdout.write(`  выполните: pnpm sma undo${snapshotId ? ` --to ${snapshotId}` : ''} --yes\n`)
+    if (!dryRun) process.stdout.write(`  выполните: node scripts/sma/cli.mjs undo${snapshotId ? ` --to ${snapshotId}` : ''} --yes\n`)
     return 0
   }
 
@@ -3146,9 +3146,9 @@ async function gatherFlightInputs(dirs, { sessionToken, trigger, now } = {}) {
 function resumeNextStep(inputs) {
   const exec = inputs.execState
   if (exec && exec.nextUndone != null) return `продолжить план ${exec.planId ?? ''}`.trim() + ` с задачи ${exec.nextUndone}`
-  if (exec && exec.complete) return `план ${exec.planId ?? ''} завершён — см. pnpm sma status`.trim()
+  if (exec && exec.complete) return `план ${exec.planId ?? ''} завершён — см. node scripts/sma/cli.mjs status`.trim()
   if (inputs.label) return `продолжить: ${inputs.label}`
-  return 'см. pnpm sma status'
+  return 'см. node scripts/sma/cli.mjs status'
 }
 
 /**
@@ -3820,7 +3820,7 @@ async function statuslineSetWebhook({ positionals, flags, dirs }) {
     ok = false
   }
   if (!ok) {
-    process.stderr.write('SMA: укажите http(s) URL: pnpm sma statusline set-webhook <url>\n')
+    process.stderr.write('SMA: укажите http(s) URL: node scripts/sma/cli.mjs statusline set-webhook <url>\n')
     return 1
   }
   try {
@@ -4095,7 +4095,7 @@ async function cmdGatesReport({ flags, dirs }) {
 async function cmdGatesAck({ positionals, flags, dirs }) {
   const ref = positionals[0]
   if (!ref) {
-    process.stderr.write('usage: pnpm sma gates-ack <eventRef> --false-positive [--gate GATE-ID]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs gates-ack <eventRef> --false-positive [--gate GATE-ID]\n')
     return 1
   }
   const journal = await import('./lib/journal.mjs')
@@ -4132,7 +4132,7 @@ async function cmdGates({ positionals, flags, dirs }) {
   const sub = positionals[0]
   if (sub === 'override') return cmdGatesOverride({ positionals: positionals.slice(1), flags, dirs })
   if (sub === 'mark-fullgate') return cmdGatesMarkFullgate({ positionals: positionals.slice(1), flags, dirs })
-  process.stderr.write('usage: pnpm sma gates <override <GATE-ID> --yes --reason "..."|mark-fullgate [--sha <sha>]>\n')
+  process.stderr.write('usage: node scripts/sma/cli.mjs gates <override <GATE-ID> --yes --reason "..."|mark-fullgate [--sha <sha>]>\n')
   return 1
 }
 
@@ -4147,7 +4147,7 @@ async function cmdGatesOverride({ positionals, flags, dirs }) {
   const gateId = positionals[0]
   if (!gateId || !SOFT_DENY_GATE_IDS.includes(gateId)) {
     process.stderr.write(
-      `usage: pnpm sma gates override <${SOFT_DENY_GATE_IDS.join('|')}> --yes --reason "почему"\n`,
+      `usage: node scripts/sma/cli.mjs gates override <${SOFT_DENY_GATE_IDS.join('|')}> --yes --reason "почему"\n`,
     )
     return 1
   }
@@ -4247,7 +4247,7 @@ async function cmdGatesMarkFullgate({ flags, dirs }) {
 async function cmdForceClear({ positionals, flags, dirs }) {
   const name = positionals[0]
   if (!name) {
-    process.stderr.write('usage: pnpm sma force-clear <claim> --yes\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs force-clear <claim> --yes\n')
     return 1
   }
   const claims = await import('./lib/claims.mjs')
@@ -4299,7 +4299,7 @@ async function cmdForceClear({ positionals, flags, dirs }) {
   if (!evidenceId) {
     process.stdout.write(
       'Принудительная очистка чужого claim — рискованная операция и требует доказательства (burden of proof).\n' +
-        `Запишите его в этом же вызове:\n  pnpm sma force-clear ${name} --yes --reason "<почему>" --checked "<что проверили>" [--checked "<ещё>"]\n` +
+        `Запишите его в этом же вызове:\n  node scripts/sma/cli.mjs force-clear ${name} --yes --reason "<почему>" --checked "<что проверили>" [--checked "<ещё>"]\n` +
         'или сошлитесь на заранее записанное свежее доказательство: --evidence <id>. Ничего не удалено.\n',
     )
     return 1
@@ -4416,7 +4416,7 @@ async function cmdPreship({ flags, dirs }) {
   for (const b of res.blocks) {
     const kind = b.verdict === 'divergence' ? 'divergence' : 'miss'
     process.stdout.write(`  [class ${b.class}] ${b.eventKey} — ${kind} in ${b.domain ?? '—'}; ${b.claim ?? b.id ?? ''}\n`)
-    process.stdout.write(`    blocked until founder disposition: pnpm sma disposition ${b.eventKey} --verdict <accept|fix-forward|rollback> --reason "<...>" --yes\n`)
+    process.stdout.write(`    blocked until founder disposition: node scripts/sma/cli.mjs disposition ${b.eventKey} --verdict <accept|fix-forward|rollback> --reason "<...>" --yes\n`)
     if (b.verdict === 'divergence' && typeof b.lastGoodSha === 'string' && /^[0-9a-f]{40}$/i.test(b.lastGoodSha)) {
       const slug = String(b.eventKey).replace(/[^\w.-]/g, '_')
       const rb = consequences.openRollbackCandidate({ slug, sha: b.lastGoodSha, execGit })
@@ -4454,7 +4454,7 @@ async function cmdPreship({ flags, dirs }) {
 async function cmdDisposition({ positionals, flags, dirs }) {
   const eventKey = positionals[0]
   if (!eventKey) {
-    process.stderr.write('usage: pnpm sma disposition <eventKey> --verdict <accept|fix-forward|rollback> --reason "<why>" --yes\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs disposition <eventKey> --verdict <accept|fix-forward|rollback> --reason "<why>" --yes\n')
     return 1
   }
   const ALLOWED = ['accept', 'fix-forward', 'rollback']
@@ -4580,7 +4580,7 @@ function resolveCurrentVersion(flags, repoRoot) {
 async function cmdPredictScore({ positionals, flags, dirs }) {
   const planPath = positionals[0]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma predict-score <plan-path> [--current-version <v>] [--json]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs predict-score <plan-path> [--current-version <v>] [--json]\n')
     return 1
   }
   const predict = await import('./lib/predict.mjs')
@@ -4901,7 +4901,7 @@ async function cmdReverify({ flags, dirs }) {
 async function cmdReceiptHash({ positionals, flags, dirs }) {
   const command = positionals[0]
   if (!command) {
-    process.stderr.write('usage: pnpm sma receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>]\n')
     return 1
   }
   const predict = await import('./lib/predict.mjs')
@@ -5017,9 +5017,9 @@ async function cmdBaseline({ positionals, flags, dirs }) {
 
   const isMetric = baseline.BASELINE_METRICS.includes(sub)
   if (sub !== 'capture' && !isMetric) {
-    process.stdout.write('usage: pnpm sma baseline capture [--only <metric>] [--cases <path>] [--queue-url <url>] [--runs N] [--record] [--json]\n')
-    process.stdout.write('       pnpm sma baseline replay [--json]\n')
-    process.stdout.write(`       pnpm sma baseline <${baseline.BASELINE_METRICS.join('|')}>  — одна метрика (форма, которую перезапускает записанная проверка)\n`)
+    process.stdout.write('usage: node scripts/sma/cli.mjs baseline capture [--only <metric>] [--cases <path>] [--queue-url <url>] [--runs N] [--record] [--json]\n')
+    process.stdout.write('       node scripts/sma/cli.mjs baseline replay [--json]\n')
+    process.stdout.write(`       node scripts/sma/cli.mjs baseline <${baseline.BASELINE_METRICS.join('|')}>  — одна метрика (форма, которую перезапускает записанная проверка)\n`)
     process.stdout.write('  capture измеряет слой: отдача памяти, цена контекста, латентность хука, восстановление воркера, чистая установка.\n')
     process.stdout.write('  --record пишет по одной структурной квитанции на метрику; replay перепроверяет записанное и падает на расхождении.\n')
     return sub ? 1 : 0
@@ -5061,7 +5061,7 @@ async function cmdBaseline({ positionals, flags, dirs }) {
       )
     }
     for (const e of recorded.errors) process.stdout.write(`  ✗ квитанция ${e.metric}: ${e.error}\n`)
-    process.stdout.write('  записано — перепроверка: pnpm sma baseline replay\n')
+    process.stdout.write('  записано — перепроверка: node scripts/sma/cli.mjs baseline replay\n')
   } else {
     process.stdout.write('  (квитанции не записаны — добавьте --record; запись ПЕРЕЗАПУСКАЕТ каждую проверку, поэтому она не по умолчанию)\n')
   }
@@ -5262,7 +5262,7 @@ async function cmdPassport({ flags, dirs }) {
       process.stdout.write('{}\n')
       return 0
     }
-    process.stdout.write('SMA passport: PASSPORT.md ещё не собран — запустите `pnpm sma passport --build`.\n')
+    process.stdout.write('SMA passport: PASSPORT.md ещё не собран — запустите `node scripts/sma/cli.mjs passport --build`.\n')
     return 0
   }
   if (wantsJson(flags)) {
@@ -5645,7 +5645,7 @@ async function cmdCalibration({ flags, dirs }) {
     const planId = typeof flags.plan === 'string' ? flags.plan : null
     const verdict = flags.verdict
     if (!planId || (verdict !== 'satisfied' && verdict !== 'unsatisfied')) {
-      process.stderr.write('usage: pnpm sma calibration --grader-record --plan <id> --verdict <satisfied|unsatisfied> --source <blind-verify|verifier|vendor> [--horizon <spec>]\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs calibration --grader-record --plan <id> --verdict <satisfied|unsatisfied> --source <blind-verify|verifier|vendor> [--horizon <spec>]\n')
       return 1
     }
     const rec = calibration.recordGraderVerdict(
@@ -5920,7 +5920,7 @@ async function cmdTrim({ flags, dirs }) {
     if (!p.coreDemotions.length && !p.noteSplits.length && !p.stateOverflow) {
       process.stdout.write('  (всё в пределах бюджетов — понижать нечего)\n')
     }
-    process.stdout.write('  Применить: pnpm sma trim --apply\n')
+    process.stdout.write('  Применить: node scripts/sma/cli.mjs trim --apply\n')
     return 0
   }
 
@@ -5981,7 +5981,7 @@ async function cmdState({ positionals, flags, dirs }) {
       const phase = typeof flags.phase === 'string' ? flags.phase : String(flags.phase ?? '')
       const text = typeof flags.text === 'string' ? flags.text : ''
       if (!phase || !text) {
-        process.stderr.write('usage: pnpm sma state set-position --phase <N> --text "<...>"\n')
+        process.stderr.write('usage: node scripts/sma/cli.mjs state set-position --phase <N> --text "<...>"\n')
         return 1
       }
       res = stateSection.setPosition({ phase, text }, { statePath })
@@ -5991,7 +5991,7 @@ async function cmdState({ positionals, flags, dirs }) {
       const text = typeof flags.text === 'string' ? flags.text : ''
       const kind = typeof flags.kind === 'string' ? flags.kind : 'tech'
       if (!phase || !text) {
-        process.stderr.write('usage: pnpm sma state add-blocker --phase <N> --text "<...>" --kind ops|external|tech\n')
+        process.stderr.write('usage: node scripts/sma/cli.mjs state add-blocker --phase <N> --text "<...>" --kind ops|external|tech\n')
         return 1
       }
       res = stateSection.addBlocker({ phase, text, kind }, { statePath })
@@ -5999,7 +5999,7 @@ async function cmdState({ positionals, flags, dirs }) {
     } else if (sub === 'resolve-blocker') {
       const match = typeof flags.match === 'string' ? flags.match : ''
       if (!match) {
-        process.stderr.write('usage: pnpm sma state resolve-blocker --match "<substr>"\n')
+        process.stderr.write('usage: node scripts/sma/cli.mjs state resolve-blocker --match "<substr>"\n')
         return 1
       }
       res = stateSection.resolveBlocker({ match }, { statePath })
@@ -6008,14 +6008,14 @@ async function cmdState({ positionals, flags, dirs }) {
       const name = typeof flags.name === 'string' ? flags.name : ''
       const owns = typeof flags.owns === 'string' ? flags.owns : ''
       if (!name) {
-        process.stderr.write('usage: pnpm sma state set-session --name "<...>" --owns "<...>"\n')
+        process.stderr.write('usage: node scripts/sma/cli.mjs state set-session --name "<...>" --owns "<...>"\n')
         return 1
       }
       res = stateSection.setSessions({ name, owns }, { statePath })
       did = `Active Sessions += ${name}`
     } else {
       process.stderr.write(
-        'usage: pnpm sma state <set-position|add-blocker|resolve-blocker|set-session> [flags]\n',
+        'usage: node scripts/sma/cli.mjs state <set-position|add-blocker|resolve-blocker|set-session> [flags]\n',
       )
       return 1
     }
@@ -6060,7 +6060,7 @@ async function cmdExecJournal({ positionals, flags, dirs }) {
   const phase = flags.phase
   const plan = flags.plan
   if (!sub || (sub !== 'append' && sub !== 'read')) {
-    process.stderr.write('usage: pnpm sma exec-journal <append|read> --phase X --plan NN [...]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs exec-journal <append|read> --phase X --plan NN [...]\n')
     return 1
   }
   if (phase == null || plan == null) {
@@ -6312,7 +6312,7 @@ async function cmdBench({ positionals, flags, dirs }) {
       else process.stdout.write(`SMA bench exam: score\n${graded.score}\n`)
       return 0
     }
-    process.stderr.write('usage: pnpm sma bench exam --new | --grade <answers> --key <key>\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs bench exam --new | --grade <answers> --key <key>\n')
     return 1
   }
 
@@ -7149,7 +7149,7 @@ async function cmdTune({ positionals, flags, dirs }) {
   if (sub === 'fix') {
     const ruleId = positionals[1]
     if (!ruleId) {
-      process.stderr.write('usage: pnpm sma tune fix <ruleId>\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs tune fix <ruleId>\n')
       return 1
     }
     let runCommand
@@ -7169,7 +7169,7 @@ async function cmdTune({ positionals, flags, dirs }) {
     const scope = positionals[1]
     const ruleId = typeof flags.rule === 'string' ? flags.rule : null
     if (!scope || !ruleId) {
-      process.stderr.write('usage: pnpm sma tune incident <scope> --rule <ruleId>\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs tune incident <scope> --rule <ruleId>\n')
       return 1
     }
     try {
@@ -7230,7 +7230,7 @@ async function cmdCurriculum({ flags, dirs }) {
   if (flags.latest) {
     const latest = curriculum.latestBrief({ dirs, now: Date.now() })
     if (wantsJson(flags)) printJson(latest)
-    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `pnpm sma curriculum`.\n')
+    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `node scripts/sma/cli.mjs curriculum`.\n')
     return 0
   }
 
@@ -7398,7 +7398,7 @@ async function cmdGrill({ positionals, flags, dirs }) {
 
   const planPath = positionals[0]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma grill <plan-path> [--challenge "promise::attack" | --resolve <CH-id> --as <status> | --gate | --standing | --land <CH-id>] | grill --standing-selftest\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs grill <plan-path> [--challenge "promise::attack" | --resolve <CH-id> --as <status> | --gate | --standing | --land <CH-id>] | grill --standing-selftest\n')
     return 1
   }
   const planId = planIdFromPath(planPath)
@@ -7512,7 +7512,7 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
 
   const planPath = positionals[0]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma blind-verify <plan-path> | blind-verify --stats --metric divergence-count\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs blind-verify <plan-path> | blind-verify --stats --metric divergence-count\n')
     return 1
   }
   // INPUT BARRIER (D-9.2-11): the blind pass accepts ONLY a -PLAN.md. A SUMMARY/exec-journal
@@ -7604,7 +7604,7 @@ async function cmdEvidence({ positionals, flags, dirs }) {
 
   const op = positionals[0]
   if (!op) {
-    process.stderr.write('usage: pnpm sma evidence <force-push|allowlist-edit|foreign-claim-clear> --target ... --reason ... --checked "a; b"\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs evidence <force-push|allowlist-edit|foreign-claim-clear> --target ... --reason ... --checked "a; b"\n')
     return 1
   }
   const checks = typeof flags.checked === 'string' ? flags.checked.split(';').map((s) => s.trim()).filter(Boolean) : []
@@ -7692,7 +7692,7 @@ async function cmdIntegrity({ positionals, flags, dirs }) {
   if (sub === 'disarm-renew') {
     const gateId = positionals[1]
     if (!gateId) {
-      process.stderr.write('usage: pnpm sma integrity disarm-renew <gateId> --reason "<why>"\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs integrity disarm-renew <gateId> --reason "<why>"\n')
       return 1
     }
     let identity = { holderIdentity: 'unknown', terminalId: 'unknown' }
@@ -7708,7 +7708,7 @@ async function cmdIntegrity({ positionals, flags, dirs }) {
     return 0
   }
 
-  process.stderr.write('usage: pnpm sma integrity <hazards|shadow|disarms|disarm-renew> [--json|--count-uncompensated|--count-silent]\n')
+  process.stderr.write('usage: node scripts/sma/cli.mjs integrity <hazards|shadow|disarms|disarm-renew> [--json|--count-uncompensated|--count-silent]\n')
   return 1
 }
 
@@ -7721,7 +7721,7 @@ async function cmdSkeptic({ positionals, flags, dirs }) {
   const sub = positionals[0]
   const planPath = positionals[1]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma skeptic <sign|verify> <plan-path>\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs skeptic <sign|verify> <plan-path>\n')
     return 1
   }
   const goodhart = await import('./lib/goodhart.mjs')
@@ -7750,7 +7750,7 @@ async function cmdSkeptic({ positionals, flags, dirs }) {
     return v.ok ? 0 : 1
   }
 
-  process.stderr.write('usage: pnpm sma skeptic <sign|verify> <plan-path>\n')
+  process.stderr.write('usage: node scripts/sma/cli.mjs skeptic <sign|verify> <plan-path>\n')
   return 1
 }
 
@@ -7766,7 +7766,7 @@ async function cmdCanary({ positionals, flags, dirs }) {
   if (sub === 'plant') {
     const claimsPath = positionals[1]
     if (!claimsPath) {
-      process.stderr.write('usage: pnpm sma canary plant <claims-path>\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs canary plant <claims-path>\n')
       return 1
     }
     let identity = { terminalId: 'unknown' }
@@ -7808,7 +7808,7 @@ async function cmdCanary({ positionals, flags, dirs }) {
   if (sub === 'sweep') {
     const claimsPath = positionals[1]
     if (!claimsPath) {
-      process.stderr.write('usage: pnpm sma canary sweep <claims-path>\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs canary sweep <claims-path>\n')
       return 1
     }
     const r = canary.sweepCanaries({ claimsPath, dirs })
@@ -7817,7 +7817,7 @@ async function cmdCanary({ positionals, flags, dirs }) {
     return 0
   }
 
-  process.stderr.write('usage: pnpm sma canary <plant <claims-path>|score [--count-scored]|sweep <claims-path>>\n')
+  process.stderr.write('usage: node scripts/sma/cli.mjs canary <plant <claims-path>|score [--count-scored]|sweep <claims-path>>\n')
   return 1
 }
 
@@ -7828,7 +7828,7 @@ async function cmdCanary({ positionals, flags, dirs }) {
 async function cmdNearmiss({ positionals, flags, dirs }) {
   const text = positionals.join(' ').trim()
   if (!text) {
-    process.stderr.write('usage: pnpm sma nearmiss "<what nearly went wrong>"\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs nearmiss "<what nearly went wrong>"\n')
     return 1
   }
   const goodhart = await import('./lib/goodhart.mjs')
@@ -7890,7 +7890,7 @@ async function cmdPreflight({ positionals, flags, dirs }) {
 
   const planPath = positionals[0]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma preflight <plan-path> [--count] [--json] [--run-verify]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs preflight <plan-path> [--count] [--json] [--run-verify]\n')
     return 1
   }
 
@@ -8025,12 +8025,12 @@ async function cmdArena({ positionals, flags }) {
   // ── arena report <records.json> [--out <html>] [--json]
   const sub = positionals[0]
   if (sub !== 'report') {
-    process.stderr.write('usage: pnpm sma arena report <records.json> [--out <html>] [--json] | arena --selftest | arena --selftest-negative\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs arena report <records.json> [--out <html>] [--json] | arena --selftest | arena --selftest-negative\n')
     return 1
   }
   const recordsPath = positionals[1]
   if (!recordsPath) {
-    process.stderr.write('usage: pnpm sma arena report <records.json> [--out <html>]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs arena report <records.json> [--out <html>]\n')
     return 1
   }
   let scored
@@ -8503,7 +8503,7 @@ async function cmdAsk({ positionals, flags, dirs }) {
   const target = positionals[0]
   const question = positionals[1] ?? (typeof flags.q === 'string' ? flags.q : '')
   if (!target) {
-    process.stderr.write('SMA: использование — pnpm sma ask <терминал> "<вопрос>"\n')
+    process.stderr.write('SMA: использование — node scripts/sma/cli.mjs ask <терминал> "<вопрос>"\n')
     return 1
   }
   const registry = await import('./lib/registry.mjs')
@@ -8973,7 +8973,7 @@ async function cmdWorktree({ positionals, flags, dirs }) {
   if (sub === 'remove') {
     const path = positionals[1]
     if (!path) {
-      process.stderr.write('usage: pnpm sma worktree remove <path> [--force]\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs worktree remove <path> [--force]\n')
       return 1
     }
     const res = wt.removeWorktree({ path, execGit, cwd: mainRoot, force: flags.force === true })
@@ -9135,7 +9135,7 @@ async function cmdMerge({ positionals, flags, dirs }) {
   // ── real `merge <branch>` — wire the REAL execGit + a targeted-test runner on the result ──
   const branch = positionals[0]
   if (!branch) {
-    process.stderr.write('usage: pnpm sma merge <branch> [--json]\n')
+    process.stderr.write('usage: node scripts/sma/cli.mjs merge <branch> [--json]\n')
     return 1
   }
   const { execFileSync } = await import('node:child_process')
@@ -9349,7 +9349,7 @@ async function main() {
 
   if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'pnpm sma <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }
