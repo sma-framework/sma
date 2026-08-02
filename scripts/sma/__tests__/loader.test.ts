@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -327,5 +327,149 @@ describe('loader.mjs — orderNotes (shared comparator)', () => {
       'c.md': '2026-01-01T00:00:00Z',
     }).map((n) => n.file)
     expect(ordered).toEqual(['c.md', 'a.md', 'b.md'])
+  })
+})
+
+/**
+ * Read-time hard filters in the delivery chain (§9.1: «hard filters run before any
+ * ranking»). The predicate lives in generator.mjs beside the CORE-membership rule —
+ * one axis, one implementation — and the loader applies it as a filter chain BEFORE
+ * CORE membership, facet matching and ordering are even asked. A record hidden by it
+ * appears in NEITHER output point of the pack (CORE and periphery).
+ */
+const V2_TIME_TAGS_MD = `# TAGS
+
+## area
+- tech — infra, build, migrations.
+- memory — memory system. · aliases: sma
+
+## kind
+- procedural-rule — a how-to rule.
+`
+
+/** A schema-v2 record with the visibility fields the hard filters read. */
+function v2timeNote(
+  dir: string,
+  name: string,
+  fm: {
+    claim: string
+    status?: string
+    priority?: string
+    areas?: string[]
+    validFrom?: string
+    validUntil?: string
+    sensitivity?: string
+  },
+) {
+  const lines = [
+    '---',
+    `id: ${name.replace(/\.md$/, '')}`,
+    'schema_version: 2',
+    `status: ${fm.status ?? 'active'}`,
+    'memory_type: procedural',
+    'truth_mode: normative',
+    `claim: ${fm.claim}`,
+    'language: ru',
+  ]
+  if (fm.validFrom) lines.push(`valid_from: ${fm.validFrom}`)
+  if (fm.validUntil) lines.push(`valid_until: ${fm.validUntil}`)
+  lines.push(`context_priority: ${fm.priority ?? 'on-demand'}`)
+  lines.push(`sensitivity: ${fm.sensitivity ?? 'internal'}`)
+  if (fm.areas && fm.areas.length) {
+    lines.push('retrieval:')
+    lines.push(`  areas: [${fm.areas.join(', ')}]`)
+  }
+  lines.push('---')
+  writeFileSync(join(dir, name), lines.join('\n') + '\nbody\n', 'utf8')
+}
+
+describe('loader.mjs — hard filters run before ranking (§9.1)', () => {
+  const NOW = '2026-08-02T12:00:00Z'
+  let dir: string
+  let tags: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sma-loader-visible-'))
+    tags = join(dir, 'TAGS.md')
+    writeFileSync(tags, V2_TIME_TAGS_MD, 'utf8')
+
+    // Expired AND always-load: the time filter outranks context_priority, exactly
+    // as the status filter does — otherwise a stale rule is quoted into every session.
+    v2timeNote(dir, 'expired-core.md', {
+      claim: 'A waiver that stopped being true in July',
+      priority: 'always',
+      areas: ['tech'],
+      validUntil: '2026-07-01',
+    })
+    // Expired, on-demand: must not arrive through a facet query either.
+    v2timeNote(dir, 'expired-facet.md', {
+      claim: 'An expired fact about the memory system',
+      areas: ['memory'],
+      validUntil: '2026-07-01',
+    })
+    // Live control notes — the same shapes, still in force.
+    v2timeNote(dir, 'live-core.md', {
+      claim: 'A live always-load rule',
+      priority: 'always',
+      areas: ['tech'],
+      validUntil: '2026-12-31',
+    })
+    v2timeNote(dir, 'live-facet.md', {
+      claim: 'A live fact about the memory system',
+      areas: ['memory'],
+    })
+    // A sensitive record — visible to its owner, withheld from a lower-class audience.
+    v2timeNote(dir, 'sensitive-facet.md', {
+      claim: 'A sensitive fact about the memory system',
+      areas: ['memory'],
+      sensitivity: 'sensitive',
+    })
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  it('Test 4: an expired record reaches NEITHER core NOR periphery, while live ones do', () => {
+    const res = resolvePeriphery({ tags: ['tech', 'memory'], corpusDir: dir, tagsPath: tags, now: NOW })
+    expect(res.core).not.toContain('expired-core.md')
+    expect(res.periphery).not.toContain('expired-core.md')
+    expect(res.core).not.toContain('expired-facet.md')
+    expect(res.periphery).not.toContain('expired-facet.md')
+    // The filter is narrow: everything still in force is delivered as before.
+    expect(res.core).toContain('live-core.md')
+    expect(res.periphery).toContain('live-facet.md')
+  })
+
+  it('Test 4b: the same corpus BEFORE the expiry date delivers the record — the filter is time, not identity', () => {
+    const res = resolvePeriphery({
+      tags: ['tech', 'memory'],
+      corpusDir: dir,
+      tagsPath: tags,
+      now: '2026-06-01T00:00:00Z',
+    })
+    expect(res.core).toContain('expired-core.md')
+    expect(res.periphery).toContain('expired-facet.md')
+  })
+
+  it('Test 4c: sensitivity filters by audience only — the owner default withholds nothing', () => {
+    const owner = resolvePeriphery({ tags: ['memory'], corpusDir: dir, tagsPath: tags, now: NOW })
+    expect(owner.periphery).toContain('sensitive-facet.md')
+
+    const delegated = resolvePeriphery({
+      tags: ['memory'],
+      corpusDir: dir,
+      tagsPath: tags,
+      now: NOW,
+      audience: 'subagent',
+    })
+    expect(delegated.periphery).not.toContain('sensitive-facet.md')
+    expect(delegated.periphery).toContain('live-facet.md')
+  })
+
+  it('Test 4d: the read path never imports the write-time approval ladder (two questions, two functions)', () => {
+    const src = readFileSync(join(process.cwd(), 'scripts/sma/lib/loader.mjs'), 'utf8')
+    expect(src).not.toContain('resolveApprovalPath')
+    expect(src).toContain('isVisibleNow')
   })
 })

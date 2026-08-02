@@ -22,7 +22,14 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { buildIndex, buildAreaIndexes, GENERATED_MARKER, computeDateMap } from '../lib/generator.mjs'
+import {
+  buildIndex,
+  buildAreaIndexes,
+  GENERATED_MARKER,
+  computeDateMap,
+  isVisibleNow,
+  projectNoteAxis,
+} from '../lib/generator.mjs'
 import { resolvePeriphery } from '../lib/loader.mjs'
 import { runLint } from '../lib/lint.mjs'
 import { ALWAYS_LOAD_BUDGET } from '../lib/constants.mjs'
@@ -532,5 +539,96 @@ describe('generator.mjs — corpus without TAGS.md (fail-soft registry)', () => 
     expect(areas.map((a) => a.file)).toEqual(['INDEX-misc.md'])
     // A periphery note is still a discoverable index line (misc bucket).
     expect(areas[0].content).toContain('(bbb.md)')
+  })
+})
+
+/**
+ * Read-time hard filters (retrieval accuracy work): the visibility predicate the
+ * loader runs BEFORE any ranking. `docs/MEMORY-MODEL.md` §9.1 states the contract —
+ * permission/sensitivity/status/valid time/scope decided before ranking — and only
+ * the `status` half of it was executed by code. These tests pin the other halves.
+ *
+ * The predicate answers ONE question: «may this record be shown right now, to this
+ * consumer». It is deliberately NOT the write-time approval ladder (that answers
+ * «may this record exist»); the two read the same fields and must not be merged.
+ */
+describe('generator.mjs — isVisibleNow (read-time hard filter, §9.1)', () => {
+  const NOW = '2026-08-02T12:00:00Z'
+
+  /** A projected v2 record — the same axis the loader and the index read. */
+  const rec = (fm: Record<string, unknown>) =>
+    projectNoteAxis(
+      { id: 'n', schema_version: 2, status: 'active', memory_type: 'semantic', truth_mode: 'factual', claim: 'c', ...fm },
+      { file: 'n.md', schemaVersion: 2 },
+    )
+
+  it('Test 1: a superseded or revoked record is not visible; an active one is (status, regression)', () => {
+    expect(isVisibleNow(rec({ status: 'superseded' }), { now: NOW })).toBe(false)
+    expect(isVisibleNow(rec({ status: 'revoked' }), { now: NOW })).toBe(false)
+    expect(isVisibleNow(rec({ status: 'active' }), { now: NOW })).toBe(true)
+    // A v1 note carries no status at all — absence is never a reason to hide.
+    expect(isVisibleNow(projectNoteAxis({ description: 'd', importance: 5 }, { file: 'v1.md' }), { now: NOW })).toBe(true)
+  })
+
+  it('Test 2: valid_until in the past hides the record; in the future keeps it; absent imposes nothing', () => {
+    expect(isVisibleNow(rec({ valid_until: '2026-07-01' }), { now: NOW })).toBe(false)
+    expect(isVisibleNow(rec({ valid_until: '2026-08-18' }), { now: NOW })).toBe(true)
+    expect(isVisibleNow(rec({}), { now: NOW })).toBe(true)
+    // The day named in valid_until is still inside the validity window (conservative
+    // reading of a date-only stamp: valid THROUGH that day, not until its midnight).
+    expect(isVisibleNow(rec({ valid_until: '2026-08-02' }), { now: NOW })).toBe(true)
+    // The other end of the same axis: a record not yet in force is not visible either.
+    expect(isVisibleNow(rec({ valid_from: '2026-09-01' }), { now: NOW })).toBe(false)
+    expect(isVisibleNow(rec({ valid_from: '2026-07-01' }), { now: NOW })).toBe(true)
+    // `now` is injected for determinism; the same record answers the same way twice.
+    expect(isVisibleNow(rec({ valid_until: '2026-07-01' }), { now: new Date(NOW) })).toBe(false)
+    // A malformed stamp is a schema finding for the lint, never a silent hide.
+    expect(isVisibleNow(rec({ valid_until: 'вчера' }), { now: NOW })).toBe(true)
+  })
+
+  it('Test 3: sensitivity filters by audience only — the local owner default keeps everything', () => {
+    const sensitive = rec({ sensitivity: 'sensitive' })
+    const internal = rec({ sensitivity: 'internal' })
+    const pub = rec({ sensitivity: 'public' })
+
+    // Default audience = the local owner: nothing is withheld (filtering here would
+    // cost recall on one's own corpus without protecting anything).
+    expect(isVisibleNow(sensitive, { now: NOW })).toBe(true)
+    expect(isVisibleNow(rec({ sensitivity: 'encrypted-required' }), { now: NOW })).toBe(true)
+
+    // A lower-class consumer: a record above its ceiling is not visible.
+    expect(isVisibleNow(sensitive, { now: NOW, audience: 'subagent' })).toBe(false)
+    expect(isVisibleNow(internal, { now: NOW, audience: 'subagent' })).toBe(true)
+    expect(isVisibleNow(internal, { now: NOW, audience: 'export' })).toBe(false)
+    expect(isVisibleNow(pub, { now: NOW, audience: 'export' })).toBe(true)
+    // An audience named as a sensitivity class reads as that ceiling.
+    expect(isVisibleNow(sensitive, { now: NOW, audience: 'internal' })).toBe(false)
+    // An unknown audience is fail-closed to the narrowest ceiling, never fail-open.
+    expect(isVisibleNow(internal, { now: NOW, audience: 'whoever' })).toBe(false)
+    expect(isVisibleNow(pub, { now: NOW, audience: 'whoever' })).toBe(true)
+  })
+
+  it('Test 5: the index is a map, not a payload — buildIndex/buildAreaIndexes never drop an expired record', () => {
+    v2note(corpusDir, 'v2-expired.md', {
+      id: 'v2-expired',
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'semantic',
+      truth_mode: 'factual',
+      claim: 'A waiver that stopped being true in July',
+      language: 'ru',
+      valid_until: '2026-07-01',
+      context_priority: 'on-demand',
+      sensitivity: 'internal',
+      retrieval: { areas: ['memory'] },
+    })
+
+    const generated = buildIndex({ corpusDir, tagsPath, commitHash: HASH, dateMap, coreThreshold: 9 })
+    const areas = buildAreaIndexes({ corpusDir, tagsPath, commitHash: HASH, dateMap, coreThreshold: 9 })
+    const memoryIndex = areas.find((a) => a.file === 'INDEX-memory.md')
+
+    // Catalogued and findable — the record is out of the delivery, not out of the corpus.
+    expect(memoryIndex?.content).toContain('(v2-expired.md)')
+    expect(generated).toContain('GENERATED')
   })
 })
