@@ -182,7 +182,7 @@ diagrams, lives in the root [README.md](../../README.md#the-trust-spine-process-
 
 | Subcommand | Purpose | Key flags / usage |
 |---|---|---|
-| `blind-verify` | Re-derive every «done» from the `-PLAN.md` + code tree ALONE; a SUMMARY/exec-journal on input is structurally refused (`BLIND_FORBIDDEN`). A claimed-pass / reproduced-fail divergence is the heaviest ledger event and blocks ship (D-9.2-11). | `<plan-path>` \| `--stats --metric divergence-count` \| `--json` |
+| `blind-verify` | Re-derive every «done» from the `-PLAN.md` + code tree ALONE; a SUMMARY/exec-journal on input is structurally refused (`BLIND_FORBIDDEN`). A claimed-pass / reproduced-fail divergence is the heaviest ledger event and blocks ship (D-9.2-11). A prediction whose `horizon` has not arrived scores `not-due` and is never compared. | `<plan-path> [--current-version <v>]` \| `--stats --metric divergence-count` \| `--json` |
 | `grill` | The adversarial pre-build gate. Register a challenge, resolve it (→ registered prediction, withdrawn, or founder-accepted), gate the build, or run the budget-aware pre-push grill over `origin..main`. | `<plan-path> --challenge "promise::attack"` \| `--resolve <CH-id> --as <converted\|withdrawn\|accepted-risk> [--prediction <P-id>]` \| `--gate` \| `--standing` \| `--standing-selftest` \| `--land <CH-id>` \| `--pre-push [--budget N] [--name-only]` \| `--stats` |
 | `preship` | The consequences gate the `sma ship` ritual calls: lists open class-A events (a class-A miss or a divergence) that BLOCK the ship. Read-only; never unblocks. | `[--count]` (numeric last line, scorer contract) \| `--selftest` \| `--json` |
 | `disposition` | The ONLY way to clear a `preship` block — the founder records an explicit verdict into the append-only ledger. The agent can never call this on its own behalf. | `<eventKey> --verdict <accept\|fix-forward\|rollback> --reason "<why>" --yes` |
@@ -200,6 +200,35 @@ pnpm sma blind-verify .planning/phases/12-x/12-01-PLAN.md
 # the ship gate + the founder's disposition
 pnpm sma preship
 pnpm sma disposition blind-divergence:sma.receipts:R-01 --verdict fix-forward --reason "regression fixed in <sha>" --yes
+```
+
+#### Horizons — a claim that is not due yet is not scored
+
+Every prediction states a `horizon`: when its claim comes due. `predict-score` and
+`blind-verify` both read it before running anything. A horizon that is
+unambiguously ahead — a calendar date later than today, or a version greater than
+the current one — means the claim is **registered and awaiting its horizon**:
+
+- `predict-score` reports it as `not-due` and writes **no verdict to the ledger**;
+- `blind-verify` scores it `not-due`, and a `not-due` verdict carries no
+  comparison, so it can never become a divergence;
+- the check command is never run on either side.
+
+Both sides deliberately apply the same rule. Two scorers independently inventing
+verdicts about a future neither can observe do not merely each guess — they can
+disagree, and a disagreement about an un-arrived claim reads as a class-A
+divergence and blocks a release for nothing.
+
+The gate is timid on purpose, because a wrong skip hides a real miss. A horizon is
+only «not yet» when it parses as a date (`2026-11-01`) or a version (`V3.2`,
+`3.2.1`) that is clearly ahead. A prose horizon («after the next release»), or a
+version horizon with no current version to compare against, is scored exactly as
+before. The comparison version comes from `--current-version <v>`, or from the
+project's own `package.json` when the flag is absent:
+
+```bash
+pnpm sma predict-score .planning/phases/12-x/12-01-PLAN.md                      # version from package.json
+pnpm sma predict-score .planning/phases/12-x/12-01-PLAN.md --current-version 3.1 # explicit
 ```
 
 ### Subagent honesty (D-9.2-10)

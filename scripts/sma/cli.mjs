@@ -4523,7 +4523,26 @@ async function cmdSnapshot({ flags, dirs }) {
 }
 
 /**
- * predict-score <plan-path> [--json] — score a PLAN.md's `predictions:` block
+ * resolveCurrentVersion(flags, repoRoot) -> string|null.
+ *
+ * The version a version-shaped `horizon` is measured against: `--current-version`
+ * when supplied, else the project's own package.json version. Unreadable or
+ * absent -> null, and every version horizon then reads as "cannot tell" rather
+ * than "not yet" — the timid side, so nothing is skipped on a guess.
+ */
+function resolveCurrentVersion(flags, repoRoot) {
+  const flagged = flags && flags['current-version']
+  if (typeof flagged === 'string' && flagged.trim() !== '') return flagged.trim()
+  try {
+    const v = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
+    return typeof v === 'string' && v.trim() !== '' ? v.trim() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * predict-score <plan-path> [--current-version <v>] [--json] — score a PLAN.md's `predictions:` block
  * DETERMINISTICALLY (9.1-08, B18): allowlist check -> run check_command ->
  * numeric compare -> append every verdict to the per-domain calibration
  * ledger. Zero LLM anywhere in scoring. NOT hook-facing: exits 1 when any
@@ -4539,7 +4558,7 @@ async function cmdSnapshot({ flags, dirs }) {
 async function cmdPredictScore({ positionals, flags, dirs }) {
   const planPath = positionals[0]
   if (!planPath) {
-    process.stderr.write('usage: pnpm sma predict-score <plan-path> [--json]\n')
+    process.stderr.write('usage: pnpm sma predict-score <plan-path> [--current-version <v>] [--json]\n')
     return 1
   }
   const predict = await import('./lib/predict.mjs')
@@ -4551,10 +4570,14 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   // non-matching command.
   const runCommand = (cmd) => execSync(cmd, { encoding: 'utf8', timeout: 120_000 })
 
-  const scored = predict.scorePlan({ planPath, runCommand })
+  const currentVersion = resolveCurrentVersion(flags, dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
+  const scored = predict.scorePlan({ planPath, runCommand, currentVersion })
   let records = scored.records
   const invalid = scored.invalid
   const excluded = scored.excluded ?? []
+  // A prediction whose horizon has not arrived is REGISTERED, not scored: no
+  // verdict reaches the ledger, and it becomes scoreable once the horizon does.
+  const notDue = scored.notDue ?? []
   // R1/R2 false class-A lesson (2026-07-10): a SUMMARY's `receipts:` block is
   // `sma reverify` territory — predict-score NEVER scores it. Count it so a
   // wholesale run over SUMMARYs sees the skip explicitly instead of silence.
@@ -4593,11 +4616,11 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const exitCode = hasError ? 1 : 0
 
   if (wantsJson(flags)) {
-    printJson({ plan: planPath, records, invalid, excluded, receiptsSkipped, drafts, appended: records.length, exitCode })
+    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, exitCode })
     return exitCode
   }
 
-  if (!records.length && !invalid.length && !excluded.length) {
+  if (!records.length && !invalid.length && !excluded.length && !notDue.length) {
     process.stdout.write(`SMA: в ${planPath} нет блока predictions — оценивать нечего.\n`)
     if (receiptsSkipped) {
       process.stdout.write(
@@ -4621,6 +4644,11 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   for (const ex of excluded) {
     process.stdout.write(
       `  [excluded] ${ex.id ?? '<без id>'}: receipt-запись (expected_sha256) — территория sma reverify, вердикт не пишется\n`,
+    )
+  }
+  for (const nd of notDue) {
+    process.stdout.write(
+      `  [not-due] ${nd.id ?? '<без id>'}: горизонт «${nd.horizon}» не наступил${currentVersion ? ` (текущая версия ${currentVersion})` : ''} — зарегистрирован, вердикт не пишется\n`,
     )
   }
   if (receiptsSkipped) {
@@ -7477,7 +7505,16 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
   const readFn = (p, enc) => readFileSync(p, enc ?? 'utf8')
 
   // 1. FREEZE the blind verdicts — before the claimed side is ever parsed.
-  const res = blind.blindVerify({ planPath, runCommand, readFn, dirs, rootDir: repoRoot })
+  const res = blind.blindVerify({
+    planPath,
+    runCommand,
+    readFn,
+    dirs,
+    rootDir: repoRoot,
+    // Same horizon reference as predict-score — both sides of the ledger must
+    // agree on which claims are due, or they invent a divergence about a future.
+    currentVersion: resolveCurrentVersion(flags, repoRoot),
+  })
 
   // 2. NOW (and only now) parse the claimed side from the sibling SUMMARY, in the CLI layer.
   const summaryPath = planPath.replace(/-PLAN\.md$/i, '-SUMMARY.md')

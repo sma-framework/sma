@@ -21,7 +21,7 @@
  *     under `predictions:` is EXCLUDED (never scored, never run).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +33,7 @@ import {
   draftLessonFromMiss,
   SAFE_COMMAND_PATTERNS,
   isSafeCommand,
+  horizonReached,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
 
@@ -465,5 +466,84 @@ describe('parsePredictions — frontmatter extraction', () => {
     writeFileSync(p, '---\nphase: test\n---\n\nbody\n')
     const { predictions } = parsePredictions(p)
     expect(predictions).toEqual([])
+  })
+})
+
+describe('horizon gate — a claim that is not due yet is not scored', () => {
+  it('horizonReached: only an unambiguously future horizon reads as not-arrived', () => {
+    // Version horizons, measured against the current version.
+    expect(horizonReached('V3.2', { currentVersion: '3.1.9' })).toBe(false)
+    expect(horizonReached('v3.2.1', { currentVersion: '3.2.0' })).toBe(false)
+    expect(horizonReached('4', { currentVersion: '3.9.9' })).toBe(false)
+    expect(horizonReached('V3.2', { currentVersion: '3.2' })).toBe(true) // the horizon IS now
+    expect(horizonReached('V3.2', { currentVersion: '5.0.4' })).toBe(true)
+    expect(horizonReached('V1.0', { currentVersion: '1.0.1' })).toBe(true)
+
+    // Date horizons, measured against `now`.
+    expect(horizonReached('2099-01-01', { now: '2026-08-02T10:00:00Z' })).toBe(false)
+    expect(horizonReached('2026-08-03', { now: '2026-08-02T10:00:00Z' })).toBe(false)
+    expect(horizonReached('2026-08-02', { now: '2026-08-02T10:00:00Z' })).toBe(true)
+    expect(horizonReached('2020-01-01', { now: '2026-08-02T10:00:00Z' })).toBe(true)
+
+    // Unknown / unparseable -> null: cannot tell, so today's behaviour stands.
+    expect(horizonReached('next run', { currentVersion: '3.1' })).toBeNull()
+    expect(horizonReached('after the next release', { now: '2026-08-02' })).toBeNull()
+    expect(horizonReached('', { currentVersion: '3.1' })).toBeNull()
+    expect(horizonReached(undefined as unknown as string, {})).toBeNull()
+    // A version horizon with nothing to compare against is NOT a skip.
+    expect(horizonReached('V3.2', {})).toBeNull()
+    expect(horizonReached('V3.2', { currentVersion: 'not-a-version' })).toBeNull()
+  })
+
+  it('scorePlan: a future-version horizon is registered as not-due — no verdict, runner never invoked', () => {
+    const planPath = writePlan(entryYaml({ horizon: '"V3.2"' }))
+    const runCommand = vi.fn(() => '0\n')
+
+    const { records, notDue, invalid } = scorePlan({ planPath, runCommand, currentVersion: '3.1.0' })
+
+    expect(records).toHaveLength(0)
+    expect(invalid).toHaveLength(0)
+    expect(notDue).toHaveLength(1)
+    expect(notDue[0]).toMatchObject({ id: 'P1', horizon: 'V3.2', reason: 'horizon-not-reached' })
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  it('scorePlan: the same prediction IS scored once the horizon arrives', () => {
+    const planPath = writePlan(entryYaml({ horizon: '"V3.2"' }))
+    const runCommand = vi.fn(() => '0\n')
+
+    const { records, notDue } = scorePlan({ planPath, runCommand, currentVersion: '3.2.0' })
+
+    expect(notDue).toHaveLength(0)
+    expect(records).toHaveLength(1)
+    expect(records[0].verdict).toBe('hit')
+    expect(runCommand).toHaveBeenCalledTimes(1)
+  })
+
+  it('scorePlan: a future DATE horizon is not-due; a past one is scored', () => {
+    const planPath = writePlan(entryYaml({ horizon: '2099-01-01' }))
+    const future = scorePlan({ planPath, runCommand: () => '0\n', now: '2026-08-02T00:00:00Z' })
+    expect(future.records).toHaveLength(0)
+    expect(future.notDue).toHaveLength(1)
+
+    const pastPlan = writePlan(entryYaml({ horizon: '2020-01-01' }), 'PAST-PLAN.md')
+    const past = scorePlan({ planPath: pastPlan, runCommand: () => '0\n', now: '2026-08-02T00:00:00Z' })
+    expect(past.notDue).toHaveLength(0)
+    expect(past.records[0].verdict).toBe('hit')
+  })
+
+  it('scorePlan: an unparseable horizon keeps the existing behaviour — scored, whatever the version', () => {
+    const planPath = writePlan(entryYaml())
+    const scored = scorePlan({ planPath, runCommand: () => '0\n', currentVersion: '0.0.1' })
+    expect(scored.notDue).toHaveLength(0)
+    expect(scored.records).toHaveLength(1)
+    expect(scored.records[0].verdict).toBe('hit')
+  })
+
+  it('scorePlan: a version horizon with no current version is scored, not skipped', () => {
+    const planPath = writePlan(entryYaml({ horizon: '"V3.2"' }))
+    const scored = scorePlan({ planPath, runCommand: () => '0\n' })
+    expect(scored.notDue).toHaveLength(0)
+    expect(scored.records).toHaveLength(1)
   })
 })

@@ -220,3 +220,81 @@ describe('blind-verify.mjs — tree-only re-derivation + divergence-as-heaviest-
     expect(after.ok).toBe(true)
   })
 })
+
+describe('horizon gate — the blind side refuses an un-arrived claim on the same rule as the scorer', () => {
+  const FUTURE_PLAN = `---
+phase: 9.2-test
+plan: 07
+predictions:
+  - id: P-FUTURE
+    claim: "a claim due at a later milestone"
+    metric: m
+    check_command: "node scripts/sma/cli.mjs grill --stats"
+    comparator: ">="
+    threshold: 0
+    horizon: "V3.2"
+    domain: sma.verification
+  - id: P-NOW
+    claim: "a claim that is due"
+    metric: m
+    check_command: "node scripts/sma/cli.mjs grill --stats"
+    comparator: ">="
+    threshold: 0
+    horizon: "V1.0"
+    domain: sma.verification
+---
+
+# body
+`
+
+  it('deriveChecks carries the horizon onto the check', () => {
+    const p = join(root, 'future-PLAN.md')
+    writeFileSync(p, FUTURE_PLAN, 'utf8')
+    const { checks } = deriveChecks({ planPath: p, readFn: (f: string) => require('node:fs').readFileSync(f, 'utf8') })
+    const future = checks.find((c: any) => c.id === 'P-FUTURE')
+    expect(future.horizon).toBe('V3.2')
+  })
+
+  it("an un-arrived horizon scores 'not-due' with the runner never invoked; a due one is verified", () => {
+    const p = join(root, 'future-PLAN.md')
+    writeFileSync(p, FUTURE_PLAN, 'utf8')
+    const ran: string[] = []
+    const runCommand = (cmd: string) => {
+      ran.push(cmd)
+      return '0'
+    }
+    const readFn = (f: string) => require('node:fs').readFileSync(f, 'utf8')
+
+    const res = blindVerify({ planPath: p, runCommand, readFn, dirs, currentVersion: '3.1.0' })
+    const byId = Object.fromEntries(res.verdicts.map((v: any) => [v.id, v.verdict]))
+    expect(byId['P-FUTURE']).toBe('not-due')
+    expect(byId['P-NOW']).toBe('pass')
+    expect(ran).toHaveLength(1) // only the due check ran
+  })
+
+  it("a 'not-due' verdict carries no comparison — it can never manufacture a divergence", () => {
+    const p = join(root, 'future-PLAN.md')
+    writeFileSync(p, FUTURE_PLAN, 'utf8')
+    const readFn = (f: string) => require('node:fs').readFileSync(f, 'utf8')
+    const res = blindVerify({ planPath: p, runCommand: () => '0', readFn, dirs, currentVersion: '3.1.0' })
+
+    // The claimed side asserts a pass for the un-arrived claim — the worst case.
+    const cmp = compareToClaimed({
+      claimed: [{ id: 'P-FUTURE', verdict: 'pass' }, { id: 'P-NOW', verdict: 'pass' }],
+      planId: res.planId,
+      dirs,
+    })
+    expect(cmp.ok).toBe(true)
+    expect(cmp.divergences).toEqual([])
+  })
+
+  it('without a current version nothing is skipped — the gate stays timid', () => {
+    const p = join(root, 'future-PLAN.md')
+    writeFileSync(p, FUTURE_PLAN, 'utf8')
+    const readFn = (f: string) => require('node:fs').readFileSync(f, 'utf8')
+    const res = blindVerify({ planPath: p, runCommand: () => '0', readFn, dirs })
+    const byId = Object.fromEntries(res.verdicts.map((v: any) => [v.id, v.verdict]))
+    expect(byId['P-FUTURE']).toBe('pass')
+    expect(byId['P-NOW']).toBe('pass')
+  })
+})
