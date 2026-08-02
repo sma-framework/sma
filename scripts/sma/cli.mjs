@@ -38,6 +38,21 @@ import { fileURLToPath } from 'node:url'
 /** This module's own dir (scripts/sma/) — resolves cli.mjs + fixtures regardless of cwd. */
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 
+/**
+ * GIT_READ_STDIO — the stdio a READ-ONLY git probe runs with: stdin closed, stdout and
+ * stderr CAPTURED.
+ *
+ * WHY IT HAS TO BE SAID OUT LOUD: execFileSync inherits the child's stderr by default, so
+ * a probe that is fail-open by design still printed the child's complaint straight onto
+ * the user's terminal. In a repository created minutes ago — `git init` with nothing
+ * committed yet, which is exactly where a new install starts — the very first memory
+ * command greeted a person with `fatal: your current branch 'master' does not have any
+ * commits yet` and then worked perfectly. The word «fatal» reads as a broken product.
+ * A probe whose failure the caller already handles owes the terminal nothing: the message
+ * belongs in the caller's catch (an empty date map), never on the screen.
+ */
+const GIT_READ_STDIO = ['ignore', 'pipe', 'pipe']
+
 // ── .sma root + dir resolution ───────────────────────────────────────────────
 // The lib modules all accept dependency-injectable dirs (sessionsDir/claimsDir/
 // journalDir/smaRoot). The CLI resolves the ONE shared root and passes the dir
@@ -1070,7 +1085,7 @@ async function cmdLint({ flags }) {
     const commitHash = m ? m[1] : '0000000'
     let dateMap = {}
     try {
-      const execGit = (args) => execFileSync('git', args, { encoding: 'utf8' })
+      const execGit = (args) => execFileSync('git', args, { encoding: 'utf8', stdio: GIT_READ_STDIO })
       dateMap = generator.computeDateMap({ execGit })
     } catch {
       /* fail-open — deterministic epoch fallback */
@@ -1402,7 +1417,7 @@ async function cmdBuildIndex({ flags }) {
   let commitHash = '0000000'
   try {
     const { execFileSync } = await import('node:child_process')
-    const execGit = (args) => execFileSync('git', args, { encoding: 'utf8' })
+    const execGit = (args) => execFileSync('git', args, { encoding: 'utf8', stdio: GIT_READ_STDIO })
     dateMap = generator.computeDateMap({ execGit })
     commitHash = execGit(['rev-parse', '--short', 'HEAD']).trim() || commitHash
   } catch {
@@ -1493,7 +1508,7 @@ async function cmdEmit({ flags, dirs }) {
   let commitHash = '0'.repeat(40)
   try {
     const { execFileSync } = await import('node:child_process')
-    const execGit = (args) => execFileSync('git', args, { encoding: 'utf8' })
+    const execGit = (args) => execFileSync('git', args, { encoding: 'utf8', stdio: GIT_READ_STDIO })
     dateMap = generator.computeDateMap({ execGit })
     const full = execGit(['rev-parse', 'HEAD']).trim()
     if (/^[0-9a-f]{40}$/.test(full)) commitHash = full
@@ -1563,7 +1578,7 @@ async function cmdLoad({ flags, dirs }) {
   try {
     const generator = await import('./lib/generator.mjs')
     const { execFileSync } = await import('node:child_process')
-    dateMap = generator.computeDateMap({ execGit: (args) => execFileSync('git', args, { encoding: 'utf8' }) })
+    dateMap = generator.computeDateMap({ execGit: (args) => execFileSync('git', args, { encoding: 'utf8', stdio: GIT_READ_STDIO }) })
   } catch {
     /* fail-open */
   }
@@ -1799,7 +1814,7 @@ async function cmdContext({ positionals, flags, dirs }) {
   try {
     const generator = await import('./lib/generator.mjs')
     const { execFileSync } = await import('node:child_process')
-    dateMap = generator.computeDateMap({ execGit: (a) => execFileSync('git', a, { encoding: 'utf8' }) })
+    dateMap = generator.computeDateMap({ execGit: (a) => execFileSync('git', a, { encoding: 'utf8', stdio: GIT_READ_STDIO }) })
   } catch {
     /* fail-open */
   }

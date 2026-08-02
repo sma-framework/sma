@@ -461,3 +461,30 @@ describe('status — the honest active count (a dead pid never impersonates a li
     expect(stdout).not.toContain(`T-${gone}`) // the dead one is never listed as working
   })
 })
+
+// ── a fresh repository is a NORMAL state, and it must not be greeted with «fatal» ──
+//
+// `git init` and nothing committed yet is exactly where a new install starts. The memory
+// commands take one read-only git pass for note dates and are fail-open about it — but
+// execFileSync inherits the child's stderr, so git's «fatal: your current branch 'master'
+// does not have any commits yet» landed on the terminal of a person whose very first
+// command had in fact just succeeded (T-QA-2026-08-02 minor #6).
+
+describe('cli.mjs memory commands in a repository with no commits yet', () => {
+  it('says nothing on stderr — the fail-open git probe keeps its complaints to itself', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'sma-unborn-'))
+    try {
+      spawnSync('git', ['init'], { cwd: repo, encoding: 'utf8' })
+      const run = spawnSync('node', [CLI, 'load', '--tags', 'x'], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma') },
+      })
+      expect(run.stderr).not.toMatch(/fatal/i)
+      expect(run.stderr.trim()).toBe('')
+      expect(run.status).toBe(0) // and the command itself still worked
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+})
