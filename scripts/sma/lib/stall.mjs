@@ -11,6 +11,9 @@
  *   2. same-error-repeat  — SAME_ERROR_REPEAT consecutive events whose error
  *      output matches after normalization (digits stripped, whitespace
  *      collapsed — so "foo.ts:123" and "foo.ts:456" are the SAME error).
+ *      An event is only an ERROR if it failed: a payload that exposes exit 0 is
+ *      never one, and harness-informational lines (HARNESS_INFO_PATTERNS) are
+ *      stripped before the signature is taken.
  *   3. ping-pong          — PINGPONG_CYCLES full A-B-A-B cycles of Edit/Write
  *      alternation between exactly two files.
  *   4. monologue          — GUARDED: fires only if the hook payload exposes a
@@ -81,13 +84,64 @@ function normalizeErr(raw) {
 }
 
 /**
+ * HARNESS_INFO_PATTERNS — line shapes the AGENT HARNESS prints on its own, which are
+ * informational and never a failure. They arrive on the same channel as real errors,
+ * so without this allowlist three SUCCESSFUL commands in a row could be read as three
+ * identical errors and trip the same-error rule (a stop-signal on healthy work is the
+ * fastest way to teach agents to ignore stop-signals).
+ *
+ * Deliberately narrow: only shapes we have actually observed. Add a line here, never a
+ * loose catch-all — a too-wide allowlist would swallow real errors instead.
+ */
+export const HARNESS_INFO_PATTERNS = [
+  // "Shell cwd was reset to /c/…" — printed after a command changes directory.
+  /^\s*shell cwd was reset to\b/i,
+]
+
+/** True when a line is harness chatter rather than program output. */
+function isHarnessInfoLine(line) {
+  return HARNESS_INFO_PATTERNS.some((re) => re.test(line))
+}
+
+/**
+ * stripHarnessNoise(raw) — drop harness-informational lines; '' when nothing else
+ * remains (i.e. the whole "error" was chatter).
+ */
+function stripHarnessNoise(raw) {
+  return String(raw ?? '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !isHarnessInfoLine(line))
+    .join('\n')
+}
+
+/**
+ * succeeded(resp) — true when the payload EXPOSES an exit code and it is 0 (and the
+ * harness did not separately flag the call as an error). The standard PostToolUse
+ * payload does not always carry one, so this is a guard, not the primary defense:
+ * when the field is present, a zero exit outranks anything printed on stderr.
+ */
+function succeeded(resp) {
+  if (resp.is_error === true) return false
+  for (const key of ['exit_code', 'exitCode', 'returncode']) {
+    const v = resp[key]
+    if (typeof v === 'number' && Number.isFinite(v)) return v === 0
+  }
+  return false
+}
+
+/**
  * Extract an error signature from a PostToolUse tool_response. Deterministic
  * field checks only: explicit `error`, non-empty `stderr`, or `is_error` with
  * a string payload. Anything else (green stdout, plain objects) is NOT an
  * error — the healthy-fixture negative depends on this staying conservative.
+ *
+ * Two subtractions keep SUCCESSFUL commands out of the error rule (both deterministic):
+ * an exposed zero exit code wins outright, and harness-informational lines are stripped
+ * before the signature is taken.
  */
 function errSigFrom(resp) {
   if (!resp || typeof resp !== 'object') return ''
+  if (succeeded(resp)) return '' // exit 0 -> not an error, whatever it printed
   let raw = ''
   if (typeof resp.error === 'string' && resp.error.trim()) raw = resp.error
   else if (typeof resp.stderr === 'string' && resp.stderr.trim()) raw = resp.stderr
@@ -99,7 +153,7 @@ function errSigFrom(resp) {
           ? resp.content
           : 'error'
   }
-  return normalizeErr(raw)
+  return normalizeErr(stripHarnessNoise(raw))
 }
 
 /** Sanitize a session token into a safe filename stem. */
