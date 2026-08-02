@@ -22,6 +22,9 @@ import { execFileSync } from 'node:child_process'
 
 import { LINT_CHECKS, runLint, computeTreeHash } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
+// The other writer of the supersession fields: a pointer this check judges is
+// most often one applyLifecycle wrote, so the two must agree on its spelling.
+import { applyLifecycle } from '../lib/write-pipeline.mjs'
 import { GRACE_HORIZON } from '../lib/schema-v2.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -181,6 +184,74 @@ describe('memory-lint supersession / regen / duplication (9-08 task 2)', () => {
     expect(sup.some((f) => f.tier === 'warn' && f.message.toLowerCase().includes('back'))).toBe(true)
     // superseded_at present without superseded_by = WARN
     expect(sup.some((f) => f.tier === 'warn' && f.message.includes('superseded_at'))).toBe(true)
+  })
+
+  it('Test 8b (supersession, pipeline spelling): a supersession completed by applyLifecycle lints CLEAN — and a pointer to a record that truly does not exist is STILL critical', () => {
+    // The two writers of these fields spell the pointer differently: the write
+    // pipeline emits a BARE STEM, a hand-authored note may emit a filename.
+    // This case proves the check resolves both to one id — it fails against a
+    // comparison that matches raw on-disk filenames, because every pointer the
+    // pipeline writes would read as a dangling target there.
+    const root = mkdtempSync(join(tmpdir(), 'sma-lint-lifecycle-'))
+    const corpusDir = join(root, 'memory')
+    const journalDir = join(root, 'journal')
+    mkdirSync(corpusDir, { recursive: true })
+    mkdirSync(journalDir, { recursive: true })
+
+    /** A minimal schema-v2 record — applyLifecycle refuses v1 notes outright. */
+    const record = (id: string, claim: string) => ({
+      id,
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'working',
+      truth_mode: 'observed',
+      claim,
+      language: 'en',
+      sensitivity: 'internal',
+      risk: 'low',
+      retention: 'P30D',
+      fingerprint: { product_version: 'v5.0.3' },
+      retrieval: { areas: ['queue'] },
+    })
+    const seed = (fm: Record<string, unknown>) =>
+      writeFileSync(
+        join(corpusDir, `${fm.id}.md`),
+        serializeNote({ frontmatter: fm, body: '\nSeeded.\n', schemaVersion: 2 }),
+      )
+
+    try {
+      seed(record('retired-claim', 'The adapter drains the backlog every night'))
+      seed(record('current-claim', 'The adapter drains the backlog in under two minutes'))
+
+      const applied = applyLifecycle({
+        corpusDir,
+        journalDir,
+        terminalId: 'lint-test',
+        now: '2026-08-01T12:00:00.000Z',
+        id: 'retired-claim',
+        action: 'supersede',
+        by: 'current-claim',
+      })
+      expect(applied.applied).toBe(true)
+
+      const lintOpts = {
+        corpusDir,
+        tagsPath: join(corpusDir, 'TAGS.md'),
+        indexPath: join(corpusDir, 'MEMORY.md'),
+      }
+      // Both ends of a real, symmetric chain: no dangling target, no asymmetry.
+      expect(findingsOf(runLint(lintOpts), 'MEM-SUPERSEDE')).toHaveLength(0)
+
+      // The negative half: a bare-stem pointer at a record that is not on disk
+      // stays CRITICAL — normalization must not turn the check into a no-op.
+      seed({ ...record('ghost-pointer', 'This one points nowhere'), supersedes: 'no-such-record' })
+      const broken = findingsOf(runLint(lintOpts), 'MEM-SUPERSEDE')
+      expect(broken.some((f) => f.tier === 'critical' && f.message.includes('no-such-record'))).toBe(true)
+      // and it is the ONLY complaint — the pipeline's chain is still clean
+      expect(broken.filter((f) => f.file !== 'ghost-pointer.md')).toHaveLength(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('Test 9 (artifact-regen, pre-flip): no GENERATED header → neutral pending-flip info, not a failure', () => {

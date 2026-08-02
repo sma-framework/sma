@@ -734,46 +734,74 @@ function noteNameSet(ctx) {
   return new Set(ctx.files.map((f) => f.replace(/\.md$/, '')))
 }
 
+/**
+ * The canonical identity of a supersession pointer: the note's STEM.
+ *
+ * The id law makes the stem the identity of a record, and the two writers of
+ * these fields spell the same pointer differently — `applyLifecycle` writes a
+ * BARE STEM (`supersedes: my-record`) while a hand-authored note may write the
+ * filename (`supersedes: my-record.md`). Normalizing BOTH sides on the stem is
+ * what lets those spellings resolve to one id. It does not soften the check: a
+ * target that is genuinely absent from the corpus has no stem on disk either,
+ * so it stays CRITICAL.
+ */
+function pointerId(value) {
+  const base = String(value ?? '').trim().split(/[\\/]/).pop() ?? ''
+  return base.endsWith('.md') ? base.slice(0, -3) : base
+}
+
+/**
+ * A supersession pointer as a list of raw, non-empty strings. `supersedes` is
+ * scalar-or-list by construction: the pipeline collapses a single target to a
+ * scalar and keeps an array when one record replaces several.
+ */
+function pointerList(value) {
+  const items = Array.isArray(value) ? value : [value]
+  return items.map((v) => String(v ?? '').trim()).filter((v) => v !== '')
+}
+
 const MEM_SUPERSEDE = {
   id: 'MEM-SUPERSEDE',
   title: 'Supersession-link integrity (B6)',
   tier: 'critical',
   run(ctx) {
     const out = []
-    const onDisk = new Set(ctx.files)
-    // Map each note file → its parsed frontmatter for back-pointer symmetry.
-    const fmByFile = new Map()
+    // Every comparison below is stem-to-stem (see pointerId).
+    const onDisk = new Set(ctx.files.map(pointerId))
+    // Map each note id → its parsed frontmatter for back-pointer symmetry.
+    const fmById = new Map()
     for (const note of ctx.parsed) {
-      if (note.frontmatter) fmByFile.set(note.file, note.frontmatter)
+      if (note.frontmatter) fmById.set(pointerId(note.file), note.frontmatter)
     }
 
     for (const note of ctx.parsed) {
       const fm = note.frontmatter
       if (!fm) continue
+      const selfId = pointerId(note.file)
 
       // supersedes / superseded_by targets must exist on disk (CRITICAL).
+      // The message quotes the pointer AS WRITTEN — the reader has to find it
+      // in the file, and the normalized stem is not what they will see there.
       for (const key of ['supersedes', 'superseded_by']) {
-        const target = fm[key]
-        if (!target || String(target).trim() === '') continue
-        const targetFile = basename(String(target).trim())
-        if (!onDisk.has(targetFile)) {
-          out.push(finding('MEM-SUPERSEDE', 'critical', note.file, `${key} target "${targetFile}" does not exist on disk (${note.file})`))
+        for (const raw of pointerList(fm[key])) {
+          if (!onDisk.has(pointerId(raw))) {
+            out.push(finding('MEM-SUPERSEDE', 'critical', note.file, `${key} target "${raw}" does not exist on disk (${note.file})`))
+          }
         }
       }
 
       // Back-pointer symmetry: A.superseded_by=B implies B.supersedes=A (WARN).
-      const succ = fm.superseded_by ? basename(String(fm.superseded_by).trim()) : ''
+      const succ = pointerId(fm.superseded_by)
       if (succ && onDisk.has(succ)) {
-        const succFm = fmByFile.get(succ)
-        const back = succFm?.supersedes ? basename(String(succFm.supersedes).trim()) : ''
-        if (back !== note.file) {
+        const back = pointerList(fmById.get(succ)?.supersedes).map(pointerId)
+        if (!back.includes(selfId)) {
           out.push(finding('MEM-SUPERSEDE', 'warn', note.file, `${note.file}.superseded_by="${succ}" has no matching back-pointer supersedes in "${succ}"`))
         }
       }
 
       // superseded_at without superseded_by is dangling metadata (WARN).
       const hasAt = fm.superseded_at != null && String(fm.superseded_at).trim() !== ''
-      const hasBy = fm.superseded_by != null && String(fm.superseded_by).trim() !== ''
+      const hasBy = pointerList(fm.superseded_by).length > 0
       if (hasAt && !hasBy) {
         out.push(finding('MEM-SUPERSEDE', 'warn', note.file, `superseded_at present without superseded_by in ${note.file}`))
       }
