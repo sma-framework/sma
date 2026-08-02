@@ -260,7 +260,7 @@ async function runGates(ctx) {
       // At tier 'auto-fix', NAME the deterministic fix verb (the hook never RUNS it —
       // execution is the explicit `tune fix` CLI verb, D-9.3-12 prohibition).
       if (overlay && overlayTierOf(overlay, w.gateId) === 'auto-fix') {
-        warns.push(`${w.text}\nSMA ladder: детерминированный фикс — pnpm sma tune fix ${w.gateId}`)
+        warns.push(`${w.text}\nSMA ladder: детерминированный фикс — node scripts/sma/cli.mjs tune fix ${w.gateId}`)
       } else {
         warns.push(w.text)
       }

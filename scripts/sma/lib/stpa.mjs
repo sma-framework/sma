@@ -137,7 +137,7 @@ export const HAZARDS = [
     gateId: 'GATE-MIGNUM',
     kind: 'gate',
     hazard: 'a hand-picked migration number collides with a parallel terminal on the shared tree',
-    compensatingControl: 'migration numbers come from `pnpm sma next-slot migration` (sorted-insert slot claim); a collision surfaces at the slot claim regardless of this WARN',
+    compensatingControl: 'migration numbers come from `node scripts/sma/cli.mjs next-slot migration` (sorted-insert slot claim); a collision surfaces at the slot claim regardless of this WARN',
     fixture: { tool_name: 'Write', tool_input: { file_path: 'src/migrations/index.ts', content: 'x' } },
   },
   {
@@ -145,7 +145,7 @@ export const HAZARDS = [
     gateId: 'GATE-STATEEDIT',
     kind: 'gate',
     hazard: 'a hand-edit of the machine-managed STATE.md fence is lost on the next state-verb write',
-    compensatingControl: 'the state verbs (pnpm sma state ...) own the fenced region; a hand-edit outside the fence is preserved, one inside is overwritten predictably, not silently corrupted',
+    compensatingControl: 'the state verbs (node scripts/sma/cli.mjs state ...) own the fenced region; a hand-edit outside the fence is preserved, one inside is overwritten predictably, not silently corrupted',
     fixture: { tool_name: 'Write', tool_input: { file_path: '.planning/STATE.md', content: '## Current Position\nx' } },
   },
   {

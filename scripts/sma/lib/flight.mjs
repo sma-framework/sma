@@ -21,7 +21,7 @@
  *     stands down (writeCapsule -> {skipped:'native'}).
  *   - buildResumeBrief / buildHandoffBrief — continuation briefs assembled from
  *     the flight recorder alone (work after a terminal death, not only compaction);
- *     briefs only ever SUGGEST `pnpm sma ...` commands, never execute anything.
+ *     briefs only ever SUGGEST `node scripts/sma/cli.mjs ...` commands, never execute anything.
  *
  * PROHIBITIONS (plan frontmatter): no LLM/network/child_process import; no git
  * write; no permissionDecision 'deny' — advisory only; redaction is unconditional
@@ -221,9 +221,9 @@ function nextStepFrom(inputs) {
   if (exec && exec.nextUndone != null) {
     return `продолжить план ${exec.planId ?? ''}`.trim() + ` с задачи ${exec.nextUndone}`
   }
-  if (exec && exec.complete) return `план ${exec.planId ?? ''} завершён — см. pnpm sma status`.trim()
+  if (exec && exec.complete) return `план ${exec.planId ?? ''} завершён — см. node scripts/sma/cli.mjs status`.trim()
   if (label) return `продолжить: ${label}`
-  return 'см. pnpm sma status'
+  return 'см. node scripts/sma/cli.mjs status'
 }
 
 /**
@@ -292,7 +292,7 @@ export function buildCapsule(inputs = {}) {
   const constraints = cLines.join('\n')
 
   // 5. Resume — NEVER truncated (essential).
-  const resume = ['## Resume', '', `- Следующий шаг: ${nextStepFrom(inputs)}`, '- Полный бриф: `pnpm sma resume`'].join('\n')
+  const resume = ['## Resume', '', `- Следующий шаг: ${nextStepFrom(inputs)}`, '- Полный бриф: `node scripts/sma/cli.mjs resume`'].join('\n')
 
   // 4. Recent decisions & events — the ONLY truncatable section (oldest dropped first).
   const journalTail = Array.isArray(inputs.journalTail) ? inputs.journalTail : []
@@ -414,30 +414,30 @@ function briefBody(inputs) {
 /**
  * buildResumeBrief(inputs) -> markdown string. PURE assembly over the same injected
  * inputs as the capsule + capsuleFresh. A fully-empty flight dir yields an honest empty
- * brief (no throw). Only SUGGESTS `pnpm sma ...` — never executes anything.
+ * brief (no throw). Only SUGGESTS `node scripts/sma/cli.mjs ...` — never executes anything.
  */
 export function buildResumeBrief(inputs = {}) {
   if (isEmptyFlight(inputs)) {
-    return ['# SMA Resume Brief', '', 'Флайт-журнал пуст — начните с `pnpm sma status`.'].join('\n') + '\n'
+    return ['# SMA Resume Brief', '', 'Флайт-журнал пуст — начните с `node scripts/sma/cli.mjs status`.'].join('\n') + '\n'
   }
   return ['# SMA Resume Brief', '', ...briefBody(inputs)].join('\n') + '\n'
 }
 
 /**
  * buildHandoffBrief(inputs) -> markdown string. Everything buildResumeBrief has PLUS a
- * claim-transfer section naming the exact `pnpm sma release <slot>` / `pnpm sma claim`
+ * claim-transfer section naming the exact `node scripts/sma/cli.mjs release <slot>` / `node scripts/sma/cli.mjs claim`
  * commands + the D-9-09 force-clear warning. PURE — the write path (writeHandoff) runs
  * the secret scan. Honest empty when the flight dir is empty.
  */
 export function buildHandoffBrief(inputs = {}) {
   if (isEmptyFlight(inputs)) {
-    return ['# SMA Handoff Brief', '', 'Флайт-журнал пуст — начните с `pnpm sma status`.'].join('\n') + '\n'
+    return ['# SMA Handoff Brief', '', 'Флайт-журнал пуст — начните с `node scripts/sma/cli.mjs status`.'].join('\n') + '\n'
   }
   const ownClaim = inputs.ownClaim ?? null
   const slot = inputs.slot ?? (ownClaim && ownClaim.name) ?? null
   const lines = ['# SMA Handoff Brief', '', ...briefBody(inputs), '', '## Передача claim (claim transfer)', '']
-  lines.push(`- Отпустить ваш claim: \`pnpm sma release ${slot ?? '<slot>'}\``)
-  lines.push('- Принять на другом терминале: `pnpm sma claim <globs> --description "<что>"`')
-  lines.push('- ⚠ Чужой claim снимается только через `pnpm sma force-clear <slot> --yes` — force-clear показывает владельца и требует явного подтверждения (D-9-09).')
+  lines.push(`- Отпустить ваш claim: \`node scripts/sma/cli.mjs release ${slot ?? '<slot>'}\``)
+  lines.push('- Принять на другом терминале: `node scripts/sma/cli.mjs claim <globs> --description "<что>"`')
+  lines.push('- ⚠ Чужой claim снимается только через `node scripts/sma/cli.mjs force-clear <slot> --yes` — force-clear показывает владельца и требует явного подтверждения (D-9-09).')
   return lines.join('\n') + '\n'
 }

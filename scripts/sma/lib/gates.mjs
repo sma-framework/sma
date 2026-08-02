@@ -168,7 +168,7 @@ export const GATES = [
       'следующий тег V1.N. Пушить только по явной команде основателя.',
     // Soft-deny tier (D-9.1-13): DORMANT unless SMA_GATE_PUSH_DENY is set. When armed,
     // a push is denied unless a fresh full-gate evidence marker exists for HEAD (written
-    // by /sma-ship via `pnpm sma gates mark-fullgate`) or a one-shot override token is
+    // by /sma-ship via `node scripts/sma/cli.mjs gates mark-fullgate`) or a one-shot override token is
     // present. Promotion (arming) is a founder action justified by gates-report
     // --promotion-readiness — NEVER armed by default.
     softDeny: {
@@ -186,8 +186,8 @@ export const GATES = [
       denyText:
         'SMA-гейт [GATE-PUSH] DENY: push заблокирован — нет доказательства полного гейта ' +
         'для текущего HEAD. Прогоните ритуал /sma-ship (он запишет маркер fullgate через ' +
-        'pnpm sma gates mark-fullgate) или получите разовый override с провенансом: ' +
-        'pnpm sma gates override GATE-PUSH --yes --reason "почему". Kill-switch: SMA_GATE_PUSH_DENY=0.',
+        'node scripts/sma/cli.mjs gates mark-fullgate) или получите разовый override с провенансом: ' +
+        'node scripts/sma/cli.mjs gates override GATE-PUSH --yes --reason "почему". Kill-switch: SMA_GATE_PUSH_DENY=0.',
     },
   },
   {
@@ -219,7 +219,7 @@ export const GATES = [
     warn:
       'SMA-гейт [GATE-MEMEDIT]: MEMORY.md / INDEX-*.md — СГЕНЕРИРОВАННЫЕ файлы, ручная правка ' +
       'потеряется при пересборке. Меняйте исходные заметки в .claude/memory/ и пересоберите ' +
-      'индекс: pnpm sma build-index.',
+      'индекс: node scripts/sma/cli.mjs build-index.',
     // Soft-deny tier (D-9.1-13): DORMANT unless SMA_GATE_MEMEDIT_DENY is set. A hand-edit
     // of a generated file has no positive "evidence" escape (nothing legitimizes it) — the
     // only sanctioned bypass is a one-shot override token with provenance.
@@ -229,8 +229,8 @@ export const GATES = [
       denyText:
         'SMA-гейт [GATE-MEMEDIT] DENY: ручная правка сгенерированного MEMORY.md / INDEX-*.md ' +
         'заблокирована — изменение потеряется при пересборке. Меняйте исходные заметки в ' +
-        '.claude/memory/ и пересоберите индекс: pnpm sma build-index. Разовый override с ' +
-        'провенансом: pnpm sma gates override GATE-MEMEDIT --yes --reason "почему". ' +
+        '.claude/memory/ и пересоберите индекс: node scripts/sma/cli.mjs build-index. Разовый override с ' +
+        'провенансом: node scripts/sma/cli.mjs gates override GATE-MEMEDIT --yes --reason "почему". ' +
         'Kill-switch: SMA_GATE_MEMEDIT_DENY=0.',
     },
   },
@@ -274,7 +274,7 @@ export const GATES = [
     match: (ctx) => reMigIndex.test(ctx.target),
     warn:
       'SMA-гейт [GATE-MIGNUM]: номер миграции в src/migrations/index.ts ОБЯЗАН приходить из ' +
-      'pnpm sma next-slot migration — не выбирайте номер вручную (коллизия на общем дереве).',
+      'node scripts/sma/cli.mjs next-slot migration — не выбирайте номер вручную (коллизия на общем дереве).',
   },
   {
     id: 'GATE-STATEEDIT',
@@ -286,7 +286,7 @@ export const GATES = [
     warn:
       'SMA-гейт [GATE-STATEEDIT]: машинно-управляемая секция STATE.md (Current Position / Open ' +
       'Blockers / Active Sessions) внутри ограждения SMA-MANAGED правится ТОЛЬКО через state-глаголы, ' +
-      'иначе правка потеряется при следующей записи. Используйте: pnpm sma state set-position | ' +
+      'иначе правка потеряется при следующей записи. Используйте: node scripts/sma/cli.mjs state set-position | ' +
       'add-blocker | resolve-blocker | set-session.',
   },
   {
@@ -301,7 +301,7 @@ export const GATES = [
     match: (ctx) => reGitPush.test(ctx.command) && reForceFlag.test(ctx.command),
     warn:
       'SMA-гейт [GATE-FORCEPUSH]: force-push — рискованная операция. Перед ней запишите ' +
-      'доказательство (что проверили и зачем): pnpm sma evidence force-push --target "<remote branch>" ' +
+      'доказательство (что проверили и зачем): node scripts/sma/cli.mjs evidence force-push --target "<remote branch>" ' +
       '--reason "<почему>" --checked "<проверка 1>" --checked "<проверка 2>". Никогда не перезаписывайте ' +
       'чужую ветку.',
     softDeny: {
@@ -317,7 +317,7 @@ export const GATES = [
       },
       denyText:
         'SMA-гейт [GATE-FORCEPUSH] DENY: force-push заблокирован — нет свежего доказательства ' +
-        '(burden of proof). Запишите его: pnpm sma evidence force-push --target "<remote branch>" ' +
+        '(burden of proof). Запишите его: node scripts/sma/cli.mjs evidence force-push --target "<remote branch>" ' +
         '--reason "<почему>" --checked "<что проверили>". Kill-switch: SMA_GATE_FORCEPUSH_DENY=0.',
     },
   },
@@ -334,7 +334,7 @@ export const GATES = [
     warn:
       'SMA-гейт [GATE-ALLOWLIST]: правка allowlist команд (SAFE_COMMAND в lib/predict.mjs) — ' +
       'рискованная операция: это единственная граница исполнения, на которой держатся рецепты, ' +
-      'слепой верификатор и pre-push grill. Запишите доказательство: pnpm sma evidence allowlist-edit ' +
+      'слепой верификатор и pre-push grill. Запишите доказательство: node scripts/sma/cli.mjs evidence allowlist-edit ' +
       '--target lib/predict.mjs --reason "<почему>" --checked "<что проверили>".',
     softDeny: {
       armEnv: 'SMA_GATE_ALLOWLIST_DENY',
@@ -348,7 +348,7 @@ export const GATES = [
       },
       denyText:
         'SMA-гейт [GATE-ALLOWLIST] DENY: правка allowlist заблокирована — нет свежего доказательства. ' +
-        'Запишите его: pnpm sma evidence allowlist-edit --target lib/predict.mjs --reason "<почему>" ' +
+        'Запишите его: node scripts/sma/cli.mjs evidence allowlist-edit --target lib/predict.mjs --reason "<почему>" ' +
         '--checked "<что проверили>". Kill-switch: SMA_GATE_ALLOWLIST_DENY=0.',
     },
   },

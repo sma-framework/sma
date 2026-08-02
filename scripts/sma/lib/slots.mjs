@@ -377,7 +377,7 @@ export function checkPushClaim(o = {}) {
     since,
     plannedVersion,
     warn: `отправка в origin уже идёт: ${who}${since ? ` (с ${since})` : ''} — дождитесь завершения`,
-    howToClear: 'дождитесь / pnpm sma force-clear push-in-progress',
+    howToClear: 'дождитесь / node scripts/sma/cli.mjs force-clear push-in-progress',
   }
 }
 

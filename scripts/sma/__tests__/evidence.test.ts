@@ -92,7 +92,7 @@ describe('evidence.mjs + risky-op gates — burden of proof', () => {
     const warned = checkEvent({ evt: forceEvt, root: REPO_ROOT, env: {}, seen: {} })
     const w = warned.warns.find((x: any) => x.gateId === 'GATE-FORCEPUSH')
     expect(w).toBeDefined()
-    expect(w.text).toMatch(/pnpm sma evidence force-push/)
+    expect(w.text).toContain('node scripts/sma/cli.mjs evidence force-push')
     // dormant by default → no deny
     expect(warned.deny).toBeFalsy()
 

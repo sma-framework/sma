@@ -211,7 +211,7 @@ export function footprintReceipt({ claim, actuals, planId, planPath, appendVerdi
     metric: 'footprint_overrun',
     id: `FOOT-${planId ?? 'unknown'}`,
     claim: `план ${planId ?? '?'}: ось ${over.axis} осталась в пределах заявленного объёма (<= ${over.expected}, tolerance ${tol}%)`,
-    check_command: `pnpm sma reverify --footprint ${planPath ?? ''}`.trim(),
+    check_command: `node scripts/sma/cli.mjs reverify --footprint ${planPath ?? ''}`.trim(),
     comparator: '<=',
     expected: over.expected,
     actual: over.actual,
