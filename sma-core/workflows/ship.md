@@ -134,6 +134,16 @@ Verify the work is ready to ship:
    There is no third path. An item that is neither raised nor written off blocks the ship with `SUMMARY_ISSUES_UNACCOUNTED`: list the unaccounted items with their source SUMMARY and ask the user to choose (a) or (b) for each.
 
    This check is about disposition, not severity — a small item takes the write-off path in one line; deciding an item is minor is itself one of the two paths, and doing it silently is not.
+
+8. **Vendored daemon dependencies audited.**
+
+   The daemon's dependency tree ships INSIDE the package (`daemon/node_modules`), so no bot watches it: Dependabot and `npm audit` at the project root both look at the root manifest and never see a vendored copy. A known CVE therefore rides along quietly until someone runs the audit against that tree deliberately:
+
+   ```bash
+   npm audit --prefix daemon --omit=dev
+   ```
+
+   Run it before every release. A clean audit passes the check. A red one does **not** block by itself — bumping a vendored dependency at release time is its own risk — but it takes exactly one of two paths: the dependency is updated (`npm update --prefix daemon`, then re-run the audit and the full gate), or the finding is written into the release notes with the founder's decision to ship anyway and why. Silence is not one of the paths: an unrun audit is an unanswered question, not a green one.
 </step>
 
 <step name="load_infra_profile">
