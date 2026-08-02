@@ -138,6 +138,12 @@ function noteDescription(corpusDir, file) {
  * @param {number} [opts.budget]    PACK_BUDGET override
  * @param {Function} [opts.resolve] resolvePeriphery double (default: the real loader)
  * @param {Function} [opts.cite]    (memberId, kind) → recordCitation (packed members only)
+ * @param {string|Date} [opts.now]  INJECTED instant for the loader's read-time validity
+ *                                  window. Absent → the loader reads the real clock, the
+ *                                  behaviour every caller had before. Present → the pack
+ *                                  is reproducible on a date other than the one it was
+ *                                  compiled on, which is what makes a measurement over
+ *                                  it a measurement rather than a snapshot of today.
  */
 export function compilePack(opts = {}) {
   const {
@@ -151,6 +157,7 @@ export function compilePack(opts = {}) {
     budget = PACK_BUDGET,
     resolve = resolvePeriphery,
     cite,
+    now,
   } = opts
 
   const registry = loadRegistrySafe(tagsPath)
@@ -161,7 +168,7 @@ export function compilePack(opts = {}) {
   let core = []
   let periphery = []
   try {
-    const res = resolve({ tags, corpusDir, tagsPath, dateMap }) || {}
+    const res = resolve({ tags, corpusDir, tagsPath, dateMap, ...(now == null ? {} : { now }) }) || {}
     core = Array.isArray(res.core) ? res.core : []
     periphery = Array.isArray(res.periphery) ? res.periphery : []
   } catch {
@@ -519,8 +526,11 @@ function resolveRepoState(repoState, { casesDir, corpusDir } = {}) {
  * corpus, writes nothing, no clock, no randomness): the same corpus + the same cases
  * always produce the identical object.
  *
- * Per case: {task, class, schemaVersion, expectedAction, loaded, selected, expected,
- *            hits, missing, criticalMissing, forbiddenPresent, abstain, error?}
+ * Per case: {task, class, schemaVersion, expectedAction, corpusDir, loaded, selected,
+ *            expected, hits, missing, criticalMissing, forbiddenPresent, abstain, error?}
+ *   - corpusDir       the corpus this case was scored AGAINST (the default one, or the
+ *                     fixture a `repo_state` case named) — so a consumer never has to
+ *                     resolve a fixture path a second time; `null` on a refused case
  *   - loaded          the note files that actually arrived in the pack, in pack order
  *   - selected        the subset retrieval CHOSE (periphery) — `loaded` minus the
  *                     unconditional CORE frame; the set an abstention case is judged by
@@ -546,6 +556,11 @@ function resolveRepoState(repoState, { casesDir, corpusDir } = {}) {
  * @param {number} [opts.budget]
  * @param {object} [opts.catalog]
  * @param {object} [opts.profile]
+ * @param {string|Date} [opts.now]  INJECTED instant for the read-time validity window
+ *                                  (threaded straight to compilePack). A scorer that
+ *                                  reads the wall clock stops being a pure function of
+ *                                  the corpus, and a gold set scored against «today»
+ *                                  changes its answer without anything changing.
  * @param {Function} [opts.resolve] resolvePeriphery double
  * @param {Function} [opts.compile] (taskText) → a compilePack result (default: the real one)
  */
@@ -560,6 +575,7 @@ export function scoreNoteCases(opts = {}) {
     budget = PACK_BUDGET,
     catalog = null,
     profile = null,
+    now,
     resolve = resolvePeriphery,
     compile,
   } = opts
@@ -581,6 +597,7 @@ export function scoreNoteCases(opts = {}) {
             profile,
             budget,
             resolve,
+            ...(now == null ? {} : { now }),
           })
 
   const coreLoaded = new Set()
@@ -619,6 +636,7 @@ export function scoreNoteCases(opts = {}) {
           ...head,
           error: resolved.error,
           repoState,
+          corpusDir: null,
           loaded: [],
           selected: [],
           expected: [],
@@ -670,7 +688,12 @@ export function scoreNoteCases(opts = {}) {
     if (abstain === 'pass') abstainPass += 1
     if (abstain === 'fail') abstainFail += 1
 
-    scored.push({ ...head, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain })
+    // `corpusDir` is reported per case because a `repo_state` case is scored against a
+    // FIXTURE corpus, and a consumer that needs what that corpus states about itself
+    // (a record's retirement, a declared contradiction) would otherwise have to resolve
+    // the fixture path a second time — re-implementing the contamination gate, which is
+    // the one thing resolveRepoState exists to be the only copy of.
+    scored.push({ ...head, corpusDir: caseCorpusDir ?? null, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain })
   }
 
   return {
