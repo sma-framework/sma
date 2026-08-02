@@ -60,6 +60,30 @@ export const CORE_THRESHOLD = 9
 export const CORE_EXCLUDED_STATUSES = new Set(['superseded', 'revoked'])
 
 /**
+ * What a schema-v2 grade is worth on the shared weight axis.
+ *
+ * v2 has no `importance` number: the migration split it into `criticality` (what
+ * does MISSING this memory cost) and `context_priority` (must it always load).
+ * `context_priority` was already read back onto the axis; `criticality` was not,
+ * so every on-demand v2 record weighed 0 — and a consumer that tiers by weight
+ * (the reflex fatigue battery silences ≤ 3) heard nothing from migrated knowledge
+ * at all. The grades are the missing half of that inverse, in ONE place: no
+ * consumer gets its own table (the one-axis law of this module's header).
+ *
+ * The numbers are the owner's semantics, not a derivation, and they were approved
+ * as such: high 8 — loud enough for the verbose tier; medium 5 — a one-liner;
+ * low 2 — deliberately BELOW the silence threshold, because a record that says
+ * missing it costs little has not earned an interruption. `critical` is the
+ * fourth grade of the documented ladder (docs/MEMORY-MODEL.md §8) and is held at
+ * the `high` value: the severest grade must never be quieter than `high`, and no
+ * tier louder than the approved one is invented here.
+ *
+ * A grade outside the ladder contributes nothing — an unknown word must not
+ * silently mint a weight.
+ */
+export const CRITICALITY_WEIGHTS = Object.freeze({ low: 2, medium: 5, high: 8, critical: 8 })
+
+/**
  * The CORE membership question, asked ONCE for both schema versions:
  *   - a retired record is never CORE (the hard filter above);
  *   - a schema-v2 record states its own answer in `context_priority` — v2 has no
@@ -294,16 +318,17 @@ export function readNotes(corpusDir) {
  * areas / are you always-load" goes through this function, so the two grammars
  * can never grow two answers. The mapping (also stated in the module header):
  *   description ~ claim · kind ~ (memory_type, truth_mode) · tags ~ retrieval.areas ·
- *   importance≥CORE_THRESHOLD ~ context_priority: always ·
+ *   importance≥CORE_THRESHOLD ~ context_priority: always · importance ~ criticality ·
  *   use-when ~ retrieval.hint · use-when-pattern ~ retrieval.paths[0] ·
  *   reflex ~ retrieval.reflex.
  *
- * The last pair is the migration's own inverse, not a new invention:
- * migrate-v1-v2.mjs writes `context_priority: importance >= 9 ? always : on-demand`,
- * so reading `always` back as CORE-eligible weight CORE_THRESHOLD round-trips a
- * migrated note to where it started. A v2 record carries no importance at all, so
- * an `on-demand` record weighs 0 and sorts at the tail — findable by facet, never
- * ahead of a note that states a number.
+ * The importance pairs are the migration's own inverse, not a new invention:
+ * migrate-v1-v2.mjs writes `context_priority: importance >= 9 ? always : on-demand`
+ * AND `criticality: importance >= 8 ? high : medium`, so reading both back —
+ * `always` as the CORE_THRESHOLD floor, the grade as the number under it
+ * (CRITICALITY_WEIGHTS) — round-trips a migrated note to where it started. A v2
+ * record still states no importance of its own: `importance` on the axis stays 0
+ * for it, and only `weight` (the ordering and tiering key) carries the grade.
  *
  * Exported for loader.mjs (retrieval) and context-pack.mjs (pointer lines): the
  * read engine and the compiler read the SAME axis the index is written with.
@@ -317,9 +342,15 @@ export function readNotes(corpusDir) {
 export function projectNoteAxis(fm, meta = {}) {
   const source = fm ?? {}
   const importance = Number(source.importance)
-  const imp = Number.isFinite(importance) ? importance : 0
+  const stated = Number.isFinite(importance)
+  const imp = stated ? importance : 0
   const contextPriority = String(source.context_priority ?? '').trim()
   const retrieval = retrievalBlock(source)
+  // The base of the weight axis. A record that STATES a number is that number —
+  // a stated 0 is a statement, not a gap to be filled in — and only a record with
+  // no number at all (every schema-v2 record) falls through to its grade.
+  const graded = CRITICALITY_WEIGHTS[String(source.criticality ?? '').trim().toLowerCase()] ?? 0
+  const base = stated ? imp : graded
   return {
     file: meta.file ?? '',
     // v1 says `description`, v2 says `claim` — one line about one fact, under
@@ -336,9 +367,12 @@ export function projectNoteAxis(fm, meta = {}) {
     status: renderableText(source.status),
     contextPriority,
     schemaVersion: meta.schemaVersion ?? 1,
-    // The ordering key. v2 carries no importance, so `always` is mapped onto
-    // the same axis the comparator already sorts by — one chain, two grammars.
-    weight: contextPriority === 'always' ? Math.max(imp, CORE_THRESHOLD) : imp,
+    // The ordering key. v2 carries no importance, so BOTH halves of what the
+    // migration split it into are mapped back onto the same axis the comparator
+    // already sorts by: `always` keeps the CORE floor, `criticality` supplies the
+    // number underneath it (CRITICALITY_WEIGHTS). One chain, two grammars — a
+    // consumer tiering by weight (the reflex battery) never computes its own.
+    weight: contextPriority === 'always' ? Math.max(base, CORE_THRESHOLD) : base,
     // ── trigger fields (read by the reflex consumer, never rendered) ──────
     // v1 `use-when` prose survives migration as `retrieval.hint`; the
     // `use-when-pattern` precision glob as `retrieval.paths[0]`; the per-note
