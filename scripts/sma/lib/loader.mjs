@@ -44,7 +44,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
-import { makeComparator, readNotes, isCoreNote, CORE_THRESHOLD } from './generator.mjs'
+import { makeComparator, readNotes, isCoreNote, isVisibleNow, CORE_THRESHOLD } from './generator.mjs'
 
 /**
  * Group the resolved query tags into facet buckets using the registry.
@@ -126,14 +126,38 @@ export function orderNotes(notes, dateMap = {}) {
  * @param {string} opts.tagsPath      path to TAGS.md (the facet registry)
  * @param {Record<string,string>} [opts.dateMap]  file → last-commit ISO (injected)
  * @param {number} [opts.coreThreshold]  importance at/above which a note is CORE
+ * @param {string|Date} [opts.now]       injected instant for the valid-time filter
+ * @param {string} [opts.audience]       consumer class (default: the local owner)
+ * @param {{repo?:string, environment?:string}} [opts.scope]  the world asking
  * @returns {{core:string[], periphery:string[], matched:number, indexFiles:string[], warnings:string[], meta:object}}
  */
 export function resolvePeriphery(opts) {
-  const { tags = [], corpusDir, tagsPath, dateMap = {}, coreThreshold = CORE_THRESHOLD, cite } = opts
+  const {
+    tags = [],
+    corpusDir,
+    tagsPath,
+    dateMap = {},
+    coreThreshold = CORE_THRESHOLD,
+    cite,
+    now,
+    audience,
+    scope,
+  } = opts
 
   const registry = loadTagsRegistry(tagsPath)
-  const notes = readNotes(corpusDir)
+  const allNotes = readNotes(corpusDir)
   const { buckets, warnings } = groupQueryByFacet(tags, registry)
+
+  // HARD FILTERS FIRST (docs/MEMORY-MODEL.md §9.1): status, valid time, sensitivity
+  // by audience and repo/environment scope are decided BEFORE anything is ranked,
+  // matched or counted — so a record that may not be shown cannot win a comparison
+  // it should never have entered. One chain, both output points below (CORE and
+  // periphery) read `notes`, so there is no path around it. The predicate is the
+  // generator's (isVisibleNow), the same module that owns CORE membership: one axis,
+  // one implementation. A hidden record is out of DELIVERY, not out of the corpus —
+  // the area indexes still catalogue it, because an index is a map, not a payload.
+  const visibility = { now, audience, scope }
+  const notes = allNotes.filter((n) => isVisibleNow(n, visibility))
 
   // CORE: always included first, ordered by the shared comparator. Membership is
   // the GENERATOR's question (isCoreNote), never re-derived here — so what loads
@@ -145,9 +169,12 @@ export function resolvePeriphery(opts) {
   )
   const coreSet = new Set(coreNotes.map((n) => n.file))
 
-  // Periphery: everything CORE did not take that matches the facet intersection.
-  // A superseded record is kept findable here — it is out of always-load, not out
-  // of the corpus (the generator catalogues it in its area index for the same reason).
+  // Periphery: everything CORE did not take that matches the facet intersection —
+  // out of the notes the hard filters already cleared, so a retired or expired
+  // record cannot ride in here after being kept out of CORE (it used to: the status
+  // filter lived at CORE membership only, and the retrieval baseline caught exactly
+  // that shape as a forbidden hit). It stays findable in its area index, with the
+  // state named — out of delivery, not out of the corpus.
   // Dedup by file path AFTER resolution (a note matched via several tags loads once).
   const matched = notes.filter(
     (n) => !isCoreNote(n, coreThreshold) && noteMatches(n, buckets, registry),

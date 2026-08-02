@@ -45,6 +45,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
+import { SENSITIVITY_CLASSES } from './schema-v2.mjs'
 
 /** Importance at/above which a note is CORE (always loaded). Sparse by design (B9). */
 export const CORE_THRESHOLD = 9
@@ -78,6 +79,133 @@ export function isCoreNote(n, coreThreshold = CORE_THRESHOLD) {
   if (n.contextPriority === 'always') return true
   if (n.contextPriority === 'on-demand') return false
   return n.importance >= coreThreshold
+}
+
+// ───────────────── read-time visibility (hard filters, docs §9.1) ────────────
+
+/**
+ * The sensitivity ceiling each named audience may be shown, as a class from the
+ * schema's own closed vocabulary (no second dictionary is minted here).
+ *
+ *   owner    — the local human reading their own corpus: nothing is withheld.
+ *              Filtering here would cost recall on one's own material while
+ *              protecting nobody, so it is the default.
+ *   subagent — a delegated agent: public + internal.
+ *   export   — anything leaving the machine (a shared pack, a report): public only.
+ *
+ * An audience named directly as a sensitivity class reads as that ceiling. An
+ * audience nobody registered is fail-CLOSED to the narrowest ceiling: an unknown
+ * consumer is not a trusted one.
+ */
+export const AUDIENCE_SENSITIVITY_CEILING = Object.freeze({
+  owner: null, // null = no ceiling
+  subagent: 'internal',
+  export: 'public',
+})
+
+/** The class an undeclared record is treated as: absence is never `public`. */
+const UNDECLARED_SENSITIVITY = 'internal'
+
+/** A date-only stamp (`YYYY-MM-DD`) — the corpus writes both this and full ISO. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * A frontmatter time stamp as epoch ms, or null when absent/unparseable.
+ * A date-only stamp is read as the WHOLE day: `valid_from` starts at its first
+ * instant, `valid_until` runs through its last. That is the conservative reading —
+ * a record stamped «valid until the 18th» is still valid ON the 18th, and hiding
+ * knowledge is the expensive mistake here. An unparseable stamp yields null (a
+ * schema finding the lint owns), never a silent removal from delivery.
+ */
+function instantOf(value, { endOfDay = false } = {}) {
+  const raw = value instanceof Date ? value.toISOString() : String(value ?? '').trim()
+  if (raw === '') return null
+  const iso = DATE_ONLY.test(raw) ? `${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z` : raw
+  const ms = Date.parse(iso)
+  return Number.isFinite(ms) ? ms : null
+}
+
+/** Position of a sensitivity class in the schema's ordered vocabulary, or -1. */
+function sensitivityRank(value) {
+  return SENSITIVITY_CLASSES.indexOf(String(value ?? '').trim())
+}
+
+/** The ceiling for an audience, or null when the audience may see every class. */
+function ceilingFor(audience) {
+  const named = String(audience ?? '').trim()
+  if (named === '' || named === 'owner') return null
+  if (Object.hasOwn(AUDIENCE_SENSITIVITY_CEILING, named)) return AUDIENCE_SENSITIVITY_CEILING[named]
+  if (SENSITIVITY_CLASSES.includes(named)) return named
+  return SENSITIVITY_CLASSES[0] // fail-closed: an unregistered audience sees public only
+}
+
+/**
+ * One dimension of `scope` (repos / environments): a record that names a world
+ * it holds in is out of delivery in every OTHER world. A record that names none
+ * constrains nothing, and a caller that states no world asks no question — the
+ * filter only narrows when BOTH sides have something to say.
+ */
+function scopeAllows(scope, key, asked) {
+  const value = String(asked ?? '').trim()
+  if (value === '') return true
+  const raw = scope?.[key]
+  const declared = (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
+    .map((s) => String(s).trim())
+    .filter((s) => s !== '')
+  return declared.length === 0 || declared.includes(value)
+}
+
+/**
+ * isVisibleNow(note, opts) — MAY this record be shown right now, to this consumer.
+ *
+ * The read-time half of `docs/MEMORY-MODEL.md` §9.1: hard filters run BEFORE any
+ * ranking — status, valid time, sensitivity by audience, repo/environment scope.
+ * Structural only: it reads typed fields and never the note's body, so nothing a
+ * record says in prose can argue its way into a payload.
+ *
+ * This is deliberately NOT the write-time approval ladder (`resolveApprovalPath`,
+ * schema-v2): that answers «may this record EXIST», this answers «may it be SHOWN».
+ * The two read some of the same fields and must not be collapsed into one function —
+ * merging them would make a read path enforce write policy and vice versa.
+ *
+ * Nothing here mutates: an expired record keeps its `status`, and the lint's
+ * advisory MEM-EXPIRE finding stays the human-facing consumer of the same field.
+ *
+ * @param {object} note  a projected record (projectNoteAxis — the shared axis)
+ * @param {{now?:string|Date, audience?:string, scope?:{repo?:string, environment?:string}}} [opts]
+ *        now      — injected for determinism; defaults to the current instant
+ *        audience — the consumer class (default: the local owner, unfiltered)
+ *        scope    — the world the caller is asking from (repo / environment)
+ * @returns {boolean}
+ */
+export function isVisibleNow(note, opts = {}) {
+  const n = note ?? {}
+
+  // 1. status — the filter that already ran at CORE membership, now on every path.
+  if (CORE_EXCLUDED_STATUSES.has(n.status)) return false
+
+  // 2. valid time — the window the record itself declares (bi-temporal, B5).
+  const now = instantOf(opts.now) ?? Date.now()
+  const from = instantOf(n.validFrom)
+  if (from != null && now < from) return false
+  const until = instantOf(n.validUntil, { endOfDay: true })
+  if (until != null && now > until) return false
+
+  // 3. sensitivity — by AUDIENCE only. The local owner (default) is withheld nothing.
+  const ceiling = ceilingFor(opts.audience)
+  if (ceiling != null) {
+    const declared = String(n.sensitivity ?? '').trim()
+    const rank = declared === '' ? sensitivityRank(UNDECLARED_SENSITIVITY) : sensitivityRank(declared)
+    if (rank < 0) return false // a class outside the vocabulary is fail-closed
+    if (rank > sensitivityRank(ceiling)) return false
+  }
+
+  // 4. scope — the repo/environment world the claim is meant to hold in (§9.2).
+  const scope = n.scope ?? {}
+  if (!scopeAllows(scope, 'repos', opts.scope?.repo)) return false
+  if (!scopeAllows(scope, 'environments', opts.scope?.environment)) return false
+
+  return true
 }
 
 /**
@@ -216,6 +344,14 @@ export function projectNoteAxis(fm, meta = {}) {
     // `use-when-pattern` precision glob as `retrieval.paths[0]`; the per-note
     // opt-out `reflex: off` as `retrieval.reflex`. They sit here, beside the
     // rest of the axis, so no consumer has to learn the v2 grammar twice.
+    // ── visibility fields (read by isVisibleNow, never rendered) ──────────
+    // Both grammars stamp validity time under the same two names (B5); the class
+    // and the world are v2-only and simply read empty for a v1 note, which is
+    // exactly «this record constrains nothing» — no v1 delivery moves.
+    validFrom: renderableText(source.valid_from),
+    validUntil: renderableText(source.valid_until),
+    sensitivity: renderableText(source.sensitivity),
+    scope: blockOf(source.scope),
     hint: renderableText(source['use-when'] ?? retrieval.hint),
     pathPattern: renderableText(source['use-when-pattern'] ?? firstPath(retrieval)),
     reflexOptOut:
@@ -250,10 +386,14 @@ function projectKind(fm) {
   return PROCEDURAL_BY_TRUTH_MODE[truthMode] ?? memoryType
 }
 
+/** A frontmatter block as a plain object ({} when absent or malformed). */
+function blockOf(v) {
+  return v != null && typeof v === 'object' && !Array.isArray(v) ? v : {}
+}
+
 /** The v2 `retrieval` block as a plain object ({} when absent or malformed). */
 function retrievalBlock(fm) {
-  const r = fm.retrieval
-  return r != null && typeof r === 'object' && !Array.isArray(r) ? r : {}
+  return blockOf(fm.retrieval)
 }
 
 /** The first entry of `retrieval.paths` (the migrated precision glob), or ''. */
