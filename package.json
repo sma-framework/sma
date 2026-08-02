@@ -51,6 +51,7 @@
   ],
   "scripts": {
     "test": "vitest run && node tools/verify-rebrand.mjs",
+    "badge": "vitest run --reporter=json --outputFile=.vitest-report.json && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json",
     "prepublishOnly": "node scripts/sma/lib/package-check.mjs --strict && node tools/verify-rebrand.mjs",
     "sma": "node scripts/sma/cli.mjs"
   },

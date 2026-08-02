@@ -6,3 +6,7 @@ daemon/static/app/
 
 .claude/
 CLAUDE.md
+
+# Raw vitest JSON, consumed by `pnpm badge` to stamp test-receipt.json. The
+# RECEIPT is committed; the transient report it was derived from is not.
+.vitest-report.json
