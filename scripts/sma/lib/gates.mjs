@@ -185,7 +185,7 @@ export const GATES = [
       },
       denyText:
         'SMA-гейт [GATE-PUSH] DENY: push заблокирован — нет доказательства полного гейта ' +
-        'для текущего HEAD. Прогоните ритуал /sma-ship (он запишет маркер fullgate через ' +
+        'для текущего HEAD. Прогоните релизный ритуал /sma-help ship (он запишет маркер fullgate через ' +
         'node scripts/sma/cli.mjs gates mark-fullgate) или получите разовый override с провенансом: ' +
         'node scripts/sma/cli.mjs gates override GATE-PUSH --yes --reason "почему". Kill-switch: SMA_GATE_PUSH_DENY=0.',
     },

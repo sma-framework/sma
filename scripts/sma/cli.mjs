@@ -8800,10 +8800,10 @@ async function cmdShipLane({ positionals, flags, dirs }) {
     if (wantsJson(flags)) printJson(res)
     else if (res.allowed) {
       process.stdout.write(
-        `SMA ship-lane: ПОДХОДИТ для /sma-quick-ship — дельта ${res.delta} коммит(ов), миграций нет, чужой push-claim отсутствует. Гейт тот же, что в /sma-ship.\n`,
+        `SMA ship-lane: ПОДХОДИТ для быстрой полосы — дельта ${res.delta} коммит(ов), миграций нет, чужой push-claim отсутствует. Гейт тот же, что в полном релизном ритуале.\n`,
       )
     } else {
-      process.stdout.write('SMA ship-lane: НЕ подходит для быстрой полосы — используйте полный /sma-ship:\n')
+      process.stdout.write('SMA ship-lane: НЕ подходит для быстрой полосы — используйте полный релизный ритуал (/sma-help ship):\n')
       for (const r of res.reasons) process.stdout.write(`  - ${r}\n`)
     }
     return res.allowed ? 0 : 1
@@ -9173,7 +9173,7 @@ async function cmdMerge({ positionals, flags, dirs }) {
     return 1
   }
   process.stdout.write(`SMA merge: ${branch} влит в main ЛОКАЛЬНО${res.resultSha ? ` (${String(res.resultSha).slice(0, 7)})` : ''}; тесты на результате слияния: ${res.testsPassed ? 'зелёные' : 'КРАСНЫЕ'}.\n`)
-  process.stdout.write('  push — по команде основателя через /sma-ship; `sma merge` НЕ пушит и НЕ деплоит.\n')
+  process.stdout.write('  push — по команде владельца в релизном ритуале (/sma-help ship); `sma merge` НЕ пушит и НЕ деплоит.\n')
   return res.testsPassed ? 0 : 1
 }
 
