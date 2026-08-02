@@ -305,6 +305,17 @@ vocabularies. `risk` is load-bearing beyond ranking: together with `memory_type`
 `truth_mode` and `sensitivity` it decides which approval path a record takes
 ([`MEMORY-LIFECYCLE.md` §3](MEMORY-LIFECYCLE.md#3-the-risk-approval-ladder)).
 
+**What `criticality` is worth when something has to rank or tier.** A v2 record
+states no `importance` number at all, so both halves of the split are read back onto
+the one shared weight axis every consumer already sorts and tiers by:
+`context_priority: always` keeps the always-load floor, and underneath it the grade
+supplies the number — `low` 2, `medium` 5, `high` 8, `critical` 8. A grade outside
+the four never mints a weight. The numbers are a deliberate semantic, not a formula:
+`high` is loud enough for a full pre-act warning, `medium` speaks in one line, and
+`low` sits *below* the reflex silence threshold on purpose — a record that says
+missing it costs little has not earned an interruption. A v1 note that states its own
+`importance` is unaffected: a stated number always wins, including a stated zero.
+
 **`frequency` is carried but unproven.** It is in the schema for completeness and is
 explicitly a candidate for the measurement work: no sample so far has demonstrated
 that it earns its place. It may be narrowed or dropped in a later minor version, and
@@ -650,6 +661,7 @@ validator reports it: kept as-is, with nothing validating it.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-08-03 | §8 states what `criticality` is worth on the shared weight axis: a record with no `importance` number of its own now weighs its grade (`low` 2 · `medium` 5 · `high` 8 · `critical` 8), with `context_priority: always` keeping the always-load floor above it. Behavior changed with it: migrated records stop weighing zero, so a knowledge item whose grade clears the reflex silence threshold fires pre-act where it used to stay quiet, and a graded record sorts ahead of an ungraded one inside its area index. A stated `importance` still wins, and no grade moves a record into or out of always-load membership. No schema change. |
 | 1.1 | 2026-08-03 | §9.1 now describes an implementation instead of a target: the read-time hard filters are code (`isVisibleNow` — status, valid time, sensitivity by audience, repo/environment scope), executed as a filter chain before ranking on both output points of a pack. One behavior changed with it: a `superseded`/`revoked` record no longer reaches the delivered periphery, only its area index. Still unenforced and named as such: permission — `audience` is a parameter the caller states, not an identity this layer verifies. No schema change. |
 | 1.0 (correction) | 2026-08-02 | §9.1 corrected, not extended: the hard retrieval filters were written as if they ran, and only the `status` filter on CORE membership does. The paragraph now separates the contract from the implementation and names placement as the defense until read-time class filtering lands, which is what `MEMORY-THREAT-MODEL.md` §2.4 and non-goal 5 have said all along. No schema or behavior changed. |
 | 1.0 | 2026-08-02 | First landed version. Reconciled with the shipped code throughout: the authority scale (`owner-instruction` · `external-review` · `self-observed` · `inferred`), the composite fingerprint (`product_version` + optional `tree_paths`/`tree_hash`) and its single hash definition, the external-artifact horizon, six lifecycle statuses including `draft`, four sensitivity classes ending in `encrypted-required`, `context_priority: always/on-demand` and `risk: low…critical`, the required field set including `language`, `applies_to` and the private-facet ban, the one-claim law, the episodes dual representation, the real lint check ids and tiers with the migration grace and its horizon, the landed v1→v2 transform table, the migration verb syntax with per-file acceptance, and a worked example in the schema's fixed emit order. |
