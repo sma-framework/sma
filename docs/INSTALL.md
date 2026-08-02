@@ -225,7 +225,7 @@ npm pack --dry-run
 | `daemon/` | 67 | the optional V5 runner, its front server, and the compiled app it serves (`daemon/static/app`) |
 | `daemon/node_modules/` | 278 | the daemon's two runtime dependencies (`pg`, `pg-boss`) and their transitive tree |
 | `docs/` | 13 | this page, both deep dives, the three memory documents, the recipes, the system map |
-| `supervisor/` | 8 | the always-on checklists and smoke runners for macOS and Windows |
+| `supervisor/` | 10 | the always-on checklists (English + Russian) and smoke runners for macOS and Windows |
 | `bin/init.mjs` | 1 | the installer |
 | root | 5 | `package.json`, `LICENSE`, `THIRD-PARTY-LICENSES.md`, `README.md`, `README.ru.md` |
 
