@@ -159,8 +159,8 @@ export function checkScopeCollision(paths, opts = {}) {
           since: session.acquireTime ?? session.renewTime ?? null,
           staleness,
           howToClear: active
-            ? 'дождитесь завершения или: pnpm sma force-clear ' + slugClaim(session)
-            : 'pnpm sma force-clear ' + slugClaim(session),
+            ? 'дождитесь завершения или: node scripts/sma/cli.mjs force-clear ' + slugClaim(session)
+            : 'node scripts/sma/cli.mjs force-clear ' + slugClaim(session),
         })
         break // one warn per foreign session is enough
       }
@@ -213,7 +213,7 @@ function slugClaim(session) {
 /**
  * buildWarnText(warn) — the RU one-liner in the Terraform force-unlock style
  * (CONTEXT: «занято терминалом Фабрика (pid 31240), операция push, с 14:20 — очистить:
- * pnpm sma force-clear push»). An info hot-file warn passes through as its own text.
+ * node scripts/sma/cli.mjs force-clear push»). An info hot-file warn passes through as its own text.
  * @param {Object} warn
  * @returns {string}
  */

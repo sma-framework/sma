@@ -451,9 +451,9 @@ export function buildIndex(opts) {
   // ── Thin discovery layer (FI-11, 9.1-13) ───────────────────────────────
   // One line per AREA with a count; the full one-line-per-note catalog lives
   // in the per-area INDEX-<area>.md files, pulled by tag on demand via
-  // `pnpm sma load` — always-load stays within its byte budget with zero loss
+  // `node scripts/sma/cli.mjs load` — always-load stays within its byte budget with zero loss
   // of discoverability.
-  out.push('## Обзор областей (полные индексы по требованию — `pnpm sma load --tags <area>`)')
+  out.push('## Обзор областей (полные индексы по требованию — `node scripts/sma/cli.mjs load --tags <area>`)')
   out.push('')
   if (byArea.size === 0) {
     out.push('_(пусто)_')

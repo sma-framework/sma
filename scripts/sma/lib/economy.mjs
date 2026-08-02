@@ -491,7 +491,7 @@ export function checkLaneOverrun({ run, budgets, appendVerdict, draftLesson, now
       metric: 'lane_budget_overrun',
       id: `LANE-${lane}-${stamp}`,
       claim: `полоса ${lane}: расход остался в пределах бюджета p${b.pct} ($${b.usd}), выведенного из ${b.n} собственных прогонов`,
-      check_command: 'pnpm sma spend lane report',
+      check_command: 'node scripts/sma/cli.mjs spend lane report',
       comparator: '<=',
       expected: b.usd,
       actual,

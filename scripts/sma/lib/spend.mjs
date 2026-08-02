@@ -436,7 +436,7 @@ function denyReason(windowUsd, cap, windowHours) {
   return (
     `SMA-spend DENY: запуск нового субагента (Task) заблокирован — за окно ${windowHours} ч ` +
     `потрачено $${round6(windowUsd)}, что достигло/превысило лимит $${cap}. Мягкий deny снимается ` +
-    `так: поднимите лимит (pnpm sma spend set-cap <usd>) или отключите проверку затрат (SMA_SPEND_DISABLE=1). ` +
+    `так: поднимите лимит (node scripts/sma/cli.mjs spend set-cap <usd>) или отключите проверку затрат (SMA_SPEND_DISABLE=1). ` +
     `Deny применяется ТОЛЬКО к Task; любой другой инструмент — только предупреждение.`
   )
 }

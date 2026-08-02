@@ -53,7 +53,7 @@ export { MERGE_SLOT_NAME } from './constants.mjs'
  */
 export const ENFORCE_OVERRIDE_HINT =
   'переопределить (если правка действительно нужна): SMA_ENFORCE_SCOPES_DISABLE=1 для этого вызова, ' +
-  'либо согласуйте со владельцем скоупа; если claim завис — pnpm sma force-clear <scope>'
+  'либо согласуйте со владельцем скоупа; если claim завис — node scripts/sma/cli.mjs force-clear <scope>'
 
 /** Default real git runner: execFileSync with an args ARRAY (no shell interpolation, T-9-06-03). */
 export function defaultExecGit(args, opts = {}) {
@@ -164,7 +164,7 @@ export function checkMergeClaim(o = {}) {
     since,
     branch,
     warn: `слияние уже идёт: ${who}${since ? ` (с ${since})` : ''} — дождитесь завершения`,
-    howToClear: 'дождитесь / pnpm sma force-clear merge-in-progress',
+    howToClear: 'дождитесь / node scripts/sma/cli.mjs force-clear merge-in-progress',
   }
 }
 
@@ -203,7 +203,7 @@ export function runMerge(o = {}) {
       return {
         merged: false,
         softDenied: true,
-        override: `слияние уже идёт (${holder}) — дождитесь завершения, либо, если оно зависло: pnpm sma force-clear ${MERGE_SLOT_NAME}`,
+        override: `слияние уже идёт (${holder}) — дождитесь завершения, либо, если оно зависло: node scripts/sma/cli.mjs force-clear ${MERGE_SLOT_NAME}`,
         holder: acq.holder ?? null,
       }
     }

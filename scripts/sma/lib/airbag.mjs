@@ -512,7 +512,7 @@ export function checkAirbag(evt = {}, opts = {}) {
         // Dormant posture: WARN only (carried-forward fail-open law).
         out.warns.push(
           'SMA-airbag: разрушительная git-команда (' + m.cmdClass + ') при условии «' + conditions.join(', ') +
-            '». Снимок создан (' + receipt.snapshotId + '); откат: pnpm sma undo. ' +
+            '». Снимок создан (' + receipt.snapshotId + '); откат: node scripts/sma/cli.mjs undo. ' +
             'Мягкий deny включается только при SMA_AIRBAG_DENY=1.',
         )
       }
@@ -528,8 +528,8 @@ function denyText(command, conditions) {
   return (
     'SMA-airbag [GATE-AIRBAG] DENY: разрушительная git-команда заблокирована — «' +
     String(command).slice(0, 160) + '» при условии «' + conditions.join(', ') + '» ' +
-    '(грязное дерево / чужая заявка). Снимок УЖЕ создан, откат: pnpm sma undo. ' +
-    'Разовый override с провенансом: pnpm sma gates override GATE-AIRBAG --yes --reason "почему". ' +
+    '(грязное дерево / чужая заявка). Снимок УЖЕ создан, откат: node scripts/sma/cli.mjs undo. ' +
+    'Разовый override с провенансом: node scripts/sma/cli.mjs gates override GATE-AIRBAG --yes --reason "почему". ' +
     'Kill-switch: SMA_AIRBAG_DISABLE=1 (или снять арм: SMA_AIRBAG_DENY=0).'
   )
 }

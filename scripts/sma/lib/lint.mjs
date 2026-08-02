@@ -1084,7 +1084,7 @@ const PRED_SKEPTIC = {
       if (v && v.ok === false) {
         const why =
           v.reason === 'unsigned'
-            ? 'has no skeptic countersign — a skeptic distinct from the implementer must sign it (pnpm sma skeptic sign)'
+            ? 'has no skeptic countersign — a skeptic distinct from the implementer must sign it (node scripts/sma/cli.mjs skeptic sign)'
             : v.reason === 'hash-mismatch'
               ? 'was edited after countersigning — the countersign is VOID; re-sign from a skeptic terminal'
               : v.reason === 'self-sign'
@@ -1347,7 +1347,7 @@ const LADDER_EVIDENCE = {
       //     an evidence-free enforcement escalation (the exact self-grading V3 kills).
       if (tier && tier !== 'warn') {
         if (!evidence.length || !hasRefs) {
-          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden (D-9.3-12); tune only via \`pnpm sma tune --apply\`, never a hand-edit`))
+          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden (D-9.3-12); tune only via \`node scripts/sma/cli.mjs tune --apply\`, never a hand-edit`))
         }
       }
       // (b) a 'retired' rule must carry a fixtureCheck record (the STPA birth-fixture

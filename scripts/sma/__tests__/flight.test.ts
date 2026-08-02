@@ -216,8 +216,8 @@ describe('continuation briefs', () => {
     expect(brief).toContain('следующая задача 2')
     // PLUS a claim-transfer section with the exact commands
     expect(brief).toContain('## Передача claim')
-    expect(brief).toContain('pnpm sma release flight-slot')
-    expect(brief).toContain('pnpm sma claim')
+    expect(brief).toContain('node scripts/sma/cli.mjs release flight-slot')
+    expect(brief).toContain('node scripts/sma/cli.mjs claim')
     expect(brief).toContain('force-clear')
     expect(brief).toContain('D-9-09')
 
