@@ -26,8 +26,8 @@
  * Node built-ins only; everything DI; no child_process anywhere; zero network; zero LLM.
  */
 
-import { readdirSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdirSync, readFileSync, appendFileSync, mkdirSync, existsSync, statSync } from 'node:fs'
+import { join, resolve as resolvePath, relative, isAbsolute } from 'node:path'
 import { createHash } from 'node:crypto'
 
 import { loadTagsRegistry, resolveAlias, parseNote } from './frontmatter.mjs'
@@ -449,6 +449,33 @@ export function growExam({ contextDir } = {}) {
  * → deriveTaskTags → resolvePeriphery (generator CORE rule + tag-matched periphery)
  * → budget prefix. Nothing about «what loads» is re-derived here, so the score can
  * never drift from the behavior it claims to measure.
+ *
+ * THE GRAMMAR GROWS ADDITIVELY (V5.2). The canon asks a gold case four more questions
+ * than the four fields above; every one of them is an OPTIONAL key, so a case file
+ * written before this paragraph existed scores byte-for-byte as it always did — which
+ * is not politeness, it is the re-measurement protocol: a baseline whose input format
+ * shifted underneath it is a story, not a comparison.
+ *
+ *   class            the named test class this case belongs to (reported, never scored)
+ *   schema_version   the case grammar the line was written against (default 1)
+ *   expected_action  what a correct consumer should DO with the retrieved set — carried
+ *                    and reported here, judged by the action-impact tier, not by this
+ *                    function (it scores retrieval, and says so)
+ *   should_abstain   the RIGHT answer is an empty selection. Scored against the SELECTED
+ *                    set — the notes retrieval CHOSE — never against unconditional CORE,
+ *                    which arrives for every task and would make abstention impossible to
+ *                    express. Reported as its own verdict (`abstain: pass|fail`) precisely
+ *                    so «held back correctly» can never be read as «missed something».
+ *   repo_state       a POSIX-relative path, from the DIRECTORY OF THE CASE FILE, to a
+ *                    fixture corpus this one case scores against instead of the default.
+ *
+ * CONTAMINATION IS REFUSED, NOT SCORED: adversarial fixtures (poisoned memory, prompt
+ * injection, a foreign repo's notes) exist to be retrieved AT the system, and the one
+ * place they must never live is the live corpus that answers real questions. A
+ * `repo_state` that resolves into the corpus directory — or an absolute path, or a path
+ * that does not exist — yields a case-level `error` and is left OUT of the score
+ * entirely. A refused case is not a miss and not a hit: pretending otherwise would let a
+ * broken fixture quietly move the number the benchmark exists to protect.
  */
 
 /** Unique + sorted (stable report bytes regardless of input order). */
@@ -456,24 +483,63 @@ function uniqSorted(list) {
   return [...new Set((Array.isArray(list) ? list : []).map((s) => String(s)))].sort()
 }
 
+/** True when `child` is `parent` itself or lives underneath it. */
+function isInside(parent, child) {
+  const rel = relative(parent, child)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * resolveRepoState(repoState, {casesDir, corpusDir}) → {dir} or {error}.
+ *
+ * The gate described in the block comment above, in one place so both the scorer and
+ * its tests read the same rule. Error codes are stable strings (they end up in a
+ * report): `repo-state-not-relative`, `repo-state-unresolvable`,
+ * `repo-state-contamination`, `repo-state-missing`.
+ */
+function resolveRepoState(repoState, { casesDir, corpusDir } = {}) {
+  const raw = String(repoState ?? '').trim()
+  // POSIX-relative only: a backslash or a drive letter is a machine-specific path, and
+  // a case file that only works on the machine that wrote it is not a gold case.
+  if (raw.includes('\\') || isAbsolute(raw) || /^[A-Za-z]:/.test(raw)) return { error: 'repo-state-not-relative' }
+  if (!casesDir) return { error: 'repo-state-unresolvable' }
+  const dir = resolvePath(casesDir, raw)
+  if (corpusDir && isInside(resolvePath(corpusDir), dir)) return { error: 'repo-state-contamination' }
+  let ok = false
+  try {
+    ok = existsSync(dir) && statSync(dir).isDirectory()
+  } catch {
+    ok = false
+  }
+  return ok ? { dir } : { error: 'repo-state-missing' }
+}
+
 /**
  * scoreNoteCases(opts) → {coreLoaded, cases[], totals}. PURE over its inputs (reads the
  * corpus, writes nothing, no clock, no randomness): the same corpus + the same cases
  * always produce the identical object.
  *
- * Per case: {task, loaded, expected, hits, missing, criticalMissing, forbiddenPresent}
+ * Per case: {task, class, schemaVersion, expectedAction, loaded, selected, expected,
+ *            hits, missing, criticalMissing, forbiddenPresent, abstain, error?}
  *   - loaded          the note files that actually arrived in the pack, in pack order
+ *   - selected        the subset retrieval CHOSE (periphery) — `loaded` minus the
+ *                     unconditional CORE frame; the set an abstention case is judged by
  *   - hits/missing    expected_notes split by presence in `loaded`
  *   - criticalMissing critical_notes absent from `loaded` (scored independently of
  *                     expected_notes — a critical note is critical whether or not the
  *                     case bothered to list it twice)
  *   - forbiddenPresent forbidden_notes that loaded anyway
+ *   - abstain         'pass' (should_abstain and selected nothing) | 'fail' | null
+ *   - error           present ONLY on a refused case (see the block comment): every
+ *                     score field is empty and the case is excluded from the totals
  * A case with no `task` string is skipped (never a fabricated score); non-array note
  * fields degrade to [] rather than throwing.
  *
  * @param {object} opts
  * @param {object[]} opts.cases     gold cases (see the block comment above)
  * @param {string} [opts.corpusDir]
+ * @param {string} [opts.casesDir]  directory of the case FILE — the base a case's
+ *                                  `repo_state` fixture path resolves against
  * @param {string} [opts.tagsPath]
  * @param {object} [opts.dateMap]
  * @param {string} [opts.commit]    injected (affects packId only, never the score)
@@ -487,6 +553,7 @@ export function scoreNoteCases(opts = {}) {
   const {
     cases = [],
     corpusDir,
+    casesDir,
     tagsPath,
     dateMap = {},
     commit = '',
@@ -497,26 +564,79 @@ export function scoreNoteCases(opts = {}) {
     compile,
   } = opts
 
+  // One compile per case, told WHICH corpus to read: the default one, or the fixture a
+  // `repo_state` case names. An injected double receives the same context object, so a
+  // test can assert which corpus a case was scored against.
   const compileOne =
     typeof compile === 'function'
       ? compile
-      : (taskText) => compilePack({ taskText, commit, corpusDir, tagsPath, dateMap, catalog, profile, budget, resolve })
+      : (taskText, ctx = {}) =>
+          compilePack({
+            taskText,
+            commit,
+            corpusDir: ctx.corpusDir ?? corpusDir,
+            tagsPath: ctx.tagsPath ?? tagsPath,
+            dateMap,
+            catalog,
+            profile,
+            budget,
+            resolve,
+          })
 
   const coreLoaded = new Set()
   const scored = []
+  let scoredCases = 0
   let expectedTotal = 0
   let hitTotal = 0
   let missingTotal = 0
   let criticalMissingTotal = 0
   let casesWithCriticalMiss = 0
   let forbiddenPresentTotal = 0
+  let abstainPass = 0
+  let abstainFail = 0
+  let rejected = 0
 
   for (const gold of Array.isArray(cases) ? cases : []) {
     if (!gold || typeof gold.task !== 'string' || gold.task.trim() === '') continue
 
+    // ── the optional canon keys (absent → the pre-extension reading, exactly) ──
+    const klass = typeof gold.class === 'string' && gold.class.trim() !== '' ? gold.class.trim() : null
+    const schemaVersion = Number.isFinite(Number(gold.schema_version)) ? Number(gold.schema_version) : 1
+    const expectedAction =
+      typeof gold.expected_action === 'string' && gold.expected_action.trim() !== '' ? gold.expected_action.trim() : null
+    const shouldAbstain = gold.should_abstain === true
+    const head = { task: gold.task, class: klass, schemaVersion, expectedAction }
+
+    // ── which corpus does THIS case ask about ──
+    let caseCorpusDir = corpusDir
+    let caseTagsPath = tagsPath
+    const repoState = typeof gold.repo_state === 'string' ? gold.repo_state.trim() : ''
+    if (repoState !== '') {
+      const resolved = resolveRepoState(repoState, { casesDir, corpusDir })
+      if (resolved.error) {
+        rejected += 1
+        scored.push({
+          ...head,
+          error: resolved.error,
+          repoState,
+          loaded: [],
+          selected: [],
+          expected: [],
+          hits: [],
+          missing: [],
+          criticalMissing: [],
+          forbiddenPresent: [],
+          abstain: null,
+        })
+        continue
+      }
+      caseCorpusDir = resolved.dir
+      caseTagsPath = join(resolved.dir, 'TAGS.md')
+    }
+
     let packMembers = []
     try {
-      const res = compileOne(gold.task)
+      const res = compileOne(gold.task, { corpusDir: caseCorpusDir, tagsPath: caseTagsPath })
       packMembers = res && Array.isArray(res.members) ? res.members : []
     } catch {
       packMembers = [] // fail-soft — a broken compile scores as «nothing loaded», never a throw
@@ -524,7 +644,11 @@ export function scoreNoteCases(opts = {}) {
     const notes = packMembers.filter((m) => m && m.type === 'note')
     const loaded = notes.map((m) => String(m.id))
     const loadedSet = new Set(loaded)
-    for (const m of notes) if (m.sub === 'core') coreLoaded.add(String(m.id))
+    // The SELECTED set: what retrieval chose, with the unconditional frame removed.
+    const selected = notes.filter((m) => m.sub !== 'core').map((m) => String(m.id))
+    // The always-load set of the DEFAULT corpus only — a fixture's core is that
+    // fixture's business and must not be reported as the corpus's own frame.
+    if (caseCorpusDir === corpusDir) for (const m of notes) if (m.sub === 'core') coreLoaded.add(String(m.id))
 
     const expected = uniqSorted(gold.expected_notes)
     const critical = uniqSorted(gold.critical_notes)
@@ -534,28 +658,35 @@ export function scoreNoteCases(opts = {}) {
     const missing = expected.filter((f) => !loadedSet.has(f))
     const criticalMissing = critical.filter((f) => !loadedSet.has(f))
     const forbiddenPresent = forbidden.filter((f) => loadedSet.has(f))
+    const abstain = shouldAbstain ? (selected.length === 0 ? 'pass' : 'fail') : null
 
+    scoredCases += 1
     expectedTotal += expected.length
     hitTotal += hits.length
     missingTotal += missing.length
     criticalMissingTotal += criticalMissing.length
     if (criticalMissing.length) casesWithCriticalMiss += 1
     forbiddenPresentTotal += forbiddenPresent.length
+    if (abstain === 'pass') abstainPass += 1
+    if (abstain === 'fail') abstainFail += 1
 
-    scored.push({ task: gold.task, loaded, expected, hits, missing, criticalMissing, forbiddenPresent })
+    scored.push({ ...head, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain })
   }
 
   return {
     coreLoaded: [...coreLoaded].sort(),
     cases: scored,
     totals: {
-      cases: scored.length,
+      cases: scoredCases,
       expected: expectedTotal,
       hits: hitTotal,
       missing: missingTotal,
       criticalMissing: criticalMissingTotal,
       casesWithCriticalMiss,
       forbiddenPresent: forbiddenPresentTotal,
+      abstainPass,
+      abstainFail,
+      rejected,
     },
   }
 }
