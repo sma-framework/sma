@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -129,10 +129,8 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
       expect(ids(run(write('.planning/phases/9-x/9-DOD.json', DOD_AGENT_PASS)))).not.toContain('GATE-DODHONESTY')
     })
 
-    it('GATE-NEXTBUILD fires on next/pnpm build; silent on pnpm sma build-index', () => {
+    it('GATE-NEXTBUILD fires on the literal invocation; silent on pnpm sma build-index', () => {
       expect(ids(run(bash('next build')))).toContain('GATE-NEXTBUILD')
-      expect(ids(run(bash('pnpm build')))).toContain('GATE-NEXTBUILD')
-      expect(ids(run(bash('pnpm run build')))).toContain('GATE-NEXTBUILD')
       expect(ids(run(bash('pnpm sma build-index')))).not.toContain('GATE-NEXTBUILD')
     })
 
@@ -393,5 +391,71 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
         expect(res.deny).toBeFalsy()
       }
     })
+  })
+})
+
+describe('GATE-NEXTBUILD — narrowed to the slow build it is actually about', () => {
+  /** A real on-disk repo fixture; the gate probes the filesystem for Next markers. */
+  function repoFixture(files: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-gates-repo-'))
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body)
+    return dir
+  }
+
+  function fires(command: string, root: string) {
+    const res = checkEvent({ evt: { tool_name: 'Bash', tool_input: { command } }, root, env: {}, seen: {} })
+    return res.warns.map((w: { gateId: string }) => w.gateId).includes('GATE-NEXTBUILD')
+  }
+
+  let viteRepo: string
+  let nextRepo: string
+
+  beforeEach(() => {
+    // A Vite SPA: package.json with a `build` script, a vite config, NO next.config.
+    viteRepo = repoFixture({
+      'package.json': JSON.stringify({ name: 'spa', scripts: { build: 'vite build' } }),
+      'vite.config.ts': 'export default {}',
+    })
+    nextRepo = repoFixture({
+      'package.json': JSON.stringify({ name: 'app', scripts: { build: 'next build' } }),
+      'next.config.mjs': 'export default {}',
+    })
+  })
+
+  afterEach(() => {
+    for (const d of [viteRepo, nextRepo]) rmSync(d, { recursive: true, force: true })
+  })
+
+  it('stays SILENT on a generic build in a Vite-shaped repo (the false-fire this closes)', () => {
+    expect(fires('pnpm build', viteRepo)).toBe(false)
+    expect(fires('npm run build', viteRepo)).toBe(false)
+    expect(fires('yarn build', viteRepo)).toBe(false)
+  })
+
+  it('still fires on a generic build inside a Next project', () => {
+    expect(fires('pnpm build', nextRepo)).toBe(true)
+    expect(fires('npm run build', nextRepo)).toBe(true)
+  })
+
+  it('an existing .next dir is a Next marker on its own (no config file needed)', () => {
+    const dotNext = repoFixture({ 'package.json': '{}' })
+    mkdirSync(join(dotNext, '.next'), { recursive: true })
+    expect(fires('pnpm build', dotNext)).toBe(true)
+    rmSync(dotNext, { recursive: true, force: true })
+  })
+
+  it('the LITERAL invocation always fires, whatever the repo looks like', () => {
+    expect(fires('next build', viteRepo)).toBe(true)
+    expect(fires('npx next build --debug', viteRepo)).toBe(true)
+  })
+
+  it('the kill-switch still silences it in a Next project (tiering untouched)', () => {
+    const res = checkEvent({
+      evt: { tool_name: 'Bash', tool_input: { command: 'next build' } },
+      root: nextRepo,
+      env: { SMA_GATE_NEXTBUILD_OFF: '1' },
+      seen: {},
+    })
+    expect(res.warns.map((w: { gateId: string }) => w.gateId)).not.toContain('GATE-NEXTBUILD')
   })
 })
