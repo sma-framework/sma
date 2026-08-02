@@ -36,7 +36,13 @@ import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 
 import { parseNote, serializeNote } from './frontmatter.mjs'
-import { buildIndex, readNotes, renderCoreLine, CORE_THRESHOLD } from './generator.mjs'
+import {
+  buildIndex,
+  readNotes,
+  renderCoreLine,
+  projectNoteAxis,
+  CORE_THRESHOLD,
+} from './generator.mjs'
 import { usageStats } from './citations.mjs'
 import { renameWithRetry } from './fs-atomics.mjs'
 import { CORE_BUDGET, NOTE_BUDGET, STATE_BUDGET } from './constants.mjs'
@@ -285,12 +291,18 @@ export function splitNote(opts = {}) {
   if (!tail.some((l) => l.trim() !== '')) return { split: false, file, reason: 'nothing to move' }
 
   const trimmedText = head + kept.join('\n') + pointer
-  const fm = parsed.frontmatter
+  // The archive tail inherits the SOURCE note's kind and areas, read through the
+  // shared projection so a schema-v2 source is inherited from too. Read by the v1
+  // names alone, a migrated note's tail was filed as a tagless `episodic` — the
+  // history was preserved on disk and lost to every facet query that would look
+  // for it. (The tail itself is written in v1 grammar; that is what serializeNote
+  // emits, and changing the write grammar is a separate question.)
+  const src = projectNoteAxis(parsed.frontmatter, { file, schemaVersion: parsed.schemaVersion })
   const archiveText = serializeNote({
     frontmatter: {
       description: `Архивный хвост заметки ${file}, вынесен командой sma trim (FI-9)`,
-      kind: String(fm.kind ?? 'episodic') || 'episodic',
-      tags: Array.isArray(fm.tags) ? fm.tags : [],
+      kind: src.kind || 'episodic',
+      tags: src.tags,
       'use-when': `при обращении к полной истории ${stem}`,
       importance: 2,
       supersedes: file, // the FI-9 back-link to the source note

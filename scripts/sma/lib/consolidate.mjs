@@ -34,6 +34,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
+import { projectNoteAxis } from './generator.mjs'
 import { readUsage, usageStats } from './citations.mjs'
 import { readJournal } from './journal.mjs'
 
@@ -105,9 +106,43 @@ function readCorpus(corpusDir) {
       continue
     }
     if (parsed.frontmatter == null) continue
-    notes.push({ file, frontmatter: parsed.frontmatter, body: parsed.body ?? '' })
+    notes.push({
+      file,
+      frontmatter: parsed.frontmatter,
+      body: parsed.body ?? '',
+      schemaVersion: parsed.schemaVersion,
+    })
   }
   return notes
+}
+
+/**
+ * A note's fields on the SHARED axis, whichever grammar it is written in
+ * (memoized per note object; a caller may inject notes that never went through
+ * readCorpus, so this must not depend on readCorpus having run).
+ *
+ * Every question this module asks a note — what kind is it, which areas is it
+ * in, what does it claim — is asked in v1 field names, and a schema-v2 record
+ * answers none of them: no `kind`, no `tags`, no `description`. The effect was
+ * not an error but a SILENCE: v2 records fell out of every pair loop (no shared
+ * area can be found in an empty tag list), so `sma consolidate` reported a clean
+ * corpus on a migrated one — no contradictions, no near-duplicates, nothing to
+ * review. The projection is the generator's, so consolidate sees exactly the
+ * corpus the index describes.
+ */
+const AXIS_CACHE = new WeakMap()
+
+function axisOf(note) {
+  if (note == null || typeof note !== 'object') return projectNoteAxis({})
+  let axis = AXIS_CACHE.get(note)
+  if (!axis) {
+    axis = projectNoteAxis(note.frontmatter ?? {}, {
+      file: note.file ?? '',
+      schemaVersion: note.schemaVersion,
+    })
+    AXIS_CACHE.set(note, axis)
+  }
+  return axis
 }
 
 /** Load the tag registry (fail-soft: empty facets when TAGS.md is unreadable). */
@@ -171,17 +206,21 @@ function jaccard(a, b) {
 
 /** Resolve a note's kind to canonical via the registry aliases. */
 function kindOf(note, registry) {
-  return resolveAlias(String(note.frontmatter?.kind ?? '').trim(), registry)
+  return resolveAlias(axisOf(note).kind, registry)
 }
 
 /** A note's area-facet tags (alias-resolved); falls back to ALL tags when the
  * registry has no area facet (fixture-less callers stay usable). */
 function areaTagsOf(note, registry) {
-  const tags = Array.isArray(note.frontmatter?.tags) ? note.frontmatter.tags : []
-  const resolved = tags.map((t) => resolveAlias(String(t), registry))
+  const resolved = axisOf(note).tags.map((t) => resolveAlias(String(t), registry))
   if (registry.area.size === 0) return new Set(resolved)
   const areas = resolved.filter((t) => registry.area.has(t))
   return new Set(areas.length ? areas : resolved)
+}
+
+/** The one-line claim a note makes, under either grammar's field name. */
+function claimOf(note) {
+  return axisOf(note).description
 }
 
 /** Bi-temporal activity: a note is ACTIVE while it has no valid_until and no
@@ -268,7 +307,7 @@ export function findContradictions(opts = {}) {
       if (!isActive(a.frontmatter) || !isActive(b.frontmatter)) continue
       if (isLinked(a, b)) continue
 
-      const conflict = detectClaimConflict(a.frontmatter.description, b.frontmatter.description)
+      const conflict = detectClaimConflict(claimOf(a), claimOf(b))
       if (!conflict) continue
 
       const files = [a.file, b.file].sort()

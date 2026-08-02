@@ -155,6 +155,82 @@ describe('consolidate.mjs — propose() merge proposals (9.1-12 test 1)', () => 
   })
 })
 
+describe('consolidate.mjs — schema-v2 records are read', () => {
+  // Every question this module asks a note is in v1 field names, and a
+  // schema-v2 record answers none of them: no kind, no tags, no description.
+  // The result was not an error but a SILENCE — with an empty tag list no pair
+  // can ever share an area, so `sma consolidate` reported a spotless corpus on a
+  // migrated one. Same fixture as Test 1, written in the other grammar.
+  function v2(name: string, claim: string, body: string) {
+    writeFileSync(
+      join(corpusDir, name),
+      `---
+schema_version: 2
+claim: ${claim}
+memory_type: procedural
+truth_mode: normative
+context_priority: on-demand
+retrieval:
+  areas: [tech]
+  hint: before pushing schema changes
+---
+${body}`,
+      'utf8',
+    )
+  }
+
+  it('finds a near-duplicate pair among migrated records', () => {
+    v2(
+      'rule_v2_one.md',
+      'Run the migration sandbox verification before pushing schema changes.',
+      'Run the migration sandbox verification pass before pushing any schema change to the production database cluster.\n',
+    )
+    v2(
+      'rule_v2_two.md',
+      'Run the migration sandbox verification pass before schema pushes land.',
+      'Run the migration sandbox verification pass before pushing any schema change to the production postgres cluster.\n',
+    )
+
+    const res = propose(opts())
+    expect(res.merges).toHaveLength(1)
+    expect(res.merges[0].files).toEqual(['rule_v2_one.md', 'rule_v2_two.md'])
+    // The pair is named by the kind the (memory_type, truth_mode) pair means —
+    // not by the collapsed memory_type, and not by an empty string.
+    expect(res.merges[0].kind).toBe('procedural-rule')
+  })
+
+  it('reads a migrated record CLAIM when checking for contradictions', () => {
+    const decision = (name: string, claim: string) =>
+      writeFileSync(
+        join(corpusDir, name),
+        `---
+schema_version: 2
+claim: ${claim}
+memory_type: semantic
+truth_mode: decision
+kind: decision
+context_priority: on-demand
+tags: [tech]
+retrieval:
+  areas: [tech]
+---
+body
+`,
+        'utf8',
+      )
+    // `kind`/`tags` are stated here on purpose: the full v1-kind inverse for
+    // semantic records is NOT part of this projection (only the procedural pair
+    // is), so this fixture isolates the ONE thing under test — that the claim
+    // itself is read where a v1 note would have said description.
+    decision('decision_v2_a.md', 'The sandbox verification always runs before a schema push.')
+    decision('decision_v2_b.md', 'The sandbox verification never runs before a schema push.')
+
+    const res = propose(opts())
+    expect(res.contradictions).toHaveLength(1)
+    expect(res.contradictions[0].files).toEqual(['decision_v2_a.md', 'decision_v2_b.md'])
+  })
+})
+
 describe('consolidate.mjs — propose() promotion counters (9.1-12 test 2)', () => {
   it('Test 2: episodic note cited by >= 3 distinct task-tag-sets → PROMOTE (episodic → procedural-rule)', () => {
     note(corpusDir, 'episodic_incident_z.md', {

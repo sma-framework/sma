@@ -212,6 +212,44 @@ describe('trim.mjs — splitNote (episodic tail → archive note)', () => {
     const combined = new Set([...trimmed.split('\n'), ...archiveText.split('\n')])
     for (const line of bodyLines) expect(combined.has(line)).toBe(true)
   })
+
+  // The archive tail inherits its kind and areas from the SOURCE note. Read by
+  // the v1 field names, a schema-v2 source has neither — so a migrated note's
+  // history was filed as a TAGLESS `episodic` record: preserved on disk and
+  // invisible to every facet query that would go looking for it.
+  it('inherits kind and areas from a schema-v2 source note', () => {
+    const name = 'project_v2_history.md'
+    const head = [
+      '---',
+      'schema_version: 2',
+      'claim: a long migrated project history record of many words',
+      'memory_type: procedural',
+      'truth_mode: factual',
+      'context_priority: on-demand',
+      'retrieval:',
+      '  areas: [memory]',
+      '  hint: reading the full project history',
+      '---',
+      '',
+    ].join('\n')
+    const bodyLines: string[] = []
+    for (let i = 0; bodyLines.join('\n').length < 9 * 1024 - head.length; i++) {
+      bodyLines.push(`line-${String(i).padStart(4, '0')} ` + 'h'.repeat(40))
+    }
+    writeFileSync(join(corpusDir, name), head + bodyLines.join('\n') + '\n', 'utf8')
+
+    const res = splitNote({ corpusDir, file: name, apply: true })
+    expect(res.split).toBe(true)
+
+    const archive = parseNote(readFileSync(join(corpusDir, res.archiveFile), 'utf8'), {
+      file: res.archiveFile,
+    })
+    // The pair (procedural, factual) means bug-lesson — not the `episodic`
+    // fallback a missing `kind` used to produce.
+    expect(archive.frontmatter!.kind).toBe('bug-lesson')
+    expect(archive.frontmatter!.tags).toEqual(['memory'])
+    expect(archive.frontmatter!.supersedes).toBe(name)
+  })
 })
 
 describe('trim.mjs — trimState (STATE.md overflow → STATE-ARCHIVE.md)', () => {

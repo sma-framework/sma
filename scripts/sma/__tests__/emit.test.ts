@@ -99,6 +99,58 @@ describe('selectNotes — eligibility (Task 1, Test 1)', () => {
   })
 })
 
+describe('selectNotes — schema-v2 eligibility', () => {
+  // A schema-v2 record states its claim as `claim` and its load priority as
+  // `context_priority`; it has no `description` and no `importance` at all. Read
+  // by the v1 names, EVERY migrated record failed the gate as `no-description`,
+  // so the export block held the corpus minus everything the migration touched —
+  // and the exclusion counter reported it as a corpus hygiene problem.
+  it('exports a schema-v2 record, named, instead of counting it as no-description', () => {
+    writeFileSync(
+      join(dir, 'v2.md'),
+      `---
+schema_version: 2
+claim: A migrated rule that must reach the export block
+memory_type: procedural
+truth_mode: normative
+context_priority: always
+retrieval:
+  areas: [tech]
+  hint: before pushing
+---
+body text
+`,
+    )
+    // A v2 episode is still excluded BY KIND, not by an accident of field names.
+    writeFileSync(
+      join(dir, 'v2-episode.md'),
+      `---
+schema_version: 2
+claim: A migrated session record that must never fossilize
+memory_type: episodic
+truth_mode: observed
+context_priority: on-demand
+---
+body text
+`,
+    )
+
+    const res = selectNotes({ corpusDir: dir, dateMap: {}, budgetBytes: 8192, style: 'md', commitHash: HASH, file: 'CLAUDE.md' })
+
+    expect(res.included.map((n: any) => n.file)).toEqual(['v2.md'])
+    expect(res.excluded['no-description']).toBe(0)
+    expect(res.excluded['no-importance']).toBe(0)
+    expect(res.excluded['kind-excluded']).toBe(1)
+    // Named in the rendered block, with the kind the (memory_type, truth_mode)
+    // pair means and the trigger the migration carried into retrieval.hint.
+    const fmt = EMIT_FORMATS.find((f: any) => f.id === 'claude')
+    const block = renderBlock({ format: fmt, selection: res, commitHash: HASH, corpusDir: dir })
+    expect(block).toContain('A migrated rule that must reach the export block')
+    expect(block).toContain('procedural-rule')
+    expect(block).toContain('before pushing')
+  })
+})
+
 describe('selectNotes — ordering (Task 1, Test 2)', () => {
   it('resolves ties exactly like makeComparator: importance desc -> date desc -> name asc', () => {
     writeNote('x.md', { description: 'X', kind: 'reference', importance: 7 })

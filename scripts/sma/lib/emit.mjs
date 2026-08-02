@@ -37,7 +37,7 @@ import { join } from 'node:path'
 import { Buffer } from 'node:buffer'
 
 import { parseNote } from './frontmatter.mjs'
-import { makeComparator } from './generator.mjs'
+import { makeComparator, projectNoteAxis } from './generator.mjs'
 import { atomicWriteRaw } from './fs-atomics.mjs'
 import { EMIT_BUDGETS } from './constants.mjs'
 
@@ -147,6 +147,15 @@ function listNoteFiles(corpusDir) {
  * "linted corpus only"): kind not in {status, episodic}, a non-empty description,
  * and a numeric importance. A parse failure is fail-soft skipped and counted.
  *
+ * Both grammars are read through the SHARED projection (projectNoteAxis), the same
+ * one the index is written with. Asking a schema-v2 record for `description` and
+ * `importance` by those v1 names yields nothing, so every migrated record used to
+ * fail the gate as `no-description` — the corpus was exported to CLAUDE.md and its
+ * siblings MINUS everything the migration had touched, and the exclusion counter
+ * called it a corpus hygiene problem. The projection answers claim~description,
+ * (memory_type, truth_mode)~kind, retrieval.hint~use-when, and the weight that
+ * `context_priority: always` stands for.
+ *
  * @returns {{eligible:object[], excluded:Record<string,number>}}
  */
 function collectEligible(corpusDir) {
@@ -161,32 +170,42 @@ function collectEligible(corpusDir) {
       excluded['parse-error']++
       continue
     }
-    let fm
+    let parsed
     try {
-      fm = parseNote(text, { file }).frontmatter
+      parsed = parseNote(text, { file })
     } catch {
       excluded['parse-error']++
       continue
     }
-    if (fm == null) {
+    if (parsed.frontmatter == null) {
       excluded['parse-error']++
       continue
     }
+    const note = projectNoteAxis(parsed.frontmatter, {
+      file,
+      schemaVersion: parsed.schemaVersion,
+    })
 
-    const kind = String(fm.kind ?? '').trim()
+    const kind = note.kind
     if (EXCLUDED_KINDS.has(kind)) {
       excluded['kind-excluded']++
       continue
     }
-    const description = typeof fm.description === 'string' ? fm.description.trim() : ''
+    const description = note.description
     if (description === '') {
       excluded['no-description']++
       continue
     }
-    const importance = fm.importance
-    if (importance == null || !Number.isFinite(Number(importance))) {
-      excluded['no-importance']++
-      continue
+    // A v2 record carries no importance number at all — it states its load
+    // priority instead, which the projection maps onto the same weight axis. So
+    // the "did the author state a number" gate is asked of v1 records only; a v2
+    // record answered the question in its own grammar and passes on its weight.
+    if (note.schemaVersion < 2) {
+      const importance = parsed.frontmatter.importance
+      if (importance == null || !Number.isFinite(Number(importance))) {
+        excluded['no-importance']++
+        continue
+      }
     }
 
     eligible.push({
@@ -194,8 +213,8 @@ function collectEligible(corpusDir) {
       name: file.replace(/\.md$/, ''),
       kind,
       description,
-      useWhen: typeof fm['use-when'] === 'string' ? fm['use-when'].trim() : '',
-      importance: Number(importance),
+      useWhen: note.hint,
+      importance: note.weight,
     })
   }
 
