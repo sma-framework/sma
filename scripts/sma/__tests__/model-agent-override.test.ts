@@ -22,6 +22,10 @@
  *   - Test 8: clearing a pin with the documented `null` spelling REMOVES the key
  *     instead of writing the string "null" (which resolved as a model named
  *     "null" — a pin you could set but not lift).
+ *   - Tests 10-12: LEGACY DATA. Configs written before the clear fix already hold
+ *     the string "null" on disk. Every model-valued read treats it as ABSENT and
+ *     falls through to the next priority, so an old config heals itself on the
+ *     next run instead of dispatching a model named "null".
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -38,7 +42,7 @@ const configSchema = require_('../../../sma-core/bin/lib/config-schema.cjs')
 
 const SMA_TOOLS = fileURLToPath(new URL('../../../sma-core/bin/sma-tools.cjs', import.meta.url))
 
-const { resolveModelInternal, resolveTierEntry, resolveAgentModelOverride } = modelResolver
+const { resolveModelInternal, resolveTierEntry, resolveAgentModelOverride, resolveModelPolicy } = modelResolver
 
 let cwd: string
 
@@ -184,5 +188,77 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
     expect(readConfig().model_profile_overrides.gemini.opus).toBe('gemini-3-ultra')
     configSet('model_profile_overrides.gemini.opus', 'null')
     expect(readConfig().model_profile_overrides.gemini ?? {}).not.toHaveProperty('opus')
+  })
+
+  it('Test 10: a legacy "null" pin is treated as absent, not as a model named "null"', () => {
+    // Exactly what config-set wrote before the clear fix.
+    writeConfig({
+      model_profile: 'balanced',
+      model_profile_overrides: { agents: { 'sma-executor': 'null' } },
+    })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+
+    // The object spelling of the same rot.
+    writeConfig({
+      model_profile: 'balanced',
+      model_profile_overrides: { agents: { 'sma-executor': { model: 'null' } } },
+    })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+
+    // The pure reader agrees, including a padded variant.
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': 'null' } }, 'sma-executor')).toBeNull()
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': '  null  ' } }, 'sma-executor')).toBeNull()
+    // A real model whose NAME merely starts with those letters is untouched.
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': 'nullable-1' } }, 'sma-executor')).toBe('nullable-1')
+  })
+
+  it('Test 11: legacy "null" in the higher-priority model_overrides also falls through', () => {
+    // model_overrides outranks the pin, so a rotted entry here shadowed everything.
+    writeConfig({
+      model_profile: 'balanced',
+      model_overrides: { 'sma-executor': 'null' },
+      model_profile_overrides: { agents: { 'sma-executor': 'opus' } },
+    })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+
+    writeConfig({ model_profile: 'balanced', model_overrides: { 'sma-executor': 'null' } })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+  })
+
+  it('Test 12: legacy "null" in the runtime tier map falls back to the built-in', () => {
+    const overrides = { gemini: { opus: 'null' } }
+    expect(resolveTierEntry({ runtime: 'gemini', tier: 'opus', overrides })?.model).toBe('gemini-3.1-pro-preview')
+
+    writeConfig({
+      model_profile: 'quality',
+      runtime: 'gemini',
+      model_profile_overrides: overrides,
+    })
+    // sma-executor is `opus` under the quality profile -> the gemini opus built-in.
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('gemini-3.1-pro-preview')
+  })
+
+  it('Test 13: routing every model slot through one reader left the healthy paths intact', () => {
+    // model_policy — both spellings of a runtime tier, and the generic provider.
+    expect(resolveModelPolicy({ runtime: 'gemini', runtime_tiers: { gemini: { opus: 'gemini-3-ultra' } } }, 'opus'))
+      .toBe('gemini-3-ultra')
+    expect(resolveModelPolicy({ runtime: 'gemini', runtime_tiers: { gemini: { opus: { model: 'g-obj' } } } }, 'opus'))
+      .toBe('g-obj')
+    expect(resolveModelPolicy({ provider: 'generic', high: 'my-big-model' }, 'opus')).toBe('my-big-model')
+    // ...and the built-in provider presets are still reached.
+    expect(resolveModelPolicy({ provider: 'openai', budget: 'medium' }, 'opus')).toBe('gpt-5.5')
+    // The same slots, rotted, decline to answer so the caller falls through.
+    expect(resolveModelPolicy({ runtime: 'gemini', runtime_tiers: { gemini: { opus: 'null' } } }, 'opus')).toBeNull()
+    expect(resolveModelPolicy({ provider: 'generic', high: 'null' }, 'opus')).toBeNull()
+
+    // A user tier override still wins outright...
+    expect(resolveTierEntry({ runtime: 'gemini', tier: 'opus', overrides: { gemini: { opus: 'custom-x' } } })?.model)
+      .toBe('custom-x')
+    // ...and dropping a rotted `model` keeps the user's sibling fields.
+    expect(resolveTierEntry({
+      runtime: 'gemini',
+      tier: 'opus',
+      overrides: { gemini: { opus: { model: 'null', note: 'keep' } } },
+    })).toEqual({ model: 'gemini-3.1-pro-preview', note: 'keep' })
   })
 })

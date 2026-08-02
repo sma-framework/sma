@@ -35,6 +35,41 @@ const model_catalog_cjs_1 = require("./model-catalog.cjs");
  */
 const AGENT_OVERRIDE_KEY = 'agents';
 /**
+ * The legacy sentinel. Before `config-set <key> null` learned to CLEAR a key it
+ * stored the word as a value, so configs written by older versions carry model
+ * slots holding the string "null". Nothing is named that: taken literally it
+ * dispatches an agent onto a model that cannot exist, and — because the rot sits
+ * in the slot that was meant to be empty — it shadows the very default the user
+ * was trying to restore.
+ */
+const CLEARED_SENTINEL = 'null';
+/**
+ * Normalise one model-valued config slot.
+ *
+ * Every model read in this file funnels through here, so a slot left rotted by
+ * the old clear bug reads as ABSENT and resolution falls through to the next
+ * priority — an old config heals itself on the next run instead of failing a
+ * dispatch. Accepts the two spellings a model slot may use: a bare string, or an
+ * object with a `model` field.
+ *
+ * Returns the trimmed model, or null when the slot is empty, malformed, or holds
+ * the legacy sentinel. Only the exact word is rot — a real model whose name
+ * merely begins with those letters is returned untouched.
+ */
+function modelValueOrNull(raw) {
+    const value = typeof raw === 'string'
+        ? raw
+        : (raw && typeof raw === 'object' && !Array.isArray(raw) && typeof raw['model'] === 'string'
+            ? raw['model']
+            : null);
+    if (typeof value !== 'string')
+        return null;
+    const trimmed = value.trim();
+    if (trimmed === '' || trimmed === CLEARED_SENTINEL)
+        return null;
+    return trimmed;
+}
+/**
  * Read `model_profile_overrides.agents.<agent-name>`.
  *
  * The tier profile answers "how heavy is this KIND of work"; this answers "which
@@ -57,13 +92,7 @@ function resolveAgentModelOverride(overrides, agentType) {
         return null;
     if (!Object.hasOwn(agentsMap, agentType))
         return null;
-    const raw = agentsMap[agentType];
-    const value = typeof raw === 'string'
-        ? raw
-        : (raw && typeof raw === 'object' && typeof raw['model'] === 'string' ? raw['model'] : null);
-    if (typeof value !== 'string' || value.trim() === '')
-        return null;
-    return value.trim();
+    return modelValueOrNull(agentsMap[agentType]);
 }
 /**
  * #2517 — Resolve the runtime-aware tier entry for (runtime, tier).
@@ -81,7 +110,20 @@ function resolveTierEntry({ runtime, tier, overrides }) {
     const userRaw = overridesMap?.[runtime]?.[tier];
     let userEntry = null;
     if (userRaw) {
-        userEntry = typeof userRaw === 'string' ? { model: userRaw } : userRaw;
+        const userModel = modelValueOrNull(userRaw);
+        if (typeof userRaw === 'string') {
+            // A bare string IS the model, so a rotted one is simply an empty slot.
+            userEntry = userModel ? { model: userModel } : null;
+        }
+        else if (typeof userRaw === 'object' && !Array.isArray(userRaw)) {
+            // Object form: drop only a rotted `model` and let the built-in show
+            // through it; any sibling fields the user set are still theirs.
+            const rest = { ...userRaw };
+            delete rest.model;
+            userEntry = userModel
+                ? { ...rest, model: userModel }
+                : (Object.keys(rest).length > 0 ? rest : null);
+        }
     }
     if (!builtin && !userEntry)
         return null;
@@ -136,12 +178,9 @@ function resolveModelPolicy(policy, tier) {
         if (Object.hasOwn(rtOverridesMap, runtime)) {
             const runtimeEntry = rtOverridesMap[runtime];
             if (runtimeEntry && typeof runtimeEntry === 'object' && Object.hasOwn(runtimeEntry, tier)) {
-                const raw = runtimeEntry[tier];
-                if (raw != null) {
-                    const entry = typeof raw === 'string' ? { model: raw } : raw;
-                    if (entry && entry['model'])
-                        return entry['model'];
-                }
+                const entryModel = modelValueOrNull(runtimeEntry[tier]);
+                if (entryModel)
+                    return entryModel;
             }
         }
     }
@@ -153,8 +192,7 @@ function resolveModelPolicy(policy, tier) {
         const policyKey = TIER_TO_POLICY_KEY[tier];
         if (!policyKey)
             return null;
-        const v = policy[policyKey];
-        return (v && typeof v === 'string') ? v : null;
+        return modelValueOrNull(policy[policyKey]);
     }
     const presetsMap = model_catalog_cjs_1.PROVIDER_PRESETS;
     if (!Object.hasOwn(presetsMap, provider))
@@ -179,7 +217,7 @@ function resolveModelInternal(cwd, agentType) {
     const config = loadConfig(cwd);
     // 1. Per-agent override
     const modelOverrides = config['model_overrides'];
-    const override = modelOverrides?.[agentType];
+    const override = modelValueOrNull(modelOverrides?.[agentType]);
     if (override) {
         return override;
     }
@@ -300,7 +338,7 @@ function resolveModelForTier(cwd, agentType, attempt) {
     const config = loadConfig(cwd);
     const attemptN = Number.isInteger(attempt) && attempt > 0 ? attempt : 0;
     const modelOverrides = config['model_overrides'];
-    const override = modelOverrides?.[agentType];
+    const override = modelValueOrNull(modelOverrides?.[agentType]);
     if (override)
         return override;
     // A per-agent pin outranks the escalation ladder too — the point of the pin
@@ -337,8 +375,8 @@ function resolveModelForTier(cwd, agentType, attempt) {
             break;
         tier = next;
     }
-    const alias = tierModels[tier];
-    if (typeof alias !== 'string' || alias.length === 0) {
+    const alias = modelValueOrNull(tierModels[tier]);
+    if (!alias) {
         return resolveModelInternal(cwd, agentType);
     }
     return alias;
@@ -505,6 +543,8 @@ function resolveEffortForTier(cwd, agentType, attempt) {
 }
 module.exports = {
     AGENT_OVERRIDE_KEY,
+    CLEARED_SENTINEL,
+    modelValueOrNull,
     resolveAgentModelOverride,
     resolveTierEntry,
     resolveModelPolicy,
