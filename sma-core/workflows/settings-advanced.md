@@ -83,6 +83,9 @@ Runtime Model Tiers:
 - `model_profile_overrides.<runtime>.sonnet` (default: built-in for the runtime, or absent)
 - `model_profile_overrides.<runtime>.haiku` (default: built-in for the runtime, or absent)
 
+Per-Agent Model Pins:
+- `model_profile_overrides.agents.<agent-name>` (default: absent — the agent follows the profile)
+
 Model Policy:
 - `model_policy.provider` (default: `null` — known values: anthropic, anthropic-fable, openai, google, qwen)
 - `model_policy.budget` (default: `null` — known values: high, medium, low)
@@ -485,6 +488,27 @@ sma_run query config-set model_profile_overrides.<runtime>.<tier> null
 "Keep current" selections are skipped entirely. Never write a key the user did not explicitly
 change.
 
+**Step E — Per-agent model pins:**
+
+The tier map above answers "how heavy is this KIND of work". It cannot answer "this one agent
+runs on this model": raising a single agent means switching the whole profile, which moves
+every other agent with it. The `agents` sub-key of the same object is the per-agent answer:
+
+```bash
+sma_run query config-set model_profile_overrides.agents.sma-executor opus
+sma_run query config-set model_profile_overrides.agents.sma-planner "claude-fable-5"
+```
+
+Resolution order for an agent's model: `model_overrides.<agent>` → **the agent pin** →
+the phase-type tier (`models.<phase-type>`) / the `model_profile` tier → the built-in
+default. A pin also holds against dynamic-routing escalation — the point of a pin is that
+this agent's model does not move with the tier.
+
+`agents` is a reserved name inside `model_profile_overrides` and is never read as a runtime.
+An entry whose key is not an agent SMA knows is a no-op: it is ignored and that agent (and
+every other) keeps resolving through the profile — a typo silently changes nothing rather
+than failing a run. Remove a pin by setting it to null.
+
 </step>
 
 <step name="update_config">
@@ -505,6 +529,8 @@ sma_run query config-set context_window 1000000
 sma_run query config-set runtime gemini
 sma_run query config-set model_profile_overrides.gemini.opus gemini-3-ultra
 sma_run query config-set model_profile_overrides.gemini.haiku null
+# Per-agent pin example (wins over the tier profile for that agent only):
+sma_run query config-set model_profile_overrides.agents.sma-executor opus
 ```
 
 Conceptual shape after merge (unchanged top-level keys like `model_profile`,
@@ -771,6 +797,7 @@ Display:
 | model_profile_overrides.<runtime>.opus     | {model/built-in/null} |
 | model_profile_overrides.<runtime>.sonnet   | {model/built-in/null} |
 | model_profile_overrides.<runtime>.haiku    | {model/built-in/null} |
+| model_profile_overrides.agents.<agent-name> | {model/null} |
 | effort.default                             | {low/medium/high/xhigh/max} |
 | effort.routing_tier_defaults.light         | {low/medium/high/xhigh/max} |
 | effort.routing_tier_defaults.standard      | {low/medium/high/xhigh/max} |

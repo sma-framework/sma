@@ -1,0 +1,139 @@
+/**
+ * Tests for the per-AGENT model override —
+ * `model_profile_overrides.agents.<agent-name>` (sma-core/bin/lib/model-resolver.cjs
+ * + the config-set key whitelist in sma-core/bin/shared/config-schema.manifest.json).
+ *
+ * The gap this closes: the model layer could express "how heavy is this KIND of
+ * work" (a per-TIER profile) but not "this agent runs on this model". Forcing one
+ * agent up meant moving the whole profile, dragging unrelated agents with it.
+ *
+ *   - Test 1: precedence — an agent pin beats the tier profile for that agent
+ *     only; every other agent stays on the profile.
+ *   - Test 2: no pin -> the profile answer, unchanged.
+ *   - Test 3: an unknown/misspelled agent name is a NO-OP (fail-open to profile),
+ *     never an error and never applied to another agent.
+ *   - Test 4: the pre-existing `model_overrides.<agent>` still outranks the pin
+ *     (no regression in the older mechanism).
+ *   - Test 5: shapes — object form `{model: …}`, and empty/blank values ignored.
+ *   - Test 6: `agents` is never read as a RUNTIME tier map, and a config that
+ *     carries a pin emits no unknown-runtime / unknown-tier warning.
+ *   - Test 7: config-set accepts the pin key path; malformed variants and an
+ *     unknown key are still rejected.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+
+const require_ = createRequire(import.meta.url)
+const modelResolver = require_('../../../sma-core/bin/lib/model-resolver.cjs')
+const configSchema = require_('../../../sma-core/bin/lib/config-schema.cjs')
+
+const { resolveModelInternal, resolveTierEntry, resolveAgentModelOverride } = modelResolver
+
+let cwd: string
+
+function writeConfig(config: Record<string, unknown>): void {
+  mkdirSync(join(cwd, '.planning'), { recursive: true })
+  writeFileSync(join(cwd, '.planning', 'config.json'), JSON.stringify(config, null, 2), 'utf8')
+}
+
+beforeEach(() => {
+  cwd = mkdtempSync(join(tmpdir(), 'sma-agent-model-'))
+})
+
+afterEach(() => {
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+describe('model_profile_overrides.agents.<agent-name>', () => {
+  it('Test 1: an agent pin beats the tier profile for that agent only', () => {
+    writeConfig({
+      model_profile: 'balanced',
+      model_profile_overrides: { agents: { 'sma-executor': 'opus' } },
+    })
+
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    // The verifier shares the balanced profile and is NOT pinned — it must not move.
+    expect(resolveModelInternal(cwd, 'sma-verifier')).toBe('sonnet')
+  })
+
+  it('Test 2: without a pin the profile answer is unchanged', () => {
+    writeConfig({ model_profile: 'balanced' })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+
+    writeConfig({ model_profile: 'budget' })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+
+    writeConfig({ model_profile: 'quality' })
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+  })
+
+  it('Test 3: an unknown agent name is a no-op — resolution falls through to the profile', () => {
+    writeConfig({
+      model_profile: 'balanced',
+      model_profile_overrides: { agents: { 'sma-exicutor': 'opus', 'not-an-agent': 'haiku' } },
+    })
+
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-verifier')).toBe('sonnet')
+    // The pure reader agrees: no entry for this agent -> null, never a throw.
+    expect(resolveAgentModelOverride({ agents: { 'sma-exicutor': 'opus' } }, 'sma-executor')).toBeNull()
+  })
+
+  it('Test 4: model_overrides.<agent> still outranks the pin', () => {
+    writeConfig({
+      model_profile: 'balanced',
+      model_overrides: { 'sma-executor': 'haiku' },
+      model_profile_overrides: { agents: { 'sma-executor': 'opus' } },
+    })
+
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('haiku')
+  })
+
+  it('Test 5: object form is accepted; blank and malformed values are ignored', () => {
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': { model: 'opus' } } }, 'sma-executor')).toBe('opus')
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': '  opus  ' } }, 'sma-executor')).toBe('opus')
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': '' } }, 'sma-executor')).toBeNull()
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': {} } }, 'sma-executor')).toBeNull()
+    expect(resolveAgentModelOverride({ agents: null }, 'sma-executor')).toBeNull()
+    expect(resolveAgentModelOverride(null, 'sma-executor')).toBeNull()
+    expect(resolveAgentModelOverride({ agents: { 'sma-executor': 'opus' } }, '')).toBeNull()
+  })
+
+  it('Test 6: `agents` is never read as a runtime tier map and raises no warning', () => {
+    const overrides = { agents: { 'sma-executor': 'opus' } }
+    expect(resolveTierEntry({ runtime: 'agents', tier: 'opus', overrides })).toBeNull()
+
+    const warnings: string[] = []
+    const realWrite = process.stderr.write.bind(process.stderr)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(process.stderr as any).write = (chunk: string) => {
+      warnings.push(String(chunk))
+      return true
+    }
+    try {
+      writeConfig({ model_profile: 'balanced', model_profile_overrides: overrides })
+      expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stderr as any).write = realWrite
+    }
+    expect(warnings.join('')).not.toMatch(/unknown runtime|unknown tier/)
+  })
+
+  it('Test 7: config-set accepts the pin key path; malformed and unknown keys stay rejected', () => {
+    expect(configSchema.isValidConfigKey('model_profile_overrides.agents.sma-executor')).toBe(true)
+    expect(configSchema.isValidConfigKey('model_profile_overrides.agents.sma-plan-checker')).toBe(true)
+    // The runtime namespace of the same object is untouched.
+    expect(configSchema.isValidConfigKey('model_profile_overrides.gemini.opus')).toBe(true)
+    // Malformed variants and an unrelated unknown key are still refused.
+    expect(configSchema.isValidConfigKey('model_profile_overrides.agents')).toBe(false)
+    expect(configSchema.isValidConfigKey('model_profile_overrides.agents.sma executor')).toBe(false)
+    expect(configSchema.isValidConfigKey('model_profile_overrides.agents.a.b')).toBe(false)
+    expect(configSchema.isValidConfigKey('model_profile_overrides_agents.sma-executor')).toBe(false)
+    expect(configSchema.isValidConfigKey('not_a_config_key')).toBe(false)
+  })
+})
