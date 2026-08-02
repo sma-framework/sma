@@ -327,6 +327,60 @@ retrieval:
     expect(ids).toContain('lesson-v2-wide') // retrieval reached the area
     expect(ids).not.toContain('lesson-v2-narrow') // …and the path scope excluded it
   })
+
+  it('an on-demand record graded medium clears the silence threshold — and a low one still does not', () => {
+    // Neither record asks to be always-loaded. Before criticality reached the shared
+    // axis both weighed 0, so the battery's silent tier (weight ≤ 3) swallowed them
+    // whatever the corpus said about the cost of missing them.
+    v2Record(
+      corpusDir,
+      'lesson-v2-medium.md',
+      `
+schema_version: 2
+claim: A migrated lesson that never asked to be always-loaded
+memory_type: procedural
+truth_mode: factual
+criticality: medium
+context_priority: on-demand
+retrieval:
+  areas: [payload]
+  hint: touching migrations
+`,
+      '## How to apply\nCheck the migration registry first.\n',
+    )
+    v2Record(
+      corpusDir,
+      'lesson-v2-low.md',
+      `
+schema_version: 2
+claim: A migrated lesson whose absence costs little
+memory_type: procedural
+truth_mode: factual
+criticality: low
+context_priority: on-demand
+retrieval:
+  areas: [payload]
+  hint: touching migrations
+`,
+      '## How to apply\nNothing urgent here.\n',
+    )
+
+    const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    const { tags, target, targetClass } = deriveTags(evt.tool_input, evt.cwd)
+    const candidates = matchReflexes({ tags, target, corpusDir, tagsPath, loader })
+
+    // The weight arrives through the shared axis — the reflex computes nothing itself.
+    expect(candidates.find((c) => c.noteId === 'lesson-v2-medium')?.importance).toBe(5)
+    expect(candidates.find((c) => c.noteId === 'lesson-v2-low')?.importance).toBe(2)
+
+    const { warns } = applyFatigue({ candidates, targetClass, sessionSeen: {}, env: {} })
+    const medium = warns.find((w: any) => w.noteId === 'lesson-v2-medium')
+
+    expect(medium).toBeDefined() // it speaks now, where it used to be silent
+    expect(medium.tier).toBe('oneliner') // medium speaks in ONE line — no new noise tier
+    // The battery itself is untouched: the silent tier is still the silent tier.
+    expect(warns.find((w: any) => w.noteId === 'lesson-v2-low')).toBeUndefined()
+  })
 })
 
 describe('reflex.mjs — applyFatigue (launch-blocking battery, Pitfall 2)', () => {

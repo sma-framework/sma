@@ -25,6 +25,8 @@ import { join } from 'node:path'
 import {
   buildIndex,
   buildAreaIndexes,
+  CORE_THRESHOLD,
+  CRITICALITY_WEIGHTS,
   GENERATED_MARKER,
   computeDateMap,
   isVisibleNow,
@@ -630,5 +632,97 @@ describe('generator.mjs — isVisibleNow (read-time hard filter, §9.1)', () => 
     // Catalogued and findable — the record is out of the delivery, not out of the corpus.
     expect(memoryIndex?.content).toContain('(v2-expired.md)')
     expect(generated).toContain('GENERATED')
+  })
+})
+
+describe('generator.mjs — criticality carries the weight of a migrated record (one axis)', () => {
+  /** A projected v2 record — the same axis the index, the loader and the reflex read. */
+  const v2 = (fm: Record<string, unknown>) =>
+    projectNoteAxis(
+      {
+        id: 'n',
+        schema_version: 2,
+        status: 'active',
+        memory_type: 'procedural',
+        truth_mode: 'factual',
+        claim: 'c',
+        ...fm,
+      },
+      { file: 'n.md', schemaVersion: 2 },
+    )
+
+  it('Test 1: an on-demand v2 record weighs its criticality, never zero', () => {
+    // The approved semantics, spelled out by number: a silent redefinition of the
+    // grades has to fail HERE, not downstream in someone's reflex going quiet.
+    expect({ ...CRITICALITY_WEIGHTS }).toEqual({ low: 2, medium: 5, high: 8, critical: 8 })
+
+    expect(v2({ context_priority: 'on-demand', criticality: 'high' }).weight).toBe(8)
+    expect(v2({ context_priority: 'on-demand', criticality: 'medium' }).weight).toBe(5)
+    expect(v2({ context_priority: 'on-demand', criticality: 'low' }).weight).toBe(2)
+    // The severest grade of the documented ladder is never quieter than `high`.
+    expect(v2({ context_priority: 'on-demand', criticality: 'critical' }).weight).toBeGreaterThanOrEqual(
+      CRITICALITY_WEIGHTS.high,
+    )
+    // Written loudly or oddly spaced, a grade is still that grade.
+    expect(v2({ context_priority: 'on-demand', criticality: ' High ' }).weight).toBe(8)
+    // A record stating no grade at all stays exactly where it always was.
+    expect(v2({ context_priority: 'on-demand' }).weight).toBe(0)
+    // …and so does a word outside the documented ladder (no invented tiers).
+    expect(v2({ context_priority: 'on-demand', criticality: 'urgent' }).weight).toBe(0)
+  })
+
+  it('Test 2: context_priority always still outranks the grade (CORE floor kept)', () => {
+    expect(v2({ context_priority: 'always', criticality: 'medium' }).weight).toBe(CORE_THRESHOLD)
+    expect(v2({ context_priority: 'always', criticality: 'high' }).weight).toBe(CORE_THRESHOLD)
+    expect(v2({ context_priority: 'always' }).weight).toBe(CORE_THRESHOLD)
+  })
+
+  it('Test 3: an explicit importance stays primary — the grade never overrides a stated number', () => {
+    // A v1 note that states 4 weighs 4, whatever a stray criticality key says.
+    expect(projectNoteAxis({ description: 'd', importance: 4, criticality: 'high' }, { file: 'v1.md' }).weight).toBe(4)
+    // A stated zero is a statement too, not an absence to be filled in.
+    expect(projectNoteAxis({ description: 'd', importance: 0, criticality: 'high' }, { file: 'v1.md' }).weight).toBe(0)
+    // The v1 law itself is untouched: number in, number out, CORE floor for `always`.
+    expect(projectNoteAxis({ description: 'd', importance: 10 }, { file: 'v1.md' }).weight).toBe(10)
+    // The `importance` slot of the axis keeps telling the truth: v2 states no number.
+    expect(v2({ context_priority: 'on-demand', criticality: 'high' }).importance).toBe(0)
+  })
+
+  it('Test 4: the grade reaches the delivery path — a graded record sorts ahead of an ungraded one', () => {
+    v2note(corpusDir, 'v2-zeta-graded.md', {
+      id: 'v2-zeta-graded',
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'procedural',
+      truth_mode: 'factual',
+      claim: 'A migrated lesson that states how much missing it costs',
+      language: 'ru',
+      criticality: 'high',
+      context_priority: 'on-demand',
+      sensitivity: 'internal',
+      retrieval: { areas: ['memory'] },
+    })
+    v2note(corpusDir, 'v2-alpha-ungraded.md', {
+      id: 'v2-alpha-ungraded',
+      schema_version: '2',
+      status: 'active',
+      memory_type: 'semantic',
+      truth_mode: 'factual',
+      claim: 'A migrated record that states no grade at all',
+      language: 'ru',
+      context_priority: 'on-demand',
+      sensitivity: 'internal',
+      retrieval: { areas: ['memory'] },
+    })
+
+    const areas = buildAreaIndexes({ corpusDir, tagsPath, commitHash: HASH, dateMap, coreThreshold: 9 })
+    const memoryIndex = areas.find((a) => a.file === 'INDEX-memory.md')?.content ?? ''
+    const graded = memoryIndex.indexOf('(v2-zeta-graded.md)')
+    const ungraded = memoryIndex.indexOf('(v2-alpha-ungraded.md)')
+
+    expect(graded).toBeGreaterThanOrEqual(0)
+    expect(ungraded).toBeGreaterThanOrEqual(0)
+    // Weight-desc is the first key of the comparator: the graded record leads.
+    expect(graded).toBeLessThan(ungraded)
   })
 })
