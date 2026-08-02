@@ -96,3 +96,31 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+<!-- daemon-vendored:begin -->
+## Daemon vendored dependencies (generated)
+
+These packages are vendored (shipped inside the package) so the optional daemon needs no second install; each one keeps its own LICENSE file inside `daemon/node_modules`.
+
+| Package | Version | License |
+|---|---|---|
+| cron-parser | 5.6.2 | MIT |
+| luxon | 3.7.2 | MIT |
+| pg | 8.22.0 | MIT |
+| pg-boss | 11.1.2 | MIT |
+| pg-cloudflare | 1.4.0 | MIT |
+| pg-connection-string | 2.14.0 | MIT |
+| pg-int8 | 1.0.1 | ISC |
+| pg-pool | 3.14.0 | MIT |
+| pg-protocol | 1.15.0 | MIT |
+| pg-types | 2.2.0 | MIT |
+| pgpass | 1.0.5 | MIT |
+| postgres-array | 2.0.0 | MIT |
+| postgres-bytea | 1.0.1 | MIT |
+| postgres-date | 1.0.7 | MIT |
+| postgres-interval | 1.2.0 | MIT |
+| serialize-error | 8.1.0 | MIT |
+| split2 | 4.2.0 | ISC |
+| type-fest | 0.20.2 | (MIT OR CC0-1.0) |
+| xtend | 4.0.2 | MIT |
+<!-- daemon-vendored:end -->

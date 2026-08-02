@@ -9,11 +9,15 @@
  *            missing bin, missing files[] entry, missing metadata
  *   Test 3 — honest sentinel: a tree without capability.json is NOT applicable
  *            (the consumer mirror must never fake a 0)
+ *   Test 5 — the vendored daemon ledger reaches this count: a generated section
+ *            that no longer describes `daemon/node_modules`, and a vendored
+ *            license outside the allowlist, are both publishability violations
  */
 
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { checkPackage } from '../lib/package-check.mjs'
+import { applyToFile, renderSection } from '../lib/daemon-licenses.mjs'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 
@@ -97,6 +101,51 @@ describe('package-check — the badge law, and only the badge law (Test 4)', () 
     expect(checkPackage({ pkgRoot: ROOT, io: io({ tests: 1866, files: 116, commit: 'a'.repeat(40), dirty: true }) }).violations).toEqual([])
     const stale = checkPackage({ pkgRoot: ROOT, io: io({ tests: 1880, files: 116 }) })
     expect(stale.violations.map((v: { code: string }) => v.code)).toEqual(['badge-stale'])
+  })
+})
+
+describe('package-check — the vendored daemon ledger (Test 5)', () => {
+  const ROOT = 'C:\\pkg'
+  const VENDORED = [{ name: 'pg-fake', version: '1.2.3', license: 'MIT' }]
+  const MODULES = resolve(ROOT, 'daemon', 'node_modules')
+
+  function io(licensesText: string) {
+    const files = new Map<string, string>([
+      [resolve(ROOT, 'package.json'), JSON.stringify({ version: '3.6.0', license: 'MIT', repository: { url: 'x' }, files: [] })],
+      [resolve(ROOT, 'sma-core', 'capabilities', 'sma', 'capability.json'), JSON.stringify({ version: '3.6.0' })],
+      [resolve(ROOT, 'THIRD-PARTY-LICENSES.md'), licensesText],
+      [resolve(MODULES, 'pg-fake', 'package.json'), JSON.stringify(VENDORED[0])],
+    ])
+    const dirs = new Map<string, string[]>([[MODULES, ['pg-fake']]])
+    return {
+      exists: (p: string) => files.has(resolve(p)) || dirs.has(resolve(p)),
+      readFile: (p: string) => {
+        const v = files.get(resolve(p))
+        if (v === undefined) throw new Error('ENOENT')
+        return v
+      },
+      readdir: (p: string) => {
+        const v = dirs.get(resolve(p))
+        if (v === undefined) throw new Error('ENOTDIR')
+        return v
+      },
+    }
+  }
+
+  it('counts a stale generated section as a publishability violation, and a current one as none', () => {
+    const current = applyToFile('# Third-Party Licenses\n', renderSection(VENDORED))
+    expect(checkPackage({ pkgRoot: ROOT, io: io(current) }).violations).toEqual([])
+    const stale = checkPackage({ pkgRoot: ROOT, io: io(current.replace('1.2.3', '1.2.4')) })
+    expect(stale.violations.map((v: { code: string }) => v.code)).toEqual(['daemon-licenses-stale'])
+  })
+
+  it('counts a vendored license outside the allowlist as a publishability violation', () => {
+    const copyleft = [{ name: 'pg-fake', version: '1.2.3', license: 'GPL-3.0' }]
+    const files = io(applyToFile('# Third-Party Licenses\n', renderSection(copyleft)))
+    const readFile = (p: string) =>
+      resolve(p) === resolve(MODULES, 'pg-fake', 'package.json') ? JSON.stringify(copyleft[0]) : files.readFile(p)
+    const res = checkPackage({ pkgRoot: ROOT, io: { ...files, readFile } })
+    expect(res.violations.map((v: { code: string }) => v.code)).toEqual(['daemon-license-forbidden'])
   })
 })
 
