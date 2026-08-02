@@ -103,6 +103,7 @@ export const COMMAND_TOPICS = {
 
   // receipts — structural claims, blind re-verification, subagent receipts
   baseline: 'receipts', // v5.1 — measurements ARE receipts here: capture records, replay re-verifies
+  eval: 'receipts', // v5.2 — the gold-set memory benchmark is receipt-shaped too: every run carries the path-free command that reproduces it
   reverify: 'receipts',
   'receipt-hash': 'receipts',
   'chain-tip': 'receipts',

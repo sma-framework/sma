@@ -243,7 +243,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI — 89 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
+Underneath runs the coordination + accountability CLI — 90 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
 
 ```bash
 node scripts/sma/cli.mjs status            # who is working on what, right now
@@ -257,6 +257,7 @@ The full reference lives in [scripts/sma/README.md](scripts/sma/README.md). A fe
 |---|---|
 | `sma baseline capture` | Measure what the layer costs you today — retrieval recall, context cost, hook latency, worker recovery, a clean install — and with `--record`, store each number as a re-runnable receipt |
 | `sma baseline replay` | Re-run those recorded receipts later, so «it got better» is a diff and not a memory |
+| `sma eval memory` | Score the memory layer against your gold cases — recall@k, precision@k, MRR, nDCG, critical-memory misses, retired records delivered anyway, contradictions handed over in one pack. Deterministic floors turn it into a verdict: a violated floor exits non-zero, and no model is asked its opinion |
 | `sma memory migrate` | Propose a richer schema for every note as a reviewable draft — preview-only: it never rewrites a note, and each proposal is applied by hand with `--apply <draft> --confirm <note> --yes` |
 | `sma memory write` | Put one candidate memory through the twelve-step write pipeline and read every verdict: what was scrubbed before anything could be stored, what it contradicts, whether it may be believed at all — and where it landed: the corpus, a draft for review, or nowhere |
 

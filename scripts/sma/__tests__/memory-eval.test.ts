@@ -18,12 +18,17 @@
  *     declared contradiction land in one pack.
  *   - Test 5 (floors): floorFailures(summary) against DEFAULT_FLOORS returns the
  *     violated floors and nothing else — an empty list IS the green verdict.
+ *   - Test 6 (the verb): `eval memory --stat <name>` prints ONE bare value and exits 0;
+ *     an unknown stat prints the legal names — derived from the summary itself — and
+ *     exits 1.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   captureMemoryEval,
@@ -258,5 +263,96 @@ describe('floors — the deterministic red/green verdict (Test 5)', () => {
   it('flattenSummary is the ONE list of stat names — nested metrics get a dotted key', () => {
     const flat = flattenSummary({ cases_total: 3, recall_at: { 3: 0.5, 10: 1 }, mrr: null })
     expect(flat).toEqual({ cases_total: 3, 'recall_at.3': 0.5, 'recall_at.10': 1, mrr: null })
+  })
+})
+
+describe('the verb — sma eval memory (Test 6)', () => {
+  const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs')
+
+  /** A whole throwaway project: .sma root, a corpus, a gold-cases file. */
+  function seedProject(): string {
+    const root = mkdtempSync(join(tmpdir(), 'sma-eval-cli-'))
+    const memory = join(root, '.claude', 'memory')
+    mkdirSync(join(root, '.sma'), { recursive: true })
+    mkdirSync(memory, { recursive: true })
+    writeFileSync(join(memory, 'TAGS.md'), TAGS, 'utf8')
+    writeFileSync(join(memory, 'MEMORY.md'), '# index\n- a core line\n', 'utf8')
+    writeFileSync(
+      join(memory, 'core-rule.md'),
+      '---\ndescription: the always-loaded rule\nkind: reference\ntags: [crm]\nimportance: 9\n---\nbody\n',
+      'utf8',
+    )
+    writeFileSync(
+      join(memory, 'gold-cases.jsonl'),
+      [
+        JSON.stringify({ task: 'fix the crm handler', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }),
+        JSON.stringify({ task: 'read the crm rule', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }),
+      ].join('\n') + '\n',
+      'utf8',
+    )
+    return root
+  }
+
+  function runCli(root: string, args: string[]): { stdout: string; stderr: string; status: number } {
+    try {
+      const stdout = execFileSync('node', [CLI, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(root, '.sma') },
+      })
+      return { stdout, stderr: '', status: 0 }
+    } catch (err: any) {
+      return {
+        stdout: (err.stdout ?? '').toString(),
+        stderr: (err.stderr ?? '').toString(),
+        status: typeof err.status === 'number' ? err.status : 1,
+      }
+    }
+  }
+
+  let root: string
+  beforeEach(() => {
+    root = seedProject()
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('--stat prints ONE bare value as the last line and exits 0', () => {
+    const res = runCli(root, ['eval', 'memory', '--stat', 'cases_total'])
+    expect(res.status).toBe(0)
+    const last = res.stdout.trim().split('\n').pop() as string
+    expect(last).toBe('2')
+    expect(Number.isInteger(Number(last))).toBe(true)
+
+    // a nested metric is reachable by its dotted name, the same way it is listed
+    const nested = runCli(root, ['eval', 'memory', '--stat', 'recall_at.10'])
+    expect(nested.status).toBe(0)
+    expect(Number(nested.stdout.trim())).toBe(1)
+  })
+
+  it('an unknown --stat prints the legal names and exits 1', () => {
+    const res = runCli(root, ['eval', 'memory', '--stat', 'no-such-metric'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('cases_total')
+    expect(res.stderr).toContain('critical_miss_rate')
+    expect(res.stderr).toContain('recall_at.10')
+  })
+
+  it('an unknown subcommand is refused with the one that exists', () => {
+    const res = runCli(root, ['eval', 'workflow'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('memory')
+  })
+
+  it('the full report carries the floors, their verdict, and a path-free check_command', () => {
+    const res = runCli(root, ['eval', 'memory', '--json'])
+    const report = JSON.parse(res.stdout.trim().split('\n').pop() as string)
+    expect(report.metric).toBe('memory-eval')
+    expect(report.summary.cases_total).toBe(2)
+    expect(report.check_command).toBe(MEMORY_EVAL_CHECK_COMMAND)
+    expect(report.check_command.includes(root)).toBe(false)
+    // this seeded corpus violates nothing, so the exit code is the green verdict
+    expect(report.floor_failures).toEqual([])
+    expect(res.status).toBe(0)
   })
 })
