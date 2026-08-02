@@ -1,6 +1,40 @@
 import { defineConfig } from 'vitest/config'
 
+/**
+ * stripShebang() — the PATTERN rule behind a class of silently shrinking suites.
+ *
+ * An executable entry point opens with `#!/usr/bin/env node`. The module runner's
+ * inline transform cannot parse that line: it throws `SyntaxError: Invalid or
+ * unexpected token` and charges it to the file that IMPORTED the script, which
+ * then collects ZERO tests. The failure names the victim, never the cause, so the
+ * honest reading of the report is "that test file is broken" — and however many
+ * cases it held quietly leave the count. It has happened once already, to a suite
+ * of 14 cases, and every shebanged file in the tree is the same loaded gun:
+ * `tools/verify-rebrand.mjs` becomes one the day anyone imports it.
+ *
+ * The old cure was a list of externals — one line per victim, added AFTER each
+ * one bled. This is the same cure applied to the CLASS: the shebang is stripped
+ * from any module whose first bytes are `#!`, so the interpreter line stays in the
+ * file (it is product surface — those files are executed directly) and never
+ * reaches the parser. Only the first line is touched, and it is replaced by
+ * nothing rather than deleted, so every later line keeps its number and stack
+ * traces still point where they should.
+ *
+ * Exported so the rule itself is testable (scripts/sma/__tests__/shebang.test.ts).
+ */
+export function stripShebang() {
+  return {
+    name: 'sma-strip-shebang',
+    enforce: 'pre',
+    transform(code) {
+      if (typeof code !== 'string' || !code.startsWith('#!')) return null
+      return { code: code.replace(/^#![^\n]*/, ''), map: null }
+    },
+  }
+}
+
 export default defineConfig({
+  plugins: [stripShebang()],
   test: {
     include: ['scripts/sma/__tests__/**/*.test.ts', 'daemon/__tests__/**/*.test.ts'],
     // globals:true lets daemon/src/queue/adapter.mjs's queueAdapterContractSuite
@@ -12,15 +46,5 @@ export default defineConfig({
     // drills, CLI round-trips). The vitest 5s default trips on cold-boot variance
     // under multi-terminal machine load; 30s bounds a hang without flaking.
     testTimeout: 30000,
-    // Executable entry points start with a `#!` shebang the module runner's
-    // inline transform cannot parse — it throws `SyntaxError: Invalid or
-    // unexpected token` and blames the IMPORTING test file, which then
-    // collects zero tests. Externalize them so the suites import them through
-    // native Node ESM (where the shebang is legal).
-    server: {
-      deps: {
-        external: [/bin[\\/]+init\.mjs$/, /tools[\\/]+terminal-parity-check\.mjs$/],
-      },
-    },
   },
 })
