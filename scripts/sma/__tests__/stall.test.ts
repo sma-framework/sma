@@ -236,3 +236,59 @@ describe('monologue rule — guarded on payload turn info (A4 spike)', () => {
     expect(hit!.pattern).toBe('monologue')
   })
 })
+
+describe('same-error-repeat — successful commands are never a stall', () => {
+  const CWD_LINE = 'Shell cwd was reset to /c/Users/dev/projects/example-app'
+
+  it('three SUCCESSFUL commands carrying the harness cwd-reset line -> no stall', () => {
+    // The false-stop this closes: three DIFFERENT commands, all exit 0, each printing the
+    // same harness notice. Pre-fix the classifier read that notice as an identical error
+    // three times in a row and raised a stop-signal on healthy work.
+    let window: unknown[] = []
+    for (const cmd of ['git add file-a', 'git add file-b', 'git commit -m x']) {
+      window = record(bashEvt(cmd, { exit_code: 0, stderr: CWD_LINE, stdout: '' }))
+      expect(detect(window)).toBeNull()
+    }
+  })
+
+  it('the harness line alone is not an error even without an exit code', () => {
+    let window: unknown[] = []
+    for (const cmd of ['cd spa && ls', 'cd .. && ls', 'cd docs && ls']) {
+      window = record(bashEvt(cmd, { stderr: CWD_LINE }))
+    }
+    expect(detect(window)).toBeNull()
+  })
+
+  it('an exposed exit 0 outranks anything printed on stderr', () => {
+    let window: unknown[] = []
+    for (let i = 0; i < SAME_ERROR_REPEAT; i++) {
+      window = record(bashEvt(`vitest run x-${i}`, { exit_code: 0, stderr: 'warning: deprecated flag' }))
+    }
+    expect(detect(window)).toBeNull()
+  })
+
+  it('a GENUINE repeated failure still trips — noise is filtered, errors are not', () => {
+    let window: unknown[] = []
+    for (let i = 0; i < SAME_ERROR_REPEAT; i++) {
+      window = record(
+        bashEvt(`pnpm vitest run ${i}`, {
+          exit_code: 1,
+          stderr: `${CWD_LINE}\nError: ENOENT src/foo.ts:${i}00`, // noise AND a real error
+        }),
+      )
+    }
+    const hit = detect(window)
+    expect(hit).not.toBeNull()
+    expect(hit!.pattern).toBe('same-error-repeat')
+    expect(hit!.detail).toContain('enoent') // the signature is the ERROR, not the chatter
+    expect(hit!.detail).not.toContain('cwd')
+  })
+
+  it('is_error still wins over a stale exit_code field', () => {
+    let window: unknown[] = []
+    for (let i = 0; i < SAME_ERROR_REPEAT; i++) {
+      window = record(bashEvt(`cmd ${i}`, { exit_code: 0, is_error: true, output: 'TypeError: x is not a function' }))
+    }
+    expect(detect(window)!.pattern).toBe('same-error-repeat')
+  })
+})
