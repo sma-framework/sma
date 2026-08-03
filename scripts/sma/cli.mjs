@@ -2550,12 +2550,14 @@ async function cmdMemory({ positionals, flags, dirs }) {
 
   if (sub === 'migrate') return cmdMemoryMigrate({ flags, dirs })
   if (sub === 'write') return cmdMemoryWrite({ flags, dirs })
+  if (sub === 'explain') return cmdMemoryExplain({ flags, dirs })
 
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory <stats|migrate|write>\n')
+    process.stdout.write('usage: sma memory <stats|migrate|write|explain>\n')
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
+    process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
   }
@@ -2593,6 +2595,95 @@ async function cmdMemory({ positionals, flags, dirs }) {
   process.stdout.write(`  ${stats.caveat}\n`)
   process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
   return 0
+}
+
+const MEMORY_EXPLAIN_USAGE = [
+  'usage: sma memory explain --task "<task text>" [--json] [--stat <name>]',
+  '',
+  '  WHY the pack looks like this. Every note in the corpus gets exactly ONE verdict:',
+  '  selected (on what grounds — the CORE rule the record states about itself, the weight',
+  '  that carried it over the CORE floor, or the tag intersection) or rejected (by WHICH',
+  '  hard filter and over which field, for no tag overlap, or as a budget cut with its',
+  '  position). It explains the REAL selection — the same compilePack a session compiles',
+  '  with, instrumented — never a second implementation that would describe a retrieval',
+  '  nobody runs. --stat prints ONE bare number; its legal names come from the report.',
+].join('\n')
+
+/**
+ * memory explain — the reason trace of retrieval (canon §6: explainability BEFORE any
+ * new retrieval layer). A subcommand of `memory`, not a verb of its own: the corpus
+ * namespace already exists and this is a question about the corpus.
+ *
+ * Exit code: 0 for a complete explanation, 1 when the explainer fails its OWN
+ * accounting (a note left with no verdict at all) — the one failure that would make
+ * every other line here untrustworthy, and therefore the one worth an exit code.
+ */
+async function cmdMemoryExplain({ flags, dirs }) {
+  if (flags.help === true) {
+    process.stdout.write(`${MEMORY_EXPLAIN_USAGE}\n`)
+    return 0
+  }
+
+  const task = typeof flags.task === 'string' ? flags.task.trim() : ''
+  if (task === '') {
+    process.stdout.write(`${MEMORY_EXPLAIN_USAGE}\n`)
+    process.stderr.write('SMA memory explain: нужен --task "<текст задачи>" — объяснять выдачу можно только для конкретной задачи\n')
+    return 1
+  }
+
+  const { explainRetrieval } = await import('./lib/memory-explain.mjs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+
+  if (!existsSync(corpusDir)) {
+    process.stderr.write(`SMA memory explain: корпус не найден — ${corpusDir}\n`)
+    return 1
+  }
+
+  const report = explainRetrieval({ task, corpusDir })
+
+  // --stat: one bare value. The legal names come from the report ITSELF — a second,
+  // hand-written list of field names is a list that goes stale (the eval verb's law).
+  if (flags.stat != null) {
+    const name = flags.stat === true ? '' : String(flags.stat)
+    if (!Object.prototype.hasOwnProperty.call(report.summary, name)) {
+      process.stderr.write(
+        `SMA memory explain: неизвестный --stat «${name}» — допустимые: ${Object.keys(report.summary).join(', ')}\n`,
+      )
+      return 1
+    }
+    process.stdout.write(`${report.summary[name]}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(report)
+    return report.summary.unaccounted ? 1 : 0
+  }
+
+  const s = report.summary
+  process.stdout.write(
+    `SMA memory explain — «${report.task}» (теги: ${report.tags.length ? report.tags.join(', ') : 'ни одного зарегистрированного'} · ` +
+      `корпус ${s.corpus_total} заметок):\n`,
+  )
+  process.stdout.write(`  выдано (${s.selected_count}) — на каком основании:\n`)
+  for (const sel of report.selected) {
+    process.stdout.write(`    ${sel.position ?? '—'}. ${sel.id} — ${sel.basis}\n`)
+  }
+  if (!report.selected.length) process.stdout.write('    (ни одной — пакет состоит из одной рамки)\n')
+  process.stdout.write(`  отклонено (${s.rejected_count}) — по какой причине:\n`)
+  for (const group of report.by_reason) {
+    process.stdout.write(`    ${group.reason} (${group.count}) [${group.step}]: ${group.notes.join(', ')}\n`)
+  }
+  if (!report.rejected.length) process.stdout.write('    (ни одной — весь корпус доехал)\n')
+  process.stdout.write(
+    `  фильтрами ${s.hard_filtered} · без пересечения тегов ${s.no_tag_overlap} · срезано бюджетом ${s.budget_cut} · ` +
+      `нечитаемых ${s.unparsed} · НЕУЧТЁННЫХ ${s.unaccounted}\n`,
+  )
+  if (s.unaccounted) {
+    process.stdout.write(`  ✗ без вердикта остались: ${report.unaccounted.join(', ')} — объяснение неполно\n`)
+  }
+  return s.unaccounted ? 1 : 0
 }
 
 const MEMORY_MIGRATE_USAGE = [
