@@ -113,7 +113,15 @@ and are removed once that transition window closes (see
 
 ## After installing
 
-Open a Claude Code session in the project and run `/sma-start`.
+Open a Claude Code session in the project and run `/sma-start` — a one-time
+guided conversation that records what the project is and how you ship it. After
+that, `/sma-help` lists every command and `/sma-progress` answers "where are we".
+
+Day to day you work one phase at a time, in this order:
+`/sma-discuss-phase N` (agree the goal) → `/sma-plan-phase N` (write the plan and
+the checks) → `/sma-execute-phase N` (do it, committing step by step) →
+`/sma-verify-work N` (walk it through and re-run the checks). Small jobs skip all
+four: `/sma-quick` for a small task, `/sma-fast` for a one-liner.
 
 Outside a session, the CLI is called the same way the installed hooks call it —
 from your project root, with no package script and nothing on your `PATH`:
