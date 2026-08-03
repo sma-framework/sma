@@ -108,6 +108,22 @@ describe('every note in the corpus gets exactly one verdict (Test 1)', () => {
   it('two runs over the same inputs explain identically (no clock, no order noise)', () => {
     expect(JSON.stringify(explainRetrieval(opts()))).toBe(JSON.stringify(explainRetrieval(opts())))
   })
+
+  it('a file retrieval cannot parse is REJECTED as unparsed, never silently dropped', () => {
+    // The accounting guarantee has exactly one way to fail quietly: a corpus file the
+    // loader never sees at all. It must still get a verdict — «retrieval cannot read
+    // you» is a fact its owner deserves from the explainer, not only from the lint.
+    writeFileSync(join(corpusDir, 'no-frontmatter.md'), 'just prose, no frontmatter at all\n', 'utf8')
+
+    const r = explainRetrieval(opts())
+    const v = r.rejected.find((x: any) => x.id === 'no-frontmatter.md') as any
+    expect(v).toBeTruthy()
+    expect(v.reason).toBe(EXPLAIN_REASONS.UNPARSED)
+    expect(v.step).toBe('corpus')
+    expect(r.unaccounted).toEqual([])
+    expect(r.summary.unparsed).toBe(1)
+    expect(r.summary.corpus_total).toBe(7)
+  })
 })
 
 describe('a rejection names the filter and the field that decided it (Test 2)', () => {
