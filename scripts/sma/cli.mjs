@@ -5390,6 +5390,7 @@ async function evalNorthStar({ flags, dirs }) {
     process.stdout.write('  на результат: нет ответа — делить не на что (ни одного проверенного результата)\n')
   }
   process.stdout.write(`  статус: ${report.status}${report.partial_reason ? ` — ${report.partial_reason}` : ''}\n`)
+  if (report.horizon_caveat) process.stdout.write(`  ОГОВОРКА периодов: ${report.horizon_caveat}\n`)
   if (report.unmeasured_components.includes('human_minutes')) {
     process.stdout.write(`  минуты человека: ${c.human_minutes.source}\n`)
   }

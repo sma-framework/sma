@@ -117,6 +117,15 @@ function str(v) {
   return t === '' ? null : t
 }
 
+/**
+ * The accounting HORIZON of the verified-result count: one benchmark run.
+ *
+ * Every cost component states its own horizon, because a cost and a result count drawn
+ * from different periods cannot honestly be divided into each other — see
+ * `horizon_aligned` on the report.
+ */
+export const RESULTS_HORIZON = 'один прогон бенчмарка'
+
 /** A measured component. */
 function measured(value, unit, source, extra = {}) {
   return { value, unit, status: 'measured', source, ...extra }
@@ -272,6 +281,7 @@ export function captureNorthStar(opts = {}) {
     wallClockMs,
     wallClockSource,
     humanMinutes,
+    humanMinutesHorizon,
     selfCostPaths = null,
     readFile,
     receipts = [],
@@ -293,8 +303,13 @@ export function captureNorthStar(opts = {}) {
     ? (num(t.inputTokens) ?? 0) + (num(t.outputTokens) ?? 0) + (num(t.cacheCreationTokens) ?? 0) + (num(t.cacheReadTokens) ?? 0)
     : null
   if (bookTokens != null) {
+    // The book's token totals are ALL-TIME: its per-event records carry a timestamp and
+    // a price but no token counts, so the rolling window that bounds the compute price
+    // cannot bound this number. Reported with its horizon said out loud rather than
+    // quietly divided by a single run's results — see `horizon_aligned`.
     tokens = measured(bookTokens, 'tokens', 'spend-книга (buildBook): вход + выход + запись и чтение кэша', {
       basis: 'session-book',
+      horizon: 'книга трат целиком: все обнаруженные сессии',
     })
   } else if (selfCostPaths) {
     // A NARROWER question, and the report says so: this is the static per-session
@@ -304,6 +319,7 @@ export function captureNorthStar(opts = {}) {
       sc.total > 0
         ? measured(sc.total, 'tokens', `economy.selfCost: статическая инъекция за сессию (${sc.estimatorVersion})`, {
             basis: 'static-injection',
+            horizon: 'одна сессия: статическая инъекция',
           })
         : unmeasured('tokens', 'economy.selfCost не нашёл ни одной инъекционной поверхности', { basis: 'static-injection' })
   } else {
@@ -320,6 +336,7 @@ export function captureNorthStar(opts = {}) {
         round4(windowSpend({ book, now, windowHours }).usd),
         'usd',
         `spend.windowSpend за окно ${windowHours} ч (прайсинг ${book.pricingVersion ?? 'не указан'})`,
+        { horizon: `окно ${windowHours} ч` },
       )
     : unmeasured('usd', 'книга трат пуста или недоступна (ни одного события) — снять: node scripts/sma/cli.mjs spend')
 
@@ -330,13 +347,16 @@ export function captureNorthStar(opts = {}) {
           num(wallClockMs),
           'ms',
           str(wallClockSource) ?? 'настенно-часовой капчер: измеренная длительность прогона, который произвёл проверенные результаты',
+          { horizon: RESULTS_HORIZON },
         )
       : unmeasured('ms', 'ни один прогон не был измерен по времени — капчер настенных часов не вызывался')
 
   // ── human minutes: the honest hole ──
   const human =
     num(humanMinutes) != null
-      ? measured(num(humanMinutes), 'minutes', 'минуты переданы вызывающим (замера в продукте по-прежнему нет)')
+      ? measured(num(humanMinutes), 'minutes', 'минуты переданы вызывающим (замера в продукте по-прежнему нет)', {
+          horizon: str(humanMinutesHorizon) ?? RESULTS_HORIZON,
+        })
       : unmeasured('minutes', HUMAN_MINUTES_SOURCE)
 
   const components = { tokens, wall_clock_ms: wall, compute, human_minutes: human }
@@ -357,6 +377,19 @@ export function captureNorthStar(opts = {}) {
   // one is not.
   const costPer = verified != null && verified > 0 ? quotients : null
 
+  // ── the horizon verdict ──
+  //
+  // Dividing a cost by a result count is only meaningful when both are drawn from the
+  // SAME period. Today they are usually not: the spend book prices every session it can
+  // discover, while the verified results come from one benchmark run. That does not make
+  // the quotient useless — it is still the best composition of the meters that exist —
+  // but it does make an undeclared quotient dishonest, so the mismatch is reported next
+  // to the number instead of being left for a reader to discover.
+  const horizons = {}
+  for (const name of measuredNames) horizons[name] = components[name].horizon ?? null
+  const offHorizon = measuredNames.filter((n) => components[n].horizon !== RESULTS_HORIZON)
+  const horizonAligned = offHorizon.length === 0
+
   const status = unmeasuredNames.length === 0 ? 'measured' : 'partial'
   const guardrail = guardrailPanel({ receipts, evalReport })
 
@@ -369,6 +402,7 @@ export function captureNorthStar(opts = {}) {
     human_minutes: human.value,
     cost_per_verified_result: quotients,
     unmeasured_components: unmeasuredNames.length,
+    horizon_aligned: horizonAligned,
     guardrail_rows: guardrail.rows.length,
     guardrail_missing: guardrail.missing,
   }
@@ -381,6 +415,15 @@ export function captureNorthStar(opts = {}) {
       'вердикты бенчмарка §8 (eval memory): кейс проверен, когда измеритель не записал против него ' +
       'ни критического промаха, ни запрещённого попадания, ни провала воздержания',
     cost_per_verified_result: costPer,
+    results_horizon: RESULTS_HORIZON,
+    horizons,
+    horizon_aligned: horizonAligned,
+    horizon_caveat: horizonAligned
+      ? null
+      : `слагаемые считаны за разные периоды, а делитель — за «${RESULTS_HORIZON}»: ` +
+        offHorizon.map((n) => `${n} — ${components[n].horizon ?? 'период не назван'}`).join('; ') +
+        '. Частное остаётся лучшей композицией существующих измерителей, но НЕ является ' +
+        'ценой одного результата в строгом смысле, пока периоды не сведены.',
     status,
     measured_components: measuredNames,
     unmeasured_components: unmeasuredNames,

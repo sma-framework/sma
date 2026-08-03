@@ -36,6 +36,7 @@ import {
   GATE_ELEMENTS,
   HUMAN_MINUTES_SOURCE,
   NORTH_STAR_CHECK_COMMAND,
+  RESULTS_HORIZON,
 } from '../lib/north-star.mjs'
 import { captureMemoryEval, MEMORY_EVAL_CHECK_COMMAND } from '../lib/memory-eval.mjs'
 import { isSafeCommand } from '../lib/predict.mjs'
@@ -259,6 +260,36 @@ describe('the honest hole — human minutes (Test 2)', () => {
     expect(r.components.tokens.status).toBe('measured')
     // and it says WHICH question it answered, because it is not the same question
     expect(r.components.tokens.basis).toBe('static-injection')
+  })
+})
+
+describe('the accounting horizons are declared, not blurred', () => {
+  it('a cost drawn from a different period than the divisor is reported as such', () => {
+    const now = Date.parse('2026-08-03T12:00:00Z')
+    // the book's token totals are ALL-TIME (its events carry no token counts, so the
+    // rolling window cannot bound them) while the divisor is one benchmark run
+    const r = captureNorthStar({ evalReport: realEvalReport(), book: book(now), now, windowHours: 5, wallClockMs: 4200 })
+
+    expect(r.results_horizon).toBe(RESULTS_HORIZON)
+    expect(r.horizon_aligned).toBe(false)
+    expect(r.horizon_caveat).toContain('tokens')
+    expect(r.horizon_caveat).toContain('compute')
+    expect(r.horizons.wall_clock_ms).toBe(RESULTS_HORIZON)
+    expect(r.summary.horizon_aligned).toBe(false)
+
+    // the number is still produced — the caveat is disclosure, not suppression
+    expect(r.cost_per_verified_result.tokens).toBe(500)
+  })
+
+  it('when every measured component shares the divisor period, there is no caveat', () => {
+    const r = captureNorthStar({
+      evalReport: realEvalReport(),
+      now: Date.parse('2026-08-03T12:00:00Z'),
+      wallClockMs: 4200,
+      humanMinutes: 6,
+    })
+    expect(r.horizon_aligned).toBe(true)
+    expect(r.horizon_caveat).toBeNull()
   })
 })
 
