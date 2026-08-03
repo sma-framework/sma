@@ -19,14 +19,32 @@
  *   - Test 4 (one read path): the exact layer sees the corpus through the shared
  *     projection with read-time visibility applied — a withheld record is not findable
  *     even by an exact match, which is the whole point of filtering before ranking.
+ *   - Test 5 (derived index): a build writes the database and a meta file naming the
+ *     engine and the corpus hash; an unchanged corpus rebuilds to the same hash.
+ *   - Test 6 (both engines rank): the full-text build and the hand-rolled BM25 fallback
+ *     answer the same fixture with the same shape — the fallback is not a placeholder.
+ *   - Test 7 (a query is data): a hostile task string — quotes, MATCH operators, a
+ *     semicolon and a DROP — is neither an error nor an injection; the corpus survives.
+ *   - Test 8 (staleness): zero right after a rebuild, one after the corpus moves.
+ *   - Test 9 (rebuildable): deleting the index file loses nothing a rebuild cannot
+ *     restore — the law that keeps a derived artifact from becoming a source of truth.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { probeFts5, lexicalCapability, queryExact, buildLexicalIndex, queryLexical, indexStatus, LEXICAL_ENGINES } from '../lib/fts-index.mjs'
+import {
+  probeFts5,
+  lexicalCapability,
+  queryExact,
+  buildLexicalIndex,
+  queryLexical,
+  indexStatus,
+  metaPathFor,
+  LEXICAL_ENGINES,
+} from '../lib/fts-index.mjs'
 
 const EMDASH = String.fromCharCode(0x2014)
 
@@ -37,6 +55,11 @@ const NOW = '2026-08-03T00:00:00Z'
 
 let dir: string
 let corpusDir: string
+
+/** Where the derived index lives in a test tree — under a `.sma`-shaped subdir. */
+function dbPath() {
+  return join(dir, 'index', 'memory-lexical.sqlite')
+}
 
 function writeNote(file: string, fields: Record<string, string>) {
   const fm = ['---', ...Object.entries(fields).map(([k, v]) => `${k}: ${v}`), '---', 'body text']
@@ -222,5 +245,117 @@ describe('one read path', () => {
     ]
     const hit = queryExact({ query: 'scripts/sma/lib/loader.mjs', notes, now: NOW })
     expect(hit.results.map((r: any) => r.id)).toEqual(['a.md'])
+  })
+
+  it('never indexes a withheld record either — the filter runs before the index, not after', () => {
+    if (!CAP.module) return expect(CAP.engine).toBe(LEXICAL_ENGINES.UNAVAILABLE)
+    writeNote('retired-pack-rule.md', {
+      description: 'compilePack used to cut on a soft budget',
+      kind: 'reference',
+      tags: '[crm]',
+      importance: '9',
+      status: 'superseded',
+    })
+    const built = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(built.indexed).toBe(3)
+    expect(queryLexical({ query: 'compilePack', dbPath: dbPath() }).results.map((r: any) => r.id)).not.toContain('retired-pack-rule.md')
+  })
+})
+
+/** The engines can only be exercised where the module exists at all. */
+const CAP = lexicalCapability()
+
+describe('the derived index', () => {
+  it.skipIf(!CAP.module)('is written with a meta file naming the engine and the corpus hash', () => {
+    const built = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+
+    expect(existsSync(dbPath())).toBe(true)
+    expect([LEXICAL_ENGINES.FTS5, LEXICAL_ENGINES.FALLBACK]).toContain(built.engine)
+    expect(built.indexed).toBe(3)
+
+    const meta = JSON.parse(readFileSync(metaPathFor(dbPath()), 'utf8'))
+    expect(meta.engine).toBe(built.engine)
+    expect(meta.built_at).toBe(NOW)
+    expect(String(meta.corpus_hash)).toMatch(/^[0-9a-f]{64}$/)
+
+    // an unchanged corpus hashes the same — the key is the content, not the file bytes
+    const again = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: '2026-08-04T00:00:00Z' })
+    expect(again.corpus_hash).toBe(built.corpus_hash)
+  })
+
+  it.skipIf(!CAP.module)('ranks with the hand-rolled BM25 fallback, on ordinary tables', () => {
+    const built = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW, probe: () => false })
+    expect(built.engine).toBe(LEXICAL_ENGINES.FALLBACK)
+
+    const found = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
+    expect(found.engine).toBe(LEXICAL_ENGINES.FALLBACK)
+    expect(found.results.length).toBeGreaterThan(0)
+    expect(found.results[0].id).toBe('pack-rule.md')
+    expect(typeof found.results[0].score).toBe('number')
+    // ranked, not merely returned
+    const scores = found.results.map((r: any) => r.score)
+    expect([...scores].sort((a: number, b: number) => b - a)).toEqual(scores)
+  })
+
+  it.skipIf(!CAP.fts5)('ranks with the full-text engine where the build carries it', () => {
+    const built = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(built.engine).toBe(LEXICAL_ENGINES.FTS5)
+
+    const found = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
+    expect(found.engine).toBe(LEXICAL_ENGINES.FTS5)
+    expect(found.results.length).toBeGreaterThan(0)
+    expect(found.results[0].id).toBe('pack-rule.md')
+    expect(typeof found.results[0].score).toBe('number')
+  })
+
+  it.skipIf(!CAP.module)('treats a hostile task string as data on both engines', () => {
+    const hostile = `loader" OR docs MATCH "x'; DROP TABLE docs; -- NEAR(a b) *`
+
+    for (const probe of [undefined, () => false]) {
+      const built = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW, ...(probe ? { probe } : {}) })
+      expect(() => queryLexical({ query: hostile, dbPath: dbPath() })).not.toThrow()
+      const after = queryLexical({ query: hostile, dbPath: dbPath() })
+      expect(Array.isArray(after.results)).toBe(true)
+
+      // the corpus is still there: an injection would have taken the table with it
+      const status = indexStatus({ corpusDir, dbPath: dbPath(), now: NOW })
+      expect(status.summary.indexed).toBe(built.indexed)
+      expect(queryLexical({ query: 'compilePack', dbPath: dbPath() }).results.length).toBeGreaterThan(0)
+    }
+  })
+
+  it.skipIf(!CAP.module)('is stale the moment the corpus moves, and not before', () => {
+    buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(0)
+
+    writeNote('pack-rule.md', {
+      description: 'compilePack now cuts the pack on a measured budget',
+      kind: 'reference',
+      tags: '[crm]',
+      importance: '5',
+      'use-when-pattern': 'scripts/sma/lib/context-pack.mjs',
+    })
+    expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(1)
+
+    buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(0)
+  })
+
+  it.skipIf(!CAP.module)('loses nothing when its file is deleted — a rebuild restores it whole', () => {
+    buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    const before = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
+    expect(before.results.length).toBeGreaterThan(0)
+
+    rmSync(dbPath(), { force: true })
+    rmSync(metaPathFor(dbPath()), { force: true })
+
+    const gone = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
+    expect(gone.results).toEqual([])
+    expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.exists).toBe(0)
+
+    const rebuilt = buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(rebuilt.indexed).toBe(3)
+    const after = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
+    expect(after.results.map((r: any) => r.id)).toEqual(before.results.map((r: any) => r.id))
   })
 })
