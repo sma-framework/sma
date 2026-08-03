@@ -19,7 +19,7 @@ written in plain language; the engineering detail follows in separate blocks.
 
 ## 1. Prerequisites
 
-- **Node.js 18.17 or newer** and **git** on PATH. The daemon uses only Node's
+- **Node.js 22.5 or newer** and **git** on PATH. The daemon uses only Node's
   built-in modules plus `pg-boss` — it is plain node, so your project's own
   conflicts over Node or framework versions never reach it.
 - **A local Postgres for the queue on :5433.** Create a `~/pg-sandbox` sandbox
