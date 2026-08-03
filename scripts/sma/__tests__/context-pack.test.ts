@@ -22,6 +22,12 @@
  *     an old case scores byte-for-byte as before, abstention is scored by the SELECTED set
  *     (never by the unconditional CORE), a repo_state case scores against its fixture corpus,
  *     and a repo_state resolving INTO the live corpus is refused instead of scored.
+ *   - Test 12 (the EXPERIMENTAL lexical fusion, Phase 10 Plan 09): reciprocal-rank fusion is
+ *     arithmetic anyone can check (1/(k+rank), k=60); the experiment cannot leak into the
+ *     default path (no flag → byte-identical pack AND the lexical layer never called); the
+ *     three ranked lists fuse deterministically with dedup, area diversity and the same
+ *     strict budget prefix; and a stale index or an absent capability DEGRADES to the
+ *     default order with the reason said out loud in the trace, never silently.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -38,6 +44,9 @@ import {
   appendMiss,
   runExam,
   scoreNoteCases,
+  reciprocalRankFusion,
+  RRF_K,
+  FUSION_DEGRADED_REASON,
 } from '../lib/context-pack.mjs'
 import { buildCatalog, readCatalog } from '../lib/catalog.mjs'
 import { loadTagsRegistry } from '../lib/frontmatter.mjs'
@@ -491,5 +500,215 @@ describe('scoreNoteCases — canon-format extension (Test 11)', () => {
     expect(c.criticalMissing).toEqual(['auth-detail.md'])
     expect(c.forbiddenPresent).toEqual([])
     expect(res.totals).toMatchObject({ cases: 1, expected: 3, hits: 2, missing: 1, criticalMissing: 1, casesWithCriticalMiss: 1, forbiddenPresent: 0 })
+  })
+})
+
+// ── the EXPERIMENTAL lexical fusion (Test 12) ────────────────────────────────
+
+/**
+ * A lexical-layer double. The real layer needs `node:sqlite` WITH the full-text
+ * extension and a built index on disk; a test that required either would only ever run
+ * on the machine that wrote it — the exact «works for me» the probe exists to refuse.
+ * The shape is the module's own: indexStatus → {engine, summary:{stale}}, queryExact and
+ * queryLexical → {results:[{id}]}.
+ */
+function lexicalDouble(opts: { exact?: string[]; lexical?: string[]; stale?: number; engine?: string } = {}) {
+  return {
+    indexStatus: vi.fn(() => ({
+      engine: opts.engine ?? 'fts5',
+      reason: '',
+      summary: { stale: opts.stale ?? 0, exists: 1, indexed: 3, corpus_notes: 3, visible_notes: 3, engine_available: 1 },
+    })),
+    queryExact: vi.fn(() => ({ results: (opts.exact ?? []).map((id) => ({ id, basis: 'symbol' })) })),
+    queryLexical: vi.fn(() => ({ results: (opts.lexical ?? []).map((id, i) => ({ id, score: 10 - i, rank: i + 1 })) })),
+  }
+}
+
+const noteIdsOf = (r: { members: { type: string; id: string }[] }) => r.members.filter((m) => m.type === 'note').map((m) => m.id)
+
+describe('reciprocalRankFusion — arithmetic anybody can check (Test 12a)', () => {
+  it('sums 1/(k+rank) across layers with k=60, dedups, and orders totally', () => {
+    expect(RRF_K).toBe(60)
+
+    const fused = reciprocalRankFusion([
+      { layer: 'facet', ids: ['x.md', 'y.md'] },
+      { layer: 'lexical', ids: ['y.md', 'z.md'] },
+    ])
+
+    expect(fused.map((e: { id: string }) => e.id)).toEqual(['y.md', 'x.md', 'z.md'])
+    expect(fused[0].score).toBeCloseTo(1 / 62 + 1 / 61, 12) // y: rank 2 in facet, rank 1 in lexical
+    expect(fused[1].score).toBeCloseTo(1 / 61, 12) // x: rank 1 in facet only
+    expect(fused[2].score).toBeCloseTo(1 / 62, 12) // z: rank 2 in lexical only
+    // the layers that ranked a document are carried, not summarised away
+    expect(fused[0].ranks).toEqual([
+      { layer: 'facet', rank: 2 },
+      { layer: 'lexical', rank: 1 },
+    ])
+
+    // one document appears ONCE however many layers found it
+    expect(fused).toHaveLength(3)
+
+    // a repeat inside ONE list is the same document, not a second chance at a rank
+    const repeated = reciprocalRankFusion([{ layer: 'facet', ids: ['a.md', 'a.md', 'b.md'] }])
+    expect(repeated.map((e: { id: string }) => e.id)).toEqual(['a.md', 'b.md'])
+    expect(repeated[1].score).toBeCloseTo(1 / 62, 12) // b kept rank 2 — the duplicate did not shift it
+
+    // an equal score breaks by id, so two runs cannot disagree
+    const tied = reciprocalRankFusion([{ layer: 'facet', ids: ['b.md'] }, { layer: 'exact', ids: ['a.md'] }])
+    expect(tied.map((e: { id: string }) => e.id)).toEqual(['a.md', 'b.md'])
+    expect(tied[0].score).toBe(tied[1].score)
+  })
+})
+
+describe('compilePack — the experiment cannot leak into the default path (Test 12b)', () => {
+  it('without the flag the pack is byte-identical AND the lexical layer is never called', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+    const resolve = () => ({ core: ['core-rule.md'], periphery: ['crm-detail.md'] })
+    const base = { taskText: 'fix the crm handler', commit: 'c', corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), resolve }
+
+    const plain = compilePack(base)
+    const lexical = lexicalDouble({ exact: ['crm-detail.md'], lexical: ['crm-detail.md', 'core-rule.md'] })
+    // the layer is HANDED IN and an index path is named — and still nothing asks it anything
+    const withLayerButNoFlag = compilePack({ ...base, lexical, indexPath: join(dir, 'idx.sqlite') })
+
+    expect(withLayerButNoFlag.packMd).toBe(plain.packMd)
+    expect(withLayerButNoFlag.manifestJson).toBe(plain.manifestJson)
+    expect(lexical.indexStatus).not.toHaveBeenCalled()
+    expect(lexical.queryExact).not.toHaveBeenCalled()
+    expect(lexical.queryLexical).not.toHaveBeenCalled()
+
+    // and the default pack still renders the core/periphery split it always did
+    expect(plain.packMd).toContain('## Core notes')
+    expect(plain.packMd).toContain('## Related notes')
+  })
+})
+
+describe('compilePack — fusion, dedup, diversity, budget (Test 12c)', () => {
+  it('fuses three ranked lists deterministically, dedups, and prefers a different area on a tie', () => {
+    writeNote('a1.md', 'first crm note', ['crm'], 5)
+    writeNote('a2.md', 'second crm note', ['crm'], 5)
+    writeNote('b1.md', 'an auth note', ['auth'], 5)
+
+    // three rotations of the same three ids: every document collects ranks 1, 2 and 3,
+    // so all three tie EXACTLY — which is the only condition under which the diversity
+    // pass is allowed to have an opinion at all.
+    const resolve = () => ({ core: [], periphery: ['a1.md', 'a2.md', 'b1.md'] })
+    const lexical = lexicalDouble({ exact: ['a2.md', 'b1.md', 'a1.md'], lexical: ['b1.md', 'a1.md', 'a2.md'] })
+    const args = {
+      taskText: 'crm and auth work',
+      commit: 'c',
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      resolve,
+      lexical,
+      indexPath: join(dir, 'idx.sqlite'),
+      experiment: 'lexical',
+    }
+
+    // fusion alone ties them and falls back to id order…
+    const raw = reciprocalRankFusion([
+      { layer: 'facet', ids: ['a1.md', 'a2.md', 'b1.md'] },
+      { layer: 'exact', ids: ['a2.md', 'b1.md', 'a1.md'] },
+      { layer: 'lexical', ids: ['b1.md', 'a1.md', 'a2.md'] },
+    ])
+    expect(raw.map((e: { id: string }) => e.id)).toEqual(['a1.md', 'a2.md', 'b1.md'])
+    expect(raw[0].score).toBe(raw[1].score)
+    expect(raw[1].score).toBe(raw[2].score)
+
+    // …and the pack breaks that tie by AREA, so two crm notes do not sit back to back
+    const res = compilePack(args)
+    expect(noteIdsOf(res)).toEqual(['a1.md', 'b1.md', 'a2.md'])
+
+    // one document, one place in the pack, however many layers found it
+    expect(noteIdsOf(res)).toHaveLength(3)
+
+    // deterministic: the same inputs give the same bytes
+    expect(compilePack(args).packMd).toBe(res.packMd)
+    expect(compilePack(args).manifestJson).toBe(res.manifestJson)
+
+    // the fused pack renders in the fused ORDER and still says which notes are the frame
+    const noteLines = res.packMd.split('\n').filter((l: string) => l.startsWith('- ['))
+    expect(noteLines.map((l: string) => l.split(' ')[2])).toEqual(['a1.md', 'b1.md', 'a2.md'])
+    expect(res.packMd).toContain('[related] a1.md')
+
+    // the trace names which layer gave which rank — explainability covers the experiment
+    const trace: { step: string; id?: string; detail?: Record<string, unknown> }[] = []
+    compilePack({ ...args, trace })
+    const fusionEvents = trace.filter((e) => e.step === 'fusion')
+    expect(fusionEvents.map((e) => e.id)).toEqual(['a1.md', 'b1.md', 'a2.md'])
+    expect(fusionEvents[0].detail).toMatchObject({
+      position: 1,
+      ranks: [
+        { layer: 'facet', rank: 1 },
+        { layer: 'exact', rank: 3 },
+        { layer: 'lexical', rank: 2 },
+      ],
+    })
+  })
+
+  it('lets a layer contribute a note the facet selection never chose, and still obeys the budget', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('found-only-lexically.md', 'a note no registered facet reaches', ['auth'], 4)
+
+    const resolve = () => ({ core: ['core-rule.md'], periphery: [] })
+    const lexical = lexicalDouble({ exact: [], lexical: ['found-only-lexically.md'] })
+    const args = {
+      taskText: 'a task naming no registered facet',
+      commit: 'c',
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      resolve,
+      lexical,
+      indexPath: join(dir, 'idx.sqlite'),
+      experiment: 'lexical',
+    }
+
+    expect(noteIdsOf(compilePack({ ...args, experiment: undefined }))).toEqual(['core-rule.md'])
+    expect(noteIdsOf(compilePack(args))).toEqual(['core-rule.md', 'found-only-lexically.md'])
+
+    // the SAME strict-prefix rule applies to the fused order: no backfill past the cut
+    const full = compilePack(args)
+    // room for the header frame and exactly one note
+    const small = compilePack({ ...args, budget: full.members[0].bytes + full.members[1].bytes + 1 })
+    expect(noteIdsOf(small)).toEqual(noteIdsOf(full).slice(0, noteIdsOf(small).length))
+    expect(noteIdsOf(small)).toEqual(['core-rule.md'])
+  })
+})
+
+describe('compilePack — the experiment degrades out loud (Test 12d)', () => {
+  it('a stale index or an absent capability falls back to the default order, with the reason in the trace', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+
+    const resolve = () => ({ core: ['core-rule.md'], periphery: ['crm-detail.md'] })
+    const base = {
+      taskText: 'fix the crm handler',
+      commit: 'c',
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      resolve,
+      indexPath: join(dir, 'idx.sqlite'),
+      experiment: 'lexical',
+    }
+    const defaultPack = compilePack({ ...base, experiment: undefined })
+
+    for (const broken of [
+      { label: 'stale', double: lexicalDouble({ stale: 1, lexical: ['crm-detail.md'] }) },
+      { label: 'unavailable', double: lexicalDouble({ engine: 'unavailable', lexical: ['crm-detail.md'] }) },
+    ]) {
+      const trace: { step: string; verdict?: string; reason?: string }[] = []
+      const res = compilePack({ ...base, lexical: broken.double, trace })
+
+      // the pack is the DEFAULT pack, byte for byte — degrading is not a third behaviour
+      expect(res.packMd).toBe(defaultPack.packMd)
+      expect(res.manifestJson).toBe(defaultPack.manifestJson)
+      // …and it is not asked to rank anything it cannot rank
+      expect(broken.double.queryLexical).not.toHaveBeenCalled()
+      // …and it SAID so
+      const said = trace.filter((e) => e.step === 'fusion' && e.verdict === 'degraded')
+      expect(said).toHaveLength(1)
+      expect(said[0].reason).toBe(FUSION_DEGRADED_REASON)
+    }
   })
 })
