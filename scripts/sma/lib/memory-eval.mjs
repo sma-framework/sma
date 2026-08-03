@@ -56,6 +56,12 @@ import { loadTagsRegistry } from './frontmatter.mjs'
  */
 export const MEMORY_EVAL_CHECK_COMMAND = 'node scripts/sma/cli.mjs eval memory'
 
+/** The same command in its A/B form — the one that produces the delta numbers. */
+export const MEMORY_EXPERIMENT_CHECK_COMMAND = 'node scripts/sma/cli.mjs eval memory --experiment lexical'
+
+/** The experiments this measurer knows how to run an arm for. */
+export const EXPERIMENTS = Object.freeze(['lexical'])
+
 /** The cutoffs reported unless the caller names others. */
 export const DEFAULT_K = Object.freeze([3, 5, 10])
 
@@ -279,6 +285,9 @@ export function captureMemoryEval(opts = {}) {
     compile,
     floors = DEFAULT_FLOORS,
     checkCommand = MEMORY_EVAL_CHECK_COMMAND,
+    experiment = null,
+    indexPath,
+    lexical,
   } = opts
 
   const ks = normalizeK(k)
@@ -298,6 +307,9 @@ export function captureMemoryEval(opts = {}) {
     ...(now == null ? {} : { now }),
     ...(budget == null ? {} : { budget }),
     ...(compile == null ? {} : { compile }),
+    ...(experiment == null ? {} : { experiment }),
+    ...(indexPath == null ? {} : { indexPath }),
+    ...(lexical == null ? {} : { lexical }),
   })
 
   const factsCache = new Map()
@@ -403,10 +415,16 @@ export function captureMemoryEval(opts = {}) {
     abstain_fail: t.abstainFail,
     corrupt_lines: corrupt,
     refused_cases: refused.length,
+    // The PRICE of the numbers above, on the same run that produced them. A retrieval
+    // score improves trivially by delivering more, so the size of what was delivered
+    // belongs in the same report — not in a second one somebody has to remember to read.
+    notes_delivered: t.loaded,
+    pack_tokens: t.packTokens,
   }
 
   return {
     metric: 'memory-eval',
+    experiment: experiment ?? null,
     k: ks,
     by_class: [...byClass.values()].sort((a, b) => (a.class < b.class ? -1 : a.class > b.class ? 1 : 0)),
     critical_misses: criticalMisses,
@@ -418,6 +436,113 @@ export function captureMemoryEval(opts = {}) {
     summary,
     floors,
     floor_failures: floorFailures(summary, floors),
+    check_command: checkCommand,
+  }
+}
+
+// ─────────────────────────── the A/B (canon §16) ────────────────────────────
+
+/**
+ * A delta in PERCENTAGE POINTS, or `null` when either arm has no number.
+ *
+ * Points, not percent-of-percent: recall going from 0.20 to 0.25 is «+5 points», and
+ * calling that «+25 %» is the standard way to make a small move sound like a large one.
+ * A percentage of a rate is the sentence people quote and nobody can check.
+ */
+function deltaPoints(after, before) {
+  if (after == null || before == null || !Number.isFinite(Number(after)) || !Number.isFinite(Number(before))) return null
+  return round4((Number(after) - Number(before)) * 100)
+}
+
+/** A plain count difference (negative = fewer, which for a floor is better). */
+function deltaCount(after, before) {
+  if (after == null || before == null) return null
+  return Number(after) - Number(before)
+}
+
+/**
+ * captureMemoryExperiment(opts) → the A/B of a retrieval experiment on the gold set.
+ *
+ * ONE set, TWO arms, run back to back in the same process against the same corpus: the
+ * CONTROL is the default path exactly as it ships, the EXPERIMENT differs by one option
+ * threaded down to compilePack and by nothing else. That is the whole design: any
+ * difference between the two summaries is attributable to the layer, because there is no
+ * second code path for it to be attributable to.
+ *
+ * The report is DELTAS, not a verdict. Canon §16 states the stopping rule — a retriever
+ * that does not improve critical recall or cost per verified result WITHOUT hurting
+ * precision does not enter the default path — and the decision that applies that rule to
+ * these numbers is a person's, recorded in writing. A measurer that also declared the
+ * winner would be marking its own homework.
+ *
+ * The deltas, by name (all in percentage points unless the name says otherwise):
+ *   critical_recall_delta_pct  the pre-registered P1 — critical recall is 1 − the
+ *                              critical-miss rate, so this is the miss rate falling
+ *   precision_delta_pct        the pre-registered P2 (precision@3): the stopping rule's
+ *                              «without hurting precision» half
+ *   recall_delta_pct           recall@3 — the phase's working ranking number
+ *   recall_at_10_delta_pct     recall@10, because a re-ranker can move the deep cut
+ *   mrr_delta_pct / ndcg_delta_pct  the order metrics the layer exists to move
+ *   forbidden_delta            a COUNT (negative is better); a must-be-zero floor
+ *   superseded_delta_pct / contradiction_delta_pct  the delivery guardrails
+ *   abstain_fail_delta         a COUNT: a broader retriever that starts answering where
+ *                              it should hold back is worse, however good its recall
+ *   pack_tokens_delta_pct      the COST projection: the same gold set, the extra tokens
+ *                              per verified answer the layer asks the reader to pay
+ *
+ * @param {object} opts  every captureMemoryEval option, plus:
+ * @param {string} [opts.experiment]  the arm's name (default 'lexical')
+ * @param {string} [opts.indexPath]   where the derived lexical index lives
+ * @param {object} [opts.lexical]     layer doubles (tests)
+ * @returns {object}
+ */
+export function captureMemoryExperiment(opts = {}) {
+  const { experiment = EXPERIMENTS[0], indexPath, lexical, checkCommand = MEMORY_EXPERIMENT_CHECK_COMMAND, ...rest } = opts
+
+  const control = captureMemoryEval({ ...rest, checkCommand: MEMORY_EVAL_CHECK_COMMAND })
+  const treatment = captureMemoryEval({
+    ...rest,
+    experiment,
+    ...(indexPath == null ? {} : { indexPath }),
+    ...(lexical == null ? {} : { lexical }),
+    checkCommand,
+  })
+
+  const c = control.summary
+  const e = treatment.summary
+  const at = (summaryAt, cutoff) => (summaryAt && summaryAt[cutoff] != null ? summaryAt[cutoff] : null)
+
+  const summary = {
+    cases_total: e.cases_total,
+    rankable_cases: e.rankable_cases,
+    // critical RECALL is 1 − the miss rate, so its rise is the miss rate's fall
+    critical_recall_delta_pct: deltaPoints(c.critical_miss_rate, e.critical_miss_rate),
+    precision_delta_pct: deltaPoints(at(e.precision_at, 3), at(c.precision_at, 3)),
+    recall_delta_pct: deltaPoints(at(e.recall_at, 3), at(c.recall_at, 3)),
+    recall_at_10_delta_pct: deltaPoints(at(e.recall_at, 10), at(c.recall_at, 10)),
+    mrr_delta_pct: deltaPoints(e.mrr, c.mrr),
+    ndcg_delta_pct: deltaPoints(e.ndcg, c.ndcg),
+    forbidden_delta: deltaCount(e.forbidden_hits, c.forbidden_hits),
+    superseded_delta_pct: deltaPoints(e.superseded_selection_rate, c.superseded_selection_rate),
+    contradiction_delta_pct: deltaPoints(e.contradiction_exposure, c.contradiction_exposure),
+    abstain_fail_delta: deltaCount(e.abstain_fail, c.abstain_fail),
+    notes_delivered_delta: deltaCount(e.notes_delivered, c.notes_delivered),
+    pack_tokens_control: c.pack_tokens,
+    pack_tokens_experiment: e.pack_tokens,
+    pack_tokens_delta_pct:
+      c.pack_tokens > 0 ? round4(((e.pack_tokens - c.pack_tokens) / c.pack_tokens) * 100) : null,
+  }
+
+  return {
+    metric: 'memory-eval-experiment',
+    experiment,
+    arms: { control: control.summary, experiment: treatment.summary },
+    reports: { control, experiment: treatment },
+    summary,
+    // The floors are the EXPERIMENT arm's own, unchanged: an arm that raises a ranking
+    // number while a must-be-zero floor goes red has not passed, and saying so needs the
+    // floors of the arm being judged, not a delta between two verdicts.
+    floor_failures: treatment.floor_failures,
     check_command: checkCommand,
   }
 }

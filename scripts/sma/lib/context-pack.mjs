@@ -37,6 +37,7 @@ import { findCards } from './catalog.mjs'
 import { listFragments, parseTrigger } from './fragments.mjs'
 import { PACK_BUDGET } from './constants.mjs'
 import { indexStatus, queryExact, queryLexical, LEXICAL_ENGINES } from './fts-index.mjs'
+import { estimateTokens } from './economy.mjs'
 
 /** Language token → catalog class family (profile.stack.languages → card boost). */
 const LANG_TO_CLASS = {
@@ -941,6 +942,7 @@ export function scoreNoteCases(opts = {}) {
   let rejected = 0
   let loadedTotal = 0
   let packBytesTotal = 0
+  let packTokensTotal = 0
 
   for (const gold of Array.isArray(cases) ? cases : []) {
     if (!gold || typeof gold.task !== 'string' || gold.task.trim() === '') continue
@@ -983,17 +985,22 @@ export function scoreNoteCases(opts = {}) {
 
     let packMembers = []
     let packBytes = 0
+    let packTokens = 0
     try {
       const res = compileOne(gold.task, { corpusDir: caseCorpusDir, tagsPath: caseTagsPath })
       packMembers = res && Array.isArray(res.members) ? res.members : []
       // What the pack COST to deliver, carried beside what it got right. A retrieval
       // number without the size of the payload that produced it can be improved by
       // simply sending more, which is the cheapest way to look better at the reader's
-      // expense. An injected compile double that reports no manifest costs 0.
+      // expense. Tokens come from the ONE estimator the product prices context with
+      // (economy.mjs, ESTIMATOR_VERSION) — a second rule of thumb here would be a second
+      // price for the same pack. An injected compile double reporting no pack costs 0.
       packBytes = res && res.manifest && Number.isFinite(Number(res.manifest.bytes)) ? Number(res.manifest.bytes) : 0
+      packTokens = res && typeof res.packMd === 'string' ? estimateTokens(res.packMd) : 0
     } catch {
       packMembers = [] // fail-soft — a broken compile scores as «nothing loaded», never a throw
       packBytes = 0
+      packTokens = 0
     }
     const notes = packMembers.filter((m) => m && m.type === 'note')
     const loaded = notes.map((m) => String(m.id))
@@ -1025,13 +1032,14 @@ export function scoreNoteCases(opts = {}) {
     if (abstain === 'fail') abstainFail += 1
     loadedTotal += loaded.length
     packBytesTotal += packBytes
+    packTokensTotal += packTokens
 
     // `corpusDir` is reported per case because a `repo_state` case is scored against a
     // FIXTURE corpus, and a consumer that needs what that corpus states about itself
     // (a record's retirement, a declared contradiction) would otherwise have to resolve
     // the fixture path a second time — re-implementing the contamination gate, which is
     // the one thing resolveRepoState exists to be the only copy of.
-    scored.push({ ...head, corpusDir: caseCorpusDir ?? null, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain, packBytes })
+    scored.push({ ...head, corpusDir: caseCorpusDir ?? null, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain, packBytes, packTokens })
   }
 
   return {
@@ -1050,6 +1058,7 @@ export function scoreNoteCases(opts = {}) {
       rejected,
       loaded: loadedTotal,
       packBytes: packBytesTotal,
+      packTokens: packTokensTotal,
     },
   }
 }

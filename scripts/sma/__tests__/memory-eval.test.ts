@@ -21,6 +21,10 @@
  *   - Test 6 (the verb): `eval memory --stat <name>` prints ONE bare value and exits 0;
  *     an unknown stat prints the legal names — derived from the summary itself — and
  *     exits 1.
+ *   - Test 7 (the A/B, Phase 10 Plan 09): the SAME gold set scored twice — default path
+ *     vs the named experiment — reported as deltas in percentage points; deterministic
+ *     on a fixture; a layer that changes nothing reports zero rather than noise; and the
+ *     report names NO winner, because the stopping rule is applied by a person.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -32,11 +36,14 @@ import { fileURLToPath } from 'node:url'
 
 import {
   captureMemoryEval,
+  captureMemoryExperiment,
   floorFailures,
   flattenSummary,
   DEFAULT_FLOORS,
   DEFAULT_K,
+  EXPERIMENTS,
   MEMORY_EVAL_CHECK_COMMAND,
+  MEMORY_EXPERIMENT_CHECK_COMMAND,
 } from '../lib/memory-eval.mjs'
 import { isSafeCommand } from '../lib/predict.mjs'
 
@@ -344,6 +351,20 @@ describe('the verb — sma eval memory (Test 6)', () => {
     expect(res.stderr).toContain('memory')
   })
 
+  it('--experiment names the arms it knows and refuses the ones it does not', () => {
+    const bogus = runCli(root, ['eval', 'memory', '--experiment', 'dense'])
+    expect(bogus.status).toBe(1)
+    expect(bogus.stderr).toContain('lexical')
+
+    // the A/B arm answers the pre-registered stat by name, as ONE bare value
+    const p1 = runCli(root, ['eval', 'memory', '--experiment', 'lexical', '--stat', 'critical_recall_delta_pct'])
+    expect(p1.status).toBe(0)
+    expect(Number.isFinite(Number(p1.stdout.trim()))).toBe(true)
+    const p2 = runCli(root, ['eval', 'memory', '--experiment', 'lexical', '--stat', 'precision_delta_pct'])
+    expect(p2.status).toBe(0)
+    expect(Number.isFinite(Number(p2.stdout.trim()))).toBe(true)
+  })
+
   it('the full report carries the floors, their verdict, and a path-free check_command', () => {
     const res = runCli(root, ['eval', 'memory', '--json'])
     const report = JSON.parse(res.stdout.trim().split('\n').pop() as string)
@@ -354,5 +375,76 @@ describe('the verb — sma eval memory (Test 6)', () => {
     // this seeded corpus violates nothing, so the exit code is the green verdict
     expect(report.floor_failures).toEqual([])
     expect(res.status).toBe(0)
+  })
+})
+
+// ── the A/B (Test 7) ─────────────────────────────────────────────────────────
+
+/**
+ * A lexical-layer double, so the A/B is testable on a machine whose Node has no
+ * `node:sqlite` and with no index on disk. `finds` is what the lexical arm returns for
+ * every task — enough to move an order, which is all the arithmetic under test needs.
+ */
+function lexicalDouble(finds: string[], stale = 0) {
+  return {
+    indexStatus: () => ({ engine: 'fts5', reason: '', summary: { stale, exists: 1, indexed: 3, corpus_notes: 3, visible_notes: 3, engine_available: 1 } }),
+    queryExact: () => ({ results: [] }),
+    queryLexical: () => ({ results: finds.map((id, i) => ({ id, score: 10 - i, rank: i + 1 })) }),
+  }
+}
+
+describe('captureMemoryExperiment — two arms, one set (Test 7)', () => {
+  it('reports both summaries and the deltas, deterministically, and names no winner', () => {
+    writeCases([
+      { task: 'fix the crm handler', class: 'exact', expected_notes: ['crm-detail.md'], critical_notes: ['crm-detail.md'], forbidden_notes: [] },
+      { task: 'read the crm rule', class: 'exact', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] },
+    ])
+
+    const args = { ...opts(), indexPath: join(dir, 'idx.sqlite'), lexical: lexicalDouble(['auth-detail.md']) }
+    const r = captureMemoryExperiment(args)
+
+    expect(r.metric).toBe('memory-eval-experiment')
+    expect(r.experiment).toBe('lexical')
+    expect(EXPERIMENTS).toContain('lexical')
+    expect(r.check_command).toBe(MEMORY_EXPERIMENT_CHECK_COMMAND)
+    expect(isSafeCommand(r.check_command)).toBe(true)
+    expect(r.check_command.includes(dir)).toBe(false)
+
+    // BOTH arms are reported in full — a delta without its two ends cannot be audited
+    expect(r.arms.control.cases_total).toBe(2)
+    expect(r.arms.experiment.cases_total).toBe(2)
+    // the control arm is the default path: it must equal a plain run of the measurer
+    expect(r.arms.control).toEqual(captureMemoryEval(opts()).summary)
+
+    // every pre-registered delta name is present and numeric
+    for (const name of ['critical_recall_delta_pct', 'precision_delta_pct', 'recall_delta_pct', 'forbidden_delta']) {
+      expect(Object.prototype.hasOwnProperty.call(r.summary, name)).toBe(true)
+      expect(Number.isFinite(Number((r.summary as Record<string, number>)[name]))).toBe(true)
+    }
+
+    // the layer DID something: it delivered a note the facet path never chose
+    expect(r.summary.notes_delivered_delta).toBeGreaterThan(0)
+    expect(r.summary.pack_tokens_experiment).toBeGreaterThan(r.summary.pack_tokens_control)
+
+    // no verdict field anywhere — the stopping rule is a person's to apply
+    expect(Object.keys(r)).not.toContain('verdict')
+    expect(Object.keys(r.summary)).not.toContain('accepted')
+
+    // deterministic: the same inputs give byte-identical bytes
+    expect(JSON.stringify(captureMemoryExperiment(args))).toBe(JSON.stringify(r))
+  })
+
+  it('an arm that cannot run honestly degrades to the control, and the deltas are zero — not noise', () => {
+    writeCases([{ task: 'fix the crm handler', expected_notes: ['crm-detail.md'], critical_notes: [], forbidden_notes: [] }])
+
+    // a STALE index: the layer refuses to rank and the compiler falls back to the default
+    const r = captureMemoryExperiment({ ...opts(), indexPath: join(dir, 'idx.sqlite'), lexical: lexicalDouble(['auth-detail.md'], 1) })
+
+    expect(r.arms.experiment).toEqual(r.arms.control)
+    expect(r.summary.critical_recall_delta_pct).toBe(0)
+    expect(r.summary.precision_delta_pct).toBe(0)
+    expect(r.summary.recall_delta_pct).toBe(0)
+    expect(r.summary.forbidden_delta).toBe(0)
+    expect(r.summary.pack_tokens_delta_pct).toBe(0)
   })
 })

@@ -5284,6 +5284,7 @@ const EVAL_SUBCOMMANDS = ['memory', 'north-star', 'gate']
 
 const EVAL_USAGE = [
   'usage: node scripts/sma/cli.mjs eval memory     [--json] [--stat <name>] [--k 3,5,10] [--cases <path>]',
+  '                                                [--experiment lexical]',
   '       node scripts/sma/cli.mjs eval north-star [--json] [--stat <name>]',
   '       node scripts/sma/cli.mjs eval gate --file <declaration.json> [--json]',
   '',
@@ -5292,6 +5293,9 @@ const EVAL_USAGE = [
   '              Deterministic floors give a red/green verdict with no model in the loop — a floor',
   '              violation exits non-zero. --stat prints one bare value (honestly `null` when the set',
   '              asked no such question); --k names the cutoffs; --cases overrides the gold-case file.',
+  '              --experiment <name> scores the SAME set twice — default path vs the named experiment —',
+  '              and prints the deltas in percentage points. It names no winner: the stopping rule of',
+  '              the canon is applied by a person and recorded in writing.',
   '  north-star  cost per VERIFIED CORRECT result — tokens, compute, wall-clock and human minutes,',
   '              divided by the results the benchmark judged correct, plus the guardrail panel of',
   '              recorded receipts. A component nothing measures reports `null` and says where its',
@@ -5334,6 +5338,16 @@ async function evalMemory({ flags, dirs }) {
   const corpusDir = join(repoRoot, '.claude', 'memory')
   const casesFlag = typeof flags.cases === 'string' ? flags.cases : null
   const casesPath = casesFlag ? (isAbsolute(casesFlag) ? casesFlag : join(repoRoot, casesFlag)) : join(corpusDir, 'gold-cases.jsonl')
+
+  // --experiment turns the run into an A/B: the same gold set scored twice, once by the
+  // default path and once by the named experiment, reported as DELTAS. Without it the
+  // verb is the single-arm benchmark it has always been, byte for byte.
+  const experiment = typeof flags.experiment === 'string' ? flags.experiment : null
+  if (experiment != null && !memoryEval.EXPERIMENTS.includes(experiment)) {
+    process.stderr.write(`SMA eval memory: неизвестный --experiment «${experiment}» — известны: ${memoryEval.EXPERIMENTS.join(', ')}\n`)
+    return 1
+  }
+  if (experiment != null) return evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusDir, casesPath, experiment })
 
   const report = memoryEval.captureMemoryEval({
     corpusDir,
@@ -5388,6 +5402,85 @@ async function evalMemory({ flags, dirs }) {
   } else {
     process.stdout.write('  ✓ все полы соблюдены\n')
   }
+  process.stdout.write(`  проверка: ${report.check_command}\n`)
+  return report.floor_failures.length ? 1 : 0
+}
+
+/**
+ * eval memory --experiment <name> — the A/B arm of the same verb.
+ *
+ * EXIT CODE IS STILL THE FLOOR VERDICT, and it is the EXPERIMENT arm's floors: an arm
+ * that lifts a ranking number while a must-be-zero floor goes red has not passed. The
+ * verb prints deltas and refuses to name a winner — the stopping rule is applied by a
+ * person and recorded in writing, because a measurer that also declared the winner would
+ * be marking its own homework.
+ */
+async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusDir, casesPath, experiment }) {
+  const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const indexPath = join(dirs?.indexDir ?? join(repoRoot, '.sma', 'index'), LEXICAL_INDEX_FILE)
+
+  const report = memoryEval.captureMemoryExperiment({
+    corpusDir,
+    casesPath,
+    experiment,
+    indexPath,
+    ...(typeof flags.k === 'string' ? { k: flags.k } : {}),
+  })
+
+  if (flags.stat != null) {
+    const flat = memoryEval.flattenSummary(report.summary)
+    const name = flags.stat === true ? '' : String(flags.stat)
+    if (!Object.prototype.hasOwnProperty.call(flat, name)) {
+      process.stderr.write(`SMA eval memory --experiment: неизвестный --stat «${name}» — допустимые: ${Object.keys(flat).join(', ')}\n`)
+      return 1
+    }
+    const value = flat[name]
+    process.stdout.write(`${value == null ? 'null' : value}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(report)
+    return report.floor_failures.length ? 1 : 0
+  }
+
+  const s = report.summary
+  const show = (v) => (v == null ? 'нет данных' : v)
+  const signed = (v) => (v == null ? 'нет данных' : Number(v) > 0 ? `+${v}` : `${v}`)
+  const control = report.arms.control
+  const arm = report.arms.experiment
+  const line = (label, ctl, exp) => `  ${label}: контроль ${show(ctl)} → эксперимент ${show(exp)}\n`
+
+  process.stdout.write(
+    `SMA eval memory --experiment ${experiment} — A/B на золотом наборе ` +
+      `(кейсов ${s.cases_total}, ранжируемых ${s.rankable_cases}):\n`,
+  )
+  process.stdout.write(line('отдача@3', control.recall_at[3], arm.recall_at[3]))
+  process.stdout.write(line('точность@3', control.precision_at[3], arm.precision_at[3]))
+  process.stdout.write(line('MRR', control.mrr, arm.mrr))
+  process.stdout.write(line('nDCG', control.ndcg, arm.ndcg))
+  process.stdout.write(line('критические промахи', control.critical_miss_rate, arm.critical_miss_rate))
+  process.stdout.write(line('запрещённые попадания', control.forbidden_hits, arm.forbidden_hits))
+  process.stdout.write(line('токенов пакетов', control.pack_tokens, arm.pack_tokens))
+  process.stdout.write('  дельты (в процентных пунктах, кроме счётных):\n')
+  process.stdout.write(
+    `    critical_recall ${signed(s.critical_recall_delta_pct)} · precision@3 ${signed(s.precision_delta_pct)} · ` +
+      `recall@3 ${signed(s.recall_delta_pct)} · recall@10 ${signed(s.recall_at_10_delta_pct)}\n`,
+  )
+  process.stdout.write(
+    `    MRR ${signed(s.mrr_delta_pct)} · nDCG ${signed(s.ndcg_delta_pct)} · ` +
+      `запрещённых ${signed(s.forbidden_delta)} · воздержаний провалено ${signed(s.abstain_fail_delta)}\n`,
+  )
+  process.stdout.write(`    цена: заметок ${signed(s.notes_delivered_delta)} · токенов ${signed(s.pack_tokens_delta_pct)} %\n`)
+  if (report.floor_failures.length) {
+    process.stdout.write(`  ✗ полы экспериментальной руки нарушены (${report.floor_failures.length}):\n`)
+    for (const f of report.floor_failures) {
+      process.stdout.write(`    ${f.metric}: ${f.value} — требуется ${f.comparator} ${f.threshold}\n`)
+    }
+  } else {
+    process.stdout.write('  ✓ полы экспериментальной руки соблюдены\n')
+  }
+  process.stdout.write('  ВЕРДИКТ НЕ ЗДЕСЬ: правило остановки канона применяет человек и записывает решение.\n')
   process.stdout.write(`  проверка: ${report.check_command}\n`)
   return report.floor_failures.length ? 1 : 0
 }
