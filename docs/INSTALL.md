@@ -4,6 +4,21 @@ SMA (sma-framework) is a layered memory + multi-terminal coordination framework
 for AI coding agents. This page covers both install paths and what each one
 puts on your machine.
 
+## Requirements
+
+**Node 22.5 or newer** (`engines.node: >=22.5`) and `git` on PATH. Nothing else:
+the installer and every verb are Node built-ins only.
+
+The floor moved up from 18.17, and it is worth saying why, because a raised
+requirement is a cost paid by everyone who installs. Node 18 reached end of life
+in April 2025 and Node 20 in April 2026 — the old floor was a promise to keep
+working on runtimes that no longer receive security fixes, which made nobody
+safer. 22.5 is also the version that first carries `node:sqlite`, used by the
+experimental lexical index, but that layer is **not** the reason for the move and
+does not depend on the floor being mandatory: it probes for the capability at
+runtime and answers the same question with a plain-table BM25 wherever the
+official Node build shipped SQLite without the full-text extension.
+
 ## Path 1: npx (the front door)
 
 The package is published on the public npm registry as `sma-framework` (v3.6+).

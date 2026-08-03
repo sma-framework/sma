@@ -110,7 +110,7 @@ The smoke is a sequential checklist: every step prints `PASS` or `FAIL` and move
 on, and at the end the process exits with the number of failures (exit 0 =
 everything green). It checks:
 
-1. node >= 18.17 + git on PATH.
+1. node >= 22.5 + git on PATH.
 2. a full `pnpm test` run in `~/sma` (a one-time acceptance of the whole suite on
    this machine).
 3. a live `worktree provision` → base check → `worktree remove` round.

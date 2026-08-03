@@ -14,7 +14,7 @@
  * on macOS together with the deploy-wave daemon fixes (parked plan 9.5-10 findings).
  *
  * COVERAGE (Windows->macOS Portability Audit rows 4, 5, 7, 10, 11 + host prereqs):
- *   1  node >= 18.17 (product engine field) + git present
+ *   1  node >= 22.5 (product engine field) + git present
  *   2  `pnpm test` in ../sma — the FULL vitest suite (this machine's ONE-TIME acceptance
  *      of the substrate on macOS; NOT a per-dev gate). Long-running by design.
  *   3  live `worktree provision` -> base-verify -> `worktree remove` round-trip (row 5:
@@ -65,12 +65,12 @@ function run(bin, args, opts = {}) {
   return { code, stdout, stderr, ok: code === 0, error: res.error }
 }
 
-/** Step 1: node >= 18.17 + git present. */
+/** Step 1: node >= 22.5 + git present. */
 function step1_nodeAndGit() {
   const [maj, min] = process.versions.node.split('.').map((n) => parseInt(n, 10))
-  const nodeOk = maj > 18 || (maj === 18 && min >= 17)
-  if (nodeOk) pass(`step1a: node ${process.versions.node} >= 18.17 (product engine field)`)
-  else fail(`step1a: node ${process.versions.node} is below the 18.17 engine floor`)
+  const nodeOk = maj > 22 || (maj === 22 && min >= 5)
+  if (nodeOk) pass(`step1a: node ${process.versions.node} >= 22.5 (product engine field)`)
+  else fail(`step1a: node ${process.versions.node} is below the 22.5 engine floor`)
 
   const git = run('git', ['--version'])
   if (git.ok && /git version/i.test(git.stdout)) pass(`step1b: git present (${git.stdout.trim()})`)

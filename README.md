@@ -35,6 +35,8 @@ One command, from the root of your own project (zero dependencies — the instal
 npx -y sma-framework@latest init
 ```
 
+**Node 22.5 or newer.** The floor moved up from 18.17, and the reason is not a feature: Node 18 went end-of-life in April 2025 and Node 20 in April 2026, so the old floor was a promise to support runtimes that no longer receive security fixes. Nothing about that promise was making anyone safer.
+
 That is the whole install. It also embeds a short managed rules block into your project's CLAUDE.md so agents can find the memory corpus (your own content is never touched), and the off-ramp is symmetric: `/sma-deleteme` removes everything and PRESERVES `.claude/memory/`. Updating later is one command too: `/sma-update` compares the installed version against what is available and re-runs this same installer — the memory corpus, your profile, and all local state stay yours. The git-clone path, flags, and the full payload manifest are in [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Quickstart

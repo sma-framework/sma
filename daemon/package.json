@@ -5,7 +5,7 @@
   "description": "SMA V5 orchestration daemon — the stateless 24/7 worker-fleet runner. Queue + runner + roster front + report-back over the 10 SMA verbs. Ships with the product (root files[] allowlist), not a separate npm package.",
   "type": "module",
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22.5"
   },
   "dependencies": {
     "pg": "^8.11.0",
