@@ -44,7 +44,44 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
-import { makeComparator, readNotes, isCoreNote, isVisibleNow, CORE_THRESHOLD } from './generator.mjs'
+import { makeComparator, readNotes, isCoreNote, visibilityVerdict, CORE_THRESHOLD } from './generator.mjs'
+
+/**
+ * SELECTION BASES — why a record that survived the hard filters is in the pack.
+ *
+ * Three different answers that a single word «selected» would collapse: the record
+ * STATES it always loads, its number carried it over the CORE floor, or the task's
+ * tags met its own. The fourth is the honest edge: a query that named no registered
+ * facet constrains nothing, so nothing was excluded by matching — reporting that as
+ * a tag hit would be claiming an intersection that never happened.
+ *
+ * Frozen and owned here, beside the code that decides, for the same reason the
+ * filters own theirs (generator VISIBILITY_REASONS): one vocabulary, one place.
+ */
+export const SELECTION_BASES = Object.freeze({
+  CORE: 'core',
+  WEIGHT: 'weight',
+  TAG: 'tag', // rendered as `tag:<name>` — the tag itself is part of the answer
+  UNCONSTRAINED: 'unconstrained',
+  NO_TAG_OVERLAP: 'no-tag-overlap',
+})
+
+/**
+ * The query tags a note satisfies, sorted — DESCRIPTIVE only. The verdict stays
+ * `noteMatches` (the real matcher); this names WHICH tags carried it, for a trace
+ * that has to answer «on what grounds» rather than merely «yes». It is computed
+ * only when a trace collector is attached, so the untraced path pays nothing.
+ */
+function matchedQueryTags(note, buckets, registry) {
+  const resolvedTags = new Set((note.tags ?? []).map((t) => resolveAlias(t, registry)))
+  const resolvedKind = resolveAlias(note.kind ?? '', registry)
+  const out = []
+  for (const facet of ['area', 'phase', 'topic']) {
+    for (const q of buckets[facet]) if (resolvedTags.has(q)) out.push(q)
+  }
+  for (const q of buckets.kind) if (q === resolvedKind) out.push(q)
+  return [...new Set(out)].sort()
+}
 
 /**
  * Group the resolved query tags into facet buckets using the registry.
@@ -129,6 +166,11 @@ export function orderNotes(notes, dateMap = {}) {
  * @param {string|Date} [opts.now]       injected instant for the valid-time filter
  * @param {string} [opts.audience]       consumer class (default: the local owner)
  * @param {{repo?:string, environment?:string}} [opts.scope]  the world asking
+ * @param {Function|Array} [opts.trace]  OPTIONAL reason-trace collector (a callback or
+ *        an array to push onto). Absent — the default — nothing is built and no event
+ *        is shaped: the untraced load is the load it always was. Present: one event
+ *        `{step, id, verdict, basis|reason, detail}` per record, so an explainer reads
+ *        the decisions this function actually made instead of re-deriving them.
  * @returns {{core:string[], periphery:string[], matched:number, indexFiles:string[], warnings:string[], meta:object}}
  */
 export function resolvePeriphery(opts) {
@@ -142,7 +184,11 @@ export function resolvePeriphery(opts) {
     now,
     audience,
     scope,
+    trace,
   } = opts
+
+  // The collector, normalized once: a callback, an array to push onto, or nothing.
+  const emit = typeof trace === 'function' ? trace : Array.isArray(trace) ? (e) => trace.push(e) : null
 
   const registry = loadTagsRegistry(tagsPath)
   const allNotes = readNotes(corpusDir)
@@ -157,7 +203,14 @@ export function resolvePeriphery(opts) {
   // one implementation. A hidden record is out of DELIVERY, not out of the corpus —
   // the area indexes still catalogue it, because an index is a map, not a payload.
   const visibility = { now, audience, scope }
-  const notes = allNotes.filter((n) => isVisibleNow(n, visibility))
+  const notes = allNotes.filter((n) => {
+    const denial = visibilityVerdict(n, visibility)
+    if (denial && emit) {
+      const { reason, ...detail } = denial
+      emit({ step: 'visibility', id: n.file, verdict: 'rejected', reason, detail })
+    }
+    return denial === null
+  })
 
   // CORE: always included first, ordered by the shared comparator. Membership is
   // the GENERATOR's question (isCoreNote), never re-derived here — so what loads
@@ -182,6 +235,50 @@ export function resolvePeriphery(opts) {
   const periphery = orderNotes(matched, dateMap).map((n) => n.file)
   // A CORE note is never repeated in periphery (threshold split already ensures it).
   const peripheryFinal = periphery.filter((f) => !coreSet.has(f))
+
+  // ── the reason trace, when somebody is collecting one ──────────────────────
+  // Every record that CLEARED the hard filters leaves exactly one event here: the
+  // grounds it was selected on, or the fact that the query's tags never met its own.
+  // The verdicts are read off the sets this function already built — nothing is
+  // re-decided for the trace, which is the only way an explanation can be trusted
+  // to describe the selection instead of a plausible-looking parallel one.
+  if (emit) {
+    const peripherySet = new Set(peripheryFinal)
+    const queried = buckets.area.size + buckets.kind.size + buckets.phase.size + buckets.topic.size
+    for (const n of notes) {
+      if (coreSet.has(n.file)) {
+        const basis = n.contextPriority === 'always' ? SELECTION_BASES.CORE : SELECTION_BASES.WEIGHT
+        emit({
+          step: 'membership',
+          id: n.file,
+          verdict: 'selected',
+          basis,
+          detail: basis === SELECTION_BASES.CORE
+            ? { field: 'context_priority', value: 'always' }
+            : { field: 'importance', value: n.importance, threshold: coreThreshold },
+        })
+        continue
+      }
+      if (peripherySet.has(n.file)) {
+        const hits = queried === 0 ? [] : matchedQueryTags(n, buckets, registry)
+        emit({
+          step: 'match',
+          id: n.file,
+          verdict: 'selected',
+          basis: hits.length ? `${SELECTION_BASES.TAG}:${hits[0]}` : SELECTION_BASES.UNCONSTRAINED,
+          detail: { tags: hits, query: [...buckets.area, ...buckets.kind, ...buckets.phase, ...buckets.topic].sort() },
+        })
+        continue
+      }
+      emit({
+        step: 'match',
+        id: n.file,
+        verdict: 'rejected',
+        reason: SELECTION_BASES.NO_TAG_OVERLAP,
+        detail: { tags: n.tags ?? [], query: [...buckets.area, ...buckets.kind, ...buckets.phase, ...buckets.topic].sort() },
+      })
+    }
+  }
 
   const meta = {}
   if (peripheryFinal.length === 0) meta.note = 'CORE only'

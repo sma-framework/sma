@@ -168,15 +168,92 @@ function ceilingFor(audience) {
  * it holds in is out of delivery in every OTHER world. A record that names none
  * constrains nothing, and a caller that states no world asks no question — the
  * filter only narrows when BOTH sides have something to say.
+ *
+ * Returns null when the dimension allows the record through, and the two sides of
+ * the disagreement when it does not — because «withheld» without «by what, against
+ * what» is the kind of answer that makes a retrieval layer unfalsifiable.
  */
-function scopeAllows(scope, key, asked) {
+function scopeDenial(scope, key, asked) {
   const value = String(asked ?? '').trim()
-  if (value === '') return true
+  if (value === '') return null
   const raw = scope?.[key]
   const declared = (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
     .map((s) => String(s).trim())
     .filter((s) => s !== '')
-  return declared.length === 0 || declared.includes(value)
+  if (declared.length === 0 || declared.includes(value)) return null
+  return { declared, asked: value }
+}
+
+/**
+ * The reason names of the read-time filters, frozen and owned HERE — by the module
+ * that runs them. Every consumer that reports why a record was withheld imports
+ * these; a second copy of the vocabulary would be a second answer waiting to drift
+ * from the code that actually decides.
+ */
+export const VISIBILITY_REASONS = Object.freeze({
+  STATUS_RETIRED: 'status-retired',
+  NOT_YET_VALID: 'not-yet-valid',
+  EXPIRED: 'expired',
+  SENSITIVITY_CEILING: 'sensitivity-ceiling',
+  SCOPE_REPO: 'scope-repo',
+  SCOPE_ENVIRONMENT: 'scope-environment',
+})
+
+/**
+ * visibilityVerdict(note, opts) — the SAME four hard filters as isVisibleNow, with
+ * their verdict spelled out: `null` when the record may be shown, otherwise the
+ * reason code plus the field and value that decided it.
+ *
+ * This is the single implementation of read-time visibility; `isVisibleNow` is the
+ * boolean question asked of it. Splitting them the other way round — a boolean
+ * filter here and a «why» reconstructed elsewhere — is exactly how an explanation
+ * starts describing a retrieval nobody runs.
+ *
+ * @param {object} note  a projected record (projectNoteAxis — the shared axis)
+ * @param {{now?:string|Date, audience?:string, scope?:{repo?:string, environment?:string}}} [opts]
+ * @returns {null|{reason:string, field:string, value:*}}
+ */
+export function visibilityVerdict(note, opts = {}) {
+  const n = note ?? {}
+
+  // 1. status — the filter that already ran at CORE membership, now on every path.
+  if (CORE_EXCLUDED_STATUSES.has(n.status)) {
+    return { reason: VISIBILITY_REASONS.STATUS_RETIRED, field: 'status', value: n.status }
+  }
+
+  // 2. valid time — the window the record itself declares (bi-temporal, B5).
+  const now = instantOf(opts.now) ?? Date.now()
+  const from = instantOf(n.validFrom)
+  if (from != null && now < from) {
+    return { reason: VISIBILITY_REASONS.NOT_YET_VALID, field: 'valid_from', value: n.validFrom }
+  }
+  const until = instantOf(n.validUntil, { endOfDay: true })
+  if (until != null && now > until) {
+    return { reason: VISIBILITY_REASONS.EXPIRED, field: 'valid_until', value: n.validUntil }
+  }
+
+  // 3. sensitivity — by AUDIENCE only. The local owner (default) is withheld nothing.
+  const ceiling = ceilingFor(opts.audience)
+  if (ceiling != null) {
+    const declared = String(n.sensitivity ?? '').trim()
+    const effective = declared === '' ? UNDECLARED_SENSITIVITY : declared
+    const rank = sensitivityRank(effective)
+    const base = { field: 'sensitivity', value: declared, effective, audience: String(opts.audience ?? ''), ceiling }
+    // a class outside the vocabulary is fail-closed — an unreadable label is not a permit
+    if (rank < 0) return { reason: VISIBILITY_REASONS.SENSITIVITY_CEILING, ...base, unknown_class: true }
+    if (rank > sensitivityRank(ceiling)) return { reason: VISIBILITY_REASONS.SENSITIVITY_CEILING, ...base }
+  }
+
+  // 4. scope — the repo/environment world the claim is meant to hold in (§9.2).
+  const scope = n.scope ?? {}
+  const repoDenial = scopeDenial(scope, 'repos', opts.scope?.repo)
+  if (repoDenial) return { reason: VISIBILITY_REASONS.SCOPE_REPO, field: 'scope.repos', value: repoDenial.declared, asked: repoDenial.asked }
+  const envDenial = scopeDenial(scope, 'environments', opts.scope?.environment)
+  if (envDenial) {
+    return { reason: VISIBILITY_REASONS.SCOPE_ENVIRONMENT, field: 'scope.environments', value: envDenial.declared, asked: envDenial.asked }
+  }
+
+  return null
 }
 
 /**
@@ -203,33 +280,7 @@ function scopeAllows(scope, key, asked) {
  * @returns {boolean}
  */
 export function isVisibleNow(note, opts = {}) {
-  const n = note ?? {}
-
-  // 1. status — the filter that already ran at CORE membership, now on every path.
-  if (CORE_EXCLUDED_STATUSES.has(n.status)) return false
-
-  // 2. valid time — the window the record itself declares (bi-temporal, B5).
-  const now = instantOf(opts.now) ?? Date.now()
-  const from = instantOf(n.validFrom)
-  if (from != null && now < from) return false
-  const until = instantOf(n.validUntil, { endOfDay: true })
-  if (until != null && now > until) return false
-
-  // 3. sensitivity — by AUDIENCE only. The local owner (default) is withheld nothing.
-  const ceiling = ceilingFor(opts.audience)
-  if (ceiling != null) {
-    const declared = String(n.sensitivity ?? '').trim()
-    const rank = declared === '' ? sensitivityRank(UNDECLARED_SENSITIVITY) : sensitivityRank(declared)
-    if (rank < 0) return false // a class outside the vocabulary is fail-closed
-    if (rank > sensitivityRank(ceiling)) return false
-  }
-
-  // 4. scope — the repo/environment world the claim is meant to hold in (§9.2).
-  const scope = n.scope ?? {}
-  if (!scopeAllows(scope, 'repos', opts.scope?.repo)) return false
-  if (!scopeAllows(scope, 'environments', opts.scope?.environment)) return false
-
-  return true
+  return visibilityVerdict(note, opts) === null
 }
 
 /**
@@ -240,7 +291,13 @@ export function isVisibleNow(note, opts = {}) {
 export const GENERATED_MARKER =
   '<!-- GENERATED by scripts/sma memory index at commit {commit} — do not hand-edit; regenerate instead (машинный артефакт, не редактировать вручную) -->'
 
-/** Structural files that are not notes — never fed to the generator. */
+/**
+ * Structural files that are not notes — never fed to the generator.
+ * `listNoteFiles` below is exported for the same one-implementation reason: a
+ * consumer that has to account for EVERY note in the corpus (the retrieval
+ * explainer) must ask this module what counts as a note, not re-derive the answer
+ * from a directory listing and a second idea of what is structural.
+ */
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 
 /** The FI-11 per-area index files are structural artifacts, never notes. */
@@ -260,7 +317,7 @@ const CORE_KIND_ORDER = ['status', 'procedural-rule', 'decision', 'reference', '
 // ─────────────────────────── corpus read ─────────────────────────────────────
 
 /** List note files (*.md, non-structural), sorted for a stable base order. */
-function listNoteFiles(corpusDir) {
+export function listNoteFiles(corpusDir) {
   let entries
   try {
     entries = readdirSync(corpusDir)
