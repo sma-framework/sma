@@ -103,6 +103,7 @@ function dirsFrom(root) {
     statuslineDir: join(root, 'statusline'), // 9.3-07 (D-9.3-13) — statusline TTL cache + webhook config + cooldown marker
     manifestDir: join(root, 'manifest'), // 9.3-08 (D-9.3-11) — PR evidence passport pack (<headSha>.json + .md)
     baselineDir: join(root, 'baseline'), // v5.1 — recorded baseline receipts (receipts.json) for replay
+    indexDir: join(root, 'index'), // v5.2 — derived lexical index (memory-lexical.sqlite + .meta.json), rebuildable
   }
 }
 
@@ -2551,13 +2552,15 @@ async function cmdMemory({ positionals, flags, dirs }) {
   if (sub === 'migrate') return cmdMemoryMigrate({ flags, dirs })
   if (sub === 'write') return cmdMemoryWrite({ flags, dirs })
   if (sub === 'explain') return cmdMemoryExplain({ flags, dirs })
+  if (sub === 'index') return cmdMemoryIndex({ positionals, flags, dirs })
 
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory <stats|migrate|write|explain>\n')
+    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index>\n')
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
+    process.stdout.write('  index rebuild|status [--json] [--stat <name>] — ЭКСПЕРИМЕНТ, вне выдачи по умолчанию\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
   }
@@ -2684,6 +2687,100 @@ async function cmdMemoryExplain({ flags, dirs }) {
     process.stdout.write(`  ✗ без вердикта остались: ${report.unaccounted.join(', ')} — объяснение неполно\n`)
   }
   return s.unaccounted ? 1 : 0
+}
+
+const MEMORY_INDEX_USAGE = [
+  'usage: sma memory index rebuild|status [--json] [--stat <name>]',
+  '',
+  '  ЭКСПЕРИМЕНТАЛЬНЫЙ лексический слой (точный путь/символ + SQLite BM25). Он НЕ',
+  '  участвует в выдаче по умолчанию: пока сравнение на золотом наборе не записано,',
+  '  слой существует, но ничего не решает.',
+  '',
+  '  rebuild  перестроить производный индекс из корпуса ЦЕЛИКОМ (.sma/index/) и',
+  '           напечатать движок: fts5 | fallback-bm25 | unavailable',
+  '  status   протух ли индекс — сравнение контент-хеша корпуса с записанным',
+  '',
+  '  Требует Node ≥22.5 (модуль node:sqlite). Ниже этой версии слой честно',
+  '  отсутствует (unavailable, код выхода 0) — детерминированные фасетный и точный',
+  '  слои работают без него. Официальная сборка Node компилирует SQLite БЕЗ',
+  '  полнотекстового расширения, поэтому движок выбирается зондом, а не версией:',
+  '  без FTS5 работает собственный BM25 на обычных таблицах.',
+].join('\n')
+
+/**
+ * memory index — the derived lexical index of the EXPERIMENTAL retrieval layer.
+ *
+ * A subcommand of `memory`, not a verb of its own: the corpus namespace exists and
+ * this is an artifact derived from the corpus.
+ *
+ * Exit code 0 for `unavailable`: a capability this machine does not have is not a
+ * mistake the caller made, and exiting non-zero would teach scripts to treat an older
+ * Node as a broken install. The only non-zero here is a syntax error or a build that
+ * genuinely failed.
+ */
+async function cmdMemoryIndex({ positionals, flags, dirs }) {
+  const action = positionals[1] ?? ''
+  if (flags.help === true || (action !== 'rebuild' && action !== 'status')) {
+    process.stdout.write(`${MEMORY_INDEX_USAGE}\n`)
+    if (flags.help === true) return 0
+    process.stderr.write(`SMA memory index: нужен подверб rebuild или status${action ? ` (получено «${action}»)` : ''}\n`)
+    return 1
+  }
+
+  const { buildLexicalIndex, indexStatus, LEXICAL_ENGINES, LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+  const dbPath = join(dirs?.indexDir ?? join(repoRoot, '.sma', 'index'), LEXICAL_INDEX_FILE)
+
+  if (!existsSync(corpusDir)) {
+    process.stderr.write(`SMA memory index: корпус не найден — ${corpusDir}\n`)
+    return 1
+  }
+
+  const built = action === 'rebuild' ? buildLexicalIndex({ corpusDir, dbPath }) : null
+  // The state of the index is one report, whichever verb asked: after a rebuild the
+  // freshly written state IS the status, so there is one place these numbers come from.
+  const status = indexStatus({ corpusDir, dbPath })
+
+  // --stat: one bare value, legal names taken from the report ITSELF (the eval law).
+  if (flags.stat != null) {
+    const name = flags.stat === true ? '' : String(flags.stat)
+    if (!Object.prototype.hasOwnProperty.call(status.summary, name)) {
+      process.stderr.write(`SMA memory index: неизвестный --stat «${name}» — допустимые: ${Object.keys(status.summary).join(', ')}\n`)
+      return 1
+    }
+    process.stdout.write(`${status.summary[name]}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(built ? { ...status, rebuild: built } : status)
+    return 0
+  }
+
+  const unavailable = status.engine === LEXICAL_ENGINES.UNAVAILABLE
+  if (built) {
+    process.stdout.write(`SMA memory index rebuild — движок ${built.engine}${built.reason ? ` (${built.reason})` : ''}\n`)
+    if (!unavailable) {
+      process.stdout.write(`  проиндексировано ${built.indexed} из ${built.corpus_notes} заметок (видимых ${built.visible_notes})\n`)
+      process.stdout.write(`  ${built.db_path}\n`)
+    }
+  } else {
+    process.stdout.write(`SMA memory index status — движок ${status.engine}${status.reason ? ` (${status.reason})` : ''}\n`)
+    if (!unavailable) {
+      process.stdout.write(
+        `  индекс ${status.summary.exists ? 'есть' : 'не построен'} · протух: ${status.summary.stale ? 'да' : 'нет'} · ` +
+          `в индексе ${status.summary.indexed} · видимых сейчас ${status.summary.visible_notes}\n`,
+      )
+      if (status.built_at) process.stdout.write(`  собран ${status.built_at}\n`)
+    }
+  }
+  if (unavailable) {
+    process.stdout.write('  слой отсутствует на этой версии Node — выдача работает на детерминированных слоях\n')
+    return 0
+  }
+  process.stdout.write('  ЭКСПЕРИМЕНТ: слой не участвует в выдаче по умолчанию\n')
+  return 0
 }
 
 const MEMORY_MIGRATE_USAGE = [

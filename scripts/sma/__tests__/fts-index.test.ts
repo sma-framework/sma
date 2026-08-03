@@ -31,9 +31,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   probeFts5,
@@ -341,6 +343,14 @@ describe('the derived index', () => {
     expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(0)
   })
 
+  it.skipIf(!CAP.module)('reports a stale index honestly rather than answering from it', () => {
+    buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    rmSync(metaPathFor(dbPath()), { force: true })
+    const status = indexStatus({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(status.summary.exists).toBe(0)
+    expect(status.summary.stale).toBe(1)
+  })
+
   it.skipIf(!CAP.module)('loses nothing when its file is deleted — a rebuild restores it whole', () => {
     buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
     const before = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
@@ -357,5 +367,83 @@ describe('the derived index', () => {
     expect(rebuilt.indexed).toBe(3)
     const after = queryLexical({ query: 'compilePack budget', dbPath: dbPath() })
     expect(after.results.map((r: any) => r.id)).toEqual(before.results.map((r: any) => r.id))
+  })
+})
+
+/**
+ * The verb. `memory index` is a SUBCOMMAND of the corpus namespace, not a new
+ * top-level surface: the index is an artifact derived from the corpus, and the
+ * namespace that owns the corpus already exists.
+ */
+describe('sma memory index', () => {
+  const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs')
+
+  function seedProject(): string {
+    const root = mkdtempSync(join(tmpdir(), 'sma-index-cli-'))
+    const memory = join(root, '.claude', 'memory')
+    mkdirSync(memory, { recursive: true })
+    mkdirSync(join(root, '.sma'), { recursive: true })
+    writeFileSync(join(memory, 'TAGS.md'), TAGS, 'utf8')
+    writeFileSync(join(memory, 'MEMORY.md'), '# index\n- a core line\n', 'utf8')
+    writeFileSync(
+      join(memory, 'core-rule.md'),
+      '---\ndescription: compilePack cuts the pack on a strict prefix budget\nkind: reference\ntags: [crm]\nimportance: 9\n---\nbody\n',
+      'utf8',
+    )
+    return root
+  }
+
+  function runCli(root: string, args: string[]): { stdout: string; stderr: string; status: number } {
+    try {
+      const stdout = execFileSync('node', [CLI, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(root, '.sma') },
+      })
+      return { stdout, stderr: '', status: 0 }
+    } catch (err: any) {
+      return {
+        stdout: (err.stdout ?? '').toString(),
+        stderr: (err.stderr ?? '').toString(),
+        status: typeof err.status === 'number' ? err.status : 1,
+      }
+    }
+  }
+
+  let root: string
+  beforeEach(() => {
+    root = seedProject()
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('rebuild names the engine it used and exits 0 whatever that engine is', () => {
+    const res = runCli(root, ['memory', 'index', 'rebuild'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toMatch(/fts5|fallback-bm25|unavailable/)
+    // whichever branch this machine is on, the layer says it is not in the default path
+    expect(res.stdout).toMatch(/ЭКСПЕРИМЕНТ|отсутствует/)
+  })
+
+  it('--stat prints ONE bare number as the last line, and a rebuilt index is not stale', () => {
+    runCli(root, ['memory', 'index', 'rebuild'])
+    const res = runCli(root, ['memory', 'index', 'status', '--stat', 'stale'])
+    expect(res.status).toBe(0)
+    expect(res.stdout.trim().split('\n').pop()).toBe('0')
+  })
+
+  it('an unknown --stat prints the legal names — taken from the report itself — and exits 1', () => {
+    const res = runCli(root, ['memory', 'index', 'status', '--stat', 'no-such-number'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('stale')
+    expect(res.stderr).toContain('visible_notes')
+  })
+
+  it('without a subcommand it refuses with the syntax instead of guessing', () => {
+    const res = runCli(root, ['memory', 'index'])
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('rebuild|status')
+    expect(res.stdout).toContain('22.5')
+    expect(res.stderr).toContain('rebuild')
   })
 })
