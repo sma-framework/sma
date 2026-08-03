@@ -1,0 +1,12 @@
+{
+  "feature": "the same layer, declared the way it is tempting to declare it",
+  "failure_class": "retrieval feels imprecise",
+  "baseline_ref": "the recorded retrieval baseline receipt",
+  "prediction": {
+    "metric": "ndcg",
+    "comparator": ">=",
+    "threshold": "noticeably better than today",
+    "check_command": "node scripts/sma/cli.mjs eval memory --stat ndcg"
+  },
+  "acceptance": "the team agrees it feels better"
+}

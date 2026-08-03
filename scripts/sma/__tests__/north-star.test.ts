@@ -22,9 +22,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   captureNorthStar,
@@ -222,6 +224,29 @@ describe('the honest hole — human minutes (Test 2)', () => {
     })
   })
 
+  it('an EMPTY spend book is an absence, not a measured zero', () => {
+    // buildBook fails open: an undiscoverable logs directory returns an empty book
+    // rather than throwing, so «no logs» arrives looking exactly like a thrifty
+    // session. Reporting 0 tokens and $0 here would be the fabrication this whole
+    // module exists to refuse — found on the first live run of the verb.
+    const empty = {
+      totals: { usd: 0, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, events: 0 },
+      events: [],
+      pricingVersion: 'test-pricing',
+    }
+    const r = captureNorthStar({ evalReport: realEvalReport(), book: empty, now: Date.parse('2026-08-03T12:00:00Z'), wallClockMs: 7 })
+    expect(r.components.tokens.value).toBeNull()
+    expect(r.components.tokens.status).toBe('unmeasured')
+    expect(r.components.compute.value).toBeNull()
+    expect(r.components.compute.status).toBe('unmeasured')
+    // ... while a book that HAS events and an empty WINDOW is a genuine zero
+    const now = Date.parse('2026-08-03T12:00:00Z')
+    const stale = { ...book(now), events: [{ ts: new Date(now - 100 * 3600 * 1000).toISOString(), usd: 9, model: 'm', sessionId: 's' }] }
+    const windowed = captureNorthStar({ evalReport: realEvalReport(), book: stale, now, windowHours: 5, wallClockMs: 7 })
+    expect(windowed.components.compute.value).toBe(0)
+    expect(windowed.components.compute.status).toBe('measured')
+  })
+
   it('the static self-cost stands in for the token volume when no spend book exists', () => {
     const claudeMd = join(dir, 'CLAUDE.md')
     writeFileSync(claudeMd, '# project\nsome rules\n', 'utf8')
@@ -385,5 +410,122 @@ describe('evalFeatureGate — five elements or no entry (Test 4)', () => {
     const res = evalFeatureGate(null as any)
     expect(res.ok).toBe(false)
     expect(res.missing).toEqual([...GATE_ELEMENTS, 'prediction.metric', 'prediction.comparator', 'prediction.threshold', 'prediction.check_command'])
+  })
+})
+
+describe('the verbs — sma eval north-star / sma eval gate (Test 5)', () => {
+  const HERE = dirname(fileURLToPath(import.meta.url))
+  const CLI = join(HERE, '..', 'cli.mjs')
+  const COMPLETE = join(HERE, 'fixtures', 'feature-gate-complete.json')
+  const INCOMPLETE = join(HERE, 'fixtures', 'feature-gate-incomplete.json')
+
+  /** A whole throwaway project: .sma root, a corpus, a gold-cases file. */
+  function seedProject(): string {
+    const root = mkdtempSync(join(tmpdir(), 'sma-north-star-cli-'))
+    const memory = join(root, '.claude', 'memory')
+    mkdirSync(join(root, '.sma'), { recursive: true })
+    mkdirSync(memory, { recursive: true })
+    writeFileSync(join(memory, 'TAGS.md'), TAGS, 'utf8')
+    writeFileSync(join(memory, 'MEMORY.md'), '# index\n- a core line\n', 'utf8')
+    writeFileSync(
+      join(memory, 'core-rule.md'),
+      '---\ndescription: the always-loaded rule\nkind: reference\ntags: [crm]\nimportance: 9\n---\nbody\n',
+      'utf8',
+    )
+    writeFileSync(
+      join(memory, 'gold-cases.jsonl'),
+      [
+        JSON.stringify({ task: 'fix the crm handler', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }),
+        JSON.stringify({ task: 'read the crm rule', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }),
+      ].join('\n') + '\n',
+      'utf8',
+    )
+    return root
+  }
+
+  function runCli(root: string, args: string[]): { stdout: string; stderr: string; status: number } {
+    try {
+      const stdout = execFileSync('node', [CLI, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(root, '.sma') },
+      })
+      return { stdout, stderr: '', status: 0 }
+    } catch (err: any) {
+      return {
+        stdout: (err.stdout ?? '').toString(),
+        stderr: (err.stderr ?? '').toString(),
+        status: typeof err.status === 'number' ? err.status : 1,
+      }
+    }
+  }
+
+  let root: string
+  beforeEach(() => {
+    root = seedProject()
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('north-star --stat prints ONE bare number as the last line and exits 0', () => {
+    const res = runCli(root, ['eval', 'north-star', '--stat', 'verified_results_count'])
+    expect(res.status).toBe(0)
+    const last = res.stdout.trim().split('\n').pop() as string
+    expect(last).toBe('2')
+    expect(Number.isInteger(Number(last))).toBe(true)
+  })
+
+  it('north-star reports the unmeasured component as null, never as 0', () => {
+    const bare = runCli(root, ['eval', 'north-star', '--stat', 'human_minutes'])
+    expect(bare.status).toBe(0)
+    expect(bare.stdout.trim()).toBe('null')
+
+    const res = runCli(root, ['eval', 'north-star', '--json'])
+    const report = JSON.parse(res.stdout.trim())
+    expect(report.metric).toBe('north-star')
+    expect(report.components.human_minutes.value).toBeNull()
+    expect(report.status).toBe('partial')
+    // a report, not a verdict: partial is the honest state and does not fail the run
+    expect(res.status).toBe(0)
+    // the panel says what is not recorded rather than leaving the row out
+    expect(report.guardrail.missing).toBeGreaterThan(0)
+    expect(report.check_command).toBe(NORTH_STAR_CHECK_COMMAND)
+    expect(report.check_command.includes(root)).toBe(false)
+  })
+
+  it('an unknown --stat prints the legal names, taken from the report itself', () => {
+    const res = runCli(root, ['eval', 'north-star', '--stat', 'no-such-thing'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('verified_results_count')
+    expect(res.stderr).toContain('cost_per_verified_result.tokens')
+  })
+
+  it('gate passes the complete declaration and refuses the incomplete one BY NAME', () => {
+    const ok = runCli(root, ['eval', 'gate', '--file', COMPLETE])
+    expect(ok.status).toBe(0)
+    expect(ok.stdout).toContain('ndcg')
+
+    const bad = runCli(root, ['eval', 'gate', '--file', INCOMPLETE])
+    expect(bad.status).toBe(1)
+    expect(bad.stdout).toContain('rollback')
+    expect(bad.stdout).toContain('prediction.threshold')
+  })
+
+  it('gate without a file, and gate on an unreadable file, are refused with a reason', () => {
+    const noFile = runCli(root, ['eval', 'gate'])
+    expect(noFile.status).toBe(1)
+    expect(noFile.stdout).toContain('--file')
+
+    const missing = runCli(root, ['eval', 'gate', '--file', join(root, 'nope.json')])
+    expect(missing.status).toBe(1)
+    expect(missing.stderr).toContain('ENOENT')
+  })
+
+  it('an unknown eval subcommand names the three that exist', () => {
+    const res = runCli(root, ['eval', 'workflow'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('memory')
+    expect(res.stderr).toContain('north-star')
+    expect(res.stderr).toContain('gate')
   })
 })
