@@ -46,7 +46,9 @@
  */
 
 import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { dirname } from 'node:path'
 
 import { isVisibleNow, projectNoteAxis, readNotes } from './generator.mjs'
 
@@ -349,14 +351,62 @@ export function corpusHash(notes) {
   return h.digest('hex')
 }
 
-/** The layer is not built yet on this branch — Task 2 lands the two storage engines. */
-function notBuiltYet(what) {
-  throw new Error(`лексический индекс: ${what} ещё не построен`)
+/**
+ * The storage layout the index is written with. It travels in the meta file so an
+ * index built by an older layout is STALE rather than silently misread — a schema
+ * change is exactly the kind of drift that otherwise shows up as wrong answers.
+ */
+export const LEXICAL_SCHEMA_VERSION = 1
+
+/** BM25's two knobs, at the values the literature and SQLite's own bm25() use. */
+const BM25_K1 = 1.2
+const BM25_B = 0.75
+
+/** How many ranked rows a query returns unless the caller says otherwise. */
+const DEFAULT_LIMIT = 20
+
+/** The meta file, or null when it is absent or unreadable — never a throw. */
+function readMeta(dbPath) {
+  if (!dbPath) return null
+  try {
+    const parsed = JSON.parse(readFileSync(metaPathFor(dbPath), 'utf8'))
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
 }
 
 /**
- * buildLexicalIndex(opts) — rebuild the derived index from the corpus, in full.
+ * Open the index for reading only. A query has no business writing to a derived
+ * artifact, and saying so to the engine is cheaper than trusting every code path
+ * downstream to remember. Older builds that do not know the option still open.
+ */
+function openRead(DatabaseSync, dbPath) {
+  try {
+    return new DatabaseSync(dbPath, { readOnly: true })
+  } catch {
+    return new DatabaseSync(dbPath)
+  }
+}
+
+/**
+ * buildLexicalIndex(opts) — rebuild the derived index from the corpus, IN FULL.
+ *
+ * Full, not incremental, and that is the point: the file is deleted and written
+ * again from the projected corpus, so there is no state in it that the corpus cannot
+ * account for. Both engines store the SAME token stream (our tokeniser, not the
+ * engine's), so a machine with the full-text extension and a machine without it index
+ * the same words — otherwise the fallback would quietly answer a different question.
+ *
  * Returns an honest `unavailable` report where the module is missing.
+ *
+ * @param {object} opts
+ * @param {string} opts.dbPath        where the derived index lives (under .sma/)
+ * @param {string} [opts.corpusDir]
+ * @param {object[]} [opts.notes]     projected records (default: read from corpusDir)
+ * @param {string|Date} [opts.now]    INJECTED build instant
+ * @param {Function} [opts.loadSqlite] module loader double
+ * @param {Function} [opts.probe]     capability probe double
  */
 export function buildLexicalIndex(opts = {}) {
   const { dbPath, now } = opts
@@ -378,19 +428,158 @@ export function buildLexicalIndex(opts = {}) {
     }
   }
 
-  return notBuiltYet('сборка')
+  if (!dbPath) throw new TypeError('buildLexicalIndex: нужен dbPath — производный индекс живёт в .sma/, путь задаёт вызывающий')
+
+  const engine = capability.engine
+  const builtAt = now == null ? new Date().toISOString() : now instanceof Date ? now.toISOString() : String(now)
+  const documents = visible.map((n) => {
+    const tokens = lexicalTokens(indexableDocument(n))
+    return { id: n.file, tokens, body: tokens.join(' ') }
+  })
+  const hash = corpusHash(visible)
+
+  mkdirSync(dirname(dbPath), { recursive: true })
+  // a rebuild is a REBUILD: nothing of the previous file survives into this one
+  for (const path of [dbPath, `${dbPath}-journal`, `${dbPath}-wal`, `${dbPath}-shm`]) rmSync(path, { force: true })
+
+  const db = new capability.DatabaseSync(dbPath)
+  try {
+    if (engine === LEXICAL_ENGINES.FTS5) {
+      db.exec("CREATE VIRTUAL TABLE docs USING fts5(id UNINDEXED, body, tokenize = 'unicode61')")
+      const insert = db.prepare('INSERT INTO docs (id, body) VALUES (?, ?)')
+      for (const doc of documents) insert.run(doc.id, doc.body)
+    } else {
+      // the same index, spelled out by hand: which documents exist and how long they
+      // are, and which term occurs how often in which document. Nothing here needs an
+      // extension to be compiled in, which is the whole reason it exists.
+      db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, len INTEGER NOT NULL)')
+      db.exec('CREATE TABLE postings (term TEXT NOT NULL, id TEXT NOT NULL, tf INTEGER NOT NULL)')
+      db.exec('CREATE INDEX postings_term ON postings (term)')
+      const insertDoc = db.prepare('INSERT INTO docs (id, len) VALUES (?, ?)')
+      const insertPosting = db.prepare('INSERT INTO postings (term, id, tf) VALUES (?, ?, ?)')
+      for (const doc of documents) {
+        insertDoc.run(doc.id, doc.tokens.length)
+        const frequency = new Map()
+        for (const term of doc.tokens) frequency.set(term, (frequency.get(term) ?? 0) + 1)
+        for (const [term, tf] of [...frequency.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) insertPosting.run(term, doc.id, tf)
+      }
+    }
+  } finally {
+    db.close()
+  }
+
+  const meta = {
+    engine,
+    schema: LEXICAL_SCHEMA_VERSION,
+    corpus_hash: hash,
+    built_at: builtAt,
+    indexed: documents.length,
+    corpus_notes: all.length,
+    visible_notes: visible.length,
+  }
+  writeFileSync(metaPathFor(dbPath), `${JSON.stringify(meta, null, 2)}\n`, 'utf8')
+
+  return {
+    metric: 'memory-lexical-index',
+    engine,
+    reason: capability.reason,
+    db_path: dbPath,
+    meta_path: metaPathFor(dbPath),
+    corpus_hash: hash,
+    built_at: builtAt,
+    indexed: documents.length,
+    corpus_notes: all.length,
+    visible_notes: visible.length,
+  }
 }
 
-/** queryLexical(opts) — the ranked lexical answer, or an honest empty one. */
+/**
+ * queryLexical(opts) — the ranked lexical answer, or an honest empty one.
+ *
+ * THE TASK TEXT IS DATA, NEVER SQL. The statement is fixed and every value is bound;
+ * the full-text expression is assembled from OUR tokens, which are letters and digits
+ * by construction, so a task text carrying quotes, MATCH operators or a semicolon is
+ * a handful of harmless words by the time it reaches the engine. On the fallback the
+ * question is only ever «which documents hold this term», one bound parameter at a
+ * time, and BM25 is arithmetic in this process.
+ *
+ * Scores are returned so that HIGHER IS BETTER on both engines — SQLite's bm25()
+ * returns a negative number where a smaller value is a better match, and handing two
+ * opposite conventions to a caller is how a fusion layer silently ranks backwards.
+ */
 export function queryLexical(opts = {}) {
+  const { query, dbPath, limit = DEFAULT_LIMIT } = opts
   const capability = lexicalCapability(opts)
+  const terms = [...new Set(lexicalTokens(query))]
+
   if (capability.engine === LEXICAL_ENGINES.UNAVAILABLE) {
     return { metric: 'memory-lexical', engine: LEXICAL_ENGINES.UNAVAILABLE, reason: capability.reason, terms: [], results: [] }
   }
-  return notBuiltYet('запрос')
+
+  const meta = readMeta(dbPath)
+  if (meta == null || !dbPath || !existsSync(dbPath)) {
+    return {
+      metric: 'memory-lexical',
+      engine: capability.engine,
+      reason: 'индекс не построен — `sma memory index rebuild`',
+      terms,
+      results: [],
+    }
+  }
+  const engine = meta.engine === LEXICAL_ENGINES.FTS5 ? LEXICAL_ENGINES.FTS5 : LEXICAL_ENGINES.FALLBACK
+  if (terms.length === 0) return { metric: 'memory-lexical', engine, reason: '', terms, results: [] }
+
+  const cap = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : DEFAULT_LIMIT
+  const db = openRead(capability.DatabaseSync, dbPath)
+  let results = []
+  try {
+    if (engine === LEXICAL_ENGINES.FTS5) {
+      // every term is [\p{L}\p{N}]+ — quoting it makes it a literal, never an operator
+      const expression = terms.map((t) => `"${t}"`).join(' OR ')
+      const rows = db.prepare('SELECT id, bm25(docs) AS score FROM docs WHERE docs MATCH ? ORDER BY score LIMIT ?').all(expression, cap)
+      results = rows.map((r) => ({ id: String(r.id), score: -Number(r.score) }))
+    } else {
+      const totals = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(len), 0) AS total FROM docs').get()
+      const count = Number(totals && totals.n) || 0
+      const avgdl = count ? Number(totals.total) / count : 0
+      const lengths = new Map(db.prepare('SELECT id, len FROM docs').all().map((r) => [String(r.id), Number(r.len)]))
+      const postings = db.prepare('SELECT id, tf FROM postings WHERE term = ?')
+
+      const scores = new Map()
+      for (const term of terms) {
+        const rows = postings.all(term)
+        if (rows.length === 0) continue
+        const df = rows.length
+        const idf = Math.log(1 + (count - df + 0.5) / (df + 0.5))
+        for (const row of rows) {
+          const tf = Number(row.tf)
+          const dl = lengths.get(String(row.id)) ?? 0
+          const norm = avgdl > 0 ? dl / avgdl : 1
+          const denominator = tf + BM25_K1 * (1 - BM25_B + BM25_B * norm)
+          const add = denominator > 0 ? idf * ((tf * (BM25_K1 + 1)) / denominator) : 0
+          scores.set(String(row.id), (scores.get(String(row.id)) ?? 0) + add)
+        }
+      }
+      results = [...scores.entries()]
+        .map(([id, score]) => ({ id, score }))
+        .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .slice(0, cap)
+    }
+  } finally {
+    db.close()
+  }
+
+  return { metric: 'memory-lexical', engine, reason: '', terms, results: results.map((r, i) => ({ ...r, rank: i + 1 })) }
 }
 
-/** indexStatus(opts) — is the index there, and does it still describe this corpus. */
+/**
+ * indexStatus(opts) — is the index there, and does it still describe THIS corpus.
+ *
+ * Stale is a content comparison: the hash of what would be indexed now against the
+ * hash recorded when it was. An absent index counts as stale, because the answer to
+ * «can I trust this index» is no either way, and a status verb that reported a
+ * missing index as fresh would be the most expensive kind of polite.
+ */
 export function indexStatus(opts = {}) {
   const { dbPath } = opts
   const capability = lexicalCapability(opts)
@@ -409,5 +598,29 @@ export function indexStatus(opts = {}) {
     }
   }
 
-  return notBuiltYet('статус')
+  const meta = readMeta(dbPath)
+  const exists = Boolean(dbPath) && existsSync(dbPath) && meta != null
+  const hash = corpusHash(visible)
+  const indexedHash = exists ? String(meta.corpus_hash ?? '') : null
+  const sameSchema = exists && Number(meta.schema) === LEXICAL_SCHEMA_VERSION
+  const stale = exists && sameSchema && indexedHash === hash ? 0 : 1
+
+  return {
+    metric: 'memory-lexical-index-status',
+    engine: exists && meta.engine ? String(meta.engine) : capability.engine,
+    reason: exists ? capability.reason : 'индекс не построен — `sma memory index rebuild`',
+    db_path: dbPath ?? null,
+    meta_path: dbPath ? metaPathFor(dbPath) : null,
+    built_at: exists ? (meta.built_at ?? null) : null,
+    corpus_hash: hash,
+    indexed_hash: indexedHash,
+    summary: {
+      stale,
+      indexed: exists ? Number(meta.indexed) || 0 : 0,
+      corpus_notes: all.length,
+      visible_notes: visible.length,
+      exists: exists ? 1 : 0,
+      engine_available: 1,
+    },
+  }
 }
