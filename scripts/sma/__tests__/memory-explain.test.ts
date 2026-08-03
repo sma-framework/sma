@@ -22,12 +22,16 @@
  *   - Test 4 (the trace changes nothing): the selected set is exactly the note set the
  *     untraced compilePack delivers, and a traced compile produces byte-identical pack
  *     bytes — instrumentation that moved the decision would be measuring itself.
+ *   - Test 5 (the verb): `memory explain --task` is scriptable through --stat, and
+ *     without a task it refuses with the syntax instead of explaining nothing.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { explainRetrieval, EXPLAIN_REASONS } from '../lib/memory-explain.mjs'
 import { compilePack } from '../lib/context-pack.mjs'
@@ -213,5 +217,91 @@ describe('the trace explains the real selection and does not move it (Test 4)', 
     expect(traced.packMd).toBe(untraced.packMd)
     expect(traced.manifestJson).toBe(untraced.manifestJson)
     expect(events.length).toBeGreaterThan(0) // the trace was actually collected
+  })
+})
+
+describe('the verb — sma memory explain (Test 5)', () => {
+  const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs')
+
+  /** A whole throwaway project: an .sma root and a corpus with one always-load note. */
+  function seedProject(): string {
+    const root = mkdtempSync(join(tmpdir(), 'sma-explain-cli-'))
+    const memory = join(root, '.claude', 'memory')
+    mkdirSync(join(root, '.sma'), { recursive: true })
+    mkdirSync(memory, { recursive: true })
+    writeFileSync(join(memory, 'TAGS.md'), TAGS, 'utf8')
+    writeFileSync(join(memory, 'MEMORY.md'), '# index\n- a core line\n', 'utf8')
+    writeFileSync(
+      join(memory, 'core-rule.md'),
+      '---\ndescription: the always-loaded rule\nkind: reference\ntags: [crm]\nimportance: 9\n---\nbody\n',
+      'utf8',
+    )
+    writeFileSync(
+      join(memory, 'auth-detail.md'),
+      '---\ndescription: an auth note a crm task never names\nkind: reference\ntags: [auth]\nimportance: 3\n---\nbody\n',
+      'utf8',
+    )
+    return root
+  }
+
+  function runCli(root: string, args: string[]): { stdout: string; stderr: string; status: number } {
+    try {
+      const stdout = execFileSync('node', [CLI, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(root, '.sma') },
+      })
+      return { stdout, stderr: '', status: 0 }
+    } catch (err: any) {
+      return {
+        stdout: (err.stdout ?? '').toString(),
+        stderr: (err.stderr ?? '').toString(),
+        status: typeof err.status === 'number' ? err.status : 1,
+      }
+    }
+  }
+
+  let root: string
+  beforeEach(() => {
+    root = seedProject()
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('--stat prints ONE bare number as the last line and exits 0', () => {
+    const res = runCli(root, ['memory', 'explain', '--task', 'fix the crm handler', '--stat', 'unaccounted'])
+    expect(res.status).toBe(0)
+    const last = res.stdout.trim().split('\n').pop() as string
+    expect(last).toBe('0')
+
+    const rejected = runCli(root, ['memory', 'explain', '--task', 'fix the crm handler', '--stat', 'no_tag_overlap'])
+    expect(rejected.status).toBe(0)
+    expect(Number(rejected.stdout.trim())).toBe(1) // the auth note the task never named
+  })
+
+  it('an unknown --stat prints the legal names — taken from the report itself — and exits 1', () => {
+    const res = runCli(root, ['memory', 'explain', '--task', 'anything', '--stat', 'no-such-number'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('unaccounted')
+    expect(res.stderr).toContain('selected_count')
+  })
+
+  it('without --task it refuses with the syntax, and explains nothing', () => {
+    const res = runCli(root, ['memory', 'explain'])
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('--task')
+    expect(res.stderr).toContain('--task')
+  })
+
+  it('--json carries the per-note verdicts of the REAL selection', () => {
+    const res = runCli(root, ['memory', 'explain', '--task', 'fix the crm handler', '--json'])
+    expect(res.status).toBe(0)
+    const report = JSON.parse(res.stdout.trim().split('\n').pop() as string)
+    expect(report.metric).toBe('memory-explain')
+    expect(report.selected.map((s: any) => s.id)).toEqual(['core-rule.md'])
+    expect(report.selected[0].basis).toBe(EXPLAIN_REASONS.WEIGHT)
+    expect(report.rejected.map((r: any) => r.id)).toEqual(['auth-detail.md'])
+    expect(report.rejected[0].reason).toBe(EXPLAIN_REASONS.NO_TAG_OVERLAP)
+    expect(report.unaccounted).toEqual([])
   })
 })
