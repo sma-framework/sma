@@ -29,25 +29,77 @@
 
 ## Install
 
-One command, from the root of your own project (zero dependencies — the installer is Node built-ins only):
+### 1 · What you need first
+
+| | |
+|---|---|
+| **Node 22.5 or newer** | Node is the program that runs SMA's scripts. Check what you have with `node -v`. If the number is lower, or the command is not found, install the current version from [nodejs.org](https://nodejs.org). |
+| **git** | SMA keeps everything as ordinary text files in your repository, so your project should be a git repository (run `git init` in it if it is not one yet). |
+| **Claude Code** | The AI coding agent SMA plugs into today. The `/sma-…` commands below are typed into a Claude Code session, the same way you talk to it normally. |
+
+Nothing else. The core of SMA adds no packages to your project and needs no database, no server and no account. (An optional extra — the worker fleet described further down — does ask for more; you can ignore it entirely.)
+
+### 2 · One command
+
+Open a terminal, go to the top folder of **your own project**, and run:
 
 ```bash
 npx -y sma-framework@latest init
 ```
 
-**Node 22.5 or newer.** The floor moved up from 18.17, and the reason is not a feature: Node 18 went end-of-life in April 2025 and Node 20 in April 2026, so the old floor was a promise to support runtimes that no longer receive security fixes. Nothing about that promise was making anyone safer.
+That is the whole install. It takes a few seconds and prints every file it wrote. (`npx` is Node's built-in "fetch and run this once" tool; it leaves nothing behind afterwards.)
 
-That is the whole install. It also embeds a short managed rules block into your project's CLAUDE.md so agents can find the memory corpus (your own content is never touched), and the off-ramp is symmetric: `/sma-deleteme` removes everything and PRESERVES `.claude/memory/`. Updating later is one command too: `/sma-update` compares the installed version against what is available and re-runs this same installer — the memory corpus, your profile, and all local state stay yours. The git-clone path, flags, and the full payload manifest are in [docs/INSTALL.md](docs/INSTALL.md).
+### 3 · What you have afterwards
 
-## Quickstart
+New folders appear **next to** your code. Not one line of your own source is edited.
 
-Open a Claude Code session in your project and run:
-
+```text
+your-project/
+├─ src/, package.json…   ← YOUR CODE — untouched
+│
+├─ .claude/
+│  ├─ skills/            ← the 14 /sma-… commands you can now type
+│  ├─ agents/            ← the helpers those commands call on
+│  ├─ sma-core/          ← the engine: the instructions behind each command
+│  ├─ memory/            ← your project's notes — installed EMPTY, the notes stay yours
+│  └─ settings.json      ← hooks that wire SMA into the agent (your own entries are kept)
+├─ scripts/sma/          ← the command-line tool the commands use underneath
+├─ .sma/                 ← working state: who is editing what, and the log of checks
+└─ CLAUDE.md             ← one short marked block is added; your own text is untouched
 ```
-/sma-start
-```
 
-The onboarding conversation explains the system, seeds your starter memory corpus, and records your infrastructure profile so every later command speaks your stack. From that point on, each new session registers itself automatically and loads the memory core before doing anything else.
+A `.planning/` folder appears later, the first time you plan a piece of work.
+
+Changed your mind? `/sma-update` re-runs this same installer to move to a newer version, and `/sma-deleteme` removes everything in one step — both keep your notes in `.claude/memory/` and everything else local. Install flags, the install-from-a-git-clone route, and the complete list of files: [docs/INSTALL.md](docs/INSTALL.md).
+
+## First steps
+
+### Start here
+
+Open a Claude Code session in your project and type:
+
+| Type this | What happens |
+|---|---|
+| `/sma-start` | A guided conversation, run once. It asks what your project is and how you ship it, writes the answers down, and starts your notes file. Everything you run later speaks in those terms. |
+| `/sma-help` | The list of commands, one line each — your map when you forget a name. |
+| `/sma-progress` | "Where are we?" — what is done, what comes next, and an offer to run it. |
+
+### A normal working cycle
+
+You work in **phases**: one chunk of work at a time — a feature, a fix, a rewrite. Four commands, always in this order:
+
+1. `/sma-discuss-phase 1` — it asks you questions until the goal is unambiguous.
+2. `/sma-plan-phase 1` — it writes the plan, including how the result will be checked.
+3. `/sma-execute-phase 1` — it does the work and commits it, step by step.
+4. `/sma-verify-work 1` — it walks the result through with you and re-runs the checks the plan promised.
+
+Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-quick` for a small task, `/sma-fast` for a one-liner.
+
+### Where to look next
+
+- [docs/INSTALL.md](docs/INSTALL.md) — install options, what lands where, updating and removing.
+- [docs/DETAILS.md](docs/DETAILS.md) — the engineering deep dive, once you want to know how it works inside.
+- `node scripts/sma/cli.mjs explain <name>` — run from your project root: a plain-language explanation of any SMA command.
 
 ## The window — V5.1's app, served by the daemon
 
