@@ -5183,36 +5183,55 @@ function summarizeBaseline(metric, r) {
   return JSON.stringify(r)
 }
 
+const EVAL_SUBCOMMANDS = ['memory', 'north-star', 'gate']
+
 const EVAL_USAGE = [
-  'usage: node scripts/sma/cli.mjs eval memory [--json] [--stat <name>] [--k 3,5,10] [--cases <path>]',
+  'usage: node scripts/sma/cli.mjs eval memory     [--json] [--stat <name>] [--k 3,5,10] [--cases <path>]',
+  '       node scripts/sma/cli.mjs eval north-star [--json] [--stat <name>]',
+  '       node scripts/sma/cli.mjs eval gate --file <declaration.json> [--json]',
   '',
-  '  memory  the gold-set benchmark of the memory layer: recall@k, precision@k, MRR, nDCG,',
-  '          critical-miss rate, superseded selection, contradiction exposure, forbidden hits.',
-  '          Deterministic floors give a red/green verdict with no model in the loop — a floor',
-  '          violation exits non-zero. --stat prints one bare value (honestly `null` when the set',
-  '          asked no such question); --k names the cutoffs; --cases overrides the gold-case file.',
+  '  memory      the gold-set benchmark of the memory layer: recall@k, precision@k, MRR, nDCG,',
+  '              critical-miss rate, superseded selection, contradiction exposure, forbidden hits.',
+  '              Deterministic floors give a red/green verdict with no model in the loop — a floor',
+  '              violation exits non-zero. --stat prints one bare value (honestly `null` when the set',
+  '              asked no such question); --k names the cutoffs; --cases overrides the gold-case file.',
+  '  north-star  cost per VERIFIED CORRECT result — tokens, compute, wall-clock and human minutes,',
+  '              divided by the results the benchmark judged correct, plus the guardrail panel of',
+  '              recorded receipts. A component nothing measures reports `null` and says where its',
+  '              future measurement will come from; a 0 is never substituted. A report, not a verdict.',
+  '  gate        the five-element admission check for a new feature: failure class, baseline,',
+  '              falsifiable prediction, acceptance, rollback. Exit 0 = the declaration is complete;',
+  '              exit 1 = refused, naming the element that is missing or unusable.',
 ].join('\n')
 
 /**
- * eval memory — the memory benchmark verb (canon §8).
+ * eval <memory|north-star|gate> — the measurement namespace of the memory track.
  *
  * Deliberately its OWN namespace and not a `baseline` subcommand: baseline measures what
  * the layer COSTS and re-runs as a receipt; this measures what retrieval GETS RIGHT and is
  * the gate a later retriever has to pass. Sharing a namespace would eventually share a
- * number. The report itself is receipt-shaped all the same — every run carries the bare,
+ * number. The reports are receipt-shaped all the same — every run carries the bare,
  * path-free command that reproduces it.
+ */
+async function cmdEval({ positionals, flags, dirs }) {
+  const sub = positionals[0]
+  if (!EVAL_SUBCOMMANDS.includes(sub)) {
+    process.stdout.write(`${EVAL_USAGE}\n`)
+    if (sub) process.stderr.write(`SMA eval: неизвестная подкоманда «${sub}» — известны: ${EVAL_SUBCOMMANDS.join(', ')}\n`)
+    return sub ? 1 : 0
+  }
+  if (sub === 'north-star') return evalNorthStar({ flags, dirs })
+  if (sub === 'gate') return evalFeatureGateVerb({ flags })
+  return evalMemory({ flags, dirs })
+}
+
+/**
+ * eval memory — the memory benchmark (canon §8).
  *
  * EXIT CODE IS THE VERDICT: non-zero when any floor is violated. That is the point of the
  * floors — a benchmark that always exits 0 is a report nobody reads.
  */
-async function cmdEval({ positionals, flags, dirs }) {
-  const sub = positionals[0]
-  if (sub !== 'memory') {
-    process.stdout.write(`${EVAL_USAGE}\n`)
-    if (sub) process.stderr.write(`SMA eval: неизвестная подкоманда «${sub}» — известна одна: memory\n`)
-    return sub ? 1 : 0
-  }
-
+async function evalMemory({ flags, dirs }) {
   const memoryEval = await import('./lib/memory-eval.mjs')
   const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const corpusDir = join(repoRoot, '.claude', 'memory')
@@ -5274,6 +5293,161 @@ async function cmdEval({ positionals, flags, dirs }) {
   }
   process.stdout.write(`  проверка: ${report.check_command}\n`)
   return report.floor_failures.length ? 1 : 0
+}
+
+/**
+ * eval north-star — what ONE VERIFIED CORRECT RESULT costs, and the guardrail panel.
+ *
+ * The verb MEASURES the run it reports on: it times the benchmark it just executed, and
+ * that duration is the wall-clock component. Every other component is composed from a
+ * measurer that already exists (the spend book, the static self-cost, the recorded
+ * baseline receipts) — nothing here counts a token or prices a dollar of its own.
+ *
+ * EXIT 0 EVEN WHEN PARTIAL, deliberately: `partial` is the honest state of the layer
+ * today (human minutes are measured by nothing), and turning honesty into a failing exit
+ * code would only teach the next person to stop reporting it. The verdicts live in
+ * `eval memory` (the floors) and `eval gate` (the declaration).
+ */
+async function evalNorthStar({ flags, dirs }) {
+  const northStar = await import('./lib/north-star.mjs')
+  const memoryEval = await import('./lib/memory-eval.mjs')
+  const spend = await import('./lib/spend.mjs')
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = join(repoRoot, '.claude', 'memory')
+  const casesPath = join(corpusDir, 'gold-cases.jsonl')
+
+  // The wall clock of the run that PRODUCED the verified results — the baseline
+  // discipline: time the real thing, discard nothing, and say what was timed.
+  const startedAt = Date.now()
+  const evalReport = memoryEval.captureMemoryEval({ corpusDir, casesPath })
+  const wallClockMs = Date.now() - startedAt
+
+  const now = Date.now()
+  let book = null
+  try {
+    book = spend.buildBook({ spendDir: dirs.spendDir, repoRoot, env: process.env, now })
+  } catch {
+    book = null // no session logs to read is an honest absence, never a fabricated zero
+  }
+  const windowHours = spend.readBudget({ spendDir: dirs.spendDir }).windowHours
+
+  let receipts = []
+  try {
+    const stored = JSON.parse(readFileSync(join(dirs.baselineDir, 'receipts.json'), 'utf8'))
+    if (Array.isArray(stored)) receipts = stored
+  } catch {
+    receipts = [] // nothing recorded — the panel says so, row by row
+  }
+
+  const report = northStar.captureNorthStar({
+    evalReport,
+    book,
+    now,
+    windowHours,
+    wallClockMs,
+    wallClockSource: 'настенно-часовой капчер: измеренная длительность прогона eval memory, который произвёл проверенные результаты',
+    selfCostPaths: { claudeMd: join(repoRoot, 'CLAUDE.md'), memoryMd: join(corpusDir, 'MEMORY.md') },
+    receipts,
+  })
+
+  // --stat: one bare value, scriptable. The legal names come from the summary ITSELF.
+  if (flags.stat != null) {
+    const flat = northStar.flattenSummary(report.summary)
+    const name = flags.stat === true ? '' : String(flags.stat)
+    if (!Object.prototype.hasOwnProperty.call(flat, name)) {
+      process.stderr.write(`SMA eval north-star: неизвестный --stat «${name}» — допустимые: ${Object.keys(flat).join(', ')}\n`)
+      return 1
+    }
+    const value = flat[name]
+    process.stdout.write(`${value == null ? 'null' : value}\n`)
+    return 0
+  }
+
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+
+  const c = report.components
+  const show = (v) => (v == null ? 'не измерено' : v)
+  process.stdout.write('SMA eval north-star — цена одного проверенного правильного результата:\n')
+  process.stdout.write(
+    `  проверенных результатов: ${show(report.verified_results_count)} из ${evalReport.summary.cases_total} кейсов золотого набора\n`,
+  )
+  process.stdout.write(
+    `  всего: токенов ${show(c.tokens.value)}${c.tokens.basis ? ` (${c.tokens.basis})` : ''} · ` +
+      `compute ${show(c.compute.value)} usd · настенные часы ${show(c.wall_clock_ms.value)} ms · ` +
+      `минуты человека ${show(c.human_minutes.value)}\n`,
+  )
+  const per = report.cost_per_verified_result
+  if (per) {
+    process.stdout.write(
+      `  на результат: токенов ${show(per.tokens)} · compute ${show(per.compute_usd)} usd · ` +
+        `${show(per.wall_clock_ms)} ms · минут человека ${show(per.human_minutes)}\n`,
+    )
+  } else {
+    process.stdout.write('  на результат: нет ответа — делить не на что (ни одного проверенного результата)\n')
+  }
+  process.stdout.write(`  статус: ${report.status}${report.partial_reason ? ` — ${report.partial_reason}` : ''}\n`)
+  if (report.unmeasured_components.includes('human_minutes')) {
+    process.stdout.write(`  минуты человека: ${c.human_minutes.source}\n`)
+  }
+  process.stdout.write(`  панель guardrail (строк ${report.guardrail.rows.length}, без квитанции ${report.guardrail.missing}):\n`)
+  for (const row of report.guardrail.rows) {
+    const mark = row.status === 'missing' ? '✗' : row.status === 'unmeasured' ? '·' : '✓'
+    process.stdout.write(`    ${mark} ${row.metric}: ${row.value == null ? 'нет данных' : row.value} — ${row.source_command}\n`)
+  }
+  process.stdout.write(`  проверка: ${report.check_command}\n`)
+  return 0
+}
+
+/**
+ * eval gate --file <declaration.json> — the five-element admission check.
+ *
+ * EXIT CODE IS THE VERDICT: 0 when the declaration carries all five elements and its
+ * prediction is checkable, 1 when anything is missing or unusable — named. A feature
+ * without a passing declaration does not enter the default path; see docs/FEATURE-GATE.md.
+ */
+async function evalFeatureGateVerb({ flags }) {
+  const northStar = await import('./lib/north-star.mjs')
+
+  const file = typeof flags.file === 'string' ? flags.file : null
+  if (!file) {
+    process.stdout.write('usage: node scripts/sma/cli.mjs eval gate --file <declaration.json> [--json]\n')
+    process.stderr.write('SMA eval gate: нужен --file с декларацией допуска (пять элементов) — формат в docs/FEATURE-GATE.md\n')
+    return 1
+  }
+
+  const path = isAbsolute(file) ? file : join(process.cwd(), file)
+  let decl
+  try {
+    decl = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (err) {
+    process.stderr.write(`SMA eval gate: декларацию не прочитать (${file}): ${err && err.message}\n`)
+    return 1
+  }
+
+  const res = northStar.evalFeatureGate(decl)
+
+  if (wantsJson(flags)) {
+    printJson(res)
+    return res.ok ? 0 : 1
+  }
+
+  const name = res.feature ?? file
+  if (res.ok) {
+    process.stdout.write(`SMA eval gate: декларация полна — «${name}» допущена к работе (элементов ${res.elements.length}/5).\n`)
+    process.stdout.write(`  прогноз: ${decl.prediction.metric} ${decl.prediction.comparator} ${decl.prediction.threshold}\n`)
+    process.stdout.write(`  проверка прогноза: ${decl.prediction.check_command}\n`)
+    return 0
+  }
+
+  process.stdout.write(`SMA eval gate: ОТКАЗ — «${name}» не проходит гейт допуска:\n`)
+  for (const missing of res.missing) process.stdout.write(`  ✗ ${missing}: элемент отсутствует\n`)
+  for (const e of res.errors) process.stdout.write(`  ✗ ${e.element}: ${e.reason}\n`)
+  process.stdout.write('  пять элементов и формат декларации: docs/FEATURE-GATE.md\n')
+  return 1
 }
 
 /** chain-tip [--json] — the deterministic merged journal chain tip (last line). */
@@ -9472,7 +9646,7 @@ const HANDLERS = {
   report: cmdReport,
   bench: cmdBench,
   baseline: cmdBaseline, // v5.1 — the memory-track measurement instrument (capture|replay + one verb per metric)
-  eval: cmdEval, // v5.2 — the gold-set memory benchmark (memory: canon §8 metrics + deterministic floors; exit code IS the verdict)
+  eval: cmdEval, // v5.2 — the measurement namespace (memory: canon §8 metrics + floors as the exit code; north-star: cost per verified correct result + the guardrail panel; gate: the five-element feature admission check)
   reverify: cmdReverify, // 9.2-03 (D-9.2-06) — re-verify structural receipts
   'receipt-hash': cmdReceiptHash, // 9.2-03 — the receipt emit path
   'chain-tip': cmdChainTip, // 9.2-03 (D-9.2-07) — merged journal chain tip (release-tag pin)

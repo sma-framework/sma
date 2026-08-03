@@ -1,0 +1,13 @@
+{
+  "feature": "a second retrieval layer, kept behind the default path until it is measured",
+  "failure_class": "the pack finds the needed record but orders it below the position a reader actually reaches, so completeness looks fine while the answer is missed",
+  "baseline_ref": "the recorded retrieval baseline receipt plus the gold-set benchmark run on the same corpus, both re-runnable",
+  "prediction": {
+    "metric": "ndcg",
+    "comparator": ">=",
+    "threshold": 0.55,
+    "check_command": "node scripts/sma/cli.mjs eval memory --stat ndcg"
+  },
+  "acceptance": "the ranking number rises past the threshold AND every must-be-zero floor stays at zero AND precision at three does not fall below the recorded baseline",
+  "rollback": "the layer sits behind a flag that is off by default; turning the flag off restores the previous selection path byte for byte, and the benchmark run proves it did"
+}

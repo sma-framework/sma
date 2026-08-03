@@ -279,9 +279,17 @@ export function captureNorthStar(opts = {}) {
   } = opts
 
   // ── tokens: the spend book's own totals, or the static injection, or nothing ──
-  let tokens
+  //
+  // A book built over NO session logs is not a measurement of zero — it is the absence
+  // of a measurement, and the two must never print the same digit. buildBook fails open
+  // (an undiscoverable logs directory returns an empty book rather than throwing), so
+  // the emptiness arrives here looking exactly like a thrifty session. The event count
+  // is what tells them apart, and it is checked ONCE, here, for both components.
   const t = book && typeof book.totals === 'object' ? book.totals : null
-  const bookTokens = t
+  const bookHasEvidence = t != null && (num(t.events) ?? 0) > 0
+
+  let tokens
+  const bookTokens = bookHasEvidence
     ? (num(t.inputTokens) ?? 0) + (num(t.outputTokens) ?? 0) + (num(t.cacheCreationTokens) ?? 0) + (num(t.cacheReadTokens) ?? 0)
     : null
   if (bookTokens != null) {
@@ -299,18 +307,21 @@ export function captureNorthStar(opts = {}) {
           })
         : unmeasured('tokens', 'economy.selfCost не нашёл ни одной инъекционной поверхности', { basis: 'static-injection' })
   } else {
-    tokens = unmeasured('tokens', 'книга трат недоступна — снять: node scripts/sma/cli.mjs spend', { basis: null })
+    tokens = unmeasured('tokens', 'книга трат пуста или недоступна (ни одного события) — снять: node scripts/sma/cli.mjs spend', {
+      basis: null,
+    })
   }
 
   // ── compute: the priced dollars of the same window, from the same book ──
-  const compute =
-    book && Array.isArray(book.events)
-      ? measured(
-          round4(windowSpend({ book, now, windowHours }).usd),
-          'usd',
-          `spend.windowSpend за окно ${windowHours} ч (прайсинг ${book.pricingVersion ?? 'не указан'})`,
-        )
-      : unmeasured('usd', 'книга трат недоступна — снять: node scripts/sma/cli.mjs spend')
+  // An empty window inside a book that HAS events is a real zero (nothing was spent in
+  // those hours); an empty book is not a zero at all.
+  const compute = bookHasEvidence
+    ? measured(
+        round4(windowSpend({ book, now, windowHours }).usd),
+        'usd',
+        `spend.windowSpend за окно ${windowHours} ч (прайсинг ${book.pricingVersion ?? 'не указан'})`,
+      )
+    : unmeasured('usd', 'книга трат пуста или недоступна (ни одного события) — снять: node scripts/sma/cli.mjs spend')
 
   // ── wall clock: whatever the caller actually TIMED, in the baseline discipline ──
   const wall =
