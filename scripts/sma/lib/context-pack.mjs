@@ -43,6 +43,14 @@ const LANG_TO_CLASS = {
   py: 'py', python: 'py', rs: 'rs', rust: 'rs', go: 'go', golang: 'go',
 }
 
+/**
+ * The ONE name for the budget verdict in the reason trace, owned by the stage that
+ * makes it (the filters own theirs in generator.mjs, the selection its own in
+ * loader.mjs). A consumer reporting «why is this note not in my pack» imports it;
+ * a second copy of the word would be a second vocabulary waiting to drift.
+ */
+export const BUDGET_CUT_REASON = 'budget-cut'
+
 /** Min touches for a pack to be «settled» (scorePurity / growExam). */
 const SETTLED_MIN_TOUCHES = 3
 /** Min settled packs before purity is scored (else the -1 insufficient-data sentinel). */
@@ -144,6 +152,12 @@ function noteDescription(corpusDir, file) {
  *                                  is reproducible on a date other than the one it was
  *                                  compiled on, which is what makes a measurement over
  *                                  it a measurement rather than a snapshot of today.
+ * @param {Function|Array} [opts.trace] OPTIONAL reason-trace collector, threaded straight
+ *                                  into the loader and extended HERE with the one decision
+ *                                  the loader cannot see: the budget cut. Absent — the
+ *                                  default — not one event is shaped and the compile is
+ *                                  byte-for-byte the compile it always was. The collector
+ *                                  OBSERVES: nothing in this function reads it back.
  */
 export function compilePack(opts = {}) {
   const {
@@ -158,7 +172,12 @@ export function compilePack(opts = {}) {
     resolve = resolvePeriphery,
     cite,
     now,
+    audience,
+    scope,
+    trace,
   } = opts
+
+  const emit = typeof trace === 'function' ? trace : Array.isArray(trace) ? (e) => trace.push(e) : null
 
   const registry = loadRegistrySafe(tagsPath)
   const tags = deriveTaskTags(taskText, registry)
@@ -168,7 +187,22 @@ export function compilePack(opts = {}) {
   let core = []
   let periphery = []
   try {
-    const res = resolve({ tags, corpusDir, tagsPath, dateMap, ...(now == null ? {} : { now }) }) || {}
+    const res =
+      resolve({
+        tags,
+        corpusDir,
+        tagsPath,
+        dateMap,
+        ...(now == null ? {} : { now }),
+        // The hard filters have carried an `audience` / `scope` question since they
+        // landed, with no caller asking it — a filter class nobody exercises. The
+        // explainer is the first caller that must be able to ask «what would an
+        // export audience be shown», so the question is threaded here rather than
+        // re-asked in a second place. Absent (every existing caller) → unchanged.
+        ...(audience == null ? {} : { audience }),
+        ...(scope == null ? {} : { scope }),
+        ...(trace == null ? {} : { trace }),
+      }) || {}
     core = Array.isArray(res.core) ? res.core : []
     periphery = Array.isArray(res.periphery) ? res.periphery : []
   } catch {
@@ -238,6 +272,28 @@ export function compilePack(opts = {}) {
     if (running + b > budget) break // strict prefix — no backfill (auditable-prefix property)
     included.push(members[i])
     running += b
+  }
+
+  // (5b) the budget verdict, when somebody is collecting a reason trace. A note the
+  // loader SELECTED and the budget then cut is not «missing» — it lost a place in a
+  // strict priority prefix, at a nameable position, against a nameable ceiling. That
+  // distinction is the whole difference between a retrieval bug and an economy one.
+  if (emit) {
+    for (let i = included.length; i < members.length; i++) {
+      const m = members[i]
+      if (m.type !== 'note') continue
+      emit({
+        step: 'budget',
+        id: m.id,
+        verdict: 'rejected',
+        reason: BUDGET_CUT_REASON,
+        detail: { position: i, bytes: m.bytes, budget, used: running },
+      })
+    }
+    for (let i = 1; i < included.length; i++) {
+      const m = included[i]
+      if (m.type === 'note') emit({ step: 'budget', id: m.id, verdict: 'within-budget', detail: { position: i } })
+    }
   }
 
   // (6) cite ONLY the packed notes + fragments (kind 'load') — packed, not merely resolved.
