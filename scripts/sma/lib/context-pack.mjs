@@ -36,6 +36,7 @@ import { projectNoteAxis } from './generator.mjs'
 import { findCards } from './catalog.mjs'
 import { listFragments, parseTrigger } from './fragments.mjs'
 import { PACK_BUDGET } from './constants.mjs'
+import { indexStatus, queryExact, queryLexical, LEXICAL_ENGINES } from './fts-index.mjs'
 
 /** Language token → catalog class family (profile.stack.languages → card boost). */
 const LANG_TO_CLASS = {
@@ -50,6 +51,43 @@ const LANG_TO_CLASS = {
  * a second copy of the word would be a second vocabulary waiting to drift.
  */
 export const BUDGET_CUT_REASON = 'budget-cut'
+
+/**
+ * The name of the ONE experiment this compiler knows. A string and not a boolean on
+ * purpose: the next experiment must be able to be a different value rather than a
+ * second flag, and a pack's manifest can then say WHICH experiment produced it.
+ */
+export const EXPERIMENT_LEXICAL = 'lexical'
+
+/**
+ * RRF_K — the smoothing constant of reciprocal-rank fusion, at the value the method was
+ * published with. It is what stops rank 1 of a noisy layer from dominating the sum: with
+ * k = 60 the gap between rank 1 and rank 2 is a few thousandths, so agreement ACROSS
+ * layers outweighs confidence WITHIN one. Exported because a number that decides an
+ * order and lives only inside a function is a number nobody can check.
+ */
+export const RRF_K = 60
+
+/** The layers whose ranks are fused — named, because «matched» is not a reason. */
+export const FUSION_LAYERS = Object.freeze({ FACET: 'facet', EXACT: 'exact', LEXICAL: 'lexical' })
+
+/**
+ * The ONE word for «the experiment was asked for and could not honestly run». A layer
+ * that quietly returns the default answer when its index is stale is the most expensive
+ * kind of failure: the measurement then compares the default path against itself and
+ * reports no difference, which reads exactly like «the layer does not help».
+ */
+export const FUSION_DEGRADED_REASON = 'fusion-degraded'
+
+/**
+ * Fused scores are rounded before they are compared. Three layers summed in three
+ * different orders produce three doubles that differ in the last bit for what is
+ * arithmetically the same total — and a tie that exists in the arithmetic but not in the
+ * floating point would silently disable the diversity pass. 12 decimals is far below any
+ * difference RRF can express (the smallest gap between adjacent ranks here is ~2e-4) and
+ * far above the noise of summation order.
+ */
+const RRF_SCORE_PRECISION = 1e12
 
 /** Min touches for a pack to be «settled» (scorePurity / growExam). */
 const SETTLED_MIN_TOUCHES = 3
@@ -109,21 +147,202 @@ function oneLine(s, max = 120) {
 }
 
 /**
- * Best-effort note description for a pointer line (fail-soft → '').
- *
- * The one-line claim is read through the SHARED projection, so a
- * schema-v2 record's `claim` fills the same slot a v1 note's `description` does —
- * otherwise every migrated record would enter the pack as a nameless pointer.
+ * A per-compile reader of what the ONE axis says about a note: its one-line claim (the
+ * pointer text) and its areas (what the diversity pass is allowed to have an opinion
+ * about). Read through the SHARED projection, so a schema-v2 record's `claim` fills the
+ * same slot a v1 note's `description` does — otherwise every migrated record would enter
+ * the pack as a nameless pointer. Fail-soft: an unreadable note is a nameless, arealess
+ * one, never a throw. Cached per compile because the fused path asks about the same
+ * files twice and a second read is a second chance to disagree.
  */
-function noteDescription(corpusDir, file) {
-  if (!corpusDir) return ''
-  try {
-    const { frontmatter } = parseNote(readFileSync(join(corpusDir, file), 'utf8'), { file })
-    if (frontmatter == null) return ''
-    return oneLine(projectNoteAxis(frontmatter, { file }).description)
-  } catch {
-    return ''
+function noteAxisReader(corpusDir) {
+  const cache = new Map()
+  return (file) => {
+    if (cache.has(file)) return cache.get(file)
+    let axis = { description: '', areas: [] }
+    if (corpusDir) {
+      try {
+        const { frontmatter } = parseNote(readFileSync(join(corpusDir, file), 'utf8'), { file })
+        if (frontmatter != null) {
+          const projected = projectNoteAxis(frontmatter, { file })
+          axis = { description: oneLine(projected.description), areas: Array.isArray(projected.tags) ? projected.tags.map(String) : [] }
+        }
+      } catch {
+        /* fail-soft — a pointer without a claim is still a pointer */
+      }
+    }
+    cache.set(file, axis)
+    return axis
   }
+}
+
+// ─────────────────────────── fusion (EXPERIMENTAL) ──────────────────────────
+
+/**
+ * reciprocalRankFusion(lists, {k}) → [{id, score, ranks:[{layer, rank}]}], best first.
+ *
+ * Ten lines of arithmetic anybody can check by hand: a document's score is the sum, over
+ * every layer that ranked it, of 1/(k + rank). No training, no weights to tune, no
+ * package — which is the whole reason this method and not a learned one: the layers here
+ * return scores on incomparable scales (a BM25 number and a facet position are not the
+ * same kind of thing), and RRF is the standard way to combine ORDERS without pretending
+ * their scores are commensurable.
+ *
+ * A document appears ONCE however many layers found it (that is the dedup), and a repeat
+ * inside one list is the same document rather than a second chance at a rank. Ties break
+ * by id, so two runs of the same inputs cannot disagree.
+ *
+ * PURE: no I/O, no clock, no randomness.
+ *
+ * @param {Array<{layer:string, ids:string[]}>} lists
+ * @param {{k?:number}} [opts]
+ */
+export function reciprocalRankFusion(lists, { k = RRF_K } = {}) {
+  const kk = Number.isFinite(Number(k)) && Number(k) > 0 ? Number(k) : RRF_K
+  const acc = new Map()
+  for (const list of Array.isArray(lists) ? lists : []) {
+    const layer = String((list && list.layer) ?? '')
+    const ids = Array.isArray(list && list.ids) ? list.ids : []
+    const seen = new Set()
+    for (let i = 0; i < ids.length; i += 1) {
+      const id = String(ids[i])
+      if (id === '' || seen.has(id)) continue
+      seen.add(id)
+      const rank = seen.size
+      const entry = acc.get(id) ?? { id, score: 0, ranks: [] }
+      entry.score += 1 / (kk + rank)
+      entry.ranks.push({ layer, rank })
+      acc.set(id, entry)
+    }
+  }
+  const out = [...acc.values()].map((e) => ({ ...e, score: Math.round(e.score * RRF_SCORE_PRECISION) / RRF_SCORE_PRECISION }))
+  return out.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
+/**
+ * diversifyByArea(ranked, areasOf) — reorder ONLY within runs of equal score.
+ *
+ * Fusion often produces exact ties (three layers, three rotations of the same handful of
+ * documents), and the id order that breaks them is alphabetical, which is no order at
+ * all from the reader's side: it clusters a corpus's naming convention, so the top of a
+ * pack can be five notes about one area while a second area waits below the budget cut.
+ * Among documents the arithmetic cannot separate, this prefers the next one that shares
+ * NO area with the one just placed.
+ *
+ * A DIFFERENT score is never touched: diversity may break a tie, it may not overrule a
+ * measurement. Deterministic — the candidate chosen inside a tie is the FIRST qualifying
+ * one in the incoming (id) order, and «first» is the same on every machine.
+ */
+function diversifyByArea(ranked, areasOf) {
+  const out = []
+  const pool = [...ranked]
+  while (pool.length) {
+    const score = pool[0].score
+    let end = 0
+    while (end < pool.length && pool[end].score === score) end += 1
+    const group = pool.splice(0, end)
+    while (group.length) {
+      const previous = out.length ? new Set(areasOf(out[out.length - 1].id)) : null
+      let pick = 0
+      if (previous && previous.size) {
+        const found = group.findIndex((c) => areasOf(c.id).every((area) => !previous.has(area)))
+        if (found !== -1) pick = found
+      }
+      out.push(group.splice(pick, 1)[0])
+    }
+  }
+  return out
+}
+
+/** The lexical layer, real unless a caller (a test, an explainer) hands in a double. */
+function lexicalLayerOf(injected) {
+  const l = injected ?? {}
+  return {
+    indexStatus: typeof l.indexStatus === 'function' ? l.indexStatus : indexStatus,
+    queryExact: typeof l.queryExact === 'function' ? l.queryExact : queryExact,
+    queryLexical: typeof l.queryLexical === 'function' ? l.queryLexical : queryLexical,
+  }
+}
+
+/**
+ * fuseLexical(...) → {order, degraded}. The experiment's whole decision, in one place.
+ *
+ * `order` is the fused list of note ids (null when degraded); `degraded` says the
+ * experiment was asked for and could not honestly run — a stale index, or a build of
+ * Node whose SQLite the layer never got. Degrading returns the DEFAULT order, and says
+ * so in the trace: a silent fallback would make the A/B compare the default path against
+ * itself and report the layer as useless.
+ *
+ * A layer may contribute a document the facet selection never chose. That is the point:
+ * the failure class this addresses is «the corpus holds it and the pack does not reach
+ * it», and a fusion allowed only to reshuffle what one layer already found could not
+ * move it. What it may NOT do is see a record the read-time filters withheld — both
+ * queries read the corpus through the same `isVisibleNow` the loader does, and the
+ * consumer's filter still stands on top.
+ */
+function fuseLexical({ taskText, corpusDir, now, audience, scope, indexPath, lexical, core, periphery, areasOf, emit }) {
+  const layer = lexicalLayerOf(lexical)
+  const visibility = {
+    ...(now == null ? {} : { now }),
+    ...(audience == null ? {} : { audience }),
+    ...(scope == null ? {} : { scope }),
+  }
+
+  let status = null
+  try {
+    status = layer.indexStatus({ corpusDir, dbPath: indexPath, ...visibility })
+  } catch {
+    status = null
+  }
+  const engine = status && status.engine ? String(status.engine) : null
+  const stale = !status || !status.summary || Number(status.summary.stale) !== 0
+  if (engine === LEXICAL_ENGINES.UNAVAILABLE || engine == null || stale) {
+    if (emit) {
+      emit({
+        step: 'fusion',
+        verdict: 'degraded',
+        reason: FUSION_DEGRADED_REASON,
+        detail: {
+          engine,
+          stale: stale ? 1 : 0,
+          index: indexPath ?? null,
+          said: status && status.reason ? String(status.reason) : '',
+        },
+      })
+    }
+    return { order: null, degraded: true }
+  }
+
+  let exactIds = []
+  try {
+    const res = layer.queryExact({ query: taskText, corpusDir, ...visibility })
+    exactIds = (res && Array.isArray(res.results) ? res.results : []).map((r) => String(r && r.id))
+  } catch {
+    exactIds = []
+  }
+  let lexicalIds = []
+  try {
+    const res = layer.queryLexical({ query: taskText, dbPath: indexPath })
+    lexicalIds = (res && Array.isArray(res.results) ? res.results : []).map((r) => String(r && r.id))
+  } catch {
+    lexicalIds = []
+  }
+
+  const fused = diversifyByArea(
+    reciprocalRankFusion([
+      { layer: FUSION_LAYERS.FACET, ids: [...core, ...periphery] },
+      { layer: FUSION_LAYERS.EXACT, ids: exactIds },
+      { layer: FUSION_LAYERS.LEXICAL, ids: lexicalIds },
+    ]),
+    (id) => areasOf(id),
+  )
+
+  if (emit) {
+    for (let i = 0; i < fused.length; i += 1) {
+      emit({ step: 'fusion', id: fused[i].id, verdict: 'ranked', detail: { position: i + 1, score: fused[i].score, ranks: fused[i].ranks } })
+    }
+  }
+  return { order: fused.map((e) => e.id), degraded: false }
 }
 
 // ─────────────────────────── compile ────────────────────────────────────────
@@ -158,6 +377,19 @@ function noteDescription(corpusDir, file) {
  *                                  default — not one event is shaped and the compile is
  *                                  byte-for-byte the compile it always was. The collector
  *                                  OBSERVES: nothing in this function reads it back.
+ * @param {string} [opts.experiment] EXPERIMENTAL, and absent by default. `'lexical'`
+ *                                  fuses the facet order with the exact and lexical
+ *                                  layers by reciprocal rank (RRF_K) and renders the pack
+ *                                  in the fused order. Any other value — and the absence
+ *                                  of the option, which is every existing caller — leaves
+ *                                  the compile byte for byte what it was, and does not
+ *                                  ask the lexical layer a single question. This is the
+ *                                  whole isolation of the experiment: one option, checked
+ *                                  once, and there is no second path through this
+ *                                  function for the default pack to drift into.
+ * @param {string} [opts.indexPath]  where the derived lexical index lives (under .sma/).
+ * @param {object} [opts.lexical]    {indexStatus, queryExact, queryLexical} doubles for
+ *                                  the fts-index layer (tests; production passes none).
  */
 export function compilePack(opts = {}) {
   const {
@@ -175,9 +407,13 @@ export function compilePack(opts = {}) {
     audience,
     scope,
     trace,
+    experiment = null,
+    indexPath,
+    lexical,
   } = opts
 
   const emit = typeof trace === 'function' ? trace : Array.isArray(trace) ? (e) => trace.push(e) : null
+  const axisOf = noteAxisReader(corpusDir)
 
   const registry = loadRegistrySafe(tagsPath)
   const tags = deriveTaskTags(taskText, registry)
@@ -242,18 +478,30 @@ export function compilePack(opts = {}) {
     if (parts.length) workingStyleLine = parts.join('; ')
   }
 
+  // (4b) the EXPERIMENT, when one was asked for by name. Absent — every existing caller
+  // — nothing below changes and the lexical layer is never asked anything at all.
+  const fusion =
+    experiment === EXPERIMENT_LEXICAL
+      ? fuseLexical({ taskText, corpusDir, now, audience, scope, indexPath, lexical, core, periphery, areasOf: (f) => axisOf(f).areas, emit })
+      : null
+  const fused = Boolean(fusion && !fusion.degraded)
+
   // (5) build the ordered member list and select a strict priority prefix under budget.
   const headerText = renderHeader({ id, commit, taskText, workingStyleLine })
   const members = [{ type: 'header', id: null, path: null, text: headerText, bytes: Buffer.byteLength(headerText, 'utf8') }]
-  for (const file of core) {
-    const desc = noteDescription(corpusDir, file)
-    const text = `- ${file}${desc ? ` — ${desc}` : ''}`
-    members.push({ type: 'note', sub: 'core', id: file, path: file, text, bytes: Buffer.byteLength(text, 'utf8') })
-  }
-  for (const file of periphery) {
-    const desc = noteDescription(corpusDir, file)
-    const text = `- ${file}${desc ? ` — ${desc}` : ''}`
-    members.push({ type: 'note', sub: 'periphery', id: file, path: file, text, bytes: Buffer.byteLength(text, 'utf8') })
+  const coreSet = new Set(core)
+  const noteOrder = fused ? fusion.order.map((file) => ({ file, sub: coreSet.has(file) ? 'core' : 'periphery' })) : [
+    ...core.map((file) => ({ file, sub: 'core' })),
+    ...periphery.map((file) => ({ file, sub: 'periphery' })),
+  ]
+  for (const { file, sub } of noteOrder) {
+    const desc = axisOf(file).description
+    // In the fused pack the two sections collapse into one ORDERED list, so the marker
+    // carries what the heading used to: rank is the whole subject of the experiment, and
+    // a pack whose rendered order disagreed with the order it was measured in would make
+    // the measurement a story about a file nobody reads.
+    const text = `- ${fused ? `[${sub === 'core' ? 'core' : 'related'}] ` : ''}${file}${desc ? ` — ${desc}` : ''}`
+    members.push({ type: 'note', sub, id: file, path: file, text, bytes: Buffer.byteLength(text, 'utf8') })
   }
   for (const card of cards) {
     const text = JSON.stringify(card)
@@ -309,7 +557,7 @@ export function compilePack(opts = {}) {
     }
   }
 
-  const packMd = renderPack({ header: included[0], members: included })
+  const packMd = renderPack({ header: included[0], members: included, fused })
   const files = []
   const seenPath = new Set()
   const manifestMembers = []
@@ -351,24 +599,37 @@ function renderHeader({ id, commit, taskText, workingStyleLine }) {
 }
 
 /**
- * renderPack({header, members}) → the PACK.md string. Sections render ONLY when they
- * carry included members, in the fixed order core → periphery → cards → fragments.
+ * renderPack({header, members, fused}) → the PACK.md string. Sections render ONLY when
+ * they carry included members, in the fixed order core → periphery → cards → fragments.
  * Deterministic (no clock, no randomness). Exported so the CLI + selftest reuse it.
+ *
+ * `fused` (the experiment only) renders the notes as ONE ranked list instead of two
+ * sections, each line marked with the provenance the heading used to carry. The split
+ * core/periphery is still explicit — per line rather than per section — and the order on
+ * the page is then the order the pack was measured in, which two sections could not be.
  */
-export function renderPack({ header, members = [] }) {
-  const coreP = members.filter((m) => m.type === 'note' && m.sub === 'core')
-  const periP = members.filter((m) => m.type === 'note' && m.sub === 'periphery')
+export function renderPack({ header, members = [], fused = false }) {
+  const notes = members.filter((m) => m.type === 'note')
+  const coreP = notes.filter((m) => m.sub === 'core')
+  const periP = notes.filter((m) => m.sub !== 'core')
   const cards = members.filter((m) => m.type === 'card')
   const frags = members.filter((m) => m.type === 'fragment')
 
   const out = [header && header.text ? header.text : '']
-  if (coreP.length) {
-    out.push('', '## Core notes')
-    for (const m of coreP) out.push(m.text)
-  }
-  if (periP.length) {
-    out.push('', '## Related notes')
-    for (const m of periP) out.push(m.text)
+  if (fused) {
+    if (notes.length) {
+      out.push('', '## Notes (fused ranking)')
+      for (const m of notes) out.push(m.text)
+    }
+  } else {
+    if (coreP.length) {
+      out.push('', '## Core notes')
+      for (const m of coreP) out.push(m.text)
+    }
+    if (periP.length) {
+      out.push('', '## Related notes')
+      for (const m of periP) out.push(m.text)
+    }
   }
   if (cards.length) {
     out.push('', '## Files (catalog cards)')
@@ -634,11 +895,18 @@ export function scoreNoteCases(opts = {}) {
     now,
     resolve = resolvePeriphery,
     compile,
+    experiment = null,
+    indexPath,
+    lexical,
   } = opts
 
   // One compile per case, told WHICH corpus to read: the default one, or the fixture a
   // `repo_state` case names. An injected double receives the same context object, so a
   // test can assert which corpus a case was scored against.
+  //
+  // The EXPERIMENT is threaded, not re-implemented: the A/B's two arms differ by this
+  // one option and nothing else, which is what makes the difference between the two
+  // numbers attributable to the layer rather than to two code paths.
   const compileOne =
     typeof compile === 'function'
       ? compile
@@ -654,6 +922,9 @@ export function scoreNoteCases(opts = {}) {
             budget,
             resolve,
             ...(now == null ? {} : { now }),
+            ...(experiment == null ? {} : { experiment }),
+            ...(indexPath == null ? {} : { indexPath }),
+            ...(lexical == null ? {} : { lexical }),
           })
 
   const coreLoaded = new Set()
@@ -668,6 +939,8 @@ export function scoreNoteCases(opts = {}) {
   let abstainPass = 0
   let abstainFail = 0
   let rejected = 0
+  let loadedTotal = 0
+  let packBytesTotal = 0
 
   for (const gold of Array.isArray(cases) ? cases : []) {
     if (!gold || typeof gold.task !== 'string' || gold.task.trim() === '') continue
@@ -709,11 +982,18 @@ export function scoreNoteCases(opts = {}) {
     }
 
     let packMembers = []
+    let packBytes = 0
     try {
       const res = compileOne(gold.task, { corpusDir: caseCorpusDir, tagsPath: caseTagsPath })
       packMembers = res && Array.isArray(res.members) ? res.members : []
+      // What the pack COST to deliver, carried beside what it got right. A retrieval
+      // number without the size of the payload that produced it can be improved by
+      // simply sending more, which is the cheapest way to look better at the reader's
+      // expense. An injected compile double that reports no manifest costs 0.
+      packBytes = res && res.manifest && Number.isFinite(Number(res.manifest.bytes)) ? Number(res.manifest.bytes) : 0
     } catch {
       packMembers = [] // fail-soft — a broken compile scores as «nothing loaded», never a throw
+      packBytes = 0
     }
     const notes = packMembers.filter((m) => m && m.type === 'note')
     const loaded = notes.map((m) => String(m.id))
@@ -743,13 +1023,15 @@ export function scoreNoteCases(opts = {}) {
     forbiddenPresentTotal += forbiddenPresent.length
     if (abstain === 'pass') abstainPass += 1
     if (abstain === 'fail') abstainFail += 1
+    loadedTotal += loaded.length
+    packBytesTotal += packBytes
 
     // `corpusDir` is reported per case because a `repo_state` case is scored against a
     // FIXTURE corpus, and a consumer that needs what that corpus states about itself
     // (a record's retirement, a declared contradiction) would otherwise have to resolve
     // the fixture path a second time — re-implementing the contamination gate, which is
     // the one thing resolveRepoState exists to be the only copy of.
-    scored.push({ ...head, corpusDir: caseCorpusDir ?? null, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain })
+    scored.push({ ...head, corpusDir: caseCorpusDir ?? null, loaded, selected, expected, hits, missing, criticalMissing, forbiddenPresent, abstain, packBytes })
   }
 
   return {
@@ -766,6 +1048,8 @@ export function scoreNoteCases(opts = {}) {
       abstainPass,
       abstainFail,
       rejected,
+      loaded: loadedTotal,
+      packBytes: packBytesTotal,
     },
   }
 }
