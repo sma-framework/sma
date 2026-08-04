@@ -11,6 +11,15 @@
  *     missing definition file → error / unknown worker → error / skill assign replace + unassign;
  *   - applyMcpToggle boolean-only: the rewritten registry deep-equals the original except `enabled`;
  *   - buildClaudeArgs mcpConfigPath order + buildMcpConfigFile enabled-only filtering + per-task path.
+ *
+ * Phase 11 Plan 06 (SB-031 part 1) appends the STOCK TEAM cases:
+ *   - readStockTeam: the whole installed roster (including definitions the roster config never
+ *     heard of), fork state by CONTENT DIGEST against the pristine engine copy, the user's own
+ *     agents, a named problem instead of a drop or a throw, an absent directory → [], both
+ *     install layouts (project-local and the global config dir), and no body / no absolute path;
+ *   - applyStockTeamToggle: one act enables the shipped roster through the EXISTING toggle door,
+ *     recording each activated definition's pristine digest as the baseline readStockTeam reads
+ *     back — with the route table still frozen at thirty.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -18,6 +27,7 @@ import { describe, it, expect } from 'vitest'
 import {
   loadMcpRegistry,
   readHarness,
+  readStockTeam,
   applyAgentToggle,
   applySkillAssign,
   applyMcpToggle,
@@ -280,6 +290,219 @@ describe('resolveWorkerContext — the role/skills preamble that makes «вкл�
 })
 
 // ── the MCP → spawn seam (args.mjs) ──
+
+// ── the stock team (Phase 11 Plan 06) ──
+
+const STOCK_PLANNER = `---
+name: sma-planner
+description: Собирает планы фаз.
+tools: Read, Write, Edit
+color: purple
+---
+Тело определения планировщика.
+`
+
+/** The same definition after the user edited one line of it — a fork by content. */
+const STOCK_PLANNER_EDITED = STOCK_PLANNER.replace('Собирает планы фаз.', 'Собирает планы фаз по-моему.')
+
+const STOCK_VERIFIER = `---
+name: sma-verifier
+description: Проверяет сделанное.
+tools: Read, Bash
+---
+Тело проверяющего.
+`
+
+const OWN_HELPER = `---
+name: мой-помощник
+description: Личный агент, которого привёл пользователь.
+tools: Read
+---
+Тело личного агента.
+`
+
+/** No frontmatter fence at all — must be reported, never dropped and never thrown on. */
+const BROKEN_DEF = 'просто текст без рамки\nвторая строка\n'
+
+/** A project-local install: <repo>/.claude/agents (editable) + <repo>/.claude/sma-core/agents (pristine). */
+function localInstall({
+  planner = STOCK_PLANNER,
+  extraFiles = {},
+  extraAgents = [],
+}: { planner?: string; extraFiles?: Record<string, string>; extraAgents?: string[] } = {}) {
+  return fakeFs({
+    files: {
+      '.claude/agents/sma-planner.md': planner,
+      '.claude/agents/sma-verifier.md': STOCK_VERIFIER,
+      '.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+      '.claude/sma-core/agents/sma-verifier.md': STOCK_VERIFIER,
+      ...extraFiles,
+    },
+    dirs: {
+      '.claude/agents': ['sma-planner.md', 'sma-verifier.md', ...extraAgents],
+      '.claude/sma-core/agents': ['sma-planner.md', 'sma-verifier.md'],
+      '.claude/skills': [],
+    },
+  })
+}
+
+const NO_HOME = () => '/home/nobody'
+
+describe('readStockTeam — the roster that actually arrived with the install', () => {
+  it('reports every definition file in the agents directory, including ids the roster config never heard of', () => {
+    const { fs } = localInstall()
+    const team = readStockTeam({
+      config: { workers: [] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: {},
+      homedir: NO_HOME,
+    })
+    expect(team.map((e: any) => e.id).sort()).toEqual(['sma-planner', 'sma-verifier'])
+    expect(team.find((e: any) => e.id === 'sma-planner')).toMatchObject({
+      title: 'sma-planner',
+      description: 'Собирает планы фаз.',
+      tools: ['Read', 'Write', 'Edit'],
+      enabled: false,
+      origin: 'sma',
+      forked: false,
+    })
+  })
+
+  it('an editable copy byte-identical to the pristine engine copy is NOT forked; an edited one IS', () => {
+    const clean = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: localInstall().fs, env: {}, homedir: NO_HOME })
+    expect(clean.find((e: any) => e.id === 'sma-planner').forked).toBe(false)
+
+    const edited = readStockTeam({
+      config: { workers: [] },
+      repoDir: '/repo',
+      fsImpl: localInstall({ planner: STOCK_PLANNER_EDITED }).fs,
+      env: {},
+      homedir: NO_HOME,
+    })
+    expect(edited.find((e: any) => e.id === 'sma-planner').forked).toBe(true)
+    // the untouched sibling is not dragged along by its neighbour's fork
+    expect(edited.find((e: any) => e.id === 'sma-verifier').forked).toBe(false)
+  })
+
+  it('a definition with no pristine counterpart is the USER’S OWN, never a fork', () => {
+    const { fs } = localInstall({
+      extraFiles: { '.claude/agents/my-helper.md': OWN_HELPER },
+      extraAgents: ['my-helper.md'],
+    })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    const mine = team.find((e: any) => e.id === 'my-helper')
+    expect(mine.origin).toBe('yours')
+    expect(mine.forked).toBe(false)
+    expect(mine.stockUpdate).toBe('not-shipped')
+  })
+
+  it('an unparseable definition is reported with a named problem — not dropped, not thrown on', () => {
+    const { fs } = localInstall({
+      extraFiles: { '.claude/agents/broken.md': BROKEN_DEF },
+      extraAgents: ['broken.md'],
+    })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    const broken = team.find((e: any) => e.id === 'broken')
+    expect(broken).toBeTruthy()
+    expect(typeof broken.problem).toBe('string')
+    expect(broken.problem.length).toBeGreaterThan(0)
+    // the readable siblings still came back
+    expect(team).toHaveLength(3)
+  })
+
+  it('a missing agents directory yields an empty list, not a throw', () => {
+    const { fs } = fakeFs({})
+    expect(() => readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })).not.toThrow()
+    expect(readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })).toEqual([])
+  })
+
+  it('the GLOBAL install layout resolves through CLAUDE_CONFIG_DIR when the project has no .claude/agents', () => {
+    const { fs } = fakeFs({
+      files: {
+        '/opt/cfg/agents/sma-planner.md': STOCK_PLANNER,
+        '/opt/cfg/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+      },
+      dirs: {
+        '/opt/cfg/agents': ['sma-planner.md'],
+        '/opt/cfg/sma-core/agents': ['sma-planner.md'],
+      },
+    })
+    const team = readStockTeam({
+      config: { workers: [] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: { CLAUDE_CONFIG_DIR: '/opt/cfg' },
+      homedir: NO_HOME,
+    })
+    expect(team.map((e: any) => e.id)).toEqual(['sma-planner'])
+    expect(team[0].origin).toBe('sma')
+  })
+
+  it('the enabled flag comes from the roster config, and a newer stock version is unknown until a baseline exists', () => {
+    const { fs } = localInstall()
+    const config = {
+      workers: [
+        { id: 'sma-planner', lane: 'prod', provider: 'claude', account: { configDir: '/c' }, enabled: true },
+        { id: 'sma-verifier', lane: 'prod', provider: 'claude', account: { configDir: '/c' }, enabled: false, stockDigest: 'deadbeef' },
+      ],
+    }
+    const team = readStockTeam({ config, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    const planner = team.find((e: any) => e.id === 'sma-planner')
+    const verifier = team.find((e: any) => e.id === 'sma-verifier')
+    expect(planner.enabled).toBe(true)
+    // never toggled through the stock door → no recorded baseline → honestly unknown, not «up to date»
+    expect(planner.stockUpdate).toBe('unknown')
+    expect(verifier.enabled).toBe(false)
+    // a recorded baseline that no longer matches today's shipped copy → a newer version is available
+    expect(verifier.stockUpdate).toBe('available')
+  })
+
+  it('no entry carries a file body, a token or an absolute path', () => {
+    const { fs } = localInstall({
+      extraFiles: { '.claude/agents/my-helper.md': OWN_HELPER },
+      extraAgents: ['my-helper.md'],
+    })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: { SOME_TOKEN: 'secret-value' }, homedir: NO_HOME })
+    const wire = JSON.stringify(team)
+    expect(wire).not.toContain('Тело определения планировщика')
+    expect(wire).not.toContain('secret-value')
+    expect(wire).not.toContain('/repo')
+    expect(wire).not.toContain('.claude')
+    for (const entry of team) {
+      expect(Object.keys(entry).sort()).toEqual(
+        ['description', 'enabled', 'forked', 'id', 'origin', 'problem', 'stockUpdate', 'title', 'tools'].sort(),
+      )
+    }
+  })
+})
+
+describe('readHarness — the stockTeam key is ADDITIVE (modules 8/9/12 keep their shape)', () => {
+  it('adds stockTeam as an array and leaves agents / skills / mcp / drafts unchanged in shape', async () => {
+    const { fs } = localInstall()
+    const config = {
+      workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: false }],
+    }
+    const out = await readHarness({
+      config,
+      registry: { servers: [] },
+      adapter: { list: async () => [] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: {},
+      homedir: NO_HOME,
+    })
+    expect(Object.keys(out).sort()).toEqual(['agents', 'drafts', 'mcp', 'skills', 'stockTeam'].sort())
+    expect(Array.isArray(out.stockTeam)).toBe(true)
+    expect(out.stockTeam.map((e: any) => e.id).sort()).toEqual(['sma-planner', 'sma-verifier'])
+    // the four existing keys keep their shape exactly
+    expect(out.agents).toHaveLength(1)
+    expect(out.agents[0]).toMatchObject({ id: 'max-2', lane: 'prod', provider: 'claude', enabled: false, can: [], cannot: [] })
+    expect(out.skills).toEqual([])
+    expect(out.mcp).toEqual([])
+    expect(out.drafts).toEqual([])
+  })
+})
 
 describe('buildClaudeArgs mcpConfigPath + buildMcpConfigFile — enabled entries only reach a spawn', () => {
   it('mcpConfigPath appends --mcp-config BEFORE --add-dir (addDir stays last)', () => {
