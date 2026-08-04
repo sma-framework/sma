@@ -150,6 +150,8 @@ describe('deriveState — the one-poll payload', () => {
       'kpis',
       'machines',
       'memory',
+
+      'projectMemory',
       'projects',
       'queue',
       'rules',
@@ -545,6 +547,8 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
       'kpis',
       'machines',
       'memory',
+
+      'projectMemory',
       'projects',
       'queue',
       'rules',

@@ -603,6 +603,101 @@ function windowBar(win) {
   }
 }
 
+// ══════════════ the CONNECTED PROJECT's corpus — a surface over a foreign tree ═══════════
+//
+// SB-031 part 2 (phase 11 plan 09). The window shows a project the daemon does not own: its
+// memory, READ-ONLY, plus — when the corpus is still in the older format — a per-file
+// preview of what a migration would change. Three properties are load-bearing:
+//
+//   - THE READERS ARE INJECTED. `readProjectMemory` and `previewProjectMigration` live in
+//     project-sync.mjs, which imports `deriveMemory` from THIS file. Injecting them instead
+//     of importing them keeps that edge one-way; a static import back would make the two
+//     modules a cycle, and the composition root is where a daemon module learns about
+//     another one anyway.
+//   - LIVENESS IS NEVER ASSUMED. The section says `polling` unless the watcher seam actively
+//     says `live`. A screen that claims live and shows stale is the failure the watcher's
+//     whole reconcile exists to prevent, so the DEFAULT here is the modest claim.
+//   - READ-ONLY IS ON THE WIRE. `readOnly: true` is carried rather than left implicit, so
+//     the screen states the boundary from the payload rather than from a hard-coded belief
+//     about what the daemon happens to do today (founder decision SB-031 / D-11-08).
+
+/**
+ * The connected project: the ACTIVE registry entry, and only when it names a folder on disk.
+ * A registry entry with no `path` is a label for grouping tasks, not a connection — reading
+ * it as one would be how the screen ends up showing a corpus that belongs to nobody.
+ */
+function connectedProject(config = {}) {
+  const list = Array.isArray(config.projects) ? config.projects : []
+  if (list.length === 0) return null
+  const activeId = config.activeProject ?? (list[0] && list[0].id)
+  const entry = list.find((p) => p && p.id === activeId) || null
+  if (!entry || typeof entry.path !== 'string' || entry.path.trim() === '') return null
+  return { id: entry.id, name: entry.name ?? entry.id, dir: entry.path }
+}
+
+/** The watcher's own word on whether it is watching or merely polling. Fail-modest. */
+function resolveLiveness(seam) {
+  try {
+    const v = typeof seam === 'function' ? seam() : seam
+    return v === 'live' ? 'live' : 'polling'
+  } catch {
+    return 'polling' // a seam that throws has told us nothing, and nothing is not «live»
+  }
+}
+
+/**
+ * deriveProjectMemory(deps) → the connected project's corpus surface, or {absent:true}.
+ *
+ * Nothing connected, nothing readable, no corpus, or a reader that throws — all four are the
+ * SAME declared-absent value, because from the screen's chair they are the same fact: there
+ * is no project memory to show. None of them is an error and none of them wedges the poll.
+ *
+ * The returned surface carries no path and no note body; that is the contract `deriveMemory`
+ * already holds and this section inherits it unchanged.
+ *
+ * @param {{config?:object, readProjectMemory?:Function, previewProjectMigration?:Function,
+ *          projectLiveness?:Function|string, migrationStagingDir?:string, fsImpl?:object,
+ *          clock?:Function}} [deps]
+ * @returns {object}
+ */
+export function deriveProjectMemory(deps = {}) {
+  const project = connectedProject(deps.config || {})
+  if (!project) return { absent: true }
+  if (typeof deps.readProjectMemory !== 'function') return { absent: true }
+
+  let surface
+  try {
+    surface = deps.readProjectMemory({ projectDir: project.dir, fsImpl: deps.fsImpl })
+  } catch {
+    return { absent: true }
+  }
+  if (!surface || surface.absent) return { absent: true }
+
+  const out = {
+    project: { id: project.id, name: project.name },
+    liveness: resolveLiveness(deps.projectLiveness),
+    readOnly: true,
+    ...surface,
+  }
+
+  // The preview is offered ONLY when there is something to migrate: a corpus already in the
+  // current format pays nothing for this section existing.
+  if (surface.migratable && typeof deps.previewProjectMigration === 'function') {
+    try {
+      const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+      const migration = deps.previewProjectMigration({
+        projectDir: project.dir,
+        stagingDir: deps.migrationStagingDir,
+        now: new Date(clock()),
+      })
+      if (migration) out.migration = migration
+    } catch {
+      /* a preview that cannot run is a section the screen does not show, never a broken poll */
+    }
+  }
+  return out
+}
+
 /**
  * deriveState(deps) → the one-poll roster payload {kpis, queue, awaiting, workers, done,
  * spend}. (Task 4 augments it with costs.series over GET /api/state.) Pure over its
@@ -793,6 +888,18 @@ export async function deriveState(deps = {}) {
   const memoryDir = deps.memoryDir ?? (deps.repoDir ? join(deps.repoDir, '.claude', 'memory') : null)
   const memory = deriveMemory({ memoryDir, fsImpl: deps.fsImpl })
   const style = deriveStyle({ memoryDir, fsImpl: deps.fsImpl })
+  // The CONNECTED project's corpus — a different question from `memory`, which is the corpus
+  // of the repository this daemon itself serves. Additive: a daemon with no project
+  // connected answers {absent:true} and every existing key keeps its exact shape.
+  const projectMemory = deriveProjectMemory({
+    config,
+    readProjectMemory: deps.readProjectMemory,
+    previewProjectMigration: deps.previewProjectMigration,
+    projectLiveness: deps.projectLiveness,
+    migrationStagingDir: deps.migrationStagingDir,
+    fsImpl: deps.fsImpl,
+    clock,
+  })
 
   const payload = {
     kpis,
@@ -810,6 +917,7 @@ export async function deriveState(deps = {}) {
     accounts,
     memory,
     style,
+    projectMemory,
   }
 
   // ── the federation merge (hub only) — FILLS this payload, never redefines it ──

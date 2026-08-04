@@ -41,6 +41,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer } from './config.mjs'
@@ -58,6 +59,13 @@ import {
   applyMcpToggle,
   applyStockTeamToggle,
 } from './front/harness.mjs'
+import {
+  applyProjectMigration,
+  previewProjectMigration,
+  readProjectMemory,
+  stopWatch,
+  watchProject,
+} from './front/project-sync.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
 import { deriveState, parseReceiptSummary } from './front/state.mjs'
@@ -135,6 +143,33 @@ export function createDaemon(o = {}) {
       }
     : undefined
 
+  // (4b) THE CONNECTED PROJECT (SB-031 part 2). The window shows a project the daemon does
+  // not own — read-only, live while the watcher holds, and honest about it when it does not.
+  // Three things are composed here and nowhere else:
+  //   - WHICH project is connected. The registry's active entry, re-read on every call, so a
+  //     project switch (which mutates this same config object in place) is picked up without
+  //     a restart on both the read and the apply path.
+  //   - WHERE proposals are staged. Beside the daemon's own data — NEVER inside the
+  //     connected project, which is what keeps a preview read-only with respect to a tree
+  //     this process does not own.
+  //   - WHETHER the connection may call itself live. Only when a watcher is running, is not
+  //     degraded, AND is watching the project the screen is currently showing. Anything else
+  //     answers «polling», so a stale screen can never present itself as a live one.
+  const migrationStagingDir = o.migrationStagingDir ?? join(dataDir ?? '.', 'migration-staging')
+  const connectedProjectDir = () => {
+    const list = Array.isArray(config.projects) ? config.projects : []
+    if (list.length === 0) return null
+    const active = list.find((p) => p && p.id === (config.activeProject ?? list[0].id)) || null
+    return active && typeof active.path === 'string' && active.path.trim() !== '' ? active.path : null
+  }
+  const connectedProjectId = () => {
+    const list = Array.isArray(config.projects) ? config.projects : []
+    return (config.activeProject ?? (list[0] && list[0].id)) || null
+  }
+  let projectWatch = null
+  const projectLiveness = () =>
+    projectWatch && !projectWatch.degraded && projectWatch.projectDir === connectedProjectDir() ? 'live' : 'polling'
+
   // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
@@ -190,6 +225,18 @@ export function createDaemon(o = {}) {
         // The one act that switches the whole shipped SMA team on — it rides the agent
         // toggle door under a reserved target, so the route table stayed at thirty.
         applyStockTeamToggle,
+        // The connected project's corpus: read on every poll, previewed only when the corpus
+        // is still in the older format, and applied ONE file at a time behind the approve
+        // door. The applier is a CLOSURE over «which project» and «where the staging lives»
+        // so a request handler never gets to name either.
+        readProjectMemory,
+        previewProjectMigration,
+        projectLiveness,
+        migrationStagingDir,
+        applyProjectMigration: ({ file }) => ({
+          ...applyProjectMigration({ projectDir: connectedProjectDir(), stagingDir: migrationStagingDir, file }),
+          projectId: connectedProjectId(),
+        }),
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
         verbRunner: (m) => runMerge({ ...m, execGit, runTests: o.runTests }),
       },
@@ -240,10 +287,34 @@ export function createDaemon(o = {}) {
       // the durable adapter owns its connection + queue provisioning — it must come up
       // BEFORE the tick can claim or the front can enqueue (the pilot finding).
       if (typeof durable.start === 'function') await durable.start()
+      // The connected project is watched while the daemon runs. It is started AFTER the
+      // queue and BEFORE the front only for tidiness — it owns nothing the others need, and
+      // a project that cannot be watched degrades inside watchProject rather than here.
+      const projectDir = connectedProjectDir()
+      if (projectDir) {
+        projectWatch = watchProject({
+          projectDir,
+          projectId: connectedProjectId(),
+          emit: (frame) => {
+            try {
+              hub.emit(frame)
+            } catch {
+              /* a hint failure never affects the poll, which is the truth */
+            }
+          },
+        })
+        if (projectWatch.degraded) {
+          console.log(
+            `[SmaDaemon] project watch degraded to polling: ${projectWatch.degradedReason} — the window will say so.`,
+          )
+        }
+      }
       front.listen()
       daemon.start()
     },
     async stop() {
+      stopWatch(projectWatch)
+      projectWatch = null
       daemon.stop()
       if (front.server && typeof front.server.close === 'function') front.server.close()
       if (typeof hub.close === 'function') hub.close()
