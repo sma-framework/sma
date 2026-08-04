@@ -27,7 +27,7 @@
  */
 
 import { readdirSync, readFileSync, appendFileSync, mkdirSync, existsSync, statSync } from 'node:fs'
-import { join, resolve as resolvePath, relative, isAbsolute } from 'node:path'
+import { join, dirname, basename, resolve as resolvePath, relative, isAbsolute } from 'node:path'
 import { createHash } from 'node:crypto'
 
 import { loadTagsRegistry, resolveAlias, parseNote } from './frontmatter.mjs'
@@ -392,6 +392,47 @@ function fuseLexical({ taskText, corpusDir, now, audience, scope, indexPath, lex
  * @param {object} [opts.lexical]    {indexStatus, queryExact, queryLexical} doubles for
  *                                  the fts-index layer (tests; production passes none).
  */
+/**
+ * deriveScopeFromCorpus(corpusDir) → {repo} or null — WHICH WORLD IS ASKING, when the
+ * caller did not say.
+ *
+ * This closes a debt recorded at 10-01 and re-measured since: `scopeDenial` (generator)
+ * has always been able to keep another repository's knowledge out of a pack, and
+ * NOBODY EVER ASKED IT A QUESTION. A filter with no caller is not a safeguard, it is a
+ * field with a comment on it, and the retrieval benchmark has been carrying a
+ * cross-repo forbidden hit ever since to prove exactly that.
+ *
+ * The world is derived from the ONE thing a corpus knows about itself: the project it
+ * lives inside. The product installs its corpus at `<project>/.claude/memory`, so the
+ * directory ABOVE the tool directory names the project, and its name is the repo the
+ * caller is asking from.
+ *
+ * IT REFUSES TO GUESS. When the corpus does not sit under a tool directory — a fixture
+ * corpus, a temp directory, a caller pointing somewhere of its own — no project can be
+ * identified, so NO default is derived and the behaviour is byte-for-byte what it was.
+ * That guard is the whole safety of this change: the existing law is «a caller that
+ * states no world asks no question», and inventing a world out of whatever directory
+ * happened to be one level up would turn a silent filter into a wrong one.
+ */
+function deriveScopeFromCorpus(corpusDir) {
+  const raw = String(corpusDir ?? '').trim()
+  if (raw === '') return null
+  let abs
+  try {
+    abs = resolvePath(raw)
+  } catch {
+    return null
+  }
+  const toolDir = dirname(abs)
+  // only the installed shape speaks: <project>/.<tool>/<corpus>
+  if (!basename(toolDir).startsWith('.')) return null
+  const projectDir = dirname(toolDir)
+  if (projectDir === toolDir) return null // filesystem root — no project above it
+  const repo = basename(projectDir)
+  if (repo === '' || repo === '.' || repo === '..') return null
+  return { repo }
+}
+
 export function compilePack(opts = {}) {
   const {
     taskText = '',
@@ -416,6 +457,12 @@ export function compilePack(opts = {}) {
   const emit = typeof trace === 'function' ? trace : Array.isArray(trace) ? (e) => trace.push(e) : null
   const axisOf = noteAxisReader(corpusDir)
 
+  // The world this compile is asking from. An explicit `scope` from a caller REPLACES
+  // the derived default outright — never merges with it — because a caller that names
+  // its world knows something this function is only inferring, and a merge would let
+  // the inference quietly widen an answer the caller narrowed on purpose.
+  const askedScope = scope ?? deriveScopeFromCorpus(corpusDir)
+
   const registry = loadRegistrySafe(tagsPath)
   const tags = deriveTaskTags(taskText, registry)
   const id = packId(taskText, commit)
@@ -437,7 +484,7 @@ export function compilePack(opts = {}) {
         // export audience be shown», so the question is threaded here rather than
         // re-asked in a second place. Absent (every existing caller) → unchanged.
         ...(audience == null ? {} : { audience }),
-        ...(scope == null ? {} : { scope }),
+        ...(askedScope == null ? {} : { scope: askedScope }),
         ...(trace == null ? {} : { trace }),
       }) || {}
     core = Array.isArray(res.core) ? res.core : []
@@ -483,7 +530,7 @@ export function compilePack(opts = {}) {
   // — nothing below changes and the lexical layer is never asked anything at all.
   const fusion =
     experiment === EXPERIMENT_LEXICAL
-      ? fuseLexical({ taskText, corpusDir, now, audience, scope, indexPath, lexical, core, periphery, areasOf: (f) => axisOf(f).areas, emit })
+      ? fuseLexical({ taskText, corpusDir, now, audience, scope: askedScope, indexPath, lexical, core, periphery, areasOf: (f) => axisOf(f).areas, emit })
       : null
   const fused = Boolean(fusion && !fusion.degraded)
 
@@ -793,6 +840,12 @@ export function growExam({ contextDir } = {}) {
  *                    so «held back correctly» can never be read as «missed something».
  *   repo_state       a POSIX-relative path, from the DIRECTORY OF THE CASE FILE, to a
  *                    fixture corpus this one case scores against instead of the default.
+ *   scope            {repo, environment} — the world this case is asking FROM, threaded
+ *                    into the compile so the repo/environment hard filter is exercised.
+ *                    In a measurement the case IS the caller: without this key the
+ *                    filter has no question to answer and a foreign repository's note
+ *                    arrives unchallenged. Absent — every case written before the key
+ *                    existed — nothing is threaded and the case scores as it always did.
  *
  * CONTAMINATION IS REFUSED, NOT SCORED: adversarial fixtures (poisoned memory, prompt
  * injection, a foreign repo's notes) exist to be retrieved AT the system, and the one
@@ -917,6 +970,11 @@ export function scoreNoteCases(opts = {}) {
             commit,
             corpusDir: ctx.corpusDir ?? corpusDir,
             tagsPath: ctx.tagsPath ?? tagsPath,
+            // The world THIS case says it is asking from. In a measurement the case IS
+            // the caller, so a case that declares a world is the only way the repo-scope
+            // filter can be exercised by the benchmark at all. A case that declares none
+            // passes nothing here and scores exactly as it always did.
+            ...(ctx.scope == null ? {} : { scope: ctx.scope }),
             dateMap,
             catalog,
             profile,
@@ -983,11 +1041,19 @@ export function scoreNoteCases(opts = {}) {
       caseTagsPath = join(resolved.dir, 'TAGS.md')
     }
 
+    // ── which world does THIS case ask FROM ──
+    // A `{repo, environment}` object, read straight off the case. Absent — which is
+    // every case written before the key existed — nothing is threaded and the score is
+    // byte-for-byte the one the baseline recorded. Non-object values are ignored rather
+    // than coerced: a malformed declaration must not quietly become a filter.
+    const caseScope =
+      gold.scope != null && typeof gold.scope === 'object' && !Array.isArray(gold.scope) ? gold.scope : null
+
     let packMembers = []
     let packBytes = 0
     let packTokens = 0
     try {
-      const res = compileOne(gold.task, { corpusDir: caseCorpusDir, tagsPath: caseTagsPath })
+      const res = compileOne(gold.task, { corpusDir: caseCorpusDir, tagsPath: caseTagsPath, scope: caseScope })
       packMembers = res && Array.isArray(res.members) ? res.members : []
       // What the pack COST to deliver, carried beside what it got right. A retrieval
       // number without the size of the payload that produced it can be improved by
