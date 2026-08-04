@@ -458,6 +458,25 @@ describe('readStockTeam — the roster that actually arrived with the install', 
     expect(verifier.stockUpdate).toBe('available')
   })
 
+  it('a definition checked out with CRLF line endings parses like any other — it is the same file', () => {
+    // Found by running the read model against the real install: 3 of 34 shipped definitions
+    // were CRLF in the workspace clone and came back as «unparseable». They are not.
+    const crlf = (s: string) => s.replace(/\n/g, '\r\n')
+    const { fs } = fakeFs({
+      files: {
+        '.claude/agents/sma-planner.md': crlf(STOCK_PLANNER),
+        '.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+      },
+      dirs: { '.claude/agents': ['sma-planner.md'], '.claude/sma-core/agents': ['sma-planner.md'] },
+    })
+    const entry = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })[0]
+    expect(entry.problem).toBe(null)
+    expect(entry.title).toBe('sma-planner')
+    expect(entry.tools).toEqual(['Read', 'Write', 'Edit'])
+    // and the CRLF checkout is NOT reported as somebody's edit
+    expect(entry.forked).toBe(false)
+  })
+
   it('no entry carries a file body, a token or an absolute path', () => {
     const { fs } = localInstall({
       extraFiles: { '.claude/agents/my-helper.md': OWN_HELPER },

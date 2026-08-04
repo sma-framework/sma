@@ -118,9 +118,16 @@ function unquote(v) {
  * `key: [a, b]` inline arrays, and `key:` + 2-space `- item` dash-lists. This reads MERGED
  * definition files (an approved forge draft), so it mirrors the forge draft schema; no
  * third-party YAML (zero-dep law). Absent/broken fence → {frontmatter:null}.
+ *
+ * Line endings are normalized FIRST. A definition file checked out on Windows opens with
+ * `---\r\n`, and matching the fence on `---\n` alone silently returned {frontmatter:null}
+ * for it — which does not look like a failure anywhere downstream: an agent card lost its
+ * can/cannot, and profileFromDefinition quietly built a DEFAULT profile instead of the
+ * file's declared lane/provider/model, breaking the two-step activation law's promise that
+ * a profile comes out of the file. A CRLF checkout is the same file (phase 11 plan 06).
  */
 function readFrontmatter(text) {
-  const s = String(text ?? '')
+  const s = String(text ?? '').replace(/\r\n/g, '\n')
   if (!s.startsWith('---\n')) return { frontmatter: null, body: s }
   const close = s.indexOf('\n---', 3)
   if (close === -1) return { frontmatter: null, body: s }
