@@ -23,6 +23,7 @@
  *   - validateRecord(frontmatter, {migratedFromV1}) -> {errors, warnings}
  *   - validateFingerprint(fingerprint) -> string[]
  *   - validateId(id, filePath) -> string|null
+ *   - LINK_TYPES · checkLinks(record) -> string[] — the closed typed-edge vocabulary
  *   - PRIVATE_FACET_PATTERN · isPrivateFacet(value)
  *   - APPROVAL_PATHS · resolveApprovalPath({memory_type, truth_mode, sensitivity, risk})
  *   - GRACE_HORIZON
@@ -102,6 +103,33 @@ export const RISK_LEVELS = Object.freeze(['low', 'medium', 'high', 'critical'])
 
 /** Load always, or only when asked for (docs/MEMORY-MODEL.md §8). */
 export const CONTEXT_PRIORITIES = Object.freeze(['always', 'on-demand'])
+
+/**
+ * The typed-edge vocabulary (docs/MEMORY-MODEL.md §10), verbatim and in the
+ * doc's order. An edge is a `{type, ref}` pair inside a record's `links` array.
+ *
+ * Closed on purpose. The grammar (frontmatter.mjs) has always enforced the SHAPE
+ * of `links`; until this enum existed nothing enforced the NAMES, so the field
+ * accepted any spelling and every later query over it inherited that doubt.
+ *
+ * `superseded_by` is deliberately NOT a member: §10 lists eleven names and the
+ * back-pointer is not among them. The supersession pair lives in the TOP-LEVEL
+ * `supersedes`/`superseded_by` fields (§5), written as a pair by the write
+ * pipeline's applyLifecycle — it is not an edge anyone writes into `links`.
+ */
+export const LINK_TYPES = Object.freeze([
+  'derived_from',
+  'supports',
+  'contradicts',
+  'supersedes',
+  'caused_by',
+  'applies_to',
+  'exception_to',
+  'requires',
+  'verified_by',
+  'owned_by',
+  'part_of',
+])
 
 /**
  * Installation-private facet shape: a phase-numbered value such as `phase:8` or
@@ -251,6 +279,9 @@ export function validateRecord(frontmatter, opts = {}) {
   // ── Structure: the composite fingerprint ──────────────────────────────────
   if (isPresent(record.fingerprint)) errors.push(...validateFingerprint(record.fingerprint))
 
+  // ── Structure: the typed-edge vocabulary ──────────────────────────────────
+  errors.push(...checkLinks(record))
+
   // ── Structure: claims about external artifacts need a horizon ─────────────
   if (!isPresent(record.valid_until) && collectRefs(record).some(isUrlRef)) {
     errors.push(
@@ -316,6 +347,52 @@ export function validateFingerprint(fingerprint) {
   if (isPresent(fingerprint.tree_hash) && !isPresent(paths)) {
     errors.push('fingerprint.tree_hash: requires tree_paths — a hash with no paths cannot be recomputed, so it can never prove drift')
   }
+  return errors
+}
+
+/**
+ * checkLinks(record) -> string[]
+ *
+ * The legality pass over a record's typed edges. Absence is legal — a record
+ * that claims no edges claims nothing false. Malformation is not: an entry whose
+ * `type` is outside LINK_TYPES, or whose `ref` is missing or not a string, is
+ * refused by NAME so the finding says which value offended.
+ *
+ * Fail-closed, in the sense the threat model gives the word: this decides what
+ * may be believed about the graph, so an edge it cannot read is refused rather
+ * than skipped. Every bad entry is reported, not just the first — a validator
+ * that stops at the first finding teaches its user to fix errors one per run.
+ *
+ * PURE: no fs, no clock, and the record it judges is never mutated.
+ *
+ * @param {unknown} record — a parsed v2 frontmatter object
+ * @returns {string[]} error messages (empty when every edge is legal)
+ */
+export function checkLinks(record) {
+  if (!isPlainObject(record)) return ['links: expected a parsed v2 record object']
+
+  const links = record.links
+  if (links === null || links === undefined) return []
+  if (!Array.isArray(links)) {
+    return ['links: must be an array of {type, ref} entries — a single entry is an array of one']
+  }
+
+  const errors = []
+  links.forEach((entry, i) => {
+    if (!isPlainObject(entry)) {
+      errors.push(`links[${i}]: must be a {type, ref} entry — an edge is a typed pair, never a bare string`)
+      return
+    }
+    const { type, ref } = entry
+    if (typeof type !== 'string' || !type.trim()) {
+      errors.push(`links[${i}].type: required — every edge must name its type (${LINK_TYPES.join(' · ')})`)
+    } else if (!LINK_TYPES.includes(type)) {
+      errors.push(`links[${i}].type: "${type}" is outside the closed vocabulary (${LINK_TYPES.join(' · ')})`)
+    }
+    if (typeof ref !== 'string' || !ref.trim()) {
+      errors.push(`links[${i}].ref: required and must be a non-empty string — an edge with no target points nowhere`)
+    }
+  })
   return errors
 }
 
