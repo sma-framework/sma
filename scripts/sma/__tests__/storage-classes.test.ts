@@ -427,10 +427,13 @@ describe('the persist step refuses local-class material before a byte is written
   it('persists a shared record exactly as it does today', () => {
     const repoRoot = tmpRoot()
     const d = dirs(repoRoot)
-    const record = plainRecord({ sensitivity: 'internal' })
+    // `factual` is machine-rederivable, so the corpus door wants its check —
+    // unrelated to placement, but it is what the door asks after the gate.
+    const record = plainRecord({ sensitivity: 'internal', fingerprint: { product_version: 'v5.2.0' } })
     const state = createPipelineState({ record, body: 'Body.' }, { ...d, corpus: [] })
     persist(state)
 
+    expect(state.trace[state.trace.length - 1].outcome).toBe('persisted')
     expect(state.persisted).toBe(true)
     expect(existsSync(join(d.corpusDir, 'courier-route-cutoff.md'))).toBe(true)
   })
