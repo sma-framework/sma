@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every rule marked *enforced* below is shipped code with test coverage; every rule marked *policy* is a written decision with no code behind it yet, and says so in place. |
-| Document version | 1.0 |
+| Document version | 1.2 |
 | Date | 2026-08-02 |
 | Applies to | the memory corpus of one installation: `schema_version: 2` records, the v1 notes beside them, and the episode archive |
 | Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) — how a record is written, approved and retired |
@@ -15,11 +15,12 @@
 
 > **The document follows the code.** Every check id, enum value, pattern and
 > refusal below is taken from the shipped modules: `scripts/sma/lib/schema-v2.mjs`
-> (classes, the approval ladder, the private-facet shape),
-> `scripts/sma/lib/lint.mjs` (the placement and integrity checks),
-> `scripts/sma/lib/write-pipeline.mjs` (the redaction gate and the write path).
-> Where this document and those modules disagree, the modules are right and this
-> document is a bug.
+> (classes, the storage-class resolver, the placement refusal, the approval
+> ladder, the private-facet shape), `scripts/sma/lib/local-store.mjs` (the
+> this-machine-only store), `scripts/sma/lib/lint.mjs` (the placement and
+> integrity checks), `scripts/sma/lib/write-pipeline.mjs` (the redaction gate and
+> the write path). Where this document and those modules disagree, the modules are
+> right and this document is a bug.
 
 [`MEMORY-MODEL.md`](MEMORY-MODEL.md) answers *what a record is*.
 [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) answers *how it becomes one*. This
@@ -52,19 +53,49 @@ it writes. None of them depends on a model call.
 
 ### 2.1 The class map
 
-Five storage classes describe where memory can live. The schema's `sensitivity`
-field is a **four-value closed vocabulary**, because only four of the five are
-confidentiality classes — the fifth is a lifetime property and the sixth kind of
-material is deliberately outside this substrate entirely.
+**Three storage classes, on one axis: who will see this record.** The names are
+the whole design — a person can answer "who sees it" without reading a manual,
+and there is nothing else to learn. The vocabulary is frozen in code as
+`STORAGE_CLASSES` (`scripts/sma/lib/schema-v2.mjs`), ordered from the lightest to
+the strictest.
 
-| Storage class | Substrate | `sensitivity` | Typical content |
+| Storage class | Who sees it | Where its records physically live | `sensitivity` values that resolve to it |
 |---|---|---|---|
-| Public / repo memory | a repository that may be published, plus the shipped preset | `public` | Reviewed architecture, public rules, project lessons |
-| Internal reviewed memory | the installation's private repository | `internal` | Internal decisions and operational knowledge |
-| Local sensitive memory | a restricted store, never a public export | `sensitive` | Material adjacent to secrets, private context |
-| Local sensitive memory *requiring encryption at rest* | an encrypted store — **not implemented** (§6) | `encrypted-required` | Anything whose plaintext must never touch a git-backed class |
-| Ephemeral memory | a runtime store with a lifetime | *(no class)* | Task scratch, temporary observations |
-| Regulated memory | a separately governed system | *(no class — see §7)* | Data carrying retention or jurisdictional obligations |
+| **Shared** | the project's people — it travels with the team and with the repository | the corpus directory, inside the project's git | none declared · `public` · `internal` |
+| **Ephemeral** | the same people, and nobody after the date | the corpus directory, carrying the lifetime window that retires it | any non-restricted value **plus** a `retention` window or a `valid_until` horizon |
+| **This-machine-only** | only this machine; the material never enters git at all | the local store, outside the corpus directory, which keeps itself out of git (`scripts/sma/lib/local-store.mjs`) | `sensitive` · `encrypted-required` |
+
+The schema's `sensitivity` field remains a **four-value closed vocabulary**. The
+three classes are DERIVED from it and from the record's lifetime fields; no new
+frontmatter field was introduced, because a boundary a person has to learn a new
+field to use is a boundary most records will miss.
+
+**How a record gets its class.** `resolveStorageClass(record, {now})` is pure and
+fail-closed, and applies its rules strictest first:
+
+1. a `sensitivity` outside the closed four is **refused**, not defaulted — an
+   unreadable label is not a permit, and quietly calling it shared would turn a
+   typo into a publication;
+2. `sensitive` and `encrypted-required` resolve to **this-machine-only**, whatever
+   else the record says, including a lifetime window: the strictest rule wins;
+3. a `retention` window or a `valid_until` horizon resolves to **ephemeral**;
+4. everything else is **shared**.
+
+The verdict names the field and the rule that decided, so it can be argued with.
+The optional `now` is used only to report whether a horizon has already passed; it
+never changes a class.
+
+**What happens when a record is aimed at the wrong place.**
+`storagePlacementDenial(record, {targetDir, localDir})` answers the placement
+question in the same module, because legality has one authority. The write path
+consults it **before any byte is written**, and a denial is terminal — nothing is
+written, not even partially. Both of the write path's doors are gated: the corpus
+door (`persist`) and the drafts door (`stage`). Gating only the corpus door would
+leave the boundary open in practice, because a restricted record never reaches
+that door — the approval ladder escalates it and routes it to drafts, and the
+drafts directory sits inside the same git working tree. The gate also refuses when
+the class could not be read at all, and when no local store directory was named
+for the write: a destination nobody named is not a permission.
 
 **Why ephemeral is not a `sensitivity` value.** "How long may this live?" and "who
 may see this?" are independent questions, and folding them into one field would
@@ -73,10 +104,27 @@ make both unanswerable. A short-lived record is expressed by its lifetime fields
 confidentiality class. The write path treats this as load-bearing rather than
 decorative: **the one automatic write path refuses a record with no lifetime
 window at all**, on the grounds that an unreviewed memory must be able to expire
-by itself ([`MEMORY-LIFECYCLE.md` §1.7](MEMORY-LIFECYCLE.md#17-step-7--risk)).
+by itself ([`MEMORY-LIFECYCLE.md` §1.7](MEMORY-LIFECYCLE.md#17-step-7--risk)). The
+same predicate (`hasLifetimeWindow`) answers that question and derives the
+ephemeral class, so the two cannot drift apart.
 
-**Why regulated is not a `sensitivity` value.** See §7. Giving it an enum value
-would advertise a capability this substrate does not have.
+**Two classes this product deliberately does not have.** Both are removed by a
+product decision, not missing by oversight, and neither is coming back through a
+side door.
+
+- **Regulated memory is removed from the product entirely**, together with any
+  separate breakdown of medical versus personal data. There is one axis here, who
+  sees it, and adding a class for material this substrate cannot actually govern
+  would advertise a capability it does not have. §7 states the same thing as a
+  non-goal.
+- **A separate "private git" class is removed** because for a user that is not a
+  distinct mechanism — it is a private repository, which the shared class already
+  describes. A new entity there adds a word to learn and changes nothing about
+  where a record sits.
+
+Neither removal touches the credential scan at the write gate, and it stays. That
+scan is about a password never reaching the text in the first place, not about
+categories of data — there is no class that may hold a live credential (§3).
 
 ### 2.2 What each class forbids
 
@@ -147,7 +195,10 @@ there is no class that may hold a live credential.
 | An unclassified note holding sensitive-shaped content is surfaced | `MEM-SENSPLACE` (warn) | **enforced**, advisory by design |
 | An installation-private facet never ships in a public-class record | `MEM-PRIVFACET` (critical) | **enforced** |
 | A restricted class routes to the strictest approval path | the approval ladder | **enforced** |
-| `encrypted-required` content is encrypted at rest | — | **policy only** (§6): the class is refused a git-backed home; no cipher exists |
+| This-machine-only material never reaches a git-backed path | `storagePlacementDenial`, consulted by the write path at both doors (`persist`, `stage`) | **enforced** — refusal before any byte; nothing is written, not even partially |
+| A record whose class cannot be read is treated as the most restrictive plausible class | `resolveStorageClass` | **enforced** — refused, never defaulted to shared |
+| The local store stays out of git without anyone editing a repository-level ignore file | `ensureLocalStore` (`local-store.mjs`) | **enforced** — the store writes its own ignore marker inside itself; a deleted marker is restored, a changed one is left alone and reported |
+| `encrypted-required` content is encrypted at rest | — | **policy only** (§6): placement is enforced in code, the cipher decision is open |
 | Retrieval filters by `status` and valid time at load time | the read engine (`isVisibleNow`, before ranking) | **enforced** — a retired or out-of-window record is out of the delivery, on both output points of a pack; it stays catalogued in its area index with the state named |
 | Retrieval filters by class at load time | the read engine (`isVisibleNow`, before ranking) | **enforced for a declared audience**: the caller states the consumer class and a record above its ceiling is not delivered (unregistered audience → narrowest ceiling; undeclared class → treated as internal). The default consumer is the local owner, who is withheld nothing |
 | The consumer's audience is *verified* rather than declared | — | **not yet**: this layer knows nothing about who runs the agent. `audience` is an argument, not an identity — a caller that mis-declares it is not caught here |
@@ -318,9 +369,14 @@ provenance left to audit.
 
 ## 6. Encryption: the policy, and the deferral
 
-`encrypted-required` states a **requirement, not an implemented cipher**. The
-schema can express the requirement and the placement checks can refuse to let such
-a record sit where it must not sit. Nothing in this product encrypts anything.
+`encrypted-required` states a **requirement, not an implemented cipher**. Nothing
+in this product encrypts anything. What the product does have is the other half,
+and it is the half that cannot be added afterwards: **placement and prevention are
+enforced in code** — the three classes, the local store, and a write path that
+refuses to put this-machine-only material into a git-backed path (§2.1). **The
+cipher decision is still open, and it is carried by a decision of its own with the
+product owner's answer at its head.** This section is the written comparison that
+decision starts from; it does not pre-empt it.
 
 ### 6.1 The two candidate families
 
@@ -353,25 +409,46 @@ a record sit where it must not sit. Nothing in this product encrypts anything.
    platform the product supports, or it becomes a per-platform correctness
    difference.
 
-### 6.3 The deferral, stated plainly
+### 6.3 Where this actually stands, stated plainly
 
-**The implementation decision is deferred to a dedicated future decision, and no
-dependency has been added for it.** Neither family above is chosen, prepared for,
-or partially wired in. This document describes the candidates so that the decision,
-when it is taken, starts from a written comparison instead of a preference.
+**The cipher is not chosen, and no dependency has been added for it.** Neither
+family above is chosen, prepared for, or partially wired in. This document
+describes the candidates so that the decision, when it is taken, starts from a
+written comparison instead of a preference. Do not read anything here as a claim
+that encryption exists; do not read it as a claim that it never will.
 
-**Until then, the rule is prevention:** `encrypted-required` material simply does
-not enter the corpus. That is enforceable today and is enforced — the class may
-never carry a public-facing audience marker, it escalates to the strictest approval
-path, and the model document states that it may not live in a git-backed class at
-all.
+**What did land is prevention, and it is code, not policy.**
+`encrypted-required` and `sensitive` material does not enter a git-backed path at
+all: the class resolves to this-machine-only, the write path refuses at both of
+its doors before writing anything, the material's home is a store outside the
+corpus, and that store keeps itself out of git by carrying its own ignore marker
+rather than by trusting a repository-level file somebody has to remember to edit
+(§2.1, §2.4). The class also may never carry a public-facing audience marker, and
+it escalates to the strictest approval path.
 
 **Why prevention rather than "encrypt it later".** Encryption added after the fact
 does not retroactively protect anything: the plaintext stays in the history, and a
 `git log -p` still returns it. There is no version of this that is fixed later.
-The same reasoning produces the erase deferral
-([`MEMORY-LIFECYCLE.md` §5.5](MEMORY-LIFECYCLE.md#55-erase-deferred-by-policy)) —
-both are the same honest admission about what a git-backed store can promise.
+That is exactly why this half shipped first and did not wait for the cipher
+question to be settled.
+
+### 6.4 The honest line about deletion
+
+**If a record reached a commit, it is in the history — and in every clone of that
+repository.** Deleting the file removes it from the working tree and from every
+derived index; it does not remove it from the history, and nothing in this product
+promises otherwise. Rewriting history to erase it is possible with repository-level
+tooling (`git filter-repo`, or `git filter-branch` on older installations, followed
+by a force-push and a re-clone by everyone who has a copy), but that is a manual,
+irreversible operation that breaks every existing clone, and this product will not
+do it on your behalf behind a friendly verb.
+
+**The way to never need that is placement, and it is one decision made once:** put
+material that must not be shown in the this-machine-only class, where it never
+enters history at all. That is the whole argument for §2.1's third class, and it is
+the same honest admission that produces the erase deferral
+([`MEMORY-LIFECYCLE.md` §5.5](MEMORY-LIFECYCLE.md#55-erase-deferred-by-policy)):
+prevention is the only thing a git-backed store can actually promise.
 
 ## 7. Non-goals
 
@@ -409,5 +486,6 @@ Stated explicitly, because an unstated non-goal reads as an oversight.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-08-04 | §2.1 rewritten to the **three** storage classes that shipped, on the single who-sees-it axis, with the mapping table and the two removals stated as product decisions: regulated memory (with any medical-versus-personal breakdown) and a separate private-git class are gone from the product; the credential scan is untouched by either. The classes stopped being a label and became a placement: `STORAGE_CLASSES` and `resolveStorageClass` derive the class fail-closed from fields the schema already had, `storagePlacementDenial` decides legality of a destination, and the write path consults it at BOTH doors — `persist` and `stage` — before any byte, because the drafts directory is a git-backed path too and is where the approval ladder actually routes a restricted record. `local-store.mjs` gives the this-machine-only class a home outside the corpus that keeps itself out of git by carrying its own ignore marker. §2.4 gained four enforced rows; §6 now says exactly where encryption stands — placement enforced in code, cipher decision open — and §6.4 carries the honest line about git history and clones. No new dependency, no cipher, no new frontmatter field. |
 | 1.1 | 2026-08-03 | §2.4 and non-goal 5 updated to the landed read-time filters: `status`, valid time and `sensitivity`-by-audience are now enforced by the read engine before ranking (`MEMORY-MODEL.md` §9.1), so the «not yet» row became two enforced rows — and one new honest «not yet»: an audience is *declared* by the caller, never verified here. Filtering narrows a delivery; it is not access control, and placement stays the defense against material that must not be stored at all. No new guard is defended by a model call. |
 | 1.0 | 2026-08-02 | First version. The five storage classes mapped onto the four-value `sensitivity` vocabulary with the two deliberate omissions and their reasons; what each class forbids; the placement rules exactly as the corpus checks enforce them, with tiers; an honest enforced/policy/not-yet map; the fail-open / fail-closed table with the landed write-path behavior behind it; the six untrusted-retrieval rules with their honest state; three provenance threats (quote-as-authority, stale facts, expired claims) with the typed fields and checks that counter them and the read-only law that keeps the counters advisory; the encryption policy — two candidate families, six selection criteria, and an explicit deferral with zero dependencies added; and six stated non-goals. |
