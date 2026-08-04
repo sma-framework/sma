@@ -479,11 +479,40 @@ export interface DraftCard {
   status: TaskStatus
 }
 
+/** Where a definition came from: it arrived with SMA, or the user brought it. */
+export type StockOrigin = 'sma' | 'yours'
+
+/**
+ * What is known about a newer shipped version. 'unknown' means nobody has ever accepted a
+ * version of this one, so there is nothing to compare against — it is never dressed up as
+ * 'current'. 'not-shipped' is the user's own agent, which SMA does not ship updates for.
+ */
+export type StockUpdate = 'current' | 'available' | 'unknown' | 'not-shipped'
+
+/**
+ * One member of the team that arrived with the install, or one the user brought. Mirrors
+ * the daemon's readStockTeam entry exactly: if this file and the daemon disagree, the
+ * daemon is right and this file is wrong.
+ */
+export interface StockTeamCard {
+  id: string
+  title: string
+  description: string
+  tools: string[]
+  enabled: boolean
+  origin: StockOrigin
+  forked: boolean
+  stockUpdate: StockUpdate
+  /** A definition that could not be read — named, so it is visible instead of missing. */
+  problem: string | null
+}
+
 export interface HarnessPayload {
   agents: AgentCard[]
   skills: SkillCard[]
   mcp: McpCard[]
   drafts: DraftCard[]
+  stockTeam: StockTeamCard[]
 }
 
 export type DraftKind = 'agent' | 'skill' | 'mcp'

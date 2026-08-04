@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { isNotReady } from '../../api/client'
+import { isNotReady, STOCK_TEAM_TARGET } from '../../api/client'
 import { useHarnessQuery, useToggleAgent } from '../../api/queries'
-import type { AgentCard } from '../../api/types'
+import type { AgentCard, StockTeamCard } from '../../api/types'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
 import { accentFor, initialOf } from '../../shell/format'
@@ -27,6 +27,20 @@ import { ForgeDialog } from './ForgeDialog'
  *
  * «Привести своих» is a door to another screen, not another API: it asks the shell for the
  * import wizard, which owns bringing in helpers that already live in the project.
+ *
+ * ════════════════════════ «КОМАНДА SMA» — ЧТО ПРИЕХАЛО С УСТАНОВКОЙ ═════════════════════
+ *
+ * «Работники» above is the pipeline: whoever the roster config declares. «Команда SMA» is a
+ * different question — what ARRIVED. Thirty-odd definitions came with the install and were
+ * invisible here until now, which is the gap this section closes. It comes out of the SAME
+ * reading — the harness payload gained a `stockTeam` key — so there is still one reading and
+ * still no fourth door: the one switch below goes through /api/agent/toggle, addressed to a
+ * reserved id that means «the whole team» instead of one helper.
+ *
+ * Three things are legible without a click: who came with SMA and who the user brought;
+ * which of them are on; and which have been edited here, with a mark when a newer shipped
+ * version exists. A definition that could not be read says so on its own card — an unreadable
+ * file is a visible fact, not a missing row.
  */
 
 /** The services that do the work, in the words the rest of the window uses for them. */
@@ -174,9 +188,155 @@ function WorkerRow({ agent }: { agent: AgentCard }) {
   )
 }
 
+/** One member of the team that arrived — or one the user brought. Read only; the switch is one, and it is below. */
+function StockRow({ member }: { member: StockTeamCard }) {
+  return (
+    <article
+      className={`flex items-start gap-3 rounded-[12px] border border-bd bg-card px-[15px] py-2.5 shadow-panel ${
+        member.enabled ? '' : 'opacity-65'
+      }`}
+    >
+      <span
+        className={`flex h-7 w-7 flex-none items-center justify-center rounded-[8px] text-[12px] font-bold ${accentFor(
+          member.id,
+        )}`}
+      >
+        {initialOf(member.title || member.id)}
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12.5px] font-semibold text-tx">{member.title}</span>
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-[2px] text-[10px] ${
+              member.enabled ? 'bg-ok-s text-ok-tx' : 'bg-idle-s text-idle-tx'
+            }`}
+          >
+            <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${member.enabled ? 'bg-green' : 'bg-tx3'}`} />
+            {member.enabled ? 'включён' : 'выключен'}
+          </span>
+          {member.forked ? (
+            <span className="rounded-full bg-warn-s px-2 py-[2px] text-[10px] text-warn-tx">изменён Вами</span>
+          ) : null}
+          {member.stockUpdate === 'available' ? (
+            <span className="rounded-full border border-bd2 px-2 py-[2px] text-[10px] text-tx2">есть новая версия</span>
+          ) : null}
+        </div>
+
+        {member.description ? (
+          <div className="mt-[3px] text-[11.5px] leading-[1.5] text-tx2">{member.description}</div>
+        ) : null}
+
+        {member.problem ? (
+          <p className="m-0 mt-1 text-[11px] text-err-tx">Файл не прочитался: {member.problem}</p>
+        ) : null}
+
+        {member.tools.length > 0 ? (
+          <div className="mt-[3px] text-[11px] text-tx3">Инструменты: {member.tools.join(', ')}</div>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
+/**
+ * «Команда SMA» — the roster that arrived, and the one act that switches it on. The switch
+ * goes through the helper toggle already wired above, addressed to the reserved team id.
+ */
+function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady: boolean }) {
+  const toggle = useToggleAgent()
+  const [problem, setProblem] = useState<string | null>(null)
+
+  const shipped = team.filter((m) => m.origin === 'sma')
+  const own = team.filter((m) => m.origin === 'yours')
+  const on = shipped.filter((m) => m.enabled).length
+  const allOn = shipped.length > 0 && on === shipped.length
+  const forked = shipped.filter((m) => m.forked).length
+  const updates = shipped.filter((m) => m.stockUpdate === 'available').length
+
+  const flipTeam = () => {
+    setProblem(null)
+    toggle.mutate(
+      { id: STOCK_TEAM_TARGET, enabled: !allOn },
+      {
+        onError: (err) =>
+          setProblem(
+            isNotReady(err)
+              ? 'Переключение пока не работает — дверь не отвечает.'
+              : allOn
+                ? 'Выключить команду не удалось. Всё осталось как было.'
+                : 'Включить команду не удалось. Всё осталось как было.',
+          ),
+      },
+    )
+  }
+
+  if (team.length === 0) {
+    return (
+      <div>
+        <div className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Команда SMA</div>
+        <p className="m-0 text-[13px] text-tx2">
+          {notReady
+            ? 'Список появится, когда кузница заработает.'
+            : 'Определений агентов на диске не найдено — команда приезжает вместе с установкой SMA.'}
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-3">
+        <div className="text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Команда SMA</div>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={flipTeam}
+          disabled={toggle.isPending || shipped.length === 0}
+          className="rounded-[9px] border border-bd2 px-[15px] py-1.5 text-[11.5px] whitespace-nowrap text-tx2 hover:text-tx disabled:opacity-60"
+        >
+          {toggle.isPending ? '…' : allOn ? 'Выключить команду' : 'Включить команду'}
+        </button>
+      </div>
+
+      <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">
+        Это те, кто приехал вместе с SMA: {shipped.length} — включено {on}.
+        {forked > 0 ? ` Изменено Вами: ${forked}.` : ''}
+        {updates > 0 ? ` Есть новая версия у: ${updates}.` : ''} Одна кнопка включает их всех сразу — ничего не
+        скачивается, включаются те файлы, что уже лежат на диске.
+      </div>
+
+      {problem ? <p className="m-0 mb-2.5 text-[11.5px] text-err-tx">{problem}</p> : null}
+
+      <div className="flex flex-col gap-2.5">
+        {shipped.map((m) => (
+          <StockRow key={m.id} member={m} />
+        ))}
+      </div>
+
+      {own.length > 0 ? (
+        <>
+          <div className="mt-5 mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Ваши агенты</div>
+          <div className="mb-3.5 text-[11.5px] text-tx3">
+            Эти определения лежат рядом, но с SMA не приезжали — обновлений для них у нас нет, и кнопка выше их не
+            трогает.
+          </div>
+          <div className="flex flex-col gap-2.5">
+            {own.map((m) => (
+              <StockRow key={m.id} member={m} />
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 export function Screen() {
   const harness = useHarnessQuery()
   const agents = harness.data?.agents ?? []
+  /** The whole roster that arrived with the install — the same reading, one key over. */
+  const stockTeam = harness.data?.stockTeam ?? []
   /** A draft with no kind is a worker's draft: this screen is where the forge lands by default. */
   const drafts = (harness.data?.drafts ?? []).filter((d) => d.kind === 'agent' || d.kind === null)
 
@@ -236,6 +396,8 @@ export function Screen() {
               </div>
             )}
           </div>
+
+          <StockTeamSection team={stockTeam} notReady={harness.isError && isNotReady(harness.error)} />
 
           {drafts.length > 0 ? (
             <div>
