@@ -37,6 +37,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { ERASE_SURFACES, eraseRecord, verifyErasure } from '../lib/erase.mjs'
+import { LIFECYCLE_ACTIONS, applyLifecycle } from '../lib/write-pipeline.mjs'
 import { appendEvent } from '../lib/journal.mjs'
 import { serializeNote, parseNote } from '../lib/frontmatter.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
@@ -487,7 +488,131 @@ describe('git history — the one surface this cannot reach, said out loud', () 
     expect(verifyErasure({ id: SUBJECT, ...ctx() }).history.touched).toBe(false)
   })
 
-  it('Test 19: no code path in the module can execute a git command', () => {
+})
+
+describe('the lifecycle stops refusing — erase is the fifth action', () => {
+  /** applyLifecycle against the fixture, with every store the erase must reach. */
+  function lc(extra: Record<string, unknown> = {}) {
+    return applyLifecycle({ id: SUBJECT, action: 'erase', ...ctx(), ...extra })
+  }
+
+  it('Test 20: LIFECYCLE_ACTIONS performs five actions, and erase is one of them', () => {
+    expect(LIFECYCLE_ACTIONS).toEqual(['supersede', 'revoke', 'expire', 'archive', 'erase'])
+    expect(LIFECYCLE_ACTIONS).toHaveLength(5)
+    expect(Object.isFrozen(LIFECYCLE_ACTIONS)).toBe(true)
+  })
+
+  it('Test 21: erase returns an APPLIED result in the same shape a revoke returns', () => {
+    seedEverySurface()
+    seed(corpusDir, record({ id: NEIGHBOUR, claim: 'The morning window is clear' }))
+    seedDerivedIndexes()
+
+    const revoked = applyLifecycle({ ...ctx(), id: NEIGHBOUR, action: 'revoke', reason: 'superseded by a measurement' })
+    expect(revoked.applied).toBe(true)
+
+    const erased = lc()
+
+    expect(erased.applied).toBe(true)
+    expect(erased.action).toBe('erase')
+    expect(erased.id).toBe(SUBJECT)
+    expect(erased.changed.length).toBeGreaterThan(0)
+    // ONE contract: every key the other four return is present on the destructive path
+    for (const key of Object.keys(revoked)) expect(erased).toHaveProperty(key)
+    // read back — the record really is gone
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(false)
+  })
+
+  it('Test 22: the erase refusal is gone from the reachable path, and nothing points at a policy any more', () => {
+    seedEverySurface()
+    seedDerivedIndexes()
+
+    const res = lc()
+
+    expect(res.refusal).toBeUndefined()
+    expect(JSON.stringify(res)).not.toMatch(/refused by policy/)
+    expect(readFileSync(join(LIB, 'write-pipeline.mjs'), 'utf8')).not.toMatch(/ERASE_REFUSAL/)
+  })
+
+  it('Test 23: an unknown action still returns the unknown-action refusal naming the legal set', () => {
+    seedEverySurface()
+    seedDerivedIndexes()
+
+    const res = applyLifecycle({ ...ctx(), id: SUBJECT, action: 'obliterate' })
+
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/obliterate/)
+    for (const action of LIFECYCLE_ACTIONS) expect(res.refusal).toContain(action)
+    // and the guard changed nothing
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+  })
+
+  it('Test 24: a shared record erases from the corpus, verified on its own surface', () => {
+    seed(corpusDir, record())
+    seedDerivedIndexes()
+
+    const res = lc()
+
+    expect(res.applied).toBe(true)
+    expect(res.storage_class).toBe('shared')
+    expect(res.surfaces.find((s: any) => s.surface === 'corpus').outcome).toBe('cleared')
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(false)
+    expect(verifyErasure({ id: SUBJECT, ...ctx() }).clean).toBe(true)
+  })
+
+  it('Test 25: a this-machine-only record erases from the LOCAL store, and the corpus is not reported broken for lacking it', () => {
+    seed(localDir, record({ sensitivity: 'sensitive' }))
+    seed(corpusDir, record({ id: NEIGHBOUR, claim: 'The morning window is clear' }))
+    seedDerivedIndexes()
+
+    const res = lc()
+
+    expect(res.applied).toBe(true)
+    expect(res.storage_class).toBe('this-machine-only')
+    expect(existsSync(join(localDir, `${SUBJECT}.md`))).toBe(false)
+    expect(res.surfaces.find((s: any) => s.surface === 'local-store').outcome).toBe('cleared')
+    // routing, not a walk over everything: the corpus was never this record's home
+    expect(res.surfaces.find((s: any) => s.surface === 'corpus').applicable).toBe(false)
+    expect(res.failures).toEqual([])
+    // the corpus record that was never the subject is untouched
+    expect(existsSync(join(corpusDir, `${NEIGHBOUR}.md`))).toBe(true)
+    expect(verifyErasure({ id: SUBJECT, ...ctx() }).clean).toBe(true)
+  })
+
+  it('Test 26: a failed erase surfaces through applyLifecycle as a FAILURE, never as an applied result', () => {
+    seedEverySurface()
+    seedDerivedIndexes()
+
+    const draftPath = join(draftsDir, `${SUBJECT}.md`)
+    const res = lc({
+      fsImpl: {
+        rmSync: (path: string, opts: any) => {
+          if (String(path) === draftPath) throw new Error('EPERM: injected removal failure')
+          rmSync(path, opts)
+        },
+      },
+    })
+
+    expect(res.applied).toBe(false)
+    expect(String(res.refusal)).toContain('drafts')
+    expect(JSON.stringify(res.failures)).toContain('drafts')
+    expect(existsSync(draftPath)).toBe(true)
+  })
+
+  it('Test 27: the four pre-existing actions are unchanged — a revoke still transitions and never deletes', () => {
+    seed(corpusDir, record())
+    seedDerivedIndexes()
+
+    const res = applyLifecycle({ ...ctx(), id: SUBJECT, action: 'revoke', reason: 'the depot changed its scanner' })
+
+    expect(res.applied).toBe(true)
+    expect(res.status).toBe('revoked')
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+    expect(parseNote(readFileSync(join(corpusDir, `${SUBJECT}.md`), 'utf8'), { file: 'x' }).frontmatter.status).toBe('revoked')
+  })
+})
+
+describe('the module source — assertions that read the file, not the docs', () => {
+  it('Test 28: no code path in erase.mjs can execute a git command', () => {
     const source = readFileSync(join(LIB, 'erase.mjs'), 'utf8')
     expect(source).not.toMatch(/child_process/)
     expect(source).not.toMatch(/execSync|spawnSync|execFileSync/)

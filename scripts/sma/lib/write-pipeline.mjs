@@ -40,10 +40,15 @@
  * anti-patterns; a machine that quietly rewrites two beliefs into one has
  * decided something a human never reviewed.
  *
- * ERASE IS REFUSED, DELIBERATELY. `applyLifecycle` performs supersede, revoke,
- * expire and archive. It refuses `erase` with a pointer to the policy that owns
- * the question — and the refusal is honest precisely because there is no
- * deletion code path in this module for a caller to reach around it.
+ * ERASE IS DELEGATED, NOT PERFORMED HERE. `applyLifecycle` performs five
+ * actions: supersede, revoke, expire, archive — and erase, which it hands to
+ * erase.mjs. It used to REFUSE erase with a pointer to the policy that owned the
+ * question; D-11-05 answered that policy (physical removal from the corpus, the
+ * working tree and every derived index, verified — with git history stated as an
+ * untouched exception rather than promised), so the refusal became a delegation.
+ * The destructive effect still has no code path IN THIS FILE: it lives in one
+ * named module of its own, which is the purity posture stated immediately below
+ * rather than an exception to it.
  *
  * PURITY POSTURE. Filesystem effects live in named places only: `observe`
  * (journal append), `persist` (corpus write), `stage` (drafts write), `index`
@@ -66,6 +71,7 @@ import { parseNote, serializeNote } from './frontmatter.mjs'
 import { scanForSecrets } from './flight.mjs'
 import { findContradictions } from './consolidate.mjs'
 import { buildAreaIndexes, buildIndex, computeDateMap } from './generator.mjs'
+import { eraseRecord } from './erase.mjs'
 import {
   INTERPRETATION_MODES,
   MEMORY_TYPES,
@@ -965,11 +971,13 @@ export function lifecycle(state) {
 // ── the lifecycle transitions (callable outside the walk) ───────────────────
 
 /**
- * The transitions this module performs. `erase` is NOT among them, and its
- * absence here is the whole design: a caller cannot ask for erasure by spelling
- * it differently, because no code path in this file removes a file.
+ * The five lifecycle actions. The first four TRANSITION a record — the bytes stay
+ * on disk and what the system is willing to believe about them changes. The
+ * fifth, `erase`, destroys: it is delegated wholesale to erase.mjs, so no code
+ * path in THIS file removes a file, and a caller still reaches destruction only
+ * by naming it.
  */
-export const LIFECYCLE_ACTIONS = Object.freeze(['supersede', 'revoke', 'expire', 'archive'])
+export const LIFECYCLE_ACTIONS = Object.freeze(['supersede', 'revoke', 'expire', 'archive', 'erase'])
 
 /** action -> the status it writes. */
 const LIFECYCLE_STATUS = Object.freeze({
@@ -978,22 +986,6 @@ const LIFECYCLE_STATUS = Object.freeze({
   expire: 'expired',
   archive: 'archived',
 })
-
-/**
- * Why erase is refused. It names the policy that owns the question rather than
- * pretending the question does not exist: erasure means physical removal from
- * EVERY permitted store with the copies verified, and a module that writes
- * markdown into a git history cannot promise any part of that sentence.
- */
-const ERASE_REFUSAL =
-  'erase is refused by policy, not by omission: it means physical removal from every permitted store with ' +
-  'copies and indexes verified, and a module that writes markdown into a git working tree cannot promise ' +
-  'that — deleting the file would leave the history intact and the promise false. See docs/MEMORY-MODEL.md ' +
-  '§6 (lifecycle: after erasure there is no record, at most a tombstone where policy requires one) and §7 ' +
-  '(storage classes: what each class may hold, and what git can never guarantee), and ' +
-  'docs/MEMORY-THREAT-MODEL.md for the policy itself — §2 (what each class may hold and where it may sit) ' +
-  'and §7 (why physical erasure is a stated non-goal of this substrate rather than a missing feature). ' +
-  'No deletion code path exists in the write pipeline for a caller to reach.'
 
 /**
  * applyLifecycle({corpusDir, id, action, by, reason, now, journalDir, terminalId})
@@ -1023,12 +1015,25 @@ export function applyLifecycle(input = {}) {
   const { corpusDir, id, action, by, reason, now, journalDir, terminalId } = input
   const base = { applied: false, action: String(action ?? ''), id: String(id ?? ''), changed: [] }
 
-  if (String(action) === 'erase') return { ...base, refusal: ERASE_REFUSAL }
   if (!LIFECYCLE_ACTIONS.includes(action)) {
     return {
       ...base,
       refusal: `unknown lifecycle action "${String(action)}" — this module performs ${LIFECYCLE_ACTIONS.join(' · ')} and nothing else`,
     }
+  }
+
+  // THE DESTRUCTIVE PATH LEAVES THIS FILE IMMEDIATELY. It is handled before the
+  // record is loaded from the corpus, because a this-machine-only record is not
+  // IN the corpus: `loadRecord` would refuse it, and the one class of record that
+  // most needs erasing would be the one class that could not be erased. The
+  // result is returned in the shape every other action returns, extended with
+  // what only a destructive operation has to report (the surfaces, the failures,
+  // the dangling links it refused to rewrite, and the history exception).
+  // `status` is present and null: an erased record has no status, because it has
+  // no record.
+  if (String(action) === 'erase') {
+    const res = eraseRecord({ ...input, id: base.id })
+    return { ...res, action: base.action, id: base.id, status: null }
   }
 
   const subject = loadRecord(corpusDir, id)

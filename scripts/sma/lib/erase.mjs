@@ -196,15 +196,24 @@ function fsOf(input) {
  */
 function contextOf(input = {}) {
   const corpusDir = String(input.corpusDir ?? '')
-  const repoRoot = typeof input.repoRoot === 'string' && input.repoRoot.trim() ? input.repoRoot : '.'
-  const indexDir = input.indexDir ?? join(repoRoot, '.sma', 'index')
+  // A DESTRUCTIVE OPERATION NEVER INVENTS THE PATH OF A STORE IT WILL DELETE FROM.
+  // Everywhere else in this codebase an unstated root defaults to the process's
+  // cwd — a harmless posture for computing a path or reading one. Here it is not:
+  // with a cwd default, an `eraseRecord` aimed at a temporary fixture corpus
+  // would find the REAL installation's lexical index sitting at the relative
+  // path and rebuild it from the fixture, silently destroying an artifact the
+  // caller never named. The `.sma` stores are therefore opt-in: `repoRoot`,
+  // `indexDir`, `localDir` or `dbPath` must be given, and a store nobody named
+  // is reported `not-configured` rather than guessed at.
+  const repoRoot = typeof input.repoRoot === 'string' && input.repoRoot.trim() ? input.repoRoot : null
+  const indexDir = input.indexDir ?? (repoRoot ? join(repoRoot, '.sma', 'index') : null)
   return {
     id: String(input.id ?? '').trim(),
     corpusDir,
     draftsDir: input.draftsDir ?? join(corpusDir, DRAFTS_DIRNAME),
     episodesDir: input.episodesDir ?? join(corpusDir, EPISODES_DIRNAME),
-    localDir: input.localDir ?? localStorePath({ repoRoot }),
-    dbPath: input.dbPath ?? join(indexDir, LEXICAL_INDEX_FILE),
+    localDir: input.localDir ?? (repoRoot ? localStorePath({ repoRoot }) : null),
+    dbPath: input.dbPath ?? (indexDir ? join(indexDir, LEXICAL_INDEX_FILE) : null),
     tagsPath: input.tagsPath ?? join(corpusDir, 'TAGS.md'),
     commitHash: input.commitHash ?? null,
     dateMap: input.dateMap && typeof input.dateMap === 'object' ? input.dateMap : {},
@@ -225,6 +234,26 @@ function copyPathOn(ctx, name) {
   if (name === 'local-store') return ctx.localDir ? join(ctx.localDir, `${ctx.id}.md`) : null
   return null
 }
+
+/**
+ * Is this surface's location known? A store the caller never named is neither
+ * cleared nor claimed clean — it is reported `not-configured`, so a caller that
+ * forgot to name its local store learns that from the result instead of from a
+ * copy nobody looked for.
+ */
+function surfaceConfigured(ctx, name) {
+  if (name === 'corpus' || name === 'generated-index' || name === 'area-indexes') return ctx.corpusDir !== ''
+  if (name === 'drafts') return Boolean(ctx.draftsDir)
+  if (name === 'local-store') return Boolean(ctx.localDir)
+  if (name === 'lexical-index') return Boolean(ctx.dbPath)
+  return false
+}
+
+/** The reason a surface is unreachable, in the caller's own terms. */
+const NOT_CONFIGURED_NOTE = Object.freeze({
+  'local-store': 'no local store was named (pass localDir or repoRoot) — this surface was neither cleared nor verified, and a destructive operation does not guess the path of a store it would delete from',
+  'lexical-index': 'no lexical index was named (pass dbPath, indexDir or repoRoot) — this surface was neither rebuilt nor verified, and rebuilding an index the caller never named could destroy an unrelated one',
+})
 
 /** Every INDEX-<area>.md that exists in the corpus right now. */
 function areaIndexFiles(ctx) {
@@ -558,19 +587,33 @@ export function verifyErasure(input = {}) {
 
   const surfaces = []
   const survivors = []
+  const unverified = []
   for (const surface of ERASE_SURFACES) {
+    if (!surfaceConfigured(ctx, surface.name)) {
+      unverified.push(surface.name)
+      surfaces.push({
+        surface: surface.name,
+        kind: surface.kind,
+        describe: surface.describe,
+        configured: false,
+        survivors: [],
+        note: NOT_CONFIGURED_NOTE[surface.name] ?? 'this surface has no configured location',
+      })
+      continue
+    }
     const seen = survivorsOn(ctx, surface.name)
     surfaces.push({
       surface: surface.name,
       kind: surface.kind,
       describe: surface.describe,
+      configured: true,
       survivors: seen.survivors,
       note: seen.note,
     })
     survivors.push(...seen.survivors)
   }
 
-  return { ...base, clean: survivors.length === 0, surfaces, survivors }
+  return { ...base, clean: survivors.length === 0, surfaces, survivors, unverified }
 }
 
 /**
@@ -592,6 +635,7 @@ export function eraseRecord(input = {}) {
     storage_class: null,
     surfaces: [],
     failures: [],
+    unverified: [],
     dangling: [],
     history: historyNote(),
   }
@@ -619,7 +663,23 @@ export function eraseRecord(input = {}) {
   const changed = []
   const cleared = []
 
+  const unverified = []
   for (const surface of ERASE_SURFACES) {
+    if (!surfaceConfigured(ctx, surface.name)) {
+      unverified.push(surface.name)
+      surfaces.push({
+        surface: surface.name,
+        kind: surface.kind,
+        describe: surface.describe,
+        applicable: false,
+        outcome: 'not-configured',
+        removed: [],
+        rebuilt: [],
+        survivors: [],
+        note: NOT_CONFIGURED_NOTE[surface.name] ?? 'this surface has no configured location',
+      })
+      continue
+    }
     if (!applicable.has(surface.name)) {
       surfaces.push({
         surface: surface.name,
@@ -685,6 +745,7 @@ export function eraseRecord(input = {}) {
           surfaces: cleared,
           changed,
           failures: failures.map((f) => f.surface),
+          unverified,
           dangling: dangling.length,
           by: ctx.by,
           reason: ctx.reason,
@@ -699,7 +760,7 @@ export function eraseRecord(input = {}) {
     // The result below still reports the truth of what was removed.
   }
 
-  const result = { ...base, applied, storage_class: storageClass, changed, surfaces, failures, dangling }
+  const result = { ...base, applied, storage_class: storageClass, changed, surfaces, failures, unverified, dangling }
   if (!applied) {
     result.refusal = `erase "${ctx.id}" did NOT complete: ${failures.map((f) => f.reason).join(' · ')}. The surfaces that were cleared are listed in \`surfaces\` — the corpus is in a partial state and the operation is not to be reported as done.`
   }

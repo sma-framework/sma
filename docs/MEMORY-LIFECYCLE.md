@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every step below is executable code with test coverage; where a behavior is deliberately absent, this document says so and says why. |
-| Document version | 1.0 |
+| Document version | 1.1 |
 | Date | 2026-08-02 |
 | Applies to | `schema_version: 2` records; v1 notes are read unchanged and are never written by this path |
 | Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
@@ -347,11 +347,13 @@ than assumed fresh: read the reported status, or clear the directory before a ba
 
 ## 5. Lifecycle actions
 
-Four transitions are performed, and they are callable outside the walk as well as from
-step 12: **supersede · revoke · expire · archive**. Each writes the status of
-[`MEMORY-MODEL.md` §6](MEMORY-MODEL.md#6-lifecycle-status).
+Five actions are performed, and they are callable outside the walk as well as from
+step 12: **supersede · revoke · expire · archive · erase**. The first four are
+*transitions* — the bytes stay on disk and each writes the status of
+[`MEMORY-MODEL.md` §6](MEMORY-MODEL.md#6-lifecycle-status). The fifth *destroys*; it has
+rules of its own and they are in [§5.5](#55-erase-physical-removal-verified) below.
 
-Rules that hold for all four:
+Rules that hold for all four transitions:
 
 - **The grammar gets the last word.** A record the shared serializer cannot re-emit is
   **refused**, not rewritten into something the emitter invented. A refusal changes
@@ -364,7 +366,7 @@ Rules that hold for all four:
 - **Every transition is journalled** — action, id, resulting status, and what changed. The
   journal is fail-open: an unwritable log degrades the audit trail, it does not un-write
   the corpus.
-- **Unknown actions are refused by name**, listing the four that exist.
+- **Unknown actions are refused by name**, listing the five that exist.
 
 ### 5.1 supersede
 
@@ -405,33 +407,59 @@ Removed from active retrieval, kept for history. This is also the disposition a 
 gives to a note that is narrative rather than doctrine
 ([`MEMORY-MODEL.md` §9.5](MEMORY-MODEL.md#95-episodes--the-other-half-of-the-representation)).
 
-### 5.5 Erase: deferred by policy
+### 5.5 Erase: physical removal, verified
 
-**Erase is not implemented, and its absence is a decision rather than a gap.**
+**Erase removes the record.** It is the only action here that destroys rather than
+transitions, and it lives in a module of its own — `scripts/sma/lib/erase.mjs` — so the
+write pipeline still contains no deletion code path. Until 2026-08-04 this section recorded
+erase as *deferred by policy*; the policy has since been decided, and this is what was
+decided.
 
-It is outside the set of transitions the module performs, and — more importantly — **no
-deletion code path exists in the write path for a caller to reach around it.** A refusal is
-only honest if the capability genuinely is not there.
+**What it does.** It clears every surface a copy of a record can survive on, and then
+verifies each one by **reading it back from disk**:
 
-**Why.** Erasure means physical removal from *every* permitted store with copies and
-indexes verified. A module that writes markdown into a git working tree cannot promise any
-part of that sentence: deleting the file would leave the history intact and the promise
-false. Saying "erased" while a `git log -p` still returns the content is worse than saying
-nothing.
+| Surface | What it is | How it is cleared |
+|---|---|---|
+| the active corpus | the reviewed record itself, in the git working tree | the file is removed |
+| the drafts area | a staged copy awaiting review, in the same tree | the file is removed |
+| the this-machine-only store | material that never entered git | the file is removed |
+| the generated index | `MEMORY.md`, which carries claim text on every CORE line | rebuilt from the corpus |
+| the per-area catalogs | `INDEX-<area>.md`, one line of claim text per note | rebuilt; an area index the rebuild no longer produces is **deleted** |
+| the derived lexical index | the `.sma/` index that answers queries from axis text | rebuilt from the corpus |
 
-**What happens instead.** A request to erase returns a refusal that names the policy owning
-the question, pointing at [`MEMORY-MODEL.md` §6](MEMORY-MODEL.md#6-lifecycle-status) (what
-erasure would have to mean, and the tombstone a policy may require) and
-[§7](MEMORY-MODEL.md#7-sensitivity-and-storage-classes) (what each storage class can and
-cannot guarantee). The companion
-[`MEMORY-THREAT-MODEL.md` §2](MEMORY-THREAT-MODEL.md#2-storage-classes) holds the
-storage-class policy this deferral hangs on.
+**Derived indexes are rebuilt, never edited.** That is the law that makes a derived index
+safe to delete in the first place; hand-editing an index line would turn the index into a
+second source of truth. The rebuild is done by the same builders the index verb uses.
 
-**What to do today.** Prevent, and retire. Material that cannot be allowed to persist must
-not enter a git-backed class in the first place — that is what step 3's hard stop and the
-sensitivity classes are for. Material already recorded is retired with `revoke` (it must
-not be used) or `archive` (out of retrieval, kept for history), and removed from history by
-the repository-level tooling that owns that job — not by a memory verb pretending it can.
+**A partial erasure is a failure.** If any surface still holds a copy after the clearing,
+the result is `applied: false` and names that surface — never a success with a warning
+attached. The surfaces that *did* succeed stay enumerated, because an operator told only
+"it failed" cannot know what state the corpus is now in.
+
+**A store nobody named is not guessed at.** The `.sma/` stores are opt-in: without a
+`repoRoot`, `localDir`, `indexDir` or `dbPath`, those surfaces are reported
+`not-configured` and are neither cleared nor claimed clean. A destructive operation does
+not invent the path of a store it would delete from.
+
+**Links are reported, never rewritten.** A record still pointing at the erased one — an
+episode, or a claim carrying `derived_from` — is reported as **dangling**. It is not
+repointed and not deleted:
+[`MEMORY-MODEL.md`](MEMORY-MODEL.md) §13 forbids rewriting records this
+operation did not author, and a pointer silently re-aimed is worse than one openly broken.
+
+**The journal keeps the evidence.** The erasure appends one event to the append-only
+journal and no prior entry is touched. The journal holds a pointer and an event, never the
+content, so keeping it does not defeat the deletion — and a deletion that erased the record
+of itself could not be audited at all.
+
+**Git history is NOT touched, and the result says so.** This is the honest limit, stated
+rather than promised away: a record that reached a commit is still in that commit and in
+every clone made since. Automatic history rewriting was **rejected by decision** — it is
+irreversible and it breaks every clone that already exists — so no code path in the module
+executes a git command, and every result carries the exception in words. The way to never
+need it is prevention: material that cannot be allowed to persist belongs in the
+this-machine-only class, which keeps it out of git in the first place. The manual route is
+in [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) §6.4.
 
 ## 6. The migration ritual
 
@@ -514,4 +542,5 @@ fall out of sync. See
 
 | Version | Date | Change |
 |---|---|---|
+| 1.1 | 2026-08-04 | Erase shipped (§5.5 rewritten from «deferred by policy» to the six surfaces it clears and verifies, the partial-erasure failure rule, the opt-in stores, the dangling-link report, the journal evidence and the git-history exception); §5 now describes five actions rather than four. |
 | 1.0 | 2026-08-02 | First version. The twelve landed pipeline steps with their module boundaries and stop conditions, the three outcomes and the write verb, the seven-path risk-approval ladder with its precedence, the draft conventions and their three markers, the four lifecycle transitions with the symmetric-pointer law and the deliberate erase deferral, the preview-only migration ritual with per-file acceptance, and the migrated-record grace with its horizon. |
