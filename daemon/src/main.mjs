@@ -50,7 +50,14 @@ import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } f
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
 import { handleChatTurn, readHistory } from './front/chat.mjs'
-import { readHarness, loadMcpRegistry, applyAgentToggle, applySkillAssign, applyMcpToggle } from './front/harness.mjs'
+import {
+  readHarness,
+  loadMcpRegistry,
+  applyAgentToggle,
+  applySkillAssign,
+  applyMcpToggle,
+  applyStockTeamToggle,
+} from './front/harness.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
 import { deriveState, parseReceiptSummary } from './front/state.mjs'
@@ -180,6 +187,9 @@ export function createDaemon(o = {}) {
         applyAgentToggle,
         applySkillAssign,
         applyMcpToggle,
+        // The one act that switches the whole shipped SMA team on — it rides the agent
+        // toggle door under a reserved target, so the route table stayed at thirty.
+        applyStockTeamToggle,
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
         verbRunner: (m) => runMerge({ ...m, execGit, runTests: o.runTests }),
       },
