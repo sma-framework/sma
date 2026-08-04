@@ -308,6 +308,85 @@ export interface MemorySurface {
 
 export type MemorySection = MemorySurface | AbsentSection
 
+// ── the CONNECTED project's memory (SB-031 part 2) ──────────────────────────────────
+//
+// A different question from `memory` above, which is the notebook of the repository this
+// daemon serves. This one is a project the founder CONNECTED — its notebook is shown and,
+// by founder decision, never edited from here. What can happen is a migration of an
+// older-format notebook, and even that is preview-first and one file at a time.
+
+/**
+ * A note of a CONNECTED project, by NAME only — the same law the local corpus holds: the row
+ * is a pointer, the body stays in the project. It is its own type rather than a reuse of
+ * MemoryNotePointer because the two are pointers into different trees, and a screen that
+ * could mix them up would be showing one project's lesson under another project's heading.
+ */
+export interface ProjectMemoryPointer {
+  id: string
+  title: string
+}
+
+/**
+ * What a migration would do to ONE note, described without quoting it.
+ *
+ * There is no diff here on purpose. A diff is the note's body, and a body never travels
+ * (T-11-09-01). What travels instead is a closed vocabulary: what the note would BECOME
+ * (`disposition`), WHY in one code the screen renders in words (`reasonCode`), which
+ * frontmatter keys would be dropped, how many lines would move, and whether the proposal
+ * validates. `applicable` is the daemon's own answer to «can this one be applied at all».
+ */
+export interface ProjectMigrationFile {
+  file: string
+  disposition: 'v2-markup' | 'episode-archive' | 'skip'
+  reasonCode: string
+  droppedKeys: string[]
+  changedLines: number
+  errors: number
+  warnings: number
+  sensitive: boolean
+  hasStub: boolean
+  draftStatus: 'written' | 'kept-existing' | 'already-applied' | 'none'
+  applicable: boolean
+}
+
+/** The whole preview: what it looked at, and how much of it could actually be applied. */
+export interface ProjectMigration {
+  total: number
+  applicable: number
+  files: ProjectMigrationFile[]
+}
+
+/**
+ * A connected project's notebook as a SURFACE.
+ *
+ * `liveness` is the honest half of the contract. `live` means a watcher is running on THIS
+ * project; `polling` means the view refreshes on an interval — because the watcher could not
+ * be established, errored, or is still pointed at a project that is no longer the selected
+ * one. The screen renders the two differently on purpose: a window that claims live and
+ * shows stale is worse than one that never claimed it.
+ *
+ * `readOnly` is carried rather than assumed, so the boundary the screen states comes from the
+ * payload and not from a belief about what the daemon happens to do today.
+ */
+export interface ProjectMemorySurface {
+  absent?: false
+  project: { id: string; name: string }
+  liveness: 'live' | 'polling'
+  readOnly: true
+  noteCount: number
+  coreSize: number
+  tags: MemoryTagCount[]
+  recent: ProjectMemoryPointer[]
+  generation: 'v1' | 'v2' | 'mixed' | 'empty'
+  migratable: boolean
+  v1Count: number
+  v2Count: number
+  unreadableCount?: number
+  migration?: ProjectMigration
+}
+
+export type ProjectMemorySection = ProjectMemorySurface | AbsentSection
+
 /** One training of the snapshot: when it ran, over how much, and how it scored. */
 export interface StyleTraining {
   date: string
@@ -379,6 +458,8 @@ export interface StatePayload {
   accounts: AccountEntry[]
   memory: MemorySection
   style: StyleSection
+  /** The CONNECTED project's notebook — absent on a daemon with no project connected. */
+  projectMemory: ProjectMemorySection
 }
 
 // ── one task: GET /api/task/:id ─────────────────────────────────────────────────────

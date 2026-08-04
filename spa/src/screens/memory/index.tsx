@@ -1,5 +1,7 @@
-import { useStateQuery } from '../../api/queries'
-import type { MemoryNotePointer } from '../../api/types'
+import { useState } from 'react'
+
+import { useApprove, useStateQuery } from '../../api/queries'
+import type { MemoryNotePointer, ProjectMemorySurface, ProjectMigrationFile } from '../../api/types'
 import { plural } from '../../shell/format'
 import { TagCloud } from './TagCloud'
 
@@ -28,6 +30,25 @@ import { TagCloud } from './TagCloud'
  *
  * The corpus lives inside the project and travels with it to the owner's own machines. No
  * third-party service holds a copy, and the line at the bottom of the screen says so.
+ *
+ * ═════════════ THE CONNECTED PROJECT — SHOWN, NEVER EDITED (SB-031 part 2) ═════════════
+ *
+ * Below the local notebook the screen shows the notebook of the project that is currently
+ * CONNECTED. It obeys the same laws — a row is a pointer, no body travels — plus one more
+ * that is a founder decision and not a technical limit: this project's memory is READ-ONLY
+ * from here. It is edited in the project itself, by the people working in it.
+ *
+ * Two sentences on the glass exist because leaving them out would make the screen dishonest:
+ *   - «Показываем, не редактируем» — so nobody looks for an edit button that will not exist;
+ *   - and, when the connection has degraded, that the view refreshes on a schedule rather
+ *     than instantly. A window that claims to be live and quietly shows yesterday is worse
+ *     than one that never claimed it, which is the whole reason the daemon reports the
+ *     degraded mode instead of hiding it.
+ *
+ * The ONE thing that can be written into a connected project is a migration of a note still
+ * written in the older format, and it is deliberately slow: the daemon previews what would
+ * change per file, the screen shows that, and each file needs its own «да» before anything
+ * is applied. There is no «применить всё» and there must never be one.
  */
 
 /** A byte count in the words a person reads without translating. */
@@ -108,10 +129,206 @@ function NoteRow({ note, first }: { note: MemoryNotePointer; first: boolean }) {
   )
 }
 
+/**
+ * The reserved POST /api/approve target prefix that means «apply the migration proposal for
+ * this one note» instead of «approve a task». DECLARED HERE, beside the call it belongs to,
+ * exactly as the stock-team target is declared beside its own call: the daemon (server.mjs
+ * PROJECT_MIGRATION_TARGET_PREFIX) owns the literal and this is the other side of that seam.
+ */
+const MIGRATION_TARGET_PREFIX = '__migrate__'
+
+/** What a note would BECOME, in the founder's language rather than the engine's. */
+const DISPOSITION_LABEL: Record<string, string> = {
+  'v2-markup': 'станет записью нового образца',
+  'episode-archive': 'уедет в архив событий',
+  skip: 'менять нечего',
+}
+
+/** WHY, from the daemon's closed vocabulary. An unknown code shows itself rather than lying. */
+const REASON_LABEL: Record<string, string> = {
+  'doctrine-record': 'это правило — переносится как запись',
+  'history-episode': 'это история — переносится в архив событий',
+  'already-v2': 'уже нового образца',
+  structural: 'служебный файл, не заметка',
+  unreadable: 'файл не читается',
+  skipped: 'пропущена',
+}
+
+/** One note of the connected project's notebook. A pointer, like every row on this screen. */
+function ProjectNoteRow({ note, first }: { note: { id: string; title: string }; first: boolean }) {
+  return (
+    <div className={`flex min-w-0 items-baseline gap-3 px-[18px] py-[11px] ${first ? '' : 'border-t border-bd'}`}>
+      <span aria-hidden className="h-1.5 w-1.5 flex-none rounded-full bg-ok-tx" />
+      <span className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-tx">{note.title || note.id}</span>
+      <span className="max-w-[220px] flex-none truncate text-[11px] text-tx3" title={note.id}>
+        {note.id}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * One proposed migration, and the «да» that belongs to it.
+ *
+ * The row shows what would change BEFORE it offers to change it, and the offer is two steps:
+ * the button asks, and a second, explicit «Да, применить» does it. One file, one question,
+ * one answer — which is the whole shape of the promise this screen makes.
+ */
+function MigrationRow({ file, first }: { file: ProjectMigrationFile; first: boolean }) {
+  const approve = useApprove()
+  const [asking, setAsking] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+
+  const stem = file.file.replace(/\.md$/, '')
+  const applied = file.draftStatus === 'already-applied'
+
+  const confirm = () => {
+    setProblem(null)
+    approve.mutate(
+      { taskId: `${MIGRATION_TARGET_PREFIX}${stem}` },
+      {
+        onSuccess: (result) => {
+          setAsking(false)
+          if (!result || result.ok !== true) setProblem('Не применилось. Файл остался как был.')
+        },
+        onError: () => {
+          setAsking(false)
+          setProblem('Не применилось. Файл остался как был.')
+        },
+      },
+    )
+  }
+
+  return (
+    <div className={`flex flex-col gap-2 px-[18px] py-[13px] ${first ? '' : 'border-t border-bd'}`}>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-tx" title={file.file}>
+          {file.file}
+        </span>
+        <span className="flex-none text-[11px] text-tx2">
+          {DISPOSITION_LABEL[file.disposition] ?? file.disposition}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-tx3">
+        <span>{REASON_LABEL[file.reasonCode] ?? file.reasonCode}</span>
+        {file.changedLines > 0 ? (
+          <span className="tabular-nums">
+            строк изменится: {file.changedLines}
+          </span>
+        ) : null}
+        {file.droppedKeys.length > 0 ? (
+          <span title={file.droppedKeys.join(', ')}>
+            полей не перенесётся: {file.droppedKeys.length}
+          </span>
+        ) : null}
+        {file.errors > 0 ? <span className="text-warn-tx">не проходит проверку: {file.errors}</span> : null}
+        {file.hasStub ? <span>потребуется дописать формулировку</span> : null}
+        {file.sensitive ? <span className="text-warn-tx">помечена как чувствительная</span> : null}
+      </div>
+
+      {applied ? (
+        <span className="text-[11.5px] text-ok-tx">Применено.</span>
+      ) : !file.applicable ? (
+        <span className="text-[11.5px] text-tx3">Применять нечего.</span>
+      ) : asking ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11.5px] text-tx">Применить именно этот файл?</span>
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={approve.isPending}
+            className="rounded-[8px] border border-bd bg-ok-s px-3 py-1 text-[11.5px] font-semibold text-ok-tx disabled:opacity-60"
+          >
+            {approve.isPending ? 'Применяю…' : 'Да, применить'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setAsking(false)}
+            className="rounded-[8px] border border-bd bg-card px-3 py-1 text-[11.5px] text-tx2"
+          >
+            Отмена
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAsking(true)}
+          className="w-fit rounded-[8px] border border-bd bg-card px-3 py-1 text-[11.5px] font-semibold text-tx"
+        >
+          Применить
+        </button>
+      )}
+      {problem ? <span className="text-[11.5px] text-warn-tx">{problem}</span> : null}
+    </div>
+  )
+}
+
+/** The connected project's notebook: shown, not edited, and honest about how fresh it is. */
+function ConnectedProject({ project }: { project: ProjectMemorySurface }) {
+  const migration = project.migration
+  return (
+    <>
+      <div className="overflow-hidden rounded-[14px] border border-bd bg-card shadow-panel">
+        <CardHead
+          title={`Подключённый проект — ${project.project.name}`}
+          note={`${project.noteCount} ${plural(project.noteCount, 'запись', 'записи', 'записей')}`}
+        />
+        <div className="flex flex-col gap-1.5 px-[18px] py-[13px]">
+          <span className="text-[12.5px] leading-[1.5] text-tx">
+            Показываем записную книжку этого проекта. Отсюда она не редактируется — её ведут в
+            самом проекте.
+          </span>
+          <span className="text-[11.5px] leading-[1.5] text-tx2">
+            {project.liveness === 'live'
+              ? 'Связь живая: изменения в проекте попадают сюда сразу.'
+              : 'Живая связь недоступна — вид обновляется по расписанию, а не мгновенно.'}
+          </span>
+        </div>
+        {project.tags.length > 0 ? <TagCloud tags={project.tags} /> : null}
+        {project.recent.length === 0 ? (
+          <p className="m-0 border-t border-bd px-[18px] py-4 text-[12.5px] text-tx2">
+            Свежих записей в этом проекте нет.
+          </p>
+        ) : (
+          project.recent.map((note, i) => <ProjectNoteRow key={note.id} note={note} first={i === 0} />)
+        )}
+      </div>
+
+      {project.migratable ? (
+        <div className="overflow-hidden rounded-[14px] border border-bd bg-card shadow-panel">
+          <CardHead
+            title="Записи старого образца"
+            note={migration ? `${migration.applicable} из ${migration.total}` : String(project.v1Count)}
+          />
+          <div className="flex flex-col gap-1.5 px-[18px] py-[13px]">
+            <span className="text-[12.5px] leading-[1.5] text-tx">
+              Часть записей этого проекта написана по старому образцу. Ниже — что именно
+              изменится в каждой из них.
+            </span>
+            <span className="text-[11.5px] leading-[1.5] text-tx2">
+              Ничего не применяется, пока Вы не скажете «да» по каждому файлу отдельно. Кнопки
+              «применить всё» здесь нет намеренно.
+            </span>
+          </div>
+          {migration && migration.files.length > 0 ? (
+            migration.files.map((file, i) => <MigrationRow key={file.file} file={file} first={i === 0} />)
+          ) : (
+            <p className="m-0 border-t border-bd px-[18px] py-4 text-[12.5px] text-tx2">
+              Разбор ещё не готов — он появится при следующем чтении проекта.
+            </p>
+          )}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 export function Screen() {
   const state = useStateQuery()
   const memory = state.data?.memory
   const filled = memory && !memory.absent ? memory : null
+  const projectMemory = state.data?.projectMemory
+  const connected = projectMemory && !projectMemory.absent ? projectMemory : null
 
   const noteCount = filled?.noteCount ?? 0
   const tags = filled?.tags ?? []
@@ -205,6 +422,8 @@ export function Screen() {
               </div>
             </div>
           )}
+
+          {connected ? <ConnectedProject project={connected} /> : null}
 
           <p className="m-0 max-w-[720px] text-[11.5px] leading-[1.6] text-tx3">
             Ничего не хранится у чужих сервисов. Всё у Вас: корпус лежит внутри проекта и едет с
