@@ -96,6 +96,19 @@ const ID_RE = /^[A-Za-z0-9._-]{1,64}$/
  */
 export const STOCK_TEAM_TARGET = '__stock-team__'
 
+/**
+ * The reserved POST /api/approve target PREFIX meaning «apply the migration proposal for one
+ * note of the connected project» rather than «approve a task» (SB-031 part 2, phase 11 plan
+ * 09). It rides the approve door for the same reason the stock team rides the toggle door:
+ * the route table is frozen at thirty and a per-file yes is, structurally, exactly what
+ * approve already is — a human's word, serialized, on one named unit of work.
+ *
+ * The suffix is the note's stem; `<prefix><stem>` stays inside ID_RE, so the id validation
+ * that guards every other approve applies unchanged. The applier arrives through deps and
+ * validates the reconstructed filename again on its own side.
+ */
+export const PROJECT_MIGRATION_TARGET_PREFIX = '__migrate__'
+
 /** POST JSON body cap (V5) — a roster body is a handful of short fields, never a blob. */
 const JSON_BODY_CAP = 16 * 1024
 
@@ -412,6 +425,13 @@ function stateDeps(config, deps, project) {
     repoDir: deps.repoDir,
     memoryDir: deps.memoryDir,
     fsImpl: deps.fsImpl,
+    // the CONNECTED project's corpus («Память» shows it read-only): the readers live in
+    // project-sync.mjs and arrive through deps like every other collaborator, so this file
+    // carries no static edge onto them and a daemon that wires none simply answers absent.
+    readProjectMemory: deps.readProjectMemory,
+    previewProjectMigration: deps.previewProjectMigration,
+    projectLiveness: deps.projectLiveness,
+    migrationStagingDir: deps.migrationStagingDir,
     // hub-only: the federation merge that fills machines[] and pours in the peers' rows.
     // Absent on a standalone daemon, where the derive is byte-identical to before.
     aggregator: deps.aggregator,
@@ -705,6 +725,11 @@ async function handleEnqueue({ req, res, config, deps }) {
  * awaiting_approval→approving (claim generation), run the EXISTING serialized merge verb
  * on wt/<taskId> LOCALLY (never a push), then CAS to approved on green / back to
  * awaiting_approval on red with the merge receipt. A lost CAS race → 409 (T-9.5-26).
+ *
+ * OR, when the id carries the reserved PROJECT_MIGRATION_TARGET_PREFIX, → the connected
+ * project's per-file migration applier. Same door, same token, same «a human said yes to
+ * exactly this one thing» meaning — and the route table did not move. Nothing about the task
+ * path is reached on that branch: no CAS, no merge verb, no branch name.
  */
 async function handleApprove({ req, res, deps }) {
   const body = await readJsonBody(req)
@@ -714,6 +739,26 @@ async function handleApprove({ req, res, deps }) {
   if (await proxyToMachine(res, b, deps, '/api/approve')) return undefined
   const taskId = b.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
+
+  if (taskId.startsWith(PROJECT_MIGRATION_TARGET_PREFIX)) {
+    if (typeof deps.applyProjectMigration !== 'function') return send501(res)
+    const file = `${taskId.slice(PROJECT_MIGRATION_TARGET_PREFIX.length)}.md`
+    let result
+    try {
+      // The composition root already knows WHICH project is connected and WHERE the daemon
+      // stages its proposals; this handler contributes only the file a person named.
+      result = await deps.applyProjectMigration({ file })
+    } catch (err) {
+      return applierError(res, err)
+    }
+    const applied = !!(result && result.applied)
+    if (applied) emitSafe(deps, { event: 'project.updated', projectId: result.projectId })
+    return sendJson(res, 200, {
+      ok: applied,
+      migration: { file, applied, reasonCode: (result && result.reasonCode) || 'refused' },
+    })
+  }
+
   if (typeof deps.casExec !== 'function' || typeof deps.verbRunner !== 'function') return send501(res)
 
   const table = deps.taskTable || 'sma_task_attempts'
