@@ -44,7 +44,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
-import { makeComparator, readNotes, isCoreNote, visibilityVerdict, CORE_THRESHOLD } from './generator.mjs'
+import { makeComparator, readNotes, isCoreNote, visibilityVerdict, untrustedVerdict, CORE_THRESHOLD } from './generator.mjs'
 
 /**
  * SELECTION BASES — why a record that survived the hard filters is in the pack.
@@ -202,9 +202,20 @@ export function resolvePeriphery(opts) {
   // generator's (isVisibleNow), the same module that owns CORE membership: one axis,
   // one implementation. A hidden record is out of DELIVERY, not out of the corpus —
   // the area indexes still catalogue it, because an index is a map, not a payload.
+  //
+  // TWO VERDICTS, ONE CHAIN. `visibilityVerdict` answers «may this be SHOWN» from typed
+  // structural fields and never from a body — that law is what makes it auditable, so
+  // the D-11-07 question «may this be BELIEVED» is asked by its SIBLING right here,
+  // inside the same filter, rather than as a fifth check that would retire the law, or
+  // as a parallel filter in the compiler that would become a second read path.
   const visibility = { now, audience, scope }
-  const notes = allNotes.filter((n) => {
+  const refuse = (n) => {
     const denial = visibilityVerdict(n, visibility)
+    if (denial) return denial
+    return untrustedVerdict(n, visibility)
+  }
+  const notes = allNotes.filter((n) => {
+    const denial = refuse(n)
     if (denial && emit) {
       const { reason, ...detail } = denial
       emit({ step: 'visibility', id: n.file, verdict: 'rejected', reason, detail })
