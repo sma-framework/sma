@@ -45,7 +45,11 @@
  *   - a machine with no corpus / no training is {absent:true}, never an error.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
+import { Readable } from 'node:stream'
 
 import {
   deriveState,
@@ -55,7 +59,10 @@ import {
   deriveAccounts,
   deriveMemory,
   deriveStyle,
+  deriveProjectMemory,
 } from '../src/front/state.mjs'
+import { previewProjectMigration, applyProjectMigration, readProjectMemory } from '../src/front/project-sync.mjs'
+import { createFrontServer, ROUTES, PROJECT_MIGRATION_TARGET_PREFIX } from '../src/front/server.mjs'
 import { REASON_LABELS } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
@@ -1024,5 +1031,440 @@ describe('deriveState — memory and style ride the SAME route as everything els
     })
     expect(payload.memory).toEqual({ absent: true })
     expect(payload.style).toEqual({ absent: true })
+  })
+})
+
+// ════════════════ the CONNECTED PROJECT on the wire (phase 11 plan 09) ════════════════
+//
+// SB-031 part 2 / ROADMAP addition 8: a project the daemon does not own is readable from
+// the window, READ-ONLY, and an older-format corpus offers a per-file preview of what
+// migration would change. The four claims that matter, and all four are asserted rather
+// than described:
+//   - the surface carries counts, tags and pointers — never a note body, never a path;
+//   - «no project connected» is a declared-absent SHAPE, not a null and not an error;
+//   - a preview writes NOTHING into the connected project — asserted by a byte snapshot of
+//     the whole fixture tree taken before the first call and after the second;
+//   - applying rides the EXISTING approve door under a reserved target, one file at a time,
+//     and the route table is still exactly thirty.
+
+const PROJ = '/founder/sma-dev'
+const PROJ_MEM = `${PROJ}/.claude/memory`
+const PROJECT_BODY_MARKER = 'ТЕЛО-ЗАМЕТКИ-ЧУЖОГО-ПРОЕКТА-НЕ-ЕДЕТ'
+
+const projectV1Note = `---
+description: Каждая повторная оплата шлёт ключ идемпотентности исходной попытки
+kind: bug-lesson
+tags: [security, testing]
+use-when: правишь ретраи чекаута
+importance: 9
+---
+${PROJECT_BODY_MARKER}
+`
+
+const projectFiles: Record<string, string> = {
+  [`${PROJ_MEM}/MEMORY.md`]: '# оглавление проекта\n',
+  [`${PROJ_MEM}/payment-retry.md`]: projectV1Note,
+}
+
+const projectConfig = {
+  ...rulesConfig,
+  projects: [{ id: 'sma-dev', name: 'SMA (разработка)', path: PROJ }],
+  activeProject: 'sma-dev',
+}
+
+describe('deriveProjectMemory — a project the daemon reads and does not own', () => {
+  it('carries the corpus as a surface: counts, tags, pointers — no body, no absolute path', () => {
+    const fs = mkFs(projectFiles)
+    const section = deriveProjectMemory({ config: projectConfig, readProjectMemory, fsImpl: fs.impl })
+
+    expect(section.absent).toBeUndefined()
+    expect(section.project).toEqual({ id: 'sma-dev', name: 'SMA (разработка)' })
+    expect(section.noteCount).toBe(1)
+    expect(section.recent[0].id).toBe('payment-retry')
+    expect(section.readOnly).toBe(true)
+
+    const serialized = JSON.stringify(section)
+    expect(serialized).not.toContain(PROJECT_BODY_MARKER)
+    expect(serialized).not.toContain(PROJ) // no absolute path of a foreign project
+    expect(serialized).not.toContain('/founder')
+  })
+
+  it('reports the corpus generation, so «мигрировать» is offered only when it means something', () => {
+    const fs = mkFs(projectFiles)
+    const section = deriveProjectMemory({ config: projectConfig, readProjectMemory, fsImpl: fs.impl })
+    expect(section.generation).toBe('v1')
+    expect(section.migratable).toBe(true)
+  })
+
+  it('never claims «живая связь» without evidence — polling unless the watcher says otherwise', () => {
+    const fs = mkFs(projectFiles)
+    const bare = deriveProjectMemory({ config: projectConfig, readProjectMemory, fsImpl: fs.impl })
+    expect(bare.liveness).toBe('polling')
+
+    const live = deriveProjectMemory({
+      config: projectConfig,
+      readProjectMemory,
+      fsImpl: mkFs(projectFiles).impl,
+      projectLiveness: () => 'live',
+    })
+    expect(live.liveness).toBe('live')
+
+    const degraded = deriveProjectMemory({
+      config: projectConfig,
+      readProjectMemory,
+      fsImpl: mkFs(projectFiles).impl,
+      projectLiveness: () => {
+        throw new Error('the seam blew up')
+      },
+    })
+    expect(degraded.liveness).toBe('polling') // a broken seam degrades, it does not lie
+  })
+
+  it('«no project connected» is a declared-absent shape, never an error', () => {
+    expect(deriveProjectMemory({ config: rulesConfig, readProjectMemory })).toEqual({ absent: true })
+    expect(deriveProjectMemory({})).toEqual({ absent: true })
+    // a registry entry that names no folder on disk is not a connection
+    expect(
+      deriveProjectMemory({
+        config: { ...rulesConfig, projects: [{ id: 'x', name: 'X' }], activeProject: 'x' },
+        readProjectMemory,
+      }),
+    ).toEqual({ absent: true })
+  })
+
+  it('a connected project with no corpus at all reports absent rather than throwing', () => {
+    expect(() =>
+      deriveProjectMemory({ config: projectConfig, readProjectMemory, fsImpl: mkFs({}).impl }),
+    ).not.toThrow()
+    expect(deriveProjectMemory({ config: projectConfig, readProjectMemory, fsImpl: mkFs({}).impl })).toEqual({
+      absent: true,
+    })
+  })
+
+  it('a read model that throws is a missing section, never a wedged poll', () => {
+    const section = deriveProjectMemory({
+      config: projectConfig,
+      readProjectMemory: () => {
+        throw new Error('the project vanished mid-read')
+      },
+    })
+    expect(section).toEqual({ absent: true })
+  })
+})
+
+describe('deriveState — projectMemory rides the SAME route, additively', () => {
+  it('the existing payload keys are unchanged in shape and projectMemory joins them', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: projectConfig,
+      readProjectMemory,
+      fsImpl: mkFs(projectFiles).impl,
+      clock: () => NOW,
+    })
+
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        'accounts',
+        'activeProject',
+        'awaiting',
+        'costs',
+        'done',
+        'federation',
+        'kpis',
+        'machines',
+        'memory',
+        'projectMemory',
+        'projects',
+        'queue',
+        'rules',
+        'spend',
+        'style',
+        'workers',
+      ].sort(),
+    )
+    expect(payload.projectMemory.noteCount).toBe(1)
+    expect(JSON.stringify(payload)).not.toContain(PROJECT_BODY_MARKER)
+  })
+
+  it('a daemon with no project connected still answers — the section reads absent', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: rulesConfig,
+      clock: () => NOW,
+    })
+    expect(payload.projectMemory).toEqual({ absent: true })
+  })
+})
+
+// ── the migration preview, against a REAL fixture project on a real temp disk ──
+//
+// This half cannot use the in-memory seam: the phase-8 migration engine reads and stages
+// through node:fs directly, and pointing it at a fake would test the fake. The fixture is
+// hermetic all the same — a temp tree, a FIXED date, and no clock in the assertions.
+
+const MIGRATION_NOW = new Date('2026-08-04T12:00:00Z')
+
+const FIXTURE_LIVE = `---
+description: Every payment retry must send the idempotency key of the original attempt
+kind: bug-lesson
+tags: [security, testing]
+use-when: touching checkout retry or the payment client
+importance: 9
+---
+The incident narrative lives in the linked episode.
+`
+
+const FIXTURE_ALREADY_V2 = `---
+schema_version: 2
+id: already-migrated
+memory_type: procedural
+truth_mode: normative
+claim: Уже во второй схеме
+status: active
+language: ru
+tags: [memory]
+description: уже мигрирована
+---
+Тело.
+`
+
+let fixtureRoot: string | null = null
+
+/** A recursive {relative path → bytes} snapshot of the WHOLE connected project. */
+function snapshotTree(dir: string, base = dir): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const entry of readdirSync(dir).sort()) {
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) Object.assign(out, snapshotTree(path, base))
+    else out[relative(base, path).split('\\').join('/')] = readFileSync(path, 'utf8')
+  }
+  return out
+}
+
+function makeFixtureProject() {
+  fixtureRoot = mkdtempSync(join(tmpdir(), 'sma-project-sync-'))
+  const projectDir = join(fixtureRoot, 'connected')
+  const stagingDir = join(fixtureRoot, 'daemon-staging')
+  const corpusDir = join(projectDir, '.claude', 'memory')
+  mkdirSync(corpusDir, { recursive: true })
+  writeFileSync(join(corpusDir, 'MEMORY.md'), '# index\n')
+  writeFileSync(join(corpusDir, 'payment-retry.md'), FIXTURE_LIVE)
+  writeFileSync(join(corpusDir, 'already-migrated.md'), FIXTURE_ALREADY_V2)
+  return { projectDir, stagingDir, corpusDir }
+}
+
+afterEach(() => {
+  if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true })
+  fixtureRoot = null
+})
+
+describe('previewProjectMigration — it describes, and it writes nothing into the project', () => {
+  it('two consecutive preview calls leave EVERY file of the connected project byte-identical', () => {
+    const { projectDir, stagingDir } = makeFixtureProject()
+
+    const before = snapshotTree(projectDir)
+    previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+    previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+    const after = snapshotTree(projectDir)
+
+    expect(after).toEqual(before)
+  })
+
+  it('reports the older-format notes per file, and says nothing about the ones already v2', () => {
+    const { projectDir, stagingDir } = makeFixtureProject()
+    const preview = previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+
+    expect(preview.total).toBe(2)
+    const byFile = Object.fromEntries(preview.files.map((f: any) => [f.file, f]))
+    expect(byFile['payment-retry.md'].disposition).toBe('v2-markup')
+    expect(byFile['payment-retry.md'].reasonCode).toBe('doctrine-record')
+    expect(byFile['payment-retry.md'].changedLines).toBeGreaterThan(0)
+    expect(byFile['payment-retry.md'].applicable).toBe(true)
+    expect(byFile['already-migrated.md'].disposition).toBe('skip')
+    expect(byFile['already-migrated.md'].reasonCode).toBe('already-v2')
+    expect(byFile['already-migrated.md'].applicable).toBe(false)
+  })
+
+  it('the preview surface carries no diff text, no note body and no absolute path', () => {
+    const { projectDir, stagingDir } = makeFixtureProject()
+    const preview = previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+
+    const serialized = JSON.stringify(preview)
+    expect(serialized).not.toContain('The incident narrative')
+    expect(serialized).not.toContain(projectDir)
+    expect(serialized).not.toContain(stagingDir)
+    expect(serialized).not.toContain('tmp')
+  })
+
+  it('a project with no corpus previews nothing rather than throwing', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'sma-project-sync-'))
+    expect(previewProjectMigration({ projectDir: join(fixtureRoot, 'nothing'), stagingDir: fixtureRoot })).toBe(null)
+    expect(previewProjectMigration({})).toBe(null)
+  })
+})
+
+describe('applyProjectMigration — one file, one yes, through the door that already exists', () => {
+  it('applies exactly the named file and consumes the proposal, so a second apply refuses', () => {
+    const { projectDir, stagingDir, corpusDir } = makeFixtureProject()
+    previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+
+    const first = applyProjectMigration({ projectDir, stagingDir, file: 'payment-retry.md', now: MIGRATION_NOW })
+    expect(first.applied).toBe(true)
+    expect(readFileSync(join(corpusDir, 'payment-retry.md'), 'utf8')).toContain('schema_version: 2')
+
+    const second = applyProjectMigration({ projectDir, stagingDir, file: 'payment-retry.md', now: MIGRATION_NOW })
+    expect(second.applied).toBe(false)
+  })
+
+  it('a file nobody proposed is refused and the project is left byte-identical', () => {
+    const { projectDir, stagingDir } = makeFixtureProject()
+    previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+
+    const before = snapshotTree(projectDir)
+    const result = applyProjectMigration({ projectDir, stagingDir, file: 'never-proposed.md', now: MIGRATION_NOW })
+
+    expect(result.applied).toBe(false)
+    expect(result.reasonCode).toBe('unknown-file')
+    expect(snapshotTree(projectDir)).toEqual(before)
+  })
+
+  it('a file name that is not a plain corpus file is refused before anything is read', () => {
+    const { projectDir, stagingDir } = makeFixtureProject()
+    const before = snapshotTree(projectDir)
+
+    for (const file of ['../../etc/passwd', 'sub/dir/note.md', '', 'note.txt']) {
+      const result = applyProjectMigration({ projectDir, stagingDir, file, now: MIGRATION_NOW })
+      expect(result.applied).toBe(false)
+      expect(result.reasonCode).toBe('invalid-file')
+    }
+    expect(snapshotTree(projectDir)).toEqual(before)
+  })
+
+  it('the result names no path — an apply answers with a file name and a code', () => {
+    const { projectDir, stagingDir } = makeFixtureProject()
+    previewProjectMigration({ projectDir, stagingDir, now: MIGRATION_NOW })
+    const result = applyProjectMigration({ projectDir, stagingDir, file: 'payment-retry.md', now: MIGRATION_NOW })
+    expect(JSON.stringify(result)).not.toContain(projectDir)
+  })
+})
+
+// ── the door: POST /api/approve, by dispatch, with the table still frozen at thirty ──
+
+const MIGRATION_TOKEN = 'b'.repeat(64)
+
+function mkMigrationReq(o: any = {}) {
+  const { method = 'POST', url = '/api/approve', body } = o
+  const req: any = Readable.from(body == null ? [] : [Buffer.from(JSON.stringify(body))])
+  req.method = method
+  req.url = url
+  req.headers = { authorization: `Bearer ${MIGRATION_TOKEN}`, 'content-type': 'application/json' }
+  req.socket = { remoteAddress: '10.0.0.1' }
+  return req
+}
+
+function mkMigrationRes() {
+  const res: any = {
+    statusCode: 0,
+    body: '',
+    headersSent: false,
+    writeHead(code: number) {
+      res.statusCode = code
+      res.headersSent = true
+      return res
+    },
+    setHeader() {},
+    getHeader() {
+      return undefined
+    },
+    write(c: any) {
+      res.body += String(c)
+      return true
+    },
+    end(c?: any) {
+      if (c != null) res.body += String(c)
+      return res
+    },
+  }
+  return res
+}
+
+async function callApprove(front: any, body: any) {
+  const res = mkMigrationRes()
+  await front.handle(mkMigrationReq({ body }), res)
+  return res
+}
+
+describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
+  it('the route table is still exactly thirty entries and carries no migration route', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(30)
+    expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
+  })
+
+  it('the reserved target dispatches to the applier and never touches the task CAS', async () => {
+    const applied: any[] = []
+    const seen: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: () => {
+          throw new Error('a migration approval must never reach the task CAS')
+        },
+        verbRunner: () => {
+          throw new Error('a migration approval must never run the merge verb')
+        },
+        applyProjectMigration: (args: any) => {
+          applied.push(args)
+          return { applied: true, file: args.file, reasonCode: 'applied' }
+        },
+        hub: { emit: (e: any) => seen.push(e) },
+      },
+    })
+
+    const res = await callApprove(front, { taskId: `${PROJECT_MIGRATION_TARGET_PREFIX}payment-retry` })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, migration: { file: 'payment-retry.md', applied: true } })
+    expect(applied[0]).toEqual({ file: 'payment-retry.md' }) // one file, named by the human
+    expect(seen).toContainEqual(expect.objectContaining({ event: 'project.updated' }))
+  })
+
+  it('a refusal from the applier is a refusal on the wire, not a silent success', async () => {
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        applyProjectMigration: () => ({ applied: false, file: 'x.md', reasonCode: 'unknown-file' }),
+      },
+    })
+    const res = await callApprove(front, { taskId: `${PROJECT_MIGRATION_TARGET_PREFIX}x` })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: false, migration: { applied: false, reasonCode: 'unknown-file' } })
+  })
+
+  it('an unwired applier answers 501 — never a fabricated ok', async () => {
+    const front = createFrontServer({ config: { token: MIGRATION_TOKEN, workers: [] }, deps: {} })
+    const res = await callApprove(front, { taskId: `${PROJECT_MIGRATION_TARGET_PREFIX}x` })
+    expect(res.statusCode).toBe(501)
+  })
+
+  it('an ordinary taskId still goes to the task CAS — the door did not change meaning', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        applyProjectMigration: () => {
+          throw new Error('the migration applier must not be reached for a task id')
+        },
+        casExec: async (...args: any[]) => {
+          calls.push(args)
+          return { rows: [] } // a lost CAS race → 409, which proves the CAS was reached
+        },
+        verbRunner: async () => ({ merged: true }),
+      },
+    })
+    const res = await callApprove(front, { taskId: 'task-42' })
+    expect(calls.length).toBeGreaterThan(0)
+    expect(res.statusCode).toBe(409)
   })
 })
