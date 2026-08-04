@@ -215,7 +215,14 @@ export function forge(input: { kind: DraftKind; description: string; slugHint?: 
   )
 }
 
-/** Switch one helper on or off. */
+/**
+ * The reserved id that means «the whole team that came with SMA», not one helper. It goes
+ * through the SAME door a single helper does — the daemon reads it as the team switch — so
+ * turning the pipeline on is one act and not a new kind of request.
+ */
+export const STOCK_TEAM_TARGET = '__stock-team__'
+
+/** Switch one helper on or off. The reserved id above switches the whole shipped team. */
 export function toggleAgent(id: string, enabled: boolean): Promise<ToggleResult> {
   return postJson<ToggleResult>('/api/agent/toggle', { id, enabled })
 }
