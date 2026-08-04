@@ -265,6 +265,25 @@ describe('memory forget — one command, and it says which state it applied', ()
     expect(frontmatterOf(corpusDir, NEIGHBOUR)?.status).toBe('archived')
   })
 
+  it('Test 7b: --archive really removes the record from the pack (D-11-DEFER-01, closed here)', () => {
+    // `--archive` promises «out of active retrieval, kept for history» while the
+    // read path acted on two of the four retirements, so an archived record was
+    // still delivered. A forget flag that leaves the record quotable is a flag
+    // that lies about what it did — asserted through the REAL pack, both sides.
+    const id = 'working-depot-scanner-archived'
+    seed(corpusDir, record({ id }))
+    expect(packedIds()).toContain(`${id}.md`)
+
+    const res = runCli(['memory', 'forget', id, '--corpus', corpusDir, '--archive'])
+    expect(res.status).toBe(0)
+    expect(packedIds()).not.toContain(`${id}.md`)
+
+    // `--expire` has no equivalent assertion to make, and the absence is the point:
+    // the action refuses unless `valid_until` has already passed, and a record whose
+    // date has passed is ALREADY withheld by the window check. Writing the same test
+    // for it would pass without the status filter existing at all.
+  })
+
   it('Test 8: the top-level verb table gains NO key — forget is a subcommand (D-11-08)', () => {
     const source = readFileSync(CLI, 'utf8')
     const start = source.indexOf('const HANDLERS = {')

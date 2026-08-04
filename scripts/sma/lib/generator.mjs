@@ -56,8 +56,23 @@ export const CORE_THRESHOLD = 9
  * less important — they are known to be wrong, and an index that keeps quoting
  * them into every session is worse than one that never learned them. They stay
  * catalogued in their area index (findable, with the state named) and out of CORE.
+ *
+ * ALL FOUR RETIREMENTS, NOT TWO. This set held `{superseded, revoked}` until
+ * 2026-08-04 while the WRITE path retired four states — `write-pipeline.mjs`
+ * `LIFECYCLE_ACTIONS` and `migrate-v1-v2.mjs` `RETIRED_STATUSES` both name
+ * `expired` and `archived` too — so a record the pipeline had archived was still
+ * delivered, and `MEMORY-LIFECYCLE.md` §5.4's promise («removed from active
+ * retrieval, kept for history») was not kept by any code. The gap was recorded
+ * as D-11-DEFER-01 and closed by plan 11-14, which put the retirement states
+ * behind a user-facing verb: `memory forget --archive` that leaves the record
+ * quotable is a verb that lies about what it did.
+ *
+ * The word means «this record has been retired by a decision», so `expired`
+ * belongs here on the record's own say-so, independently of the `valid_until`
+ * window that `visibilityVerdict` checks separately — a record can be stamped
+ * expired before its date, and the stamp is the newer statement.
  */
-export const CORE_EXCLUDED_STATUSES = new Set(['superseded', 'revoked'])
+export const CORE_EXCLUDED_STATUSES = new Set(['superseded', 'revoked', 'expired', 'archived'])
 
 /**
  * What a schema-v2 grade is worth on the shared weight axis.

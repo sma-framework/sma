@@ -92,7 +92,14 @@ function writeCorpus() {
   writeNote('crm-handler-revoked-core.md', ['status: revoked'], 9)
   writeNote('crm-handler-revoked-periphery.md', ['status: revoked'], 5)
   writeNote('crm-handler-superseded.md', ['status: superseded'], 5)
-  writeNote('crm-handler-expired-window.md', ['status: expired', 'valid_until: 2026-01-01'], 5)
+  // ONE variable per note, which is this file's own stated discipline. This note
+  // carried `status: expired` AND a past `valid_until` until 2026-08-04 — two
+  // signals for one question, and it only stayed readable while the status half
+  // was inert. Once plan 11-14 widened CORE_EXCLUDED_STATUSES to all four
+  // retirements the status began winning first, and the two tests below stopped
+  // measuring the clock they are named after. The note is `active` so that the
+  // window, and nothing else, decides its fate.
+  writeNote('crm-handler-expired-window.md', ['status: active', 'valid_until: 2026-01-01'], 5)
 }
 
 /** Compile with the REAL loader — no `resolve` double anywhere in this file. */
@@ -204,33 +211,48 @@ describe('ACC-2 — a retired record never reaches the pack (compilePack, real r
   })
 })
 
-describe('the status words the read-time filter does NOT act on today (recorded gap — plan 11-03 owns it)', () => {
+describe('the other two retirements — the recorded gap, CLOSED by plan 11-14 on 2026-08-04', () => {
   /**
-   * CORE_EXCLUDED_STATUSES (generator.mjs) is exactly {superseded, revoked}. The
-   * schema's lifecycle vocabulary (STATUS_VALUES, schema-v2.mjs) is six words wide,
-   * and migrate-v1-v2.mjs's own RETIRED_STATUSES calls four of them retired —
-   * superseded, revoked, expired, archived. The read path acts on two of those four.
+   * THIS BLOCK WAS DELIBERATELY GREEN ON THE WRONG BEHAVIOUR, and it is now
+   * flipped. Until 2026-08-04 `CORE_EXCLUDED_STATUSES` (generator.mjs) held exactly
+   * {superseded, revoked} while the WRITE path retired four states —
+   * `write-pipeline.mjs` `LIFECYCLE_ACTIONS` and `migrate-v1-v2.mjs`
+   * `RETIRED_STATUSES` both name `expired` and `archived` too. A record the pipeline
+   * had archived was still delivered, with no verdict in the trace. The block below
+   * asserted that true-but-unwanted behaviour on purpose (D-11-DEFER-01), so that the
+   * day the gap closed, it would fail loudly and be flipped by hand instead of the
+   * behaviour changing under a silently green suite. That day was 2026-08-04, when
+   * plan 11-14 put the retirement states behind a user-facing verb: `memory forget
+   * --archive` that leaves the record quotable is a verb that lies about what it did.
    *
-   * A record stamped `archived`, and a record stamped `status: expired` whose
-   * valid_until has NOT passed, are both delivered. Recorded here as an executable
-   * fact so that the day plan 11-03 closes the gap, this expectation fails loudly and
-   * is flipped deliberately — instead of the behaviour changing under a green suite.
+   * The assertions are inverted, not deleted. A reader comparing this file across
+   * that commit sees exactly which behaviour changed and in which direction.
    */
-  it('delivers an archived record, and a status:expired record still inside its window', () => {
+  it('withholds an archived record, and a status:expired record still inside its window', () => {
     writeCorpus()
     writeNote('crm-handler-archived.md', ['status: archived'], 5)
     writeNote('crm-handler-expired-status-only.md', ['status: expired', 'valid_until: 2027-01-01'], 5)
 
-    const trace: { step: string; id?: string; verdict?: string }[] = []
+    const trace: { step: string; id?: string; verdict?: string; reason?: string }[] = []
     const packed = noteIds(compile({ trace }))
 
-    // NOT the assertion ACC-2 would like to make — the assertion the code earns today
-    expect(packed).toContain('crm-handler-archived.md')
-    expect(packed).toContain('crm-handler-expired-status-only.md')
+    // the assertion ACC-2 always wanted, and the code now earns
+    expect(packed).not.toContain('crm-handler-archived.md')
+    expect(packed).not.toContain('crm-handler-expired-status-only.md')
 
-    // and the filter is silent about them: no verdict, so nothing for an explainer to print
-    const withheldIds = trace.filter((e) => e.step === 'visibility' && e.verdict === 'rejected').map((e) => e.id)
-    expect(withheldIds).not.toContain('crm-handler-archived.md')
-    expect(withheldIds).not.toContain('crm-handler-expired-status-only.md')
+    // and the filter SAYS SO: a withheld record leaves a verdict an explainer can print,
+    // which is the half of the fix that makes the absence contestable rather than silent
+    const withheld = trace.filter((e) => e.step === 'visibility' && e.verdict === 'rejected')
+    const withheldIds = withheld.map((e) => e.id)
+    expect(withheldIds).toContain('crm-handler-archived.md')
+    expect(withheldIds).toContain('crm-handler-expired-status-only.md')
+    expect(withheld.find((e) => e.id === 'crm-handler-archived.md')).toMatchObject({
+      reason: 'status-retired',
+      detail: { field: 'status', value: 'archived' },
+    })
+
+    // the two ACTIVE records are still delivered — this widened a filter, it did not empty the pack
+    expect(packed).toContain('crm-handler-active-core.md')
+    expect(packed).toContain('crm-handler-active-periphery.md')
   })
 })
