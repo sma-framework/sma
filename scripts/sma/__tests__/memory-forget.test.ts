@@ -321,11 +321,12 @@ describe('memory forget --erase — irreversible, confirmed once, honest about h
     // is no TTY. Test 11 already proves the refusal fires under exactly that
     // condition; this asserts the SOURCE can never learn to read a terminal instead.
     const source = readFileSync(CLI, 'utf8')
-    const start = source.indexOf('async function cmdMemoryForget')
-    expect(start).toBeGreaterThan(0)
-    const body = source.slice(start, source.indexOf('\n}\n', start))
-    expect(body).not.toContain('isTTY')
-    expect(body).not.toContain('createInterface')
+    expect(source).toContain('async function cmdMemoryForget')
+    // asserted over the WHOLE CLI rather than one function body: a guard that can
+    // be dodged by moving the code into a helper is not a guard. There is no
+    // terminal prompt anywhere in this product, and this is what keeps it that way.
+    expect(source).not.toContain('isTTY')
+    expect(source).not.toContain('createInterface')
 
     // and behaviourally, once more, with stdin explicitly empty
     const res = forget(['--erase'])

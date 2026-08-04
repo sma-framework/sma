@@ -2789,6 +2789,7 @@ const MEMORY_FORGET_USAGE = [
   'usage: sma memory forget <id> --reason "<почему>"',
   '       sma memory forget <id> --replaced-by <новый-id>',
   '       sma memory forget <id> --expire | --archive',
+  '       sma memory forget <id> --erase --yes',
   '',
   '  Одна команда, чтобы система перестала считать запись верной. Внутри',
   '  состояний несколько, но помнить их наизусть не нужно: команда выбирает сама',
@@ -2801,12 +2802,46 @@ const MEMORY_FORGET_USAGE = [
   '                      сразу: старая помечается заменённой, новая — заменяющей.',
   '  --expire            просрочить. Только если дата в valid_until уже прошла.',
   '  --archive           убрать в архив. Из работы уходит, для истории остаётся.',
+  '  --erase             СТЕРЕТЬ СОВСЕМ. Файл удаляется отовсюду, где он лежит,',
+  '                      и все указатели пересобираются без него. Вернуть будет',
+  '                      нечем. Сам по себе флаг ничего не удаляет: он печатает,',
+  '                      что будет стёрто, и останавливается.',
+  '  --yes               согласие на --erase. Это флаг, а не вопрос в терминале:',
+  '                      отсутствие терминала согласием не считается.',
   '  --corpus <dir>      где искать. По умолчанию .claude/memory',
   '  --json              машинный вывод',
   '',
-  '  Ничего из этого не удаляет файл. Совсем стереть — отдельное действие, и оно',
-  '  необратимо: смотрите docs/MEMORY-LIFECYCLE.md.',
+  '  Чего «стереть совсем» НЕ делает: оно не трогает историю git. Если запись',
+  '  когда-то попала в коммит, она осталась в этом коммите и во всех копиях',
+  '  репозитория. Чистить историю за Вас мы не будем: это необратимо и ломает',
+  '  чужие копии. Что можно сделать руками — docs/MEMORY-LIFECYCLE.md §5.7.',
 ].join('\n')
+
+/**
+ * The unpleasant truth, in one place so both the refusal and the completed
+ * erase say it in exactly the same words. It is deliberately short and
+ * deliberately not softened: a person who believes a record is gone will act on
+ * that belief, including about material they wanted nobody to see.
+ *
+ * The engine carries its own, longer version on every result (`HISTORY_EXCEPTION`
+ * in lib/erase.mjs) for a machine reader; this is the human register of the same
+ * fact, and the document carries the manual steps neither of them should repeat.
+ */
+const FORGET_HISTORY_LINE =
+  'историю git это не трогает: если запись когда-то попала в коммит, она осталась в этом коммите и ' +
+  'во всех копиях репозитория. Убрать её оттуда можно только руками — как именно и почему мы не делаем ' +
+  'этого за Вас, написано в docs/MEMORY-LIFECYCLE.md §5.7. Чтобы это вообще не понадобилось, такое ' +
+  'кладут в класс «только на этой машине»: туда история не заглядывает, потому что он в неё не попадает.'
+
+/** The six surfaces of lib/erase.mjs, in the words of the person who owns them. */
+const ERASE_SURFACE_WORDS = Object.freeze({
+  corpus: 'память проекта',
+  drafts: 'черновики',
+  'local-store': 'хранилище только этой машины',
+  'generated-index': 'общий указатель MEMORY.md',
+  'area-indexes': 'указатели по темам',
+  'lexical-index': 'поисковый указатель',
+})
 
 /**
  * The four transitions in the words a person actually needs, and nothing else.
@@ -2854,7 +2889,7 @@ const STORAGE_CLASS_WORDS = Object.freeze({
  * Here the worst outcome is a mistyped intent quietly becoming a different
  * lifecycle action on a real record, so an unknown flag is refused by name.
  */
-const FORGET_FLAGS = new Set(['reason', 'replaced-by', 'expire', 'archive', 'corpus', 'json', 'raw', 'help'])
+const FORGET_FLAGS = new Set(['reason', 'replaced-by', 'expire', 'archive', 'erase', 'yes', 'corpus', 'json', 'raw', 'help'])
 
 /** Where the record actually is: the project's memory first, then this machine's own store. */
 function forgetLocate(id, stores) {
@@ -2918,12 +2953,15 @@ async function cmdMemoryForget({ positionals, flags, dirs }) {
   if (replacedBy !== '') asked.push('--replaced-by')
   if (flags.expire === true) asked.push('--expire')
   if (flags.archive === true) asked.push('--archive')
+  if (flags.erase === true) asked.push('--erase')
   if (asked.length > 1) {
     process.stderr.write(
       `SMA memory forget: ${asked.join(' и ')} вместе — это два разных действия. Выберите одно; ничего не сделано\n`,
     )
     return 1
   }
+
+  if (flags.erase === true) return cmdMemoryForgetErase({ id, flags, dirs })
 
   const action = replacedBy !== '' ? 'supersede' : flags.expire === true ? 'expire' : flags.archive === true ? 'archive' : 'revoke'
   const state = FORGET_STATES[action]
@@ -3002,6 +3040,147 @@ async function cmdMemoryForget({ positionals, flags, dirs }) {
   if (reason !== '') process.stdout.write(`  причина записана в журнал: ${reason}\n`)
   for (const path of result.changed) process.stdout.write(`  изменено: ${path}\n`)
   process.stdout.write('  файл на диске остался — это не удаление. Совсем стереть можно отдельно и необратимо\n')
+  return 0
+}
+
+/**
+ * memory forget <id> --erase [--yes] — the one destructive operation a person
+ * can reach in this product.
+ *
+ * THIS FUNCTION DELETES NOTHING ITSELF. Removal lives in lib/erase.mjs, which
+ * walks its own frozen list of surfaces and verifies each one by reading it back
+ * from disk. What is added here is a confirmation and a sentence — a second
+ * implementation of deletion beside the first is exactly how the two stop
+ * agreeing about what «gone» means.
+ *
+ * CONSENT IS A FLAG, NEVER A TERMINAL. `--erase` on its own prints what it would
+ * destroy and stops. `--yes` is the consent, the same posture `force-clear`,
+ * `gates override` and `memory migrate --apply` already use. Nothing here reads
+ * a terminal, so a missing one cannot be mistaken for agreement — the failure
+ * mode that turns a guard into decoration.
+ *
+ * THE CALLER CONTRACT IS HONOURED HERE OR NOWHERE (D-11-DEFER-14). `eraseRecord`
+ * refuses to invent the paths of the `.sma` stores it would delete from, and it
+ * cannot run git to order a rebuilt index. Both are passed from here: without
+ * the store paths an erase silently skips the this-machine-only store and the
+ * lexical index — the two surfaces restricted material is most likely to be on —
+ * and without the date map a rebuilt MEMORY.md comes out in a different order
+ * from what `memory index` regenerates. Anything the engine still could not
+ * reach comes back in `unverified`, and it is printed rather than swallowed.
+ */
+async function cmdMemoryForgetErase({ id, flags, dirs }) {
+  const { ERASE_SURFACES, eraseRecord, verifyErasure } = await import('./lib/erase.mjs')
+  const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const { localStorePath } = await import('./lib/local-store.mjs')
+  const generator = await import('./lib/generator.mjs')
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+  const indexDir = dirs?.indexDir ?? join(repoRoot, '.sma', 'index')
+
+  // The order a rebuilt index comes out in. Read-only, one git pass, fail-open
+  // to empty — the same runner and the same fallback the index rebuild uses.
+  let dateMap = {}
+  try {
+    const { execFileSync } = await import('node:child_process')
+    dateMap = generator.computeDateMap({
+      execGit: (args) => execFileSync('git', args, { encoding: 'utf8', cwd: repoRoot, stdio: GIT_READ_STDIO }),
+    })
+  } catch {
+    /* fail-open — erase inherits the anchor already on the index header */
+  }
+
+  const input = {
+    id,
+    corpusDir,
+    repoRoot,
+    localDir: localStorePath({ repoRoot }),
+    indexDir,
+    dbPath: join(indexDir, LEXICAL_INDEX_FILE),
+    dateMap,
+    journalDir: dirs?.journalDir,
+    terminalId: await resolveTerminalId(),
+    reason: typeof flags.reason === 'string' ? flags.reason.trim() : null,
+  }
+
+  const surfaceLine = (name) => `${ERASE_SURFACE_WORDS[name] ?? name} (${name})`
+
+  // ── no consent yet: say what would go, and stop ────────────────────────────
+  if (flags.yes !== true) {
+    const check = verifyErasure(input)
+    if (check.survivors.length === 0) {
+      process.stderr.write(`SMA memory forget: записи «${id}» нигде нет — стирать нечего. Ничего не сделано\n`)
+      return 1
+    }
+    process.stdout.write(`SMA memory forget: --erase сотрёт «${id}» насовсем. Вернуть будет нечем\n`)
+    process.stdout.write('  сейчас копии лежат здесь:\n')
+    for (const path of check.survivors) process.stdout.write(`    ${path}\n`)
+    process.stdout.write('  пройдено будет по всем местам сразу, и каждое потом перечитывается:\n')
+    for (const surface of ERASE_SURFACES) {
+      process.stdout.write(`    ${surfaceLine(surface.name)}\n`)
+    }
+    if (check.unverified.length) {
+      process.stdout.write(
+        `  проверить не получится: ${check.unverified.map(surfaceLine).join(', ')} — путь не задан\n`,
+      )
+    }
+    process.stdout.write(`  ${FORGET_HISTORY_LINE}\n`)
+    process.stdout.write('  ничего не сделано. Если Вы уверены, повторите то же самое с --yes:\n')
+    process.stdout.write(`    node scripts/sma/cli.mjs memory forget ${id} --erase --yes\n`)
+    process.stderr.write('SMA memory forget: без --yes ничего не стирается\n')
+    return 1
+  }
+
+  // ── consent given ─────────────────────────────────────────────────────────
+  const result = eraseRecord(input)
+
+  if (wantsJson(flags)) {
+    printJson(result)
+    return result.applied ? 0 : 1
+  }
+
+  if (result.refusal && !result.surfaces.length) {
+    process.stderr.write(`SMA memory forget: ${result.refusal}\n`)
+    return 1
+  }
+
+  process.stdout.write(
+    result.applied
+      ? `SMA memory forget: «${id}» стёрта совсем\n`
+      : `SMA memory forget: «${id}» стёрта НЕ ДО КОНЦА — часть копий осталась\n`,
+  )
+  for (const entry of result.surfaces) {
+    const what =
+      entry.removed.length ? `удалено: ${entry.removed.join(', ')}`
+      : entry.rebuilt.length ? 'пересобран без неё'
+      : entry.outcome === 'not-configured' ? 'путь не задан — не проверено'
+      : entry.outcome === 'not-applicable' ? 'здесь такие записи не лежат'
+      : entry.outcome === 'failed' ? `НЕ ПОЛУЧИЛОСЬ: ${entry.note ?? 'причина не названа'}`
+      : 'ничего не было'
+    process.stdout.write(`    ${surfaceLine(entry.surface)} — ${what}\n`)
+    for (const survivor of entry.survivors) {
+      process.stdout.write(`      ! копия ОСТАЛАСЬ: ${survivor}\n`)
+    }
+  }
+  if (result.unverified.length) {
+    process.stdout.write(
+      `  не проверено: ${result.unverified.map(surfaceLine).join(', ')} — путь к этому месту не задан, ` +
+        'поэтому чистым его назвать нельзя\n',
+    )
+  }
+  if (result.dangling.length) {
+    process.stdout.write('  на неё ещё ссылаются (мы эти записи не трогали, чужое не переписываем):\n')
+    for (const link of result.dangling) {
+      process.stdout.write(`    ${link.path ?? link.file ?? JSON.stringify(link)}\n`)
+    }
+  }
+  process.stdout.write(`  ${FORGET_HISTORY_LINE}\n`)
+  if (!result.applied) {
+    for (const failure of result.failures) {
+      process.stderr.write(`SMA memory forget: не удалось очистить ${failure.surface} — ${failure.reason}\n`)
+    }
+    return 1
+  }
   return 0
 }
 
