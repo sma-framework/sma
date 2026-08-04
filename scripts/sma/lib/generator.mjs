@@ -304,25 +304,35 @@ export function isVisibleNow(note, opts = {}) {
  * being line-wrapped or quoted — which is exactly how the benchmark's own carrier is
  * written. `[^.]{0,N}` keeps every match inside one sentence: a verb in one sentence
  * and a noun three sentences later is not an imperative, it is prose.
+ *
+ * WHY THE RUSSIAN HALVES DO NOT USE `\b` OR `\w`. JavaScript's `\w` is
+ * `[A-Za-z0-9_]` and its `\b` is defined in terms of it, so BOTH ARE BLIND TO
+ * CYRILLIC: a Russian alternative written with them matches nothing at all, silently,
+ * while the pattern still looks bilingual on the page. That is not a hypothetical —
+ * the first draft of this list was written that way and a fully Russian attack walked
+ * straight through it; it was caught by running the detector, not by reading it. The
+ * Russian halves therefore use the `u` flag with `\p{L}` classes and `(?<!\p{L})` /
+ * `(?!\p{L})` boundaries, and `memory-untrusted.test.ts` carries a Russian-only attack
+ * so the blindness cannot come back unnoticed.
  */
 export const INJECTION_MARKERS = Object.freeze([
   Object.freeze({
     name: 'override-prior-instructions',
     why: 'An imperative to disregard what came before is the canonical opening of an indirect prompt injection: a record making a claim about the world has no reason to address the reader’s prior instructions at all.',
     pattern:
-      /(?:\b(?:ignore|disregard|forget)\b[^.]{0,32}\b(?:previous|prior|earlier|preceding|above|all)\b[^.]{0,32}\b(?:instruction|prompt|rule|directive)s?\b)|(?:\b(?:игнорируй\w*|игнорировать|забудь\w*|не\s+выполняй)\b[^.]{0,40}\b(?:предыдущ\w+|прежн\w+|прошл\w+|вышеизложенн\w+|инструкци\w+|указани\w+)\b)/i,
+      /(?:\b(?:ignore|disregard|forget)\b[^.]{0,32}\b(?:previous|prior|earlier|preceding|above|all)\b[^.]{0,32}\b(?:instruction|prompt|rule|directive)s?\b)|(?:(?<!\p{L})(?:игнорируй\p{L}*|игнорировать|забудь\p{L}*|не\s+выполняй)(?!\p{L})[^.]{0,40}(?<!\p{L})(?:предыдущ\p{L}+|прежн\p{L}+|прошл\p{L}+|вышеизложенн\p{L}+|инструкци\p{L}+|указани\p{L}+))/iu,
   }),
   Object.freeze({
     name: 'outranks-user-task',
     why: 'A record asserting that its own text ranks above the user’s task is claiming authority it cannot have: retrieved memory is evidence offered to a decision, never the decision, so the assertion itself is the attack.',
     pattern:
-      /(?:\b(?:take|takes|has|have)\s+(?:priority|precedence)\s+over\b[^.]{0,48}\b(?:user|task|request|instruction|prompt)s?\b)|(?:\boverrides?\s+(?:the\s+)?(?:user|user['’]s)\b)|(?:\b(?:имеет|имеют)\s+приоритет\s+над\b[^.]{0,48}\b(?:задач\w+|инструкци\w+|указани\w+|запрос\w+|пользовател\w+))/i,
+      /(?:\b(?:take|takes|has|have)\s+(?:priority|precedence)\s+over\b[^.]{0,48}\b(?:user|task|request|instruction|prompt)s?\b)|(?:\boverrides?\s+(?:the\s+)?(?:user|user['’]s)\b)|(?:(?<!\p{L})(?:имеет|имеют)\s+приоритет\s+над(?!\p{L})[^.]{0,48}(?<!\p{L})(?:задач\p{L}+|инструкци\p{L}+|указани\p{L}+|запрос\p{L}+|пользовател\p{L}+))/iu,
   }),
   Object.freeze({
     name: 'exfiltrate-secrets',
-    why: 'An imperative to send credentials somewhere is the payload half of the same attack. The secret nouns are the UNAMBIGUOUS ones only — a bare "token" is an LLM accounting unit in this product’s own notes far more often than a credential, and a marker that cannot tell those apart would withhold ordinary knowledge.',
+    why: 'An imperative to send credentials somewhere is the payload half of the same attack. The secret nouns are the UNAMBIGUOUS ones only: a bare "token" is an LLM accounting unit in this product’s own notes far more often than a credential, and Russian «ключевой» is the adjective "central", not a key — a marker that cannot tell those apart would withhold ordinary knowledge, which is the denial-of-service half of the same threat.',
     pattern:
-      /(?:\b(?:disclose|reveal|expose|post|publish|send|share|leak|dump|upload)\b[^.]{0,64}\b(?:credentials?|secrets?|api[\s-]?keys?|(?:access|auth|bearer)[\s-]?tokens?|passwords?|\.env)\b)|(?:\b(?:вылож\w+|опубликуй\w*|опубликова\w+|отправ\w+|раскро\w+|пришл\w+|слей|скинь|передай)\b[^.]{0,64}\b(?:ключ\w*|секрет\w*|парол\w*|учётн\w+\s+данн\w+|учетн\w+\s+данн\w+))/i,
+      /(?:\b(?:disclose|reveal|expose|post|publish|send|share|leak|dump|upload)\b[^.]{0,64}\b(?:credentials?|secrets?|api[\s-]?keys?|(?:access|auth|bearer)[\s-]?tokens?|passwords?|\.env)\b)|(?:(?<!\p{L})(?:вылож\p{L}+|опубликуй\p{L}*|опубликова\p{L}+|отправ\p{L}+|раскро\p{L}+|пришл\p{L}+|слей|скинь|передай)(?!\p{L})[^.]{0,64}(?<!\p{L})(?:ключ(?:[аиуеы]|ей|ам|ами|ах|ом)?(?!\p{L})|секрет\p{L}*|парол\p{L}*|учётн\p{L}+\s+данн\p{L}+|учетн\p{L}+\s+данн\p{L}+))/iu,
   }),
 ])
 
