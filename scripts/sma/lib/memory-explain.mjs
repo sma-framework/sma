@@ -38,7 +38,7 @@ import { join } from 'node:path'
 
 import { compilePack, BUDGET_CUT_REASON } from './context-pack.mjs'
 import { SELECTION_BASES } from './loader.mjs'
-import { listNoteFiles, readNotes, VISIBILITY_REASONS } from './generator.mjs'
+import { listNoteFiles, readNotes, VISIBILITY_REASONS, UNTRUSTED_REASONS } from './generator.mjs'
 
 /** A corpus file whose frontmatter retrieval cannot parse — invisible to the loader. */
 const UNPARSED_REASON = 'unparsed'
@@ -61,6 +61,11 @@ export const EXPLAIN_REASONS = Object.freeze({
   SENSITIVITY_CEILING: VISIBILITY_REASONS.SENSITIVITY_CEILING,
   SCOPE_REPO: VISIBILITY_REASONS.SCOPE_REPO,
   SCOPE_ENVIRONMENT: VISIBILITY_REASONS.SCOPE_ENVIRONMENT,
+  // the trust filter's own vocabulary (generator.mjs untrustedVerdict) — a refusal the
+  // explainer could name but not COUNT would leave `hard_filtered` quietly short of the
+  // rejections it claims to total, which is the arithmetic version of a silent filter
+  SUSPICIOUS_INSTRUCTION: UNTRUSTED_REASONS.SUSPICIOUS_INSTRUCTION,
+  UNREADABLE_BODY: UNTRUSTED_REASONS.UNREADABLE_BODY,
   NO_TAG_OVERLAP: SELECTION_BASES.NO_TAG_OVERLAP,
   BUDGET_CUT: BUDGET_CUT_REASON,
   UNPARSED: UNPARSED_REASON,
@@ -215,7 +220,11 @@ export function explainRetrieval(opts = {}) {
   }
 
   const count = (reason) => rejected.filter((r) => r.reason === reason).length
-  const hardFiltered = Object.values(VISIBILITY_REASONS).reduce((n, reason) => n + count(reason), 0)
+  // Both hard-filter vocabularies, de-duplicated: FOREIGN_ORIGIN is an ALIAS of
+  // SCOPE_REPO by design (one decision, one reason string), so a plain concatenation
+  // would count that refusal twice.
+  const hardFilterReasons = new Set([...Object.values(VISIBILITY_REASONS), ...Object.values(UNTRUSTED_REASONS)])
+  const hardFiltered = [...hardFilterReasons].reduce((n, reason) => n + count(reason), 0)
 
   return {
     metric: 'memory-explain',

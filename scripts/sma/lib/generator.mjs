@@ -283,6 +283,118 @@ export function isVisibleNow(note, opts = {}) {
   return visibilityVerdict(note, opts) === null
 }
 
+// ──────────── read-time trust (the sibling filter, docs §9 · D-11-07) ─────────
+
+/**
+ * INJECTION_MARKERS — the shapes of text that count as AN INSTRUCTION AIMED AT THE
+ * READER rather than a claim about the world.
+ *
+ * The list is deliberately SHORT, NAMED and each entry states why it is a marker. A
+ * long unexplained regex list is the artifact that quietly gets tuned until a benchmark
+ * goes green, and at that point the filter measures the benchmark instead of the
+ * threat. Three shapes are the whole standard indirect-prompt-injection grammar, and
+ * anything a fourth would catch belongs in a review, not in a silent regex.
+ *
+ * Both languages the corpus is written in are covered in each marker, because a
+ * detector that only reads English would make «write the attack in Russian» the
+ * bypass.
+ *
+ * The patterns are applied to a NORMALIZED body (blockquote markers stripped, all
+ * whitespace collapsed to single spaces) so an attack does not become invisible by
+ * being line-wrapped or quoted — which is exactly how the benchmark's own carrier is
+ * written. `[^.]{0,N}` keeps every match inside one sentence: a verb in one sentence
+ * and a noun three sentences later is not an imperative, it is prose.
+ */
+export const INJECTION_MARKERS = Object.freeze([
+  Object.freeze({
+    name: 'override-prior-instructions',
+    why: 'An imperative to disregard what came before is the canonical opening of an indirect prompt injection: a record making a claim about the world has no reason to address the reader’s prior instructions at all.',
+    pattern:
+      /(?:\b(?:ignore|disregard|forget)\b[^.]{0,32}\b(?:previous|prior|earlier|preceding|above|all)\b[^.]{0,32}\b(?:instruction|prompt|rule|directive)s?\b)|(?:\b(?:игнорируй\w*|игнорировать|забудь\w*|не\s+выполняй)\b[^.]{0,40}\b(?:предыдущ\w+|прежн\w+|прошл\w+|вышеизложенн\w+|инструкци\w+|указани\w+)\b)/i,
+  }),
+  Object.freeze({
+    name: 'outranks-user-task',
+    why: 'A record asserting that its own text ranks above the user’s task is claiming authority it cannot have: retrieved memory is evidence offered to a decision, never the decision, so the assertion itself is the attack.',
+    pattern:
+      /(?:\b(?:take|takes|has|have)\s+(?:priority|precedence)\s+over\b[^.]{0,48}\b(?:user|task|request|instruction|prompt)s?\b)|(?:\boverrides?\s+(?:the\s+)?(?:user|user['’]s)\b)|(?:\b(?:имеет|имеют)\s+приоритет\s+над\b[^.]{0,48}\b(?:задач\w+|инструкци\w+|указани\w+|запрос\w+|пользовател\w+))/i,
+  }),
+  Object.freeze({
+    name: 'exfiltrate-secrets',
+    why: 'An imperative to send credentials somewhere is the payload half of the same attack. The secret nouns are the UNAMBIGUOUS ones only — a bare "token" is an LLM accounting unit in this product’s own notes far more often than a credential, and a marker that cannot tell those apart would withhold ordinary knowledge.',
+    pattern:
+      /(?:\b(?:disclose|reveal|expose|post|publish|send|share|leak|dump|upload)\b[^.]{0,64}\b(?:credentials?|secrets?|api[\s-]?keys?|(?:access|auth|bearer)[\s-]?tokens?|passwords?|\.env)\b)|(?:\b(?:вылож\w+|опубликуй\w*|опубликова\w+|отправ\w+|раскро\w+|пришл\w+|слей|скинь|передай)\b[^.]{0,64}\b(?:ключ\w*|секрет\w*|парол\w*|учётн\w+\s+данн\w+|учетн\w+\s+данн\w+))/i,
+  }),
+])
+
+/**
+ * The reason names of the read-time TRUST filter, frozen and owned here beside the code
+ * that runs them — the same law as VISIBILITY_REASONS above.
+ *
+ * FOREIGN_ORIGIN is deliberately NOT a new string. A note belonging to another
+ * repository is refused by the scope filter that has always owned that question, and
+ * minting a second name for the same verdict would give one decision two vocabularies
+ * and let them drift. It is aliased here so a consumer reading only this map still
+ * finds the foreign-origin answer under a name it recognises.
+ */
+export const UNTRUSTED_REASONS = Object.freeze({
+  SUSPICIOUS_INSTRUCTION: 'suspicious-instruction',
+  UNREADABLE_BODY: 'unreadable-body',
+  FOREIGN_ORIGIN: VISIBILITY_REASONS.SCOPE_REPO,
+})
+
+/**
+ * scanBodyForInjection(body) → {unreadable, markers[]}.
+ *
+ * Called ONCE per record, in `readNotes`, where the file text is already in memory —
+ * so the corpus is still read in a single pass and no second read path is introduced.
+ * What travels onward is the VERDICT MATERIAL (a boolean and the matched marker names),
+ * never the body: a trace that quoted the attack back would carry the payload into the
+ * very place the filter exists to keep it out of.
+ */
+function scanBodyForInjection(body) {
+  if (typeof body !== 'string') return { unreadable: true, markers: [] }
+  const normalized = body
+    .replace(/^[ \t]*>+[ \t]?/gm, ' ') // a quoted attack is still an attack
+    .replace(/\s+/g, ' ')
+  const markers = []
+  for (const m of INJECTION_MARKERS) if (m.pattern.test(normalized)) markers.push(m.name)
+  return { unreadable: false, markers }
+}
+
+/**
+ * untrustedVerdict(note, opts) — MAY this record be BELIEVED, as opposed to shown.
+ *
+ * The sibling of `visibilityVerdict`, not a fifth check inside it. That separation is
+ * the whole point: `visibilityVerdict`'s docstring states that it reads typed fields and
+ * never a body, and that law is what makes the structural filter auditable. Folding a
+ * body scan into it would quietly retire the law while leaving the sentence in place.
+ *
+ * This function ALSO reads typed fields only — `injectionMarkers` and `bodyUnreadable`
+ * are computed at parse time (scanBodyForInjection) and carried on the projected axis
+ * like any other field. The body itself never reaches here.
+ *
+ * FAIL-CLOSED, per the threat model's own rule (docs/MEMORY-THREAT-MODEL.md §3): «a
+ * subsystem that only improves an answer may degrade; a subsystem that decides what may
+ * be believed... must refuse.» A body that could not be read is therefore a refusal, not
+ * a pass — an unreadable record is precisely the one whose contents nobody checked.
+ *
+ * @param {object} note  a projected record (projectNoteAxis — the shared axis)
+ * @param {object} [opts] reserved for symmetry with visibilityVerdict; unread today
+ * @returns {null|{reason:string, field:string, value:*, markers?:string[]}}
+ */
+export function untrustedVerdict(note, opts = {}) {
+  const n = note ?? {}
+  void opts
+  if (n.bodyUnreadable === true) {
+    return { reason: UNTRUSTED_REASONS.UNREADABLE_BODY, field: 'body', value: null }
+  }
+  const markers = Array.isArray(n.injectionMarkers) ? n.injectionMarkers : []
+  if (markers.length > 0) {
+    return { reason: UNTRUSTED_REASONS.SUSPICIOUS_INSTRUCTION, field: 'body', value: markers[0], markers: [...markers] }
+  }
+  return null
+}
+
 /**
  * GENERATED_MARKER — the exact header line lint MEM-REGEN greps to know the index
  * is a machine artifact. `{commit}` is substituted with the injected build hash.
@@ -362,7 +474,16 @@ export function readNotes(corpusDir) {
     }
     const fm = parsed.frontmatter
     if (fm == null) continue
-    notes.push(projectNoteAxis(fm, { file, schemaVersion: parsed.schemaVersion }))
+    // The body-derived trust signal is computed HERE — the one place the file text is
+    // already in memory — and only its VERDICT MATERIAL is carried onward. One corpus
+    // read, and `untrustedVerdict` still reads typed fields like its sibling.
+    notes.push(
+      projectNoteAxis(fm, {
+        file,
+        schemaVersion: parsed.schemaVersion,
+        bodyScan: scanBodyForInjection(parsed.body),
+      }),
+    )
   }
   return notes
 }
@@ -391,7 +512,9 @@ export function readNotes(corpusDir) {
  * read engine and the compiler read the SAME axis the index is written with.
  *
  * @param {object} fm  parsed frontmatter (v1 or v2)
- * @param {{file?:string, schemaVersion?:1|2}} [meta]
+ * @param {{file?:string, schemaVersion?:1|2, bodyScan?:{unreadable:boolean, markers:string[]}}} [meta]
+ *        bodyScan — the ONE body-derived signal, computed by readNotes at parse time.
+ *        Absent for a caller that only wants the axis; see the trust fields below.
  * @returns {{file:string, description:string, kind:string, tags:string[], useWhen:string,
  *            importance:number, status:string, contextPriority:string, schemaVersion:1|2,
  *            weight:number, hint:string, pathPattern:string, reflexOptOut:boolean}}
@@ -443,6 +566,15 @@ export function projectNoteAxis(fm, meta = {}) {
     validUntil: renderableText(source.valid_until),
     sensitivity: renderableText(source.sensitivity),
     scope: blockOf(source.scope),
+    // ── trust fields (read by untrustedVerdict, never rendered) ───────────────
+    // The body-derived signal, as TYPED FIELDS and nothing more: whether the body
+    // could be read at all, and the NAMES of the markers that matched. The body is
+    // not here and must never be — carrying it would put the payload on the axis
+    // every consumer reads. A projection made without a scan (the consumers that
+    // ask this module for an axis, not for a delivery decision) reads clean, which
+    // is honest: nothing was scanned, so nothing is being claimed about it.
+    bodyUnreadable: meta.bodyScan?.unreadable === true,
+    injectionMarkers: Object.freeze([...(meta.bodyScan?.markers ?? [])]),
     hint: renderableText(source['use-when'] ?? retrieval.hint),
     pathPattern: renderableText(source['use-when-pattern'] ?? firstPath(retrieval)),
     reflexOptOut:
