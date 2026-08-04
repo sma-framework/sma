@@ -19,11 +19,13 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { LINK_TYPES, checkLinks, validateRecord } from '../lib/schema-v2.mjs'
+import { LINK_PROJECTION_VERSION, linkGraphFromCorpus, projectLinks } from '../lib/links.mjs'
 
 /** The eleven edge names docs/MEMORY-MODEL.md §10 documents, in the doc's order. */
 const CANON_SECTION_10 = [
@@ -175,6 +177,212 @@ describe('checkLinks is wired into validateRecord', () => {
 
   it('leaves a record with no links field clean', () => {
     expect(validateRecord(baseRecord()).errors).toEqual([])
+  })
+})
+
+// ── The projection: computed from the records, never stored ─────────────────
+
+/** A parsed-note stand-in in readCorpus's shape: {file, frontmatter, body}. */
+function parsedNote(id: string, links?: Array<Record<string, unknown>>): Record<string, unknown> {
+  const frontmatter: Record<string, unknown> = { ...baseRecord({ id, claim: `Synthetic ${id}.` }) }
+  if (links) frontmatter.links = links
+  return { file: `${id}.md`, frontmatter, body: `Body of ${id}.\n` }
+}
+
+/** The on-disk text of a v2 record, with `links` in the canon {type, ref} shape. */
+function noteText(id: string, links: Array<{ type: string; ref: string }> = []): string {
+  const block = links.length
+    ? `links:\n${links.map((l) => `  - type: ${l.type}\n    ref: ${l.ref}`).join('\n')}\n`
+    : ''
+  return (
+    `---\nid: ${id}\nschema_version: 2\nstatus: active\nmemory_type: semantic\n` +
+    `truth_mode: factual\nclaim: Synthetic ${id}.\nlanguage: en\nsensitivity: internal\n` +
+    `${block}---\n\nBody of ${id}.\n`
+  )
+}
+
+function writeCorpus(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'sma-links-'))
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text, 'utf8')
+  return dir
+}
+
+/** Follow `supersedes` edges from a starting id until the chain ends. */
+function walkSupersedes(graph: { bySource: Record<string, Array<{ type: string; to: string }>> }, start: string): string {
+  let current = start
+  const seen = new Set([current])
+  for (;;) {
+    const next = (graph.bySource[current] ?? []).find((e) => e.type === 'supersedes')
+    if (!next || seen.has(next.to)) return current
+    current = next.to
+    seen.add(current)
+  }
+}
+
+describe('projectLinks — a graph value, one entry per valid edge, keyed by source', () => {
+  it('names the projection shape it produces', () => {
+    expect(typeof LINK_PROJECTION_VERSION).toBe('string')
+    expect(LINK_PROJECTION_VERSION.length).toBeGreaterThan(0)
+    expect(projectLinks([]).version).toBe(LINK_PROJECTION_VERSION)
+  })
+
+  it('projects one edge per valid links entry, keyed by source id', () => {
+    const graph = projectLinks([
+      parsedNote('checkout-latency-budget', [
+        { type: 'supports', ref: 'cart-abandon-rate' },
+        { type: 'verified_by', ref: 'shop-load-test' },
+      ]),
+      parsedNote('cart-abandon-rate'),
+      parsedNote('shop-load-test'),
+    ])
+    expect(graph.edges).toEqual([
+      { from: 'checkout-latency-budget', type: 'supports', to: 'cart-abandon-rate' },
+      { from: 'checkout-latency-budget', type: 'verified_by', to: 'shop-load-test' },
+    ])
+    expect(graph.bySource['checkout-latency-budget']).toHaveLength(2)
+    expect(graph.refused).toEqual([])
+    expect(graph.dangling).toEqual([])
+  })
+
+  it('accepts a bare frontmatter record as well as a parsed note', () => {
+    const bare = { id: 'a', links: [{ type: 'supports', ref: 'b' }] }
+    const graph = projectLinks([bare, { id: 'b' }])
+    expect(graph.edges).toEqual([{ from: 'a', type: 'supports', to: 'b' }])
+  })
+
+  it('reports an edge checkLinks refuses in a `refused` list and keeps it out of the graph', () => {
+    const graph = projectLinks([
+      parsedNote('a', [
+        { type: 'inspired_by', ref: 'b' },
+        { type: 'supports', ref: 'b' },
+      ]),
+      parsedNote('b'),
+    ])
+    expect(graph.edges).toEqual([{ from: 'a', type: 'supports', to: 'b' }])
+    expect(graph.refused).toHaveLength(1)
+    expect(graph.refused[0].from).toBe('a')
+    expect(graph.refused[0].type).toBe('inspired_by')
+    expect(String(graph.refused[0].reason)).toContain('inspired_by')
+  })
+
+  it('reports a malformed entry rather than silently dropping it', () => {
+    const graph = projectLinks([parsedNote('a', [{ type: 'supports' }]), parsedNote('b')])
+    expect(graph.edges).toEqual([])
+    expect(graph.refused).toHaveLength(1)
+    expect(String(graph.refused[0].reason)).toContain('ref')
+  })
+
+  it('reports a ref that names no record in the corpus as dangling and excludes it', () => {
+    const graph = projectLinks([parsedNote('a', [{ type: 'supports', ref: 'ghost-record' }]), parsedNote('b')])
+    expect(graph.edges).toEqual([])
+    expect(graph.bySource.a).toBeUndefined()
+    expect(graph.dangling).toEqual([{ from: 'a', type: 'supports', ref: 'ghost-record' }])
+  })
+
+  it('is deterministic: input order does not change the output', () => {
+    const notes = [
+      parsedNote('c', [{ type: 'supports', ref: 'a' }]),
+      parsedNote('a', [{ type: 'requires', ref: 'b' }]),
+      parsedNote('b', [{ type: 'part_of', ref: 'c' }]),
+    ]
+    const first = projectLinks(notes)
+    const second = projectLinks([notes[2], notes[0], notes[1]])
+    expect(second).toEqual(first)
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first))
+  })
+
+  it('resolves a three-record supersession chain to its terminal record', () => {
+    const graph = projectLinks([
+      parsedNote('budget-v3', [{ type: 'supersedes', ref: 'budget-v2' }]),
+      parsedNote('budget-v2', [{ type: 'supersedes', ref: 'budget-v1' }]),
+      parsedNote('budget-v1'),
+    ])
+    expect(walkSupersedes(graph, 'budget-v3')).toBe('budget-v1')
+  })
+
+  it('is pure: it does not mutate the notes it reads', () => {
+    const notes = [parsedNote('a', [{ type: 'supports', ref: 'b' }]), parsedNote('b')]
+    const before = JSON.stringify(notes)
+    projectLinks(notes)
+    expect(JSON.stringify(notes)).toBe(before)
+  })
+
+  it('tolerates an empty or absent note list', () => {
+    expect(projectLinks([]).edges).toEqual([])
+    expect(projectLinks(undefined as unknown as unknown[]).edges).toEqual([])
+  })
+})
+
+describe('linkGraphFromCorpus — the one function here that touches the filesystem', () => {
+  it('returns exactly what projectLinks returns for the same records', () => {
+    const dir = writeCorpus({
+      'a.md': noteText('a', [{ type: 'supports', ref: 'b' }]),
+      'b.md': noteText('b', [{ type: 'requires', ref: 'a' }]),
+    })
+    try {
+      const fromDisk = linkGraphFromCorpus({ corpusDir: dir })
+      const fromNotes = projectLinks([
+        { id: 'a', links: [{ type: 'supports', ref: 'b' }] },
+        { id: 'b', links: [{ type: 'requires', ref: 'a' }] },
+      ])
+      expect(fromDisk).toEqual(fromNotes)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes nothing: the projection is never persisted, so deleting it destroys no knowledge', () => {
+    const dir = writeCorpus({
+      'a.md': noteText('a', [{ type: 'supports', ref: 'b' }]),
+      'b.md': noteText('b'),
+    })
+    try {
+      const before = readdirSync(dir).sort()
+      const first = linkGraphFromCorpus({ corpusDir: dir })
+      expect(readdirSync(dir).sort()).toEqual(before)
+      // A second call holds no cached state from the first — the graph is rebuilt
+      // from the records' own links fields, every time, byte for byte.
+      const second = linkGraphFromCorpus({ corpusDir: dir })
+      expect(second).toEqual(first)
+      expect(JSON.stringify(second)).toBe(JSON.stringify(first))
+      expect(readdirSync(dir).sort()).toEqual(before)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads through an injected fs implementation', () => {
+    const files: Record<string, string> = {
+      'a.md': noteText('a', [{ type: 'supports', ref: 'b' }]),
+      'b.md': noteText('b'),
+    }
+    const fsImpl = {
+      readdirSync: () => Object.keys(files),
+      readFileSync: (path: string) => files[String(path).split(/[\\/]/).pop() as string],
+    }
+    const graph = linkGraphFromCorpus({ corpusDir: '/nowhere', fsImpl })
+    expect(graph.edges).toEqual([{ from: 'a', type: 'supports', to: 'b' }])
+  })
+
+  it('returns an empty graph for a directory that does not exist, never throws', () => {
+    const graph = linkGraphFromCorpus({ corpusDir: join(tmpdir(), 'sma-links-absent-xyz') })
+    expect(graph.edges).toEqual([])
+    expect(graph.version).toBe(LINK_PROJECTION_VERSION)
+  })
+
+  it('skips a file the grammar cannot parse instead of failing the whole projection', () => {
+    const dir = writeCorpus({
+      'a.md': noteText('a', [{ type: 'supports', ref: 'b' }]),
+      'b.md': noteText('b'),
+      'MEMORY.md': '# MEMORY\n\n- [a](a.md)\n',
+      'broken.md': '---\nschema_version: 7\n---\nnot a grammar this parser knows\n',
+    })
+    try {
+      const graph = linkGraphFromCorpus({ corpusDir: dir })
+      expect(graph.edges).toEqual([{ from: 'a', type: 'supports', to: 'b' }])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
