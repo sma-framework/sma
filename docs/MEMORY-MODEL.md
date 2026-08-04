@@ -262,9 +262,10 @@ forbids things:
 schema and the lint can refuse to let such a record sit where it must not sit;
 they do not encrypt anything. Which cipher, which key custody, which
 recovery story — that is policy, and it lives in the companion
-[`MEMORY-THREAT-MODEL.md` §6](MEMORY-THREAT-MODEL.md#6-encryption-the-policy-and-the-deferral).
-Implementing storage encryption is a separate decision;
-nothing in this model pretends it has already been made.
+[`MEMORY-THREAT-MODEL.md` §6](MEMORY-THREAT-MODEL.md#6-encryption-the-policy-and-the-decided-deferral).
+That decision was taken on **2026-08-04: no cipher in this version.** The class is
+enforced as *placement* — the record never enters a git-backed path — and the bytes
+in the local store are **plain text**. Nothing in this model implies otherwise.
 
 **Placement is checked, not assumed.** A record that declares a restricted class
 while also declaring a public or preset audience is wrong on its own terms and is a
