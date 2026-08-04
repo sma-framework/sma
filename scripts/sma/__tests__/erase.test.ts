@@ -221,24 +221,48 @@ describe('eraseRecord — every surface, read back from disk', () => {
     expect(after).toBe(buildIndex({ corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commitHash: '0000000', dateMap: {} }))
   })
 
-  it('Test 5: an area index that the rebuild no longer produces is DELETED, not left holding the claim', () => {
-    // the subject is the only periphery note, so its area index has no reason to
-    // exist afterwards — and a builder that only writes files would leave it.
+  it('Test 5: a surviving area index is rebuilt without the record', () => {
+    // two periphery notes share an area, so the area index still has a reason to
+    // exist afterwards — the assertion is about its CONTENT, not its absence.
+    seed(corpusDir, record())
+    seed(corpusDir, record({ id: NEIGHBOUR, claim: 'The morning window is clear' }))
+    seedDerivedIndexes()
+
+    const before = areaIndexFiles()
+    expect(before).toHaveLength(1)
+    expect(readFileSync(join(corpusDir, before[0]), 'utf8')).toContain(`${SUBJECT}.md`)
+
+    erase()
+
+    const after = areaIndexFiles()
+    expect(after).toEqual(before) // still there, because it still has a member
+    const text = readFileSync(join(corpusDir, after[0]), 'utf8')
+    expect(text).not.toContain(`${SUBJECT}.md`)
+    expect(text).not.toContain('clears the evening backlog')
+    expect(text).toContain(`${NEIGHBOUR}.md`)
+  })
+
+  it('Test 5b: an area index the rebuild no longer produces is DELETED, not left holding the claim', () => {
+    // the subject is the ONLY periphery note, so after the erase its area index
+    // has no members at all. A rebuild that only WRITES files would leave the
+    // orphan on disk still carrying the erased claim — a surviving copy on a
+    // derived index, which is the exact failure ACC-3 exists to catch.
     seed(corpusDir, record())
     seed(corpusDir, record({ id: NEIGHBOUR, context_priority: 'always', claim: 'The morning window is clear' }))
     seedDerivedIndexes()
 
     const before = areaIndexFiles()
-    expect(before.length).toBeGreaterThan(0)
-    for (const f of before) expect(readFileSync(join(corpusDir, f), 'utf8')).toContain(`${SUBJECT}.md`)
+    expect(before).toHaveLength(1)
+    const orphanPath = join(corpusDir, before[0])
+    expect(readFileSync(orphanPath, 'utf8')).toContain('clears the evening backlog')
 
-    erase()
+    const res = erase()
 
-    for (const f of areaIndexFiles()) {
-      const text = readFileSync(join(corpusDir, f), 'utf8')
-      expect(text).not.toContain(`${SUBJECT}.md`)
-      expect(text).not.toContain('clears the evening backlog')
-    }
+    expect(existsSync(orphanPath)).toBe(false)
+    expect(areaIndexFiles()).toEqual([])
+    expect(res.changed).toContain(orphanPath)
+    // and the surface reports the deletion rather than only the writes
+    expect(res.surfaces.find((s: any) => s.surface === 'area-indexes').removed).toContain(orphanPath)
   })
 
   it('Test 6: the lexical index no longer returns the erased record', () => {
