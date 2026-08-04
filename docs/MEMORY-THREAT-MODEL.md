@@ -1,10 +1,10 @@
-# SMA Memory Threat Model 1.3 — storage classes, failure semantics and untrusted retrieval
+# SMA Memory Threat Model 1.4 — storage classes, failure semantics and untrusted retrieval
 
 | | |
 |---|---|
-| Status | **1.3 — landed.** Every rule marked *enforced* below is shipped code with test coverage; every rule marked *policy* is a written decision with no code behind it yet, and says so in place. |
-| Document version | 1.2 |
-| Date | 2026-08-02 |
+| Status | **1.4 — landed.** Every rule marked *enforced* below is shipped code with test coverage; every rule marked *policy* is a written decision with no code behind it yet, and says so in place. |
+| Document version | 1.4 |
+| Date | 2026-08-04 |
 | Applies to | the memory corpus of one installation: `schema_version: 2` records, the v1 notes beside them, and the episode archive |
 | Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) — how a record is written, approved and retired |
 
@@ -473,9 +473,15 @@ do it on your behalf behind a friendly verb.
 **The way to never need that is placement, and it is one decision made once:** put
 material that must not be shown in the this-machine-only class, where it never
 enters history at all. That is the whole argument for §2.1's third class, and it is
-the same honest admission that produces the erase deferral
-([`MEMORY-LIFECYCLE.md` §5.5](MEMORY-LIFECYCLE.md#55-erase-deferred-by-policy)):
+the same honest admission the shipped erase makes in its own result
+([`MEMORY-LIFECYCLE.md` §5.5](MEMORY-LIFECYCLE.md#55-erase-physical-removal-verified)):
 prevention is the only thing a git-backed store can actually promise.
+
+**The steps themselves are written out once, and not here.** In order, with the
+rotate-the-secret step that is usually the only one that helps, they are in
+[`MEMORY-LIFECYCLE.md` §5.7](MEMORY-LIFECYCLE.md#57-if-it-already-reached-a-commit-the-manual-route).
+The tooling above is named in this section and nowhere else: a recipe this
+dangerous should have one home rather than two that drift apart.
 
 ## 7. Non-goals
 
@@ -487,12 +493,17 @@ Stated explicitly, because an unstated non-goal reads as an oversight.
    substrate is markdown in a git working tree; it can promise none of those. The
    `sensitivity` vocabulary deliberately has **no** value for it, so that no
    record can claim a protection that does not exist.
-2. **Physical erasure is not implemented.** It is refused by policy rather than
-   missing by accident, with the refusal naming the reason, and it arrives — if it
-   arrives — with lifecycle governance capable of verifying removal across every
-   permitted store. What to do instead (prevent at the write gate and the classes;
-   retire with `revoke` or `archive`; use repository-level tooling for history) is
-   in [`MEMORY-LIFECYCLE.md` §5.5](MEMORY-LIFECYCLE.md#55-erase-deferred-by-policy).
+2. **Physical erasure is implemented — and it stops at git history, on purpose.**
+   This non-goal read «not implemented, refused by policy» until **2026-08-04**,
+   when the policy was decided and erasure shipped: it clears the corpus, the
+   working tree and every derived index, and verifies each surface by reading it
+   back. What remains a non-goal is the part that was always the hard part —
+   **removing a record from git history**. That is manual, irreversible, breaks
+   every existing clone, and cannot be verified from inside one clone, so no verb
+   here offers it. The prevention (place it in the this-machine-only class), the
+   shipped operation and the manual route are in
+   [`MEMORY-LIFECYCLE.md` §5.5](MEMORY-LIFECYCLE.md#55-erase-physical-removal-verified)
+   and [§5.7](MEMORY-LIFECYCLE.md#57-if-it-already-reached-a-commit-the-manual-route).
 3. **This is not a runtime policy engine or a capability broker.** The memory layer
    supplies typed provenance, a deterministic approval path and a set of refusals.
    Deciding what a tool may touch belongs to the harness that runs the agent.
@@ -513,6 +524,7 @@ Stated explicitly, because an unstated non-goal reads as an oversight.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-08-04 | Two statements that had become false when erasure shipped are corrected. **Non-goal 2** said physical erasure is not implemented and refused by policy; it is implemented, and what remains a non-goal is the narrower and honest thing — removing a record from **git history**, which is manual, irreversible, breaks every existing clone and cannot be verified from inside one clone. **§6.4** pointed at a `MEMORY-LIFECYCLE.md` anchor that no longer exists (`#55-erase-deferred-by-policy`) and described the deferral as the source of the placement argument; both are corrected, and §6.4 now states that the manual steps live once, in `MEMORY-LIFECYCLE.md` §5.7, while the *tooling* is named in §6.4 and nowhere else. No policy changed and no code changed: the storage classes, the placement denial and the encryption decision of 1.3 are exactly as they were. The `Document version` row, which had stopped tracking this log at 1.2, is set to match it. |
 | 1.3 | 2026-08-04 | §6 stops describing the cipher as an open question. It was put to the product owner and **answered on 2026-08-04: no encryption at rest in this version**, on the stated ground that the material is worked on by a closed set of people who already hold full access. §6.3 now carries the decision, its date, what it means concretely — the bytes of a this-machine-only record are **plain text** on disk, and the class's protection is *placement*, not ciphertext — the recommendation to use full-disk encryption at the OS layer where the stolen-disk threat is real, and the two conditions that would reopen it (a production writer for the store, and material in it that is genuinely secret). §2.4's encryption row changed from "policy only, decision open" to "not built, by decision", stating the plain-text reality rather than an intention. §6.3 also now says in place that a cipher added later protects nothing written before it, and that the write-time credential scan is a separate control unaffected either way. **No code changed: no cipher, no dependency, and the fail-closed placement denial in `persist` and `stage` is exactly as 1.2 left it.** The header version was corrected from 1.0 to match this log, which it had stopped tracking at 1.1. |
 | 1.2 | 2026-08-04 | §2.1 rewritten to the **three** storage classes that shipped, on the single who-sees-it axis, with the mapping table and the two removals stated as product decisions: regulated memory (with any medical-versus-personal breakdown) and a separate private-git class are gone from the product; the credential scan is untouched by either. The classes stopped being a label and became a placement: `STORAGE_CLASSES` and `resolveStorageClass` derive the class fail-closed from fields the schema already had, `storagePlacementDenial` decides legality of a destination, and the write path consults it at BOTH doors — `persist` and `stage` — before any byte, because the drafts directory is a git-backed path too and is where the approval ladder actually routes a restricted record. `local-store.mjs` gives the this-machine-only class a home outside the corpus that keeps itself out of git by carrying its own ignore marker. §2.4 gained four enforced rows; §6 now says exactly where encryption stands — placement enforced in code, cipher decision open — and §6.4 carries the honest line about git history and clones. No new dependency, no cipher, no new frontmatter field. |
 | 1.1 | 2026-08-03 | §2.4 and non-goal 5 updated to the landed read-time filters: `status`, valid time and `sensitivity`-by-audience are now enforced by the read engine before ranking (`MEMORY-MODEL.md` §9.1), so the «not yet» row became two enforced rows — and one new honest «not yet»: an audience is *declared* by the caller, never verified here. Filtering narrows a delivery; it is not access control, and placement stays the defense against material that must not be stored at all. No new guard is defended by a model call. |

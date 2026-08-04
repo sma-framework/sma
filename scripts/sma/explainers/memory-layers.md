@@ -10,10 +10,13 @@ Your project's knowledge lives as small notes, one fact per note, each carrying 
 
 The index is machine-built by a script from the notes, so a manual edit is caught by the checker immediately.
 
+Forgetting is one command. `memory forget <id>` makes the assistant stop treating a note as true: the file stays on disk, but the note never reaches a conversation again, and the command tells you which state it applied. Name a replacement and the old note is linked to the new one instead. Erasing is a separate and irreversible act: `--erase` on its own only shows what would go and deletes nothing, and it happens only when you repeat it with `--yes`. Even then, a note that once reached a commit is still in that commit and in every copy of the repository, which the command says out loud rather than hides.
+
 The commands:
 - `node scripts/sma/cli.mjs load --tags <area>` pulls the relevant notes for a task.
 - `node scripts/sma/cli.mjs lint` finds untagged, mistyped, broken-link or stale notes.
 - `node scripts/sma/cli.mjs build-index` regenerates the table of contents.
+- `node scripts/sma/cli.mjs memory forget <id> --reason "<why>"` makes one note stop counting as true; `--erase --yes` deletes it for good.
 - `node scripts/sma/cli.mjs consolidate` and `node scripts/sma/cli.mjs trim` keep the corpus sharp at scale.
 
 Example: `node scripts/sma/cli.mjs load --tags security` returns only the security notes, so the assistant is briefed without loading hundreds of unrelated facts.
@@ -26,10 +29,13 @@ Example: `node scripts/sma/cli.mjs load --tags security` returns only the securi
 
 Индекс строит скрипт из заметок, поэтому ручную правку проверяющий ловит сразу.
 
+Забыть можно одной командой. `memory forget <id>` заставляет ассистента перестать считать заметку верной: файл на диске остаётся, но в разговор заметка больше не попадает, и команда сама печатает, что именно она применила. Если назвать замену, старая заметка просто свяжется с новой. Стереть совсем это отдельное и необратимое действие: один флаг `--erase` ничего не удаляет, он только показывает, что уйдёт, а само удаление происходит, лишь если повторить то же самое с `--yes`. И даже тогда заметка, которая когда-то попала в коммит, остаётся в этом коммите и во всех копиях репозитория; команда говорит это вслух, а не умалчивает.
+
 Команды:
 - `node scripts/sma/cli.mjs load --tags <область>` тянет нужные заметки под задачу.
 - `node scripts/sma/cli.mjs lint` находит заметки без ярлыков, с опечатками, с битыми ссылками или устаревшие.
 - `node scripts/sma/cli.mjs build-index` пересобирает оглавление.
+- `node scripts/sma/cli.mjs memory forget <id> --reason "<почему>"` перестаёт считать одну заметку верной; `--erase --yes` удаляет её насовсем.
 - `node scripts/sma/cli.mjs consolidate` и `node scripts/sma/cli.mjs trim` держат корпус острым на масштабе.
 
 Пример: `node scripts/sma/cli.mjs load --tags security` вернёт только заметки по безопасности, поэтому ассистент введён в курс, не загружая сотни несвязанных фактов.

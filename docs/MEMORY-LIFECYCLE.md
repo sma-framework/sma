@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every step below is executable code with test coverage; where a behavior is deliberately absent, this document says so and says why. |
-| Document version | 1.1 |
-| Date | 2026-08-02 |
+| Document version | 1.2 |
+| Date | 2026-08-04 |
 | Applies to | `schema_version: 2` records; v1 notes are read unchanged and are never written by this path |
 | Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
 
@@ -367,6 +367,16 @@ Rules that hold for all four transitions:
   journal is fail-open: an unwritable log degrades the audit trail, it does not un-write
   the corpus.
 - **Unknown actions are refused by name**, listing the five that exist.
+- **All four retirements are honoured by the read path.** A record in any of the four
+  states is withheld from the pack, with the state named in the trace so the absence can
+  be argued with. This was true of `superseded` and `revoked` from the start and became
+  true of `expired` and `archived` on **2026-08-04**: until then the read filter acted on
+  two of the four, so §5.4's promise below was made by this document and kept by no code.
+  It is one set now (`CORE_EXCLUDED_STATUSES`, `generator.mjs`), read by the always-load
+  index, by read-time visibility and by the evaluator's definition of «retired».
+
+What a person types to reach any of this is in [§5.6](#56-what-a-person-actually-types) —
+one command and at most one flag.
 
 ### 5.1 supersede
 
@@ -416,7 +426,10 @@ erase as *deferred by policy*; the policy has since been decided, and this is wh
 decided.
 
 **What it does.** It clears every surface a copy of a record can survive on, and then
-verifies each one by **reading it back from disk**:
+verifies each one by **reading it back from disk**. The surfaces are a single frozen list,
+`ERASE_SURFACES`, and the same list is walked twice — once to clear, once to verify — so
+the two cannot drift apart. Adding a derived index later is one entry in that list, not
+two functions somebody has to remember:
 
 | Surface | What it is | How it is cleared |
 |---|---|---|
@@ -458,8 +471,94 @@ every clone made since. Automatic history rewriting was **rejected by decision**
 irreversible and it breaks every clone that already exists — so no code path in the module
 executes a git command, and every result carries the exception in words. The way to never
 need it is prevention: material that cannot be allowed to persist belongs in the
-this-machine-only class, which keeps it out of git in the first place. The manual route is
-in [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) §6.4.
+this-machine-only class, which keeps it out of git in the first place. The steps a person
+would take by hand, and the reason the tool will not take them, are in
+[§5.7](#57-if-it-already-reached-a-commit-the-manual-route).
+
+### 5.6 What a person actually types
+
+Everything above is the machinery. **A person types one command and, at most, one flag.**
+Nobody is obliged to learn the difference between superseding, revoking, expiring and
+archiving in order to make the system stop believing something, and that is
+the whole reason this section exists.
+
+```bash
+sma memory forget <id> --reason "<why>"        # revoke    — the default
+sma memory forget <id> --replaced-by <new-id>  # supersede
+sma memory forget <id> --expire                # expire
+sma memory forget <id> --archive               # archive
+sma memory forget <id> --erase --yes           # erase     — irreversible
+```
+
+`forget` is a **subcommand of the `memory` namespace**, not a verb of its own: the
+top-level handler table gains no key and the documented verb count is unchanged.
+
+**The default-state rule**, stated so a reader can predict what a bare forget will do:
+
+| What was typed | What is applied | Why that one |
+|---|---|---|
+| a replacement is named | **supersede** | the replacement exists, so the chain is the true statement — and both ends are written together or neither is |
+| no replacement is named | **revoke** | the strongest non-destructive state, and the safe default in the only direction that matters: revoking something merely stale costs a little findability, while archiving something that was actually *wrong* leaves a wrong record quotable |
+| `--expire` | **expire** | reachable for a caller that knows it wants it; still refused unless the record's own `valid_until` has passed |
+| `--archive` | **archive** | reachable for a caller that knows it wants it |
+| `--erase --yes` | **erase** | never implied, never a default, and not reachable without both flags |
+
+A revocation needs a stated reason (§5.2), and the command asks for it in those words
+rather than failing quietly.
+
+**Underneath is not the same as hidden.** The command prints which state it applied — in
+plain words *and* as the `status` value — and the record carries that status in its own
+frontmatter afterwards, where anyone can read it later. The reason goes to the journal.
+Someone who never opens this document still learns which of the five ran, from the command
+that ran it.
+
+**A record is forgotten where it lives.** A this-machine-only record is not in the corpus
+at all; the verb resolves the storage class and acts on the store that actually holds it,
+rather than refusing to forget precisely the class of record a person most wants forgotten.
+
+**The destructive flag is not a stronger version of the other four.** `--erase` on its own
+destroys nothing: it lists the copies it found, names every surface it would walk, states
+the history exception and stops. The consent is the explicit `--yes` flag — the posture
+every other irreversible operation in this product already uses. **A missing terminal is
+never consent:** nothing in this path reads a terminal, so there is no prompt for a
+non-interactive caller to be assumed past.
+
+### 5.7 If it already reached a commit: the manual route
+
+Erase clears the corpus, the working tree and every derived index. **It does not touch git
+history, and this document will not pretend otherwise.** If the record was ever committed,
+it is in that commit, and in every clone anyone has made since.
+
+Removing it from history is a manual operation, and these are the steps:
+
+1. **Decide whether it is worth it.** Everything below breaks every existing clone of the
+   repository. If the material was a credential, read step 5 first — you may find that it
+   is the only step that helps.
+2. **Rewrite the history**, in a fresh clone, over the paths that held the record. The
+   tooling and the exact invocation are named in
+   [`MEMORY-THREAT-MODEL.md` §6.4](MEMORY-THREAT-MODEL.md#64-the-honest-line-about-deletion),
+   deliberately in **one** place: a recipe this dangerous should have one home rather than
+   two that drift apart.
+3. **Force-push the rewritten history**, and expect every branch protection you have to
+   object. That objection is correct.
+4. **Tell everyone holding a copy to re-clone.** Not pull, not rebase — re-clone. A
+   colleague who pulls reintroduces the old objects, and forks, mirrors, backups and a
+   hosting provider's own caches may keep them regardless of what your branch now says.
+5. **Rotate anything that was secret.** This is the step people skip, and once the material
+   has been readable by others it is the only one that actually helps: assume a copy exists
+   somewhere, and make it worthless.
+
+**Why the product does not do this for you.** It is irreversible, it breaks work other
+people are in the middle of, and it cannot be verified from inside a single clone — while
+the one thing this operation refuses to do is report a success it could not check. Putting
+a friendly verb over that would be a promise the product cannot keep, and it was rejected by
+name rather than left undone by accident.
+
+**The prevention is one decision made once.** Material that must not persist belongs in the
+**this-machine-only** storage class, which never enters a git-backed path at all. The
+argument and the enforcement are in
+[`MEMORY-THREAT-MODEL.md` §2](MEMORY-THREAT-MODEL.md#2-storage-classes); this document does
+not repeat them.
 
 ## 6. The migration ritual
 
@@ -542,5 +641,6 @@ fall out of sync. See
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-08-04 | The lifecycle got a user-facing surface, and this document got the two sections that describe it. §5.6 (**what a person actually types**) states the one-command view and the default-state rule — a forget naming a replacement supersedes, a forget naming none revokes, expiry and archiving stay reachable by flag, and erase is reachable only behind two of them — plus the rule that the applied state is always shown and always written into the record. §5.7 (**the manual route**) carries the git-history limit in full: five numbered steps a person would take by hand, including the rotate-the-secret step everyone skips, the warning that each of them breaks every existing clone, and the reason the product refuses to do it behind a friendly verb; the tooling itself stays named in exactly one place, `MEMORY-THREAT-MODEL.md` §6.4. §5's shared rules now record that **all four** retirements are honoured by the read path as of this date — `expired` and `archived` were retired by the write path and delivered by the read path until then, so §5.4's promise was made here and kept by no code — a gap this document had recorded against itself. §5.5 names `ERASE_SURFACES` as the one list walked twice. |
 | 1.1 | 2026-08-04 | Erase shipped (§5.5 rewritten from «deferred by policy» to the six surfaces it clears and verifies, the partial-erasure failure rule, the opt-in stores, the dangling-link report, the journal evidence and the git-history exception); §5 now describes five actions rather than four. |
 | 1.0 | 2026-08-02 | First version. The twelve landed pipeline steps with their module boundaries and stop conditions, the three outcomes and the write verb, the seven-path risk-approval ladder with its precedence, the draft conventions and their three markers, the four lifecycle transitions with the symmetric-pointer law and the deliberate erase deferral, the preview-only migration ritual with per-file acceptance, and the migrated-record grace with its horizon. |
