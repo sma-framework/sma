@@ -29,11 +29,29 @@
  * (whether the NAMED var is populated in the process env) — never a token, never a command,
  * never a file body. Env VALUES never appear in a harness payload.
  *
+ * ═══════════════════════ THE STOCK TEAM (SB-031 part 1, phase 11) ════════════════
+ * `readStockTeam` is the SECOND read model in this module and it answers a different
+ * question than `agents` does. `agents` is the PIPELINE: the worker profiles the roster
+ * config declares. The stock team is what ARRIVED — every definition file the installer
+ * wrote into `<config>/agents/`, whether or not the roster config has ever heard of it,
+ * beside the user's own definitions in the same directory.
+ *
+ * Fork state is a CONTENT DIGEST comparison, never a modification time: the installer also
+ * leaves a pristine copy of every shipped definition at `<config>/sma-core/agents/<id>.md`,
+ * so «edited» is «the editable copy no longer digests to the pristine one». A reinstall
+ * rewrites mtimes and would otherwise report the whole roster as edited (T-11-06-04).
+ *
+ * «A newer shipped version is available» needs a recorded baseline, and there is exactly one
+ * honest place to keep it: the worker profile, written at the moment of activation by
+ * `applyStockTeamToggle` (`stockDigest`, beside `enabled`). An agent that was never toggled
+ * through that door has no baseline and is reported `unknown` — never a fabricated 'current'.
+ *
  * Node built-ins only; every fs call + env + homedir is injectable so tests never touch the
  * real ~/.sma-daemon or repo tree. Every config/registry write goes through atomicWriteJson
  * (plan-01 posture). Zero deps.
  */
 
+import { createHash } from 'node:crypto'
 import {
   existsSync as fsExistsSync,
   readFileSync as fsReadFileSync,
@@ -233,6 +251,149 @@ function scanSkills(config, repoDir, fsImpl) {
   return out
 }
 
+// ── the stock team read model (SB-031 part 1) ──
+
+/**
+ * The reserved toggle target meaning «the whole shipped team», not one agent id. It is
+ * shaped to pass server.mjs's ID_RE unchanged, so the EXISTING POST /api/agent/toggle door
+ * carries it and no route is added; and it cannot collide with an installed definition,
+ * because the installer only ever writes `sma-*.md` and a user's own file would have to be
+ * named literally `__stock-team__.md`.
+ */
+export const STOCK_TEAM_TARGET = '__stock-team__'
+
+/** Where a definition came from: shipped with SMA, or the user's own. */
+export const STOCK_ORIGINS = Object.freeze(['sma', 'yours'])
+
+/**
+ * What is known about a newer shipped version. 'unknown' is the honest answer for a
+ * definition with no recorded baseline — it is never collapsed into 'current'.
+ */
+export const STOCK_UPDATE_STATES = Object.freeze(['current', 'available', 'unknown', 'not-shipped'])
+
+/** The frontmatter description is a card subtitle, capped — a file body never travels. */
+const STOCK_DESCRIPTION_CAP = 400
+
+/** readdir that answers `null` instead of throwing (an absent directory is an answer). */
+function listDirSafe(path, fsImpl) {
+  const readdirSync = (fsImpl && fsImpl.readdirSync) || fsReaddirSync
+  try {
+    return readdirSync(path).map(String)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The digest fork state is decided by. Newline-normalized on purpose: a CRLF checkout of
+ * the same bytes is not somebody's edit, and reporting it as one would make the whole
+ * roster look forked on Windows.
+ */
+function definitionDigest(text) {
+  return createHash('sha256').update(String(text ?? '').replace(/\r\n/g, '\n')).digest('hex')
+}
+
+/**
+ * resolveStockTeamDirs({repoDir, env, homedir, fsImpl}) → {configDir, agentsDir,
+ * pristineDir, names, projectLocal} for the install that actually exists, or null when no
+ * agents directory does. Both installer layouts are covered, in the env-then-homedir order
+ * resolveMcpRegistryPath already uses: the project-local `<repo>/.claude` first (the
+ * installer's default), then $CLAUDE_CONFIG_DIR, then ~/.claude. The probe is a readdir,
+ * because that is the call whose success actually means «the roster is here».
+ *
+ * @param {{repoDir?:string, env?:object, homedir?:Function, fsImpl?:object}} [opts]
+ * @returns {{configDir:string, agentsDir:string, pristineDir:string, names:string[], projectLocal:boolean}|null}
+ */
+export function resolveStockTeamDirs({ repoDir, env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  const projectDir = join(repoDir ?? '.', '.claude')
+  const candidates = [projectDir]
+  const override = env.CLAUDE_CONFIG_DIR
+  if (override && String(override).trim()) candidates.push(String(override).trim())
+  candidates.push(join(homedir(), '.claude'))
+  for (const configDir of candidates) {
+    const agentsDir = join(configDir, 'agents')
+    const names = listDirSafe(agentsDir, fsImpl)
+    if (names) {
+      return {
+        configDir,
+        agentsDir,
+        pristineDir: join(configDir, 'sma-core', 'agents'),
+        names,
+        projectLocal: configDir === projectDir,
+      }
+    }
+  }
+  return null
+}
+
+/** `tools:` is written as a comma line in the shipped definitions and as a list in some — both become an array. */
+function toolsOf(fm) {
+  const raw = fm && fm.tools
+  if (Array.isArray(raw)) return raw.map((t) => String(t).trim()).filter(Boolean)
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.split(',').map((t) => t.trim()).filter(Boolean)
+  }
+  return []
+}
+
+/** One stock-team card. Explicit-pick: no body, no path, no env value — ever. */
+function stockEntry({ id, content, pristine, worker }) {
+  const { frontmatter: fm } = readFrontmatter(content)
+  const shipped = pristine != null
+  const forked = shipped ? definitionDigest(content) !== definitionDigest(pristine) : false
+  let stockUpdate = 'not-shipped'
+  if (shipped) {
+    const baseline = worker && typeof worker.stockDigest === 'string' ? worker.stockDigest : null
+    if (baseline == null) stockUpdate = 'unknown'
+    else stockUpdate = baseline === definitionDigest(pristine) ? 'current' : 'available'
+  }
+  return {
+    id,
+    title: (fm && String(fm.name ?? '').trim()) || id,
+    description: fm ? String(fm.description ?? '').slice(0, STOCK_DESCRIPTION_CAP) : '',
+    tools: toolsOf(fm),
+    enabled: !!(worker && worker.enabled !== false),
+    origin: shipped ? 'sma' : 'yours',
+    forked,
+    stockUpdate,
+    problem: fm
+      ? null
+      : 'файл определения не разобран: нет рамки frontmatter в начале файла — карточка показана по имени файла',
+  }
+}
+
+/**
+ * readStockTeam({config, repoDir, fsImpl, env, homedir}) → the whole roster that arrived
+ * with the install, one entry per definition file, INCLUDING ids the roster config has
+ * never heard of. Each card carries id, title, a short description, the declared tools,
+ * whether the roster config enables it, whether it is a shipped SMA definition or the
+ * user's own, whether it is forked, and whether a newer shipped version is available.
+ *
+ * A definition that fails to parse comes back with a named `problem` — the scan is never
+ * broken by one bad file, and a missing agents directory is an empty list, not a throw.
+ *
+ * @param {{config?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} [args]
+ * @returns {Array<{id:string, title:string, description:string, tools:string[], enabled:boolean, origin:string, forked:boolean, stockUpdate:string, problem:(string|null)}>}
+ */
+export function readStockTeam({ config, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
+  const roots = resolveStockTeamDirs({ repoDir, env, homedir, fsImpl })
+  if (!roots) return []
+  const workers = config && Array.isArray(config.workers) ? config.workers : []
+  const byId = new Map(workers.filter((w) => w && w.id).map((w) => [String(w.id), w]))
+
+  const out = []
+  for (const name of roots.names) {
+    if (!name.endsWith('.md')) continue
+    const content = readFileSafe(join(roots.agentsDir, name), fsImpl)
+    if (content == null) continue // a directory or an unreadable entry — not a definition
+    const id = name.slice(0, -3)
+    const pristine = readFileSafe(join(roots.pristineDir, name), fsImpl)
+    out.push(stockEntry({ id, content, pristine, worker: byId.get(id) }))
+  }
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return out
+}
+
 /** MCP card: env-var NAMES with '[set]'/'[unset]' status — NEVER the value (secretsView). */
 function mcpEntry(server, env) {
   const names = Array.isArray(server.envNames) ? server.envNames : []
@@ -248,20 +409,25 @@ function mcpEntry(server, env) {
 }
 
 /**
- * readHarness({config, registry, adapter, repoDir, fsImpl, env}) → ONE explicit-pick payload
- * {agents, skills, mcp, drafts} for the 9.6 modules. Agents join profile + roleFile
- * frontmatter; skills scan the tree + per-profile assignment; mcp exposes env-var NAMES with
- * '[set]'/'[unset]' only (values NEVER appear); drafts are the forge tasks awaiting approval
- * (kind + draftPath). No field carries tokens, commands, or file bodies.
+ * readHarness({config, registry, adapter, repoDir, fsImpl, env, homedir}) → ONE explicit-pick
+ * payload {agents, skills, mcp, drafts, stockTeam} for the 9.6 modules. Agents join profile +
+ * roleFile frontmatter; skills scan the tree + per-profile assignment; mcp exposes env-var
+ * NAMES with '[set]'/'[unset]' only (values NEVER appear); drafts are the forge tasks awaiting
+ * approval (kind + draftPath); stockTeam is the installed roster (readStockTeam). No field
+ * carries tokens, commands, or file bodies.
  *
- * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object}} args
- * @returns {Promise<{agents:Array, skills:Array, mcp:Array, drafts:Array}>}
+ * `stockTeam` is ADDITIVE (phase 11 plan 06): the four keys modules 8/9/12 already read keep
+ * their shape exactly, the way the queue side's `project` field was added.
+ *
+ * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * @returns {Promise<{agents:Array, skills:Array, mcp:Array, drafts:Array, stockTeam:Array}>}
  */
-export async function readHarness({ config, registry, adapter, repoDir, fsImpl, env = process.env } = {}) {
+export async function readHarness({ config, registry, adapter, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
   const cfg = config ?? {}
   const agents = (cfg.workers ?? []).map((w) => agentEntry(w, repoDir, fsImpl))
   const skills = scanSkills(cfg, repoDir, fsImpl)
   const mcp = ((registry && registry.servers) || []).map((s) => mcpEntry(s, env))
+  const stockTeam = readStockTeam({ config: cfg, repoDir, fsImpl, env, homedir })
 
   let drafts = []
   if (adapter && typeof adapter.list === 'function') {
@@ -282,7 +448,7 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
       }))
   }
 
-  return { agents, skills, mcp, drafts }
+  return { agents, skills, mcp, drafts, stockTeam }
 }
 
 // ── the two-step activation appliers (config/registry writes, atomic) ──
