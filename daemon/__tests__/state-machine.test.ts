@@ -24,6 +24,8 @@ import {
   TRANSITIONS,
   transitionContract,
   toQueueStatus,
+  idempotencyKey,
+  applyTransition,
 } from '../src/queue/state-machine.mjs'
 
 /** The canon's eleven states, verbatim (roadmap txt lines 512-514). */
@@ -197,6 +199,273 @@ describe('toQueueStatus — the two layers never disagree about what is running'
   it('returns null for anything that is not a fleet state', () => {
     expect(toQueueStatus('queued')).toBeNull()
     expect(toQueueStatus(undefined as any)).toBeNull()
+  })
+})
+
+describe('idempotencyKey — the same effect retried under the same attempt is the same key', () => {
+  it('is deterministic: identical inputs always give an identical key', () => {
+    const a = idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')
+    const b = idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')
+    expect(a).toBe(b)
+  })
+
+  it('gives different keys for two different transitions on the same attempt', () => {
+    const produced = idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')
+    const retryable = idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->RETRYABLE')
+    expect(produced).not.toBe(retryable)
+  })
+
+  it('gives different keys for the same transition on two different attempts', () => {
+    const first = idempotencyKey('BL-96', 'BL-96#1', 'RUNNING->PRODUCED')
+    const second = idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')
+    expect(first).not.toBe(second)
+  })
+
+  it('gives different keys for the same transition on two different tasks', () => {
+    const one = idempotencyKey('BL-96', 'a#1', 'RUNNING->PRODUCED')
+    const two = idempotencyKey('BL-97', 'a#1', 'RUNNING->PRODUCED')
+    expect(one).not.toBe(two)
+  })
+
+  it('is a short stable hex string derived from its inputs — no clock, counter or randomness', () => {
+    const key = idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')
+    expect(key).toMatch(/^[0-9a-f]{16}$/)
+    // The composition is separated, so ('ab','c') and ('a','bc') can never collide.
+    expect(idempotencyKey('ab', 'c', 'T')).not.toBe(idempotencyKey('a', 'bc', 'T'))
+    // Stable across processes because it is a hash of the three canon inputs and
+    // nothing else — pinned here so a future "improvement" that mixes in a timestamp
+    // fails loudly instead of silently breaking every redelivery.
+    expect(idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')).toBe(
+      idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED'),
+    )
+  })
+
+  it('throws on a missing input rather than hashing an empty string into a real-looking key', () => {
+    expect(() => idempotencyKey('', 'a#1', 'T')).toThrow()
+    expect(() => idempotencyKey('BL-96', '', 'T')).toThrow()
+    expect(() => idempotencyKey('BL-96', 'a#1', '')).toThrow()
+  })
+})
+
+describe('applyTransition — legal, contracted, correctly actored and idempotent, or refused', () => {
+  const base = {
+    taskId: 'BL-96',
+    attemptId: 'BL-96#2',
+    attempt: 2,
+  }
+
+  it('applies a legal transition and carries the new state, the contract and the key', () => {
+    const res = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' })
+    expect(res.applied).toBe(true)
+    expect(res.alreadyApplied).toBe(false)
+    expect(res.from).toBe('RUNNING')
+    expect(res.state).toBe('PRODUCED')
+    expect(res.contract).toBe(TRANSITIONS.RUNNING.PRODUCED)
+    expect(res.idempotencyKey).toBe(idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED'))
+    expect(res.stateMachineVersion).toBe(STATE_MACHINE_VERSION)
+    expect(res.refusal).toBeUndefined()
+  })
+
+  it('returns a row the attempt ledger can accept without a spread', () => {
+    const res = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' })
+    expect(res.taskId).toBe('BL-96')
+    expect(res.attempt).toBe(2)
+    expect(typeof res.idempotencyKey).toBe('string')
+  })
+
+  it('names the preconditions it cannot decide instead of pretending it checked them', () => {
+    const res = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' })
+    expect(res.deferredPreconditions).toContain('active_lease_matches_attempt')
+    expect(res.deferredPreconditions).toContain('capability_allows_write_scope')
+  })
+
+  it('refuses an illegal from-to pair with a reason naming BOTH states, applying nothing', () => {
+    const res = applyTransition({ ...base, state: 'READY', to: 'ACCEPTED', actor: 'verifier' })
+    expect(res.applied).toBe(false)
+    expect(res.state).toBe('READY')
+    expect(res.refusal).toMatch(/READY/)
+    expect(res.refusal).toMatch(/ACCEPTED/)
+    expect(res.idempotencyKey).toBeUndefined()
+  })
+
+  it('refuses a state that is not in the vocabulary at all', () => {
+    const res = applyTransition({ ...base, state: 'PENDING', to: 'READY', actor: 'dispatcher' })
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/state/i)
+  })
+
+  it('refuses the wrong actor with a reason naming the REQUIRED actor', () => {
+    const res = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'human' })
+    expect(res.applied).toBe(false)
+    expect(res.state).toBe('RUNNING')
+    expect(res.refusal).toMatch(/worker/)
+  })
+
+  it('refuses ACCEPTED without a verification receipt, naming invariant 1', () => {
+    const res = applyTransition({
+      ...base,
+      state: 'VERIFYING',
+      to: 'ACCEPTED',
+      actor: 'verifier',
+      disposition: 'human-approved',
+    })
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/invariant 1/i)
+    expect(res.refusal).toMatch(/receipt/i)
+  })
+
+  it('refuses ACCEPTED without an authorized disposition, naming invariant 1', () => {
+    const res = applyTransition({
+      ...base,
+      state: 'VERIFYING',
+      to: 'ACCEPTED',
+      actor: 'verifier',
+      receiptRef: 'reverify:abc',
+    })
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/invariant 1/i)
+    expect(res.refusal).toMatch(/disposition/i)
+  })
+
+  it('refuses a disposition outside the authorized vocabulary — a worker cannot self-accept', () => {
+    const res = applyTransition({
+      ...base,
+      state: 'VERIFYING',
+      to: 'ACCEPTED',
+      actor: 'verifier',
+      receiptRef: 'reverify:abc',
+      disposition: 'the worker says it is fine',
+    })
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/invariant 1/i)
+  })
+
+  it('applies ACCEPTED when the receipt AND an authorized disposition are both there', () => {
+    const res = applyTransition({
+      ...base,
+      state: 'VERIFYING',
+      to: 'ACCEPTED',
+      actor: 'verifier',
+      receiptRef: 'reverify:abc',
+      disposition: 'human-approved',
+    })
+    expect(res.applied).toBe(true)
+    expect(res.state).toBe('ACCEPTED')
+  })
+
+  it('refuses ANY transition that would grant push or merge capability, naming invariant 2', () => {
+    for (const grant of ['push', 'git-push', 'merge', 'merge_pr', 'FORCE-PUSH']) {
+      const res = applyTransition({
+        ...base,
+        state: 'RUNNING',
+        to: 'PRODUCED',
+        actor: 'worker',
+        grants: ['read_repo', grant],
+      })
+      expect(res.applied, grant).toBe(false)
+      expect(res.refusal, grant).toMatch(/invariant 2/i)
+    }
+  })
+
+  it('refuses a push grant even on an otherwise perfect ACCEPTED — no input turns it on', () => {
+    const res = applyTransition({
+      ...base,
+      state: 'VERIFYING',
+      to: 'ACCEPTED',
+      actor: 'verifier',
+      receiptRef: 'reverify:abc',
+      disposition: 'human-approved',
+      grants: 'push',
+    })
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toMatch(/invariant 2/i)
+  })
+
+  it('refuses DEAD_LETTER -> READY with no disposition, naming invariant 7', () => {
+    const res = applyTransition({ ...base, state: 'DEAD_LETTER', to: 'READY', actor: 'dispatcher' })
+    expect(res.applied).toBe(false)
+    expect(res.state).toBe('DEAD_LETTER')
+    expect(res.refusal).toMatch(/invariant 7/i)
+    expect(res.refusal).toMatch(/disposition/i)
+  })
+
+  it('with a disposition, still refuses the shortcut and says a NEW attempt is required', () => {
+    const res = applyTransition({
+      ...base,
+      state: 'DEAD_LETTER',
+      to: 'READY',
+      actor: 'human',
+      disposition: 'human-approved',
+    })
+    expect(res.applied).toBe(false)
+    expect(res.requiresNewAttempt).toBe(true)
+    expect(res.refusal).toMatch(/attempt/i)
+  })
+
+  it('reports already-applied on a repeated delivery and does NOT apply a second time', () => {
+    const first = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' })
+    expect(first.applied).toBe(true)
+
+    const again = applyTransition({
+      ...base,
+      state: 'RUNNING',
+      to: 'PRODUCED',
+      actor: 'worker',
+      appliedKeys: [first.idempotencyKey],
+    })
+    expect(again.applied).toBe(false)
+    expect(again.alreadyApplied).toBe(true)
+    expect(again.refusal).toBeUndefined()
+    expect(again.state).toBe('PRODUCED')
+    expect(again.idempotencyKey).toBe(first.idempotencyKey)
+  })
+
+  it('accepts a Set of applied keys as readily as an array', () => {
+    const first = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' })
+    const again = applyTransition({
+      ...base,
+      state: 'RUNNING',
+      to: 'PRODUCED',
+      actor: 'worker',
+      appliedKeys: new Set([first.idempotencyKey]),
+    })
+    expect(again.alreadyApplied).toBe(true)
+  })
+
+  it('treats a DIFFERENT transition on the same attempt as not yet applied', () => {
+    const produced = applyTransition({ ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' })
+    const retryable = applyTransition({
+      ...base,
+      state: 'RUNNING',
+      to: 'RETRYABLE',
+      actor: 'supervisor',
+      appliedKeys: [produced.idempotencyKey],
+    })
+    expect(retryable.applied).toBe(true)
+    expect(retryable.alreadyApplied).toBe(false)
+  })
+
+  it('keeps refusal reasons free of caller text and connection strings (T-11-04-06)', () => {
+    const secret = 'postgres://user:hunter2@localhost:5433/queue'
+    const res = applyTransition({
+      ...base,
+      state: 'RUNNING',
+      to: 'PRODUCED',
+      actor: 'human',
+      grants: [secret],
+      disposition: secret,
+      receiptRef: secret,
+    })
+    expect(res.applied).toBe(false)
+    expect(res.refusal).not.toMatch(/postgres/)
+    expect(res.refusal).not.toMatch(/hunter2/)
+  })
+
+  it('is pure — the input object is never mutated', () => {
+    const input: any = { ...base, state: 'RUNNING', to: 'PRODUCED', actor: 'worker' }
+    const before = JSON.stringify(input)
+    applyTransition(input)
+    expect(JSON.stringify(input)).toBe(before)
   })
 })
 
