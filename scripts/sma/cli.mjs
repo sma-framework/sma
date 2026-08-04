@@ -2553,14 +2553,16 @@ async function cmdMemory({ positionals, flags, dirs }) {
   if (sub === 'write') return cmdMemoryWrite({ flags, dirs })
   if (sub === 'explain') return cmdMemoryExplain({ flags, dirs })
   if (sub === 'index') return cmdMemoryIndex({ positionals, flags, dirs })
+  if (sub === 'forget') return cmdMemoryForget({ positionals, flags, dirs })
 
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index>\n')
+    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index|forget>\n')
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
     process.stdout.write('  index rebuild|status [--json] [--stat <name>] — ЭКСПЕРИМЕНТ, вне выдачи по умолчанию\n')
+    process.stdout.write('  forget <id> [--reason "…"|--replaced-by <id>|--expire|--archive] [--erase --yes]\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
   }
@@ -2780,6 +2782,226 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     return 0
   }
   process.stdout.write('  ЭКСПЕРИМЕНТ: слой не участвует в выдаче по умолчанию\n')
+  return 0
+}
+
+const MEMORY_FORGET_USAGE = [
+  'usage: sma memory forget <id> --reason "<почему>"',
+  '       sma memory forget <id> --replaced-by <новый-id>',
+  '       sma memory forget <id> --expire | --archive',
+  '',
+  '  Одна команда, чтобы система перестала считать запись верной. Внутри',
+  '  состояний несколько, но помнить их наизусть не нужно: команда выбирает сама',
+  '  и печатает, что выбрала. В самой записи это потом видно.',
+  '',
+  '  без флагов          отозвать. Записи больше не верят, файл остаётся на',
+  '                      диске. Нужна причина: отзыв без объяснения нельзя',
+  '                      отличить от случайного.',
+  '  --replaced-by <id>  заменить новой записью. Обе стороны связи проставляются',
+  '                      сразу: старая помечается заменённой, новая — заменяющей.',
+  '  --expire            просрочить. Только если дата в valid_until уже прошла.',
+  '  --archive           убрать в архив. Из работы уходит, для истории остаётся.',
+  '  --corpus <dir>      где искать. По умолчанию .claude/memory',
+  '  --json              машинный вывод',
+  '',
+  '  Ничего из этого не удаляет файл. Совсем стереть — отдельное действие, и оно',
+  '  необратимо: смотрите docs/MEMORY-LIFECYCLE.md.',
+].join('\n')
+
+/**
+ * The four transitions in the words a person actually needs, and nothing else.
+ *
+ * D-11-06 says the internal states live underneath and nobody is obliged to
+ * learn the difference between them. «Underneath» is not «hidden»: the command
+ * prints WHICH state it applied and what that means, and the state is in the
+ * record's own frontmatter afterwards. A machine can read `status`; a person
+ * reads the sentence. Both come from this one table, so they cannot disagree.
+ */
+const FORGET_STATES = Object.freeze({
+  supersede: Object.freeze({
+    status: 'superseded',
+    said: 'заменена новой',
+    means: 'старую больше не подают в работу, вместо неё идёт новая',
+  }),
+  revoke: Object.freeze({
+    status: 'revoked',
+    said: 'отозвана',
+    means: 'записи больше не верят, но файл остался на диске',
+  }),
+  expire: Object.freeze({
+    status: 'expired',
+    said: 'просрочена',
+    means: 'срок, который запись объявила сама, вышел',
+  }),
+  archive: Object.freeze({
+    status: 'archived',
+    said: 'убрана в архив',
+    means: 'из работы ушла, для истории осталась',
+  }),
+})
+
+/** The storage classes in the who-sees-it words D-11-04 asked for. */
+const STORAGE_CLASS_WORDS = Object.freeze({
+  shared: 'общая память проекта, едет с репозиторием',
+  'this-machine-only': 'только на этой машине, в git не попадает',
+  ephemeral: 'временная, живёт до своего срока',
+})
+
+/**
+ * The flags this verb understands. A DESTRUCTIVE VERB DOES NOT SHRUG AT A FLAG
+ * IT DOES NOT KNOW. Everywhere else in this CLI an unrecognised flag is ignored,
+ * which is harmless when the worst outcome is a report with a default in it.
+ * Here the worst outcome is a mistyped intent quietly becoming a different
+ * lifecycle action on a real record, so an unknown flag is refused by name.
+ */
+const FORGET_FLAGS = new Set(['reason', 'replaced-by', 'expire', 'archive', 'corpus', 'json', 'raw', 'help'])
+
+/** Where the record actually is: the project's memory first, then this machine's own store. */
+function forgetLocate(id, stores) {
+  for (const store of stores) {
+    if (!store.dir) continue
+    const path = join(store.dir, `${id}.md`)
+    if (existsSync(path)) return { ...store, path }
+  }
+  return null
+}
+
+/**
+ * memory forget <id> — the ONE user-facing way to make the system stop believing
+ * something (D-11-06).
+ *
+ * A subcommand of `memory`, not a verb of its own: the corpus namespace already
+ * exists and this is something done TO the corpus. The top-level HANDLERS table
+ * gains no key, so the documented verb count is unchanged — the same precedent
+ * `memory index` set in phase 10 (D-11-08).
+ *
+ * THE STATE IS CHOSEN FOR THE PERSON, AND THEN SHOWN. A forget that names a
+ * replacement supersedes. A forget that names none REVOKES — the strongest
+ * non-destructive state, and the safe default in the only direction that
+ * matters: revoking something merely stale costs a little findability, while
+ * archiving something that was actually WRONG leaves a wrong record quotable.
+ * Expiry and archiving stay reachable by flag for a caller that knows it wants
+ * them, and neither is ever applied on its own.
+ *
+ * THIS VERB IMPLEMENTS NO LIFECYCLE OF ITS OWN. It resolves where the record
+ * lives, picks the action, and hands both to `applyLifecycle` — the same
+ * boundary step 12 of the write pipeline uses. What it adds is the register: a
+ * person's words instead of an action name.
+ */
+async function cmdMemoryForget({ positionals, flags, dirs }) {
+  if (flags.help === true) {
+    process.stdout.write(`${MEMORY_FORGET_USAGE}\n`)
+    return 0
+  }
+
+  const id = typeof positionals[1] === 'string' ? positionals[1].trim() : ''
+  if (id === '') {
+    process.stdout.write(`${MEMORY_FORGET_USAGE}\n`)
+    process.stderr.write('SMA memory forget: скажите, какую запись забыть — нужен её id\n')
+    return 1
+  }
+
+  const unknown = Object.keys(flags).filter((f) => !FORGET_FLAGS.has(f))
+  if (unknown.length) {
+    process.stdout.write(`${MEMORY_FORGET_USAGE}\n`)
+    process.stderr.write(
+      `SMA memory forget: не знаю флаг ${unknown.map((f) => `--${f}`).join(', ')} — ничего не сделано. ` +
+        'На всякий случай: угадывать, что Вы имели в виду, эта команда не будет\n',
+    )
+    return 1
+  }
+
+  // Exactly one intent, or none. Two of them named together is a question, not
+  // an instruction, and a destructive-adjacent verb answers a question by asking.
+  const asked = []
+  const replacedBy = typeof flags['replaced-by'] === 'string' ? flags['replaced-by'].trim() : ''
+  if (replacedBy !== '') asked.push('--replaced-by')
+  if (flags.expire === true) asked.push('--expire')
+  if (flags.archive === true) asked.push('--archive')
+  if (asked.length > 1) {
+    process.stderr.write(
+      `SMA memory forget: ${asked.join(' и ')} вместе — это два разных действия. Выберите одно; ничего не сделано\n`,
+    )
+    return 1
+  }
+
+  const action = replacedBy !== '' ? 'supersede' : flags.expire === true ? 'expire' : flags.archive === true ? 'archive' : 'revoke'
+  const state = FORGET_STATES[action]
+  const reason = typeof flags.reason === 'string' ? flags.reason.trim() : ''
+
+  // The revoke law, said in the caller's own register BEFORE the engine says it
+  // in its own. The engine still enforces it — this only names the flag, which a
+  // refusal written for a library caller has no reason to know about.
+  if (action === 'revoke' && reason === '') {
+    process.stderr.write(
+      `SMA memory forget: скажите одним предложением, почему — отзыв без причины не отличить от случайного.\n` +
+        `  node scripts/sma/cli.mjs memory forget ${id} --reason "<почему>"\n`,
+    )
+    return 1
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+  const { localStorePath } = await import('./lib/local-store.mjs')
+  const localDir = localStorePath({ repoRoot })
+
+  // ROUTED BY WHERE IT ACTUALLY IS. A this-machine-only record is not in the
+  // corpus at all, so a verb that assumed the corpus would refuse to forget
+  // precisely the class of record a person most wants forgotten.
+  const found = forgetLocate(id, [
+    { dir: corpusDir, where: 'память проекта' },
+    { dir: localDir, where: 'хранилище только этой машины' },
+  ])
+  if (!found) {
+    process.stderr.write(
+      `SMA memory forget: записи «${id}» нет ни в памяти проекта (${corpusDir}), ни в хранилище только этой машины. Ничего не сделано\n`,
+    )
+    return 1
+  }
+
+  const { parseNote } = await import('./lib/frontmatter.mjs')
+  const { resolveStorageClass } = await import('./lib/schema-v2.mjs')
+  let storageClass = null
+  try {
+    const fm = parseNote(readFileSync(found.path, 'utf8'), { file: found.path }).frontmatter
+    const verdict = fm ? resolveStorageClass(fm) : null
+    storageClass = verdict && !verdict.refused ? verdict.storageClass : null
+  } catch {
+    /* an unreadable record is the lifecycle's refusal to make, not this verb's */
+  }
+
+  const pipeline = await import('./lib/write-pipeline.mjs')
+  const terminalId = await resolveTerminalId()
+  const result = pipeline.applyLifecycle({
+    corpusDir: found.dir,
+    id,
+    action,
+    by: action === 'supersede' ? replacedBy : terminalId,
+    reason: reason === '' ? null : reason,
+    journalDir: dirs?.journalDir,
+    terminalId,
+  })
+
+  if (wantsJson(flags)) {
+    printJson({ ...result, storage_class: storageClass, replaced_by: action === 'supersede' ? replacedBy : null })
+    return result.applied ? 0 : 1
+  }
+
+  if (!result.applied) {
+    process.stderr.write(`SMA memory forget: «${id}» — не получилось. ${result.refusal ?? 'причина не названа'}\n`)
+    return 1
+  }
+
+  process.stdout.write(`SMA memory forget: «${id}»\n`)
+  process.stdout.write(
+    `  применено: ${state.said} (status: ${state.status}) — ${action === 'supersede' ? `вместо неё теперь «${replacedBy}»` : state.means}\n`,
+  )
+  if (storageClass) {
+    process.stdout.write(`  где лежит: ${STORAGE_CLASS_WORDS[storageClass] ?? storageClass} (${storageClass})\n`)
+  }
+  if (reason !== '') process.stdout.write(`  причина записана в журнал: ${reason}\n`)
+  for (const path of result.changed) process.stdout.write(`  изменено: ${path}\n`)
+  process.stdout.write('  файл на диске остался — это не удаление. Совсем стереть можно отдельно и необратимо\n')
   return 0
 }
 

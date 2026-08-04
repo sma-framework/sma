@@ -278,7 +278,8 @@ describe('memory forget — one command, and it says which state it applied', ()
 
   it('Test 9: a this-machine-only record is forgotten in ITS OWN store, not the corpus', () => {
     seedCorpus()
-    seed(localDir, record({ id: SUBJECT, sensitivity: 'restricted' }))
+    // `sensitive` is the closed-vocabulary word that routes to this-machine-only
+    seed(localDir, record({ id: SUBJECT, sensitivity: 'sensitive' }))
     rmSync(join(corpusDir, `${SUBJECT}.md`))
 
     const res = forget(['--reason', 'the restricted note was re-measured and no longer holds'])
