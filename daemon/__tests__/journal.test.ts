@@ -11,10 +11,17 @@
  * Everything rides the EXISTING per-task attempt ledger (append-only JSONL, one file per
  * task) — no new store. The suite drives a real temp dir (real append semantics are the
  * point: a rewrite must be impossible, not merely unused).
+ *
+ * ════════ PHASE 11 PLAN 05: THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN ═══════
+ * The same ledger, the same append-only law, seven more explicitly-picked fields (canon
+ * invariant 6): the policy version, the memory snapshot digest, the plan hash, the harness
+ * version, the state-machine version, the idempotency key and the capability envelope's
+ * digest. The cases live HERE rather than in a third file because they are cases about
+ * `attempt-ledger.mjs`, which this suite already drives — the plan's own instruction.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -28,7 +35,17 @@ import {
   journalComplete,
   parseApproachNote,
 } from '../src/front/journal.mjs'
-import { appendJournalEntry, readJournalEntries, recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
+import {
+  appendJournalEntry,
+  readJournalEntries,
+  recordAttempt,
+  readAttempts,
+  memorySnapshotHash,
+  MEMORY_SNAPSHOT_ABSENT,
+  ALLOWED_ATTEMPT_KEYS,
+} from '../src/queue/attempt-ledger.mjs'
+import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
+import { applyTransition, STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { buildTaskPrompt } from '../src/runner/args.mjs'
 import { tick, classifyFailure } from '../src/loop.mjs'
@@ -505,5 +522,279 @@ describe('parseApproachNote — the worker-side protocol the loop reads off the 
 
   it('returns null when the worker left no note', () => {
     expect(parseApproachNote(['just output', 'no note here'])).toBeNull()
+  })
+})
+
+// ═══════ the attempt stamp — canon invariant 6 (Phase 11 Plan 05, Task 2) ═════════
+
+const NEW_STAMP_KEYS = [
+  'policyVersion',
+  'memorySnapshotHash',
+  'planHash',
+  'harnessVersion',
+  'stateMachineVersion',
+  'idempotencyKey',
+  'capabilityEnvelopeHash',
+]
+
+describe('ALLOWED_ATTEMPT_KEYS — seven more, and every old one kept', () => {
+  it('keeps every pre-existing member, in place', () => {
+    const before = [
+      'taskId',
+      'attempt',
+      'workerId',
+      'provider',
+      'startedAt',
+      'endedAt',
+      'outcome',
+      'failureReason',
+      'receiptRef',
+    ]
+    expect(ALLOWED_ATTEMPT_KEYS.slice(0, before.length)).toEqual(before)
+  })
+
+  it('gains exactly the seven stamp fields and stays frozen', () => {
+    for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(16)
+    expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(16) // no duplicate name
+  })
+})
+
+describe('recordAttempt — the stamp is additive, and it rides the existing allowlist', () => {
+  it('a call passing all seven writes all seven into the row', () => {
+    const taskId = 'BL-S1'
+    const env = defaultEnvelope('prod')
+    const stamp = {
+      policyVersion: 'routing-1',
+      memorySnapshotHash: 'a'.repeat(64),
+      planHash: 'b'.repeat(64),
+      harnessVersion: 'claude-code-2.0.1',
+      stateMachineVersion: STATE_MACHINE_VERSION,
+      idempotencyKey: idempotencyKey(taskId, `${taskId}#1`, 'RUNNING->PRODUCED'),
+      capabilityEnvelopeHash: envelopeHash(env),
+    }
+    recordAttempt(dir, { taskId, attempt: 1, outcome: 'completed', receiptRef: 'reverify:abc', ...stamp })
+    const [row] = readAttempts(dir, taskId)
+    for (const k of NEW_STAMP_KEYS) expect(row[k], k).toBe((stamp as any)[k])
+  })
+
+  it('a call passing NONE of them writes the row today’s readers already see (byte-identical)', () => {
+    const taskId = 'BL-S2'
+    const row = recordAttempt(dir, {
+      taskId,
+      attempt: 1,
+      workerId: 'max-2',
+      provider: 'claude',
+      startedAt: '2026-08-04T10:00:00.000Z',
+      endedAt: '2026-08-04T10:05:00.000Z',
+      outcome: 'completed',
+      receiptRef: 'reverify:abc',
+      recordedAt: '2026-08-04T10:05:01.000Z',
+    })
+    expect(JSON.stringify(row)).toBe(
+      '{"taskId":"BL-S2","attempt":1,"workerId":"max-2","provider":"claude",' +
+        '"startedAt":"2026-08-04T10:00:00.000Z","endedAt":"2026-08-04T10:05:00.000Z",' +
+        '"outcome":"completed","receiptRef":"reverify:abc","recordedAt":"2026-08-04T10:05:01.000Z"}',
+    )
+    for (const k of NEW_STAMP_KEYS) expect(row[k]).toBeUndefined()
+  })
+
+  it('a key OUTSIDE the allowlist is still dropped, exactly as before', () => {
+    const taskId = 'BL-S3'
+    recordAttempt(dir, {
+      taskId,
+      attempt: 1,
+      outcome: 'completed',
+      // @ts-expect-error — deliberately outside the allowlist
+      promptText: 'СЕКРЕТНЫЙ текст задачи, которому нечего делать в леджере',
+      apiKey: 'sk-not-a-real-key',
+    })
+    const raw = readFileSync(join(dir, `${taskId}.jsonl`), 'utf8')
+    expect(raw).not.toContain('СЕКРЕТНЫЙ')
+    expect(raw).not.toContain('sk-not-a-real-key')
+    const [row] = readAttempts(dir, taskId)
+    expect(row.promptText).toBeUndefined()
+    expect(row.apiKey).toBeUndefined()
+  })
+
+  it('APPEND-ONLY: two calls for one task produce two rows, the first untouched', () => {
+    const taskId = 'BL-S4'
+    recordAttempt(dir, { taskId, attempt: 1, outcome: 'failed', failureReason: 'agent_error' })
+    const first = readFileSync(join(dir, `${taskId}.jsonl`), 'utf8')
+    recordAttempt(dir, { taskId, attempt: 2, outcome: 'completed', receiptRef: 'reverify:abc' })
+    const rows = readAttempts(dir, taskId)
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r: any) => r.attempt)).toEqual([1, 2])
+    expect(readFileSync(join(dir, `${taskId}.jsonl`), 'utf8').startsWith(first)).toBe(true)
+  })
+
+  it('derives capabilityEnvelopeHash from a passed envelope, and the ENVELOPE never lands on the row', () => {
+    const taskId = 'BL-S5'
+    const env = defaultEnvelope('forge')
+    recordAttempt(dir, { taskId, attempt: 1, outcome: 'completed', capabilityEnvelope: env } as any)
+    const [row] = readAttempts(dir, taskId)
+    expect(row.capabilityEnvelopeHash).toBe(envelopeHash(env))
+    expect(row.capabilityEnvelope).toBeUndefined()
+    // no path from the envelope's declared write paths reaches the durable row
+    const raw = readFileSync(join(dir, `${taskId}.jsonl`), 'utf8')
+    expect(raw).not.toContain('.claude/agents')
+  })
+
+  it('an explicit capabilityEnvelopeHash wins over a passed envelope — the caller may stamp what actually ran', () => {
+    const taskId = 'BL-S6'
+    recordAttempt(dir, {
+      taskId,
+      attempt: 1,
+      outcome: 'completed',
+      capabilityEnvelope: defaultEnvelope('prod'),
+      capabilityEnvelopeHash: 'c'.repeat(64),
+    } as any)
+    expect(readAttempts(dir, taskId)[0].capabilityEnvelopeHash).toBe('c'.repeat(64))
+  })
+
+  it('an applyTransition result records DIRECTLY: the version and the key ride in on it', () => {
+    const taskId = 'BL-S7'
+    const result: any = applyTransition({
+      state: 'RUNNING',
+      to: 'PRODUCED',
+      actor: 'worker',
+      taskId,
+      attemptId: `${taskId}#1`,
+      attempt: 1,
+    })
+    expect(result.applied).toBe(true)
+    recordAttempt(dir, result)
+    const [row] = readAttempts(dir, taskId)
+    expect(row.stateMachineVersion).toBe(STATE_MACHINE_VERSION)
+    expect(row.idempotencyKey).toBe(result.idempotencyKey)
+    // the transition result's OTHER fields (contract, externalEffects, from) are not
+    // allowlist members and never reach the durable row
+    expect(row.contract).toBeUndefined()
+    expect(row.externalEffects).toBeUndefined()
+    expect(row.from).toBeUndefined()
+  })
+
+  it('the recorded digests carry no path separator and no note text (T-11-05-04)', () => {
+    const corpus = join(dir, 'corpus')
+    mkdirSync(corpus, { recursive: true })
+    writeFileSync(join(corpus, 'lesson.md'), '---\nid: lesson\n---\nСЕКРЕТНОЕ содержимое заметки\n')
+    const taskId = 'BL-S8'
+    recordAttempt(dir, {
+      taskId,
+      attempt: 1,
+      outcome: 'completed',
+      memorySnapshotHash: memorySnapshotHash({ corpusDir: corpus }),
+      capabilityEnvelope: defaultEnvelope('prod'),
+    } as any)
+    const [row] = readAttempts(dir, taskId)
+    for (const field of [row.memorySnapshotHash, row.capabilityEnvelopeHash]) {
+      expect(field).toMatch(/^[0-9a-f]{64}$/)
+      expect(field).not.toContain('/')
+      expect(field).not.toContain('\\')
+    }
+    const raw = readFileSync(join(dir, `${taskId}.jsonl`), 'utf8')
+    expect(raw).not.toContain('СЕКРЕТНОЕ')
+    expect(raw).not.toContain('lesson.md')
+    expect(raw).not.toContain(corpus)
+  })
+})
+
+describe('memorySnapshotHash — what the worker knew, as a digest and nothing more', () => {
+  const seed = () => {
+    const corpus = join(dir, `corpus-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(corpus, { recursive: true })
+    writeFileSync(join(corpus, 'a-rule.md'), '---\nid: a_rule\n---\nправило\n')
+    writeFileSync(join(corpus, 'b-lesson.md'), '---\nid: b_lesson\n---\nурок\n')
+    return corpus
+  }
+
+  it('two consecutive calls over an unchanged corpus return the same digest', () => {
+    const corpus = seed()
+    const first = memorySnapshotHash({ corpusDir: corpus })
+    expect(memorySnapshotHash({ corpusDir: corpus })).toBe(first)
+    expect(first).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('accepts a bare corpus path as well as the options object', () => {
+    const corpus = seed()
+    expect(memorySnapshotHash(corpus)).toBe(memorySnapshotHash({ corpusDir: corpus }))
+  })
+
+  it('editing a canonical record CHANGES the digest', () => {
+    const corpus = seed()
+    const before = memorySnapshotHash({ corpusDir: corpus })
+    writeFileSync(join(corpus, 'b-lesson.md'), '---\nid: b_lesson\n---\nурок, переписанный\n')
+    expect(memorySnapshotHash({ corpusDir: corpus })).not.toBe(before)
+  })
+
+  it('adding a canonical record changes it; renaming one changes it (the axis is name + content)', () => {
+    const corpus = seed()
+    const before = memorySnapshotHash({ corpusDir: corpus })
+    writeFileSync(join(corpus, 'c-new.md'), '---\nid: c_new\n---\nновое\n')
+    expect(memorySnapshotHash({ corpusDir: corpus })).not.toBe(before)
+  })
+
+  it('adding a GENERATED index file does NOT change it — a derived index is not knowledge', () => {
+    const corpus = seed()
+    const before = memorySnapshotHash({ corpusDir: corpus })
+    writeFileSync(join(corpus, 'MEMORY.md'), '# CORE\n- generated index\n')
+    writeFileSync(join(corpus, 'INDEX-tech.md'), '# tech\n- generated area index\n')
+    writeFileSync(join(corpus, 'TAGS.md'), '# tags\n')
+    writeFileSync(join(corpus, 'ARCHIVE.md'), '# archive\n')
+    expect(memorySnapshotHash({ corpusDir: corpus })).toBe(before)
+  })
+
+  it('a MISSING corpus yields a declared absent value — never a throw, never a fabricated digest', () => {
+    const missing = join(dir, 'no-such-corpus')
+    expect(existsSync(missing)).toBe(false)
+    const value = memorySnapshotHash({ corpusDir: missing })
+    expect(value).toBe(MEMORY_SNAPSHOT_ABSENT)
+    expect(value).not.toMatch(/^[0-9a-f]{64}$/)
+    expect(memorySnapshotHash({} as any)).toBe(MEMORY_SNAPSHOT_ABSENT)
+    expect(memorySnapshotHash(undefined as any)).toBe(MEMORY_SNAPSHOT_ABSENT)
+  })
+
+  it('a corpus holding only generated artifacts is ABSENT, not a digest of an empty world', () => {
+    const corpus = join(dir, 'empty-corpus')
+    mkdirSync(corpus, { recursive: true })
+    expect(memorySnapshotHash({ corpusDir: corpus })).toBe(MEMORY_SNAPSHOT_ABSENT)
+    writeFileSync(join(corpus, 'MEMORY.md'), '# CORE\n')
+    expect(memorySnapshotHash({ corpusDir: corpus })).toBe(MEMORY_SNAPSHOT_ABSENT)
+  })
+
+  it('the digest carries no path, no file name and no note text', () => {
+    const corpus = seed()
+    const digest = memorySnapshotHash({ corpusDir: corpus })
+    expect(digest).not.toContain('/')
+    expect(digest).not.toContain('\\')
+    expect(digest).not.toContain('a-rule')
+    expect(digest).not.toContain('правило')
+    expect(MEMORY_SNAPSHOT_ABSENT).not.toContain('/')
+  })
+
+  it('is stable across two corpora with identical content in different directories', () => {
+    const one = seed()
+    const two = seed()
+    expect(memorySnapshotHash({ corpusDir: two })).toBe(memorySnapshotHash({ corpusDir: one }))
+  })
+})
+
+describe('the ledger keeps its stated disciplines', () => {
+  const ledgerSrc = readFileSync(new URL('../src/queue/attempt-ledger.mjs', import.meta.url), 'utf8')
+
+  it('exposes only append and read functions — no rewrite, no delete (T-11-05-05)', () => {
+    const exported = [...ledgerSrc.matchAll(/^export function (\w+)/gm)].map((m) => m[1])
+    expect(exported.sort()).toEqual(
+      ['appendJournalEntry', 'memorySnapshotHash', 'readAttempts', 'readJournalEntries', 'recordAttempt'].sort(),
+    )
+    for (const forbidden of ['unlinkSync', 'rmSync', 'writeFileSync', 'truncateSync']) {
+      expect(ledgerSrc).not.toContain(forbidden)
+    }
+  })
+
+  it('builds the row through the allowlist loop only — no spread, no passthrough', () => {
+    expect(ledgerSrc).toContain('for (const k of ALLOWED_ATTEMPT_KEYS) if (attempt[k] !== undefined) row[k] = attempt[k]')
+    expect(ledgerSrc).not.toMatch(/row\s*=\s*\{\s*\.\.\.attempt/)
   })
 })
