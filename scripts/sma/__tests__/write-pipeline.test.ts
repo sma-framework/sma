@@ -868,22 +868,37 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
     expect(freshIndex()).not.toContain('working-queue-adapter-nightly-drain.md')
   })
 
-  it('Test 50: erase is REFUSED with a policy pointer — nothing is deleted, ever', () => {
+  it('Test 50: erase is PERFORMED — the refusal became a delegation, and the record is gone', () => {
+    // The contract this case pins CHANGED in 11-11 (D-11-05). It used to assert
+    // that erase was refused with a policy pointer and was not in the vocabulary
+    // at all. It is rewritten rather than deleted so the change of contract is
+    // visible in a test diff instead of only in an absence: the destructive
+    // effect now lives in erase.mjs and the lifecycle delegates to it.
     seedCorpus(NEIGHBOUR)
-    const before = readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')
+    expect(existsSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))).toBe(true)
 
     const res = lc({ id: 'working-queue-adapter-nightly-drain', action: 'erase' })
 
+    expect(res.applied).toBe(true)
+    expect(res.refusal).toBeUndefined()
+    expect(res.changed).toContain(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))
+    // read the surface back — the return value is not the evidence
+    expect(existsSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))).toBe(false)
+    // erase is now one of the five things this module can do
+    expect(LIFECYCLE_ACTIONS).toContain('erase')
+    // and it still refuses to promise the one thing it cannot do
+    expect(res.history.touched).toBe(false)
+    expect(String(res.history.note)).toMatch(/histor/i)
+  })
+
+  it('Test 50b: an unknown action is still refused, naming all five legal ones', () => {
+    seedCorpus(NEIGHBOUR)
+    const res = lc({ id: 'working-queue-adapter-nightly-drain', action: 'obliterate' })
+
     expect(res.applied).toBe(false)
-    expect(res.refusal).toMatch(/MEMORY-MODEL/)
-    // the policy the refusal defers to lives in the threat model — the pointer
-    // must name it, or the reader is sent to the schema for a governance answer
-    expect(res.refusal).toMatch(/MEMORY-THREAT-MODEL/)
-    expect(res.refusal).toMatch(/polic/i)
+    expect(res.refusal).toMatch(/obliterate/)
+    for (const action of LIFECYCLE_ACTIONS) expect(res.refusal).toContain(action)
     expect(existsSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'))).toBe(true)
-    expect(readFileSync(join(corpusDir, 'working-queue-adapter-nightly-drain.md'), 'utf8')).toBe(before)
-    // erase is not even in the vocabulary of things this module can do
-    expect(LIFECYCLE_ACTIONS).not.toContain('erase')
   })
 
   it('Test 51: expire refuses a record whose window has not run out, and applies when it has', () => {
