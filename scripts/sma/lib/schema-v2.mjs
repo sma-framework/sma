@@ -26,11 +26,16 @@
  *   - LINK_TYPES · checkLinks(record) -> string[] — the closed typed-edge vocabulary
  *   - PRIVATE_FACET_PATTERN · isPrivateFacet(value)
  *   - APPROVAL_PATHS · resolveApprovalPath({memory_type, truth_mode, sensitivity, risk})
+ *   - STORAGE_CLASSES · resolveStorageClass(record, {now}) · hasLifetimeWindow(record) ·
+ *     storagePlacementDenial(record, {targetDir, localDir}) — where a record may sit
  *   - GRACE_HORIZON
  *
  * Node built-ins only. Every function here is PURE: no fs, no clock, no network.
  * Expiry ("is this valid_until in the past?") is a LINT concern precisely
  * because it needs a clock; this module must stay replayable and testable.
+ * `resolveStorageClass` takes an OPTIONAL `now` and never reaches for one:
+ * nothing here calls Date.now(), and an absent clock reports the lifetime window
+ * as `unknown` rather than guessing. The clock never decides a class.
  */
 
 import { V2_KEY_ORDER } from './frontmatter.mjs'
@@ -511,6 +516,195 @@ export function resolveApprovalPath(record) {
 
   // 4. Well-formed but unmapped: review, never an automatic path.
   return 'evidence-review'
+}
+
+// ── storage classes: who will see this record ───────────────────────────────
+
+/**
+ * The three storage classes, named by the one question a person can answer
+ * without a manual: WHO WILL SEE THIS. Ordered lightest to strictest, exactly
+ * like APPROVAL_PATHS — "the strictest rule wins" is the later member winning.
+ *
+ *   'shared'            — «Общее»: lives in the project's git, travels with the
+ *                         team and with the repository. The default, and where
+ *                         lessons, decisions and rules belong.
+ *   'ephemeral'         — «Временное»: goes away by its own deadline. Task
+ *                         scratch, the observations of a single run.
+ *   'this-machine-only' — «Только на этой машине»: never enters git at all.
+ *                         Tokens, private notes, a client's name.
+ *
+ * THREE, NOT FIVE, and the count is load-bearing. The canon's regulated-data
+ * class — together with any separate breakdown of medical versus personal data —
+ * is removed from this product by a direct product decision: there is ONE axis
+ * here, who sees it. The canon's private-git class is removed too, because for a
+ * user that is a private repository rather than a distinct mechanism, and a new
+ * entity there only confuses. Neither discard touches the write-time credential
+ * scan: that is about a password never reaching the text at all, not about
+ * categories of data, and it stays.
+ *
+ * THE MAPPING, WRITTEN DOWN. The same table is in docs/MEMORY-THREAT-MODEL.md
+ * §2.1; if the two ever disagree, this module is right and the document is a bug.
+ *
+ *   sensitivity                        → storage class      why
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   (none declared)                    → shared             nothing says otherwise
+ *   public                             → shared             everyone may see it
+ *   internal                           → shared             the team may; git is the team
+ *   sensitive                          → this-machine-only  not where an export can read it
+ *   encrypted-required                 → this-machine-only  must not sit in a git-backed class at all
+ *   any of the above + a lifetime      → ephemeral          …unless the value is restricted,
+ *   window (retention / valid_until)                        in which case the strictest wins
+ *   anything else                      → REFUSED            an unreadable label is not a permit
+ *
+ * The ephemeral class is DERIVED FROM THE LIFETIME FIELDS and never from a fifth
+ * `sensitivity` value. "How long may this live?" and "who may see it?" are
+ * independent questions; folding them into one field makes both unanswerable.
+ * docs/MEMORY-THREAT-MODEL.md §2.1 reasoned that out and this module does not
+ * relitigate it. No new frontmatter field is introduced either: all three classes
+ * are derived from fields the schema already has, so nobody has to learn one.
+ */
+export const STORAGE_CLASSES = Object.freeze(['shared', 'ephemeral', 'this-machine-only'])
+
+/** The two `sensitivity` values that may never sit in a git-backed class. */
+const RESTRICTED_SENSITIVITY = Object.freeze(['sensitive', 'encrypted-required'])
+
+/**
+ * Which lifetime field bounds this record, by name, or null when none does.
+ * A `retention` BLOCK counts only when it actually carries a window (`ttl` or
+ * `until`): an empty block, or one holding nothing the schema recognises, bounds
+ * nothing and must not be mistaken for an expiry.
+ */
+function lifetimeField(record) {
+  if (!isPlainObject(record)) return null
+  const retention = record.retention
+  if (isPlainObject(retention)) {
+    if (isPresent(retention.ttl) || isPresent(retention.until)) return 'retention'
+  } else if (isPresent(retention)) {
+    return 'retention'
+  }
+  return isPresent(record.valid_until) ? 'valid_until' : null
+}
+
+/**
+ * hasLifetimeWindow(record) -> boolean — can this record expire by itself?
+ *
+ * EXPORTED for the same one-implementation reason as INTERPRETATION_MODES and
+ * hasEvidence: the write pipeline's risk step asks exactly this question before
+ * it will let the one automatic path write anything, and the storage resolver
+ * asks it to derive the ephemeral class. Two answers to "is this bounded in
+ * time?" is precisely the drift this vocabulary module exists to prevent.
+ *
+ * @param {unknown} record
+ * @returns {boolean}
+ */
+export function hasLifetimeWindow(record) {
+  return lifetimeField(record) !== null
+}
+
+/**
+ * Whether the record's horizon has already passed, as far as the CALLER's clock
+ * can say. Reported, never decisive: a closed window does not move a record to
+ * another class, it only tells the reader what it is looking at. With no clock
+ * supplied — the normal case — the answer is `unknown`, never a guess.
+ */
+function windowState(record, now) {
+  const until = record.valid_until
+  if (!isPresent(until) || !isPresent(now)) return 'unknown'
+  const untilMs = Date.parse(String(until))
+  const nowMs = Date.parse(String(now))
+  if (Number.isNaN(untilMs) || Number.isNaN(nowMs)) return 'unknown'
+  return nowMs > untilMs ? 'closed' : 'open'
+}
+
+/** A refusal verdict: no class was assigned, and the reason names what stopped it. */
+function classRefusal(field, value, reason) {
+  return { storageClass: null, refused: true, rule: 'unreadable-class', field, value, window: 'unknown', reason }
+}
+
+/**
+ * resolveStorageClass(record, {now}) -> verdict
+ *
+ * Which of the three classes may hold this record, in the same posture as
+ * resolveApprovalPath: strictest rule first, an unknown value refused rather
+ * than defaulted, and a verdict that names the field and the rule that decided
+ * so a person can argue with it.
+ *
+ * Precedence:
+ *   1. fail-closed — an input that is not a record, or a `sensitivity` outside
+ *      the closed four, is REFUSED. An unreadable label is not a permit, and
+ *      quietly calling it `shared` would turn a typo into a publication;
+ *   2. restricted — `sensitive` or `encrypted-required` resolves to
+ *      this-machine-only whatever else the record says, including a lifetime
+ *      window: the strictest rule wins;
+ *   3. lifetime — a `retention` window or a `valid_until` horizon resolves to
+ *      ephemeral, because "who sees it" is answered by "nobody, after the date";
+ *   4. default — everything else is shared.
+ *
+ * PURE: no fs, no network, and no clock of its own. `now` is optional, is used
+ * only to REPORT whether a horizon has passed, and never changes the class.
+ *
+ * @param {unknown} record — a parsed v2 frontmatter object
+ * @param {{now?: string}} [opts]
+ * @returns {{storageClass: string|null, refused: boolean, rule: string,
+ *            field: string|null, value: unknown, window: string, reason: string}}
+ */
+export function resolveStorageClass(record, opts = {}) {
+  if (!isPlainObject(record)) {
+    return classRefusal(
+      null,
+      record,
+      'storage class: the input is not a record — a class cannot be read off something that is not a record, and no class means no permission to write anywhere',
+    )
+  }
+
+  const sensitivity = record.sensitivity
+  if (isPresent(sensitivity) && !SENSITIVITY_CLASSES.includes(sensitivity)) {
+    return classRefusal(
+      'sensitivity',
+      sensitivity,
+      `storage class: sensitivity "${String(sensitivity)}" is outside the closed vocabulary (${SENSITIVITY_CLASSES.join(' · ')}) — an unreadable label is not a permit, so no class is assigned`,
+    )
+  }
+
+  const now = opts && typeof opts === 'object' ? opts.now : undefined
+  const window = windowState(record, now)
+  const lifetime = lifetimeField(record)
+
+  if (RESTRICTED_SENSITIVITY.includes(sensitivity)) {
+    return {
+      storageClass: 'this-machine-only',
+      refused: false,
+      rule: 'restricted-class',
+      field: 'sensitivity',
+      value: sensitivity,
+      window,
+      reason: lifetime
+        ? `storage class: sensitivity "${String(sensitivity)}" is restricted and "${lifetime}" bounds the record in time — the strictest rule wins, so the record is this-machine-only and expires there`
+        : `storage class: sensitivity "${String(sensitivity)}" is restricted — the strictest rule wins: this material never enters a git-backed path`,
+    }
+  }
+
+  if (lifetime) {
+    return {
+      storageClass: 'ephemeral',
+      refused: false,
+      rule: 'lifetime-window',
+      field: lifetime,
+      value: record[lifetime],
+      window,
+      reason: `storage class: "${lifetime}" bounds the record in time — who sees it is answered by "nobody, after the date"`,
+    }
+  }
+
+  return {
+    storageClass: 'shared',
+    refused: false,
+    rule: 'default-shared',
+    field: null,
+    value: null,
+    window,
+    reason: 'storage class: nothing restricts this record and nothing bounds it in time — the default is the project\'s own git, which is what the team sees',
+  }
 }
 
 /**
