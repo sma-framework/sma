@@ -455,11 +455,37 @@ Wikilinks stay for humans; the machine layer uses typed edges. A `links` entry i
 The graph is built for questions, not beauty: an edge earns its place only if it
 improves a concrete retrieval, temporal-resolution or verification query.
 
-**Honest state:** the *shape* of `links` is enforced by the grammar; the edge
-vocabulary above is a documented convention and is **not** yet a closed enum in the
-validator. The two edges the tooling itself writes are the supersession pair (§5,
-top-level fields) and `derived_from` (§9.5). Closing the vocabulary is a job for the
-first tool that consumes typed links — with fixtures that prove the spelling.
+**Enforced, not conventional:** the *shape* of `links` is enforced by the grammar and
+the vocabulary above **is a closed enum** — `LINK_TYPES` in `schema-v2.mjs`, checked by
+`checkLinks`, which the record validator runs in its structure tier. A type outside the
+eleven is refused with a `links[i].type: "…" is outside the closed vocabulary (…)`
+finding, and an entry with no `ref`, or a `ref` that is not a string, is refused the
+same way; the corpus lint surfaces both as `MEM-V2SCHEMA` criticals. Absence stays
+legal — a record that claims no edges claims nothing false. The two edges the tooling
+itself writes are the supersession pair (§5, top-level fields) and `derived_from`
+(§9.5); the back-pointer `superseded_by` is a top-level field, not a member of this
+vocabulary.
+
+### 10.1 The graph is a projection, not an artifact
+
+The graph is **computed from the records' own `links` fields on demand and thrown
+away**: `projectLinks` (pure, over already-parsed notes) and `linkGraphFromCorpus` (the
+one function that reads the disk) in `scripts/sma/lib/links.mjs`.
+The projection is **never persisted** — no graph file, no graph database, no
+per-note graph artifact. Nothing
+derived from it can become a second source of truth about the corpus, and deleting
+anything it ever returned destroys no knowledge, because the edges live in the records.
+
+Two limits, stated rather than implied:
+
+- **Direction and symmetry are not enforced.** An edge points from the record that
+  declares it to the record it names, and no inverse edge is required at the other end.
+  The one pair that is symmetric — `supersedes`/`superseded_by` — gets that symmetry
+  from `applyLifecycle`, which writes both ends atomically, not from this vocabulary.
+- **A dangling reference is reported, not repaired.** An edge whose `ref` names no
+  record in the corpus is listed in the projection's `dangling` set and left out of the
+  traversable graph; an edge the validator refuses is listed in `refused`. Neither is
+  rewritten: this codebase does not edit records it did not author.
 
 ## 11. Corpus integrity lint
 
