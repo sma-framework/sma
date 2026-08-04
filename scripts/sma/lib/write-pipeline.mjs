@@ -71,10 +71,13 @@ import {
   MEMORY_TYPES,
   TRUTH_MODES,
   hasEvidence,
+  hasLifetimeWindow,
   resolveApprovalPath,
+  storagePlacementDenial,
   validateId,
   validateRecord,
 } from './schema-v2.mjs'
+import { localStorePath } from './local-store.mjs'
 
 /**
  * The canon write sequence. Twelve names, one order, frozen. Positions 1-8 are
@@ -167,7 +170,7 @@ const AUTO_PERSIST_PATH = 'auto-ttl'
  *     flags,      // findings that inform later steps but do not stop the walk
  *     redactions, // [{rule, class}] applied to the content
  *     corpus,     // [{file, frontmatter, body}] read ONCE, before the walk
- *     dirs,       // {corpusDir, draftsDir, journalDir}
+ *     dirs,       // {corpusDir, draftsDir, journalDir, localDir}
  *     opts,       // {terminalId, now, registry, execGit}
  *   }
  *
@@ -191,6 +194,10 @@ export function createPipelineState(event = {}, opts = {}) {
       corpusDir,
       draftsDir: opts.draftsDir ?? join(corpusDir, DRAFTS_DIRNAME),
       journalDir: opts.journalDir ?? null,
+      // Where this-machine-only material belongs. A PATH, computed, never created
+      // here: this module does not own the store's creation, only the refusal to
+      // write past it. Same relative-to-cwd default posture as corpusDir.
+      localDir: opts.localDir ?? localStorePath({ repoRoot: opts.repoRoot ?? '.' }),
     },
     opts: {
       terminalId: opts.terminalId ?? DEFAULT_TERMINAL,
@@ -581,14 +588,42 @@ export function assignRisk(state) {
   return trace(state, 'risk', 'ok', { approval_path: approvalPath })
 }
 
-/** A record that may expire on its own: a retention window, or an explicit end date. */
+/**
+ * A record that may expire on its own: a retention window, or an explicit end
+ * date. Delegated to schema-v2.mjs so the risk gate and the storage-class
+ * resolver cannot grow two different ideas of "bounded in time" — the same
+ * one-implementation rule that exported INTERPRETATION_MODES and hasEvidence.
+ */
 function hasRetentionWindow(record) {
-  const retention = record.retention
-  if (isNonEmpty(retention)) return true
-  if (retention && typeof retention === 'object' && (isNonEmpty(retention.ttl) || isNonEmpty(retention.until))) {
-    return true
+  return hasLifetimeWindow(record)
+}
+
+// ── the placement gate (asked on BOTH write paths, before either writes) ─────
+
+/**
+ * placementDenial(state, targetDir) -> denial detail | null.
+ *
+ * The legality question — may THIS record be written into THIS directory — is
+ * answered by schema-v2.mjs; this is only the call site. Fail-closed by the
+ * threat model's rule: a subsystem that decides where something may sit refuses
+ * rather than degrades. A denial carries the class, the deciding rule and the
+ * destination the record should have gone to instead, so the refusal is
+ * something a person can act on rather than a wall.
+ */
+function placementDenial(state, targetDir) {
+  const denial = storagePlacementDenial(state.record, {
+    targetDir,
+    localDir: state.dirs.localDir ?? undefined,
+  })
+  if (!denial) return null
+  return {
+    reason: denial.reason,
+    storage_class: denial.storageClass,
+    storage_rule: denial.rule,
+    target_dir: denial.targetDir,
+    local_dir: denial.localDir,
+    errors: [],
   }
-  return isNonEmpty(record.valid_until)
 }
 
 // ── step 8: persist ─────────────────────────────────────────────────────────
@@ -610,6 +645,12 @@ function hasRetentionWindow(record) {
 export function persist(state) {
   const record = state.record
   const target = join(state.dirs.corpusDir, `${String(record.id ?? '')}.md`)
+
+  // Placement runs FIRST — before validation, before the never-clobber guard,
+  // before any byte. Everything else in this function decides whether a record
+  // is good enough to write; this decides whether it may be written HERE at all.
+  const denied = placementDenial(state, state.dirs.corpusDir)
+  if (denied) return reject(state, 'persist', denied)
 
   const idError = validateId(record.id, target)
   const { errors } = validateRecord(record)
@@ -655,6 +696,13 @@ export function persist(state) {
 function stage(state, step, detail) {
   const record = { ...state.record, status: 'draft', draft_kind: PIPELINE_DRAFT_KIND }
   const target = join(state.dirs.draftsDir, `${String(record.id ?? '')}.md`)
+
+  // THE DRAFTS DIRECTORY IS A GIT-BACKED PATH TOO. Gating only the corpus door
+  // would leave the boundary trivially open, because a restricted record never
+  // reaches the corpus door in the first place: the approval ladder escalates it
+  // and routes it here. So the placement question is asked on BOTH write paths.
+  const denied = placementDenial(state, state.dirs.draftsDir)
+  if (denied) return reject(state, step, { ...detail, ...denied })
 
   const idError = validateId(record.id, target)
   if (idError) {
@@ -1167,8 +1215,9 @@ export const STEPS = Object.freeze({
  * anyone re-running anything.
  *
  * @param {{record:object, body?:string}} event
- * @param {{corpusDir?:string, draftsDir?:string, journalDir?:string,
- *          terminalId?:string, now?:string, corpus?:Array, registry?:object}} [opts]
+ * @param {{corpusDir?:string, draftsDir?:string, journalDir?:string, localDir?:string,
+ *          repoRoot?:string, terminalId?:string, now?:string, corpus?:Array,
+ *          registry?:object}} [opts]
  */
 export function runPipeline(event, opts = {}) {
   const state = createPipelineState(event, opts)

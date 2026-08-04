@@ -708,6 +708,86 @@ export function resolveStorageClass(record, opts = {}) {
 }
 
 /**
+ * Directory paths, compared the only way a pure function can: as text. Separators
+ * are normalised and a trailing slash is dropped; letter case is NOT folded,
+ * because folding it on a case-sensitive filesystem would let two different
+ * directories compare equal. The residual risk points the safe way — a caller
+ * that spells the same directory in two cases gets a refusal, never a permit.
+ */
+function normalizeDir(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const slashed = trimmed.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '')
+  return slashed === '' ? '/' : slashed
+}
+
+/** Is `child` the same directory as `parent`, or somewhere beneath it? */
+function isInsideDir(child, parent) {
+  return child === parent || child.startsWith(`${parent}/`)
+}
+
+/**
+ * storagePlacementDenial(record, {targetDir, localDir}) -> denial | null
+ *
+ * May this record be written into this directory? Placement is a LEGALITY
+ * question, so it is answered here, in the one validation authority, rather than
+ * by whichever write path happens to be running.
+ *
+ * Fail-closed, by the threat model's own rule (docs/MEMORY-THREAT-MODEL.md §3): a
+ * subsystem that decides WHERE something may sit must refuse rather than degrade.
+ * So a denial is returned when
+ *   - the record resolves to the this-machine-only class and the target is not
+ *     the local store, or
+ *   - the record's class could not be read at all — an unreadable class is
+ *     treated as the most restrictive plausible class, never as the default, or
+ *   - no local store directory was named: a destination nobody named cannot be
+ *     the destination this record was aimed at.
+ * Everything else returns null. A shared or ephemeral record is not a placement
+ * question: a deadline is not a secret.
+ *
+ * PURE: text comparison over two paths. It never touches a filesystem, never
+ * creates the store, and never mutates the record.
+ *
+ * @param {unknown} record — a parsed v2 frontmatter object
+ * @param {{targetDir?: string, localDir?: string}} [opts]
+ * @returns {{storageClass: string|null, rule: string, field: string|null, value: unknown,
+ *            targetDir: string|null, localDir: string|null, reason: string}|null}
+ */
+export function storagePlacementDenial(record, opts = {}) {
+  const verdict = resolveStorageClass(record)
+  if (!verdict.refused && verdict.storageClass !== 'this-machine-only') return null
+
+  const options = isPlainObject(opts) ? opts : {}
+  const targetDir = typeof options.targetDir === 'string' ? options.targetDir : null
+  const localDir = typeof options.localDir === 'string' ? options.localDir : null
+  const target = normalizeDir(targetDir)
+  const local = normalizeDir(localDir)
+
+  // Already where it belongs.
+  if (local && target && isInsideDir(target, local)) return null
+
+  const destination = local
+    ? `the this-machine-only store at ${localDir}`
+    : 'the this-machine-only store — and no store directory was named for this write, which is itself a refusal: a destination nobody named is not a permission'
+  const aimedAt = targetDir ? `"${targetDir}"` : 'the requested directory'
+
+  const reason = verdict.refused
+    ? `placement refused: ${verdict.reason}. A record whose class cannot be read may not be written to ${aimedAt} — an unreadable class is treated as the most restrictive plausible class, so it is handled as this-machine-only material and belongs in ${destination}`
+    : `placement refused: this record is this-machine-only (${verdict.rule}: ${String(verdict.field)} = "${String(verdict.value)}") and ${aimedAt} is a git-backed path. It belongs in ${destination}. Nothing was written: a record that reached a commit is in the history and in every clone, and there is no version of that which is fixed later`
+
+  return {
+    storageClass: verdict.storageClass,
+    rule: verdict.rule,
+    field: verdict.field,
+    value: verdict.value,
+    targetDir,
+    localDir,
+    reason,
+  }
+}
+
+/**
  * Evidence that would actually re-verify something — none-recorded is honest,
  * not evidence. EXPORTED for the same reason as INTERPRETATION_MODES: the write
  * pipeline asks this exact question at its evidence step, and the
