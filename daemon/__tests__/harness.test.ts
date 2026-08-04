@@ -23,6 +23,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { Readable } from 'node:stream'
 
 import {
   loadMcpRegistry,
@@ -31,7 +32,9 @@ import {
   applyAgentToggle,
   applySkillAssign,
   applyMcpToggle,
+  applyStockTeamToggle,
   resolveWorkerContext,
+  STOCK_TEAM_TARGET,
   MissingDefinitionFileError,
   UnknownProfileError,
   UnknownSkillError,
@@ -39,6 +42,7 @@ import {
   UnknownMcpServerError,
 } from '../src/front/harness.mjs'
 import { buildClaudeArgs, buildMcpConfigFile } from '../src/runner/args.mjs'
+import { createFrontServer, ROUTES, STOCK_TEAM_TARGET as SERVER_STOCK_TEAM_TARGET } from '../src/front/server.mjs'
 
 // ── a fake fs (files for reads, dirs for readdir, records writes) ──
 
@@ -520,6 +524,154 @@ describe('readHarness — the stockTeam key is ADDITIVE (modules 8/9/12 keep the
     expect(out.skills).toEqual([])
     expect(out.mcp).toEqual([])
     expect(out.drafts).toEqual([])
+  })
+})
+
+describe('applyStockTeamToggle — one act, through the door that already exists', () => {
+  const baseConfig = () => ({
+    workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2', oauthTokenEnv: 'T' }, enabled: true }],
+  })
+  const toggleEnv = { SMA_DAEMON_CONFIG: '/cfg.json' }
+
+  it('switching on activates the SHIPPED roster from the files, records a stock baseline per agent, and leaves the user’s own agents alone', () => {
+    const { fs, lastWritten } = localInstall({
+      extraFiles: { '.claude/agents/my-helper.md': OWN_HELPER },
+      extraAgents: ['my-helper.md'],
+    })
+    const next = applyStockTeamToggle({ config: baseConfig(), enabled: true, repoDir: '/repo', fsImpl: fs, env: toggleEnv, homedir: NO_HOME })
+
+    const planner = next.workers.find((w: any) => w.id === 'sma-planner')
+    expect(planner).toBeTruthy()
+    expect(planner.enabled).toBe(true)
+    expect(planner.roleFile).toBe('.claude/agents/sma-planner.md')
+    expect(planner.account).toEqual({ configDir: '/m2', oauthTokenEnv: 'T' }) // inherited pool default
+    expect(typeof planner.stockDigest).toBe('string')
+    expect(planner.stockDigest.length).toBe(64) // sha256 hex
+    // a switch labelled «the SMA team» never sweeps up the user's own agent
+    expect(next.workers.find((w: any) => w.id === 'my-helper')).toBeUndefined()
+    // and it was written atomically, not just returned
+    expect(lastWritten().workers.map((w: any) => w.id).sort()).toEqual(['max-2', 'sma-planner', 'sma-verifier'])
+
+    // the baseline is readable back by readStockTeam: today's shipped copy IS what was accepted
+    const team = readStockTeam({ config: next, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    expect(team.find((e: any) => e.id === 'sma-planner')).toMatchObject({ enabled: true, stockUpdate: 'current', forked: false })
+    expect(team.find((e: any) => e.id === 'my-helper')).toMatchObject({ enabled: false, origin: 'yours' })
+  })
+
+  it('switching off flips enabled and keeps the recorded baseline — what was last accepted does not change because a switch moved', () => {
+    const { fs } = localInstall()
+    const on = applyStockTeamToggle({ config: baseConfig(), enabled: true, repoDir: '/repo', fsImpl: fs, env: toggleEnv, homedir: NO_HOME })
+    const digest = on.workers.find((w: any) => w.id === 'sma-planner').stockDigest
+    const off = applyStockTeamToggle({ config: on, enabled: false, repoDir: '/repo', fsImpl: fs, env: toggleEnv, homedir: NO_HOME })
+    const planner = off.workers.find((w: any) => w.id === 'sma-planner')
+    expect(planner.enabled).toBe(false)
+    expect(planner.stockDigest).toBe(digest)
+    // switching off adds nobody
+    expect(off.workers).toHaveLength(on.workers.length)
+  })
+
+  it('with no definition files on disk it returns the EXISTING refusal and writes no config (two-step activation)', () => {
+    const { fs, writes } = fakeFs({})
+    expect(() =>
+      applyStockTeamToggle({ config: baseConfig(), enabled: true, repoDir: '/repo', fsImpl: fs, env: toggleEnv, homedir: NO_HOME }),
+    ).toThrow(MissingDefinitionFileError)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('a forked definition still activates, and readStockTeam keeps saying it is forked', () => {
+    const { fs } = localInstall({ planner: STOCK_PLANNER_EDITED })
+    const next = applyStockTeamToggle({ config: baseConfig(), enabled: true, repoDir: '/repo', fsImpl: fs, env: toggleEnv, homedir: NO_HOME })
+    const team = readStockTeam({ config: next, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    expect(team.find((e: any) => e.id === 'sma-planner')).toMatchObject({ enabled: true, forked: true, stockUpdate: 'current' })
+  })
+})
+
+// ── the door: the reserved target rides POST /api/agent/toggle, the table stays at thirty ──
+
+const TOKEN = 'a'.repeat(64)
+
+function mkReq(o: any = {}) {
+  const { method = 'GET', url = '/', headers = {}, body } = o
+  const req: any = Readable.from(body == null ? [] : [Buffer.from(JSON.stringify(body))])
+  req.method = method
+  req.url = url
+  req.headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', ...headers }
+  req.socket = { remoteAddress: '10.0.0.1' }
+  return req
+}
+
+function mkRes() {
+  const res: any = {
+    statusCode: 0,
+    body: '',
+    headersSent: false,
+    writeHead(code: number) { res.statusCode = code; res.headersSent = true; return res },
+    setHeader() {},
+    getHeader() { return undefined },
+    write(c: any) { res.body += String(c); return true },
+    end(c?: any) { if (c != null) res.body += String(c); return res },
+  }
+  return res
+}
+
+async function call(front: any, opts: any) {
+  const res = mkRes()
+  await front.handle(mkReq(opts), res)
+  return res
+}
+
+describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no route added)', () => {
+  it('the route table is still exactly thirty entries and carries no stock-team route', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(30)
+    expect(Object.keys(ROUTES).filter((k) => /stock/i.test(k))).toEqual([])
+  })
+
+  it('the reserved target is the same literal on both sides of the seam', () => {
+    expect(SERVER_STOCK_TEAM_TARGET).toBe(STOCK_TEAM_TARGET)
+  })
+
+  it('the reserved target dispatches to the stock applier and emits the harness.updated hint', async () => {
+    const seen: any[] = []
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [] },
+      deps: {
+        applyAgentToggle: () => { throw new Error('the single-agent applier must not be reached for the team target') },
+        applyStockTeamToggle: (args: any) => { calls.push(args); return { workers: [{ id: 'sma-planner', enabled: true, stockDigest: 'x' }] } },
+        hub: { emit: (e: any) => seen.push(e) },
+      },
+    })
+    const res = await call(front, { method: 'POST', url: '/api/agent/toggle', body: { id: STOCK_TEAM_TARGET, enabled: true } })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, stockTeam: { enabled: true, agents: 1 } })
+    expect(calls[0]).toMatchObject({ enabled: true })
+    expect(seen).toContainEqual({ event: 'harness.updated' })
+  })
+
+  it('a single agent id still reaches the single-agent applier — the door did not change meaning', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [] },
+      deps: {
+        applyAgentToggle: (args: any) => { calls.push(args); return { workers: [{ id: 'max-2', enabled: false }] } },
+        applyStockTeamToggle: () => { throw new Error('the team applier must not be reached for a single id') },
+      },
+    })
+    const res = await call(front, { method: 'POST', url: '/api/agent/toggle', body: { id: 'max-2', enabled: false } })
+    expect(res.statusCode).toBe(200)
+    expect(calls[0]).toMatchObject({ id: 'max-2', enabled: false })
+  })
+
+  it('the refusal maps the same way it always did: nothing installed → 404, not a silent success', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [] },
+      deps: {
+        applyAgentToggle: () => ({ workers: [] }),
+        applyStockTeamToggle: () => { throw new MissingDefinitionFileError('no installed SMA definitions') },
+      },
+    })
+    const res = await call(front, { method: 'POST', url: '/api/agent/toggle', body: { id: STOCK_TEAM_TARGET, enabled: true } })
+    expect(res.statusCode).toBe(404)
   })
 })
 

@@ -471,10 +471,23 @@ function writeConfig(config, { env, homedir, fsImpl }) {
   return path
 }
 
-/** Build a new profile from an APPROVED definition file + pool defaults (never request text). */
-function profileFromDefinition(id, enabled, config, repoDir, fsImpl) {
-  const defPath = join(repoDir ?? '.', '.claude', 'agents', `${id}.md`)
-  const content = readFileSafe(defPath, fsImpl)
+/**
+ * Build a new profile from an APPROVED definition file + pool defaults (never request text).
+ *
+ * `source` lets a caller that has ALREADY located the definition hand over its content and
+ * the repo-relative roleFile to record (applyStockTeamToggle, which reads the installed
+ * roster out of a config directory that is not always the project's). Absent, the project's
+ * own `.claude/agents/<id>.md` is read — the path applyAgentToggle has always used.
+ * A profile whose definition lives outside the repo carries NO roleFile: that field is
+ * resolved as repo-relative by resolveWorkerContext, so an out-of-tree path there would be
+ * a broken join rather than a preamble.
+ */
+function profileFromDefinition(id, enabled, config, repoDir, fsImpl, source) {
+  const src = source ?? {
+    content: readFileSafe(join(repoDir ?? '.', '.claude', 'agents', `${id}.md`), fsImpl),
+    roleFile: `.claude/agents/${id}.md`,
+  }
+  const content = src.content
   if (content == null) {
     throw new MissingDefinitionFileError(
       `no definition file .claude/agents/${id}.md — approve-merge the forged draft before toggling (two-step activation)`,
@@ -495,7 +508,7 @@ function profileFromDefinition(id, enabled, config, repoDir, fsImpl) {
     ...(fm.model ? { model: fm.model } : {}),
     ...(fm.effort ? { effort: fm.effort } : {}),
     account: donor.account,
-    roleFile: `.claude/agents/${id}.md`,
+    ...(src.roleFile ? { roleFile: src.roleFile } : {}),
     skills: [],
     enabled: !!enabled,
   }
@@ -520,6 +533,78 @@ export function applyAgentToggle({ config, id, enabled, repoDir, fsImpl, env = p
   } else {
     const profile = profileFromDefinition(id, enabled, config, repoDir, fsImpl)
     nextWorkers = [...workers, profile]
+  }
+  const nextConfig = { ...config, workers: nextWorkers }
+  writeConfig(nextConfig, { env, homedir, fsImpl })
+  return nextConfig
+}
+
+/**
+ * applyStockTeamToggle({config, enabled, repoDir, fsImpl, env, homedir}) → the updated config.
+ * THE single «switch the pipeline on» act (SB-031 part 1), reached through the EXISTING
+ * POST /api/agent/toggle door under the reserved target STOCK_TEAM_TARGET — no route added.
+ *
+ * It obeys the two-step activation law exactly as applyAgentToggle does: it only ever acts on
+ * definitions that ALREADY exist on disk, and every profile it creates is built from that
+ * file's own fields plus pool defaults — the request contributes one boolean and nothing else.
+ * Nothing installs, nothing is fetched: the roster it switches on is the one the installer
+ * already wrote. With no installed definitions at all it refuses by name and writes nothing.
+ *
+ * Only SHIPPED definitions are touched — the ones with a pristine counterpart under
+ * `<config>/sma-core/agents/`. The user's own agents in the same directory are not swept up
+ * by a switch labelled «the SMA team», in either direction.
+ *
+ * On activation each profile records `stockDigest`: the digest of TODAY's pristine copy,
+ * beside `enabled`. That is the baseline readStockTeam reads back to answer «is a newer
+ * shipped version available» after the next install. Switching OFF flips `enabled` and leaves
+ * the recorded baseline alone — the answer to «what did I last accept» does not change
+ * because a switch moved.
+ *
+ * @param {{config:object, enabled:boolean, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * @returns {object} the updated config
+ */
+export function applyStockTeamToggle({ config, enabled, repoDir, fsImpl, env = process.env, homedir = osHomedir }) {
+  if (!config || !Array.isArray(config.workers)) {
+    throw new UnknownProfileError('applyStockTeamToggle: config.workers required')
+  }
+  const roots = resolveStockTeamDirs({ repoDir, env, homedir, fsImpl })
+  const shipped = []
+  for (const name of roots ? roots.names : []) {
+    if (!name.endsWith('.md')) continue
+    const pristine = readFileSafe(join(roots.pristineDir, name), fsImpl)
+    if (pristine == null) continue // the user's own agent — not part of the shipped team
+    const content = readFileSafe(join(roots.agentsDir, name), fsImpl)
+    if (content == null) continue
+    shipped.push({
+      id: name.slice(0, -3),
+      content,
+      stockDigest: definitionDigest(pristine),
+      roleFile: roots.projectLocal ? `.claude/agents/${name}` : null,
+    })
+  }
+  if (shipped.length === 0) {
+    throw new MissingDefinitionFileError(
+      'no installed SMA definitions under <config>/agents — nothing to switch on until the install put them there (two-step activation)',
+    )
+  }
+
+  const byId = new Map(shipped.map((s) => [s.id, s]))
+  const nextWorkers = config.workers.map((w) => {
+    const s = w && w.id ? byId.get(String(w.id)) : undefined
+    if (!s) return w
+    return { ...w, enabled: !!enabled, ...(enabled ? { stockDigest: s.stockDigest } : {}) }
+  })
+  const known = new Set(config.workers.filter((w) => w && w.id).map((w) => String(w.id)))
+  if (enabled) {
+    // A worker is only CREATED when switching on: switching off has nothing to add.
+    for (const s of shipped) {
+      if (known.has(s.id)) continue
+      const profile = profileFromDefinition(s.id, true, config, repoDir, fsImpl, {
+        content: s.content,
+        roleFile: s.roleFile,
+      })
+      nextWorkers.push({ ...profile, stockDigest: s.stockDigest })
+    }
   }
   const nextConfig = { ...config, workers: nextWorkers }
   writeConfig(nextConfig, { env, homedir, fsImpl })

@@ -87,6 +87,15 @@ import { createOnboarding } from './onboarding.mjs'
  *  smuggle a path traversal or a shell metacharacter into an injected git call. */
 const ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 
+/**
+ * The reserved POST /api/agent/toggle target meaning «the whole shipped SMA team» rather than
+ * one agent id (SB-031 part 1). DECLARED HERE rather than imported, because harness.mjs is the
+ * appliers module and this file must carry no static edge onto it — the same reason readHarness
+ * and the appliers arrive through deps. It is the same literal as harness.mjs's
+ * STOCK_TEAM_TARGET, and harness.test.ts asserts the two never drift apart.
+ */
+export const STOCK_TEAM_TARGET = '__stock-team__'
+
 /** POST JSON body cap (V5) — a roster body is a handful of short fields, never a blob. */
 const JSON_BODY_CAP = 16 * 1024
 
@@ -886,7 +895,16 @@ async function handleForge({ req, res, deps }) {
   sendJson(res, 202, { ok: true, id: result.id, kind: b.kind })
 }
 
-/** POST /api/agent/toggle — body {id, enabled:boolean} → applyAgentToggle (file-derived). */
+/**
+ * POST /api/agent/toggle — body {id, enabled:boolean} → applyAgentToggle (file-derived), OR,
+ * when `id` is the reserved STOCK_TEAM_TARGET, → applyStockTeamToggle: the one act that
+ * switches the whole shipped SMA team on (SB-031 part 1, phase 11 plan 06).
+ *
+ * The reserved target rides THIS door on purpose. The route table is frozen at thirty and its
+ * size is the guard invariant; a «switch the team on» route would have had to move it. So the
+ * whole team is addressed the way one agent is — same validation, same applier posture, same
+ * refusal shape, same harness.updated hint — and the table did not move.
+ */
 async function handleAgentToggle({ req, res, config, deps }) {
   if (typeof deps.applyAgentToggle !== 'function') return send501(res)
   const body = await readJsonBody(req)
@@ -895,6 +913,17 @@ async function handleAgentToggle({ req, res, config, deps }) {
   if (rejectUnknownKeys(res, b, new Set(['id', 'enabled']))) return undefined
   if (typeof b.id !== 'string' || !ID_RE.test(b.id)) return send400(res, 'invalid id')
   if (typeof b.enabled !== 'boolean') return send400(res, 'enabled must be a boolean')
+  if (b.id === STOCK_TEAM_TARGET) {
+    if (typeof deps.applyStockTeamToggle !== 'function') return send501(res)
+    try {
+      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
+      const touched = (next && next.workers ? next.workers : []).filter((w) => w && w.stockDigest !== undefined)
+      emitSafe(deps, { event: 'harness.updated' })
+      return sendJson(res, 200, { ok: true, stockTeam: { enabled: b.enabled, agents: touched.length } })
+    } catch (err) {
+      return applierError(res, err)
+    }
+  }
   try {
     const next = deps.applyAgentToggle({ config, id: b.id, enabled: b.enabled, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
     const worker = (next && next.workers ? next.workers : []).find((w) => w && w.id === b.id)
