@@ -38,12 +38,43 @@
  * runner already uses for task titles and notes (T-9-08). The vocabularies and the
  * normalizer live in ../front/journal.mjs, which is an import-free leaf module — depending
  * on it here inverts no layer and closes no cycle.
+ *
+ * ═══════ THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN (Phase 11 Plan 05) ═══════
+ * Canon invariant 6: «Policy, memory snapshot, model и harness version фиксируются на
+ * attempt». Until now a row recorded WHO ran the work and HOW it ended, and nothing about
+ * the world it ran in — so a result could not be replayed against the state that produced
+ * it. Seven names join the allowlist: policyVersion, memorySnapshotHash, planHash,
+ * harnessVersion, stateMachineVersion, idempotencyKey and capabilityEnvelopeHash.
+ *
+ * THEY ARE ADDITIVE AND OPTIONAL. `recordAttempt` builds its row by iterating the allowlist
+ * with an `if (attempt[k] !== undefined)` guard, so adding names IS the whole change on the
+ * write side: a caller that passes none of them writes exactly the row every existing reader
+ * already sees, and no second code path, spread or passthrough exists to keep in step. The
+ * suite asserts that row byte-for-byte.
+ *
+ * ONLY DIGESTS, NEVER THE THING ITSELF (T-11-05-04). A ledger row is read by anything that
+ * reads the ledger — the liveness sweep, the roster cards, a human with `cat`. So the memory
+ * snapshot is recorded as a digest and never as paths, file names or note text, and a
+ * capability envelope is recorded as `envelopeHash(...)` and never as the envelope. A path
+ * on an audit row is a disclosure channel bought for no benefit.
+ *
+ * WHERE THE VERSIONS COME FROM. `capabilityEnvelopeHash` is derived HERE, at the point of
+ * recording, when a caller hands over the envelope the work ran under — one hash function,
+ * no second implementation. `stateMachineVersion` and `idempotencyKey` are NOT defaulted
+ * here and this module deliberately does not import the state machine to supply them: they
+ * ride in on `applyTransition`'s result, whose shape state-machine.mjs designed for exactly
+ * this call (`recordAttempt(ledgerDir, result)` works directly, and the suite proves it).
+ * Stamping a state-machine version onto an attempt that never went through the state machine
+ * would fabricate provenance, which is the one thing this stamp exists to prevent.
  */
 
 import { appendFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import { attemptIdFor, normalizeJournalPayload } from '../front/journal.mjs'
+import { envelopeHash } from './capability-envelope.mjs'
+import { listNoteFiles } from '../../../scripts/sma/lib/generator.mjs'
 
 /** The ONLY keys an attempt row carries — explicit-pick allowlist. */
 export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
@@ -56,6 +87,14 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'outcome',
   'failureReason',
   'receiptRef',
+  // ── the attempt stamp (canon invariant 6) — additive, optional, digest-only ──
+  'policyVersion',
+  'memorySnapshotHash',
+  'planHash',
+  'harnessVersion',
+  'stateMachineVersion',
+  'idempotencyKey',
+  'capabilityEnvelopeHash',
 ])
 
 /** `<ledgerDir>/<safeTaskId>.jsonl`. taskId is a queue id WE mint ('BL-…'/'R-…'/'F-…');
@@ -71,9 +110,18 @@ function ledgerFile(ledgerDir, taskId) {
  * ledgerDir / taskId), never on a normal append.
  *
  * @param {string} ledgerDir
+ * THE CAPABILITY ENVELOPE MAY ARRIVE AS THE OBJECT (Phase 11 Plan 05). A caller that hands
+ * over `capabilityEnvelope` gets its digest stamped as `capabilityEnvelopeHash`; the
+ * envelope itself is NOT an allowlist member, so it can never reach the durable row. An
+ * explicitly supplied `capabilityEnvelopeHash` wins — a receipt must be able to record the
+ * digest of what actually ran, not of what a caller reconstructed afterwards.
+ *
  * @param {{taskId:string, attempt?:number, workerId?:string, provider?:string,
  *          startedAt?:string, endedAt?:string, outcome?:string,
- *          failureReason?:string, receiptRef?:string, recordedAt?:string}} attempt
+ *          failureReason?:string, receiptRef?:string, recordedAt?:string,
+ *          policyVersion?:string, memorySnapshotHash?:string, planHash?:string,
+ *          harnessVersion?:string, stateMachineVersion?:string, idempotencyKey?:string,
+ *          capabilityEnvelopeHash?:string, capabilityEnvelope?:object}} attempt
  * @returns {object} the appended row
  */
 export function recordAttempt(ledgerDir, attempt) {
@@ -85,6 +133,16 @@ export function recordAttempt(ledgerDir, attempt) {
   mkdirSync(ledgerDir, { recursive: true })
   const row = {}
   for (const k of ALLOWED_ATTEMPT_KEYS) if (attempt[k] !== undefined) row[k] = attempt[k]
+  // The envelope is hashed at the point of recording and only its digest is kept. A
+  // malformed envelope is not fatal to the attempt — the stamp is simply not written,
+  // because a wrong digest is worse than an absent one.
+  if (row.capabilityEnvelopeHash === undefined && attempt.capabilityEnvelope !== undefined) {
+    try {
+      row.capabilityEnvelopeHash = envelopeHash(attempt.capabilityEnvelope)
+    } catch {
+      /* an unhashable envelope leaves no stamp (fail-open on the AUDIT field, never on the gate) */
+    }
+  }
   row.recordedAt = attempt.recordedAt ?? new Date().toISOString()
   appendFileSync(ledgerFile(ledgerDir, attempt.taskId), `${JSON.stringify(row)}\n`)
   return row
@@ -118,6 +176,72 @@ export function readAttempts(ledgerDir, taskId) {
   }
   rows.sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0))
   return rows
+}
+
+// ── the memory snapshot digest (canon invariant 6) ─────────────────────────────
+
+/**
+ * What a row carries when there was no corpus to snapshot. A DECLARED absence, not a
+ * digest: hashing nothing would produce a real-looking value and an audit reader would
+ * have no way to tell "the worker knew nothing" from "the worker knew this exact empty
+ * set". Deliberately short, lowercase and separator-free so it can never be mistaken for a
+ * hex digest and never leaks a path.
+ */
+export const MEMORY_SNAPSHOT_ABSENT = 'absent'
+
+/**
+ * memorySnapshotHash({corpusDir, fsImpl}) → a 64-char hex digest of the canonical memory
+ * records, or `MEMORY_SNAPSHOT_ABSENT`.
+ *
+ * WHAT IT COVERS AND WHY: exactly the corpus's canonical records — the files
+ * `generator.mjs` calls notes. The membership question is asked THROUGH `listNoteFiles`
+ * rather than re-derived from a directory listing, because that module owns the one
+ * definition of what counts as a note and states that a consumer must ask it (a second
+ * idea of "what is structural" is how two answers start). Generated artifacts — MEMORY.md,
+ * ARCHIVE.md, TAGS.md, the per-area INDEX-*.md — are therefore excluded for free: an index
+ * rebuild must not move this digest, because the digest answers «what did the worker know»
+ * and a derived index is not knowledge.
+ *
+ * Both the file NAME and the file CONTENT enter the hash, length-prefixed, in
+ * `listNoteFiles`'s stable sorted order — so renaming a record moves the digest, and no
+ * choice of separator inside a file can make two different corpora hash alike. The corpus
+ * PATH does not enter: two identical corpora in different directories are the same
+ * knowledge, and the absolute path of a machine has no business in a durable audit row.
+ *
+ * A missing corpus, an unreadable one, and one holding only generated artifacts all return
+ * the declared absent value. Never throws: an attempt must still be recordable when the
+ * corpus is not there.
+ *
+ * @param {string|{corpusDir?:string, fsImpl?:object}} input — the corpus dir, or options
+ * @returns {string} 64 hex chars, or MEMORY_SNAPSHOT_ABSENT
+ */
+export function memorySnapshotHash(input) {
+  const opts = typeof input === 'string' ? { corpusDir: input } : input && typeof input === 'object' ? input : {}
+  const { corpusDir, fsImpl } = opts
+  if (!corpusDir || typeof corpusDir !== 'string') return MEMORY_SNAPSHOT_ABSENT
+
+  let files
+  try {
+    files = listNoteFiles(corpusDir)
+  } catch {
+    return MEMORY_SNAPSHOT_ABSENT
+  }
+  if (!Array.isArray(files) || files.length === 0) return MEMORY_SNAPSHOT_ABSENT
+
+  const read = (fsImpl && fsImpl.readFileSync) || readFileSync
+  const hash = createHash('sha256')
+  let counted = 0
+  for (const file of files) {
+    let text
+    try {
+      text = String(read(join(corpusDir, file), 'utf8'))
+    } catch {
+      continue // an unreadable record is not knowledge the worker had
+    }
+    hash.update(`${file.length}:${file}`).update(`${text.length}:${text}`)
+    counted += 1
+  }
+  return counted === 0 ? MEMORY_SNAPSHOT_ABSENT : hash.digest('hex')
 }
 
 // ── the decision journal: three layers, strictly appended (D-9.7-14) ────────────
