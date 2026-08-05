@@ -62,8 +62,8 @@
  * read-only git runner the index build takes its anchor from.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 
 import { appendEvent, lineHash } from './journal.mjs'
 import { atomicWriteRaw } from './fs-atomics.mjs'
@@ -125,6 +125,26 @@ export const RETRIEVAL_TRACE_KIND = 'retrieval-trace'
 
 /** The corpus subdirectory drafts live in (the product-wide drafts dir, predict.mjs's too). */
 export const DRAFTS_DIRNAME = 'drafts'
+
+/**
+ * Keys that exist only while a record is a draft — stripped before anything is
+ * written into the corpus, by whichever door is applying it. Defined HERE, next
+ * to the step that mints them, and imported by migrate-v1-v2.mjs rather than
+ * re-listed there: two lists would drift the first time either side grew a key
+ * and the drift would be invisible (a marker that reached the corpus reads like
+ * an ordinary unknown field).
+ */
+export const DRAFT_MARKER_KEYS = Object.freeze(['draft_kind', 'draft_source', 'draft_disposition'])
+
+/**
+ * A draft is UNTRUSTED INPUT on a filesystem boundary: it may have been
+ * hand-edited before acceptance (that is the whole point of staging it), pasted
+ * in, or produced by a future tool. Both values that reach `join(corpusDir, …)`
+ * are therefore charset-gated before any write, so an apply can only ever
+ * resolve INSIDE the corpus.
+ */
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const SAFE_SOURCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/
 
 /** The generated always-load index the step-9 rebuild writes. */
 const INDEX_FILENAME = 'MEMORY.md'
@@ -1237,6 +1257,266 @@ export function runPipeline(event, opts = {}) {
   }
 
   return { record: state.record, body: state.body, trace: state.trace, outcome: state.outcome, path: state.path }
+}
+
+// ── the apply door: the way OUT of drafts/ ──────────────────────────────────
+
+/**
+ * Strip the draft-only marker keys. Nothing in this list may reach the corpus:
+ * a marker that survived the apply would read like an ordinary unknown field
+ * and would quietly claim the record is still a draft.
+ *
+ * @param {object} frontmatter
+ * @returns {object} a copy of the record without the markers
+ */
+export function stripDraftMarkers(frontmatter) {
+  const out = { ...frontmatter }
+  for (const key of DRAFT_MARKER_KEYS) delete out[key]
+  return out
+}
+
+/**
+ * appliedDraftPath(draftPath) — the CONSUMED-draft marker path. Its presence
+ * beside a draft means that draft was already applied, and it is what makes a
+ * second apply impossible rather than merely discouraged.
+ */
+export function appliedDraftPath(draftPath) {
+  return String(draftPath).replace(/\.md$/, '.applied.md')
+}
+
+/**
+ * confirmationRefusal({recordId, declaredSource, confirmFile, subject}) -> string|null
+ *
+ * THE PER-FILE CONFIRMATION MECHANIC — one implementation, used by every door
+ * that moves a draft into the corpus (this module's `applyStagedDraft` and
+ * migrate-v1-v2.mjs's `applyProposal`). A second copy would be the usual
+ * failure: the day one side learned a new escape the other would still accept
+ * it, and the weaker door is the one an attacker (or a slip) reaches for.
+ *
+ * Three questions, in this order:
+ *   1. is the record id legal — letters, digits, dot, dash, underscore, no
+ *      separators and no leading dot, so `join(corpusDir, id)` can only ever
+ *      land INSIDE the corpus;
+ *   2. is the declared source a plain corpus filename, for the same reason;
+ *   3. does the confirmation NAME that source. Acceptance has to be typed, and
+ *      it has to be typed per file: «accept all» must not be expressible.
+ *
+ * PURE — it decides, it never writes. A refusal is the message; null means the
+ * confirmation holds.
+ *
+ * @param {{recordId?:string, declaredSource?:string, confirmFile?:string, subject?:string}} [args]
+ * @returns {string|null}
+ */
+export function confirmationRefusal({ recordId, declaredSource, confirmFile, subject = 'proposal' } = {}) {
+  const id = String(recordId ?? '').trim()
+  if (!SAFE_ID_PATTERN.test(id)) {
+    return (
+      `id "${id}" is not a legal record id — letters, digits, dot, dash and underscore only, ` +
+      'and it must address a file INSIDE the corpus'
+    )
+  }
+  const source = String(declaredSource ?? '').trim()
+  if (!SAFE_SOURCE_PATTERN.test(source)) {
+    return (
+      `draft_source "${source}" is not a plain corpus filename — a ${subject} may only address a note ` +
+      'INSIDE the corpus directory'
+    )
+  }
+  const confirmed = basename(String(confirmFile ?? '').trim())
+  if (confirmed === '' || confirmed !== source) {
+    return (
+      `confirmation mismatch: this ${subject} declares source "${source}", the confirmation named ` +
+      `"${confirmed || '(nothing)'}" — every apply names its own file`
+    )
+  }
+  return null
+}
+
+/** Which door owns a draft this one will not take — named, so a refusal points somewhere. */
+function draftKindRefusal(kind) {
+  if (kind === CONSOLIDATION_DRAFT_KIND) {
+    return (
+      `draft_kind "${kind}": a consolidation proposal is a QUESTION about two beliefs that already exist, ` +
+      'not a staged record. No verb in this codebase applies one — deciding which belief survives is a human act'
+    )
+  }
+  return `the draft is not a staged pipeline record (draft_kind "${kind || '(none)'}" ≠ "${PIPELINE_DRAFT_KIND}")`
+}
+
+/** The reason the last executed step gave for stopping the walk. */
+function lastRefusalReason(state) {
+  const last = state.trace[state.trace.length - 1]
+  return last?.detail?.reason ? `${last.step}: ${last.detail.reason}` : null
+}
+
+/**
+ * applyStagedDraft({draftPath, corpusDir, confirmFile, …}) -> result
+ *
+ * THE DOOR OUT OF drafts/. Step 7 stages a record for a reason — a standing
+ * rule, a decision, an owner preference is not written without review — and
+ * until this function existed that was the end of the road: a draft the owner
+ * had confirmed had no path into the corpus at all, because the migration
+ * engine's door honestly refuses anything that is not a v2-migration proposal.
+ * A pipeline that can only ever stage is a pipeline whose review step is a
+ * dead letter.
+ *
+ * WHAT THE CONFIRMATION REPLACES, AND WHAT IT DOES NOT. The named per-file
+ * confirmation stands in for steps 6 (evidence) and 7 (risk) — those two are
+ * exactly what routed the record here, and re-running them at the door would
+ * refuse it on the ground the human has just answered. It stands in for nothing
+ * else: a draft is a file a person may have edited, so steps 2 (classify), 3
+ * (redact), 4 (extract) and 5 (compare) are re-asked at the door, against the
+ * corpus AS IT IS NOW. REDACTION PRECEDES ALL PERSISTENCE is not a rule about
+ * where a record came from.
+ *
+ * `validateRecord` runs BEFORE any of it: an invalid draft is refused with the
+ * validation reasons and nothing anywhere is touched. Once the record is
+ * written the walk continues through steps 9-12 exactly as `runPipeline` walks
+ * them — the same index rebuild, the same retrieval trace, the same
+ * proposes-never-merges consolidation, the same lifecycle completion — because
+ * a record that entered by this door is not a lesser record.
+ *
+ * THE ONLY THING THE DOOR REWRITES is `status: draft -> active`: that status is
+ * the mark of the staging, and applying is the act that lifts it. A truth mode
+ * the evidence step downgraded stays downgraded — a confirmation is not
+ * provenance, and nobody re-earned it.
+ *
+ * Refusal paths write nothing: every gate is asked before the corpus door is
+ * opened, so there is no half-applied state to unwind. Success consumes the
+ * draft with the `.applied` marker — the same convention the migration door
+ * uses — so a proposal is applied exactly once.
+ *
+ * @param {{draftPath:string, corpusDir:string, confirmFile:string, draftsDir?:string,
+ *          journalDir?:string, terminalId?:string, now?:string, execGit?:Function,
+ *          registry?:object, localDir?:string, repoRoot?:string}} input
+ * @returns {{applied:boolean, outcome:string, target_path:string|null, reason:string,
+ *            errors:string[], trace:Array, record:object|null, consumed?:boolean}}
+ */
+export function applyStagedDraft(input = {}) {
+  const { draftPath, corpusDir, confirmFile } = input
+  if (typeof draftPath !== 'string' || draftPath.trim() === '') {
+    throw new Error('applyStagedDraft: draftPath is required (the staged draft to apply)')
+  }
+  if (typeof corpusDir !== 'string' || corpusDir.trim() === '') {
+    throw new Error('applyStagedDraft: corpusDir is required (the .claude/memory directory)')
+  }
+
+  // The state exists BEFORE the gates, for the same reason step 1 runs before
+  // every other step: an apply the system refuses must still be a thing the
+  // system remembers being asked. The drafts directory defaults to the draft's
+  // OWN directory, so a step-11 proposal lands beside the draft it came from.
+  const state = createPipelineState(
+    {},
+    { ...input, corpusDir, draftsDir: input.draftsDir ?? dirname(draftPath) },
+  )
+  const draftFile = basename(draftPath)
+  const refuse = (reason, errors = []) => {
+    journal(state, { stage: 'apply', outcome: 'refused', draft: draftFile, reason })
+    return { applied: false, outcome: 'refused', target_path: null, reason, errors, trace: state.trace, record: null }
+  }
+  journal(state, { stage: 'apply', outcome: 'requested', draft: draftFile })
+
+  if (!existsSync(draftPath)) {
+    return refuse(
+      existsSync(appliedDraftPath(draftPath))
+        ? `the draft ${draftFile} was already applied (consumed marker present) — a staged record is applied once`
+        : `no draft at ${draftPath}`,
+    )
+  }
+
+  let parsed
+  try {
+    parsed = parseNote(readFileSync(draftPath, 'utf8'), { file: draftFile })
+  } catch (err) {
+    return refuse(`the draft cannot be parsed: ${String(err?.message ?? err)}`)
+  }
+  if (parsed.frontmatter == null || parsed.schemaVersion !== 2) {
+    return refuse('the draft is not a schema-v2 record')
+  }
+
+  const fm = parsed.frontmatter
+  const kind = String(fm.draft_kind ?? '').trim()
+  if (kind !== PIPELINE_DRAFT_KIND) return refuse(draftKindRefusal(kind))
+
+  // A staged record names its OWN destination: the id is the corpus filename by
+  // the id law, so that is the file the confirmation has to name. There is no
+  // second source to declare — unlike a migration proposal, nothing existed
+  // before this draft.
+  const recordId = String(fm.id ?? '').trim()
+  const confirmRefusal = confirmationRefusal({
+    recordId,
+    declaredSource: `${recordId}.md`,
+    confirmFile,
+    subject: 'staged record',
+  })
+  if (confirmRefusal) return refuse(confirmRefusal)
+
+  const record = stripDraftMarkers(fm)
+  if (String(record.status ?? '').trim() === 'draft') record.status = 'active'
+
+  const validation = validateRecord(record)
+  if (validation.errors.length) {
+    return refuse(
+      `the staged record does not validate — ${validation.errors.length} error(s): ${validation.errors[0]}`,
+      validation.errors,
+    )
+  }
+
+  // Asked HERE as well as inside `persist`, and deliberately: persist STAGES a
+  // record it will not write, and staging is the one thing this door must never
+  // do — it would write a second draft on a refusal path.
+  const target = join(state.dirs.corpusDir, `${recordId}.md`)
+  if (existsSync(target)) {
+    return refuse(`a record already holds this identity at ${target} — the door never clobbers a record it did not write`)
+  }
+
+  state.record = deepCopy(record)
+  state.body = typeof parsed.body === 'string' ? parsed.body : ''
+  state.corpus = readCorpus(state.dirs.corpusDir)
+
+  for (const step of [classify, redact, extract, compare]) {
+    step(state)
+    if (state.outcome !== null) return refuse(lastRefusalReason(state) ?? 'the record was refused before the corpus door')
+  }
+
+  persist(state)
+  if (!state.persisted) return refuse(lastRefusalReason(state) ?? 'the corpus door refused the record')
+
+  for (const step of [index, measure, proposeConsolidation, lifecycle]) step(state)
+
+  // Consume the draft LAST: a marker written before the record was on disk would
+  // close the door on a write that had not happened. A rename that fails leaves
+  // the draft in place and the record written — the next apply refuses on the
+  // occupied identity, which is a stated refusal rather than a silent double
+  // write.
+  let consumed = true
+  try {
+    renameSync(draftPath, appliedDraftPath(draftPath))
+  } catch {
+    consumed = false
+  }
+
+  journal(state, {
+    stage: 'apply',
+    outcome: 'applied',
+    id: recordId,
+    path: state.path,
+    draft: draftFile,
+    consumed,
+  })
+
+  return {
+    applied: true,
+    outcome: state.outcome,
+    target_path: state.path,
+    reason: consumed
+      ? `applied from ${draftFile}, confirmed as ${recordId}.md — the draft is consumed`
+      : `applied from ${draftFile}, confirmed as ${recordId}.md — the draft could NOT be marked consumed, remove ${draftFile} by hand`,
+    errors: [],
+    trace: state.trace,
+    record: state.record,
+    consumed,
+  }
 }
 
 // ── the corpus read (the third and last fs effect) ──────────────────────────

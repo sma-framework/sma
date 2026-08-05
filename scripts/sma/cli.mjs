@@ -2560,6 +2560,7 @@ async function cmdMemory({ positionals, flags, dirs }) {
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
+    process.stdout.write('  write --apply <draft> --confirm <record-file> --yes — применить отложенный черновик конвейера\n')
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
     process.stdout.write('  index rebuild|status [--json] [--stat <name>] — ЭКСПЕРИМЕНТ, вне выдачи по умолчанию\n')
     process.stdout.write('  forget <id> [--reason "…"|--replaced-by <id>|--expire|--archive] [--erase --yes]\n')
@@ -3349,10 +3350,18 @@ async function cmdMemoryMigrate({ flags, dirs }) {
 function memoryWriteUsage(schema) {
   return [
     'usage: sma memory write --type <memory_type> --truth <truth_mode> --claim <text> [options]',
+    '       sma memory write --apply <draft> --confirm <record-file> --yes [--corpus <dir>]',
     '',
     '  Run ONE candidate memory through the twelve-step write pipeline and print what',
     '  each step decided. Classification is YOURS: --type and --truth are never guessed,',
     '  and a value outside the closed vocabulary is refused with the allowed list.',
+    '',
+    '  --apply <draft>       apply exactly ONE draft this pipeline staged (draft_kind',
+    '                        pipeline-write) into the corpus. --confirm must name the',
+    '                        record\'s own file (<id>.md) and --yes must be present:',
+    '                        acceptance is per-file, by hand. There is no bulk apply.',
+    '                        The record is validated first, the walk finishes through',
+    '                        steps 9-12, and the draft is consumed (.applied).',
     '',
     `  --type <v>            ${schema.MEMORY_TYPES.join(' | ')}`,
     `  --truth <v>           ${schema.TRUTH_MODES.join(' | ')}`,
@@ -3394,6 +3403,40 @@ async function cmdMemoryWrite({ flags, dirs }) {
   if (flags.help === true) {
     process.stdout.write(`${usage}\n`)
     return 0
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+
+  // ── apply: one staged draft, one named confirmation, one explicit yes ──────
+  // The door OUT of drafts/. It is the same shape `memory migrate --apply`
+  // takes, for the same reason: acceptance is a human act typed per file.
+  if (flags.apply != null && flags.apply !== true) {
+    const draftPath = String(flags.apply)
+    const confirmFile = typeof flags.confirm === 'string' ? flags.confirm : ''
+    if (!confirmFile || flags.yes !== true) {
+      process.stdout.write(`${usage}\n`)
+      process.stderr.write(
+        'SMA memory write: --apply требует --confirm <record-file> И --yes — приёмка пофайловая, по одному черновику\n',
+      )
+      return 1
+    }
+    const res = pipeline.applyStagedDraft({
+      draftPath,
+      corpusDir,
+      confirmFile,
+      journalDir: dirs?.journalDir,
+      ...(await pipelineRuntime()),
+    })
+    if (wantsJson(flags)) {
+      printJson({ applied: res.applied, target_path: res.target_path, reason: res.reason, errors: res.errors, trace: res.trace })
+      return res.applied ? 0 : 1
+    }
+    printPipelineTrace(res.trace)
+    if (res.applied) process.stdout.write(`SMA memory write: применено → ${res.target_path}\n`)
+    else process.stdout.write(`SMA memory write: ОТКАЗ — ${res.reason}\n`)
+    for (const e of res.errors ?? []) process.stdout.write(`    · ${e}\n`)
+    return res.applied ? 0 : 1
   }
 
   const problems = []
@@ -3472,12 +3515,39 @@ async function cmdMemoryWrite({ flags, dirs }) {
     ...(supersedes.length ? { supersedes: supersedes.length === 1 ? supersedes[0] : supersedes } : {}),
   }
 
-  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
   const body = typeof flags.body === 'string' ? `\n${flags.body.trim()}\n` : '\n'
 
-  // The read-only git runner the index rebuild takes its build anchor from — the
-  // same one build-index uses. The pipeline never shells out on its own.
+  const result = pipeline.runPipeline(
+    { record, body },
+    { corpusDir, journalDir: dirs?.journalDir, ...(await pipelineRuntime()) },
+  )
+
+  if (wantsJson(flags)) {
+    printJson({ outcome: result.outcome, id, path: result.path, trace: result.trace })
+    return result.outcome === 'rejected' ? 1 : 0
+  }
+
+  process.stdout.write(`SMA memory write: ${result.outcome} · ${id}\n`)
+  printPipelineTrace(result.trace)
+  const last = result.trace[result.trace.length - 1]
+  if (result.outcome === 'persisted-active') {
+    process.stdout.write(`  → записано в корпус: ${result.path}\n`)
+  } else if (result.outcome === 'staged-draft') {
+    process.stdout.write(`  → отложено черновиком (в корпус НЕ попало): ${result.path}\n`)
+  } else {
+    process.stdout.write(`  → ОТКАЗ: ${last?.detail?.reason ?? 'см. трассировку выше'}\n`)
+  }
+  return result.outcome === 'rejected' ? 1 : 0
+}
+
+/**
+ * The two injected runtime bits every pipeline entry point takes: the read-only
+ * git runner the index rebuild takes its build anchor from (the same one
+ * build-index uses — the pipeline never shells out on its own) and this
+ * terminal's identity for the journal. Both fail open: no runner means the
+ * deterministic epoch anchor, no registry means the pipeline's own terminal name.
+ */
+async function pipelineRuntime() {
   let execGit = null
   try {
     const { execFileSync } = await import('node:child_process')
@@ -3493,31 +3563,15 @@ async function cmdMemoryWrite({ flags, dirs }) {
   } catch {
     /* fail-open — the pipeline falls back to its own terminal name */
   }
+  return { execGit, terminalId }
+}
 
-  const result = pipeline.runPipeline(
-    { record, body },
-    { corpusDir, journalDir: dirs?.journalDir, terminalId, execGit },
-  )
-
-  if (wantsJson(flags)) {
-    printJson({ outcome: result.outcome, id, path: result.path, trace: result.trace })
-    return result.outcome === 'rejected' ? 1 : 0
-  }
-
-  process.stdout.write(`SMA memory write: ${result.outcome} · ${id}\n`)
-  result.trace.forEach((t, i) => {
+/** One line per EXECUTED step: what ran, what it decided, and why. */
+function printPipelineTrace(trace) {
+  ;(trace ?? []).forEach((t, i) => {
     const n = String(i + 1).padStart(2, ' ')
     process.stdout.write(`  ${n} ${String(t.step).padEnd(11)} ${String(t.outcome).padEnd(12)} ${traceDetail(t.detail)}\n`)
   })
-  const last = result.trace[result.trace.length - 1]
-  if (result.outcome === 'persisted-active') {
-    process.stdout.write(`  → записано в корпус: ${result.path}\n`)
-  } else if (result.outcome === 'staged-draft') {
-    process.stdout.write(`  → отложено черновиком (в корпус НЕ попало): ${result.path}\n`)
-  } else {
-    process.stdout.write(`  → ОТКАЗ: ${last?.detail?.reason ?? 'см. трассировку выше'}\n`)
-  }
-  return result.outcome === 'rejected' ? 1 : 0
 }
 
 /** A comma-separated flag value as a list of non-empty trimmed strings. */

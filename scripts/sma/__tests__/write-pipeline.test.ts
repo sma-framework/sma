@@ -49,8 +49,10 @@ import {
   assignRisk,
   persist,
   applyLifecycle,
+  applyStagedDraft,
   runPipeline,
 } from '../lib/write-pipeline.mjs'
+import { applyProposal } from '../lib/migrate-v1-v2.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 import { buildIndex } from '../lib/generator.mjs'
 import { validateRecord } from '../lib/schema-v2.mjs'
@@ -1099,5 +1101,245 @@ describe('the CLI surface — sma memory write', () => {
     expect(readNote(join(draftsDir, 'procedural-prefer-the-queue-adapter.md')).frontmatter.draft_kind).toBe(
       PIPELINE_DRAFT_KIND,
     )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE APPLY DOOR — the way OUT of drafts/ for a record this pipeline staged.
+//
+// Staging was always terminal and there was no door: a standing rule the risk
+// step legitimately deferred, and that the owner then confirmed, had no path
+// into the corpus at all (`memory migrate --apply` refuses it honestly — a
+// pipeline-write draft is not a v2-migration proposal). These tests pin the
+// door and, first, the dead end that made it necessary.
+//
+// The fixture rule text is SYNTHETIC. What it reproduces is the live SHAPE —
+// normative/normative, an owner-instruction authority, evidence, low risk —
+// which is what the approval ladder actually routes into drafts/.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The class that always stages: a standing rule, owner-stamped, carrying evidence. */
+const OWNER_RULE = {
+  id: 'normative-release-notes-before-the-tag',
+  schema_version: '2',
+  status: 'active',
+  memory_type: 'normative',
+  truth_mode: 'normative',
+  claim: 'A release tag is cut only after the release notes for that release are written and reviewed',
+  language: 'en',
+  source: { authority: 'owner-instruction' },
+  evidence: [{ type: 'doc', ref: 'docs/RELEASING.md' }],
+  risk: 'low',
+  sensitivity: 'internal',
+  retrieval: { areas: ['release'] },
+}
+const OWNER_RULE_BODY = '\nRecorded after the owner confirmed the rule in review.\n'
+const OWNER_RULE_FILE = `${OWNER_RULE.id}.md`
+
+/** Stage the owner rule through the REAL pipeline and hand back the draft it wrote. */
+function stageOwnerRule(overrides: Record<string, unknown> = {}): string {
+  const result = runPipeline({ record: { ...OWNER_RULE, ...overrides }, body: OWNER_RULE_BODY }, opts())
+  expect(result.outcome).toBe('staged-draft')
+  expect(result.path).toBe(join(draftsDir, OWNER_RULE_FILE))
+  return result.path as string
+}
+
+/** Hand-edit a staged draft the way a human would before accepting it. */
+function editDraft(draftPath: string, mutate: (fm: any, body: string) => { frontmatter: any; body: string }) {
+  const note = readNote(draftPath)
+  const next = mutate(note.frontmatter, note.body)
+  writeFileSync(draftPath, serializeNote({ ...next, schemaVersion: 2 }))
+}
+
+describe('the apply door — the dead end it was built to close', () => {
+  it('Test 63: the migration door refuses a pipeline-write draft, and now says which door owns it', () => {
+    const draftPath = stageOwnerRule()
+
+    const res = applyProposal({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE })
+
+    // The honest refusal SB-038 reports — a staged record is not a migration
+    // proposal, and the migration engine was never entitled to apply one.
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/not a migration proposal/i)
+    expect(res.reason).toContain(PIPELINE_DRAFT_KIND)
+    // …and the dead end is now a signpost rather than a wall.
+    expect(res.reason).toMatch(/memory write --apply/)
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([OWNER_RULE_FILE])
+  })
+})
+
+describe('applyStagedDraft — one draft, one named confirmation, one door', () => {
+  it('Test 64: an owner-stamped draft named by its own confirmation reaches the corpus, and the draft is consumed', () => {
+    const draftPath = stageOwnerRule()
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(true)
+    expect(res.outcome).toBe('persisted-active')
+    expect(res.target_path).toBe(join(corpusDir, OWNER_RULE_FILE))
+
+    // The record is IN the corpus, valid, active, and carries no draft marker.
+    const note = readNote(join(corpusDir, OWNER_RULE_FILE))
+    expect(validateRecord(note.frontmatter).errors).toEqual([])
+    expect(note.frontmatter!.status).toBe('active')
+    expect(note.frontmatter!.draft_kind).toBeUndefined()
+    expect(note.frontmatter!.truth_mode).toBe('normative')
+    expect(note.frontmatter!.claim).toBe(OWNER_RULE.claim)
+
+    // The draft is consumed — the same `.applied` convention the migration door uses.
+    expect(filesIn(draftsDir)).toEqual([`${OWNER_RULE.id}.applied.md`])
+  })
+
+  it('Test 65: steps 9-12 run after the write — the index is rebuilt and the retrieval trace is journalled', () => {
+    const draftPath = stageOwnerRule()
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(true)
+    expect(stepsOf(res.trace).slice(-4)).toEqual(['index', 'measure', 'consolidate', 'lifecycle'])
+    // The SAME generator path the build-index verb walks — not a second grammar.
+    expect(indexText()).toBe(freshIndex())
+    const areaFiles: string[] = traceStep(res.trace, 'index').detail.area_files
+    expect(areaFiles.length).toBeGreaterThan(0)
+    expect(readFileSync(join(corpusDir, areaFiles[0]), 'utf8')).toContain(OWNER_RULE.id)
+    expect(journalEvents().some((e) => e.detail?.kind === 'retrieval-trace')).toBe(true)
+  })
+
+  it('Test 66: step 11 still only PROPOSES — a duplicate claim in the corpus produces a draft, never a merge', () => {
+    seedCorpus({
+      ...OWNER_RULE,
+      id: 'normative-release-notes-first',
+      status: 'active',
+    })
+    const draftPath = stageOwnerRule()
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(true)
+    expect(traceStep(res.trace, 'consolidate').outcome).toBe('proposed')
+    const proposal = join(draftsDir, `consolidation-${OWNER_RULE.id}.md`)
+    expect(existsSync(proposal)).toBe(true)
+    expect(readNote(proposal).frontmatter!.draft_kind).toBe(CONSOLIDATION_DRAFT_KIND)
+    // Both beliefs are still on disk, untouched: nothing was merged.
+    expect(readNote(join(corpusDir, 'normative-release-notes-first.md')).frontmatter!.status).toBe('active')
+  })
+
+  it('Test 67: the confirmation must name the record\'s own file — a mismatch writes nothing', () => {
+    const draftPath = stageOwnerRule()
+    const before = readFileSync(draftPath, 'utf8')
+
+    const wrong = applyStagedDraft({ draftPath, corpusDir, confirmFile: 'some-other-record.md', ...opts() })
+    const absent = applyStagedDraft({ draftPath, corpusDir, confirmFile: '', ...opts() })
+
+    for (const res of [wrong, absent]) {
+      expect(res.applied).toBe(false)
+      expect(res.reason).toMatch(/confirmation mismatch/i)
+    }
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([OWNER_RULE_FILE])
+    expect(readFileSync(draftPath, 'utf8')).toBe(before)
+  })
+
+  it('Test 68: validateRecord runs BEFORE any write — an invalid draft is refused with the reasons', () => {
+    const draftPath = stageOwnerRule()
+    // A human edits the provenance out of the draft before accepting it.
+    editDraft(draftPath, (fm, body) => {
+      const next = { ...fm }
+      delete next.source
+      return { frontmatter: next, body }
+    })
+    const before = readFileSync(draftPath, 'utf8')
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/does not validate/i)
+    expect(res.errors.join(' ')).toMatch(/source\.authority/)
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([OWNER_RULE_FILE])
+    expect(readFileSync(draftPath, 'utf8')).toBe(before)
+  })
+
+  it('Test 69: redaction still precedes persistence — a secret hand-edited into a draft is refused, nothing written', () => {
+    const draftPath = stageOwnerRule()
+    editDraft(draftPath, (fm, body) => ({ frontmatter: fm, body: `${body}\nkey: ${SEEDED_SECRET}\n` }))
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/secret-class/i)
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([OWNER_RULE_FILE])
+    // The refusal is journalled by RULE NAME, never with the content.
+    expect(JSON.stringify(journalEvents())).not.toContain(SEEDED_SECRET)
+  })
+
+  it('Test 70: a proposal is applied exactly once — the consumed marker closes the door behind it', () => {
+    const draftPath = stageOwnerRule()
+
+    const first = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+    const second = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(first.applied).toBe(true)
+    expect(second.applied).toBe(false)
+    expect(second.reason).toMatch(/already applied/i)
+    expect(filesIn(corpusDir).filter((f) => f === OWNER_RULE_FILE)).toEqual([OWNER_RULE_FILE])
+  })
+
+  it('Test 71: a consolidation proposal is NOT a staged record — no verb applies one', () => {
+    seedCorpus({ ...OWNER_RULE, id: 'normative-release-notes-first', status: 'active' })
+    const applied = applyStagedDraft({
+      draftPath: stageOwnerRule(),
+      corpusDir,
+      confirmFile: OWNER_RULE_FILE,
+      ...opts(),
+    })
+    expect(applied.applied).toBe(true)
+    const proposal = join(draftsDir, `consolidation-${OWNER_RULE.id}.md`)
+
+    const res = applyStagedDraft({
+      draftPath: proposal,
+      corpusDir,
+      confirmFile: `consolidation-${OWNER_RULE.id}.md`,
+      ...opts(),
+    })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/human act/i)
+    expect(readFileSync(proposal, 'utf8')).toContain(CONSOLIDATION_DRAFT_KIND)
+  })
+
+  it('Test 72: an occupied id is never clobbered — the door refuses and leaves both files alone', () => {
+    const draftPath = stageOwnerRule()
+    seedCorpus({ ...OWNER_RULE, claim: 'A different belief already holds this identity' }, '\nSeeded first.\n')
+    const before = readFileSync(join(corpusDir, OWNER_RULE_FILE), 'utf8')
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(false)
+    expect(res.reason).toMatch(/identity|already/i)
+    expect(readFileSync(join(corpusDir, OWNER_RULE_FILE), 'utf8')).toBe(before)
+    expect(filesIn(draftsDir)).toEqual([OWNER_RULE_FILE])
+  })
+
+  it('Test 73: the verb route applies the draft end to end — the same door, seen from the terminal', () => {
+    const draftPath = stageOwnerRule()
+
+    const refused = runCli([
+      'memory', 'write', '--corpus', corpusDir, '--apply', draftPath, '--confirm', OWNER_RULE_FILE,
+    ])
+    expect(refused.status).not.toBe(0)
+    expect(`${refused.stdout}${refused.stderr}`).toContain('--yes')
+    expect(filesIn(corpusDir)).toEqual([])
+
+    const res = runCli([
+      'memory', 'write', '--corpus', corpusDir, '--apply', draftPath, '--confirm', OWNER_RULE_FILE, '--yes',
+    ])
+
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain(join(corpusDir, OWNER_RULE_FILE))
+    expect(validateRecord(readNote(join(corpusDir, OWNER_RULE_FILE)).frontmatter).errors).toEqual([])
+    expect(filesIn(draftsDir)).toEqual([`${OWNER_RULE.id}.applied.md`])
   })
 })
