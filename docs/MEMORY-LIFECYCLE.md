@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every step below is executable code with test coverage; where a behavior is deliberately absent, this document says so and says why. |
-| Document version | 1.2 |
-| Date | 2026-08-04 |
+| Document version | 1.3 |
+| Date | 2026-08-05 |
 | Applies to | `schema_version: 2` records; v1 notes are read unchanged and are never written by this path |
 | Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
 
@@ -120,7 +120,26 @@ nothing, and overlapping validity windows on a shared area.
 in this codebase. It reads the v1 note vocabulary, so a v2 record is projected onto it
 (claim as description, retrieval areas as tags, truth mode as kind); a v1 note in the
 corpus is already in that shape. The corpus itself was read **once**, before the walk,
-so this step is a pure function over data and never touches the disk.
+so this step is a pure function over data and never touches the disk. The same function
+is what the `MEM-CONTRADICT` lint rule renders, so the two can never disagree.
+
+**What it looks at, and what it cannot see.** The detector considers the kinds that
+**state a rule** — `decision`, `status`, `normative`, `procedural-rule`. Kinds that state
+a *fact* stay out on purpose: two facts phrased differently are a **merge** question, and
+the merge proposal already owns subject overlap. A pair must share subject matter *and*
+then either oppose in polarity or disagree on a number. Three limits are worth knowing
+before trusting a clean result:
+
+- **Polarity is read from marker words**, in English and Russian both, and only in their
+  base forms. An opposition carried by **verb antonymy** — "the snapshot stays" against
+  "delete the snapshot" — is invisible to it, because no list of marker words reaches
+  that.
+- **A date is not a quantity, and a bare numeral is not a subject.** Two rules given on
+  different days are sequential, not contradictory; *when* a claim was made is what
+  `valid_from` / `valid_until` are for.
+- **A clean result is weaker than it looks.** This is a lexical heuristic, not a reasoner:
+  it finds the contradictions that are visible in the words. It is worth what it catches,
+  not as proof that the corpus agrees with itself.
 
 **Stops the walk:** **one** thing blocks — an exact id collision, because two records
 cannot share an identity and the id law makes the id the filename. Everything else is a
@@ -454,6 +473,21 @@ attached. The surfaces that *did* succeed stay enumerated, because an operator t
 `not-configured` and are neither cleared nor claimed clean. A destructive operation does
 not invent the path of a store it would delete from.
 
+**The episode archive is not a surface, and an episode sharing the id stops the erase.**
+`episodes/` is deliberately outside the list above: an episode records **what happened**,
+not what is true, and destroying history is a larger promise than the one that was
+decided. Normally the distinction costs nothing, because the claim extracted from an
+episode is written as `<stem>-claim` while the episode keeps `<stem>` — the two never
+collide. Nothing in the id law *forbids* the collision, though, and on one the erase would
+leave `episodes/<id>.md` holding a copy of the same content that no surface reports. So
+this operation **refuses**: it names the colliding file, removes nothing, rebuilds nothing,
+and stops before the first surface is touched. The operator decides what happens to the
+history — keep it and erase under a different id, or remove the episode themselves — and
+runs the command again. It is a gate, not a wall: once the collision is gone the same
+command completes normally. Erasing the episode automatically was considered and **not**
+chosen; a delete that can reach into the history archive is a promise this product does not
+make on the operator's behalf.
+
 **Links are reported, never rewritten.** A record still pointing at the erased one — an
 episode, or a claim carrying `derived_from` — is reported as **dangling**. It is not
 repointed and not deleted:
@@ -522,6 +556,11 @@ the history exception and stops. The consent is the explicit `--yes` flag — th
 every other irreversible operation in this product already uses. **A missing terminal is
 never consent:** nothing in this path reads a terminal, so there is no prompt for a
 non-interactive caller to be assumed past.
+
+**An erase can also decline.** If an episode in the archive happens to share the record's
+id, the command stops and says so instead of completing a removal it could not honestly
+call complete ([§5.5](#55-erase-physical-removal-verified)). Nothing is removed; the
+operator resolves the episode and runs the same command again.
 
 ### 5.7 If it already reached a commit: the manual route
 
@@ -641,6 +680,7 @@ fall out of sync. See
 
 | Version | Date | Change |
 |---|---|---|
+| 1.3 | 2026-08-05 | Two promises this document was making without code behind them got their code, and both are now stated as what they actually are. §1.5 says what the contradiction detector **looks at** — the rule-stating kinds, not every kind — and, more usefully, what it **cannot see**: verb antonymy, and a clean result that is weaker than it looks. Until this date the detector's kind gate admitted only `decision` and `status`, and a corpus holding neither got an empty result that read as «no contradictions» and meant «nothing was examined»; the polarity vocabulary was likewise English-only on a Russian corpus. §5.5 and §5.6 record that an erase **can decline**: the episode archive is not one of the six surfaces, so an episode sharing the record's id stops the operation before anything is removed, names the file, and leaves the decision about history with the operator. Erasing the episode along with the record was considered and rejected — it is a strictly larger promise than the one that was approved. |
 | 1.2 | 2026-08-04 | The lifecycle got a user-facing surface, and this document got the two sections that describe it. §5.6 (**what a person actually types**) states the one-command view and the default-state rule — a forget naming a replacement supersedes, a forget naming none revokes, expiry and archiving stay reachable by flag, and erase is reachable only behind two of them — plus the rule that the applied state is always shown and always written into the record. §5.7 (**the manual route**) carries the git-history limit in full: five numbered steps a person would take by hand, including the rotate-the-secret step everyone skips, the warning that each of them breaks every existing clone, and the reason the product refuses to do it behind a friendly verb; the tooling itself stays named in exactly one place, `MEMORY-THREAT-MODEL.md` §6.4. §5's shared rules now record that **all four** retirements are honoured by the read path as of this date — `expired` and `archived` were retired by the write path and delivered by the read path until then, so §5.4's promise was made here and kept by no code — a gap this document had recorded against itself. §5.5 names `ERASE_SURFACES` as the one list walked twice. |
 | 1.1 | 2026-08-04 | Erase shipped (§5.5 rewritten from «deferred by policy» to the six surfaces it clears and verifies, the partial-erasure failure rule, the opt-in stores, the dangling-link report, the journal evidence and the git-history exception); §5 now describes five actions rather than four. |
 | 1.0 | 2026-08-02 | First version. The twelve landed pipeline steps with their module boundaries and stop conditions, the three outcomes and the write verb, the seven-path risk-approval ladder with its precedence, the draft conventions and their three markers, the four lifecycle transitions with the symmetric-pointer law and the deliberate erase deferral, the preview-only migration ritual with per-file acceptance, and the migrated-record grace with its horizon. |
