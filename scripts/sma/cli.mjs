@@ -3020,6 +3020,18 @@ async function cmdMemoryForget({ positionals, flags, dirs }) {
     terminalId,
   })
 
+  // All four retirement statuses are read-time exclusions from the CORE, and
+  // MEMORY.md quotes claim text on every CORE line — so a transition that left
+  // the generated index untouched would leave the always-load artifact quoting
+  // the very record this verb just said is «убрана из активной выдачи». Step 12
+  // of the write pipeline already rebuilds after ITS transitions; this is the
+  // same duty on the verb's own path.
+  let indexRefreshed = []
+  if (result.applied) {
+    indexRefreshed = await refreshForgetIndexes({ corpusDir: found.dir, repoRoot })
+    result.changed = [...result.changed, ...indexRefreshed]
+  }
+
   if (wantsJson(flags)) {
     printJson({ ...result, storage_class: storageClass, replaced_by: action === 'supersede' ? replacedBy : null })
     return result.applied ? 0 : 1
@@ -3039,8 +3051,56 @@ async function cmdMemoryForget({ positionals, flags, dirs }) {
   }
   if (reason !== '') process.stdout.write(`  причина записана в журнал: ${reason}\n`)
   for (const path of result.changed) process.stdout.write(`  изменено: ${path}\n`)
+  if (indexRefreshed.length) {
+    process.stdout.write('  индексы перестроены: из всегда-загружаемого ядра запись ушла\n')
+  }
   process.stdout.write('  файл на диске остался — это не удаление. Совсем стереть можно отдельно и необратимо\n')
   return 0
+}
+
+/**
+ * After a lifecycle transition, rebuild the generated index and the per-area
+ * catalogs — REBUILD-IF-PRESENT, never create: a store with no generated
+ * MEMORY.md (the this-machine-only store, a bare fixture corpus) gets none made
+ * here, and a hand-written MEMORY.md (no GENERATED header) is never overwritten.
+ * The anchor is inherited from the artifact's own header — the same posture
+ * erase.mjs and the MEM-REGEN lint regeneration use — so the byte-compare stays
+ * stable after HEAD moves; the dateMap is one read-only git pass, fail-open.
+ * Fail-open overall: the transition already happened, and a stale index is a
+ * degraded outcome, not an un-write.
+ */
+async function refreshForgetIndexes({ corpusDir, repoRoot }) {
+  try {
+    const generator = await import('./lib/generator.mjs')
+    const { atomicWriteRaw } = await import('./lib/fs-atomics.mjs')
+    const indexPath = join(corpusDir, 'MEMORY.md')
+    if (!existsSync(indexPath)) return []
+    const prefix = generator.GENERATED_MARKER.split('{commit}')[0]
+    const head = readFileSync(indexPath, 'utf8').split('\n')[0] ?? ''
+    if (!head.startsWith(prefix)) return []
+    const commitHash = (head.slice(prefix.length).trim().split(/\s+/)[0] ?? '') || '0000000'
+    let dateMap = {}
+    try {
+      const { execFileSync } = await import('node:child_process')
+      dateMap = generator.computeDateMap({
+        execGit: (args) => execFileSync('git', args, { encoding: 'utf8', cwd: repoRoot, stdio: GIT_READ_STDIO }),
+      })
+    } catch {
+      /* fail-open — the epoch ordering is honest, and MEM-REGEN will say so */
+    }
+    const args = { corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commitHash, dateMap }
+    const changed = []
+    atomicWriteRaw(indexPath, generator.buildIndex(args))
+    changed.push(indexPath)
+    for (const a of generator.buildAreaIndexes(args)) {
+      const p = join(corpusDir, a.file)
+      atomicWriteRaw(p, a.content)
+      changed.push(p)
+    }
+    return changed
+  } catch {
+    return []
+  }
 }
 
 /**

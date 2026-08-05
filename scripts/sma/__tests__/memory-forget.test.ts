@@ -37,7 +37,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -317,6 +317,32 @@ describe('memory forget --erase — irreversible, confirmed once, honest about h
 
     expect(res.status).toBe(0)
     expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+  })
+
+  it('Test 10b: a non-destructive forget rebuilds the generated index — MEMORY.md stops quoting the record', () => {
+    // The verb's own promise is «убрана из активной выдачи». MEMORY.md is the
+    // one artifact sessions load first, and its CORE lines quote claim text —
+    // a transition that left it stale would keep the retired claim in every
+    // session start until someone happened to regenerate.
+    seedCorpus({ context_priority: 'always' })
+    seedDerivedIndexes()
+    expect(readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')).toContain(`${SUBJECT}.md`)
+
+    const res = forget(['--reason', 'the evening window claim was withdrawn'])
+
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('индексы перестроены')
+    const index = readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')
+    expect(index).not.toContain(`${SUBJECT}.md`)
+    // rebuilt through the ONE builder, anchor inherited from the artifact header
+    expect(index).toBe(buildIndex({ corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), commitHash: '0000000', dateMap: {} }))
+    // the record itself survives — retired, and still catalogued in an area
+    // index for history, exactly as the README's filtered-delivery paragraph says
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+    const areaFiles = readdirSync(corpusDir).filter((f: string) => /^INDEX-.+\.md$/.test(f))
+    expect(areaFiles.length).toBeGreaterThan(0)
+    const catalogued = areaFiles.map((f: string) => readFileSync(join(corpusDir, f), 'utf8')).join('\n')
+    expect(catalogued).toContain(`${SUBJECT}.md`)
   })
 
   it('Test 11: --erase WITHOUT --yes refuses, deletes nothing, and says what it would have done', () => {
