@@ -268,6 +268,34 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
     expect(byId['other-shop'].taskCounts).toMatchObject({ queued: 1, completed: 1, total: 2 })
   })
 
+  /**
+   * D-11-DEFER-18 — the default registry entry every install mints carries a NAME and no
+   * `path`, so the screens named a project they could not read one file of: «Память» answered
+   * «нет подключённого проекта» while «Машины и проекты» listed it by name. An entry that
+   * names a project it cannot open is the worst of the three states, so the fact travels.
+   *
+   * The PATH does not travel: an absolute path on the wire is a disclosure (T-11-09-01), and
+   * a boolean is the whole of what a screen needs to say «не подключён».
+   */
+  it('a registry entry says whether it names a folder at all, and never says which', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter(projectRows),
+      windows: makeWindows({}),
+      config: {
+        ...multiConfig,
+        projects: [
+          { id: 'acme-clinic', name: 'Клиника' }, // the minted default: a name, no folder
+          { id: 'other-shop', name: 'Магазин', path: '/home/founder/projects/shop' },
+        ],
+      },
+      clock: () => NOW,
+    })
+    const byId = Object.fromEntries(payload.projects.map((p: any) => [p.id, p]))
+    expect(byId['acme-clinic'].connected).toBe(false)
+    expect(byId['other-shop'].connected).toBe(true)
+    expect(JSON.stringify(payload)).not.toContain('/home/founder')
+  })
+
   it('every task row carries its project and its machine — screens filter, never guess', async () => {
     const payload = await deriveState({
       adapter: mkAdapter(projectRows),

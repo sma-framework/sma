@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useRenameProject, useSelectProject, useStateQuery } from '../../api/queries'
+import { useAddProject, useRenameProject, useSelectProject, useStateQuery } from '../../api/queries'
 import type { AccountEntry, DoneRow, ProjectRow, WorkerRow } from '../../api/types'
 import { plural } from '../../shell/format'
 import { AddMachineWizard } from './AddMachineWizard'
@@ -31,6 +31,19 @@ import { StopParkZone } from './StopParkZone'
  * a folder on another machine is that machine's own business. So the second block says
  * «на этой машине» and means it, while the third block counts the work itself, which does
  * travel. Saying which is which is the difference between a summary and a guess.
+ *
+ * ═════════════════ CONNECTING A PROJECT IS AN ACT, NOT AN INSTRUCTION ═════════════════
+ *
+ * Until now this screen's «Добавить проект» opened a sentence telling a person to install
+ * SMA in another folder and wait — the project register could only be written through a
+ * hand-made HTTP request, and nothing appeared by itself. It is a form now: a folder, an
+ * optional name, and the project is taken into the register and selected in one act, through
+ * the two doors that already exist.
+ *
+ * And a register entry that names a folder is a different thing from one that does not. The
+ * default entry every install mints carries a name and no folder at all, so the screens used
+ * to show a project whose notebook they could not read one line of. A row says «не подключён»
+ * when that is the case — the honest of the three states.
  */
 
 /** Whether a moment falls on the day the reader is having. */
@@ -138,6 +151,15 @@ function ProjectLine({
               выбран
             </span>
           ) : null}
+          {/* A register entry with no folder is a label for grouping tasks, not a connection. */}
+          {project.connected ? null : (
+            <span
+              title="У этой записи нет папки на этой машине — записную книжку проекта окно прочитать не может"
+              className="flex-none rounded-full bg-warn-s px-2 py-[2px] text-[10.5px] whitespace-nowrap text-warn-tx"
+            >
+              не подключён
+            </span>
+          )}
         </button>
       )}
 
@@ -164,10 +186,14 @@ export function Screen() {
   const select = useSelectProject()
   const rename = useRenameProject()
 
+  const add = useAddProject()
+
   const [wizardOpen, setWizardOpen] = useState(false)
   const [byMachine, setByMachine] = useState(false)
   const [byProject, setByProject] = useState(false)
-  const [addHint, setAddHint] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const [addPath, setAddPath] = useState('')
+  const [addName, setAddName] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
 
   const data = state.data
@@ -207,6 +233,34 @@ export function Screen() {
   const pickProject = (id: string) => {
     setProblem(null)
     select.mutate({ id }, { onError: (err) => setProblem(isNotReady(err) ? null : 'Не получилось переключить проект.') })
+  }
+
+  /**
+   * Take a folder into the register and look at it — two existing doors, one act, because
+   * adding a project a person then has to go and select is a control that half works.
+   */
+  const connectProject = () => {
+    const path = addPath.trim()
+    if (path === '') return
+    setProblem(null)
+    add.mutate(
+      { path, ...(addName.trim() ? { name: addName.trim() } : {}) },
+      {
+        onSuccess: (result) => {
+          const id = result?.project?.id
+          setAddPath('')
+          setAddName('')
+          setAddOpen(false)
+          if (id) select.mutate({ id }, { onError: () => setProblem('Проект добавлен, но выбрать его не получилось.') })
+        },
+        onError: (err) =>
+          setProblem(
+            isNotReady(err)
+              ? 'Подключение проектов пока недоступно — дверь не отвечает.'
+              : 'Не получилось подключить папку. В списке ничего не изменилось.',
+          ),
+      },
+    )
   }
 
   const renameProject = (id: string, name: string) => {
@@ -314,7 +368,8 @@ export function Screen() {
 
               <button
                 type="button"
-                onClick={() => setAddHint((v) => !v)}
+                onClick={() => setAddOpen((v) => !v)}
+                aria-expanded={addOpen}
                 className="flex w-full items-center gap-2.5 border-t border-bd px-[18px] py-3 text-left text-[12.5px] font-medium text-tx2 hover:bg-row-hover hover:text-tx"
               >
                 <span aria-hidden className="text-[13px] text-blue-d">
@@ -322,9 +377,46 @@ export function Screen() {
                 </span>
                 <span>Добавить проект</span>
               </button>
-              {addHint ? (
-                <div className="border-t border-bd bg-surf px-[18px] py-3 pl-10 text-[12.5px] text-tx2">
-                  Установите SMA в папке нового проекта на этой машине — проект появится в списке сам.
+              {addOpen ? (
+                <div className="flex flex-col gap-2.5 border-t border-bd bg-surf px-[18px] py-3.5 pl-10">
+                  <span className="text-[12.5px] text-tx2">
+                    Укажите папку проекта на этой машине. Окно будет показывать её записную книжку —
+                    только показывать, ничего в ней не меняя.
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <input
+                      value={addPath}
+                      onChange={(e) => setAddPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') connectProject()
+                      }}
+                      placeholder="C:\Users\Вы\projects\мой-проект"
+                      aria-label="Папка проекта"
+                      className="h-8 min-w-[320px] flex-1 rounded-[7px] border border-bd2 bg-input px-2.5 text-[12.5px] text-tx outline-none"
+                    />
+                    <input
+                      value={addName}
+                      onChange={(e) => setAddName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') connectProject()
+                      }}
+                      placeholder="Название (необязательно)"
+                      aria-label="Название проекта"
+                      className="h-8 w-[240px] rounded-[7px] border border-bd2 bg-input px-2.5 text-[12.5px] text-tx outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={connectProject}
+                      disabled={add.isPending || addPath.trim() === ''}
+                      className="h-8 rounded-[8px] bg-blue-d px-4 text-[12.5px] font-semibold text-white hover:bg-blue disabled:opacity-60"
+                    >
+                      {add.isPending ? 'Подключаю…' : 'Подключить'}
+                    </button>
+                  </div>
+                  <span className="text-[11.5px] text-tx3">
+                    Ничего не устанавливается и ничего не записывается в папку — проект просто попадает
+                    в список и становится выбранным.
+                  </span>
                 </div>
               ) : null}
             </div>
