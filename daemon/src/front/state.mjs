@@ -96,6 +96,12 @@ const DONE_COMMIT_CAP = 10
 const MEMORY_STRUCTURAL = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 /** How many corpus pointers the «Память» screen gets — a surface, not a feed. */
 const MEMORY_RECENT_CAP = 10
+/**
+ * How much of a note's own line travels. A v2 `claim` is a full sentence and sometimes three;
+ * a row on the screen is one line, and the whole note is read where it lives. The generated
+ * corpus indexes cut their own lines at the same order of magnitude.
+ */
+const MEMORY_TITLE_CAP = 200
 /** How much of the training history and how many drafts travel on one poll. */
 const STYLE_TRAININGS_CAP = 20
 const STYLE_DECISIONS_CAP = 20
@@ -419,6 +425,46 @@ function noteFrontmatter(text, file) {
   }
 }
 
+/**
+ * The note's own line, in whichever generation of the schema wrote it (D-11-DEFER-20).
+ *
+ * A schema-v2 record states its subject in `claim`; the v1 note that came before it used
+ * `description`. This read model was written against v1 and only ever looked at
+ * `description`, so on the founder's own corpus — 34 notes, `generation: v2`, nothing pending
+ * — every row came back with an empty title and the screen showed a column of bare file ids.
+ * The corpus was not wrong and no migration was outstanding: the reader simply predated the
+ * format it was reading.
+ *
+ * v2 first, v1 as the fallback, because older corpora exist and both are legitimate.
+ */
+function noteTitle(fm) {
+  for (const value of [fm && fm.claim, fm && fm.description]) {
+    if (typeof value === 'string' && value.trim() !== '') return value.trim().slice(0, MEMORY_TITLE_CAP)
+  }
+  return ''
+}
+
+/**
+ * The tag surface of ONE note — what the «О чём записи» cloud counts.
+ *
+ * A v2 record carries two facet fields and they are two different vocabularies: `retrieval.areas`
+ * is the topical axis the loader itself retrieves by (`load --tags os,memory`), and `applies_to`
+ * is the narrower scope a claim is about. The areas are therefore the tag surface, and
+ * `applies_to` stands in for a record that declares no areas — mixing both into one cloud would
+ * put two vocabularies under one heading. `tags` is the v1 spelling and stays as the last fallback.
+ *
+ * The first non-empty list wins per note; nothing is merged.
+ */
+function noteTagSurface(fm) {
+  const areas = fm && fm.retrieval && Array.isArray(fm.retrieval.areas) ? fm.retrieval.areas : null
+  for (const list of [areas, fm && fm.applies_to, fm && fm.tags]) {
+    if (!Array.isArray(list)) continue
+    const clean = list.filter((t) => typeof t === 'string' && t.trim() !== '').map((t) => t.trim())
+    if (clean.length > 0) return clean
+  }
+  return []
+}
+
 /** Last-modified ms, or 0 when the platform / seam cannot say. */
 function mtimeOf(io, path) {
   try {
@@ -461,13 +507,12 @@ export function deriveMemory({ memoryDir, fsImpl } = {}) {
     if (text == null) continue
     const fm = noteFrontmatter(text, file)
     if (!fm) continue
-    for (const tag of Array.isArray(fm.tags) ? fm.tags : []) {
-      if (typeof tag !== 'string' || tag === '') continue
+    for (const tag of noteTagSurface(fm)) {
       tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
     }
     notes.push({
       id: file.replace(/\.md$/, ''),
-      title: typeof fm.description === 'string' ? fm.description.trim() : '',
+      title: noteTitle(fm),
       mtimeMs: mtimeOf(io, path),
     })
   }
