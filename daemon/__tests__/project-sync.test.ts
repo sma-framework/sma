@@ -23,10 +23,20 @@
  *   - the read model is a SURFACE — counts, tags and pointers, no body, no absolute path.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { watchProject, stopWatch, readProjectMemory } from '../src/front/project-sync.mjs'
+import {
+  watchProject,
+  stopWatch,
+  readProjectMemory,
+  previewProjectMigration,
+  pruneMigrationStaging,
+  PREVIEW_NOTE_CAP,
+  STAGING_RETENTION_MS,
+} from '../src/front/project-sync.mjs'
 
 // ── the fake disk: a map of directory → {filename: text}, with injectable mtimes ──
 
@@ -402,5 +412,104 @@ describe('readProjectMemory — a surface over a project the daemon does not own
 
     const after = readProjectMemory({ projectDir: PROJECT, fsImpl: io })
     expect(after.noteCount).toBe(2) // no cache to invalidate, so nothing to invalidate
+  })
+})
+
+// ── D-11-DEFER-10: the preview is bounded, and its staging is swept ──
+//
+// `deriveState` runs on every GET /api/state (2-5s), and for a connected project still in the
+// older format that call also ran the whole phase-8 preview over the whole corpus: read every
+// note, build a v2 rendering, serialize it, diff it, stage a draft. Milliseconds for the
+// founder's corpora; bounded by nothing at all for a thousand-note one, on every poll of every
+// open window. And the drafts it staged — complete v2 renderings of a FOREIGN project's notes,
+// bodies included — were never deleted by anything.
+
+describe('previewProjectMigration — bounded by the corpus size (D-11-DEFER-10)', () => {
+  const STAGING = join('/tmp', 'sma-staging')
+
+  /** A corpus of `n` notes on the fake disk, and a preview engine that records its runs. */
+  function corpus(n: number) {
+    const notes: Record<string, string> = { 'MEMORY.md': '# индекс\n' }
+    for (let i = 0; i < n; i += 1) notes[`note-${i}.md`] = V1_NOTE
+    const runs: any[] = []
+    const previewImpl = (args: any) => {
+      runs.push(args)
+      return { proposals: Object.keys(notes).filter((f) => f !== 'MEMORY.md').map((file) => ({
+        source_file: file,
+        disposition: 'v2-markup',
+        reason: '',
+        dropped_keys: [],
+        diff: '+a\n-b\n',
+        validation: { errors: [], warnings: [] },
+        sensitivity_reasons: [],
+        draft_status: 'written',
+      })) }
+    }
+    return { fsImpl: fakeFs({ [CLAUDE_DIR]: { 'settings.json': '{}' }, [MEMORY_DIR]: notes }), previewImpl, runs }
+  }
+
+  it('a corpus inside the cap is previewed exactly as before, and says it was not truncated', () => {
+    const { fsImpl, previewImpl, runs } = corpus(3)
+    const out: any = previewProjectMigration({ projectDir: PROJECT, stagingDir: STAGING, fsImpl, previewImpl, noteCap: 10 })
+    expect(runs).toHaveLength(1)
+    expect(out.total).toBe(3)
+    expect(out.truncated).toBe(false)
+    expect(out.corpusNotes).toBe(3)
+  })
+
+  it('a corpus over the cap is REPORTED, not previewed — the engine is never started', () => {
+    const { fsImpl, previewImpl, runs } = corpus(12)
+    const out: any = previewProjectMigration({ projectDir: PROJECT, stagingDir: STAGING, fsImpl, previewImpl, noteCap: 10 })
+    expect(runs).toHaveLength(0) // nothing read, nothing rendered, nothing staged
+    expect(out).toMatchObject({ total: 0, applicable: 0, files: [], truncated: true, corpusNotes: 12, previewCap: 10 })
+  })
+
+  it('the shipped cap is a number the module owns, not a caller default', () => {
+    expect(PREVIEW_NOTE_CAP).toBeGreaterThan(0)
+    const { fsImpl, previewImpl, runs } = corpus(2)
+    previewProjectMigration({ projectDir: PROJECT, stagingDir: STAGING, fsImpl, previewImpl })
+    expect(runs).toHaveLength(1) // a small corpus still previews with no cap passed in
+  })
+})
+
+describe('pruneMigrationStaging — the staged renderings have a retention (D-11-DEFER-10)', () => {
+  let staging: string
+  beforeEach(() => {
+    staging = mkdtempSync(join(tmpdir(), 'sma-staging-'))
+  })
+  afterEach(() => {
+    rmSync(staging, { recursive: true, force: true })
+  })
+
+  const age = (name: string, ms: number) => {
+    const path = join(staging, name)
+    writeFileSync(path, '---\nid: x\n---\n\nтело чужой заметки\n', 'utf8')
+    const when = new Date(Date.now() - ms)
+    utimesSync(path, when, when)
+  }
+
+  it('deletes drafts nobody re-staged inside the window and keeps the fresh ones', () => {
+    age('migration--old-note.md', STAGING_RETENTION_MS + 60_000)
+    age('migration--fresh-note.md', 1000)
+
+    const out = pruneMigrationStaging({ stagingDir: staging })
+    expect(out).toEqual({ removed: 1, kept: 1 })
+    expect(existsSync(join(staging, 'migration--old-note.md'))).toBe(false)
+    expect(existsSync(join(staging, 'migration--fresh-note.md'))).toBe(true)
+  })
+
+  it('NEVER deletes a consumed-draft marker — that file is what stops a second apply', () => {
+    age('migration--done.applied.md', STAGING_RETENTION_MS * 4)
+    const out = pruneMigrationStaging({ stagingDir: staging })
+    expect(out.removed).toBe(0)
+    expect(existsSync(join(staging, 'migration--done.applied.md'))).toBe(true)
+  })
+
+  it('leaves anything that is not a staged draft alone, and an absent directory is a non-event', () => {
+    age('notes-of-mine.md', STAGING_RETENTION_MS * 4)
+    expect(pruneMigrationStaging({ stagingDir: staging }).removed).toBe(0)
+    expect(existsSync(join(staging, 'notes-of-mine.md'))).toBe(true)
+    expect(pruneMigrationStaging({ stagingDir: join(staging, 'nope') })).toEqual({ removed: 0, kept: 0 })
+    expect(pruneMigrationStaging({})).toEqual({ removed: 0, kept: 0 })
   })
 })
