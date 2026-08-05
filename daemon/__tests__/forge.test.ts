@@ -476,6 +476,35 @@ describe('the forge-path trace (D-9.5-09) — draft, lint gate, no activation', 
     expect(row.status).toBe('failed')
   })
 
+  /**
+   * The forge lane's capability envelope declares WHERE it may write — the three draft
+   * directories — and until 2026-08-05 nothing consulted that declaration (D-11-DEFER-02).
+   * The tick now asks it about the committed path before the draft is accepted.
+   *
+   * `listCommittedDrafts` filters by a string PREFIX, so a path that walks back out of the
+   * draft directory passes it. `envelopeAllows` refuses a traversal instead of resolving it
+   * and matches on a segment boundary. HONEST NOTE: `lintDraft`'s own path contract would
+   * refuse this file too — this is a second, independent leg at the acceptance point, not a
+   * hole that was open. What it makes real is the `writePaths` dimension itself, which is
+   * the only one the four lanes actually differ on.
+   */
+  it('a committed draft whose path escapes the lane\'s declared write scope → fail("agent_error") before the lint', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(forgeTask())
+    const order: string[] = []
+    const { deps } = makeForgeDeps(adapter, c.clock, order, {
+      execGit: () => '.claude/agents/../../../../etc/rogue.md',
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'F-1', reason: 'agent_error' })
+    expect(res.failed.detail).toMatch(/outside the lane's declared write scope/)
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('failed')
+  })
+
   it('a red lint (the committed draft grants a forbidden power) → fail("agent_error")', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
