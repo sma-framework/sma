@@ -270,7 +270,7 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
     const taskId = String(r.taskId ?? '')
     const conversation = taskId.startsWith(CHAT_TASK_ID_PREFIX)
     const day = dayOf(at)
-    const key = `${day} ${account} ${conversation ? 'chat' : 'task'}`
+    const key = `${day}\u0000${account}\u0000${conversation ? 'chat' : 'task'}`
 
     let point = points.get(key)
     if (!point) {

@@ -344,9 +344,9 @@ export function corpusHash(notes) {
   const h = createHash('sha256')
   for (const note of [...notes].map(axisOf).sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))) {
     h.update(note.file ?? '')
-    h.update(' ')
+    h.update('\u0000')
     h.update(indexableDocument(note))
-    h.update(' ')
+    h.update('\u0000')
   }
   return h.digest('hex')
 }

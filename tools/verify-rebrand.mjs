@@ -177,7 +177,13 @@ for (const root of idRoots) {
     const isPkg = path.basename(file) === 'package.json'
     if (!isDoc && !isCode && !isPkg) continue
     const buf = fs.readFileSync(file)
-    if (buf.includes(0)) continue
+    if (buf.includes(0)) {
+      // A NUL byte makes a text scan meaningless — and skipping SILENTLY once hid
+      // five runtime files from this check. A file the scan cannot read is a
+      // finding, not an exemption: put the byte in a \u0000 escape and it scans.
+      errors.push(`INTERNAL-ID: ${r}: carries raw NUL bytes, so check (d) cannot read it — replace them with \\u0000 escapes`)
+      continue
+    }
     const text = buf.toString('utf8')
     idScanned++
     if (!INTERNAL_ID.test(text)) continue
