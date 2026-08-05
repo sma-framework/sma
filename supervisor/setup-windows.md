@@ -22,12 +22,40 @@ written in plain language; the engineering detail follows in separate blocks.
 - **Node.js 22.5 or newer** and **git** on PATH. The daemon uses only Node's
   built-in modules plus `pg-boss` — it is plain node, so your project's own
   conflicts over Node or framework versions never reach it.
-- **A local Postgres for the queue on :5433.** Create a `~/pg-sandbox` sandbox
-  (embedded-postgres, PG18): a directory with a `start.mjs` boot script that
-  brings an embedded Postgres up on :5433. Run it with
-  `cd ~/pg-sandbox && node start.mjs` (the server backgrounds itself; running it
-  again is harmless). This needs no administrator rights, no docker, and no
-  installed Postgres server.
+- **A local Postgres for the queue on :5433.** This is the only hard requirement the
+  daemon adds. Nothing in the memory and coordination layer needs it — that layer is
+  plain files and git — so a machine that never starts the daemon never needs a
+  database at all.
+
+  Either point `queueUrl` at a server you already run, or create the `~/pg-sandbox`
+  sandbox (embedded-postgres, PG18) this checklist assumes: a directory holding an
+  initialised `pgdata` and the `@embedded-postgres` binaries. It needs no
+  administrator rights, no docker, and no installed Postgres server:
+
+  ```powershell
+  mkdir ~/pg-sandbox; cd ~/pg-sandbox
+  npm init -y; npm install embedded-postgres
+  node -e "import('embedded-postgres').then(async ({default:P})=>{ const pg=new P({databaseDir:'./pgdata',user:'postgres',password:'postgres',port:5433,persistent:true}); await pg.initialise() })"
+  ```
+
+  Bring it up — and create the daemon's queue database in the same command — with the
+  starter that ships beside this file:
+
+  ```powershell
+  cd <SMA_HOME>
+  node supervisor/pg-sandbox-windows.mjs start          # start | stop | status
+  ```
+
+  > **Use the starter rather than the sandbox's own boot script.** On the reference
+  > machine `node start.mjs` did not return, was killed on a timeout, and left the
+  > cluster in crash recovery — accepting TCP connections and answering no query, which
+  > every port probe reports as «up». The starter takes the `pg_ctl` road, and it waits
+  > for a **session that answers** rather than for an open socket: a cluster still
+  > replaying its log is reported by name (`57P03`) and waited out. It is idempotent —
+  > running it against a cluster that is already up prints «already up» and exits 0 —
+  > and it creates the queue database (`queueUrl`'s, or `sma_queue`) if it is missing,
+  > explicitly in UTF-8, because Windows `initdb` defaults a cluster to the ANSI code
+  > page and a WIN1252 queue database cannot hold a task title written in Cyrillic.
 - **Daemon dependencies.** `pgboss-backend.mjs` imports `pg-boss` and `pg`
   lazily. These packages are not declared in the product's root `package.json`;
   install them machine-locally into `node_modules` (they stay out of git). The
@@ -81,8 +109,8 @@ Bring the Postgres sandbox up first (if it is not already running), then run the
 smoke:
 
 ```powershell
-cd ~/pg-sandbox; node start.mjs      # bring :5433 up (harmless if already running)
 cd <SMA_HOME>
+node supervisor/pg-sandbox-windows.mjs start --db sma_queue   # harmless if already up
 node supervisor/live-smoke-windows.mjs
 ```
 
