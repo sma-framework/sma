@@ -415,6 +415,29 @@ describe('memory forget --erase — irreversible, confirmed once, honest about h
     for (const surface of ERASE_SURFACES) expect(res.out).toContain(surface.name)
   })
 
+  it('Test 14b: an episode sharing the id makes the CLI DECLINE — non-zero, path named, nothing removed', () => {
+    // The module-level proof is erase.test.ts Tests 29-32; this one asserts the
+    // refusal survives the trip to the operator's terminal, because a decline
+    // that exits 0 or prints nothing is indistinguishable from a completed
+    // erase (D-11-DEFER-15).
+    seedCorpus()
+    seed(join(corpusDir, 'episodes'), record({ status: 'archived', memory_type: 'episodic' }))
+    seedDerivedIndexes()
+    const indexBefore = readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')
+
+    const res = forget(['--erase', '--yes'])
+
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain(`${SUBJECT}.md`)
+    expect(res.out).toMatch(/episod/i)
+    // fail-closed: every copy is still where it was, read back from disk, and
+    // the derived index was not even rebuilt — the refusal lands before the
+    // first surface is touched, not after a partial run.
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+    expect(existsSync(join(corpusDir, 'episodes', `${SUBJECT}.md`))).toBe(true)
+    expect(readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')).toBe(indexBefore)
+  })
+
   it('Test 15: the output says the unpleasant thing about git history, in both paths', () => {
     seedCorpus()
 
