@@ -35,6 +35,7 @@ import { ROUTES } from '../src/front/server.mjs'
 const TOKEN = 'c'.repeat(64)
 
 let tmpRoot: string
+let projectDir: string
 let park: any
 const savedEnv: Record<string, string | undefined> = {}
 
@@ -89,6 +90,8 @@ function mkRes() {
 const BODIES: Record<string, object> = {
   'POST /api/approve': { taskId: 'R-1' },
   'POST /api/return': { taskId: 'R-1', note: 'нет' },
+  'select-p1': { id: 'p1' },
+  'select-p2': { id: 'p2' },
 }
 
 /** Every route of the frozen table, dynamic segments filled — derived, never hand-kept. */
@@ -116,6 +119,9 @@ beforeAll(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'sma-composition-'))
   const repoDir = join(tmpRoot, 'repo')
   mkdirSync(repoDir, { recursive: true })
+  // A second project that names a REAL folder — the watcher has somewhere to move to.
+  projectDir = join(tmpRoot, 'connected')
+  mkdirSync(join(projectDir, '.claude', 'memory'), { recursive: true })
   const configPath = join(tmpRoot, 'config.json')
   writeFileSync(
     configPath,
@@ -129,7 +135,7 @@ beforeAll(() => {
       repoDir,
       dataDir: join(tmpRoot, 'data'),
       ledgerDir: join(tmpRoot, 'ledger'),
-      projects: [{ id: 'p1', name: 'p1' }],
+      projects: [{ id: 'p1', name: 'p1' }, { id: 'p2', name: 'p2', path: join(tmpRoot, 'connected') }],
       activeProject: 'p1',
       // hub, so the federation engine is constructed: the three machine routes are then
       // wired like every other one and may not answer «not available here» either.
@@ -223,6 +229,31 @@ describe('the production composition root is COMPLETE', () => {
 
   it('passes a plain error through unchanged (masked)', () => {
     expect(describeBootFailure(new Error('queue url is malformed'), {})).toBe('queue url is malformed')
+  })
+
+  /**
+   * D-11-DEFER-09 — the watcher used to bind ONCE, at boot, to whatever project was connected
+   * then. Switching projects left it on the old tree: the new project's changes reached the
+   * screen only through the SPA's own poll, and the recovery was restarting the daemon.
+   * Nothing lied (the liveness seam compares directories and answers `polling` when they
+   * differ) — the instant hint was simply gone until a restart.
+   *
+   * This is asserted through the PRODUCTION wiring rather than a hand-built server, because
+   * the bug was in the wiring: the handler and the watcher were each fine on their own.
+   */
+  it('a project switch re-targets the watcher, with no restart (D-11-DEFER-09)', async () => {
+    const liveness = park.front.deps.projectLiveness
+    expect(park.front.deps.onProjectSelected, 'the select door has no re-target seam wired').toBeTypeOf('function')
+    expect(liveness()).toBe('polling') // p1 names no folder: nothing to watch, and it says so
+
+    const res = await call('POST', '/api/project/select', 'select-p2')
+    expect(res.statusCode).toBe(200)
+    expect(liveness()).toBe('live')
+
+    // back to the project with no folder: the watcher is stopped, not left on the old tree
+    const back = await call('POST', '/api/project/select', 'select-p1')
+    expect(back.statusCode).toBe(200)
+    expect(liveness()).toBe('polling')
   })
 
   it('derives a working data/ledger dir even from a config that names neither', () => {

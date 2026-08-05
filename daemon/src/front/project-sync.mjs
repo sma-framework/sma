@@ -47,7 +47,13 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync, watch as fsWatch } from 'node:fs'
+import {
+  readdirSync as fsReaddirSync,
+  readFileSync as fsReadFileSync,
+  rmSync as fsRmSync,
+  statSync as fsStatSync,
+  watch as fsWatch,
+} from 'node:fs'
 import { join } from 'node:path'
 
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
@@ -98,6 +104,7 @@ function fsSeam(fsImpl) {
     readdirSync: io.readdirSync ?? fsReaddirSync,
     readFileSync: io.readFileSync ?? fsReadFileSync,
     statSync: io.statSync ?? fsStatSync,
+    rmSync: io.rmSync ?? fsRmSync,
   }
 }
 
@@ -446,21 +453,66 @@ function proposalSurface(p) {
 }
 
 /**
- * previewProjectMigration({projectDir, stagingDir, now, previewImpl}) → the per-file surface
- * of what a migration would change, or `null` when there is nothing to preview.
+ * How large a corpus may be before the preview stops being something a POLL can carry
+ * (D-11-DEFER-10).
+ *
+ * WHY A CAP AT ALL. `deriveState` runs on every GET /api/state (2-5s), and for a connected
+ * project still in the older format that call ALSO ran this preview over the whole corpus:
+ * read every note, build a v2 rendering, serialize it, diff it, stage a draft. For the
+ * founder's real corpora — tens of small notes — that is milliseconds. It was bounded by
+ * nothing at all: a connected project with a thousand old-format notes would pay for that on
+ * every poll of every open window, and it is also, strictly, a write on a timer.
+ *
+ * WHY TWO HUNDRED. The corpus lint caps a note's size, so two hundred notes is the order of
+ * magnitude of a large real corpus and roughly an order of magnitude above the founder's own
+ * (34). Under it, nothing about today's behaviour changes; over it, the preview is not built
+ * and the payload SAYS SO, so the screen can tell a person the corpus is too large for a
+ * live preview instead of showing a section that quietly means something else.
+ *
+ * The honest limitation, stated where it is decided: the register's wording is «preview the
+ * first N notes and say so», and the engine (`previewMigration`) takes a corpus directory
+ * rather than a file list, so previewing a PART of a corpus is not something a caller can ask
+ * it for. What this seam can do is refuse to start an unbounded run and name the reason.
+ */
+export const PREVIEW_NOTE_CAP = 200
+
+/** How many plain notes the corpus holds — a readdir, never a read. */
+function countCorpusNotes(io, corpusDir) {
+  try {
+    return (io.readdirSync(corpusDir) || []).filter((f) => typeof f === 'string' && isNoteFile(f)).length
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * previewProjectMigration({projectDir, stagingDir, now, previewImpl, noteCap}) → the per-file
+ * surface of what a migration would change, or `null` when there is nothing to preview.
  *
  * READ-ONLY WITH RESPECT TO THE CONNECTED PROJECT, by construction rather than by care: the
  * only directory the engine writes into is `stagingDir`, and that lives beside the daemon's
  * own data, never inside the project.
  *
- * @param {{projectDir?:string, stagingDir?:string, now?:Date, previewImpl?:Function}} [args]
+ * BOUNDED. A corpus over `noteCap` notes is reported, not previewed: `truncated: true` with
+ * the corpus size and the cap beside it. Nothing is cached either way — derive-never-store is
+ * this module's founding law, and a memo of a foreign project's corpus is exactly the
+ * daemon-side copy it forbids.
+ *
+ * @param {{projectDir?:string, stagingDir?:string, now?:Date, previewImpl?:Function, noteCap?:number, fsImpl?:object}} [args]
  * @returns {object|null}
  */
-export function previewProjectMigration({ projectDir, stagingDir, now, previewImpl } = {}) {
+export function previewProjectMigration({ projectDir, stagingDir, now, previewImpl, noteCap = PREVIEW_NOTE_CAP, fsImpl } = {}) {
   const corpusDir = memoryDirOf(projectDir)
   if (!corpusDir || typeof stagingDir !== 'string' || stagingDir.trim() === '') return null
-  const run = typeof previewImpl === 'function' ? previewImpl : previewMigration
+  const io = fsSeam(fsImpl)
+  const corpusNotes = countCorpusNotes(io, corpusDir)
+  const cap = Number.isFinite(noteCap) && noteCap > 0 ? noteCap : PREVIEW_NOTE_CAP
 
+  if (corpusNotes > cap) {
+    return { total: 0, applicable: 0, files: [], truncated: true, corpusNotes, previewCap: cap }
+  }
+
+  const run = typeof previewImpl === 'function' ? previewImpl : previewMigration
   let report
   try {
     report = run({ corpusDir, draftsDir: stagingDir, now })
@@ -474,7 +526,79 @@ export function previewProjectMigration({ projectDir, stagingDir, now, previewIm
     total: proposals.length,
     applicable: proposals.filter((p) => p.applicable).length,
     files: proposals,
+    truncated: false,
+    corpusNotes,
+    previewCap: cap,
   }
+}
+
+/**
+ * How long a staged migration draft is kept (D-11-DEFER-10, second half).
+ *
+ * A preview stages a COMPLETE v2 rendering of a foreign project's note — body and all —
+ * beside the daemon's own data, and nothing ever deleted one. Two weeks is the retention:
+ * long enough that a person who previewed a migration on Friday can still accept it after a
+ * holiday, short enough that a project connected once in spring is not still on this disk in
+ * the autumn. A draft that is still relevant is re-staged by the next preview, which resets
+ * its age — so the window is «two weeks since anybody looked», not «two weeks since it was
+ * first written».
+ */
+export const STAGING_RETENTION_MS = 14 * 24 * 60 * 60 * 1000
+
+/** Only the engine's own staged drafts are candidates — nothing else in the directory. */
+const STAGED_DRAFT_RE = /^migration--.+\.md$/
+
+/**
+ * pruneMigrationStaging({stagingDir, now, retentionMs, fsImpl}) → {removed, kept}.
+ *
+ * Deletes staged drafts nobody has re-staged inside the retention window. Two things it does
+ * NOT touch, both on purpose:
+ *
+ *   - the consumed-draft markers (`*.applied.md`). Their presence is what makes a second
+ *     apply of the same proposal impossible; removing one would let an already-applied
+ *     migration be applied again, which is a data question, not a housekeeping one;
+ *   - anything that is not a staged draft. This directory is the daemon's, but a prune that
+ *     sweeps by directory rather than by name is one rename away from deleting something else.
+ *
+ * An absent directory, an unreadable entry and a failed delete are all non-events: pruning is
+ * housekeeping and must never be able to stop a boot or a project switch.
+ *
+ * @param {{stagingDir?:string, now?:number, retentionMs?:number, fsImpl?:object}} [args]
+ * @returns {{removed:number, kept:number}}
+ */
+export function pruneMigrationStaging({ stagingDir, now = Date.now(), retentionMs = STAGING_RETENTION_MS, fsImpl } = {}) {
+  const out = { removed: 0, kept: 0 }
+  if (typeof stagingDir !== 'string' || stagingDir.trim() === '') return out
+  const io = fsSeam(fsImpl)
+
+  let names = []
+  try {
+    names = (io.readdirSync(stagingDir) || []).filter((n) => typeof n === 'string')
+  } catch {
+    return out // no staging directory yet is the state we wanted
+  }
+
+  for (const name of names) {
+    if (!STAGED_DRAFT_RE.test(name) || name.endsWith('.applied.md')) continue
+    const path = join(stagingDir, name)
+    let mtime = NaN
+    try {
+      mtime = Number(io.statSync(path).mtimeMs)
+    } catch {
+      continue // an entry that vanished under us needs no deleting
+    }
+    if (!Number.isFinite(mtime) || now - mtime <= retentionMs) {
+      out.kept += 1
+      continue
+    }
+    try {
+      io.rmSync(path, { force: true })
+      out.removed += 1
+    } catch {
+      out.kept += 1 // a file we may not delete is one we keep, not a thrown boot
+    }
+  }
+  return out
 }
 
 /**

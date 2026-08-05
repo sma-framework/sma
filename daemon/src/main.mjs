@@ -62,6 +62,7 @@ import {
 import {
   applyProjectMigration,
   previewProjectMigration,
+  pruneMigrationStaging,
   readProjectMemory,
   stopWatch,
   watchProject,
@@ -170,6 +171,44 @@ export function createDaemon(o = {}) {
   const projectLiveness = () =>
     projectWatch && !projectWatch.degraded && projectWatch.projectDir === connectedProjectDir() ? 'live' : 'polling'
 
+  /**
+   * Start a watcher on whatever project is connected RIGHT NOW, replacing the one that was
+   * running. Called at boot and again on every project select (D-11-DEFER-09).
+   *
+   * WHY IT IS ONE FUNCTION AND NOT TWO. The watcher used to be started once, inside `start()`,
+   * from the project that happened to be connected at boot. Switching projects therefore left
+   * the watcher on the old tree: the new project's changes reached the screen only through the
+   * SPA's own poll, and the only recovery was restarting the daemon. Nothing lied — the
+   * liveness seam compares the running watcher's directory with the connected one and answers
+   * `polling` when they differ — but the instant hint was gone until a restart.
+   *
+   * A project with no folder connected is a valid state and leaves no watcher running: there
+   * is nothing to watch, and `projectLiveness` says `polling`, which is the truth.
+   */
+  const retargetProjectWatch = () => {
+    stopWatch(projectWatch)
+    projectWatch = null
+    const projectDir = connectedProjectDir()
+    if (!projectDir) return null
+    projectWatch = watchProject({
+      projectDir,
+      projectId: connectedProjectId(),
+      emit: (frame) => {
+        try {
+          hub.emit(frame)
+        } catch {
+          /* a hint failure never affects the poll, which is the truth */
+        }
+      },
+    })
+    if (projectWatch.degraded) {
+      console.log(
+        `[SmaDaemon] project watch degraded to polling: ${projectWatch.degradedReason} — the window will say so.`,
+      )
+    }
+    return projectWatch
+  }
+
   // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
@@ -233,6 +272,14 @@ export function createDaemon(o = {}) {
         previewProjectMigration,
         projectLiveness,
         migrationStagingDir,
+        // A project switch moves the tree the watcher is on. Without this the watcher stayed
+        // bound to whatever was connected at boot, and the only recovery was a restart
+        // (D-11-DEFER-09). The switch is also the moment the previous project's staged
+        // previews become residue, so the retention sweep runs here too.
+        onProjectSelected: () => {
+          retargetProjectWatch()
+          pruneMigrationStaging({ stagingDir: migrationStagingDir })
+        },
         applyProjectMigration: ({ file }) => ({
           ...applyProjectMigration({ projectDir: connectedProjectDir(), stagingDir: migrationStagingDir, file }),
           projectId: connectedProjectId(),
@@ -290,25 +337,10 @@ export function createDaemon(o = {}) {
       // The connected project is watched while the daemon runs. It is started AFTER the
       // queue and BEFORE the front only for tidiness — it owns nothing the others need, and
       // a project that cannot be watched degrades inside watchProject rather than here.
-      const projectDir = connectedProjectDir()
-      if (projectDir) {
-        projectWatch = watchProject({
-          projectDir,
-          projectId: connectedProjectId(),
-          emit: (frame) => {
-            try {
-              hub.emit(frame)
-            } catch {
-              /* a hint failure never affects the poll, which is the truth */
-            }
-          },
-        })
-        if (projectWatch.degraded) {
-          console.log(
-            `[SmaDaemon] project watch degraded to polling: ${projectWatch.degradedReason} — the window will say so.`,
-          )
-        }
-      }
+      // Staged previews are complete v2 renderings of a FOREIGN project's notes. Nothing used
+      // to delete one; the sweep runs at boot and on every project switch (D-11-DEFER-10).
+      pruneMigrationStaging({ stagingDir: migrationStagingDir })
+      retargetProjectWatch()
       front.listen()
       daemon.start()
     },

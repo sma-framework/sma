@@ -1183,6 +1183,18 @@ async function handleProjectSelect({ req, res, config, deps }) {
   try {
     const next = deps.selectProject(config, { id: b.id }, configIo(deps))
     refreshRegistry(config, next)
+    // The watcher binds to ONE tree, and the tree just changed (D-11-DEFER-09). The seam is a
+    // callback rather than a watcher handle on purpose: a request handler that could stop and
+    // start watchers would be a request handler holding a lifecycle, and the composition root
+    // is where a lifecycle belongs. It is best-effort — a connection that cannot be re-watched
+    // degrades to the polling the liveness seam already reports honestly, never a failed select.
+    if (typeof deps.onProjectSelected === 'function') {
+      try {
+        deps.onProjectSelected({ projectId: b.id })
+      } catch {
+        /* re-targeting is an improvement on the answer, never a condition of it */
+      }
+    }
     emitSafe(deps, { event: 'project.updated', projectId: b.id })
     return sendJson(res, 200, { ok: true, activeProject: next.activeProject ?? null })
   } catch (err) {
