@@ -149,7 +149,7 @@ export function checkScopeCollision(paths, opts = {}) {
 
         const cls = classifyStaleness(session, { now, scopeMtimeProbe: opts.scopeMtimeProbe })
         const staleness = cls.state // 'fresh'|'attention'|'reap-clean'|'needs-human' (the DISPLAY tier)
-        // SB-041: «can this owner still be working» is the ONE shared predicate, never a
+        // «can this owner still be working» is the ONE shared predicate, never a
         // local re-derivation from `staleness` — a dead-pid lease reads 'fresh' by age and
         // would otherwise tell the reader to WAIT for a terminal that no longer exists.
         const active = isSessionLive(session, { now, scopeMtimeProbe: opts.scopeMtimeProbe })
@@ -171,7 +171,7 @@ export function checkScopeCollision(paths, opts = {}) {
 
     // D-9-16 hot-file advisory: >=2 fresh sessions + a hot-file path, no claim needed.
     // The advisory PRINTS its count («N сессий активны»), so it is one of the numbers
-    // SB-041 was about: it asks sessionActivityTier, not a private fresh-only rule.
+    // that once inflated: it asks sessionActivityTier, not a private fresh-only rule.
     const freshCount = sessions.filter((s) => sessionActivityTier(s, { now }) === 'fresh').length
     if (freshCount >= 2) {
       for (const p of normPaths) {
@@ -246,7 +246,7 @@ export function buildWarnText(warn) {
  * can distinguish a hard-busy owner from one that may already be idle. `active`
  * (fresh+attention) is kept for the legacy count.
  *
- * The tier per session is registry.sessionActivityTier (SB-041) — the same rule the hook
+ * The tier per session is registry.sessionActivityTier — the same rule the hook
  * and `status` use, so this counter can never drift from the headline number again.
  * Injectable classify for tests.
  * @param {Array} sessions

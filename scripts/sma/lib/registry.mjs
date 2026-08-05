@@ -499,12 +499,12 @@ export function classifyStaleness(session, opts = {}) {
  * boolean, so the one caller that needs the hard-busy tier alone can have it without
  * forking a second rule.
  *
- * TWO gates, ANDed (SB-041). renewTime freshness is the first (classifyStaleness); the
+ * TWO gates, ANDed. renewTime freshness is the first (classifyStaleness); the
  * dead-pid-lease rule is the second. The second one is what the divergence was about: a
  * `T-<pid>` lease is written by EVERY one-shot CLI process (`sma claim`, `sma status`…)
  * and keeps a YOUNG renewTime for the full 45-minute window after that process exited, so
  * a renewTime-only reading counts each dead command as a separate live terminal. `status`
- * learned this in SB-021 and the hook did not — for one afternoon the hook printed 20–80
+ * learned this first and the hook did not — for one afternoon the hook printed 20–80
  * «working» terminals while `status` honestly printed 1. A signal that inflated teaches
  * agents to ignore it, so the rule lives in ONE function with no parallel copy.
  *

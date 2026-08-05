@@ -32,7 +32,7 @@
  * is the fingerprint's ATTENTION axis — what the agent SAYS it is doing. The lease already
  * carries a work-axis `status`; `fpStatus` sits alongside it without conflation.
  *
- * LIVENESS IS NOT DECIDED HERE (SB-041). It is registry.isSessionLive — the SAME predicate
+ * LIVENESS IS NOT DECIDED HERE. It is registry.isSessionLive — the SAME predicate
  * `sma status` counts with. This module used to carry its own renewTime-only copy of the
  * rule («pid is NEVER consulted»), which was right for a NAMED window (whose pid goes
  * stale across Claude restarts while the window lives on) and wrong for the `T-<pid>`
@@ -128,7 +128,7 @@ export function buildFingerprint(opts = {}) {
 }
 
 /** True when a session is LIVE. NOT a local rule: it delegates to registry.isSessionLive
- * — the ONE activity classification `sma status` also asks (SB-041). Injectable classify
+ * — the ONE activity classification `sma status` also asks. Injectable classify
  * for tests, forwarded unchanged. */
 function isLive(session, now, classify) {
   return isSessionLive(session, { now, classify })

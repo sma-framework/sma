@@ -262,7 +262,7 @@ async function gatherSummary(dirs) {
     for (const w of warnings) out.warnings.push(w)
     for (const s of sessions) {
       const cls = registry.classifyStaleness(s, {})
-      // SB-041: the ONE activity predicate — the same one the PreToolUse hook asks.
+      // The ONE activity predicate — the same one the PreToolUse hook asks.
       const live = registry.isSessionLive(s)
       if (live) out.activeSessions += 1
       else out.staleSessions += 1
@@ -1109,6 +1109,12 @@ async function cmdLint({ flags }) {
   const defaultProfile = join('.sma', 'profile.json')
   const profilePath = typeof flags.profile === 'string' ? flags.profile : existsSync(defaultProfile) ? defaultProfile : undefined
 
+  // A wall-clock budget for the walk: `--budget 90` (seconds), `--budget 5m`,
+  // `--budget 500ms`; SMA_LINT_BUDGET does the same from the environment. Past it
+  // the run stops and names what it did not check — exit 2, never a silent green.
+  const bm = /^(\d+(?:\.\d+)?)\s*(ms|s|m)?$/.exec(typeof flags.budget === 'string' ? flags.budget.trim() : '')
+  const budgetMs = bm ? (bm[2] === 'ms' ? Number(bm[1]) : bm[2] === 'm' ? Number(bm[1]) * 60_000 : Number(bm[1]) * 1000) : undefined
+
   const opts = {
     corpusDir,
     tagsPath,
@@ -1116,6 +1122,8 @@ async function cmdLint({ flags }) {
     claudeMdPath: 'CLAUDE.md',
     generate,
     generateAreas,
+    ...(budgetMs === undefined ? {} : { budgetMs }),
+    ...(flags.progress === true ? { progress: (l) => process.stderr.write(`SMA lint: ${l}\n`) } : {}),
     ...(statePath ? { statePath } : {}),
     ...(profilePath ? { profilePath } : {}),
     ...(plansDir ? { plansDir } : {}),
