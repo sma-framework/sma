@@ -28,6 +28,8 @@ import {
 } from '../src/queue/pgboss-backend.mjs'
 import { queueAdapterContractSuite, NoReceiptError } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
+import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
+import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
 
 // ── temp ledger dirs (cleaned once at the end) ──
 const tmpDirs: string[] = []
@@ -188,12 +190,17 @@ function makeFakeBackend({
   const execSql = async (sql: string, params: any[]) => {
     maintain()
     if (sql.includes("state = 'active'")) {
-      // taskId → active job resolution (touch/complete/fail)
+      // taskId → active job resolution (touch/complete/fail). `data` and `retry_count` come
+      // back as well (2026-08-05): the backend's SELECT asks for them so complete/fail can
+      // stamp the attempt row with the number and the lane THE QUEUE holds, and a fake that
+      // withheld the two columns would test the absent-value path forever.
       const taskId = params[0]
       const match = [...jobs.values()]
         .filter((j) => j.state === 'active' && j.data && j.data.id === taskId)
         .sort((a, b) => (b.started_on ?? 0) - (a.started_on ?? 0))[0]
-      return { rows: match ? [{ id: match.id, name: match.name }] : [] }
+      return {
+        rows: match ? [{ id: match.id, name: match.name, data: match.data, retry_count: match.retry_count }] : [],
+      }
     }
     // list(): all jobs; the adapter maps + filters
     return {
@@ -293,6 +300,94 @@ describe('pg-boss backend — job-option contract', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].outcome).toBe('failed')
     expect(rows[0].failureReason).toBe('missing_access')
+  })
+})
+
+// ═══ the attempt stamp on the ADAPTER's own rows (D-11-DEFER-23, 2026-08-05) ═══════
+//
+// Until this landed the backend's two `recordAttempt` call sites passed none of the seven
+// stamp fields and no status change was ever routed through `applyTransition`. These cases
+// pin what the adapter can now truthfully say — and, just as deliberately, what it cannot.
+
+describe('the queue adapter stamps the attempt row it writes', () => {
+  it('complete() routes RUNNING -> PRODUCED through the machine and stamps key, version, attempt and envelope digest', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green', workerId: 'w1' })
+
+    const [row] = readAttempts(ledgerDir, 'BL-196')
+    expect(row.attempt).toBe(1) // the number the QUEUE holds, not one the caller supplied
+    expect(row.stateMachineVersion).toBe(STATE_MACHINE_VERSION)
+    expect(row.idempotencyKey).toBe(idempotencyKey('BL-196', 'BL-196#1', 'RUNNING->PRODUCED'))
+    // The envelope reaches the durable row as a DIGEST and never as paths (T-11-05-04).
+    expect(row.capabilityEnvelopeHash).toBe(envelopeHash(defaultEnvelope('prod')))
+    expect(row.capabilityEnvelope).toBeUndefined()
+  })
+
+  it('fail() routes RUNNING -> RETRYABLE, and the key is the one of the attempt the QUEUE names', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
+    // A task already on its second attempt: the number rides in the job payload, and the
+    // adapter reads it from there rather than defaulting to 1 about itself.
+    await adapter.enqueue(backlog({ id: 'BL-A2', attempt: 2 }))
+    await adapter.claimNext('w1', {})
+    await adapter.fail('BL-A2', 'tests_red')
+
+    const [row] = readAttempts(ledgerDir, 'BL-A2')
+    expect(row.attempt).toBe(2)
+    expect(row.idempotencyKey).toBe(idempotencyKey('BL-A2', 'BL-A2#2', 'RUNNING->RETRYABLE'))
+    // A different attempt of the SAME task is a different key by construction — that is the
+    // half of canon invariant 5 the queue layer has to keep from its side.
+    expect(row.idempotencyKey).not.toBe(idempotencyKey('BL-A2', 'BL-A2#1', 'RUNNING->RETRYABLE'))
+  })
+
+  it('leaves the four fields it cannot observe ABSENT rather than inventing them', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+
+    const [row] = readAttempts(ledgerDir, 'BL-196')
+    // policyVersion: the daemon's routing policy carries no version.
+    // memorySnapshotHash: the backend does not know which corpus the worker read (the tick does).
+    // harnessVersion: nothing in this process observes the agent CLI's version.
+    // planHash: a task has a title and an acceptance sentence, not a plan document.
+    for (const absent of ['policyVersion', 'memorySnapshotHash', 'harnessVersion', 'planHash']) {
+      expect(Object.hasOwn(row, absent)).toBe(false)
+    }
+  })
+
+  it('a seam that does not surface the job payload writes NO stamp instead of a guessed one', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    // The pre-2026-08-05 fake: the active-job resolution answers with id and name only.
+    const { adapter: full, boss } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
+    const narrow = createPgBossQueue({
+      boss,
+      execSql: async (sql: string, params: any[]) => {
+        const res: any = await (full as any).execSql(sql, params)
+        if (!sql.includes("state = 'active'")) return res
+        return { rows: res.rows.map((r: any) => ({ id: r.id, name: r.name })) }
+      },
+      clock: c.clock,
+      expireMs: 5000,
+      ledgerDir,
+    })
+    await narrow.enqueue(backlog({ id: 'BL-NARROW' }))
+    await narrow.claimNext('w1', {})
+    await narrow.fail('BL-NARROW', 'agent_error')
+
+    const [row] = readAttempts(ledgerDir, 'BL-NARROW')
+    expect(row.failureReason).toBe('agent_error') // the row is still written, in full
+    for (const absent of ['attempt', 'idempotencyKey', 'stateMachineVersion', 'capabilityEnvelopeHash']) {
+      expect(Object.hasOwn(row, absent)).toBe(false)
+    }
   })
 })
 
