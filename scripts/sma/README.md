@@ -1245,7 +1245,7 @@ for any external wiring that still calls them — but new installs wire only `pr
 | `SMA_GATES_DISABLE=1` | skip ONLY the gates stream (also skips the HEAD-sha git probe) |
 | `SMA_PRE_BUDGET_MS=<n>` | soft time-budget (default 1500 ms); once a call exceeds it, remaining streams are SKIPPED, never overrun |
 
-**The `PRE_CHECKS` stream contract (for downstream stream authors — plans 05/09):**
+**The `PRE_CHECKS` stream contract (for anyone adding a stream to the `pre` multiplexer):**
 `lib/pre.mjs` exports an ordered array `PRE_CHECKS` of stream objects
 `{ id, tools, killSwitchEnv, mayDeny, run(ctx) -> { warns: string[], deny?: {text} } }`.
 To add a stream, append ONE object literal to that array — there is no dynamic
