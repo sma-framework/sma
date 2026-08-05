@@ -798,6 +798,24 @@ function mkNote({ description, tags, importance, body }: any) {
   ].join('\n')
 }
 
+/** A schema-v2 record: its subject is `claim`, its facets are `applies_to` + `retrieval.areas`. */
+function mkV2Note({ claim, appliesTo, areas }: any) {
+  const lines = [
+    '---',
+    'schema_version: 2',
+    'status: active',
+    'memory_type: normative',
+    `claim: "${claim}"`,
+    'language: ru',
+    `applies_to: [${(appliesTo ?? []).join(', ')}]`,
+    'observed_at: 2026-07-10',
+    'recorded_at: 2026-08-01',
+  ]
+  if (areas) lines.push('retrieval:', `  areas: [${areas.join(', ')}]`, '  hint: когда речь о версии')
+  lines.push('---', '', 'Тело записи.', '')
+  return lines.join('\n')
+}
+
 /** A distillation draft in the shape the decision miner writes: fenced, already-redacted. */
 function mkDraft({ description, situation, decision, why, kind = 'founder-decision' }: any) {
   const lines = [
@@ -882,6 +900,60 @@ describe('deriveMemory — the corpus as a SURFACE: counters and pointers, never
   it('a machine with no corpus is a normal state: {absent:true}, never an error', () => {
     expect(deriveMemory({ memoryDir: '/nowhere', fsImpl: mkFs({}).impl })).toEqual({ absent: true })
     expect(deriveMemory({})).toEqual({ absent: true }) // no dir injected at all
+  })
+
+  /**
+   * D-11-DEFER-20 — the read model predated the format it reads.
+   *
+   * A schema-v2 record states its subject in `claim` and its facets in `retrieval.areas` /
+   * `applies_to`; this derive only ever looked at the v1 `description` and `tags`. Measured on
+   * the founder's own corpus — 34 notes, `generation: v2`, nothing pending — the payload
+   * answered `tags: []` and `title: ''` for every note, and the screen rendered a count plus a
+   * column of bare file ids. His words at the live proof, about exactly this: «Нет меток».
+   *
+   * Both generations are legitimate, so both are read, v2 first.
+   */
+  it('a v2 corpus gets its claims as lines and its retrieval areas as tags (D-11-DEFER-20)', () => {
+    const fs = mkFs(
+      {
+        [`${MEM}/MEMORY.md`]: MEMORY_INDEX,
+        [`${MEM}/reference_version_law.md`]: mkV2Note({
+          claim: 'Единственный источник версии продукта — package.json.',
+          appliesTo: ['release-ritual'],
+          areas: ['os', 'release'],
+        }),
+        [`${MEM}/feedback_quality_first.md`]: mkV2Note({
+          claim: 'Качество приоритетнее дешевизны.',
+          appliesTo: ['sma-product-repo'],
+          areas: ['os'],
+        }),
+      },
+      { [`${MEM}/reference_version_law.md`]: 1000, [`${MEM}/feedback_quality_first.md`]: 2000 },
+    )
+    const memory = deriveMemory({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(memory.noteCount).toBe(2)
+    expect(memory.tags).toEqual([
+      { tag: 'os', count: 2 },
+      { tag: 'release', count: 1 },
+    ])
+    expect(memory.recent).toEqual([
+      { id: 'feedback_quality_first', title: 'Качество приоритетнее дешевизны.' },
+      { id: 'reference_version_law', title: 'Единственный источник версии продукта — package.json.' },
+    ])
+  })
+
+  it('a v2 record with no retrieval areas falls back to applies_to, and v1 notes still read', () => {
+    const fs = mkFs({
+      [`${MEM}/MEMORY.md`]: MEMORY_INDEX,
+      [`${MEM}/scoped.md`]: mkV2Note({ claim: 'Заметка без областей.', appliesTo: ['release-ritual'], areas: null }),
+      [`${MEM}/old.md`]: mkNote({ description: 'Правило релиза', tags: ['os'], importance: 4, body: '## Урок\n\nтекст\n' }),
+    })
+    const memory = deriveMemory({ memoryDir: MEM, fsImpl: fs.impl })
+    expect(memory.tags).toEqual([
+      { tag: 'os', count: 1 },
+      { tag: 'release-ritual', count: 1 },
+    ])
+    expect(memory.recent.map((n: any) => n.title).sort()).toEqual(['Заметка без областей.', 'Правило релиза'])
   })
 })
 
