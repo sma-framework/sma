@@ -11,6 +11,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseNamedArgs = parseNamedArgs;
 exports.parseMultiwordArg = parseMultiwordArg;
+exports.collectPositionals = collectPositionals;
+exports.parseNamedArgsWithPositionals = parseNamedArgsWithPositionals;
 /**
  * Extract named --flag <value> pairs from an args array.
  * Returns an object mapping flag names to their values (null if absent).
@@ -37,6 +39,68 @@ function parseNamedArgs(args, valueFlags = [], booleanFlags = []) {
         result[flag] = firstIndex.has(`--${flag}`);
     }
     return result;
+}
+/**
+ * The bare tokens of a family argv `[family, subcommand, ...rest]` — everything
+ * after the subcommand that is neither a `--flag` nor the value one consumed.
+ *
+ * `valueFlags` is what makes the second half possible: without it,
+ * `add-decision --phase 11 "text"` would offer `11` as a positional.
+ */
+function collectPositionals(args, valueFlags = []) {
+    const valueFlagTokens = new Set(valueFlags.map(flag => `--${flag}`));
+    const positionals = [];
+    for (let i = 2; i < args.length; i++) {
+        const token = args[i];
+        if (typeof token !== 'string')
+            continue;
+        if (token.startsWith('--')) {
+            // A value flag eats the next token (matching parseNamedArgs' own rule);
+            // a boolean or unknown flag eats nothing.
+            const next = args[i + 1];
+            if (valueFlagTokens.has(token) && next !== undefined && !next.startsWith('--'))
+                i += 1;
+            continue;
+        }
+        positionals.push(token);
+    }
+    return positionals;
+}
+/**
+ * parseNamedArgs, plus the POSITIONAL spelling of the same command.
+ *
+ * Several state verbs accepted only `--flag value` while the
+ * shipped executor documentation and workflows call them positionally
+ * (`state.record-metric "$PHASE" "$PLAN" "$DURATION" …`). The mismatch failed
+ * SILENTLY — `record-session "" "Completed 11-02" "None"` reported
+ * `{"recorded": true}` and dropped the text. Accepting both spellings is the
+ * non-breaking direction: every existing flag caller is untouched, and the
+ * documented positional form starts doing what it says.
+ *
+ * A FLAG ALWAYS WINS: positionals only fill slots that no flag filled, so the two
+ * spellings can be mixed (`add-decision --phase 11 "the text"`) without the parser
+ * ever having to guess which bare token belongs to which flag.
+ *
+ * `positionalOrder` names the flag each slot fills; a `null`/empty entry means "this
+ * slot exists in the documented form but is ignored", and it still consumes a token.
+ */
+function parseNamedArgsWithPositionals(args, valueFlags = [], positionalOrder = [], booleanFlags = []) {
+    const named = parseNamedArgs(args, valueFlags, booleanFlags);
+    const positionals = collectPositionals(args, valueFlags);
+    let next = 0;
+    for (const name of positionalOrder) {
+        if (next >= positionals.length)
+            break;
+        if (!name) {
+            next += 1; // reserved slot — consumed, discarded
+            continue;
+        }
+        if (named[name] !== null && named[name] !== undefined)
+            continue; // the flag spelling wins; no positional is consumed for it
+        named[name] = positionals[next];
+        next += 1;
+    }
+    return named;
 }
 /**
  * Collect all tokens after --flag until the next --flag or end of args.

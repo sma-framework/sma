@@ -138,20 +138,32 @@
  *     --phase N [--fields '{json}']
  *
  * State Progression:
- *   state advance-plan                 Increment plan counter
+ *   (record-metric / add-decision / record-session accept BOTH the flag spelling
+ *    below and the positional spelling the executor workflows print; a flag always
+ *    wins over the positional slot it would have filled.)
+ *   state advance-plan                 Increment plan counter. Requires a counter in
+ *                                      STATE.md (`Current Plan` + `Total Plans in
+ *                                      Phase`, `Plan: X of Y`, or the frontmatter
+ *                                      keys); refuses with what it searched when the
+ *                                      file tracks position some other way.
  *   state record-metric --phase N      Record execution metrics
  *     --plan M --duration Xmin
  *     [--tasks N] [--files N]
+ *     positional: state record-metric <phase> <plan> <duration> [tasks] [files]
  *   state update-progress              Recalculate progress bar
- *   state add-decision --summary "..."  Add decision to STATE.md
- *     [--phase N] [--rationale "..."]
+ *   state add-decision --decision "..." Add decision to STATE.md (--summary is the
+ *     [--phase N] [--rationale "..."]   older spelling of --decision and still works)
  *     [--summary-file path] [--rationale-file path]
+ *     positional: state add-decision <decision> [rationale]
+ *     --phase is resolved from STATE.md when omitted; the verb REFUSES rather than
+ *     writing "[Phase ?]" if it cannot be resolved.
  *   state add-blocker --text "..."     Add blocker
  *     [--text-file path]
  *   state resolve-blocker --text "..." Remove blocker
  *   state record-session               Update session continuity
  *     --stopped-at "..."
  *     [--resume-file path]
+ *     positional: state record-session "" <stopped-at> <resume-file>
  *
  * Compound Commands (workflow-specific initialization):
  *   init execute-phase <phase>         All context for execute-phase workflow

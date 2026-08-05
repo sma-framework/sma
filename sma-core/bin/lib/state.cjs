@@ -13,7 +13,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ioMod = require("./io.cjs");
-const { output, error } = ioMod;
+const { output, error, ERROR_REASON } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const configLoaderMod = require("./config-loader.cjs");
 const { loadConfig } = configLoaderMod;
@@ -440,6 +440,81 @@ function updateCurrentPositionFields(content, fields) {
     // Splice the modified body back in place of the original untrimmed span.
     return content.slice(0, posBodyStart) + posBody + content.slice(posBodyEnd);
 }
+/**
+ * The field names `advance-plan` will accept as "where this phase's plan counter
+ * lives". Kept as data, not prose, so the REFUSAL below can name exactly what was
+ * searched instead of the old dead-end "Cannot parse Current Plan": a live STATE.md
+ * that tracks position with `state record-session` carries none of these, and the
+ * old message named neither the file nor a way forward.
+ */
+const PLAN_POSITION_SOURCES = Object.freeze([
+    'body field `Current Plan:` + `Total Plans in Phase:`',
+    'body field `Plan:` in the compound form "2 of 6"',
+    'frontmatter keys `current_plan:` + `total_plans_in_phase:`',
+]);
+/**
+ * Read the phase plan position out of a STATE.md.
+ *
+ * Sources, in the order `state snapshot` already trusts them, so the two readers of
+ * the same file cannot disagree:
+ *   1. body `Current Plan` + `Total Plans in Phase`   → source 'legacy'
+ *   2. body `Plan: X of Y`                            → source 'compound'
+ *   3. frontmatter `current_plan` + `total_plans_in_phase` → source 'frontmatter'
+ *
+ * Frontmatter is a REAL shape in the wild, not a hypothetical: syncStateFrontmatter
+ * writes `current_plan` and then preserves it across body rewrites (#905), so a
+ * STATE.md can legitimately carry the counter in the frontmatter alone. This verb
+ * was the only reader that could not see it.
+ *
+ * Returns NaN/NaN with `source: null` when the file carries no counter at all.
+ */
+function readPlanPosition(content) {
+    const legacyPlan = (0, state_document_cjs_1.stateExtractField)(content, 'Current Plan');
+    const legacyTotal = (0, state_document_cjs_1.stateExtractField)(content, 'Total Plans in Phase');
+    if (legacyPlan && legacyTotal) {
+        return {
+            currentPlan: parseInt(legacyPlan, 10),
+            totalPlans: parseInt(legacyTotal, 10),
+            source: 'legacy',
+            planField: null,
+        };
+    }
+    const planField = (0, state_document_cjs_1.stateExtractField)(content, 'Plan');
+    if (planField) {
+        // Compound format: "2 of 6 in current phase" or "2 of 6"
+        const ofMatch = planField.match(/of\s+(\d+)/);
+        return {
+            currentPlan: parseInt(planField, 10),
+            totalPlans: ofMatch ? parseInt(ofMatch[1], 10) : NaN,
+            source: 'compound',
+            planField,
+        };
+    }
+    const fm = extractFrontmatter(content);
+    const fmPlan = fm['current_plan'];
+    const fmTotal = fm['total_plans_in_phase'];
+    if (fmPlan !== undefined && fmPlan !== null && fmTotal !== undefined && fmTotal !== null) {
+        return {
+            currentPlan: parseInt(String(fmPlan), 10),
+            totalPlans: parseInt(String(fmTotal), 10),
+            source: 'frontmatter',
+            planField: null,
+        };
+    }
+    return { currentPlan: NaN, totalPlans: NaN, source: null, planField: null };
+}
+/**
+ * Set one frontmatter scalar, leaving the body untouched. Used when the plan counter
+ * was READ from the frontmatter — without this the advance would report success and
+ * persist nothing (readModifyWriteStateMd's no-op guard would skip the write).
+ */
+function setStateFrontmatterKey(content, key, value) {
+    const fm = extractFrontmatter(content);
+    if (Object.keys(fm).length === 0)
+        return content;
+    fm[key] = value;
+    return `---\n${reconstructFrontmatter(fm)}\n---\n${stripFrontmatter(content)}`;
+}
 function cmdStateAdvancePlan(cwd, raw) {
     const statePath = planningPaths(cwd).state;
     if (!node_fs_1.default.existsSync(statePath)) {
@@ -449,27 +524,10 @@ function cmdStateAdvancePlan(cwd, raw) {
     const today = clock_cjs_1.realClock.today();
     let result = null;
     readModifyWriteStateMd(statePath, (content) => {
-        // Try legacy separate fields first, then compound "Plan: X of Y" format
-        const legacyPlan = (0, state_document_cjs_1.stateExtractField)(content, 'Current Plan');
-        const legacyTotal = (0, state_document_cjs_1.stateExtractField)(content, 'Total Plans in Phase');
-        const planField = (0, state_document_cjs_1.stateExtractField)(content, 'Plan');
-        let currentPlan, totalPlans;
-        let useCompoundFormat = false;
-        if (legacyPlan && legacyTotal) {
-            currentPlan = parseInt(legacyPlan, 10);
-            totalPlans = parseInt(legacyTotal, 10);
-        }
-        else if (planField) {
-            // Compound format: "2 of 6 in current phase" or "2 of 6"
-            currentPlan = parseInt(planField, 10);
-            const ofMatch = planField.match(/of\s+(\d+)/);
-            totalPlans = ofMatch ? parseInt(ofMatch[1], 10) : NaN;
-            useCompoundFormat = true;
-        }
-        else {
-            currentPlan = NaN;
-            totalPlans = NaN;
-        }
+        const position = readPlanPosition(content);
+        const { currentPlan, totalPlans, source: planSource } = position;
+        const planField = position.planField;
+        const useCompoundFormat = planSource === 'compound';
         if (isNaN(currentPlan) || isNaN(totalPlans)) {
             result = { error: true };
             return content;
@@ -494,6 +552,14 @@ function cmdStateAdvancePlan(cwd, raw) {
                 planDisplayValue = planField.replace(/^\d+/, String(newPlan));
                 content = (0, state_document_cjs_1.stateReplaceField)(content, 'Plan', planDisplayValue) || content;
             }
+            else if (planSource === 'frontmatter') {
+                // The counter lives in the frontmatter only — write it back there, or the
+                // transform would return unchanged content, readModifyWriteStateMd's
+                // no-op guard would skip the write, and this verb would report an
+                // advance that never happened.
+                planDisplayValue = `${newPlan} of ${totalPlans}`;
+                content = setStateFrontmatterKey(content, 'current_plan', String(newPlan));
+            }
             else {
                 planDisplayValue = `${newPlan} of ${totalPlans}`;
                 content = (0, state_document_cjs_1.stateReplaceField)(content, 'Current Plan', String(newPlan)) || content;
@@ -509,7 +575,19 @@ function cmdStateAdvancePlan(cwd, raw) {
         return content;
     }, cwd);
     if (!result || result['error']) {
-        output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
+        // The old text was "Cannot parse Current Plan or Total
+        // Plans in Phase from STATE.md" — it named no file, no field, and no way
+        // forward, so a STATE.md that tracks position through `state record-session`
+        // (a supported, documented layout) got a dead end instead of an answer.
+        output({
+            advanced: false,
+            error: `No plan counter in ${statePath} — nothing to advance.`,
+            state_file: statePath,
+            searched: [...PLAN_POSITION_SOURCES],
+            hint: 'This STATE.md tracks position some other way. Either record position without a counter — ' +
+                '`state record-session --stopped-at "Completed <phase>-<plan>-PLAN.md"` — or create the counter ' +
+                'first with `state begin-phase --phase <N> --plans <M>`, after which advance-plan has something to increment.',
+        }, raw, undefined);
         return;
     }
     if (result['advanced'] === false) {
@@ -527,7 +605,11 @@ function cmdStateRecordMetric(cwd, options, raw) {
     }
     const { phase, plan, duration, tasks, files } = options;
     if (!phase || !plan || !duration) {
-        output({ error: 'phase, plan, and duration required' }, raw, undefined);
+        output({
+            error: 'phase, plan, and duration required',
+            usage: 'state record-metric --phase <N> --plan <M> --duration <Xmin> [--tasks <N>] [--files <N>]  ' +
+                '(positional form, as the executor docs print it: state record-metric <phase> <plan> <duration> [tasks] [files])',
+        }, raw, undefined);
         return;
     }
     let _recorded = false;
@@ -619,6 +701,53 @@ function cmdStateUpdateProgress(cwd, raw) {
         output({ updated: false, reason: 'Progress field not found in STATE.md' }, raw, 'false');
     }
 }
+/**
+ * Resolve the phase number a decision belongs to.
+ *
+ * The verb used to write the literal `- [Phase ?]:` whenever `--phase` was omitted.
+ * Four such rows accumulated in one live decision log across three plans before
+ * anyone noticed, because the write reported `added: true` either way.
+ *
+ * Order — explicit first, then the context the repo actually carries, mirroring the
+ * precedence `state snapshot` already uses so two readers of one file agree:
+ *   1. `--phase N`                                   → 'flag'
+ *   2. STATE.md frontmatter `current_phase:`         → 'state_frontmatter'
+ *   3. STATE.md body `Current Phase:`                → 'state_body'
+ *   4. STATE.md body prose `Phase: 11 (name) — …`    → 'state_prose'
+ *   5. `.planning/phases/` holding exactly ONE phase → 'phases_dir'
+ *   6. nothing                                       → null (the caller REFUSES)
+ *
+ * Step 5 is deliberately narrow: with two or more phase directories there is no
+ * honest answer, and guessing is what produced `Phase ?`.
+ */
+function resolveDecisionPhase(cwd, content, explicitPhase) {
+    const explicit = typeof explicitPhase === 'string' ? explicitPhase.trim() : explicitPhase;
+    if (explicit)
+        return { phase: String(explicit), source: 'flag' };
+    const fm = extractFrontmatter(content);
+    const fmPhase = fm['current_phase'];
+    if (fmPhase !== undefined && fmPhase !== null && String(fmPhase).trim())
+        return { phase: String(fmPhase).trim(), source: 'state_frontmatter' };
+    const body = stripFrontmatter(content);
+    const bodyPhase = (0, state_document_cjs_1.stateExtractField)(body, 'Current Phase');
+    if (bodyPhase && bodyPhase.trim())
+        return { phase: bodyPhase.trim(), source: 'state_body' };
+    const prose = parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(body, 'Phase'));
+    if (prose.phase)
+        return { phase: prose.phase, source: 'state_prose' };
+    try {
+        const phasesDir = planningPaths(cwd).phases;
+        const dirs = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true })
+            .filter(e => e.isDirectory())
+            .map(e => extractPhaseToken(e.name))
+            .filter(token => token);
+        const unique = [...new Set(dirs)];
+        if (unique.length === 1)
+            return { phase: unique[0], source: 'phases_dir' };
+    }
+    catch { /* no phases directory — fall through to the refusal */ }
+    return { phase: null, source: null };
+}
 function cmdStateAddDecision(cwd, options, raw) {
     const statePath = planningPaths(cwd).state;
     if (!node_fs_1.default.existsSync(statePath)) {
@@ -637,10 +766,21 @@ function cmdStateAddDecision(cwd, options, raw) {
         return;
     }
     if (!summaryText) {
-        output({ error: 'summary required' }, raw, undefined);
+        output({ error: 'summary required — pass it as `--decision "…"` (alias: `--summary`), `--summary-file <path>`, or as the first positional argument' }, raw, undefined);
         return;
     }
-    const entry = `- [Phase ${phase || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
+    const resolvedPhase = resolveDecisionPhase(cwd, node_fs_1.default.readFileSync(statePath, 'utf-8'), phase);
+    if (!resolvedPhase.phase) {
+        // REFUSE rather than write `- [Phase ?]:`. A row that names no phase is worse
+        // than no row: it reads as data, sorts with the real entries, and has to be
+        // repaired by hand later.
+        error(`Cannot resolve the phase number for this decision, and "- [Phase ?]" is never written.\n` +
+            `Pass it explicitly:  state add-decision --phase <N> --decision "${summaryText.slice(0, 60)}${summaryText.length > 60 ? '…' : ''}"\n` +
+            `Looked in: ${statePath} (frontmatter current_phase, body "Current Phase", the "Phase:" line) ` +
+            `and ${planningPaths(cwd).phases} (used only when exactly one phase directory exists).`, ERROR_REASON.SDK_MISSING_ARG);
+        return;
+    }
+    const entry = `- [Phase ${resolvedPhase.phase}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
     let _added = false;
     let created = false;
     readModifyWriteStateMd(statePath, (content) => {
@@ -687,7 +827,9 @@ function cmdStateAddDecision(cwd, options, raw) {
         return content.trimEnd() + '\n' + scaffold;
     }, cwd);
     // Auto-create fallback guarantees added === true; no else branch needed.
-    const result = { added: true, decision: entry };
+    // phase_source makes the resolution auditable: a reader of the JSON can tell
+    // whether the number came from the caller or from the workspace, and which part.
+    const result = { added: true, decision: entry, phase: resolvedPhase.phase, phase_source: resolvedPhase.source };
     if (created)
         result['created'] = true;
     output(result, raw, 'true');
@@ -1595,6 +1737,14 @@ function syncStateFrontmatter(content, cwd) {
     }
     if (!derivedFm['current_plan'] && existingFm['current_plan']) {
         derivedFm['current_plan'] = existingFm['current_plan'];
+    }
+    // `total_plans_in_phase` is READ as authoritative by cmdStateSnapshot and by
+    // advance-plan's frontmatter source, but buildStateFrontmatter never derives it
+    // from the body — so without this line every write silently DROPPED it, and a
+    // counter that lived in the frontmatter survived exactly one update. Same #905
+    // rule as its sibling `current_plan` directly above.
+    if (!derivedFm['total_plans_in_phase'] && existingFm['total_plans_in_phase']) {
+        derivedFm['total_plans_in_phase'] = existingFm['total_plans_in_phase'];
     }
     // progress is a sub-object: fall back to existing only when the body+disk
     // scan produced NO progress block at all. When buildStateFrontmatter did
@@ -3014,6 +3164,12 @@ function cmdStateCompletePhase(cwd, raw, overridePhase) {
     output({ updated, phase: resolvedPhase }, raw, updated.length > 0 ? 'true' : 'false');
 }
 module.exports = {
+    // Exported for test: both are pure enough to pin without a
+    // subprocess — readPlanPosition is text-in, resolveDecisionPhase reads a
+    // directory listing at most.
+    readPlanPosition,
+    resolveDecisionPhase,
+    PLAN_POSITION_SOURCES,
     stateExtractField: state_document_cjs_1.stateExtractField,
     stateReplaceField: state_document_cjs_1.stateReplaceField,
     stateReplaceFieldWithFallback,
