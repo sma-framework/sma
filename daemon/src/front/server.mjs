@@ -551,6 +551,12 @@ async function handleTask({ res, params, config, deps }) {
     failureReason: a.failureReason ?? null,
     reasonLabel: a.failureReason ? REASON_LABELS[a.failureReason] ?? null : null,
     receipt: parseReceipt(a.receiptRef, { execGit: deps.execGit }),
+    // A row the reconciliation pass appended after the fact (D-11-DEFER-07) says so on the
+    // card too. Without this a card would show an attempt with no worker and no provider as
+    // though somebody had watched it produce nothing; the flag exists precisely so a reader
+    // never has to guess which kind of row is in front of them. Absent (never false) on
+    // every live-recorded row, exactly as it is in the ledger.
+    ...(a.reconstructed === true ? { reconstructed: true } : {}),
     // (b) of the three layers: the worker's own note rides ITS attempt, not the task
     ...(journal.approachByAttempt.has(a.attempt) ? { approachNote: journal.approachByAttempt.get(a.attempt) } : {}),
   }))

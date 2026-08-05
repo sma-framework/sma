@@ -46,8 +46,19 @@ import { join } from 'node:path'
 
 import { createPgBossQueue, TASK_QUEUE_LANES, DEAD_LETTER_QUEUE } from '../src/queue/pgboss-backend.mjs'
 import { livenessSweep } from '../src/queue/liveness.mjs'
+import { reconcileAttempts, concludedAttempts, missingAttemptNumbers } from '../src/queue/reconcile.mjs'
 import { recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
 import { applyTransition, idempotencyKey, transitionContract } from '../src/queue/state-machine.mjs'
+
+/**
+ * The ledger seam exactly as the composition root builds it (main.mjs): two closures over
+ * one directory. The reconciliation pass takes it, so the drills exercise the shape
+ * production hands it rather than a shape invented for the test.
+ */
+const mkLedger = (ledgerDir: string) => ({
+  readAttempts: (taskId: string) => readAttempts(ledgerDir, taskId),
+  recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
+})
 
 // ── temp ledger dirs (cleaned once at the end) ────────────────────────────────
 
@@ -227,6 +238,11 @@ function makeFakeBoss(store: Store, clock: () => number) {
  * backend's `list()` actually sends, so a dead-lettered job is invisible to `list()` here
  * exactly as it is in production — which is why the census below has to look for it
  * separately instead of trusting one query.
+ *
+ * The active-job resolution returns `data` and `retry_count` as well (2026-08-05), because
+ * that is what the backend's SELECT now asks for: complete/fail stamp the attempt row with
+ * the number and the lane THE QUEUE holds, and a fake that withheld the two columns would
+ * quietly test the seam's absent-value path forever instead of the real one.
  */
 function makeExecSql(store: Store, boss: { maintain: () => void }) {
   return async (sql: string, params: any[] = []) => {
@@ -236,7 +252,9 @@ function makeExecSql(store: Store, boss: { maintain: () => void }) {
       const match = [...store.jobs.values()]
         .filter((j) => j.state === 'active' && j.data && j.data.id === taskId)
         .sort((a, b) => (b.started_on ?? 0) - (a.started_on ?? 0))[0]
-      return { rows: match ? [{ id: match.id, name: match.name }] : [] }
+      return {
+        rows: match ? [{ id: match.id, name: match.name, data: match.data, retry_count: match.retry_count }] : [],
+      }
     }
     if (sql.includes('CREATE TABLE')) return { rows: [] }
     if (sql.includes('INSERT INTO')) {
@@ -339,7 +357,29 @@ describe('kill drill — a worker stops refreshing its lease', () => {
     expect(after, 'kill drill: the number of tasks accounted for after the kill must equal the number before').toBe(before)
   })
 
-  it('pg-boss\'s own lease expiry also recovers the task — but on that path the ledger records NOTHING', async () => {
+  /**
+   * THIS CASE WAS DELIBERATELY GREEN ON A HOLE, and it is now flipped (D-11-DEFER-07).
+   *
+   * Until 2026-08-05 recovery by pg-boss's OWN lease expiry — the daemon down while a
+   * worker dies — wrote no attempt row at all, because only `adapter.fail` and
+   * `adapter.complete` reach the ledger and in that path neither runs. The case below
+   * asserted that true-but-unwanted behaviour ON PURPOSE, so that the day the gap closed it
+   * would fail loudly and be flipped by hand rather than change under a silently green
+   * suite. That day is 2026-08-05: `reconcile.mjs` compares the queue's own retry count
+   * against the attempt NUMBERS the ledger holds and appends the ones nobody wrote, and
+   * `loop.mjs` runs the pass every tick right after the liveness sweep.
+   *
+   * The assertions are INVERTED, NOT DELETED. A reader comparing this file across that
+   * commit sees exactly which behaviour changed and in which direction. The drill drives the
+   * adapter rather than the tick, so it calls the pass directly — that call stands in for
+   * step (1b) of the tick, and the same seam (`mkLedger`) is the one the composition root
+   * builds.
+   *
+   * The red-before-green was taken: with the pass wired and the old `toHaveLength(0)` still
+   * in place, this case failed with «expected [ { taskId: 'BL-K9', …(5) } ] to have a
+   * length of +0 but got 1».
+   */
+  it('pg-boss\'s own lease expiry also recovers the task — and the pass reconstructs the row nobody wrote', async () => {
     const c = mkClock(1000)
     const ledgerDir = mkLedgerDir()
     const store = makeStore()
@@ -355,11 +395,28 @@ describe('kill drill — a worker stops refreshing its lease', () => {
     expect(reclaimed.id).toBe('BL-K9')
     expect(reclaimed.attempt).toBe(2) // recovered, with the retry counted
 
-    // RECORDED HOLE, not an accident: recovery by pg-boss expiry writes NO attempt row,
-    // because only `adapter.fail` / `adapter.complete` reach the ledger. So the evidence
-    // that a worker ran and died exists ONLY when the liveness sweep fires first. This
-    // assertion pins today's behaviour so a future change to it is a visible decision.
+    // Before the pass runs the ledger is still empty — the hole is real, it is just no
+    // longer permanent. This keeps the old fact visible instead of erasing it.
     expect(readAttempts(ledgerDir, 'BL-K9')).toHaveLength(0)
+
+    const summary = await reconcileAttempts({ adapter, ledger: mkLedger(ledgerDir), clock: c.clock })
+    expect(summary).toEqual({ examined: 1, reconstructed: 1 })
+
+    // The assertion the invariant always wanted, and the code now earns: an attempt that
+    // happened has a row, whichever recovery path noticed it.
+    const rows = readAttempts(ledgerDir, 'BL-K9')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].attempt).toBe(1)
+    expect(rows[0].outcome).toBe('failed')
+    expect(rows[0].failureReason).toBe('runtime_offline')
+
+    // And it says so about itself. A reconstructed row is EVIDENCE THAT AN ATTEMPT EXISTED
+    // and nothing more, so it never carries a worker, a provider or a receipt — the three
+    // things nobody was there to observe — and it is flagged so no reader has to guess.
+    expect(rows[0].reconstructed).toBe(true)
+    expect(rows[0].workerId).toBeUndefined()
+    expect(rows[0].provider).toBeUndefined()
+    expect(rows[0].receiptRef).toBeUndefined()
 
     const after = await census(adapter, store)
     expect(after, 'kill drill (queue-expiry path): the number of tasks accounted for must be unchanged').toBe(before)
@@ -569,5 +626,141 @@ describe('redelivery drill — the same effect delivered twice', () => {
 
     const after = await census(adapter, store)
     expect(after, 'redelivery drill: the number of tasks accounted for after the duplicate delivery must equal the number before').toBe(before)
+  })
+})
+
+// ═══════════════════════ DRILL 5 — THE RECONCILIATION DRILL ═══════════════════
+//
+// The pass that closed the hole the second kill-drill case used to pin (D-11-DEFER-07).
+// Everything here runs against the same fake store: no database, no tick, no wall clock.
+
+describe('reconciliation drill — the ledger caught up with the queue\'s own retry count', () => {
+  it('reconstructs ONLY the attempt nobody recorded, even when the observed one wrote two rows', async () => {
+    const c = mkClock(1000)
+    const ledgerDir = mkLedgerDir()
+    const store = makeStore()
+    // A short lease, so the queue's own expiry is what recovers the UNOBSERVED attempt.
+    const adapter = mountAdapter(store, { clock: c.clock, expireMs: 5000, ledgerDir })
+    const ledger = mkLedger(ledgerDir)
+
+    await adapter.enqueue(backlog({ id: 'BL-C1' }))
+
+    // ── attempt 1: OBSERVED. Somebody called fail(), so BOTH production writers fire — the
+    // adapter's own row inside fail(), and then the tick's richer row in failTask. That is
+    // the shape which defeats a count-based comparison, which is why it is modelled here.
+    await adapter.claimNext('w1', {})
+    await adapter.fail('BL-C1', 'runtime_offline')
+    ledger.recordAttempt({ taskId: 'BL-C1', attempt: 1, outcome: 'failed', failureReason: 'runtime_offline' })
+    expect(readAttempts(ledgerDir, 'BL-C1')).toHaveLength(2) // two rows, ONE attempt
+
+    // ── attempt 2: UNOBSERVED. The daemon is down; the lease simply expires.
+    const second = await adapter.claimNext('w2', {})
+    expect(second.attempt).toBe(2)
+    c.advance(6000)
+    const third = await adapter.claimNext('w3', {})
+    expect(third.attempt).toBe(3)
+
+    const summary = await reconcileAttempts({ adapter, ledger, clock: c.clock })
+    expect(summary.reconstructed).toBe(1)
+
+    const rows = readAttempts(ledgerDir, 'BL-C1')
+    const reconstructed = rows.filter((r: any) => r.reconstructed === true)
+    expect(reconstructed).toHaveLength(1)
+    expect(reconstructed[0].attempt).toBe(2) // the number nobody claimed, and only that one
+    // Attempt 1's two live rows are untouched: the pass appends, it never edits or dedupes.
+    expect(rows.filter((r: any) => r.attempt === 1)).toHaveLength(2)
+    expect(rows.filter((r: any) => r.attempt === 1).every((r: any) => r.reconstructed === undefined)).toBe(true)
+  })
+
+  it('is a no-op on a second run — the tick may call it as often as it likes', async () => {
+    const c = mkClock(1000)
+    const ledgerDir = mkLedgerDir()
+    const store = makeStore()
+    const adapter = mountAdapter(store, { clock: c.clock, expireMs: 5000, ledgerDir })
+    const ledger = mkLedger(ledgerDir)
+
+    await adapter.enqueue(backlog({ id: 'BL-C2' }))
+    await adapter.claimNext('w1', {})
+    c.advance(6000)
+    await adapter.claimNext('w2', {})
+
+    const first = await reconcileAttempts({ adapter, ledger, clock: c.clock })
+    expect(first.reconstructed).toBe(1)
+    const afterFirst = readAttempts(ledgerDir, 'BL-C2')
+
+    const second = await reconcileAttempts({ adapter, ledger, clock: c.clock })
+    expect(second.reconstructed).toBe(0)
+    expect(readAttempts(ledgerDir, 'BL-C2')).toEqual(afterFirst)
+  })
+
+  it('leaves a task that never retried alone, and never touches its ledger file', async () => {
+    const c = mkClock(1000)
+    const ledgerDir = mkLedgerDir()
+    const store = makeStore()
+    const adapter = mountAdapter(store, { clock: c.clock, expireMs: 600000, ledgerDir })
+
+    await adapter.enqueue(backlog({ id: 'BL-C3' }))
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-C3', { receiptRef: 'reverify:green', workerId: 'w1' })
+
+    const before = readAttempts(ledgerDir, 'BL-C3')
+    const summary = await reconcileAttempts({ adapter, ledger: mkLedger(ledgerDir), clock: c.clock })
+    expect(summary).toEqual({ examined: 0, reconstructed: 0 })
+    expect(readAttempts(ledgerDir, 'BL-C3')).toEqual(before)
+  })
+
+  it('stays silent on a task whose ledger holds a row it cannot place', async () => {
+    const c = mkClock(1000)
+    const ledgerDir = mkLedgerDir()
+    const store = makeStore()
+    const adapter = mountAdapter(store, { clock: c.clock, expireMs: 5000, ledgerDir })
+
+    await adapter.enqueue(backlog({ id: 'BL-C4' }))
+    await adapter.claimNext('w1', {})
+    c.advance(6000)
+    await adapter.claimNext('w2', {}) // attempt 2 — one attempt has concluded unobserved
+
+    // A row from before the attempt number was recorded on it. It stands for SOME attempt,
+    // and nothing says which — so reconstructing beside it could duplicate that very one.
+    recordAttempt(ledgerDir, { taskId: 'BL-C4', outcome: 'failed', failureReason: 'agent_error' })
+
+    const summary = await reconcileAttempts({ adapter, ledger: mkLedger(ledgerDir), clock: c.clock })
+    expect(summary).toEqual({ examined: 1, reconstructed: 0 })
+    expect(readAttempts(ledgerDir, 'BL-C4').filter((r: any) => r.reconstructed)).toHaveLength(0)
+  })
+
+  it('a ledger seam that is not wired makes the pass a no-op rather than an error', async () => {
+    const c = mkClock(1000)
+    const store = makeStore()
+    const adapter = mountAdapter(store, { clock: c.clock, expireMs: 5000 })
+    await adapter.enqueue(backlog({ id: 'BL-C5' }))
+    await adapter.claimNext('w1', {})
+    c.advance(6000)
+    await adapter.claimNext('w2', {})
+
+    await expect(reconcileAttempts({ adapter, clock: c.clock })).resolves.toEqual({ examined: 0, reconstructed: 0 })
+    // A read-only ledger (no write door) is the same answer — nowhere to write is not an error.
+    await expect(
+      reconcileAttempts({ adapter, ledger: { readAttempts: () => [] } as any, clock: c.clock }),
+    ).resolves.toEqual({ examined: 0, reconstructed: 0 })
+  })
+
+  it('the arithmetic, stated directly: what the queue says has concluded, and which numbers are owed', () => {
+    // A task that never retried is not this pass's business, terminal or not.
+    expect(concludedAttempts({ attempt: 1, status: 'queued' })).toBe(0)
+    expect(concludedAttempts({ attempt: 1, status: 'completed' })).toBe(0)
+    // In flight on attempt 3 → two concluded. Terminal on attempt 3 → three.
+    expect(concludedAttempts({ attempt: 3, status: 'claimed' })).toBe(2)
+    expect(concludedAttempts({ attempt: 3, status: 'failed' })).toBe(3)
+    // Unreadable is never an accusation that a row is missing.
+    expect(concludedAttempts({ status: 'queued' } as any)).toBe(0)
+    expect(concludedAttempts(undefined as any)).toBe(0)
+
+    // Duplicate rows for one attempt do not hide a missing number — the whole point.
+    expect(missingAttemptNumbers([{ attempt: 1 }, { attempt: 1 }], 2)).toEqual([2])
+    expect(missingAttemptNumbers([{ attempt: 1 }, { attempt: 2 }], 2)).toEqual([])
+    expect(missingAttemptNumbers([], 3)).toEqual([1, 2, 3])
+    // One unplaceable row silences the whole task.
+    expect(missingAttemptNumbers([{ outcome: 'failed' }], 2)).toBeNull()
   })
 })
