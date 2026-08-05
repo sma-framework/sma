@@ -16,6 +16,20 @@
  *     listing top-cited notes and repeated incident classes.
  *   - Test 5: propose() performs ZERO disk writes — the fixture tree is
  *     byte-identical before/after AND the module source imports no write API.
+ *
+ * 11-POST (D-11-DEFER-11 / D-11-DEFER-12) — the detector was measured, not read,
+ * and both halves of what the measurement found are pinned here:
+ *
+ *   - Test 6: the kind gate admits the kinds schema v2 actually produces. The
+ *     shipped set was {decision, status} while the live corpus holds ZERO records
+ *     of either kind — the candidate set was empty BEFORE the first claim was
+ *     ever compared, so `[]` meant "the detector did not look", not "the corpus
+ *     is clean". Test 6b pins that the gate still EXISTS: widening is not removal.
+ *   - Test 7: the polarity vocabulary answers Russian. Every marker shipped was
+ *     English on a corpus whose normative records are Russian, so `polarity()`
+ *     returned null for claims that plainly state an obligation or a prohibition.
+ *   - Test 7b: the honest limit, stated rather than papered over — a pair opposed
+ *     by VERB ANTONYMY is still not detected, and no marker list reaches it.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -32,7 +46,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { propose, digest, findContradictions } from '../lib/consolidate.mjs'
+import { propose, digest, findContradictions, detectClaimConflict } from '../lib/consolidate.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -49,6 +63,8 @@ const TAGS_MD = `# TAGS — closed faceted vocabulary (fixture)
 - status — a point-in-time status snapshot.
 - episodic — a single-event record (promotion candidate).
 - procedural-rule — a durable how-to rule.
+- normative — a standing rule the project is held to.
+- semantic — a durable fact.
 - reference — a lookup fact.
 
 ## phase
@@ -315,6 +331,108 @@ describe('consolidate.mjs — propose() contradiction detection (9.1-12 test 3)'
 
   it('findContradictions is exported (single shared implementation for lint MEM-CONTRADICT)', () => {
     expect(typeof findContradictions).toBe('function')
+  })
+})
+
+describe('consolidate.mjs — the kind gate admits what schema v2 produces (D-11-DEFER-11)', () => {
+  it('Test 6: two procedural-rule notes with opposing claims → CONTRADICT (the shipped gate saw neither)', () => {
+    // MEASURED, not assumed: the live corpus's kind histogram through the
+    // product's own projectNoteAxis is {bug-lesson, normative, prospective,
+    // preference, procedural-rule, semantic} — not one `decision`, not one
+    // `status`. Under the shipped set this pair was filtered out before
+    // detectClaimConflict was ever called, and the empty result read as clean.
+    note(corpusDir, 'rule_cache_on.md', {
+      description: 'Always enable the shared build cache for release pipelines.',
+      kind: 'procedural-rule',
+      tags: ['tech'],
+      'use-when': 'configuring release pipelines',
+      importance: 6,
+    })
+    note(corpusDir, 'rule_cache_off.md', {
+      description: 'Never enable the shared build cache for release pipelines.',
+      kind: 'procedural-rule',
+      tags: ['tech'],
+      'use-when': 'configuring release pipelines',
+      importance: 6,
+    })
+
+    const res = propose(opts())
+    const pair = res.contradictions.find((c: { files: string[] }) => c.files.includes('rule_cache_on.md'))
+    expect(pair).toBeDefined()
+    expect(pair.files).toContain('rule_cache_off.md')
+    expect(pair.kind).toBe('procedural-rule')
+    expect(pair.reason).toBe('opposing polarity markers')
+  })
+
+  it('Test 6b: the gate still EXISTS — a semantic pair with the same claims is NOT a contradiction', () => {
+    // Widening is not removal. A durable fact stated two ways is a MERGE
+    // question (findMerges owns subject overlap); a detector that fired on every
+    // kind would be the untuned-to-green failure T-11-10-02 names.
+    note(corpusDir, 'fact_cache_on.md', {
+      description: 'Always enable the shared build cache for release pipelines.',
+      kind: 'semantic',
+      tags: ['tech'],
+      'use-when': 'configuring release pipelines',
+      importance: 6,
+    })
+    note(corpusDir, 'fact_cache_off.md', {
+      description: 'Never enable the shared build cache for release pipelines.',
+      kind: 'semantic',
+      tags: ['tech'],
+      'use-when': 'configuring release pipelines',
+      importance: 6,
+    })
+
+    expect(propose(opts()).contradictions).toHaveLength(0)
+  })
+})
+
+describe('consolidate.mjs — polarity answers Russian (D-11-DEFER-12)', () => {
+  it('Test 7: two Russian normative notes, one obliging and one forbidding → CONTRADICT', () => {
+    // The live corpus holds twelve `normative` records and every one of them is
+    // written in Russian. With an English-only marker list both halves scored
+    // `null`, so `opposing` could never be true — the channel was dead code on
+    // the only language the corpus speaks.
+    note(corpusDir, 'norm_readme_always.md', {
+      description: 'Всегда обновляй README продукта при каждом обновлении версии.',
+      kind: 'normative',
+      tags: ['memory'],
+      'use-when': 'при выпуске версии',
+      importance: 7,
+    })
+    note(corpusDir, 'norm_readme_never.md', {
+      description: 'Никогда не обновляй README продукта при каждом обновлении версии.',
+      kind: 'normative',
+      tags: ['memory'],
+      'use-when': 'при выпуске версии',
+      importance: 7,
+    })
+
+    const res = propose(opts())
+    const pair = res.contradictions.find((c: { files: string[] }) => c.files.includes('norm_readme_always.md'))
+    expect(pair).toBeDefined()
+    expect(pair.files).toContain('norm_readme_never.md')
+    expect(pair.kind).toBe('normative')
+    expect(pair.reason).toBe('opposing polarity markers')
+    // The shared subject is read in Russian too — the tokenizer already keeps
+    // Cyrillic, it was only the polarity list that was monolingual.
+    expect(pair.shared).toContain('readme')
+    expect(pair.shared.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('Test 7b: the honest limit — a pair opposed by VERB ANTONYMY is still not detected', () => {
+    // Both halves of the real poisoned pair contain «не», so both score `neg`
+    // and nothing opposes. The opposition is «снимок остаётся на месте» versus
+    // «удалите ночной снимок» — verb antonymy, which no marker list reaches.
+    // This test exists so the limit is PINNED rather than discovered later as a
+    // surprise: the goal of the Russian markers is a detector that is honest
+    // about Russian, NOT one that catches this pair.
+    const keepTheSnapshot =
+      'Восстановление хранилища идёт только из ночного снимка; снимок остаётся на месте и удаляется не раньше следующего успешного снимка.'
+    const deleteTheSnapshot =
+      'Перед восстановлением освободите место — удалите ночной снимок, иначе на диске не хватит места.'
+
+    expect(detectClaimConflict(keepTheSnapshot, deleteTheSnapshot)).toBeNull()
   })
 })
 

@@ -15,6 +15,13 @@
  * update two functions. A surface omitted from the list is a surface nobody will
  * ever check, which is the failure mode this shape exists to prevent.
  *
+ * THE EPISODE ARCHIVE IS NOT A SURFACE, AND THAT IS SAID OUT LOUD. `episodes/`
+ * is deliberately absent from the list — an episode records what happened, not
+ * what is true, and erasing history is a larger promise than the one that was
+ * approved. Where an episode SHARES the record's id, the copy it would keep is
+ * unnamed by every surface, so this operation REFUSES rather than completing an
+ * erase it cannot honestly call complete (D-11-DEFER-15).
+ *
  * VERIFICATION READS THE DISK. Nothing here concludes a copy is gone because the
  * code that removed it returned without throwing. Each surface reports survivors
  * by reading itself back, and a surviving copy is a FAILURE naming the surface —
@@ -90,6 +97,41 @@ const DEFAULT_TERMINAL = 'memory-erase'
 
 /** The deterministic anchor for an index rebuilt with no commit to stamp it with. */
 const EPOCH_COMMIT = '0000000'
+
+/**
+ * THE EPISODE COLLISION — a refusal, not a seventh surface (D-11-DEFER-15).
+ *
+ * `ERASE_SURFACES` does not include `episodes/`, and that follows the decision
+ * behind this command (D-11-05): it clears the ACTIVE corpus, the working tree
+ * and every derived index, while an episode is a different asset class — «what
+ * happened» rather than «what is true». The question normally cannot arise,
+ * because the extracted claim is written as `<stem>-claim` while the episode
+ * keeps `<stem>`.
+ *
+ * Nothing in the id law FORBIDS the collision. On one, erasing the record would
+ * leave `episodes/<id>.md` holding a copy of the same content that no surface
+ * reports — a copy surviving a "physical removal" without being named, which is
+ * exactly the disclosure this module exists to prevent.
+ *
+ * Two answers were possible and only one was approved. Erasing the episode too
+ * is a STRICTLY LARGER promise than the one that was decided — an erase that can
+ * destroy history — and this module does not widen its own scope. So the smaller
+ * promise ships: erase DECLINES while the collision exists, names the file, and
+ * the operator decides what happens to the history. Fail-closed: nothing is
+ * removed, nothing is rebuilt, and the refusal is stated before any surface is
+ * touched rather than reported after a partial run.
+ */
+function episodeCollisionPath(ctx) {
+  if (ctx.id === '' || !ctx.episodesDir) return null
+  const path = join(ctx.episodesDir, `${ctx.id}.md`)
+  try {
+    return ctx.fs.existsSync(path) ? path : null
+  } catch {
+    // AN UNREADABLE EPISODE ARCHIVE IS NOT AN EMPTY ONE. A destructive operation
+    // that cannot see the archive cannot claim there is no copy in it.
+    return path
+  }
+}
 
 /**
  * The one thing this operation cannot do, said in the refusal constant's own
@@ -667,6 +709,23 @@ export function eraseRecord(input = {}) {
   }
   if (ctx.corpusDir === '') {
     return { ...base, refusal: `erase "${ctx.id}": no corpusDir was given, and the surfaces a copy can live on are all resolved from it` }
+  }
+
+  // BEFORE ANY SURFACE IS TOUCHED — the episode collision (see the constant
+  // above): an episode sharing this id would hold a copy of the erased content
+  // that no surface reports, so the operation declines and names it instead of
+  // completing a removal it cannot honestly call complete.
+  const episodePath = episodeCollisionPath(ctx)
+  if (episodePath) {
+    return {
+      ...base,
+      refusal:
+        `erase "${ctx.id}" did NOT run: an episode shares this id — ${episodePath}. The episode archive is not a ` +
+        `surface this command clears (it records what HAPPENED, not what is true), so erasing the record would ` +
+        `leave that file holding a copy of the same content with nothing naming it. Nothing was removed. Decide ` +
+        `what happens to the history first — keep it and erase under a different id, or remove the episode ` +
+        `yourself — then run this again.`,
+    }
   }
 
   const { found, frontmatter } = locate(ctx)
