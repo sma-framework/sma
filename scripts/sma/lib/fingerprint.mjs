@@ -29,10 +29,17 @@
  * file/scope inside B's fingerprint.
  *
  * TWO AXES, NEVER CONFLATED (B16, D-9.3-22f): `fpStatus` (working|waiting-for-human|idle)
- * is the fingerprint's ATTENTION axis — what the agent SAYS it is doing. Liveness is the
- * lease's renewTime freshness ONLY — pid is NEVER consulted (pid is stale across Claude
- * restarts). The lease already carries a work-axis `status`; `fpStatus` sits alongside it
- * without conflation.
+ * is the fingerprint's ATTENTION axis — what the agent SAYS it is doing. The lease already
+ * carries a work-axis `status`; `fpStatus` sits alongside it without conflation.
+ *
+ * LIVENESS IS NOT DECIDED HERE (SB-041). It is registry.isSessionLive — the SAME predicate
+ * `sma status` counts with. This module used to carry its own renewTime-only copy of the
+ * rule («pid is NEVER consulted»), which was right for a NAMED window (whose pid goes
+ * stale across Claude restarts while the window lives on) and wrong for the `T-<pid>`
+ * leases every one-shot CLI process leaves behind: those keep a young renewTime for 45
+ * minutes after the command exited, so the hook printed 20–80 «working» terminals while
+ * `status` printed 1. Two counters answering one question is how a signal becomes noise
+ * agents learn to ignore. There is now one function and two callers.
  *
  * FAIL-OPEN EVERYWHERE (substrate law C9): every function degrades to a safe default on
  * any error; nothing throws. A coordination bug can NEVER wedge a session.
@@ -41,7 +48,7 @@
  * .sma/, never shell out for attribution, never spend a token. Zero npm deps.
  */
 
-import { classifyStaleness } from './registry.mjs'
+import { isSessionLive } from './registry.mjs'
 import { normalizePath, compileGlob } from './collision.mjs'
 import { appendEvent, journalTail } from './journal.mjs'
 import { FINGERPRINT_FILES_WINDOW_MS, FINGERPRINT_FILES_MAX, AMBIENT_DIGEST_MS } from './constants.mjs'
@@ -120,16 +127,11 @@ export function buildFingerprint(opts = {}) {
   }
 }
 
-/** True when a session is LIVE (renewTime-only liveness: fresh OR attention). pid is
- * NEVER consulted (D-9.3-22f). Injectable classify for tests. */
+/** True when a session is LIVE. NOT a local rule: it delegates to registry.isSessionLive
+ * — the ONE activity classification `sma status` also asks (SB-041). Injectable classify
+ * for tests, forwarded unchanged. */
 function isLive(session, now, classify) {
-  const cl = classify ?? classifyStaleness
-  try {
-    const st = cl(session, { now }).state
-    return st === 'fresh' || st === 'attention'
-  } catch {
-    return false
-  }
+  return isSessionLive(session, { now, classify })
 }
 
 /** Compact one-line digest of a fingerprint/lease (status · intent-or-phase · id). Pure,

@@ -35,6 +35,8 @@ import {
   hasSnapshotReceiver,
   isPidAlive,
   isDeadPidLease,
+  sessionActivityTier,
+  isSessionLive,
 } from '../lib/registry.mjs'
 import { appendEvent, journalTail } from '../lib/journal.mjs'
 import {
@@ -570,6 +572,37 @@ describe('dead-pid leases — a gone terminal is reap-clean, dirty scope or not'
     expect(res.reaped).toContain('T-4242')
     expect(remaining).toContain('named.json') // dirty + named -> needs-human, never auto-deleted
     expect(remaining).not.toContain('dead.json')
+  })
+
+  // SB-041: the two gates above, ANDed once and exported once, so `status` and the
+  // PreToolUse hook can never answer «who is working» differently again.
+  describe('sessionActivityTier / isSessionLive — the ONE activity predicate', () => {
+    it('a YOUNG dead-pid lease is fresh by age but NOT live (the divergence, closed)', () => {
+      const young = lease('T-4242', 1000)
+      expect(classifyStaleness(young, { now, killFn: DEAD }).state).toBe('fresh')
+      expect(sessionActivityTier(young, { now, killFn: DEAD })).toBe('stale')
+      expect(isSessionLive(young, { now, killFn: DEAD })).toBe(false)
+    })
+
+    it('the SAME lease with a live pid keeps its tier — the gate is the pid, not the shape', () => {
+      expect(sessionActivityTier(lease('T-4242', 1000), { now, killFn: ALIVE })).toBe('fresh')
+      const attentionAge = ATTENTION_AFTER_MISSES * HEARTBEAT_INTERVAL_MS + 1000
+      expect(sessionActivityTier(lease('T-4242', attentionAge), { now, killFn: ALIVE })).toBe('attention')
+    })
+
+    it('a NAMED window is never demoted by a dead pid (its pid field goes stale by design)', () => {
+      expect(sessionActivityTier(lease('Мозг', 1000), { now, killFn: DEAD })).toBe('fresh')
+      expect(isSessionLive(lease('Мозг', 1000), { now, killFn: DEAD })).toBe(true)
+    })
+
+    it('aged-out leases are stale, and a throwing classify fails CLOSED (never «working»)', () => {
+      expect(sessionActivityTier(lease('Мозг', staleAge), { now })).toBe('stale')
+      const boom = () => {
+        throw new Error('classify exploded')
+      }
+      expect(sessionActivityTier(lease('Мозг', 1000), { now, classify: boom })).toBe('stale')
+      expect(isSessionLive(null as any, { now })).toBe(false)
+    })
   })
 })
 

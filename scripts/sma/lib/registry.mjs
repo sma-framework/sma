@@ -492,6 +492,53 @@ export function classifyStaleness(session, opts = {}) {
 }
 
 /**
+ * sessionActivityTier(session, {now, classify, killFn}) → 'fresh' | 'attention' | 'stale'
+ * — THE ONE activity classification. Every path that answers «is this terminal working
+ * right now» (the `status` count, the PreToolUse hook's fingerprint digest, the collision
+ * detector's hot-file advisory) goes through HERE. It is deliberately a tier, not a
+ * boolean, so the one caller that needs the hard-busy tier alone can have it without
+ * forking a second rule.
+ *
+ * TWO gates, ANDed (SB-041). renewTime freshness is the first (classifyStaleness); the
+ * dead-pid-lease rule is the second. The second one is what the divergence was about: a
+ * `T-<pid>` lease is written by EVERY one-shot CLI process (`sma claim`, `sma status`…)
+ * and keeps a YOUNG renewTime for the full 45-minute window after that process exited, so
+ * a renewTime-only reading counts each dead command as a separate live terminal. `status`
+ * learned this in SB-021 and the hook did not — for one afternoon the hook printed 20–80
+ * «working» terminals while `status` honestly printed 1. A signal that inflated teaches
+ * agents to ignore it, so the rule lives in ONE function with no parallel copy.
+ *
+ * Fail-closed on error (a lease we cannot classify is NOT reported as working) — which is
+ * still fail-open for the caller: nothing throws, nothing wedges.
+ * @param {Object} session
+ * @param {{now?:number, classify?:Function, killFn?:Function, scopeMtimeProbe?:Function}} [opts]
+ * @returns {'fresh'|'attention'|'stale'}
+ */
+export function sessionActivityTier(session, opts = {}) {
+  try {
+    const classify = typeof opts.classify === 'function' ? opts.classify : classifyStaleness
+    const now = opts.now ?? Date.now()
+    const state = classify(session, { now, scopeMtimeProbe: opts.scopeMtimeProbe, killFn: opts.killFn }).state
+    if (state !== 'fresh' && state !== 'attention') return 'stale'
+    return isDeadPidLease(session, opts) ? 'stale' : state
+  } catch {
+    return 'stale'
+  }
+}
+
+/**
+ * isSessionLive(session, {now, classify, killFn}) — the boolean face of
+ * sessionActivityTier: true when the lease can still be doing work. The predicate the
+ * hook, the collision detector and `status` share. Never throws.
+ * @param {Object} session
+ * @param {{now?:number, classify?:Function, killFn?:Function, scopeMtimeProbe?:Function}} [opts]
+ * @returns {boolean}
+ */
+export function isSessionLive(session, opts = {}) {
+  return sessionActivityTier(session, opts) !== 'stale'
+}
+
+/**
  * reapStale({sessionsDir, now, dryRun, scopeMtimeProbe}) — the ONLY code path that
  * removes a session file, and only for entries classifyStaleness rates 'reap-clean'.
  * Dirty / fresh / attention entries are left untouched (P3). Returns the reaped
