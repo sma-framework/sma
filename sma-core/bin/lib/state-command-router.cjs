@@ -90,7 +90,10 @@ function routeStateCommand({ state, args, cwd, raw, error }) {
             },
             'advance-plan': () => state.cmdStateAdvancePlan(cwd, raw),
             'record-metric': () => {
-                const a = (0, command_arg_projection_cjs_1.parseNamedArgs)(args, ['phase', 'plan', 'duration', 'tasks', 'files']);
+                // Both spellings are accepted. The positional order is the one
+                // the executor documentation prints:
+                //   state.record-metric "$PHASE" "$PLAN" "$DURATION" "$TASKS" "$FILES"
+                const a = (0, command_arg_projection_cjs_1.parseNamedArgsWithPositionals)(args, ['phase', 'plan', 'duration', 'tasks', 'files'], ['phase', 'plan', 'duration', 'tasks', 'files']);
                 state.cmdStateRecordMetric(cwd, {
                     phase: strArg(a, 'phase'),
                     plan: strArg(a, 'plan'),
@@ -101,10 +104,13 @@ function routeStateCommand({ state, args, cwd, raw, error }) {
             },
             'update-progress': () => state.cmdStateUpdateProgress(cwd, raw),
             'add-decision': () => {
-                const a = (0, command_arg_projection_cjs_1.parseNamedArgs)(args, ['phase', 'summary', 'summary-file', 'rationale', 'rationale-file']);
+                // `--decision` is the flag the verb's NAME implies;
+                // `--summary` keeps working, and the documented positional form
+                // `state.add-decision "<text>"` now lands on the same field.
+                const a = (0, command_arg_projection_cjs_1.parseNamedArgsWithPositionals)(args, ['phase', 'summary', 'decision', 'summary-file', 'rationale', 'rationale-file'], ['summary', 'rationale']);
                 state.cmdStateAddDecision(cwd, {
                     phase: strArg(a, 'phase'),
-                    summary: strArg(a, 'summary'),
+                    summary: strArg(a, 'summary') ?? strArg(a, 'decision'),
                     summary_file: strArg(a, 'summary-file'),
                     rationale: strArg(a, 'rationale') || '',
                     rationale_file: strArg(a, 'rationale-file'),
@@ -128,6 +134,24 @@ function routeStateCommand({ state, args, cwd, raw, error }) {
             'resolve-blocker': () => state.cmdStateResolveBlocker(cwd, strArg((0, command_arg_projection_cjs_1.parseNamedArgs)(args, ['text']), 'text'), raw),
             'record-session': () => {
                 const a = (0, command_arg_projection_cjs_1.parseNamedArgs)(args, ['stopped-at', 'resume-file']);
+                if (a['stopped-at'] === null && a['resume-file'] === null) {
+                    // Positional spelling. Every documented call —
+                    // sma-executor.md, forensics.md, milestone-summary.md — writes
+                    //   state.record-session "" "<stopped-at>" "<resume-file>"
+                    // where slot 0 is a legacy timestamp the handler always overwrites with
+                    // `now`. Three-or-more slots therefore drop slot 0; a shorter call drops a
+                    // leading empty slot and reads left to right. Before this, all three
+                    // documented calls reported {"recorded": true} and silently discarded the
+                    // text they were given.
+                    const positionals = (0, command_arg_projection_cjs_1.collectPositionals)(args, ['stopped-at', 'resume-file']);
+                    const slots = positionals.length >= 3
+                        ? positionals.slice(1)
+                        : (positionals[0] === '' ? positionals.slice(1) : positionals);
+                    if (slots[0])
+                        a['stopped-at'] = slots[0];
+                    if (slots[1] !== undefined)
+                        a['resume-file'] = slots[1];
+                }
                 // Pass resume_file as-is (undefined when --resume-file was not provided) so
                 // cmdStateRecordSession can distinguish "caller explicitly passed a value" from
                 // "option was not supplied" and apply the template-default-only replacement guard.
