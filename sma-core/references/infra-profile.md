@@ -100,12 +100,12 @@ the user AT THAT MOMENT and offers to save the answer back into the profile.
 | `workflows/ship.md` | `releaseRitual` (tagPattern, fullGateCommand, ciWatchCommand), `autoDeployBranch`, `pushTarget`, `envVarNames` (ship preflight) | Ask the user for the missing piece, offer to save it into `.sma/profile.json`. Never substitute another project's ritual. |
 | `next-slot` (`scripts/sma/lib/slots.mjs` via `node scripts/sma/cli.mjs next-slot`) | `sharedCounters` — which counters are coordination-worthy in this project | Counter not listed = no slot coordination claimed for it; ask before assuming a counter is shared. |
 | Push-safety gates (pre-push hooks, push-claim checks) | `autoDeployBranch` (a push to it is a deploy), `releaseRitual.fullGateCommand` | Ask; a gate never invents a command to run. |
-| `sma emit` headers + planner context (9.3-04/05) | `stack` (languages, frameworks, packageManager) | Omit the stack header; the planner asks when it matters. |
+| `sma emit` headers + planner context | `stack` (languages, frameworks, packageManager) | Omit the stack header; the planner asks when it matters. |
 | Executor targeted-test rule + ship full gate | `testRunner.targetedCommand` (per-edit), `testRunner.fullSuiteCommand` / `typeCheckCommand` (push gate) | Ask for the command; never invent a test invocation. |
-| Statusline segment + collision messaging (9.3-07) | `parallelTerminals` (typicalCount, splitHabit) | Segment renders a neutral count; no assumption about split habit. |
+| Statusline segment + collision messaging | `parallelTerminals` (typicalCount, splitHabit) | Segment renders a neutral count; no assumption about split habit. |
 | gates/reflex verbosity + self-tuning ladder | `riskTolerance` | Default to the balanced presentation; ask before assuming a posture. |
 | gates-check PreToolUse warn patterns | `dangerCommands` — match patterns only, NEVER executed | No extra warn patterns; the built-in safety invariants still fire. |
-| Context-compiler pack header (9.3-05) | `workingStyle` (sessionRhythm, tddPreference, reviewHabit) | Omit the working-style header. |
+| Context-compiler pack header | `workingStyle` (sessionRhythm, tddPreference, reviewHabit) | Omit the working-style header. |
 | Reflex surface (seeded notes) | `machineLessons` — seeded as memory notes at onboarding | No machine-specific reflex; nothing assumed. |
 
 The one non-negotiable rule for all consumers: **fallback is ask-the-user, never a
