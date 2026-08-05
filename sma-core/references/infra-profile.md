@@ -20,7 +20,7 @@ The profile lives in TWO synchronized forms:
 
 ## Schema v2 (`.sma/profile.json`)
 
-Schema v2 (D-9.3-04) keeps EVERY v1 field and v1 law intact and ADDS a fuller working
+Schema v2 is additive by decision: it keeps EVERY v1 field and v1 law intact and ADDS a fuller working
 profile — stack, test commands, parallel-terminal habits, risk posture, danger-command
 patterns, working style, machine lessons, and env-var NAMES. A v1 profile (no
 `profileVersion`) is upgraded to the v2 shape IN MEMORY by the reader (`normalizeProfile`)
@@ -118,7 +118,7 @@ a lint failure (PROFILE-DEADFIELD) — a field nobody reads is the "700-line rul
 failure in miniature (adoption scorecard metric 5). This table and `PROFILE_CONSUMERS`
 must stay in agreement: adding a field here without a consumer entry there fails lint.
 
-## Privacy boundary (T-9.3-06)
+## Privacy boundary (names and facts, never a secret value)
 
 The profile stores **env-var NAMES and tool FACTS only — never a secret VALUE.** A name
 (`STRIPE_SECRET_KEY`, `DATABASE_URL`) is a fact about which variables the project uses; a
@@ -131,7 +131,7 @@ NAMES (uppercase-with-underscores allowed), so the literal name `STRIPE_SECRET_K
 passes while a value never would. A secret-shaped value is a rejection (PROFILE-SECRET),
 not a warning; the onboarding workflow never echoes a value into the profile.
 
-## Safety boundary (T-9.1-09)
+## Safety boundary (a user-supplied command is shown before it runs)
 
 The profile supplies COMMAND STRINGS (`fullGateCommand`, `ciWatchCommand`) that the
 user themselves configured for their own repository. Consumers must:

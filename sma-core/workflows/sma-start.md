@@ -6,25 +6,25 @@ produces: PROJECT.md, ROADMAP.md, TAGS.md, starter CORE notes, .sma/profile.json
 consumes:
 -->
 <purpose>
-First-run onboarding for SMA (FI-2 + FI-3), rebuilt for V3.5 as a STAGED, TEACHING
-conversation (D-9.3-03/04/05). Not a scaffolding script and not one front-loaded
+First-run onboarding for SMA, rebuilt for V3.5 as a STAGED, TEACHING
+conversation. Not a scaffolding script and not one front-loaded
 lecture: the workflow TEACHES how SMA works and WHY the process matters — five
 deterministic modules delivered at the moment each becomes relevant — while it learns a
 FULL working profile (schema v2) and seeds the starter memory corpus. The founder's ask,
-verbatim: «Give people as much intro as possible» (D-9.3-03) — adoption is decided in the
+verbatim: «Give people as much intro as possible» — adoption is decided in the
 first ten minutes.
 
 The teaching CONTENT is versioned in `references/onboarding-teaching.md` (five modules,
 each with one before/after example and a one-line recap); THIS workflow only STAGES it —
 a `> TEACH(<module-id>)` marker fires each module immediately before the stage it makes
-meaningful, never all at once (D-9.3-05). The end product includes a deterministic recap
+meaningful, never all at once. The end product includes a deterministic recap
 artifact (`.sma/onboarding-recap.md`).
 
 Supersedes bare `new-project.md` as the entry point for a fresh install: the file-writing
 mechanics are reused from there; the interaction model is this conversation. Every V2
 mechanic (PROJECT/ROADMAP seed, TAGS.md grammar, MEM-SCHEMA note frontmatter, the
 lint-clean law, the profile write + mirror notes, the close pointer) survives verbatim —
-this is an ENRICHMENT of the shipped V2 flow, NOT a from-scratch rewrite (D-9.3-02).
+this is an ENRICHMENT of the shipped V2 flow, NOT a from-scratch rewrite.
 </purpose>
 
 <required_reading>
@@ -41,7 +41,7 @@ Also read:
   one-line gloss the first time it appears. Never assume the user knows git remotes,
   CI, migrations, or hooks.
 - Teaching is STAGED, never front-loaded. Deliver each module at its marker, immediately
-  before the stage it makes meaningful — never one lecture blob at the top (D-9.3-05).
+  before the stage it makes meaningful — never one lecture blob at the top.
 - The teaching TEXT is deterministic — it comes from `references/onboarding-teaching.md`.
   Do not improvise new modules or reorder them; deliver the five as written, in order.
 - The user's answers are the source of truth. Suggest, never impose: novices get sane
@@ -52,7 +52,7 @@ Also read:
 - NEVER hardcode any specific host, tag scheme, or company ritual as a default. Every
   project-specific value comes from the user's answers and lands in their profile.
 - NEVER write a secret VALUE into the profile. Capture env-var NAMES and tool FACTS only;
-  the validator rejects secret-shaped values deterministically (T-9.3-06).
+  the validator rejects secret-shaped values deterministically, before anything is written.
 - Everything this workflow writes must pass `node scripts/sma/cli.mjs lint` immediately — the starter
   notes use the exact frontmatter schema the linter enforces.
 </hard_rules>
@@ -78,7 +78,7 @@ ls .sma/profile.json 2>/dev/null && echo "EXISTING — profile present" || echo 
   > teaching), or the quick path — `node scripts/sma/cli.mjs profile --quick` prints exactly the
   > fields that are still unset, in order, with zero teaching modules. Answer only
   > those; I write them straight to `.sma/profile.json` through the same validation
-  > (secret-shaped values are still rejected, T-9.3-06). Which do you want?
+  > (secret-shaped values are still rejected). Which do you want?
 
   On the quick path: run `node scripts/sma/cli.mjs profile --quick`, ask ONLY the fields it lists
   (each carries its one-line description), and write the answers through the Stage D
@@ -280,7 +280,7 @@ gates and reflexes are. Then ask six questions (Stage D of the profile):
 **Write the profile:**
 
 **The schema and the write path are `scripts/sma/lib/profile-writer.mjs` — the single
-source (D-9.7-16).** Field set, stable serialization, secret rejection and the starter
+source.** Field set, stable serialization, secret rejection and the starter
 notes live in that module; the first-run screen calls the SAME `writeProfile` /
 `seedCorpusNotes`. This terminal flow MUST produce the byte-identical result — read the
 module for the shape, and never hand-roll a second writer of it.
