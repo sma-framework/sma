@@ -474,3 +474,80 @@ describe('POST /api/onboarding/complete — the ONE writer, called from the scre
     expect(existsSync(profileFile(dir))).toBe(false)
   })
 })
+
+/**
+ * D-11-DEFER-17 — the interview had exactly one exit, and it wrote into the project.
+ *
+ * `App.tsx` gives the whole window to the first run whenever `GET /api/onboarding` answers
+ * `needed: true`, and the only way to make it answer false was `complete()`, which writes
+ * `.sma/profile.json` AND seeds starter notes. So a person who did not want to be interviewed
+ * had to be interviewed anyway, and a project that carries no profile BY DESIGN could never
+ * reach «Агенты» or «Память» at all. Found by running the daemon on 04.08, not by reading code.
+ *
+ * The exit is «позже», and the case that matters is the one about the disk: after it, the
+ * project is byte-for-byte what it was — the draft included, so the interview resumes.
+ */
+describe('«позже» — the exit that leaves the project untouched (D-11-DEFER-17)', () => {
+  /** The door with the daemon's own data directory wired, as the composition root wires it. */
+  function doorWithState(root: string, stateDir: string) {
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { repoDir: root, dataDir: stateDir } })
+    return async (method: string, url: string, body?: any) => {
+      const res = mkRes()
+      await front.handle(mkReq({ method, url, headers: jsonHeaders(), body }), res)
+      return res
+    }
+  }
+
+  it('closes the need, writes NOTHING into the project, and keeps the answers', async () => {
+    const call = doorWithState(dir, other)
+    await call('POST', '/api/onboarding/answer', { step: 1, key: 'about', text: 'магазин детской мебели' })
+
+    const before = JSON.parse((await call('GET', '/api/onboarding')).body)
+    expect(before.needed).toBe(true)
+
+    const res = await call('POST', '/api/onboarding/complete', { later: true })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ done: true, deferred: true, notes: 0 })
+
+    // the project: no profile, no seeded corpus — and the draft is still there
+    expect(existsSync(profileFile(dir))).toBe(false)
+    expect(existsSync(join(dir, '.claude', 'memory'))).toBe(false)
+    expect(existsSync(draftPath(dir))).toBe(true)
+    expect(JSON.parse(readFileSync(draftPath(dir), 'utf8')).answers.about).toBe('магазин детской мебели')
+
+    // the flag lives on the DAEMON's side
+    expect(existsSync(join(other, 'onboarding-declined.json'))).toBe(true)
+  })
+
+  it('the answer outlives the process: a fresh daemon over the same dirs does not ask again', async () => {
+    await doorWithState(dir, other)('POST', '/api/onboarding/complete', { later: true })
+    const fresh = doorWithState(dir, other)
+    const state = JSON.parse((await fresh('GET', '/api/onboarding')).body)
+    expect(state.needed).toBe(false)
+    expect(state.declined).toBe(true)
+  })
+
+  it('the interview can still be finished later — «позже» is not a refusal to ever ask', async () => {
+    const call = doorWithState(dir, other)
+    await call('POST', '/api/onboarding/complete', { later: true })
+    await answerAll(call)
+    // needed is false now, and the writing door refuses rather than writing behind the decline
+    expect((await call('POST', '/api/onboarding/complete', {})).statusCode).toBe(409)
+    expect(existsSync(profileFile(dir))).toBe(false)
+  })
+
+  it('a non-boolean `later` → 400, and no other field is accepted', async () => {
+    const call = doorWithState(dir, other)
+    expect((await call('POST', '/api/onboarding/complete', { later: 'yes' })).statusCode).toBe(400)
+    expect((await call('POST', '/api/onboarding/complete', { later: true, targetDir: '/etc' })).statusCode).toBe(400)
+    expect(existsSync(join(other, 'onboarding-declined.json'))).toBe(false)
+  })
+
+  it('with no daemon data directory the exit refuses by name rather than picking one', async () => {
+    const call = door(dir) // deps.dataDir absent — the pre-fix wiring
+    const res = await call('POST', '/api/onboarding/complete', { later: true })
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toContain('позже')
+    expect(existsSync(profileFile(dir))).toBe(false)
+  })
+})

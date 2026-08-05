@@ -40,6 +40,11 @@
  *     would have rejected it.
  *   - UNKNOWN KEYS ARE REFUSED BY NAME. A key from another step, or no step at
  *     all, throws instead of silently landing in a map nobody reads.
+ *   - THERE IS AN EXIT THAT WRITES NOTHING (D-11-DEFER-17). `complete()` is one way
+ *     out of the interview and `declineForNow()` is the other: it records «позже»
+ *     in the DAEMON's own data directory and leaves the project untouched — no
+ *     profile, no starter notes, not even the draft, which stays so the interview
+ *     can be picked up later. A window with only the writing exit is a wall.
  *
  * Node built-ins only; zero npm deps. Every fs call is dependency-injectable.
  */
@@ -69,8 +74,33 @@ export class UnknownQuestionError extends Error {
   }
 }
 
+/** Named error: «позже» was asked for with nowhere on the daemon's side to remember it. */
+export class NoStateDirError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'NoStateDirError'
+  }
+}
+
 /** The draft file, next to the profile it will become. */
 export const DRAFT_FILE = 'onboarding-draft.json'
+
+/**
+ * Where «спросите меня позже» is remembered — in the DAEMON's own data directory, never in
+ * the project (D-11-DEFER-17).
+ *
+ * THE EXIT THAT LEAVES THE DISK ALONE. Until now the only way out of the interview was
+ * `complete()`, which writes `.sma/profile.json` AND seeds starter notes into the project.
+ * So a person who did not want to be interviewed had to be interviewed anyway, and a project
+ * that has no profile BY DESIGN (developer mode) could never reach «Агенты» or «Память» at
+ * all — the first run took the whole window and had no door.
+ *
+ * The flag lives here rather than in the project because declining is a fact about this
+ * PERSON at this daemon, not about the project's files: writing anything at all into someone
+ * else's tree is the thing the decline was declining. A project that is later opened by a
+ * daemon that never heard the answer asks again, which is the honest behaviour.
+ */
+export const DECLINED_FILE = 'onboarding-declined.json'
 
 /** The draft schema version — a stale shape is ignored rather than half-read. */
 export const DRAFT_VERSION = 1
@@ -319,21 +349,28 @@ function normalizeText(value) {
 }
 
 /**
- * createOnboarding({targetDir, fsImpl, writer}) — the first-run interview engine.
+ * createOnboarding({targetDir, stateDir, fsImpl, writer}) — the first-run interview engine.
  *
  * `writer` is the profile writer, injected so a test can prove the engine has no
  * write path of its own: with an inert writer, `complete()` leaves the disk empty.
  * In production it is `scripts/sma/lib/profile-writer.mjs` — the ONE writer.
  *
- * @param {{targetDir?:string, fsImpl?:object, writer?:{writeProfile:Function, seedCorpusNotes:Function}}} [args]
- * @returns {{getState:Function, answer:Function, addTopic:Function, complete:Function}}
+ * `stateDir` is the DAEMON's own data directory and it holds exactly one fact: whether this
+ * person said «позже» (DECLINED_FILE). Absent, `declineForNow()` refuses by name rather than
+ * inventing somewhere to write — the whole point of the exit is that it writes nothing the
+ * caller did not ask for.
+ *
+ * @param {{targetDir?:string, stateDir?:string, fsImpl?:object, writer?:{writeProfile:Function, seedCorpusNotes:Function}}} [args]
+ * @returns {{getState:Function, answer:Function, addTopic:Function, complete:Function, declineForNow:Function}}
  */
-export function createOnboarding({ targetDir = process.cwd(), fsImpl, writer } = {}) {
+export function createOnboarding({ targetDir = process.cwd(), stateDir, fsImpl, writer } = {}) {
   const io = resolveIo(fsImpl)
   const write = writer ?? { writeProfile: defaultWriteProfile, seedCorpusNotes: defaultSeedCorpusNotes }
 
   const profilePath = join(targetDir, '.sma', 'profile.json')
   const draftPath = join(targetDir, '.sma', DRAFT_FILE)
+  const declinedPath =
+    typeof stateDir === 'string' && stateDir.trim() !== '' ? join(stateDir, DECLINED_FILE) : null
 
   /** @type {Record<string,string>} */
   let answers = {}
@@ -342,6 +379,11 @@ export function createOnboarding({ targetDir = process.cwd(), fsImpl, writer } =
   /** @type {string[]} */
   let added = [] // optional topics pulled into the queue, in the order they joined
   let completed = false
+
+  // «Позже», remembered across restarts on the daemon's side. A file that is not there, is
+  // not readable, or does not say `declined: true` all mean the same thing: nobody declined.
+  const declinedRecord = declinedPath ? readJsonSafe(declinedPath, { readFn: io.readFileSync }) : null
+  let declined = !!(declinedRecord && declinedRecord.declined === true)
 
   // Resume: a draft left by a previous engine over this directory (T-9.7-44).
   const draft = readJsonSafe(draftPath, { readFn: io.readFileSync })
@@ -419,9 +461,11 @@ export function createOnboarding({ targetDir = process.cwd(), fsImpl, writer } =
     const lastStep = STEPS[STEPS.length - 1].step
 
     return {
-      // The need itself: no profile on disk and no completed interview.
-      needed: !completed && !io.existsSync(profilePath),
+      // The need itself: no profile on disk, no completed interview, and nobody said «позже».
+      needed: !completed && !declined && !io.existsSync(profilePath),
       done: completed,
+      /** Whether the window is open because a person asked to be left alone for now. */
+      declined,
       finished: at === null,
 
       step: at ? at.step : lastStep,
@@ -522,5 +566,33 @@ export function createOnboarding({ targetDir = process.cwd(), fsImpl, writer } =
     }
   }
 
-  return { getState, answer, addTopic, complete }
+  /**
+   * declineForNow() — «позже»: close the need WITHOUT writing anything into the project.
+   *
+   * It is the exact opposite of `complete()` and that is the whole design. `complete()` calls
+   * the one writer and produces `.sma/profile.json` plus the starter corpus notes; this
+   * records ONE boolean in the daemon's own data directory and touches the project not at
+   * all — not the profile, not a note, not even the draft, which stays exactly where it was
+   * so the interview can be resumed later from the same answers.
+   *
+   * With nowhere on the daemon's side to remember it, it refuses by name instead of picking a
+   * directory of its own: an exit that quietly wrote somewhere unexpected would be the very
+   * thing a person pressing «позже» is refusing.
+   */
+  function declineForNow() {
+    if (!declinedPath) {
+      throw new NoStateDirError(
+        'некуда записать «позже»: демону не передан собственный каталог данных — в проект такое не пишется',
+      )
+    }
+    atomicWriteJson(
+      declinedPath,
+      { version: DRAFT_VERSION, declined: true, at: new Date().toISOString() },
+      { mkdirFn: io.mkdirSync, writeFn: io.writeFileSync, renameFn: io.renameSync },
+    )
+    declined = true
+    return getState()
+  }
+
+  return { getState, answer, addTopic, complete, declineForNow }
 }

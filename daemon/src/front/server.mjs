@@ -1686,9 +1686,20 @@ const ONBOARDING_KEY_RE = /^[a-z][a-z0-9-]{0,63}$/
 /** A bound on the step NUMBER — the shape only; which steps exist is the engine's truth. */
 const ONBOARDING_STEP_MAX = 16
 
-/** The interview over the project this daemon serves; `.sma/` lives beside its files. */
+/**
+ * The interview over the project this daemon serves; `.sma/` lives beside its files.
+ *
+ * `stateDir` is the daemon's OWN data directory and it is what makes the «позже» exit
+ * possible: the one fact «this person asked to be left alone for now» is the daemon's, not
+ * the project's, so it is remembered here and never written into somebody else's tree
+ * (D-11-DEFER-17).
+ */
 function onboardingEngine(config, deps) {
-  return createOnboarding({ targetDir: deps.repoDir ?? config.repoDir ?? '.', fsImpl: deps.fsImpl })
+  return createOnboarding({
+    targetDir: deps.repoDir ?? config.repoDir ?? '.',
+    stateDir: deps.dataDir ?? config.dataDir,
+    fsImpl: deps.fsImpl,
+  })
 }
 
 /**
@@ -1702,6 +1713,18 @@ function onboardingError(res, err) {
   if (name === 'ProfileExistsError') return send409(res, 'profile already exists')
   return send400(res, String((err && err.message) || 'bad request'))
 }
+
+/**
+ * The reserved field on POST /api/onboarding/complete meaning «позже» — close the first run
+ * WITHOUT writing a profile and WITHOUT seeding a single note into the project.
+ *
+ * It rides this door for the same reason the whole shipped team rides the agent toggle: the
+ * route table is frozen at thirty and its size is a guard invariant, so a second way out of
+ * the interview is a reserved ARGUMENT to the way out that already exists — same validation,
+ * same refusal shape, same table. And it is one boolean: a caller still cannot name a target
+ * directory or smuggle an overwrite, which is what the empty-body contract was protecting.
+ */
+export const ONBOARDING_DEFER_FIELD = 'later'
 
 /** One question as the screen shows it — the interview's own words, explicit-picked. */
 function pickQuestion(q) {
@@ -1719,6 +1742,8 @@ function pickOnboardingState(s) {
   return {
     needed: !!s.needed,
     done: !!s.done,
+    /** Whether the interview is closed because a person asked for it later, not because it ran. */
+    declined: !!s.declined,
     finished: !!s.finished,
     step: s.step,
     questionIndex: s.questionIndex,
@@ -1777,13 +1802,20 @@ async function handleOnboardingAnswer({ req, res, config, deps }) {
 async function handleOnboardingComplete({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
-  if (rejectUnknownKeys(res, body.value || {}, NO_FIELDS)) return undefined
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set([ONBOARDING_DEFER_FIELD]))) return undefined
+  const later = b[ONBOARDING_DEFER_FIELD]
+  if (later !== undefined && typeof later !== 'boolean') return send400(res, 'later must be a boolean')
 
   const engine = onboardingEngine(config, deps)
   if (!engine.getState().needed) return send409(res, 'profile already exists')
   try {
+    if (later === true) {
+      engine.declineForNow()
+      return sendJson(res, 200, { done: true, deferred: true, notes: 0 })
+    }
     const written = engine.complete()
-    return sendJson(res, 200, { done: true, notes: Array.isArray(written.notes) ? written.notes.length : 0 })
+    return sendJson(res, 200, { done: true, deferred: false, notes: Array.isArray(written.notes) ? written.notes.length : 0 })
   } catch (err) {
     return onboardingError(res, err)
   }

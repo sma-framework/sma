@@ -228,16 +228,45 @@ export function Screen() {
 
   const openHouse = () => {
     setProblem(null)
-    finish.mutate(undefined, {
-      onError: (err) =>
-        setProblem(
-          isNotReady(err)
-            ? 'Дверь первого запуска пока не отвечает. Ничего не записано.'
-            : err instanceof ApiError && err.status === 409
-              ? 'Этот дом уже настроен — окно откроется само.'
-              : 'Не получилось закрыть первый запуск. Ваши ответы сохранены.',
-        ),
-    })
+    finish.mutate(
+      {},
+      {
+        onError: (err) =>
+          setProblem(
+            isNotReady(err)
+              ? 'Дверь первого запуска пока не отвечает. Ничего не записано.'
+              : err instanceof ApiError && err.status === 409
+                ? 'Этот дом уже настроен — окно откроется само.'
+                : 'Не получилось закрыть первый запуск. Ваши ответы сохранены.',
+          ),
+      },
+    )
+  }
+
+  /**
+   * «Позже» — the exit that writes nothing.
+   *
+   * It goes through the SAME door «Открыть Сегодня» does, with one field set, and the two
+   * outcomes are deliberately not alike: that one hands the answers to the profile writer and
+   * seeds the first lessons INTO the project; this one records «спросите позже» on the
+   * daemon's own side and leaves the project's files exactly as they were. The answers stay in
+   * the draft, so the interview picks up where it stopped whenever a person comes back to it.
+   */
+  const askLater = () => {
+    setProblem(null)
+    finish.mutate(
+      { later: true },
+      {
+        onError: (err) =>
+          setProblem(
+            isNotReady(err)
+              ? 'Дверь первого запуска пока не отвечает. Ничего не записано.'
+              : err instanceof ApiError && err.status === 409
+                ? 'Этот дом уже настроен — окно откроется само.'
+                : 'Не получилось отложить знакомство. В проекте ничего не изменилось.',
+          ),
+      },
+    )
   }
 
   const stepOf = (n: number) => steps.find((s) => s.step === n)
@@ -295,6 +324,16 @@ export function Screen() {
               <span className="rounded-[8px] border border-bd bg-card px-2.5 py-1.5 text-[12.5px] font-semibold text-tx2 shadow-panel">
                 {current ? `Шаг ${current.step} из ${steps.length || 4}` : 'Все шаги пройдены'}
               </span>
+              {/* The way out, on the glass from question one — see askLater. */}
+              <button
+                type="button"
+                onClick={askLater}
+                disabled={finish.isPending}
+                title="Ничего не будет записано в Ваш проект — знакомство продолжится, когда Вы захотите"
+                className="rounded-[8px] border border-bd2 bg-card px-3 py-1.5 text-[12.5px] font-semibold text-tx2 shadow-panel hover:bg-surf hover:text-tx disabled:opacity-60"
+              >
+                {finish.isPending ? '…' : 'Позже'}
+              </button>
             </div>
           ) : null}
         </header>
@@ -342,6 +381,8 @@ export function Screen() {
         </div>
 
         <div className="mt-auto flex flex-wrap items-center gap-[7px] border-t border-bd pt-3.5 pb-[18px] text-[12.5px] leading-[1.5] text-tx3">
+          <span>Не сейчас? Нажмите «Позже» наверху — в Вашем проекте ничего не появится, а окно откроется.</span>
+          <span aria-hidden className="mx-1 h-[12px] w-px bg-bd2" />
           <span>Привычнее в терминале? Продолжите там:</span>
           <span className="rounded-[6px] border border-bd bg-surf px-2 py-0.5 font-mono text-[12px] text-tx2">
             sma start

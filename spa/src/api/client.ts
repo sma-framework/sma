@@ -343,7 +343,15 @@ export function answerOnboarding(input: { step: number; key: string; text: strin
   })
 }
 
-/** Close the first run: the answers become the saved profile and the first lessons. */
-export function completeOnboarding(): Promise<OnboardingResult> {
-  return postJson<OnboardingResult>('/api/onboarding/complete', {})
+/**
+ * Close the first run.
+ *
+ * Two ways out, one door. By default the answers become the saved profile and the first
+ * lessons — the writing exit. With `later`, the first run is simply set aside: the daemon
+ * remembers on its own side that this person asked to be left alone, and NOTHING is written
+ * into the project — no profile, no notes, not even the draft, so the interview can be picked
+ * up later exactly where it stopped.
+ */
+export function completeOnboarding(opts: { later?: boolean } = {}): Promise<OnboardingResult> {
+  return postJson<OnboardingResult>('/api/onboarding/complete', opts.later ? { later: true } : {})
 }

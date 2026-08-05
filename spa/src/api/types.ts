@@ -866,6 +866,11 @@ export interface OnboardingReadyLine {
 export interface OnboardingState {
   needed: boolean
   done: boolean
+  /**
+   * Whether the first run is closed because a person asked to be left alone for now, rather
+   * than because the interview ran. `needed` is false either way; this says which it was.
+   */
+  declined: boolean
   finished: boolean
   step: number
   questionIndex: number
@@ -887,6 +892,8 @@ export interface OnboardingState {
 export interface OnboardingResult {
   done: boolean
   notes: number
+  /** True when the first run was DEFERRED: nothing was written into the project at all. */
+  deferred?: boolean
 }
 
 // ── what the action routes answer ───────────────────────────────────────────────────
