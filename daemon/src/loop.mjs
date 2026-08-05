@@ -43,6 +43,29 @@
  * alongside the memory trace derived from the worker-context load. Every journal write is
  * fail-open: an unwritable journal can never wedge a tick, and never lies a status.
  *
+ * ═══════════════ THE CAPABILITY ENVELOPE IS RESOLVED WHERE WORK IS HANDED OVER ════
+ * (D-11-DEFER-02, 2026-08-05.) The envelope used to be a declaration with no consumer.
+ * Now the lane's envelope is resolved at the ONE point a worker is given work — after the
+ * route, before any worktree or spawn — validated, and consulted through `envelopeAllows`
+ * for the actions THIS PROCESS mediates:
+ *   - starting a process for the task at all (the envelope must grant the shell tool the
+ *     spawn is; a lane whose envelope grants no execution surface never reaches a spawn);
+ *   - accepting the forge lane's committed draft (its path must lie inside the lane's
+ *     declared write scope, on a segment boundary, with no traversal).
+ * A refusal is FAIL-CLOSED and NEVER SILENT: the task is failed with a named reason from
+ * the existing taxonomy, the detail reaches the daemon's own log, and the card carries it
+ * exactly as it carries any other refusal. What this does NOT do is bound the worker's own
+ * reach inside its session — that surface is still the checkout's `.claude/settings.json`
+ * (FLEET-INVARIANTS §5.1 states the half that remains open, and it stays stated).
+ *
+ * ═══════════════ THE ATTEMPT ROW CARRIES THE WORLD IT RAN IN (D-11-DEFER-23) ═══════
+ * Both `recordAttempt` call sites below stamp what this file can TRUTHFULLY compute: the
+ * digest of the lane envelope resolved above, the digest of the memory corpus the worker
+ * stood in, and — from `applyTransition` — the idempotency key and state-machine version
+ * of the transition the outcome stands for. `policyVersion`, `harnessVersion` and
+ * `planHash` stay ABSENT; `attemptStamp` says once, in one place, why each of them has no
+ * real value to carry.
+ *
  * ═══════════════════════ FAIL-OPEN HONESTY (merge-gate posture) ═══════════════════
  * The whole tick is wrapped fail-open: any thrown error is journaled and the affected
  * task is FAILED HONESTLY ('runtime_offline' on spawn infra errors) — a tick bug can
@@ -55,11 +78,25 @@
 import { join } from 'node:path'
 
 import { livenessSweep } from './queue/liveness.mjs'
+import { reconcileAttempts } from './queue/reconcile.mjs'
+import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
+import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capability-envelope.mjs'
+import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
-import { parseApproachNote } from './front/journal.mjs'
+import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
+import { memoryDirOf } from './front/project-sync.mjs'
 
 /** The execution lanes, in the documented stable order (mirrors the adapter's lanes). */
 const LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
+
+/**
+ * The tool an envelope must grant before this process will start anything for a task. A
+ * spawn IS an operating-system process, and `allowedTools`'s shell entry is the dimension
+ * that grants one — §5.1 of FLEET-INVARIANTS already names it as the entry that
+ * structurally permits everything below it, which is precisely why its ABSENCE has to mean
+ * «do not start».
+ */
+const SPAWN_TOOL = 'Bash'
 
 const TOUCH_THROTTLE_MS = 30000 // touch at most once per 30s while streaming (Pitfall 2)
 const HOUR_MS = 3600000
