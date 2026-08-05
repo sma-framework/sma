@@ -24,7 +24,7 @@
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
-import { join, basename, dirname } from 'node:path'
+import { join, basename, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
@@ -500,6 +500,9 @@ function buildContext(opts) {
     claudeMdPath: opts.claudeMdPath,
     // PRED family (9.1-09): plan files are read ONCE here, like the corpus.
     // execGit is an injected read-only git runner (args, {cwd}) => stdout.
+    // plansDir travels with them: the POSTEDIT batch maps a plan path
+    // back into git's path space from it.
+    plansDir: opts.plansDir,
     plans: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-PLAN.md')) : [],
     // RECEIPT-PROSE (9.2-03): SUMMARY files are read ONCE here, same posture as
     // plans — no check re-reads the disk.
@@ -1019,6 +1022,130 @@ const PRED_NOMETRIC = {
   },
 }
 
+/** Git speaks forward slashes; join() on Windows does not. One path space. */
+function toPosixPath(p) {
+  return String(p).replace(/\\/g, '/')
+}
+
+/**
+ * firstCommitTexts(ctx) — ONE git history walk, shared by the two POSTEDIT checks.
+ *
+ * PRED-POSTEDIT and CONS-POSTEDIT ask the SAME question of the SAME files ("what
+ * did this plan look like in its first commit?") and each used to answer it with
+ * `git log --follow` + `git show` PER PLAN. On the house corpus (151 plans) that
+ * is 604 git processes, and it was 92 % of the whole lint's wall clock — measured
+ * 2026-08-05: 176 s of a 193 s run, `git log --follow` alone ~0.55 s a file.
+ * A release-gate check nobody can afford to run is a check nobody runs.
+ *
+ * The replacement asks git once per run and keeps every verdict identical:
+ *   - one repo-wide `log --name-status --find-renames` walk gives, per path, the
+ *     commits that touched it, newest first; the OLDEST record is its creation;
+ *   - a plan whose only commit IS that creation, and whose worktree copy is not
+ *     modified against HEAD, needs no `git show` at all — the text already in
+ *     memory IS its first-commit text;
+ *   - a plan the walk cannot answer for (untracked, renamed — renames are exactly
+ *     what `--follow` exists for, and a path space the batch cannot map) falls
+ *     back to the per-file `--follow` walk. A verdict is never silently lost.
+ *
+ * Memoized on ctx: the second check pays nothing.
+ */
+function firstCommitTexts(ctx) {
+  if (ctx._firstCommitTexts) return ctx._firstCommitTexts
+  const execGit = ctx.execGit
+  const cache = new Map()
+  // stderr is dropped on the batch calls: `git diff` narrates CRLF conversions,
+  // and lint's own stderr is a progress channel, not git's.
+  const readOpts = (cwd) => ({ cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+
+  /** repo-relative path -> [{status, hash}], newest first. */
+  const records = new Map()
+  let dirty = null
+  let prefix = null
+  if (typeof execGit === 'function' && typeof ctx.plansDir === 'string' && ctx.plansDir !== '') {
+    try {
+      const cwd = ctx.plansDir
+      prefix = toPosixPath(String(execGit(['rev-parse', '--show-prefix'], readOpts(cwd))).trim())
+      // NO pathspec: rename detection must see the whole tree, or a plan moved IN
+      // from outside would read as a fresh creation (which `--follow` would not).
+      const walk = String(
+        execGit(['-c', 'core.quotePath=false', 'log', '--find-renames', '--format=%x00%H', '--name-status'], readOpts(cwd)),
+      )
+      for (const group of walk.split('\u0000').slice(1)) {
+        const lines = group.split('\n')
+        const hash = lines[0].trim()
+        if (!/^[0-9a-f]{7,40}$/.test(hash)) continue
+        for (let i = 1; i < lines.length; i++) {
+          if (lines[i].trim() === '') continue
+          const parts = lines[i].split('\t')
+          const status = parts[0][0]
+          // `R100<TAB>old<TAB>new` / `C100<TAB>src<TAB>dst`: the DESTINATION is the
+          // path this walk knows, recorded as R so the plan takes the --follow path.
+          const path = status === 'R' || status === 'C' ? parts[2] : parts[1]
+          if (!path) continue
+          const list = records.get(path)
+          if (list) list.push({ status, hash })
+          else records.set(path, [{ status, hash }])
+        }
+      }
+      const diffOut = String(
+        execGit(['-c', 'core.quotePath=false', 'diff', '--name-only', 'HEAD', '--', '.'], readOpts(cwd)),
+      )
+      dirty = new Set(diffOut.split('\n').map((s) => s.trim()).filter(Boolean))
+    } catch {
+      prefix = null // no batch — every plan takes the per-file path, as before
+    }
+  }
+
+  /** The original per-file walk: `--follow` + `show`, unchanged. */
+  const perFile = (plan) => {
+    try {
+      // All git ops run with cwd = the plan's own directory and cwd-relative
+      // paths (`<hash>:./<name>`), so Windows 8.3 short-path tmpdirs never
+      // desync from git's long-name toplevel.
+      const cwd = dirname(plan.path)
+      const name = basename(plan.path)
+      // First commit = the LAST line of the --diff-filter=A first-parent walk.
+      const log = String(execGit(['log', '--follow', '--diff-filter=A', '--format=%H', '--', name], { cwd })).trim()
+      const hashes = log.split('\n').filter(Boolean)
+      if (!hashes.length) return null // never committed — the block is not locked yet
+      const first = hashes[hashes.length - 1]
+      return String(execGit(['show', `${first}:./${name}`], { cwd }))
+    } catch {
+      return null // fail-soft: outside a repo / git error → no verdict on this plan
+    }
+  }
+
+  const resolve = (plan) => {
+    if (prefix !== null && dirty !== null) {
+      const key = prefix + toPosixPath(relative(ctx.plansDir, plan.path))
+      const list = records.get(key)
+      const oldest = list && list.length ? list[list.length - 1] : null
+      if (oldest && oldest.status === 'A') {
+        // Only one commit ever touched it and the worktree matches HEAD: the
+        // first-commit text and the text in memory are the same bytes.
+        if (list.length === 1 && !dirty.has(key)) return plan.text
+        try {
+          return String(execGit(['show', `${oldest.hash}:./${basename(plan.path)}`], { cwd: dirname(plan.path) }))
+        } catch {
+          return null
+        }
+      }
+    }
+    return typeof execGit === 'function' ? perFile(plan) : null
+  }
+
+  const api = {
+    textOf(plan) {
+      if (cache.has(plan.path)) return cache.get(plan.path)
+      const text = resolve(plan)
+      cache.set(plan.path, text)
+      return text
+    },
+  }
+  ctx._firstCommitTexts = api
+  return api
+}
+
 const PRED_POSTEDIT = {
   id: 'PRED-POSTEDIT',
   title: 'Predictions are immutable after the plan\'s first commit (HARKing guard)',
@@ -1035,24 +1162,18 @@ const PRED_POSTEDIT = {
       }
       return out
     }
+    const first = firstCommitTexts(ctx)
+    let done = 0
     for (const plan of ctx.plans) {
-      const nowBlock = extractPredictionsBlock(plan.text)
-      let firstText
-      try {
-        // All git ops run with cwd = the plan's own directory and cwd-relative
-        // paths (`<hash>:./<name>`), so Windows 8.3 short-path tmpdirs never
-        // desync from git's long-name toplevel.
-        const cwd = dirname(plan.path)
-        const name = basename(plan.path)
-        // First commit = the LAST line of the --diff-filter=A first-parent walk.
-        const log = String(execGit(['log', '--follow', '--diff-filter=A', '--format=%H', '--', name], { cwd })).trim()
-        const hashes = log.split('\n').filter(Boolean)
-        if (!hashes.length) continue // never committed — predictions not locked yet
-        const first = hashes[hashes.length - 1]
-        firstText = String(execGit(['show', `${first}:./${name}`], { cwd }))
-      } catch {
-        continue // fail-soft: outside a repo / git error → no verdict on this plan
+      if (ctx.overBudget && ctx.overBudget()) {
+        ctx.noteTruncation('PRED-POSTEDIT', done, ctx.plans.length, 'plans')
+        break
       }
+      done++
+      if (ctx.tick) ctx.tick('PRED-POSTEDIT', done, ctx.plans.length, 'plans')
+      const nowBlock = extractPredictionsBlock(plan.text)
+      const firstText = first.textOf(plan)
+      if (firstText === null) continue // never committed / no git verdict on this plan
       const firstBlock = extractPredictionsBlock(firstText)
       if (nowBlock === '' && firstBlock === '') continue
       if (sha256(nowBlock) !== sha256(firstBlock)) {
@@ -1195,20 +1316,20 @@ const CONS_POSTEDIT = {
       }
       return out
     }
+    // The SAME first-commit index PRED-POSTEDIT built (memoized on ctx): the two
+    // checks ask one question of one file set, so they pay for it once.
+    const first = firstCommitTexts(ctx)
+    let done = 0
     for (const plan of ctx.plans) {
-      const nowBlock = extractFrontmatterBlock(plan.text, 'consequences')
-      let firstText
-      try {
-        const cwd = dirname(plan.path)
-        const name = basename(plan.path)
-        const log = String(execGit(['log', '--follow', '--diff-filter=A', '--format=%H', '--', name], { cwd })).trim()
-        const hashes = log.split('\n').filter(Boolean)
-        if (!hashes.length) continue // never committed — the law is not locked yet
-        const first = hashes[hashes.length - 1]
-        firstText = String(execGit(['show', `${first}:./${name}`], { cwd }))
-      } catch {
-        continue // fail-soft: outside a repo / git error → no verdict on this plan
+      if (ctx.overBudget && ctx.overBudget()) {
+        ctx.noteTruncation('CONS-POSTEDIT', done, ctx.plans.length, 'plans')
+        break
       }
+      done++
+      if (ctx.tick) ctx.tick('CONS-POSTEDIT', done, ctx.plans.length, 'plans')
+      const nowBlock = extractFrontmatterBlock(plan.text, 'consequences')
+      const firstText = first.textOf(plan)
+      if (firstText === null) continue // never committed — the law is not locked yet
       const firstBlock = extractFrontmatterBlock(firstText, 'consequences')
       if (nowBlock === '' && firstBlock === '') continue
       if (sha256(nowBlock) !== sha256(firstBlock)) {
@@ -2216,6 +2337,50 @@ export const LINT_CHECKS = [
 
 // ─────────────────────────── runner ──────────────────────────────────────────
 
+/**
+ * The time budget, in milliseconds, or null for "run to completion" (the default
+ * and the only shape the release gate accepts as a verdict).
+ *
+ * Resolution: `opts.budgetMs` (a number, ms — 0 is a legal budget and means
+ * "check nothing, tell me so"), else `SMA_LINT_BUDGET` ("90", "90s", "5m", or a
+ * bare ms count via SMA_LINT_BUDGET_MS). Anything unparseable is ignored — a
+ * typo must never quietly shrink what got checked.
+ */
+function resolveBudgetMs(opts) {
+  if (typeof opts.budgetMs === 'number' && Number.isFinite(opts.budgetMs) && opts.budgetMs >= 0) return opts.budgetMs
+  const rawMs = String(process.env.SMA_LINT_BUDGET_MS ?? '').trim()
+  if (rawMs !== '' && /^\d+$/.test(rawMs)) return Number(rawMs)
+  const raw = String(process.env.SMA_LINT_BUDGET ?? '').trim()
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m)?$/.exec(raw)
+  if (!m) return null
+  const n = Number(m[1])
+  return m[2] === 'ms' ? n : m[2] === 'm' ? n * 60_000 : n * 1000
+}
+
+/**
+ * The progress sink. A lint that walks hundreds of files must say so while it
+ * walks — a check that looks hung is a check that gets killed.
+ *
+ * It writes to STDERR, never stdout: stdout carries the report (`--json` is
+ * parsed by receipts and by the commit hook) and must stay byte-stable.
+ * Default: on when stderr is a terminal, off when it is a pipe or a file, so
+ * nothing that captures output ever sees a new line it did not ask for.
+ * `SMA_LINT_PROGRESS=1` forces it on (the backgrounded-run case), `=0` off.
+ */
+function resolveProgress(opts) {
+  if (typeof opts.progress === 'function') return opts.progress
+  const raw = String(process.env.SMA_LINT_PROGRESS ?? '').trim().toLowerCase()
+  const on = raw === '' ? Boolean(process.stderr && process.stderr.isTTY) : !(raw === '0' || raw === 'false' || raw === 'off')
+  if (!on) return null
+  return (line) => {
+    try {
+      process.stderr.write(`SMA lint: ${line}\n`)
+    } catch {
+      /* a closed stderr must never take the lint down */
+    }
+  }
+}
+
 /** Stable sort key: (checkId, file, message). */
 function sortFindings(findings) {
   return findings.slice().sort((a, b) => {
@@ -2236,13 +2401,47 @@ function sortFindings(findings) {
  * @param {string} [opts.claudeMdPath]  path to CLAUDE.md (for MEM-CLAUDEDUP)
  * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family, 9.1-09)
  * @param {(args:string[], o?:{cwd?:string})=>string} [opts.execGit]  read-only git runner (PRED-POSTEDIT)
- * @returns {{critical:number, warn:number, info:number, findings:Array, summary:string, exitCode:number}}
+ * @param {number} [opts.budgetMs]  wall-clock budget; past it the run STOPS and says what it did not check
+ * @param {(line:string)=>void} [opts.progress]  progress sink (default: stderr when it is a terminal)
+ * @returns {{critical:number, warn:number, info:number, findings:Array, summary:string, exitCode:number,
+ *   partial?:boolean, skipped?:string[], truncated?:Array, budgetMs?:number}}
  */
 export function runLint(opts) {
+  const startedAt = Date.now()
+  const budgetMs = resolveBudgetMs(opts)
+  const deadline = budgetMs === null ? null : startedAt + budgetMs
+  const progress = resolveProgress(opts)
+  const truncated = []
+
+  if (progress) progress(`reading corpus${opts.plansDir ? ' + plans' : ''}…`)
   const ctx = buildContext(opts)
+  if (progress) {
+    progress(`${ctx.files.length} notes, ${ctx.plans.length} plans, ${ctx.summaries.length} summaries, ${LINT_CHECKS.length} checks`)
+  }
+
+  // The budget is a property of the RUN, and the checks that walk hundreds of
+  // files honour it mid-walk — a budget only enforced between checks would be
+  // no budget at all on the corpus that made this necessary.
+  ctx.overBudget = deadline === null ? null : () => Date.now() >= deadline
+  ctx.noteTruncation = (checkId, done, total, unit) => {
+    truncated.push({ checkId, checked: done, total, unit: unit ?? 'items' })
+  }
+  ctx.tick = progress
+    ? (checkId, done, total, unit) => {
+        if (done % 25 === 0 || done === total) progress(`  ${checkId} ${done}/${total} ${unit ?? 'items'}`)
+      }
+    : null
 
   let findings = []
+  const skipped = []
+  let n = 0
   for (const check of LINT_CHECKS) {
+    n++
+    if (deadline !== null && Date.now() >= deadline) {
+      skipped.push(check.id)
+      continue
+    }
+    if (progress) progress(`[${n}/${LINT_CHECKS.length}] ${check.id} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`)
     try {
       const res = check.run(ctx)
       if (Array.isArray(res)) findings.push(...res)
@@ -2250,6 +2449,25 @@ export function runLint(opts) {
       // FAIL-SOFT (T-9-08-02): a broken check becomes a WARN, never a crash.
       findings.push(finding(check.id, 'warn', '', `lint check ${check.id} threw and was skipped: ${err.message}`))
     }
+  }
+
+  // A partial lint SAYS it is partial, in the findings and in the summary line
+  // and in the exit code. Silent truncation would turn a budget into a lie.
+  const partial = skipped.length > 0 || truncated.length > 0
+  if (partial) {
+    const cut = truncated.map((t) => `${t.checkId} stopped at ${t.checked}/${t.total} ${t.unit}`)
+    // Name the first few and count the rest; the FULL list is in report.skipped,
+    // which is the surface a machine reads.
+    const named = skipped.slice(0, 8).join(', ') + (skipped.length > 8 ? `, +${skipped.length - 8} more` : '')
+    const notRun = skipped.length ? `${skipped.length} of ${LINT_CHECKS.length} checks did not run (${named})` : ''
+    findings.push(
+      finding(
+        'LINT-BUDGET',
+        'warn',
+        '',
+        `PARTIAL RUN — the ${(budgetMs / 1000).toFixed(1)}s budget (SMA_LINT_BUDGET / --budget) ran out: ${[notRun, ...cut].filter(Boolean).join('; ')}. This report is NOT a verdict on what it did not read; re-run without a budget before quoting it.`,
+      ),
+    )
   }
 
   findings = sortFindings(findings)
@@ -2262,8 +2480,16 @@ export function runLint(opts) {
     warn,
     info,
     findings,
-    summary: `${critical} critical, ${warn} warn, ${info} info`,
+    // The partial fields and the partial suffix appear ONLY on a run that was
+    // actually cut short: a complete run's report is byte-identical to the one
+    // this verb produced before the budget existed (instrument integrity).
+    summary: partial
+      ? `${critical} critical, ${warn} warn, ${info} info — PARTIAL (${(budgetMs / 1000).toFixed(1)}s budget; ${skipped.length} of ${LINT_CHECKS.length} checks did not run)`
+      : `${critical} critical, ${warn} warn, ${info} info`,
     // The commit-hook tier (9-12) consumes this: critical blocks, warnings do not.
-    exitCode: critical > 0 ? 1 : 0,
+    // 2 is the third answer a budget makes possible: "no verdict — I was stopped".
+    // It is non-zero on purpose, so a hook fails CLOSED on an unfinished check.
+    exitCode: critical > 0 ? 1 : partial ? 2 : 0,
+    ...(partial ? { partial: true, budgetMs, skipped, truncated } : {}),
   }
 }
