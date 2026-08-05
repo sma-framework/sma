@@ -242,10 +242,28 @@ function StockRow({ member }: { member: StockTeamCard }) {
 /**
  * «Команда SMA» — the roster that arrived, and the one act that switches it on. The switch
  * goes through the helper toggle already wired above, addressed to the reserved team id.
+ *
+ * ══════════════ THE SWITCH IS THE POINT OF THIS SECTION, SO IT LOOKS LIKE ONE ═══════════
+ *
+ * It used to be a thin bordered word to the right of a small heading, below the fold. The
+ * founder, at the live proof on 05.08, in his own words: «переключатель конвеера не вижу
+ * вообще», and the verdict «нужно более понятно чтобы все было». So it is a panel now, at
+ * the top of the section and before the roster it acts on: it says how many arrived and how
+ * many are on, it says what pressing it will do BEFORE it is pressed, and the button carries
+ * the count it will act on.
+ *
+ * ══════════════ AND AN ACTION THAT DID NOTHING HAS TO SAY SO ════════════════════════════
+ *
+ * The same proof: «нажал включить команду, но ничего не произошло» — no effect and no error.
+ * The cause was on the daemon's side (the roster was written to disk and the next read still
+ * served the pre-toggle one) and it is fixed there. What is fixed HERE is the second half,
+ * which is a defect in its own right: a silent no-op. The outcome is stated either way now —
+ * a refusal in red, and a plain confirmation of what moved when there was none.
  */
 function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady: boolean }) {
   const toggle = useToggleAgent()
   const [problem, setProblem] = useState<string | null>(null)
+  const [outcome, setOutcome] = useState<string | null>(null)
 
   const shipped = team.filter((m) => m.origin === 'sma')
   const own = team.filter((m) => m.origin === 'yours')
@@ -256,16 +274,23 @@ function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady:
 
   const flipTeam = () => {
     setProblem(null)
+    setOutcome(null)
+    const turningOn = !allOn
     toggle.mutate(
-      { id: STOCK_TEAM_TARGET, enabled: !allOn },
+      { id: STOCK_TEAM_TARGET, enabled: turningOn },
       {
+        onSuccess: (result) => {
+          const touched = result?.stockTeam?.agents
+          const many = typeof touched === 'number' ? ` Затронуто работников: ${touched}.` : ''
+          setOutcome(turningOn ? `Команда включена.${many}` : `Команда выключена.${many}`)
+        },
         onError: (err) =>
           setProblem(
             isNotReady(err)
               ? 'Переключение пока не работает — дверь не отвечает.'
-              : allOn
-                ? 'Выключить команду не удалось. Всё осталось как было.'
-                : 'Включить команду не удалось. Всё осталось как было.',
+              : turningOn
+                ? 'Включить команду не удалось. Всё осталось как было.'
+                : 'Выключить команду не удалось. Всё осталось как было.',
           ),
       },
     )
@@ -286,27 +311,57 @@ function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady:
 
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center gap-3">
-        <div className="text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Команда SMA</div>
-        <div className="flex-1" />
+      <div className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Команда SMA</div>
+
+      {/* The switch, as a panel and not as a word in a corner — see the note above. */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-[14px] border border-bd2 bg-surf px-[18px] py-4 shadow-panel">
+        <div className="min-w-[260px] flex-1">
+          <div className="flex flex-wrap items-baseline gap-2.5">
+            <span className="text-[15px] font-semibold text-tx">
+              {allOn ? 'Команда включена' : on > 0 ? 'Команда включена не вся' : 'Команда выключена'}
+            </span>
+            <span className="text-[12.5px] text-tx2 tabular-nums">
+              включено {on} из {shipped.length}
+            </span>
+          </div>
+          <div className="mt-1 max-w-[620px] text-[12px] leading-[1.6] text-tx2">
+            {allOn
+              ? 'Все работники, приехавшие вместе с SMA, включены и могут брать задачи.'
+              : 'Одно нажатие включает их всех сразу. Ничего не скачивается — включаются те файлы, что уже лежат на диске.'}
+          </div>
+        </div>
         <button
           type="button"
           onClick={flipTeam}
           disabled={toggle.isPending || shipped.length === 0}
-          className="rounded-[9px] border border-bd2 px-[15px] py-1.5 text-[11.5px] whitespace-nowrap text-tx2 hover:text-tx disabled:opacity-60"
+          className={`h-[42px] flex-none rounded-[10px] px-6 text-[14px] font-semibold whitespace-nowrap disabled:opacity-60 ${
+            allOn ? 'border border-bd2 bg-card text-tx hover:bg-row-hover' : 'bg-blue-d text-white hover:bg-blue'
+          }`}
         >
-          {toggle.isPending ? '…' : allOn ? 'Выключить команду' : 'Включить команду'}
+          {toggle.isPending
+            ? 'Минуту…'
+            : allOn
+              ? `Выключить команду (${shipped.length})`
+              : `Включить команду (${shipped.length})`}
         </button>
       </div>
 
-      <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">
-        Это те, кто приехал вместе с SMA: {shipped.length} — включено {on}.
-        {forked > 0 ? ` Изменено Вами: ${forked}.` : ''}
-        {updates > 0 ? ` Есть новая версия у: ${updates}.` : ''} Одна кнопка включает их всех сразу — ничего не
-        скачивается, включаются те файлы, что уже лежат на диске.
-      </div>
+      {problem ? (
+        <p className="m-0 mb-2.5 rounded-[10px] border border-err-tx bg-err-s px-3.5 py-2.5 text-[12.5px] font-semibold text-err-tx">
+          {problem}
+        </p>
+      ) : null}
+      {outcome ? (
+        <p className="m-0 mb-2.5 rounded-[10px] border border-bd2 bg-ok-s px-3.5 py-2.5 text-[12.5px] text-ok-tx">
+          {outcome}
+        </p>
+      ) : null}
 
-      {problem ? <p className="m-0 mb-2.5 text-[11.5px] text-err-tx">{problem}</p> : null}
+      <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">
+        Это те, кто приехал вместе с SMA: {shipped.length}.
+        {forked > 0 ? ` Изменено Вами: ${forked}.` : ''}
+        {updates > 0 ? ` Есть новая версия у: ${updates}.` : ''}
+      </div>
 
       <div className="flex flex-col gap-2.5">
         {shipped.map((m) => (
