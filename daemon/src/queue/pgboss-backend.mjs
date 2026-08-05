@@ -50,6 +50,36 @@
  * all injectable. When `boss` is injected NO connection is opened and pg-boss is never
  * imported — EVERY unit test runs against a fake. pg-boss is imported LAZILY inside
  * start() only when we own the connection.
+ *
+ * ═══════ THE STATUS CHANGES ARE ROUTED THROUGH THE STATE MACHINE (D-11-DEFER-23) ═══════
+ * Until 2026-08-05 nothing in production called `applyTransition`: the fleet's fine
+ * vocabulary was a formal reference the tests held the code to, and the four coarse queue
+ * statuses moved without ever passing it. Now each of the three mutations names the fine
+ * transition it stands for and mints it through the machine, whose result supplies the two
+ * stamp fields only it can supply — `idempotencyKey` and `stateMachineVersion` — which then
+ * ride onto the durable attempt row:
+ *
+ *   claimNext  READY   -> CLAIMED    (dispatcher)  the fetch IS the claim
+ *   complete   RUNNING -> PRODUCED   (worker)      the work exists and is certified
+ *   fail       RUNNING -> RETRYABLE  (supervisor)  the attempt did not produce
+ *
+ * WHAT IS DELIBERATELY EXEMPT, AND WHY — stated here rather than left as silence:
+ *   - RETRYABLE -> READY and RETRYABLE -> DEAD_LETTER. Which of the two a failure takes is
+ *     decided INSIDE pg-boss by `retryLimit` during the very `boss.fail` call above, and
+ *     this backend never observes the branch. Naming one would be a claim about something
+ *     it did not see.
+ *   - PRODUCED -> VERIFYING -> ACCEPTED. `complete()` is not acceptance: it hands the task
+ *     to a human (`markAwaitingApproval`), and the front's approve path is where a
+ *     disposition appears. Routing a completion through ACCEPTED would need canon
+ *     invariant 1's receipt AND authorized disposition, and manufacturing the disposition
+ *     here is exactly the self-certification that invariant exists to forbid.
+ *
+ * THE MACHINE IS CONSULTED, THE QUEUE IS NOT GATED ON IT. A refusal is LOGGED by name and
+ * the stamp is then absent from the row; the durable mutation still happens. That is
+ * deliberate: the queue is the coarse truth, and an audit layer that could strand a
+ * finished task by refusing to record it would be a worse fault than the one it detects.
+ * The refusal text carries state names, actor names and ids only (state-machine.mjs's own
+ * law), so it is safe in a log line.
  */
 
 import {
@@ -61,6 +91,9 @@ import {
 } from './adapter.mjs'
 import { recordAttempt } from './attempt-ledger.mjs'
 import { ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
+import { applyTransition } from './state-machine.mjs'
+import { defaultEnvelope } from './capability-envelope.mjs'
+import { attemptIdFor } from '../front/journal.mjs'
 
 /** The four execution lanes, in the documented stable claim order (grill CH-9.5-07-1). */
 export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
@@ -94,6 +127,45 @@ const startedUrls = new Set()
 function maskError(err) {
   const s = err && err.message ? String(err.message) : String(err)
   return s.replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
+}
+
+/**
+ * attemptNumberOf(data, retryCount) → the attempt now in flight, or NaN.
+ *
+ * The SAME arithmetic `mapRow` and `claimNext` use, in one place so the three cannot
+ * drift. NaN when the caller could not read the job's payload — an attempt number that
+ * was not observed is left absent rather than defaulted to 1, because a wrong number on a
+ * durable audit row is worse than a missing one.
+ */
+function attemptNumberOf(data, retryCount) {
+  if (!data || typeof data !== 'object') return NaN
+  return (Number(data.attempt) || 1) + (Number(retryCount) || 0)
+}
+
+/**
+ * transitionStamp({from, to, actor, taskId, attempt, log}) → `{idempotencyKey,
+ * stateMachineVersion}` for a status change routed through the fleet state machine, or
+ * `null` when it could not be minted (D-11-DEFER-23).
+ *
+ * Null has exactly two causes and both are honest absences: the attempt number was not
+ * observable (no truthful `attemptId`, and `idempotencyKey` refuses an invented one), or
+ * the machine REFUSED the transition — which is logged by name and never swallowed.
+ */
+function transitionStamp({ from, to, actor, taskId, attempt, log }) {
+  if (!Number.isFinite(attempt)) return null
+  const result = applyTransition({
+    state: from,
+    to,
+    actor,
+    taskId,
+    attemptId: attemptIdFor(taskId, attempt),
+    attempt,
+  })
+  if (!result.applied && !result.alreadyApplied) {
+    log(`transition refused ${from}->${to} task=${taskId}: ${result.refusal}`)
+    return null
+  }
+  return { idempotencyKey: result.idempotencyKey, stateMachineVersion: result.stateMachineVersion }
 }
 
 /**
@@ -191,14 +263,56 @@ export function createPgBossQueue({
    * mutation (touch/complete/fail) can address it by (queue, jobId). Stateless — no
    * in-process taskId→job map (that would be lost on a kill). The `state = 'active'`
    * marker also lets the fake execSql distinguish this query from list().
+   *
+   * It also reads `data` and `retry_count` (D-11-DEFER-23) so complete/fail can stamp the
+   * attempt row with the number and the lane THE QUEUE ITSELF holds, rather than with a
+   * value the caller supplied about itself. Both are optional on the returned object: a
+   * seam that does not surface them leaves `attempt` NaN and `lane` undefined, and the
+   * stamp is then simply not written.
    */
   async function resolveActiveJob(taskId) {
     const res = await runSql(
-      `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state = 'active' ORDER BY started_on DESC LIMIT 1`,
+      `SELECT id, name, data, retry_count FROM pgboss.job WHERE data->>'id' = $1 AND state = 'active' ORDER BY started_on DESC LIMIT 1`,
       [taskId],
     )
     const rows = res && Array.isArray(res.rows) ? res.rows : []
-    return rows[0] || null
+    const row = rows[0] || null
+    if (!row) return null
+    const data = row.data || null
+    return {
+      ...row,
+      attempt: attemptNumberOf(data, row.retry_count),
+      lane: data && typeof data.lane === 'string' ? data.lane : undefined,
+    }
+  }
+
+  /**
+   * The stamp fields derivable from the JOB ROW at the moment of a mutation: the attempt
+   * number, the transition's key and version, and the digest of the lane envelope the work
+   * ran under (`recordAttempt` hashes the envelope itself and keeps only the digest).
+   *
+   * FOUR OF THE SEVEN STAMP FIELDS ARE ABSENT HERE, AND THIS IS THE ONE PLACE THAT SAYS WHY
+   * (canon invariant 6; D-11-DEFER-23 — never invent a value):
+   *   - `memorySnapshotHash` — this backend does not know which memory corpus the worker
+   *     read. The tick does, because it is what handed the worker its work, and it stamps
+   *     the digest on its own ledger row (loop.mjs). Re-deriving it here would mean
+   *     guessing a corpus directory from a queue row.
+   *   - `policyVersion` — the daemon's routing policy carries no version. The only
+   *     versioned policy artifact in the product is the distilled voice's `policyVersion`
+   *     in the exam score ledger, which is a different thing; stamping it here would
+   *     fabricate provenance.
+   *   - `harnessVersion` — the harness is the agent CLI the worker is spawned under, and
+   *     nothing in this process observes its version.
+   *   - `planHash` — a task carries a title, an acceptance sentence and a lane. There is
+   *     no plan document, so there is nothing to hash.
+   */
+  function jobStamp(job, { from, to, actor, taskId }) {
+    if (!job) return {}
+    return {
+      ...(Number.isFinite(job.attempt) ? { attempt: job.attempt } : {}),
+      ...(transitionStamp({ from, to, actor, taskId, attempt: job.attempt, log }) || {}),
+      ...(job.lane ? { capabilityEnvelope: defaultEnvelope(job.lane) } : {}),
+    }
   }
 
   async function claimNext(workerId, { lanes } = {}) {
@@ -213,7 +327,13 @@ export function createPgBossQueue({
       if (job) {
         const data = job.data || {}
         const retries = job.retrycount ?? job.retryCount ?? job.retry_count ?? 0
-        return { ...data, attempt: (data.attempt ?? 1) + retries }
+        const attempt = (data.attempt ?? 1) + retries
+        // READY -> CLAIMED. The fetch above IS the claim (atomic in the queue), so this
+        // cannot gate it — it is minted AFTER the fact, and a refusal is logged rather
+        // than acted on: nothing here can un-fetch a job, and dropping a task the queue
+        // has already handed out would strand it until its lease expires.
+        transitionStamp({ from: 'READY', to: 'CLAIMED', actor: 'dispatcher', taskId: data.id, attempt, log })
+        return { ...data, attempt }
       }
     }
     return null
@@ -247,6 +367,7 @@ export function createPgBossQueue({
         outcome: 'completed',
         receiptRef: result.receiptRef,
         endedAt: new Date(now()).toISOString(),
+        ...jobStamp(job, { from: 'RUNNING', to: 'PRODUCED', actor: 'worker', taskId }),
       })
     }
     return true
@@ -266,6 +387,7 @@ export function createPgBossQueue({
         outcome: 'failed',
         failureReason: reason,
         endedAt: new Date(now()).toISOString(),
+        ...jobStamp(job, { from: 'RUNNING', to: 'RETRYABLE', actor: 'supervisor', taskId }),
       })
     }
     return true

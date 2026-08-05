@@ -95,6 +95,13 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'stateMachineVersion',
   'idempotencyKey',
   'capabilityEnvelopeHash',
+  // ── the provenance flag (D-11-DEFER-07, 2026-08-05) ──
+  // `true` ONLY on a row appended by `reconcile.mjs` AFTER the fact, from the queue's own
+  // retry count. Such a row is EVIDENCE THAT AN ATTEMPT EXISTED, and nothing more: nobody
+  // watched it, so it carries no worker, no provider, no receipt, and its `recordedAt` is
+  // the moment of reconciliation rather than the moment of the attempt. Absent on every
+  // live-recorded row, so a reader never has to guess which kind it is holding.
+  'reconstructed',
 ])
 
 /** `<ledgerDir>/<safeTaskId>.jsonl`. taskId is a queue id WE mint ('BL-…'/'R-…'/'F-…');
