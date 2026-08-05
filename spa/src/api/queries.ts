@@ -273,8 +273,8 @@ export function useAnswerOnboarding() {
 }
 
 export function useCompleteOnboarding() {
-  return useAction<void, Awaited<ReturnType<typeof api.completeOnboarding>>>(
-    () => api.completeOnboarding(),
+  return useAction<{ later?: boolean } | void, Awaited<ReturnType<typeof api.completeOnboarding>>>(
+    (input) => api.completeOnboarding(input ?? {}),
     [ONBOARDING_KEY],
   )
 }
