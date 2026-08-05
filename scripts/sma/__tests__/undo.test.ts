@@ -31,6 +31,20 @@ function realRunner(cwd: string) {
     execFileSync('git', args, { cwd, input: opts.input, encoding: opts.buffer ? 'buffer' : 'utf8' }) as any
 }
 
+/**
+ * Assert an airbag receipt / restore result is ok, WITH the reason when it is not.
+ *
+ * takeSnapshot and restoreSnapshot are fail-soft by design (a snapshot failure is
+ * a WARN and an `ok:false` receipt, never an exception — that law is why the gate
+ * can never block a user). The cost lands here: `expect(receipt.ok).toBe(true)`
+ * turns a named git failure into "expected false to be true", which is exactly the
+ * unreadable red this file produced under full-suite load. `error` and `warns` are
+ * on the object already; this puts them in the report.
+ */
+function expectAirbagOk(r: any) {
+  expect({ ok: r.ok, error: r.error, warns: r.warns }).toMatchObject({ ok: true })
+}
+
 /** A fresh temp repo with one base commit (tracked.ts = "v1"). */
 function newRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'airbag-repo-'))
@@ -61,7 +75,7 @@ describe('sma undo (real git)', () => {
     // snapshot via checkAirbag (snapshots + journals the receipt with indexPathMap)
     const evt = { tool_name: 'Bash', tool_input: { command: 'git reset --hard' } }
     const res = checkAirbag(evt, { runGit: g, dirs: { journalDir }, terminalId: 't', repoRoot: dir })
-    expect(res.receipt.ok).toBe(true)
+    expectAirbagOk(res.receipt)
 
     // catastrophe
     g(['reset', '--hard'])
@@ -71,7 +85,7 @@ describe('sma undo (real git)', () => {
 
     // ONE action back
     const r = restoreSnapshot({}, { runGit: g, dirs: { journalDir }, repoRoot: dir, terminalId: 't' })
-    expect(r.ok).toBe(true)
+    expectAirbagOk(r)
     expect(r.untrackedRestored).toBe(1)
 
     // byte-for-byte
@@ -115,7 +129,7 @@ describe('sma undo (real git)', () => {
     // --to <olderId> targets the specific older snapshot
     const olderId = groups[groups.length - 1].id
     const r = restoreSnapshot({ snapshotId: olderId }, opts)
-    expect(r.ok).toBe(true)
+    expectAirbagOk(r)
     expect(r.snapshotId).toBe(olderId)
   })
 
@@ -125,7 +139,7 @@ describe('sma undo (real git)', () => {
     const tip = String(g(['rev-parse', 'refs/heads/feature/x'])).trim()
 
     const receipt = takeSnapshot({ cmdClass: 'branch-delete', meta: { branchName: 'feature/x' } }, { runGit: g, repoRoot: dir })
-    expect(receipt.ok).toBe(true)
+    expectAirbagOk(receipt)
     expect(receipt.refs.branch).toBeTruthy()
 
     g(['branch', '-D', 'feature/x'])
@@ -176,7 +190,7 @@ describe('sma undo (real git)', () => {
     const t0 = Date.now()
     const r = takeSnapshot({ cmdClass: 'reset-hard', meta: {} }, { runGit: g, repoRoot: dir })
     const elapsed = Date.now() - t0
-    expect(r.ok).toBe(true)
+    expectAirbagOk(r)
     // regression tripwire only; the SLO is bench over live receipts
     expect({ elapsed, budget, perGit, within: elapsed < budget }).toMatchObject({ within: true })
   })

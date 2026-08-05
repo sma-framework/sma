@@ -63,11 +63,30 @@ function makeProject(name: string, phaseDirs: string[], roadmap: string): string
   return proj
 }
 
-/** Run sma-tools against `proj` and parse its JSON output. */
+/**
+ * Run sma-tools against `proj` and parse its JSON output.
+ *
+ * The spawn result is CHECKED before it is parsed. `JSON.parse(res.stdout)` on a
+ * child that never printed throws `SyntaxError: Unexpected end of JSON input` —
+ * a message that names neither the command, nor its exit code, nor the stderr
+ * that would say why, and that is the exact red on record for this file under
+ * full-suite load (D-11-DEFER-05). A starved, killed or crashed child is a
+ * legitimate failure; it just has to arrive readable. Nothing is retried and
+ * nothing is swallowed: this converts an opaque crash into a diagnosis.
+ */
 function tools(proj: string, args: string[]): Record<string, unknown> {
   const res = spawnSync(process.execPath, [smaTools, ...args, '--cwd', proj], { encoding: 'utf8' })
   expect(res.stderr).not.toMatch(/MODULE_NOT_FOUND/)
-  return JSON.parse(res.stdout) as Record<string, unknown>
+  const stdout = res.stdout ?? ''
+  if (res.error || res.status !== 0 || stdout.trim() === '') {
+    throw new Error(
+      `sma-tools ${args.join(' ')} gave no parseable stdout — ` +
+        `status=${res.status} signal=${res.signal} spawnError=${res.error ? res.error.message : 'none'}\n` +
+        `stdout: ${JSON.stringify(stdout.slice(0, 300))}\n` +
+        `stderr: ${JSON.stringify((res.stderr ?? '').slice(0, 600))}`,
+    )
+  }
+  return JSON.parse(stdout) as Record<string, unknown>
 }
 
 // ── the token: directory name -> phase id + slug ────────────────────────────
