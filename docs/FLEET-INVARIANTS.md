@@ -94,9 +94,11 @@ checked far more often than its own dedicated case suggests.
 transition into `ACCEPTED` that lacks a receipt reference or names a disposition
 outside the closed set, and by `complete()` in `adapter.mjs` and
 `pgboss-backend.mjs`, which throw `NoReceiptError` before any mutation when a
-result carries no `receiptRef`. **Read §5.8:** on the live queue path only the
-`complete()` guard runs today — `applyTransition` is the tested formal
-reference, not yet a production checkpoint.
+result carries no `receiptRef`. **Read §5.8:** the live queue path now calls
+`applyTransition`, but it never names `ACCEPTED` — `complete()` hands the task to
+a human rather than accepting it — so on that path this invariant is still held by
+the `complete()` receipt guard alone. The `ACCEPTED` refusal remains a tested
+formal reference with no production caller.
 
 **Proven by** `invariants.test.ts` → `invariantOneAcceptedIsNeverSelfCertified`,
 whose generator deliberately withholds the receipt or the disposition on roughly
@@ -155,10 +157,11 @@ which the record of an attempt survives the worker that wrote it.
 which asserts that no effect key ever recorded is missing after any number of
 lease expiries and worker deaths; the mutation case *"4 — an effect that was
 recorded and then retracted is reported"*; and `fleet-drill.test.ts` → the kill
-drill, which asserts the dead worker's attempt row is still in the ledger after
-the task has been recovered by somebody else.
+drill, whose two cases now assert a row on **both** recovery paths, plus the
+reconciliation drill.
 
-**Read §5.4.** On one of the two recovery paths there is no attempt row at all.
+**Read §5.4.** The second recovery path's row is reconstructed after the fact, and
+says less than a live one.
 
 ### 3.5 Invariant five — a retry reuses the key, or opens a new attempt
 
@@ -219,8 +222,10 @@ disposition supplied it is still refused, now returning `requiresNewAttempt`,
 because an authorized disposition opens a **new** attempt through the enqueue
 path and does not move this immutable one. At the queue layer the dead-letter
 queue is a separate queue that `claimNext` never fetches from. **Read §5.8:**
-the queue-layer half is what runs in production today; the `applyTransition`
-half is the tested formal reference.
+the queue-layer half is what runs in production; the `applyTransition` half is
+still a tested formal reference on this edge specifically — nothing in production
+asks the machine about `DEAD_LETTER -> READY`, because nothing in production
+attempts it.
 
 **Proven by** `invariants.test.ts` → `invariantSevenDeadLetterNeedsADisposition`,
 which checks two halves — that the transition **table** declares no way out of
@@ -269,14 +274,32 @@ Written in the manner of the memory threat model's own non-goals section: these
 are limits that are known, not limits that were missed. Each one names what would
 close it.
 
-### 5.1 The capability envelope is a declaration, not an enforcement point
+### 5.1 The capability envelope bounds the daemon's own acts, not the worker's session
 
-Nothing in the daemon currently constructs, validates or consults an envelope
-before a worker runs. A worker's real permission surface is the checkout's
-`.claude/settings.json` in the worktree it was given. The envelope is the shape a
-receipt can be checked against and the shape a future enforcement point will
-consume; it is not, by itself, a boundary. Three consequences follow and all three
-are stated in the module header as well:
+**Updated 2026-08-05.** The daemon now constructs, validates and consults an
+envelope: `loop.mjs` resolves the lane's envelope at the claim and asks
+`envelopeAllows` two questions — may this lane start a worker process at all
+(`allowedTools` must grant the shell), and does the forge lane's committed draft
+path lie inside the lane's declared write scope. Both refusals are fail-closed and
+land on the record: a named reason from the failure taxonomy, the detail in the
+daemon's log, and the digest of the refusing envelope on the attempt row.
+
+**What that is worth, and what it is not.** For all four shipped lanes
+`LANE_TOOLS` grants the shell, so the spawn gate refuses only a lane the queue
+should never have produced — `validateTask` rejects an unknown lane at enqueue
+already. Its value is that the checkpoint now exists at the place a process is
+started, so a narrowed tool list or a forgotten new lane takes effect in
+production rather than only in the declaration. The draft-path check is a second
+independent leg beside `lintDraft`'s own path contract; what it changes is that
+`writePaths` — the one dimension the four lanes actually differ on — is now a
+consulted declaration instead of a decoration.
+
+**What is still open, and it is the larger half.** Nothing bounds the worker's
+reach INSIDE its session. Once the process starts, its real permission surface is
+the checkout's `.claude/settings.json` in the worktree it was given, exactly as
+before. The envelope gates the daemon's own two acts; it does not follow the
+worker in. Three consequences follow and all three are stated in the module header
+as well:
 
 - The `prod` lane's declared write scope is the whole worktree. That is the
   envelope being **accurate** about a lane that edits any source file in the
@@ -293,8 +316,10 @@ are stated in the module header as well:
   statement, not an omission: a worker's provider traffic and credentials belong
   to the account the harness spawns it under, not to the task.
 
-**What would close it:** a check at spawn time that resolves the task's envelope
-and refuses to start a worker whose requested surface exceeds it.
+**What would close the remaining half:** a bound the worker cannot step outside
+once it is running — the envelope projected onto the session's own permission
+surface at spawn time, rather than checked once at the door. That is a change to
+how a worker is launched, not to this module.
 
 ### 5.2 The drills prove logic, not durability
 
@@ -324,19 +349,34 @@ be caught here.
 in-memory reference queue, which would make the sequences much slower and is a
 larger piece of work than this document's subject.
 
-### 5.4 On one recovery path there is no attempt row at all
+### 5.4 On one recovery path the row is reconstructed, and says less
 
-A task recovered by the queue's **own** lease expiry — the case where the daemon
-is down while a worker dies — leaves **no** row in the attempt ledger, because
-only `complete()` and `fail()` reach the ledger and neither of them ran. The
-evidence that a worker ran and died exists only when the liveness sweep notices
-first. The kill drill pins both paths so that this is visible rather than
-discovered later; it is recorded as an open item rather than fixed here, because
-writing a row from the expiry path means teaching the backend to observe an event
-it currently does not observe.
+**Updated 2026-08-05 — the gap is closed, and what replaced it is weaker than a
+live row, deliberately.** A task recovered by the queue's **own** lease expiry —
+the daemon down while a worker dies — used to leave no row at all, because only
+`complete()` and `fail()` reach the ledger and neither of them ran. `reconcile.mjs`
+now runs once a tick from `loop.mjs`, compares what the queue says has concluded
+against the attempt **numbers** the ledger holds, and appends the ones nobody
+wrote.
 
-**What would close it:** a reconciliation pass that compares the queue's retry
-count against the ledger's row count for a task and appends the missing row.
+**A reconstructed row is evidence that an attempt existed, and nothing more.** It
+carries `reconstructed: true`, and it carries no `workerId`, no `provider` and no
+`receiptRef`, because nobody observed those. Its `recordedAt` is the moment of
+reconciliation, not the moment of the attempt — a retry counter cannot say when
+the attempt was, and a plausible timestamp would be a fabricated one. Its
+`outcome: 'failed'` / `failureReason: 'runtime_offline'` are the two facts the
+counter really does carry.
+
+**It under-reports by construction.** Only tasks the queue reports with
+`attempt > 1` are examined, and a ledger holding any row the pass cannot place —
+a row with no attempt number — silences that whole task rather than guessing
+beside it. So the answer to «is every attempt in the ledger» is *more often yes
+than it was*, not *always yes*.
+
+**What is still open:** the pass holds no state between calls, so it re-reads the
+ledger file of every retried task on every tick. On a queue with thousands of
+retried tasks that is the cost to watch, and a time bound on how far back it looks
+is the narrowing that would pay for itself first.
 
 ### 5.5 Half of invariant five is not machine-decidable
 
@@ -379,27 +419,50 @@ person shrinks it by re-running with fewer steps.
 **What would close it:** adopting a property-testing library, which is a decision
 about dependencies rather than about tests.
 
-### 5.8 The state machine and the attempt stamp are formal references, not yet the production path
+### 5.8 The machine is wired, and three of the seven stamp fields have no value to carry
 
-Nothing in `daemon/src` routes a live status change through `applyTransition`,
-and none of the four production `recordAttempt` call sites (`loop.mjs`,
-`pgboss-backend.mjs`) passes the seven stamp fields — no live attempt row
-carries `policyVersion`, `memorySnapshotHash`, `planHash`, `harnessVersion`,
-`stateMachineVersion`, `idempotencyKey` or `capabilityEnvelopeHash`, and no
-idempotency key is minted outside the suites. Where §3 says **Enforced by**
-`applyTransition`, read it the way §5.1 reads for the envelope: the refusal
-exists, is exercised after every step of every generated sequence, and is the
-shape a receipt or a future wiring point is checked against — the live queue
-path does not consult it yet. What holds the invariants in production today is
-the queue layer itself (the `complete()`/`fail()` receipt guards, the separate
-dead-letter queue `claimNext` never fetches from) plus the composition §5.1
-lists.
+**Rewritten 2026-08-05 — the wiring landed; what remains is narrower and is stated
+here rather than implied.**
 
-**What would close it:** the queue adapter routing its status changes through
-`applyTransition` (or recording why a transition is exempt), and the four
-`recordAttempt` call sites passing the stamp fields they can already compute.
-That is deliberate production wiring with its own plan, registered as
-release-gate work — not a tail task.
+**What now runs in production.** `pgboss-backend.mjs` routes each of its three
+status changes through `applyTransition` — `claimNext` names `READY -> CLAIMED`,
+`complete` names `RUNNING -> PRODUCED`, `fail` names `RUNNING -> RETRYABLE` — and
+`loop.mjs` mints the transition its own attempt row stands for, naming `CLAIMED`
+or `RUNNING` according to whether a worker process had actually started. Live
+attempt rows now carry `idempotencyKey`, `stateMachineVersion`,
+`capabilityEnvelopeHash`, and — on the tick's rows — `memorySnapshotHash`.
+
+**The machine is consulted; the queue is not gated on it.** A refused transition
+is logged by name and leaves the stamp absent, and the durable mutation still
+happens. That is deliberate: the queue is the coarse truth, and an audit layer
+that could strand a finished task by refusing to record it would be a worse fault
+than the one it detects.
+
+**Three transitions are exempt, by name.** `RETRYABLE -> READY` and
+`RETRYABLE -> DEAD_LETTER` — which of the two a failure takes is decided inside
+pg-boss by `retryLimit` during the very `fail` call, and this backend never
+observes the branch; naming one would be a claim about something it did not see.
+`PRODUCED -> VERIFYING -> ACCEPTED` — `complete()` is not acceptance, it hands the
+task to a human, and manufacturing a disposition there is exactly the
+self-certification invariant one exists to forbid. This is why §3.1 and §3.7 still
+point here: the machine is called, but not on the edges those two invariants live
+on.
+
+**Three of the seven stamp fields are still absent, and that is the honest answer,
+not a gap.** `policyVersion` — the daemon's routing policy carries no version at
+all. `harnessVersion` — nothing in this process asks the agent CLI what version it
+is. `planHash` — a task carries a title, an acceptance sentence and a lane; there
+is no plan document to hash. Each absence is recorded at the call site. A fourth,
+`memorySnapshotHash`, is absent on the **adapter's** rows specifically, because
+that layer does not know which corpus the worker read; the tick does, and stamps
+it there.
+
+**What would close the rest:** a versioned routing policy and an observed harness
+version would give two of the three fields something true to carry. The exempt
+transitions close only when the layer that decides them reports the branch it
+took — for the retry/dead-letter split that means reading the outcome back from
+pg-boss, and for acceptance it means the front's approve path minting the
+transition it already performs.
 
 ## 6. Change log
 
@@ -407,3 +470,4 @@ release-gate work — not a tail task.
 |---|---|---|
 | 1.0 | 2026-08-04 | First edition. The seven invariants, the eleven states and the transition contract shape, the at-least-once promise, and seven non-goals — written when the property suite and the drills that prove them landed. |
 | 1.1 | 2026-08-05 | §5.8 added after review: the state machine and the attempt stamp are tested formal references with no production consumer yet — §3.1/§3.7's «Enforced by `applyTransition`» now reads through that lens, stated instead of implied. |
+| 1.2 | 2026-08-05 | The wiring landed and three non-goals shrank to their true size. §5.8 rewritten: the queue adapter and the tick now route status changes through `applyTransition` and live rows carry the key, the machine version and the envelope digest — with three transitions exempt by name and three stamp fields absent because nothing in the product can compute them. §5.1: the envelope is consulted before a spawn and before a forge draft is accepted, fail-closed; the worker's own session surface remains unbounded and that is now the whole of the non-goal. §5.4: the reconciliation pass closed the missing-row gap, and a reconstructed row is documented as weaker than a live one. §3.1/§3.4/§3.7 re-pointed accordingly. |

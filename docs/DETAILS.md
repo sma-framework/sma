@@ -173,12 +173,22 @@ Seeded property tests attack all seven invariants — twelve independent histori
 each, from one fixed seed, so a failure arrives as a replayable recipe rather than a mood — and
 crash, restart, dead-letter and redelivery drills take a task census before and after each blow.
 
-**What is honestly not yet true**, stated here because a document that only lists capabilities is
-an advertisement: the running daemon does **not** route its status changes through the state
-machine, and the production attempt rows do not carry the stamp fields. This layer is a tested
-formal reference the code is measured against, not an enforcer wired into the loop. §5 of
-[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) says which parts are deliberately not goals, and where
-the wiring stands.
+**The wiring landed on 2026-08-05**, and the three declarations are now consulted by the running
+daemon: the queue adapter routes its status changes through the state machine, the tick refuses to
+start a worker whose lane envelope grants no execution surface, and production attempt rows carry
+the idempotency key, the state-machine version, the envelope digest and the digest of the memory
+corpus the worker stood in. A fourth thing landed with them — the ledger is reconciled against the
+queue's own retry count once a tick, so an attempt that died while the daemon was down no longer
+leaves no trace at all.
+
+**What is honestly still not true**, stated here because a document that only lists capabilities is
+an advertisement: three of the seven stamp fields — the policy version, the harness version and a
+plan hash — stay **absent**, because nothing in the product can compute them and a stamp that
+invents a value is worse than one that admits a gap. Three transitions are exempt by name, each for
+a reason written down. And the envelope bounds what the *daemon* does on a worker's behalf, not
+what the worker may reach once its session is running — that surface is still the checkout's own
+settings. §5 of [FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) says which parts are deliberately not
+goals, and exactly where each remaining edge is.
 
 ## The full CLI reference, by version layer
 
