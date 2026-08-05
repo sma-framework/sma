@@ -146,11 +146,43 @@ The daemon also brings its own dependencies with it: nineteen packages, about
 `npm install` to run for it — the list, with the licence each one carries, is
 generated into `THIRD-PARTY-LICENSES.md`.
 
+**Nothing above this section needs a database.** The memory and coordination
+layer — the corpus, the ninety verbs, claims, receipts, the `/sma-*` commands —
+is plain files and git, with no server and no PostgreSQL anywhere in it. The
+database below is a requirement of the optional V5 daemon and the app it serves,
+and of nothing else. If you never start the daemon, you never need one.
+
 To bring the app up, from the SMA package or checkout directory:
 
-1. **Run a local PostgreSQL.** The daemon keeps its task queue there
+1. **Give the queue a PostgreSQL.** The daemon keeps its task queue there
    (pg-boss), in a database of its own — never your application's production
-   database, and never exposed to the internet.
+   database, and never exposed to the internet. There are two honest roads and
+   the product does not pretend there is a third:
+
+   - **A server you already run.** Create an empty database for the queue and
+     point `queueUrl` in `~/.sma-daemon/config.json` at it. SMA does not install
+     PostgreSQL and does not manage yours.
+   - **The sandbox**, for a machine with no PostgreSQL, no docker and no
+     administrator rights — which is the case this product was actually
+     developed on. It is an `embedded-postgres` cluster in `~/pg-sandbox`,
+     started by:
+
+     ```bash
+     node supervisor/pg-sandbox-windows.mjs start
+     ```
+
+     That command starts the cluster through `pg_ctl`, then **waits until a real
+     session answers** — an open socket is not readiness, because a cluster still
+     replaying its write-ahead log accepts the connection and refuses every query
+     with `57P03`, which is exactly how a half-started sandbox looks like a
+     working one. It also creates the daemon's queue database if it is missing,
+     and it is safe to run when everything is already up: it says so and exits 0.
+     `stop` and `status` are the other two verbs. Creating the sandbox directory
+     itself is a one-time step written out in
+     [`supervisor/setup-windows.md`](../supervisor/setup-windows.md); if it is
+     not there, the starter names what is missing and how to make it rather than
+     failing with a stack trace.
+
 2. **Start it:** `node daemon/src/main.mjs`. The first boot writes
    `~/.sma-daemon/config.json` (machine-local, never committed) with a fresh
    front token, then prints the address it listens on — `127.0.0.1:7777` by
