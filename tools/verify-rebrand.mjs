@@ -17,9 +17,9 @@
  *       bookkeeping; read by an adopter they are noise that references a
  *       register the adopter cannot open.
  *   (e) INTERNAL PLAN SHAPES: no bare house plan id (a plan/phase word followed
- *       by a compound `9.5-10` id, or by a wildcard `49.x` id) survives in
- *       published markdown. Same reason as (d): it points at a register the
- *       adopter cannot read.
+ *       by a compound `9.5-10` id, by a wildcard `49.x` id, or by a zero-padded
+ *       slash pair `05/09`) survives in published markdown. Same reason as (d):
+ *       it points at a register the adopter cannot read.
  *
  * WHAT "PUBLISHED" MEANS HERE — the git-tracked set, and the reason for it.
  * A push publishes the REPOSITORY, not the npm tarball: `files[]` in package.json
@@ -55,9 +55,12 @@
  *     class, left uncovered on purpose — the shapes collide with ordinary prose and
  *     with product vocabulary, so a blind ban costs more false positives than the
  *     leak is worth. Removed by hand where found, not by rule.
- *   - the slash-pair plan shape (`plans 05/09`, `phases 51/52`): a real variant of
- *     (e), not yet armed — the pattern also matches progress notation ("plans
- *     15/15"), so arming it needs a narrower rule than the two-number pair.
+ *   - an UNPADDED slash pair (`phases 51/52`, `plans 12/13`): the same variant of
+ *     (e), left uncovered on purpose. The zero padding is what separates a house
+ *     cross-reference from progress notation ("15/15 plans executed", "Phase
+ *     63/7"); without it the two shapes are the same three characters and a ban
+ *     costs more false positives than the leak is worth. The padded half IS armed
+ *     — see PLAN_PAIR below for the three discriminators it leans on.
  *   - bare plan/phase numbering (`9.4-01`) STANDING ALONE — check (e) picks up only
  *     the narrower case where a plan/phase word introduces it.
  *   - prediction ids (`P9.3-12-A`) IN PROSE — they are legitimate data in the
@@ -259,8 +262,9 @@ let mdScanned = 0
 // ---- (e) internal plan shapes in published markdown -------------------------
 /**
  * A house plan id in PUBLISHED markdown. The leak shape is a plan/phase word
- * introducing either a compound id (`plan 9.5-10`, `плана 9.1-04`, `phase 9.1-26`)
- * or a wildcard one (`plan 49.x`). The number names a register no adopter can read.
+ * introducing a compound id (`plan 9.5-10`, `плана 9.1-04`, `phase 9.1-26`), a
+ * wildcard one (`plan 49.x`), or a zero-padded slash pair (`plans 05/09`). The
+ * number names a register no adopter can read.
  *
  * The match is CONTEXTUAL — the word has to introduce the number — which is what
  * keeps the false-positive floor honest. Deliberately NOT flagged:
@@ -272,7 +276,34 @@ let mdScanned = 0
  *     plan-file naming convention) — same reason.
  */
 const PLAN_WORD = String.raw`(?:plans?|phases?|план\p{L}*|фаз\p{L}*)`
-const PLAN_SHAPE = String.raw`(?:\d{1,2}\.\d{1,2}-\d{1,3}|\d{1,2}\.x)`
+/**
+ * Words that turn a number pair into PROGRESS. Used as a negative lookahead on the
+ * slash-pair branch only — a cross-reference is followed by punctuation or prose,
+ * a count is followed by what is being counted.
+ */
+const PROGRESS_WORD = String.raw`(?:complete|completed|done|executed|passed|verified|green|remaining|left|answered|tasks?|steps?|plans?|phases?|выполн\p{L}*|заверш\p{L}*|готов\p{L}*|осталось|шаг\p{L}*|задач\p{L}*)`
+/**
+ * ARMED 2026-08-05 — the slash-pair cross-reference (`plans 05/09`, «планы 05/09»).
+ * It was deliberately unarmed until now because the naive two-number pair collides
+ * with progress notation, which this repository's own markdown is full of ("3/3
+ * plans executed", "Phase 63/7", "Plans: 3/5 complete", "2/2 plans complete").
+ * Three discriminators, read off that real corpus, keep the two apart:
+ *
+ *   1. ZERO PADDING. A house plan number is padded to two digits (`05`, `09`); a
+ *      count never is. Across every git-tracked markdown file exactly two padded
+ *      pairs exist, and one of them was the offender this rule was armed for.
+ *   2. WORD ORDER. The plan word has to INTRODUCE the pair, which is inherited
+ *      from check (e)'s contextual shape. Progress puts the word after the count
+ *      ("15/15 plans executed") or behind a colon ("Plans: 3/5"), and neither
+ *      reaches this pattern.
+ *   3. WHAT FOLLOWS. A pair trailed by a counting word is progress even when it is
+ *      padded, and an identical pair (`05/05`) is a count of itself, never a
+ *      cross-reference between two plans. Both are excluded by name.
+ *
+ * A pair followed by another `/` is a date or a longer id, not this shape.
+ */
+const PLAN_PAIR = String.raw`(?!(?<pp>\d{2})/\k<pp>)(?:0\d/\d{2}|\d{2}/0\d)(?!/)(?!\s+${PROGRESS_WORD})`
+const PLAN_SHAPE = String.raw`(?:\d{1,2}\.\d{1,2}-\d{1,3}|\d{1,2}\.x|${PLAN_PAIR})`
 const INTERNAL_PLAN = new RegExp(
   // trailing guard: not a longer number, and not the `02.1-01-PLAN.md` file name
   String.raw`(?<![\p{L}\p{N}])${PLAN_WORD}\s*[№#]?\s*${PLAN_SHAPE}(?![\p{L}\p{N}]|-[A-Za-z])`,
