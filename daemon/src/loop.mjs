@@ -45,18 +45,21 @@
  *
  * ═══════════════ THE CAPABILITY ENVELOPE IS RESOLVED WHERE WORK IS HANDED OVER ════
  * (D-11-DEFER-02, 2026-08-05.) The envelope used to be a declaration with no consumer.
- * Now the lane's envelope is resolved at the ONE point a worker is given work — after the
- * route, before any worktree or spawn — validated, and consulted through `envelopeAllows`
- * for the actions THIS PROCESS mediates:
- *   - starting a process for the task at all (the envelope must grant the shell tool the
- *     spawn is; a lane whose envelope grants no execution surface never reaches a spawn);
- *   - accepting the forge lane's committed draft (its path must lie inside the lane's
- *     declared write scope, on a segment boundary, with no traversal).
+ * Now the lane's envelope is resolved the moment a task is claimed — it is a property of
+ * the LANE, so it is known before the route is — validated once, and consulted through
+ * `envelopeAllows` at the two points THIS PROCESS actually mediates:
+ *   - before a worker process is started at all (the envelope must grant the shell tool a
+ *     spawn IS; a lane whose envelope grants no execution surface never reaches a spawn);
+ *   - before the forge lane's committed draft is accepted (its path must lie inside the
+ *     lane's declared write scope, on a segment boundary, with no traversal).
  * A refusal is FAIL-CLOSED and NEVER SILENT: the task is failed with a named reason from
- * the existing taxonomy, the detail reaches the daemon's own log, and the card carries it
- * exactly as it carries any other refusal. What this does NOT do is bound the worker's own
- * reach inside its session — that surface is still the checkout's `.claude/settings.json`
- * (FLEET-INVARIANTS §5.1 states the half that remains open, and it stays stated).
+ * the existing taxonomy, the detail reaches the daemon's own log, and the attempt row
+ * carries the digest of the envelope that refused. What this does NOT do is bound the
+ * worker's own reach INSIDE its session — that surface is still the checkout's
+ * `.claude/settings.json` (FLEET-INVARIANTS §5.1 states the half that remains open, and it
+ * stays stated). The preflight-«built» door is deliberately upstream of the spawn gate: a
+ * task whose work already exists completes without any worker, so refusing it for a tool
+ * nothing was going to use would be a gate inventing work to refuse.
  *
  * ═══════════════ THE ATTEMPT ROW CARRIES THE WORLD IT RAN IN (D-11-DEFER-23) ═══════
  * Both `recordAttempt` call sites below stamp what this file can TRUTHFULLY compute: the
@@ -65,6 +68,13 @@
  * of the transition the outcome stands for. `policyVersion`, `harnessVersion` and
  * `planHash` stay ABSENT; `attemptStamp` says once, in one place, why each of them has no
  * real value to carry.
+ *
+ * ═══════════════ THE LEDGER IS RECONCILED ONCE A TICK (D-11-DEFER-07) ══════════════
+ * Step (1b) runs `reconcileAttempts` straight after the liveness sweep: the sweep writes
+ * the rows it can observe, and the pass then appends the rows for attempts NOBODY observed
+ * — the ones pg-boss's own lease expiry retried while this daemon was down. Those rows are
+ * flagged `reconstructed` and never pretend to be live ones. Fail-open like the sweep: a
+ * reconciliation that throws is journaled and the tick continues.
  *
  * ═══════════════════════ FAIL-OPEN HONESTY (merge-gate posture) ═══════════════════
  * The whole tick is wrapped fail-open: any thrown error is journaled and the affected
@@ -190,6 +200,104 @@ function executorBlocker(deps) {
     }
   }
   return null
+}
+
+/**
+ * envelopeBlocker(envelope) → {reason, detail} when THIS LANE'S ENVELOPE does not permit
+ * starting a worker process, or null when it does (D-11-DEFER-02).
+ *
+ * FAIL-CLOSED ON BOTH LEGS. An envelope the validator refuses grants nothing — a task whose
+ * lane is not one of the four resolves to `defaultEnvelope`'s LOCKED envelope, whose
+ * `allowedTools` is empty, and it is refused here rather than spawned on the assumption
+ * that an unrecognised lane is a harmless one. `missing_access` is the reason because that
+ * is what the existing taxonomy already means by «нужен человек: не хватает доступа», and
+ * every card and label already renders it.
+ *
+ * WHAT THIS IS AND IS NOT WORTH, stated rather than implied: for all four shipped lanes
+ * `LANE_TOOLS` grants the shell, so today this refuses only a lane the queue should never
+ * have produced (`validateTask` rejects one at enqueue). Its value is that the CHECKPOINT
+ * now exists at the place a process is started, so the day a lane's tool list is narrowed —
+ * or a lane is added and its defaults forgotten — the narrowing takes effect in production
+ * instead of only in the declaration.
+ */
+function envelopeBlocker(envelope) {
+  const check = validateEnvelope(envelope)
+  if (!check.valid) {
+    return { reason: 'missing_access', detail: `capability envelope refused: ${check.refusal}` }
+  }
+  if (!envelopeAllows(envelope, { action: 'tool', tool: SPAWN_TOOL })) {
+    return {
+      reason: 'missing_access',
+      detail: `capability envelope grants no "${SPAWN_TOOL}" — this lane may not start a worker process`,
+    }
+  }
+  return null
+}
+
+/**
+ * attemptStamp(deps, task, {from, to, actor, envelope}) → the stamp fields THIS FILE can
+ * truthfully compute for one attempt row (canon invariant 6; D-11-DEFER-23).
+ *
+ * WHAT IT WRITES:
+ *   - `capabilityEnvelope` — the lane envelope this attempt ran under. `recordAttempt`
+ *     hashes it at the point of recording and keeps only the digest; the envelope itself is
+ *     not an allowlist member and can never reach the durable row.
+ *   - `memorySnapshotHash` — the digest of the corpus the worker stood in. The tick knows it
+ *     because the tick is what hands the worker its checkout; nothing downstream does.
+ *     Omitted entirely when there is no repo dir to derive one from, and written as the
+ *     declared absent value when the corpus is empty — an absence that says so beats a
+ *     digest of nothing.
+ *   - `idempotencyKey` + `stateMachineVersion` — minted by `applyTransition` for the named
+ *     transition. A refusal is LOGGED by name and leaves both fields absent; it never
+ *     changes the outcome, because an audit layer that could strand a finished task by
+ *     refusing to record it would be a worse fault than the one it detects.
+ *
+ * WHAT IT DELIBERATELY DOES NOT WRITE, AND WHY (never invent a value):
+ *   - `policyVersion` — the daemon's routing policy carries no version. The one versioned
+ *     policy artifact in the product is the distilled voice's `policyVersion` in the exam
+ *     score ledger, which is a different thing; stamping it here would fabricate provenance.
+ *   - `harnessVersion` — the harness is the agent CLI the worker is spawned under. This
+ *     process assembles its argv and never asks it what version it is.
+ *   - `planHash` — a task carries a title, an acceptance sentence and a lane. There is no
+ *     plan document, so there is nothing to hash.
+ *
+ * `from` is the fine state the task was ACTUALLY in — CLAIMED before a worker process was
+ * started, RUNNING after — so the minted key names the transition that really happened. A
+ * caller that passes no `to` (the preflight-«built» completion, where no worker ever ran and
+ * no fleet transition took place) gets no transition fields at all rather than an invented
+ * pair.
+ */
+function attemptStamp(deps, task, { from, to, actor, envelope } = {}) {
+  const stamp = {}
+  if (envelope) stamp.capabilityEnvelope = envelope
+
+  const corpusDir = memoryDirOf(deps.config && deps.config.repoDir)
+  if (corpusDir) {
+    try {
+      stamp.memorySnapshotHash = memorySnapshotHash({ corpusDir })
+    } catch {
+      /* the digest is an AUDIT field: an unreadable corpus leaves no stamp, never a throw */
+    }
+  }
+
+  if (!to) return stamp
+  const transition = applyTransition({
+    state: from,
+    to,
+    actor,
+    taskId: task.id,
+    attemptId: attemptIdFor(task.id, task.attempt),
+    attempt: task.attempt,
+  })
+  if (transition.applied || transition.alreadyApplied) {
+    stamp.idempotencyKey = transition.idempotencyKey
+    stamp.stateMachineVersion = transition.stateMachineVersion
+  } else {
+    // Refusals carry state names, actor names and ids only (state-machine.mjs's own law),
+    // so the text is safe in a log line.
+    writeLog(deps, { type: 'transition.refused', taskId: task.id, from, to, detail: transition.refusal })
+  }
+  return stamp
 }
 
 /**
@@ -379,6 +487,16 @@ export async function tick(deps = {}) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }
 
+    // (1b) reconcile the ledger against the queue's own retry count (D-11-DEFER-07). AFTER
+    // the sweep on purpose: the sweep writes the rows it can observe, and this pass then
+    // appends only the attempts NOBODY observed — the ones the queue's own lease expiry
+    // retried while this daemon was down. Fail-open exactly like the sweep.
+    try {
+      result.reconciled = await reconcileAttempts({ adapter, ledger, clock })
+    } catch (err) {
+      if (typeof journal === 'function') journal({ type: 'reconcile-error', error: String((err && err.message) || err) })
+    }
+
     // (2) intake per cadence (secondary path; roster button is primary — Q2).
     await runIntake(deps, now(), result)
 
@@ -399,6 +517,16 @@ export async function tick(deps = {}) {
     }
     result.claimed = task.id
 
+    // (3a0) THE LANE'S CAPABILITY ENVELOPE (D-11-DEFER-02). Resolved here because it is a
+    // property of the LANE the task was claimed into — known before the route is, and
+    // therefore available to stamp on EVERY attempt row this tick can write, including the
+    // rows of attempts that never reach a spawn.
+    const envelope = defaultEnvelope(task.lane)
+    // The fine state the task is actually in. It becomes RUNNING at the spawn, and every
+    // transition minted below names the state the task was really in rather than the one
+    // the happy path would have had it in.
+    let fleetState = 'CLAIMED'
+
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
       // The router writes its OWN dispatcher layer at the decision (D-9.7-14) — the tick
@@ -412,7 +540,7 @@ export async function tick(deps = {}) {
       })
       if (!route || (!route.workerId && !route.useApiFallback)) {
         // Claimed but no runnable target after the real route (rare race) — degrade honestly.
-        await failTask(deps, task, { reason: 'window_exhausted', now: now() })
+        await failTask(deps, task, { reason: 'window_exhausted', now: now(), envelope, from: fleetState })
         result.failed = { taskId: task.id, reason: 'window_exhausted' }
         return result
       }
@@ -425,7 +553,7 @@ export async function tick(deps = {}) {
       const blocker = attemptBlocker(deps, task, route)
       if (blocker) {
         writeLog(deps, { type: 'task.refused', taskId: task.id, workerId: route.workerId, reason: blocker.reason, detail: blocker.detail })
-        await failTask(deps, task, { reason: blocker.reason, route, now: now() })
+        await failTask(deps, task, { reason: blocker.reason, route, now: now(), envelope, from: fleetState })
         result.failed = { taskId: task.id, reason: blocker.reason, detail: blocker.detail }
         return result
       }
@@ -435,14 +563,19 @@ export async function tick(deps = {}) {
       // gate is a DETERMINISTIC draft lint, not reverify (a draft is a definition file). The
       // «Создатель» never activates anything — it commits a draft on the branch, full stop.
       if (task.lane === 'forge') {
-        return await runForgeTask(deps, task, route, result, now)
+        return await runForgeTask(deps, task, route, result, now, envelope)
       }
 
       // (4) preflight — verify-before-execute. 'built' → complete on the preflight receipt.
       const pf = await invokeVerb(verbRunner, 'preflight', [task.id], config.repoDir)
       if (pf.verdict === 'built') {
         const receiptRef = pf.receiptRef || `preflight:${task.id}`
-        await completeTask(deps, task, { receiptRef, branch: null, diffStat: pf.diffStat, route, now: now() })
+        // NO transition is minted for this completion, on purpose. The work already existed;
+        // no worker process was ever started, so the task never entered RUNNING and there is
+        // no CLAIMED -> PRODUCED contract to name. Minting the two-step CLAIMED -> RUNNING ->
+        // PRODUCED would assert `worker_process_started`, an external effect that did not
+        // happen — the exact fabrication the stamp exists to prevent.
+        await completeTask(deps, task, { receiptRef, branch: null, diffStat: pf.diffStat, route, now: now(), envelope })
         result.completed = task.id
         return result
       }
@@ -452,8 +585,20 @@ export async function tick(deps = {}) {
       const noExecutor = executorBlocker(deps)
       if (noExecutor) {
         writeLog(deps, { type: 'task.refused', taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail })
-        await failTask(deps, task, { reason: noExecutor.reason, route, now: now() })
+        await failTask(deps, task, { reason: noExecutor.reason, route, now: now(), envelope, from: fleetState })
         result.failed = { taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail }
+        return result
+      }
+
+      // (4c) MAY THIS LANE START A PROCESS AT ALL? (D-11-DEFER-02.) The envelope is
+      // consulted here — after the preflight door, which completes without any worker, and
+      // before the worktree, which is the first thing provisioned FOR one. Fail-closed: a
+      // lane whose envelope grants no execution surface is refused by name, on the record.
+      const noPermit = envelopeBlocker(envelope)
+      if (noPermit) {
+        writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: noPermit.reason, detail: noPermit.detail })
+        await failTask(deps, task, { reason: noPermit.reason, route, now: now(), envelope, from: fleetState })
+        result.failed = { taskId: task.id, reason: noPermit.reason, detail: noPermit.detail }
         return result
       }
 
@@ -495,6 +640,9 @@ export async function tick(deps = {}) {
           Promise.resolve(adapter.touch(task.id)).catch(() => {})
         }
       }
+      // A worker process is about to exist: from this line the task is RUNNING, and every
+      // transition minted afterwards says so — including the one the fail-open catch mints.
+      fleetState = 'RUNNING'
       const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
 
       // (7) reverify GATE in the worktree — the ONLY door to completed (D-9.5-04a).
@@ -513,7 +661,7 @@ export async function tick(deps = {}) {
       const noteWritten = recordApproachNote(deps, task, note)
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
-        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now() })
+        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState })
         result.completed = task.id
       } else {
         const reason = classifyFailure({
@@ -523,7 +671,7 @@ export async function tick(deps = {}) {
           workerMarker: marker,
           journalComplete: noteWritten,
         })
-        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now() })
+        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState })
         result.failed = { taskId: task.id, reason }
       }
       return result
@@ -531,7 +679,7 @@ export async function tick(deps = {}) {
       // Per-task fail-open: a thrown error becomes an honest runtime_offline, never a wedge.
       if (typeof journal === 'function') journal({ type: 'task-error', taskId: task.id, error: String((err && err.message) || err) })
       try {
-        await failTask(deps, task, { reason: 'runtime_offline', now: now() })
+        await failTask(deps, task, { reason: 'runtime_offline', now: now(), envelope, from: fleetState })
       } catch {
         /* even the fail is fail-open — the next tick's liveness sweep will recover it */
       }
@@ -575,16 +723,32 @@ function listCommittedDrafts(execGit, branch, cwd, kind) {
  * `lintDraft`. Green + committed → complete on the FORGE receipt (D-9.5-04a for the forge
  * lane); red lint or an uncommitted draft → fail('agent_error') with the lint detail on the
  * attempt row. A return-with-note re-forges: the note flows into buildForgePrompt.
+ *
+ * THE ENVELOPE IS CONSULTED TWICE HERE (D-11-DEFER-02): once before the spawn, exactly as
+ * the code path does, and once over the committed draft's PATH before the draft is
+ * accepted. The second one is the check with teeth — `listCommittedDrafts` filters by a
+ * string prefix, and `envelopeAllows` answers on a SEGMENT boundary with traversal refused,
+ * so `.claude/agents-elsewhere/x.md` passes the first and is refused by the second.
  */
-async function runForgeTask(deps, task, route, result, now) {
+async function runForgeTask(deps, task, route, result, now, envelope) {
   const { verbRunner, spawnWorker, buildArgs, config, adapter } = deps
+  let fleetState = 'CLAIMED'
 
   // The forge lane has no preflight door, so the executor question is asked first thing.
   const noExecutor = executorBlocker(deps)
   if (noExecutor) {
     writeLog(deps, { type: 'task.refused', taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail })
-    await failTask(deps, task, { reason: noExecutor.reason, route, now: now() })
+    await failTask(deps, task, { reason: noExecutor.reason, route, now: now(), envelope, from: fleetState })
     result.failed = { taskId: task.id, reason: noExecutor.reason, detail: noExecutor.detail }
+    return result
+  }
+
+  // May this lane start a process at all? Same fail-closed gate the code path applies.
+  const noPermit = envelopeBlocker(envelope)
+  if (noPermit) {
+    writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: noPermit.reason, detail: noPermit.detail })
+    await failTask(deps, task, { reason: noPermit.reason, route, now: now(), envelope, from: fleetState })
+    result.failed = { taskId: task.id, reason: noPermit.reason, detail: noPermit.detail }
     return result
   }
 
@@ -612,13 +776,14 @@ async function runForgeTask(deps, task, route, result, now) {
       Promise.resolve(adapter.touch(task.id)).catch(() => {})
     }
   }
+  fleetState = 'RUNNING'
   const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
 
   // The forge lane creates an attempt, so the forge lane owes a note like any other lane.
   const noteWritten = recordApproachNote(deps, task, parseApproachNote(streamLines))
 
   if (exit.spawnError) {
-    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now() })
+    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState })
     result.failed = { taskId: task.id, reason: 'runtime_offline' }
     return result
   }
@@ -626,22 +791,36 @@ async function runForgeTask(deps, task, route, result, now) {
   // (7) EXIT GATE = deterministic draft lint + committed-on-branch assertion (NOT reverify).
   const drafts = listCommittedDrafts(deps.execGit, branch, worktreePath, kind)
   if (drafts.length !== 1) {
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now() })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: 'draft not committed (expected exactly one)' }
     return result
   }
   const draftPath = drafts[0]
+
+  // (7a) THE DRAFT'S PATH AGAINST THE LANE'S DECLARED WRITE SCOPE (D-11-DEFER-02). The
+  // draft is a file a spawned agent chose the name of, and this is the moment the daemon
+  // decides to accept it. `envelopeAllows` refuses anything outside the forge lane's three
+  // draft directories, refuses a traversal instead of resolving it, and matches on a
+  // segment boundary rather than a prefix.
+  if (!envelopeAllows(envelope, { action: 'write', path: draftPath })) {
+    const detail = `draft path is outside the lane's declared write scope: ${draftPath}`
+    writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: 'agent_error', detail })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState })
+    result.failed = { taskId: task.id, reason: 'agent_error', detail }
+    return result
+  }
+
   const lint = lintDraft({ kind, filePath: join(worktreePath, draftPath), fsImpl: deps.fsImpl })
   if (!lint.passed) {
     const failed = lint.checks.filter((c) => !c.ok).map((c) => c.name).join(',')
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now() })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: `lint failed: ${failed}` }
     return result
   }
 
   if (!noteWritten) {
     // Certified draft, unexplained attempt — the same gate, the same named failure.
-    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now() })
+    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState })
     result.failed = { taskId: task.id, reason: 'no_journal' }
     return result
   }
@@ -655,13 +834,17 @@ async function runForgeTask(deps, task, route, result, now) {
     sha256: lint.sha256,
     fsImpl: deps.fsImpl,
   })
-  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now() })
+  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState })
   result.completed = task.id
   return result
 }
 
-/** complete a task through the adapter gate + write a rich (receipt-bearing) attempt row. */
-async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now }) {
+/**
+ * complete a task through the adapter gate + write a rich (receipt-bearing) attempt row.
+ * `from` names the fine state the task was really in; omitting it (the preflight-«built»
+ * door) writes the row with no transition fields rather than an invented pair.
+ */
+async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from }) {
   const { adapter, ledger, report } = deps
   await adapter.complete(task.id, {
     receiptRef,
@@ -678,6 +861,7 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       outcome: 'completed',
       receiptRef,
       endedAt: new Date(now).toISOString(),
+      ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
     })
   }
   if (typeof report === 'function') {
@@ -685,8 +869,12 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
   }
 }
 
-/** fail a task through the adapter gate + write a rich (receipt-bearing) attempt row. */
-async function failTask(deps, task, { reason, receiptRef, branch, route, now }) {
+/**
+ * fail a task through the adapter gate + write a rich (receipt-bearing) attempt row.
+ * `from` is CLAIMED for an attempt refused before any worker started and RUNNING for one
+ * that died after — both are legal edges into RETRYABLE, and the key names the real one.
+ */
+async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from }) {
   const { adapter, ledger, report } = deps
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
@@ -703,6 +891,7 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now }) 
         failureReason: reason,
         receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row (D-9.5-11)
         endedAt: new Date(now).toISOString(),
+        ...attemptStamp(deps, task, { from, to: from ? 'RETRYABLE' : undefined, actor: 'supervisor', envelope }),
       })
     } catch (err) {
       writeLog(deps, { type: 'ledger-error', taskId: task.id, reason, error: String((err && err.message) || err) })
