@@ -906,6 +906,41 @@ describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
     }
   })
 
+  it('Test 4 (MEM-CONTRADICT, 11-POST): a RUSSIAN normative pair reaches the lint through the same one detector', () => {
+    // D-11-DEFER-11/12 measured: the shipped gate was {decision, status} on a
+    // corpus holding neither, and every polarity marker was English on a corpus
+    // whose normative records are Russian. MEM-CONTRADICT was therefore silent
+    // for two reasons at once — reported clean because it was blind, not
+    // because the corpus was. Lint DELEGATES to consolidate's findContradictions
+    // (one implementation), so this asserts the delegation carries the widening.
+    const tmp = copyCase('contradict')
+    try {
+      appendFileSync(join(tmp, 'TAGS.md'), '- normative — a standing rule the project is held to.\n', 'utf8')
+      const ru = (description: string) =>
+        serializeNote({
+          frontmatter: {
+            description,
+            kind: 'normative',
+            tags: ['tech'],
+            'use-when': 'при выпуске версии',
+            importance: 7,
+          },
+          body: '\nФикстура.\n',
+        })
+      writeFileSync(join(tmp, 'norm_readme_always.md'), ru('Всегда обновляй README продукта при каждом обновлении версии.'))
+      writeFileSync(join(tmp, 'norm_readme_never.md'), ru('Никогда не обновляй README продукта при каждом обновлении версии.'))
+
+      const con = findingsOf(runLint({ corpusDir: tmp, tagsPath: join(tmp, 'TAGS.md'), indexPath: join(tmp, 'MEMORY.md') }), 'MEM-CONTRADICT')
+
+      const pair = con.find((f) => f.message.includes('norm_readme_always.md'))
+      expect(pair).toBeDefined()
+      expect(pair!.message).toContain('norm_readme_never.md')
+      expect(pair!.tier).toBe('critical')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
   it('Test 4 (MEM-CONTRADICT): conflicting notes of kind outside decision/status never fire', () => {
     const res = lintCase('contradict')
     const con = findingsOf(res, 'MEM-CONTRADICT')

@@ -46,8 +46,32 @@ const MERGE_SIMILARITY = 0.5
 /** Distinct task-tag-sets at/above which an episodic note is a PROMOTE candidate. */
 const PROMOTION_THRESHOLD = 3
 
-/** Kinds that participate in contradiction detection (bi-temporal subject model). */
-const CONTRADICT_KINDS = new Set(['decision', 'status'])
+/**
+ * Kinds that participate in contradiction detection (bi-temporal subject model).
+ *
+ * WIDENED because the narrow set was MEASURED, not read. It held {decision,
+ * status} — and the kind histogram of the live corpus, taken through this
+ * module's own `projectNoteAxis` projection, is {bug-lesson, normative,
+ * prospective, preference, procedural-rule, semantic}: twenty-six records, not
+ * one of them `decision` or `status`. The candidate set was therefore empty
+ * BEFORE `detectClaimConflict` was ever called, and the empty result read as
+ * «the corpus has no contradictions» when it meant «the detector did not look».
+ * `sma consolidate`, lint's MEM-CONTRADICT and the write-time proposal were all
+ * silent for that one reason.
+ *
+ * The two added kinds are the ones schema v2 actually produces for a record that
+ * STATES A RULE: `normative` (memory_type: normative) and `procedural-rule`
+ * (memory_type: procedural + truth_mode: normative). They are the shape the
+ * bi-temporal model was written for — a standing claim that a later claim can
+ * contradict and that supersession resolves.
+ *
+ * DELIBERATELY STILL A GATE. `semantic`, `bug-lesson`, `preference`,
+ * `prospective` and `episodic` stay out. Two facts stated differently are a
+ * MERGE question, and `findMerges` already owns subject overlap; a detector that
+ * fired on every kind would be tuned to a benchmark rather than to a rule, which
+ * is the failure T-11-10-02 names by name.
+ */
+const CONTRADICT_KINDS = new Set(['decision', 'status', 'normative', 'procedural-rule'])
 
 /** Episodic-class kinds eligible for episodic→semantic promotion. */
 const EPISODIC_KINDS = new Set(['episodic', 'status'])
@@ -171,9 +195,32 @@ function rawTokens(s) {
     .filter(Boolean)
 }
 
-/** Words that carry claim polarity, not subject matter. */
-const NEG_MARKERS = new Set(['never', 'not', 'no', 'dont', 'forbidden', 'banned', 'disable', 'disabled', 'reject', 'avoid', 'without'])
-const POS_MARKERS = new Set(['always', 'must', 'use', 'enable', 'enabled', 'allow', 'allowed', 'prefer', 'require', 'required'])
+/**
+ * Words that carry claim polarity, not subject matter.
+ *
+ * BILINGUAL because the corpus is. Every marker here was English while the live
+ * corpus's twelve `normative` records are written in Russian, so `polarity()`
+ * returned null for claims that plainly state an obligation or a prohibition —
+ * the same defect class as the injection markers whose Russian half was dead
+ * code. The Russian entries are matched exactly the way the English ones are:
+ * as WHOLE TOKENS off `rawTokens`, never as substrings, so «нет» cannot fire
+ * inside «нетривиальный».
+ *
+ * NOT A STEMMER, and the limit is stated rather than implied: only the base
+ * forms are listed, so «должна»/«запрещена» and other inflections are not
+ * reached, and neither is the harder case — an opposition carried by VERB
+ * ANTONYMY («снимок остаётся на месте» versus «удалите ночной снимок») rather
+ * than by sentence polarity. No marker list of any size reaches that one; it is
+ * pinned as a known limit in consolidate.test.ts (Test 7b).
+ */
+const NEG_MARKERS = new Set([
+  'never', 'not', 'no', 'dont', 'forbidden', 'banned', 'disable', 'disabled', 'reject', 'avoid', 'without',
+  'не', 'нет', 'никогда', 'нельзя', 'запрещено',
+])
+const POS_MARKERS = new Set([
+  'always', 'must', 'use', 'enable', 'enabled', 'allow', 'allowed', 'prefer', 'require', 'required',
+  'только', 'обязан', 'всегда', 'должен', 'следует', 'нужно',
+])
 
 /** Subject tokens: content words (len >= 3) minus polarity markers. */
 function subjectTokens(raws) {
@@ -285,8 +332,9 @@ export function detectClaimConflict(descA, descB) {
 }
 
 /**
- * findContradictions({notes, registry}) — same-subject conflicting
- * decision/status pairs with NO supersedes/superseded_by/valid_until linkage
+ * findContradictions({notes, registry}) — same-subject conflicting pairs of
+ * rule-stating kinds (CONTRADICT_KINDS: decision · status · normative ·
+ * procedural-rule) with NO supersedes/superseded_by/valid_until linkage
  * (MEM-CONTRADICT's subject model — the parallel-terminal contradiction class).
  * Detection only; resolution (set valid_until or supersedes on the stale one)
  * is a human review action — Zep-style contradiction DETECTION without the

@@ -653,6 +653,123 @@ describe('the lifecycle stops refusing — erase is the fifth action', () => {
   })
 })
 
+// ── 11-POST (D-11-DEFER-15), added 2026-08-05 ────────────────────────────────
+//
+// The episode archive is deliberately NOT an erase surface: D-11-05 scoped the
+// command to the ACTIVE corpus, the working tree and every derived index, and an
+// episode is a different asset class — "what happened" rather than "what is
+// true". Normally the question cannot arise, because migrate-v1-v2 writes the
+// extracted claim as `<stem>-claim` while the episode keeps `<stem>`.
+//
+// Nothing in the id law FORBIDS the collision, though, and on a collision the
+// episode would hold a copy of the erased content that no surface reports —
+// a copy surviving a "physical removal" without being named. Option (a),
+// erasing episodes too, was NOT chosen: it is a strictly larger promise than
+// the one that was approved. What ships is option (b), the REFUSAL — erase
+// declines while the collision exists, names the file, and the operator decides.
+
+describe('an episode that shares the erased id — the refusal (D-11-DEFER-15)', () => {
+  it('Test 29: erase REFUSES while episodes/<id>.md exists, names the file, and deletes nothing', () => {
+    seedEverySurface()
+    // the collision: an episode carrying the SAME stem as the corpus record
+    seed(episodesDir, {
+      id: SUBJECT,
+      schema_version: '2',
+      status: 'archived',
+      memory_type: 'episodic',
+      recorded_at: '2026-07-30',
+      sensitivity: 'internal',
+      language: 'en',
+    })
+    seedDerivedIndexes()
+    const episodePath = join(episodesDir, `${SUBJECT}.md`)
+    const episodeBefore = readFileSync(episodePath, 'utf8')
+    const indexBefore = readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')
+
+    const res = erase()
+
+    // fail-closed: a refusal, not a partial success with a warning attached
+    expect(res.applied).toBe(false)
+    expect(res.refusal).toBeTruthy()
+    expect(res.refusal).toContain(`${SUBJECT}.md`)
+    expect(res.refusal).toContain('episode')
+    expect(res.changed).toEqual([])
+    // NOTHING was removed — every copy surface still holds the record, read back
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+    expect(existsSync(join(draftsDir, `${SUBJECT}.md`))).toBe(true)
+    expect(existsSync(join(localDir, `${SUBJECT}.md`))).toBe(true)
+    // the derived index was not rebuilt and the episode was not touched
+    expect(readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')).toBe(indexBefore)
+    expect(readFileSync(episodePath, 'utf8')).toBe(episodeBefore)
+  })
+
+  it('Test 30: the refusal is a GATE, not a wall — once the operator resolves the episode, the same erase completes', () => {
+    seedEverySurface()
+    seed(episodesDir, {
+      id: SUBJECT,
+      schema_version: '2',
+      status: 'archived',
+      memory_type: 'episodic',
+      recorded_at: '2026-07-30',
+      sensitivity: 'internal',
+      language: 'en',
+    })
+    seedDerivedIndexes()
+
+    expect(erase().applied).toBe(false)
+
+    // the operator decides what happens to the history — here, they move it out
+    rmSync(join(episodesDir, `${SUBJECT}.md`), { force: true })
+
+    const res = erase()
+    expect(res.failures).toEqual([])
+    expect(res.applied).toBe(true)
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(false)
+  })
+
+  it('Test 31: an episode with a DIFFERENT id does not trigger the refusal — the normal case still erases', () => {
+    // The collision is the hole; the ordinary `<stem>` / `<stem>-claim` pairing
+    // is not, and a refusal that fired on it would make erase unusable.
+    seedEverySurface()
+    seed(episodesDir, {
+      id: 'depot-scanner-night-drill',
+      schema_version: '2',
+      status: 'archived',
+      memory_type: 'episodic',
+      recorded_at: '2026-07-30',
+      sensitivity: 'internal',
+      language: 'en',
+    })
+    seedDerivedIndexes()
+
+    const res = erase()
+
+    expect(res.applied).toBe(true)
+    expect(res.refusal).toBeUndefined()
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(false)
+    expect(existsSync(join(episodesDir, 'depot-scanner-night-drill.md'))).toBe(true)
+  })
+
+  it('Test 32: verifyErasure is untouched by the refusal — a read-only check never declines to look', () => {
+    seedEverySurface()
+    seed(episodesDir, {
+      id: SUBJECT,
+      schema_version: '2',
+      status: 'archived',
+      memory_type: 'episodic',
+      recorded_at: '2026-07-30',
+      sensitivity: 'internal',
+      language: 'en',
+    })
+
+    const res = verifyErasure({ id: SUBJECT, ...ctx() })
+
+    expect(res.refusal).toBeUndefined()
+    expect(res.clean).toBe(false)
+    expect(res.survivors.length).toBeGreaterThan(0)
+  })
+})
+
 describe('the module source — assertions that read the file, not the docs', () => {
   it('Test 28: no code path in erase.mjs can execute a git command', () => {
     const source = readFileSync(join(LIB, 'erase.mjs'), 'utf8')
