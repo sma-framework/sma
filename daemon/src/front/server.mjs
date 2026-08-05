@@ -886,6 +886,25 @@ function rejectUnknownKeys(res, body, allowed) {
   return false
 }
 
+/**
+ * refreshWorkers(config, next) — the roster half of the ONE-config rule (LP-2-02).
+ *
+ * WHY THIS EXISTS, in the words of the live proof: the founder pressed «Включить команду» in
+ * the window and «ничего не произошло» — no effect, no error. The door was fine. The applier
+ * wrote the roster to disk and returned a NEW config, and this process kept serving the OLD
+ * one: `handleHarness` reads `config.workers` out of the single object the composition root
+ * built at boot, so every card came back with exactly the `enabled` it had before the click,
+ * and the request had succeeded, so there was nothing to show as a failure either. A write
+ * that lands on disk and is invisible until a restart is indistinguishable from a no-op.
+ *
+ * The registry doors already obeyed this rule (refreshRegistry); the three harness appliers
+ * did not. Only the roster field moves — nothing else of the applier's answer is trusted here.
+ */
+function refreshWorkers(config, next) {
+  if (!next || typeof next !== 'object' || !Array.isArray(next.workers)) return
+  config.workers = next.workers
+}
+
 /** Map an applier's named error → 404 (unknown/missing) or 400 (validation). */
 function applierError(res, err) {
   const name = (err && err.name) || ''
@@ -968,6 +987,7 @@ async function handleAgentToggle({ req, res, config, deps }) {
     if (typeof deps.applyStockTeamToggle !== 'function') return send501(res)
     try {
       const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
+      refreshWorkers(config, next)
       const touched = (next && next.workers ? next.workers : []).filter((w) => w && w.stockDigest !== undefined)
       emitSafe(deps, { event: 'harness.updated' })
       return sendJson(res, 200, { ok: true, stockTeam: { enabled: b.enabled, agents: touched.length } })
@@ -977,6 +997,7 @@ async function handleAgentToggle({ req, res, config, deps }) {
   }
   try {
     const next = deps.applyAgentToggle({ config, id: b.id, enabled: b.enabled, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
+    refreshWorkers(config, next)
     const worker = (next && next.workers ? next.workers : []).find((w) => w && w.id === b.id)
     emitSafe(deps, { event: 'harness.updated' })
     return sendJson(res, 200, { ok: true, agent: { id: b.id, enabled: worker ? worker.enabled !== false : b.enabled } })
@@ -999,7 +1020,10 @@ async function handleSkillAssign({ req, res, config, deps }) {
     if (typeof w !== 'string' || !ID_RE.test(w)) return send400(res, 'invalid workerId')
   }
   try {
-    deps.applySkillAssign({ config, skillId: b.skillId, workerIds: b.workerIds, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
+    refreshWorkers(
+      config,
+      deps.applySkillAssign({ config, skillId: b.skillId, workerIds: b.workerIds, repoDir: deps.repoDir, fsImpl: deps.fsImpl }),
+    )
     emitSafe(deps, { event: 'harness.updated' })
     return sendJson(res, 200, { ok: true, skill: { id: b.skillId, assignedTo: b.workerIds } })
   } catch (err) {
@@ -1049,12 +1073,16 @@ async function handleMcpToggle({ req, res, deps }) {
 // 400) and emit the `project.updated` hint the app re-reads on. The id is minted by the
 // door and NEVER moves on a rename — it is the key tasks and workers reference.
 
-/** The write-seam options every config.mjs door takes (all three are DI). */
+/** The write-seam options every config.mjs door takes (all four are DI). */
 function configIo(deps) {
   return {
     ...(deps.env ? { env: deps.env } : {}),
     ...(deps.homedir ? { homedir: deps.homedir } : {}),
     ...(deps.fsImpl ? { fsImpl: deps.fsImpl } : {}),
+    // The launch directory the load-time derive used. The writer needs it to tell a value it
+    // would derive again from one an operator typed, so a registry write persists neither
+    // (D-11-DEFER-19).
+    ...(deps.repoDir ? { repoDir: deps.repoDir } : {}),
   }
 }
 
