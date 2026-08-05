@@ -388,6 +388,83 @@ function cmdRoadmapAnalyze(cwd, raw) {
     };
     output(result, raw, undefined);
 }
+// ─── replacePlansFigure ───────────────────────────────────────────────────────
+/**
+ * The COUNT TOKEN a `Plans:` line may open with. Everything the verb is allowed to
+ * rewrite lives inside this match; everything after it is the author's and is
+ * preserved byte-for-byte.
+ *
+ *   `15 plans`                  — template summary form
+ *   `1 plan`                    — singular
+ *   `2/15 plans executed`       — mid-phase form written by this verb
+ *   `9/9 plans complete`        — closed-phase form written by this verb
+ */
+const PLANS_COUNT_TOKEN = /^(?:\d+\s*\/\s*\d+|\d+)[ \t]+plans?\b(?:[ \t]+(?:executed|complete|completed))?/i;
+/**
+ * A value that carries nothing to lose: the unfilled template placeholder.
+ * `[Number of plans, e.g., "3 plans" or "TBD"]` (sma-core/templates/roadmap.md) and a
+ * bare `TBD` are both safe to replace wholesale.
+ */
+const PLANS_PLACEHOLDER = /^(?:TBD|\[[^\]]*\])[ \t]*$/i;
+/**
+ * Rewrite ONLY the count token of the phase's `Plans:` line.
+ *
+ * Returns `{ content, result }` where `result` records what happened to the line so
+ * the caller can report it:
+ *   { plans_line: 'updated',     preserved: '<the tail that survived>' }
+ *   { plans_line: 'filled' }                      — placeholder / empty summary filled
+ *   { plans_line: 'absent' }                      — no Plans: line for this phase
+ *   { plans_line: 'preserved-unrecognized', value } — refused; the line is untouched
+ *
+ * The refusal also goes to stderr, mirroring the diagnostic style of
+ * state.cjs stateReplaceFieldWithFallback: an unexpected shape must be visible to
+ * the operator, and it must NOT be overwritten on the way.
+ */
+function replacePlansFigure(content, phasePattern, planCountText, roadmapPath) {
+    // Group 1: heading … anchor + horizontal whitespace.  Group 2: the REST OF THAT
+    // LINE only — `[^\n]*` never crosses the newline, so a bare `Plans:` checklist
+    // header can no longer reach the first checklist row.
+    const anchored = new RegExp(`(#{2,4}\\s*Phase\\s+${phasePattern}(?=[:\\s])[\\s\\S]*?(\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)[ \\t]*)([^\\n]*)`, 'i');
+    // Scope to the active milestone exactly as replaceInCurrentMilestone does, so the
+    // match this function inspects is the match it rewrites.
+    const lastDetailsClose = content.lastIndexOf('</details>');
+    const offset = lastDetailsClose === -1 ? 0 : lastDetailsClose + '</details>'.length;
+    const head = content.slice(0, offset);
+    const tail = content.slice(offset);
+    const match = tail.match(anchored);
+    if (!match) {
+        return { content, result: { plans_line: 'absent' } };
+    }
+    const anchorToken = match[2];
+    const value = match[3];
+    const isBareChecklistHeader = !/\*\*/.test(anchorToken) && value.trim() === '';
+    const countMatch = value.match(PLANS_COUNT_TOKEN);
+    if (countMatch) {
+        const preserved = value.slice(countMatch[0].length);
+        const rewritten = match[1] + planCountText + preserved;
+        return {
+            content: head + tail.slice(0, match.index) + rewritten + tail.slice(match.index + match[0].length),
+            result: preserved.trim() ? { plans_line: 'updated', preserved: preserved.trim() } : { plans_line: 'updated' },
+        };
+    }
+    if (isBareChecklistHeader) {
+        // `Plans:` on its own line is the CHECKLIST header, not a summary. It has no
+        // figure to carry; writing one there was the (b) corruption. Leave it alone.
+        return { content, result: { plans_line: 'absent' } };
+    }
+    if (value.trim() === '' || PLANS_PLACEHOLDER.test(value.trim())) {
+        const rewritten = match[1] + planCountText;
+        return {
+            content: head + tail.slice(0, match.index) + rewritten + tail.slice(match.index + match[0].length),
+            result: { plans_line: 'filled' },
+        };
+    }
+    process.stderr.write(`[sma-tools] WARNING: ${roadmapPath}: the Plans line for this phase reads ` +
+        `"${value.trim()}", which does not open with a plan count (e.g. "2/15 plans executed"). ` +
+        `The line was LEFT UNCHANGED rather than overwritten with "${planCountText}"; ` +
+        `edit it to start with a count if you want this verb to maintain it.\n`);
+    return { content, result: { plans_line: 'preserved-unrecognized', plans_line_value: value.trim() } };
+}
 // ─── cmdRoadmapUpdatePlanProgress ─────────────────────────────────────────────
 function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
     if (!phaseNum) {
@@ -412,6 +489,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         return;
     }
     // Wrap entire read-modify-write in lock to prevent concurrent corruption
+    let plansLineResult = { plans_line: 'absent' };
     withPlanningLock(cwd, () => {
         let roadmapContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
         const phasePattern = phaseMarkdownRegexSource(phaseNum);
@@ -447,11 +525,24 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         //   `**Plans**: N plans`  — bold word + outer colon (sma-core/templates/roadmap.md)
         //   `**Plans:** N plans`  — bold "Plans:" (colon inside bold)
         //   `Plans: N plans`      — plain text header
-        const planCountPattern = new RegExp(`(#{2,4}\\s*Phase\\s+${phasePattern}(?=[:\\s])[\\s\\S]*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)[^\\n]+`, 'i');
+        //
+        // This write used to be `(anchor\s*)[^\n]+` and therefore
+        // OVERWROTE the whole rest of the line with the bare figure. Two shapes lost
+        // content to it, both observed in a live workspace:
+        //   (a) `**Plans:** 2/15 plans executed (15 планов / 5 волн). Дом фазы: …` —
+        //       everything after the figure was destroyed;
+        //   (b) a bare `Plans:` CHECKLIST header with no value — `\s*` crossed the
+        //       newline and the figure was written OVER the first checklist row.
+        // The write is now surgical: only the leading count TOKEN of the value is
+        // rewritten and every other byte of the line is preserved. A value whose shape
+        // is not a count token is refused loudly (stderr + a reported field) instead of
+        // being replaced.
         const planCountText = isComplete
             ? `${summaryCount}/${planCount} plans complete`
             : `${summaryCount}/${planCount} plans executed`;
-        roadmapContent = replaceInCurrentMilestone(roadmapContent, planCountPattern, `$1${planCountText}`);
+        const plansLineOutcome = replacePlansFigure(roadmapContent, phasePattern, planCountText, roadmapPath);
+        roadmapContent = plansLineOutcome.content;
+        plansLineResult = plansLineOutcome.result;
         // If complete: check checkbox
         if (isComplete) {
             const checkboxPattern = new RegExp(`(-\\s*\\[)[ ](\\]\\s*.*Phase\\s+${phasePattern}[:\\s][^\\n]*)`, 'i');
@@ -549,6 +640,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         summary_count: summaryCount,
         status,
         complete: isComplete,
+        ...plansLineResult,
     }, raw, `${summaryCount}/${planCount} ${status}`);
 }
 // ─── cmdRoadmapAnnotateDependencies ───────────────────────────────────────────
@@ -749,4 +841,7 @@ module.exports = {
     cmdRoadmapAnalyze,
     cmdRoadmapUpdatePlanProgress,
     cmdRoadmapAnnotateDependencies,
+    // Exported for test: the figure surgery is pure text-in/text-out, so the
+    // preservation guarantee can be pinned without spawning a process.
+    replacePlansFigure,
 };
