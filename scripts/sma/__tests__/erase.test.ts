@@ -472,6 +472,48 @@ describe('links the erase did not author', () => {
     expect(existsSync(join(corpusDir, `${NEIGHBOUR}.md`))).toBe(true)
     expect(parseNote(readFileSync(join(corpusDir, `${NEIGHBOUR}.md`), 'utf8'), { file: 'x' }).frontmatter.derived_from).toBe(SUBJECT)
   })
+
+  it('Test 17b: a typed links edge pointing at the erased record is reported dangling — not only the five pointer fields', () => {
+    // schema v2's edge vocabulary shipped in the SAME phase as erase; a report
+    // that read only the old pointer fields would call this corpus clean.
+    seedEverySurface()
+    seed(corpusDir, record({ id: NEIGHBOUR, claim: 'The morning window is clear', links: [{ type: 'supports', ref: SUBJECT }] }))
+    seedDerivedIndexes()
+
+    const res = erase()
+
+    expect(res.applied).toBe(true)
+    expect(JSON.stringify(res.dangling)).toContain(NEIGHBOUR)
+    expect(JSON.stringify(res.dangling)).toContain('links[0]')
+    // the pointing record is untouched — reported, never rewritten
+    const fm = parseNote(readFileSync(join(corpusDir, `${NEIGHBOUR}.md`), 'utf8'), { file: 'x' }).frontmatter as any
+    expect(fm.links).toEqual([{ type: 'supports', ref: SUBJECT }])
+  })
+})
+
+describe('a record id that is a suffix of a survivor id', () => {
+  it('Test 17c: erasing the short id does not read the long survivor as its own copy', () => {
+    // `evening-window` is a strict suffix of the SUBJECT id. A substring match
+    // on `<id>.md` would find `…scanner-evening-window.md` in the rebuilt
+    // indexes, report a false survivor, and fail a fully successful erase —
+    // unrecoverably, because re-running can never clear the neighbour's line.
+    const SHORT = 'evening-window'
+    // the long survivor sits in CORE, so the rebuilt MEMORY.md quotes its
+    // filename — the exact line a substring match would read as the short id's
+    seed(corpusDir, record({ context_priority: 'always' }))
+    seed(corpusDir, record({ id: SHORT, claim: 'The short evening window closes at nine' }))
+    seedDerivedIndexes()
+
+    const res = eraseRecord({ id: SHORT, ...ctx() })
+
+    expect(res.failures).toEqual([])
+    expect(res.applied).toBe(true)
+    expect(existsSync(join(corpusDir, `${SHORT}.md`))).toBe(false)
+    // the long neighbour survives, catalogued, and is not read as a copy
+    expect(existsSync(join(corpusDir, `${SUBJECT}.md`))).toBe(true)
+    const index = readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8')
+    expect(index).toContain(`${SUBJECT}.md`)
+  })
 })
 
 describe('git history — the one surface this cannot reach, said out loud', () => {
