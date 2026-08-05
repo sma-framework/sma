@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.2.0-3B82F6" alt="version 5.2.0">
-  <img src="https://img.shields.io/badge/tests-2368%2F2368-3CC0A0" alt="tests 2368/2368">
+  <img src="https://img.shields.io/badge/tests-2478%2F2478-3CC0A0" alt="tests 2478/2478">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
