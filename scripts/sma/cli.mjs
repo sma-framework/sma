@@ -262,11 +262,8 @@ async function gatherSummary(dirs) {
     for (const w of warnings) out.warnings.push(w)
     for (const s of sessions) {
       const cls = registry.classifyStaleness(s, {})
-      // A dead-pid lease (`T-<pid>` whose pid is gone) is never "active" no matter how
-      // young its renewTime is: those are the one-shot CLI leases that die the moment the
-      // command exits, and counting them as working terminals is what turned the graveyard
-      // into a headline number.
-      const live = (cls.state === 'fresh' || cls.state === 'attention') && !registry.isDeadPidLease(s)
+      // SB-041: the ONE activity predicate — the same one the PreToolUse hook asks.
+      const live = registry.isSessionLive(s)
       if (live) out.activeSessions += 1
       else out.staleSessions += 1
       if (cls.state === 'needs-human') {
@@ -343,10 +340,7 @@ async function cmdStatus({ flags, dirs }) {
       const registry = await import('./lib/registry.mjs')
       const { sessions } = registry.readSessions(dirs)
       for (const sess of sessions) {
-        const st = registry.classifyStaleness(sess, {}).state
-        // Same predicate as the human line: aged-out entries AND dead-pid leases (which
-        // survive with a young renewTime) both count as dead sessions that are still here.
-        if (st === 'reap-clean' || st === 'needs-human' || registry.isDeadPidLease(sess)) n += 1
+        if (!registry.isSessionLive(sess)) n += 1 // exactly the complement of "working"
       }
     } catch {
       /* fail-open -> 0 */
@@ -406,9 +400,7 @@ async function cmdStatus({ flags, dirs }) {
   try {
     const registry = await import('./lib/registry.mjs')
     for (const sess of s.sessions || []) {
-      const cls = registry.classifyStaleness(sess, {})
-      if (cls.state !== 'fresh' && cls.state !== 'attention') continue
-      if (registry.isDeadPidLease(sess)) continue // dead pid -> counted as stale, never listed as working
+      if (!registry.isSessionLive(sess)) continue
       const id = registry.displayIdentity({ holderIdentity: sess.holderIdentity, label: sess.label })
       const label = sess.label ? ` — ${sess.label}` : ''
       process.stdout.write(`  · ${id}${label}\n`)
