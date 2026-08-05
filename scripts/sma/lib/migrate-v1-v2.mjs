@@ -50,7 +50,14 @@ import {
   episodeRequiredFields,
   writeEpisode,
 } from './episodes.mjs'
-import { PERSONAL_PATTERNS } from './write-pipeline.mjs'
+import {
+  DRAFT_MARKER_KEYS as PIPELINE_DRAFT_MARKER_KEYS,
+  PERSONAL_PATTERNS,
+  PIPELINE_DRAFT_KIND,
+  appliedDraftPath,
+  confirmationRefusal,
+  stripDraftMarkers as stripPipelineDraftMarkers,
+} from './write-pipeline.mjs'
 
 /** The ONE staging directory — the product-wide drafts convention. */
 export const DRAFTS_DIRNAME = 'drafts'
@@ -63,8 +70,12 @@ export const DRAFTS_DIRNAME = 'drafts'
  */
 export const DRAFT_KIND = 'v2-migration'
 
-/** Keys that exist only while a proposal is a draft. Stripped at apply time. */
-export const DRAFT_MARKER_KEYS = Object.freeze(['draft_kind', 'draft_source', 'draft_disposition'])
+/**
+ * Keys that exist only while a proposal is a draft. Stripped at apply time.
+ * Re-exported from write-pipeline.mjs — the module that MINTS the markers owns
+ * the list, and two copies would drift the first time either side grew a key.
+ */
+export const DRAFT_MARKER_KEYS = PIPELINE_DRAFT_MARKER_KEYS
 
 /** Corpus files that are not notes and are never migration targets. */
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
@@ -103,17 +114,6 @@ const RULE_STRENGTH_MARKERS = /\b(must|never|always|forbidden|required|hard rule
 
 /** Lifecycle states that mean "this is history now". */
 const RETIRED_STATUSES = new Set(['superseded', 'revoked', 'expired', 'archived'])
-
-/**
- * A draft is UNTRUSTED INPUT on a filesystem boundary. It may have been
- * hand-edited before acceptance (that is the whole point of a preview), pasted
- * in, or produced by a future tool. Both values that reach `join(corpusDir, …)`
- * are therefore charset-gated before any write, the same posture episodes.mjs
- * takes with an episode id: no separators, no leading dot, no whitespace, so a
- * proposal can only ever resolve INSIDE the corpus.
- */
-const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
-const SAFE_SOURCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/
 
 /** v1 fields the transform consumes explicitly — anything else is reported, never guessed at. */
 const CONSUMED_V1_KEYS = new Set([
@@ -427,10 +427,12 @@ function draftPathFor(draftsDir, stem, suffix = '') {
   return join(draftsDir, `migration--${stem}${suffix}.md`)
 }
 
-/** The consumed-draft marker. Its presence means this proposal was already applied. */
-function appliedPathFor(draftPath) {
-  return draftPath.replace(/\.md$/, '.applied.md')
-}
+/**
+ * The consumed-draft marker. Its presence means this proposal was already
+ * applied. ONE implementation, in write-pipeline.mjs, because both doors out of
+ * drafts/ have to agree on what «already applied» looks like on disk.
+ */
+const appliedPathFor = appliedDraftPath
 
 /**
  * stageDraft — write a draft, but NEVER over a human's edits.
@@ -463,11 +465,7 @@ function renderDraft({ record, body, sourceFile, disposition }) {
 }
 
 /** Strip the draft-only marker keys — nothing here may reach the corpus. */
-export function stripDraftMarkers(frontmatter) {
-  const out = { ...frontmatter }
-  for (const key of DRAFT_MARKER_KEYS) delete out[key]
-  return out
-}
+export const stripDraftMarkers = stripPipelineDraftMarkers
 
 /**
  * The legality of an EPISODE proposal. Episodes carry no `claim`, so
@@ -725,28 +723,23 @@ export function applyProposal({ draftPath, corpusDir, confirmFile } = {}) {
 
   const fm = parsed.frontmatter
   if (str(fm.draft_kind) !== DRAFT_KIND) {
-    return refuse(`the draft is not a migration proposal (draft_kind "${str(fm.draft_kind)}" ≠ "${DRAFT_KIND}")`)
+    const kind = str(fm.draft_kind)
+    // A honest refusal that names the door which DOES own the draft. A staged
+    // pipeline record used to hit this line and stop there — a confirmed draft
+    // with no path into the corpus, which is the gap `memory write --apply`
+    // closes.
+    const signpost =
+      kind === PIPELINE_DRAFT_KIND
+        ? ' — a staged pipeline record is applied with `sma memory write --apply`, the door that owns it'
+        : ''
+    return refuse(`the draft is not a migration proposal (draft_kind "${kind}" ≠ "${DRAFT_KIND}")${signpost}`)
   }
 
   const declaredSource = str(fm.draft_source)
-  if (!SAFE_SOURCE_PATTERN.test(declaredSource)) {
-    return refuse(
-      `draft_source "${declaredSource}" is not a plain corpus filename — a proposal may only address a note INSIDE the corpus directory`,
-    )
-  }
   const recordId = str(fm.id)
-  if (!SAFE_ID_PATTERN.test(recordId)) {
-    return refuse(
-      `id "${recordId}" is not a legal record id — letters, digits, dot, dash and underscore only, and it must address a file INSIDE the corpus`,
-    )
-  }
-
-  const confirmed = basename(str(confirmFile))
-  if (confirmed === '' || confirmed !== declaredSource) {
-    return refuse(
-      `confirmation mismatch: this proposal declares source "${declaredSource}", the confirmation named "${confirmed || '(nothing)'}" — every apply names its own file`,
-    )
-  }
+  // The per-file confirmation mechanic, from the ONE place that implements it.
+  const confirmRefusal = confirmationRefusal({ recordId, declaredSource, confirmFile })
+  if (confirmRefusal) return refuse(confirmRefusal)
 
   const disposition = str(fm.draft_disposition)
   const record = stripDraftMarkers(fm)
