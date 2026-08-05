@@ -1,4 +1,40 @@
-import { defineConfig } from 'vitest/config'
+import { defaultExclude, defineConfig } from 'vitest/config'
+
+/**
+ * SERIAL_SUITES — the files that must not run beside eleven other workers.
+ *
+ * Everything else in this suite is in-process. These five are not: between them
+ * they run the REAL installer four times (each copy is ~459 files), copy the whole
+ * sma-core payload into a temp tree, spawn the real `sma-tools` binary thirteen
+ * times, spawn the 9.7k-line `cli.mjs` eight times, and drive ~60 REAL `git`
+ * processes through mkdtemp repositories. That work is the POINT of these tests —
+ * the defects they cover were only ever visible through a real child process — so
+ * it cannot be mocked away without deleting the coverage.
+ *
+ * What it cannot survive is being stacked on top of the default file parallelism:
+ * measured on this machine, one parallel full run in four was green and the
+ * failing set differed every time, while a `--no-file-parallelism` run was
+ * 2368/2368 (registered as D-11-DEFER-05). A gate that is green one run in four
+ * is not a gate. So these five are pinned to their own project, run with
+ * `fileParallelism: false`, in a LATER group order — `sequence.groupOrder` runs
+ * groups from lowest to highest, so this group starts only once the parallel
+ * group has finished and the machine is otherwise idle. The remaining ~129 files
+ * keep the default parallelism and the whole suite still finishes in about a
+ * minute.
+ *
+ * This is the smaller, honest half of the cure; the other half lives in the files
+ * themselves (the races and the duplicate child-process deadlines were fixed, and
+ * every spawn now reports status/signal/stderr instead of dying inside
+ * `JSON.parse`). Pinning buys determinism, not silence: a real regression in any
+ * of the five still turns this suite red.
+ */
+const SERIAL_SUITES = [
+  'scripts/sma/__tests__/manifest.test.ts',
+  'scripts/sma/__tests__/init-hooks.test.ts',
+  'scripts/sma/__tests__/install-layout.test.ts',
+  'scripts/sma/__tests__/undo.test.ts',
+  'scripts/sma/__tests__/phase-id.test.ts',
+]
 
 /**
  * stripShebang() — the PATTERN rule behind a class of silently shrinking suites.
@@ -33,10 +69,15 @@ export function stripShebang() {
   }
 }
 
+const INCLUDE = ['scripts/sma/__tests__/**/*.test.ts', 'daemon/__tests__/**/*.test.ts']
+
 export default defineConfig({
   plugins: [stripShebang()],
   test: {
-    include: ['scripts/sma/__tests__/**/*.test.ts', 'daemon/__tests__/**/*.test.ts'],
+    // NOTE: `include` lives in the projects below, never here. `extends: true`
+    // CONCATENATES array options, so a root include would be merged into the
+    // serial project and every file would run twice (measured: 263 files /
+    // 4721 tests instead of 134 / 2392).
     // globals:true lets daemon/src/queue/adapter.mjs's queueAdapterContractSuite
     // register its describe/it block WITHOUT a top-level `import … from 'vitest'`
     // in a runtime module (that import would break the production daemon, which
@@ -46,5 +87,33 @@ export default defineConfig({
     // drills, CLI round-trips). The vitest 5s default trips on cold-boot variance
     // under multi-terminal machine load; 30s bounds a hang without flaking.
     testTimeout: 30000,
+    // The same reason, for the SAME suites' setup work — and the gap that was
+    // left open: hookTimeout keeps its own 10s default when testTimeout is
+    // raised. install-layout's beforeAll copies the entire sma-core payload
+    // (459 files, 0.7–1.5s idle on this machine) and the preset group runs the
+    // real installer; a loaded box pushes either past 10s, the HOOK dies, and
+    // vitest charges the WHOLE FILE — which is exactly the "install-layout
+    // (whole file)" red on record. Parity with testTimeout, not inflation: the
+    // per-hook bound stays the same order as the per-test one.
+    hookTimeout: 30000,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'parallel',
+          include: INCLUDE,
+          exclude: [...defaultExclude, ...SERIAL_SUITES],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'serial',
+          include: SERIAL_SUITES,
+          fileParallelism: false,
+          sequence: { groupOrder: 1 },
+        },
+      },
+    ],
   },
 })
