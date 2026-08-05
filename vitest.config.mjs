@@ -3,9 +3,9 @@ import { defaultExclude, defineConfig } from 'vitest/config'
 /**
  * SERIAL_SUITES — the files that must not run beside eleven other workers.
  *
- * Everything else in this suite is in-process. These five are not: between them
+ * Everything else in this suite is in-process. These six are not: between them
  * they run the REAL installer four times (each copy is ~459 files), copy the whole
- * sma-core payload into a temp tree, spawn the real `sma-tools` binary thirteen
+ * sma-core payload into a temp tree, spawn the real `sma-tools` binary twenty-two
  * times, spawn the 9.7k-line `cli.mjs` eight times, and drive ~60 REAL `git`
  * processes through mkdtemp repositories. That work is the POINT of these tests —
  * the defects they cover were only ever visible through a real child process — so
@@ -15,7 +15,7 @@ import { defaultExclude, defineConfig } from 'vitest/config'
  * measured on this machine, one parallel full run in four was green and the
  * failing set differed every time, while a `--no-file-parallelism` run was
  * 2368/2368 (registered as D-11-DEFER-05). A gate that is green one run in four
- * is not a gate. So these five are pinned to their own project, run with
+ * is not a gate. So these six are pinned to their own project, run with
  * `fileParallelism: false`, in a LATER group order — `sequence.groupOrder` runs
  * groups from lowest to highest, so this group starts only once the parallel
  * group has finished and the machine is otherwise idle. The remaining ~129 files
@@ -26,7 +26,7 @@ import { defaultExclude, defineConfig } from 'vitest/config'
  * themselves (the races and the duplicate child-process deadlines were fixed, and
  * every spawn now reports status/signal/stderr instead of dying inside
  * `JSON.parse`). Pinning buys determinism, not silence: a real regression in any
- * of the five still turns this suite red.
+ * of the six still turns this suite red.
  */
 const SERIAL_SUITES = [
   'scripts/sma/__tests__/manifest.test.ts',
@@ -34,6 +34,10 @@ const SERIAL_SUITES = [
   'scripts/sma/__tests__/install-layout.test.ts',
   'scripts/sma/__tests__/undo.test.ts',
   'scripts/sma/__tests__/phase-id.test.ts',
+  // Nine `sma-tools` spawns: three of the four tracking-verb defects it covers were
+  // only ever visible at the operator's terminal (exit code + printed envelope), so
+  // the child process is the coverage and cannot be mocked away.
+  'scripts/sma/__tests__/tracking-verbs.test.ts',
 ]
 
 /**
