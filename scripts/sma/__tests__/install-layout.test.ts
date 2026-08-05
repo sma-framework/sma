@@ -82,14 +82,33 @@ beforeAll(() => {
   cpSync(join(repoRoot, 'sma-core'), join(projDir, '.claude', 'sma-core'), { recursive: true })
   smaTools = join(projDir, '.claude', 'sma-core', 'bin', 'sma-tools.cjs')
   rosterPath = join(projDir, '.claude', 'sma-core', 'bin', 'lib', 'command-roster.cjs')
-})
+  // 60s, said out loud: this hook copies 459 real files (0.7–1.5s idle here) and
+  // vitest's hookTimeout default is 10s even where testTimeout is 30s. A hook
+  // that dies takes the WHOLE FILE with it — the "install-layout (whole file)"
+  // red on record. The config carries the same parity; this states the reason
+  // at the hook that needs it.
+}, 60000)
 
 afterAll(() => {
-  rmSync(tmp, { recursive: true, force: true })
+  rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
 })
 
+/**
+ * Spawn a node child and REPORT it. No `timeout:` option on purpose: a child
+ * deadline shorter than vitest's own (30s testTimeout) is a second, tighter
+ * clock, and when it fires the child is killed, `status` comes back `null`, and
+ * the case reads "expected null to be 0" — slowness dressed up as a defect. One
+ * deadline, the runner's, and a kill or a spawn failure says so by name.
+ */
 function runNode(args: string[], cwd: string) {
-  return spawnSync(process.execPath, args, { cwd, encoding: 'utf8', timeout: 25000 })
+  const res = spawnSync(process.execPath, args, { cwd, encoding: 'utf8' })
+  if (res.error || res.signal) {
+    throw new Error(
+      `node ${args.join(' ')} did not complete — signal=${res.signal} ` +
+        `spawnError=${res.error ? res.error.message : 'none'}\nstderr: ${(res.stderr ?? '').slice(0, 600)}`,
+    )
+  }
+  return res
 }
 
 describe('install layout — sma-tools boots (Test 1)', () => {
@@ -256,12 +275,17 @@ describe('preset — what a stranger actually receives (Tests 5-8)', () => {
     proj = join(ptmp, 'consumer')
     mkdirSync(proj, { recursive: true })
     // The REAL installer, exactly as `npx sma-framework init --local` runs it.
+    // No child `timeout:` — the hook's own 120s is the single deadline (see runNode).
     const res = spawnSync(process.execPath, [join(repoRoot, 'bin', 'init.mjs'), '--local'], {
       cwd: proj,
       encoding: 'utf8',
-      timeout: 90000,
     })
-    if (res.status !== 0) throw new Error(`installer failed (${res.status}): ${res.stderr || res.stdout}`)
+    if (res.error || res.signal || res.status !== 0) {
+      throw new Error(
+        `installer failed — status=${res.status} signal=${res.signal} ` +
+          `spawnError=${res.error ? res.error.message : 'none'}\n${res.stderr || res.stdout}`,
+      )
+    }
   }, 120000)
 
   afterAll(() => {
@@ -335,9 +359,10 @@ describe('preset — what a stranger actually receives (Tests 5-8)', () => {
     const check = spawnSync(process.execPath, [join('scripts', 'sma', 'cli.mjs'), 'build-index', '--check'], {
       cwd: proj,
       encoding: 'utf8',
-      timeout: 30000,
     })
-    expect(check.status).toBe(0)
+    expect({ status: check.status, signal: check.signal, stderr: (check.stderr ?? '').slice(0, 400) }).toMatchObject({
+      status: 0,
+    })
   })
 
   it('never clobbers a live corpus: a second install leaves the user\'s note alone', () => {
@@ -350,9 +375,10 @@ describe('preset — what a stranger actually receives (Tests 5-8)', () => {
     const again = spawnSync(process.execPath, [join(repoRoot, 'bin', 'init.mjs'), '--local'], {
       cwd: proj,
       encoding: 'utf8',
-      timeout: 90000,
     })
-    expect(again.status).toBe(0)
+    expect({ status: again.status, signal: again.signal, stderr: (again.stderr ?? '').slice(0, 400) }).toMatchObject({
+      status: 0,
+    })
     expect(readFileSync(mine, 'utf8')).toBe(body)
     expect(readFileSync(join(corpus, 'TAGS.md'), 'utf8')).toBe(tagsBefore)
 

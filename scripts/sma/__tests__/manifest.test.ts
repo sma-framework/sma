@@ -395,16 +395,34 @@ describe('renderManifestDense — the compact, agent-readable passport', () => {
 
 const CLI = fileURLToPath(new URL('../cli.mjs', import.meta.url))
 
-function runManifest(args: string[], smaRoot: string): { out: string; code: number } {
+/**
+ * Run `cli.mjs manifest …` against a temp .sma root.
+ *
+ * `err` rides out with the exit code on purpose. The old shape dropped the
+ * child's stderr on the floor, so every non-zero exit — a real product error, a
+ * crash, a child that never started on a loaded box — reduced to the same
+ * "expected 1 to be 0" with nothing to read. `expectOk` checks the pair, so a
+ * red arrives with its reason attached.
+ */
+function runManifest(args: string[], smaRoot: string): { out: string; code: number; err: string } {
   try {
     const out = execFileSync(process.execPath, [CLI, 'manifest', ...args], {
       env: { ...process.env, SMA_ROOT_OVERRIDE: smaRoot },
       encoding: 'utf8',
     })
-    return { out, code: 0 }
+    return { out, code: 0, err: '' }
   } catch (err: any) {
-    return { out: String(err.stdout ?? ''), code: err.status ?? 1 }
+    return {
+      out: String(err.stdout ?? ''),
+      code: err.status ?? 1,
+      err: `${err.message ?? ''}\n${String(err.stderr ?? '')}`.slice(0, 600),
+    }
   }
+}
+
+/** Assert a manifest run exited 0, carrying the child's stderr into the report. */
+function expectOk(r: { code: number; err: string }) {
+  expect({ code: r.code, err: r.err }).toMatchObject({ code: 0 })
 }
 
 describe('sma manifest — the CLI surface', () => {
@@ -416,7 +434,7 @@ describe('sma manifest — the CLI surface', () => {
 
   it('Test 8 (--json/--md): canonical keys, marker line 1, artifacts written', () => {
     const j = runManifest(['--json'], smaRoot)
-    expect(j.code).toBe(0)
+    expectOk(j)
     const parsed = JSON.parse(j.out)
     expect(Object.keys(parsed).sort()).toEqual(
       [
@@ -437,7 +455,7 @@ describe('sma manifest — the CLI surface', () => {
       ].sort(),
     )
     const md = runManifest(['--md'], smaRoot)
-    expect(md.code).toBe(0)
+    expectOk(md)
     expect(md.out.split('\n')[0]).toBe(MANIFEST_MARKER)
     // both artifacts landed under .sma/manifest/
     const manifestDir = join(smaRoot, 'manifest')
@@ -448,7 +466,7 @@ describe('sma manifest — the CLI surface', () => {
   it('Test 9 (--stat): numeric last line, exit 0, determinism == 1 on a stable tree', () => {
     for (const stat of ['determinism', 'prediction-coverage', 'bench-build-ms']) {
       const r = runManifest([`--stat`, stat], smaRoot)
-      expect(r.code).toBe(0)
+      expectOk(r)
       const last = r.out.trim().split('\n').pop() as string
       expect(Number.isFinite(Number(last))).toBe(true)
       if (stat === 'determinism') expect(Number(last)).toBe(1)
@@ -457,21 +475,21 @@ describe('sma manifest — the CLI surface', () => {
 
   it('Test 17 (--dense): the fixed compact shape, exit 0; --json keeps its own render', () => {
     const d = runManifest(['--dense'], smaRoot)
-    expect(d.code).toBe(0)
+    expectOk(d)
     const lines = d.out.trimEnd().split('\n')
     expect(lines).toHaveLength(MANIFEST_DENSE_LINES)
     expect(lines[0].startsWith('manifest: ')).toBe(true)
     expect(d.out).not.toContain(MANIFEST_MARKER)
     // the two renders never mix: --json passed alongside --dense stays JSON (regression)
     const both = runManifest(['--dense', '--json'], smaRoot)
-    expect(both.code).toBe(0)
+    expectOk(both)
     expect(() => JSON.parse(both.out)).not.toThrow()
     expect(JSON.parse(both.out).manifestVersion).toBe(MANIFEST_VERSION)
   })
 
   it('Test 10 (honest empty): no plans in range -> plans:[], coverage 100, exit 0', () => {
     const r = runManifest(['--json'], smaRoot)
-    expect(r.code).toBe(0)
+    expectOk(r)
     const parsed = JSON.parse(r.out)
     expect(parsed.plans).toEqual([])
     expect(manifestStats(parsed, 'prediction-coverage')).toBe(100)

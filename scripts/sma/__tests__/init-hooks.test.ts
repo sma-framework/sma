@@ -172,13 +172,25 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
     try {
       const proj = join(tmp, 'proj')
       mkdirSync(proj, { recursive: true })
-      const run = () =>
-        spawnSync(process.execPath, [initPath, '--local'], { cwd: proj, encoding: 'utf8', timeout: 120000 })
+      // No child `timeout:` — the case's own 120s below is the single deadline.
+      // A duplicate, tighter child clock kills the installer, hands back
+      // `status: null`, and the case reads "expected null to be 0": a loaded
+      // machine reported as a defect. A kill or a spawn failure now says so.
+      const run = () => {
+        const res = spawnSync(process.execPath, [initPath, '--local'], { cwd: proj, encoding: 'utf8' })
+        if (res.error || res.signal) {
+          throw new Error(
+            `installer did not complete — signal=${res.signal} ` +
+              `spawnError=${res.error ? res.error.message : 'none'}\nstderr: ${(res.stderr ?? '').slice(0, 600)}`,
+          )
+        }
+        return res
+      }
       const settingsPath = join(proj, '.claude', 'settings.json')
 
       // fresh install: exactly one PreToolUse spawn chain (the consumer guard invariant)
       const fresh = run()
-      expect(fresh.status).toBe(0)
+      expect({ status: fresh.status, stderr: (fresh.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
       const s1 = JSON.parse(readFileSync(settingsPath, 'utf8'))
       expect(s1.hooks.PreToolUse).toEqual([multiplexerGroup()])
 
@@ -190,7 +202,7 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
       writeFileSync(settingsPath, JSON.stringify(s1, null, 2) + '\n')
 
       const update = run()
-      expect(update.status).toBe(0)
+      expect({ status: update.status, stderr: (update.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
       expect(update.stdout).toMatch(/legacy per-stream entries/)
       const s2 = JSON.parse(readFileSync(settingsPath, 'utf8'))
       expect(JSON.stringify(s2)).not.toMatch(/collision-check|reflex-check|gates-check/)

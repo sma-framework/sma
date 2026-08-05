@@ -380,6 +380,28 @@ describe('server.mjs — costs.series rides GET /api/state', () => {
 
 // ── real ephemeral-port SSE smoke ──
 
+/**
+ * WHY THIS TEST SYNCHRONIZES ON THE RESPONSE AND NOT ON A CLOCK.
+ *
+ * It used to emit on a fixed `setTimeout(…, 50)` after `req.end()`, commented
+ * "emit AFTER the handshake is established" — a hope, not a guarantee. The
+ * handshake costs 20–24 ms on this machine idle, so the whole assertion rested on
+ * a ~2× margin: double the latency and the emit lands while the hub still has
+ * ZERO clients, the frame is never written, the promise never settles, and the
+ * case dies on the 30s testTimeout with a message that names nothing. Measured
+ * with the emit moved inside that window (probe, 05.08):
+ *
+ *   emitDelay 0ms  -> handshake 24ms, clients at emit 0 -> no frame, timeout
+ *   emitDelay 1ms  -> handshake 23ms, clients at emit 0 -> no frame, timeout
+ *   emitDelay 50ms -> handshake 20ms, clients at emit 1 -> frame
+ *
+ * The server registers the subscriber BEFORE it answers (`handleEvents` calls
+ * `hub.addClient(res)` and addClient writes the head), so "the client has the
+ * response head" is proof that the hub already holds it. Emitting from the
+ * response callback is therefore race-free at any machine speed — and `emit`
+ * returns the delivered-client count, so a zero is reported as a zero instead of
+ * being waited out.
+ */
 describe('server.mjs — real-listen SSE smoke', () => {
   it('streams an id/event/data frame over a real socket', async () => {
     const hub = createEventHub({})
@@ -391,19 +413,26 @@ describe('server.mjs — real-listen SSE smoke', () => {
         const req = httpRequest(
           { host: '127.0.0.1', port, path: '/api/events', method: 'GET', headers: { authorization: `Bearer ${TOKEN}` } },
           (res) => {
-            expect(res.statusCode).toBe(200)
-            expect(res.headers['content-type']).toBe('text/event-stream')
+            try {
+              expect(res.statusCode).toBe(200)
+              expect(res.headers['content-type']).toBe('text/event-stream')
+            } catch (e) {
+              reject(e) // an assertion thrown in here would otherwise hang to the test timeout
+              return
+            }
             let buf = ''
             res.on('data', (c) => {
               buf += c.toString()
               if (buf.includes('event: task.queued')) resolve(buf)
             })
+            res.on('error', reject)
+            // The head is in hand, so hub.addClient(res) has already run.
+            const delivered = hub.emit({ event: 'task.queued', taskId: 'SMOKE' })
+            if (delivered !== 1) reject(new Error(`hub.emit reached ${delivered} clients, expected 1`))
           },
         )
         req.on('error', reject)
         req.end()
-        // emit AFTER the handshake is established
-        setTimeout(() => hub.emit({ event: 'task.queued', taskId: 'SMOKE' }), 50)
       })
       expect(frame).toMatch(/id: \d+/)
       expect(frame).toMatch(/event: task\.queued/)
