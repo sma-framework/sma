@@ -238,9 +238,17 @@ function projectOf(row, activeProject) {
 }
 
 /**
- * deriveProjects(rows, config) → [{id, name, taskCounts}] over the WHOLE selection.
+ * deriveProjects(rows, config) → [{id, name, connected, taskCounts}] over the WHOLE selection.
  * Counts are per project by construction, so they are computed from every row regardless
  * of an active filter — that is exactly what makes the switcher readable.
+ *
+ * `connected` is whether the registry entry names a folder on disk (D-11-DEFER-18). The
+ * default entry every install mints carries a NAME and no path, so the screens showed a
+ * project they could not read a single file of: «Память» answered «нет подключённого
+ * проекта» while «Машины и проекты» listed the project by name. An entry that names a
+ * project it cannot open is the worst of the three states, so the fact travels and the
+ * screens say it. The PATH itself never does — an absolute path on the wire is a disclosure
+ * (T-11-09-01), and a boolean is the whole of what a screen needs.
  */
 function deriveProjects(rows, config) {
   const registry = Array.isArray(config.projects) ? config.projects : []
@@ -251,7 +259,7 @@ function deriveProjects(rows, config) {
     for (const r of mine) {
       if (Object.prototype.hasOwnProperty.call(taskCounts, r.status)) taskCounts[r.status] += 1
     }
-    return { id: p.id, name: p.name, taskCounts }
+    return { id: p.id, name: p.name, connected: typeof p.path === 'string' && p.path.trim() !== '', taskCounts }
   })
 }
 

@@ -312,6 +312,14 @@ function ConnectedProject({ project }: { project: ProjectMemorySurface }) {
           </div>
           {migration && migration.files.length > 0 ? (
             migration.files.map((file, i) => <MigrationRow key={file.file} file={file} first={i === 0} />)
+          ) : migration && migration.truncated ? (
+            /* An empty list can mean two opposite things. This one means the daemon refused to
+               build the preview on a poll, not that there is nothing to change. */
+            <p className="m-0 border-t border-bd px-[18px] py-4 text-[12.5px] text-tx2">
+              В записной книжке этого проекта {migration.corpusNotes} записей — это больше, чем окно
+              разбирает на лету ({migration.previewCap}). Разбор по файлам здесь не строится; перенос
+              делается в самом проекте.
+            </p>
           ) : (
             <p className="m-0 border-t border-bd px-[18px] py-4 text-[12.5px] text-tx2">
               Разбор ещё не готов — он появится при следующем чтении проекта.
@@ -329,6 +337,9 @@ export function Screen() {
   const filled = memory && !memory.absent ? memory : null
   const projectMemory = state.data?.projectMemory
   const connected = projectMemory && !projectMemory.absent ? projectMemory : null
+  /** The selected register entry when it names no folder — a project in the list, unreadable. */
+  const active = (state.data?.projects ?? []).find((p) => p.id === state.data?.activeProject) ?? null
+  const notConnected = !connected && active && active.connected === false ? active : null
 
   const noteCount = filled?.noteCount ?? 0
   const tags = filled?.tags ?? []
@@ -423,7 +434,23 @@ export function Screen() {
             </div>
           )}
 
-          {connected ? <ConnectedProject project={connected} /> : null}
+          {connected ? (
+            <ConnectedProject project={connected} />
+          ) : notConnected ? (
+            /* The register names a project; nothing on this machine says WHERE it is. Saying
+               that plainly is the whole of D-11-DEFER-18 on this screen — the alternative was
+               a screen naming a project it could not read one line of. */
+            <div className="overflow-hidden rounded-[14px] border border-bd bg-card shadow-panel">
+              <CardHead title={`Подключённый проект — ${notConnected.name}`} />
+              <div className="flex flex-col gap-2 px-[18px] py-5">
+                <span className="text-[13px] text-tx">У этого проекта не указана папка — читать нечего.</span>
+                <span className="max-w-[640px] text-[11.5px] leading-[1.6] text-tx2">
+                  Откройте «Машины и проекты» и подключите папку проекта на этой машине — записная
+                  книжка появится здесь сама.
+                </span>
+              </div>
+            </div>
+          ) : null}
 
           <p className="m-0 max-w-[720px] text-[11.5px] leading-[1.6] text-tx3">
             Ничего не хранится у чужих сервисов. Всё у Вас: корпус лежит внутри проекта и едет с

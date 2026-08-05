@@ -166,6 +166,13 @@ export interface ProjectTaskCounts {
 export interface ProjectRow {
   id: string
   name: string
+  /**
+   * Whether the entry names a folder on this machine at all. The default entry an install
+   * mints carries a name and nothing else, so a project can be in the register and still be
+   * unreadable — the screens say «не подключён» rather than naming a project they cannot open.
+   * The path itself never travels.
+   */
+  connected: boolean
   taskCounts: ProjectTaskCounts
 }
 
@@ -354,6 +361,15 @@ export interface ProjectMigration {
   total: number
   applicable: number
   files: ProjectMigrationFile[]
+  /**
+   * True when the corpus is larger than the daemon will preview on a poll. The preview then
+   * runs over nothing at all: `files` is empty and `total` is 0 BY REFUSAL, not because there
+   * was nothing to change. The screen has to say which it is.
+   */
+  truncated?: boolean
+  /** How many notes the corpus holds, and the size a live preview is built up to. */
+  corpusNotes?: number
+  previewCap?: number
 }
 
 /**
@@ -929,8 +945,19 @@ export interface ToggleResult {
   agent?: { id: string; enabled: boolean }
   skill?: { id: string; assignedTo: string[] }
   mcp?: { id: string; enabled: boolean }
+  /** The reserved «whole shipped team» branch: how many roster entries the switch touched. */
+  stockTeam?: { enabled: boolean; agents: number }
 }
 
 export interface OkResult {
   ok: boolean
+}
+
+/**
+ * What the two project-writing doors answer: the entry as it now stands, with the id the
+ * DAEMON minted. A screen that wants to look at what it just added reads the id from here —
+ * it never invents one, because minting the id is the register's own business.
+ */
+export interface ProjectWriteResult extends OkResult {
+  project?: { id: string; name: string }
 }

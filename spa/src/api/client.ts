@@ -15,6 +15,7 @@ import type {
   OnboardingState,
   PairingInvitation,
   ProjectsPayload,
+  ProjectWriteResult,
   ReturnResult,
   StatePayload,
   TaskDetail,
@@ -244,14 +245,14 @@ export function getProjects(): Promise<ProjectsPayload> {
   return getJson<ProjectsPayload>('/api/projects')
 }
 
-/** Take a folder into the register of projects. */
-export function addProject(input: { path: string; name?: string }): Promise<OkResult> {
-  return postJson<OkResult>('/api/project/add', withOptional({ path: input.path }, { name: input.name }))
+/** Take a folder into the register of projects. The id comes back minted by the daemon. */
+export function addProject(input: { path: string; name?: string }): Promise<ProjectWriteResult> {
+  return postJson<ProjectWriteResult>('/api/project/add', withOptional({ path: input.path }, { name: input.name }))
 }
 
 /** Give a project a better name. */
-export function renameProject(id: string, name: string): Promise<OkResult> {
-  return postJson<OkResult>('/api/project/rename', { id, name })
+export function renameProject(id: string, name: string): Promise<ProjectWriteResult> {
+  return postJson<ProjectWriteResult>('/api/project/rename', { id, name })
 }
 
 /** Look at another project. */
