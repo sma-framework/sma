@@ -105,7 +105,8 @@ export const HISTORY_EXCEPTION =
   'class, which keeps material out of git in the first place. See docs/MEMORY-THREAT-MODEL.md §6.4 for ' +
   'the manual route.'
 
-/** The frontmatter fields that can hold a pointer AT another record. */
+/** The frontmatter fields that can hold a pointer AT another record. The typed
+ * `links: [{type, ref}]` array points too — `danglingLinks` walks both. */
 const LINK_FIELDS = Object.freeze(['derived_from', 'supersedes', 'superseded_by', 'predicted_from', 'excavated_from'])
 
 /** The storage classes whose records live in the git-backed corpus. */
@@ -293,11 +294,21 @@ function anchorOf(ctx) {
 
 // ── survivors: what each surface still holds, read back from disk ────────────
 
-/** Does a generated markdown artifact still name the record? */
+/**
+ * Does a generated markdown artifact still name the record?
+ *
+ * MATCHED ON A BOUNDARY, never as a substring: erasing `window` while a record
+ * named `morning-window` survives must not read the survivor's
+ * `morning-window.md` as a copy of `window.md`. That false survivor would report
+ * a fully successful erase as failed — and re-running could never clear it,
+ * because the "copy" it names is another record's legitimate line.
+ */
 function markdownHolds(ctx, path) {
   try {
     if (!ctx.fs.existsSync(path)) return false
-    return ctx.fs.readFileSync(path, 'utf8').includes(`${ctx.id}.md`)
+    const escaped = ctx.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const onBoundary = new RegExp(`(^|[^A-Za-z0-9_-])${escaped}\\.md`, 'm')
+    return onBoundary.test(ctx.fs.readFileSync(path, 'utf8'))
   } catch {
     return false
   }
@@ -562,6 +573,17 @@ function danglingLinks(ctx) {
           out.push({ file: path, where: place.where, field, value: String(value) })
         }
       }
+      // The typed edge vocabulary points the same way the five pointer fields
+      // do — schema v2's `links: [{type, ref}]`. A report that read only the
+      // old fields would call a corpus clean while a typed edge still names
+      // the erased record.
+      const typed = Array.isArray(fm.links) ? fm.links : []
+      typed.forEach((entry, index) => {
+        const ref = entry && typeof entry === 'object' ? entry.ref : entry
+        const stem = String(ref ?? '').trim().replace(/\.md$/i, '')
+        if (stem !== ctx.id) return
+        out.push({ file: path, where: place.where, field: `links[${index}]`, value: String(ref) })
+      })
     }
   }
   return out
