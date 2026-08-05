@@ -215,6 +215,11 @@ describe('envelopeAllows — a permit is checked, never assumed', () => {
     expect(envelopeAllows(forge, { action: 'write', path: '.claude/agents/../../etc/passwd' })).toBe(false)
     expect(envelopeAllows(forge, { action: 'write', path: 'C:/Windows/system32' })).toBe(false)
     expect(envelopeAllows(forge, { action: 'write', path: '/etc/passwd' })).toBe(false)
+    // Windows drive-RELATIVE — no slash after the colon. It resolves against the
+    // drive's own cwd, outside any declared root; a slash-only test waves it
+    // through as "relative", and prod declares writePaths: ['.'].
+    expect(envelopeAllows(prod, { action: 'write', path: 'C:evil.txt' })).toBe(false)
+    expect(envelopeAllows(forge, { action: 'write', path: 'c:.claude/agents/x.md' })).toBe(false)
   })
 
   it('returns false when the envelope itself is invalid — a malformed envelope grants nothing', () => {

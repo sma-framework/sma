@@ -319,7 +319,10 @@ export function validateEnvelope(env) {
 function normalizePath(p) {
   if (typeof p !== 'string' || p.trim() === '') return null
   const slashed = p.replace(/\\/g, '/').trim()
-  if (slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed)) return null // absolute: outside any declared root
+  // Any drive-letter prefix is refused, slash or no slash: `C:foo` is Windows
+  // drive-RELATIVE — it resolves against the drive's own cwd, outside any
+  // declared root, and a slash-only test would wave it through as "relative".
+  if (slashed.startsWith('/') || /^[A-Za-z]:/.test(slashed)) return null // absolute or drive-anchored: outside any declared root
   const segments = slashed.split('/').filter((s) => s !== '' && s !== '.')
   if (segments.includes('..')) return null // a traversal is refused, never resolved
   return segments.join('/')
