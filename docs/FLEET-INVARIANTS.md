@@ -94,7 +94,9 @@ checked far more often than its own dedicated case suggests.
 transition into `ACCEPTED` that lacks a receipt reference or names a disposition
 outside the closed set, and by `complete()` in `adapter.mjs` and
 `pgboss-backend.mjs`, which throw `NoReceiptError` before any mutation when a
-result carries no `receiptRef`.
+result carries no `receiptRef`. **Read §5.8:** on the live queue path only the
+`complete()` guard runs today — `applyTransition` is the tested formal
+reference, not yet a production checkpoint.
 
 **Proven by** `invariants.test.ts` → `invariantOneAcceptedIsNeverSelfCertified`,
 whose generator deliberately withholds the receipt or the disposition on roughly
@@ -216,7 +218,9 @@ so a caller gets the reason rather than a generic illegal-pair answer; with a
 disposition supplied it is still refused, now returning `requiresNewAttempt`,
 because an authorized disposition opens a **new** attempt through the enqueue
 path and does not move this immutable one. At the queue layer the dead-letter
-queue is a separate queue that `claimNext` never fetches from.
+queue is a separate queue that `claimNext` never fetches from. **Read §5.8:**
+the queue-layer half is what runs in production today; the `applyTransition`
+half is the tested formal reference.
 
 **Proven by** `invariants.test.ts` → `invariantSevenDeadLetterNeedsADisposition`,
 which checks two halves — that the transition **table** declares no way out of
@@ -375,8 +379,31 @@ person shrinks it by re-running with fewer steps.
 **What would close it:** adopting a property-testing library, which is a decision
 about dependencies rather than about tests.
 
+### 5.8 The state machine and the attempt stamp are formal references, not yet the production path
+
+Nothing in `daemon/src` routes a live status change through `applyTransition`,
+and none of the four production `recordAttempt` call sites (`loop.mjs`,
+`pgboss-backend.mjs`) passes the seven stamp fields — no live attempt row
+carries `policyVersion`, `memorySnapshotHash`, `planHash`, `harnessVersion`,
+`stateMachineVersion`, `idempotencyKey` or `capabilityEnvelopeHash`, and no
+idempotency key is minted outside the suites. Where §3 says **Enforced by**
+`applyTransition`, read it the way §5.1 reads for the envelope: the refusal
+exists, is exercised after every step of every generated sequence, and is the
+shape a receipt or a future wiring point is checked against — the live queue
+path does not consult it yet. What holds the invariants in production today is
+the queue layer itself (the `complete()`/`fail()` receipt guards, the separate
+dead-letter queue `claimNext` never fetches from) plus the composition §5.1
+lists.
+
+**What would close it:** the queue adapter routing its status changes through
+`applyTransition` (or recording why a transition is exempt), and the four
+`recordAttempt` call sites passing the stamp fields they can already compute.
+That is deliberate production wiring with its own plan, registered as
+release-gate work — not a tail task.
+
 ## 6. Change log
 
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-08-04 | First edition. The seven invariants, the eleven states and the transition contract shape, the at-least-once promise, and seven non-goals — written when the property suite and the drills that prove them landed. |
+| 1.1 | 2026-08-05 | §5.8 added after review: the state machine and the attempt stamp are tested formal references with no production consumer yet — §3.1/§3.7's «Enforced by `applyTransition`» now reads through that lens, stated instead of implied. |

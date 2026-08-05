@@ -212,6 +212,13 @@ export const MEMORY_SNAPSHOT_ABSENT = 'absent'
  * the declared absent value. Never throws: an attempt must still be recordable when the
  * corpus is not there.
  *
+ * SEAM BOUNDARY, stated so nobody trips on it: `fsImpl` overrides CONTENT reads
+ * only. The membership question always goes to `listNoteFiles`, which asks the
+ * REAL filesystem — that module owns the one definition of "what is a note" and
+ * re-deriving it here against a fake fs would be the second definition it warns
+ * against. A test injecting a fully virtual fs therefore gets
+ * MEMORY_SNAPSHOT_ABSENT; back the corpus with a real temp dir instead.
+ *
  * @param {string|{corpusDir?:string, fsImpl?:object}} input — the corpus dir, or options
  * @returns {string} 64 hex chars, or MEMORY_SNAPSHOT_ABSENT
  */

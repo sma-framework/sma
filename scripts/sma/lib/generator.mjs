@@ -29,7 +29,8 @@
  *   description ~ claim · kind ~ (memory_type, truth_mode) · tags ~ retrieval.areas ·
  *   importance≥threshold ~ context_priority: always.
  * On top of that sits ONE filter that outranks all of it: a record whose status
- * is superseded or revoked never reaches CORE (see CORE_EXCLUDED_STATUSES).
+ * names any of the four retirements (superseded · revoked · expired · archived)
+ * never reaches CORE (see CORE_EXCLUDED_STATUSES).
  *
  * EPISODES ARE INVISIBLE HERE BY CONSTRUCTION. `.claude/memory/episodes/` is a
  * subdirectory, and the corpus listing below is FLAT (readdirSync + isFile), so
