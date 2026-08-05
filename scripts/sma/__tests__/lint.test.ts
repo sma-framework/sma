@@ -941,10 +941,12 @@ describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
     }
   })
 
-  it('Test 4 (MEM-CONTRADICT): conflicting notes of kind outside decision/status never fire', () => {
+  it('Test 4 (MEM-CONTRADICT): conflicting notes of a kind outside CONTRADICT_KINDS never fire', () => {
     const res = lintCase('contradict')
     const con = findingsOf(res, 'MEM-CONTRADICT')
     // The reference_port pair conflicts textually but kind=reference — ignored.
+    // The gate was WIDENED (D-11-DEFER-11) and it is still a gate: `reference`
+    // stays outside it, which is what this test has always been about.
     expect(con.some((f) => f.message.includes('reference_port_one.md'))).toBe(false)
     expect(con.some((f) => f.message.includes('reference_port_two.md'))).toBe(false)
   })

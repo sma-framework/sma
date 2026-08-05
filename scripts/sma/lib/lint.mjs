@@ -976,7 +976,7 @@ const MEM_CLAUDEDUP = {
 
 const MEM_CONTRADICT = {
   id: 'MEM-CONTRADICT',
-  title: 'Same-subject conflicting decision/status notes, both active, unlinked (B5)',
+  title: 'Same-subject conflicting rule-stating notes, both active, unlinked (B5)',
   tier: 'critical',
   run(ctx) {
     // Detection is DELEGATED to consolidate.mjs's findContradictions — the one
