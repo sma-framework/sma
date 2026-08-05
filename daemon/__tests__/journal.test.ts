@@ -537,7 +537,7 @@ const NEW_STAMP_KEYS = [
   'capabilityEnvelopeHash',
 ]
 
-describe('ALLOWED_ATTEMPT_KEYS — seven more, and every old one kept', () => {
+describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, every old one kept', () => {
   it('keeps every pre-existing member, in place', () => {
     const before = [
       'taskId',
@@ -555,9 +555,23 @@ describe('ALLOWED_ATTEMPT_KEYS — seven more, and every old one kept', () => {
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(16)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(17)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(16) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(17) // no duplicate name
+  })
+
+  // The seventeenth key, added 2026-08-05 with the reconciliation pass (D-11-DEFER-07). It
+  // is NOT a stamp field: a stamp says what the world was, this says who wrote the row.
+  it('carries the reconstructed flag LAST, after the stamp, so a reader can tell the two apart', () => {
+    expect(ALLOWED_ATTEMPT_KEYS).toContain('reconstructed')
+    expect(ALLOWED_ATTEMPT_KEYS[ALLOWED_ATTEMPT_KEYS.length - 1]).toBe('reconstructed')
+    expect(NEW_STAMP_KEYS).not.toContain('reconstructed')
+  })
+
+  it('a live-recorded row does not carry the flag at all — absence is how a reader knows', () => {
+    recordAttempt(dir, { taskId: 'BL-LIVE', attempt: 1, outcome: 'failed', failureReason: 'runtime_offline' })
+    const [row] = readAttempts(dir, 'BL-LIVE')
+    expect(Object.hasOwn(row, 'reconstructed')).toBe(false)
   })
 })
 

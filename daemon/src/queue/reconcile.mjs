@@ -13,8 +13,10 @@
  *
  * THIS IS THAT OBSERVATION, MADE AFTERWARDS. The queue counts retries whether or not anyone
  * was watching, so `attempt` on a queue row (`data.attempt + retry_count`) is a durable
- * statement about HOW MANY attempts have been made. Comparing it with the number of rows in
- * the ledger yields the count that was never written, and this pass appends it.
+ * statement about HOW MANY attempts have been made. Comparing it with the attempt NUMBERS
+ * the ledger already holds yields the ones that were never written, and this pass appends
+ * them. The daemon tick runs it once per tick, right after the liveness sweep, so the rows
+ * the sweep has just written are already on disk when the comparison is made.
  *
  * ═══════════ A RECONSTRUCTED ROW NEVER MASQUERADES AS A LIVE ONE ═══════════════════
  * Every row this module appends carries `reconstructed: true`. It is the whole point: the
@@ -27,17 +29,36 @@
  * 'runtime_offline' when it is the one that notices. The two paths therefore say the same
  * thing about the same event instead of two dialects of it.
  *
+ * ═══════════ IT COMPARES NUMBERS, NOT COUNTS — AND THAT IS THE WHOLE FIX ═══════════
+ * The obvious comparison — «does the ledger hold as many rows as the queue implies» — is
+ * WRONG IN PRODUCTION, and it was written that way first and then rejected. A completed or
+ * failed task on the real daemon gets TWO rows for ONE attempt: the adapter writes one
+ * inside `complete()`/`fail()`, and the tick writes a richer one in
+ * `completeTask`/`failTask`. So a task with one observed failure and one unobserved death
+ * holds two rows against a queue count of two — a count comparison sees a full ledger and
+ * reconstructs nothing, leaving exactly the hole this module exists to close. The pass
+ * therefore asks, per attempt NUMBER, whether any row claims it, and fills the numbers
+ * nobody claimed.
+ *
  * ═══════════ CONSERVATIVE BY CONSTRUCTION — IT UNDER-REPORTS, NEVER INVENTS ════════
  * Three narrowings, each deliberate:
  *   1. Only tasks whose queue row shows `attempt > 1` are examined. A retry is the only
  *      event this pass can read, so a task that never retried is not its business — and
  *      this keeps the pass off the ledger files of every historical task on every tick.
- *   2. It appends ONLY when the ledger holds FEWER rows than the queue's count implies.
- *      A duplicate row, or a row written before `attempt` was recorded on it, therefore
- *      provokes no reconstruction — the pass stays silent rather than guessing.
- *   3. It fills the attempt NUMBERS that are absent, up to the number owed. A number
- *      already present is never written twice, so re-running the pass is a no-op and the
- *      tick may call it as often as it likes.
+ *   2. A ledger holding ANY row this pass cannot place — a row carrying no attempt number,
+ *      as every row written before that number was recorded on it does — silences the whole
+ *      task. Such a row is evidence of an attempt whose identity is unknown, and
+ *      reconstructing «the missing number» beside it could duplicate the very attempt it
+ *      already stands for.
+ *   3. A number already present is never written twice, so re-running the pass is a no-op
+ *      and the tick may call it as often as it likes.
+ *
+ * WHAT IT COSTS, SAID OUT LOUD: one durable `adapter.list({})` per pass, plus one ledger
+ * file read per task the queue reports with `attempt > 1`. The pass holds no state between
+ * calls (D-9.5-02 — the daemon is killable at any line), so it cannot remember which tasks
+ * it has already found complete and re-reads them every tick. On a queue whose retried
+ * tasks number in the thousands that is the cost to watch, and the narrowing that would pay
+ * for itself first is a time bound on how far back the pass looks.
  *
  * Node built-ins only — in fact none. The adapter, the ledger and the clock are injected;
  * this module opens nothing and holds no state between calls. A per-task failure is
@@ -75,6 +96,28 @@ export function concludedAttempts(row) {
 }
 
 /**
+ * missingAttemptNumbers(existing, concluded) → the attempt numbers in 1..concluded that no
+ * ledger row claims, or NULL when the ledger holds a row this pass cannot place.
+ *
+ * Null is a refusal to guess, not an error (narrowing 2 above). PURE.
+ *
+ * @param {object[]} existing
+ * @param {number} concluded
+ * @returns {number[]|null}
+ */
+export function missingAttemptNumbers(existing, concluded) {
+  const recorded = new Set()
+  for (const row of Array.isArray(existing) ? existing : []) {
+    const n = Number(row && row.attempt)
+    if (!Number.isFinite(n)) return null // an unplaceable row silences the whole task
+    recorded.add(n)
+  }
+  const missing = []
+  for (let n = 1; n <= concluded; n += 1) if (!recorded.has(n)) missing.push(n)
+  return missing
+}
+
+/**
  * reconcileAttempts({adapter, ledger, clock}) — one pass over durable queue state,
  * appending the attempt rows the ledger is missing. Returns a summary
  * `{examined, reconstructed}`; never throws.
@@ -100,24 +143,18 @@ export async function reconcileAttempts({ adapter, ledger, clock = Date.now } = 
     if (concluded < 1) continue
     summary.examined += 1
     try {
-      const existing = ledger.readAttempts(row.id) || []
-      let owed = concluded - existing.length
-      if (owed < 1) continue // the ledger is complete, or holds more than the count implies
-      const recorded = new Set(
-        existing.map((r) => Number(r && r.attempt)).filter((n) => Number.isFinite(n)),
-      )
-      for (let n = 1; n <= concluded && owed > 0; n += 1) {
-        if (recorded.has(n)) continue
+      const missing = missingAttemptNumbers(ledger.readAttempts(row.id) || [], concluded)
+      if (missing === null) continue // a row this pass cannot place — stay silent
+      for (const attempt of missing) {
         ledger.recordAttempt({
           taskId: row.id,
-          attempt: n,
+          attempt,
           ...RECONSTRUCTED_OUTCOME,
           reconstructed: true,
           // The moment of RECONCILIATION. The moment of the attempt is not knowable from a
           // retry counter, and a plausible timestamp would be a fabricated one.
           recordedAt: new Date(now()).toISOString(),
         })
-        owed -= 1
         summary.reconstructed += 1
       }
     } catch {
