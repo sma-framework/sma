@@ -11,32 +11,55 @@
  *       anywhere in sma-core/** contents or filenames, outside the fixed
  *       exclusions (the aliases/ layer intentionally carries the old prefix).
  *   (c) COLORS: every sma-core/agents/sma-*.md frontmatter carries a color field.
- *   (d) INTERNAL IDS: no internal register id (threat `T-<phase>-<n>` / decision
- *       `D-<phase>-<n>`) survives in a USER-FACING surface. These ids are house
- *       bookkeeping; printed at an adopter they are noise that references a
- *       register the adopter cannot read.
+ *   (d) INTERNAL IDS: no internal register id (threat `T-<phase>-<n>`, decision
+ *       `D-<phase>-<n>`, deferred item `D-<phase>-DEFER-<n>`, private backlog
+ *       `SB-<n>`) survives in a PUBLISHED surface. These ids are house
+ *       bookkeeping; read by an adopter they are noise that references a
+ *       register the adopter cannot open.
  *   (e) INTERNAL PLAN SHAPES: no bare house plan id (a plan/phase word followed
- *       by a compound `9.5-10` id, or by a wildcard `49.x` id) survives in a
- *       markdown file the PACKAGE SHIPS (root package.json `files[]`). Same
- *       reason as (d): it points at a register the adopter cannot read.
+ *       by a compound `9.5-10` id, or by a wildcard `49.x` id) survives in
+ *       published markdown. Same reason as (d): it points at a register the
+ *       adopter cannot read.
  *
- * SCOPE BOUNDARY of check (d) — stated honestly, because "is this string printed
- * to a user?" is not statically decidable. What IS scanned:
- *   - string literals in shipped runtime JS (USER_FACING_CODE below), i.e. the
- *     lint/check titles, warn+error texts and CLI output that reach a terminal;
- *   - shipped user-facing prose (USER_FACING_DOCS): the READMEs, docs/*.md, the
- *     engine README, the statusline snippet an adopter pastes into a config;
- *   - `description` fields in any package.json (the npm shop window).
+ * WHAT "PUBLISHED" MEANS HERE — the git-tracked set, and the reason for it.
+ * A push publishes the REPOSITORY, not the npm tarball: `files[]` in package.json
+ * is the narrower shop window, and scanning only it left the agent-facing markdown
+ * under `sma-core/**` and the root test config unread while both become
+ * world-readable the moment `main` is pushed. So checks (d) and (e) enumerate
+ * `git ls-files`. If git cannot be run, the tool SAYS SO on stderr and falls back
+ * to a filesystem walk — a surface it cannot enumerate is a finding, not a pass.
+ *
+ * Inside that set, per file class:
+ *   - MARKDOWN (`*.md`), wherever it lives: every line. Markdown has no "comment"
+ *     class — every line ships as content. This now includes `sma-core/**`, whose
+ *     earlier exclusion ("agent-facing instructions, not adopter-facing output")
+ *     was the hole: an agent-facing file is still a published file.
+ *   - ROOT BUILD/TEST CONFIG (`*.config.{mjs,js,cjs,ts}` at the repo root): the
+ *     whole file, comments included. A handful of short hand-written files whose
+ *     comments ARE their documentation — there is no archaeology to lose.
+ *   - OTHER SHIPPED CODE: string literals only (see below).
+ *   - `description` in any package.json (the npm shop window).
  * What is deliberately NOT scanned, and why:
- *   - CODE COMMENTS. They ship in source but never print. Scanning them would
- *     force ~980 rewrites across 168 files and would delete the design rationale
- *     that makes the code auditable. Tracked as a known, accepted residue.
- *   - `sma-core/**` workflow/agent/reference prompts — agent-facing instructions,
- *     not adopter-facing output.
+ *   - COMMENT TEXT inside the runtime source trees (`scripts/`, `daemon/`, `spa/`,
+ *     `supervisor/`, `tools/`, `bin/`, `sma-core/bin/`). It ships in source but
+ *     never prints, and several hundred such comments carry decision ids that are
+ *     the only surviving link between a line of code and the reasoning that put it
+ *     there. Whether they go is an OPEN DECISION with a real archaeology cost, and
+ *     this tool must not pre-empt it by conflating the two classes.
  *   - `__tests__/`, `fixtures/`, `assets/demos/` — synthetic and sample ids are
  *     sanctioned there (a demo of decision-locking must show decision ids).
- *   - bare plan/phase numbering (`9.4-01`) STANDING ALONE — check (e) below picks
- *     up only the narrower case where a plan/phase word introduces it.
+ *   - `BL-<n>`: NOT an internal-only shape. It is the PRODUCT's own backlog item
+ *     id — minted and parsed by `scripts/sma/lib/batch.mjs`, documented in
+ *     `docs/VENDOR-LEDGER.md`. Banning it would fail the product's own vocabulary.
+ *   - single-letter register prefixes (`P5`, `B14`, `FI-2`): a residue of the same
+ *     class, left uncovered on purpose — the shapes collide with ordinary prose and
+ *     with product vocabulary, so a blind ban costs more false positives than the
+ *     leak is worth. Removed by hand where found, not by rule.
+ *   - the slash-pair plan shape (`plans 05/09`, `phases 51/52`): a real variant of
+ *     (e), not yet armed — the pattern also matches progress notation ("plans
+ *     15/15"), so arming it needs a narrower rule than the two-number pair.
+ *   - bare plan/phase numbering (`9.4-01`) STANDING ALONE — check (e) picks up only
+ *     the narrower case where a plan/phase word introduces it.
  *   - prediction ids (`P9.3-12-A`) IN PROSE — they are legitimate data in the
  *     documented `prediction` / `tripwire` table columns, where removing them
  *     would break the traceability that makes a prediction checkable. They are
@@ -46,6 +69,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -121,9 +145,19 @@ for (const file of walk(CORE)) {
   })
 }
 
-// ---- (d) internal register ids in user-facing surfaces ----------------------
-/** Threat / decision register id. NOT bare plan numbering (`9.4-01`), which is public. */
-const INTERNAL_ID = /\b[TD]-\d+(?:\.\d+)?-\d+[a-z]?\b/
+// ---- (d) internal register ids in published surfaces ------------------------
+/**
+ * Internal register id. Three house shapes:
+ *   `T-9.1-43` / `D-11-08`  — threat and decision ids;
+ *   `D-11-DEFER-05`         — the deferred-item register. The WORD segment is why
+ *                             the older pattern walked past it: that pattern wants
+ *                             digits straight after the phase number, and this
+ *                             shape has a word there;
+ *   `SB-031`                — the private product backlog.
+ * NOT bare plan numbering (`9.4-01`), which is public, and NOT `BL-<n>`, which is
+ * the product's own backlog id format (see the header).
+ */
+const INTERNAL_ID = /\b(?:[TDQ]-\d+(?:\.\d+)?-(?:[A-Z]{2,}-)?\d+[a-z]?|SB-\d{3})\b/
 /**
  * Prediction register id (`P9.3-12-A`). Applied to CODE STRING LITERALS ONLY, not
  * to docs: a prediction id is legitimate DATA in a documented table column (the
@@ -134,14 +168,27 @@ const INTERNAL_ID = /\b[TD]-\d+(?:\.\d+)?-\d+[a-z]?\b/
  */
 const PREDICTION_ID = /\bP\d+\.\d+-\d+(?:-[A-Za-z0-9]+)?\b/
 
-/** Shipped runtime trees whose STRING LITERALS reach an adopter's terminal. */
-const USER_FACING_CODE = ['scripts/sma', 'daemon/src', 'bin', 'tools', 'supervisor']
-/** Shipped prose an adopter reads. */
-const USER_FACING_DOCS = ['README.md', 'README.ru.md', 'ROADMAP.md', 'ROADMAP.ru.md', 'PASSPORT.md', 'THIRD-PARTY-LICENSES.md', 'docs', 'scripts/sma/README.md', 'scripts/sma/statusline-snippet.md']
 /** Sanctioned: synthetic ids belong here. */
 const ID_EXCLUDED = /(^|\/)(node_modules|__tests__|fixtures|assets\/demos)(\/|$)/
+/** Code whose comment text is the open-decision class: string literals only. */
+const CODE_EXT = /\.(?:mjs|js|cjs|ts|tsx)$/
+/** Root build/test config: short, hand-written, its comments are its documentation. */
+const ROOT_CONFIG = /^[^/]+\.config\.(?:mjs|js|cjs|ts)$/
 
-const inTree = (relPath, roots) => roots.some((r) => relPath === r || relPath.startsWith(r + '/'))
+/**
+ * The published surface: everything git tracks. A push publishes the repository,
+ * so the git index — not `files[]` — is the honest enumeration. Fail LOUD, never
+ * quiet: a surface this tool cannot enumerate is a finding.
+ */
+function publishedFiles() {
+  try {
+    const out = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    return out.split('\0').filter(Boolean)
+  } catch (e) {
+    console.error(`WARNING: \`git ls-files\` failed (${String(e.message).split('\n')[0]}) — falling back to a filesystem walk, which may include untracked files`)
+    return walkAll(ROOT).map(rel)
+  }
+}
 
 /**
  * Lines of `text` whose id sits inside a quoted literal (not a comment). Keeps
@@ -149,7 +196,7 @@ const inTree = (relPath, roots) => roots.some((r) => relPath === r || relPath.st
  */
 function idsInStringLiterals(text) {
   const hits = []
-  const LITERAL = /(['"`])[^'"`]*(?:[TD]-\d+(?:\.\d+)?-\d+[a-z]?|P\d+\.\d+-\d+(?:-[A-Za-z0-9]+)?)[^'"`]*\1/
+  const LITERAL = /(['"`])[^'"`]*(?:[TDQ]-\d+(?:\.\d+)?-(?:[A-Z]{2,}-)?\d+[a-z]?|SB-\d{3}|P\d+\.\d+-\d+(?:-[A-Za-z0-9]+)?)[^'"`]*\1/
   text.split('\n').forEach((line, i) => {
     if (!INTERNAL_ID.test(line) && !PREDICTION_ID.test(line)) return
     const t = line.trim()
@@ -163,20 +210,19 @@ function idsInStringLiterals(text) {
   return hits
 }
 
+const PUBLISHED = publishedFiles()
 let idScanned = 0
-const idRoots = [...new Set([...USER_FACING_CODE, ...USER_FACING_DOCS])]
-for (const root of idRoots) {
-  const abs = path.join(ROOT, root)
-  if (!fs.existsSync(abs)) continue
-  const files = fs.statSync(abs).isDirectory() ? walkAll(abs) : [abs]
-  for (const file of files) {
-    const r = rel(file)
+let mdScanned = 0
+{
+  for (const r of PUBLISHED) {
     if (ID_EXCLUDED.test(r)) continue
-    const isDoc = file.endsWith('.md')
-    const isCode = /\.(mjs|js|cjs|ts)$/.test(file)
-    const isPkg = path.basename(file) === 'package.json'
+    const abs = path.join(ROOT, r)
+    if (!fs.existsSync(abs)) continue // tracked, but deleted in the worktree
+    const isDoc = r.endsWith('.md')
+    const isCode = CODE_EXT.test(r)
+    const isPkg = path.basename(r) === 'package.json'
     if (!isDoc && !isCode && !isPkg) continue
-    const buf = fs.readFileSync(file)
+    const buf = fs.readFileSync(abs)
     if (buf.includes(0)) {
       // A NUL byte makes a text scan meaningless — and skipping SILENTLY once hid
       // five runtime files from this check. A file the scan cannot read is a
@@ -186,26 +232,33 @@ for (const root of idRoots) {
     }
     const text = buf.toString('utf8')
     idScanned++
-    if (!INTERNAL_ID.test(text)) continue
-    if (isDoc) {
+    if (isDoc) mdScanned++
+    // Markdown and root config are read WHOLE, comments included; other shipped
+    // code is read through its string literals only — header's scope block says why.
+    if (isDoc || (isCode && ROOT_CONFIG.test(r))) {
+      if (!INTERNAL_ID.test(text)) continue
       text.split('\n').forEach((line, i) => {
         if (INTERNAL_ID.test(line)) errors.push(`INTERNAL-ID: ${r}:${i + 1}: ${line.trim().slice(0, 120)}`)
       })
     } else if (isPkg) {
+      if (!INTERNAL_ID.test(text)) continue
       let pkg
       try { pkg = JSON.parse(text) } catch { continue }
       if (typeof pkg.description === 'string' && INTERNAL_ID.test(pkg.description)) {
         errors.push(`INTERNAL-ID: ${r}: package description carries an internal register id`)
       }
     } else {
+      // Prediction ids are banned from literals too, so the cheap pre-filter has to
+      // ask about BOTH shapes — asking about one silently skipped the other.
+      if (!INTERNAL_ID.test(text) && !PREDICTION_ID.test(text)) continue
       for (const h of idsInStringLiterals(text)) errors.push(`INTERNAL-ID: ${r}:${h.n}: ${h.line}`)
     }
   }
 }
 
-// ---- (e) internal plan shapes in shipped markdown ---------------------------
+// ---- (e) internal plan shapes in published markdown -------------------------
 /**
- * A house plan id in a doc the PACKAGE SHIPS. The leak shape is a plan/phase word
+ * A house plan id in PUBLISHED markdown. The leak shape is a plan/phase word
  * introducing either a compound id (`plan 9.5-10`, `плана 9.1-04`, `phase 9.1-26`)
  * or a wildcard one (`plan 49.x`). The number names a register no adopter can read.
  *
@@ -226,25 +279,20 @@ const INTERNAL_PLAN = new RegExp(
   'iu',
 )
 
-/** Markdown the npm package ships, per the root `files[]` allowlist. */
-const SHIPPED = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).files ?? []
-
+// Same surface as check (d): the git-tracked set, not `files[]`. The npm allowlist
+// was the narrower of the two and left published markdown unread.
 let shippedDocsScanned = 0
-for (const entry of SHIPPED) {
-  const abs = path.join(ROOT, entry)
+for (const r of PUBLISHED) {
+  if (!r.endsWith('.md')) continue
+  if (ID_EXCLUDED.test(r)) continue
+  const abs = path.join(ROOT, r)
   if (!fs.existsSync(abs)) continue
-  const files = fs.statSync(abs).isDirectory() ? walkAll(abs) : [abs]
-  for (const file of files) {
-    if (!file.endsWith('.md')) continue
-    const r = rel(file)
-    if (ID_EXCLUDED.test(r)) continue
-    shippedDocsScanned++
-    const text = fs.readFileSync(file, 'utf8')
-    if (!INTERNAL_PLAN.test(text)) continue
-    text.split('\n').forEach((line, i) => {
-      if (INTERNAL_PLAN.test(line)) errors.push(`PLAN-ID: ${r}:${i + 1}: ${line.trim().slice(0, 120)}`)
-    })
-  }
+  shippedDocsScanned++
+  const text = fs.readFileSync(abs, 'utf8')
+  if (!INTERNAL_PLAN.test(text)) continue
+  text.split('\n').forEach((line, i) => {
+    if (INTERNAL_PLAN.test(line)) errors.push(`PLAN-ID: ${r}:${i + 1}: ${line.trim().slice(0, 120)}`)
+  })
 }
 
 // ---- (c) colors -------------------------------------------------------------
@@ -262,11 +310,11 @@ for (const name of fs.readdirSync(AGENTS).sort()) {
 console.log(`dispatch sites checked: ${dispatchCount}`)
 console.log(`agents with color: ${colorCount}/${[...fs.readdirSync(AGENTS)].filter((f) => f.endsWith('.md')).length}`)
 console.log(`residue hits: ${residueHits}`)
-console.log(`user-facing files scanned for internal ids: ${idScanned}`)
-console.log(`shipped markdown scanned for internal plan shapes: ${shippedDocsScanned}`)
+console.log(`published files scanned for internal ids: ${idScanned} (of which markdown: ${mdScanned})`)
+console.log(`published markdown scanned for internal plan shapes: ${shippedDocsScanned}`)
 if (errors.length) {
   console.error(`\nFAIL — ${errors.length} violation(s):`)
   for (const e of errors) console.error('  ' + e)
   process.exit(1)
 }
-console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in user-facing strings, no internal plan shapes in shipped docs)')
+console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in published markdown / root config / user-facing strings, no internal plan shapes in published markdown)')
