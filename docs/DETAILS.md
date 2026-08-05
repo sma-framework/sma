@@ -42,7 +42,7 @@ One burn, permanent avoidance — the model is a child who touches boiling water
 
 ## Memory, in three layers
 
-Not one big instruction file — three tiers that keep the always-loaded budget tiny while nothing is ever forgotten.
+Not one big instruction file — three tiers that keep the always-loaded budget tiny while nothing is lost by accident. (Losing something on purpose is its own command — see *Governance: classes, lifecycle, erasure and refusals* below.)
 
 ```mermaid
 flowchart TD
@@ -71,11 +71,120 @@ flowchart LR
     U -->|cold, superseded| DM["Demoted a layer<br>(smaller footprint, never deleted)"]
 ```
 
-Each note carries a `use-when` trigger — that single line is what lets SMA deliver it at exactly the right tool call instead of dumping the whole corpus into every prompt. Promotion is earned by evidence, never by a timer; demotion shrinks the hot budget without forgetting. *The system never forgets — it only changes how loudly it remembers.*
+Each note carries a `use-when` trigger — that single line is what lets SMA deliver it at exactly the right tool call instead of dumping the whole corpus into every prompt. Promotion is earned by evidence, never by a timer; demotion shrinks the hot budget without forgetting. *Auto-trim only changes how loudly the system remembers; real forgetting is a separate deliberate command, never a side effect.*
+
+## Governance: classes, lifecycle, erasure and refusals
+
+This section is the map. The law lives in four documents and is not reprinted here:
+[MEMORY-MODEL.md](MEMORY-MODEL.md) (what one record may claim and must carry),
+[MEMORY-LIFECYCLE.md](MEMORY-LIFECYCLE.md) (how it is written, approved and retired),
+[MEMORY-THREAT-MODEL.md](MEMORY-THREAT-MODEL.md) (who may see what, and what fails closed),
+[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) (the worker fleet's seven invariants). A map that
+reprints the territory goes stale first.
+
+### The three storage classes, and the field they are derived from
+
+There is no new frontmatter field to learn. All three classes are **derived** from fields the
+schema already has — `sensitivity` answers *who may see this*, the lifetime fields
+(`retention`, `valid_until`) answer *how long may it live*. Folding those two questions into one
+field would make both unanswerable, so they stay separate and the class falls out of them:
+
+| `sensitivity` | → storage class | why |
+|---|---|---|
+| none declared | `shared` | nothing says otherwise |
+| `public` | `shared` | everyone may see it |
+| `internal` | `shared` | the team may — and git *is* the team |
+| `sensitive` | `this-machine-only` | not where an export can read it |
+| `encrypted-required` | `this-machine-only` | must not sit in a git-backed class at all |
+| any of the above **plus** a lifetime window | `ephemeral` | …unless the value is restricted, in which case the strictest wins |
+| anything else | **refused** | an unreadable label is not a permit |
+
+The mapping is enforced in both write doors before a single byte is written, failing closed. A
+`this-machine-only` record is filed under `.sma/local-memory`, which keeps itself out of git by
+its own ignore marker. **Be exact about what that buys: it is enforced placement, not
+encryption.** The bytes are plain text on disk — a decision taken on 2026-08-04 with its costs
+measured and written down, not an oversight. The reasoning is in
+[MEMORY-THREAT-MODEL.md](MEMORY-THREAT-MODEL.md) §6.
+
+### The five lifecycle states, and which one a bare forget applies
+
+A record is `active`, or it is in one of four retirements: `superseded` (something newer says it
+better), `revoked` (it was withdrawn), `expired` (its own clock ran out), `archived` (parked for
+history). **All four are honoured by the read path**, not just some of them: a record in any of
+them is excluded from the pack, stays in its area index marked, and remains quotable as history.
+
+`sma memory forget <id>` with no flag applies **`revoked`** — the plain reading of "forget this":
+withdrawn, no longer delivered, still readable. The other three are explicit:
+`--expire`, `--archive`, and `--replaced-by <id>` for supersession. Nothing is deleted by any of
+them, and the generated index is rebuilt so the on-disk `MEMORY.md` stops quoting what was just
+retired.
+
+### What an erase walks, and how it proves it
+
+`--erase` is the different verb: physical removal, asked once, not reversible. It walks six named
+surfaces, clears each, and then **reads each one back** to confirm it is actually gone:
+
+| Surface | What it is |
+|---|---|
+| `corpus` | the reviewed record itself, in the git working tree |
+| `drafts` | a staged copy awaiting review, in the same tree |
+| `local-store` | the this-machine-only store under `.sma/` |
+| `generated-index` | `MEMORY.md`, rebuilt afterwards rather than patched |
+| `area-indexes` | the per-area catalogs, rebuilt the same way |
+| `lexical-index` | the derived BM25/path index under `.sma/` |
+
+A surface whose path the caller did not supply is reported as **`unverified`** — named to the
+user, never counted as clean. That distinction is the whole point: "I could not look there" and
+"there is nothing there" are different sentences, and a delete command that confuses them is
+worth nothing. Two limits are stated rather than hidden: **git history still holds anything that
+was committed** (erase says so, and rewriting history stays your decision), and the episode
+archive is deliberately *not* a surface erase clears — an episode is "what happened", a different
+asset class from "what is true".
+
+### The refusals that happen at read time
+
+Retrieved text is data, never an instruction. Two refusals fire before ranking, and both are
+visible:
+
+- **A note carrying something aimed at the assistant** — "ignore your previous instructions" and
+  the same trick in Russian — is withheld, not down-ranked. (The Russian half of that matcher was
+  dead code until this version; it was found by measurement, not by reading.)
+- **A note belonging to a different repository** than the one being asked about is withheld once
+  the caller declares which world it is asking about.
+
+Neither happens silently. `sma memory explain --task "…"` gives every note in the corpus exactly
+one verdict — delivered on a named ground, or withheld naming the filter and the field that
+decided — so a refusal is arguable decision by decision instead of being an unexplained absence.
+
+### The fleet, made formal
+
+The optional worker fleet gained three declarations, and they are declarations the tests hold the
+code to:
+
+- **A named state machine** — which task state may follow which, and on whose authority. An
+  accepted task requires an authorized disposition; the vocabulary is closed.
+- **A capability envelope** — what one worker may touch, declared up front across eight
+  fail-closed dimensions, with an empty list meaning "nothing", never "anything".
+- **An attempt stamp** — every attempt can record the world it ran in: which policy version,
+  which plan, which memory snapshot, which harness, which state-machine version, plus an
+  idempotency key so a redelivered effect is applied once.
+
+Seeded property tests attack all seven invariants — twelve independent histories, forty steps
+each, from one fixed seed, so a failure arrives as a replayable recipe rather than a mood — and
+crash, restart, dead-letter and redelivery drills take a task census before and after each blow.
+
+**What is honestly not yet true**, stated here because a document that only lists capabilities is
+an advertisement: the running daemon does **not** route its status changes through the state
+machine, and the production attempt rows do not carry the stamp fields. This layer is a tested
+formal reference the code is measured against, not an enforcer wired into the loop. §5 of
+[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) says which parts are deliberately not goals, and where
+the wiring stands.
 
 ## The full CLI reference, by version layer
 
 The coordination + accountability CLI runs underneath — 90 verbs, grouped here by the version layer that introduced them. Sessions and hooks call it for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`).
+
+**Still 90, and that is worth saying out loud.** This version shipped real new abilities — forgetting, erasing, storage classes, the fleet's formal layer — and the verb count did not move, because each one arrived as a subcommand of a namespace that already existed (`memory forget`, `memory index`) rather than as a new top-level name. The alternative is a surface that grows a little every release until nobody can hold it in their head, and the growth is never anybody's decision because each single addition looked small.
 
 ### Core (V1–V2): memory, coordination, slots
 
