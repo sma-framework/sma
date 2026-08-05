@@ -21,7 +21,7 @@
  */
 
 import { appendEvent } from './journal.mjs'
-import { classifyStaleness } from './registry.mjs'
+import { classifyStaleness, isSessionLive, sessionActivityTier } from './registry.mjs'
 import { HEARTBEAT_INTERVAL_MS, ATTENTION_AFTER_MISSES } from './constants.mjs'
 
 /**
@@ -148,8 +148,11 @@ export function checkScopeCollision(paths, opts = {}) {
         if (!hit) continue
 
         const cls = classifyStaleness(session, { now, scopeMtimeProbe: opts.scopeMtimeProbe })
-        const staleness = cls.state // 'fresh'|'attention'|'reap-clean'|'needs-human'
-        const active = staleness === 'fresh' || staleness === 'attention'
+        const staleness = cls.state // 'fresh'|'attention'|'reap-clean'|'needs-human' (the DISPLAY tier)
+        // SB-041: «can this owner still be working» is the ONE shared predicate, never a
+        // local re-derivation from `staleness` — a dead-pid lease reads 'fresh' by age and
+        // would otherwise tell the reader to WAIT for a terminal that no longer exists.
+        const active = isSessionLive(session, { now, scopeMtimeProbe: opts.scopeMtimeProbe })
         warns.push({
           tier: 'warn',
           who: session.holderIdentity ?? '—',
@@ -167,10 +170,9 @@ export function checkScopeCollision(paths, opts = {}) {
     }
 
     // D-9-16 hot-file advisory: >=2 fresh sessions + a hot-file path, no claim needed.
-    const freshCount = sessions.filter((s) => {
-      const cls = classifyStaleness(s, { now })
-      return cls.state === 'fresh'
-    }).length
+    // The advisory PRINTS its count («N сессий активны»), so it is one of the numbers
+    // SB-041 was about: it asks sessionActivityTier, not a private fresh-only rule.
+    const freshCount = sessions.filter((s) => sessionActivityTier(s, { now }) === 'fresh').length
     if (freshCount >= 2) {
       for (const p of normPaths) {
         if (HOT_FILES.includes(p)) {
@@ -240,28 +242,25 @@ export function buildWarnText(warn) {
 
 /**
  * countSessionTiers(sessions, {now, classify}) — D-9.3-22f: count `fresh` and
- * `attention` SEPARATELY instead of collapsing both into one "active" boolean. Liveness is
- * renewTime-only (classifyStaleness — no pid). `active` (fresh+attention) is kept for the
- * legacy count, but the two tiers are also individually visible so a caller can distinguish
- * a hard-busy owner from one that may already be idle. Injectable classify for tests.
+ * `attention` SEPARATELY instead of collapsing both into one "active" boolean, so a caller
+ * can distinguish a hard-busy owner from one that may already be idle. `active`
+ * (fresh+attention) is kept for the legacy count.
+ *
+ * The tier per session is registry.sessionActivityTier (SB-041) — the same rule the hook
+ * and `status` use, so this counter can never drift from the headline number again.
+ * Injectable classify for tests.
  * @param {Array} sessions
  * @param {{now?:number, classify?:Function}} [opts]
  * @returns {{fresh:number, attention:number, active:number}}
  */
 export function countSessionTiers(sessions, opts = {}) {
   const now = opts.now ?? Date.now()
-  const classify = typeof opts.classify === 'function' ? opts.classify : classifyStaleness
   let fresh = 0
   let attention = 0
   for (const s of Array.isArray(sessions) ? sessions : []) {
-    let st
-    try {
-      st = classify(s, { now }).state
-    } catch {
-      continue
-    }
-    if (st === 'fresh') fresh += 1
-    else if (st === 'attention') attention += 1
+    const tier = sessionActivityTier(s, { now, classify: opts.classify })
+    if (tier === 'fresh') fresh += 1
+    else if (tier === 'attention') attention += 1
   }
   return { fresh, attention, active: fresh + attention }
 }

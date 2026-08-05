@@ -37,8 +37,8 @@ import {
   askUnmetCount,
   FP_STATUS_VALUES,
 } from '../lib/fingerprint.mjs'
-import { buildWarnText, countSessionTiers, verifyClaimEvidence } from '../lib/collision.mjs'
-import { reapStaleObservable, classifyStaleness } from '../lib/registry.mjs'
+import { buildWarnText, checkScopeCollision, countSessionTiers, verifyClaimEvidence } from '../lib/collision.mjs'
+import { reapStaleObservable, classifyStaleness, isDeadPidLease, isSessionLive } from '../lib/registry.mjs'
 import { sessionEnd, commitEvidenceRelease, cooldownText, claimSlot, readClaims, releaseSlot } from '../lib/claims.mjs'
 import { appendEvent, journalTail } from '../lib/journal.mjs'
 import {
@@ -46,6 +46,8 @@ import {
   FINGERPRINT_FILES_WINDOW_MS,
   FINGERPRINT_FILES_MAX,
   AMBIENT_DIGEST_MS,
+  SESSION_TTL_MS,
+  GRACE_MS,
 } from '../lib/constants.mjs'
 import { PRE_CHECKS } from '../lib/pre.mjs'
 
@@ -243,6 +245,83 @@ describe('fingerprint stream (fail-open + no-op + renewTime-only liveness)', () 
     // and the digest excludes it (no live line)
     const dg = ambientDigest({ sessions: [staleButPidAlive], lastDigestAt: 0, now: NOW })
     expect((dg as any).lines).toEqual([])
+  })
+})
+
+// ── 15: SB-041 — ONE activity logic on the hook path and the `status` path ───
+//
+// The recorded defect (executor, 03.08.2026): inside PreToolUse-hook context the
+// fingerprint printed 20–80 «working» terminals while `sma status` at the very same
+// moment printed «1 активная, 0 коллизий, 0 claim-слотов». Root cause: the hook's
+// liveness was renewTime-only, so every one-shot CLI lease (`T-<pid>`, written by a
+// `sma claim` / `sma status` process that exited milliseconds later) stayed «fresh» for
+// the full 45-minute window and impersonated a live terminal. `status` had been taught
+// the dead-pid rule by SB-021; the hook had not. Two counters, one question.
+//
+// pid-liveness here is REAL, no injection: the test's own pid is the live one and an
+// absurd pid is the dead one (ESRCH on Windows too — verified on this platform).
+describe('SB-041 — the hook counts exactly the terminals `status` counts', () => {
+  const DEAD_PID = 999999999 // absurd -> ESRCH everywhere; the process cannot exist
+  const STALE_AGE = SESSION_TTL_MS + GRACE_MS + 1000
+
+  /** The mixed population the hook actually meets on a shared checkout. */
+  const mixed = [
+    // (a) the ONE genuinely working terminal: named window, live pid, fresh heartbeat
+    lease({ _file: 'мозг.json', ageMs: 60000, extra: { holderIdentity: 'Мозг', pid: process.pid } }),
+    // (b) a named window whose heartbeat aged out — live pid, but not working
+    lease({ _file: 'фабрика.json', ageMs: STALE_AGE, extra: { holderIdentity: 'Фабрика', pid: process.pid } }),
+    // (c)-(e) the graveyard: one-shot CLI leases, YOUNG renewTime, pid already gone.
+    // This is the exact population that inflated the hook's count.
+    lease({ _file: `t-${DEAD_PID}.json`, ageMs: 1000, extra: { holderIdentity: `T-${DEAD_PID}`, pid: DEAD_PID } }),
+    lease({ _file: `t-${DEAD_PID - 1}.json`, ageMs: 5000, extra: { holderIdentity: `T-${DEAD_PID - 1}`, pid: DEAD_PID - 1 } }),
+    lease({ _file: `t-${DEAD_PID - 2}.json`, ageMs: HEARTBEAT_INTERVAL_MS * 4, extra: { holderIdentity: `T-${DEAD_PID - 2}`, pid: DEAD_PID - 2 } }), // attention-aged, still dead
+  ]
+
+  /** The `status` count, spelled out exactly as cmdStatus/gatherSummary derives it. */
+  const statusActive = () =>
+    mixed.filter((s) => {
+      const cls = classifyStaleness(s, { now: NOW })
+      return (cls.state === 'fresh' || cls.state === 'attention') && !isDeadPidLease(s)
+    }).length
+
+  it('the ambient digest prints one line per live terminal — the SAME number `status` reports', () => {
+    expect(statusActive()).toBe(1) // the honest answer
+    const dg = ambientDigest({ sessions: mixed, lastDigestAt: 0, now: NOW })
+    expect((dg as any).lines.length).toBe(statusActive())
+    expect((dg as any).text).toContain('Мозг')
+    expect((dg as any).text).not.toContain(`T-${DEAD_PID}`) // no dead command impersonates a terminal
+  })
+
+  it('overlap injection ignores a dead-pid lease even when its claimed scope matches', () => {
+    const deadOwner = lease({
+      _file: `t-${DEAD_PID}.json`,
+      ageMs: 1000,
+      globs: ['src/crm/**'],
+      extra: { holderIdentity: `T-${DEAD_PID}`, pid: DEAD_PID },
+    })
+    const liveOwner = lease({
+      _file: 'фабрика.json',
+      ageMs: 60000,
+      globs: ['src/crm/**'],
+      extra: { holderIdentity: 'Фабрика', pid: process.pid },
+    })
+    const out = overlapInjection({ ownTouch: 'src/crm/x.ts', sessions: [deadOwner, liveOwner], selfTerminalId: 'мозг', now: NOW })
+    expect(out.length).toBe(1)
+    expect(out[0].holderIdentity).toBe('Фабрика')
+  })
+
+  it('both paths ask ONE exported predicate — registry.isSessionLive', () => {
+    const deadButYoung = mixed[2]
+    expect(classifyStaleness(deadButYoung, { now: NOW }).state).toBe('fresh') // renewTime says «fresh»
+    expect(isSessionLive(deadButYoung, { now: NOW })).toBe(false) // the shared rule says «not working»
+    expect(isSessionLive(mixed[0], { now: NOW })).toBe(true)
+    expect(mixed.filter((s) => isSessionLive(s, { now: NOW })).length).toBe(statusActive())
+  })
+
+  it('the hot-file advisory counts the same live terminals (no inflated «N сессий активны»)', () => {
+    // Two dead-pid leases + one live one used to read as «3 сессии активны» on a hot file.
+    const warns = checkScopeCollision(['.planning/STATE.md'], { sessions: mixed, now: NOW, selfTerminalId: 'никто' })
+    expect(warns.filter((w: any) => w.reason === 'hot-file')).toHaveLength(0) // only 1 live -> below the >=2 threshold
   })
 })
 
