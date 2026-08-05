@@ -525,6 +525,67 @@ describe('server.mjs — POST /api/agent/toggle', () => {
   })
 })
 
+/**
+ * LP-2-01/LP-2-02 — the live proof, 05.08.2026: the founder pressed «Включить команду» in the
+ * window and «ничего не произошло». No effect, no visible error. The same door with the same
+ * body worked from the terminal in both directions, so the failure was on this side.
+ *
+ * The cause is here and it is one line long. The process holds ONE config object; the applier
+ * wrote the roster to disk and returned a NEW config, and nothing put the roster back into the
+ * object `GET /api/harness` reads. So the next read served the pre-toggle roster: the cards
+ * came back with exactly the `enabled` they had before the click, and the request HAD
+ * succeeded, so there was nothing to render as a failure either. The registry doors already
+ * obeyed this rule; the three harness appliers did not.
+ *
+ * The case is written as the window experiences it — toggle, then read — because that pair is
+ * the defect. Either half alone looks perfectly healthy.
+ */
+describe('server.mjs — a toggle is visible to the very next read (LP-2-02)', () => {
+  /** The stock-team applier's real posture: a NEW config, the caller's object untouched. */
+  const applyStockTeamToggle = ({ config, enabled }: any) => ({
+    ...config,
+    workers: config.workers.map((w: any) => ({ ...w, enabled: !!enabled })),
+  })
+  const applyAgentToggle = ({ config, id, enabled }: any) => ({
+    ...config,
+    workers: config.workers.map((w: any) => (w.id === id ? { ...w, enabled: !!enabled } : w)),
+  })
+  /** The read model, as thin as the real one is over `config.workers`. */
+  const readHarness = async ({ config }: any) => ({
+    agents: config.workers.map((w: any) => ({ id: w.id, enabled: w.enabled !== false })),
+    skills: [],
+    mcp: [],
+    drafts: [],
+    stockTeam: config.workers.map((w: any) => ({ id: w.id, enabled: w.enabled !== false, origin: 'sma' })),
+  })
+
+  it('«Включить команду» changes what GET /api/harness answers, with no restart', async () => {
+    const config = { token: TOKEN, workers: [{ id: 'sma-planner', enabled: false }, { id: 'sma-executor', enabled: false }] }
+    const front = createFrontServer({ config, deps: { applyStockTeamToggle, applyAgentToggle, readHarness, loadMcpRegistry: () => ({ servers: [] }) } })
+
+    const before = await call(front, { url: '/api/harness', headers: bearer() })
+    expect(JSON.parse(before.body).stockTeam.every((m: any) => m.enabled === false)).toBe(true)
+
+    const flip = await call(front, { method: 'POST', url: '/api/agent/toggle', headers: jsonHeaders(), body: { id: '__stock-team__', enabled: true } })
+    expect(flip.statusCode).toBe(200)
+
+    const after = await call(front, { url: '/api/harness', headers: bearer() })
+    expect(JSON.parse(after.body).stockTeam.every((m: any) => m.enabled === true)).toBe(true)
+  })
+
+  it('the switch of ONE worker is visible to the very next read too', async () => {
+    const config = { token: TOKEN, workers: [{ id: 'max-2', enabled: true }, { id: 'max-3', enabled: true }] }
+    const front = createFrontServer({ config, deps: { applyAgentToggle, readHarness, loadMcpRegistry: () => ({ servers: [] }) } })
+
+    const flip = await call(front, { method: 'POST', url: '/api/agent/toggle', headers: jsonHeaders(), body: { id: 'max-2', enabled: false } })
+    expect(flip.statusCode).toBe(200)
+
+    const after = JSON.parse((await call(front, { url: '/api/harness', headers: bearer() })).body)
+    expect(after.agents.find((a: any) => a.id === 'max-2').enabled).toBe(false)
+    expect(after.agents.find((a: any) => a.id === 'max-3').enabled).toBe(true)
+  })
+})
+
 describe('server.mjs — POST /api/skill/assign', () => {
   it('more than 16 workerIds → 400', async () => {
     const front = createFrontServer({ config: { token: TOKEN }, deps: { applySkillAssign: () => ({ workers: [] }) } })

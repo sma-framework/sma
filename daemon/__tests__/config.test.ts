@@ -420,3 +420,61 @@ describe('project registry mutations — add / rename / select', () => {
     expect(() => renameProject(next, { id: 'ghost', name: 'x' }, { env: {}, homedir })).toThrow(UnknownProjectError)
   })
 })
+
+/**
+ * D-11-DEFER-19 — a registry write must persist only the PERSISTED shape.
+ *
+ * `loadConfig` returns the config WITH the three read-time working directories attached, and
+ * every registry door writes that same object back. One project add was enough to land
+ * `repoDir`, `dataDir` and `ledgerDir` in `~/.sma-daemon/config.json` as literal keys — and a
+ * persisted `repoDir` then decides, on every later boot, whether the first-run interview takes
+ * the window and where the agent roster is read from, whatever directory the daemon was
+ * started in. `withDerivedDirs` documented itself as «DERIVED AT READ TIME, NEVER PERSISTED»;
+ * these two cases are what makes the second half of that sentence true.
+ *
+ * The second case is the safety half and it matters as much as the first: the rule is «a value
+ * the derive would produce again is not written down», never a blanket delete. An operator who
+ * pointed `dataDir` somewhere on purpose keeps it across a project add.
+ */
+describe('D-11-DEFER-19 — the derived working directories never reach the file', () => {
+  const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
+
+  it('a round trip through every registry door leaves no derived key in the file', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    // the read model carries all three — that is what makes the daemon runnable at all
+    expect(cfg.dataDir).toBe(join(home, '.sma-daemon', 'data'))
+    expect(cfg.ledgerDir).toBe(join(home, '.sma-daemon', 'ledger'))
+    expect(cfg.repoDir).toBe(repo)
+
+    const io = { env: {}, homedir, repoDir: repo }
+    const added = addProject(cfg, { id: 'second', name: 'Second', path: repo }, io)
+    const selected = selectProject(added, { id: 'second' }, io)
+    renameProject(selected, { id: 'second', name: 'Второй' }, io)
+
+    const onDisk = readFile()
+    expect(onDisk.dataDir).toBeUndefined()
+    expect(onDisk.ledgerDir).toBeUndefined()
+    expect(onDisk.repoDir).toBeUndefined()
+    // the write itself still happened — the registry is on disk, only the derive is not
+    expect(onDisk.activeProject).toBe('second')
+    expect(onDisk.projects.find((p: any) => p.id === 'second').name).toBe('Второй')
+  })
+
+  it('an EXPLICIT working directory survives the same round trip', () => {
+    const path = resolveConfigPath({ env: {}, homedir })
+    mkdirSync(join(home, '.sma-daemon'), { recursive: true })
+    writeFileSync(
+      path,
+      JSON.stringify({ token: 'x'.repeat(64), workers: [], dataDir: 'D:/sma-data', projects: [{ id: 'one', name: 'One' }], activeProject: 'one' }),
+      'utf8',
+    )
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.dataDir).toBe('D:/sma-data')
+
+    addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir, repoDir: repo })
+    const onDisk = readFile()
+    expect(onDisk.dataDir).toBe('D:/sma-data') // an operator's own choice is not a derive
+    expect(onDisk.ledgerDir).toBeUndefined()
+    expect(onDisk.repoDir).toBeUndefined()
+  })
+})

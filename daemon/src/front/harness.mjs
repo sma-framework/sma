@@ -61,7 +61,7 @@ import { homedir as osHomedir } from 'node:os'
 import { join } from 'node:path'
 
 import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
-import { resolveConfigPath } from '../config.mjs'
+import { resolveConfigPath, stripDerivedDirs } from '../config.mjs'
 
 // ── named errors ──
 
@@ -460,10 +460,15 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
 
 // ── the two-step activation appliers (config/registry writes, atomic) ──
 
-/** Write the whole config atomically to its resolved path (fsImpl fs overrides). */
-function writeConfig(config, { env, homedir, fsImpl }) {
+/**
+ * Write the PERSISTED shape of the config atomically to its resolved path (fsImpl fs
+ * overrides). The appliers here receive the object `loadConfig` returned, which carries the
+ * three read-time working directories; `stripDerivedDirs` is what keeps a toggle from
+ * pinning them into the file (D-11-DEFER-19 — the same law the registry doors obey).
+ */
+function writeConfig(config, { env, homedir, fsImpl, repoDir }) {
   const path = resolveConfigPath({ env, homedir })
-  atomicWriteJson(path, config, {
+  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, repoDir }), {
     mkdirFn: fsImpl && fsImpl.mkdirSync,
     writeFn: fsImpl && fsImpl.writeFileSync,
     renameFn: fsImpl && fsImpl.renameSync,
@@ -535,7 +540,7 @@ export function applyAgentToggle({ config, id, enabled, repoDir, fsImpl, env = p
     nextWorkers = [...workers, profile]
   }
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl })
+  writeConfig(nextConfig, { env, homedir, fsImpl, repoDir })
   return nextConfig
 }
 
@@ -607,7 +612,7 @@ export function applyStockTeamToggle({ config, enabled, repoDir, fsImpl, env = p
     }
   }
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl })
+  writeConfig(nextConfig, { env, homedir, fsImpl, repoDir })
   return nextConfig
 }
 
@@ -637,7 +642,7 @@ export function applySkillAssign({ config, skillId, workerIds, repoDir, fsImpl, 
     return { ...w, skills: next }
   })
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl })
+  writeConfig(nextConfig, { env, homedir, fsImpl, repoDir })
   return nextConfig
 }
 

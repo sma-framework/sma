@@ -384,14 +384,60 @@ export function ensureDefaultProject(config, { repoDir = process.cwd(), fsImpl, 
 }
 
 /**
- * writeConfig(config, {env, homedir, fsImpl}) — the ONE write path: the existing atomic
- * writer plus a best-effort re-stamp of the 0600 mode (rename installs the temp file's
- * mode, so re-stamping PRESERVES the permissions rather than changing them).
+ * The three working directories `withDerivedDirs` falls back to. They are DERIVED at read
+ * time, so they are not part of the persisted shape — see stripDerivedDirs.
  */
-function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export const DERIVED_DIR_KEYS = Object.freeze(['dataDir', 'ledgerDir', 'repoDir'])
+
+/** What the derive would produce for this config path and this launch directory. */
+function derivedDirsFor({ configPath, repoDir }) {
+  const root = dirname(configPath)
+  return { dataDir: join(root, 'data'), ledgerDir: join(root, 'ledger'), repoDir }
+}
+
+/**
+ * stripDerivedDirs(config, {configPath, repoDir}) — the PERSISTED shape of a config that has
+ * been through `withDerivedDirs` (D-11-DEFER-19).
+ *
+ * WHY THIS EXISTS. `loadConfig` returns the config WITH the three working directories
+ * attached, and every registry door (addProject / selectProject / renameProject) and every
+ * harness applier writes that same object back. One project add was enough to land
+ * `repoDir`, `dataDir` and `ledgerDir` in the file as literal keys — and a persisted
+ * `repoDir` then decides, forever, whether the first-run interview takes the window and
+ * where the agent roster is read from, no matter which directory the daemon is started in.
+ * The documented portability promise («the same config stays portable between machines whose
+ * homes differ») was gone after the first click.
+ *
+ * A KEY IS DROPPED ONLY WHEN STORING IT WOULD CHANGE NOTHING. The rule is «a value the derive
+ * would produce again is not written down», never a blanket delete: an operator who set
+ * `dataDir` by hand has pointed the daemon's data somewhere on purpose, and a project add
+ * must not quietly move it. So the value is compared against what the derive would give, and
+ * only an exact match is removed.
+ *
+ * @param {object} config
+ * @param {{configPath:string, repoDir?:string}} args
+ * @returns {object} a copy carrying only the persisted keys
+ */
+export function stripDerivedDirs(config, { configPath, repoDir } = {}) {
+  if (!config || typeof config !== 'object') return config
+  const derived = derivedDirsFor({ configPath: configPath ?? '', repoDir })
+  const out = { ...config }
+  for (const key of DERIVED_DIR_KEYS) {
+    if (out[key] !== undefined && out[key] === derived[key]) delete out[key]
+  }
+  return out
+}
+
+/**
+ * writeConfig(config, {env, homedir, fsImpl, repoDir}) — the ONE write path: the persisted
+ * shape (stripDerivedDirs) through the existing atomic writer, plus a best-effort re-stamp
+ * of the 0600 mode (rename installs the temp file's mode, so re-stamping PRESERVES the
+ * permissions rather than changing them).
+ */
+function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, repoDir = process.cwd() } = {}) {
   const io = fsImpl ?? {}
   const path = resolveConfigPath({ env, homedir })
-  atomicWriteJson(path, config, {
+  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, repoDir }), {
     mkdirFn: io.mkdirSync,
     writeFn: io.writeFileSync,
     renameFn: io.renameSync,
@@ -419,15 +465,17 @@ function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl } 
  *
  * DERIVED AT READ TIME, NEVER PERSISTED: an explicit value in the file always wins and is
  * returned untouched, and a file that omits them is NOT rewritten — the same config stays
- * portable between machines whose homes differ.
+ * portable between machines whose homes differ. The «never persisted» half is enforced by
+ * `stripDerivedDirs` at the writer, because this object is what the registry doors and the
+ * harness appliers hand back to be written (D-11-DEFER-19).
  */
 function withDerivedDirs(config, { configPath, repoDir }) {
-  const root = dirname(configPath)
+  const derived = derivedDirsFor({ configPath, repoDir })
   return {
     ...config,
-    dataDir: config.dataDir || join(root, 'data'),
-    ledgerDir: config.ledgerDir || join(root, 'ledger'),
-    repoDir: config.repoDir || repoDir,
+    dataDir: config.dataDir || derived.dataDir,
+    ledgerDir: config.ledgerDir || derived.ledgerDir,
+    repoDir: config.repoDir || derived.repoDir,
   }
 }
 
@@ -453,14 +501,14 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
     const raw = JSON.parse(readFileSync(path, 'utf8'))
     const config = validateConfig(raw)
     const migrated = ensureDefaultProject(config, { repoDir, fsImpl })
-    if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl })
+    if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl, repoDir })
     return withDerivedDirs(migrated, { configPath: path, repoDir })
   }
 
   // Bootstrap: fresh token, the default pool, its project registry, atomic write, 0600.
   const token = randomBytes(32).toString('hex')
   const config = ensureDefaultProject(validateConfig(defaultConfig(token)), { repoDir, fsImpl })
-  writeConfig(config, { env, homedir, fsImpl })
+  writeConfig(config, { env, homedir, fsImpl, repoDir })
   return withDerivedDirs(config, { configPath: path, repoDir })
 }
 
@@ -476,13 +524,13 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
  *
  * @returns {object} the updated config
  */
-export function addProject(config, { id, name, path } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export function addProject(config, { id, name, path } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   const seen = new Set(projects.map((p) => p.id))
   const mintedId = id ?? freeProjectId(slugify(name), seen)
   const entry = validateProject({ id: mintedId, name, ...(path !== undefined ? { path } : {}) }, { seen })
   const next = { ...config, projects: [...projects, entry], activeProject: config.activeProject ?? entry.id }
-  writeConfig(next, { env, homedir, fsImpl })
+  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
   return next
 }
 
@@ -493,13 +541,13 @@ export function addProject(config, { id, name, path } = {}, { env = process.env,
  *
  * @returns {object} the updated config
  */
-export function renameProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export function renameProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   const idx = projects.findIndex((p) => p && p.id === id)
   if (idx === -1) throw new UnknownProjectError(`renameProject: unknown project "${id}"`)
   const entry = validateProject({ ...projects[idx], id: projects[idx].id, name })
   const next = { ...config, projects: projects.map((p, i) => (i === idx ? entry : p)) }
-  writeConfig(next, { env, homedir, fsImpl })
+  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
   return next
 }
 
@@ -508,13 +556,13 @@ export function renameProject(config, { id, name } = {}, { env = process.env, ho
  *
  * @returns {object} the updated config
  */
-export function selectProject(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export function selectProject(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   if (!projects.some((p) => p && p.id === id)) {
     throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
   }
   const next = { ...config, activeProject: id }
-  writeConfig(next, { env, homedir, fsImpl })
+  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
   return next
 }
 
@@ -535,12 +583,12 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
  * @returns {object} the updated config
  * @throws {InvalidFederationError}
  */
-export function addPeer(config, { id, name, url, token } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export function addPeer(config, { id, name, url, token } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
   const current = validateFederation((config && config.federation) ?? undefined)
   const entry = { id, url, token, ...(name !== undefined ? { name } : {}) }
   const federation = validateFederation({ ...current, peers: [...current.peers, entry] })
   const next = { ...config, federation }
-  writeConfig(next, { env, homedir, fsImpl })
+  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
   return next
 }
 
@@ -552,14 +600,14 @@ export function addPeer(config, { id, name, url, token } = {}, { env = process.e
  * @returns {object} the updated config
  * @throws {UnknownPeerError}
  */
-export function removePeer(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl } = {}) {
+export function removePeer(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
   const current = validateFederation((config && config.federation) ?? undefined)
   if (!current.peers.some((p) => p && p.id === id)) {
     throw new UnknownPeerError(`removePeer: unknown machine "${id}"`)
   }
   const federation = { ...current, peers: current.peers.filter((p) => p.id !== id) }
   const next = { ...config, federation }
-  writeConfig(next, { env, homedir, fsImpl })
+  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
   return next
 }
 
