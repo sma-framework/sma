@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
 import { existsSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -38,6 +39,7 @@ import {
   COOKIE_NAME,
 } from '../src/front/auth.mjs'
 import { addProject, renameProject, selectProject } from '../src/config.mjs'
+import { applyAgentToggle } from '../src/front/harness.mjs'
 
 const TOKEN = 'a'.repeat(64) // stand-in for randomBytes(32).toString('hex')
 
@@ -1151,6 +1153,88 @@ describe('server.mjs — the project write doors delegate to the config registry
       body: { path: '/p' },
     })
     expect(res.statusCode).toBe(501)
+  })
+})
+
+/**
+ * LP-3 — a pinned repoDir was deleted from the file by one press in the window (05.08.2026).
+ *
+ * The live incident, in order: the founder's `~/.sma-daemon/config.json` carried a `repoDir`
+ * pin (the daemon is launched from a temp worktree, so the pin is the only thing that says
+ * which tree the roster and the interview belong to). One press, and the pin was gone from
+ * the file. The daemon then derived `repoDir` = its launch directory, and GET /api/onboarding
+ * flipped to `needed: true`, because a worktree carries no `.sma/profile.json`.
+ *
+ * The mechanism is a seam, not a typo. `stripDerivedDirs` drops a key only when the file's
+ * value equals what the derive WOULD produce — and the derive's `repoDir` is whatever
+ * baseline the caller hands in. The composition root hands the doors the EFFECTIVE repoDir
+ * (`o.repoDir ?? config.repoDir`), which for a pinned config IS the pin, so the comparison
+ * read «pin === pin» and the pin was deleted as if nobody had ever typed it.
+ *
+ * These two cases are written the way PRODUCTION wires it — the real door, `deps.repoDir`
+ * set to the effective repoDir, exactly what main.mjs passes — because that wiring is the
+ * defect. The unit cases that came with D-11-DEFER-19 all pass a fake LAUNCH directory as
+ * the baseline, which is the semantically correct one, and that is why they stayed green
+ * through the whole incident.
+ */
+describe('server.mjs — a pinned repoDir survives a write through the window (LP-3)', () => {
+  const PIN = '/Users/f/projects/sma' // the tree the founder pinned by hand
+  const CONFIG_ROOT = dirname(PROJECT_ENV.SMA_DAEMON_CONFIG)
+
+  /** The ONE object the composition root serves: the file's pin IS the effective repoDir. */
+  const pinnedConfig = () => ({
+    token: TOKEN,
+    workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }],
+    projects: [],
+    activeProject: null,
+    repoDir: PIN,
+    dataDir: join(CONFIG_ROOT, 'data'), // derive-equal: these two MUST still be stripped
+    ledgerDir: join(CONFIG_ROOT, 'ledger'),
+  })
+
+  it('POST /api/project/add keeps the pin and still strips the two derive-equal dirs', async () => {
+    const fsImpl = capturingConfigFs()
+    const config: any = pinnedConfig()
+    const front = createFrontServer({
+      config,
+      // the production wiring: deps.repoDir is main.mjs's `o.repoDir ?? config.repoDir`
+      deps: { addProject, renameProject, selectProject, env: PROJECT_ENV, fsImpl, repoDir: config.repoDir },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/project/add',
+      headers: jsonHeaders(),
+      body: { path: '/Users/f/projects/mass-platform', name: 'Платформа' },
+    })
+    expect(res.statusCode).toBe(200)
+
+    const stored = fsImpl.written[fsImpl.written.length - 1]
+    expect(stored.projects).toHaveLength(1) // the write itself happened
+    expect(stored.repoDir, "the operator's pin was deleted by a project add").toBe(PIN)
+    expect(stored.dataDir).toBeUndefined()
+    expect(stored.ledgerDir).toBeUndefined()
+  })
+
+  it('POST /api/agent/toggle keeps the pin too — the appliers write through the same seam', async () => {
+    const fsImpl = capturingConfigFs()
+    const config: any = pinnedConfig()
+    const front = createFrontServer({
+      config,
+      deps: { applyAgentToggle, env: PROJECT_ENV, fsImpl, repoDir: config.repoDir },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/agent/toggle',
+      headers: jsonHeaders(),
+      body: { id: 'max-2', enabled: false },
+    })
+    expect(res.statusCode).toBe(200)
+
+    const stored = fsImpl.written[fsImpl.written.length - 1]
+    expect(stored.workers[0].enabled).toBe(false)
+    expect(stored.repoDir, "the operator's pin was deleted by an agent toggle").toBe(PIN)
+    expect(stored.dataDir).toBeUndefined()
+    expect(stored.ledgerDir).toBeUndefined()
   })
 })
 

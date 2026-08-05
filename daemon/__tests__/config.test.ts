@@ -50,6 +50,7 @@ import {
   addProject,
   renameProject,
   selectProject,
+  stripDerivedDirs,
   FEDERATION_ROLES,
   InvalidWorkerProfileError,
   InvalidProjectError,
@@ -435,6 +436,10 @@ describe('project registry mutations — add / rename / select', () => {
  * The second case is the safety half and it matters as much as the first: the rule is «a value
  * the derive would produce again is not written down», never a blanket delete. An operator who
  * pointed `dataDir` somewhere on purpose keeps it across a project add.
+ *
+ * THE BASELINE THE DOORS TAKE IS `launchDir` — the directory the daemon PROCESS was started
+ * in, which is what these cases always meant by `repo`. It used to be called `repoDir`, and
+ * that name is what let the effective repoDir be handed in instead; see the LP-3 cases below.
  */
 describe('D-11-DEFER-19 — the derived working directories never reach the file', () => {
   const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
@@ -446,7 +451,7 @@ describe('D-11-DEFER-19 — the derived working directories never reach the file
     expect(cfg.ledgerDir).toBe(join(home, '.sma-daemon', 'ledger'))
     expect(cfg.repoDir).toBe(repo)
 
-    const io = { env: {}, homedir, repoDir: repo }
+    const io = { env: {}, homedir, launchDir: repo }
     const added = addProject(cfg, { id: 'second', name: 'Second', path: repo }, io)
     const selected = selectProject(added, { id: 'second' }, io)
     renameProject(selected, { id: 'second', name: 'Второй' }, io)
@@ -471,10 +476,94 @@ describe('D-11-DEFER-19 — the derived working directories never reach the file
     const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
     expect(cfg.dataDir).toBe('D:/sma-data')
 
-    addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir, repoDir: repo })
+    addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir, launchDir: repo })
     const onDisk = readFile()
     expect(onDisk.dataDir).toBe('D:/sma-data') // an operator's own choice is not a derive
     expect(onDisk.ledgerDir).toBeUndefined()
     expect(onDisk.repoDir).toBeUndefined()
+  })
+})
+
+/**
+ * LP-3 — the strip baseline is the LAUNCH directory, and only the launch directory
+ * (the live incident of 05.08.2026).
+ *
+ * The founder's config carried a `repoDir` pin, because the daemon is started from a temp
+ * worktree and the pin is the only thing that says which tree the roster and the interview
+ * belong to. One press in the window and the pin was gone from the file: the daemon derived
+ * `repoDir` = its launch directory and GET /api/onboarding answered `needed: true`, because a
+ * worktree has no `.sma/profile.json`.
+ *
+ * Nothing was wrong with the RULE. `stripDerivedDirs` drops a key when storing it would
+ * change nothing — but «nothing» is measured against what a file with NO value would derive,
+ * and the derive's repoDir is whatever baseline the caller passes. The composition root
+ * passes the doors the EFFECTIVE repoDir (`o.repoDir ?? config.repoDir`), so for a pinned
+ * config the test read «pin === pin» and deleted it. The two facts are now told apart by
+ * name: `repoDir` is the tree being served, `launchDir` is where the process started.
+ *
+ * The dataDir/ledgerDir halves are derived from the CONFIG PATH and are untouched by any of
+ * this — asserted here so a future change to the repoDir rule cannot quietly move them.
+ */
+describe('LP-3 — a pinned repoDir is not a derive, and survives every door', () => {
+  const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
+  const PIN = 'D:/pinned-tree'
+
+  /** A config file that pins a tree ≠ the directory the daemon is launched from. */
+  function seedPinnedConfig(extra: object = {}) {
+    const path = resolveConfigPath({ env: {}, homedir })
+    mkdirSync(join(home, '.sma-daemon'), { recursive: true })
+    writeFileSync(
+      path,
+      JSON.stringify({ token: 'x'.repeat(64), workers: [], repoDir: PIN, projects: [{ id: 'one', name: 'One' }], activeProject: 'one', ...extra }),
+      'utf8',
+    )
+    return path
+  }
+
+  it('the pin survives a registry write — the baseline is the launch dir, not the pin', () => {
+    seedPinnedConfig()
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.repoDir).toBe(PIN) // an explicit value always wins over the derive
+
+    addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir, launchDir: repo })
+    expect(readFile().repoDir).toBe(PIN)
+  })
+
+  it('a repoDir the derive WOULD produce again is still dropped (the DEFER-19 half holds)', () => {
+    const path = resolveConfigPath({ env: {}, homedir })
+    mkdirSync(join(home, '.sma-daemon'), { recursive: true })
+    writeFileSync(
+      path,
+      JSON.stringify({ token: 'x'.repeat(64), workers: [], repoDir: repo, projects: [{ id: 'one', name: 'One' }], activeProject: 'one' }),
+      'utf8',
+    )
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    addProject(cfg, { id: 'second', name: 'Second' }, { env: {}, homedir, launchDir: repo })
+    expect(readFile().repoDir).toBeUndefined() // storing it would change nothing
+  })
+
+  it('dataDir keeps its own rule: hand-set survives, derive-equal is dropped, pin or no pin', () => {
+    seedPinnedConfig({ dataDir: 'D:/sma-data' })
+    const pinnedCfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    addProject(pinnedCfg, { id: 'second', name: 'Second' }, { env: {}, homedir, launchDir: repo })
+    let onDisk = readFile()
+    expect(onDisk.dataDir).toBe('D:/sma-data') // derived from the config PATH — never from repoDir
+    expect(onDisk.repoDir).toBe(PIN)
+
+    // and the same file with the value the derive itself would give: dropped
+    seedPinnedConfig({ dataDir: join(home, '.sma-daemon', 'data') })
+    const derivedCfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    addProject(derivedCfg, { id: 'second', name: 'Second' }, { env: {}, homedir, launchDir: repo })
+    onDisk = readFile()
+    expect(onDisk.dataDir).toBeUndefined()
+    expect(onDisk.repoDir).toBe(PIN)
+  })
+
+  it('stripDerivedDirs refuses the old parameter name instead of silently mis-comparing', () => {
+    // The one way this defect comes back is a caller that still believes the baseline is
+    // «the repo directory». There is no safe guess, so the seam says so out loud.
+    expect(() => stripDerivedDirs({ repoDir: PIN }, { configPath: '/c/config.json', repoDir: PIN } as any)).toThrow(TypeError)
+    expect(stripDerivedDirs({ repoDir: PIN }, { configPath: '/c/config.json', launchDir: repo })).toEqual({ repoDir: PIN })
+    expect(stripDerivedDirs({ repoDir: repo }, { configPath: '/c/config.json', launchDir: repo })).toEqual({})
   })
 })

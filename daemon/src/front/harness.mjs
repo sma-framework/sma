@@ -465,10 +465,17 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
  * overrides). The appliers here receive the object `loadConfig` returned, which carries the
  * three read-time working directories; `stripDerivedDirs` is what keeps a toggle from
  * pinning them into the file (D-11-DEFER-19 — the same law the registry doors obey).
+ *
+ * THE BASELINE IS `launchDir`, NOT `repoDir`. Every applier in this file needs BOTH: the
+ * repoDir to READ from (role files, the skills tree, the installed roster) and the launch
+ * directory to decide what counts as derived when it WRITES. Handing the repoDir to the
+ * writer is the LP-3 defect — a toggle then deletes the operator's pin from the file. The
+ * default is this process's own cwd, so a caller that omits it still compares against a
+ * launch directory rather than against a served tree.
  */
-function writeConfig(config, { env, homedir, fsImpl, repoDir }) {
+function writeConfig(config, { env, homedir, fsImpl, launchDir = process.cwd() }) {
   const path = resolveConfigPath({ env, homedir })
-  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, repoDir }), {
+  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, launchDir }), {
     mkdirFn: fsImpl && fsImpl.mkdirSync,
     writeFn: fsImpl && fsImpl.writeFileSync,
     renameFn: fsImpl && fsImpl.renameSync,
@@ -520,13 +527,16 @@ function profileFromDefinition(id, enabled, config, repoDir, fsImpl, source) {
 }
 
 /**
- * applyAgentToggle({config, id, enabled, repoDir, fsImpl, env, homedir}) → the updated config.
- * An EXISTING profile: flip its `enabled`. A NEW id: the definition file
+ * applyAgentToggle({config, id, enabled, repoDir, launchDir, fsImpl, env, homedir}) → the
+ * updated config. An EXISTING profile: flip its `enabled`. A NEW id: the definition file
  * `.claude/agents/<id>.md` MUST exist (already approve-merged) — the profile is built from
  * the FILE's fields + pool defaults, the request contributing only id + enabled. Written
  * atomically. Unknown id with no file → MissingDefinitionFileError.
+ *
+ * `repoDir` is READ from (the definition file); `launchDir` is the write-time derive
+ * baseline — see writeConfig above. They are different facts and may not be swapped.
  */
-export function applyAgentToggle({ config, id, enabled, repoDir, fsImpl, env = process.env, homedir = osHomedir }) {
+export function applyAgentToggle({ config, id, enabled, repoDir, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
   if (!config || !Array.isArray(config.workers)) throw new UnknownProfileError('applyAgentToggle: config.workers required')
   if (typeof id !== 'string' || !id) throw new UnknownProfileError('applyAgentToggle: id required')
   const workers = config.workers
@@ -540,12 +550,13 @@ export function applyAgentToggle({ config, id, enabled, repoDir, fsImpl, env = p
     nextWorkers = [...workers, profile]
   }
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl, repoDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
   return nextConfig
 }
 
 /**
- * applyStockTeamToggle({config, enabled, repoDir, fsImpl, env, homedir}) → the updated config.
+ * applyStockTeamToggle({config, enabled, repoDir, launchDir, fsImpl, env, homedir}) → the
+ * updated config.
  * THE single «switch the pipeline on» act (SB-031 part 1), reached through the EXISTING
  * POST /api/agent/toggle door under the reserved target STOCK_TEAM_TARGET — no route added.
  *
@@ -565,10 +576,10 @@ export function applyAgentToggle({ config, id, enabled, repoDir, fsImpl, env = p
  * the recorded baseline alone — the answer to «what did I last accept» does not change
  * because a switch moved.
  *
- * @param {{config:object, enabled:boolean, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * @param {{config:object, enabled:boolean, repoDir?:string, launchDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
  * @returns {object} the updated config
  */
-export function applyStockTeamToggle({ config, enabled, repoDir, fsImpl, env = process.env, homedir = osHomedir }) {
+export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
   if (!config || !Array.isArray(config.workers)) {
     throw new UnknownProfileError('applyStockTeamToggle: config.workers required')
   }
@@ -612,18 +623,18 @@ export function applyStockTeamToggle({ config, enabled, repoDir, fsImpl, env = p
     }
   }
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl, repoDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
   return nextConfig
 }
 
 /**
- * applySkillAssign({config, skillId, workerIds, repoDir, fsImpl, env, homedir}) → the updated
- * config. The skill file `.claude/skills/<skillId>/SKILL.md` MUST exist; every workerId must
- * be an existing profile. REPLACES the skill's assignment: the listed workers get skillId in
- * their `skills`, every other worker has it removed. Empty workerIds = unassign everywhere.
- * Written atomically.
+ * applySkillAssign({config, skillId, workerIds, repoDir, launchDir, fsImpl, env, homedir}) →
+ * the updated config. The skill file `.claude/skills/<skillId>/SKILL.md` MUST exist; every
+ * workerId must be an existing profile. REPLACES the skill's assignment: the listed workers
+ * get skillId in their `skills`, every other worker has it removed. Empty workerIds =
+ * unassign everywhere. Written atomically.
  */
-export function applySkillAssign({ config, skillId, workerIds, repoDir, fsImpl, env = process.env, homedir = osHomedir }) {
+export function applySkillAssign({ config, skillId, workerIds, repoDir, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
   if (!config || !Array.isArray(config.workers)) throw new UnknownProfileError('applySkillAssign: config.workers required')
   if (typeof skillId !== 'string' || !skillId) throw new UnknownSkillError('applySkillAssign: skillId required')
   const skillFile = join(repoDir ?? '.', '.claude', 'skills', skillId, 'SKILL.md')
@@ -642,7 +653,7 @@ export function applySkillAssign({ config, skillId, workerIds, repoDir, fsImpl, 
     return { ...w, skills: next }
   })
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl, repoDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
   return nextConfig
 }
 

@@ -986,7 +986,10 @@ async function handleAgentToggle({ req, res, config, deps }) {
   if (b.id === STOCK_TEAM_TARGET) {
     if (typeof deps.applyStockTeamToggle !== 'function') return send501(res)
     try {
-      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
+      // BOTH directories: `repoDir` is the tree the applier READS the installed roster from,
+      // and `configIo` carries the write seam — including the launchDir baseline, which is
+      // never the served repoDir (LP-3).
+      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, ...configIo(deps) })
       refreshWorkers(config, next)
       const touched = (next && next.workers ? next.workers : []).filter((w) => w && w.stockDigest !== undefined)
       emitSafe(deps, { event: 'harness.updated' })
@@ -996,7 +999,7 @@ async function handleAgentToggle({ req, res, config, deps }) {
     }
   }
   try {
-    const next = deps.applyAgentToggle({ config, id: b.id, enabled: b.enabled, repoDir: deps.repoDir, fsImpl: deps.fsImpl })
+    const next = deps.applyAgentToggle({ config, id: b.id, enabled: b.enabled, repoDir: deps.repoDir, ...configIo(deps) })
     refreshWorkers(config, next)
     const worker = (next && next.workers ? next.workers : []).find((w) => w && w.id === b.id)
     emitSafe(deps, { event: 'harness.updated' })
@@ -1022,7 +1025,7 @@ async function handleSkillAssign({ req, res, config, deps }) {
   try {
     refreshWorkers(
       config,
-      deps.applySkillAssign({ config, skillId: b.skillId, workerIds: b.workerIds, repoDir: deps.repoDir, fsImpl: deps.fsImpl }),
+      deps.applySkillAssign({ config, skillId: b.skillId, workerIds: b.workerIds, repoDir: deps.repoDir, ...configIo(deps) }),
     )
     emitSafe(deps, { event: 'harness.updated' })
     return sendJson(res, 200, { ok: true, skill: { id: b.skillId, assignedTo: b.workerIds } })
@@ -1073,16 +1076,27 @@ async function handleMcpToggle({ req, res, deps }) {
 // 400) and emit the `project.updated` hint the app re-reads on. The id is minted by the
 // door and NEVER moves on a rename — it is the key tasks and workers reference.
 
-/** The write-seam options every config.mjs door takes (all four are DI). */
+/**
+ * THE WRITE SEAM, in one place: the options every path that ends in a config write takes —
+ * the registry doors of config.mjs AND the three harness appliers (all four are DI). One
+ * builder, so a write-time fact cannot reach one family and miss the other; that asymmetry
+ * is how `launchDir` would go missing again.
+ */
 function configIo(deps) {
   return {
     ...(deps.env ? { env: deps.env } : {}),
     ...(deps.homedir ? { homedir: deps.homedir } : {}),
     ...(deps.fsImpl ? { fsImpl: deps.fsImpl } : {}),
-    // The launch directory the load-time derive used. The writer needs it to tell a value it
-    // would derive again from one an operator typed, so a registry write persists neither
-    // (D-11-DEFER-19).
-    ...(deps.repoDir ? { repoDir: deps.repoDir } : {}),
+    // The daemon's LAUNCH directory — the fallback the load-time derive used. The writer
+    // needs it to tell a value it would derive again from one an operator typed, so a
+    // registry write persists neither (D-11-DEFER-19).
+    //
+    // NOT `deps.repoDir`. That one is the tree this daemon SERVES, which for a config
+    // carrying a pin IS the pin, and handing it to the writer made the strip's test read
+    // «pin === pin»: one press in the window deleted the founder's pin from the file
+    // (LP-3, 05.08.2026). The two facts travel together to the same doors and are told
+    // apart only by their names.
+    ...(deps.launchDir ? { launchDir: deps.launchDir } : {}),
   }
 }
 

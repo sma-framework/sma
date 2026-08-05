@@ -197,9 +197,24 @@ describe('the production composition root is COMPLETE', () => {
       'addProject',
       'addPeer',
       'handleChatTurn',
+      'launchDir',
     ]) {
       expect(deps[name], `deps.${name} is missing from the production wiring`).toBeTruthy()
     }
+  })
+
+  /**
+   * LP-3 — the config here PINS a repoDir, exactly like the founder's does. TWO different
+   * facts leave this root: the tree being served (the pin — every read uses it) and the
+   * directory this process started in (the write-time derive baseline). Wiring the served
+   * tree into the write seam is what deleted the pin from the founder's file on 05.08.2026,
+   * so the separation is asserted here, at the root where it was collapsed.
+   */
+  it("separates the SERVED repoDir from the daemon's own launch directory", () => {
+    const deps = park.front.deps
+    expect(deps.repoDir).toBe(join(tmpRoot, 'repo')) // the file's pin wins for the reads
+    expect(deps.launchDir).toBe(process.cwd()) // the write baseline is the process's own dir
+    expect(deps.launchDir).not.toBe(deps.repoDir)
   })
 
   it('answers 501 on NO route of the frozen table', async () => {

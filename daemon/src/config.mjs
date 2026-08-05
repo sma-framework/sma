@@ -66,8 +66,10 @@
  * leaking into every payload.
  *
  * Node built-ins only. randomBytes for the token; atomicWriteJson (scripts/sma/lib,
- * zero-dep law intact) for the write. env / homedir / fsImpl / repoDir are all
- * dependency-injectable so tests never touch the real ~/.sma-daemon.
+ * zero-dep law intact) for the write. env / homedir / fsImpl / launchDir are all
+ * dependency-injectable so tests never touch the real ~/.sma-daemon — and `launchDir`, the
+ * directory the daemon process started in, stays injected rather than read from the ambient
+ * cwd so no test has to chdir to exercise the derive.
  */
 
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync, chmodSync as fsChmodSync } from 'node:fs'
@@ -389,15 +391,20 @@ export function ensureDefaultProject(config, { repoDir = process.cwd(), fsImpl, 
  */
 export const DERIVED_DIR_KEYS = Object.freeze(['dataDir', 'ledgerDir', 'repoDir'])
 
-/** What the derive would produce for this config path and this launch directory. */
-function derivedDirsFor({ configPath, repoDir }) {
+/**
+ * What the derive would produce for this config path and this LAUNCH directory — i.e. what
+ * `withDerivedDirs` gives a file that names none of the three. `launchDir` is the directory
+ * the daemon process was started in and NOTHING else: never the repoDir the daemon is
+ * currently serving, which may well be a pin the file itself carries (LP-3).
+ */
+function derivedDirsFor({ configPath, launchDir }) {
   const root = dirname(configPath)
-  return { dataDir: join(root, 'data'), ledgerDir: join(root, 'ledger'), repoDir }
+  return { dataDir: join(root, 'data'), ledgerDir: join(root, 'ledger'), repoDir: launchDir }
 }
 
 /**
- * stripDerivedDirs(config, {configPath, repoDir}) — the PERSISTED shape of a config that has
- * been through `withDerivedDirs` (D-11-DEFER-19).
+ * stripDerivedDirs(config, {configPath, launchDir}) — the PERSISTED shape of a config that
+ * has been through `withDerivedDirs` (D-11-DEFER-19).
  *
  * WHY THIS EXISTS. `loadConfig` returns the config WITH the three working directories
  * attached, and every registry door (addProject / selectProject / renameProject) and every
@@ -414,13 +421,29 @@ function derivedDirsFor({ configPath, repoDir }) {
  * must not quietly move it. So the value is compared against what the derive would give, and
  * only an exact match is removed.
  *
+ * THE BASELINE IS `launchDir`, AND THE NAME IS THE POINT (LP-3, the live incident of
+ * 05.08.2026). The comparison only means «storing it would change nothing» when it is made
+ * against what a file with NO value would derive. Handed the EFFECTIVE repoDir instead —
+ * `o.repoDir ?? config.repoDir`, which the composition root computes and the front hands to
+ * every door — the test for `repoDir` degenerates into «pin === pin», and one press in the
+ * window deleted the founder's pin from the file. Both meanings are real and both travel to
+ * the same doors, so they carry different names: `repoDir` is the tree being served,
+ * `launchDir` is the process's own starting directory. Nothing else may arrive here.
+ *
  * @param {object} config
- * @param {{configPath:string, repoDir?:string}} args
+ * @param {{configPath:string, launchDir?:string}} args
  * @returns {object} a copy carrying only the persisted keys
  */
-export function stripDerivedDirs(config, { configPath, repoDir } = {}) {
+export function stripDerivedDirs(config, args = {}) {
+  if (args && 'repoDir' in args) {
+    // Loud on purpose: the ONE way this defect returns is a caller that still believes the
+    // baseline is «the repo directory». There is no sane fallback — guessing would either
+    // delete an operator's pin or persist a derive — so the mistake stops here.
+    throw new TypeError('stripDerivedDirs: the baseline is `launchDir` (the daemon\'s launch directory), not `repoDir`')
+  }
   if (!config || typeof config !== 'object') return config
-  const derived = derivedDirsFor({ configPath: configPath ?? '', repoDir })
+  const { configPath, launchDir } = args
+  const derived = derivedDirsFor({ configPath: configPath ?? '', launchDir })
   const out = { ...config }
   for (const key of DERIVED_DIR_KEYS) {
     if (out[key] !== undefined && out[key] === derived[key]) delete out[key]
@@ -429,15 +452,19 @@ export function stripDerivedDirs(config, { configPath, repoDir } = {}) {
 }
 
 /**
- * writeConfig(config, {env, homedir, fsImpl, repoDir}) — the ONE write path: the persisted
+ * writeConfig(config, {env, homedir, fsImpl, launchDir}) — the ONE write path: the persisted
  * shape (stripDerivedDirs) through the existing atomic writer, plus a best-effort re-stamp
  * of the 0600 mode (rename installs the temp file's mode, so re-stamping PRESERVES the
  * permissions rather than changing them).
+ *
+ * `launchDir` defaults to this process's own cwd — the same directory `withDerivedDirs`
+ * falls back to — so a caller that forgets it still compares against a launch directory and
+ * never against a served repoDir.
  */
-function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, repoDir = process.cwd() } = {}) {
+function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd() } = {}) {
   const io = fsImpl ?? {}
   const path = resolveConfigPath({ env, homedir })
-  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, repoDir }), {
+  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, launchDir }), {
     mkdirFn: io.mkdirSync,
     writeFn: io.writeFileSync,
     renameFn: io.renameSync,
@@ -470,7 +497,9 @@ function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, r
  * harness appliers hand back to be written (D-11-DEFER-19).
  */
 function withDerivedDirs(config, { configPath, repoDir }) {
-  const derived = derivedDirsFor({ configPath, repoDir })
+  // `repoDir` here is the LAUNCH directory: this runs before any value from the file has
+  // been applied, so the two cannot yet mean different things (see stripDerivedDirs).
+  const derived = derivedDirsFor({ configPath, launchDir: repoDir })
   return {
     ...config,
     dataDir: config.dataDir || derived.dataDir,
@@ -487,6 +516,11 @@ function withDerivedDirs(config, { configPath, repoDir }) {
  * idempotent, so every later load is a pure read. The returned object always carries the
  * three working directories (withDerivedDirs) whether or not the file names them.
  *
+ * `repoDir` is the daemon's LAUNCH directory — the fallback the derive uses when the file
+ * names no tree, and, at this one point in the program, the same thing as `launchDir`
+ * (nothing has read the file's value yet). It is NEVER the effective repoDir a caller
+ * computed from a loaded config: that direction is exactly the LP-3 defect.
+ *
  * @param {{env?:object, homedir?:Function, fsImpl?:object, repoDir?:string}} [opts]
  * @returns {object} the normalized config
  */
@@ -501,16 +535,25 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
     const raw = JSON.parse(readFileSync(path, 'utf8'))
     const config = validateConfig(raw)
     const migrated = ensureDefaultProject(config, { repoDir, fsImpl })
-    if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl, repoDir })
+    if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl, launchDir: repoDir })
     return withDerivedDirs(migrated, { configPath: path, repoDir })
   }
 
   // Bootstrap: fresh token, the default pool, its project registry, atomic write, 0600.
   const token = randomBytes(32).toString('hex')
   const config = ensureDefaultProject(validateConfig(defaultConfig(token)), { repoDir, fsImpl })
-  writeConfig(config, { env, homedir, fsImpl, repoDir })
+  writeConfig(config, { env, homedir, fsImpl, launchDir: repoDir })
   return withDerivedDirs(config, { configPath: path, repoDir })
 }
+
+/**
+ * THE `io` OF EVERY DOOR BELOW is `{env, homedir, fsImpl, launchDir}` — the three write seams
+ * plus the derive baseline. `launchDir` is the directory the daemon process was started in,
+ * NOT the repoDir it is serving. The doors are handed the whole loaded config, working
+ * directories and all, and `stripDerivedDirs` decides which of the three were derived; that
+ * decision is only right against a launch directory (LP-3). A door never needs to know which
+ * tree is being served, so `repoDir` does not appear in this file's write path at all.
+ */
 
 /**
  * addProject(config, {id, name, path}, io) — append a validated entry to the registry and
@@ -524,13 +567,13 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
  *
  * @returns {object} the updated config
  */
-export function addProject(config, { id, name, path } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
+export function addProject(config, { id, name, path } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   const seen = new Set(projects.map((p) => p.id))
   const mintedId = id ?? freeProjectId(slugify(name), seen)
   const entry = validateProject({ id: mintedId, name, ...(path !== undefined ? { path } : {}) }, { seen })
   const next = { ...config, projects: [...projects, entry], activeProject: config.activeProject ?? entry.id }
-  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -541,13 +584,13 @@ export function addProject(config, { id, name, path } = {}, { env = process.env,
  *
  * @returns {object} the updated config
  */
-export function renameProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
+export function renameProject(config, { id, name } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   const idx = projects.findIndex((p) => p && p.id === id)
   if (idx === -1) throw new UnknownProjectError(`renameProject: unknown project "${id}"`)
   const entry = validateProject({ ...projects[idx], id: projects[idx].id, name })
   const next = { ...config, projects: projects.map((p, i) => (i === idx ? entry : p)) }
-  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -556,13 +599,13 @@ export function renameProject(config, { id, name } = {}, { env = process.env, ho
  *
  * @returns {object} the updated config
  */
-export function selectProject(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
+export function selectProject(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   if (!projects.some((p) => p && p.id === id)) {
     throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
   }
   const next = { ...config, activeProject: id }
-  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -583,12 +626,12 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
  * @returns {object} the updated config
  * @throws {InvalidFederationError}
  */
-export function addPeer(config, { id, name, url, token } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
+export function addPeer(config, { id, name, url, token } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   const current = validateFederation((config && config.federation) ?? undefined)
   const entry = { id, url, token, ...(name !== undefined ? { name } : {}) }
   const federation = validateFederation({ ...current, peers: [...current.peers, entry] })
   const next = { ...config, federation }
-  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -600,14 +643,14 @@ export function addPeer(config, { id, name, url, token } = {}, { env = process.e
  * @returns {object} the updated config
  * @throws {UnknownPeerError}
  */
-export function removePeer(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl, repoDir } = {}) {
+export function removePeer(config, { id } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   const current = validateFederation((config && config.federation) ?? undefined)
   if (!current.peers.some((p) => p && p.id === id)) {
     throw new UnknownPeerError(`removePeer: unknown machine "${id}"`)
   }
   const federation = { ...current, peers: current.peers.filter((p) => p.id !== id) }
   const next = { ...config, federation }
-  writeConfig(next, { env, homedir, fsImpl, ...(repoDir !== undefined ? { repoDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 

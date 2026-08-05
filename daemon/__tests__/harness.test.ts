@@ -254,6 +254,56 @@ describe('applySkillAssign — replace + unassign, existing workers only', () =>
   })
 })
 
+/**
+ * LP-3 — an applier READS from the served repoDir and WRITES against the launch directory.
+ *
+ * The live incident of 05.08.2026: the founder's config pinned a `repoDir` (the daemon runs
+ * from a temp worktree), a toggle was pressed, and the pin was gone from the file — the next
+ * boot derived the launch directory instead and the first-run interview took the window. The
+ * appliers were handed ONE directory for both jobs, and the front hands them the EFFECTIVE
+ * repoDir, which for a pinned config is the pin itself: `stripDerivedDirs` then compared the
+ * pin against the pin and dropped it as «a value the derive would produce again».
+ *
+ * Both cases below call the applier exactly as server.mjs does — `repoDir` = the tree being
+ * served, taken from the config — because that call is the defect.
+ */
+describe('the appliers keep an operator\'s repoDir pin out of the strip (LP-3)', () => {
+  const PIN = '/pinned/tree'
+  const pinnedConfig = () => ({
+    repoDir: PIN,
+    workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }],
+  })
+  const env = { SMA_DAEMON_CONFIG: '/cfg.json' }
+
+  it('a toggle rewrites the roster and leaves the pin in the file', () => {
+    const { fs, lastWritten } = fakeFs({})
+    applyAgentToggle({ config: pinnedConfig(), id: 'max-2', enabled: false, repoDir: PIN, launchDir: '/tmp/worktree-91', fsImpl: fs, env })
+    expect(lastWritten().workers[0].enabled).toBe(false)
+    expect(lastWritten().repoDir).toBe(PIN)
+  })
+
+  it('a skill assignment does the same — one seam, all three appliers', () => {
+    const { fs, lastWritten } = fakeFs({ files: { '.claude/skills/twitter-digest/SKILL.md': SKILL_DIGEST } })
+    applySkillAssign({
+      config: pinnedConfig(),
+      skillId: 'twitter-digest',
+      workerIds: ['max-2'],
+      repoDir: PIN,
+      launchDir: '/tmp/worktree-91',
+      fsImpl: fs,
+      env,
+    })
+    expect(lastWritten().repoDir).toBe(PIN)
+  })
+
+  it('and a repoDir equal to the LAUNCH directory is still dropped (D-11-DEFER-19 holds)', () => {
+    const { fs, lastWritten } = fakeFs({})
+    const config = { ...pinnedConfig(), repoDir: '/tmp/worktree-91' } // what the derive would give
+    applyAgentToggle({ config, id: 'max-2', enabled: false, repoDir: '/tmp/worktree-91', launchDir: '/tmp/worktree-91', fsImpl: fs, env })
+    expect(lastWritten().repoDir).toBeUndefined()
+  })
+})
+
 describe('applyMcpToggle — ONLY the enabled boolean can change (RCE-closed)', () => {
   const registry = () => ({
     servers: [{ id: 'twitter', title: 'Twitter', purposeRu: 'чтение', command: 'npx', args: ['twitter-mcp'], envNames: ['TWITTER_TOKEN'], enabled: false }],
