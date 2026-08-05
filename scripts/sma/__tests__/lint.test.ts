@@ -1590,3 +1590,164 @@ describe('MEM-SENSPLACE + MEM-PRIVFACET + MEM-EPISODE — placement and history'
     }
   })
 })
+
+// ── The POSTEDIT walk is bounded, it narrates, and it can be budgeted ──
+//
+// The two POSTEDIT checks used to ask git the same question twice per plan
+// (`log --follow` + `show`, ×2 checks). On the house corpus that was 604 git
+// processes and 92 % of the lint's wall clock — the reason a release-gate check
+// stopped being run. These tests pin the three properties that replaced it:
+// ONE shared git pass, a progress channel, and an honest partial run.
+
+describe('lint cost + progress + budget', () => {
+  /** A git runner that records every invocation, then does the real thing. */
+  function countingGit() {
+    const calls: string[][] = []
+    const run = (args: string[], opts: { cwd?: string } = {}): string => {
+      calls.push(args)
+      return execFileSync('git', args, { encoding: 'utf8', ...opts }) as string
+    }
+    return { calls, run }
+  }
+
+  it('Test 1: two POSTEDIT checks over N clean plans issue ONE history pass, not 4·N git calls', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-cost-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      for (const n of ['01', '02', '03', '04', '05']) {
+        writeFileSync(join(tmp, `9.2-${n}-PLAN.md`), planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
+      }
+      gitCommit(tmp, 'five plans, committed once and never touched again')
+      const git = countingGit()
+      const res = runPredLint(tmp, { execGit: git.run })
+      // Verdict first: nothing was edited after its first commit.
+      expect(findingsOf(res, 'PRED-POSTEDIT').filter((x) => x.tier === 'critical')).toHaveLength(0)
+      expect(findingsOf(res, 'CONS-POSTEDIT').filter((x) => x.tier === 'critical')).toHaveLength(0)
+      // The old shape was 4 git processes per plan (2 checks × log+show) = 20 here.
+      expect(git.calls.length).toBeLessThanOrEqual(6)
+      // A clean, once-committed plan needs no `show` at all: its first-commit text
+      // is the text already in memory.
+      expect(git.calls.some((a) => a.includes('--follow'))).toBe(false)
+      expect(git.calls.filter((a) => a[0] === 'show')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 2: a plan edited and RE-COMMITTED still fails both POSTEDIT checks (the batch never swallows a verdict)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-recommit-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const p = join(tmp, '9.2-01-PLAN.md')
+      writeFileSync(p, planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
+      gitCommit(tmp, 'first commit locks both blocks')
+      // Both laws renegotiated after the fact — and the edit is COMMITTED, so the
+      // worktree is clean against HEAD. Only the first commit can say it moved.
+      writeFileSync(
+        p,
+        planWith({
+          predictions: GOOD_ENTRY.replace('threshold: 0', 'threshold: 5'),
+          consequences: CONS_ENTRY.replace('founder disposition recorded', 'anyone can clear it'),
+        }),
+      )
+      gitCommit(tmp, 'HARKing, committed')
+      const git = countingGit()
+      const res = runPredLint(tmp, { execGit: git.run })
+      expect(findingsOf(res, 'PRED-POSTEDIT').some((x) => x.tier === 'critical')).toBe(true)
+      expect(findingsOf(res, 'CONS-POSTEDIT').some((x) => x.tier === 'critical')).toBe(true)
+      // Exactly one `show` — fetched once, answered twice.
+      expect(git.calls.filter((a) => a[0] === 'show')).toHaveLength(1)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 3: an UNTRACKED plan yields no POSTEDIT verdict and no crash (its blocks are not locked yet)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-untracked-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'seed.txt'), 'seed\n')
+      gitCommit(tmp, 'seed so HEAD exists')
+      writeFileSync(join(tmp, '9.2-01-PLAN.md'), planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
+      const res = runPredLint(tmp, { execGit })
+      expect(findingsOf(res, 'PRED-POSTEDIT').filter((x) => x.tier === 'critical')).toHaveLength(0)
+      expect(findingsOf(res, 'CONS-POSTEDIT').filter((x) => x.tier === 'critical')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 4: the run narrates — a line per check and a counter through the plans walk', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-progress-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      for (let i = 1; i <= 26; i++) {
+        writeFileSync(
+          join(tmp, `9.2-${String(i).padStart(2, '0')}-PLAN.md`),
+          planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }),
+        )
+      }
+      gitCommit(tmp, 'a corpus big enough to tick')
+      const lines: string[] = []
+      const res = runPredLint(tmp, { execGit, progress: (l: string) => lines.push(l) })
+      // Every registered check announces itself before it runs.
+      for (const c of LINT_CHECKS) expect(lines.some((l) => l.includes(c.id))).toBe(true)
+      expect(lines.some((l) => /^\[1\/\d+\]/.test(l))).toBe(true)
+      // …and the long walk counts, so a slow run never looks hung.
+      expect(lines.some((l) => l.includes('PRED-POSTEDIT 25/26 plans'))).toBe(true)
+      // A run that finished carries NO partial fields — the report a complete run
+      // produces is the report it produced before the budget existed.
+      expect(res.partial).toBeUndefined()
+      expect(res.skipped).toBeUndefined()
+      expect(res.summary).toMatch(/^\d+ critical, \d+ warn, \d+ info$/)
+      expect(findingsOf(res, 'LINT-BUDGET')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 5: a budget of 0 produces an HONEST partial — it names what it did not check and refuses to exit 0', () => {
+    const res = runPredLint(join(FIX, 'clean'), { budgetMs: 0 })
+    expect(res.partial).toBe(true)
+    expect(res.skipped).toHaveLength(LINT_CHECKS.length)
+    expect(res.summary).toContain('PARTIAL')
+    // Zero criticals found — but "found nothing" is not "there is nothing".
+    expect(res.critical).toBe(0)
+    expect(res.exitCode).toBe(2)
+    const b = findingsOf(res, 'LINT-BUDGET')
+    expect(b).toHaveLength(1)
+    expect(b[0].tier).toBe('warn')
+    expect(b[0].message).toContain(`${LINT_CHECKS.length} of ${LINT_CHECKS.length} checks did not run`)
+    expect(b[0].message).toContain('NOT a verdict')
+  })
+
+  it('Test 6: a budget that runs out during the plans walk stops it and SAYS where it stopped', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-budget-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      for (const n of ['01', '02', '03']) {
+        writeFileSync(join(tmp, `9.2-${n}-PLAN.md`), planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
+      }
+      gitCommit(tmp, 'three plans')
+      // A deliberately slow git runner: the budget must bite inside the git work,
+      // which is the only place this lint has ever spent real time.
+      const slowGit = (args: string[], opts: { cwd?: string } = {}): string => {
+        const until = Date.now() + 400
+        while (Date.now() < until) {
+          /* burn — a wait the synchronous runner can actually observe */
+        }
+        return execFileSync('git', args, { encoding: 'utf8', ...opts }) as string
+      }
+      const res = runPredLint(tmp, { execGit: slowGit, budgetMs: 500 })
+      expect(res.partial).toBe(true)
+      const stopped = [...(res.skipped ?? []), ...(res.truncated ?? []).map((t: { checkId: string }) => t.checkId)]
+      // The bounded walk is the point: PRED-POSTEDIT either never started or was
+      // cut mid-walk, and either way the report says so out loud.
+      expect(stopped).toContain('PRED-POSTEDIT')
+      expect(findingsOf(res, 'LINT-BUDGET')).toHaveLength(1)
+      expect(res.exitCode).not.toBe(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
