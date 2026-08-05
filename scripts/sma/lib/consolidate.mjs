@@ -222,11 +222,27 @@ const POS_MARKERS = new Set([
   'только', 'обязан', 'всегда', 'должен', 'следует', 'нужно',
 ])
 
-/** Subject tokens: content words (len >= 3) minus polarity markers. */
+/** A token carries subject matter only if it carries a letter (Latin or Cyrillic). */
+const HAS_LETTER = /[a-zа-яё]/i
+
+/**
+ * Subject tokens: content WORDS (len >= 3) minus polarity markers.
+ *
+ * A BARE NUMERAL IS NOT A SUBJECT, and the rule is stated rather than tuned. A
+ * token of pure digits is a QUANTITY, and quantities are the numeric channel's
+ * business one function below; admitting them here let the same «2026» count as
+ * shared subject matter AND as numeric disagreement, so two founder rules whose
+ * only overlap was the year they were given scored as a same-subject conflict.
+ * Requiring one letter is the type correction, not a threshold: it says what a
+ * subject IS. Measured on the live 26-note corpus, it removes 4 of 14 findings
+ * and adds none — every one of the four was a date collision (D-11-DEFER-11's
+ * false-positive condition).
+ */
 function subjectTokens(raws) {
   const out = new Set()
   for (const t of raws) {
     if (t.length < 3) continue
+    if (!HAS_LETTER.test(t)) continue
     if (NEG_MARKERS.has(t) || POS_MARKERS.has(t)) continue
     out.add(t)
   }
@@ -243,9 +259,29 @@ function polarity(raws) {
   return pos ? 'pos' : null
 }
 
-/** Numbers mentioned in a claim (numeric-disagreement channel). */
+/**
+ * Dates written the way this corpus writes them: `2026-08-03`, `31.07.2026`,
+ * `2026/08/03`, and a bare four-digit year.
+ */
+const DATE_LIKE = /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[.\-/]\d{1,2}[.\-/]\d{4}\b|\b(?:19|20)\d{2}\b/g
+
+/**
+ * Numbers mentioned in a claim (numeric-disagreement channel).
+ *
+ * A DATE IS NOT A QUANTITY IN DISPUTE. Timestamps are stripped before the
+ * numbers are read, and the reason is the module's own model rather than any
+ * measurement: this is the BI-TEMPORAL subject detector, and WHEN a claim was
+ * made is already owned by `valid_from`/`valid_until` and honoured above by
+ * `isActive`. Two rules the founder gave on different days are SEQUENTIAL, not
+ * contradictory — reading their dates as disagreeing quantities made every pair
+ * of dated rules a critical finding. Measured on the live 26-note corpus,
+ * stripping dates removes 10 of 14 findings and adds none.
+ *
+ * The channel keeps its job: a claim saying «keep 3 backups» against one saying
+ * «keep 7» still disagrees, because neither number is a date.
+ */
 function numbersOf(s) {
-  return (String(s ?? '').match(/\d+(?:\.\d+)?/g) ?? []).sort()
+  return (String(s ?? '').replace(DATE_LIKE, ' ').match(/\d+(?:\.\d+)?/g) ?? []).sort()
 }
 
 /** Token-set Jaccard similarity of two Sets. */

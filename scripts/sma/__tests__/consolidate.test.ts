@@ -436,6 +436,48 @@ describe('consolidate.mjs — polarity answers Russian (D-11-DEFER-12)', () => {
   })
 })
 
+describe('consolidate.mjs — what the two channels are allowed to read (11-POST precision)', () => {
+  // These were UNREACHABLE before the kind gate widened, and the first run of
+  // the widened detector over the live 26-note corpus made them the dominant
+  // failure: 14 findings, none of them a contradiction. Both rules below are
+  // type corrections — what a subject IS, what a quantity IS — not thresholds.
+
+  it('Test 8: two dated rules on one subject are SEQUENTIAL, not contradictory — a date is not a quantity', () => {
+    // The founder's rules carry the day they were given. Reading `2026-08-03`
+    // against `2026-07-10` as disagreeing quantities made every pair of dated
+    // rules a critical finding. WHEN a claim was made is bi-temporality's job
+    // (valid_from / valid_until), which findContradictions already honours.
+    const ruleA = 'HARD RULE (основатель 2026-08-03) — релиз выкатывают только через гейт приёмки.'
+    const ruleB = 'HARD RULE (основатель 2026-07-10) — релиз выкатывают только через гейт приёмки.'
+
+    expect(detectClaimConflict(ruleA, ruleB)).toBeNull()
+  })
+
+  it('Test 8b: the numeric channel keeps its job — a real quantity disagreement still fires', () => {
+    // The rule strips TIMESTAMPS, not numbers. A claim that genuinely disputes
+    // a count must still be caught, or the fix would have removed a channel
+    // instead of correcting what it reads.
+    const keepThree = 'Храните 3 резервные копии базы в горячем хранилище.'
+    const keepSeven = 'Храните 7 резервных копий базы в горячем хранилище.'
+
+    const conflict = detectClaimConflict(keepThree, keepSeven)
+    expect(conflict).not.toBeNull()
+    expect(conflict!.numeric).toBe(true)
+  })
+
+  it('Test 9: a bare numeral is not shared SUBJECT matter — the year two rules mention is not their topic', () => {
+    // The live corpus's own shape: a README rule and a clean-history rule, both
+    // dated, both about entirely different things. Their ONLY overlap besides
+    // the year is one ordinary word — one token, below MIN_SHARED_SUBJECT. With
+    // «2026» admitted as subject matter the pair cleared the threshold and the
+    // opposing «всегда»/«никогда» turned it into a critical contradiction.
+    const aboutReadme = 'В 2026 команда всегда обновляет README при выпуске.'
+    const aboutHistory = 'В 2026 команда никогда не трогает историю коммитов.'
+
+    expect(detectClaimConflict(aboutReadme, aboutHistory)).toBeNull()
+  })
+})
+
 describe('consolidate.mjs — digest() reflection summary (9.1-12 test 4)', () => {
   it('Test 4: digest over a usage+journal window lists top-cited notes and repeated incident classes', () => {
     jsonl(join(usageDir, 'term-1.jsonl'), [
