@@ -87,9 +87,17 @@ import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
  */
 export function createDaemon(o = {}) {
   const clock = typeof o.clock === 'function' ? o.clock : Date.now
-  const config = o.config ?? loadConfig()
+  // THE DIRECTORY THIS PROCESS WAS STARTED IN — a fact about the process, decided before
+  // anything is read, and the ONLY honest baseline for «would the derive produce this
+  // value again?». Everything that ends in a config write is handed this one (LP-3).
+  const launchDir = o.launchDir ?? process.cwd()
+  const config = o.config ?? loadConfig({ repoDir: launchDir })
   const dataDir = o.dataDir ?? config.dataDir
   const ledgerDir = o.ledgerDir ?? config.ledgerDir
+  // THE TREE THIS DAEMON SERVES — the file's pin when it has one, the launch directory when
+  // it does not. Everything that READS a repository (the roster, git log, the interview's
+  // target) uses this. It is NOT a write baseline: for a pinned config it IS the pin, and
+  // comparing the pin against itself is what deleted it from the founder's file (LP-3).
   const repoDir = o.repoDir ?? config.repoDir
 
   // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store; plus the
@@ -220,7 +228,8 @@ export function createDaemon(o = {}) {
         hub,
         ledger, // the attempt ledger AND the decision journal ride the same seam
         ledgerDir,
-        repoDir,
+        repoDir, // the tree being SERVED — reads only
+        launchDir, // the process's own start directory — the write-time derive baseline
         deriveState,
         parseReceiptSummary,
         // the project registry doors — the ONLY way a request reaches a config write
