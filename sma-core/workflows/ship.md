@@ -168,8 +168,8 @@ tag scheme, or gate command — the fallback is ask-the-user, nothing else.
 commands implement them, never WHETHER they run:
 
 1. **Never ship red.** Run the full gate before pushing. Echo the profile-supplied
-   command verbatim before executing it (the user must see what is about to run —
-   T-9.1-09):
+   command verbatim before executing it (the user must see what is about to run; the
+   command came from their own profile, so it is theirs to audit):
 
    ```bash
    echo "Full gate (from .sma/profile.json): ${FULL_GATE_COMMAND}"
@@ -178,7 +178,7 @@ commands implement them, never WHETHER they run:
 
    Non-zero exit blocks the ship. Fix first; never push over a red gate.
 
-   **Full-gate evidence marker (D-9.1-13).** Immediately after the full gate passes,
+   **Full-gate evidence marker.** Immediately after the full gate passes,
    record the evidence marker for the current HEAD — this is the proof that GATE-PUSH's
    soft-deny tier checks before it will allow a push:
 
@@ -626,7 +626,7 @@ After shipping:
 - [ ] «Issues Encountered» scan run over every SUMMARY in the ship scope, and every item it printed either raised as a gate line item or written off in deferred-items.md — none left silent
 - [ ] Infra profile read (.sma/profile.json) — missing fields asked and offered for save, never defaulted
 - [ ] Full gate green before push (profile-supplied command, echoed before running) + origin-diff reviewed
-- [ ] Full-gate evidence marker written after the gate passed (`node scripts/sma/cli.mjs gates mark-fullgate`) — GATE-PUSH soft-deny proof (D-9.1-13)
+- [ ] Full-gate evidence marker written after the gate passed (`node scripts/sma/cli.mjs gates mark-fullgate`) — GATE-PUSH soft-deny proof
 - [ ] Branch pushed to remote
 - [ ] PR created with rich auto-generated body
 - [ ] STATE.md updated with shipping status

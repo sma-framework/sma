@@ -1,4 +1,4 @@
-# Transitional /gsd-* alias layer (D-9.1-02)
+# Transitional /gsd-* alias layer (a deliberate, time-boxed exception to «one name per command»)
 
 This directory holds THIN alias skills that map the old `/gsd-*` command names
 1:1 onto the canonical `/sma-*` commands. They exist only so parallel terminals
@@ -22,7 +22,7 @@ adds zero behavior.
 | /gsd-fast | /sma-fast | workflows/fast.md |
 | /gsd-help | /sma-help | workflows/help.md |
 
-## Removal condition (D-9.1-02)
+## Removal condition (fixed when the rename was decided — not renegotiable per project)
 
 `/sma-*` is canonical from wave 0. This alias layer is DELETED as soon as the
 adopting project's remaining pre-rename live phases are closed
@@ -32,7 +32,7 @@ add behavior to it, do not add new aliases: new commands ship as `/sma-*` only.
 Deletion command (run from the repo root, one commit):
 
 ```
-git rm -r sma-core/aliases && git commit -m "aliases: remove transitional /gsd-* layer (D-9.1-02 condition met: phases 51/52 closed)"
+git rm -r sma-core/aliases && git commit -m "aliases: remove transitional /gsd-* layer (removal condition met: the pre-rename phases are closed)"
 ```
 
 ## Installer contract

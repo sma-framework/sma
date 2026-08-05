@@ -14,8 +14,8 @@ import { defaultExclude, defineConfig } from 'vitest/config'
  * What it cannot survive is being stacked on top of the default file parallelism:
  * measured on this machine, one parallel full run in four was green and the
  * failing set differed every time, while a `--no-file-parallelism` run was
- * 2368/2368 (registered as D-11-DEFER-05). A gate that is green one run in four
- * is not a gate. So these six are pinned to their own project, run with
+ * 2368/2368. A gate that is green one run in four is not a gate. So these
+ * six are pinned to their own project, run with
  * `fileParallelism: false`, in a LATER group order — `sequence.groupOrder` runs
  * groups from lowest to highest, so this group starts only once the parallel
  * group has finished and the machine is otherwise idle. The remaining ~129 files
