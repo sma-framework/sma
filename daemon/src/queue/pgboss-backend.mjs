@@ -322,7 +322,17 @@ export function createPgBossQueue({
       ? TASK_QUEUE_LANES.filter((l) => lanes.includes(l)) // restricted, but keep the stable order
       : TASK_QUEUE_LANES // omitted → all lanes eligible
     for (const lane of eligible) {
-      const jobs = await bossInstance.fetch(laneQueue(lane), { batchSize: 1 })
+      // `includeMetadata` IS THE ATTEMPT NUMBER (found by the live crash drill, 2026-08-05).
+      // pg-boss v11's fetch returns four columns by default — id, name, data,
+      // expireInSeconds — and `retry_count` is NOT one of them. Without this flag the
+      // arithmetic below always read a retry count of 0, so EVERY claim on the real queue
+      // reported attempt 1: the tick stamped `attempt: 1` on every ledger row it wrote,
+      // the CLAIMED transition minted the SAME idempotency key for a first attempt and a
+      // third, and the ledger reconciliation pass found attempt 1 already claimed and
+      // reconstructed nothing. None of it was visible in the suite, because the test's
+      // fake pg-boss returns the retry count from fetch unconditionally — the fake was
+      // more generous than the library it models.
+      const jobs = await bossInstance.fetch(laneQueue(lane), { batchSize: 1, includeMetadata: true })
       const job = Array.isArray(jobs) ? jobs[0] : jobs
       if (job) {
         const data = job.data || {}
