@@ -4,23 +4,23 @@
  * LINT_CHECKS is an array of {id, title, tier, run(ctx)}; runLint drives them,
  * collects findings, and returns a stable-sorted report.
  *
- * DESIGN INVARIANTS (9-08 execution rules):
+ * DESIGN INVARIANTS:
  *   - READ-ONLY (C4): no check writes, fixes, or deletes anything in the corpus.
  *     This module imports ONLY read APIs from node:fs (readFileSync, readdirSync,
  *     statSync). Auto-fix is out of scope for V1.
  *   - DETERMINISTIC: same tree → byte-identical report. Findings are sorted by
  *     (checkId, file, message); no timestamps inside the report body.
  *   - FAIL-SOFT: a check that throws is converted to a WARN finding
- *     rather than crashing the whole run — the commit hook (9-12) is additionally
+ *     rather than crashing the whole run — the commit hook is additionally
  *     fail-open.
  *
- * Exports (consumed by the CLI 9-10, migration 9-11, flip 9-14, snapshot 9-13):
+ * Exports (consumed by the CLI, the migrator, the index flip and the snapshot):
  *   - LINT_CHECKS : the array of check objects.
  *   - runLint({corpusDir, tagsPath, indexPath, ...}) -> {critical, warn, info,
  *       findings[], summary}.
  *
  * The corpus is accessed ONLY through frontmatter.mjs (parseNote + loadTagsRegistry
- * + resolveAlias) — the single shared read path (9-04).
+ * + resolveAlias) — the single shared read path.
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
@@ -98,7 +98,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  */
 const GENERATED_MARKER = 'GENERATED'
 
-/** Where the regeneration module lands in the same wave (9-09). */
+/** Where the regeneration module lands. */
 const GENERATOR_PATH = join(__dirname, 'generator.mjs')
 
 /**
@@ -879,7 +879,7 @@ const MEM_REGEN = {
     // The generator is injected (test / CLI) or lazy-loaded from generator.mjs.
     const generate = ctx.generate
     if (typeof generate !== 'function') {
-      // The module lands in the same wave (9-09) — degrade, never crash (P4).
+      // The module may not be present yet — degrade, never crash (P4).
       const landed = existsSync(GENERATOR_PATH)
       const why = landed
         ? 'generator.mjs is present but no generate() was supplied to runLint'
@@ -2397,7 +2397,7 @@ function sortFindings(findings) {
  * @param {string} opts.corpusDir  directory of the memory notes
  * @param {string} opts.tagsPath   path to TAGS.md (the registry)
  * @param {string} opts.indexPath  path to MEMORY.md (the index)
- * @param {(committed:string)=>string} [opts.generate]  regeneration fn (9-09 / test)
+ * @param {(committed:string)=>string} [opts.generate]  regeneration fn (injected by tests)
  * @param {string} [opts.claudeMdPath]  path to CLAUDE.md (for MEM-CLAUDEDUP)
  * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family)
  * @param {(args:string[], o?:{cwd?:string})=>string} [opts.execGit]  read-only git runner (PRED-POSTEDIT)
@@ -2486,7 +2486,7 @@ export function runLint(opts) {
     summary: partial
       ? `${critical} critical, ${warn} warn, ${info} info — PARTIAL (${(budgetMs / 1000).toFixed(1)}s budget; ${skipped.length} of ${LINT_CHECKS.length} checks did not run)`
       : `${critical} critical, ${warn} warn, ${info} info`,
-    // The commit-hook tier (9-12) consumes this: critical blocks, warnings do not.
+    // The commit-hook tier consumes this: critical blocks, warnings do not.
     // 2 is the third answer a budget makes possible: "no verdict — I was stopped".
     // It is non-zero on purpose, so a hook fails CLOSED on an unfinished check.
     exitCode: critical > 0 ? 1 : partial ? 2 : 0,

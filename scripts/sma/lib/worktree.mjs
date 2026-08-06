@@ -34,7 +34,7 @@
  * checkout. It reads profile.mjs read-only — it NEVER modifies the profile.
  *
  * THE TWO WINDOWS HAZARDS ARE STRUCTURALLY GUARDED
- *   - feedback_worktree_base_windows_bug (fired 3/4 in P17.2, 3/3 on 2026-07-03): a
+ *   - feedback_worktree_base_windows_bug (fired 3/4 in one project, 3/3 on 2026-07-03): a
  *     Windows worktree can branch from a commit OLDER than HEAD. provisionWorktree
  *     CAPTURES EXPECTED_BASE = `git rev-parse HEAD` at creation, VERIFIES the new
  *     worktree's base against it, and prefers `git reset --hard $EXPECTED_BASE`

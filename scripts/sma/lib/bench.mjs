@@ -1,5 +1,5 @@
 /**
- * bench.mjs — the W0 measurement harness.
+ * bench.mjs — the baseline measurement harness.
  *
  * A DETERMINISTIC, ZERO-LLM metric runner over the V2 journals, git history, and
  * throwaway clones. It is the phase's founding instrument: the 8-metric 10x
@@ -39,7 +39,7 @@ import { benchProviders as airbagBench } from './airbag.mjs'
 //
 // Each entry: { id, scorecard: 'S1'..'S8', unit, measure }. `measure(ctx)` is a
 // thin adapter that pulls what it needs from a uniform ctx and returns the honest
-// {metric, value, unit, n, method, status} shape. Plans 02-10 and phase-close
+// {metric, value, unit, n, method, status} shape. Every later plan and the phase-close
 // scoring consume these by id — the ids are the CONTRACT.
 
 /** The four honest status values a measure may report. */
@@ -1034,7 +1034,7 @@ function tokenizeKeywords(v) {
 // Task 3 — aggregate runner, baseline capture, and freeze verification.
 // ════════════════════════════════════════════════════════════════════════════
 
-/** The immutable baseline freeze date. W1+ plans gate on this. */
+/** The immutable baseline freeze date. Everything after the baseline gates on it. */
 export const FREEZE_DATE = '2026-07-21'
 
 /** The two DETERMINISTIC bases that must reproduce on a fresh clone. */

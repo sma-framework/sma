@@ -84,7 +84,7 @@ function envOn(v) {
  * `merge-in-progress` advisory slot via claimSlot (mkdir-EEXIST). This serializes
  * integration: a second concurrent acquire returns {acquired:false, holder} (never a
  * throw). The branch rides in `reason` as a suffix so checkMergeClaim can read it back
- * without changing the 9-03 provenance stamp. Returns {acquired, holder?}.
+ * without changing the claim's provenance stamp. Returns {acquired, holder?}.
  */
 export function acquireMergeClaim(o = {}) {
   const claimOpts = o.claimsDir ? { claimsDir: o.claimsDir } : {}
@@ -113,7 +113,7 @@ export function acquireMergeClaim(o = {}) {
 /**
  * releaseMergeClaim({by, claimsDir}) — release the caller's OWN merge claim. A foreign
  * claim is refused by releaseSlot (P3) — force-clear lives in the interactive
- * CLI (9-10), never here.
+ * CLI, never here.
  */
 export function releaseMergeClaim(o = {}) {
   const claimOpts = o.claimsDir ? { claimsDir: o.claimsDir } : {}

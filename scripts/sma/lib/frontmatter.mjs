@@ -7,7 +7,7 @@
  * `metadata:` block (sub-keys node_type/type/originSessionId); 66 files are flat
  * `type:` scalars; 2 structural files (MEMORY.md, ARCHIVE.md) have NO frontmatter.
  * This parser handles EXACTLY those shapes and throws LOUDLY (B12) on anything
- * else — never guesses, so a later migration (9-11) cannot silently corrupt a note.
+ * else — never guesses, so a later migration cannot silently corrupt a note.
  *
  * SCHEMA v2 (docs/MEMORY-MODEL.md) rides on the SAME read/write path behind a
  * `schema_version` discriminator that is read FIRST, before any other grammar
@@ -24,7 +24,7 @@
  * decides SHAPE, never enum or field legality (that is schema-v2.mjs's job) —
  * and it must never import schema-v2.mjs (no cycles).
  *
- * Exports (shared by lint 9-08, generator/loader 9-09, migration 9-11):
+ * Exports (shared by lint, the generator/loader pair and the migrator):
  *   - parseNote(text, {file})   -> {frontmatter|null, body, schemaVersion}
  *   - serializeNote({frontmatter, body, schemaVersion}) -> normalized note text
  *   - V2_KEY_ORDER — the fixed schema-v2 top-level emit order (serialization law)
@@ -671,7 +671,7 @@ export function loadTagsRegistry(tagsPath) {
 /**
  * resolveAlias(tag, registry) — map a UF alias to its canonical USE tag (B2).
  * A canonical tag resolves to itself; an unknown tag is returned unchanged
- * (membership validation is lint's job in 9-08, not the parser's).
+ * (membership validation is lint's job, not the parser's).
  *
  * @param {string} tag
  * @param {{aliases:Map<string,string>}} registry

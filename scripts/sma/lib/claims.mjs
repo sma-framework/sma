@@ -10,7 +10,7 @@
  *
  * Foreign-claim protection (P3): releaseSlot removes only the caller's OWN
  * claim; a foreign claim is refused unless {force:true} — the single foreign-removal
- * path, reachable only via the interactive force-clear command (9-10) with journaled
+ * path, reachable only via the interactive force-clear command, with journaled
  * provenance.
  *
  * Node built-ins only; fs is dependency-injectable via the claimsDir option.

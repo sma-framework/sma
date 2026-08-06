@@ -620,7 +620,7 @@ const PROBE_SKIP_DIRS = new Set(['.git', 'node_modules', '.next', '.sma'])
  * probeScopeMtime(session, {root, statFn, readdirFn}) — a convenience default probe:
  * the max mtime (ms) across ONLY the files whose repo-relative path matches one of the
  * session's claimed globs under `root`. The plan's public contract accepts an injected
- * probe; this helper is exported for the CLI (9-10) / hooks (9-12) so the mtime source
+ * probe; this helper is exported for the CLI and the hooks so the mtime source
  * lives in one place. Fail-open: any error -> 0 (treated as clean).
  *
  * WR-01: previously this walked the ENTIRE tree (incl. .git/node_modules) and returned

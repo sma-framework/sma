@@ -7,7 +7,7 @@
  * it parses the plan's must_haves (artifact paths + `contains` needles) and its
  * allowlisted `<verify>` commands, checks them against the REAL code tree, and returns
  * exactly ONE verdict — built / partial / absent → skip / reconcile-only / execute.
- * It mechanizes the house verify-before-execute HARD RULE (the 23-02 near-re-execution
+ * It mechanizes the house verify-before-execute HARD RULE (after a real near-re-execution
  * incident, where a parallel terminal had already committed the plan's code).
  *
  * Consume-never-reimplement: this module writes NO second frontmatter

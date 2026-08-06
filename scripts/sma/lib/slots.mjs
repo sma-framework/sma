@@ -18,7 +18,7 @@
  *   - Fail-open (C9): if fetch fails (offline) we compute from local state and attach
  *     a WARN rather than throwing.
  *   - Atomic claim gate: slot contention is resolved by claimSlot's mkdir gate — the
- *     deterministic slot name IS the lock (9-03). A lost race retries at N+1.
+ *     deterministic slot name IS the lock. A lost race retries at N+1.
  *   - Foreign claims are never auto-cleared (P3): a stale deploy signal is
  *     flagged needsHuman, never silently removed.
  *
@@ -42,7 +42,7 @@ import { PUSH_CLAIM_TTL_MS, SLOT_CLAIM_TTL_MS } from './constants.mjs'
 
 /**
  * B21 sorted-insert rule — printed by the CLI with every migration slot result and
- * embedded in 9-14's README. Exported as a string constant so both consume one text.
+ * embedded in the README. Exported as a string constant so both consume one text.
  */
 export const SORTED_INSERT_RULE =
   'Новая запись миграции вставляется строго по числовому месту в конец массива, ' +
@@ -298,9 +298,9 @@ export function verifyReleaseStillFree(version, o = {}) {
 export function acquirePushClaim(o = {}) {
   const claimOpts = o.claimsDir ? { claimsDir: o.claimsDir } : {}
   const terminalId = o.by ?? 'unknown'
-  // claimSlot (9-03) persists a FIXED provenance shape {by,pid,session,at,expectedPrev,
+  // claimSlot persists a FIXED provenance shape {by,pid,session,at,expectedPrev,
   // reason}; it does not carry arbitrary fields. To keep plannedVersion readable by
-  // checkPushClaim without changing the 9-03 stamp, it rides in reason as a suffix.
+  // checkPushClaim without changing that stamp, it rides in reason as a suffix.
   const plannedVersion = o.plannedVersion ?? null
   const res = claimSlot(
     PUSH_SLOT_NAME,
@@ -325,7 +325,7 @@ export function acquirePushClaim(o = {}) {
 /**
  * releasePushClaim({by, claimsDir}) — release the caller's OWN deploy signal (the
  * post-confirm / timeout path). A foreign claim is refused (P3) — force-clear lives in
- * the interactive CLI (9-10), never here.
+ * the interactive CLI, never here.
  */
 export function releasePushClaim(o = {}) {
   const claimOpts = o.claimsDir ? { claimsDir: o.claimsDir } : {}

@@ -7,13 +7,13 @@
  *     an EXPLICIT key allowlist. No object spread of raw local state ever reaches
  *     the payload (P1): a note body, an env dump, a file's contents present in the
  *     local files never survive serialization — they are simply not picked.
- *   sendSnapshot() — POSTs the payload to the CRM receiver (9-07) with the
+ *   sendSnapshot() — POSTs the payload to the CRM receiver with the
  *     x-sma-token header and a 5s AbortController timeout. It is FAIL-OPEN (C9,
  *     R12): every failure (no token, network error, non-2xx, timeout) is swallowed
  *     to a journal 'snapshot-fail' event + {sent:false}. Killing the network never
  *     affects the terminal's local work — the whole point of the one-way mirror.
  *
- * runSnapshot() is the CLI entry (cli.mjs `snapshot` subcommand, 9-10): build →
+ * runSnapshot() is the CLI entry (cli.mjs `snapshot` subcommand): build →
  * send → return a small JSON status. It too never throws.
  *
  * ── ONE-WAY MIRROR ─────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ import { buildBook, windowSpend, readBudget } from './spend.mjs'
 import { SESSIONS_DIR, JOURNAL_DIR, CALIBRATION_DIR, SPEND_DIR, JOURNAL_TAIL_FOR_SNAPSHOT } from './constants.mjs'
 
 /**
- * The EXPLICIT allowlist — the exact field set the receiving route (9-07,
+ * The EXPLICIT allowlist — the exact field set the receiving route (its own
  * ALLOWED_KEYS) persists. The payload is assembled by named picks from this set;
  * nothing outside it ever reaches the wire.
  */
