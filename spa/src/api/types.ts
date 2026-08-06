@@ -617,8 +617,16 @@ export type DraftKind = 'agent' | 'skill' | 'mcp'
 // ── live hints: GET /api/events ─────────────────────────────────────────────────────
 
 /**
- * The fourteen kinds of doorbell. A frame says something changed; it never says what was
+ * The nineteen kinds of doorbell. A frame says something changed; it never says what was
  * said. The window then re-reads the truth from the poll.
+ *
+ * This list is the daemon's own vocabulary, transcribed. It has to be, and not approximately:
+ * a screen that watches for a bell the daemon really rings, but that is missing from this
+ * union, cannot even be WRITTEN — comparing against a name the type does not contain is a
+ * compile error, so the screen is forced to drop the live signal and wait for the poll. The
+ * daemon's side of that lesson is already written down beside its own list: an unknown name
+ * is dropped in silence, and a defect that looks like «slow» rather than like «broken» is the
+ * expensive kind.
  */
 export type EventName =
   | 'task.queued'
@@ -635,7 +643,21 @@ export type EventName =
   | 'machine.presence'
   | 'project.updated'
   | 'import.updated'
+  // ── the five that came with the conveyor of phases ──
+  | 'phase.stage'
+  | 'discussion.updated'
+  | 'memory.drafts'
+  | 'coordination.updated'
+  | 'ship.gate'
 
+/**
+ * Every field a frame may carry, and no field it may not.
+ *
+ * The omissions below are the design, not an oversight: `discussion.updated` names the phase
+ * and NOT the question, `ship.gate` names the step and NOT what the step printed. A frame
+ * reaches whatever has the channel open; the text behind it is fetched from the authenticated
+ * endpoint by whoever is entitled to read it.
+ */
 export interface EventFrame {
   id: number
   event: EventName
@@ -649,6 +671,12 @@ export interface EventFrame {
   projectId?: string
   batchId?: string
   count?: number
+  /** `phase.stage`, `discussion.updated` — which phase moved. */
+  phase?: string
+  /** `phase.stage` — which stage it moved to. */
+  stage?: string
+  /** `ship.gate` — which step of the gate reported. */
+  step?: string
 }
 
 // ── projects and machines (declared routes, filled by their own work) ───────────────
@@ -960,4 +988,381 @@ export interface OkResult {
  */
 export interface ProjectWriteResult extends OkResult {
   project?: { id: string; name: string }
+}
+
+// ═══════════════ the conveyor, the workbench and the release gate ═══════════════
+//
+// Everything below belongs to the addresses declared in one revision and filled one at a
+// time. Six of them answer TODAY — the account door, the conveyor switch, the money stop,
+// the model assignment, the diagnostics block and the update door — and their shapes are
+// transcribed from the handlers that serve them, field by field, like every shape above.
+//
+// The rest answer «not yet» (501). Their shapes are written here FIRST, and that is the
+// point of declaring the whole layer in one go: a screen is built against the shape once,
+// the door is filled by its own work, and neither half has to guess what the other meant.
+// A shape here is therefore a CONTRACT on the filling work, not a wish — if a door ends up
+// answering something else, this file is what changes, in that door's own commit.
+
+/** The four stages a phase goes through. A closed vocabulary; a fifth name is refused. */
+export type PhaseStage = 'discuss' | 'plan' | 'execute' | 'verify'
+
+/**
+ * Where a stage stands, read off the artefacts on disk rather than remembered. A stage is
+ * `done` because its document exists, which is why the answer survives a restart of anything.
+ */
+export type PhaseStageStatus = 'none' | 'in-progress' | 'done'
+
+/** One phase as the index lists it. */
+export interface PhaseIndexRow {
+  id: string
+  name: string
+  stages: Record<PhaseStage, PhaseStageStatus>
+  /** Questions this phase parked and nobody has answered yet. */
+  open: number
+  /** Questions already answered — the pair is «N открыто / M отвечено», counted, never stored. */
+  answered: number
+}
+
+/** What the reserved `index` segment of the phase card route answers. */
+export interface PhaseIndex {
+  phases: PhaseIndexRow[]
+}
+
+/** One thing a person may pick when a stage stops to ask. */
+export interface PhaseQuestionOption {
+  id: string
+  label: string
+}
+
+/**
+ * One question a stage parked for the founder.
+ *
+ * An OPEN question is a record with no answer — that is the whole of the definition, and it
+ * is why `answer` is optional rather than a second field saying «open». The identifier comes
+ * from the question's own area, never from its position in a list: reordering the areas would
+ * otherwise route an answer quietly into somebody else's question.
+ */
+export interface PhaseQuestion {
+  id: string
+  area: string
+  question: string
+  options: PhaseQuestionOption[]
+  /** Absent, null or empty while the question is still waiting. */
+  answer?: string | null
+  /** The parked round this answer would wake, when there is one. */
+  taskId?: string
+}
+
+/**
+ * A document of the phase, by its name and by the path the artefact door will accept —
+ * relative, and rooted where that door's only permitted root is. Nothing here is a place on
+ * the founder's disk.
+ */
+export interface PhaseArtifact {
+  name: string
+  path: string
+}
+
+/** One line of a phase's acceptance, and what a person said about it. */
+export interface PhaseUatItem {
+  item: string
+  verdict: 'pass' | 'fail' | null
+  note?: string
+}
+
+/** One phase in full: where it stands, what it asked, and what it left behind. */
+export interface PhaseCard {
+  id: string
+  name: string
+  stages: Record<PhaseStage, PhaseStageStatus>
+  questions: PhaseQuestion[]
+  plans: PhaseArtifact[]
+  summaries: PhaseArtifact[]
+  uat: PhaseUatItem[]
+}
+
+/** Starting a stage puts a task in the queue, and the answer names it. */
+export interface PhaseStageResult extends OkResult {
+  taskId: string
+  phase: string
+  stage: PhaseStage
+}
+
+/**
+ * What recording an answer says back: the counts as they now stand, and — only when this
+ * answer was the LAST open one — the task the round woke.
+ */
+export interface DecisionAnswerResult extends OkResult {
+  open: number
+  answered: number
+  taskId?: string
+}
+
+export interface PhaseUatResult extends OkResult {
+  phase: string
+  item: string
+  verdict: 'pass' | 'fail'
+}
+
+/**
+ * One lesson waiting for a yes.
+ *
+ * `preview` is the change itself as text, because a person agreeing to a lesson is agreeing
+ * to what it says and not to its title. `targetFile` is the note's name in the corpus.
+ */
+export interface MemoryDraftRow {
+  id: string
+  targetFile: string
+  preview: string
+  age: string
+}
+
+export interface MemoryDrafts {
+  drafts: MemoryDraftRow[]
+}
+
+/** Applying ONE draft. There is no door that applies them all — deliberately. */
+export interface MemoryApplyResult extends OkResult {
+  draftId: string
+  receipt: string
+}
+
+export interface MemoryIndexResult extends OkResult {
+  receipt: string
+  notes?: number
+}
+
+export interface MemoryLintFinding {
+  rule: string
+  severity: 'critical' | 'warning'
+  note: string
+  /** The note's own name in the corpus — a name, never a path. */
+  file: string
+}
+
+export interface MemoryLintReport {
+  ok: boolean
+  critical: number
+  warnings: number
+  findings: MemoryLintFinding[]
+}
+
+/** A terminal that has this checkout open right now. */
+export interface CoordinationSession {
+  id: string
+  title: string
+  age: string
+}
+
+/** A scope somebody reserved before changing it. */
+export interface CoordinationClaim {
+  name: string
+  globs: string[]
+  desc: string
+  age: string
+}
+
+/** Two reservations over the same ground. Nobody may ignore one of these in silence. */
+export interface CoordinationCollision {
+  a: string
+  b: string
+  overlap: string[]
+}
+
+export interface CoordinationSnapshot {
+  sessions: CoordinationSession[]
+  claims: CoordinationClaim[]
+  collisions: CoordinationCollision[]
+}
+
+/** Clearing somebody else's reservation. The reason is not optional — it is the evidence. */
+export interface ClaimClearResult extends OkResult {
+  claim: string
+  receipt: string
+}
+
+/**
+ * One line of the backlog, as the file has it.
+ *
+ * The identifier is DATA read out of the project's own file — the window does not know what
+ * the letters before the number mean and must never grow an opinion about them.
+ */
+export interface BacklogRow {
+  id: string
+  title: string
+  ageLine: string
+}
+
+export interface Backlog {
+  rows: BacklogRow[]
+}
+
+/** Taking a backlog line into the queue. The line itself is not removed: the file is a hand. */
+export interface BacklogPromoteResult extends OkResult {
+  id: string
+  taskId: string
+}
+
+/** One line a worker printed, with the one fact about it that matters on screen. */
+export interface AttemptLogLine {
+  ts: string
+  line: string
+  subagent: boolean
+}
+
+/**
+ * The tail of one attempt. `truncated` says the beginning was cut, so the screen can say so
+ * rather than let a person read a middle as if it were a start. No session identifier rides
+ * this payload.
+ */
+export interface AttemptLog {
+  lines: AttemptLogLine[]
+  truncated: boolean
+  /** The worker's own note about how it approached the task, when it left one. */
+  note: string | null
+}
+
+/** One check of the release gate, and what it said. */
+export interface ShipGateCheck {
+  step: string
+  ok: boolean
+  detail: string | null
+}
+
+/** A gate run: the task carrying it, the checks so far, and the receipt a green run leaves. */
+export interface ShipGateReport {
+  ok: boolean
+  taskId: string
+  checks: ShipGateCheck[]
+  receipt?: string
+}
+
+/**
+ * The most dangerous act in the product, and its answer. It is reachable only with a green
+ * gate's receipt AND the exact version string, both checked by the daemon.
+ */
+export interface ShipPublishResult extends OkResult {
+  version: string
+  receipt: string
+}
+
+/** Which corpus a hit came out of. */
+export type SearchKind = 'screen' | 'task' | 'note' | 'rule' | 'agent' | 'attempt'
+
+/**
+ * Where a hit leads: a place in the WINDOW, never a place on disk. Whichever field is set
+ * is the one the result opens with.
+ */
+export interface SearchRef {
+  screen?: string
+  taskId?: string
+  noteId?: string
+  attemptId?: string
+}
+
+/** One answer to one question, along the axis «what is it / when is it needed / where is it». */
+export interface SearchHit {
+  kind: SearchKind
+  title: string
+  hint: string
+  ref: SearchRef
+}
+
+export interface SearchResults {
+  hits: SearchHit[]
+}
+
+/**
+ * Whether the environment variable an account names is populated on its own machine.
+ *
+ * This is as much as anything outside that machine is ever told about a credential: not the
+ * value, and not even the NAME of the variable holding it. The daemon collapses both to one
+ * of these two words before the answer leaves the process.
+ */
+export type SecretState = '[set]' | '[unset]'
+
+/** One subscription as the settings side of the window knows it. */
+export interface AccountProfile {
+  id: string
+  lane: string
+  /** A subscription that exists is not yet a subscription that may be spent. */
+  enabled: boolean
+  token: SecretState
+}
+
+/**
+ * What taking on an account answers.
+ *
+ * `enabled` is `false` and cannot be anything else — the door has no field to ask otherwise,
+ * because between «this account exists» and «this account may be spent» stands a human
+ * logging it in. That login is the one step with no headless form, so the answer carries the
+ * SCENARIO in separate parts and the screen composes the line: the founder's machine may be
+ * Windows, macOS or Linux and each spells «set this variable» differently.
+ */
+export interface AccountAddResult extends OkResult {
+  id: string
+  enabled: false
+  login: {
+    env: Record<string, string>
+    cmd: string
+    /** The NAME of the variable the token will live in. A name is not a secret. */
+    tokenEnv: string
+  }
+}
+
+/** The conveyor's own switch. Off is a state the window must render as off — there is no third. */
+export interface PipelineToggleResult extends OkResult {
+  pipeline: { enabled: boolean }
+}
+
+/**
+ * The money stop. It is machine-wide, because that is the only stop this product reads;
+ * `lane` exists so the screen may say which, and its one legal value says «the machine».
+ */
+export interface BudgetSetResult extends OkResult {
+  budget: { lane: string; limit: number }
+}
+
+/** The one part of a worker's session that does not come from the project checkout. */
+export interface AgentModelResult extends OkResult {
+  agent: { id: string; model: string | null; effort: string | null }
+}
+
+/**
+ * The four facts — and ONLY these four — that the feedback window may quote.
+ *
+ * The reader of this block is a public issue on the internet, so the list is short by
+ * construction on the daemon's side and short by transcription here. Nothing may be added to
+ * it on the screen either: not the project's name, not the current route, not a task title.
+ * `version` is null when the stamp could not be read — an honest nothing, never the path it
+ * failed on.
+ */
+export interface Diagnostics {
+  version: string | null
+  platform: string
+  release: string
+  node: string
+}
+
+/** One place a version was looked for, and what looking there said. */
+export interface UpdateSource {
+  id: string
+  version: string | null
+  verdict: string
+}
+
+/**
+ * The update door's answer. By default it is a REPORT and nothing has been written: an
+ * update never starts by itself, and the applying half runs only on an explicit word in the
+ * request. Versions and verdicts ride this shape; paths never do.
+ */
+export interface UpdateReport {
+  ok: boolean
+  dryRun: boolean
+  installed: string | null
+  sources: UpdateSource[]
+  /** Present only on an applied run. */
+  applied?: { ran: boolean; exitCode: number | null }
+  /** Present only when an applied run succeeded. */
+  receipt?: string
 }

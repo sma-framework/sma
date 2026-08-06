@@ -15,9 +15,13 @@ import { clockLabel } from '../../shell/format'
  */
 
 /**
- * The fourteen bells, in the words a person reads. The type of this table is the daemon's
+ * The nineteen bells, in the words a person reads. The type of this table is the daemon's
  * own list of names, so a new kind of bell cannot be added on that side without this side
  * being made to name it — an unnamed event would otherwise arrive as a silent blank row.
+ *
+ * The guard has now done that once, in earnest: the five names at the bottom were declared on
+ * the daemon's side ahead of the screens that ring them, and this table refused to compile
+ * until each one had been given words. That is the mechanism working, not an inconvenience.
  */
 export const EVENT_LABEL: Record<EventName, string> = {
   'task.queued': 'Задача поставлена',
@@ -34,6 +38,11 @@ export const EVENT_LABEL: Record<EventName, string> = {
   'machine.presence': 'Машина сменила состояние',
   'project.updated': 'Проект изменился',
   'import.updated': 'Разбор своих помощников продвинулся',
+  'phase.stage': 'Фаза перешла на следующий шаг',
+  'discussion.updated': 'Появился вопрос — ждёт вашего ответа',
+  'memory.drafts': 'Черновики памяти изменились',
+  'coordination.updated': 'Брони на файлы изменились',
+  'ship.gate': 'Ворота выката отчитались о шаге',
 }
 
 /** The mark in the margin: what kind of news this is, at a glance. */
@@ -54,6 +63,9 @@ export function EventRow({ frame, onOpen }: { frame: EventFrame; onOpen: (frame:
   if (frame.workerId) meta.push(frame.workerId)
   if (frame.machineId) meta.push(frame.machineId)
   if (frame.projectId) meta.push(frame.projectId)
+  if (frame.phase) meta.push(frame.phase)
+  if (frame.stage) meta.push(frame.stage)
+  if (frame.step) meta.push(frame.step)
   if (typeof frame.online === 'boolean') meta.push(frame.online ? 'на связи' : 'выключена')
   if (typeof frame.count === 'number') meta.push(`${frame.count}`)
 
