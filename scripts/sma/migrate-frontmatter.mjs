@@ -1,32 +1,32 @@
 /**
- * migrate-frontmatter.mjs — R2 corpus migration (Phase 9 Plan 11).
+ * migrate-frontmatter.mjs — one-shot corpus migration to the normalized schema.
  *
- * The FIRST corpus-mutating work in the phase. Migrates every non-structural
+ * The first corpus-mutating step. Migrates every non-structural
  * .claude/memory/*.md note from its legacy frontmatter (flat `type:` scalar OR a
- * nested one-level `metadata:` block) to the NORMALIZED schema that the flip
- * (9-14) requires:
+ * nested one-level `metadata:` block) to the NORMALIZED schema that the generated
+ * index requires:
  *
  *   description  — a standalone claim (existing field; MEMORY.md index fallback)
  *   kind         — one of TAGS.md `## kind` (via KIND_MAP)
  *   tags         — ≥1 area tag from TAGS.md `## area` (via AREA_KEYWORD_MAP)
- *   use-when     — a relevance trigger (existing use-when, else derived B10)
+ *   use-when     — a relevance trigger (existing use-when, else derived)
  *   importance   — integer 1–10 (via IMPORTANCE_RULES)
  *   supersedes / superseded_by / superseded_at — preserved verbatim if present
  *
  * CONTRACT (the reviewable judgment surface is the three exported tables below):
  *   - DRY-RUN by default; --write applies; --only <file> re-runs one note.
  *   - The ONLY corpus I/O path is frontmatter.mjs (parseNote / serializeNote) +
- *     loadTagsRegistry — no third-party YAML, no new deps (9-04 discipline).
+ *     loadTagsRegistry — no third-party YAML, no new deps.
  *   - Note BODIES are byte-preserved — only the frontmatter block is rewritten
- *     (serializeNote appends `body` verbatim; T-9-11-01).
+ *     (serializeNote appends `body` verbatim).
  *   - A note whose parse throws, or whose body is empty/whitespace, or that has
  *     no derivable description, is SKIPPED and LISTED with a reason — never
- *     guessed (T-9-11-03, SPEC edge: empty R2).
+ *     guessed (the empty-note edge of the spec).
  *   - Every tag assigned MUST be in TAGS.md — an unknown mapping target is a
- *     script ERROR, never an unregistered-tag write (closed vocab, B3).
+ *     script ERROR, never an unregistered-tag write (closed vocab).
  *   - Structural files (MEMORY.md / ARCHIVE.md / TAGS.md) are excluded.
  *   - The FOUR parallel-terminal files below are ALSO excluded by name — a
- *     parallel session owns their uncommitted edits (Plan 11 critical exclusion).
+ *     parallel session owns their uncommitted edits.
  *   - Windows-safe atomic writes: same-dir temp → renameWithRetry (fs-atomics).
  *
  * Node built-ins only; zero npm deps.
@@ -45,7 +45,7 @@ const DEFAULT_CORPUS = join(REPO_ROOT, '.claude', 'memory')
 
 // ─────────────────────────── exclusion lists ─────────────────────────────────
 
-/** Structural files: no note frontmatter by design (RESEARCH finding 3). */
+/** Structural files: no note frontmatter by design. */
 export const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 
 /**
@@ -76,7 +76,7 @@ export const EXCLUDED_FILES = new Set([...STRUCTURAL_FILES, ...PARALLEL_TERMINAL
 /**
  * KIND_MAP — derive the normalized `kind` from filename prefix + legacy type.
  *
- * feedback_* splits on body markers (D-9-15): a note carrying BOTH the bold
+ * feedback_* splits on body markers: a note carrying BOTH the bold
  * **Why:** and **How to apply:** sections is a `bug-lesson`; every other
  * feedback_* is a `procedural-rule`. That marker split is applied in
  * deriveKind() (it needs the body), NOT here — this table is the prefix default.
@@ -87,13 +87,13 @@ export const EXCLUDED_FILES = new Set([...STRUCTURAL_FILES, ...PARALLEL_TERMINAL
  */
 export const KIND_MAP = {
   // legacy `type:` scalar → kind (used when no stronger signal applies)
-  feedback: 'procedural-rule', // refined to bug-lesson by body markers (D-9-15)
+  feedback: 'procedural-rule', // refined to bug-lesson by body markers
   reference: 'reference',
   project: 'episodic', // refined to status by active-signal in deriveKind()
   decision: 'decision',
 }
 
-/** The kind for a feedback_* note whose body carries the D-9-15 bug-lesson form. */
+/** The kind for a feedback_* note whose body carries the bug-lesson form. */
 export const BUG_LESSON_KIND = 'bug-lesson'
 
 /**
@@ -102,10 +102,10 @@ export const BUG_LESSON_KIND = 'bug-lesson'
  * Matched against `${filename} ${description}` lowercased. FIRST match wins for
  * the primary area; a note may collect additional area tags from later matches
  * (deduped). Every value here MUST be a canonical area tag in TAGS.md — the
- * closed-vocab self-check (validateTables) fails the run otherwise (B3).
+ * closed-vocab self-check (validateTables) fails the run otherwise.
  *
  * The kind facet is carried by the `kind` FIELD and is deliberately NOT
- * duplicated as a tag (D-9-12 facet separation).
+ * duplicated as a tag (facet separation).
  */
 export const AREA_KEYWORD_MAP = [
   // messaging channels (sms/push/inbox → messaging)
@@ -196,7 +196,7 @@ function prefixOf(file) {
   return m ? m[1] : ''
 }
 
-/** A feedback body carries the D-9-15 bug-lesson form: BOTH **Why:** and **How to apply:**. */
+/** A feedback body carries the bug-lesson form: BOTH **Why:** and **How to apply:**. */
 function hasBugLessonForm(body) {
   return /\*\*Why:\*\*/i.test(body) && /\*\*How to apply:?\*\*/i.test(body)
 }
@@ -219,7 +219,7 @@ function deriveKind({ file, fm, body, registry }) {
   // it under `metadata:` — and NO legacy `type:`. Re-deriving from prefix alone
   // would lose the original signal (e.g. a HARD-RULE note stored under a project_
   // filename). If a valid canonical kind is already present (top-level OR nested),
-  // preserve it — a re-run must not reclassify (B12 / R3).
+  // preserve it — a re-run must not reclassify.
   if (registry && !oldType) {
     const rawKind =
       typeof fm.kind === 'string' && fm.kind.trim()
@@ -273,7 +273,7 @@ function deriveAreas({ file, description, fm, registry }) {
       const canon = resolveAlias(String(t).trim(), registry)
       if (registry.area.has(canon) && !kept.includes(canon)) kept.push(canon)
     }
-    if (kept.length) return kept.slice(0, 3) // cap 3 (B4 anti-overbroad)
+    if (kept.length) return kept.slice(0, 3) // cap 3 (anti-overbroad)
   }
   // No valid existing area tag → derive from filename + description.
   const hay = `${file} ${description}`.toLowerCase()
@@ -282,7 +282,7 @@ function deriveAreas({ file, description, fm, registry }) {
     if (re.test(hay) && !areas.includes(area)) areas.push(area)
   }
   if (areas.length === 0) areas.push(AREA_FALLBACK)
-  // Cap at 3 area tags — minimal + discriminating (B4 anti-overbroad).
+  // Cap at 3 area tags — minimal + discriminating (anti-overbroad).
   return areas.slice(0, 3)
 }
 
@@ -344,7 +344,7 @@ function deriveDescription(fm, indexLine) {
 
 /**
  * deriveUseWhen(fm, description) → an existing use-when, else a derived trigger
- * (B10 "при работе с <topic>" style) from the description's leading topic.
+ * ("при работе с <topic>" style) from the description's leading topic.
  */
 /** The prefix marking an AUTO-derived use-when (vs a human-authored trigger). */
 const AUTO_USEWHEN_PREFIX = 'при работе с:'
@@ -369,7 +369,7 @@ function deriveUseWhen(fm, description) {
   // or on sentence/clause punctuation ONLY when followed by whitespace/end — so a
   // token like "MEMORY.md" or "08:00" is never cut mid-word. Strip embedded quotes
   // so the trigger is not noised by \"...\" escapes, and cap at a WORD boundary
-  // near 70 chars so the trigger never cuts mid-word (B10).
+  // near 70 chars so the trigger never cuts mid-word.
   let topic = description
     .split(/\s+—\s+|[;.,:](?=\s|$)/)[0]
     .replace(/["'«»\\]/g, '')
@@ -401,7 +401,7 @@ function loadIndexLines(corpusDir) {
   return out
 }
 
-// ─────────────────────────── table self-check (B3) ────────────────────────────
+// ─────────────────────────── table self-check ────────────────────────────
 
 /**
  * validateTables(registry) — every kind/area the tables can emit MUST exist in
@@ -439,8 +439,8 @@ export function validateTables(registry) {
  * @returns {{frontmatter?:object, body?:string, kind?:string, skip?:boolean, reason?:string}}
  */
 export function migrateNote({ file, text, indexLine, registry }) {
-  // CRLF normalization (Plan 11 project rule: memory schema mandates LF). A tiny
-  // minority of legacy notes were saved with CRLF endings; the shared 9-04 parser
+  // CRLF normalization (the memory schema mandates LF). A tiny
+  // minority of legacy notes were saved with CRLF endings; the shared parser
   // only recognizes the LF `---\n` fence, so a CRLF note would be misread as a
   // structural (no-frontmatter) file and silently skipped. Normalizing to LF here
   // (a) lets the shared parser recognize the real frontmatter and (b) satisfies
@@ -463,7 +463,7 @@ export function migrateNote({ file, text, indexLine, registry }) {
   // Structural (no fence) → not a migration target.
   if (fm == null) return { skip: true, reason: 'no frontmatter (structural file)' }
 
-  // Empty / whitespace-only body → skip, never guess (SPEC edge: empty R2).
+  // Empty / whitespace-only body → skip, never guess (the empty-note edge of the spec).
   if (!body || body.trim() === '') return { skip: true, reason: 'empty/whitespace body' }
 
   const description = deriveDescription(fm, indexLine)
