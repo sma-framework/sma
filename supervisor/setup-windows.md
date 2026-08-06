@@ -56,6 +56,24 @@ written in plain language; the engineering detail follows in separate blocks.
   > and it creates the queue database (`queueUrl`'s, or `sma_queue`) if it is missing,
   > explicitly in UTF-8, because Windows `initdb` defaults a cluster to the ANSI code
   > page and a WIN1252 queue database cannot hold a task title written in Cyrillic.
+
+  > **A queue database that already exists in another encoding.** A database's encoding
+  > is fixed when the database is created; no `ALTER` changes it, so a queue created
+  > before the starter learned this is still WIN1252. The daemon now says so at boot,
+  > and there is a door out:
+  >
+  > ```powershell
+  > node supervisor/queue-utf8-migrate.mjs             # report only: encoding, what is waiting
+  > # stop the daemon, then:
+  > node supervisor/queue-utf8-migrate.mjs --apply
+  > ```
+  >
+  > It writes the export to a JSON file before it changes anything, builds a new UTF-8
+  > database over `template0`, carries the tasks that are still waiting plus the attempt
+  > rows, and swaps the names. The old database is **renamed and kept**, never dropped —
+  > delete it yourself once you are satisfied. What it does not carry (the finished job
+  > history, the original timestamps, a task a worker was holding at that moment) is
+  > printed by the command itself, before and after.
 - **Daemon dependencies.** `pgboss-backend.mjs` imports `pg-boss` and `pg`
   lazily. These packages are not declared in the product's root `package.json`;
   install them machine-locally into `node_modules` (they stay out of git). The
