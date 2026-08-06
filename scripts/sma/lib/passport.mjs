@@ -267,7 +267,7 @@ export function renderPassport(snapshot) {
   L.push('## What `--verify` proves (and what it does not)')
   L.push('')
   L.push(
-    '`sma passport --verify` proves RENDER DETERMINISM: the rendered passport and badge re-derive byte-identically from the embedded snapshot on a fresh clone. It does NOT prove the underlying ledger is truthful — ledger truthfulness is owned upstream by the canary false-dones and the 5% deep audit (9.2-10). This passport reports the ledger line and corrupt counts (' +
+    '`sma passport --verify` proves RENDER DETERMINISM: the rendered passport and badge re-derive byte-identically from the embedded snapshot on a fresh clone. It does NOT prove the underlying ledger is truthful — ledger truthfulness is owned upstream by the canary false-dones and the 5% deep audit. This passport reports the ledger line and corrupt counts (' +
       `${snapshot.ledger ? snapshot.ledger.lines : 0} lines, ${snapshot.ledger ? snapshot.ledger.corrupt : 0} corrupt) and says so plainly rather than overclaiming.`,
   )
   L.push('')

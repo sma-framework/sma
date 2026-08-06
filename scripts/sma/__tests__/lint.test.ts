@@ -259,8 +259,8 @@ describe('memory-lint supersession / regen / duplication (9-08 task 2)', () => {
     const regen = findingsOf(res, 'MEM-REGEN')
     expect(regen.length).toBeGreaterThanOrEqual(1)
     expect(regen.every((f) => f.tier === 'info')).toBe(true)
-    expect(regen.some((f) => f.message.toLowerCase().includes('pending flip'))).toBe(true)
-    // Pre-flip must not raise a critical — load-bearing for 9-11's self-check.
+    expect(regen.some((f) => f.message.toLowerCase().includes('pending the index flip'))).toBe(true)
+    // Pre-flip must not raise a critical — load-bearing for the migrator's self-check.
     expect(regen.filter((f) => f.tier === 'critical')).toHaveLength(0)
   })
 
