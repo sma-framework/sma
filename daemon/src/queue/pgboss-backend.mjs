@@ -90,6 +90,13 @@ import {
   InvalidFailReasonError,
   UnknownTaskError,
 } from './adapter.mjs'
+import {
+  QueueEncodingError,
+  describeEncoding,
+  describeUntranslatable,
+  readQueueEncoding,
+  UTF8,
+} from './encoding.mjs'
 import { recordAttempt } from './attempt-ledger.mjs'
 import { ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
 import { applyTransition } from './state-machine.mjs'
@@ -101,6 +108,17 @@ export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 
 
 /** Shared dead-letter queue for exhausted retries → the roster's red «не справился» card. */
 export const DEAD_LETTER_QUEUE = 'sma.task.dead'
+
+/**
+ * THE SESSION SPEAKS UTF-8, ALWAYS, AND IT HAS TO BE SAID OUT LOUD. node-postgres decodes
+ * whatever the server sends as UTF-8 unconditionally, but it does not ASK for UTF-8 unless
+ * this option is set — with no `client_encoding` it inherits the server's. On a database
+ * created in the Windows ANSI code page the server then sends WIN1252 bytes and the driver
+ * reads them as UTF-8: every accented character comes back mangled, on a path that never
+ * errors. Asking explicitly makes the SERVER transcode, so text stored in an old encoding
+ * still arrives intact.
+ */
+const CLIENT_ENCODING = Object.freeze({ client_encoding: UTF8 })
 
 /** `sma.task.<lane>` — one durable queue per lane. */
 const laneQueue = (lane) => `sma.task.${lane}`
@@ -171,7 +189,7 @@ function transitionStamp({ from, to, actor, taskId, attempt, log }) {
  * createPgBossQueue(opts) — a QueueAdapter over pg-boss.
  *
  * @param {{queueUrl?:string, boss?:object, execSql?:Function, clock?:Function|number,
- *          expireMs?:number, ledgerDir?:string}} [opts]
+ *          expireMs?:number, ledgerDir?:string, log?:Function}} [opts]
  * @returns {object} a QueueAdapter (+ start/stop lifecycle)
  */
 export function createPgBossQueue({
@@ -181,6 +199,7 @@ export function createPgBossQueue({
   clock = Date.now,
   expireMs = DEFAULT_EXPIRE_MS,
   ledgerDir,
+  log: logLine,
 } = {}) {
   const ownBoss = !boss
   let bossInstance = boss || null
@@ -188,6 +207,8 @@ export function createPgBossQueue({
   const expireInSeconds = Math.max(1, Math.ceil(expireMs / 1000))
   /** SOFT display counter (taskId -> coalesce count) — NOT task truth (see header). */
   const coalesce = new Map()
+  /** What the database answered about its encoding at start(); null until then / unknown. */
+  let encodingInfo = null
 
   // Lazy default execSql over a pg Pool for real use; tests inject a fake execSql and
   // never touch this path (pg is never imported).
@@ -195,20 +216,22 @@ export function createPgBossQueue({
   async function defaultExecSql(sql, params) {
     if (!queueUrl) throw new Error('list()/resolve require queueUrl or an injected execSql')
     if (!poolPromise) {
-      poolPromise = import('pg').then(({ default: pg }) => new pg.Pool({ connectionString: queueUrl }))
+      poolPromise = import('pg').then(({ default: pg }) => new pg.Pool({ connectionString: queueUrl, ...CLIENT_ENCODING }))
     }
     const pool = await poolPromise
     return pool.query(sql, params)
   }
   const runSql = execSql || defaultExecSql
 
-  const log = (msg) => console.log(`[SmaQueue] ${msg}`) // ids only, never payloads
+  const log = typeof logLine === 'function' ? logLine : (msg) => console.log(`[SmaQueue] ${msg}`) // ids only, never payloads
 
   async function start() {
     if (ownBoss) {
       if (startedUrls.has(queueUrl)) return true // duplicate in-process init guard
       const { default: PgBoss } = await import('pg-boss') // LAZY — only when we own the connection
-      bossInstance = new PgBoss({ connectionString: queueUrl })
+      // pg-boss hands its whole option object to `pg.Pool`, so the session encoding above
+      // reaches the queue's own connections too — one rule for every connection we open.
+      bossInstance = new PgBoss({ connectionString: queueUrl, ...CLIENT_ENCODING })
       bossInstance.on('error', (err) => log(`boss error: ${maskError(err)}`))
       await bossInstance.start()
     } else if (typeof bossInstance.on === 'function') {
@@ -226,6 +249,14 @@ export function createPgBossQueue({
     // request. Fail-open by construction: a database that refuses the CREATE logs and
     // boots anyway (the queue itself is what a boot cannot do without).
     await ensureApprovalTable(runSql, { log })
+    // WHAT ENCODING IS THIS DATABASE? Asked once, at boot, and answered in words when the
+    // answer is not UTF8: a database created by a Windows `initdb` default cannot store a
+    // task title written in Cyrillic, and the founder deserves to learn that from a sentence
+    // with a command in it rather than from a driver error months later. NEVER fatal — a
+    // daemon that has been running on such a database must not stop booting because the
+    // product learned to notice.
+    encodingInfo = await readQueueEncoding(runSql)
+    for (const line of describeEncoding(encodingInfo) ?? []) log(line)
     if (ownBoss) startedUrls.add(queueUrl)
     return true
   }
@@ -240,13 +271,23 @@ export function createPgBossQueue({
 
   async function enqueue(task) {
     const norm = validateTask(task) // DoR / forge / allowlist gate — same path as the memory backend
-    const jobId = await bossInstance.send(laneQueue(norm.lane), norm, {
-      singletonKey: norm.id, // Pattern 5: one pending entry per item (coalescing)
-      priority: norm.priority,
-      retryLimit: 2,
-      retryBackoff: true,
-      expireInSeconds, // liveness: silent worker → job expires → requeue
-    })
+    let jobId
+    try {
+      jobId = await bossInstance.send(laneQueue(norm.lane), norm, {
+        singletonKey: norm.id, // Pattern 5: one pending entry per item (coalescing)
+        priority: norm.priority,
+        retryLimit: 2,
+        retryBackoff: true,
+        expireInSeconds, // liveness: silent worker → job expires → requeue
+      })
+    } catch (err) {
+      // A title in a language the database's encoding does not have is a PROPERTY OF THE
+      // DATABASE, not a bad request, and the driver's byte-sequence message says nothing a
+      // person can act on. Anything else is re-thrown untouched.
+      const said = describeUntranslatable(err, encodingInfo ?? {})
+      if (!said) throw err
+      throw new QueueEncodingError(said, { cause: err })
+    }
     if (jobId == null) {
       // Coalesced onto an existing pending/active entry — bump the soft display counter.
       const count = (coalesce.get(norm.id) ?? 1) + 1
@@ -465,5 +506,21 @@ export function createPgBossQueue({
   // this queue is actually running on, and the composition root's own test is what reads it.
   // A liveness value that only exists inside a closure cannot be shown to agree with the
   // sweep's — and «they agree» is the whole property (see DEFAULT_EXPIRE_MS in adapter.mjs).
-  return { start, stop, enqueue, claimNext, touch, complete, fail, list, stats, execSql: runSql, expireMs }
+  // `encoding()` is a FUNCTION, not a field: it is answered at start(), and every decorator
+  // in this product copies an adapter by spreading it — a field would be captured as its
+  // pre-boot value and then quietly report «unknown» forever.
+  return {
+    start,
+    stop,
+    enqueue,
+    claimNext,
+    touch,
+    complete,
+    fail,
+    list,
+    stats,
+    execSql: runSql,
+    expireMs,
+    encoding: () => encodingInfo,
+  }
 }
