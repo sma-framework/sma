@@ -46,6 +46,7 @@ import { fileURLToPath } from 'node:url'
 
 import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
+import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
 import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
@@ -103,7 +104,13 @@ export function createDaemon(o = {}) {
   // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store; plus the
   // sidecar attempt ledger as an OBJECT seam (liveness/sp-report call ledger.readAttempts —
   // a bare dir string silently no-ops them; the pilot finding).
-  const durable = o.adapter ?? createPgBossQueue({ queueUrl: config.queueUrl, clock, ledgerDir })
+  // The liveness value is resolved ONCE and handed to the queue, whose lease is one of the
+  // two mechanisms that requeue a silent worker's task; the tick's sweep — the other one —
+  // resolves the same config through the same function. They used to be independent: the
+  // sweep read the config, the queue was built without it and leased on the built-in
+  // default, so an operator who lengthened the expiry moved one clock and not the other.
+  const durable =
+    o.adapter ?? createPgBossQueue({ queueUrl: config.queueUrl, clock, ledgerDir, expireMs: resolveExpireMs(config) })
   const ledger =
     o.ledger ?? {
       readAttempts: (taskId) => readAttempts(ledgerDir, taskId),

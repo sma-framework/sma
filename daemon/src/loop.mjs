@@ -87,6 +87,7 @@
 
 import { join } from 'node:path'
 
+import { resolveExpireMs } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
@@ -482,7 +483,9 @@ export async function tick(deps = {}) {
   try {
     // (1) liveness sweep — audit durable state; requeue any task that lost its live path.
     try {
-      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: config?.expireMs ?? 120000 })
+      // The SAME resolved value the durable queue's lease was built with (adapter.mjs):
+      // the sweep and the lease are two answers to one question and may not disagree.
+      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config) })
     } catch (err) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }

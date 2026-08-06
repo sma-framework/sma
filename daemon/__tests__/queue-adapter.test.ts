@@ -30,6 +30,8 @@ import {
   NotReadyError,
   InvalidStoryPointsError,
   InvalidTaskError,
+  DEFAULT_EXPIRE_MS,
+  resolveExpireMs,
 } from '../src/queue/adapter.mjs'
 
 // ── the reusable contract suite, run against the in-memory reference backend ──
@@ -52,6 +54,38 @@ const backlog = (over: any = {}) => ({
   storyPoints: 3,
   acceptance: 'green tests + reverify receipt',
   ...over,
+})
+
+/**
+ * ONE LIVENESS CLOCK. The sweep that requeues a silent worker and the queue's own lease
+ * expiry are two mechanisms answering the same question, and they used to read two
+ * different values: the config's expiry reached the sweep and never reached the queue,
+ * whose lease then always ran on the built-in default. This resolver is the single place
+ * that turns a config into that one number, so the two cannot drift apart by construction.
+ */
+describe('resolveExpireMs — the ONE liveness value both the sweep and the lease read', () => {
+  it('a config that names no expiry yields the shipped default', () => {
+    expect(resolveExpireMs({})).toBe(DEFAULT_EXPIRE_MS)
+    expect(resolveExpireMs(undefined)).toBe(DEFAULT_EXPIRE_MS)
+    expect(DEFAULT_EXPIRE_MS).toBe(120000)
+  })
+
+  it('an operator value is honoured exactly', () => {
+    expect(resolveExpireMs({ expireMs: 300000 })).toBe(300000)
+    expect(resolveExpireMs({ expireMs: 1 })).toBe(1)
+  })
+
+  /**
+   * A hand-edited config is a trust boundary: this number now reaches pg-boss, where it is
+   * divided by 1000 and sent as `expireInSeconds`. NaN or a negative would make a lease of
+   * nonsense out of a typo, so anything that is not a positive finite number falls back to
+   * the default instead of travelling on.
+   */
+  it('refuses a value that is not a positive finite number and falls back to the default', () => {
+    for (const bad of ['5m', 0, -1, Number.NaN, Number.POSITIVE_INFINITY, null, {}, []]) {
+      expect(resolveExpireMs({ expireMs: bad as any }), `expireMs=${String(bad)}`).toBe(DEFAULT_EXPIRE_MS)
+    }
+  })
 })
 
 describe('validateTask — DoR gate (D-9.5-10) + forge (D-9.5-09)', () => {
