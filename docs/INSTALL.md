@@ -183,6 +183,17 @@ To bring the app up, from the SMA package or checkout directory:
      not there, the starter names what is missing and how to make it rather than
      failing with a stack trace.
 
+   Either road, the queue database has to be **UTF-8** for a task to be named in
+   anything but plain ASCII. PostgreSQL fixes a database's encoding when the
+   database is created — no `ALTER` changes it later — and the Windows `initdb`
+   default is the ANSI code page. The daemon reports a queue database in another
+   encoding at boot, names what will happen to a non-ASCII title, and names the
+   command that repairs it: `node supervisor/queue-utf8-migrate.mjs` reports,
+   `--apply` builds a UTF-8 database, carries the waiting tasks and the attempt
+   rows over, and keeps the old database under a new name. The full procedure,
+   and what deliberately does not travel, is in
+   [`supervisor/setup-windows.md`](../supervisor/setup-windows.md).
+
 2. **Start it:** `node daemon/src/main.mjs`. The first boot writes
    `~/.sma-daemon/config.json` (machine-local, never committed) with a fresh
    front token, then prints the address it listens on — `127.0.0.1:7777` by
