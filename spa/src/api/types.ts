@@ -1088,6 +1088,13 @@ export interface PhaseCard {
   plans: PhaseArtifact[]
   summaries: PhaseArtifact[]
   uat: PhaseUatItem[]
+  /**
+   * The acceptance document itself, when the phase keeps one — so a screen can open the whole
+   * record through the artefact door instead of only the lines parsed out of it. It is also
+   * the ONE answer to «which file is this phase's acceptance»: the door that writes a verdict
+   * takes it from here rather than looking the directory up a second time.
+   */
+  uatDocument?: PhaseArtifact
 }
 
 /** Starting a stage puts a task in the queue, and the answer names it. */

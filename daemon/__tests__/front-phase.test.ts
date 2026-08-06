@@ -427,6 +427,9 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
     // the path is the one the artefact door accepts — relative, rooted at the only root it opens
     expect(card.plans[0].path).toBe('.planning/phases/12-front/12-01-PLAN.md')
     expect(card.summaries.map((s: any) => s.name)).toEqual(['12-01-SUMMARY.md'])
+    // the acceptance document travels whole as well as parsed: it is the ONE answer to «which
+    // file is this phase's acceptance», and the door that writes a verdict reads it from here
+    expect(card.uatDocument).toEqual({ name: '12-UAT.md', path: '.planning/phases/12-front/12-UAT.md' })
     expect(card.uat).toEqual([
       { item: '1', name: 'Экран дня открывается', verdict: 'pass' },
       { item: '2', name: 'Карточка фазы считает вопросы', verdict: null },
@@ -692,7 +695,7 @@ describe('GET /api/artifact — ONE ROOT, AND IT IS `.planning/`', () => {
   it('the path the CARD hands out is the path this door accepts — one spelling, end to end', async () => {
     const { front } = mkFront()
     const card = JSON.parse((await call(front, { url: '/api/phase/12-front' })).body)
-    for (const doc of [...card.plans, ...card.summaries]) {
+    for (const doc of [...card.plans, ...card.summaries, card.uatDocument]) {
       const res = await call(front, { url: `/api/artifact?path=${encodeURIComponent(doc.path)}` })
       expect(res.statusCode, doc.path).toBe(200)
     }

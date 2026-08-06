@@ -950,6 +950,8 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl } = {}) {
     questions = []
   }
 
+  const acceptance = readAcceptance(io, root, dir, files)
+
   return {
     id: dir,
     name: phaseNameOf(dir),
@@ -957,23 +959,28 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl } = {}) {
     questions,
     plans: artifactsOf(files, dir, '-PLAN.md'),
     summaries: artifactsOf(files, dir, '-SUMMARY.md'),
-    uat: readUatItems(io, root, dir, files),
+    uat: acceptance.items,
+    // WHICH FILE IS THE ACCEPTANCE DOCUMENT is answered HERE and nowhere else. The door that
+    // writes a verdict into it needs the same answer, and it takes it off this card rather
+    // than looking the directory up a second time: two spellings of one rule is how a screen
+    // ends up reading one file while a write lands in another.
+    ...(acceptance.document ? { uatDocument: acceptance.document } : {}),
   }
 }
 
 /**
- * The acceptance lines of a phase and what a person said about each one.
+ * The acceptance document of a phase and the lines inside it, or an empty answer.
  *
- * Read out of the phase's own UAT file in the format `/sma-verify-work` writes and the
- * `audit-uat` verb parses — this module neither invents a second format nor migrates the one
- * that exists. No UAT file is an empty list: a phase nobody has accepted yet is a normal
- * state, not a missing one.
+ * Read in the format `/sma-verify-work` writes and the `audit-uat` verb parses — this module
+ * neither invents a second format nor migrates the one that exists. No UAT file is an empty
+ * list: a phase nobody has accepted yet is a normal state, not a missing one.
  */
-function readUatItems(io, root, dir, files) {
+function readAcceptance(io, root, dir, files) {
   const file = files.filter((f) => UAT_FILE_RE.test(f)).sort()[0]
-  if (!file) return []
+  if (!file) return { document: null, items: [] }
+  const document = { name: file, path: `${PHASES_PATH}/${dir}/${file}` }
   const text = readTextOrNull(io, join(root, dir, file))
-  if (text == null) return []
+  if (text == null) return { document, items: [] }
 
   const items = []
   UAT_ITEM_RE.lastIndex = 0
@@ -987,7 +994,7 @@ function readUatItems(io, root, dir, files) {
       ...(note ? { note } : {}),
     })
   }
-  return items
+  return { document, items }
 }
 
 /**
