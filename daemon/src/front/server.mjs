@@ -63,9 +63,11 @@
  */
 
 import { createServer } from 'node:http'
-import { readFileSync as fsReadFileSync } from 'node:fs'
-import { join, extname, isAbsolute } from 'node:path'
+import { readFileSync as fsReadFileSync, statSync as fsStatSync, readdirSync as fsReaddirSync } from 'node:fs'
+import { join, extname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
@@ -289,8 +291,6 @@ export const ROUTES = Object.freeze({
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([
-    'POST /api/phase/uat',
-    'GET /api/artifact',
     'GET /api/memory/drafts',
     'POST /api/memory/apply',
     'POST /api/memory/index',
@@ -2009,12 +2009,6 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handlePhaseUat({ res }) {
-  send501(res)
-}
-function handleArtifact({ res }) {
-  send501(res)
-}
 function handleMemoryDrafts({ res }) {
   send501(res)
 }
@@ -2373,6 +2367,278 @@ async function wakeParkedRound(res, deps, { taskId, phase }) {
   await casTransition(deps.casExec, { table, id: taskId, from: 'approving', to: 'approved' })
   emitSafe(deps, { event: 'task.queued', taskId })
   return { answered: false, taskId }
+}
+
+// ═══════════ reading a document of the phase, and writing one line of its acceptance ═════
+//
+// THE ARTEFACT DOOR HAS EXACTLY ONE ROOT AND IT IS `.planning/`. Everything a phase leaves
+// behind — its context, its plans, its summaries, its acceptance — lives under that one
+// directory, so the door does not need to open anything else, and «does not need to» is the
+// only argument for a reading surface that ever holds. What it refuses, it refuses with the
+// SAME 400 every time: a caller learns that the path was not acceptable and nothing about the
+// shape of the disk behind it.
+//
+// THE CHECK IS MADE TWICE, ON PURPOSE. Once on the TEXT (no `..` segment, no leading
+// separator, no drive letter, and it must begin with the one permitted prefix) and once on the
+// RESOLVED result (it must still sit inside the resolved root). Either alone has been enough
+// to lose this argument before: a textual check misses what a symlink or an odd separator
+// resolves to, and a resolve-only check accepts a path that never should have been spelled.
+
+/** The only root this door opens, and the only prefix a path may carry. */
+const ARTIFACT_ROOT = '.planning'
+const ARTIFACT_PREFIX = `${ARTIFACT_ROOT}/`
+
+/** A document a person reads on a screen is not a payload: past this it is not a document. */
+const ARTIFACT_MAX_BYTES = 1024 * 1024
+const ARTIFACT_PATH_CAP = 512
+
+/** The fs surface the two document doors use — injected in tests, real fs in production. */
+function documentIo(deps) {
+  const io = (deps && deps.fsImpl) || {}
+  return {
+    readFileSync: io.readFileSync ?? fsReadFileSync,
+    statSync: io.statSync ?? fsStatSync,
+    ...(io.mkdirSync ? { mkdirSync: io.mkdirSync } : {}),
+    ...(io.writeFileSync ? { writeFileSync: io.writeFileSync } : {}),
+    ...(io.renameSync ? { renameSync: io.renameSync } : {}),
+  }
+}
+
+/**
+ * safeArtifactPath(projectDir, rel) → the path to open, or null.
+ *
+ * `null` is the ONLY failure value: which rule was broken is this function's business and
+ * never the caller's answer.
+ *
+ * The RESOLVED form is what the containment check is made against, and the JOINED form is what
+ * is handed to the filesystem — the same relative string, checked the strict way and used the
+ * ordinary way, so nothing about resolving against a process's own drive or working directory
+ * can turn an accepted path into a different file.
+ */
+function safeArtifactPath(projectDir, rel) {
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
+  if (typeof rel !== 'string' || rel === '' || rel.length > ARTIFACT_PATH_CAP) return null
+
+  const path = rel.replace(/\\/g, '/')
+  if (path.split('/').includes('..')) return null // a traversal segment, in either spelling
+  if (path.startsWith('/') || isAbsolute(rel) || /^[A-Za-z]:/.test(path)) return null
+  if (path.includes('\0')) return null
+  if (path !== ARTIFACT_ROOT && !path.startsWith(ARTIFACT_PREFIX)) return null
+
+  const root = resolvePath(projectDir, ARTIFACT_ROOT)
+  const full = resolvePath(projectDir, path)
+  // the resolved answer must still be the root itself or something beneath it — compared on a
+  // separator boundary, so a sibling directory whose name merely starts the same cannot pass
+  if (full !== root && !full.startsWith(`${root}/`) && !full.startsWith(`${root}\\`)) return null
+  return join(projectDir, path)
+}
+
+/**
+ * GET /api/artifact?path=<relative> — one document of the phase cycle, as plain text.
+ *
+ * TEXT, NEVER MARKUP. What comes back is `text/plain` with `nosniff` and `no-store`: rendering
+ * a plan is the screen's business, and a daemon that returned HTML for a file it does not
+ * control would be handing a browser whatever a document happened to contain.
+ */
+function handleArtifact({ res, query, deps }) {
+  const full = safeArtifactPath(phaseCycleDir(deps), (query && query.path) || '')
+  if (!full) return send400(res, 'invalid path')
+
+  const io = documentIo(deps)
+  let stat
+  try {
+    stat = io.statSync(full)
+  } catch {
+    return send404(res)
+  }
+  if (!stat || (typeof stat.isFile === 'function' && !stat.isFile())) return send400(res, 'invalid path')
+  if (Number.isFinite(stat.size) && stat.size > ARTIFACT_MAX_BYTES) return send413(res)
+
+  let text
+  try {
+    text = String(io.readFileSync(full, 'utf8'))
+  } catch {
+    return send404(res)
+  }
+  // a fs seam with no size to report is still bounded — the cap is a property of the door
+  if (Buffer.byteLength(text, 'utf8') > ARTIFACT_MAX_BYTES) return send413(res)
+  return sendText(res, 200, text)
+}
+
+// ── the acceptance record: one line, one verdict, written in the file's own words ──
+//
+// The document belongs to `/sma-verify-work` and to the verb that audits it, and this door is
+// a SECOND WRITER of it, not its owner. So it writes the vocabulary that file already uses:
+// `pass` is `pass`, and `fail` on the wire is `issue` in the document, with the person's words
+// on the `reported:` line the audit verb reads. Inventing `result: fail` would have been one
+// word cheaper here and invisible to every reader of that file.
+
+/** The verdicts a person may give, and the word each one is written as. */
+const UAT_RESULT_OF = Object.freeze({ pass: 'pass', fail: 'issue' })
+
+/** The severity a reported issue carries when nobody said otherwise — the template's own default. */
+const UAT_DEFAULT_SEVERITY = 'major'
+
+/** The lines that belong to a verdict and are rewritten with it. */
+const UAT_VERDICT_LINE = /^(result|reported|severity|reason|blocked_by):/
+
+/** One test heading: `### 7. Название`. */
+const uatHeading = (item) => new RegExp(`^###\\s*${item}\\.\\s`)
+
+/**
+ * A note as ONE line of the document.
+ *
+ * The format this file is parsed by is line-oriented, so a pasted paragraph would not be a
+ * long value — it would be a value followed by lines the parser reads as something else. The
+ * whitespace is collapsed and the quotes that delimit the value are dropped from inside it.
+ */
+function uatNoteLine(note) {
+  return String(note).replace(/\s+/g, ' ').replace(/"/g, '”').trim()
+}
+
+/**
+ * Rewrite ONE test block of a UAT document, and bring the counters after it back in step.
+ *
+ * Returns null when the document has no such test — a door does not invent a line of somebody's
+ * acceptance, it records what a person said about a line that already exists.
+ */
+function writeUatVerdict(text, { item, verdict, note, now }) {
+  const lines = String(text).replace(/\r\n/g, '\n').split('\n')
+  const head = lines.findIndex((line) => uatHeading(item).test(line))
+  if (head < 0) return null
+
+  let end = head + 1
+  while (end < lines.length && !/^#{2,3}\s/.test(lines[end])) end += 1
+
+  const block = lines.slice(head + 1, end)
+  const kept = block.filter((line) => !UAT_VERDICT_LINE.test(line))
+  // `expected:` and everything else the block carries stays exactly where it was; only the
+  // verdict lines are ours to replace, and they are replaced as a set so a `pass` cannot be
+  // left sitting next to the `reported:` line of the issue it used to be.
+  const verdictLines = [`result: ${UAT_RESULT_OF[verdict]}`]
+  if (verdict === 'fail' && note) {
+    verdictLines.push(`reported: "${uatNoteLine(note)}"`, `severity: ${UAT_DEFAULT_SEVERITY}`)
+  }
+  const expectedAt = kept.findIndex((line) => /^expected:/.test(line))
+  const rebuilt = expectedAt < 0
+    ? [...verdictLines, ...kept]
+    : [...kept.slice(0, expectedAt + 1), ...verdictLines, ...kept.slice(expectedAt + 1)]
+
+  const next = [...lines.slice(0, head + 1), ...rebuilt, ...lines.slice(end)]
+  return refreshUatBookkeeping(next, now).join('\n')
+}
+
+/**
+ * The counters and the timestamp the document keeps about itself.
+ *
+ * They are DERIVED from the blocks above them and rewritten only where they already exist:
+ * a number left stale by a write is a second truth inside one file, and this door would be the
+ * one that put it there. A document that keeps no counters is left without any.
+ */
+function refreshUatBookkeeping(lines, now) {
+  const counts = { total: 0, passed: 0, issues: 0, pending: 0, skipped: 0, blocked: 0 }
+  for (const line of lines) {
+    const m = line.match(/^result:\s*\[?([A-Za-z_]+)\]?\s*$/)
+    if (!m) continue
+    counts.total += 1
+    if (m[1] === 'pass') counts.passed += 1
+    else if (m[1] === 'issue' || m[1] === 'fail') counts.issues += 1
+    else if (m[1] === 'skipped') counts.skipped += 1
+    else if (m[1] === 'blocked') counts.blocked += 1
+    else counts.pending += 1
+  }
+
+  // the frontmatter's own «last touched», when the document declares one
+  const fmEnd = lines[0] === '---' ? lines.indexOf('---', 1) : -1
+  return lines.map((line, i) => {
+    if (fmEnd > 0 && i > 0 && i < fmEnd && /^updated:/.test(line)) return `updated: ${now}`
+    if (fmEnd > 0 && i < fmEnd) return line
+    const m = line.match(/^(total|passed|issues|pending|skipped|blocked):\s*\d+\s*$/)
+    return m ? `${m[1]}: ${counts[m[1]]}` : line
+  })
+}
+
+/**
+ * POST /api/phase/uat — body {phase, item, verdict, note?}. One line of a phase's acceptance.
+ *
+ * `item` is the test's NUMBER, which is how that document and the verb that audits it already
+ * address a line: a title can be reworded and a number cannot, and an answer that landed on the
+ * wrong line because somebody fixed a typo would be worse than no answer.
+ */
+async function handlePhaseUat({ req, res, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['phase', 'item', 'verdict', 'note']))) return undefined
+
+  const phase = b.phase === undefined || b.phase === null ? '' : String(b.phase)
+  if (!PHASE_RE.test(phase)) return send400(res, 'invalid phase')
+  const item = b.item === undefined || b.item === null ? '' : String(b.item)
+  if (!/^\d{1,4}$/.test(item)) return send400(res, 'item must be the number of a test')
+  const verdict = b.verdict
+  if (verdict !== 'pass' && verdict !== 'fail') return send400(res, 'verdict must be pass or fail')
+  const note = b.note == null ? '' : String(b.note)
+  if (note.length > 2000) return send400(res, 'note exceeds 2000 chars')
+
+  const projectDir = phaseCycleDir(deps)
+  if (!projectDir) return send501(res)
+  const io = documentIo(deps)
+
+  // the acceptance document of the phase, found through the ONE rule for «which directory is
+  // phase N» — the same one the daemon's gate and the phase card resolve a phase with
+  const relative = uatDocumentOf(deps, projectDir, phase)
+  if (!relative) return send404(res)
+  const full = safeArtifactPath(projectDir, relative)
+  if (!full) return send400(res, 'invalid path')
+
+  let text
+  try {
+    text = String(io.readFileSync(full, 'utf8'))
+  } catch {
+    return send404(res)
+  }
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  const next = writeUatVerdict(text, { item, verdict, note, now: new Date(clock()).toISOString() })
+  if (next === null) return send404(res)
+
+  atomicWriteRaw(full, next, {
+    ...(io.mkdirSync ? { mkdirFn: io.mkdirSync } : {}),
+    ...(io.writeFileSync ? { writeFn: io.writeFileSync } : {}),
+    ...(io.renameSync ? { renameFn: io.renameSync } : {}),
+  })
+  // NO HINT IS EMITTED, and that is a decision rather than an omission: the frozen vocabulary
+  // has nineteen names and none of them means «one line of an acceptance was answered».
+  // `phase.stage` would have been the nearest, and it would have been a lie — a frame saying
+  // the phase moved when it did not. The screen re-reads the card after its own POST, which is
+  // the same contract every hint on this daemon has: the frame is never the truth.
+  return sendJson(res, 200, { ok: true, phase, item, verdict })
+}
+
+/** A phase's acceptance document, as `/sma-verify-work` names it. */
+const UAT_FILE_RE = /-UAT[^/\\]*\.md$/
+
+/**
+ * The door-relative path of a phase's acceptance document, or null when it keeps none.
+ *
+ * WHICH DIRECTORY IS PHASE N is asked of the CARD, not answered again here: the card resolves
+ * it through the same `findPhaseDir` the daemon's exit gate uses, so a phase number, a
+ * directory name and a `phase-`-prefixed name all reach the same document from every door.
+ */
+function uatDocumentOf(deps, projectDir, phase) {
+  if (typeof deps.derivePhaseCard !== 'function') return null
+  const card = deps.derivePhaseCard({ projectDir, phaseId: phase, fsImpl: deps.fsImpl })
+  if (!card || !card.id) return null
+
+  const readdirSync = (deps.fsImpl && deps.fsImpl.readdirSync) || fsReaddirSync
+  let names = []
+  try {
+    const entries = readdirSync(join(projectDir, ARTIFACT_ROOT, 'phases', card.id))
+    names = Array.isArray(entries) ? entries.map(String) : []
+  } catch {
+    return null // an unreadable phase directory keeps no acceptance this door can write to
+  }
+  const file = names.filter((f) => UAT_FILE_RE.test(f)).sort()[0]
+  return file ? `${ARTIFACT_ROOT}/phases/${card.id}/${file}` : null
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──
