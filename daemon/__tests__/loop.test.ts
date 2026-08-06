@@ -15,6 +15,16 @@
  *   - the aging signal (queued older than agingHours fires task.aging; younger fires none)
  *   - kill-mid-tick drill: a fresh tick recovers a stale-claimed task from durable state
  *   - idle tick short-circuit (no claim → {idle:true}, no side effects)
+ *
+ * THE SECOND EXIT GATE (work made of prose), pinned as grep-visible invariants:
+ *   - a document stage completes on a COMMITTED artifact, with a receipt naming the file and
+ *     the commit — and on nothing else: a stage that wrote no document fails no_artifact, and
+ *     one whose document was never committed fails no_artifact too
+ *   - a discussion round parks for a human instead of going red: an open question in the
+ *     workflow's own checkpoint is a SUCCESSFUL round, and the row lands awaiting_approval
+ *   - an execute stage's blocking checkpoint parks the SAME way, checked BEFORE the code gate
+ *   - the gate is a FILE check: the suite never feeds the daemon a line of worker stdout to
+ *     decide an outcome with, and the code gate is byte-for-byte what it was (regression)
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
@@ -386,6 +396,300 @@ describe('the capability envelope gates the spawn', () => {
 })
 
 // ═══ the attempt row carries the world it ran in ═══════════════════
+
+// ═══ THE SECOND EXIT GATE: work whose product is prose ═════════════════════════
+//
+// A stage of the phase cycle has no targeted tests to be green, so under the single reverify
+// gate every stage started from the screen would have failed «нет квитанции» while sitting
+// next to the document it had just written. The second gate asks for the document instead —
+// and asks the DISK and GIT, never the worker's own account of itself.
+
+/** A tiny in-memory filesystem: the only surface findArtifact and the questions engine use. */
+function makeFs(files: Record<string, string>) {
+  const norm = (p: string) => String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+  const table: Record<string, string> = {}
+  for (const [k, v] of Object.entries(files)) table[norm(k)] = v
+  const names = () => Object.keys(table)
+  return {
+    existsSync: (p: string) => {
+      const n = norm(p)
+      return names().some((f) => f === n || f.startsWith(`${n}/`))
+    },
+    readdirSync: (p: string) => {
+      const n = norm(p)
+      const out: string[] = []
+      for (const f of names()) {
+        if (!f.startsWith(`${n}/`)) continue
+        const child = f.slice(n.length + 1).split('/')[0]
+        if (!out.includes(child)) out.push(child)
+      }
+      return out
+    },
+    readFileSync: (p: string) => {
+      const n = norm(p)
+      if (!(n in table)) throw new Error(`ENOENT: ${n}`)
+      return table[n]
+    },
+  }
+}
+
+/** A git that knows which paths are committed and to which short sha. */
+function makeGit(committed: Record<string, string>) {
+  return (args: string[]) => {
+    const path = args[args.indexOf('--') + 1]
+    return committed[String(path)] ?? ''
+  }
+}
+
+const PHASE_DIR = '/repo/.planning/phases/12-front'
+
+/** A checkpoint in the workflow's OWN shape, with one question still unanswered. */
+const parkedCheckpointJson = JSON.stringify({
+  phase: '12',
+  phase_name: 'front',
+  areas_completed: ['Область 1'],
+  areas_remaining: ['Область 2'],
+  decisions: {
+    'Область 2': [{ question: 'Хранить ответы в чекпойнте?', options_presented: ['да', 'нет'] }],
+  },
+})
+
+const stageTask = (data: any, over: any = {}) => ({
+  id: 'ST-1',
+  source: 'roster',
+  title: 'стадия фазы',
+  lane: 'paperwork',
+  priority: 0,
+  attempt: 1,
+  data,
+  ...over,
+})
+
+/** Every stage case routes the same way; the cases are about the GATE, nothing else. */
+const stageDeps = (over: any = {}) =>
+  makeDeps({
+    ...over,
+    deps: { routing: { resolveRoute: () => ({ workerId: 'max-2', provider: 'claude' }) }, ...over.deps },
+  })
+
+describe('a document stage completes on a committed artifact — and on nothing else', () => {
+  it('artifact present AND committed → complete with an artifact receipt naming file and commit', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const { deps, order } = stageDeps({
+      adapter,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan', [`${PHASE_DIR}/12-02-PLAN.md`]: '# plan' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-02-PLAN.md': 'abc1234' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    const [call] = adapter.calls
+    expect(call.op).toBe('complete')
+    expect(call.result.receiptRef).toBe('artifact:.planning/phases/12-front/12-02-PLAN.md@abc1234')
+    expect(call.result.receiptRef.startsWith('artifact:')).toBe(true)
+    expect(call.result.receiptRef).toContain('@')
+    // a documentary stage stands in the project checkout: no worktree, and no preflight —
+    // «is this backlog item already built» is not a question a phase stage can be asked
+    expect(order).toEqual(['spawn'])
+    expect(call.result.branch).toBe(null)
+  })
+
+  it('no artifact → fail("no_artifact"), whatever the worker printed about itself', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const { deps } = stageDeps({
+      adapter,
+      // the worker ANNOUNCES the document — the first threat this gate exists for
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: ['документ готов, план записан', 'APPROACH_NOTE: соврал'],
+      }),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-CONTEXT.md`]: 'ctx' }), // a different stage's file
+        execGit: makeGit({ '.planning/phases/12-front/12-CONTEXT.md': 'deadbee' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'ST-1', reason: 'no_artifact' })
+    expect(String(res.failed.detail)).toContain('-PLAN.md')
+    expect(adapter.calls).toEqual([{ op: 'fail', id: 'ST-1', reason: 'no_artifact' }])
+  })
+
+  it('artifact on disk but NEVER COMMITTED → fail("no_artifact") — the history is half the gate', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'verify', phase: 12 }))
+    const { deps } = stageDeps({
+      adapter,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-VERIFICATION.md`]: '# verdict' }),
+        execGit: makeGit({}), // git names no commit for it
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'ST-1', reason: 'no_artifact' })
+    expect(String(res.failed.detail)).toContain('не закоммичен')
+  })
+
+  it('an undeclared stage is refused by name — no gate is picked by default', async () => {
+    // `data.stage` is a closed vocabulary at enqueue; this is the layer below, where a row
+    // written by an older or a foreign writer could still arrive with a stage nobody declared.
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'ponder', phase: 12 }))
+    const { deps } = stageDeps({ adapter, deps: { fsImpl: makeFs({}), execGit: makeGit({}) } })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'ST-1', reason: 'no_artifact' })
+    expect(String(res.failed.detail)).toContain('ponder')
+  })
+})
+
+describe('a discussion round parks for a human instead of going red', () => {
+  it('an open question in the workflow’s own checkpoint is a SUCCESSFUL round — awaiting_approval', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(stageTask({ kind: 'document', stage: 'discuss', phase: 12 }))
+    const { deps, order } = stageDeps({
+      adapter,
+      clockObj: c,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-DISCUSS-CHECKPOINT.json`]: parkedCheckpointJson }),
+        execGit: makeGit({ '.planning/phases/12-front/12-DISCUSS-CHECKPOINT.json': 'c0ffee1' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    const [row] = await adapter.list({})
+    // the contract turns a receipted complete() into «ждёт человека» — the card the screen shows
+    expect(row.status).toBe('awaiting_approval')
+    expect(order).toEqual(['spawn'])
+  })
+
+  it('a parked question that was never committed is not a question yet', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'discuss', phase: 12 }))
+    const { deps } = stageDeps({
+      adapter,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-DISCUSS-CHECKPOINT.json`]: parkedCheckpointJson }),
+        execGit: makeGit({}),
+      },
+    })
+
+    const res = await tick(deps)
+    expect(res.failed).toMatchObject({ reason: 'no_artifact' })
+    expect(String(res.failed.detail)).toContain('только этой машине')
+  })
+
+  it('no checkpoint and a committed context file → the discussion simply ENDED, ordinary success', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'discuss', phase: 12 }))
+    const { deps } = stageDeps({
+      adapter,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-CONTEXT.md`]: '# context' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-CONTEXT.md': 'facade1' }),
+      },
+    })
+
+    const res = await tick(deps)
+    expect(res.completed).toBe('ST-1')
+    expect(adapter.calls[0].result.receiptRef).toBe('artifact:.planning/phases/12-front/12-CONTEXT.md@facade1')
+  })
+
+  it('the gate is a FILE check: an answered checkpoint parks nothing, however loud the stream', async () => {
+    const answered = JSON.stringify({
+      phase: '12',
+      areas_completed: ['Область 1'],
+      decisions: { 'Область 1': [{ question: 'q', answer: 'да', options_presented: [] }] },
+    })
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'discuss', phase: 12 }))
+    const { deps } = stageDeps({
+      adapter,
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['жду ответа человека', 'APPROACH_NOTE: спросил'] }),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-DISCUSS-CHECKPOINT.json`]: answered }),
+        execGit: makeGit({ '.planning/phases/12-front/12-DISCUSS-CHECKPOINT.json': 'c0ffee1' }),
+      },
+    })
+
+    const res = await tick(deps)
+    // nothing is open, so the round did not park — and the stage owes its own document
+    expect(res.failed).toMatchObject({ reason: 'no_artifact' })
+  })
+})
+
+describe('an execute stage parks its blocking checkpoint the same way — BEFORE the code gate', () => {
+  it('an EXEC checkpoint with an open question → complete on the artifact receipt, no reverify', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const { deps, order } = stageDeps({
+      adapter,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/repo' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-EXEC-CHECKPOINT.json`]: parkedCheckpointJson }),
+        execGit: makeGit({ '.planning/phases/12-front/12-EXEC-CHECKPOINT.json': 'ba5eba11' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    expect(adapter.calls[0].result.receiptRef).toBe('artifact:.planning/phases/12-front/12-EXEC-CHECKPOINT.json@ba5eba11')
+    // the checkpoint is asked BEFORE the code gate — reverify never ran
+    expect(order).toEqual(['preflight', 'worktree', 'spawn'])
+    // …and the position is not thrown away: the row parks instead of failing, so the answer
+    // wakes a CONTINUATION of the stage rather than a fresh attempt from zero
+    expect(adapter.calls.some((x: any) => x.op === 'fail')).toBe(false)
+  })
+
+  it('REGRESSION — an execute stage with NO checkpoint runs the code gate exactly as before', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const { deps, order } = stageDeps({
+      adapter,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/repo' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { fsImpl: makeFs({}), execGit: makeGit({}) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+    expect(adapter.calls[0].result.receiptRef).toBe('reverify:abc') // the ORIGINAL receipt, unchanged
+  })
+
+  it('REGRESSION — a task with no data envelope at all is ordinary code work', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-REG' }))
+    const { deps, order } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-REG' }) },
+        reverify: GREEN_REVERIFY,
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-REG')
+    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('awaiting_approval')
+  })
+})
 
 describe('the tick stamps its attempt rows', () => {
   const tmpDirs: string[] = []

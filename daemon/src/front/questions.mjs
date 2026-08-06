@@ -115,6 +115,18 @@ export class AnswerSecretError extends Error {
 /** The workflow's own file name ending — the checkpoint is `<padded phase>-DISCUSS-CHECKPOINT.json`. */
 export const CHECKPOINT_SUFFIX = '-DISCUSS-CHECKPOINT.json'
 
+/**
+ * The OTHER file this same engine reads: the checkpoint an execute stage parks when it reaches
+ * a blocking decision with nobody at the keyboard, `<padded phase>-EXEC-CHECKPOINT.json`.
+ *
+ * It is a different FILE and the same SHAPE, deliberately. A question asked by a discussion
+ * and a question asked by an executor are the same thing to the person answering it, so they
+ * ride one parser, one open-question convention and one card. What the execute file adds is a
+ * `position` block naming where the stage stopped; every field this module does not read is
+ * carried through the writer verbatim, so the extra block costs the engine nothing.
+ */
+export const EXEC_CHECKPOINT_SUFFIX = '-EXEC-CHECKPOINT.json'
+
 /** Where phases live, relative to a project root. */
 export const PHASES_DIR = join('.planning', 'phases')
 
@@ -157,6 +169,31 @@ function phaseNumberOf(name) {
   const withoutPrefix = String(name ?? '').replace(/^phase-/i, '')
   const match = withoutPrefix.match(/^(\d+(?:\.\d+)?)/)
   return match ? Number(match[1]) : null
+}
+
+/**
+ * findPhaseDir(dirNames, phaseId) → the directory of one phase among the names of a phases
+ * directory, or null. An exact name wins; failing that, the first directory whose leading
+ * phase number matches. PURE — the caller owns every filesystem call.
+ *
+ * Exported because it is the one rule for «which directory is phase N», and more than one
+ * reader needs it: the questions engine finds a checkpoint with it, and the daemon's exit
+ * gate finds the document a stage was supposed to produce. A second copy of this rule would
+ * be a second answer the day a layout changes.
+ *
+ * @param {string[]} dirNames
+ * @param {string|number} phaseId
+ * @returns {string|null}
+ */
+export function findPhaseDir(dirNames, phaseId) {
+  const wanted = String(phaseId ?? '').trim()
+  if (wanted === '') return null
+  const names = (Array.isArray(dirNames) ? dirNames : []).map(String).sort()
+  const exact = names.find((name) => name === wanted)
+  if (exact) return exact
+  const wantedNumber = phaseNumberOf(wanted)
+  if (wantedNumber === null) return null
+  return names.find((name) => phaseNumberOf(name) === wantedNumber) ?? null
 }
 
 /**
@@ -271,12 +308,18 @@ function parseCheckpoint(data, path) {
  * so the whole engine — including the atomic write — runs in a test with no real
  * files and no socket.
  *
- * @param {{projectDir?:string, phasesDir?:string, fsImpl?:object}} [args]
+ * `checkpointSuffix` selects WHICH checkpoint file the engine reads. It defaults to the
+ * discussion's own; the execute stage's parked question is the same shape in a different file
+ * (EXEC_CHECKPOINT_SUFFIX) and is read by the same engine rather than a second copy of it.
+ *
+ * @param {{projectDir?:string, phasesDir?:string, fsImpl?:object, checkpointSuffix?:string}} [args]
  */
-export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl } = {}) {
+export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl, checkpointSuffix } = {}) {
   const io = resolveIo(fsImpl)
   const rootDir =
     typeof phasesDir === 'string' && phasesDir.trim() !== '' ? phasesDir : join(projectDir, PHASES_DIR)
+  const suffix =
+    typeof checkpointSuffix === 'string' && checkpointSuffix.trim() !== '' ? checkpointSuffix : CHECKPOINT_SUFFIX
 
   /**
    * The checkpoint file of one phase, or null when no discussion is parked.
@@ -290,11 +333,7 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl 
     }
     if (!io.existsSync(rootDir)) return null
 
-    const wantedNumber = phaseNumberOf(wanted)
-    const dirs = io.readdirSync(rootDir).map(String).sort()
-    const dir =
-      dirs.find((name) => name === wanted) ??
-      (wantedNumber === null ? undefined : dirs.find((name) => phaseNumberOf(name) === wantedNumber))
+    const dir = findPhaseDir(io.readdirSync(rootDir), wanted)
     if (!dir) return null
 
     const phaseDir = join(rootDir, dir)
@@ -303,7 +342,7 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl 
       .readdirSync(phaseDir)
       .map(String)
       .sort()
-      .find((name) => name.endsWith(CHECKPOINT_SUFFIX))
+      .find((name) => name.endsWith(suffix))
     return file ? join(phaseDir, file) : null
   }
 
