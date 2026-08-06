@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/batch.mjs (Phase 9.3 Plan 12 — the /sma-batch middle lane).
+ * Tests for scripts/sma/lib/batch.mjs — the /sma-batch middle lane.
  *
- * D-9.3-19: the lane between an inline fix and a full phase. It takes 2-4
+ * The lane between an inline fix and a full phase. It takes 2-4
  * named backlog items (or self-assembles a compatible set), runs grill-lite per item,
  * executes with ONE executor (atomic commit per item), blind-reverifies every item,
  * checks the items off the backlog, and writes ONE batch note — with two hard guards:

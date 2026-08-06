@@ -1,6 +1,5 @@
 /**
- * Tests for scripts/sma/lib/model-version.mjs (Phase 9.3 Plan 02, Task 1 —
- * D-9.3-10, grill missing-leaps ICE 567).
+ * Tests for scripts/sma/lib/model-version.mjs.
  *
  * The model-sighting timeline + stale-priors guard that keeps the calibration
  * badge honest across a Claude-model change.

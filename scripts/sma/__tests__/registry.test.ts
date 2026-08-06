@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/registry.mjs (Phase 9 Plan 05, Task 1).
+ * Tests for scripts/sma/lib/registry.mjs.
  *
- * R7 heartbeat session registry (B15 lease schema, D-9-01 identity, D-9-11 grading):
+ * R7 heartbeat session registry (B15 lease schema, identity + staleness grading):
  *   - Test 1: heartbeat() on a clean dir creates <terminalId>.json with the FULL
  *     B15 schema.
  *   - Test 2: heartbeat() again within HEARTBEAT_INTERVAL_MS, unchanged scope/status
@@ -71,7 +71,7 @@ afterEach(() => {
   rmSync(sessionsDir, { recursive: true, force: true })
 })
 
-describe('resolveTerminalIdentity (D-9-01)', () => {
+describe('resolveTerminalIdentity', () => {
   it('uses SMA_TERMINAL_NAME when set; slugifies for terminalId; pid rides along', () => {
     const id = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'Фабрика' } })
     expect(id.holderIdentity).toBe('Фабрика')
@@ -104,7 +104,7 @@ describe('resolveTerminalIdentity (D-9-01)', () => {
   })
 })
 
-describe('resolveTerminalIdentity — window-stable across sequential hook invocations (R7/D-9-01)', () => {
+describe('resolveTerminalIdentity — window-stable across sequential hook invocations (R7)', () => {
   it('SAME window token + DIFFERENT pids -> SAME terminalId (kills per-invocation fragmentation)', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-1' })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 200, sessionToken: 'sess-1' })
@@ -301,7 +301,7 @@ describe('readSessions — duplicate holderIdentity (Test 5, concurrency R7)', (
   })
 })
 
-describe('classifyStaleness — graduated grading (Test 6, D-9-11, P3)', () => {
+describe('classifyStaleness — graduated grading (Test 6, P3)', () => {
   const base = {
     holderIdentity: 'Мозг',
     pid: 111,
@@ -574,7 +574,7 @@ describe('dead-pid leases — a gone terminal is reap-clean, dirty scope or not'
     expect(remaining).not.toContain('dead.json')
   })
 
-  // SB-041: the two gates above, ANDed once and exported once, so `status` and the
+  // The two gates above, ANDed once and exported once, so `status` and the
   // PreToolUse hook can never answer «who is working» differently again.
   describe('sessionActivityTier / isSessionLive — the ONE activity predicate', () => {
     it('a YOUNG dead-pid lease is fresh by age but NOT live (the divergence, closed)', () => {

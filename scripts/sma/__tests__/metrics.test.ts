@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/metrics.mjs (Phase 9.1 Plan 24, Task 1 — D-9.1-07, B23).
+ * Tests for scripts/sma/lib/metrics.mjs.
  *
  * Read-only process telemetry over INJECTED sources (git log + exec journals +
  * gate/collision/stall journals). No writes, no network. The four behaviours the

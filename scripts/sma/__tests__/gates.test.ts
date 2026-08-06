@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/gates.mjs (Phase 9.1 Plan 16, Task 2 — B9/B10, D-9.1-12).
+ * Tests for scripts/sma/lib/gates.mjs (B9/B10).
  *
  * The checkable HARD-RULE inventory promoted from prose to PreToolUse WARN gates.
  * ALL gates advisory WARN (permissionDecision allow); soft-deny is 9.1-17.
@@ -258,14 +258,14 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
     })
   })
 
-  // ── soft-deny tier (9.1-17, D-9.1-13) ──────────────────────────────────────
+  // ── soft-deny tier ─────────────────────────────────────────────────────────
   //
   // The two gates that carry teeth: GATE-PUSH (push without full-gate evidence) and
   // GATE-MEMEDIT (hand-edit of generated MEMORY.md). Deny is DORMANT by default —
   // it exists ONLY when the per-gate arm env is set, and even then a fresh evidence
   // marker or a one-shot override token allows the operation. An exception anywhere
   // in the deny path degrades to allow (fail-open, scorecard metric 7).
-  describe('soft-deny tier (9.1-17, D-9.1-13)', () => {
+  describe('soft-deny tier', () => {
     let gatesDir: string
     let journalDir: string
     beforeEach(() => {

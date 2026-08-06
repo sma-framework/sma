@@ -543,7 +543,7 @@ describe('cli.mjs reflex-check (hook consumer, Task 2)', () => {
     expect(status).toBe(0)
     const out = JSON.parse(stdout)
     expect(out.hookSpecificOutput.hookEventName).toBe('PreToolUse')
-    expect(out.hookSpecificOutput.permissionDecision).toBe('allow') // NEVER deny (D-9.1-12)
+    expect(out.hookSpecificOutput.permissionDecision).toBe('allow') // NEVER deny
     expect(out.hookSpecificOutput.additionalContext).toContain('lesson-migration')
   })
 

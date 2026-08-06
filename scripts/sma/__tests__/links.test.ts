@@ -386,7 +386,7 @@ describe('linkGraphFromCorpus — the one function here that touches the filesys
   })
 })
 
-// ── Source-shape guard (acceptance criterion of plan 11-02 Task 1) ───────────
+// ── Source-shape guard ──────────────────────────────────────────────────────
 
 describe('schema-v2.mjs source shape', () => {
   it('freezes LINK_TYPES at its declaration', () => {

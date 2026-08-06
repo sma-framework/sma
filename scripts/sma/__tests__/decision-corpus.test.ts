@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/decision-corpus.mjs (Phase 9.5 Plan 02, Task 1).
  *
- * D-9.5-08 lane 1 — the decision-corpus miner. It retrospectively mines the
+ * The decision-corpus miner. It retrospectively mines the
  * founder's real decisions (orders, corrections, refusals, приёмка) from local
  * session transcripts into DRAFT corpus notes «ситуация → решение + почему»,
  * copying the excavate.mjs containment posture verbatim.

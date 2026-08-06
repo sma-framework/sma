@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/explain.mjs (Phase 9.3 Plan 09, Task 1 — D-9.3-15).
+ * Tests for scripts/sma/lib/explain.mjs.
  *
  *  - Test 1 (getTopic parse): a fixture topic parses into {ok, id, title, summary,
  *    en, ru}; a topic missing the ## ru section returns {ok:false, missing:['ru']}.

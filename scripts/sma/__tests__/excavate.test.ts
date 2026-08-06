@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/excavate.mjs (Phase 9.3 Plan 03 — D-9.3-09).
+ * Tests for scripts/sma/lib/excavate.mjs.
  *
  * `sma excavate` mines a STRANGER's git history READ-ONLY and DETERMINISTICALLY:
  * commit↔revert pairs, typo-fix chains, red-CI fix-forward chains — and turns

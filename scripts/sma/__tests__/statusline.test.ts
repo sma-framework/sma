@@ -1,6 +1,5 @@
 /**
- * Tests for scripts/sma/lib/statusline.mjs + the cli.mjs statusline surface
- * (Phase 9.3 Plan 07 — D-9.3-13).
+ * Tests for scripts/sma/lib/statusline.mjs + the cli.mjs statusline surface.
  *
  * The native-statusline SEGMENT: a pure, degradable, cheap function over injected +
  * cached local state, plus the managed settings install/wrap/uninstall that NEVER

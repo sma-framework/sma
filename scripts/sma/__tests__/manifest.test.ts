@@ -1,6 +1,6 @@
 /**
  * Tests for scripts/sma/lib/manifest.mjs + the `sma manifest` CLI + the
- * sma-manifest CI workflow (Phase 9.3 Plan 08 — D-9.3-11, D-9.3-02).
+ * sma-manifest CI workflow.
  *
  * The PR EVIDENCE PASSPORT: a deterministic, reader-only assembler over the
  * Track A trust-spine outputs. It computes ZERO new verdicts — every number is

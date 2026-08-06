@@ -17,8 +17,8 @@
  *   - Test 5: propose() performs ZERO disk writes — the fixture tree is
  *     byte-identical before/after AND the module source imports no write API.
  *
- * 11-POST (D-11-DEFER-11 / D-11-DEFER-12) — the detector was measured, not read,
- * and both halves of what the measurement found are pinned here:
+ * The detector was measured, not read, and both halves of what the measurement
+ * found are pinned here:
  *
  *   - Test 6: the kind gate admits the kinds schema v2 actually produces. The
  *     shipped set was {decision, status} while the live corpus holds ZERO records
@@ -334,7 +334,7 @@ describe('consolidate.mjs — propose() contradiction detection (9.1-12 test 3)'
   })
 })
 
-describe('consolidate.mjs — the kind gate admits what schema v2 produces (D-11-DEFER-11)', () => {
+describe('consolidate.mjs — the kind gate admits what schema v2 produces', () => {
   it('Test 6: two procedural-rule notes with opposing claims → CONTRADICT (the shipped gate saw neither)', () => {
     // MEASURED, not assumed: the live corpus's kind histogram through the
     // product's own projectNoteAxis is {bug-lesson, normative, prospective,
@@ -367,7 +367,7 @@ describe('consolidate.mjs — the kind gate admits what schema v2 produces (D-11
   it('Test 6b: the gate still EXISTS — a semantic pair with the same claims is NOT a contradiction', () => {
     // Widening is not removal. A durable fact stated two ways is a MERGE
     // question (findMerges owns subject overlap); a detector that fired on every
-    // kind would be the untuned-to-green failure T-11-10-02 names.
+    // kind would be the untuned-to-green failure this gate exists to prevent.
     note(corpusDir, 'fact_cache_on.md', {
       description: 'Always enable the shared build cache for release pipelines.',
       kind: 'semantic',
@@ -387,7 +387,7 @@ describe('consolidate.mjs — the kind gate admits what schema v2 produces (D-11
   })
 })
 
-describe('consolidate.mjs — polarity answers Russian (D-11-DEFER-12)', () => {
+describe('consolidate.mjs — polarity answers Russian', () => {
   it('Test 7: two Russian normative notes, one obliging and one forbidding → CONTRADICT', () => {
     // The live corpus holds twelve `normative` records and every one of them is
     // written in Russian. With an English-only marker list both halves scored
@@ -437,7 +437,7 @@ describe('consolidate.mjs — polarity answers Russian (D-11-DEFER-12)', () => {
   })
 })
 
-describe('consolidate.mjs — what the two channels are allowed to read (11-POST precision)', () => {
+describe('consolidate.mjs — what the two channels are allowed to read (precision)', () => {
   // These were UNREACHABLE before the kind gate widened, and the first run of
   // the widened detector over the live 26-note corpus made them the dominant
   // failure: 14 findings, none of them a contradiction. Both rules below are

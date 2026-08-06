@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/goodhart.mjs (Phase 9.2 Plan 10, Task 1).
  *
- * The Goodhart integrity guards (D-9.2-14):
+ * The Goodhart integrity guards:
  *   - Test 1: signPredictions writes a countersign; verifySkeptic on the untouched
  *     plan -> {ok:true}.
  *   - Test 2: editing the predictions block after signing -> {ok:false,

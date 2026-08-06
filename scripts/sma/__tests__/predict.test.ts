@@ -16,7 +16,7 @@
  *     never throws.
  *   - Test 6 (R1/R2 false class-A lesson, 2026-07-10): predict-score scores
  *     plan-frontmatter `predictions:` ONLY. SUMMARY `receipts:` claims
- *     (expected_sha256-pinned, D-9.2-06) are `sma reverify` territory — a
+ *     (expected_sha256-pinned) are `sma reverify` territory — a
  *     receipts block yields zero verdicts, and a receipt-shaped entry misfiled
  *     under `predictions:` is EXCLUDED (never scored, never run).
  */

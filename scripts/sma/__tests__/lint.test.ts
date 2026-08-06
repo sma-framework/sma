@@ -311,7 +311,7 @@ describe('memory-lint supersession / regen / duplication (9-08 task 2)', () => {
     expect(dup.every((f) => f.tier === 'warn')).toBe(true)
   })
 
-  it('Test 12 (bug-lesson form, D-9-15): missing Why / How to apply → CRITICAL; well-formed passes', () => {
+  it('Test 12 (bug-lesson form): missing Why / How to apply → CRITICAL; well-formed passes', () => {
     const res = lintCase('buglesson')
     const bug = findingsOf(res, 'MEM-BUGLESSON')
     expect(bug.length).toBeGreaterThanOrEqual(1)
@@ -321,7 +321,7 @@ describe('memory-lint supersession / regen / duplication (9-08 task 2)', () => {
     expect(bug.some((f) => f.file.includes('feedback_good_lesson.md'))).toBe(false)
   })
 
-  it('Test 13 (wikilinks, D-9-15): [[link]] to a non-existent note → CRITICAL; valid links pass', () => {
+  it('Test 13 (wikilinks): [[link]] to a non-existent note → CRITICAL; valid links pass', () => {
     const res = lintCase('wikilink')
     const wl = findingsOf(res, 'MEM-WIKILINK')
     expect(wl.length).toBeGreaterThanOrEqual(1)
@@ -906,8 +906,8 @@ describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
     }
   })
 
-  it('Test 4 (MEM-CONTRADICT, 11-POST): a RUSSIAN normative pair reaches the lint through the same one detector', () => {
-    // D-11-DEFER-11/12 measured: the shipped gate was {decision, status} on a
+  it('Test 4 (MEM-CONTRADICT): a RUSSIAN normative pair reaches the lint through the same one detector', () => {
+    // Measured, not assumed: the shipped gate was {decision, status} on a
     // corpus holding neither, and every polarity marker was English on a corpus
     // whose normative records are Russian. MEM-CONTRADICT was therefore silent
     // for two reasons at once — reported clean because it was blind, not
@@ -945,7 +945,7 @@ describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
     const res = lintCase('contradict')
     const con = findingsOf(res, 'MEM-CONTRADICT')
     // The reference_port pair conflicts textually but kind=reference — ignored.
-    // The gate was WIDENED (D-11-DEFER-11) and it is still a gate: `reference`
+    // The gate was WIDENED and it is still a gate: `reference`
     // stays outside it, which is what this test has always been about.
     expect(con.some((f) => f.message.includes('reference_port_one.md'))).toBe(false)
     expect(con.some((f) => f.message.includes('reference_port_two.md'))).toBe(false)

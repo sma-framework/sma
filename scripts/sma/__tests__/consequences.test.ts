@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/consequences.mjs (Phase 9.2 Plan 08 — D-9.2-12).
+ * Tests for scripts/sma/lib/consequences.mjs.
  *
  * Consequences-as-LAW: the deterministic brain that turns a recorded class-A
  * event into a ship BLOCK.

@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/preflight.mjs (Phase 9.3 Plan 10).
  *
- * The already-built pre-dispatch comparator (D-9.3-17): a deterministic, zero-LLM,
+ * The already-built pre-dispatch comparator: a deterministic, zero-LLM,
  * read-only check of a plan's must_haves (artifact paths + `contains` needles) and
  * allowlisted verify commands against the REAL tree → verdict built / partial / absent.
  *

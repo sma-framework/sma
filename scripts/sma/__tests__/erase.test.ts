@@ -23,8 +23,8 @@
  *   that erased the record of itself could not be audited at all.
  *
  *   HISTORY IS NOT TOUCHED, AND THE RESULT SAYS SO. No git command is executed
- *   by any code path in the module. D-11-05 rejected automatic history rewriting
- *   by name; the honest line is carried in the result rather than in a promise.
+ *   by any code path in the module. Automatic history rewriting was rejected
+ *   deliberately; the honest line is carried in the result, not in a promise.
  *
  * EVERY fixture corpus is built in a fresh temp directory. Nothing in this file
  * ever points an erase call at a real `.claude/memory/`.
@@ -653,10 +653,10 @@ describe('the lifecycle stops refusing — erase is the fifth action', () => {
   })
 })
 
-// ── 11-POST (D-11-DEFER-15), added 2026-08-05 ────────────────────────────────
+// ── Added 2026-08-05 ────────────────────────────────────────────────────────
 //
-// The episode archive is deliberately NOT an erase surface: D-11-05 scoped the
-// command to the ACTIVE corpus, the working tree and every derived index, and an
+// The episode archive is deliberately NOT an erase surface: the command is
+// scoped to the ACTIVE corpus, the working tree and every derived index, and an
 // episode is a different asset class — "what happened" rather than "what is
 // true". Normally the question cannot arise, because migrate-v1-v2 writes the
 // extracted claim as `<stem>-claim` while the episode keeps `<stem>`.
@@ -668,7 +668,7 @@ describe('the lifecycle stops refusing — erase is the fifth action', () => {
 // the one that was approved. What ships is option (b), the REFUSAL — erase
 // declines while the collision exists, names the file, and the operator decides.
 
-describe('an episode that shares the erased id — the refusal (D-11-DEFER-15)', () => {
+describe('an episode that shares the erased id — the refusal', () => {
   it('Test 29: erase REFUSES while episodes/<id>.md exists, names the file, and deletes nothing', () => {
     seedEverySurface()
     // the collision: an episode carrying the SAME stem as the corpus record

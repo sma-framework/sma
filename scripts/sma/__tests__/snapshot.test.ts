@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/snapshot.mjs (Phase 9 Plan 13, Task 1).
+ * Tests for scripts/sma/lib/snapshot.mjs.
  *
- * The terminal→CRM reporter (R12, D-9-04/05/11, P1):
+ * The terminal→CRM reporter (R12, P1):
  *   - Test 1: buildSnapshotPayload output keys are EXACTLY the allowlist (deep,
  *     incl. nested collisionFeed item keys) — nothing else survives serialization (P1).
  *   - Test 2: collisionFeed is the OWN journal tail bounded to 20; memoryHealth
@@ -41,7 +41,7 @@ const ALLOWED_KEYS = [
   'reflexFires',
   'gates',
   'corpusHealth',
-  // 9.2-09 (D-9.2-13) — the deterministic spend ledger block.
+  // The deterministic spend ledger block.
   'spend',
 ]
 
