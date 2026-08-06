@@ -85,7 +85,7 @@ describe('resolveTerminalIdentity', () => {
     expect(id.terminalId).toBe(`t-${process.pid}`)
   })
 
-  it('WR-05: two windows sharing a latin name get DISTINCT terminalIds (pid suffix)', () => {
+  it('two windows sharing a latin name get DISTINCT terminalIds (pid suffix)', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100 })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 200 })
     expect(a.holderIdentity).toBe('exec')
@@ -95,7 +95,7 @@ describe('resolveTerminalIdentity', () => {
     expect(a.terminalId).not.toBe(b.terminalId) // no lease/journal-file collision
   })
 
-  it('WR-05: two windows sharing a non-latin name get DISTINCT terminalIds too', () => {
+  it('two windows sharing a non-latin name get DISTINCT terminalIds too', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'Мозг' }, pid: 100 })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'Мозг' }, pid: 200 })
     expect(a.terminalId).toBe('t-100')
@@ -112,7 +112,7 @@ describe('resolveTerminalIdentity — window-stable across sequential hook invoc
     expect(a.sessionToken).toBe('sess-1')
   })
 
-  it('SAME name but DIFFERENT window tokens -> DISTINCT terminalIds (WR-05 concurrent windows preserved)', () => {
+  it('SAME name but DIFFERENT window tokens -> DISTINCT terminalIds (concurrent windows preserved)', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-A' })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-B' })
     expect(a.terminalId).not.toBe(b.terminalId)
@@ -132,7 +132,7 @@ describe('resolveTerminalIdentity — window-stable across sequential hook invoc
     expect(viaWindow.terminalId).toBe(viaClaude.terminalId)
   })
 
-  it('no token anywhere -> the volatile pid tiebreaker still applies (WR-05 manual-run case)', () => {
+  it('no token anywhere -> the volatile pid tiebreaker still applies (manual-run case)', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100 })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 200 })
     expect(a.terminalId).toBe('exec-100')
@@ -177,7 +177,7 @@ describe('heartbeat — two sequential hook invocations of ONE window renew ONE 
     expect(after.acquireTime).toBe(before.acquireTime) // acquire preserved across the window
   })
 
-  it('two DIFFERENT windows sharing a name (distinct tokens) -> TWO lease files (WR-05 both directions)', () => {
+  it('two DIFFERENT windows sharing a name (distinct tokens) -> TWO lease files (both directions)', () => {
     const idA = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-A' })
     const idB = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-B' })
     const t0 = Date.parse('2026-07-03T10:00:00.000Z')
@@ -390,7 +390,7 @@ describe('reapStale — removes only clean stale entries (P3)', () => {
   })
 })
 
-describe('heartbeat snapshot spawn — suppressed under the test runner (WR-10)', () => {
+describe('heartbeat snapshot spawn — suppressed under the test runner', () => {
   it('does NOT spawn a real detached child under VITEST (no injected spawnFn)', () => {
     // VITEST is set during the suite, so the kill-switch inside spawnDetachedSnapshot
     // must short-circuit. We assert indirectly: with no spawnFn injected the beat still
@@ -729,7 +729,7 @@ describe('buildJournalActors + a real journal event — who/what never empty (Te
   })
 })
 
-describe('probeScopeMtime — only matching globs, skips heavy dirs (WR-01)', () => {
+describe('probeScopeMtime — only matching globs, skips heavy dirs', () => {
   let root: string
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'sma-probe-'))

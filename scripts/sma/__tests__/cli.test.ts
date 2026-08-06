@@ -244,7 +244,7 @@ describe('cli.mjs force-clear (terraform-style force-unlock)', () => {
   })
 })
 
-describe('cli.mjs claim + force-clear round-trip (WR-02)', () => {
+describe('cli.mjs claim + force-clear round-trip', () => {
   it('claim creates a claims-dir entry that force-clear can actually remove', () => {
     // Фабрика claims a scope; the claims-dir entry is named after the scope slug — the
     // exact string a collision WARN would suggest to force-clear.
@@ -302,7 +302,7 @@ describe('cli.mjs window-stable identity across sequential hook PROCESSES (R7 re
     expect(sessionFileCount()).toBe(1)
   })
 
-  it('two windows sharing a NAME but DIFFERENT session_ids -> TWO distinct leases (WR-05 preserved)', () => {
+  it('two windows sharing a NAME but DIFFERENT session_ids -> TWO distinct leases (concurrent-windows rule preserved)', () => {
     runCli(['collision-check'], { stdin: editStdin('window-alpha'), terminalName: 'exec' })
     runCli(['collision-check'], { stdin: editStdin('window-beta'), terminalName: 'exec' })
     expect(sessionFileCount()).toBe(2)
@@ -356,7 +356,7 @@ describe('cli.mjs subagent-receipts --stat (honest stat surface)', () => {
   })
 })
 
-describe('cli.mjs status — collision counter is bounded to today (WR-04)', () => {
+describe('cli.mjs status — collision counter is bounded to today', () => {
   /** Seed a journal .jsonl file with the given events under .sma/journal/. */
   function seedJournal(terminalId: string, events: Record<string, unknown>[]) {
     const dir = join(smaRoot, 'journal')

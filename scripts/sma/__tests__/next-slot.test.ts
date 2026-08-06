@@ -152,7 +152,7 @@ describe('nextMigrationSlot — numeric max + atomic claim (R9a, B21)', () => {
     }
   })
 
-  it('WR-03: slot claim events land in journalDir, NOT the claims dir', () => {
+  it('slot claim events land in journalDir, NOT the claims dir', () => {
     const journalDir = mkdtempSync(join(tmpdir(), 'sma-slots-journal-'))
     try {
       writeFileSync(migPath, migrationsFile(['090']))
