@@ -28,7 +28,7 @@ import {
   applyTransition,
 } from '../src/queue/state-machine.mjs'
 
-/** The canon's eleven states, verbatim (roadmap txt lines 512-514). */
+/** The eleven fleet states, verbatim. */
 const CANON_STATES = [
   'READY',
   'CLAIMED',
@@ -56,7 +56,7 @@ const allPairs = () =>
   )
 
 describe('FLEET_STATES — the named vocabulary', () => {
-  it('holds exactly the canon eleven state names', () => {
+  it('holds exactly the eleven fleet state names', () => {
     expect(FLEET_STATES).toHaveLength(11)
     expect([...FLEET_STATES]).toEqual(CANON_STATES)
   })
@@ -65,7 +65,7 @@ describe('FLEET_STATES — the named vocabulary', () => {
     expect(Object.isFrozen(FLEET_STATES)).toBe(true)
   })
 
-  it('TERMINAL_STATES is exactly the canon terminal set and a subset of FLEET_STATES', () => {
+  it('TERMINAL_STATES is exactly the fleet terminal set and a subset of FLEET_STATES', () => {
     expect([...TERMINAL_STATES].sort()).toEqual(['ACCEPTED', 'CANCELLED', 'DEAD_LETTER', 'REJECTED'])
     for (const s of TERMINAL_STATES) expect(FLEET_STATES).toContain(s)
     expect(Object.isFrozen(TERMINAL_STATES)).toBe(true)
@@ -139,7 +139,7 @@ describe('TRANSITIONS — the contract table', () => {
     }
   })
 
-  it('carries the canon timeout on RUNNING->PRODUCED', () => {
+  it('carries the fleet timeout on RUNNING->PRODUCED', () => {
     expect(TRANSITIONS.RUNNING.PRODUCED.timeout).toBe('45m')
   })
 
@@ -232,7 +232,7 @@ describe('idempotencyKey — the same effect retried under the same attempt is t
     expect(key).toMatch(/^[0-9a-f]{16}$/)
     // The composition is separated, so ('ab','c') and ('a','bc') can never collide.
     expect(idempotencyKey('ab', 'c', 'T')).not.toBe(idempotencyKey('a', 'bc', 'T'))
-    // Stable across processes because it is a hash of the three canon inputs and
+    // Stable across processes because it is a hash of the three fleet inputs and
     // nothing else — pinned here so a future "improvement" that mixes in a timestamp
     // fails loudly instead of silently breaking every redelivery.
     expect(idempotencyKey('BL-96', 'BL-96#2', 'RUNNING->PRODUCED')).toBe(

@@ -528,7 +528,7 @@ describe('dead-letter drill — an exhausted task stays put until somebody decid
       attemptId: 'BL-D1#3',
     })
     expect(noDisposition.applied).toBe(false)
-    expect(noDisposition.refusal).toMatch(/canon invariant 7/)
+    expect(noDisposition.refusal).toMatch(/fleet invariant 7/)
     expect(transitionContract('DEAD_LETTER', 'READY')).toBeNull()
 
     // Every one of the three attempts left its own immutable row behind.

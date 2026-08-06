@@ -458,7 +458,8 @@ export function applyTransition(input = {}) {
     for (const token of FORBIDDEN_CAPABILITY_TOKENS) {
       if (lowered.includes(token)) {
         return refusal(
-          `no transition may grant "${token}" capability (canon invariant 2): a worker has no ` +
+          `no transition may grant "${token}" capability (fleet invariant 2, ` +
+          `docs/FLEET-INVARIANTS.md): a worker has no ` +
             'push or merge capability regardless of any prompt, task text or grant list',
           at,
         )
@@ -473,7 +474,8 @@ export function applyTransition(input = {}) {
   if (state === 'DEAD_LETTER' && to === 'READY') {
     if (!hasDisposition) {
       return refusal(
-        'DEAD_LETTER -> READY requires an explicit disposition (canon invariant 7): a ' +
+        'DEAD_LETTER -> READY requires an explicit disposition (fleet invariant 7, ' +
+        'docs/FLEET-INVARIANTS.md): a ' +
           'dead-lettered task never returns to READY on its own',
         at,
       )
@@ -481,7 +483,8 @@ export function applyTransition(input = {}) {
     return refusal(
       'DEAD_LETTER -> READY is not a transition on this attempt: an authorized disposition ' +
         'opens a NEW attempt through the queue enqueue path, and this attempt stays ' +
-        'dead-lettered (canon invariant 3 — many immutable attempts, at most one active lease)',
+        'dead-lettered (fleet invariant 3, docs/FLEET-INVARIANTS.md — many immutable ' +
+          'attempts, at most one active lease)',
       { ...at, requiresNewAttempt: true },
     )
   }
@@ -515,7 +518,8 @@ export function applyTransition(input = {}) {
       if (!hasReceipt) missing.push('a verification receipt reference')
       if (!authorized) missing.push(`an authorized disposition (${AUTHORIZED_DISPOSITIONS.join(' · ')})`)
       return refusal(
-        `${state} -> ACCEPTED requires ${missing.join(' and ')} (canon invariant 1): no worker ` +
+        `${state} -> ACCEPTED requires ${missing.join(' and ')} (fleet invariant 1, ` +
+        `docs/FLEET-INVARIANTS.md): no worker ` +
           'accepts its own work',
         at,
       )

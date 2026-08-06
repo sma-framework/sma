@@ -3,7 +3,7 @@
  *
  * WHY THIS FILE EXISTS: `state-machine.test.ts` and `capability-envelope.test.ts` prove
  * that each module refuses the cases their authors thought of. Neither proves anything
- * about a SEQUENCE — and every one of the canon's seven invariants is a property of a
+ * about a SEQUENCE — and every one of the seven fleet invariants is a property of a
  * history, not of a call. This suite generates histories nobody wrote by hand and checks
  * all seven after every single step of every one of them.
  *
@@ -37,7 +37,7 @@
  * shrinking is done by a person re-running with a smaller `STEPS_PER_SEQUENCE`. That is the
  * accepted cost of adding no dependency, and it is recorded here rather than discovered.
  *
- * INVARIANT 5, EXACTLY AS THIS SUITE READS IT. The canon writes: «retry использует тот же
+ * INVARIANT 5, EXACTLY AS THIS SUITE READS IT. The fleet spec writes: «retry использует тот же
  * idempotency key для одного effect или создает новый attempt без повторного effect». The
  * enforceable half — the half a machine can decide — is that ONE effect is applied at most
  * once per (task, attempt, transition), that a redelivery under an existing key reports
@@ -86,10 +86,10 @@ export const SEQUENCES = 12
 export const STEPS_PER_SEQUENCE = 40
 export const TASKS_PER_SEQUENCE = 4
 
-/** The stamp fields canon invariant 6 fixes at attempt creation. */
+/** The stamp fields fleet invariant 6 fixes at attempt creation. */
 const STAMP_FIELDS = Object.freeze(['policyVersion', 'memorySnapshotHash', 'planHash', 'harnessVersion'])
 
-/** The dispositions `applyTransition` accepts for ACCEPTED (canon invariant 1). */
+/** The dispositions `applyTransition` accepts for ACCEPTED (fleet invariant 1). */
 const AUTHORIZED_DISPOSITIONS = Object.freeze(['human-approved', 'authorized-policy'])
 
 /** The replay recipe printed with every failure. */
@@ -211,7 +211,7 @@ function openAttempt(t: TaskModel, step: number): AttemptModel {
   const att: AttemptModel = {
     attemptId: `${t.taskId}#${attemptNo}`,
     attemptNo,
-    // FIXED HERE, AT CREATION, AND NEVER TOUCHED AGAIN — that is canon invariant 6, and
+    // FIXED HERE, AT CREATION, AND NEVER TOUCHED AGAIN — that is fleet invariant 6, and
     // checker six reads the durable ledger back to see whether it held.
     stamp: {
       policyVersion: `policy-v${attemptNo}`,
@@ -318,7 +318,7 @@ function applyAction(kind: string, t: TaskModel, world: World, rng: () => number
     if (!contract) return 'skipped-no-contract'
     // A REDELIVERY is the same message again: the same task, the SAME attempt, the same
     // transition. Replaying under a different attempt id would be a NEW attempt performing
-    // the same transition, which canon invariant 5 explicitly permits — so the attempt id
+    // the same transition, which fleet invariant 5 explicitly permits — so the attempt id
     // is taken from the history entry rather than from whatever attempt is current now.
     const att = t.attempts.find((a) => a.attemptId === last.attemptId) ?? currentAttempt(t, step)
     const result: any = applyTransition({
@@ -333,7 +333,7 @@ function applyAction(kind: string, t: TaskModel, world: World, rng: () => number
       appliedKeys: t.appliedKeys,
     })
     // The redelivery must report itself as ALREADY APPLIED — not run the effect a second
-    // time, and not be refused either: the effect DID happen (canon invariant 5).
+    // time, and not be refused either: the effect DID happen (fleet invariant 5).
     if (result.applied) {
       t.breaches.push({
         invariant: 5,
@@ -360,7 +360,7 @@ function applyAction(kind: string, t: TaskModel, world: World, rng: () => number
     t.activeLeases = []
     t.leaseExpiries += 1
     // The supervisor notices and moves the task to RETRYABLE where that edge exists. The
-    // effects already recorded are NOT touched — canon invariant 4 is precisely that an
+    // effects already recorded are NOT touched — fleet invariant 4 is precisely that an
     // expiry says nothing about whether the outside world changed.
     const contract = transitionContract(t.state, 'RETRYABLE')
     if (contract) {
@@ -382,7 +382,7 @@ function applyAction(kind: string, t: TaskModel, world: World, rng: () => number
   if (kind === 'worker-death') {
     // The worker vanishes. No transition fires, no row is written, the lease simply stops
     // being refreshed. What must survive is the EVIDENCE: the attempt rows already in the
-    // ledger (canon invariant 4 / the repudiation half of it).
+    // ledger (fleet invariant 4 / the repudiation half of it).
     if (t.activeLeases.length === 0) return 'skipped-no-lease'
     t.activeLeases = []
     return 'worker-died'
@@ -407,7 +407,7 @@ function applyAction(kind: string, t: TaskModel, world: World, rng: () => number
   }
 
   if (kind === 'hostile-grant') {
-    // No input widens what a worker may do (canon invariant 2). The grant list is the
+    // No input widens what a worker may do (fleet invariant 2). The grant list is the
     // shape a prompt-borne escalation would take.
     const grant = pick(rng, ['git push', 'MERGE', 'push-to-origin', 'auto-merge', 'Push', 'merge --no-ff'])
     const to = outgoing ? pick(rng, Object.keys(outgoing)) : 'CLAIMED'
@@ -886,7 +886,7 @@ describe('fleet invariants — the mutation battery (each checker is proven able
       attemptId: 'BL-mutant#1',
     })
     expect(refused.applied).toBe(false)
-    expect(refused.refusal).toMatch(/canon invariant 7/)
+    expect(refused.refusal).toMatch(/fleet invariant 7/)
     expect(transitionContract('DEAD_LETTER', 'READY')).toBeNull()
   })
 })

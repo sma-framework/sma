@@ -403,7 +403,10 @@ export function createPgBossQueue({
   async function complete(taskId, result) {
     // No self-certified done — refuse BEFORE any mutation.
     if (!result || !result.receiptRef) {
-      throw new NoReceiptError(`complete("${taskId}") refused: result must carry a receiptRef (Pitfall 6)`)
+      throw new NoReceiptError(
+        `complete("${taskId}") refused: result must carry a receiptRef — work is never ` +
+          `certified done on the runner's own word`,
+      )
     }
     const job = await resolveActiveJob(taskId)
     if (!job) throw new UnknownTaskError(`complete: no active task "${taskId}"`)
