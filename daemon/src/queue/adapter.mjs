@@ -124,6 +124,35 @@ export const REASON_LABELS = Object.freeze({
   manual: 'остановлено вручную',
 })
 
+/**
+ * THE ONE LIVENESS VALUE. Two mechanisms answer «has this worker gone silent»: the tick's
+ * explicit sweep (liveness.mjs) and the queue's own lease expiry inside the backend. They
+ * are belt and suspenders for the SAME event, so they must read the same number — and until
+ * now they did not: the config's value reached the sweep, the backend was constructed
+ * without it, and its lease ran on the built-in default no matter what the operator wrote.
+ * Nothing said so; the two clocks simply disagreed. The constant and the resolver live HERE,
+ * in the interface both the sweep and every backend already build against, so neither side
+ * owns a private copy of the number.
+ */
+export const DEFAULT_EXPIRE_MS = 120000
+
+/**
+ * resolveExpireMs(config) → the liveness/lease duration in ms for THIS config.
+ *
+ * A hand-edited config file is a trust boundary and this number does not stay inside the
+ * process: the backend divides it by 1000 and hands `expireInSeconds` to the queue. So
+ * anything that is not a positive finite number — `"5m"`, 0, a negative, NaN, Infinity —
+ * falls back to the default rather than travelling on as a lease made out of a typo. PURE.
+ *
+ * @param {{expireMs?:number}} [config]
+ * @returns {number}
+ */
+export function resolveExpireMs(config) {
+  const raw = config && typeof config === 'object' ? config.expireMs : undefined
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return DEFAULT_EXPIRE_MS
+  return raw
+}
+
 const PROVIDERS = Object.freeze(['claude', 'codex', 'api'])
 const FORGE_KINDS = Object.freeze(['agent', 'skill', 'mcp'])
 const STORY_POINTS = Object.freeze([1, 2, 3, 5, 8, 13]) // Fibonacci ONLY (D-9.5-10)

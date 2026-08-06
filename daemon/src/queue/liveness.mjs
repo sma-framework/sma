@@ -29,6 +29,8 @@
  * tests. No live Postgres — the adapter + ledger are injected fakes in the suite.
  */
 
+import { DEFAULT_EXPIRE_MS } from './adapter.mjs'
+
 const BASE_COOLDOWN_MS = 120000 // 120s
 const MAX_COOLDOWN_MS = 1800000 // 30 min
 
@@ -69,7 +71,7 @@ function countNoProgress(attempts) {
  * @param {{adapter:object, ledger?:object, clock?:Function|number, expireMs?:number}} opts
  * @returns {Promise<{audited:number, requeued:number, throttled:number}>}
  */
-export async function livenessSweep({ adapter, ledger, clock = Date.now, expireMs = 120000 } = {}) {
+export async function livenessSweep({ adapter, ledger, clock = Date.now, expireMs = DEFAULT_EXPIRE_MS } = {}) {
   if (!adapter || typeof adapter.list !== 'function' || typeof adapter.fail !== 'function') {
     throw new TypeError('livenessSweep requires an adapter with list() and fail()')
   }

@@ -31,6 +31,7 @@ import { join } from 'node:path'
 
 import { createDaemon, describeBootFailure } from '../src/main.mjs'
 import { ROUTES } from '../src/front/server.mjs'
+import { resolveExpireMs } from '../src/queue/adapter.mjs'
 
 const TOKEN = 'c'.repeat(64)
 
@@ -132,6 +133,9 @@ beforeAll(() => {
       bind: '127.0.0.1',
       port: 7999,
       token: TOKEN,
+      // an expiry the operator chose, deliberately NOT the shipped default: a wiring that
+      // drops it on the floor is then visible as the default rather than as this number.
+      expireMs: 300000,
       repoDir,
       dataDir: join(tmpRoot, 'data'),
       ledgerDir: join(tmpRoot, 'ledger'),
@@ -269,6 +273,19 @@ describe('the production composition root is COMPLETE', () => {
     const back = await call('POST', '/api/project/select', 'select-p1')
     expect(back.statusCode).toBe(200)
     expect(liveness()).toBe('polling')
+  })
+
+  /**
+   * TWO LIVENESS CLOCKS WERE RUNNING. The tick's sweep read `config.expireMs`; the durable
+   * queue was constructed without it and its lease therefore always ran on the built-in
+   * default. Both numbers decide the same thing — when a silent worker's task returns to the
+   * queue — so a config that moved one of them moved only one, and the two disagreed with
+   * nothing in the product saying so. The root is where they are joined: the SAME resolved
+   * value reaches the lease and the sweep.
+   */
+  it('hands the config expiry to the durable lease, not only to the sweep', () => {
+    expect(resolveExpireMs(park.config)).toBe(300000)
+    expect(park.adapter.expireMs, 'the durable queue was built without the config expiry').toBe(300000)
   })
 
   it('derives a working data/ledger dir even from a config that names neither', () => {

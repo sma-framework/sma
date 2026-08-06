@@ -84,6 +84,7 @@
 
 import {
   validateTask,
+  DEFAULT_EXPIRE_MS,
   FAIL_REASONS,
   NoReceiptError,
   InvalidFailReasonError,
@@ -100,8 +101,6 @@ export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 
 
 /** Shared dead-letter queue for exhausted retries → the roster's red «не справился» card. */
 export const DEAD_LETTER_QUEUE = 'sma.task.dead'
-
-const DEFAULT_EXPIRE_MS = 120000
 
 /** `sma.task.<lane>` — one durable queue per lane. */
 const laneQueue = (lane) => `sma.task.${lane}`
@@ -462,5 +461,9 @@ export function createPgBossQueue({
   // SQL seam this backend already owns (one pool, one connection string, one place that
   // knows how to reach the queue database) — that is what fills deps.casExec in production
   // instead of leaving approve/return answering «not implemented».
-  return { start, stop, enqueue, claimNext, touch, complete, fail, list, stats, execSql: runSql }
+  // `expireMs` rides out as a FACT about the adapter, not as configuration: it is the lease
+  // this queue is actually running on, and the composition root's own test is what reads it.
+  // A liveness value that only exists inside a closure cannot be shown to agree with the
+  // sweep's — and «they agree» is the whole property (see DEFAULT_EXPIRE_MS in adapter.mjs).
+  return { start, stop, enqueue, claimNext, touch, complete, fail, list, stats, execSql: runSql, expireMs }
 }
