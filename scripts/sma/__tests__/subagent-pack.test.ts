@@ -1,6 +1,6 @@
 /**
  * Tests for subagent-pack.mjs — deterministic PreTask context-pack assembly +
- * the PreToolUse `updatedInput` injection payload (Phase 9.2 Plan 04, Task 1).
+ * the PreToolUse `updatedInput` injection payload.
  *
  * Everything is DI: sources are injected functions, so tests never touch the
  * filesystem, never shell out, and are fully deterministic (ages come from

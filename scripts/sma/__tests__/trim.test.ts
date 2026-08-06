@@ -1,7 +1,7 @@
 /**
- * Tests for scripts/sma/lib/trim.mjs (Phase 9.1 Plan 13, Task 2).
+ * Tests for scripts/sma/lib/trim.mjs.
  *
- * FI-9 demotion-only trimmer — overflow moves DOWN a layer, nothing is ever
+ * The demotion-only trimmer — overflow moves DOWN a layer, nothing is ever
  * deleted ("система никогда ничего не забывает", founder lock):
  *   - Test 1: plan() (dry-run default) over an over-budget fixture CORE returns
  *     the demotion list ordered least-recently-cited-first and writes NOTHING.
@@ -14,7 +14,7 @@
  *   - Test 4: trimState on an over-budget STATE fixture moves the overflow
  *     section to STATE-ARCHIVE.md verbatim (byte-level containment assert).
  *   - Test 5: a note with recent citations is NEVER selected while an uncited
- *     one exists (9.1-11 usage data decides WHAT demotes).
+ *     one exists (usage data decides WHAT demotes).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -116,7 +116,7 @@ afterEach(() => {
 
 const trimOpts = () => ({ corpusDir, tagsPath, usageDir, journalDir: join(usageDir, 'no-journal') })
 
-describe('trim.mjs — plan() dry-run (FI-9)', () => {
+describe('trim.mjs — plan() dry-run', () => {
   it('Test 1: over-budget CORE → demotion list least-recently-cited-first; writes NOTHING', () => {
     const before = snapshot(corpusDir)
     const res = plan(trimOpts())
@@ -162,7 +162,7 @@ describe('trim.mjs — demoteCore apply (demotion, never deletion)', () => {
       const { frontmatter, body } = parseNote(readFileSync(join(corpusDir, f), 'utf8'), { file: f })
       // Membership changed: importance now below the CORE threshold.
       expect(Number(frontmatter!.importance)).toBeLessThan(CORE_THRESHOLD)
-      // Body untouched (content preservation — FI-9).
+      // Body untouched (content preservation).
       const orig = parseNote(before[f], { file: f })
       expect(body).toBe(orig.body)
       expect(frontmatter!.description).toBe(orig.frontmatter!.description)
@@ -203,7 +203,7 @@ describe('trim.mjs — splitNote (episodic tail → archive note)', () => {
     const trimmed = readFileSync(join(corpusDir, name), 'utf8')
     expect(Buffer.byteLength(trimmed, 'utf8')).toBeLessThanOrEqual(NOTE_BUDGET)
 
-    // The archive note exists and carries the supersedes back-link (FI-9).
+    // The archive note exists and carries the supersedes back-link.
     const archiveText = readFileSync(join(corpusDir, res.archiveFile), 'utf8')
     const archive = parseNote(archiveText, { file: res.archiveFile })
     expect(archive.frontmatter!.supersedes).toBe(name)

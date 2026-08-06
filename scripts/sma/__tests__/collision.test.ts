@@ -101,7 +101,7 @@ describe('checkScopeCollision — foreign glob hit (Test 2, B25)', () => {
   })
 })
 
-describe('checkScopeCollision — absolute hook paths vs. relative globs (CR-01)', () => {
+describe('checkScopeCollision — absolute hook paths vs. relative globs', () => {
   // Claude Code PreToolUse delivers ABSOLUTE file_path values; the fix relativizes
   // them against the repo root before matching the repo-relative globs + HOT_FILES.
   const REPO_ROOT = 'C:\\Users\\dev\\projects\\example-app'
@@ -122,7 +122,7 @@ describe('checkScopeCollision — absolute hook paths vs. relative globs (CR-01)
     expect(collision.who).toBe('Фабрика')
   })
 
-  it('WITHOUT the root option the absolute path never matches (documents the CR-01 bug)', () => {
+  it('WITHOUT the root option the absolute path never matches (documents the original bug)', () => {
     const now = Date.parse('2026-07-02T12:00:00.000Z')
     const abs = `${REPO_ROOT}\\src\\crm\\foo.ts`
     const warns = checkScopeCollision([abs], { sessions: [mkSession()], selfTerminalId: 'alpha', now })

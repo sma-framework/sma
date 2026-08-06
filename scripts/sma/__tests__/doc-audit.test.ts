@@ -134,7 +134,7 @@ describe('doc-audit.mjs — readme positioning audit', () => {
     expect(v.some((x) => x.rule === 'analog-missing' && x.detail === 'ccusage')).toBe(true)
     expect(v.some((x) => x.rule === 'wedge-missing' && x.file === 'README.ru.md')).toBe(true)
 
-    // 9.4-05: 'Outcomes' is now a guarded analog — a positioning region without the
+    // 'Outcomes' is now a guarded analog — a positioning region without the
     // Outcomes token scores an analog-honesty violation, so the SMA-vs-Outcomes row
     // can never silently disappear from either language.
     expect(ANALOGS).toContain('Outcomes')

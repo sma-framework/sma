@@ -17,7 +17,7 @@
  *   - Test 5: IDEMPOTENCE — the same answers written twice produce byte-identical
  *     files (the property the parity test downstream leans on).
  *   - Test 6: SECRET-REJECT — a token-shaped answer is refused by a named error
- *     and NOTHING is written (T-9.7-43); the discipline the terminal flow already
+ *     and NOTHING is written; the discipline the terminal flow already
  *     carried is now mechanical.
  *   - Test 7: OVERWRITE-PROTECTION — an existing profile is never silently
  *     replaced; the explicit flag is the only way through.
@@ -30,7 +30,7 @@
  *   - Test 11: a corpus that already has a TAGS.md keeps it verbatim; the seed is
  *     byte-idempotent.
  *   - Test 12: the corpus seed refuses a secret too — a secret must not reach git
- *     through the notes door either (T-9.7-43).
+ *     through the notes door either.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -181,7 +181,7 @@ describe('writeProfile', () => {
 
 // ─────────────────────────── Test 6 ───────────────────────────
 
-describe('secret rejection (T-9.7-43)', () => {
+describe('secret rejection', () => {
   it('refuses a token-shaped answer by name and writes nothing', () => {
     const poisoned = { ...ANSWERS, who: 'ключ ghp_0123456789abcdefghijklmnopqrstuvwxyz' }
 

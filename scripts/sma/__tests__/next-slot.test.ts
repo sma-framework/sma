@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/slots.mjs (Phase 9 Plan 06).
+ * Tests for scripts/sma/lib/slots.mjs.
  *
  * R9 external-state slots — the three shared counters that have burned this repo:
  *   Task 1 — nextMigrationSlot: fetch + numeric max + atomic claim + loser-gets-N+1
@@ -297,7 +297,7 @@ const ROADMAP_FIXTURE = `### Phase 52: Search — Indexing Pipeline
 ### Phase 9.1: SMA V2 — Predictions, Reflexes, Enforcement
 `
 
-describe('nextCounterSlot — all-counter slots (B11, FI-5)', () => {
+describe('nextCounterSlot — all-counter slots (B11)', () => {
   let planningRoot: string
 
   beforeEach(() => {
@@ -400,7 +400,7 @@ describe('nextCounterSlot — all-counter slots (B11, FI-5)', () => {
   })
 })
 
-// ── 9.1-23 (B17) — idempotent slot reconciliation (the claimed-but-not-consumed gap) ─
+// ── Idempotent slot reconciliation (the claimed-but-not-consumed gap, B17) ──
 //
 // A terminal claims a number slot then dies before writing the number into the source.
 // The old scan saw the live claim dir and skipped that number forever. Reconcile: an
@@ -414,7 +414,7 @@ function ageClaim(claimsDir: string, slotName: string, olderThanMs: number) {
   writeFileSyncNode(provPath, JSON.stringify(prov))
 }
 
-describe('slot reconciliation — expired unconsumed claims are re-issued (9.1-23, B17)', () => {
+describe('slot reconciliation — expired unconsumed claims are re-issued (B17)', () => {
   it('reconcileExpiredClaim removes an expired UNconsumed claim, spares a fresh or consumed one', () => {
     // fresh -> spared
     claimSlot('migration-500', { by: 'x', session: 's', expectedPrev: null, reason: 'migration-number' }, { claimsDir })

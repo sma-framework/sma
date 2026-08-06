@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/claims.mjs (Phase 9 Plan 03, Task 2).
+ * Tests for scripts/sma/lib/claims.mjs.
  *
  * R11 + Pattern 4 claim-gate:
  *   - Test 1: two concurrent claimSlot() -> exactly one winner; the loser reads

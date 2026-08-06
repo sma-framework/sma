@@ -606,7 +606,7 @@ describe('dead-pid leases — a gone terminal is reap-clean, dirty scope or not'
   })
 })
 
-describe('resolveWorkLabel — precedence: claim scope > STATE phase > command (FI-10)', () => {
+describe('resolveWorkLabel — precedence: claim scope > STATE phase > command', () => {
   it('Test 1a: an active claimed scope wins over everything', () => {
     const label = resolveWorkLabel({
       claimScope: 'правит slots.mjs',
@@ -637,7 +637,7 @@ describe('resolveWorkLabel — precedence: claim scope > STATE phase > command (
   })
 })
 
-describe('heartbeat — the work label lands + REFRESHES each call (FI-10, Test 1/2)', () => {
+describe('heartbeat — the work label lands + REFRESHES each call (Test 1/2)', () => {
   it('Test 1: the label lands in the heartbeat record', () => {
     const identity = { holderIdentity: 'Tom', terminalId: 'tom', pid: 111 }
     heartbeat(
@@ -683,7 +683,7 @@ describe('heartbeat — the work label lands + REFRESHES each call (FI-10, Test 
   })
 })
 
-describe('displayIdentity — «P<phase> <Name>», graceful degradation (FI-10, Test 3)', () => {
+describe('displayIdentity — «P<phase> <Name>», graceful degradation (Test 3)', () => {
   it('both parts known -> «P9 Tom»', () => {
     expect(displayIdentity({ holderIdentity: 'Tom', label: 'phase:9' })).toBe('P9 Tom')
   })
@@ -702,7 +702,7 @@ describe('displayIdentity — «P<phase> <Name>», graceful degradation (FI-10, 
   })
 })
 
-describe('buildJournalActors + a real journal event — who/what never empty (FI-10, Test 4)', () => {
+describe('buildJournalActors + a real journal event — who/what never empty (Test 4)', () => {
   let journalDir: string
   beforeEach(() => {
     journalDir = mkdtempSync(join(tmpdir(), 'sma-registry-journal-'))

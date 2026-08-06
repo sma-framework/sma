@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/airbag.mjs (Phase 9.2 Plan 05, Task 1).
+ * Tests for scripts/sma/lib/airbag.mjs.
  *
  * The git airbag — a cheap ms-level GATE that snapshots a recovery point BEFORE a
  * destructive git command runs:

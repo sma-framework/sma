@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/receipts.mjs (Phase 9.2 Plan 03, Task 1).
+ * Tests for scripts/sma/lib/receipts.mjs.
  *
  * Structural receipts — the claims schema over the V2 coverage block:
  *   - Test 1: parseReceipts extracts a flat `receipts:` dash-list; missing file /

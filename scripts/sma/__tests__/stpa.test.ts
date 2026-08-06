@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/stpa.mjs (Phase 9.2 Plan 10, Task 3).
+ * Tests for scripts/sma/lib/stpa.mjs.
  *
  * The STPA disarm-path guard:
  *   - Test 1: HAZARDS covers every kill-switch; uncompensatedKillSwitches -> [] on

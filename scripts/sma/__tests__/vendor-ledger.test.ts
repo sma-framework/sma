@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/vendor-ledger.mjs (9.4-01 — the standing
+ * Tests for scripts/sma/lib/vendor-ledger.mjs (the standing
  * Anthropic-update triage ledger linter).
  *
  * The load-bearing behaviors:

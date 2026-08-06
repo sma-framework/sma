@@ -70,7 +70,7 @@ function makeExecGit(opts: { throwOn?: string; resultSha?: string } = {}) {
   return runner as ((args: string[], o?: { cwd?: string }) => string) & { calls: typeof calls }
 }
 
-describe('9.3-15 Task 1 — merge-claim triplet + the sma merge ritual', () => {
+describe('merge-claim triplet + the sma merge ritual', () => {
   it('Test 1: the merge-claim triplet mirrors the push-claim (acquire/second-fails/check/release)', () => {
     const a = acquireMergeClaim({ by: 'T-a', branch: 'sma-wt/x', claimsDir, journalDir })
     expect(a.acquired).toBe(true)
@@ -202,7 +202,7 @@ function makeCtx(opts: { env?: Record<string, string>; overlaps?: any[]; overlap
   } as any
 }
 
-describe('9.3-15 Task 2 — enforcing scopes (verified-live-only soft-deny + opt-in stream)', () => {
+describe('enforcing scopes (verified-live-only soft-deny + opt-in stream)', () => {
   it('Test 7: enforceScope soft-denies ONLY a verified-LIVE claim; stale -> warn; none -> allow', () => {
     // dirty scope (no post-renew commit) -> verifyClaimEvidence LIVE -> soft-deny + override.
     const live = enforceScope({ foreignClaim: { by: 'T-x' }, evidence: { scopeDirtyVsHead: true }, env: {}, verifyClaimEvidence })

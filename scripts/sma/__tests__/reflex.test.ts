@@ -1,14 +1,14 @@
 /**
- * Tests for scripts/sma/lib/reflex.mjs (Phase 9.1 Plan 10, Task 1 — B1/B2).
+ * Tests for scripts/sma/lib/reflex.mjs (B1/B2).
  *
  * P2 reflex consumer core: deriveTags + matchReflexes + applyFatigue + formatWarn.
  *
- * CR-01 discipline (RESEARCH Pitfall 1): the stdin fixture is REAL-SHAPE — an
+ * Real-shape discipline (RESEARCH Pitfall 1): the stdin fixture is REAL-SHAPE — an
  * absolute Windows path in the mock hook payload, mirroring what Claude Code
  * actually delivers. A relative-path fixture would happily green a dead feature
- * (the exact CR-01 regression class already fixed once in collision.mjs/cli.mjs).
+ * (the exact regression class already fixed once in collision.mjs/cli.mjs).
  *
- *   - Test 1 (CR-01 class): real-shape Edit event (absolute C:\ path into
+ *   - Test 1 (the regression class): real-shape Edit event (absolute C:\ path into
  *     src/migrations) matches a bug-lesson tagged area:payload -> 1 candidate.
  *   - Test 2: same event twice in one session -> second call yields ZERO warns
  *     (per-session dedup via the seen-store).
@@ -109,9 +109,9 @@ afterEach(() => {
 })
 
 describe('reflex.mjs — deriveTags + matchReflexes (B2)', () => {
-  it('Test 1 (CR-01 class): real-shape absolute-path Edit event -> 1 warn candidate', () => {
+  it('Test 1 (the regression class): real-shape absolute-path Edit event -> 1 warn candidate', () => {
     const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
-    // The fixture MUST be real-shape: an absolute Windows path (CR-01 lesson).
+    // The fixture MUST be real-shape: an absolute Windows path (the lesson).
     expect(evt.tool_input.file_path).toMatch(/^[A-Za-z]:\\/)
 
     const { tags, target } = deriveTags(evt.tool_input, evt.cwd)
@@ -531,7 +531,7 @@ describe('cli.mjs reflex-check (hook consumer, Task 2)', () => {
   })
 
   it('real-shape replay against a seeded matching note -> additionalContext, allow', () => {
-    // Real-shape stdin: ABSOLUTE Windows path under the temp repo root (CR-01).
+    // Real-shape stdin: ABSOLUTE Windows path under the temp repo root.
     const stdin = JSON.stringify({
       session_id: 'cli-session-1',
       cwd: repoRoot,

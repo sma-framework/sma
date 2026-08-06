@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/exec-journal.mjs (Phase 9.1 Plan 20, Task 1 — P5, B14).
+ * Tests for scripts/sma/lib/exec-journal.mjs (P5, B14).
  *
  * The per-plan execution progress journal + the resume-point derivation:
  *   - Test 1: append writes the RESEARCH Pattern-5 line shape to

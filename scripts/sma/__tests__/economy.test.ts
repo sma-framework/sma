@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/economy.mjs (9.4-06 — the economy meters).
+ * Tests for scripts/sma/lib/economy.mjs — the economy meters.
  *
  * The six load-bearing behaviors:
  *   Test 1 — estimator: estimateTokens is pure/deterministic; ESTIMATOR_VERSION stamped; empty -> 0
@@ -274,7 +274,7 @@ describe('economy — selfCost (Test 6)', () => {
     expect(s.notCounted).toMatch(/per-turn hook stdout/i)
   })
 
-  it('the dogfood shape — a MEMORY.md but NO managed blocks — returns the MEMORY surface alone with total>0 (P9.4-06-C)', () => {
+  it('the dogfood shape — a MEMORY.md but NO managed blocks — returns the MEMORY surface alone with total>0', () => {
     const files: Record<string, string> = { 'CLAUDE.md': 'plain project rules, no SMA blocks\n', 'MEMORY.md': 'm'.repeat(200) }
     const s = selfCost({ readFile: (p: string) => files[p], paths: { claudeMd: 'CLAUDE.md', memoryMd: 'MEMORY.md' } })
     expect(s.surfaces.length).toBe(1)

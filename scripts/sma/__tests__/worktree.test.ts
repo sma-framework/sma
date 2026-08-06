@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/worktree.mjs (Phase 9.3 Plan 14).
+ * Tests for scripts/sma/lib/worktree.mjs.
  *
  * Per-terminal worktree isolation: `sma worktree` provisions or
  * reuses a per-session worktree DIRECTORY so parallel human Claude Code sessions

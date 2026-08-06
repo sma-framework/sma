@@ -2,9 +2,9 @@
  * Tests for scripts/sma/lib/gates.mjs (B9/B10).
  *
  * The checkable HARD-RULE inventory promoted from prose to PreToolUse WARN gates.
- * ALL gates advisory WARN (permissionDecision allow); soft-deny is 9.1-17.
+ * ALL gates advisory WARN (permissionDecision allow); soft-deny is a later tier.
  *
- * REAL-SHAPE fixtures (CR-01, RESEARCH Pitfall 1): Edit/Write events carry ABSOLUTE
+ * REAL-SHAPE fixtures (RESEARCH Pitfall 1): Edit/Write events carry ABSOLUTE
  * Windows paths and Bash events carry realistic command strings, mirroring what
  * Claude Code actually delivers on the PreToolUse hook stdin. A relative-path or
  * toy-command fixture would happily green a dead matcher.
@@ -281,7 +281,7 @@ describe('gates.mjs — the checkable HARD-RULE inventory', () => {
     const pushEvt = () => bash('git push origin main')
     const memEvt = () => edit('.claude/memory/MEMORY.md', { old_string: 'a', new_string: 'b' })
 
-    // GATE-PUSH + GATE-MEMEDIT (9.1-17) plus the 9.2-07 risky-op gates carry softDeny.
+    // GATE-PUSH + GATE-MEMEDIT plus the risky-op gates carry softDeny.
     it('exactly the softDeny-capable gates carry a softDeny capability', () => {
       const withSoft = GATES.filter((g: any) => g.softDeny)
       expect(new Set(withSoft.map((g: any) => g.id))).toEqual(
