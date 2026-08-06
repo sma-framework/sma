@@ -16,9 +16,13 @@
  *                  receipt, skip the spawn entirely (the work already exists).
  *   - worktree   — per-task branch `wt/<taskId>`; the worktree.mjs EXPECTED_BASE guard
  *                  (platform-neutral) stays ON inside the provision verb.
- *   - reverify   — THE exit gate: done = a GREEN reverify receipt, whoever
+ *   - reverify   — the exit gate FOR CODE: done = a GREEN reverify receipt, whoever
  *                  the executor was. No receipt → fail('no_receipt'); never completed on
  *                  the daemon's word (the Multica «completed = слово демона» anti-lesson).
+ *                  Work whose product is PROSE passes the SECOND gate instead (see
+ *                  STAGE_ARTIFACTS below): the document its stage owes, on disk AND in the
+ *                  history. Two gates, one law — the daemon decides from what it can see for
+ *                  itself, never from what the worker said about itself.
  *   - merge      — stays a serialized verb invoked ONLY from the front's approve path.
  *                  The loop itself NEVER merges.
  * All four run through ONE injected `verbRunner(bin, argsArray, {cwd}) → {code, stdout}`
@@ -86,6 +90,7 @@
  * Node built-ins only; every collaborator injected. Zero deps; zero network in this file.
  */
 
+import { existsSync as fsExistsSync, readdirSync as fsReaddirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { resolveExpireMs } from './queue/adapter.mjs'
@@ -97,6 +102,7 @@ import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
+import { createQuestions, findPhaseDir, CHECKPOINT_SUFFIX, EXEC_CHECKPOINT_SUFFIX } from './front/questions.mjs'
 
 /** The execution lanes, in the documented stable order (mirrors the adapter's lanes). */
 const LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
@@ -112,6 +118,174 @@ const SPAWN_TOOL = 'Bash'
 
 const TOUCH_THROTTLE_MS = 30000 // touch at most once per 30s while streaming
 const HOUR_MS = 3600000
+
+// ═══════════════════════ THE SECOND EXIT GATE — WORK MADE OF PROSE ════════════════
+//
+// Until now this process knew exactly one way to be done: a green reverify receipt. That is
+// the right law for work whose product is code, and it is the WRONG law for a stage of the
+// phase cycle — a discussion, a plan, an acceptance — whose product is a document. Those
+// stages have no targeted tests to be green, so every one of them started from the screen
+// would have failed «нет квитанции» while sitting next to the file it had just written.
+//
+// So there are two gates, and the SAME law governs both: THE DAEMON DECIDES, from facts it
+// can see for itself. For code that fact is a receipt; for a document it is (1) the file the
+// stage was supposed to produce, present in the phase's own directory, and (2) a git line
+// saying it was committed. Neither gate reads a word the worker said about itself — a worker
+// that announces «документ готов» without writing one is the first threat this gate exists
+// for, and prose is trivially easy to announce.
+//
+// THE MAP BELOW IS THE WHOLE «which document proves which stage» RULE, in one place, on
+// purpose: a stage whose artifact is not declared here fails by name rather than picking
+// whichever gate happens to be looser.
+//
+// WHAT THIS GATE HONESTLY DOES NOT PROVE: that the document on disk is THIS attempt's work
+// rather than a previous one's. It proves that the stage's product exists and is in the
+// repository's history — which is what makes the outcome inspectable by a person. The
+// attempt-scoped question is answered one layer up, by the approach note the gate still
+// requires and by the commit the reviewer opens.
+const DOCUMENT_KIND = 'document'
+
+const STAGE_ARTIFACTS = Object.freeze({
+  // a discussion ends in the phase's context file, and PARKS in its own checkpoint
+  discuss: Object.freeze({ produces: '-CONTEXT.md', checkpoint: CHECKPOINT_SUFFIX }),
+  // planning ends in plan files — one per plan of the phase
+  plan: Object.freeze({ produces: '-PLAN.md', checkpoint: null }),
+  // acceptance ends in the verification record
+  verify: Object.freeze({ produces: '-VERIFICATION.md', checkpoint: null }),
+  // an execute stage produces CODE (it rides the reverify gate), but it can still stop on a
+  // question only a person may answer — and then it parks exactly like a discussion round
+  execute: Object.freeze({ produces: '-SUMMARY.md', checkpoint: EXEC_CHECKPOINT_SUFFIX }),
+})
+
+/** Where phases live under a checkout, in the forward-slashed form git pathspecs want. */
+const PHASES_PATH = '.planning/phases'
+
+/** Resolve the injectable fs surface; defaults are the real node:fs calls (forge.mjs posture). */
+function resolveIo(fsImpl) {
+  const io = fsImpl ?? {}
+  return {
+    existsSync: io.existsSync ?? fsExistsSync,
+    readdirSync: io.readdirSync ?? fsReaddirSync,
+  }
+}
+
+/** The `data` envelope a stage task carries, or an empty one for ordinary code work. */
+function stageDataOf(task) {
+  const data = task && task.data
+  return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+}
+
+/**
+ * findArtifact(deps, cwd, phase, suffix) → the checkout-relative path of the newest file of a
+ * phase directory whose name ends with `suffix`, or null. «Newest» is the LAST name in sorted
+ * order — for every artifact this map names, the name carries its own sequence
+ * (`12-03-PLAN.md`), so sorting is deterministic where a modification time would not be.
+ */
+function findArtifact(deps, cwd, phase, suffix) {
+  const io = resolveIo(deps.fsImpl)
+  const root = join(cwd ?? '.', PHASES_PATH)
+  if (!io.existsSync(root)) return null
+  let dirs
+  try {
+    dirs = io.readdirSync(root)
+  } catch {
+    return null
+  }
+  const dir = findPhaseDir(dirs, phase)
+  if (!dir) return null
+  let names
+  try {
+    names = io.readdirSync(join(root, dir))
+  } catch {
+    return null
+  }
+  const file = names
+    .map(String)
+    .sort()
+    .filter((name) => name.endsWith(suffix))
+    .pop()
+  return file ? `${PHASES_PATH}/${dir}/${file}` : null
+}
+
+/**
+ * artifactSha(deps, cwd, relPath) → the short sha of the last commit that touched the file, or
+ * null when git names none. THE «not just written, but recorded» HALF of the gate: a file that
+ * exists only in a working tree is invisible to every reader but this machine's disk.
+ */
+function artifactSha(deps, cwd, relPath) {
+  if (typeof deps.execGit !== 'function') return null
+  try {
+    const out = String(deps.execGit(['log', '-1', '--format=%h', '--', relPath], { cwd }) || '')
+    return out.split(/\r?\n/)[0].trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** The receipt a documentary outcome is completed on: the file and the commit that carry it. */
+function artifactReceipt(relPath, sha) {
+  return `artifact:${relPath}@${sha}`
+}
+
+/**
+ * parkedRound(deps, task, cwd) → what to do about a checkpoint this stage may have parked:
+ *   null                 — nothing is parked; the caller's own gate decides
+ *   {receiptRef}         — a question is parked AND committed: THE ROUND SUCCEEDED. The row
+ *                          completes on the artifact receipt, which the contract turns into
+ *                          `awaiting_approval` — a card that asks the founder something
+ *   {reason, detail}     — a question is parked and NOT committed, which is a refusal: a
+ *                          question nobody but this disk can see is not a question yet
+ *
+ * The check is a FILE check. The daemon opens the checkpoint the workflows write and asks the
+ * questions engine — the one place that knows what «still open» means — whether anything in
+ * it is unanswered. It never parses the worker's console output for a marker: a round is
+ * parked because a file says so, not because a process said so.
+ */
+function parkedRound(deps, task, cwd) {
+  const { stage, phase } = stageDataOf(task)
+  const spec = STAGE_ARTIFACTS[stage]
+  if (!spec || !spec.checkpoint || phase === undefined || phase === null) return null
+
+  let path = null
+  try {
+    const engine = createQuestions({ projectDir: cwd, fsImpl: deps.fsImpl, checkpointSuffix: spec.checkpoint })
+    path = engine.checkpointPath(phase)
+    if (!path || engine.openQuestions(phase).length === 0) return null
+  } catch (err) {
+    // A torn or foreign checkpoint is NOT a parked round — but it is a fact somebody has to
+    // see, so it is said out loud and the stage's own gate then decides the outcome.
+    writeLog(deps, { type: 'checkpoint.unreadable', taskId: task.id, stage, error: String((err && err.message) || err) })
+    return null
+  }
+
+  const relPath = String(path).replace(/\\/g, '/').replace(`${String(cwd).replace(/\\/g, '/')}/`, '')
+  const sha = artifactSha(deps, cwd, relPath)
+  if (!sha) {
+    return { reason: 'no_artifact', detail: `чекпойнт ${relPath} не закоммичен — вопрос виден только этой машине` }
+  }
+  return { receiptRef: artifactReceipt(relPath, sha) }
+}
+
+/**
+ * documentGate(deps, task, cwd) → {receiptRef} when a documentary stage really produced its
+ * document, or {reason, detail} naming why not. Fail-closed on an undeclared stage.
+ */
+function documentGate(deps, task, cwd) {
+  const { stage, phase } = stageDataOf(task)
+  const spec = STAGE_ARTIFACTS[stage]
+  if (!spec) {
+    return { reason: 'no_artifact', detail: `стадия "${stage ?? '(нет)'}" не объявлена — гейту нечем доказать её результат` }
+  }
+  const relPath = findArtifact(deps, cwd, phase, spec.produces)
+  if (!relPath) {
+    return { reason: 'no_artifact', detail: `стадия "${stage}" не оставила файла ${spec.produces} в каталоге фазы ${phase}` }
+  }
+  const sha = artifactSha(deps, cwd, relPath)
+  if (!sha) {
+    return { reason: 'no_artifact', detail: `${relPath} есть на диске, но не закоммичен — истории он не достался` }
+  }
+  return { receiptRef: artifactReceipt(relPath, sha) }
+}
 
 /** Worker final-output markers — a SOFT protocol the worker MAY emit. */
 const MARKER_RE = /^\s*(NEEDS_DECISION|MISSING_ACCESS)\s*:/
@@ -571,8 +745,16 @@ export async function tick(deps = {}) {
         return await runForgeTask(deps, task, route, result, now, envelope)
       }
 
+      // IS THIS WORK MADE OF CODE OR OF PROSE? The answer decides two
+      // things below — where the worker stands, and which exit gate it must pass. It rides
+      // on the task rather than in a fifth lane because routing treats the two identically.
+      const isDocument = stageDataOf(task).kind === DOCUMENT_KIND
+
       // (4) preflight — verify-before-execute. 'built' → complete on the preflight receipt.
-      const pf = await invokeVerb(verbRunner, 'preflight', [task.id], config.repoDir)
+      // SKIPPED for a documentary stage: preflight answers «does this backlog item's work
+      // already exist in the tree», and a stage of the phase cycle is not a backlog item —
+      // asking would be a verb inventing an answer about something it was never given.
+      const pf = isDocument ? {} : await invokeVerb(verbRunner, 'preflight', [task.id], config.repoDir)
       if (pf.verdict === 'built') {
         const receiptRef = pf.receiptRef || `preflight:${task.id}`
         // NO transition is minted for this completion, on purpose. The work already existed;
@@ -607,10 +789,19 @@ export async function tick(deps = {}) {
         return result
       }
 
-      // (5) worktree provision — per-task branch `wt/<taskId>` (EXPECTED_BASE guard on).
-      const branch = `wt/${task.id}`
-      const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch], config.repoDir)
-      const worktreePath = wt.worktreePath || `${config.repoDir ?? '.'}/../${branch}`
+      // (5) WHERE THE WORKER STANDS. Code work gets a per-task worktree on its own
+      // branch (`wt/<taskId>`, EXPECTED_BASE guard on) so two tasks can never edit one tree.
+      // A DOCUMENTARY stage stands in the project checkout itself — its whole product is the
+      // phase directory, the next stage reads it there, and a worktree would put every
+      // document one merge away from the person who asked for it. The isolation a worktree
+      // buys is worth its price for parallel code and is a pure cost for a document.
+      let branch = null
+      let workDir = config.repoDir
+      if (!isDocument) {
+        branch = `wt/${task.id}`
+        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch], config.repoDir)
+        workDir = wt.worktreePath || `${config.repoDir ?? '.'}/../${branch}`
+      }
 
       // (6) spawn the routed worker; touch (throttled) on every stream line.
       const spec = buildArgs(task, route)
@@ -648,22 +839,54 @@ export async function tick(deps = {}) {
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
-      const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
+      const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
 
-      // (7) reverify GATE in the worktree — the ONLY door to completed (receipts or nothing).
-      const rv = exit.spawnError ? { code: 1 } : await invokeVerb(verbRunner, 'reverify', ['--branch', branch], worktreePath)
+      const marker = detectMarker(streamLines)
+
+      // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
+      // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
+      // It is required of EVERY class of work: a parked round and a written document explain
+      // themselves on the same terms a merged branch does.
+      const note = parseApproachNote(streamLines)
+      const noteWritten = recordApproachNote(deps, task, note)
+
+      // An infra failure or a worker marker is the SHARPER signal and wins over either gate
+      // below: a crashed attempt must not complete on a document that was already there.
+      const infraReason = exit.spawnError || marker
+        ? classifyFailure({ spawnError: exit.spawnError, exitCode: exit.code, workerMarker: marker })
+        : null
+
+      // (7a) A PARKED QUESTION IS A SUCCESSFUL ROUND — and it is asked BEFORE either gate.
+      // A discussion round that stopped on a question, and an execute stage that reached a
+      // blocking checkpoint, are the same event: the work went as far as it honestly could
+      // and now owes a person a word. Failing it would throw away the position and start the
+      // whole stage over on the next attempt; completing it on the checkpoint's own receipt
+      // parks the row in `awaiting_approval`, where the screen renders it as a card.
+      const parked = infraReason ? null : parkedRound(deps, task, workDir)
+
+      if (parked || isDocument) {
+        const gate = parked ?? (infraReason ? {} : documentGate(deps, task, workDir))
+        const reason = infraReason ?? (gate.receiptRef ? (noteWritten ? null : 'no_journal') : gate.reason)
+        if (reason) {
+          if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
+          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState })
+          result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
+        } else {
+          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState })
+          result.completed = task.id
+        }
+        return result
+      }
+
+      // (7) reverify GATE in the worktree — the ONLY door to completed for CODE work
+      // (receipts or nothing). Unchanged: this is the original law, now one branch of two.
+      const rv = exit.spawnError ? { code: 1 } : await invokeVerb(verbRunner, 'reverify', ['--branch', branch], workDir)
       let receipt = null
       if (rv.receiptRef) {
         receipt = { verdict: rv.verdict || (rv.code === 0 ? 'green' : 'red'), ref: rv.receiptRef }
       } else if (rv.verdict === 'red' || (Number.isFinite(rv.code) && rv.code !== 0)) {
         receipt = { verdict: 'red', ref: null }
       }
-      const marker = detectMarker(streamLines)
-
-      // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
-      // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
-      const note = parseApproachNote(streamLines)
-      const noteWritten = recordApproachNote(deps, task, note)
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState })

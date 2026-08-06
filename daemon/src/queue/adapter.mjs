@@ -124,12 +124,18 @@ export const TASK_STATUSES = Object.freeze([
  *   tests_red       — a red reverify receipt (targeted tests failed)
  *   needs_decision  — the worker surfaced a call only a human can make
  *   missing_access  — credentials / permissions absent
+ *   no_artifact     — a DOCUMENTARY stage claimed to be done and left no document: the file
+ *                     its stage is supposed to produce is absent from the phase directory, or
+ *                     it is on disk but was never committed. It is the exact counterpart of
+ *                     `no_receipt` for work whose product is prose rather than code — the two
+ *                     exist so that «done» is never the worker's own word on either side
  *   timeout / runtime_offline / window_exhausted — infra causes
  *   manual          — a human stopped it
  */
 export const FAIL_REASONS = Object.freeze([
   'no_receipt',
   'no_journal',
+  'no_artifact',
   'agent_error',
   'tests_red',
   'needs_decision',
@@ -144,6 +150,7 @@ export const FAIL_REASONS = Object.freeze([
 export const REASON_LABELS = Object.freeze({
   no_receipt: 'нет квитанции — работа не подтверждена',
   no_journal: 'нет записки о подходе — попытка не объяснена',
+  no_artifact: 'нет документа — стадия не оставила своего файла',
   agent_error: 'ошибка работника',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
@@ -187,10 +194,35 @@ const PROVIDERS = Object.freeze(['claude', 'codex', 'api'])
 const FORGE_KINDS = Object.freeze(['agent', 'skill', 'mcp'])
 const STORY_POINTS = Object.freeze([1, 2, 3, 5, 8, 13]) // Fibonacci ONLY
 
+/**
+ * WHAT KIND OF WORK THIS IS — and therefore WHICH EXIT GATE it must pass.
+ *
+ *   code     — the product changes. Done = a green reverify receipt (the original law).
+ *   document — a stage of the phase cycle changes documents. Done = the document its stage
+ *              is supposed to produce, on disk AND committed.
+ *
+ * The distinction rides in `data` rather than in a new LANE on purpose: a lane is a routing
+ * dimension (which worker, which window), and these two are routed identically. Adding a
+ * fifth lane would have made every lane table, every envelope and every eligibility probe
+ * grow a member that means nothing to any of them.
+ */
+export const TASK_KINDS = Object.freeze(['code', 'document'])
+
+/**
+ * The stages of the phase cycle a task may stand for. The exit gate asks a different question
+ * of each, so the vocabulary is CLOSED: a stage nobody declared cannot silently pick the
+ * loosest gate. `execute` is the one stage whose product is code AND whose questions are
+ * documents — which is exactly why it is named here alongside the other three.
+ */
+export const TASK_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'])
+
+/** The keys the `data` envelope may carry — a field allowlist inside the field allowlist. */
+const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase'])
+
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
   'id', 'source', 'title', 'lane', 'provider', 'model', 'effort',
-  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'project', 'forge',
+  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'project', 'forge', 'data',
 ])
 
 /**
@@ -279,6 +311,32 @@ export function validateTask(task) {
     }
   } else if (task.forge !== undefined) {
     throw new InvalidTaskError(`non-forge task "${task.id}" must not carry a forge object`)
+  }
+
+  // data envelope: OPTIONAL (absent → a plain code task, byte-for-byte today's behaviour), and
+  // fail-closed when present. A typo in `kind` or `stage` must never fall through to «code» by
+  // default — a document stage silently gated on reverify would fail red forever with nothing
+  // saying why, and a code task silently gated on an artifact would complete without one.
+  if (task.data !== undefined) {
+    if (typeof task.data !== 'object' || task.data === null || Array.isArray(task.data)) {
+      throw new InvalidTaskError(`task "${task.id}" data must be an object`)
+    }
+    for (const key of Object.keys(task.data)) {
+      if (!ALLOWED_DATA_KEYS.includes(key)) throw new InvalidTaskError(`task "${task.id}" data has unknown key "${key}"`)
+    }
+    if (task.data.kind !== undefined && !TASK_KINDS.includes(task.data.kind)) {
+      throw new InvalidTaskError(`task "${task.id}" has invalid data.kind "${task.data.kind}"`)
+    }
+    if (task.data.stage !== undefined && !TASK_STAGES.includes(task.data.stage)) {
+      throw new InvalidTaskError(`task "${task.id}" has invalid data.stage "${task.data.stage}"`)
+    }
+    if (
+      task.data.phase !== undefined &&
+      typeof task.data.phase !== 'string' &&
+      typeof task.data.phase !== 'number'
+    ) {
+      throw new InvalidTaskError(`task "${task.id}" data.phase must be a string or a number`)
+    }
   }
 
   // DoR gate: backlog REQUIRES storyPoints ∈ Fibonacci AND non-empty acceptance.

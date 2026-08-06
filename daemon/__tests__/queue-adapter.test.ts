@@ -12,8 +12,11 @@
  *     enqueuedAt/claimedAt/completedAt timestamps, and — since completed work is
  *     reported as awaiting approval — that a receipted complete() leaves the row in
  *     `awaiting_approval` with a stats() counter to match.
- *   - Constants: FAIL_REASONS is the 9-reason human taxonomy and
+ *   - Constants: FAIL_REASONS is the 11-reason human taxonomy and
  *     REASON_LABELS carries a RU подпись for every one.
+ *   - The `data` envelope: which EXIT GATE a task must pass rides in `data.kind` /
+ *     `data.stage`, and the enqueue gate is fail-closed about both — a typo can never
+ *     fall through to the other kind's gate.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -286,10 +289,13 @@ describe('project — an additive task field with an injected default', () => {
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 10-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 11-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
+      // the documentary counterpart of no_receipt: a stage whose product is prose said done
+      // and left no document — the file is absent from the phase directory, or uncommitted
+      'no_artifact',
       'agent_error',
       'tests_red',
       'needs_decision',
@@ -307,6 +313,38 @@ describe('constants — taxonomy', () => {
       expect(typeof REASON_LABELS[reason]).toBe('string')
       expect(REASON_LABELS[reason].length).toBeGreaterThan(0)
     }
+  })
+
+  // ── the data envelope: WHICH GATE, carried by the task, refused by name when malformed ──
+  //
+  // Nothing in the queue interprets these two words; the tick does. What the queue owes them
+  // is that they arrive intact and that a typo is refused rather than defaulted: a document
+  // stage gated on reverify fails red forever, and a code task gated on an artifact completes
+  // without one. Both are silent, and both are prevented here.
+
+  it('the data envelope survives the field allowlist — the gate rides ON the task', () => {
+    const out = validateTask({
+      id: 'ST-1',
+      source: 'roster',
+      title: 'спланировать фазу',
+      lane: 'paperwork',
+      data: { kind: 'document', stage: 'plan', phase: 12 },
+    })
+    expect(out.data).toEqual({ kind: 'document', stage: 'plan', phase: 12 })
+  })
+
+  it('a task with no data envelope is unchanged — absent means «code», today’s behaviour', () => {
+    const out = validateTask({ id: 'BL-9', source: 'roster', title: 'обычная задача', lane: 'prod' })
+    expect(Object.hasOwn(out, 'data')).toBe(false)
+  })
+
+  it('a typo in kind / stage is REFUSED BY NAME, never defaulted to the other gate', () => {
+    const base = { id: 'ST-2', source: 'roster', title: 'стадия', lane: 'paperwork' }
+    expect(() => validateTask({ ...base, data: { kind: 'documents' } })).toThrow(InvalidTaskError)
+    expect(() => validateTask({ ...base, data: { kind: 'document', stage: 'planning' } })).toThrow(/data\.stage/)
+    expect(() => validateTask({ ...base, data: { kind: 'document', phase: { n: 12 } } })).toThrow(/data\.phase/)
+    expect(() => validateTask({ ...base, data: { kind: 'document', smuggled: 'x' } })).toThrow(/unknown key "smuggled"/)
+    expect(() => validateTask({ ...base, data: ['document'] })).toThrow(/must be an object/)
   })
 
   it('TASK_LANES includes forge and TASK_SOURCES the three intake origins', () => {
