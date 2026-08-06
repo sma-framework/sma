@@ -24,7 +24,11 @@
  *   - no new field carries a peer url or a peer token,
  *   - awaiting[] carries the rows a person still owes a decision to — the same row shape
  *     the queue uses, oldest first — while queue[] keeps carrying only what waits for a
- *     worker; the counter and the list come from one source, so they cannot disagree.
+ *     worker; the counter and the list come from one source, so they cannot disagree,
+ *   - and that list is now fed from a REAL certified adapter, not only from fixtures:
+ *     completed work is reported as awaiting approval, so a task driven through the
+ *     adapter the way the tick drives it arrives on the screen and in the per-project
+ *     counter. The filter was never wrong — until this it simply had nothing to match.
  *
  * V5.1 settings read models (the «Правила» / «Аккаунты» screens ride the SAME route —
  * the frozen table is the ROUTES, not the shape of a payload):
@@ -63,7 +67,7 @@ import {
 } from '../src/front/state.mjs'
 import { previewProjectMigration, applyProjectMigration, readProjectMemory } from '../src/front/project-sync.mjs'
 import { createFrontServer, ROUTES, PROJECT_MIGRATION_TARGET_PREFIX } from '../src/front/server.mjs'
-import { REASON_LABELS } from '../src/queue/adapter.mjs'
+import { REASON_LABELS, createMemoryQueue } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
 const NOW = 1_000_000_000_000
@@ -251,6 +255,62 @@ const projectRows = [
   { id: 'BL-2', status: 'queued', lane: 'prod', title: 'b', priority: 0, project: 'other-shop', enqueuedAt: NOW - 900 },
   { id: 'BL-3', status: 'completed', lane: 'prod', title: 'c', project: 'other-shop', completedAt: NOW },
 ]
+
+/**
+ * THE SCREEN STOPS BEING EMPTY, PROVED FROM THE ADAPTER AND NOT FROM A FIXTURE.
+ *
+ * `awaiting[]` and the counter beside it have always been written correctly — and always
+ * read nothing, because the only status a finished task could carry was `completed`. The
+ * filter was never wrong; it had nothing to match. The case below hands deriveState a REAL
+ * certified adapter and drives a task through it the way the tick does, so what fills the
+ * screen is the contract itself rather than a row this file typed out.
+ */
+describe('deriveState — finished work reaches «ждут решения»', () => {
+  const waitingProject = {
+    ...config,
+    projects: [{ id: 'acme-clinic', name: 'Клиника' }],
+    activeProject: 'acme-clinic',
+  }
+
+  it('a task completed through the adapter lands in awaiting[] and in the per-project counter', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000, activeProject: 'acme-clinic' })
+    await q.enqueue({
+      id: 'BL-7',
+      source: 'backlog',
+      title: 'ночная задача',
+      lane: 'prod',
+      storyPoints: 3,
+      acceptance: 'зелёные целевые тесты',
+    })
+    await q.claimNext('max-1', {})
+    await q.complete('BL-7', { receiptRef: 'reverify:green' })
+
+    const payload = await deriveState({ adapter: q, windows: makeWindows({}), config: waitingProject, clock: () => NOW })
+
+    expect(payload.awaiting).toHaveLength(1)
+    expect(payload.awaiting[0]).toMatchObject({ id: 'BL-7', status: 'awaiting_approval', project: 'acme-clinic' })
+    // the counter and the list come from ONE source, so they cannot disagree
+    expect(payload.kpis.awaitingApproval).toBe(1)
+    expect(payload.projects[0].taskCounts).toMatchObject({ awaiting_approval: 1, completed: 0, total: 1 })
+    // waiting for a PERSON is not waiting for a worker — the queue keeps meaning what it says
+    expect(payload.queue).toHaveLength(0)
+  })
+
+  it('the longest wait comes first — waiting is the whole cost, so priority has no say', async () => {
+    const rows = [
+      { id: 'BL-fresh', status: 'awaiting_approval', lane: 'prod', title: 'f', priority: 9, enqueuedAt: NOW - HOUR },
+      { id: 'BL-stale', status: 'awaiting_approval', lane: 'prod', title: 's', priority: 0, enqueuedAt: NOW - 6 * HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: waitingProject,
+      clock: () => NOW,
+    })
+    expect(payload.awaiting.map((r: any) => r.id)).toEqual(['BL-stale', 'BL-fresh'])
+    expect(payload.projects[0].taskCounts.awaiting_approval).toBe(2)
+  })
+})
 
 describe('deriveState — projects, machines and federation', () => {
   it('carries projects[] with per-project counts and the active project', async () => {
