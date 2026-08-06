@@ -1,7 +1,7 @@
 import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { UseMutationResult } from '@tanstack/react-query'
 import * as api from './client'
-import { ApiError } from './client'
+import { ApiError, isNotReady } from './client'
 import type { EnqueueInput } from './client'
 import type {
   ChatHistory,
@@ -40,8 +40,21 @@ export const diffKey = (id: string) => ['diff', id] as const
 export const STATE_POLL_MS = 3000
 export const STATE_STALE_MS = 2000
 
-/** A door that is declared but not filled in yet must not be knocked on repeatedly. */
+/**
+ * A door that is declared but not filled in yet must not be knocked on repeatedly.
+ *
+ * That sentence has been here since the beginning and was not true: «not filled in yet» is
+ * 501, and 501 is not below 500, so the only door the rule was written for was the one door
+ * that kept being retried — three times, on every screen that asked, for as long as the slot
+ * stayed empty. The whole release declares its addresses before it fills them, so that is a
+ * lot of knocking on doors nobody is behind yet.
+ *
+ * `isNotReady` is asked rather than the number compared, because client.ts is where this
+ * product decides what «not filled in yet» means, and a second copy of that decision is a
+ * second thing to remember to change.
+ */
 function retryUnlessRefused(failureCount: number, error: unknown): boolean {
+  if (isNotReady(error)) return false // 501 — declared, not filled in: a refusal, not a fault
   if (error instanceof ApiError && error.status < 500) return false
   return failureCount < 2
 }
