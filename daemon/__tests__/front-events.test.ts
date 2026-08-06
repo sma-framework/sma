@@ -81,12 +81,28 @@ describe('events.mjs — EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('spend.updated')
   })
 
-  it('the frozen vocabulary is EXACTLY fourteen types with no duplicates', () => {
-    expect(EVENT_TYPES).toHaveLength(14)
-    expect(new Set(EVENT_TYPES).size).toBe(14)
+  it('the frozen vocabulary is EXACTLY nineteen types with no duplicates', () => {
+    expect(EVENT_TYPES).toHaveLength(19)
+    expect(new Set(EVENT_TYPES).size).toBe(19)
     for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated']) {
       expect(EVENT_TYPES).toContain(t)
     }
+  })
+
+  /**
+   * The five V5.4 types, declared in one revision AHEAD of the emit points that will use
+   * them. This case is why the declaration cannot wait: `emit()` drops an unlisted type
+   * SILENTLY, so a screen wired to a type nobody declared does not break loudly — it just
+   * never updates, and the bug looks like a slow screen rather than a missing word.
+   */
+  it('the five V5.4 types are declared verbatim, so a later emit is not silently dropped', () => {
+    for (const t of ['phase.stage', 'discussion.updated', 'memory.drafts', 'coordination.updated', 'ship.gate']) {
+      expect(EVENT_TYPES, t).toContain(t)
+      expect(emitOne({ event: t }).delivered, `${t} was dropped as unlisted`).toBe(1)
+    }
+    // and a near-miss is still nothing: the vocabulary is a list, not a prefix rule
+    expect(emitOne({ event: 'phase.staged' }).delivered).toBe(0)
+    expect(emitOne({ event: 'ship.gates' }).delivered).toBe(0)
   })
 })
 
@@ -143,6 +159,39 @@ describe('events.mjs — the four hint types leak nothing', () => {
     const i = emitOne({ event: 'import.updated', batchId: 'IMP-3', count: 7, files: ['/home/me/.claude/agents/x.md'] })
     expect(i.payload).toMatchObject({ batchId: 'IMP-3', count: 7 })
     expect(i.raw).not.toContain('.claude/agents')
+  })
+
+  /**
+   * The V5.4 five under the SAME two absolute bans. These are asserted on the FRAME rather
+   * than by reading EVENT_FIELDS, because what the file declares matters only insofar as it
+   * is what leaves the process — and the pick is the thing that decides that.
+   */
+  it('the five V5.4 types carry identifiers ONLY — the question, the note and the output stay behind', () => {
+    const secret = 'вопрос основателю: переносим ли шифрование, и пароль тут же — hunter2'
+    const ts = new Date(7).toISOString()
+
+    // a stage move names the stage, never what happened in it
+    const stage = emitOne({ event: 'phase.stage', taskId: 'R-4', phase: '12', stage: 'uat', note: secret, title: secret })
+    expect(stage.payload).toEqual({ id: 1, event: 'phase.stage', ts, taskId: 'R-4', phase: '12', stage: 'uat' })
+    expect(stage.raw).not.toContain('hunter2')
+
+    // a waiting discussion names the phase, NEVER the question
+    const disc = emitOne({ event: 'discussion.updated', phase: '12', question: secret, text: secret })
+    expect(disc.payload).toEqual({ id: 1, event: 'discussion.updated', ts, phase: '12' })
+    expect(disc.raw).not.toContain('hunter2')
+
+    // a release gate names the step, NEVER what the step printed
+    const gate = emitOne({ event: 'ship.gate', taskId: 'R-4', step: 'tests', output: secret, log: secret })
+    expect(gate.payload).toEqual({ id: 1, event: 'ship.gate', ts, taskId: 'R-4', step: 'tests' })
+    expect(gate.raw).not.toContain('hunter2')
+
+    // and the two pure doorbells carry nothing at all beyond the envelope
+    for (const event of ['memory.drafts', 'coordination.updated']) {
+      const { payload, raw } = emitOne({ event, path: '/home/me/.claude/memory', note: secret, files: [secret] })
+      expect(payload, event).toEqual({ id: 1, event, ts })
+      expect(raw, event).not.toContain('hunter2')
+      expect(raw, event).not.toContain('.claude/memory')
+    }
   })
 
   it('a field belonging to another type is dropped, and an unlisted type is still a no-op', () => {

@@ -29,7 +29,10 @@
  *     TEXT of a conversation turn never enters a frame (chat.reply carries a turn id and
  *     a status, never the reply), and a peer's TOKEN or URL never enters a frame
  *     (machine.presence carries a machine id and a boolean, never an address). A frame is
- *     a doorbell: it says something changed, never what was said.
+ *     a doorbell: it says something changed, never what was said. The V5.4 types were
+ *     declared under exactly those bans and show what obeying them looks like:
+ *     `discussion.updated` names the phase whose question is waiting and NOT the question,
+ *     and `ship.gate` names the step that reported and NOT what it printed.
  *   - DoS BOUNDS: maxClients cap (→ the handler answers 503), a 25s heartbeat, and
  *     reap-on-write-failure keep stale handles from accumulating.
  *
@@ -43,11 +46,16 @@
  */
 
 /**
- * The frozen event vocabulary — the SPA contract. FOURTEEN types (re-frozen 2026-08-01,
- * the single revision of the V5.1 release; the previous freeze was TEN).
- * Emitting an unlisted event is a no-op. The «hint, never truth» contract is
- * UNCHANGED by the revision: the four new types announce that something changed, and the
- * client re-reads the auth'd endpoint to learn what.
+ * The frozen event vocabulary — the SPA contract. NINETEEN types (re-frozen 2026-08-06, the
+ * single revision of the V5.4 release; the previous freezes were FOURTEEN, 2026-08-01, and
+ * TEN before that). Emitting an unlisted event is a no-op — which is precisely why the whole
+ * vocabulary is declared HERE, in one revision, ahead of the emit points: a type that has not
+ * been declared does not fail loudly when someone emits it, it is silently dropped, and the
+ * screen that was waiting for it simply never updates.
+ *
+ * The «hint, never truth» contract is UNCHANGED by the revision. Every new type announces
+ * that something changed and names only WHICH thing, by identifier; the client re-reads the
+ * auth'd endpoint to learn what actually happened.
  */
 export const EVENT_TYPES = Object.freeze([
   'task.queued',
@@ -64,6 +72,12 @@ export const EVENT_TYPES = Object.freeze([
   'machine.presence', // a peer went online/offline (never its url, never its token)
   'project.updated', // the project registry changed
   'import.updated', // a batch of import drafts was produced
+  // ── the V5.4 five (declared here, emitted by the plans that fill their screens) ──
+  'phase.stage', // a phase moved to another stage (the stage NAME, never its contents)
+  'discussion.updated', // a discussion question is waiting (the TEXT rides the read model)
+  'memory.drafts', // the memory drafts changed — which ones is a read, not a frame
+  'coordination.updated', // a claim or a session moved (never a glob, never a path)
+  'ship.gate', // a release gate step reported (the step id, never its output)
 ])
 
 /**
@@ -87,6 +101,17 @@ const EVENT_FIELDS = Object.freeze({
   'machine.presence': ['machineId', 'online'], // NEVER the peer url or token
   'project.updated': ['projectId'],
   'import.updated': ['batchId', 'count'],
+  // The V5.4 five. Every field below is an IDENTIFIER or a short enumerated name, and the
+  // omissions are the design: `discussion.updated` does NOT carry the question, so the text a
+  // person is about to be asked cannot reach a screen that is merely open — it is fetched from
+  // the auth'd endpoint by whoever is entitled to read it. `ship.gate` does NOT carry the
+  // gate's output for the same reason a receipt body never rode a frame: a failing gate's
+  // output is the most quotable thing in the system.
+  'phase.stage': ['taskId', 'phase', 'stage'],
+  'discussion.updated': ['phase'], // NEVER the question
+  'memory.drafts': [], // a pure doorbell: something in the drafts moved, go and look
+  'coordination.updated': [], // likewise — who claimed what is a read, never a frame
+  'ship.gate': ['taskId', 'step'], // NEVER the gate's output
 })
 
 /** Fields serialised as a boolean / a number; everything else is stringified. */
