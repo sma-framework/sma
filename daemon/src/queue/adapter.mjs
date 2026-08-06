@@ -257,7 +257,8 @@ export function validateTask(task) {
     const hasAcceptance = task.acceptance !== undefined && String(task.acceptance).trim() !== ''
     if (task.storyPoints === undefined || !hasAcceptance) {
       throw new NotReadyError(
-        `backlog task "${task.id}" is not ready: storyPoints + acceptance both required (D-9.5-10 DoR)`,
+        `backlog task "${task.id}" is not ready: a backlog task must carry both a storyPoints ` +
+          `estimate and acceptance criteria before it can be dispatched`,
       )
     }
     if (!STORY_POINTS.includes(task.storyPoints)) {
@@ -413,7 +414,10 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     const rec = records.get(taskId)
     if (!rec) throw new UnknownTaskError(`complete: unknown task "${taskId}"`)
     if (!result || !result.receiptRef) {
-      throw new NoReceiptError(`complete("${taskId}") refused: result must carry a receiptRef (Pitfall 6)`)
+      throw new NoReceiptError(
+        `complete("${taskId}") refused: result must carry a receiptRef — work is never ` +
+          `certified done on the runner's own word`,
+      )
     }
     rec.status = 'completed'
     rec.completedAt = now()

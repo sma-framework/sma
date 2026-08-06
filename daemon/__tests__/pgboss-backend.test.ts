@@ -341,7 +341,7 @@ describe('the queue adapter stamps the attempt row it writes', () => {
     expect(row.attempt).toBe(2)
     expect(row.idempotencyKey).toBe(idempotencyKey('BL-A2', 'BL-A2#2', 'RUNNING->RETRYABLE'))
     // A different attempt of the SAME task is a different key by construction — that is the
-    // half of canon invariant 5 the queue layer has to keep from its side.
+    // half of fleet invariant 5 the queue layer has to keep from its side.
     expect(row.idempotencyKey).not.toBe(idempotencyKey('BL-A2', 'BL-A2#1', 'RUNNING->RETRYABLE'))
   })
 

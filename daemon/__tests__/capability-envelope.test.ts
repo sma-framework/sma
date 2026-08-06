@@ -27,13 +27,13 @@ import { TASK_LANES } from '../src/queue/adapter.mjs'
 
 const src = readFileSync(new URL('../src/queue/capability-envelope.mjs', import.meta.url), 'utf8')
 
-describe('CAPABILITY_KEYS — the canon’s eight dimensions, frozen', () => {
+describe('CAPABILITY_KEYS — the fleet’s eight dimensions, frozen', () => {
   it('holds exactly eight dimensions and is frozen', () => {
     expect(CAPABILITY_KEYS).toHaveLength(8)
     expect(Object.isFrozen(CAPABILITY_KEYS)).toBe(true)
   })
 
-  it('names the canon’s dimensions: read/write paths, tools, network, secrets, budget, runtime, human-only', () => {
+  it('names the fleet’s dimensions: read/write paths, tools, network, secrets, budget, runtime, human-only', () => {
     expect([...CAPABILITY_KEYS].sort()).toEqual(
       [
         'allowedTools',
@@ -72,7 +72,7 @@ describe('defaultEnvelope — a complete envelope for every lane', () => {
     }
   })
 
-  it('EVERY lane denies push and denies merge (canon invariant 2)', () => {
+  it('EVERY lane denies push and denies merge (fleet invariant 2)', () => {
     for (const lane of ENVELOPE_LANES) {
       const env = defaultEnvelope(lane)
       expect(env.humanOnlyActions, `${lane}`).toContain('push')

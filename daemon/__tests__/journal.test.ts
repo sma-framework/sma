@@ -13,7 +13,7 @@
  * point: a rewrite must be impossible, not merely unused).
  *
  * ════════ PHASE 11 PLAN 05: THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN ═══════
- * The same ledger, the same append-only law, seven more explicitly-picked fields (canon
+ * The same ledger, the same append-only law, seven more explicitly-picked fields (fleet
  * invariant 6): the policy version, the memory snapshot digest, the plan hash, the harness
  * version, the state-machine version, the idempotency key and the capability envelope's
  * digest. The cases live HERE rather than in a third file because they are cases about
@@ -525,7 +525,7 @@ describe('parseApproachNote — the worker-side protocol the loop reads off the 
   })
 })
 
-// ═══════ the attempt stamp — canon invariant 6 ═════════
+// ═══════ the attempt stamp — fleet invariant 6 ═════════
 
 const NEW_STAMP_KEYS = [
   'policyVersion',

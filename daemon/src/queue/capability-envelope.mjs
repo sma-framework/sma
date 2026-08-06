@@ -259,7 +259,8 @@ export function validateEnvelope(env) {
       for (const token of FORBIDDEN_CAPABILITY_TOKENS) {
         if (lowered.includes(token)) {
           return refuse(
-            `"${key}" declares "${token}", which crosses the human-only boundary (canon invariant 2): ` +
+            `"${key}" declares "${token}", which crosses the human-only boundary ` +
+            `(fleet invariant 2, docs/FLEET-INVARIANTS.md): ` +
               'a worker holds no push or merge capability regardless of any prompt, task text or ' +
               'envelope input — narrow or rename the entry, the gate does not widen',
             key,
