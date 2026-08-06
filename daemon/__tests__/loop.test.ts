@@ -135,7 +135,8 @@ describe('tick — the stateless composed tick', () => {
     expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
     expect(res.completed).toBe('BL-1')
     const [row] = await adapter.list({})
-    expect(row.status).toBe('completed')
+    // completed work is reported as awaiting approval — the tick certified it, a person accepts it
+    expect(row.status).toBe('awaiting_approval')
     // the report fired for the completion
     expect(reports.some((r) => r.event === 'task.completed' && r.taskId === 'BL-1')).toBe(true)
   })
@@ -155,7 +156,7 @@ describe('tick — the stateless composed tick', () => {
     expect(order).toEqual(['preflight']) // never spawned, never reverified
     expect(res.completed).toBe('BL-2')
     const [row] = await adapter.list({})
-    expect(row.status).toBe('completed')
+    expect(row.status).toBe('awaiting_approval')
   })
 
   it('a worker exiting 0 WITHOUT a reverify receipt → fail("no_receipt")', async () => {
@@ -214,7 +215,7 @@ describe('tick — the stateless composed tick', () => {
     expect(order).toContain('spawn') // the fresh tick picked the recovered task up
     expect(res.completed).toBe('BL-K')
     const [row] = await adapter.list({})
-    expect(row.status).toBe('completed')
+    expect(row.status).toBe('awaiting_approval')
   })
 })
 

@@ -8,8 +8,10 @@
  *     honest — the pg-boss suite re-runs THIS block against a real backend).
  *   - Direct unit tests below pin the grep-visible invariants in the test file itself:
  *     the NoReceiptError refusal, enqueue coalescing, the DoR gate
- *     (NotReadyError / InvalidStoryPointsError), the forge rule, and the
- *     enqueuedAt/claimedAt/completedAt timestamps.
+ *     (NotReadyError / InvalidStoryPointsError), the forge rule, the
+ *     enqueuedAt/claimedAt/completedAt timestamps, and — since completed work is
+ *     reported as awaiting approval — that a receipted complete() leaves the row in
+ *     `awaiting_approval` with a stats() counter to match.
  *   - Constants: FAIL_REASONS is the 9-reason human taxonomy and
  *     REASON_LABELS carries a RU подпись for every one.
  */
@@ -24,6 +26,7 @@ import {
   DEFAULT_PROJECT_ID,
   TASK_SOURCES,
   TASK_LANES,
+  TASK_STATUSES,
   FAIL_REASONS,
   REASON_LABELS,
   NoReceiptError,
@@ -164,6 +167,32 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
     expect(row.completedAt).toBe(5200)
   })
 
+  /**
+   * Completed work is reported as awaiting approval. The receipt is the worker's half of
+   * «done»; the other half is a person, and until that word arrives the row says so out
+   * loud instead of parking in a status that means the business is finished.
+   */
+  it('a receipted complete() leaves the row awaiting_approval — never completed', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(backlog())
+    await q.claimNext('w1', {})
+    await q.complete('BL-96', { receiptRef: 'reverify:abc' })
+    const [row] = await q.list({})
+    expect(row.status).toBe('awaiting_approval')
+    const s = await q.stats()
+    expect(s.awaiting_approval).toBe(1)
+    expect(s.completed).toBe(0)
+  })
+
+  it('stats() carries a key for EVERY status of the closed vocabulary, at zero when empty', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    const s = await q.stats()
+    for (const status of TASK_STATUSES) expect(s[status]).toBe(0)
+    expect(s.total).toBe(0)
+  })
+
   it('fail(taskId, reason) rejects an unknown reason and records a valid one', async () => {
     const c = mkClock()
     const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
@@ -283,5 +312,10 @@ describe('constants — taxonomy', () => {
   it('TASK_LANES includes forge and TASK_SOURCES the three intake origins', () => {
     expect(TASK_LANES).toContain('forge')
     expect(TASK_SOURCES).toEqual(['backlog', 'roster', 'return'])
+  })
+
+  it('TASK_STATUSES is the closed five-status vocabulary, waiting-for-a-person included, and is frozen', () => {
+    expect(TASK_STATUSES).toEqual(['queued', 'claimed', 'awaiting_approval', 'completed', 'failed'])
+    expect(Object.isFrozen(TASK_STATUSES)).toBe(true)
   })
 })

@@ -62,7 +62,13 @@
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
  *   list(filter)                  → rows expose enqueuedAt/claimedAt/completedAt
- *   stats()                       → per-status counts
+ *   stats()                       → per-status counts, one key per TASK_STATUSES entry
+ *
+ * FINISHED IS NOT ACCEPTED. `complete()` carries a receipt, and a receipt is the worker's
+ * half of done — the other half is a person saying so. So a completed task reads back as
+ * `awaiting_approval`, never as `completed`, at EVERY backend: the status a screen shows is
+ * a property of the task, and a front that had to derive «waiting for a person» for itself
+ * would be a second reading path, silently diverging from the first.
  *
  * TIMESTAMPS: enqueue stamps enqueuedAt, claimNext stamps claimedAt,
  * complete stamps completedAt — the raw material for post-pilot flow metrics (cycle
@@ -82,6 +88,30 @@ export const TASK_SOURCES = Object.freeze(['backlog', 'roster', 'return'])
 
 /** Execution lanes. `forge` = draft generation for the «Создатель» role. */
 export const TASK_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
+
+/**
+ * THE CLOSED STATUS VOCABULARY of a read row — every `list()` row and every `stats()` key
+ * of every backend is one of these five, and a backend that answers anything else is not a
+ * conforming adapter.
+ *
+ *   queued            — waiting for a WORKER
+ *   claimed           — a worker holds it
+ *   awaiting_approval — the work is done and certified, and now owes a PERSON a word
+ *   completed         — a person said yes
+ *   failed            — the attempt did not produce
+ *
+ * `awaiting_approval` is here rather than derived on a screen for one reason: a durable
+ * backend already RECORDS that state (the daemon's own approval row), so deriving it a
+ * second time in the front would be a second source of the same truth. The two would
+ * disagree the first time either changed, and nothing would say so.
+ */
+export const TASK_STATUSES = Object.freeze([
+  'queued',
+  'claimed',
+  'awaiting_approval',
+  'completed',
+  'failed',
+])
 
 /**
  * The human-readable failure taxonomy. `fail(taskId, reason)` accepts ONLY
@@ -419,7 +449,11 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
           `certified done on the runner's own word`,
       )
     }
-    rec.status = 'completed'
+    // NOT 'completed': the receipt certifies the WORK, and the work now owes a person a
+    // word. The durable backend records exactly this state in its own approval row; the
+    // reference backend has to say the same thing or the contract suite would certify two
+    // different meanings of the same call.
+    rec.status = 'awaiting_approval'
     rec.completedAt = now()
     rec.result = result
     return true
@@ -450,7 +484,11 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
 
   async function stats() {
     sweep()
-    const s = { queued: 0, claimed: 0, completed: 0, failed: 0, total: records.size }
+    // Every status of the closed vocabulary is a KEY, present at zero — a counter that
+    // appears only once something lands in it reads as «no such thing» on the screen that
+    // asks for it, which is a different statement from «none right now».
+    const s = { total: records.size }
+    for (const st of TASK_STATUSES) s[st] = 0
     for (const rec of records.values()) s[rec.status] = (s[rec.status] ?? 0) + 1
     return s
   }
@@ -526,7 +564,32 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       await expect(q.complete('BL-96', {})).rejects.toThrow(/receipt/i)
       await q.complete('BL-96', { receiptRef: 'reverify:abc' })
       const [r] = await q.list({})
-      expect(r.status).toBe('completed')
+      expect(r.status).toBe('awaiting_approval')
+    })
+
+    // COMPLETED WORK IS REPORTED AS AWAITING APPROVAL. Certified work is not accepted work:
+    // the receipt is the worker's half and a person owes the other half. Every backend has
+    // to say so in its own read path, because the screen that shows «ждут решения» reads
+    // list()/stats() and nothing else — where this row said 'completed', that screen was
+    // empty at all times and the counter beside it read zero while work piled up.
+    it('after complete() with a receipt the row reads awaiting_approval, never completed, and stats() counts it', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog())
+      await q.claimNext('w1', {})
+      await q.complete('BL-96', { receiptRef: 'reverify:abc' })
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('awaiting_approval')
+      expect(r.status).not.toBe('completed')
+
+      // the filter the front's «ждут решения» screen actually runs
+      expect(await q.list({ status: 'awaiting_approval' })).toHaveLength(1)
+      expect(await q.list({ status: 'completed' })).toHaveLength(0)
+
+      const s = await q.stats()
+      expect(s.awaiting_approval).toBe(1)
+      expect(s.completed).toBe(0)
     })
 
     it('fail rejects an unknown reason and records a valid one', async () => {
