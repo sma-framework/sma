@@ -17,7 +17,7 @@ import type { OpenScreenDetail } from '../../shell/navigation'
  * `enabled` — and the door it uses accepts exactly two fields, an id and a boolean, refusing
  * a body with any third key before it even opens the registry. There is therefore no shape of
  * this screen, and no text a person could type into it, that turns into a command to run.
- * That is the MCP law of the product, and this screen is its face (D-9-09, T-9.5-38).
+ * That is the MCP law of the product, and this screen is its face.
  *
  * Which is why «+ Подключить инструмент» does NOT add a row. It sends a described REQUEST to
  * the forge, and a request becomes a draft — a proposal a person reads and copies into the
