@@ -1,5 +1,5 @@
 /**
- * ship-lane.mjs — the SMA ship lanes (9.4-08). The founder's 2026-07-13 ask
+ * ship-lane.mjs — the SMA ship lanes. The founder's 2026-07-13 ask
  * («shipment of 90-100 commits takes around 1h — is it normal?» + «can we add
  * /sma-quick-ship … to move it to prod not to wait so long?»). The 1h/90-commit
  * diagnosis (9.4-RESEARCH-ECONOMY §4): the gates cost ~10 minutes; the hour was BATCH
@@ -8,7 +8,7 @@
  *
  * This module is a READ-ONLY checker / drafter / recorder. It NEVER pushes, tags, or
  * deploys — pushing stays inside the founder-ordered skill rituals (substrate law + the
- * /sma-ship sole-push-path boundary, D-9.3-24d). Four surfaces:
+ * /sma-ship sole-push-path boundary). Four surfaces:
  *   1. checkQuickPrecondition — the deterministic entry gate: origin-delta <= maxDelta
  *      commits AND no migrations in the delta AND no FOREIGN push-claim. Any failing leg
  *      refuses «this is a full release ritual: <legs>» (the batch.mjs {allowed, reason} refusal
@@ -26,7 +26,7 @@
  *      ORPHANED pending run visible to the next session (grill CH-9.4-08-2).
  *   4. shipLaneSelftest — canned-git fixtures proving all of the above, returns 1/0.
  *
- * Consume-never-reimplement (D-9.3-02): the CLI injects slots.checkPushClaim (the exact
+ * Consume-never-reimplement: the CLI injects slots.checkPushClaim (the exact
  * triplet the airbag + merge-gate consume) and a DI execGit (slots.mjs defaultExecGit
  * pattern); this lib spawns nothing and reads no .sma/ directly in tests. The refusal shape
  * mirrors batch.mjs verbatim. Node built-ins only. Zero LLM, zero network, zero
@@ -229,7 +229,7 @@ export function draftChangelog(o = {}) {
 
 // ═══════════════════════════ the lane outcome ledger ════════════════════════════
 
-/** ship-lanes.jsonl lives in the EXISTING spendDir — NO new .sma subdir (D-9.3-02). */
+/** ship-lanes.jsonl lives in the EXISTING spendDir — NO new .sma subdir. */
 function shipLaneFile(spendDir) {
   return join(spendDir, 'ship-lanes.jsonl')
 }

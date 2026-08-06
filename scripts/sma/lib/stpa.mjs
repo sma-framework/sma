@@ -1,5 +1,5 @@
 /**
- * stpa.mjs — the STPA disarm-path guard (9.2-10, D-9.2-14).
+ * stpa.mjs — the STPA disarm-path guard.
  *
  * STPA (System-Theoretic Process Analysis) asks not «did a component fail» but
  * «what control action, or its ABSENCE, leads to a hazard». Our hazard: a
@@ -28,7 +28,7 @@
  *      a rule off deliberately via renewDisarm (recorded provenance) but NEVER
  *      silently.
  *
- * CONS-9.2-B: everything here is fail-open. shadowRunFixtures/reArmDecisions wrap
+ * everything here is fail-open. shadowRunFixtures/reArmDecisions wrap
  * every path — an IO error yields empty results so session-start can never wedge.
  * They wire into session-start + the lint ONLY, never the per-tool-call hot path
  * (plan 02 SLO): gates-check consults a re-arm decision solely on the rare path
@@ -188,7 +188,7 @@ export const HAZARDS = [
     fixture: null, // the compensating control is a lint, not a tool-event fixture
   },
   {
-    // 9.3-06 (D-9.3-12) — the self-tuning ladder's OWN kill env. Disabling the
+    // the self-tuning ladder's OWN kill env. Disabling the
     // overlay freezes every tier: demotions/re-arms stop, so a warned-then-ignored
     // rule can neither quieten nor re-arm. The disarm-path guard covers the tuner
     // itself. Its compensating control is env-independent: the tier registry is a

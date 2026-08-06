@@ -3,7 +3,7 @@
  * D-9.3-06). Every git-tracked repo file gets ONE one-line card = a pure function
  * of (file bytes, injected git data): path, language class, key symbols, import
  * targets, git stats (last-commit ISO + commit count), size. NOTHING is derived by
- * an LLM — the meaning-string is CUT (D-9.3-06, the grill's ruling on pillar 02 is
+ * an LLM — the meaning-string is CUT (the grill's ruling on pillar 02 is
  * law; it revisits no earlier than after v1 field data). Same input → same card,
  * byte-for-byte.
  *

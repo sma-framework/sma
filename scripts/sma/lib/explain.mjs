@@ -1,12 +1,12 @@
 /**
- * explain.mjs — in-product explainers with a command-coverage tripwire (9.3-09).
+ * explain.mjs — in-product explainers with a command-coverage tripwire.
  *
  * `pnpm sma explain <topic>` prints a plain-language explainer for every core SMA
  * concept AND, via the COMMAND_TOPICS alias map, for every CLI subcommand registered
  * in cli.mjs's HANDLERS block. An unknown topic lists the catalog and exits 0 — the
- * teaching surface never punishes curiosity (D-9.3-15).
+ * teaching surface never punishes curiosity.
  *
- * THE DRIFT TRIPWIRE (P9.3-09-A): `coverage()` reads cli.mjs as TEXT (anchored regex
+ * THE DRIFT TRIPWIRE: `coverage()` reads cli.mjs as TEXT (anchored regex
  * over the `const HANDLERS = {` block) and reports every HANDLERS key with no resolvable
  * explainer topic. A sibling plan that lands a new command WITHOUT extending COMMAND_TOPICS
  * flips the uncovered count above 0 and scores a miss. That is by design — docs cannot
@@ -48,7 +48,7 @@ export const COMMAND_TOPICS = {
   consume: 'coordination',
   tia: 'coordination',
   worktree: 'coordination',
-  merge: 'merge', // 9.3-15 — the serialized merge ritual has its own topic
+  merge: 'merge', // the serialized merge ritual has its own topic
 
   // hooks — the four hook points
   'session-start': 'hooks',
@@ -125,7 +125,7 @@ export const COMMAND_TOPICS = {
   flight: 'loop',
   batch: 'loop',
 
-  // passport — PASSPORT.md + badge + model-version guard (9.3-02)
+  // passport — PASSPORT.md + badge + model-version guard
   passport: 'passport',
   model: 'passport',
 
@@ -145,8 +145,8 @@ export const COMMAND_TOPICS = {
 
   // v4 — the standing Anthropic-update triage ledger + the economy meters
   vendor: 'vendor',
-  memory: 'economy', // 9.4-06 — corpus token-cost report, lane budgets, self-cost meter
-  'ship-lane': 'economy', // 9.4-08 — the ship lanes: quick-ship precondition + changelog drafter + lane records
+  memory: 'economy', // corpus token-cost report, lane budgets, self-cost meter
+  'ship-lane': 'economy', // the ship lanes: quick-ship precondition + changelog drafter + lane records
 
   // v3.6 — the off-ramp and the onboarding preview
   deleteme: 'deleteme',

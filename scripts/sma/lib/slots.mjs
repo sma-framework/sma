@@ -6,10 +6,10 @@
  * Design invariants:
  *   - All git access goes through an INJECTABLE runner (execGit) so tests never touch
  *     the network. The real runner (defaultExecGit) uses execFileSync('git', [args])
- *     with args ARRAYS — no shell string, no interpolation (T-9-06-03).
+ *     with args ARRAYS — no shell string, no interpolation.
  *   - Read-only git: this module issues ONLY read subcommands (fetch/show/tag/
  *     rev-parse/log). It NEVER performs the founder-reserved deploy operation
- *     (git-push) — that stays a human action outside SMA (P5, T-9-06-01). The
+ *     (git-push) — that stays a human action outside SMA (P5). The
  *     SMA-3 guard greps this file for the two-word invocation; every reference here
  *     is hyphenated ("git-push") or phrased as "отправка в origin" so it never
  *     matches, and the args-array runner never yields the adjacent literal.
@@ -19,7 +19,7 @@
  *     a WARN rather than throwing.
  *   - Atomic claim gate: slot contention is resolved by claimSlot's mkdir gate — the
  *     deterministic slot name IS the lock (9-03). A lost race retries at N+1.
- *   - Foreign claims are never auto-cleared (P3, T-9-06-02): a stale deploy signal is
+ *   - Foreign claims are never auto-cleared (P3): a stale deploy signal is
  *     flagged needsHuman, never silently removed.
  *
  * Node built-ins only; zero npm deps.
@@ -101,7 +101,7 @@ function padMigration(n) {
  * @param {object} o
  * @param {(args:string[])=>string} [o.execGit]        injectable git runner
  * @param {string} [o.migrationsPath]                   path to the local migrations index
- * @param {string} o.by                                 holder identity (D-9-01)
+ * @param {string} o.by                                 holder identity
  * @param {string} [o.session]
  * @param {string} [o.claimsDir]                        test override for the claims dir
  * @param {string} [o.journalDir]                       journal dir (WR-03: events go here,
@@ -179,7 +179,7 @@ export function nextMigrationSlot(o = {}) {
       }
     }
 
-    // 9.1-23 (B17): before leaking this number to N+1, try to reconcile an EXPIRED
+    // before leaking this number to N+1, try to reconcile an EXPIRED
     // unconsumed claim on the SAME slot — an abandoned number is nobody's. On success,
     // reclaim the same candidate immediately (the claimed-number-lost class ends).
     const rec = reconcileExpiredClaim(slotName, { ...claimOpts, ttlMs: SLOT_CLAIM_TTL_MS })
@@ -560,7 +560,7 @@ export function nextCounterSlot(kind, o = {}) {
       }
     }
 
-    // 9.1-23 (B17): reconcile an EXPIRED unconsumed claim on the SAME slot before
+    // reconcile an EXPIRED unconsumed claim on the SAME slot before
     // leaking the number to N+1 — the claimed-number-lost class ends for counters too.
     const rec = reconcileExpiredClaim(slotName, { ...claimOpts, ttlMs: SLOT_CLAIM_TTL_MS })
     if (rec.reconciled) {
@@ -607,7 +607,7 @@ export function nextCounterSlot(kind, o = {}) {
   }
 }
 
-// ── 9.1-23 (B17) — consume: mark a claimed number as ACTUALLY used ──────────────────
+// ── consume: mark a claimed number as ACTUALLY used ─────────────────────────────────
 
 /**
  * slotNameForKind(kind, n, o) -> the claim-dir name for a number slot, or null when the

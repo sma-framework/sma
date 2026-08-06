@@ -1,5 +1,5 @@
 /**
- * flight.mjs — the deterministic pre-compaction FLIGHT RECORDER (9.2-06, D-9.2-09).
+ * flight.mjs — the deterministic pre-compaction FLIGHT RECORDER.
  *
  * The #1-world-pain bridge: auto-compaction silently deletes a session's working
  * state. This module makes that moment survivable with PURE FILE ASSEMBLY — zero
@@ -15,8 +15,8 @@
  *     sections, byte-deterministic, budgeted to CAPSULE_BUDGET (oldest events
  *     dropped first; header + Current-task NEVER truncated).
  *   - scanForSecrets — a pure deterministic redactor run before EVERY write; a
- *     matched secret is NEVER written in raw form (T-9.2-06A, unconditional).
- *   - nativeProbe — the D-9.2-05 demolition-clause sensor: when a sufficient
+ *     matched secret is NEVER written in raw form (unconditional).
+ *   - nativeProbe — the demolition-clause sensor: when a sufficient
  *     native pre-compaction preservation mechanism is detected the whole stream
  *     stands down (writeCapsule -> {skipped:'native'}).
  *   - buildResumeBrief / buildHandoffBrief — continuation briefs assembled from
@@ -148,14 +148,14 @@ export function readMarks(opts = {}) {
   return { marks: all, count: all.length, corrupt }
 }
 
-// ── the capability probe (demolition-clause sensor, D-9.2-05) ───────────────────
+// ── the capability probe (demolition-clause sensor) ─────────────────────────────
 
 /**
  * nativeProbe(opts) -> {native, reason}. Today NO vendor mechanism preserves a
  * session's working state deterministically across compaction, so native is false
  * unless the documented stand-down override SMA_FLIGHT_NATIVE is truthy — that is
  * also the seam where a real vendor-feature detection lands the day one exists.
- * When native, writeCapsule stands the whole bridge down (D-9.2-05). Deterministic.
+ * When native, writeCapsule stands the whole bridge down. Deterministic.
  * @param {{env?:object}} [opts]
  * @returns {{native:boolean, reason:string}}
  */
@@ -166,7 +166,7 @@ export function nativeProbe(opts = {}) {
     : { native: false, reason: 'no native pre-compaction preservation mechanism known' }
 }
 
-// ── secret scan (unconditional redaction before EVERY write, T-9.2-06A) ─────────
+// ── secret scan (unconditional redaction before EVERY write) ────────────────────
 
 /**
  * SECRET_PATTERNS — anchored regexes with rule names. Pure data; scanForSecrets and
@@ -327,7 +327,7 @@ export function buildCapsule(inputs = {}) {
  * writeCapsule({capsule, terminalId}, opts) — probe stand-down -> redact EVERY line via
  * scanForSecrets -> atomicWriteRaw to BOTH intent.md and capsules/<terminalId>.md.
  * When the probe reports native, writes NOTHING and returns {skipped:'native'} (bridge
- * stands down, D-9.2-05). Returns {written:[paths], redactions}.
+ * stands down). Returns {written:[paths], redactions}.
  * @param {{capsule:string, terminalId:string}} args
  * @param {{flightDir?:string, env?:object, writeRaw?:Function}} [opts]
  */
@@ -426,7 +426,7 @@ export function buildResumeBrief(inputs = {}) {
 /**
  * buildHandoffBrief(inputs) -> markdown string. Everything buildResumeBrief has PLUS a
  * claim-transfer section naming the exact `node scripts/sma/cli.mjs release <slot>` / `node scripts/sma/cli.mjs claim`
- * commands + the D-9-09 force-clear warning. PURE — the write path (writeHandoff) runs
+ * commands + the force-clear warning. PURE — the write path (writeHandoff) runs
  * the secret scan. Honest empty when the flight dir is empty.
  */
 export function buildHandoffBrief(inputs = {}) {

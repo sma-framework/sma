@@ -1,6 +1,6 @@
 /**
  * notify.mjs — the claim PULSE + the edge-triggered outbound waiting-for-human
- * webhook (9.3-07, D-9.3-13).
+ * webhook.
  *
  * THE ONE NEW SANCTIONED OUTBOUND PATH (beside snapshot.mjs's one-way CRM mirror),
  * explicitly permitted by D-9.3-13 and policed by the security guard from this
@@ -17,7 +17,7 @@
  *   - OFF BY DEFAULT. No configured URL means NO network call, ever. Silence is
  *     the default posture; SMA_NOTIFY_DISABLE is the hard kill-switch.
  *
- * NO PARALLEL STORE (D-9.3-02): the pulse rides the EXISTING session lease field
+ * NO PARALLEL STORE: the pulse rides the EXISTING session lease field
  * `fpStatus` (registry.FP_STATUS_VALUES / FP_STATUS on the lease, shipped 9.3-13)
  * — NOT a new duplicate field. registry's WORK axis `status` (working|blocked|idle|
  * done — what the session SAYS) stays untouched; the pulse is the ATTENTION axis.
@@ -192,7 +192,7 @@ export async function firePulseWebhook(ctx = {}, opts = {}) {
 
 /**
  * resolveWebhookUrl(opts) — the URL resolution ORDER (test 6): env SMA_WEBHOOK_URL wins;
- * else dirs.statuslineDir/webhook.json {url}; else the 9.3-01 profile's
+ * else dirs.statuslineDir/webhook.json {url}; else the profile's
  * notifications.webhookUrl (tolerant — absent profile is fine). Only http(s) URLs are
  * accepted; anything else resolves to null. Never throws.
  * @param {{env?:object, dirs?:object}} [opts]

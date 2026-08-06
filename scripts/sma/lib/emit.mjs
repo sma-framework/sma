@@ -1,12 +1,12 @@
 /**
- * emit.mjs — `sma emit`: one corpus, any agent (Phase 9.3 Plan 04, D-9.3-08).
+ * emit.mjs — `sma emit`: one corpus, any agent (Phase 9.3 Plan 04).
  *
  * Compiles the learned memory corpus into a MANAGED EXPORT BLOCK inside each of
  * CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md, every block under a per-format
  * byte budget. The block is regenerated from the corpus, never hand-edited in
  * place: portability = anti-lock-in, value even for non-Claude-Code users.
  *
- * DETERMINISM CONTRACT (inherited verbatim from generator.mjs, T-9-09-01):
+ * DETERMINISM CONTRACT (inherited verbatim from generator.mjs):
  *   - commitHash + dateMap are ARGUMENTS, never read from the environment here.
  *     No clock, no mtime, no HEAD read in the output-producing path.
  *   - Ordering is the ONE shared truth: makeComparator (importance desc -> injected
@@ -14,7 +14,7 @@
  *     comparator MEMORY.md and the loader already share.
  *   - LF line endings, UTF-8 no BOM.
  *
- * MANAGED-BLOCK LAW (D-9.3-08, T-9.3-04-A): spliceBlock only ever replaces the
+ * MANAGED-BLOCK LAW (T-9.3-04-A): spliceBlock only ever replaces the
  * BEGIN..END span; a file without a block gets it appended (every pre-existing
  * byte unchanged); an absent file is created holding only the block; a file whose
  * anchor pair is broken is NEVER written (skipped-corrupt, file untouched). The
@@ -26,7 +26,7 @@
  * so no injected line can ever open or close a managed block.
  *
  * emit performs git READ ops only (hash + dateMap arrive injected) and NEVER
- * commits or pushes — output lands as a reviewable working-tree diff (T-9.3-03).
+ * commits or pushes — output lands as a reviewable working-tree diff.
  *
  * Corpus access is ONLY through frontmatter.mjs (parseNote) — the single shared
  * read path (9-04). Node built-ins only; zero npm deps, no LLM, no network.
@@ -396,11 +396,11 @@ const TOOL_TO_FORMAT = {
 
 /**
  * resolveFormats({formats, profilePath, io}) — the caller's explicit formats win.
- * With none passed, consult the 9.3-01 onboarding profile (SCORECARD METRIC 5:
+ * With none passed, consult the onboarding profile (SCORECARD METRIC 5:
  * this read is the live consumption that keeps a declared agent-tools field alive
  * under the dead-field lint) and narrow/order the default set; on ANY failure
  * (absent, unreadable, field missing) fall back to all four formats SILENTLY.
- * NOTE: profile schema v2 (9.3-01) ships NO agent-tools field, so today this
+ * NOTE: profile schema v2 ships NO agent-tools field, so today this
  * ALWAYS fails soft to all four — the permanent default until such a field lands.
  */
 function resolveFormats({ formats, profilePath, io }) {

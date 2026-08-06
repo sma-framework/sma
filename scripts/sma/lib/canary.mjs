@@ -1,5 +1,5 @@
 /**
- * canary.mjs — planted false-«done» canaries with a sealed ledger (9.2-10, D-9.2-14).
+ * canary.mjs — planted false-«done» canaries with a sealed ledger.
  *
  * S8 (blind-verifier quality) has no teeth without a control group: «zero
  * divergence» from a verifier that never actually re-derives anything is
@@ -24,7 +24,7 @@
  *
  * TAMPER-EVIDENCE: the sealed ledger is append-only JSONL, each line carrying
  * `prev` = lineHash(previous raw line) — the SAME hash-chain posture as plan 03's
- * journal (D-9.2-07), reusing journal.mjs's lineHash (never re-derived). A local
+ * journal, reusing journal.mjs's lineHash (never re-derived). A local
  * edit breaks the chain, and scoreCanaries then REFUSES to score ({chain-broken})
  * rather than silently trusting a doctored plant list.
  *

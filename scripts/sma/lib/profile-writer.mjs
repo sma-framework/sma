@@ -1,6 +1,6 @@
 /**
  * profile-writer.mjs — the ONE writer of the install profile and its starter
- * corpus notes (D-9.7-16).
+ * corpus notes.
  *
  * WHAT IT IS: the callable form of a contract that used to live only as PROSE in
  * `sma-core/workflows/sma-start.md`. That workflow told an agent what
@@ -34,7 +34,7 @@
  *     are pure functions of their answers: no Date.now(), no random, no network.
  *     Only writeProfile / seedCorpusNotes touch a disk, through the existing
  *     atomic writer, with every fs call dependency-injectable.
- *   - SECRETS NEVER LAND (T-9.7-43). A secret-shaped answer is refused by a NAMED
+ *   - SECRETS NEVER LAND. A secret-shaped answer is refused by a NAMED
  *     error before anything is written — to the profile AND to the corpus, since
  *     both are committed to git. This is the discipline /sma-start already carried
  *     in prose, made mechanical.
@@ -55,7 +55,7 @@ import { STARTER_TAGS } from './memory-scaffold.mjs'
 /** The schema version this writer stamps — same value `sma-start.md` documents. */
 export const PROFILE_VERSION = 2
 
-/** Named error: an answer carried a secret-shaped value (T-9.7-43). */
+/** Named error: an answer carried a secret-shaped value. */
 export class ProfileSecretError extends Error {
   constructor(message) {
     super(message)
@@ -161,7 +161,7 @@ function collectStrings(value, out) {
 }
 
 /**
- * assertNoSecrets(answers) — refuse BEFORE anything is written (T-9.7-43).
+ * assertNoSecrets(answers) — refuse BEFORE anything is written.
  *
  * The scan covers every answer, including the corpus-only ones: a secret typed
  * into «не повторять» would reach git through a note just as surely as through

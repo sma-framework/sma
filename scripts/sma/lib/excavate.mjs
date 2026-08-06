@@ -1,5 +1,5 @@
 /**
- * excavate.mjs — the adoption wedge (9.3-03, D-9.3-09).
+ * excavate.mjs — the adoption wedge.
  *
  * `sma excavate` mines a STRANGER's git history and turns three classes of
  * evidence into CATCHES — «this reflex would have fired before this push, here»:
@@ -12,7 +12,7 @@
  * evidence in the history itself — a commit whose subject says it fixes ci/build/
  * test and that follows a related change. It is a proxy, labeled as such.
  *
- * READ-ONLY GIT CONTRACT (T-9.3-03A, D-9.3-09): the ONLY git subcommands this
+ * READ-ONLY GIT CONTRACT: the ONLY git subcommands this
  * wedge ever runs are `log` (here, in mineRepo), and `rev-parse` + `remote
  * get-url` (in the CLI layer). Every invocation goes through a runner that takes
  * an ARGUMENT ARRAY and runs the git binary with the shell DISABLED — a hostile
@@ -26,7 +26,7 @@
  * total order is: evidence strength (revert-pair > ci-fix-forward > typo-chain),
  * then author date descending, then sha lexical ascending.
  *
- * CORPUS PATH (T-9.3-03B): an approved catch reaches the memory corpus ONLY as a
+ * CORPUS PATH: an approved catch reaches the memory corpus ONLY as a
  * draft under `.claude/memory/drafts/` through the SAME 3-condition promotion gate
  * predict.mjs's draftLessonFromMiss uses — never auto-promoted, never written to
  * the corpus root. Mined text is confined to a fenced untrusted-evidence block;
@@ -674,7 +674,7 @@ function isCorpusNote(file) {
  * excavateStats({metric, corpusDir, repoPath, runGit, readdir, readFile}) → number.
  *
  * The instrument behind the --stats numeric-last-line contract (predict.mjs scorer
- * input shape, D-9.3-16). Metrics:
+ * input shape). Metrics:
  *   - approved-lessons: count of top-level corpus notes carrying `excavated_from`.
  *   - firing-ready-pct: integer % of those notes where firingReady is true (0 when none).
  *   - determinism: mineRepo twice on the repo; 1 on serialized-equal output, else 0.

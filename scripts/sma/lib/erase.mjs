@@ -20,7 +20,7 @@
  * what is true, and erasing history is a larger promise than the one that was
  * approved. Where an episode SHARES the record's id, the copy it would keep is
  * unnamed by every surface, so this operation REFUSES rather than completing an
- * erase it cannot honestly call complete (D-11-DEFER-15).
+ * erase it cannot honestly call complete.
  *
  * VERIFICATION READS THE DISK. Nothing here concludes a copy is gone because the
  * code that removed it returned without throwing. Each surface reports survivors
@@ -49,7 +49,7 @@
  * GIT HISTORY IS NOT TOUCHED, AND THE RESULT SAYS SO. No code path in this module
  * executes a git command, and none ever should: automatic history rewriting is
  * irreversible and breaks every clone that already exists. It was rejected by
- * name (D-11-05). This module does everything it can honestly do and states the
+ * name. This module does everything it can honestly do and states the
  * one thing it cannot in its own result, rather than letting a caller assume.
  *
  * THE BUILD ANCHOR IS INJECTED, NOT DISCOVERED. Rebuilding the generated index
@@ -99,10 +99,10 @@ const DEFAULT_TERMINAL = 'memory-erase'
 const EPOCH_COMMIT = '0000000'
 
 /**
- * THE EPISODE COLLISION — a refusal, not a seventh surface (D-11-DEFER-15).
+ * THE EPISODE COLLISION — a refusal, not a seventh surface.
  *
  * `ERASE_SURFACES` does not include `episodes/`, and that follows the decision
- * behind this command (D-11-05): it clears the ACTIVE corpus, the working tree
+ * behind this command: it clears the ACTIVE corpus, the working tree
  * and every derived index, while an episode is a different asset class — «what
  * happened» rather than «what is true». The question normally cannot arise,
  * because the extracted claim is written as `<stem>-claim` while the episode

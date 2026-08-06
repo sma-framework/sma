@@ -1,6 +1,5 @@
 /**
- * doc-audit.mjs — deterministic honesty audit over the manual and README positioning
- * (9.3-09, D-9.3-01 + D-9.3-15).
+ * doc-audit.mjs — deterministic honesty audit over the manual and README positioning.
  *
  * Every promise the docs plan makes is turned into a number a script prints, not a
  * sentence a reviewer trusts. It verifies, zero-LLM and read-only:

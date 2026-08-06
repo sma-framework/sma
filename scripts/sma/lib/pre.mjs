@@ -151,7 +151,7 @@ async function runCollision(ctx) {
 }
 
 /**
- * reflex stream — the P2 reflex consumer (9.1-10). Derives tags → matches promoted
+ * reflex stream — the P2 reflex consumer. Derives tags → matches promoted
  * bug-lessons → applies the launch-blocking fatigue battery → journals each fire.
  * Mutates the SHARED ctx.seen (loaded/saved once by runPre, not here). WARN-only.
  * Kill-switch SMA_REFLEX_DISABLE (also honored by runPre before this runs).
@@ -229,7 +229,7 @@ async function runGates(ctx) {
 
     // 9.3-06 overlay: for each ladder gate rule at tier 'soft-deny', ARM the gate by
     // injecting its dormant softDeny.armEnv into checkEvent's env — the exact injectable
-    // surface 9.2-10's shadow-run uses, run in reverse. gates.mjs stays byte-untouched;
+    // surface the shadow-run uses, run in reverse. gates.mjs stays byte-untouched;
     // the module's kill envs + SMA_GATES_DISABLE still win (they ride the same env).
     const overlay = loadLadderOverlay(ctx)
     let env = ctx.env
@@ -279,7 +279,7 @@ async function runGates(ctx) {
  * mayDeny:true — an armed (SMA_AIRBAG_DENY) soft-deny on a dirty tree / foreign claim
  * surfaces permissionDecision 'deny' unless a GATE-AIRBAG override token is present.
  *
- * OPT-IN (CONS-9.2-B): the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
+ * OPT-IN: the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
  * plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
  * multiplexer re-measures under SLO. Protection stays UNCONDITIONAL once enabled
  * (the snapshot is not posture-gated; only the deny tier is). Kill: SMA_AIRBAG_DISABLE.
@@ -287,7 +287,7 @@ async function runGates(ctx) {
 async function runAirbag(ctx) {
   const warns = []
   try {
-    // opt-in default-off until the multiplexer meets its SLO (CONS-9.2-B).
+    // opt-in default-off until the multiplexer meets its SLO.
     if (!envOn(ctx.env.SMA_AIRBAG_ENABLE)) return { warns }
     if (ctx.toolName !== 'Bash') return { warns }
     const { airbag, slots } = ctx.deps
@@ -325,7 +325,7 @@ async function runAirbag(ctx) {
  * (detectAndTrip). mayDeny:true — but checkSpend only ever denies the Task tool at
  * >=100% of a FOUNDER-CONFIGURED cap; every other tool is WARN-only forever.
  *
- * OPT-IN (CONS-9.2-09-B / CONS-9.2-B): the stream is a NO-OP unless SMA_SPEND_OPTIN
+ * OPT-IN: the stream is a NO-OP unless SMA_SPEND_OPTIN
  * is set — plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
  * multiplexer re-measures under SLO (and P9.2-09-2 scores the warm spend-check <=50ms).
  * The mechanism ships complete + inert. Kill-switch: SMA_SPEND_DISABLE. Native probe true
@@ -334,7 +334,7 @@ async function runAirbag(ctx) {
 async function runSpend(ctx) {
   const warns = []
   try {
-    // opt-in default-off until the multiplexer meets its SLO (CONS-9.2-09-B).
+    // opt-in default-off until the multiplexer meets its SLO.
     if (!envOn(ctx.env.SMA_SPEND_OPTIN)) return { warns }
     const { spend, breaker } = ctx.deps
     if (!spend) return { warns }

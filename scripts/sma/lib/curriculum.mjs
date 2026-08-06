@@ -1,5 +1,5 @@
 /**
- * curriculum.mjs — the weekly miss-curriculum (9.3-06, D-9.3-16).
+ * curriculum.mjs — the weekly miss-curriculum.
  *
  * Turns error clusters (calibration misses + journal incidents + ignored-broke
  * fires) into two engineer-facing artifacts, MECHANICALLY — zero LLM, zero hidden

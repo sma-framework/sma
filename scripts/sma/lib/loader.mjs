@@ -205,7 +205,7 @@ export function resolvePeriphery(opts) {
   //
   // TWO VERDICTS, ONE CHAIN. `visibilityVerdict` answers «may this be SHOWN» from typed
   // structural fields and never from a body — that law is what makes it auditable, so
-  // the D-11-07 question «may this be BELIEVED» is asked by its SIBLING right here,
+  // the question «may this be BELIEVED» is asked by its SIBLING right here,
   // inside the same filter, rather than as a fifth check that would retire the law, or
   // as a parallel filter in the compiler that would become a second read path.
   const visibility = { now, audience, scope }
@@ -296,7 +296,7 @@ export function resolvePeriphery(opts) {
 
   const core = coreNotes.map((n) => n.file)
 
-  // FI-11 (9.1-13): the on-demand discovery fallback — for every queried AREA
+  // FI-11: the on-demand discovery fallback — for every queried AREA
   // facet whose per-area index file exists, name it, so the caller can read
   // the full catalog line for a match (discovery line → INDEX file → note).
   const indexFiles = [...buckets.area]
@@ -310,7 +310,7 @@ export function resolvePeriphery(opts) {
       }
     })
 
-  // 9.1-11 (B4): best-effort load-citation emission — one call per RETURNED
+  // best-effort load-citation emission — one call per RETURNED
   // note (CORE + periphery), so every load is measured at the consumption
   // point. The callback is optional + injected (callers without it are byte-
   // identical in behavior) and each call is fail-open: a citation failure can

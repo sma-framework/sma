@@ -4,12 +4,12 @@
  * Turns the memory corpus into MEMORY.md = an always-load CORE section (blockers,
  * current-task pointer, top facts) plus a sparse one-line-per-fact index (C1, B9,
  * B10). CORE is generated ONLY from memory notes — the repo instruction file is
- * NEVER an input (D-9-08). Output is byte-deterministic: no clock, no mtime, no HEAD
+ * NEVER an input. Output is byte-deterministic: no clock, no mtime, no HEAD
  * read in the output-producing path — the commit hash and the last-commit date map
  * are INJECTED so lint's MEM-REGEN (9-08) can byte-compare a committed artifact
  * against a fresh regeneration, and so the flip (9-14) can prove determinism.
  *
- * DETERMINISM CONTRACT (T-9-09-01):
+ * DETERMINISM CONTRACT:
  *   - commitHash + dateMap are arguments, never read from the environment here.
  *   - The single ordering comparator (importance desc → dateMap desc → name asc)
  *     is shared with the loader (9-09 loader.mjs imports orderNotes), so both the
@@ -480,7 +480,7 @@ export function listNoteFiles(corpusDir) {
  * schema errors (MEM-SCHEMA); the generator stays fail-soft (never crashes on a
  * bad note, so a regen during a partial migration still produces a stable file).
  *
- * Exported for trim.mjs (9.1-13): the trimmer sizes/demotes CORE through the
+ * Exported for trim.mjs: the trimmer sizes/demotes CORE through the
  * SAME read + render path the generator writes with — one membership truth.
  */
 export function readNotes(corpusDir) {
@@ -677,7 +677,7 @@ function mergeAreas(fm) {
  * loader (9-09): importance desc → injected last-commit date desc → name asc.
  * Recency is NEVER the primary filter (R4). A missing dateMap entry sorts last.
  *
- * Exported so loader.mjs can import a single ordering truth (T-9-09-01).
+ * Exported so loader.mjs can import a single ordering truth.
  *
  * @param {Record<string,string>} dateMap  file → last-commit ISO
  * @returns {(a:{file:string,importance:number}, b:{file:string,importance:number})=>number}
@@ -755,7 +755,7 @@ function renderCoreLine(n) {
 function statusSuffix(n) {
   return n.status && n.status !== 'active' ? ` · status: ${n.status}` : ''
 }
-// trim.mjs (9.1-13) sizes CORE demotions with the exact render the generator
+// trim.mjs sizes CORE demotions with the exact render the generator
 // writes — exported so the byte math cannot drift from the artifact.
 export { renderCoreLine }
 
@@ -837,7 +837,7 @@ export function buildIndex(opts) {
     out.push('')
   }
 
-  // ── Thin discovery layer (FI-11, 9.1-13) ───────────────────────────────
+  // ── Thin discovery layer (FI-11) ───────────────────────────────────────
   // One line per AREA with a count; the full one-line-per-note catalog lives
   // in the per-area INDEX-<area>.md files, pulled by tag on demand via
   // `node scripts/sma/cli.mjs load` — always-load stays within its byte budget with zero loss

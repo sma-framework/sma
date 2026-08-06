@@ -1,6 +1,6 @@
 /**
  * breaker.mjs — the loop-breaker: soft-disables an SMA rule that fires REPEATEDLY
- * in the journal, until a human review re-arms it (9.2-09, D-9.2-13).
+ * in the journal, until a human review re-arms it.
  *
  * ═══════════════════════════ WHAT IT DOES ═════════════════════════════════════
  *
@@ -10,7 +10,7 @@
  * detectAndTrip writes a per-ruleId marker under .sma/breaker/ that soft-disables
  * THAT rule (and only that rule) until `sma breaker re-arm` clears it.
  *
- * ═══════════════════════════ THE NAMESPACE FENCE (T-9.2-09-03) ═══════════════
+ * ═══════════════════════════ THE NAMESPACE FENCE ═════════════════════════════
  *
  * isBreakableRule is a hard fence: ONLY reflex note ids and SMA gate ids (GATE-*)
  * are breakable. The security-regression-guard and its invariants (SMA-*, SEC-*)
@@ -21,7 +21,7 @@
  * ═══════════════════════════ POSTURE ══════════════════════════════════════════
  *
  * Fail-open everywhere (C9 substrate law): any error → no trip, no throw. Re-arm is
- * the force-clear-with-provenance idiom (D-9-09): it journals who re-armed and why.
+ * the force-clear-with-provenance idiom: it journals who re-armed and why.
  * Node built-ins only; the journal + fs are dependency-injectable.
  */
 
@@ -32,7 +32,7 @@ import { appendEvent, readJournal } from './journal.mjs'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { BREAKER_DIR } from './constants.mjs'
 
-/** Claude's-discretion defaults, exported as named constants (D-9.2-13). */
+/** Claude's-discretion defaults, exported as named constants. */
 export const DEFAULT_BREAKER_THRESHOLD = 10
 export const DEFAULT_BREAKER_WINDOW_MS = 30 * 60 * 1000 // 30 min
 
@@ -288,7 +288,7 @@ export function recordSkipOnce(ruleId, opts = {}) {
 /**
  * reArm(ruleId, {breakerDir, journalDir, by, terminalId}) — the review re-arm. Deletes
  * the marker (re-enabling the rule) and journals a 'breaker-rearm' event WITH provenance
- * (who + why, the D-9-09 force-clear idiom). Absent marker → {rearmed:false}. Fail-open.
+ * (who + why, the force-clear idiom). Absent marker → {rearmed:false}. Fail-open.
  * @param {string} ruleId
  * @param {{breakerDir?:string, journalDir?:string, by?:string, terminalId?:string, journalAppend?:Function}} [opts]
  * @returns {{rearmed:boolean}}

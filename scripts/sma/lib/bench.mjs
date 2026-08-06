@@ -1,5 +1,5 @@
 /**
- * bench.mjs — the W0 measurement harness (9.2-01, D-9.2-02).
+ * bench.mjs — the W0 measurement harness.
  *
  * A DETERMINISTIC, ZERO-LLM metric runner over the V2 journals, git history, and
  * throwaway clones. It is the phase's founding instrument: the 8-metric 10x
@@ -110,7 +110,7 @@ export const SCORECARD_METRICS = [
 
 /**
  * AUX_METRICS — non-scorecard metrics that resolve through `bench --metric` but are
- * NOT part of the immutable 8-entry scorecard. `airbag-latency` (9.2-05, P9.2-05-B)
+ * NOT part of the immutable 8-entry scorecard. `airbag-latency`
  * is the ms-level airbag SLO instrument; the 8-entry contract stays exactly 8.
  */
 export const AUX_METRICS = [
@@ -124,7 +124,7 @@ export function metricById(id) {
 
 /**
  * measureAirbagLatency(opts) -> P9.2-05-B base. p95 of airbag snapshot elapsedMs
- * over ok receipts (9.2-05), computed by the ONE airbag.benchProviders path so it
+ * over ok receipts, computed by the ONE airbag.benchProviders path so it
  * never drifts from `sma airbag stats`. Empty → 0.
  */
 export function measureAirbagLatency(opts = {}) {
@@ -218,7 +218,7 @@ export function parseVerifyCommands(planText) {
  * standing `bash -c "cd <path> && <inner>"` idiom (the 9.1 plan convention) into
  * its cwd + inner command; a plain command passes through with cwd=null. `safe` is
  * the predict.mjs isSafeCommand verdict on the INNER command — the boundary every
- * caller must honor BEFORE any spawn (T-9.2-01).
+ * caller must honor BEFORE any spawn.
  */
 export function normalizeVerifyCommand(cmd) {
   const raw = String(cmd ?? '').trim()
@@ -235,7 +235,7 @@ export function normalizeVerifyCommand(cmd) {
 // ── S1: false-done-rate (blind, claims-only) ─────────────────────────────────
 
 /**
- * measureFalseDoneRate(opts) -> S1 base. Blind by construction (D-9.2-11): a
+ * measureFalseDoneRate(opts) -> S1 base. Blind by construction: a
  * verdict derives from PLAN claims only — must_haves artifacts (contains-grep) +
  * normalized `<verify>` commands — and NEVER reads a SUMMARY body. Completion is
  * SUMMARY-file EXISTENCE only, checked through an injected existence probe whose
@@ -280,7 +280,7 @@ export function measureFalseDoneRate(opts = {}) {
     for (const cmd of parseVerifyCommands(text ?? '')) {
       const norm = normalizeVerifyCommand(cmd)
       if (!norm.safe) {
-        planUnverifiable += 1 // skipped-unsafe: runner NEVER invoked (T-9.2-01)
+        planUnverifiable += 1 // skipped-unsafe: runner NEVER invoked
         continue
       }
       if (!runCommand) continue
@@ -350,7 +350,7 @@ export function measureGitLossRecoverability(opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now()
   const cutoff = now - windowDays * 24 * 60 * 60 * 1000
 
-  // Airbag-RECEIPT primary (9.2-05, D-9.2-08): once airbag receipts exist they are
+  // Airbag-RECEIPT primary: once airbag receipts exist they are
   // the canonical per-firing log — coverage = ok receipts / all airbag firings, and a
   // firing with ok:false counts AGAINST coverage (honest denominator). Only when NO
   // airbag receipts exist yet (the whole pre-airbag window) do we fall through to the
@@ -503,7 +503,7 @@ export function parseSummaryClaims(text) {
       }
     }
   }
-  // The commit convention tags the NUMERIC plan id (`feat(9.1-26): ...`), not the
+  // The commit convention tags the NUMERIC plan id (`feat: ...`), not the
   // full phase dir name — derive `9.1` from `9.1-sma-v2-...` so the git grep hits.
   const phaseNum = phase != null ? (/^(\d+(?:\.\d+)?)/.exec(String(phase)) || [])[1] ?? String(phase) : null
   const planId = phaseNum != null && plan != null ? `${phaseNum}-${plan}` : phaseNum != null ? String(phaseNum) : ''
@@ -711,7 +711,7 @@ import { atomicWriteJson, atomicWriteRaw } from './fs-atomics.mjs'
 export const PRE_TOOL_HOOKS = ['collision-check', 'reflex-check', 'gates-check']
 export const POST_TOOL_HOOKS = ['stall-check']
 
-/** SLO budget (D-9.2-04): a hook whose p95 exceeds this HURTS. */
+/** SLO budget: a hook whose p95 exceeds this HURTS. */
 export const HOOK_BUDGET_MS = 300
 
 /** A stdout that looks like an advisory WARN on the neutral fixture = a hurt. */
@@ -737,7 +737,7 @@ function percentile(samples, p) {
  * p95 exceeds HOOK_BUDGET_MS, or that emits an unexpected WARN on the neutral
  * fixture, lands in `hurts`.
  *
- * SECURITY (T-9.2-02): the source repo receives ONLY the read-class clone call;
+ * SECURITY: the source repo receives ONLY the read-class clone call;
  * every hook spawn runs with cwd under a mkdtemp clone, never the source root. The
  * injected exec records every invocation so tests can assert this.
  *
@@ -972,7 +972,7 @@ export function examGrade(opts = {}) {
  * of a session, writes ONE marker { sessionToken, registeredAt, firstEditAt } to
  * `.sma/bench/ttc/<session>.json`; a second Edit is a no-op (marker exists -> early
  * return, no rewrite). Fully tolerant (never throws) — the caller wraps it in a
- * try/catch on the hook path so a bench bug can never break stall-check (T-9.2-03).
+ * try/catch on the hook path so a bench bug can never break stall-check.
  *
  * @param {{toolName:string, sessionToken:string, dirs?:object, now?:number,
  *          registeredAtFor?:Function, existsFn?:Function, writeFn?:Function}} opts
@@ -1033,10 +1033,10 @@ function tokenizeKeywords(v) {
 // Task 3 — aggregate runner, baseline capture, and freeze verification.
 // ════════════════════════════════════════════════════════════════════════════
 
-/** The immutable baseline freeze date (D-9.2-02). W1+ plans gate on this. */
+/** The immutable baseline freeze date. W1+ plans gate on this. */
 export const FREEZE_DATE = '2026-07-21'
 
-/** The two DETERMINISTIC bases that must reproduce on a fresh clone (P9.2-01-C). */
+/** The two DETERMINISTIC bases that must reproduce on a fresh clone. */
 export const DETERMINISTIC_METRICS = ['false-done-rate', 'phantom-writes']
 
 /**
@@ -1076,7 +1076,7 @@ export function captureBaseline(ctx = {}) {
  * verifyFreeze({ ctx, frozen }) -> { ok, checked }. Recomputes ONLY the deterministic
  * bases (S1 false-done-rate over the frozen plan set, S4 phantom-writes over the frozen
  * phase window) and compares them to the frozen values (exact equality). Timing metrics
- * are excluded by design (P9.2-01-C). Returns ok=true only when every deterministic
+ * are excluded by design. Returns ok=true only when every deterministic
  * base reproduces exactly.
  *
  * @param {{ctx:object, frozen:Record<string,number>}} args

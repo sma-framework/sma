@@ -10,7 +10,7 @@
  * It mechanizes the house verify-before-execute HARD RULE (the 23-02 near-re-execution
  * incident, where a parallel terminal had already committed the plan's code).
  *
- * Consume-never-reimplement (D-9.3-02): this module writes NO second frontmatter
+ * Consume-never-reimplement: this module writes NO second frontmatter
  * parser, NO second command allowlist, NO second tree-comparison engine. It composes
  * three existing substrate modules, all LAZY-imported and tolerated-if-absent:
  *   - bench.mjs      → parseMustHaveArtifacts / parseVerifyCommands / normalizeVerifyCommand
@@ -44,7 +44,7 @@ export const VERDICT_CODES = { built: 0, partial: 1, absent: 2 }
 
 const DEFAULT_READ = (p) => readFileSync(p, 'utf8')
 
-/** Lazy, tolerated-if-absent substrate loaders (D-9.3-02). */
+/** Lazy, tolerated-if-absent substrate loaders. */
 async function loadBench(inject) {
   if (typeof inject === 'function') return inject()
   return import('./bench.mjs')

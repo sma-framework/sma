@@ -4,7 +4,7 @@
  * `sma exam` replays HELD-OUT historical founder situations through the synthetic
  * orchestrator and computes a match rate against the founder's REAL decisions — the
  * calibration metric for the orchestrator policy prompt (plan 9.5-06). It is the
- * measurement half of the «оркестрация × обучение» differentiator (D-9.5-08): the
+ * measurement half of the «оркестрация × обучение» differentiator: the
  * policy's fidelity is MEASURED, not asserted.
  *
  *   - buildExam samples founder-decision corpus notes deterministically (seeded
@@ -14,13 +14,13 @@
  *     appends the score to a durable ledger keyed by policy_version, and prints the
  *     rate as the numeric LAST stdout line (machine-readable for calibration).
  *
- * BLIND-EXAM INVARIANT (T-9.5-18): the answer key is written to a SEPARATE file
+ * BLIND-EXAM INVARIANT: the answer key is written to a SEPARATE file
  * whose name carries the `-key` suffix (`exam-<date>-key.jsonl`). The examinee
  * (sma-synthetic-orchestrator) is handed ONLY the `exam-<date>.jsonl` items — the
  * key file is NEVER passed to it. The path convention IS the enforcement: a
  * consumer that reads `exam-<date>.jsonl` can never see the stripped answers.
  *
- * CONTAINMENT (copied from decision-corpus.mjs / excavate.mjs, D-9.3-09): all
+ * CONTAINMENT (copied from decision-corpus.mjs / excavate.mjs): all
  * artifacts land under `<memoryDir>/exam/` — a LOCAL repo tree, never public/, never
  * a served artifact, never shipped with the SMA product. Mined situation text is
  * DATA end to end: it is copied verbatim into an item's `situation` field and is
@@ -235,7 +235,7 @@ const VALID_VERDICTS = new Set(['match', 'partial', 'miss'])
  *
  * Reads externally-graded rows {id, verdict: match|partial|miss} (grading is done by
  * the founder or a judge agent OUTSIDE this harness — the score is spoofing-resistant
- * because the grading input is external, T-9.5-19). Computes
+ * because the grading input is external). Computes
  *   matchRate = floor( (match + 0.5*partial) / total * 100 )   [0 when total==0]
  * appends the score to `<memoryDir>/exam/scores.jsonl` with the policy_version + the
  * grades path (audit trail), and prints the match rate as the numeric LAST stdout

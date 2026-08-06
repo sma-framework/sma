@@ -1,5 +1,5 @@
 /**
- * fragments.mjs — atomic knowledge facts with triggers (9.3-05, D-9.3-07).
+ * fragments.mjs — atomic knowledge facts with triggers.
  *
  * A fragment is ONE fact: an individual .md file under `<corpusDir>/fragments/` — a
  * SUBDIRECTORY precisely so the V2 note pipeline (readNotes / build-index / MEMORY.md
@@ -14,7 +14,7 @@
  * (Bash command), `tag:<tag>` (derived facet). Delivery reuses the reflex fatigue posture
  * (once per session, via the SHARED seen-store under a 'frag:' namespace) and cites each
  * delivered fact through recordCitation kind 'fire' — the SAME usage journal notes ride
- * (D-9.3-02: consumed, never re-implemented).
+ * (consumed, never re-implemented).
  *
  * Node built-ins only; everything DI; no child_process anywhere; zero network; zero LLM.
  */

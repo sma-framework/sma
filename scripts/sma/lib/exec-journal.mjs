@@ -9,8 +9,8 @@
  * (execute-plan.md) reconstructs the exact resume point in <=5 minutes.
  *
  * Fail-open (C9): a corrupt line is skipped-and-counted, never a throw; a missing
- * journal yields a zero-event report. Appends are best-effort at the call site
- * (T-9.1-44): a missing line degrades resume quality, never blocks work.
+ * journal yields a zero-event report. Appends are best-effort at the call site:
+ * a missing line degrades resume quality, never blocks work.
  *
  * Node built-ins only; the exec dir is dependency-injectable via the option.
  */

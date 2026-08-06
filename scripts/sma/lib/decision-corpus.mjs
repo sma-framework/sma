@@ -5,9 +5,9 @@
  * local Claude Code session transcripts (~thousands of jsonl) and turns each into
  * a DRAFT corpus note «ситуация → реальное решение основателя + почему». The
  * corpus is the raw material for the orchestrator policy prompt + replay exam
- * (plan 9.5-06) — the «оркестрация × обучение» differentiator (D-9.5-08).
+ * (plan 9.5-06) — the «оркестрация × обучение» differentiator.
  *
- * CONTAINMENT POSTURE — copied VERBATIM from excavate.mjs (D-9.3-09):
+ * CONTAINMENT POSTURE — copied VERBATIM from excavate.mjs:
  *   - LOCAL ONLY. Transcripts contain secrets/PHI. Mined material lands ONLY as
  *     drafts under `<memoryDir>/drafts/` — never auto-committed, never in public/,
  *     never in a served artifact, never in the SMA product's shipped files. The
