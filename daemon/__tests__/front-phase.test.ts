@@ -227,6 +227,17 @@ async function call(front: any, o: any) {
   return res
 }
 
+/**
+ * The id of the first question still open in a phase — asked of the ENGINE rather than
+ * hand-written here, because the identifier is derived from the area's name and a literal in
+ * this file would be a second implementation of that derivation.
+ */
+function openIdOf(io: any, phase: string): string {
+  const card = derivePhaseCard({ projectDir: PROJECT, phaseId: phase, fsImpl: io })
+  const open = (card?.questions ?? []).find((q: any) => !q.answer)
+  return open ? open.id : ''
+}
+
 /** A front wired with exactly the collaborators the phase doors use. */
 function mkFront(deps: any = {}) {
   const enqueued: any[] = []
@@ -457,11 +468,219 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
   })
 })
 
+// ══════════════════════════════ THE DECISION DOOR ═════════════════════════════
+
+/** A CAS seam that records every transition and can be told to lose the claim. */
+function casSeam({ lose = false }: { lose?: boolean } = {}) {
+  const calls: Array<{ sql: string; params: any[] }> = []
+  const execSql = async (sql: string, params: any[]) => {
+    calls.push({ sql, params })
+    const isClaim = /status = \$1/.test(sql) && params[0] === 'approving'
+    return { rows: isClaim && lose ? [] : [{ id: params[1] }] }
+  }
+  return { execSql, calls, transitions: () => calls.map((c) => `${c.params[c.params.length - 1]}->${c.params[0]}`) }
+}
+
+/** A phase parked mid-round: one question answered, one still open, plus its queue row. */
+function parkedDiscussion(over: Tree = {}) {
+  return fakeFs({
+    [`${PROJECT}/.planning/phases/14-round/14${CHECKPOINT_SUFFIX}`]: checkpoint({
+      'граница релиза': [
+        { question: 'Что входит?', answer: 'уже построенное', options_presented: [] },
+        { question: 'Кого зовём?', options_presented: ['никого', 'друга'] },
+      ],
+    }),
+    ...over,
+  })
+}
+
+const PARKED_ROW = {
+  id: 'S-42',
+  status: 'awaiting_approval',
+  attempt: 2,
+  data: { kind: 'document', stage: 'discuss', phase: '14' },
+}
+
+describe('POST /api/decision/answer — THE ANSWER WAKES THE ROUND, NOT THE KEYSTROKE', () => {
+  it('the LAST answer re-queues the round: claimed, enqueued, approved, in that order', async () => {
+    const io = parkedDiscussion()
+    const cas = casSeam()
+    const { front, enqueued, emitted } = mkFront({ fsImpl: io, rows: [PARKED_ROW], casExec: cas.execSql })
+
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '14', questionId: openIdOf(io, '14'), taskId: 'S-42', optionId: 'o0' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, open: 0, answered: 2, taskId: 'S-42' })
+    expect(cas.transitions()).toEqual(['awaiting_approval->approving', 'approving->approved'])
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]).toMatchObject({
+      id: 'S-42',
+      lane: 'paperwork',
+      attempt: 3, // the SAME round, one attempt further on — never a new row
+      data: { kind: 'document', stage: 'discuss', phase: '14' },
+    })
+    expect(enqueued[0].title).toBe('/sma-discuss-phase 14 --batch --text')
+    expect(emitted).toContainEqual({ event: 'discussion.updated', phase: '14' })
+  })
+
+  it('THE TEXT OF AN ANSWER NEVER REACHES A PROMPT — it stays in the artefact', async () => {
+    const io = parkedDiscussion()
+    const secret = 'зовём Петра, но только после публикации'
+    const { front, enqueued } = mkFront({ fsImpl: io, rows: [PARKED_ROW], casExec: casSeam().execSql })
+
+    await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '14', questionId: openIdOf(io, '14'), taskId: 'S-42', freeText: secret },
+    })
+
+    // it IS in the file the next round reads …
+    const parked = JSON.parse(io.readFileSync(`${PROJECT}/.planning/phases/14-round/14${CHECKPOINT_SUFFIX}`))
+    expect(parked.decisions['граница релиза'][1].answer).toBe(secret)
+    // … and nowhere in what the queue was handed
+    expect(JSON.stringify(enqueued)).not.toContain('Петра')
+    expect(JSON.stringify(enqueued)).not.toContain(secret)
+  })
+
+  it('THE POSITION IS THE ARTEFACT’S BUSINESS: an execute round wakes with its original command', async () => {
+    const io = fakeFs({
+      [`${PROJECT}/.planning/phases/15-exec/15${EXEC_CHECKPOINT_SUFFIX}`]: checkpoint(
+        { 'развилка исполнения': [{ question: 'Ставим таблицу?', options_presented: ['да', 'нет'] }] },
+        { position: { plan: '15-03', task: 2, completed: ['15-01', '15-02'] } },
+      ),
+    })
+    const row = { id: 'S-77', status: 'awaiting_approval', attempt: 1, data: { kind: 'code', stage: 'execute', phase: '15' } }
+    const { front, enqueued } = mkFront({ fsImpl: io, rows: [row], casExec: casSeam().execSql })
+
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '15', questionId: openIdOf(io, '15'), taskId: 'S-77', optionId: 'o1' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    // byte-identical to the string that STARTS an execute stage — the door carries no position
+    expect(enqueued[0].title).toBe('/sma-execute-phase 15')
+    expect(enqueued[0].data).toEqual({ kind: 'code', stage: 'execute', phase: '15' })
+    expect(JSON.stringify(enqueued)).not.toContain('15-03')
+    // and the position block is still in the artefact, untouched by the write
+    const parked = JSON.parse(io.readFileSync(`${PROJECT}/.planning/phases/15-exec/15${EXEC_CHECKPOINT_SUFFIX}`))
+    expect(parked.position).toEqual({ plan: '15-03', task: 2, completed: ['15-01', '15-02'] })
+  })
+
+  it('an answer that is NOT the last one records and wakes nothing', async () => {
+    const io = fakeFs({
+      [`${PROJECT}/.planning/phases/14-round/14${CHECKPOINT_SUFFIX}`]: checkpoint({
+        'область': [{ question: 'первый?' }, { question: 'второй?' }],
+      }),
+    })
+    const cas = casSeam()
+    const { front, enqueued } = mkFront({ fsImpl: io, rows: [PARKED_ROW], casExec: cas.execSql })
+
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '14', questionId: openIdOf(io, '14'), taskId: 'S-42', freeText: 'первый ответ' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, open: 1, answered: 1 })
+    expect(enqueued).toEqual([])
+    expect(cas.calls).toEqual([])
+  })
+
+  it('ONE ROUND, ONE WAKE: a lost claim is a 409 and enqueues nothing', async () => {
+    // The real race this guards: the founder decided the parked row from the «Ждут решения»
+    // card in the same second the answer arrived, so the row is no longer awaiting_approval.
+    const io = parkedDiscussion()
+    const cas = casSeam({ lose: true })
+    const { front, enqueued } = mkFront({ fsImpl: io, rows: [PARKED_ROW], casExec: cas.execSql })
+
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '14', questionId: openIdOf(io, '14'), taskId: 'S-42', optionId: 'o0' },
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(enqueued).toEqual([])
+    expect(cas.transitions()).toEqual(['awaiting_approval->approving']) // never reached approved
+  })
+
+  it('the answer is recorded even when there is no round to wake — the two acts are separate', async () => {
+    const io = parkedDiscussion()
+    const { front, enqueued } = mkFront({ fsImpl: io, rows: [], casExec: casSeam().execSql })
+
+    // no taskId at all: a question answered from the phase card rather than from the queue row
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '14', questionId: openIdOf(io, '14'), optionId: 'o1' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, open: 0, answered: 2 })
+    expect(enqueued).toEqual([])
+    const parked = JSON.parse(io.readFileSync(`${PROJECT}/.planning/phases/14-round/14${CHECKPOINT_SUFFIX}`))
+    expect(parked.decisions['граница релиза'][1].answer).toBe('друга')
+  })
+
+  it('every refusal is the ENGINE’s, in its own words: unknown question, second answer, secret, cap', async () => {
+    const io = parkedDiscussion()
+    const front = mkFront({ fsImpl: io, rows: [PARKED_ROW], casExec: casSeam().execSql }).front
+    const post = (body: object) => call(front, { method: 'POST', url: '/api/decision/answer', body })
+    const open = openIdOf(io, '14')
+
+    // the shape of the request is judged BEFORE the file is opened: no answer in it at all
+    const empty = await post({ phase: '14', questionId: open })
+    expect(empty.statusCode).toBe(400)
+    expect(empty.body).toContain('optionId')
+    // a well-formed answer to a question that does not exist
+    expect((await post({ phase: '14', questionId: 'нет-такого', freeText: 'да' })).statusCode).toBe(404)
+
+    const secret = await post({ phase: '14', questionId: open, freeText: 'sk-ant-api03-Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0Lz' })
+    expect(secret.statusCode).toBe(400)
+    expect(secret.body).toContain('ключ')
+    // NOTHING was written: the secret never reached the artefact
+    expect(io.readFileSync(`${PROJECT}/.planning/phases/14-round/14${CHECKPOINT_SUFFIX}`)).not.toContain('sk-ant')
+
+    const long = await post({ phase: '14', questionId: open, freeText: 'я'.repeat(2001) })
+    expect(long.statusCode).toBe(400)
+
+    const unknownField = await post({ phase: '14', questionId: open, severity: 'major' })
+    expect(unknownField.statusCode).toBe(400)
+    expect(unknownField.body).toContain('severity')
+
+    // and after all four refusals the question is STILL open
+    expect(openIdOf(io, '14')).toBe(open)
+
+    // the first answer stands: answering it twice is refused rather than overwritten
+    expect((await post({ phase: '14', questionId: open, optionId: 'o0' })).statusCode).toBe(200)
+    expect((await post({ phase: '14', questionId: open, optionId: 'o1' })).statusCode).toBe(400)
+  })
+
+  it('a torn checkpoint answers 409 with the offending field, never 400 at the person typing', async () => {
+    const io = parkedDiscussion({ [`${PROJECT}/.planning/phases/14-round/14${CHECKPOINT_SUFFIX}`]: '{нет' })
+    const { front } = mkFront({ fsImpl: io, rows: [PARKED_ROW], casExec: casSeam().execSql })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/decision/answer',
+      body: { phase: '14', questionId: 'abc-0', freeText: 'да' },
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.body).toContain('JSON')
+  })
+})
+
 // ═════════════════════ the freeze these fills are measured by ═════════════════
 
 describe('the route freeze shrinks by exactly the slots this work filled', () => {
   it('the phase doors are gone from PENDING_ROUTES', () => {
-    for (const key of ['POST /api/phase/stage', 'GET /api/phase/:id']) {
+    for (const key of ['POST /api/phase/stage', 'GET /api/phase/:id', 'POST /api/decision/answer']) {
       expect(PENDING_ROUTES.has(key), `${key} is live and must not be declared pending`).toBe(false)
     }
   })

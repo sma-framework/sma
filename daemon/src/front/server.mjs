@@ -69,6 +69,7 @@ import { fileURLToPath } from 'node:url'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
@@ -80,6 +81,10 @@ import { collectDiagnostics } from './diagnostics.mjs'
 // NOTE: diagnostics.mjs is STATICALLY imported for the same reason as the two below: it is
 // pure over an injected os/process/fs, it writes nothing, it reaches no model and no spawn,
 // and its whole job is to REFUSE to carry anything — there is no capability here to gate.
+// NOTE: the questions engine is STATICALLY imported for the same reason: it is pure over an
+// INJECTED fs, it reaches no model and no spawn, and the ONE field it writes it writes into an
+// artifact the workflow already owns, through its own atomic write. There is no capability
+// here to gate — and unlike a read model it has no second implementation to inject.
 // NOTE: the import scanner and the onboarding interview are STATICALLY imported — unlike
 // the appliers and the chat engine — because neither holds a capability worth gating: both
 // are pure over an INJECTED fs, neither reaches a model or a spawn (their suites prove it
@@ -285,7 +290,6 @@ export const ROUTES = Object.freeze({
 export const PENDING_ROUTES = Object.freeze(
   new Set([
     'POST /api/phase/uat',
-    'POST /api/decision/answer',
     'GET /api/artifact',
     'GET /api/memory/drafts',
     'POST /api/memory/apply',
@@ -2008,9 +2012,6 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 function handlePhaseUat({ res }) {
   send501(res)
 }
-function handleDecisionAnswer({ res }) {
-  send501(res)
-}
 function handleArtifact({ res }) {
   send501(res)
 }
@@ -2218,6 +2219,160 @@ function handlePhaseCard({ res, params, deps }) {
   const card = deps.derivePhaseCard({ projectDir, phaseId: id, fsImpl: deps.fsImpl })
   if (!card) return send404(res)
   return sendJson(res, 200, card)
+}
+
+/**
+ * How the questions engine's five named errors answer at the door.
+ *
+ * A TORN CHECKPOINT IS NOT THE CALLER'S FAULT and must not read as one: it is a file on this
+ * machine that somebody has to look at, so it answers 409 with the engine's own message (which
+ * names the offending field), never a 400 that would send a person looking at their own typing.
+ * A SECRET-SHAPED ANSWER answers 400 with the engine's explanation and NOTHING is logged: the
+ * text that tripped the heuristic is the one text that must not be written down anywhere.
+ */
+function questionsError(res, err) {
+  const name = (err && err.name) || ''
+  const message = String((err && err.message) || 'bad request')
+  if (name === 'CheckpointFormatError') return send409(res, message)
+  if (name === 'UnknownQuestionError') return send404(res)
+  return send400(res, message)
+}
+
+/** The questions engine over the phase cycle's own tree, reading BOTH parking files. */
+function questionsFor(deps) {
+  return createQuestions({
+    projectDir: phaseCycleDir(deps) ?? '.',
+    fsImpl: deps.fsImpl,
+    checkpointSuffix: ALL_CHECKPOINT_SUFFIXES,
+  })
+}
+
+/**
+ * POST /api/decision/answer — body {phase, questionId, taskId?, optionId?, freeText?}.
+ * Answer ONE parked question, and wake the round it was blocking if it was the last one.
+ *
+ * TWO ACTS, IN THIS ORDER, AND THE ORDER IS THE CONTRACT. The answer is recorded FIRST, into
+ * the workflow's own artifact, by the engine that owns the validation, the secret heuristic and
+ * the atomic write. Only then — and only when nothing is still open, and only when the caller
+ * named the parked row — does the round wake. So answering is always safe: nothing starts
+ * because a person typed, only because a person FINISHED.
+ *
+ * THE ANSWER TRAVELS AS THE ARTIFACT, NEVER AS THE PROMPT. The re-queued task carries the SAME
+ * command the stage was started with, byte for byte, out of the same frozen dictionary; the
+ * worker reads what was decided from the checkpoint, which is where the terminal reads it from
+ * too. Nothing a person typed is ever concatenated into an instruction here.
+ *
+ * AND THE DOOR KNOWS NOTHING ABOUT POSITION. An execute stage that parked at a checkpoint
+ * resumes from the position written INSIDE that artifact — the workflow's business, carried by
+ * the file, invisible to this function. That is why the woken command is identical to the
+ * original: «where it stopped» is not a parameter, it is a fact already on disk.
+ *
+ * The wake is the two-phase CAS the approve door uses — awaiting_approval → approving → the
+ * re-queue → approved — so two people answering the last question at the same time produce one
+ * 200 and one 409 rather than two workers on one stage.
+ */
+async function handleDecisionAnswer({ req, res, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'phase', 'questionId', 'optionId', 'freeText']))) {
+    return undefined
+  }
+
+  const phase = b.phase === undefined || b.phase === null ? '' : String(b.phase)
+  if (!PHASE_RE.test(phase)) return send400(res, 'invalid phase')
+  const questionId = b.questionId
+  if (typeof questionId !== 'string' || questionId.trim() === '') return send400(res, 'invalid questionId')
+  const taskId = b.taskId
+  if (taskId !== undefined && (typeof taskId !== 'string' || !ID_RE.test(taskId))) {
+    return send400(res, 'invalid taskId')
+  }
+
+  // ── (1) record it. Every refusal below belongs to the engine and is reported in its words:
+  // the caps, the one-of-two rule and the secret screen live in exactly one place.
+  const engine = questionsFor(deps)
+  let progress
+  try {
+    engine.recordAnswer(phase, questionId, {
+      ...(b.optionId !== undefined ? { optionId: b.optionId } : {}),
+      ...(b.freeText !== undefined ? { freeText: b.freeText } : {}),
+    })
+    progress = engine.progress(phase)
+  } catch (err) {
+    return questionsError(res, err)
+  }
+
+  emitSafe(deps, { event: 'discussion.updated', phase })
+
+  // ── (2) the round wakes only on the LAST answer, and only when the row was named.
+  if (progress.open > 0 || taskId === undefined) {
+    return sendJson(res, 200, { ok: true, open: progress.open, answered: progress.answered })
+  }
+  const woken = await wakeParkedRound(res, deps, { taskId, phase })
+  if (woken.answered) return undefined
+  return sendJson(res, 200, {
+    ok: true,
+    open: progress.open,
+    answered: progress.answered,
+    ...(woken.taskId ? { taskId: woken.taskId } : {}),
+  })
+}
+
+/**
+ * Re-queue the round a parked row was holding, under the two-phase CAS.
+ *
+ * The stage and the phase are read off the ROW's own `data` envelope, not off the request: the
+ * caller says which row it is answering for, and the row says what it was doing. A row that
+ * carries no envelope is not a stage and is left exactly where it is — silently, with the
+ * answer still recorded, because the answer was the point and the wake is the courtesy.
+ *
+ * @returns {Promise<{answered:boolean, taskId?:string}>} answered:true when a response was sent
+ */
+async function wakeParkedRound(res, deps, { taskId, phase }) {
+  const adapter = deps.adapter
+  if (typeof deps.casExec !== 'function' || !adapter || typeof adapter.enqueue !== 'function') {
+    return { answered: false } // the answer stands; this daemon simply has no queue to wake
+  }
+
+  let row = null
+  if (typeof adapter.list === 'function') {
+    const rows = await adapter.list({})
+    row = (Array.isArray(rows) ? rows : []).find((r) => r && r.id === taskId) || null
+  }
+  const envelope = (row && row.data) || null
+  const stage = envelope && envelope.stage
+  if (!stage || !TASK_STAGES.includes(stage)) return { answered: false }
+
+  const table = deps.taskTable || 'sma_task_attempts'
+  const claim = await casTransition(deps.casExec, {
+    table,
+    id: taskId,
+    from: 'awaiting_approval',
+    to: 'approving',
+    ...(deps.dispatchedAt !== undefined ? { dispatchedAt: deps.dispatchedAt } : {}),
+  })
+  if (!claim.won) {
+    send409(res, 'answer race lost (the round is already awake)')
+    return { answered: true }
+  }
+
+  // The phase the round was working on is the ROW's, not the request's — the two agree in
+  // every ordinary case, and where they could not, the row is the one that ran.
+  const rowPhase = envelope.phase === undefined || envelope.phase === null ? phase : String(envelope.phase)
+  const attempt = Number.isFinite(row && row.attempt) ? row.attempt : 1
+  const requeue = await enqueueOrExplain(res, adapter, {
+    id: taskId,
+    source: 'roster',
+    title: stageCommand(stage, rowPhase),
+    lane: STAGE_LANE,
+    data: { kind: stageKind(stage), stage, phase: rowPhase },
+    attempt: attempt + 1,
+  })
+  if (requeue.answered) return { answered: true }
+
+  await casTransition(deps.casExec, { table, id: taskId, from: 'approving', to: 'approved' })
+  emitSafe(deps, { event: 'task.queued', taskId })
+  return { answered: false, taskId }
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──
