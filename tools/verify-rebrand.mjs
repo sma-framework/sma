@@ -199,7 +199,14 @@ const INTERNAL_ID = /\b(?:[TDQ]-\d+(?:\.\d+)?-(?:[A-Z]{2,}-)?\d+[a-z]?|SB-\d{3})
  *     WORD segment is the half an earlier pattern walked past.
  *   threat            — `T-9.1-03`, `T-11-11-01`, `T-02-01`.
  *   private backlog   — `SB-031`. Three digits, so a bare `SB-1` is not assumed.
- *   short registers   — `LP-2`, `FI-9`, `CH-1`, `CONS-1`, `WR-02`, `CR-01`.
+ *   short registers   — `LP-2`, `FI-9`, `WR-02`, `CR-01`.
+ *   grill / consequence — the COMPOUND form only (`CH-9.4-06-1`, `CONS-9.2-07-A`,
+ *     `CONS-09-01-A`): a phase segment plus a counter. The BARE form is the
+ *     ADOPTER'S vocabulary and stays legal — `CONS-1` is an id in the
+ *     `consequences:` block of the adopter's own plan frontmatter (schema
+ *     {id, trigger, blocks, until}, enforced by the CONS-SCHEMA lint rule), and
+ *     `CH-1` labels a step in the shipped grill demo. Banning either would fail
+ *     the product on its own words, which is the same mistake `BL-<n>` avoids.
  *   generation tag    — `SMA-3`, with ONE carve-out: `SMA-2` names the LEGACY
  *     PRODUCT this repo imports from (`sma-core/bin/lib/sma2-import.cjs` exists to
  *     read it), so it is product vocabulary, not a filing number.
@@ -214,7 +221,8 @@ const REGISTER_SHAPES = [
   String.raw`[DQ]-\d+(?:\.\d+)?-(?:\d+[a-z]?|[A-Z][A-Z0-9]*(?:-\d+[a-z]?)?)`,
   String.raw`T-\d+(?:\.\d+)?-\d+(?:-\d+)?[a-z]?`,
   String.raw`SB-\d{3}`,
-  String.raw`(?:LP|FI|CH|CONS)-\d+`,
+  String.raw`(?:LP|FI)-\d+`,
+  String.raw`(?:CH|CONS)-\d+(?:\.\d+)?-\d+(?:-[A-Za-z0-9]+)?`,
   String.raw`(?:WR|CR)-\d{2}`,
   String.raw`SMA-[013-9](?!\d)`,
   String.raw`49\.\d+-\d+`,
