@@ -10,7 +10,7 @@
  *     land in the ordinary point of the same day and account, and the conversation's point
  *     carries a real booking id so the screen can find it by that same prefix,
  *   - TOKENS travel beside the euros: a subscription row books no dollar cost, and a series
- *     that carried money alone would show a night of real work as a flat zero (Pitfall 5),
+ *     that carried money alone would show a night of real work as a flat zero,
  *   - the window is a rolling number of days, and the account list narrows it,
  *   - a missing or corrupt book yields fewer points, never an error.
  *

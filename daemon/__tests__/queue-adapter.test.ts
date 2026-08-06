@@ -1,16 +1,16 @@
 /**
- * Tests for daemon/src/queue/adapter.mjs (Phase 9.5 Plan 01, Task 3).
+ * Tests for daemon/src/queue/adapter.mjs.
  *
- * The D-9.5-02c QueueAdapter seam — an EXECUTABLE contract any backend (the
- * in-memory reference now, pg-boss in plan 9.5-03, a file backend later) must pass:
+ * The QueueAdapter seam — an EXECUTABLE contract any backend (the
+ * in-memory reference now, pg-boss next, a file backend later) must pass:
  *   - queueAdapterContractSuite('memory', …) runs the full describe/it block against
  *     createMemoryQueue with an injected fake clock (this is what makes the seam
- *     honest — plan 03 re-runs THIS suite against pg-boss).
+ *     honest — the pg-boss suite re-runs THIS block against a real backend).
  *   - Direct unit tests below pin the grep-visible invariants in the test file itself:
- *     the NoReceiptError refusal (Pitfall 6), enqueue coalescing (Pattern 5), the
- *     D-9.5-10 DoR gate (NotReadyError / InvalidStoryPointsError), the forge rule
- *     (D-9.5-09), and the enqueuedAt/claimedAt/completedAt timestamps (D-9.5-10).
- *   - Constants: FAIL_REASONS is the 9-reason human taxonomy (D-9.5-11) and
+ *     the NoReceiptError refusal, enqueue coalescing, the DoR gate
+ *     (NotReadyError / InvalidStoryPointsError), the forge rule, and the
+ *     enqueuedAt/claimedAt/completedAt timestamps.
+ *   - Constants: FAIL_REASONS is the 9-reason human taxonomy and
  *     REASON_LABELS carries a RU подпись for every one.
  */
 
@@ -88,7 +88,7 @@ describe('resolveExpireMs — the ONE liveness value both the sweep and the leas
   })
 })
 
-describe('validateTask — DoR gate (D-9.5-10) + forge (D-9.5-09)', () => {
+describe('validateTask — DoR gate + forge', () => {
   it('rejects a backlog task missing storyPoints with NotReadyError', () => {
     expect(() => validateTask(backlog({ storyPoints: undefined }))).toThrow(NotReadyError)
   })
@@ -138,7 +138,7 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
     await expect(q.complete('BL-96', { receiptRef: 'reverify:abc' })).resolves.toBeTruthy()
   })
 
-  it('enqueue of the same id while pending coalesces to ONE entry with a counter (Pattern 5)', async () => {
+  it('enqueue of the same id while pending coalesces to ONE entry with a counter', async () => {
     const c = mkClock()
     const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
     await q.enqueue(backlog())
@@ -150,7 +150,7 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
     expect(rows[0].coalesceCount).toBe(2)
   })
 
-  it('stamps enqueuedAt / claimedAt / completedAt across the transitions (D-9.5-10)', async () => {
+  it('stamps enqueuedAt / claimedAt / completedAt across the transitions', async () => {
     const c = mkClock(5000)
     const q = createMemoryQueue({ clock: c.clock, expireMs: 10000 })
     await q.enqueue(backlog())
@@ -177,9 +177,9 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
   })
 })
 
-// ── V5.1: the project field on a task (D-9.7-01) + the read-time backfill (D-9.7-08) ──
+// ── V5.1: the project field on a task + the read-time backfill ──
 
-describe('project — an additive task field with an injected default (D-9.7-01)', () => {
+describe('project — an additive task field with an injected default', () => {
   it('validateTask accepts an optional project slug and rejects a malformed one', () => {
     expect(validateTask(backlog({ project: 'acme-clinic' })).project).toBe('acme-clinic')
     expect(validateTask(backlog()).project).toBeUndefined()
@@ -256,7 +256,7 @@ describe('project — an additive task field with an injected default (D-9.7-01)
   })
 })
 
-describe('constants — taxonomy (D-9.5-11)', () => {
+describe('constants — taxonomy', () => {
   it('FAIL_REASONS is the 10-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',

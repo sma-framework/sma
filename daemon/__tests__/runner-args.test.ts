@@ -1,12 +1,12 @@
 /**
- * Tests for daemon/src/runner/args.mjs (Phase 9.5 Plan 04, Task 1).
+ * Tests for daemon/src/runner/args.mjs.
  *
  * Pure arg-builders for both worker lanes + the forbidden-flag guard + per-account
- * env assembly + the task-prompt DoD builder (D-9.5-03/03a/03b/04a, 11). No I/O,
+ * env assembly + the task-prompt DoD builder (11). No I/O,
  * no child spawn — every function here is a pure transform, so the whole suite is a
  * table of input→arg-array assertions.
  *
- *   Claude arg-builder (D-9.5-04a — hooks-enforced lane):
+ *   Claude arg-builder (hooks-enforced lane):
  *   - Test 1:  base command line is exactly the headless stream-json shape.
  *   - Test 2:  a valid-UUID resumeId adds `--resume <uuid>`; addDir lands last.
  *   - Test 3:  a non-UUID resumeId is refused (Multica resolveSessionID lesson).
@@ -19,18 +19,18 @@
  *   - Test 8:  fresh-session discipline — a timer/new-task wake REFUSES a resumeId
  *              (Paperclip PF-4).
  *
- *   Codex arg-builder (D-9.5-04 — exit-gate lane):
+ *   Codex arg-builder (exit-gate lane):
  *   - Test 9:  base is `exec --json … -`; effort maps to `-c model_reasoning_effort=<E>`.
  *   - Test 10: the forbidden-flag guard holds on the Codex lane too.
  *
- *   Per-account env assembly (T-9.5-11/12, Multica #3130):
+ *   Per-account env assembly (Multica #3130):
  *   - Test 11: a Claude account gets CLAUDE_CONFIG_DIR + OAuth token BY NAME from env
  *              + SMA_SPEND_LOGS_DIR; a token env that is unset yields no token key.
- *   - Test 12: the sub→API fallback (D-9.5-03b) is one env key on the spawn.
+ *   - Test 12: the sub→API fallback is one env key on the spawn.
  *   - Test 13: a Codex account gets a FRESH per-task CODEX_HOME — two tasks differ —
  *              plus the memories-off config seed.
  *
- *   Task-prompt DoD builder (D-9.5-11 item 1):
+ *   Task-prompt DoD builder:
  *   - Test 14: acceptance present → a «Критерии приёмки» DoD block; task text is fenced DATA.
  *   - Test 15: acceptance absent (roster/return exempt) → no block, no placeholder.
  *   - Test 16: a fence-escape attempt in untrusted content cannot break out of the fence.
@@ -77,7 +77,7 @@ import { buildForgePrompt } from '../src/forge/forge.mjs'
 
 const UUID = '9f8e7d6c-1234-4abc-8def-0123456789ab'
 
-describe('buildClaudeArgs (D-9.5-04a hooks-enforced lane)', () => {
+describe('buildClaudeArgs (hooks-enforced lane)', () => {
   it('base command line is exactly the headless stream-json shape', () => {
     expect(buildClaudeArgs({})).toEqual(['--print', '-', '--output-format', 'stream-json', '--verbose'])
   })
@@ -140,7 +140,7 @@ describe('buildClaudeArgs (D-9.5-04a hooks-enforced lane)', () => {
   })
 })
 
-describe('buildCodexArgs (D-9.5-04 exit-gate lane)', () => {
+describe('buildCodexArgs (exit-gate lane)', () => {
   it('base is `exec --json … -`; effort maps to -c model_reasoning_effort', () => {
     expect(buildCodexArgs({})).toEqual(['exec', '--json', '-'])
     expect(buildCodexArgs({ model: 'gpt-5-codex', effort: 'high', resumeThreadId: 'th_abc' })).toEqual([
@@ -154,7 +154,7 @@ describe('buildCodexArgs (D-9.5-04 exit-gate lane)', () => {
   })
 })
 
-describe('buildAccountEnv (T-9.5-11/12, Multica #3130)', () => {
+describe('buildAccountEnv (Multica #3130)', () => {
   const claudeAccount = {
     name: 'max-1',
     configDir: '/home/w/.sma-accounts/max-1',
@@ -178,7 +178,7 @@ describe('buildAccountEnv (T-9.5-11/12, Multica #3130)', () => {
     expect('CLAUDE_CODE_OAUTH_TOKEN' in env2).toBe(false)
   })
 
-  it('the sub→API fallback (D-9.5-03b) is one env key on the spawn', () => {
+  it('the sub→API fallback is one env key on the spawn', () => {
     const env = buildAccountEnv({
       account: claudeAccount,
       provider: 'claude',
@@ -201,7 +201,7 @@ describe('buildAccountEnv (T-9.5-11/12, Multica #3130)', () => {
   })
 })
 
-describe('buildTaskPrompt (D-9.5-11 item 1 — DoD contract into the worker)', () => {
+describe('buildTaskPrompt (item 1 — DoD contract into the worker)', () => {
   it('acceptance present → a «Критерии приёмки» DoD block; task text is fenced DATA', () => {
     const prompt = buildTaskPrompt({
       task: { id: 'BL-301', title: 'пилот пакетного импорта', note: 're-queued', acceptance: 'тест на 50 записей зелёный' },
@@ -315,7 +315,7 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
       model: 'sonnet',
       effort: 'high',
     })
-    // profile sonnet, args opus → the guard screams (T-9-15)
+    // profile sonnet, args opus → the guard screams
     expect(() => assertProfileParity({ args: buildClaudeArgs({ model: 'opus', effort: 'high' }), worker })).toThrow(
       ProfileParityError,
     )

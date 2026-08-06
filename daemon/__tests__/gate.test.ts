@@ -1,6 +1,5 @@
 /**
- * gate.test.ts — the D-9.5-04a UNIFIED EXIT GATE as its own regression-locked suite
- * (Phase 9.5 Plan 07, Task 3; D-9.5-04a, Pitfall 6).
+ * gate.test.ts — the UNIFIED EXIT GATE as its own regression-locked suite.
  *
  * This suite is the phase's cognitive-layer differentiator made executable: RECEIPTS OR
  * NOTHING, for EVERY executor. It proves — over the real loop + real memory adapter +
@@ -10,7 +9,7 @@
  *   - a worker exiting 0 WITHOUT a receipt is failed 'no_receipt' — the exit code proves
  *     nothing (the Multica «completed = слово демона» anti-lesson);
  *   - a RED reverify receipt fails 'tests_red' with the receipt ref preserved on the
- *     attempt row (the roster's «не справился» card has evidence — D-9.5-11 taxonomy);
+ *     attempt row (the roster's «не справился» card has evidence — taxonomy);
  *   - defense in depth: the adapter itself refuses complete() without a receiptRef.
  */
 
@@ -39,7 +38,7 @@ function makeVerbRunner(responses: Record<string, any>) {
   }
 }
 
-// A COMPLETE attempt now leaves an approach note as well as a receipt (D-9.7-14), so the
+// A COMPLETE attempt now leaves an approach note as well as a receipt, so the
 // default fake worker leaves one — the note law is exercised on its own in journal.test.ts.
 function makeSpawnWorker(opts: { lines?: string[]; code?: number } = {}) {
   const { lines = ['working', 'APPROACH_NOTE: прямой путь'], code = 0 } = opts
@@ -78,7 +77,7 @@ const LANE_CASES = [
   { name: 'codex lane (research)', task: { id: 'R-C', source: 'roster', title: 't', lane: 'research' } },
 ]
 
-describe('D-9.5-04a — one gate for all executors: green reverify receipt or nothing', () => {
+describe('one gate for all executors: green reverify receipt or nothing', () => {
   for (const { name, task } of LANE_CASES) {
     it(`${name}: completes ONLY on a green reverify receipt`, async () => {
       const c = mkClock()
@@ -91,7 +90,7 @@ describe('D-9.5-04a — one gate for all executors: green reverify receipt or no
       expect(row.status).toBe('completed')
     })
 
-    it(`${name}: a worker exiting 0 WITHOUT a receipt → fail('no_receipt') (Pitfall 6)`, async () => {
+    it(`${name}: a worker exiting 0 WITHOUT a receipt → fail('no_receipt')`, async () => {
       const c = mkClock()
       const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
       await adapter.enqueue(task)
@@ -109,7 +108,7 @@ describe('D-9.5-04a — one gate for all executors: green reverify receipt or no
     })
   }
 
-  it("D-9.5-11: a RED reverify receipt → fail('tests_red') with the receipt ref preserved on the attempt row", async () => {
+  it("a RED reverify receipt → fail('tests_red') with the receipt ref preserved on the attempt row", async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue({ id: 'BL-R', source: 'backlog', title: 't', lane: 'prod', storyPoints: 2, acceptance: 'a' })
@@ -126,7 +125,7 @@ describe('D-9.5-04a — one gate for all executors: green reverify receipt or no
     expect(row.receiptRef).toBe('reverify:red-BL-R') // evidence preserved for the roster card
   })
 
-  it('defense in depth (Pitfall 6): the adapter itself refuses complete() without a receiptRef', async () => {
+  it('defense in depth: the adapter itself refuses complete() without a receiptRef', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue({ id: 'BL-D', source: 'backlog', title: 't', lane: 'prod', storyPoints: 1, acceptance: 'a' })

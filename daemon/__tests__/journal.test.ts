@@ -1,5 +1,5 @@
 /**
- * Tests for the decision journal — three layers on every attempt (D-9.7-14).
+ * Tests for the decision journal — three layers on every attempt.
  *
  * The law under test: an attempt is not complete until it EXPLAINS itself.
  *   (a) dispatcher — why the router picked this lane/worker, as a CODE from a closed
@@ -262,7 +262,7 @@ describe('backward compatibility — a task from before this revision', () => {
   })
 })
 
-describe('the dispatcher layer is written BY the router, at the decision (D-9.7-14)', () => {
+describe('the dispatcher layer is written BY the router, at the decision', () => {
   const worker = { id: 'max-2', lane: 'prod', provider: 'claude', enabled: true, account: { configDir: '/x' } }
   const nightClock = () => new Date('2026-07-21T03:00:00').getTime() // outside active hours
 
@@ -496,7 +496,7 @@ describe('the completion gate asks for the note where it asks for the receipt', 
 describe('the tick file keeps its disciplines', () => {
   const src = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
 
-  it('holds NO in-process keyed collection (D-9.5-02 grep gate)', () => {
+  it('holds NO in-process keyed collection (grep gate)', () => {
     expect(src).not.toMatch(/new Map\b/)
     expect(src).not.toMatch(/new Set\b/)
   })
@@ -525,7 +525,7 @@ describe('parseApproachNote — the worker-side protocol the loop reads off the 
   })
 })
 
-// ═══════ the attempt stamp — canon invariant 6 (Phase 11 Plan 05, Task 2) ═════════
+// ═══════ the attempt stamp — canon invariant 6 ═════════
 
 const NEW_STAMP_KEYS = [
   'policyVersion',
@@ -560,7 +560,7 @@ describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, ever
     expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(17) // no duplicate name
   })
 
-  // The seventeenth key, added 2026-08-05 with the reconciliation pass (D-11-DEFER-07). It
+  // The seventeenth key, added 2026-08-05 with the reconciliation pass. It
   // is NOT a stamp field: a stamp says what the world was, this says who wrote the row.
   it('carries the reconstructed flag LAST, after the stamp, so a reader can tell the two apart', () => {
     expect(ALLOWED_ATTEMPT_KEYS).toContain('reconstructed')
@@ -689,7 +689,7 @@ describe('recordAttempt — the stamp is additive, and it rides the existing all
     expect(row.from).toBeUndefined()
   })
 
-  it('the recorded digests carry no path separator and no note text (T-11-05-04)', () => {
+  it('the recorded digests carry no path separator and no note text', () => {
     const corpus = join(dir, 'corpus')
     mkdirSync(corpus, { recursive: true })
     writeFileSync(join(corpus, 'lesson.md'), '---\nid: lesson\n---\nСЕКРЕТНОЕ содержимое заметки\n')
@@ -797,7 +797,7 @@ describe('memorySnapshotHash — what the worker knew, as a digest and nothing m
 describe('the ledger keeps its stated disciplines', () => {
   const ledgerSrc = readFileSync(new URL('../src/queue/attempt-ledger.mjs', import.meta.url), 'utf8')
 
-  it('exposes only append and read functions — no rewrite, no delete (T-11-05-05)', () => {
+  it('exposes only append and read functions — no rewrite, no delete', () => {
     const exported = [...ledgerSrc.matchAll(/^export function (\w+)/gm)].map((m) => m[1])
     expect(exported.sort()).toEqual(
       ['appendJournalEntry', 'memorySnapshotHash', 'readAttempts', 'readJournalEntries', 'recordAttempt'].sort(),

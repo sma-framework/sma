@@ -1,5 +1,5 @@
 /**
- * Tests for the roster front's auth + closed route table (Phase 9.5 Plan 08, Tasks 1 & 3).
+ * Tests for the roster front's auth + closed route table.
  *
  * The FIRST sanctioned inbound surface must prove the inverted-notify posture:
  *   - token on EVERY route — the sweep is DERIVED from the frozen table itself, so a
@@ -114,8 +114,8 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 /**
  * The bare-stub shape a declared-but-unfilled route used to have: a handler whose whole
  * body is `send501(res)`. The V5.1 freeze declared sixteen of them at once so every screen
- * was built against the final contract; the last five (import + onboarding) were filled by
- * 9.7-20 and the list of unfilled routes is now EMPTY — which is why it is a shape, not a
+ * was built against the final contract; the last five (import + onboarding) have since been
+ * filled and the list of unfilled routes is now EMPTY — which is why it is a shape, not a
  * list, that guards the table from here on.
  */
 const BARE_STUB = /\)\s*\{\s*(return\s+)?send501\(res\)\s*;?\s*\}\s*$/
@@ -169,7 +169,7 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 describe('server.mjs — the closed THIRTY-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
   // change again, that change is a declared re-freeze revision, not a routine edit.
-  it('the frozen table has EXACTLY thirty routes (D-9.7-09)', () => {
+  it('the frozen table has EXACTLY thirty routes', () => {
     expect(Object.keys(ROUTES)).toHaveLength(30)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
@@ -487,7 +487,7 @@ describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
   })
 })
 
-// ── Plan 9.5-11: the five D-9.5-09 harness handlers (filled a slot, added no route) ──
+// ── the five harness handlers (filled a slot, added no route) ──
 
 const jsonHeaders = () => ({ ...bearer(), 'content-type': 'application/json' })
 
@@ -556,7 +556,7 @@ describe('server.mjs — POST /api/agent/toggle', () => {
 })
 
 /**
- * LP-2-01/LP-2-02 — the live proof, 05.08.2026: the founder pressed «Включить команду» in the
+ * The live proof, 05.08.2026: the founder pressed «Включить команду» in the
  * window and «ничего не произошло». No effect, no visible error. The same door with the same
  * body worked from the terminal in both directions, so the failure was on this side.
  *
@@ -570,7 +570,7 @@ describe('server.mjs — POST /api/agent/toggle', () => {
  * The case is written as the window experiences it — toggle, then read — because that pair is
  * the defect. Either half alone looks perfectly healthy.
  */
-describe('server.mjs — a toggle is visible to the very next read (LP-2-02)', () => {
+describe('server.mjs — a toggle is visible to the very next read', () => {
   /** The stock-team applier's real posture: a NEW config, the caller's object untouched. */
   const applyStockTeamToggle = ({ config, enabled }: any) => ({
     ...config,
@@ -659,11 +659,11 @@ describe('server.mjs — POST /api/mcp/toggle (RCE-closed)', () => {
   })
 })
 
-// ── the D-9.7-09 sixteen: declared ONCE, filled by their own plans, none left ──
+// ── the sixteen: declared ONCE, filled by their own plans, none left ──
 //
 // The group of 501 cases that stood here is gone: the freeze declared sixteen routes in one
-// revision, and every one of them now answers for real (static + projects in 9.7-09,
-// machines + chat in 9.7-15, import + onboarding in 9.7-20). The table never changed —
+// revision, and every one of them now answers for real (static and projects, machines and
+// chat, import and onboarding, each filled in turn). The table never changed —
 // a fill plan replaces a stub, it does not add a route. What guards that promise from here
 // on is the ZERO STUBS case in the table describe above, plus the 501 that remains for an
 // honest reason: a collaborator this daemon was not wired with (the case below).
@@ -682,7 +682,7 @@ describe('server.mjs — a 501 now means «not wired here», never «not written
   })
 })
 
-// ── the `machine` field: another machine is an ADDRESSEE, never another door (D-9.7-07) ──
+// ── the `machine` field: another machine is an ADDRESSEE, never another door ──
 
 describe('server.mjs — the optional machine field on enqueue/approve/return', () => {
   const adapter = { list: async () => [], enqueue: async (t: any) => ({ id: t.id }) }
@@ -731,7 +731,7 @@ describe('server.mjs — the optional machine field on enqueue/approve/return', 
   })
 })
 
-// ── Plan 9.7-15 Task 2: the machine field goes LIVE (D-9.7-07) ──
+// ── the machine field goes LIVE ──
 //
 // The hub RE-ISSUES the founder's action against the machine that owns the task and relays
 // that machine's answer verbatim. It re-implements nothing: the peer's own DoR gate, its own
@@ -864,14 +864,14 @@ describe('server.mjs — the machine field is LIVE: the hub proxies, it never re
   })
 })
 
-// ── Plan 9.7-09 Task 1: the daemon serves the built SPA itself (D-9.7-04) ──
+// ── the daemon serves the built SPA itself ──
 //
 // «The app rides with the daemon»: the SAME process, behind the SAME token, with NO second
 // web server. The file system is an injected seam (deps.fsImpl + deps.staticDir), so these
 // cases never touch the real tree — except the ONE smoke at the bottom, which reads the
 // real build when a build is present and skips itself when it is not.
 
-/** A file system that SHOUTS if it is ever reached — the traversal proof (T-9.7-21). */
+/** A file system that SHOUTS if it is ever reached — the traversal proof. */
 function shoutingFs() {
   const calls: string[] = []
   return {
@@ -977,7 +977,7 @@ describe('server.mjs — GET /assets/:file', () => {
     expect(res.body).not.toContain('BUNDLE')
   })
 
-  it('TRAVERSAL dies at the name parse: the file system is never reached (T-9.7-21)', async () => {
+  it('TRAVERSAL dies at the name parse: the file system is never reached', async () => {
     const fs = shoutingFs()
     const front = createFrontServer({ config: { token: TOKEN }, deps: { staticDir: '/built', fsImpl: fs } })
     for (const url of [
@@ -1000,7 +1000,7 @@ describe('server.mjs — GET /assets/:file', () => {
 const BUILT_APP_DIR = fileURLToPath(new URL('../static/app/', import.meta.url))
 const HAS_BUILD = existsSync(`${BUILT_APP_DIR}index.html`)
 
-// ── Plan 9.7-09 Task 2: the project doors + the decision journal on the task card ──
+// ── the project doors + the decision journal on the task card ──
 //
 // The four project routes do NOT re-implement a single rule of the registry: they reject
 // unknown keys, hand the body to the config.mjs door (addProject / renameProject /
@@ -1093,7 +1093,7 @@ describe('server.mjs — the project write doors delegate to the config registry
     expect(JSON.parse(res.body).project.name).toBe('acme-clinic')
   })
 
-  it('POST /api/project/rename moves the NAME and never the id (D-9.7-08)', async () => {
+  it('POST /api/project/rename moves the NAME and never the id', async () => {
     const fsImpl = capturingConfigFs()
     const config: any = { token: TOKEN, workers: [], projects: [{ id: 'sma', name: 'СМА' }], activeProject: 'sma' }
     const res = await call(mkFront(config, fsImpl), {
@@ -1185,7 +1185,7 @@ describe('server.mjs — the project write doors delegate to the config registry
 })
 
 /**
- * LP-3 — a pinned repoDir was deleted from the file by one press in the window (05.08.2026).
+ * A pinned repoDir was deleted from the file by one press in the window (05.08.2026).
  *
  * The live incident, in order: the founder's `~/.sma-daemon/config.json` carried a `repoDir`
  * pin (the daemon is launched from a temp worktree, so the pin is the only thing that says
@@ -1201,11 +1201,11 @@ describe('server.mjs — the project write doors delegate to the config registry
  *
  * These two cases are written the way PRODUCTION wires it — the real door, `deps.repoDir`
  * set to the effective repoDir, exactly what main.mjs passes — because that wiring is the
- * defect. The unit cases that came with D-11-DEFER-19 all pass a fake LAUNCH directory as
+ * defect. The unit cases that came with all pass a fake LAUNCH directory as
  * the baseline, which is the semantically correct one, and that is why they stayed green
  * through the whole incident.
  */
-describe('server.mjs — a pinned repoDir survives a write through the window (LP-3)', () => {
+describe('server.mjs — a pinned repoDir survives a write through the window', () => {
   const PIN = '/Users/f/projects/sma' // the tree the founder pinned by hand
   const CONFIG_ROOT = dirname(PROJECT_ENV.SMA_DAEMON_CONFIG)
 

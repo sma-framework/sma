@@ -1,5 +1,5 @@
 /**
- * Tests for the roster one-poll derive (Phase 9.5 Plan 08, Task 2).
+ * Tests for the roster one-poll derive.
  *
  * deriveState re-computes the WHOLE roster truth from durable fixtures (adapter rows +
  * an injected ledger reader + a window-state function + a usageReader) — never a stored
@@ -7,16 +7,16 @@
  *   - the full payload shape {kpis, queue, workers, done, spend},
  *   - presence is a PURE derive (truth table: closed window → «ждёт окно» even with
  *     queued work; open + active + fresh touch → «работает»; open + no task → «свободен»)
- *     — the fixtures carry NO presence field to read (Pitfall 2),
+ *     — the fixtures carry NO presence field to read,
  *   - window bars carry estimated: true (honest labels),
  *   - agedForHours appears ONLY past config.agingHours (both sides of the boundary),
  *   - failed done rows carry {reason, reasonLabel} from REASON_LABELS,
  *   - acceptance («обещано») is carried when the task had one, omitted when it did not.
  *
- * V5.1 additions (D-9.7-01 projects, D-9.7-04 machines + federation role):
+ * V5.1 additions (projects, machines + federation role):
  *   - the payload carries projects[] with per-project counts, activeProject, machines[]
  *     and federation{role,hubReachable} — the SHAPE is final now so the SPA types it once,
- *     and plan 9.7-13 fills machines[] with peers without changing the contract,
+ *     and the federation aggregator fills machines[] with peers without changing the contract,
  *   - every task row carries its project and its machine (screens filter, never guess),
  *   - the optional project filter narrows tasks and kpis but NOT the project or machine
  *     lists (the project switcher must see all of them),
@@ -91,7 +91,7 @@ function mkAdapter(rows: any[]) {
   return { list: async () => rows.slice() }
 }
 
-describe('derivePresence — pure truth table (Pitfall 2)', () => {
+describe('derivePresence — pure truth table', () => {
   it('a CLOSED window → «ждёт окно» even with an active task', () => {
     expect(derivePresence({ windowOpen: false, hasActiveTask: true, pulseAgeSec: 1 })).toBe('ждёт окно')
     expect(derivePresence({ windowOpen: false, hasActiveTask: false })).toBe('ждёт окно')
@@ -235,7 +235,7 @@ describe('deriveState — the one-poll payload', () => {
   })
 })
 
-// ── V5.1: projects, machines and the federation role in the read model (D-9.7-01/04) ──
+// ── V5.1: projects, machines and the federation role in the read model ──
 
 const multiConfig = {
   ...config,
@@ -252,7 +252,7 @@ const projectRows = [
   { id: 'BL-3', status: 'completed', lane: 'prod', title: 'c', project: 'other-shop', completedAt: NOW },
 ]
 
-describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)', () => {
+describe('deriveState — projects, machines and federation', () => {
   it('carries projects[] with per-project counts and the active project', async () => {
     const payload = await deriveState({
       adapter: mkAdapter(projectRows),
@@ -269,12 +269,12 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
   })
 
   /**
-   * D-11-DEFER-18 — the default registry entry every install mints carries a NAME and no
+   * The default registry entry every install mints carries a NAME and no
    * `path`, so the screens named a project they could not read one file of: «Память» answered
    * «нет подключённого проекта» while «Машины и проекты» listed it by name. An entry that
    * names a project it cannot open is the worst of the three states, so the fact travels.
    *
-   * The PATH does not travel: an absolute path on the wire is a disclosure (T-11-09-01), and
+   * The PATH does not travel: an absolute path on the wire is a disclosure, and
    * a boolean is the whole of what a screen needs to say «не подключён».
    */
   it('a registry entry says whether it names a folder at all, and never says which', async () => {
@@ -356,7 +356,7 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
     expect(holder.taskTitle).toBeNull()
   })
 
-  it('a row with no project falls back to the active project (the quiet migration, D-9.7-08)', async () => {
+  it('a row with no project falls back to the active project (the quiet migration)', async () => {
     const legacy = [{ id: 'BL-old', status: 'queued', lane: 'prod', title: 'old', priority: 0, enqueuedAt: NOW }]
     const payload = await deriveState({
       adapter: mkAdapter(legacy),
@@ -395,7 +395,7 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
     expect(payload.machines).toEqual([{ id: 'self', title: 'Эта машина', role: 'self', online: true }])
   })
 
-  it('the federation role comes from the config; hubReachable is an injectable seam for 9.7-13', async () => {
+  it('the federation role comes from the config; hubReachable is an injectable seam', async () => {
     const payload = await deriveState({
       adapter: mkAdapter([]),
       windows: makeWindows({}),
@@ -412,7 +412,7 @@ describe('deriveState — projects, machines and federation (D-9.7-01, D-9.7-04)
     expect(payload.machines).toEqual([{ id: 'mac-mini', title: 'Mac mini', role: 'self', online: true }])
   })
 
-  it('NO new field carries a peer url or a peer token (T-9.7-05)', async () => {
+  it('NO new field carries a peer url or a peer token', async () => {
     const payload = await deriveState({
       adapter: mkAdapter(projectRows),
       windows: makeWindows({}),
@@ -537,9 +537,9 @@ describe('deriveState — awaiting[]: the rows a person still has to decide on',
   })
 })
 
-// ── 9.7-13: the aggregator seam — deriveState FILLS the same shape, never redefines it ──
+// ── the aggregator seam — deriveState FILLS the same shape, never redefines it ──
 
-describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)', () => {
+describe('deriveState — the federation aggregator seam', () => {
   /** A fake aggregator standing in for createFederation().aggregateState. */
   function fakeAggregator(payload: any) {
     return {
@@ -564,7 +564,7 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
     ])
     expect(payload.queue.map((q: any) => q.machine)).toEqual(['this-pc', 'this-pc', 'mac-mini'])
     expect(payload.kpis.queued).toBe(3)
-    // the KEY SET is untouched — the 9.7-02 contract the SPA types once
+    // the KEY SET is untouched — the contract the SPA types once
     expect(Object.keys(payload).sort()).toEqual([
       'accounts',
       'activeProject',
@@ -586,7 +586,7 @@ describe('deriveState — the federation aggregator seam (D-9.7-01, plan 9.7-13)
     ])
   })
 
-  it('WITHOUT an aggregator the payload is byte-identical to the standalone derive (regression 9.7-02)', async () => {
+  it('WITHOUT an aggregator the payload is byte-identical to the standalone derive', async () => {
     const args = { adapter: mkAdapter(projectRows), windows: makeWindows({}), config: multiConfig, clock: () => NOW }
     const standalone = await deriveState(args)
     const withUndefined = await deriveState({ ...args, aggregator: undefined })
@@ -715,7 +715,7 @@ describe('deriveAccounts — an account lives on exactly ONE machine, and it is 
   })
 })
 
-describe('deriveState — rules and accounts ride the EXISTING /api/state route (D-9.7-09)', () => {
+describe('deriveState — rules and accounts ride the EXISTING /api/state route', () => {
   it('the payload carries both sections, and the spend strip stays byte-identical', async () => {
     const windows = makeWindows({ 'max-1': { pct5h: 40, pctWeek: 55, estimated: true } })
     const payload = await deriveState({
@@ -745,7 +745,7 @@ describe('deriveState — rules and accounts ride the EXISTING /api/state route 
     expect(payload.rules.subApiSwitch.mode).toBe('api')
   })
 
-  it('NO secret value, credential env-var NAME or account path reaches the payload (T-9.7-36)', async () => {
+  it('NO secret value, credential env-var NAME or account path reaches the payload', async () => {
     const payload = await deriveState({
       adapter: mkAdapter([]),
       windows: makeWindows({}),
@@ -754,7 +754,7 @@ describe('deriveState — rules and accounts ride the EXISTING /api/state route 
     })
     const serialized = JSON.stringify(payload)
     expect(serialized).not.toContain('front-token-secret-value')
-    expect(serialized).not.toContain(TOKEN_ENV) // the env-var NAME is a secret too (T-9.5-01)
+    expect(serialized).not.toContain(TOKEN_ENV) // the env-var NAME is a secret too
     expect(serialized).not.toContain(ACCOUNT_DIR)
     expect(serialized).not.toContain('.sma-accounts')
     // …and the sections are genuinely populated, so the assertion above is not vacuous
@@ -931,7 +931,7 @@ describe('deriveMemory — the corpus as a SURFACE: counters and pointers, never
   })
 
   /**
-   * D-11-DEFER-20 — the read model predated the format it reads.
+   * The read model predated the format it reads.
    *
    * A schema-v2 record states its subject in `claim` and its facets in `retrieval.areas` /
    * `applies_to`; this derive only ever looked at the v1 `description` and `tags`. Measured on
@@ -941,7 +941,7 @@ describe('deriveMemory — the corpus as a SURFACE: counters and pointers, never
    *
    * Both generations are legitimate, so both are read, v2 first.
    */
-  it('a v2 corpus gets its claims as lines and its retrieval areas as tags (D-11-DEFER-20)', () => {
+  it('a v2 corpus gets its claims as lines and its retrieval areas as tags', () => {
     const fs = mkFs(
       {
         [`${MEM}/MEMORY.md`]: MEMORY_INDEX,
@@ -1138,9 +1138,9 @@ describe('deriveState — memory and style ride the SAME route as everything els
   })
 })
 
-// ════════════════ the CONNECTED PROJECT on the wire (phase 11 plan 09) ════════════════
+// ════════════════ the CONNECTED PROJECT on the wire ════════════════
 //
-// SB-031 part 2 / ROADMAP addition 8: a project the daemon does not own is readable from
+// a project the daemon does not own is readable from
 // the window, READ-ONLY, and an older-format corpus offers a per-file preview of what
 // migration would change. The four claims that matter, and all four are asserted rather
 // than described:

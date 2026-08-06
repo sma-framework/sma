@@ -1,6 +1,6 @@
 /**
- * fleet-drill.test.ts — a killed worker, a restart, a stranded task and a redelivery
- * (Phase 11 Plan 08, Task 2; canon §10, acceptance item «crash/restart drill loses no task»).
+ * fleet-drill.test.ts — a killed worker, a restart, a stranded task and a redelivery.
+ * The acceptance item it answers: «crash/restart drill loses no task».
  *
  * WHAT A DRILL IS FOR: the fleet's recovery story is told in four places — pg-boss's own
  * `expireInSeconds`, the liveness sweep, the dead-letter queue and the attempt ledger — and
@@ -358,7 +358,7 @@ describe('kill drill — a worker stops refreshing its lease', () => {
   })
 
   /**
-   * THIS CASE WAS DELIBERATELY GREEN ON A HOLE, and it is now flipped (D-11-DEFER-07).
+   * THIS CASE WAS DELIBERATELY GREEN ON A HOLE, and it is now flipped.
    *
    * Until 2026-08-05 recovery by pg-boss's OWN lease expiry — the daemon down while a
    * worker dies — wrote no attempt row at all, because only `adapter.fail` and
@@ -631,7 +631,7 @@ describe('redelivery drill — the same effect delivered twice', () => {
 
 // ═══════════════════════ DRILL 5 — THE RECONCILIATION DRILL ═══════════════════
 //
-// The pass that closed the hole the second kill-drill case used to pin (D-11-DEFER-07).
+// The pass that closed the hole the second kill-drill case used to pin.
 // Everything here runs against the same fake store: no database, no tick, no wall clock.
 
 describe('reconciliation drill — the ledger caught up with the queue\'s own retry count', () => {

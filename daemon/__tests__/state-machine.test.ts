@@ -1,11 +1,11 @@
 /**
- * Tests for daemon/src/queue/state-machine.mjs (Phase 11 Plan 04).
+ * Tests for daemon/src/queue/state-machine.mjs.
  *
- * The fleet's state vocabulary and its transition contracts (canon §10). The suite is
+ * The fleet's state vocabulary and its transition contracts. The suite is
  * deliberately TABLE-DRIVEN: it walks FLEET_STATES and TRANSITIONS themselves rather
  * than asserting a hand-written list of pairs, so a state added WITHOUT its contract —
  * or a contract pointing at a state that does not exist — fails here instead of passing
- * unnoticed and stranding a task at runtime (T-11-04-05).
+ * unnoticed and stranding a task at runtime.
  *
  * The module under test is BACKEND-FREE BY LAW (adapter.mjs's posture): a source-level
  * assertion below reads the file and refuses any pg / pg-boss / backend import, because
@@ -445,7 +445,7 @@ describe('applyTransition — legal, contracted, correctly actored and idempoten
     expect(retryable.alreadyApplied).toBe(false)
   })
 
-  it('keeps refusal reasons free of caller text and connection strings (T-11-04-06)', () => {
+  it('keeps refusal reasons free of caller text and connection strings', () => {
     const secret = 'postgres://user:hunter2@localhost:5433/queue'
     const res = applyTransition({
       ...base,

@@ -1,6 +1,5 @@
 /**
- * Tests for daemon/src/loop.mjs — the stateless tick (Phase 9.5 Plan 07, Task 2;
- * D-9.5-02/04a/11, Pitfalls 1/2/4/6/7/10).
+ * Tests for daemon/src/loop.mjs — the stateless tick.
  *
  * The tick is COMPOSITION over durable state: liveness sweep → intake → claim (eligible
  * lanes only) → preflight → worktree → spawn → reverify GATE → complete/fail → report.
@@ -12,7 +11,7 @@
  *     spawn→reverify (verify-before-execute mechanized; reverify is THE exit gate)
  *   - preflight 'built' short-circuit (skip spawn, complete on the preflight receipt)
  *   - exit-0 with no reverify receipt → fail('no_receipt') (exit code proves nothing)
- *   - classifyFailure parametrized over the whole D-9.5-11 taxonomy
+ *   - classifyFailure parametrized over the whole taxonomy
  *   - the aging signal (queued older than agingHours fires task.aging; younger fires none)
  *   - kill-mid-tick drill: a fresh tick recovers a stale-claimed task from durable state
  *   - idle tick short-circuit (no claim → {idle:true}, no side effects)
@@ -64,7 +63,7 @@ function makeVerbRunner(responses: Record<string, any>, order?: string[]) {
 
 // A recording spawnWorker: emits stream lines then exits. Optionally throws synchronously
 // (an infra spawn error) or is left un-exited (to model a mid-tick kill).
-// A COMPLETE attempt carries BOTH a green receipt and an approach note (D-9.7-14) — the
+// A COMPLETE attempt carries BOTH a green receipt and an approach note — the
 // default fake worker leaves the note; the note law itself is exercised in journal.test.ts.
 function makeSpawnWorker(order?: string[], opts: { lines?: string[]; code?: number; throwSync?: boolean } = {}) {
   const { lines = ['stream line', 'APPROACH_NOTE: прямой путь'], code = 0, throwSync = false } = opts
@@ -159,7 +158,7 @@ describe('tick — the stateless composed tick', () => {
     expect(row.status).toBe('completed')
   })
 
-  it('a worker exiting 0 WITHOUT a reverify receipt → fail("no_receipt") (Pitfall 6)', async () => {
+  it('a worker exiting 0 WITHOUT a reverify receipt → fail("no_receipt")', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(backlogTask({ id: 'BL-3' }))
@@ -308,7 +307,7 @@ describe('an attempt that cannot start is REFUSED, loudly and on the record', ()
   })
 })
 
-// ═══ the capability envelope is CONSULTED before a worker starts (D-11-DEFER-02) ═══
+// ═══ the capability envelope is CONSULTED before a worker starts ═══
 //
 // Until 2026-08-05 nothing in the daemon constructed or consulted an envelope: the module
 // declared eight fail-closed dimensions and had no caller. The tick now resolves the lane's
@@ -346,7 +345,7 @@ function oneTaskAdapter(task: any) {
   }
 }
 
-describe('the capability envelope gates the spawn (D-11-DEFER-02)', () => {
+describe('the capability envelope gates the spawn', () => {
   it('a lane whose envelope grants no shell never reaches a worktree or a spawn, and says why', async () => {
     const c = mkClock()
     const adapter = oneTaskAdapter(backlogTask({ lane: 'ghost', attempt: 1 }))
@@ -385,7 +384,7 @@ describe('the capability envelope gates the spawn (D-11-DEFER-02)', () => {
   })
 })
 
-// ═══ the attempt row carries the world it ran in (D-11-DEFER-23) ═══════════════════
+// ═══ the attempt row carries the world it ran in ═══════════════════
 
 describe('the tick stamps its attempt rows', () => {
   const tmpDirs: string[] = []
@@ -500,7 +499,7 @@ describe('the tick stamps its attempt rows', () => {
   })
 })
 
-// ═══ the ledger is reconciled once a tick (D-11-DEFER-07) ══════════════════════════
+// ═══ the ledger is reconciled once a tick ══════════════════════════
 
 describe('the tick runs the reconciliation pass', () => {
   it('reports the pass in its summary, right after the sweep', async () => {
@@ -563,7 +562,7 @@ describe('readiness — can this worker start at all? (runner/readiness.mjs)', (
   })
 })
 
-describe('the aging signal (D-9.5-11 item 3) — derived fresh every tick, nothing stored', () => {
+describe('the aging signal — derived fresh every tick, nothing stored', () => {
   it('fires task.aging (with queuedForHours) for a task older than agingHours; not for a younger one', async () => {
     const c = mkClock()
     // A fake adapter whose list() returns two queued rows with fixed enqueuedAt.
@@ -592,7 +591,7 @@ describe('the aging signal (D-9.5-11 item 3) — derived fresh every tick, nothi
   })
 })
 
-describe('classifyFailure — the D-9.5-11 taxonomy (pure)', () => {
+describe('classifyFailure — the taxonomy (pure)', () => {
   const cases: Array<[string, any, string]> = [
     ['spawn infra error → runtime_offline', { spawnError: new Error('offline'), exitCode: null }, 'runtime_offline'],
     ['red reverify receipt → tests_red', { exitCode: 0, receipt: { verdict: 'red', ref: 'reverify:red' } }, 'tests_red'],

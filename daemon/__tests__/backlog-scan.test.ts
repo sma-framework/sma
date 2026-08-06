@@ -1,11 +1,10 @@
 /**
- * Tests for daemon/src/intake/backlog-scan.mjs + daemon/src/report.mjs
- * (Phase 9.5 Plan 07, Task 1; D-9.5-06/10/11, Pitfall 13).
+ * Tests for daemon/src/intake/backlog-scan.mjs + daemon/src/report.mjs.
  *
  * The two edges of the tick:
  *   - INTAKE  (backlog-scan): the origin project's parse contract ported 1:1 + the DoR split
  *     (missing `sp:N` → notReady «нет оценки»; `sp:N` > 13 → notReady «>13 SP…»;
- *     neither is EVER enqueued — D-9.5-10/11) + the Pitfall-13 age label.
+ *     neither is EVER enqueued) + the data-age label.
  *   - OUTBOUND (report): the notify.mjs posture — explicit-pick allowlist (9 keys),
  *     off-by-default (no URL → zero fetch), response never read.
  */
@@ -100,7 +99,7 @@ describe('scanBacklog — git fetch + age label + the DoR notReady split', () =>
     return { deps: { repoDir: '/repo', execGit, clock: () => now, fsImpl }, gitCalls }
   }
 
-  it('git-fetches, enqueues ONLY ready open items, and labels the data age (Pitfall 13)', async () => {
+  it('git-fetches, enqueues ONLY ready open items, and labels the data age', async () => {
     const { deps, gitCalls } = makeDeps()
     const res = await scanBacklog(deps)
 
@@ -117,7 +116,7 @@ describe('scanBacklog — git fetch + age label + the DoR notReady split', () =>
     expect(res.dataAgeMs).toBe(1700003600000 - 1700000000 * 1000)
   })
 
-  it('splits notReady with reasons: missing estimate vs >13 SP (D-9.5-10/11)', async () => {
+  it('splits notReady with reasons: missing estimate vs >13 SP', async () => {
     const { deps } = makeDeps()
     const res = await scanBacklog(deps)
     const byId = Object.fromEntries(res.notReady.map((n: any) => [n.id, n.reason]))
@@ -141,7 +140,7 @@ describe('scanBacklog — git fetch + age label + the DoR notReady split', () =>
 })
 
 describe('reportTaskEvent — outbound notify posture (off by default, allowlist, no read)', () => {
-  it('has exactly the 9 allowlisted keys incl. the D-9.5-11 aging expansion', () => {
+  it('has exactly the 9 allowlisted keys incl. the aging expansion', () => {
     expect(ALLOWED_REPORT_KEYS).toEqual([
       'event', 'taskId', 'title', 'lane', 'receiptVerdict', 'branch', 'attempt', 'ts', 'queuedForHours',
     ])

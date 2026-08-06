@@ -1,6 +1,5 @@
 /**
- * harness.test.ts — the harness read model + two-step activation appliers + the MCP seam
- * (Phase 9.5 Plan 11, Task 2; D-9.5-09).
+ * harness.test.ts — the harness read model + two-step activation appliers + the MCP seam.
  *
  * Proves the SPA data contract and the RCE-closed activation path with fakes only — no real
  * ~/.sma-daemon, no real repo tree, no token ever on disk:
@@ -12,7 +11,7 @@
  *   - applyMcpToggle boolean-only: the rewritten registry deep-equals the original except `enabled`;
  *   - buildClaudeArgs mcpConfigPath order + buildMcpConfigFile enabled-only filtering + per-task path.
  *
- * Phase 11 Plan 06 (SB-031 part 1) appends the STOCK TEAM cases:
+ * Later work appends the STOCK TEAM cases:
  *   - readStockTeam: the whole installed roster (including definitions the roster config never
  *     heard of), fork state by CONTENT DIGEST against the pristine engine copy, the user's own
  *     agents, a named problem instead of a drop or a throw, an absent directory → [], both
@@ -255,7 +254,7 @@ describe('applySkillAssign — replace + unassign, existing workers only', () =>
 })
 
 /**
- * LP-3 — an applier READS from the served repoDir and WRITES against the launch directory.
+ * An applier READS from the served repoDir and WRITES against the launch directory.
  *
  * The live incident of 05.08.2026: the founder's config pinned a `repoDir` (the daemon runs
  * from a temp worktree), a toggle was pressed, and the pin was gone from the file — the next
@@ -267,7 +266,7 @@ describe('applySkillAssign — replace + unassign, existing workers only', () =>
  * Both cases below call the applier exactly as server.mjs does — `repoDir` = the tree being
  * served, taken from the config — because that call is the defect.
  */
-describe('the appliers keep an operator\'s repoDir pin out of the strip (LP-3)', () => {
+describe('the appliers keep an operator\'s repoDir pin out of the strip', () => {
   const PIN = '/pinned/tree'
   const pinnedConfig = () => ({
     repoDir: PIN,
@@ -296,7 +295,7 @@ describe('the appliers keep an operator\'s repoDir pin out of the strip (LP-3)',
     expect(lastWritten().repoDir).toBe(PIN)
   })
 
-  it('and a repoDir equal to the LAUNCH directory is still dropped (D-11-DEFER-19 holds)', () => {
+  it('and a repoDir equal to the LAUNCH directory is still dropped (holds)', () => {
     const { fs, lastWritten } = fakeFs({})
     const config = { ...pinnedConfig(), repoDir: '/tmp/worktree-91' } // what the derive would give
     applyAgentToggle({ config, id: 'max-2', enabled: false, repoDir: '/tmp/worktree-91', launchDir: '/tmp/worktree-91', fsImpl: fs, env })
@@ -345,7 +344,7 @@ describe('resolveWorkerContext — the role/skills preamble that makes «вкл�
 
 // ── the MCP → spawn seam (args.mjs) ──
 
-// ── the stock team (Phase 11 Plan 06) ──
+// ── the stock team ──
 
 const STOCK_PLANNER = `---
 name: sma-planner

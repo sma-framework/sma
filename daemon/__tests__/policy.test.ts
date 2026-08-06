@@ -1,10 +1,10 @@
 /**
- * policy.test.ts — the executor-routing POLICY suite (Phase 9.5 Plan 05).
+ * policy.test.ts — the executor-routing POLICY suite.
  *
  * Three describe blocks, one per module of the policy layer:
- *   1. routing.mjs  — default lanes + override precedence + day-priority protection (D-9.5-04/03a)
+ *   1. routing.mjs  — default lanes + override precedence + day-priority protection
  *   2. windows.mjs  — estimated window state + rate-limit ground truth (Assumption A3)
- *   3. budget.mjs   — sub→API switch + monthly budget stop (D-9.5-03b)
+ *   3. budget.mjs   — sub→API switch + monthly budget stop
  *
  * Every module is pure with an injected clock / usageReader; no test spawns a CLI,
  * touches the real ~/.sma-daemon, or spends a token.
@@ -91,12 +91,12 @@ describe('policy/routing — default lanes + override precedence + day-priority'
 
   it('day-priority: dayPriorityOwner is SKIPPED during active hours when another window is open', () => {
     const r = resolveRoute({ lane: 'prod' }, { workers: pool(), windows: allOpen, clock: dayClock })
-    expect(r.workerId).not.toBe('max-1') // founder account protected (D-9.5-03a)
+    expect(r.workerId).not.toBe('max-1') // founder account protected
     expect(r.provider).toBe('claude')
     expect(r.workerId).toBe('max-2')
   })
 
-  it('day-priority: even when it is the ONLY open window the task WAITS (grill CH-9.5-05-1)', () => {
+  it('day-priority: even when it is the ONLY open window the task WAITS', () => {
     // Only max-1 (the day-priority owner) has an open window; day hours.
     const r = resolveRoute({ lane: 'prod' }, { workers: pool(), windows: only('max-1'), clock: dayClock })
     expect(r.workerId).toBe(null)

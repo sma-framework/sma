@@ -1,11 +1,10 @@
 /**
- * Tests for daemon/src/sp-report.mjs — SP-калибровка «оценил ↔ факт»
- * (Phase 9.5 Plan 07, Task 4; D-9.5-11 item 2, D-9.5-10 prohibition).
+ * Tests for daemon/src/sp-report.mjs — SP-калибровка «оценил ↔ факт».
  *
  * Deterministic, zero-LLM: completed tasks grouped by storyPoints; medians of cycle time
  * (enqueuedAt→completedAt) and work time (claimedAt→completedAt), € and diff size; the
  * 3×-median outlier cut; a skip counter for rows missing a timestamp (never a crash). The
- * rendered report's first content line after the title MUST be the D-9.5-10 prohibition
+ * rendered report's first content line after the title MUST be the prohibition
  * verbatim (structurally mandatory — this is what makes it incapable of becoming an hours
  * converter or a worker KPI).
  */
@@ -85,7 +84,7 @@ describe('buildSpReport — deterministic zero-LLM calibration data', () => {
   })
 })
 
-describe('renderSpReport — the mandatory D-9.5-10 prohibition header', () => {
+describe('renderSpReport — the mandatory prohibition header', () => {
   it('prints «SP не переводятся в часы и не используются как KPI» as the first content line', async () => {
     const data = await buildSpReport(makeDeps())
     const text = renderSpReport(data)

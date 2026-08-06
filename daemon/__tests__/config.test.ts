@@ -1,36 +1,36 @@
 /**
- * Tests for daemon/src/config.mjs (Phase 9.5 Plan 01, Task 2).
+ * Tests for daemon/src/config.mjs.
  *
- * Worker-profile + secrets config loader (D-9.5-03/03a/05a, D-9.5-09/11):
+ * Worker-profile + secrets config loader:
  *   - Test 1: resolveConfigPath honors the SMA_DAEMON_CONFIG env override.
  *   - Test 2: resolveConfigPath falls back to ~/.sma-daemon/config.json via the
  *     injected homedir (no override).
  *   - Test 3: loadConfig with NO file present writes a default config, generates a
  *     64-hex token (randomBytes(32)), and (POSIX only) stamps mode 0600.
- *   - Test 4: the default pool encodes D-9.5-03 — 5 profiles (3 Claude Max + 1
- *     Codex/Pro + the `creator` forge role, enabled) and exactly one dayPriorityOwner
- *     (D-9.5-03a). The creator RIDES an existing Max account (D-9.5-09).
+ *   - Test 4: the default pool is 5 profiles (3 Claude Max + 1
+ *     Codex/Pro + the `creator` forge role, enabled) and exactly one dayPriorityOwner.
+ *     The creator RIDES an existing Max account.
  *   - Test 5: loadConfig with an existing file parses and returns it unchanged
  *     (token round-trips — the default is persisted, not regenerated per call).
  *   - Test 6: validation rejects a worker profile missing id / lane / account.configDir
  *     with a named InvalidWorkerProfileError.
- *   - Test 7: validation normalizes the D-9.5-09 harness trio — enabled defaults to
+ *   - Test 7: validation normalizes the harness trio — enabled defaults to
  *     true; roleFile / skills are accepted.
  *   - Test 8: secretsView is the ONLY loggable shape — token and every
- *     account.oauthTokenEnv collapse to '[set]'/'[unset]' (T-9.5-01); no secret,
+ *     account.oauthTokenEnv collapse to '[set]'/'[unset]'; no secret,
  *     no env-var NAME, ever leaves.
  *
- * V5.1 additions (D-9.7-01 project registry, D-9.7-08 quiet migration, D-9.7-04
+ * V5.1 additions (project registry, quiet migration,
  * federation shape):
  *   - Test 9: REGRESSION — a config carrying NEITHER projects NOR federation still
  *     loads and validates (the additive-field law: no existing install breaks).
  *   - Test 10: ensureDefaultProject is the quiet migration — the first load mints
  *     exactly ONE project (name from the install profile when present, else the
- *     repo directory name) and a second load mints nothing (idempotence, T-9.7-06).
+ *     repo directory name) and a second load mints nothing (idempotence).
  *   - Test 11: validateProject truth table (missing id, bad slug, duplicate, empty name).
  *   - Test 12: validateFederation truth table (three roles, broken url, empty token).
  *   - Test 13: peer tokens collapse in secretsView from the day the field exists
- *     (T-9.7-05) — the token value appears in NO serialization of the view.
+ * — the token value appears in NO serialization of the view.
  *   - Test 14: renaming a project changes the name only — the id is the key tasks
  *     reference and never moves.
  */
@@ -71,7 +71,7 @@ afterEach(() => {
 
 const homedir = () => home
 
-describe('resolveConfigPath (D-9.5-05a)', () => {
+describe('resolveConfigPath', () => {
   it('honors the SMA_DAEMON_CONFIG env override', () => {
     const p = resolveConfigPath({ env: { SMA_DAEMON_CONFIG: 'C:/custom/daemon.json' }, homedir })
     expect(p).toBe('C:/custom/daemon.json')
@@ -95,7 +95,7 @@ describe('loadConfig — bootstrap (default write)', () => {
     }
   })
 
-  it('encodes the D-9.5-03 pool: 5 profiles (3 claude + 1 codex + creator forge) and one dayPriorityOwner', () => {
+  it('encodes the pool: 5 profiles (3 claude + 1 codex + creator forge) and one dayPriorityOwner', () => {
     const cfg = loadConfig({ env: {}, homedir })
     expect(cfg.workers).toHaveLength(5)
     const claude = cfg.workers.filter((w: any) => w.provider === 'claude')
@@ -172,7 +172,7 @@ describe('loadConfig — existing file', () => {
     expect(() => loadConfig({ env: {}, homedir })).toThrow(InvalidWorkerProfileError)
   })
 
-  it('normalizes the D-9.5-09 harness trio: enabled defaults true; roleFile/skills accepted', () => {
+  it('normalizes the harness trio: enabled defaults true; roleFile/skills accepted', () => {
     const path = resolveConfigPath({ env: {}, homedir })
     loadConfig({ env: {}, homedir })
     const raw = JSON.parse(readFileSync(path, 'utf8'))
@@ -194,7 +194,7 @@ describe('loadConfig — existing file', () => {
   })
 })
 
-describe('secretsView (T-9.5-01 — the only loggable shape)', () => {
+describe('secretsView (the only loggable shape)', () => {
   it('collapses token and every account.oauthTokenEnv to [set]/[unset]; no secret leaks', () => {
     const cfg = loadConfig({ env: {}, homedir })
     const firstEnvName = cfg.workers[0].account.oauthTokenEnv
@@ -221,7 +221,7 @@ describe('secretsView (T-9.5-01 — the only loggable shape)', () => {
   })
 })
 
-// ─────────────────── V5.1: projects + federation (D-9.7-01/04/08) ───────────────────
+// ─────────────────── V5.1: projects + federation ───────────────────
 
 /** Seed a PRE-V5.1 config on disk: workers, token — no projects, no federation. */
 function seedLegacyConfig(): string {
@@ -235,7 +235,7 @@ function seedLegacyConfig(): string {
   return path
 }
 
-describe('REGRESSION — a pre-V5.1 config still loads (additive-field law, D-9.7-08)', () => {
+describe('REGRESSION — a pre-V5.1 config still loads (additive-field law)', () => {
   it('a config with NEITHER projects NOR federation validates and keeps its workers and token', () => {
     const path = seedLegacyConfig()
     const before = JSON.parse(readFileSync(path, 'utf8'))
@@ -249,7 +249,7 @@ describe('REGRESSION — a pre-V5.1 config still loads (additive-field law, D-9.
   })
 })
 
-describe('ensureDefaultProject — the quiet migration (D-9.7-08, T-9.7-06)', () => {
+describe('ensureDefaultProject — the quiet migration', () => {
   it('the first load mints exactly ONE project and points activeProject at it', () => {
     seedLegacyConfig()
     const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
@@ -279,7 +279,7 @@ describe('ensureDefaultProject — the quiet migration (D-9.7-08, T-9.7-06)', ()
     expect(out.projects[0].id).toMatch(/^[a-z0-9-]{1,64}$/)
   })
 
-  it('IDEMPOTENT — a second load does not mint a second project (T-9.7-06)', () => {
+  it('IDEMPOTENT — a second load does not mint a second project', () => {
     seedLegacyConfig()
     const first = loadConfig({ env: {}, homedir, repoDir: repo })
     const second = loadConfig({ env: {}, homedir, repoDir: repo })
@@ -294,7 +294,7 @@ describe('ensureDefaultProject — the quiet migration (D-9.7-08, T-9.7-06)', ()
   })
 })
 
-describe('validateProject — truth table (D-9.7-01)', () => {
+describe('validateProject — truth table', () => {
   it('accepts a well-formed entry', () => {
     expect(validateProject({ id: 'acme-clinic', name: 'Acme Clinic' })).toMatchObject({
       id: 'acme-clinic',
@@ -328,7 +328,7 @@ describe('validateProject — truth table (D-9.7-01)', () => {
   })
 })
 
-describe('validateFederation — truth table (D-9.7-04, T-9.7-07)', () => {
+describe('validateFederation — truth table', () => {
   it('an absent block means role standalone with no peers', () => {
     expect(validateFederation(undefined)).toMatchObject({ role: 'standalone', peers: [] })
     expect(FEDERATION_ROLES).toEqual(['standalone', 'hub', 'peer'])
@@ -358,7 +358,7 @@ describe('validateFederation — truth table (D-9.7-04, T-9.7-07)', () => {
     )
   })
 
-  it('a broken peer entry refuses the whole load — the daemon never starts half-alive (T-9.7-07)', () => {
+  it('a broken peer entry refuses the whole load — the daemon never starts half-alive', () => {
     const path = resolveConfigPath({ env: {}, homedir })
     loadConfig({ env: {}, homedir, repoDir: repo })
     const raw = JSON.parse(readFileSync(path, 'utf8'))
@@ -368,7 +368,7 @@ describe('validateFederation — truth table (D-9.7-04, T-9.7-07)', () => {
   })
 })
 
-describe('secretsView — peer tokens collapse the day the field exists (T-9.7-05)', () => {
+describe('secretsView — peer tokens collapse the day the field exists', () => {
   it('every federation.peers[].token becomes [set]/[unset]; the value is in NO serialization', () => {
     const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
     const withPeers = {
@@ -423,7 +423,7 @@ describe('project registry mutations — add / rename / select', () => {
 })
 
 /**
- * D-11-DEFER-19 — a registry write must persist only the PERSISTED shape.
+ * A registry write must persist only the PERSISTED shape.
  *
  * `loadConfig` returns the config WITH the three read-time working directories attached, and
  * every registry door writes that same object back. One project add was enough to land
@@ -439,9 +439,9 @@ describe('project registry mutations — add / rename / select', () => {
  *
  * THE BASELINE THE DOORS TAKE IS `launchDir` — the directory the daemon PROCESS was started
  * in, which is what these cases always meant by `repo`. It used to be called `repoDir`, and
- * that name is what let the effective repoDir be handed in instead; see the LP-3 cases below.
+ * that name is what let the effective repoDir be handed in instead; see the pinned-repoDir cases below.
  */
-describe('D-11-DEFER-19 — the derived working directories never reach the file', () => {
+describe('the derived working directories never reach the file', () => {
   const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
 
   it('a round trip through every registry door leaves no derived key in the file', () => {
@@ -485,7 +485,7 @@ describe('D-11-DEFER-19 — the derived working directories never reach the file
 })
 
 /**
- * LP-3 — the strip baseline is the LAUNCH directory, and only the launch directory
+ * The strip baseline is the LAUNCH directory, and only the launch directory
  * (the live incident of 05.08.2026).
  *
  * The founder's config carried a `repoDir` pin, because the daemon is started from a temp
@@ -504,7 +504,7 @@ describe('D-11-DEFER-19 — the derived working directories never reach the file
  * The dataDir/ledgerDir halves are derived from the CONFIG PATH and are untouched by any of
  * this — asserted here so a future change to the repoDir rule cannot quietly move them.
  */
-describe('LP-3 — a pinned repoDir is not a derive, and survives every door', () => {
+describe('a pinned repoDir is not a derive, and survives every door', () => {
   const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
   const PIN = 'D:/pinned-tree'
 

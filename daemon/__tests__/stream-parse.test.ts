@@ -1,6 +1,6 @@
 /**
  * Tests for daemon/src/runner/spawn.mjs + stream.mjs + usage.mjs
- * (Phase 9.5 Plan 04, Tasks 2 & 3).
+ *.
  *
  * The child mechanics + NDJSON stream extraction + usage booking, proven entirely
  * over FIXTURE streams and a RECORDING fake spawnImpl — no test ever spawns a real
@@ -20,7 +20,7 @@
  *             turn.completed yields the usage token counts.
  *   - Test 6: a garbage line returns { type: 'unparsed' } from BOTH parsers and never throws.
  *
- *   usage.mjs (honest per-account booking — Pitfall 5):
+ *   usage.mjs (honest per-account booking):
  *   - Test 7: claudeUsageFromResult maps the fixture result → a stream-result row w/ cost.
  *   - Test 8: codexUsageFromFinal with token fields → a codex-final row.
  *   - Test 9: codexUsageFromFinal WITHOUT token fields → a source:'estimate' row (never $0-blind).
@@ -129,7 +129,7 @@ describe('parseCodexEvent (pure, never throws)', () => {
   })
 })
 
-describe('parsers never throw on hostile output (T-9.5-13)', () => {
+describe('parsers never throw on hostile output', () => {
   it('a garbage line → {type:unparsed} from both parsers, no throw', () => {
     const garbage = 'not json at all }{'
     expect(() => parseClaudeEvent(garbage)).not.toThrow()
@@ -140,7 +140,7 @@ describe('parsers never throw on hostile output (T-9.5-13)', () => {
   })
 })
 
-describe('usage.mjs — honest per-account booking (Pitfall 5)', () => {
+describe('usage.mjs — honest per-account booking', () => {
   let dataDir: string
   beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'sma-usage-')) })
   afterEach(() => { rmSync(dataDir, { recursive: true, force: true }) })
