@@ -14,6 +14,16 @@
  *   total_cost_usd, modelUsage, session_id. system init carries session_id; assistant
  *   events carry message.usage. Field names are the CLI's, mapped to our camelCase view.
  *
+ * SUBAGENT PROVENANCE — `parent_tool_use_id`. With `--forward-subagent-text` the CLI puts
+ * the text and thinking of DELEGATED sessions on the same stream as the main one, and the
+ * only thing that tells the two apart is a `parent_tool_use_id` on the frame: present means
+ * "this line was spoken by a subagent, under that tool call". Every event therefore carries
+ * `subagent` — `true`/`false`, never absent — so a reader is never left guessing whether the
+ * flag was omitted or the answer was no. The parent id itself is an OPAQUE string, passed
+ * through verbatim: it is not parsed, not interpreted and not trusted, and it is CAPPED at
+ * the storage boundary (front/journal.mjs owns every cap in this system) rather than here,
+ * so one rule lives in one place.
+ *
  * ASSUMPTION A4 (Codex, MEDIUM confidence — verified in the pilot): `codex exec --json`
  * emits a thread-start event carrying `thread_id` and a final `turn.completed` event
  * carrying a `usage` object with token counts sufficient for the ledger. If the final
@@ -47,8 +57,20 @@ function safeParse(line) {
 }
 
 /**
+ * Who spoke this frame: the MAIN session, or a subagent it delegated to. `parent_tool_use_id`
+ * present → a subagent line, and the opaque parent id travels with it so a screen can group
+ * a delegated burst under the tool call that started it. Absent → `{subagent:false}` and no
+ * id at all: an absent id is not the empty string.
+ */
+function provenanceOf(obj) {
+  const parentId = strOrNull(obj.parent_tool_use_id ?? obj.parentToolUseId)
+  return parentId ? { subagent: true, parentId } : { subagent: false }
+}
+
+/**
  * parseClaudeEvent(line) → typed event. For system/assistant events returns { type, … };
- * for a `result` event extracts { totalCostUsd, modelUsage, sessionId }. A malformed line
+ * for a `result` event extracts { totalCostUsd, modelUsage, sessionId }. Every parsed event
+ * also carries { subagent, parentId? } — see SUBAGENT PROVENANCE above. A malformed line
  * → { type: 'unparsed', raw }. NEVER throws.
  *
  * @param {string} line
@@ -56,13 +78,17 @@ function safeParse(line) {
  */
 export function parseClaudeEvent(line) {
   const p = safeParse(line)
+  // An unparsed line has no frame to read provenance OFF — claiming `subagent:false` for it
+  // would be an answer invented from nothing. It keeps exactly the shape it always had.
   if (!p.ok) return { type: 'unparsed', raw: p.raw }
   const obj = p.obj
   const type = typeof obj.type === 'string' ? obj.type : 'unknown'
+  const who = provenanceOf(obj)
 
   if (type === 'result') {
     return {
       type,
+      ...who,
       totalCostUsd: numOrNull(obj.total_cost_usd),
       modelUsage: obj.modelUsage ?? obj.model_usage ?? null,
       sessionId: strOrNull(obj.session_id ?? obj.sessionId),
@@ -71,15 +97,15 @@ export function parseClaudeEvent(line) {
   }
 
   if (type === 'system') {
-    return { type, subtype: strOrNull(obj.subtype), sessionId: strOrNull(obj.session_id ?? obj.sessionId) }
+    return { type, ...who, subtype: strOrNull(obj.subtype), sessionId: strOrNull(obj.session_id ?? obj.sessionId) }
   }
 
   if (type === 'assistant') {
     const m = obj.message && typeof obj.message === 'object' ? obj.message : {}
-    return { type, model: strOrNull(m.model), usage: m.usage ?? null }
+    return { type, ...who, model: strOrNull(m.model), usage: m.usage ?? null }
   }
 
-  return { type }
+  return { type, ...who }
 }
 
 /**
