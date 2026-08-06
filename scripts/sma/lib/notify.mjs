@@ -3,7 +3,7 @@
  * webhook.
  *
  * THE ONE NEW SANCTIONED OUTBOUND PATH (beside snapshot.mjs's one-way CRM mirror),
- * explicitly permitted by D-9.3-13 and policed by the security guard from this
+ * explicitly permitted and policed by the security guard from this
  * commit on. The boundary is deliberate and total:
  *   - OUTBOUND EVENTS ONLY. A transition INTO waiting-for-human fires exactly ONE
  *     HTTP POST to a USER-configured URL. Nothing else ever leaves.
@@ -18,7 +18,7 @@
  *     the default posture; SMA_NOTIFY_DISABLE is the hard kill-switch.
  *
  * NO PARALLEL STORE: the pulse rides the EXISTING session lease field
- * `fpStatus` (registry.FP_STATUS_VALUES / FP_STATUS on the lease, shipped 9.3-13)
+ * `fpStatus` (registry.FP_STATUS_VALUES / FP_STATUS on the lease)
  * — NOT a new duplicate field. registry's WORK axis `status` (working|blocked|idle|
  * done — what the session SAYS) stays untouched; the pulse is the ATTENTION axis.
  * `pulseSince` is the companion transition timestamp. `idle` is DERIVED at read time

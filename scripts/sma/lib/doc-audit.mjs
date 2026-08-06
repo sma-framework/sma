@@ -59,7 +59,7 @@ export const SURFACE_MANIFEST = [
 
 /**
  * The world analogs the positioning region must name honestly (brand tokens).
- * 'Outcomes' joins the list in 9.4-05: after Claude Outcomes shipped separate-context
+ * 'Outcomes' joined the list later: after Claude Outcomes shipped separate-context
  * grading, the honest comparison row is load-bearing — dropping it from either
  * language's region is now a scored analog-honesty violation (the same grow-the-guard
  * law as the origin project's security guard; the guard only ever grows).

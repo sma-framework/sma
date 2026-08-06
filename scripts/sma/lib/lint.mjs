@@ -58,7 +58,7 @@ import { GATES } from './gates.mjs'
 // env-independent compensating control the SMA_LADDER_OFF HAZARDS row cites: an
 // evidence-free tier escalation, or an unchecked retirement, cannot survive a commit.
 import { readLadder } from './ladder.mjs'
-// The ONE contradiction implementation (9.1-12 T2): lint imports consolidate's
+// The ONE contradiction implementation: lint imports consolidate's
 // detector — single subject model shared by `sma consolidate` and MEM-CONTRADICT.
 import { findContradictions } from './consolidate.mjs'
 // The MEM-* schema-v2 family delegates ALL record legality to the schema module
@@ -263,7 +263,7 @@ function comparePhase(a, b) {
   return 0
 }
 
-/** The leading dotted-numeric phase token of a SUMMARY filename ('9.2-03-…' -> '9.2'). */
+/** The leading dotted-numeric phase token of a SUMMARY filename ('3.2-03-…' -> '3.2'). */
 function summaryPhase(summaryPath) {
   const m = /^(\d+(?:\.\d+)*)-/.exec(basename(summaryPath))
   return m ? m[1] : null
@@ -284,7 +284,7 @@ function frontmatterText(text) {
  * NUMBER namespace with unrelated legacy phases (50-55+). A numeric phase
  * cutover alone would retro-fail those legacy summaries (which legitimately use
  * prose coverage); gating on `subsystem: sma…` scopes enforcement to the SMA
- * lineage without a magic upper bound. (9.2-03 deviation, Rule 3.)
+ * lineage without a magic upper bound.
  */
 function isSmaRegimeSummary(text) {
   return /^subsystem:\s*sma\b/m.test(frontmatterText(text))
@@ -983,7 +983,7 @@ const MEM_CONTRADICT = {
   tier: 'critical',
   run(ctx) {
     // Detection is DELEGATED to consolidate.mjs's findContradictions — the one
-    // shared implementation (9.1-12 T2 acceptance). Lint only renders findings.
+    // shared implementation. Lint only renders findings.
     const notes = ctx.parsed.filter((n) => n.frontmatter && !n.parseError && !n.error)
     const pairs = findContradictions({ notes, registry: ctx.registry })
     return pairs.map((p) =>
@@ -1007,7 +1007,7 @@ const PRED_NOMETRIC = {
     const out = []
     for (const plan of ctx.plans) {
       // Field validation is DELEGATED to predict.mjs's validatePrediction —
-      // one boundary, never duplicated (9.1-08 lock).
+      // one boundary, never duplicated.
       const { predictions } = parsePredictions(plan.path, { readFn: () => plan.text })
       for (const entry of predictions) {
         const v = validatePrediction(entry)
@@ -1373,7 +1373,7 @@ const RECEIPT_PROSE = {
       // enforce only on SMA-lineage summaries (subsystem: sma…).
       if (!isSmaRegimeSummary(s.text)) continue
       // Cutover: the whole V2 history (< 9.2) is NEVER retro-failed. The retro
-      // look at V2 false-dones is plan 01's baseline harness, not this lint.
+      // look at V2 false-dones belongs to the baseline harness, not this lint.
       if (comparePhase(phase, RECEIPTS_ENFORCED_FROM) < 0) continue
 
       const readFn = () => s.text
@@ -2292,7 +2292,7 @@ const MEM_EPISODE = {
   },
 }
 
-// The check registry — the full R5 class list plus the two D-9-15 checks
+// The check registry — the full R5 class list plus the two coordination checks
 // plus the PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
   MEM_VOCAB,

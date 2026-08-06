@@ -63,9 +63,8 @@ export const CORE_THRESHOLD = 9
  * `LIFECYCLE_ACTIONS` and `migrate-v1-v2.mjs` `RETIRED_STATUSES` both name
  * `expired` and `archived` too — so a record the pipeline had archived was still
  * delivered, and `MEMORY-LIFECYCLE.md` §5.4's promise («removed from active
- * retrieval, kept for history») was not kept by any code. The gap was recorded
- * as D-11-DEFER-01 and closed by plan 11-14, which put the retirement states
- * behind a user-facing verb: `memory forget --archive` that leaves the record
+ * retrieval, kept for history») was not kept by any code. The gap was closed by
+ * putting the retirement states behind a user-facing verb: `memory forget --archive` that leaves the record
  * quotable is a verb that lies about what it did.
  *
  * The word means «this record has been retired by a decision», so `expired`
@@ -299,7 +298,7 @@ export function isVisibleNow(note, opts = {}) {
   return visibilityVerdict(note, opts) === null
 }
 
-// ──────────── read-time trust (the sibling filter, docs §9 · D-11-07) ─────────
+// ──────────── read-time trust (the sibling filter, docs §9) ───────────────────
 
 /**
  * INJECTION_MARKERS — the shapes of text that count as AN INSTRUCTION AIMED AT THE

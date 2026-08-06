@@ -35,8 +35,8 @@
  *
  * probeNativeSpend is the demolition-clause sensor: the day the vendor ships a
  * sufficient LOCAL spend surface (per-session + per-model + window totals without
- * network), the probe flips and spend.mjs stands the ledger down. P9.2-09-3 is the
- * registered self-removal prediction; the ledger is NEVER headlined in positioning.
+ * network), the probe flips and spend.mjs stands the ledger down; a registered
+ * prediction scores that self-removal. The ledger is NEVER headlined in positioning.
  *
  * Node built-ins only; zero npm deps, zero network, zero LLM.
  */

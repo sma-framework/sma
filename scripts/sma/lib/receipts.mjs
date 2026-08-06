@@ -9,8 +9,8 @@
  * and reports observed-vs-expected. The RECEIPT-PROSE lint (in lint.mjs) fails
  * any 9.2+ SUMMARY whose machine-verifiable coverage item carries no receipt.
  *
- * SCHEMA (flat frontmatter dash-list `receipts:`), the four locked fields of
- * D-9.2-06 plus this plan's discretion encoding (D-9.2-06 Claude's-discretion):
+ * SCHEMA (flat frontmatter dash-list `receipts:`), the four locked fields
+ * plus this module's discretion encoding:
  *   { id, assertion, check_command, expected_sha256,
  *     expected_exit?, hash_stdout?, coverage_id? }
  *   - id               : receipt identity (unique within the SUMMARY)
@@ -42,7 +42,7 @@
  * check_command strings arrive from SUMMARY files (which may be imported from
  * untrusted sources) and get EXECUTED. The boundary is NOT re-derived here — it
  * is the SAME isSafeCommand + SAFE_COMMAND_PATTERNS imported from predict.mjs
- * (the single-execution-boundary lock, T-9.1-14 extension). Every path
+ * (the single-execution-boundary lock, extended here). Every path
  * that would run a command — verifyReceipts AND the emit path recordReceipt —
  * gates on isSafeCommand FIRST; a non-matching command scores 'skipped-unsafe'
  * and the runner is NEVER invoked.
@@ -57,8 +57,8 @@
  * FRESH CLONE (freshClone): `git clone --no-hardlinks --quiet <repoRoot>
  * <targetDir>` via the injected git runner. Only COMMITTED receipts exist in a
  * clone — that is the POINT, not a limitation: uncommitted local doctoring is
- * invisible to a fresh-clone reverify by construction (T-9.2-03-03 partial
- * mitigation; the committed-code residual is plan 10's Goodhart layer).
+ * invisible to a fresh-clone reverify by construction (a partial
+ * mitigation; the committed-code residual belongs to the Goodhart layer).
  *
  * Node built-ins only; zero npm deps; zero LLM/network anywhere (substrate law).
  */
@@ -68,7 +68,7 @@ import { createHash } from 'node:crypto'
 
 import { isSafeCommand, parseFrontmatterEntries } from './predict.mjs'
 
-/** The four locked fields of D-9.2-06 — every receipt MUST carry them. */
+/** The four locked receipt fields — every receipt MUST carry them. */
 export const RECEIPT_REQUIRED_FIELDS = ['id', 'assertion', 'check_command', 'expected_sha256']
 
 /** sha256 hex of a UTF-8 string. */

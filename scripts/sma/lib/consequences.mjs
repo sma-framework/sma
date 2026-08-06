@@ -21,7 +21,7 @@
  *      calibration ledger and the ONLY unblock path (a NEW appended disposition
  *      record, never an edit).
  *   4. `openRollbackCandidate` — create-only `update-ref` in a dedicated
- *      namespace (airbag D-9.2-08 posture: milliseconds, working tree untouched).
+ *      namespace (the airbag posture: milliseconds, working tree untouched).
  *
  * Prohibitions honored HERE (see the plan's threat register):
  *   - NEVER a PreToolUse/hook hard deny — enforcement is exit codes the ship
@@ -35,10 +35,10 @@ import { readLedger, appendVerdict } from './calibration.mjs'
 import { parseFrontmatterEntries } from './predict.mjs'
 
 /**
- * The three trust-claim domains from CONS-9.2-A: a `miss` verdict in ANY of
+ * The three trust-claim domains: a `miss` verdict in ANY of
  * them is class A by construction — these ARE the trust claim (S1 false-done,
- * S4 subagent honesty, S8 blind-verifier quality). Frozen + exported so plan
- * 10's guards and the report reuse ONE boundary, never a second copy.
+ * S4 subagent honesty, S8 blind-verifier quality). Frozen + exported so the
+ * integrity guards and the report reuse ONE boundary, never a second copy.
  */
 export const CLASS_A_DOMAINS = Object.freeze([
   'sma.receipts',
@@ -211,7 +211,7 @@ export function recordDisposition({ eventKey: ref, disposition, reason, by, doma
  * short-circuits with the spy NEVER called), sanitize the slug, then issue
  * `update-ref <ref> <sha> <40-zeros>` — the 40-zeros oldvalue makes it CREATE
  * ONLY (git refuses if the ref already exists). No checkout, no reset, no delete,
- * ever (airbag D-9.2-08: milliseconds, working tree untouched). Never throws —
+ * ever (the airbag posture: milliseconds, working tree untouched). Never throws —
  * an execGit failure (ref exists / git unavailable) returns {created:false}.
  *
  * @param {{slug:string, sha:string, execGit:Function}} args

@@ -386,7 +386,7 @@ export function prePushPlan(args = {}) {
  * "grilled" if its ledger carries >=1 challenge; yield = pct of grilled plans having
  * >=1 challenge with landed:true (set by the --land flow when a pre-push defect traces
  * back to a challenge). Zero grilled plans -> 0. yieldPct is an integer (the
- * P9.2-07-A instrument's numeric-last-line contract). Never throws.
+ * instrument's numeric-last-line contract). Never throws.
  *
  * @param {{grillDir:string}} opts
  * @returns {{grilledPlans:number, plansWithLanded:number, yieldPct:number}}

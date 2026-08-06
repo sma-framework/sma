@@ -14,7 +14,7 @@
  *     readSessions, execTail, vocab}) — zero I/O of its own, so tests never touch
  *     the filesystem. The CLI wires the real sources (loader/claims/registry/exec).
  *   - Per-source try/catch: ONE failing source degrades to a PARTIAL pack with a
- *     collected warning, never a throw (digest.mjs T-9.1-37 posture) —
+ *     collected warning, never a throw (the digest.mjs posture) —
  *     `pretask-pack` is HOOK_FACING and must never wedge a Task spawn.
  *   - Hard byte budget (PACK_BUDGET_BYTES, UTF-8 bytes). When over budget the trim
  *     order is lessons (from the END of the loader-ordered list) -> parent slice ->

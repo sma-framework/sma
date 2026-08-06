@@ -40,8 +40,8 @@
  *
  * This is one of the three ICE bridge-features and carries the demolition clause:
  * nativeCheckpointProbe is the capability sensor (stand the stream down the day a
- * native pre-Bash-git snapshot mechanism ships), P9.2-05-C is the registered
- * self-removal prediction, and the airbag is NEVER headlined in README/positioning.
+ * native pre-Bash-git snapshot mechanism ships); a registered prediction scores its own
+ * self-removal, and the airbag is NEVER headlined in README/positioning.
  *
  * SMA-3 escaped-verb discipline: every sensitive git verb literal is assembled via
  * `['verb'].join('')` so this source never carries the adjacent dangerous literal
@@ -405,7 +405,7 @@ function foreignClaimCondition(cmdClass, opts = {}) {
 
 /**
  * checkAirbag(evt, opts) -> {warns:string[], deny?:{text}, receipt}. The gates.checkEvent-
- * shaped in-process contract for plan 02's `sma pre` AND the standalone airbag-check hook:
+ * shaped in-process contract for the `sma pre` multiplexer AND the standalone airbag-check hook:
  *   Bash events only → matchDestructive → probe stand-down → snapshot (UNCONDITIONAL) →
  *   journal receipt (type 'airbag') → soft-deny CONDITIONS (dirty / foreign) → deny ONLY
  *   when SMA_AIRBAG_DENY is armed AND no evidence token exists (the gates.mjs GATE-AIRBAG
@@ -503,7 +503,8 @@ export function checkAirbag(evt = {}, opts = {}) {
       if (truthy(env.SMA_AIRBAG_DENY)) {
         // Armed: the evidence escape REUSES gates.mjs's one-shot override token
         // (GATE-AIRBAG). Present → consumed + journaled 'gate-override', allow;
-        // absent → deny. NO new evidence machinery is built (D-9-09 provenance).
+        // absent → deny. NO new evidence machinery is built — the force-clear
+        // provenance idiom is reused as it stands.
         const overridden = consumeOverrideToken('GATE-AIRBAG', { gatesDir: dirs.gatesDir, journalDir, terminalId })
         if (!overridden) {
           out.deny = { text: denyText(command, conditions) }

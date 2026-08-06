@@ -9,7 +9,7 @@
  *
  * BLINDNESS is the whole game:
  *   - The plant list lives ONLY in a sealed ledger under dirs.canaryDir, which
- *     plan 07's blind-verifier pack-assembly MUST exclude (key_link contract). A
+ *     the blind-verifier pack-assembly MUST exclude (key_link contract). A
  *     verifier that can read the plant list scores itself — S8 destroyed.
  *   - The planted CLAIM body carries NO marker distinguishing it from a real
  *     claim (no `canary:true`, no tag, no sequence mark). A canary spottable from
@@ -19,12 +19,12 @@
  * SEPARATION OF SCORING (prohibitions):
  *   - A canary divergence scores the VERIFIER (S8, domain sma.verification), is
  *     EXCLUDED from S1 false-done-rate, and NEVER trips the plan-08 ship block.
- *     classifyDivergence is the ONE function plan 08's consumer calls before
+ *     classifyDivergence is the ONE function the ship-block consumer calls before
  *     blocking — a divergence on a planted id routes 's8-score', never 'ship-block'.
  *
  * TAMPER-EVIDENCE: the sealed ledger is append-only JSONL, each line carrying
- * `prev` = lineHash(previous raw line) — the SAME hash-chain posture as plan 03's
- * journal, reusing journal.mjs's lineHash (never re-derived). A local
+ * `prev` = lineHash(previous raw line) — the SAME hash-chain posture as the
+ * coordination journal, reusing journal.mjs's lineHash (never re-derived). A local
  * edit breaks the chain, and scoreCanaries then REFUSES to score ({chain-broken})
  * rather than silently trusting a doctored plant list.
  *
@@ -182,7 +182,7 @@ export function isCanaryClaim(claimId, { dirs = {} } = {}) {
 
 /**
  * filterCanaries(claimIds, {dirs}) -> the input ids with EXACTLY the planted
- * canary ids stripped. Plan 08's ship-block consumer calls this before
+ * canary ids stripped. The ship-block consumer calls this before
  * classifying a divergence, so a canary never blocks a ship.
  */
 export function filterCanaries(claimIds, { dirs = {} } = {}) {
@@ -192,7 +192,7 @@ export function filterCanaries(claimIds, { dirs = {} } = {}) {
 
 /**
  * classifyDivergence(divergence, {dirs}) -> 's8-score' | 'ship-block'. The ONE
- * routing function plan 08's consumer calls before blocking ship: a divergence
+ * routing function that consumer calls before blocking ship: a divergence
  * whose claim id is a planted canary routes to S8 scoring (grades the verifier);
  * everything else is a real divergence that may block ship.
  */
@@ -259,7 +259,7 @@ export function scoreCanaries({ divergences = [], dirs = {}, now } = {}) {
 
 /**
  * countScored({dirs}) -> integer count of distinct canary ids that have a 'score'
- * ledger line. The data source for `canary score --count-scored` (P9.2-10-03).
+ * ledger line. The data source for `canary score --count-scored`.
  * Monotonic + idempotent by construction.
  */
 export function countScored({ dirs = {} } = {}) {

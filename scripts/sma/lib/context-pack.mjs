@@ -18,7 +18,7 @@
  * and `stack` (tie-break boost for matching-language cards) — this keeps the schema-v2
  * fields alive under PROFILE-DEADFIELD (scorecard metric 5).
  *
- * TOUCHED-NOT-READ HONESTY: P9.3-05-C measures Edit/Write/Bash TOUCHES (the deterministic
+ * TOUCHED-NOT-READ HONESTY: the scorer measures Edit/Write/Bash TOUCHES (the deterministic
  * observable) as the v1 proxy for «read» — hooking Read would add a spawn per file read and
  * blow the envelope. Timestamps live ONLY in the touch/exam JOURNALS (.jsonl state),
  * never in the regenerable PACK.md / MANIFEST.json bytes.
@@ -396,7 +396,7 @@ function fuseLexical({ taskText, corpusDir, now, audience, scope, indexPath, lex
  * deriveScopeFromCorpus(corpusDir) → {repo} or null — WHICH WORLD IS ASKING, when the
  * caller did not say.
  *
- * This closes a debt recorded at 10-01 and re-measured since: `scopeDenial` (generator)
+ * This closes a debt recorded earlier and re-measured since: `scopeDenial` (generator)
  * has always been able to keep another repository's knowledge out of a pack, and
  * NOBODY EVER ASKED IT A QUESTION. A filter with no caller is not a safeguard, it is a
  * field with a comment on it, and the retrieval benchmark has been carrying a

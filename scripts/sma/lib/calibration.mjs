@@ -11,7 +11,7 @@
  * Structure mirrors journal.mjs EXACTLY (PATTERNS analog): one append-only
  * JSONL file per key (here: domain, there: terminal), appendFileSync single-
  * line appends, tolerant skip-and-count line reader (fail-open C9), missing
- * dir -> honest empty report. Ledger integrity is accepted-risk T-9.1-15:
+ * dir -> honest empty report. Ledger integrity is an ACCEPTED risk:
  * the dir lives in gitignored .sma/; the committed rollup lands with
  * the report.
  *
@@ -293,7 +293,7 @@ export function scoreGraderVerdicts({ records, evidence = [], now } = {}) {
  *   - a verdict that was CONTRADICTED is a MISS (the judge was wrong),
  *   - an UNSETTLED verdict counts as neither.
  * Records without a judgeModelId land in an explicit 'unstamped' bucket — never
- * silently merged into another judge's rate (T-9.4-02-A: missing identity is
+ * silently merged into another judge's rate (missing identity is
  * VISIBLE).
  *
  * @param {object[]} records  scored grader-verdict records (from scoreGraderVerdicts)

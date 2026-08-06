@@ -1,11 +1,11 @@
 /**
- * decision-corpus.mjs — lane 1 of D-9.5-08 («поведенческий слепок основателя»).
+ * decision-corpus.mjs — lane 1 of «поведенческий слепок основателя».
  *
  * `sma decisions mine` retrospectively mines the founder's REAL decisions from
  * local Claude Code session transcripts (~thousands of jsonl) and turns each into
  * a DRAFT corpus note «ситуация → реальное решение основателя + почему». The
  * corpus is the raw material for the orchestrator policy prompt + replay exam
- * (plan 9.5-06) — the «оркестрация × обучение» differentiator.
+ * — the «оркестрация × обучение» differentiator.
  *
  * CONTAINMENT POSTURE — copied VERBATIM from excavate.mjs:
  *   - LOCAL ONLY. Transcripts contain secrets/PHI. Mined material lands ONLY as
@@ -20,7 +20,7 @@
  *   - No http/https/net/dns import. No LLM call (deterministic mining only —
  *     substrate law). Node built-ins only (zero-dep law).
  *
- * DETERMINISM (D-9.3-07 posture): the ranking path has no Date.now and no
+ * DETERMINISM (the house posture): the ranking path has no Date.now and no
  * randomness — the same transcripts yield byte-identical drafts + filenames. Total
  * order = signal strength desc → timestamp desc → sessionId asc. The injected
  * `clock` is used ONLY as a filename-date fallback for a record with no timestamp,

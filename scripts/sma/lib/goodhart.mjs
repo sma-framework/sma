@@ -12,7 +12,7 @@
  *      journal) is a self-sign — rejected.
  *
  *   2. SEEDED 5% DEEP RECEIPT AUDIT — a random ~5% sample of receipts is re-run
- *      through plan 03's OWN machinery (receipts.verifyReceipt), seeded by the
+ *      through the receipts module's OWN machinery (receipts.verifyReceipt), seeded by the
  *      release-tip commit sha. The seed is unknowable at receipt-authoring time,
  *      so the author structurally cannot steer which receipts get audited
  *      (Goodhart mitigation). Verdicts land in the V2 calibration ledger under a
@@ -50,12 +50,12 @@ function sha256(s) {
   return createHash('sha256').update(String(s), 'utf8').digest('hex')
 }
 
-/** '9.2-10-PLAN.md' -> '9.2-10' (the plan identity a countersign is keyed by). */
+/** '3.2-10-PLAN.md' -> '3.2-10' (the plan identity a countersign is keyed by). */
 export function planIdFromPath(planPath) {
   return basename(String(planPath)).replace(/-PLAN\.md$/i, '').replace(/\.md$/i, '')
 }
 
-/** '9.2-10' -> {phase:'9.2', plan:'10'} (the exec-journal file key). */
+/** '3.2-10' -> {phase:'3.2', plan:'10'} (the exec-journal file key). */
 function splitPlanId(planId) {
   const s = String(planId)
   const i = s.lastIndexOf('-')
@@ -183,7 +183,7 @@ export function sampleReceipts({ receipts = [], seedSha = '', rate = 0.05, floor
 
 /**
  * auditReceipts({receipts, seedSha, runCommand, dirs, rate, floor, now}) ->
- * {sampled, records}. Re-runs the SAMPLED receipts through plan 03's OWN
+ * {sampled, records}. Re-runs the SAMPLED receipts through the receipts module's OWN
  * verifyReceipt (the same isSafeCommand boundary, verbatim), maps the receipt
  * verdict into a calibration verdict (verified->hit, divergent->miss, others
  * pass through), and appends each under domain 'sma.receipts-audit'. Never throws;

@@ -19,7 +19,7 @@
  * (same size+mtime) is not re-read; an appended file is parsed ONLY from its cached
  * byte offset; a SHRUNK or replaced file invalidates its entry and reparses from
  * zero (fail-open — never wrong-by-cache). This is what keeps a warm spend-check
- * inside `sma pre`'s 300 ms SLO (P9.2-09-2 / key_links).
+ * inside `sma pre`'s 300 ms SLO.
  *
  * ═══════════════════════════ THE WINDOW BUDGET ════════════════════════════════
  *
@@ -372,7 +372,7 @@ export function writeBudget(budget = {}, opts = {}) {
 
 /**
  * spendStats(name, opts) -> a single finite number. The predict-score scorer parses
- * the numeric LAST line of a `--stat` run (9.1-08 contract). Every stat resolves to
+ * the numeric LAST line of a `--stat` run (the scorer contract). Every stat resolves to
  * ONE finite number, never NaN/Infinity.
  *
  *   parse-coverage    recognized / (recognized + unrecognized) * 100 (no drift → 100)
@@ -515,7 +515,7 @@ export function checkSpend(ctx = {}, opts = {}) {
 
 /**
  * benchCheckP95(opts) -> number. Warm the incremental cache once, then run checkSpend
- * 20x over the warm book and return the p95 wall-clock ms. This is the P9.2-09-2
+ * 20x over the warm book and return the p95 wall-clock ms. This is the SLO
  * instrument (a warm spend-check must ride inside sma pre's 300 ms SLO). Deterministic
  * inputs; the number is the last stdout line of `spend --stat bench-check-p95-ms`.
  * @param {{spendDir?:string, repoRoot?:string, env?:object}} [opts]

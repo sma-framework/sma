@@ -2,7 +2,7 @@
  * ship-lane.mjs — the SMA ship lanes. The founder's 2026-07-13 ask
  * («shipment of 90-100 commits takes around 1h — is it normal?» + «can we add
  * /sma-quick-ship … to move it to prod not to wait so long?»). The 1h/90-commit
- * diagnosis (9.4-RESEARCH-ECONOMY §4): the gates cost ~10 minutes; the hour was BATCH
+ * diagnosis: the gates cost ~10 minutes; the hour was BATCH
  * SIZE and passive BABYSITTING. So the treatment is cadence + a background watch, NEVER
  * a weaker gate — the quality-ratchet law from 06/07 stays armed over both lanes.
  *
@@ -23,7 +23,7 @@
  *      posture, but a SEPARATE file: lane BUDGETS and ship OUTCOMES are different records).
  *      A run is appended {outcome:'pending'} AT PUSH TIME and finalized (last-wins on the
  *      same startedAt) when the background watch returns; an interrupted watch leaves an
- *      ORPHANED pending run visible to the next session (grill CH-9.4-08-2).
+ *      ORPHANED pending run visible to the next session.
  *   4. shipLaneSelftest — canned-git fixtures proving all of the above, returns 1/0.
  *
  * Consume-never-reimplement: the CLI injects slots.checkPushClaim (the exact
@@ -321,7 +321,7 @@ function percentile(values, pct) {
 /**
  * laneReport({runs, now}) -> {pending, orphaned, finalized}. Pending runs are listed FIRST
  * (an interrupted background watch is visible to the NEXT session, never silent), and any
- * pending run older than 24h is flagged as an ORPHANED watch (grill CH-9.4-08-2).
+ * pending run older than 24h is flagged as an ORPHANED watch.
  *
  * @param {{runs:object[], now?:number}} o
  * @returns {{pending:object[], orphaned:object[], finalized:object[]}}
@@ -346,12 +346,12 @@ export function laneReport({ runs, now } = {}) {
 /**
  * laneStats({runs, now}) -> the two paired scorer signals with documented sentinels:
  *   - quickActiveP50Min: p50 active minutes of FINALIZED quick runs; the 9999 sentinel when
- *     fewer than 3 quick runs exist (P9.4-08-B honest-miss: a lane nobody used saved
+ *     fewer than 3 quick runs exist (an honest miss: a lane nobody used saved
  *     nothing).
  *   - quickRedMinusFullRedPct: (quickRedPct - fullRedPct). 0 when the quick side has NO
  *     finalized runs (no data, guard idle); when quick has runs but full has none it returns
  *     quickRedPct ALONE so the ratchet guard fires on the FIRST quick red with no full
- *     baseline (P9.4-08-C — teeth from day one).
+ *     baseline (teeth from day one).
  * Pending runs count toward NEITHER stat. Deterministic.
  *
  * @param {{runs:object[], now?:number}} o

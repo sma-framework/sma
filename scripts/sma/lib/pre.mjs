@@ -185,7 +185,7 @@ async function runReflex(ctx) {
     // Shared seen-store (loaded once in buildCtx) — applyFatigue mutates it in place.
     const res = reflex.applyFatigue({ candidates, targetClass, sessionSeen: ctx.seen, env: ctx.env })
 
-    // 9.3-06 overlay: a rule demoted to 'note'/'retired' is journaled SILENTLY
+    // Ladder overlay: a rule demoted to 'note'/'retired' is journaled SILENTLY
     // (evidence keeps accruing — behavior stays observable) but EXCLUDED from the
     // additionalContext output. A rule at 'warn' (or absent from the overlay) is
     // unchanged. One bounded overlay read; fail-open leaves V2 behavior intact.
@@ -227,7 +227,7 @@ async function runGates(ctx) {
     if (!gates) return { warns }
     const terminalId = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : 'unknown'
 
-    // 9.3-06 overlay: for each ladder gate rule at tier 'soft-deny', ARM the gate by
+    // Ladder overlay: for each ladder gate rule at tier 'soft-deny', ARM the gate by
     // injecting its dormant softDeny.armEnv into checkEvent's env — the exact injectable
     // surface the shadow-run uses, run in reverse. gates.mjs stays byte-untouched;
     // the module's kill envs + SMA_GATES_DISABLE still win (they ride the same env).
@@ -280,7 +280,7 @@ async function runGates(ctx) {
  * surfaces permissionDecision 'deny' unless a GATE-AIRBAG override token is present.
  *
  * OPT-IN: the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
- * plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
+ * the measured hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
  * multiplexer re-measures under SLO. Protection stays UNCONDITIONAL once enabled
  * (the snapshot is not posture-gated; only the deny tier is). Kill: SMA_AIRBAG_DISABLE.
  */
@@ -326,8 +326,8 @@ async function runAirbag(ctx) {
  * >=100% of a FOUNDER-CONFIGURED cap; every other tool is WARN-only forever.
  *
  * OPT-IN: the stream is a NO-OP unless SMA_SPEND_OPTIN
- * is set — plan 02's hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
- * multiplexer re-measures under SLO (and P9.2-09-2 scores the warm spend-check <=50ms).
+ * is set — the measured hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until
+ * the multiplexer re-measures under SLO (a scorer holds the warm spend-check <=50 ms).
  * The mechanism ships complete + inert. Kill-switch: SMA_SPEND_DISABLE. Native probe true
  * → silent (bridge stood down). Fully fail-open — a spend/breaker bug never wedges a session.
  */
@@ -348,7 +348,7 @@ async function runSpend(ctx) {
     for (const w of res.warnings) warns.push(w)
 
     // Loop-breaker: soft-disable a repeatedly-firing SMA rule (writes a reviewable marker
-    // consumed by plan 10's disarm-path guard). Best-effort — never blocks the tool call.
+    // consumed by the disarm-path guard). Best-effort — never blocks the tool call.
     try {
       if (breaker) {
         breaker.detectAndTrip({
@@ -611,7 +611,7 @@ async function runEnforce(ctx) {
     if (!mergeGate) return { warns }
     const selfTerm = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : null
 
-    // The overlapping LIVE foreign terminal(s) via plan 13's fingerprint overlap — the
+    // The overlapping LIVE foreign terminal(s) via the fingerprint overlap — the
     // "fresh touches + live heartbeat" signal, reused (NOT re-derived). No overlap -> no-op.
     let overlaps = []
     try {

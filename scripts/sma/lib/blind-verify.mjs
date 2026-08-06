@@ -13,8 +13,8 @@
  *
  * A claimed-pass / reproduced-fail DIVERGENCE reuses the V2 ledger EXACTLY
  * (calibration.appendVerdict — calibration.mjs stays untouched): it carries
- * verdict:'divergence' so plan 08's shipped classifyEvent scores it class A (the
- * auto-block), PLUS kind:'divergence' so plan 07's divergenceStats and plan 10's canary
+ * verdict:'divergence' so the shipped classifyEvent scores it class A (the
+ * auto-block), PLUS kind:'divergence' so divergenceStats and the canary
  * audit key on it. (The plan text said verdict:'miss'; reconciled to the SHIPPED
  * plan-08 consumer, whose classifyEvent keys class-A on verdict:'divergence' — never on
  * kind — so the block fires for EVERY divergence regardless of the check's domain.)
@@ -371,8 +371,8 @@ export function compareToClaimed({ claimed, planId, dirs = {}, lastGoodSha, now 
     const domain = v.domain ?? DEFAULT_DOMAIN
 
     if (claimedPass && blindFail) {
-      // DIVERGENCE — reconciled to plan 08's shipped classifyEvent: verdict:'divergence'
-      // is class A ALWAYS (regardless of domain), kind:'divergence' is plan 07/10's key.
+      // DIVERGENCE — reconciled to the shipped classifyEvent: verdict:'divergence'
+      // is class A ALWAYS (regardless of domain), kind:'divergence' is the audit's key.
       const rec = {
         verdict: 'divergence',
         kind: 'divergence',

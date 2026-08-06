@@ -1,5 +1,5 @@
 /**
- * emit.mjs — `sma emit`: one corpus, any agent (Phase 9.3 Plan 04).
+ * emit.mjs — `sma emit`: one corpus, any agent.
  *
  * Compiles the learned memory corpus into a MANAGED EXPORT BLOCK inside each of
  * CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md, every block under a per-format
@@ -14,13 +14,13 @@
  *     comparator MEMORY.md and the loader already share.
  *   - LF line endings, UTF-8 no BOM.
  *
- * MANAGED-BLOCK LAW (T-9.3-04-A): spliceBlock only ever replaces the
+ * MANAGED-BLOCK LAW: spliceBlock only ever replaces the
  * BEGIN..END span; a file without a block gets it appended (every pre-existing
  * byte unchanged); an absent file is created holding only the block; a file whose
  * anchor pair is broken is NEVER written (skipped-corrupt, file untouched). The
  * ruler tool's documented clobbering failure is the named anti-lesson.
  *
- * INJECTION DEFENSE (T-9.3-04-B): note content is never executed; every
+ * INJECTION DEFENSE: note content is never executed; every
  * note-derived field is newline-collapsed to a single line and the anchor token
  * is defanged (colon-form SMA:EXPORT: -> dash-form SMA-EXPORT-) before rendering,
  * so no injected line can ever open or close a managed block.

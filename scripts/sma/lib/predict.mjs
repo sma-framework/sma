@@ -1,5 +1,5 @@
 /**
- * predict.mjs — the P1 prediction engine core (B18; D-9.1-10).
+ * predict.mjs — the P1 prediction engine core (B18).
  *
  * A PLAN.md may carry an optional `predictions:` block in frontmatter — a
  * pre-registered, machine-checkable claim set scored DETERMINISTICALLY at
@@ -98,7 +98,7 @@ function scalarValue(raw) {
  * first line outside that indentation closes the block. Missing file, no
  * fence, or no block -> honest empty array, never a throw (fail-open C9 — the
  * consumers are observers, not gates). Parameterizing the top-level key is the
- * ONLY change vs the original parsePredictions inline scan (9.2-08 T1): the
+ * ONLY change vs the original parsePredictions inline scan: the
  * `predictions:` and `consequences:` blocks share one narrow extractor rather
  * than two hand-rolled copies.
  *
@@ -157,7 +157,7 @@ export function parseFrontmatterEntries(planPath, key, opts = {}) {
  * parsePredictions(planPath, opts) -> {predictions, error?}.
  *
  * Thin wrapper over parseFrontmatterEntries keyed to 'predictions'. Behavior
- * is byte-identical to the pre-9.2-08 inline scan — predict.test.ts is the
+ * is byte-identical to the original inline scan — predict.test.ts is the
  * regression proof.
  *
  * @param {string} planPath
@@ -221,7 +221,7 @@ function compare(actual, comparator, threshold) {
 /**
  * isReceiptEntry(entry) — the receipts discriminator (R1/R2 false class-A
  * lesson, 2026-07-10). A structural receipt pins `expected_sha256` over an
- * observation (the locked D-9.2-06 evidence field); a prediction NEVER
+ * observation (the locked evidence field); a prediction NEVER
  * carries it — its expectation is a numeric `threshold`. A receipt is a
  * BUILD-TIME claim: re-scoring it later as a standing prediction against
  * ACCRUING .sma state (e.g. `subagent-receipts --json` output) is a guaranteed
@@ -440,7 +440,7 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
  *
  * @param {object} args
  * @param {object} args.verdict  a scorePlan record ({verdict:'miss', id, claim, ...})
- * @param {string} args.planId   the plan identity, e.g. '9.1-09'
+ * @param {string} args.planId   the plan identity, e.g. '3.1-09'
  * @param {{draftsDir?:string}} [args.dirs]  DI dir (default .claude/memory/drafts)
  * @returns {{drafted: boolean, path: string|null}}
  */

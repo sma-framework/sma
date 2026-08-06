@@ -19,8 +19,8 @@
  * THE FINGERPRINT EXTENDS THE LEASE. There is NO parallel `.sma/fingerprint/`
  * store: the lease (registry.mjs heartbeat payload) gains `intent` + `filesRecent[]` +
  * `fpStatus`, and buildFingerprint reads them back. The pre-injection, `pnpm sma status`,
- * and plan-07's statusline all READ this ONE fingerprint — plan 07 is its renderer, so
- * plan 13 waves BEFORE plan 07 (W2 before W3).
+ * and the native statusline all READ this ONE fingerprint — the statusline is only its
+ * renderer, never a second source.
  *
  * INJECTION IS TWO CHANNELS, NEVER PER-TOOL-CALL SPAM: (1) a compact AMBIENT
  * digest of all live terminals (one line each — status + intent + phase) throttled to

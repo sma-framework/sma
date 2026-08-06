@@ -18,7 +18,7 @@
  *   - propose(opts)            -> {merges, promotions, contradictions, digest}
  *   - digest(opts)             -> {topCited, incidents, summary}
  *   - findContradictions(opts) -> contradiction pairs (the ONE shared detector —
- *       lint.mjs imports THIS, single implementation, 9.1-12 T2 acceptance)
+ *       lint.mjs imports THIS, single implementation)
  *
  * DESIGN INVARIANTS:
  *   - READ-ONLY: imports ONLY read APIs from node:fs. Zero write calls (test 5).
@@ -69,7 +69,7 @@ const PROMOTION_THRESHOLD = 3
  * `prospective` and `episodic` stay out. Two facts stated differently are a
  * MERGE question, and `findMerges` already owns subject overlap; a detector that
  * fired on every kind would be tuned to a benchmark rather than to a rule, which
- * is the failure T-11-10-02 names by name.
+ * is exactly the benchmark-tuning the house forbids.
  */
 const CONTRADICT_KINDS = new Set(['decision', 'status', 'normative', 'procedural-rule'])
 
@@ -235,8 +235,8 @@ const HAS_LETTER = /[a-zа-яё]/i
  * only overlap was the year they were given scored as a same-subject conflict.
  * Requiring one letter is the type correction, not a threshold: it says what a
  * subject IS. Measured on the live 26-note corpus, it removes 4 of 14 findings
- * and adds none — every one of the four was a date collision (D-11-DEFER-11's
- * false-positive condition).
+ * and adds none — every one of the four was a date collision (the detector's
+ * known false-positive condition).
  */
 function subjectTokens(raws) {
   const out = new Set()
@@ -612,7 +612,7 @@ export function digest(opts = {}) {
  * @param {object} opts
  * @param {string} opts.corpusDir   directory of the memory notes
  * @param {string} [opts.tagsPath]  path to TAGS.md (defaults to corpusDir/TAGS.md)
- * @param {string} [opts.usageDir]  .sma/usage ledger dir (9.1-11 promotion evidence)
+ * @param {string} [opts.usageDir]  .sma/usage ledger dir (promotion evidence)
  * @param {string} [opts.journalDir] .sma/journal dir (digest incident classes)
  * @param {number} [opts.promotionThreshold] distinct tag-sets to propose promotion
  * @param {number} [opts.mergeSimilarity]    Jaccard threshold for merge proposals

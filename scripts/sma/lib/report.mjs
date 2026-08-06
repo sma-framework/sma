@@ -1,11 +1,11 @@
 /**
- * report.mjs — the LOCAL, self-contained static-HTML report (B23,
- * D-9.1-07). Zero server, zero daemon, zero DB — it must open file:// offline.
+ * report.mjs — the LOCAL, self-contained static-HTML report (B23).
+ * Zero server, zero daemon, zero DB — it must open file:// offline.
  * The live-server panel (the deferred `sma ui`) stays REJECTED (V3 candidate).
  *
  * renderReport(data) is a PURE transform: fixtures / gathered sources in, ONE
  * self-contained HTML string out (inline CSS, no external asset URLs, no fetches).
- * The six sections + process metrics per D-9.1-07: sessions, predictions,
+ * The six sections + process metrics: sessions, predictions,
  * calibration (per domain), reflex firings, collisions, corpus health, metrics.
  *
  * SECURITY: every interpolated value is HTML-escaped through the
