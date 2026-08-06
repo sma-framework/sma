@@ -1,8 +1,8 @@
 /**
  * cas.mjs — compare-and-set (CAS-UPDATE) state transitions for owned task rows,
- * without locks (Phase 9.5 Plan 03, Task 2; D-9.5-07).
+ * without locks.
  *
- * ATTRIBUTION (D-9.5-07): the CAS-UPDATE checkout pattern here is ABSORBED AS A
+ * ATTRIBUTION: the CAS-UPDATE checkout pattern here is ABSORBED AS A
  * CODE PATTERN from **Paperclip** (github.com/paperclipai/paperclip, HEAD `3a727bf7`,
  * MIT, © 2025 Paperclip AI) — «UPDATE … SET status='x' WHERE id=? AND
  * status='expected' RETURNING; zero rows = you lost the race, no locks». The
@@ -10,11 +10,11 @@
  * handler cannot roll back a NEWER reclaim) is a **Multica IDEA, our own
  * implementation** — no Multica code is copied. Full record: `THIRD-PARTY-LICENSES.md`.
  *
- * WHY CAS, NOT LOCKS (Pitfall 4): advisory locks / SELECT FOR UPDATE queues LEAK on a
+ * WHY CAS, NOT LOCKS: advisory locks / SELECT FOR UPDATE queues LEAK on a
  * crash — a killed handler holding a lock wedges the row until a human intervenes. A
  * CAS UPDATE is self-clearing: it either wins atomically (1 row) or reports a lost
  * race (0 rows), and a crash mid-flight leaves the row exactly as it was. The daemon
- * must be killable at ANY line with zero lost state (D-9.5-02).
+ * must be killable at ANY line with zero lost state.
  *
  * SAFETY: `table` and `extra`/`from`/`to` COLUMN NAMES are TRUSTED IDENTIFIERS chosen
  * by the daemon (e.g. 'sma_task_attempts', 'status') — NEVER user input. All VALUES

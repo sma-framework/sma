@@ -1,17 +1,17 @@
 /**
- * adapter.mjs — the QueueAdapter seam (D-9.5-02c): ONE interface, a reusable
- * contract test factory, and an in-memory reference backend (Phase 9.5 Plan 01).
+ * adapter.mjs — the QueueAdapter seam: ONE interface, a reusable contract test
+ * factory, and an in-memory reference backend.
  *
- * WHY THIS FILE EXISTS: everything in waves 2-4 (the pg-boss backend, the runner,
- * the tick, the front) builds against THIS interface. Interface-first — the contract
- * lands before any implementation. The seam is honest because `queueAdapterContractSuite`
- * is an EXECUTABLE spec: plan 9.5-03 re-runs this exact suite against the pg-boss
- * backend, and the deferred file backend (D-9.5-02c) will re-run it too. A backend
- * that passes the suite IS a conforming QueueAdapter; nothing else certifies it.
+ * WHY THIS FILE EXISTS: the pg-boss backend, the runner, the tick and the front all
+ * build against THIS interface. Interface-first — the contract lands before any
+ * implementation. The seam is honest because `queueAdapterContractSuite` is an
+ * EXECUTABLE spec: the pg-boss backend re-runs this exact suite, and the deferred file
+ * backend will re-run it too. A backend that passes the suite IS a conforming
+ * QueueAdapter; nothing else certifies it.
  *
  * BACKEND-FREE BY LAW: this module imports NO backend (no pg-boss, no pg, no fs
  * beyond none). The interface must never learn its implementations. The future file
- * backend (deferred, D-9.5-02c) will implement its atomic checkout via the
+ * backend (deferred) will implement its atomic checkout via the
  * claims.mjs `mkdirSync`-EEXIST primitive + a JSONL journal of transitions — this is
  * a SEAM NOTE only; it is not implemented here.
  *
@@ -19,32 +19,32 @@
  * TASK SHAPE (single source of truth — every later plan consumes this):
  *
  * task = {
- *   id: string,                 // 'BL-96' (backlog), 'R-<epochMs>' (roster), 'F-<epochMs>' (forge, D-9.5-09)
+ *   id: string,                 // 'BL-96' (backlog), 'R-<epochMs>' (roster), 'F-<epochMs>' (forge)
  *   source: 'backlog'|'roster'|'return',
  *   title: string,              // <= 200 chars, plain text
- *   lane: 'prod'|'research'|'paperwork'|'forge',  // 'forge' = draft generation (D-9.5-09)
- *   provider?: 'claude'|'codex'|'api',            // per-task override (D-9.5-04)
+ *   lane: 'prod'|'research'|'paperwork'|'forge',  // 'forge' = draft generation
+ *   provider?: 'claude'|'codex'|'api',            // per-task override of lane routing
  *   model?: string, effort?: string,              // per-task overrides
  *   priority: number,           // 0 default; higher fetched first
  *   attempt: number,            // 1-based; incremented on requeue
- *   storyPoints?: number,       // CUE estimate, Fibonacci ONLY: 1|2|3|5|8|13 (D-9.5-10); REQUIRED when source==='backlog'
- *   acceptance?: string,        // приёмочные критерии, <= 2000; REQUIRED when source==='backlog' (D-9.5-10 DoR)
+ *   storyPoints?: number,       // CUE estimate, Fibonacci ONLY: 1|2|3|5|8|13; REQUIRED when source==='backlog'
+ *   acceptance?: string,        // приёмочные критерии, <= 2000; REQUIRED when source==='backlog' (DoR)
  *   note?: string,              // return-with-comment text, <= 2000
- *   project?: string,           // V5.1 (D-9.7-01): the project slug this task belongs to.
+ *   project?: string,           // V5.1: the project slug this task belongs to.
  *                               // Optional on the wire, ALWAYS present on a read row.
- *   forge?: {                   // REQUIRED iff lane==='forge', forbidden otherwise (D-9.5-09)
+ *   forge?: {                   // REQUIRED iff lane==='forge', forbidden otherwise
  *     kind: 'agent'|'skill'|'mcp',
  *     description: string       // founder free text, <= 2000 — DATA, never instructions
  *   }
  * }
  *
  * ═══════════════ V5.1: PROJECT IS ADDITIVE, THE BACKFILL IS ON READ ═════════════
- * `project` (D-9.7-01) is optional on the wire. An adapter is constructed with the
+ * `project` is optional on the wire. An adapter is constructed with the
  * config's `activeProject`, which an enqueue stamps onto a task that names none. LANE and
  * PROJECT are independent dimensions — a forge task in another project is perfectly valid.
  *
  * Rows written BEFORE the field existed are backfilled ON READ (`backfillProject`), never
- * by an UPDATE/ALTER over the live queue (D-9.7-08): the daemon is not the source of truth
+ * by an UPDATE/ALTER over the live queue: the daemon is not the source of truth
  * for its own history, so an existing task is never rewritten — only read completely.
  *
  * The adapter stays BACKEND-FREE and IMPORT-FREE: the active project arrives by injection,
@@ -55,16 +55,16 @@
  *   enqueue(task)                 → {id, coalesced, coalesceCount}; validateTask on every path
  *   claimNext(workerId, {lanes})  → atomic checkout RESTRICTED to `lanes`; null when empty or
  *                                   no queued task in those lanes. The tick derives eligible
- *                                   lanes from OPEN workers BEFORE claiming (grill CH-9.5-07),
+ *                                   lanes from OPEN workers BEFORE claiming,
  *                                   so a claimed task is always runnable. lanes:[] → null,
  *                                   no mutation. lanes omitted → all lanes eligible.
  *   touch(taskId)                 → refresh the liveness clock on a claimed task
- *   complete(taskId, result)      → result MUST carry `receiptRef` (Pitfall 6) else NoReceiptError
+ *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
- *   list(filter)                  → rows expose enqueuedAt/claimedAt/completedAt (D-9.5-10)
+ *   list(filter)                  → rows expose enqueuedAt/claimedAt/completedAt
  *   stats()                       → per-status counts
  *
- * TIMESTAMPS (D-9.5-10): enqueue stamps enqueuedAt, claimNext stamps claimedAt,
+ * TIMESTAMPS: enqueue stamps enqueuedAt, claimNext stamps claimedAt,
  * complete stamps completedAt — the raw material for post-pilot flow metrics (cycle
  * time, aging WIP). No dashboard in V5; recording them now is three fields, migrating
  * pilot data later would be a chore.
@@ -80,14 +80,14 @@
 /** Task intake origins. `backlog` = BL-item scan, `roster` = a founder button, `return` = requeue-with-comment. */
 export const TASK_SOURCES = Object.freeze(['backlog', 'roster', 'return'])
 
-/** Execution lanes. `forge` = draft generation for the «Создатель» role (D-9.5-09). */
+/** Execution lanes. `forge` = draft generation for the «Создатель» role. */
 export const TASK_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
 
 /**
- * The human-readable failure taxonomy (D-9.5-11). `fail(taskId, reason)` accepts ONLY
+ * The human-readable failure taxonomy. `fail(taskId, reason)` accepts ONLY
  * these; the roster renders the RU подпись from REASON_LABELS, never the raw code.
  *   no_receipt      — the exit gate produced no reverify receipt
- *   no_journal      — the attempt left no approach note (D-9.7-14): the work may be
+ *   no_journal      — the attempt left no approach note: the work may be
  *                     certified, but it never explained itself, and an unexplained attempt
  *                     is incomplete by the same law that makes an uncertified one incomplete
  *   agent_error     — the worker process errored
@@ -110,7 +110,7 @@ export const FAIL_REASONS = Object.freeze([
   'manual',
 ])
 
-/** RU подписи для красной карточки ростера — single source; план 08 передаёт, план 09 рендерит (D-9.5-11). */
+/** RU подписи для красной карточки ростера — единственный источник: сервер передаёт, экран рендерит. */
 export const REASON_LABELS = Object.freeze({
   no_receipt: 'нет квитанции — работа не подтверждена',
   no_journal: 'нет записки о подходе — попытка не объяснена',
@@ -155,7 +155,7 @@ export function resolveExpireMs(config) {
 
 const PROVIDERS = Object.freeze(['claude', 'codex', 'api'])
 const FORGE_KINDS = Object.freeze(['agent', 'skill', 'mcp'])
-const STORY_POINTS = Object.freeze([1, 2, 3, 5, 8, 13]) // Fibonacci ONLY (D-9.5-10)
+const STORY_POINTS = Object.freeze([1, 2, 3, 5, 8, 13]) // Fibonacci ONLY
 
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
@@ -164,13 +164,13 @@ const ALLOWED_TASK_KEYS = Object.freeze([
 ])
 
 /**
- * The project slug grammar (D-9.7-01). A LOCAL constant, not an import: this module must
+ * The project slug grammar. A LOCAL constant, not an import: this module must
  * stay free of the config module to keep the backend-free/import-free law intact. Kept in
  * agreement with config.mjs's PROJECT_ID_RE by the tests on both sides.
  */
 const TASK_PROJECT_RE = /^[a-z0-9-]{1,64}$/
 
-/** The project a read row falls back to when nothing else names one (D-9.7-08). */
+/** The project a read row falls back to when nothing else names one. */
 export const DEFAULT_PROJECT_ID = 'default'
 
 const CAP_TITLE = 200
@@ -181,14 +181,14 @@ const CAP_TEXT = 2000
 export class InvalidTaskError extends Error {
   constructor(message) { super(message); this.name = 'InvalidTaskError' }
 }
-/** DoR gate (D-9.5-10): a backlog task without a CUE estimate + acceptance is not ready to dispatch. */
+/** DoR gate: a backlog task without a CUE estimate + acceptance is not ready to dispatch. */
 export class NotReadyError extends Error {
   constructor(message) { super(message); this.name = 'NotReadyError' }
 }
 export class InvalidStoryPointsError extends Error {
   constructor(message) { super(message); this.name = 'InvalidStoryPointsError' }
 }
-/** Pitfall 6: no self-certified done — complete() refuses without a receiptRef. */
+/** No self-certified done — complete() refuses without a receiptRef. */
 export class NoReceiptError extends Error {
   constructor(message) { super(message); this.name = 'NoReceiptError' }
 }
@@ -227,13 +227,13 @@ export function validateTask(task) {
   if (task.priority !== undefined && typeof task.priority !== 'number') {
     throw new InvalidTaskError(`task "${task.id}" priority must be a number`)
   }
-  // project (D-9.7-01): STRUCTURAL only. Whether the slug names a REGISTERED project is
+  // project: STRUCTURAL only. Whether the slug names a REGISTERED project is
   // the door's question (it owns the config); the adapter never learns the registry.
   if (task.project !== undefined && (typeof task.project !== 'string' || !TASK_PROJECT_RE.test(task.project))) {
     throw new InvalidTaskError(`task "${task.id}" has an invalid project "${task.project}"`)
   }
 
-  // forge object: REQUIRED iff lane==='forge', forbidden otherwise (D-9.5-09)
+  // forge object: REQUIRED iff lane==='forge', forbidden otherwise
   if (task.lane === 'forge') {
     if (!task.forge || typeof task.forge !== 'object') {
       throw new InvalidTaskError(`forge task "${task.id}" requires a forge object`)
@@ -251,7 +251,7 @@ export function validateTask(task) {
     throw new InvalidTaskError(`non-forge task "${task.id}" must not carry a forge object`)
   }
 
-  // DoR gate (D-9.5-10): backlog REQUIRES storyPoints ∈ Fibonacci AND non-empty acceptance.
+  // DoR gate: backlog REQUIRES storyPoints ∈ Fibonacci AND non-empty acceptance.
   // roster/return are founder-explicit and exempt (expedite by nature — no friction).
   if (task.source === 'backlog') {
     const hasAcceptance = task.acceptance !== undefined && String(task.acceptance).trim() !== ''
@@ -278,7 +278,7 @@ export function validateTask(task) {
 
 /**
  * backfillProject(row, activeProject) → the same row guaranteed to carry a project
- * (D-9.7-08). A row written before the field existed is COMPLETED on read, never
+ * A row written before the field existed is COMPLETED on read, never
  * rewritten on disk: the queue's history stays exactly as it was recorded, and the
  * migration cost of multi-project is zero rows touched. Pure; a nullish row passes through.
  *
@@ -298,11 +298,11 @@ export function backfillProject(row, activeProject) {
  * createMemoryQueue({clock, expireMs, activeProject}) — the reference QueueAdapter over
  * plain Maps.
  * Used by the contract suite AND as the executable spec for the pg-boss backend
- * (plan 9.5-03) and the future file backend. Any `Map` of live tasks in the DAEMON
- * would be a bug (D-9.5-02 stateless-tick law) — but THIS is the reference backend
+ * and the future file backend. Any `Map` of live tasks in the DAEMON
+ * would be a bug (the tick is stateless by law) — but THIS is the reference backend
  * itself, whose whole job is to hold the durable state a real backend keeps in PG.
  *
- * `activeProject` is the config's currently selected project (D-9.7-01), injected by the
+ * `activeProject` is the config's currently selected project, injected by the
  * composition root — the adapter never reads the config itself. An enqueue stamps it onto
  * a task that names no project; every read path backfills it onto a row that predates the
  * field.
@@ -353,7 +353,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
 
   async function enqueue(task) {
     const norm = validateTask(task)
-    // D-9.7-01: a task that names no project joins the currently active one.
+    // a task that names no project joins the currently active one.
     if (norm.project === undefined && activeProject) norm.project = activeProject
     const existing = records.get(norm.id)
     if (existing && existing.status === 'queued') {
@@ -380,7 +380,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
 
   async function claimNext(workerId, { lanes } = {}) {
     sweep()
-    // lanes:[] → nothing eligible, return null WITHOUT mutating anything (grill CH-9.5-07-1).
+    // lanes:[] → nothing eligible, return null WITHOUT mutating anything.
     if (Array.isArray(lanes) && lanes.length === 0) return null
     const laneSet = Array.isArray(lanes) ? new Set(lanes) : null
 
@@ -437,7 +437,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     let rows = [...records.values()]
     if (filter.status) rows = rows.filter((r) => r.status === filter.status)
     if (filter.lane) rows = rows.filter((r) => r.task.lane === filter.lane)
-    // D-9.7-01: an optional project filter; its absence means EVERY project.
+    // an optional project filter; its absence means EVERY project.
     if (filter.project) {
       rows = rows.filter((r) => (r.task.project || activeProject || DEFAULT_PROJECT_ID) === filter.project)
     }
@@ -459,8 +459,8 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
 /**
  * queueAdapterContractSuite(name, makeAdapter) — register the full QueueAdapter
  * contract as a vitest describe/it block against ANY adapter factory. This is what
- * makes the D-9.5-02c seam honest: plan 9.5-03 re-runs this exact suite against the
- * pg-boss backend, the future file backend re-runs it too.
+ * makes the seam honest: the pg-boss backend re-runs this exact suite, and the future
+ * file backend re-runs it too.
  *
  * `makeAdapter({clock, expireMs})` returns a fresh adapter. The suite owns a mutable
  * fake clock per test so the liveness/expiry path is deterministic.

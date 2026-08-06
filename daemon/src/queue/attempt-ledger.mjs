@@ -1,12 +1,12 @@
 /**
- * attempt-ledger.mjs — the sidecar per-attempt ledger for the durable queue
- * (Phase 9.5 Plan 03, Task 2; D-9.5-07 audit note).
+ * attempt-ledger.mjs — the sidecar per-attempt ledger for the durable queue: the
+ * audit trail the queue itself cannot keep.
  *
  * WHY THIS EXISTS (Multica retry-as-child-row IDEA, own implementation — zero code
  * copied): pg-boss mutates a job row IN PLACE across retries — `retry_count`
  * advances but the per-attempt history (which provider ran, why it failed, which
  * receipt certified it) is overwritten. The roster's «3 попытки» card needs that
- * history durably (T-9.5-07 repudiation mitigation). So every attempt appends ONE
+ * history durably, or a failed attempt can be denied after the fact. So every attempt appends ONE
  * immutable JSONL row to a sidecar ledger: pg-boss stays the queue truth, the ledger
  * is the durable per-attempt audit trail.
  *
@@ -23,25 +23,25 @@
  * parseFile. The writer uses an explicit-pick key allowlist (notify.mjs posture) so a
  * stray key can never leak into the durable record.
  *
- * ══════════════ THE DECISION JOURNAL RIDES HERE TOO (D-9.7-14) ══════════════════
+ * ══════════════ THE DECISION JOURNAL RIDES HERE TOO ═════════════════════════════
  * The three explanation layers of an attempt — dispatcher reason code, the worker's
  * approach note, the memory trace — are appended by `appendJournalEntry` into a SIBLING
  * file `<taskId>.journal.jsonl` in this same dir, under this same append-only law: a row
- * is added, NEVER rewritten (no rewrite function exists in this module, by construction —
- * T-9-09). A sibling file, not extra rows in `<taskId>.jsonl`, because every existing
+ * is added, NEVER rewritten (no rewrite function exists in this module, by
+ * construction). A sibling file, not extra rows in `<taskId>.jsonl`, because every existing
  * reader of the attempt rows (liveness sweep, the roster's attempt cards, the story-point
  * report) must keep seeing exactly the rows it saw before — the journal adds a layer, it
  * never edits the old one.
  *
  * THE APPROACH NOTE IS DATA. It is text a model wrote; it is capped and stored as data,
  * and wherever it later reaches a prompt it MUST ride inside the untrusted-data fence the
- * runner already uses for task titles and notes (T-9-08). The vocabularies and the
+ * runner already uses for task titles and notes. The vocabularies and the
  * normalizer live in ../front/journal.mjs, which is an import-free leaf module — depending
  * on it here inverts no layer and closes no cycle.
  *
- * ═══════ THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN (Phase 11 Plan 05) ═══════
- * Canon invariant 6: «Policy, memory snapshot, model и harness version фиксируются на
- * attempt». Until now a row recorded WHO ran the work and HOW it ended, and nothing about
+ * ═══════ THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN ══════════════════════════
+ * Fleet invariant six (docs/FLEET-INVARIANTS.md): policy, memory snapshot, model and
+ * harness version are fixed at the moment the attempt is created. Until now a row recorded WHO ran the work and HOW it ended, and nothing about
  * the world it ran in — so a result could not be replayed against the state that produced
  * it. Seven names join the allowlist: policyVersion, memorySnapshotHash, planHash,
  * harnessVersion, stateMachineVersion, idempotencyKey and capabilityEnvelopeHash.
@@ -52,7 +52,7 @@
  * already sees, and no second code path, spread or passthrough exists to keep in step. The
  * suite asserts that row byte-for-byte.
  *
- * ONLY DIGESTS, NEVER THE THING ITSELF (T-11-05-04). A ledger row is read by anything that
+ * ONLY DIGESTS, NEVER THE THING ITSELF. A ledger row is read by anything that
  * reads the ledger — the liveness sweep, the roster cards, a human with `cat`. So the memory
  * snapshot is recorded as a digest and never as paths, file names or note text, and a
  * capability envelope is recorded as `envelopeHash(...)` and never as the envelope. A path
@@ -87,7 +87,7 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'outcome',
   'failureReason',
   'receiptRef',
-  // ── the attempt stamp (canon invariant 6) — additive, optional, digest-only ──
+  // ── the attempt stamp (fleet invariant six) — additive, optional, digest-only ──
   'policyVersion',
   'memorySnapshotHash',
   'planHash',
@@ -95,7 +95,7 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'stateMachineVersion',
   'idempotencyKey',
   'capabilityEnvelopeHash',
-  // ── the provenance flag (D-11-DEFER-07, 2026-08-05) ──
+  // ── the provenance flag ──
   // `true` ONLY on a row appended by `reconcile.mjs` AFTER the fact, from the queue's own
   // retry count. Such a row is EVIDENCE THAT AN ATTEMPT EXISTED, and nothing more: nobody
   // watched it, so it carries no worker, no provider, no receipt, and its `recordedAt` is
@@ -117,7 +117,7 @@ function ledgerFile(ledgerDir, taskId) {
  * ledgerDir / taskId), never on a normal append.
  *
  * @param {string} ledgerDir
- * THE CAPABILITY ENVELOPE MAY ARRIVE AS THE OBJECT (Phase 11 Plan 05). A caller that hands
+ * THE CAPABILITY ENVELOPE MAY ARRIVE AS THE OBJECT. A caller that hands
  * over `capabilityEnvelope` gets its digest stamped as `capabilityEnvelopeHash`; the
  * envelope itself is NOT an allowlist member, so it can never reach the durable row. An
  * explicitly supplied `capabilityEnvelopeHash` wins — a receipt must be able to record the
@@ -185,7 +185,7 @@ export function readAttempts(ledgerDir, taskId) {
   return rows
 }
 
-// ── the memory snapshot digest (canon invariant 6) ─────────────────────────────
+// ── the memory snapshot digest (fleet invariant six) ───────────────────────────
 
 /**
  * What a row carries when there was no corpus to snapshot. A DECLARED absence, not a
@@ -258,7 +258,7 @@ export function memorySnapshotHash(input) {
   return counted === 0 ? MEMORY_SNAPSHOT_ABSENT : hash.digest('hex')
 }
 
-// ── the decision journal: three layers, strictly appended (D-9.7-14) ────────────
+// ── the decision journal: three layers, strictly appended ──────────────────────
 
 /** The ONLY keys a journal row carries — explicit-pick allowlist, same law as above. */
 export const ALLOWED_JOURNAL_KEYS = Object.freeze(['taskId', 'attempt', 'attemptId', 'layer', 'payload', 'recordedAt'])

@@ -1,5 +1,5 @@
 /**
- * liveness.mjs — the durable liveness sweep (Phase 9.5 Plan 03, Task 3; D-9.5-07).
+ * liveness.mjs — the durable liveness sweep.
  *
  * THE CONTRACT (Paperclip §8 as ТЗ / SPECIFICATION, our own implementation — no code
  * copied; see THIRD-PARTY-LICENSES.md): «every NON-TERMINAL task MUST have a durable
@@ -7,7 +7,7 @@
  * background PID is NOT a live path.» One daemon tick audits this over DURABLE state
  * ONLY (the QueueAdapter + the attempt ledger) and requeues any violation.
  *
- * STATELESS BY LAW (Pattern 1, D-9.5-02): there is NO in-memory registry of live
+ * STATELESS BY LAW: there is NO in-memory registry of live
  * tasks, NO Map of running PIDs here — any such structure would be a bug. The sweep
  * reads `adapter.list()` (Postgres truth) every tick; the daemon is killable at any
  * line, and on restart the sweep re-derives every task's live path from durable state.
@@ -16,10 +16,10 @@
  * 'runtime_offline')`. On the pg-boss backend this hands the SAME job row back to
  * pg-boss's retryLimit/retryBackoff — «замолчал — задача вернулась в очередь» falls
  * out of the library, WITHOUT re-enqueuing (so no task field is lost). The adapter's
- * fail() is also what appends the durable attempt row (T-9.5-07). The sweep is the
+ * fail() is also what appends the durable attempt row. The sweep is the
  * belt-and-suspenders AUDIT on top of pg-boss's own expiry.
  *
- * REWAKE THROTTLE (Pattern 4 / T-9.5-08): a task with >= 2 consecutive no-progress
+ * REWAKE THROTTLE: a task with >= 2 consecutive no-progress
  * attempts is subject to computeCooldownMs(n) = min(120000 * 2^(n-2), 1800000) before
  * it should be woken again — coalescing + exponential backoff so a wedged task can
  * never burn a night window in a wake storm. The formula is exported and unit-tested;
