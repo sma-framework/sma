@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/frontmatter.mjs (Phase 9 Plan 04, Task 2).
+ * Tests for scripts/sma/lib/frontmatter.mjs.
  *
  * The single shared read/write path for all 205 memory notes (RESEARCH §Don't
  * Hand-Roll — narrow parser for the two observed corpus shapes only):

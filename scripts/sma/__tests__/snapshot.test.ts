@@ -34,7 +34,7 @@ const ALLOWED_KEYS = [
   'sentAt',
   'collisionFeed',
   'memoryHealth',
-  // v2 (9.1-25, B21) — the extended cockpit blocks.
+  // v2 (B21) — the extended cockpit blocks.
   'schemaVersion',
   'predictions',
   'calibration',
@@ -92,7 +92,7 @@ function writeJournal(n: number) {
   writeFileSync(join(journalDir, `${identity.terminalId}.jsonl`), lines.join('\n') + '\n')
 }
 
-/** Append calibration ledger records for a domain (9.1-25 v2 fixtures). */
+/** Append calibration ledger records for a domain (v2 fixtures). */
 function writeCalibration(domain: string, records: Array<{ verdict: string; ts: string }>) {
   const lines = records.map((r) => JSON.stringify({ domain, verdict: r.verdict, ts: r.ts }))
   writeFileSync(join(calibrationDir, `${domain}.jsonl`), lines.join('\n') + '\n')
@@ -226,7 +226,7 @@ describe('buildSnapshotPayload — bounded feed + narrowed health (Test 2)', () 
   })
 })
 
-describe('buildSnapshotPayload — v2 cockpit blocks (9.1-25, B21)', () => {
+describe('buildSnapshotPayload — v2 cockpit blocks (B21)', () => {
   it('Test 1: payload gains predictions/calibration/reflexFires/gates/corpusHealth + schemaVersion 2; session block unchanged', () => {
     writeLease()
     writeReflexAndGateJournal()
@@ -296,7 +296,7 @@ describe('buildSnapshotPayload — v2 cockpit blocks (9.1-25, B21)', () => {
     expect(payload.corpusHealth).toBeNull()
   })
 
-  it('Test 3: named identity ("P9 Том" + work label) rides in the session block (FI-10)', () => {
+  it('Test 3: named identity ("P9 Том" + work label) rides in the session block', () => {
     writeLease({ holderIdentity: 'P9 Том', scope: { globs: ['src/**'], description: 'платёжный модуль' } })
     const payload = buildSnapshotPayload({
       identity,

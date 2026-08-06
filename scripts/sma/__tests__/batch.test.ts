@@ -58,7 +58,7 @@ const items = {
   BL201b: { id: 'BL-106', title: 'Другой фикс', description: 'править тот же файл', size: 'S', area: 'crm', done: false, files: ['src/a.ts'] },
 }
 
-describe('9.3-12 batch — risk filter (Test 1)', () => {
+describe('batch — risk filter (Test 1)', () => {
   it('rejects every phase-class item with «this is a phase» and accepts S/M non-overlapping items', () => {
     const phaseClass = [
       { id: 'BL-301', title: 'Add a migration', description: 'schema change' },
@@ -91,7 +91,7 @@ describe('9.3-12 batch — risk filter (Test 1)', () => {
   })
 })
 
-describe('9.3-12 batch — selection + compatibility assembly (Test 2)', () => {
+describe('batch — selection + compatibility assembly (Test 2)', () => {
   it('selectBatch resolves named ids, caps at 4, refuses a file-overlapping set', () => {
     const ok = selectBatch(['BL-101', 'BL-102', 'BL-103'], Object.values(items))
     expect(ok.ok).toBe(true)
@@ -138,7 +138,7 @@ describe('9.3-12 batch — selection + compatibility assembly (Test 2)', () => {
   })
 })
 
-describe('9.3-12 batch — surgical backlog writer (Test 3)', () => {
+describe('batch — surgical backlog writer (Test 3)', () => {
   it('flips exactly the matched line to [x] and leaves every other byte identical', () => {
     const before = BACKLOG_FIXTURE
     const { changed, backlogText } = checkOffBacklogItem({ backlogText: before, id: 'BL-102' })
@@ -169,7 +169,7 @@ describe('9.3-12 batch — surgical backlog writer (Test 3)', () => {
   })
 })
 
-describe('9.3-12 batch — eject on growth (Test 4)', () => {
+describe('batch — eject on growth (Test 4)', () => {
   it('returns the item to the backlog as [ ] with the eject note and keeps the text valid', () => {
     // start from a backlog where BL-103 was checked off mid-run, then grows
     const checked = checkOffBacklogItem({ backlogText: BACKLOG_FIXTURE, id: 'BL-103' }).backlogText
@@ -184,7 +184,7 @@ describe('9.3-12 batch — eject on growth (Test 4)', () => {
   })
 })
 
-describe('9.3-12 batch — orchestration order + mandatory receipts (Test 5)', () => {
+describe('batch — orchestration order + mandatory receipts (Test 5)', () => {
   function makeIo(initial) {
     let text = initial
     const order = []
@@ -271,7 +271,7 @@ describe('9.3-12 batch — orchestration order + mandatory receipts (Test 5)', (
   })
 })
 
-describe('9.3-12 batch — one note, not a phase folder (Test 6)', () => {
+describe('batch — one note, not a phase folder (Test 6)', () => {
   it('writeBatchNote emits a single note carrying every item; 3 items → 3 commits + 1 note', async () => {
     const bag = { read: () => BACKLOG_FIXTURE, write: () => {} }
     const commits = []

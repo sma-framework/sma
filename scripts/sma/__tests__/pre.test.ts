@@ -1,5 +1,5 @@
 /**
- * Tests for the `sma pre` PreToolUse multiplexer (Phase 9.2 Plan 02).
+ * Tests for the `sma pre` PreToolUse multiplexer.
  *
  * Task 1 — the dispatch core (lib/pre.mjs): behaviors 1-8.
  * Task 2 — the CLI surface (cli.mjs cmdPre / cmdPreBench / legacy delegation): 9-14.

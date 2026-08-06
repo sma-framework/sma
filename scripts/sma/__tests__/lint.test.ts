@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/lint.mjs (Phase 9 Plan 08).
+ * Tests for scripts/sma/lib/lint.mjs.
  *
  * memory-lint (R5) — the one deterministic checker for the whole memory layer,
  * cloned structurally from the security guard's checks.mjs array pattern. Each
@@ -332,7 +332,7 @@ describe('memory-lint supersession / regen / duplication (9-08 task 2)', () => {
   })
 })
 
-// ── 9.1-09 Task 1: PRED lint family (pre-registration integrity) + predicted_from ──
+// ── PRED lint family (pre-registration integrity) + predicted_from ──────────
 
 /** Read-only git runner for the temp-repo fixtures (same shape the CLI injects). */
 const execGit = (args: string[], opts: { cwd?: string } = {}): string =>
@@ -371,7 +371,7 @@ function runPredLint(plansDir: string, extra: Record<string, unknown> = {}) {
   })
 }
 
-describe('PRED lint family (9.1-09 task 1)', () => {
+describe('PRED lint family', () => {
   it('Test 1 (PRED-NOMETRIC): predictions entry missing check_command → CRITICAL naming the field', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-pred-nometric-'))
     try {
@@ -460,7 +460,7 @@ describe('PRED lint family (9.1-09 task 1)', () => {
   })
 })
 
-// ── 9.2-08 Task 2: CONS lint family (the consequences block is law) ─────────
+// ── CONS lint family (the consequences block is law) ────────────────────────
 
 const CONS_ENTRY =
   '  - id: CONS-1\n' +
@@ -476,7 +476,7 @@ function planWith({ predictions, consequences }: { predictions?: string; consequ
   return fm + '---\n\n<objective>x</objective>\n'
 }
 
-describe('CONS lint family (9.2-08 task 2)', () => {
+describe('CONS lint family', () => {
   it('Test 1 (CONS-SCHEMA): entry missing `until` → CRITICAL naming the field; valid → silent', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-schema-'))
     try {
@@ -556,7 +556,7 @@ describe('CONS lint family (9.2-08 task 2)', () => {
   })
 })
 
-// ── 9.2-03 Task 3: RECEIPT-PROSE lint (a machine «done» needs a receipt) ─────
+// ── RECEIPT-PROSE lint (a machine «done» needs a receipt) ───────────────────
 
 const HEX64 = 'a'.repeat(64)
 
@@ -569,7 +569,7 @@ function summaryWith({ coverage, receipts }: { coverage?: string; receipts?: str
   return fm + '---\n\n# summary body\n'
 }
 
-describe('RECEIPT-PROSE lint (9.2-03 task 3)', () => {
+describe('RECEIPT-PROSE lint', () => {
   it('Case 1: a 9.2 SUMMARY with a machine coverage item and no receipts → CRITICAL', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-receipt-prose-1-'))
     try {
@@ -633,7 +633,7 @@ describe('RECEIPT-PROSE lint (9.2-03 task 3)', () => {
     try {
       // A legacy-phase summary (numerically >= 9.2 but subsystem is not sma…):
       // the receipts law is SMA-only; the shared dogfood phase-number namespace must
-      // never retro-fail unrelated legacy phases (9.2-03 Rule-3 deviation).
+      // never retro-fail unrelated legacy phases.
       const fm =
         '---\nphase: 53\nplan: 05\nsubsystem: operator-tools, intake-bridge\n' +
         'coverage:\n  - id: T1\n    human_judgment: false\n---\n\n# summary body\n'
@@ -689,7 +689,7 @@ describe('RECEIPT-PROSE lint (9.2-03 task 3)', () => {
   })
 })
 
-// ── 9.1-13 Task 1: FI-9/FI-11 size lints (budgets are law) ──────────────────
+// ── Size lints (budgets are law) ────────────────────────────────────────────
 
 import { CORE_BUDGET, NOTE_BUDGET, ALWAYS_LOAD_BUDGET, STATE_BUDGET } from '../lib/constants.mjs'
 
@@ -741,7 +741,7 @@ function lintSized(setup: (dir: string) => void, extra: Record<string, unknown> 
   }
 }
 
-describe('size lints — WARN at 80%, critical at 100% (9.1-13 task 1)', () => {
+describe('size lints — WARN at 80%, critical at 100%', () => {
   it('Test 1 (MEM-CORESIZE): warn at ~5.1 KB CORE (83% of budget), critical at ~6.5 KB', () => {
     // 5.1 KB CORE — inside [80%, 100%) of CORE_BUDGET=6144 → WARN.
     const warned = lintSized((dir) => {
@@ -845,9 +845,9 @@ describe('size lints — WARN at 80%, critical at 100% (9.1-13 task 1)', () => {
   })
 })
 
-// ── 9.1-12 Task 2: bi-temporal fields + MEM-CONTRADICT (B5) ─────────────────
+// ── Bi-temporal fields + MEM-CONTRADICT (B5) ────────────────────────────────
 
-describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
+describe('bi-temporal fields + MEM-CONTRADICT', () => {
   it('Test 1 (bi-temporal): valid_from/valid_until round-trip through parse+serialize', () => {
     const note = {
       frontmatter: {
@@ -952,7 +952,7 @@ describe('bi-temporal fields + MEM-CONTRADICT (9.1-12 task 2)', () => {
   })
 })
 
-// ── 9.1-14 Task 2: MEM-SECRET — screen secrets at the corpus door (T-9.1-27) ─
+// ── MEM-SECRET — screen secrets at the corpus door ──────────────────────────
 
 /**
  * Run lint over a single schema-valid note whose BODY is `body`. The note is
@@ -985,7 +985,7 @@ function lintBody(body: string) {
   }
 }
 
-describe('MEM-SECRET — corpus-door secret screen (9.1-14 task 2)', () => {
+describe('MEM-SECRET — corpus-door secret screen', () => {
   it('Test 1 (secret shapes): AWS key id, sk- token, and a base64/opaque run each → MEM-SECRET critical', () => {
     // AWS-style access key id.
     const aws = findingsOf(lintBody('deploy key AKIAIOSFODNN7EXAMPLE was rotated\n'), 'MEM-SECRET')

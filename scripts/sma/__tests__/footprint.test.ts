@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/footprint.mjs + grill.standingFootprint (9.4-07 — the
+ * Tests for scripts/sma/lib/footprint.mjs + grill.standingFootprint (the
  * economy ladder as a claim + a deterministic receipt). The five load-bearing behaviors:
  *   Test 1 — claim parse: parseFootprintClaim coerces the frontmatter dash-entry;
  *            absent block -> null; missing new_deps -> 0

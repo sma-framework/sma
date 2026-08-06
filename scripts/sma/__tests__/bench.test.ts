@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/bench.mjs (Phase 9.2 Plan 01, Task 1 — the W0 harness).
+ * Tests for scripts/sma/lib/bench.mjs (the W0 harness).
  *
  * The 8-metric registry + deterministic base readers (S1, S2, S4, S5; registered
  * S6/S8; S3 reads results, S7 reads a persisted base). Everything DI so tests never
@@ -171,7 +171,7 @@ describe('S1 false-done-rate (blind, claims-only)', () => {
       runCommand: runner,
       summaryAccess: { exists: () => true },
     })
-    expect(runner).not.toHaveBeenCalled() // unsafe command NEVER spawned (T-9.2-01)
+    expect(runner).not.toHaveBeenCalled() // unsafe command NEVER spawned
     expect(out.unverifiable).toBe(1)
     expect(out.detail[0].falseDone).toBe(false) // unverifiable is not false-done (honest denominator)
 

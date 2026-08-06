@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/fs-atomics.mjs (Phase 9 Plan 03, Task 1).
+ * Tests for scripts/sma/lib/fs-atomics.mjs.
  *
  * RESEARCH Pattern 4 — the one novel primitive with no repo analog:
  *   - atomicWriteJson stages the temp file as a SAME-DIR sibling of the target

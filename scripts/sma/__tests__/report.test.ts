@@ -3,13 +3,13 @@
  *
  * The LOCAL static-HTML report: zero server, zero daemon, zero DB. renderReport is
  * a pure transform (fixtures in, one self-contained HTML string out). The four
- * pinned behaviours + the XSS escape pin (T-9.1-51):
+ * pinned behaviours + the XSS escape pin:
  *   - Test 1: renderReport over full fixture -> one self-contained HTML string
  *     (no external script/css URLs) containing the six sections + metrics.
  *   - Test 2: every empty data source renders its honest empty-state text.
  *   - Test 3: the footer carries the generated-at timestamp line.
  *   - Test 4: writeReport writes the file; defaultReportPath is .sma/report/index.html.
- *   - Test 5 (T-9.1-51): journal strings are HTML-escaped (a <script> fixture entry
+ *   - Test 5: journal strings are HTML-escaped (a <script> fixture entry
  *     never lands as live markup).
  */
 
@@ -112,7 +112,7 @@ describe('writeReport + defaultReportPath', () => {
   })
 })
 
-describe('XSS escape (T-9.1-51)', () => {
+describe('XSS escape', () => {
   it('escapes journal strings so a <script> entry never lands as live markup', () => {
     const evil = {
       ...FULL,

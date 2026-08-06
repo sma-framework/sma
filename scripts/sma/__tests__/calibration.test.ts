@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/calibration.mjs (Phase 9.1 Plan 08, Task 2 — B20).
+ * Tests for scripts/sma/lib/calibration.mjs (B20).
  *
  * Per-domain calibration ledger, mirroring journal.mjs's append-only-JSONL
  * shape (PATTERNS analog: exact):
@@ -175,7 +175,7 @@ describe('corrupt line tolerance (Test 4 — journal.mjs posture)', () => {
   })
 })
 
-// ── Grade the grader (9.4-02) ────────────────────────────────────────────────
+// ── Grade the grader ─────────────────────────────────────────────────────────
 
 /** A ground-truth evidence record for planId at `at` of the given type. */
 function ev(type: string, planId: string, at: string) {

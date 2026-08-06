@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/journal.mjs (Phase 9 Plan 03, Task 3).
+ * Tests for scripts/sma/lib/journal.mjs.
  *
  * R10 per-terminal collision-event journal:
  *   - Test 1: appendEvent writes one JSON line to <terminalId>.jsonl; seq

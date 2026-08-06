@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/cli.mjs (Phase 9 Plan 10).
+ * Tests for scripts/sma/cli.mjs.
  *
  * The deterministic CLI's two hook-facing / policy contracts (the parts a wrong
  * implementation could actually break):
@@ -151,7 +151,7 @@ describe('cli.mjs collision-check (PreToolUse contract, P4)', () => {
       reason: 'push-in-progress:V1.48',
     })
     // Build the deploy command by concatenation so THIS file never carries the
-    // adjacent two-word phrase (SMA-3 discipline).
+    // adjacent two-word phrase (the escaped-verb discipline).
     const deployCmd = 'git ' + 'push' + ' origin main'
     const stdin = JSON.stringify({ tool_name: 'Bash', tool_input: { command: deployCmd } })
     const { stdout, status } = runCli(['collision-check'], { stdin, terminalName: 'Мозг' })
@@ -277,7 +277,7 @@ describe('cli.mjs claim + force-clear round-trip (WR-02)', () => {
 })
 
 describe('cli.mjs window-stable identity across sequential hook PROCESSES (R7 regression)', () => {
-  // The CR-01 lesson: exercise the REAL hook seam — two separate `node cli.mjs`
+  // The lesson from a real regression: exercise the REAL hook seam — two separate `node cli.mjs`
   // invocations are two real processes with DIFFERENT pids, mirroring how Claude Code
   // spawns a fresh one-shot hook per tool call. The stdin `session_id` is the stable
   // window token both invocations of one window share.

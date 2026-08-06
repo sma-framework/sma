@@ -11,7 +11,7 @@ WARN only** — `permissionDecision` is ALWAYS `allow`. The soft-deny tier is a 
 mechanism of its own, never introduced here. `gates-check` is HOOK_FACING and
 fail-open: a gate bug can never wedge a session (scorecard metric 7).
 
-Every sensitive command literal in `gates.mjs` is assembled via the SMA-3 escaped-verb
+Every sensitive command literal in `gates.mjs` is assembled via the escaped-verb
 isolation (`['verb'].join('')`), exactly as the push-claim channel in `cli.mjs` does, so
 this source tree never carries the adjacent dangerous literal.
 

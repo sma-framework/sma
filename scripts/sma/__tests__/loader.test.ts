@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/loader.mjs (Phase 9 Plan 09, Task 2).
+ * Tests for scripts/sma/lib/loader.mjs.
  *
  * R4 deterministic loader — resolves a task's tag set into CORE + tag-matched
  * periphery with stable ordering (recency NEVER primary):

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/replay-exam.mjs (Phase 9.5 Plan 06, Task 3).
+ * Tests for scripts/sma/lib/replay-exam.mjs.
  *
  * The replay exam. It replays held-out historical founder
  * situations through the synthetic orchestrator and computes a match rate against

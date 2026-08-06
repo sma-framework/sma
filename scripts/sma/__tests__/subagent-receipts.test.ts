@@ -1,6 +1,6 @@
 /**
  * Tests for subagent-receipts.mjs — transcript claim extraction + tree verification
- * + the shared-journal receipt (Phase 9.2 Plan 04, Task 2).
+ * + the shared-journal receipt.
  *
  * Everything is DI: readFn feeds a fixture transcript string, runGit/statFile are
  * injected stubs (never git, never the real fs), appendEvent is a spy. Deterministic.
@@ -274,7 +274,7 @@ describe('receiptStatsSchemaOk — deterministic report-shape check', () => {
   })
 })
 
-// ── 9.4-03: the three false-positive mechanisms killed, with the 9 forensic ──
+// ── The three false-positive mechanisms killed, with the 9 forensic ─────────
 // rows (9.3-PHANTOM-FORENSICS.md — 0 real phantoms / 4 path artifacts / 5 instrument
 // artifacts) as permanent regression fixtures.
 

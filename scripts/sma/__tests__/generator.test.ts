@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/generator.mjs (Phase 9 Plan 09, Task 1).
+ * Tests for scripts/sma/lib/generator.mjs.
  *
  * R3 generator — MEMORY.md builder = CORE (always-load) + one-line-per-fact index:
  *   - Test 1: buildIndex over a fixture corpus twice with the same injected
@@ -160,12 +160,12 @@ describe('generator.mjs — buildIndex (R3)', () => {
     expect(/do not hand-edit|не редактировать вручную/i.test(out)).toBe(true)
   })
 
-  it('Test 3 (FI-11): CORE stays in MEMORY.md; every periphery note is ONE line in its area index (C1/B10)', () => {
+  it('Test 3: CORE stays in MEMORY.md; every periphery note is ONE line in its area index (C1/B10)', () => {
     const out = buildIndex({ corpusDir, tagsPath, commitHash: HASH, dateMap, coreThreshold: 9 })
     // CORE notes are the two importance ≥ 9 facts — still always-loaded.
     expect(out).toContain('Email SEND blocked on prod by Railway SMTP ports')
     expect(out).toContain('Always run the full test suite before pushing to main')
-    // Periphery lines LEFT MEMORY.md (the FI-11 thinning).
+    // Periphery lines LEFT MEMORY.md (the index thinning).
     expect(out).not.toContain('(bbb.md)')
 
     const areas = buildAreaIndexes({ corpusDir, tagsPath, commitHash: HASH, dateMap, coreThreshold: 9 })
@@ -201,9 +201,9 @@ describe('generator.mjs — buildIndex (R3)', () => {
   })
 })
 
-// ── 9.1-13 Task 3: FI-11 index restructure — thin discovery + per-area files ──
+// ── Index restructure — thin discovery + per-area files ─────────────────────
 
-describe('index restructure (9.1-13 task 3, FI-11)', () => {
+describe('index restructure', () => {
   /** A 200-note corpus across three areas with fat descriptions. */
   function bigCorpus(): { dir: string; tags: string } {
     const dir = mkdtempSync(join(tmpdir(), 'sma-gen-big-'))
@@ -234,7 +234,7 @@ describe('index restructure (9.1-13 task 3, FI-11)', () => {
     const { dir, tags } = bigCorpus()
     try {
       const out = buildIndex({ corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} })
-      // The whole always-load payload fits the FI-11 budget.
+      // The whole always-load payload fits the index budget.
       expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(ALWAYS_LOAD_BUDGET)
       // One discovery line PER AREA carrying the count + the INDEX file pointer.
       for (const area of ['tech', 'memory', 'messaging']) {

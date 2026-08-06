@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/decision-corpus.mjs (Phase 9.5 Plan 02, Task 1).
+ * Tests for scripts/sma/lib/decision-corpus.mjs.
  *
  * The decision-corpus miner. It retrospectively mines the
  * founder's real decisions (orders, corrections, refusals, приёмка) from local

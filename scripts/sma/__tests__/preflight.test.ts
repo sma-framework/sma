@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/preflight.mjs (Phase 9.3 Plan 10).
+ * Tests for scripts/sma/lib/preflight.mjs.
  *
  * The already-built pre-dispatch comparator: a deterministic, zero-LLM,
  * read-only check of a plan's must_haves (artifact paths + `contains` needles) and

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/bench.mjs harness (Phase 9.2 Plan 01, Task 2).
+ * Tests for scripts/sma/lib/bench.mjs harness.
  *
  * The A/B throwaway-clone replay + hook timing (S7), the compaction exam (S3), and
  * the ttc first-edit recorder (S5 instrument). Everything DI (injected exec/hrtime/

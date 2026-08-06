@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/spend-adapter.mjs (Phase 9.2 Plan 09, Task 1).
+ * Tests for scripts/sma/lib/spend-adapter.mjs.
  *
  * The versioned log-format adapter — the ONLY module in the tree that knows the
  * vendor's local session-transcript shape (a deliberate quarantine). All vendor-drift

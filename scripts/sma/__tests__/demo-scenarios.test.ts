@@ -1,6 +1,6 @@
 /**
  * demo-scenarios.test.ts — the single-machine, script-executable version of the
- * four SPEC demo acceptance scenarios (Phase 9 Plan 16, R8/R9/R10).
+ * four SPEC demo acceptance scenarios (R8/R9/R10).
  *
  * The SPEC (9-SPEC.md) names four demo acceptances that are, in production, run
  * across two REAL parallel terminals. Those live 2-terminal reruns stay a founder
@@ -196,7 +196,7 @@ describe('SMA demo scenarios — the four SPEC acceptances on one machine', () =
 
     // Process B runs a pre-push collision-check over a deploy command.
     // Build the deploy verb by concatenation so THIS source never carries the
-    // adjacent two-word literal (SMA-3 discipline).
+    // adjacent two-word literal (the escaped-verb discipline).
     const deployCmd = 'git ' + 'push' + ' origin main --follow-tags'
     const stdin = JSON.stringify({ tool_name: 'Bash', tool_input: { command: deployCmd } })
     const b = runCli(['collision-check'], { root, terminalName: 'Мозг', stdin })
