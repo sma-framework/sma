@@ -110,13 +110,18 @@ export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 
 export const DEAD_LETTER_QUEUE = 'sma.task.dead'
 
 /**
- * THE SESSION SPEAKS UTF-8, ALWAYS, AND IT HAS TO BE SAID OUT LOUD. node-postgres decodes
- * whatever the server sends as UTF-8 unconditionally, but it does not ASK for UTF-8 unless
- * this option is set — with no `client_encoding` it inherits the server's. On a database
- * created in the Windows ANSI code page the server then sends WIN1252 bytes and the driver
- * reads them as UTF-8: every accented character comes back mangled, on a path that never
- * errors. Asking explicitly makes the SERVER transcode, so text stored in an old encoding
- * still arrives intact.
+ * THE SESSION SPEAKS UTF-8, AND IT HAS TO BE SAID OUT LOUD. node-postgres decodes every byte
+ * it receives as UTF-8 unconditionally, but it never ASKS the server for an encoding: with
+ * no `client_encoding` in the connection the session runs on whatever the CLUSTER'S
+ * CONFIGURATION decides. Where that is not UTF-8 — a cluster left at its own defaults over a
+ * database in the Windows ANSI code page — the server sends WIN1252 bytes and the driver
+ * reads them as UTF-8, so accented text comes back mangled on a path that never errors.
+ *
+ * MEASURED, NOT ASSUMED: on the reference WIN1252 database the session already reported
+ * UTF8, because that cluster is configured that way. Which is the whole argument for saying
+ * it explicitly — it was a property of one machine's configuration, not a guarantee. Asked
+ * for by name, the SERVER transcodes, and text stored in an older encoding arrives intact
+ * on any cluster.
  */
 const CLIENT_ENCODING = Object.freeze({ client_encoding: UTF8 })
 

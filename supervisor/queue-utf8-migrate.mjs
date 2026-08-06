@@ -109,9 +109,9 @@ export function databaseOf(queueUrl) {
 
 /**
  * A one-shot SQL executor over a single client. `client_encoding` is asked for explicitly:
- * without it the session inherits the SERVER's encoding and node-postgres decodes the bytes
- * as UTF-8 anyway — which is precisely how text stored in WIN1252 would arrive mangled and
- * be written mangled into the new database.
+ * without it the session runs on whatever the cluster's configuration decides, while
+ * node-postgres decodes the bytes as UTF-8 either way — which is precisely how text stored
+ * in WIN1252 could arrive mangled and be written mangled into the new database.
  */
 function makeExecSql(pg, connectionString) {
   return async (sql, params = []) => {
