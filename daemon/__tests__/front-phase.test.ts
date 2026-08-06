@@ -676,11 +676,188 @@ describe('POST /api/decision/answer — THE ANSWER WAKES THE ROUND, NOT THE KEYS
   })
 })
 
+// ══════════════════════════════ THE ARTEFACT DOOR ═════════════════════════════
+
+describe('GET /api/artifact — ONE ROOT, AND IT IS `.planning/`', () => {
+  it('reads a document of the phase as plain text, not as markup', async () => {
+    const { front } = mkFront()
+    const res = await call(front, { url: '/api/artifact?path=.planning/phases/12-front/12-01-PLAN.md' })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toBe('# план 1')
+    expect(res.headers['content-type']).toMatch(/^text\/plain/)
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+  })
+
+  it('the path the CARD hands out is the path this door accepts — one spelling, end to end', async () => {
+    const { front } = mkFront()
+    const card = JSON.parse((await call(front, { url: '/api/phase/12-front' })).body)
+    for (const doc of [...card.plans, ...card.summaries]) {
+      const res = await call(front, { url: `/api/artifact?path=${encodeURIComponent(doc.path)}` })
+      expect(res.statusCode, doc.path).toBe(200)
+    }
+  })
+
+  it('EVERY refusal is the same 400: `..`, an absolute path, a drive letter, another root', async () => {
+    const { front } = mkFront()
+    const refused = [
+      '../секрет',
+      '.planning/../секрет',
+      '.planning/phases/../../.env',
+      '/etc/passwd',
+      'C:/Users/секрет.md',
+      'C:\\Users\\секрет.md',
+      '.claude/settings.json',
+      'daemon/src/front/server.mjs',
+      '..\\..\\секрет',
+      '.planning/phases/12-front/..\\..\\..\\секрет',
+      '',
+      `.planning/${'x'.repeat(600)}.md`,
+    ]
+    for (const path of refused) {
+      const res = await call(front, { url: `/api/artifact?path=${encodeURIComponent(path)}` })
+      expect(res.statusCode, path).toBe(400)
+      expect(res.body, path).toBe('invalid path')
+    }
+    // a sibling whose name merely STARTS like the root is outside it, and is refused too
+    const sibling = await call(front, { url: '/api/artifact?path=.planning-old/leak.md' })
+    expect(sibling.statusCode).toBe(400)
+  })
+
+  it('a well-formed path to a file that is not there is a 404, and a directory is a 400', async () => {
+    const { front } = mkFront()
+    expect((await call(front, { url: '/api/artifact?path=.planning/phases/12-front/нет.md' })).statusCode).toBe(404)
+    expect((await call(front, { url: '/api/artifact?path=.planning/phases/12-front' })).statusCode).toBe(400)
+  })
+
+  it('a document past the cap is refused by SIZE, not truncated into a half-truth', async () => {
+    const io = fixture({ [`${PROJECT}/.planning/phases/12-front/12-HUGE.md`]: 'я'.repeat(700000) })
+    const { front } = mkFront({ fsImpl: io })
+    const res = await call(front, { url: '/api/artifact?path=.planning/phases/12-front/12-HUGE.md' })
+    expect(res.statusCode).toBe(413) // 700k Cyrillic characters are 1.4 MB of UTF-8
+  })
+})
+
+// ═════════════════════════════════ THE UAT DOOR ═══════════════════════════════
+
+describe('POST /api/phase/uat — A VERDICT IS WRITTEN IN THE FILE’S OWN VOCABULARY', () => {
+  const uatText = (io: any) => io.readFileSync(`${PROJECT}/.planning/phases/12-front/12-UAT.md`)
+
+  it('a pass lands on the line it was given, and the counters come back in step', async () => {
+    const io = fixture()
+    const { front } = mkFront({ fsImpl: io })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/phase/uat',
+      body: { phase: '12', item: '2', verdict: 'pass' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, phase: '12', item: '2', verdict: 'pass' })
+    const text = uatText(io)
+    expect(text).toContain('### 2. Карточка фазы считает вопросы\nexpected: «N открыто / M отвечено»\nresult: pass')
+    // the document's own counters are derived again rather than left saying three-of-nothing
+    expect(text).toContain('total: 3')
+    // and the card reads back exactly what was written — one file, two readers
+    const card = JSON.parse((await call(front, { url: '/api/phase/12-front' })).body)
+    expect(card.uat[1]).toEqual({ item: '2', name: 'Карточка фазы считает вопросы', verdict: 'pass' })
+  })
+
+  it('`fail` on the wire is `issue` in the document, with the person’s words on the reported line', async () => {
+    const io = fixture()
+    const { front } = mkFront({ fsImpl: io })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/phase/uat',
+      body: { phase: '12', item: '1', verdict: 'fail', note: 'экран пустой\nи ничего не грузится' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const text = uatText(io)
+    expect(text).toContain('result: issue')
+    // ONE line: a pasted paragraph would become lines the audit verb reads as something else
+    expect(text).toContain('reported: "экран пустой и ничего не грузится"')
+    expect(text).toContain('severity: major')
+    const card = JSON.parse((await call(front, { url: '/api/phase/12-front' })).body)
+    expect(card.uat[0]).toEqual({
+      item: '1',
+      name: 'Экран дня открывается',
+      verdict: 'fail',
+      note: 'экран пустой и ничего не грузится',
+    })
+  })
+
+  it('a verdict REPLACES the old one whole — no `pass` left sitting beside a stale reported line', async () => {
+    const io = fixture()
+    const { front } = mkFront({ fsImpl: io })
+    await call(front, { method: 'POST', url: '/api/phase/uat', body: { phase: '12', item: '3', verdict: 'pass' } })
+    const text = uatText(io)
+    expect(text).not.toContain('ничего не произошло')
+    expect(text).not.toContain('severity: major')
+    expect(text).toContain('### 3. Ответ будит раунд\nexpected: задача снова в очереди\nresult: pass')
+  })
+
+  it('the write is ATOMIC: the document is never written to directly, only renamed over', async () => {
+    const io = fixture()
+    const writes: string[] = []
+    const renames: Array<[string, string]> = []
+    const recording = {
+      ...io,
+      writeFileSync: (p: string, t: string) => {
+        writes.push(norm(p))
+        io.writeFileSync(p, t)
+      },
+      renameSync: (a: string, b: string) => {
+        renames.push([norm(a), norm(b)])
+        io.renameSync(a, b)
+      },
+    }
+    const { front } = mkFront({ fsImpl: recording })
+    await call(front, { method: 'POST', url: '/api/phase/uat', body: { phase: '12', item: '1', verdict: 'pass' } })
+
+    const target = norm(`${PROJECT}/.planning/phases/12-front/12-UAT.md`)
+    expect(writes).not.toContain(target) // never written in place
+    expect(writes).toHaveLength(1)
+    expect(writes[0].split('/').slice(0, -1)).toEqual(target.split('/').slice(0, -1)) // same directory
+    expect(renames).toEqual([[writes[0], target]])
+  })
+
+  it('a line, a phase or a document that does not exist is a 404 — a door does not invent acceptance', async () => {
+    const { front } = mkFront()
+    const post = (body: object) => call(front, { method: 'POST', url: '/api/phase/uat', body })
+    expect((await post({ phase: '12', item: '99', verdict: 'pass' })).statusCode).toBe(404)
+    expect((await post({ phase: '77', item: '1', verdict: 'pass' })).statusCode).toBe(404)
+    expect((await post({ phase: '13', item: '1', verdict: 'pass' })).statusCode).toBe(404) // no UAT file
+  })
+
+  it('the body is explicit-pick, the verdict is a closed pair, and a pasted file is refused', async () => {
+    const io = fixture()
+    const { front } = mkFront({ fsImpl: io })
+    const before = uatText(io)
+    const post = (body: object) => call(front, { method: 'POST', url: '/api/phase/uat', body })
+
+    const unknown = await post({ phase: '12', item: '1', verdict: 'pass', severity: 'blocker' })
+    expect(unknown.statusCode).toBe(400)
+    expect(unknown.body).toContain('severity')
+    expect((await post({ phase: '12', item: '1', verdict: 'issue' })).statusCode).toBe(400)
+    expect((await post({ phase: '12', item: 'первый', verdict: 'pass' })).statusCode).toBe(400)
+    expect((await post({ phase: '12', item: '1', verdict: 'fail', note: 'я'.repeat(2001) })).statusCode).toBe(400)
+
+    expect(uatText(io)).toBe(before) // not one of the four touched the document
+  })
+})
+
 // ═════════════════════ the freeze these fills are measured by ═════════════════
 
 describe('the route freeze shrinks by exactly the slots this work filled', () => {
-  it('the phase doors are gone from PENDING_ROUTES', () => {
-    for (const key of ['POST /api/phase/stage', 'GET /api/phase/:id', 'POST /api/decision/answer']) {
+  it('all FIVE doors of the phase cycle are gone from PENDING_ROUTES', () => {
+    for (const key of [
+      'POST /api/phase/stage',
+      'GET /api/phase/:id',
+      'POST /api/phase/uat',
+      'POST /api/decision/answer',
+      'GET /api/artifact',
+    ]) {
       expect(PENDING_ROUTES.has(key), `${key} is live and must not be declared pending`).toBe(false)
     }
   })
