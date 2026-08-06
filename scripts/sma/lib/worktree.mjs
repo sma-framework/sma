@@ -21,8 +21,8 @@
  * registry.smaRoot() resolves `.sma/` to the MAIN checkout via
  * `git rev-parse --git-common-dir`, so every worktree session ALREADY registers in
  * the shared checkout's `.sma/` — the fingerprint, claims, sessions, and journal
- * «just work» across worktrees for free. Plan 14 provisions WORKING-TREE directories
- * ONLY; it imports/relies on that resolution and never re-implements coordination.
+ * «just work» across worktrees for free. This module provisions WORKING-TREE directories
+ * ONLY; it relies on that resolution and never re-implements coordination.
  *
  * THE SIBLING PRODUCT REPO RESOLVES FROM AN ABSOLUTE PATH
  * Scripts operating on `../sma/scripts/sma/**` from INSIDE a worktree cannot trust a
@@ -48,7 +48,7 @@
  * error degrades to an honest {ok:false, fellBackToPrimary:true, message} + the primary
  * checkout, never a wedged session and never a throw that escapes to the caller.
  *
- * BRIDGE POSTURE (applied via D-9.3-24): worktree-per-terminal multiplayer
+ * BRIDGE POSTURE: worktree-per-terminal multiplayer
  * is vendor-absorbable (OpenAI acquired Multi in 2024) — a demolition clause with a
  * self-removal disposition, never headlined as a moat.
  *

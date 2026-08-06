@@ -33,7 +33,7 @@ const EM_DASH_RE = /—/
 /**
  * COMMAND_TOPICS — the exhaustive alias map from every LIVE cli.mjs HANDLERS key to an
  * explainer topic id. This is the join between the command surface and the topic corpus.
- * A later sibling adding a HANDLERS key without extending this map flips P9.3-09-A — the
+ * A later sibling adding a HANDLERS key without extending this map flips the coverage score — the
  * designed drift tripwire. Keep this map exhaustive against the live HANDLERS block.
  */
 export const COMMAND_TOPICS = {
@@ -273,7 +273,7 @@ export function renderTopic(id, { explainersDir, lang = 'en' }) {
 /**
  * coverage({cliSource, explainersDir}) — {uncovered:[...keys], count}. A HANDLERS key
  * absent from COMMAND_TOPICS counts; a key mapped to a topic whose file does not exist
- * ALSO counts. `count` is the number P9.3-09-A scores (0 at phase verify).
+ * ALSO counts. `count` is the number the drift tripwire scores (0 at phase verify).
  */
 export function coverage({ cliSource, explainersDir }) {
   const keys = extractHandlersKeys(cliSource)

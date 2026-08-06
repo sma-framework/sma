@@ -483,7 +483,7 @@ function counterSpec(kind, o = {}) {
     const path = o.roadmapPath ?? join(planningRoot, 'ROADMAP.md')
     return {
       sourceText: safeReadText(path),
-      // Dotted headings (### Phase 9.1) match too; the capture is the INTEGER part, so
+      // Dotted headings (### Phase 3.1) match too; the capture is the INTEGER part, so
       // the next phase is the next whole number above the highest integer seen.
       re: /^###\s+Phase\s+(\d+)/gm,
       format: (n) => `${n}`,

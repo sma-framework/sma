@@ -13,9 +13,9 @@
  * Reader is tolerant: a corrupt line is skipped-and-counted, never a throw (C9).
  *
  * Fail-open discipline (C9/P4): recordCitation NEVER throws — a citation write
- * failure must never break the load it instruments (9.1-11 Test 5).
+ * failure must never break the load it instruments.
  *
- * Exports (consumed by loader.mjs wiring + `sma usage` + 9.1-12/13):
+ * Exports (consumed by loader.mjs wiring + `sma usage` + the consolidate/trim layers):
  *   - recordCitation(evt, opts) — append one citation line (fail-open, null on error)
  *   - readUsage(opts)           — merged citation events (usage ledger + reflex fires)
  *   - usageStats(opts)          — per-note counts split by kind, with lastCitedAt
@@ -63,7 +63,7 @@ function parseFile(path) {
  * recordCitation(evt, opts) — append ONE citation line to <terminal>.jsonl.
  * seq = last line's seq + 1 (missing file -> 1), matching journal.appendEvent.
  * FAIL-OPEN: any error returns null — a citation must never break the load
- * it instruments (9.1-11 Test 5).
+ * it instruments.
  *
  * @param {{noteId:string, kind:'load'|'fire', terminal:string, session?:string|null}} evt
  * @param {{usageDir?:string, now?:string}} [opts]
@@ -107,7 +107,7 @@ function compareEvents(a, b) {
 
 /**
  * readUsage(opts) -> {events, corrupt}. Merges the usage ledger with the reflex
- * journal's fire events (9.1-10 journals each surviving fire as type 'reflex'
+ * journal's fire events (the reflex consumer journals each surviving fire as 'reflex'
  * with detail.noteId) — ONE usage model over both consumption points.
  *
  * @param {{usageDir?:string, journalDir?:string}} [opts]

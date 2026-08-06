@@ -1,6 +1,6 @@
 /**
- * catalog.mjs — the deterministic file catalog of the context compiler (9.3-05,
- * D-9.3-06). Every git-tracked repo file gets ONE one-line card = a pure function
+ * catalog.mjs — the deterministic file catalog of the context compiler.
+ * Every git-tracked repo file gets ONE one-line card = a pure function
  * of (file bytes, injected git data): path, language class, key symbols, import
  * targets, git stats (last-commit ISO + commit count), size. NOTHING is derived by
  * an LLM — the meaning-string is CUT (the grill's ruling on pillar 02 is
@@ -100,7 +100,7 @@ function toLines(content) {
 
 // ─────────────────────────── extraction (js + md only) ──────────────────────
 // Line-anchored regexes only (no backtracking-heavy patterns). Only the js family
-// and md get extraction; every other class skips (D-9.3-06 deterministic v1).
+// and md get extraction; every other class skips (the deterministic v1 scope).
 
 const JS_SYMBOL_RES = [
   /^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/,

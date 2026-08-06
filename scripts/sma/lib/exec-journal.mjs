@@ -20,7 +20,7 @@ import { join } from 'node:path'
 
 import { EXEC_DIR } from './constants.mjs'
 
-/** Event kinds the journal records (RESEARCH Pattern 5; blocked reused by 9.1-21). */
+/** Event kinds the journal records (RESEARCH Pattern 5; `blocked` is reused by the stall window). */
 export const EXEC_EVENTS = ['task_start', 'task_complete', 'wave_complete', 'blocked', 'plan_complete']
 
 function resolveExecDir(opts = {}) {
@@ -77,7 +77,7 @@ export function append(entry, opts = {}) {
     testRun: entry.testRun ?? null,
     commitSha: entry.commitSha ?? null,
     status: entry.status ?? null,
-    // Carry any extra payload (e.g. a blocked event's `reason` — 9.1-21 park protocol).
+    // Carry any extra payload (e.g. a blocked event's `reason` — the park protocol).
     ...Object.fromEntries(
       Object.entries(entry).filter(
         ([k]) => !['wave', 'task', 'event', 'file', 'testRun', 'commitSha', 'status'].includes(k),

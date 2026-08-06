@@ -258,7 +258,7 @@ function evidenceRow(window, s) {
  *   {ruleId, kind, from, to, reason, evidence, refused:false}          — a tier move
  *   {ruleId, kind, from:'note'|... , to:'retired', refused:true, ...}  — a refused retire
  *   {kind:'gate-candidate', ruleId, evidence, reason}                  — a reflex that
- *        earned soft-deny evidence (reflexes NEVER deny — D-9.1-12; a human authors
+ *        earned soft-deny evidence (reflexes NEVER deny; a human authors
  *        the gate from the brief instead).
  *
  * @param {{ladder:{rules:object[]}, stats:Object<string,object>, checkFixture?:Function, thresholds?:object}} args
@@ -279,7 +279,7 @@ export function proposeTierChanges({ ladder = { rules: [] }, stats = {}, checkFi
     const zeroBenefit = fires >= t.demoteFires && (s.spanDays ?? 0) >= t.demoteSpanDays && (s.heeded ?? 0) === 0 && (s.ignoredBroke ?? 0) === 0
 
     // (1) incident RE-ARM — an ignored-broke on a silenced rule bumps one rung up,
-    // immediately and as a reviewable diff (never silent, T-9.3-63 / Test 6).
+    // immediately and as a reviewable diff (never silent).
     if ((tier === 'note' || tier === 'retired') && (s.ignoredBroke ?? 0) >= 1) {
       proposals.push({ ruleId, kind, from: tier, to: bumpUp(tier), reason: 'ignored-broke re-arm', refused: false, evidence: ev })
       continue

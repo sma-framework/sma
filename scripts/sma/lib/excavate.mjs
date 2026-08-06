@@ -21,7 +21,7 @@
  * string. No http/https/net/dns import exists in this module. No LLM call exists
  * in this module (deterministic history mining only — substrate law).
  *
- * DETERMINISM (D-9.3-07 posture): mineRepo has no Date.now and no randomness in
+ * DETERMINISM (the house posture): mineRepo has no Date.now and no randomness in
  * its ranking path — the same repo at the same HEAD yields deep-equal output. The
  * total order is: evidence strength (revert-pair > ci-fix-forward > typo-chain),
  * then author date descending, then sha lexical ascending.
@@ -633,7 +633,7 @@ function recordedIncidentPaths(body) {
  * firingReady(notePath, {dirs, paths}) → boolean. Replay the reflex precision-glob
  * matcher (compileGlob — the SAME primitive reflex.mjs uses) against the note's
  * own recorded incident paths (or an override `paths` set). Powers the
- * firing-ready-pct stat and prediction P9.3-03-B. Zero new matcher code.
+ * firing-ready-pct stat. Zero new matcher code.
  * Fail-soft: any error → false.
  *
  * @param {string} notePath

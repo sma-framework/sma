@@ -31,7 +31,7 @@
  * everything here is fail-open. shadowRunFixtures/reArmDecisions wrap
  * every path — an IO error yields empty results so session-start can never wedge.
  * They wire into session-start + the lint ONLY, never the per-tool-call hot path
- * (plan 02 SLO): gates-check consults a re-arm decision solely on the rare path
+ * (the hook SLO): gates-check consults a re-arm decision solely on the rare path
  * where a gate's own kill env is actually set (zero extra IO otherwise).
  *
  * Node built-ins only; DI dirs; zero packages.
@@ -393,7 +393,7 @@ export function reArmDecisions({ env = {}, now, dirs = {}, gates = GATES } = {})
  * countSilentDisarms({env, now, dirs}) -> integer. A SILENT disarm = a set
  * kill-switch that is being HONORED (not re-armed) yet carries no provenance —
  * disabled with neither a live provenance lease NOR an auto-re-arm. The data
- * source for `integrity disarms --count-silent` (P9.2-10-02). Zero on an env
+ * source for `integrity disarms --count-silent`. Zero on an env
  * with no kill-switch set.
  *
  * @param {{env?:object, now?:(string|number), dirs?:object}} [args]
@@ -405,7 +405,7 @@ export function countSilentDisarms({ env = {}, now, dirs = {} } = {}) {
 
 /**
  * renewDisarm({gateId, reason, identity, dirs, now, ttlMs}) -> the renewed lease.
- * Re-leases a kill-switch WITH provenance {renewedAt, by, reason} (D-9-09 shape)
+ * Re-leases a kill-switch WITH provenance {renewedAt, by, reason} (the force-clear shape)
  * so a founder can keep a rule off deliberately — but never silently. Journals the
  * renewal. `gateId` is the lease key (a gate id, or a global killEnv). Never throws.
  *

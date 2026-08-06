@@ -1,6 +1,5 @@
 /**
- * vendor-ledger.mjs — the standing Anthropic-update triage ledger linter
- * (9.4-01; §3.4 of 9.4-RESEARCH).
+ * vendor-ledger.mjs — the standing Anthropic-update triage ledger linter.
  *
  * The founder's standing mandate mechanized: every Anthropic dev update becomes
  * ONE append-only row in docs/VENDOR-LEDGER.md carrying a mandatory verdict

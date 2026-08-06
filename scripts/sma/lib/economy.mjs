@@ -1,6 +1,6 @@
 /**
  * economy.mjs — the SMA economy meters. The caveman
- * absorption done the SMA way (9.4-RESEARCH-ECONOMY §2 rows 4/6): their local
+ * absorption done the SMA way: their local
  * token estimates become a VERSIONED estimator, their per-turn overhead caveat
  * becomes our own self-cost meter, and — unlike them — every savings number is
  * paired with quality guards and every budget derives ONLY from OUR measured
@@ -17,12 +17,12 @@
  *                     an overrun is a SCORED calibration miss + an auto-drafted
  *                     lesson, both produced by CONSUMING the existing machinery.
  *
- * HONESTY POSTURE (mirrors spend.mjs D-9.2-13):
+ * HONESTY POSTURE (mirrors spend.mjs):
  *   - A lane with fewer than minRuns closed CLEAN runs derives NO budget and stays
  *     report-only (the capUsd:null law — a soft signal never fires off a guess).
  *   - Multi-terminal contamination is COUNTED (sessionsInWindow + overlap flag) and
  *     ACTED on: overlap-flagged runs are EXCLUDED from derivation AND can never score
- *     an overrun miss — report-only (grill CH-9.4-06-1). A miss is NEVER scored off
+ *     an overrun miss — report-only. A miss is NEVER scored off
  *     tokens/dollars another terminal may have burned.
  *   - The book exposes USD per event, not tokens; lane budgets therefore meter the
  *     two per-window signals the book DOES expose (dollars + minutes), and this is
@@ -404,9 +404,9 @@ function percentile(values, pct) {
 /**
  * deriveLaneBudgets({runs, pct, minRuns}) -> { [lane]: budget }. A budget derives ONLY
  * for lanes with >= minRuns closed CLEAN runs — overlap-flagged runs are EXCLUDED (they
- * neither count toward minRuns nor shape the percentile; grill CH-9.4-06-1). A lane below
+ * neither count toward minRuns nor shape the percentile). A lane below
  * the floor returns {insufficient:true, n}. The budget records n + source pct (the
- * D-9.2-13 capUsd:null honesty posture: a soft signal never fires off an assumed number).
+ * capUsd:null honesty posture: a soft signal never fires off an assumed number).
  *
  * @param {{runs:object[], pct?:number, minRuns?:number, now?:string}} opts
  * @returns {Object<string, object>}
@@ -461,8 +461,8 @@ export function maxLaneClosedRuns(runs) {
  * injected appendVerdict once (a scorePlan-miss-shaped record, domain sma.economy) and
  * the injected draftLesson once. It scores NOTHING when: the run is still open, the lane
  * has no derived budget (report-only), or the run is OVERLAP-FLAGGED (report-only WARN —
- * a miss is never scored off tokens another terminal may have burned; grill CH-9.4-06-1).
- * Whole body fail-open (T-9.4-06-B): any internal throw -> {reportOnly:true} — never a
+ * a miss is never scored off tokens another terminal may have burned).
+ * Whole body fail-open: any internal throw -> {reportOnly:true} — never a
  * false miss.
  *
  * The miss record is shaped EXACTLY as a predict.mjs scorePlan miss so
@@ -475,7 +475,7 @@ export function maxLaneClosedRuns(runs) {
 export function checkLaneOverrun({ run, budgets, appendVerdict, draftLesson, now } = {}) {
   try {
     if (!run || run.open) return { reportOnly: true, reason: 'open' }
-    if (run.overlap) return { reportOnly: true, reason: 'overlap' } // CH-9.4-06-1
+    if (run.overlap) return { reportOnly: true, reason: 'overlap' } // contaminated by a parallel terminal — never scored
     const lane = run.lane || 'unknown'
     const b = budgets && budgets[lane]
     if (!b || b.insufficient || !Number.isFinite(b.usd)) return { reportOnly: true, reason: 'no-budget', lane }
@@ -510,7 +510,7 @@ export function checkLaneOverrun({ run, budgets, appendVerdict, draftLesson, now
     }
     return { miss: true, lane, budgetUsd: b.usd, actualUsd: actual, verdict, appended, draftedPath }
   } catch {
-    return { reportOnly: true, reason: 'error' } // fail-open — never a false miss (T-9.4-06-B)
+    return { reportOnly: true, reason: 'error' } // fail-open — never a false miss
   }
 }
 
@@ -586,7 +586,6 @@ export function memoryStatsSelftest() {
  *   - an under-minRuns lane derives NO budget (insufficient);
  *   - an OVERLAP-flagged run is excluded from derivation AND scores no overrun (report-only);
  *   - a synthetic over-budget run appends ONE sma.economy calibration miss AND drafts ONE lesson.
- * (P9.4-06-B.)
  * @returns {Promise<number>}
  */
 export async function laneSelftest() {

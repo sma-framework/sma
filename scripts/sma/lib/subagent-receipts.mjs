@@ -11,7 +11,7 @@
  * hash-chained journal receipt with per-claim verdicts. Phantom writes (claimed but
  * absent / tree-unchanged) are flagged deterministically, zero LLM.
  *
- * Asserted-tier precision (9.4-03; forensics 9.3-PHANTOM-FORENSICS.md proved
+ * Asserted-tier precision (the phantom-write forensics proved
  * all 9 asserted phantoms were instrument noise, 0 real). Three false-positive
  * mechanisms fixed:
  *   1. Repo-root basename resolution — a bare basename («Wrote 46.2-DOD.json») no longer
@@ -29,14 +29,14 @@
  *   - DI everywhere ({runGit, statFile, appendEvent, now, readFn}) so tests never
  *     shell out or touch git. The CLI wires runGit = execFileSync('git', args) with
  *     arg arrays and a literal `--` before every claimed path (no shell string is
- *     ever built from transcript content — T-9.2-04-C).
+ *     ever built from transcript content).
  *   - The tree is the only witness: a subagent's self-report is NEVER trusted as
  *     evidence of a write. verifyWrites never throws on a malformed
  *     claim — a null/outside-repo path scores 'unverifiable', never a phantom.
- *   - Receipts ride journal.mjs appendEvent UNCHANGED — plan 03's hash chain then
+ *   - Receipts ride journal.mjs appendEvent UNCHANGED — the journal's hash chain then
  *     covers receipt lines for free. This module re-implements nothing.
- *   - transcriptSha pins WHAT was verified so plan 10's 5% audit re-derives the
- *     same verdicts (D-9.2-14 hook).
+ *   - transcriptSha pins WHAT was verified so the 5% deep audit re-derives the
+ *     same verdicts (the integrity-guard hook).
  *
  * Node built-ins only; no child_process (git is injected), no network, no LLM.
  */
@@ -46,7 +46,7 @@ import { resolve, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 
 /**
- * VERDICTS — the fixed enum plan 01's bench and plan 10's audit consume. A recorded
+ * VERDICTS — the fixed enum the bench and the deep audit consume. A recorded
  * verdict is ALWAYS one of these five (never a free string).
  */
 export const VERDICTS = ['verified', 'phantom-missing', 'phantom-unchanged', 'divergent', 'unverifiable']
@@ -447,7 +447,7 @@ export function dedupeByTranscriptSha(events) {
  * unchanged transcript re-receipted N times counts ONCE — precision mechanism 3):
  *   - coverage  = 100 * receipts / spawnRecords ('subagent-pack' events); 100 when empty
  *   - phantoms  = tool-call-tier phantom count (the ==0 prediction's instrument)
- *   - phantomsAsserted = asserted-tier phantoms, counted SEPARATELY (plan 10's audit)
+ *   - phantomsAsserted = asserted-tier phantoms, counted SEPARATELY (the deep audit)
  *   - packP95   = p95 of durationMs over 'subagent-pack' events
  * Honest empty: zero spawns -> coverage 100, phantoms 0, packP95 0, empty:true.
  */

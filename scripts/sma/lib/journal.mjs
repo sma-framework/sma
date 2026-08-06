@@ -47,7 +47,7 @@ function resolveJournalDir(opts = {}) {
 
 /**
  * lineHash(rawLine) -> sha256 hex of the exact line bytes (UTF-8, no trailing
- * newline). The chain link primitive; exported so plan 04's subagent receipts
+ * newline). The chain link primitive; exported so the subagent receipts
  * and any future ledger reuse the SAME hash of a journal line (never re-derive).
  * @param {string} rawLine
  * @returns {string}

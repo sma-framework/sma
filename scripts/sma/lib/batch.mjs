@@ -1,7 +1,7 @@
 /**
- * batch.mjs — the /sma-batch MIDDLE lane (Phase 9.3 Plan 12).
+ * batch.mjs — the /sma-batch MIDDLE lane.
  *
- * D-9.3-19 verbatim (the founder's gap): «tasks which are not small, but not
+ * The founder's gap, verbatim: «tasks which are not small, but not
  * phase oriented … 2-3-4 backlog items, plans them and executes, but not in the full
  * scale which takes so long.» The house two-lane rule (inline fix vs full phase) leaves a
  * gap for genuine multi-item work that does not warrant a phase. /sma-batch fills it:
@@ -20,7 +20,7 @@
  *     batch CONTINUES with the remaining items — never aborts.
  *
  * RECEIPTS ARE NON-NEGOTIABLE (the accountability floor): every item is blind-reverified
- * (9.2-03 `sma reverify`) after its atomic commit BEFORE its backlog checkbox flips. A
+ * (`sma reverify`) after its atomic commit BEFORE its backlog checkbox flips. A
  * green-looking item with no reproduced receipt does NOT get checked off. «Light» means
  * fewer AGENTS (no research / plan-checker / discuss), never fewer RECEIPTS
  * («light does not mean unaccountable»).
@@ -160,7 +160,7 @@ export function assembleCompatibleBatch(backlog) {
   return { ok: true, items: best, reason: '' }
 }
 
-// - [ ] **BL-007** …  /  - [x] **BL-007** … — the exact open/done anchor of the origin parser.
+// - [ ] **BL-NNN** …  /  - [x] **BL-NNN** … — the exact open/done anchor of the origin parser.
 const OPEN_LINE = (id) => new RegExp(`^(-\\s+\\[)( )(\\]\\s+\\*\\*${escapeId(id)}\\*\\*)`)
 const DONE_LINE = (id) => new RegExp(`^-\\s+\\[[xX]\\]\\s+\\*\\*${escapeId(id)}\\*\\*`)
 const ANY_LINE = (id) => new RegExp(`^-\\s+\\[[ xX]\\]\\s+\\*\\*${escapeId(id)}\\*\\*`)

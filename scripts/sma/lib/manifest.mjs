@@ -6,7 +6,7 @@
  * a regulator) needs into ONE object + ONE markdown render — which predictions
  * were registered and how they scored, a receipt per claim, the blind-verify
  * verdict, token spend, per-area hit rate, plus the journal chainTip and the
- * 9.3-02 stale-priors guard state as the audit-trail footer.
+ * stale-priors guard state as the audit-trail footer.
  *
  * WHAT IT IS NOT — a SECOND GRADER. This module computes ZERO new verdicts. Every
  * number it emits is READ from a calibration-ledger record (predict-score

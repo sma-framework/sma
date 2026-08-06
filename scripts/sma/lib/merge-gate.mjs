@@ -20,7 +20,7 @@
  * The merge-claim triplet (acquire/release/check) mirrors slots.mjs's push-claim triplet
  * near line-for-line, built on claims.mjs's claimSlot/releaseSlot mkdir-EEXIST primitive
  * (`claimSlot('merge-in-progress', …)`, NO new directory, NO bespoke lockfile). The
- * enforcing check reuses plan 13's verifyClaimEvidence (collision.mjs) for the
+ * enforcing check reuses verifyClaimEvidence (collision.mjs) for the
  * verified-LIVE-vs-stale decision — ONE evidence source, never a second logic.
  *
  * ═══════════════════════════ POSTURE LOCKS (carried) ════════════════════════════
@@ -259,8 +259,8 @@ export function runMerge(o = {}) {
 // ── enforcing scopes — the verified-LIVE-only soft-deny predicate ───────────────────
 //
 // enforceScope is the SOFT-deny-with-override predicate. It fires (soft-deny + override)
-// ONLY on a VERIFIED-LIVE foreign claim — the SAME evidence logic as plan 13's
-// self-verifying banner (verifyClaimEvidence): a claim is STALE (safe to take) when the
+// ONLY on a VERIFIED-LIVE foreign claim — the SAME evidence logic as the
+// self-verifying collision banner (verifyClaimEvidence): a claim is STALE (safe to take) when the
 // scope is CLEAN vs HEAD AND a commit landed in scope after the claim's renewTime; only
 // otherwise is it LIVE (real busy). A stale/unverified claim stays WARN-only. Posture:
 //   - SOFT-deny-with-override ONLY — NEVER a hard block (hard deny stays the security
@@ -279,7 +279,7 @@ export function runMerge(o = {}) {
  *   - cooling-down / force-cleared scope      -> {action:'warn'}  (founder word wins)
  *   - foreign claim STALE/unverified          -> {action:'warn', text}
  *   - foreign claim VERIFIED-LIVE             -> {action:'soft-deny', text, override}
- * Deterministic over the injected evidence + verifyClaimEvidence (plan 13's ONE evidence
+ * Deterministic over the injected evidence + verifyClaimEvidence (the ONE evidence
  * source). Any error -> {action:'allow'} (fail-open). NEVER a hard block.
  * @returns {{action:'allow'|'warn'|'soft-deny', text?:string, override?:string}}
  */
@@ -297,7 +297,7 @@ export function enforceScope(o = {}) {
       return { action: 'warn', text: 'скоуп недавно освобождён — можно занимать (не блокируем)' }
     }
 
-    // The verified-LIVE-vs-stale decision — plan 13's verifyClaimEvidence, ONE source.
+    // The verified-LIVE-vs-stale decision — verifyClaimEvidence, ONE source.
     const verify = typeof o.verifyClaimEvidence === 'function' ? o.verifyClaimEvidence : null
     const ev = verify ? verify(o.evidence || {}) : { live: true, text: '' }
 

@@ -16,7 +16,7 @@
  * are breakable. The security-regression-guard and its invariants (SMA-*, SEC-*)
  * are UNREACHABLE by construction — a runaway rule can never disarm a protection.
  * Every marker CITES a compensatingControl and carries reviewRequired:true — the
- * D-9.2-14 disarm-path contract plan 10 shadow-runs and auto-re-arms against.
+ * disarm-path contract the integrity guards shadow-run and auto-re-arm against.
  *
  * ═══════════════════════════ POSTURE ══════════════════════════════════════════
  *
@@ -237,7 +237,7 @@ export function isTripped(ruleId, opts = {}) {
 
 /**
  * listMarkers({breakerDir}) -> marker[]. All breaker markers, newest-first by disabledAt.
- * Fail-open → []. Read-only (the input contract plan 10's disarm-path guard consumes).
+ * Fail-open → []. Read-only (the input contract the disarm-path guard consumes).
  */
 export function listMarkers(opts = {}) {
   const out = []

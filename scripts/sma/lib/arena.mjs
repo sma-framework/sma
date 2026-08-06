@@ -5,7 +5,7 @@
  *
  * The passport proves calibration on OUR repo; the arena proves the
  * adoption claim against named rivals on NEUTRAL ground. It hardens the founder-run
- * n=1 pilot (9.3-11-PILOT-*) into a reproducible n>=4 four-arm comparison — vanilla
+ * n=1 pilot into a reproducible n>=4 four-arm comparison — vanilla
  * Claude Code / GSD only / Superpowers only / SMA — over a FIXED ticket set on a
  * public repo, scored FULLY DETERMINISTICALLY (git-diff LOC, acceptance test pass
  * count, tokens+cost via the spend-adapter, plus a separate adversarial
@@ -108,7 +108,7 @@ function normRounds(v) {
  *   m7Scope:[bool] } — the metric arrays aligned by run index (n = number of runs).
  *
  * opts.adapterVersions: the KNOWN spend-adapter version set (DI — the caller injects
- *   `ADAPTER_VERSIONS.map(a=>a.version)` from spend-adapter.mjs; D-9.3-02). A cost
+ *   `ADAPTER_VERSIONS.map(a=>a.version)` from spend-adapter.mjs — consumed, never re-declared). A cost
  *   record tagged with a version NOT in this set is booked but flagged as drift.
  *
  * Returns { arm, label, n, m1Median, m1FirstDoneRate, m2MeanRounds, m2NotConverged,

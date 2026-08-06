@@ -11,15 +11,16 @@
  *   - SCORECARD_METRICS exports EXACTLY 8 entries whose ids match the scorecard
  *     check_commands VERBATIM: false-done-rate, airbag-coverage, compaction-exam,
  *     phantom-writes, time-to-context-ratio, cross-machine-drill, self-cost,
- *     canary-catch. Renaming one breaks P9.2-S1..S8 and plans 02-10.
+ *     canary-catch. Renaming one breaks the scorecard and everything reading it.
  *   - Every measure returns {metric, value:number, unit, n, method, status} with
  *     status in {measured, registered, insufficient-data, pending-instrument} —
  *     never undefined/null value, never a throw (tolerant posture, journal.mjs).
  *   - Every command a metric executes (retro verify + scorecard check_command)
  *     passes predict.mjs isSafeCommand BEFORE any spawn; a non-matching command
- *     scores skipped-unsafe and the runner is NEVER invoked (extends T-9.1-14).
+ *     scores skipped-unsafe and the runner is NEVER invoked (the one boundary,
+ *     extended to this module rather than re-declared).
  *
- * SECURITY (T-9.2-01/02, mitigate): plan claims/verify strings can arrive from
+ * SECURITY (mitigated, not accepted): plan claims/verify strings can arrive from
  * untrusted imports; the SAFE_COMMAND allowlist is the boundary. All clone/replay
  * work (tasks 2/3) happens inside mkdtemp throwaway dirs — the source repo is
  * read-only to bench, its git refs never touched.
@@ -123,7 +124,7 @@ export function metricById(id) {
 }
 
 /**
- * measureAirbagLatency(opts) -> P9.2-05-B base. p95 of airbag snapshot elapsedMs
+ * measureAirbagLatency(opts) -> the airbag-latency base. p95 of snapshot elapsedMs
  * over ok receipts, computed by the ONE airbag.benchProviders path so it
  * never drifts from `sma airbag stats`. Empty → 0.
  */
@@ -334,13 +335,13 @@ function makeRemap(cloneRoot) {
   }
 }
 
-// ── S2: git-loss recoverability (airbag arrives plan 05) ─────────────────────
+// ── S2: git-loss recoverability (before any airbag mechanism exists) ─────────
 
 /**
  * measureGitLossRecoverability(opts) -> S2 base. Tolerant-reads the coordination
  * journal for destructive-git GATE firings in the window and computes recoverability
  * = firings-preceded-by-a-snapshot / firings. Today the numerator is STRUCTURALLY 0
- * (no airbag mechanism exists — it arrives plan 05), so the firing COUNT is the log
+ * (no airbag mechanism exists yet), so the firing COUNT is the log
  * and value is 0. Honest: registered when there is nothing yet to protect.
  *
  * @param {{dirs?:object, windowDays?:number, now?:number, journalReader?:Function}} opts
@@ -418,7 +419,7 @@ export function measureGitLossRecoverability(opts = {}) {
  * claimed created/modified files and cross-check each against the plan-id-grepped
  * commits' --name-only file sets (injected gitLog provider). A claimed file that no
  * plan-id commit touched is a PHANTOM. share = phantoms/claims; mode:'count' returns
- * the absolute phantom count (the scoring shape for P9.2-S4's `== 0`).
+ * the absolute phantom count (the scoring shape the phantom metric needs: `== 0`).
  *
  * @param {{summaryPaths?:string[], gitLog?:Function, mode?:string, readFile?:Function}} opts
  */
@@ -664,7 +665,7 @@ export function measureCrossMachineDrill() {
   })
 }
 
-/** S8 canary-catch: blind verifier + canary audit arrive plan 10. Base 0, registered. */
+/** S8 canary-catch: the blind verifier + canary audit do not exist yet. Base 0, registered. */
 export function measureCanaryCatch() {
   return result('canary-catch', {
     value: 0,
@@ -1056,7 +1057,7 @@ export function runAllMetrics(ctx = {}) {
   })
 }
 
-/** coverageCount(metrics) -> count with a real base (measured OR registered) — P9.2-01-A. */
+/** coverageCount(metrics) -> count with a real base (measured OR registered). */
 export function coverageCount(metrics) {
   return (Array.isArray(metrics) ? metrics : []).filter(
     (m) => m.status === 'measured' || m.status === 'registered',
@@ -1065,7 +1066,7 @@ export function coverageCount(metrics) {
 
 /**
  * captureBaseline(ctx) -> { capturedAt, metrics }. Runs the full 8-metric suite for
- * the baseline artifact. The CLL renders this into 9.2-BASELINE.md; on/after the
+ * the baseline artifact. The CLI renders this into the BASELINE.md file; on/after the
  * freeze date it flips status to frozen with git anchors.
  */
 export function captureBaseline(ctx = {}) {

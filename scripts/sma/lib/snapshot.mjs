@@ -1,5 +1,5 @@
 /**
- * snapshot.mjs — the terminal→CRM reporter (R12, D-9-04/05/11, P1).
+ * snapshot.mjs — the terminal→CRM reporter (R12, P1).
  *
  * Two exports carry the contract:
  *   buildSnapshotPayload() — reads THIS terminal's own lease + its own journal

@@ -43,7 +43,7 @@
  * ERASE IS DELEGATED, NOT PERFORMED HERE. `applyLifecycle` performs five
  * actions: supersede, revoke, expire, archive — and erase, which it hands to
  * erase.mjs. It used to REFUSE erase with a pointer to the policy that owned the
- * question; D-11-05 answered that policy (physical removal from the corpus, the
+ * question; that policy is now settled (physical removal from the corpus, the
  * working tree and every derived index, verified — with git history stated as an
  * untouched exception rather than promised), so the refusal became a delegation.
  * The destructive effect still has no code path IN THIS FILE: it lives in one

@@ -25,7 +25,7 @@ import { appendFileSync, readFileSync, readdirSync, statSync, mkdirSync } from '
 import { join } from 'node:path'
 
 import { atomicWriteRaw } from './fs-atomics.mjs'
-// The ONE allowlist boundary (9.2-10 lock): isSafeCommand = charset + pattern guard;
+// The ONE allowlist boundary, locked: isSafeCommand = charset + pattern guard;
 // SAFE_COMMAND_PATTERNS is the anchored shape a template's check_command must match to
 // be safe for the planner to run unedited. Both IMPORTED, never re-declared here.
 import { isSafeCommand, SAFE_COMMAND_PATTERNS } from './predict.mjs'

@@ -1,9 +1,9 @@
 /**
- * replay-exam.mjs — lane 4 of D-9.5-08 («экзамен-реплей», the calibration metric).
+ * replay-exam.mjs — lane 4 of the founder's behavioural imprint («экзамен-реплей»).
  *
  * `sma exam` replays HELD-OUT historical founder situations through the synthetic
  * orchestrator and computes a match rate against the founder's REAL decisions — the
- * calibration metric for the orchestrator policy prompt (plan 9.5-06). It is the
+ * calibration metric for the orchestrator policy prompt. It is the
  * measurement half of the «оркестрация × обучение» differentiator: the
  * policy's fidelity is MEASURED, not asserted.
  *
@@ -26,7 +26,7 @@
  * DATA end to end: it is copied verbatim into an item's `situation` field and is
  * NEVER executed, eval'd, required, or interpolated into a command string.
  *
- * DETERMINISM (D-9.3-07 posture): the selection path has NO Date.now and NO
+ * DETERMINISM (the house posture): the selection path has NO Date.now and NO
  * Math.random — a seeded PRNG (xmur3 → mulberry32) drives a Fisher-Yates shuffle over
  * a filename-sorted base order, so the same corpus + same seed yields byte-identical
  * exam + key files. The injected `clock` is used ONLY for the filename date + the

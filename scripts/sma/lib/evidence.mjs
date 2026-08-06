@@ -5,8 +5,8 @@
  * foreign-claim force-clear — must carry a burden-of-proof record in .sma/evidence/
  * naming the reason AND the verifications performed BEFORE it proceeds. The record
  * follows the force-clear-with-provenance shape (claims.mjs lineage):
- * append-only, actor+pid+ts stamped, NEVER overwritten and NEVER deleted (T-9.2-07C —
- * there is no unlink path in this module). The risky-op gates (gates.mjs) consult
+ * append-only, actor+pid+ts stamped, NEVER overwritten and NEVER deleted (there is
+ * no unlink path in this module). The risky-op gates (gates.mjs) consult
  * hasFreshEvidence for their DORMANT soft-deny tier; the advisory WARN + the journaled
  * risky-op event are the default posture (hard-deny stays the security guard's alone).
  *
@@ -105,7 +105,7 @@ export function hasFreshEvidence({ op, target, maxAgeMs } = {}, opts = {}) {
  * evidenceStats({evidenceDir, journalDir}) -> {coverage, riskyOps, covered}. Coverage =
  * pct of journal events type 'risky-op' that reference an evidenceId. No risky-op events
  * → 100 (coverage of an empty set is honestly full). coverage is an integer (the
- * P9.2-07-C numeric-last-line contract). Never throws.
+ * numeric-last-line contract). Never throws.
  *
  * @param {{evidenceDir?:string, journalDir:string}} opts
  * @returns {{coverage:number, riskyOps:number, covered:number}}

@@ -1,7 +1,7 @@
 /**
  * footprint.mjs — the economy ladder as a claim + a deterministic receipt.
- * The ponytail absorption done the SMA way
- * (9.4-RESEARCH-ECONOMY §2 rows 1-2): their /review LLM diff judge is REJECTED
+ * The ponytail absorption done the SMA way:
+ * their /review LLM diff judge is REJECTED
  * and rebuilt here as arithmetic — a plan CLAIMS its footprint in frontmatter
  * (files touched, new files, ~LOC, new deps, tolerance %), and the receipt
  * compares `git diff --numstat` ACTUALS against that written claim. An overrun
@@ -13,7 +13,7 @@
  *     no new YAML machinery;
  *   - the overrun row is shaped EXACTLY as a scorePlan miss so
  *     predict.draftLessonFromMiss + calibration.appendVerdict work UNMODIFIED
- *     (the same seam the checkLaneOverrun used);
+ *     (the same seam checkLaneOverrun uses);
  *   - the standing challenge «which ladder rung?» lives inside grill.mjs's
  *     existing ledger law (grill.standingFootprint) — this module never touches
  *     the gate.

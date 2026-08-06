@@ -87,7 +87,7 @@ function parseFile(path) {
  * Structurally mirrors journal.mjs (per-terminal file, seq = last+1, tolerant parse).
  * Mark shape: {ts, terminal, seq, tool, target}. `target` is a file path for Edit/
  * Write or a first-token command SLUG for Bash — NEVER the full command line (secrets
- * ride in command args; T-9.2-06A).
+ * ride in command args).
  * @param {{tool?:string, target?:string}} entry
  * @param {{terminalId:string, flightDir?:string, now?:string}} opts
  * @returns {object} the written mark
@@ -228,7 +228,7 @@ function nextStepFrom(inputs) {
 
 /**
  * buildCapsule(inputs) -> markdown string. PURE — zero fs, zero clock (inputs.now is
- * injected; the determinism precondition, P9.2-06-02). Fixed 5-section order; enforces
+ * injected; the determinism precondition). Fixed 5-section order; enforces
  * CAPSULE_BUDGET by dropping the OLDEST events first with one `…truncated` marker. The
  * header and Current-task sections are NEVER truncated.
  * @param {{now, identity, label, trigger, statePosition, stateBlockers, ownClaim, otherClaims, pushClaim, journalTail, marksTail, execState}} inputs

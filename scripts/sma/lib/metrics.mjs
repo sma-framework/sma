@@ -1,6 +1,6 @@
 /**
- * metrics.mjs — read-only process telemetry from git + artifacts (B23,
- * D-9.1-07; CODING #8 pattern).
+ * metrics.mjs — read-only process telemetry from git + artifacts (B23;
+ * CODING #8 pattern).
  *
  * The public product's "how is delivery actually going" layer, computed from data
  * that already exists on disk — NO new state, NO writes, NO network:
