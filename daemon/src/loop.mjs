@@ -102,6 +102,7 @@ import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capab
 import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
+import { parseClaudeEvent } from './runner/stream.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, CHECKPOINT_SUFFIX, EXEC_CHECKPOINT_SUFFIX } from './front/questions.mjs'
 
@@ -119,6 +120,18 @@ const SPAWN_TOOL = 'Bash'
 
 const TOUCH_THROTTLE_MS = 30000 // touch at most once per 30s while streaming
 const HOUR_MS = 3600000
+
+/**
+ * The options EVERY worker spawn is assembled with, named once so the two spawn paths in this
+ * file cannot come to disagree.
+ *
+ * `forwardSubagentText` puts the text and thinking of DELEGATED sessions on the same stream
+ * as the main one. Without it a worker that delegates goes silent for minutes at a time and
+ * the live log — the whole point of watching an attempt — has nothing to show but a spinner,
+ * which reads as «it is stuck» rather than «it is busy». args.mjs made it opt-in and off by
+ * default; this is the opt-in.
+ */
+const SPAWN_OPTIONS = Object.freeze({ forwardSubagentText: true })
 
 // ═══════════════════════ THE SECOND EXIT GATE — WORK MADE OF PROSE ════════════════
 //
@@ -497,6 +510,62 @@ function writeJournal(deps, entry) {
   }
 }
 
+/**
+ * openAttemptLog(deps, task) → a live-log writer for THIS attempt, or a working no-op.
+ * The log rides the SAME ledger seam the attempt rows and the decision journal ride — one
+ * object, one directory — so a test can drive it with fakes and a daemon assembled without a
+ * ledger simply does not keep a transcript. FAIL-OPEN at every step: a seam that throws on
+ * construction is reported to the daemon's log and then treated as absent.
+ */
+function openAttemptLog(deps, task) {
+  const noop = { append: () => false }
+  const { ledger } = deps
+  if (!ledger || typeof ledger.attemptLog !== 'function') return noop
+  try {
+    const writer = ledger.attemptLog({ attemptId: attemptIdFor(task.id, task.attempt) })
+    return writer && typeof writer.append === 'function' ? writer : noop
+  } catch (err) {
+    writeLog(deps, { type: 'attempt-log-error', taskId: task.id, error: String((err && err.message) || err) })
+    return noop
+  }
+}
+
+/**
+ * attemptStream(deps, task, streamLines) → `{onLine, sessionId}` — the ONE stdout reader both
+ * spawn paths use. It does three things per line, in this order and for these reasons:
+ *
+ *   (1) collects the line for the markers the gates read afterwards (unchanged);
+ *   (2) APPENDS it to the attempt's live log — while the process is still alive, because a
+ *       transcript that only exists after the exit is a post-mortem, not an observation.
+ *       A delegated line is marked as such, so a screen can badge it instead of showing a
+ *       jumble of two voices;
+ *   (3) touches the lease, throttled, exactly as before.
+ *
+ * It also KEEPS THE SESSION ID off the result frame. That identifier is the one thing about a
+ * finished attempt that cannot be recovered later, and holding it is what makes resuming a
+ * session — instead of paying for its context again — possible at all.
+ *
+ * The log is read through `parseClaudeEvent`, which never throws on any input: a line that is
+ * not JSON is still a line, and it is still logged. NOTHING here can fail the attempt.
+ */
+function attemptStream(deps, task, streamLines, now) {
+  const log = openAttemptLog(deps, task)
+  const state = { sessionId: null }
+  let lastTouchAt = 0
+  const onLine = (line) => {
+    streamLines.push(line)
+    const event = parseClaudeEvent(line)
+    if (!state.sessionId && event.sessionId) state.sessionId = event.sessionId
+    log.append({ line, subagent: event.subagent === true, parentId: event.parentId })
+    const t = now()
+    if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
+      lastTouchAt = t
+      Promise.resolve(deps.adapter.touch(task.id)).catch(() => {})
+    }
+  }
+  return { onLine, sessionOf: () => state.sessionId }
+}
+
 /** Parse the last JSON object on a verb's stdout; fail-open to {} (never throws). */
 function parseVerbResult(stdout) {
   const text = typeof stdout === 'string' ? stdout : ''
@@ -821,8 +890,8 @@ export async function tick(deps = {}) {
         workDir = wt.worktreePath || `${config.repoDir ?? '.'}/../${branch}`
       }
 
-      // (6) spawn the routed worker; touch (throttled) on every stream line.
-      const spec = buildArgs(task, route)
+      // (6) spawn the routed worker; log + touch (throttled) on every stream line.
+      const spec = buildArgs(task, route, SPAWN_OPTIONS)
       // prepend the enabled agent's role/skills preamble (resolveWorkerContext) so
       // «включён» is real in the session. Optional + DI-guarded — skipped when not injected.
       if (typeof deps.resolveWorkerContext === 'function' && route && route.workerId) {
@@ -845,15 +914,7 @@ export async function tick(deps = {}) {
         }
       }
       const streamLines = []
-      let lastTouchAt = 0
-      const onLine = (line) => {
-        streamLines.push(line)
-        const t = now()
-        if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
-          lastTouchAt = t
-          Promise.resolve(adapter.touch(task.id)).catch(() => {})
-        }
-      }
+      const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now)
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
@@ -887,10 +948,10 @@ export async function tick(deps = {}) {
         const reason = infraReason ?? (gate.receiptRef ? (noteWritten ? null : 'no_journal') : gate.reason)
         if (reason) {
           if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
-          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState })
+          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
           result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
         } else {
-          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState })
+          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
           result.completed = task.id
         }
         return result
@@ -907,7 +968,7 @@ export async function tick(deps = {}) {
       }
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
-        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState })
+        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
         result.completed = task.id
       } else {
         const reason = classifyFailure({
@@ -917,7 +978,7 @@ export async function tick(deps = {}) {
           workerMarker: marker,
           journalComplete: noteWritten,
         })
-        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState })
+        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
         result.failed = { taskId: task.id, reason }
       }
       return result
@@ -977,7 +1038,9 @@ function listCommittedDrafts(execGit, branch, cwd, kind) {
  * so `.claude/agents-elsewhere/x.md` passes the first and is refused by the second.
  */
 async function runForgeTask(deps, task, route, result, now, envelope) {
-  const { verbRunner, spawnWorker, buildArgs, config, adapter } = deps
+  // `adapter` is NOT destructured here any more: its only use in this lane was the throttled
+  // touch, which now lives inside the shared stream reader with the log it belongs next to.
+  const { verbRunner, spawnWorker, buildArgs, config } = deps
   let fleetState = 'CLAIMED'
 
   // The forge lane has no preflight door, so the executor question is asked first thing.
@@ -1005,23 +1068,17 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
 
   // (6) spawn the «Создатель» with the FORGE prompt (not the code task prompt); touch on stream.
   const kind = task.forge && task.forge.kind
-  const spec = buildArgs(task, route)
+  const spec = buildArgs(task, route, SPAWN_OPTIONS)
   spec.prompt = buildForgePrompt({
     kind,
     description: task.forge && task.forge.description,
     note: task.note,
     repoDir: config.repoDir,
   })
-  let lastTouchAt = 0
+  // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
+  // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const onLine = (line) => {
-    streamLines.push(line)
-    const t = now()
-    if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
-      lastTouchAt = t
-      Promise.resolve(adapter.touch(task.id)).catch(() => {})
-    }
-  }
+  const { onLine } = attemptStream(deps, task, streamLines, now)
   fleetState = 'RUNNING'
   const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
 
@@ -1090,7 +1147,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  * `from` names the fine state the task was really in; omitting it (the preflight-«built»
  * door) writes the row with no transition fields rather than an invented pair.
  */
-async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from }) {
+async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId }) {
   const { adapter, ledger, report } = deps
   await adapter.complete(task.id, {
     receiptRef,
@@ -1106,6 +1163,10 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       provider: route && route.provider,
       outcome: 'completed',
       receiptRef,
+      // The session this attempt ran in. `undefined` when the stream never named one (a
+      // preflight door completes with no worker at all) — the allowlist loop then omits the
+      // key entirely, so a row without a session says so by ABSENCE, never by an empty string.
+      sessionId: sessionId ?? undefined,
       endedAt: new Date(now).toISOString(),
       ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
     })
@@ -1120,7 +1181,7 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
  * `from` is CLAIMED for an attempt refused before any worker started and RUNNING for one
  * that died after — both are legal edges into RETRYABLE, and the key names the real one.
  */
-async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from }) {
+async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId }) {
   const { adapter, ledger, report } = deps
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
@@ -1136,6 +1197,9 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
         outcome: 'failed',
         failureReason: reason,
         receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row
+        // A FAILED attempt keeps its session id too — that is the attempt a person is most
+        // likely to want to open and look inside afterwards.
+        sessionId: sessionId ?? undefined,
         endedAt: new Date(now).toISOString(),
         ...attemptStamp(deps, task, { from, to: from ? 'RETRYABLE' : undefined, actor: 'supervisor', envelope }),
       })

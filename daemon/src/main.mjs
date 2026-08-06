@@ -59,7 +59,13 @@ import {
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
-import { recordAttempt, readAttempts, appendJournalEntry, readJournalEntries } from './queue/attempt-ledger.mjs'
+import {
+  recordAttempt,
+  readAttempts,
+  appendJournalEntry,
+  readJournalEntries,
+  createAttemptLogWriter,
+} from './queue/attempt-ledger.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
 import { handleChatTurn, readHistory } from './front/chat.mjs'
@@ -190,6 +196,18 @@ export function createDaemon(o = {}) {
       // the decision journal rides the same ledger dir — same seam, same object
       appendJournal: (entry) => appendJournalEntry(ledgerDir, entry),
       readJournalEntries: (taskId) => readJournalEntries(ledgerDir, taskId),
+      // …and so does the LIVE log: the worker's stdout, appended while the process is still
+      // alive, one file per attempt. A write that fails reaches the daemon's log ONCE and
+      // changes nothing else — the transcript is an observation of the work, not a condition
+      // of it, and a founder who loses the picture must not lose the task with it.
+      attemptLog: ({ attemptId }) =>
+        createAttemptLogWriter({
+          dir: ledgerDir,
+          attemptId,
+          clock,
+          onError: (err) =>
+            console.error(`[SmaDaemon] attempt log unavailable for ${attemptId}: ${String((err && err.message) || err)}`),
+        }),
     }
 
   // (2) the SSE hint hub + the event-wrapped adapter handed to BOTH sides.

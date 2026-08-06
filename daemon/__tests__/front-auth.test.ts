@@ -1417,6 +1417,22 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
     expect(out.journal.memoryTrace).toEqual({ notes: ['reference_sma_dev_workspace'], reflexes: ['no-new-store'] })
   })
 
+  it('the sessionId on a ledger row does NOT travel to the card — the read model is an explicit pick', async () => {
+    const withSession = {
+      readAttempts: () => [
+        { attempt: 1, workerId: 'max-1', outcome: 'completed', sessionId: '9f8e7d6c-1234-4abc-8def-0123456789ab' },
+      ],
+    }
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger: withSession } })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    // The audit row keeps it — it is the one fact about a finished attempt nothing can
+    // recover afterwards. The screen has no use for it, so the payload never names it, and
+    // that is asserted on the BYTES rather than on the shape.
+    expect(res.body).not.toContain('9f8e7d6c-1234-4abc-8def-0123456789ab')
+    expect(Object.hasOwn(JSON.parse(res.body).attempts[0], 'sessionId')).toBe(false)
+  })
+
   it('a task older than the journal → EMPTY layers, never an error', async () => {
     const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger: { readAttempts: () => [] } } })
     const res = await call(front, { url: '/api/task/R-9', headers: bearer() })

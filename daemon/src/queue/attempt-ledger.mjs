@@ -112,6 +112,14 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'stateMachineVersion',
   'idempotencyKey',
   'capabilityEnvelopeHash',
+  // ── the worker's own session id ──
+  // The identifier the CLI minted for the session this attempt ran in, read off the result
+  // frame. It is kept because it is the ONE thing that cannot be recovered afterwards: with
+  // it a later attempt can resume the session instead of paying for the same context twice,
+  // and without it that option is gone the moment the process exits. It is an OPAQUE handle
+  // and it stays on the audit row — the task-card read model is an explicit pick and does not
+  // name it, so it never travels to a screen.
+  'sessionId',
   // ── the provenance flag ──
   // `true` ONLY on a row appended by `reconcile.mjs` AFTER the fact, from the queue's own
   // retry count. Such a row is EVIDENCE THAT AN ATTEMPT EXISTED, and nothing more: nobody

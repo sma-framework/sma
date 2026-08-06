@@ -26,6 +26,15 @@
  *   - the gate is a FILE check: the suite never feeds the daemon a line of worker stdout to
  *     decide an outcome with, and the code gate is byte-for-byte what it was (regression)
  *
+ * THE LIVE ATTEMPT LOG (the tick's half of «наблюдение за исполнителями»), also pinned:
+ *   - every stream line reaches the ATTEMPT's own file while the process is still alive, and
+ *     a line spoken by a SUBAGENT is marked as such (parent_tool_use_id → subagent+parentId)
+ *   - the sessionId off the result frame lands on the attempt row; an attempt that never
+ *     named one carries no such key at all
+ *   - the log is fail-open THREE ways: an unwritable directory, a seam that throws, and no
+ *     seam at all — in each case the task is decided by its own gate, exactly as before
+ *   - every spawn (both lanes, one constant) is assembled with forwardSubagentText
+ *
  * WHY THIS FILE IS NOT PINNED SERIAL (vitest.config.mjs SERIAL_SUITES): the gate cases above
  * drive an in-memory filesystem and a git that is one function returning a string. Not one of
  * them starts a process, opens a real repository or writes outside a temp dir, so they carry
@@ -52,6 +61,8 @@ import {
   readAttempts,
   memorySnapshotHash,
   MEMORY_SNAPSHOT_ABSENT,
+  createAttemptLogWriter,
+  readAttemptLog,
 } from '../src/queue/attempt-ledger.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
@@ -1025,6 +1036,238 @@ describe('classifyFailure — the taxonomy (pure)', () => {
     expect(classifyFailure({ exitCode: 1, receipt: { verdict: 'red', ref: 'r' }, workerMarker: 'MISSING_ACCESS' })).toBe(
       'missing_access',
     )
+  })
+})
+
+// ═══════════ THE LIVE ATTEMPT LOG — the tick writes it WHILE the worker speaks ═══════════
+
+describe('the tick keeps a live log of the attempt, and never dies of it', () => {
+  const tmpDirs: string[] = []
+  const mkDir = (prefix: string) => {
+    const d = mkdtempSync(join(tmpdir(), prefix))
+    tmpDirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmpDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  })
+
+  /** A REAL ledger over a temp dir: attempt rows and the live log, exactly as main.mjs wires them. */
+  const realLedger = (ledgerDir: string, over: any = {}) => ({
+    recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
+    readAttempts: (id: string) => readAttempts(ledgerDir, id),
+    attemptLog: ({ attemptId }: any) => createAttemptLogWriter({ dir: ledgerDir, attemptId }),
+    ...over,
+  })
+
+  /** What a delegating session prints: its own line, a SUBAGENT's, a plain note, a result frame. */
+  const DELEGATING_STREAM = [
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8' } }),
+    JSON.stringify({ type: 'assistant', parent_tool_use_id: 'toolu_01SUB', message: { model: 'claude-opus-4-8' } }),
+    'APPROACH_NOTE: прямой путь',
+    JSON.stringify({ type: 'result', session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab', total_cost_usd: 0.03 }),
+  ]
+
+  const greenRun = (ledgerDir: string, over: any = {}) => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    return {
+      c,
+      adapter,
+      mk: () =>
+        makeDeps({
+          adapter,
+          clockObj: c,
+          spawnWorker: makeSpawnWorker(undefined, { lines: DELEGATING_STREAM }),
+          responses: {
+            preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+            worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+            reverify: GREEN_REVERIFY,
+          },
+          deps: { ledger: realLedger(ledgerDir, over) },
+        }),
+    }
+  }
+
+  it('every line reaches the attempt’s own file, and the delegated one is marked as delegated', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    const run = greenRun(ledgerDir)
+    await run.adapter.enqueue(backlogTask())
+    const { deps } = run.mk()
+
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+
+    const log = readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#1' })
+    expect(log.total).toBe(DELEGATING_STREAM.length) // four lines in, four rows out — nothing dropped
+    expect(log.truncated).toBe(false)
+    const subagentRows = log.entries.filter((e: any) => e.subagent === true)
+    expect(subagentRows).toHaveLength(1)
+    expect(subagentRows[0].parentId).toBe('toolu_01SUB')
+    // a line that is not a frame is still a line
+    expect(log.entries.some((e: any) => e.line === 'APPROACH_NOTE: прямой путь')).toBe(true)
+    // and it was written to the ATTEMPT's file, not the task's
+    expect(readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#2' }).total).toBe(0)
+  })
+
+  it('the sessionId off the result frame lands on the attempt row — the one fact nothing else can recover', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    const run = greenRun(ledgerDir)
+    await run.adapter.enqueue(backlogTask())
+    const { deps } = run.mk()
+
+    await tick(deps)
+
+    const [row] = readAttempts(ledgerDir, 'BL-1')
+    expect(row.outcome).toBe('completed')
+    expect(row.sessionId).toBe('9f8e7d6c-1234-4abc-8def-0123456789ab')
+  })
+
+  it('an attempt whose stream never names a session carries NO sessionId key — absence, not an empty string', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['plain text', 'APPROACH_NOTE: прямой путь'] }),
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { ledger: realLedger(ledgerDir) },
+    })
+
+    await tick(deps)
+
+    const [row] = readAttempts(ledgerDir, 'BL-1')
+    expect(Object.hasOwn(row, 'sessionId')).toBe(false)
+  })
+
+  it('A LOG THAT CANNOT BE WRITTEN COSTS THE PICTURE AND NOTHING ELSE — the task completes by its own gate', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    // a directory that is really a FILE: every append underneath it fails, for real
+    const unreachable = join(ledgerDir, 'not-a-dir')
+    writeFileSync(unreachable, 'i am a file', 'utf8')
+
+    const run = greenRun(ledgerDir, {
+      attemptLog: ({ attemptId }: any) => createAttemptLogWriter({ dir: join(unreachable, 'nested'), attemptId }),
+    })
+    await run.adapter.enqueue(backlogTask())
+    const { deps } = run.mk()
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1') // the gate decided, exactly as it does with a working log
+    const [row] = readAttempts(ledgerDir, 'BL-1')
+    expect(row.outcome).toBe('completed')
+    expect(row.sessionId).toBe('9f8e7d6c-1234-4abc-8def-0123456789ab') // still read off the stream
+  })
+
+  it('a ledger seam that THROWS when asked for a writer is survived, named in the log, and treated as absent', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    const run = greenRun(ledgerDir, {
+      attemptLog: () => {
+        throw new Error('no log for you')
+      },
+    })
+    await run.adapter.enqueue(backlogTask())
+    const { deps, journalled } = run.mk()
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    expect(journalled.some((e: any) => e.type === 'attempt-log-error')).toBe(true)
+  })
+
+  it('a daemon assembled with NO log seam at all behaves exactly as it did before (regression)', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    const run = greenRun(ledgerDir, { attemptLog: undefined })
+    await run.adapter.enqueue(backlogTask())
+    const { deps } = run.mk()
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    expect(readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#1' }).total).toBe(0)
+  })
+
+  it('EVERY spawn is assembled with forwardSubagentText — otherwise the delegated half of the log is silent', async () => {
+    const seen: any[] = []
+    const ledgerDir = mkDir('sma-loop-log-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: makeSpawnWorker(undefined, { lines: DELEGATING_STREAM }),
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: {
+        ledger: realLedger(ledgerDir),
+        buildArgs: (_task: any, _route: any, opts: any) => {
+          seen.push(opts)
+          return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }
+        },
+      },
+    })
+
+    await tick(deps)
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toEqual({ forwardSubagentText: true })
+  })
+
+  it('the same option reaches the FORGE lane’s spawn, and that lane keeps a transcript too', async () => {
+    const seen: any[] = []
+    const ledgerDir = mkDir('sma-loop-log-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue({
+      id: 'F-1',
+      source: 'roster',
+      title: 'выкуй агента',
+      lane: 'forge',
+      priority: 0,
+      forge: { kind: 'agent', description: 'читает и суммирует' },
+    } as any)
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [{ id: 'max-2', lane: 'forge', provider: 'claude', account: { configDir: '/x' }, enabled: true }] },
+      spawnWorker: makeSpawnWorker(undefined, { lines: DELEGATING_STREAM }),
+      responses: { worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/F-1' }) } },
+      deps: {
+        ledger: realLedger(ledgerDir),
+        execGit: () => '',
+        buildArgs: (_task: any, _route: any, opts: any) => {
+          seen.push(opts)
+          return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'forge it' }
+        },
+      },
+    })
+
+    await tick(deps)
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toEqual({ forwardSubagentText: true })
+    // the forge attempt fails its own draft gate here (nothing committed) — and it STILL left
+    // a transcript, because a lane nobody can watch is the lane that goes quiet at 3am
+    const log = readAttemptLog({ dir: ledgerDir, attemptId: 'F-1#1' })
+    expect(log.total).toBe(DELEGATING_STREAM.length)
+    expect(log.entries.filter((e: any) => e.subagent === true)).toHaveLength(1)
   })
 })
 

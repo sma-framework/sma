@@ -576,9 +576,26 @@ describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, ever
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(17)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(18)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(17) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(18) // no duplicate name
+  })
+
+  // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a
+  // stamp says what the world was, this says which SESSION the work happened in — the one
+  // thing about a finished attempt that cannot be recovered once the process is gone.
+  it('carries sessionId, which is neither a stamp nor the provenance flag', () => {
+    expect(ALLOWED_ATTEMPT_KEYS).toContain('sessionId')
+    expect(NEW_STAMP_KEYS).not.toContain('sessionId')
+    recordAttempt(dir, { taskId: 'BL-SESS', attempt: 1, outcome: 'completed', sessionId: 'sess-abc' })
+    const [row] = readAttempts(dir, 'BL-SESS')
+    expect(row.sessionId).toBe('sess-abc')
+  })
+
+  it('a row whose caller passed no session carries no sessionId key — absence, never an empty string', () => {
+    recordAttempt(dir, { taskId: 'BL-NOSESS', attempt: 1, outcome: 'completed', sessionId: undefined })
+    const [row] = readAttempts(dir, 'BL-NOSESS')
+    expect(Object.hasOwn(row, 'sessionId')).toBe(false)
   })
 
   // The seventeenth key, added 2026-08-05 with the reconciliation pass. It
