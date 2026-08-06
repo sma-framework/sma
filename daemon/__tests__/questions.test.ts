@@ -22,6 +22,11 @@ import { describe, it, expect } from 'vitest'
 import {
   createQuestions,
   CheckpointFormatError,
+  UnknownQuestionError,
+  UnknownAnswerKeyError,
+  AnswerRejectedError,
+  AnswerSecretError,
+  MAX_FREE_TEXT,
   PHASES_DIR,
 } from '../src/front/questions.mjs'
 
@@ -39,6 +44,8 @@ type Fake = {
   renameSync: (from: string, to: string) => void
   read: (p: string) => string | undefined
   paths: () => string[]
+  writes: string[]
+  renames: Array<[string, string]>
 }
 
 function makeFakeFs(seed: Record<string, string> = {}): Fake {
@@ -68,7 +75,15 @@ function makeFakeFs(seed: Record<string, string> = {}): Fake {
     addParents(p)
   }
 
+  // Every write and rename is recorded, so the ATOMIC shape of the write is an
+  // assertion rather than an assumption: a direct overwrite would leave the same
+  // bytes on disk and only the call log tells the two apart.
+  const writes: string[] = []
+  const renames: Array<[string, string]> = []
+
   return {
+    writes,
+    renames,
     existsSync: (p) => files.has(norm(p)) || dirs.has(norm(p)),
     readdirSync: (p) => {
       const base = norm(p)
@@ -89,12 +104,14 @@ function makeFakeFs(seed: Record<string, string> = {}): Fake {
     },
     mkdirSync: (p) => addDir(p),
     writeFileSync: (p, text) => {
+      writes.push(norm(p))
       files.set(norm(p), String(text))
       addParents(p)
     },
     renameSync: (from, to) => {
       const a = norm(from)
       const b = norm(to)
+      renames.push([a, b])
       if (!files.has(a)) throw enoent(a)
       files.set(b, files.get(a) as string)
       files.delete(a)
@@ -290,5 +307,221 @@ describe('questions.mjs — a foreign file is NAMED, never crashed through', () 
 
     expect(() => questions.progress('12')).toThrow(CheckpointFormatError)
     expect(() => questions.openQuestions('12')).toThrow(CheckpointFormatError)
+  })
+})
+
+describe('questions.mjs — an answer is mirrored ATOMICALLY into the artifact', () => {
+  it('writes the answer into the question that asked it, and leaves the rest verbatim', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+    const before = JSON.parse(fs.read(CHECKPOINT) as string)
+
+    const result = questions.recordAnswer('12', target.id, { optionId: 'o1' })
+
+    // The stored answer is the option's own wording — the next round reads prose.
+    expect(result.answer).toBe('Списком')
+    const after = JSON.parse(fs.read(CHECKPOINT) as string)
+    expect(after.decisions['Экран решений'][0].answer).toBe('Списком')
+
+    // Every other field of the workflow's file is carried through untouched.
+    expect(after.phase).toBe(before.phase)
+    expect(after.phase_name).toBe(before.phase_name)
+    expect(after.timestamp).toBe(before.timestamp)
+    expect(after.areas_completed).toEqual(before.areas_completed)
+    expect(after.areas_remaining).toEqual(before.areas_remaining)
+    expect(after.decisions['Очередь задач']).toEqual(before.decisions['Очередь задач'])
+    expect(after.deferred_ideas).toEqual(before.deferred_ideas)
+    expect(after.canonical_refs).toEqual(before.canonical_refs)
+  })
+
+  it('the write is a temp sibling renamed over the target — no torn file is ever observed', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    questions.recordAnswer('12', target.id, { freeText: 'Карточками, по одной' })
+
+    // The checkpoint itself was never written to directly.
+    expect(fs.writes).toHaveLength(1)
+    expect(fs.writes[0]).not.toBe(CHECKPOINT)
+
+    // What was written is a SAME-DIRECTORY sibling, then renamed over the target:
+    // a cross-volume rename is not atomic, so the staging directory is the invariant.
+    const [staged] = fs.writes
+    expect(staged.slice(0, staged.lastIndexOf('/'))).toBe(PHASE_DIR)
+    expect(fs.renames).toEqual([[staged, CHECKPOINT]])
+
+    // And nothing of the staging survives: no torn file is ever left behind.
+    expect(fs.paths()).toEqual([CHECKPOINT])
+  })
+
+  it('accepts free text and moves the counter — the answer becomes part of the record', () => {
+    const { questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    const result = questions.recordAnswer('12', target.id, { freeText: '  Карточками, но по одной  ' })
+
+    expect(result.answer).toBe('Карточками, но по одной')
+    expect(result.progress).toEqual({ open: 2, answered: 3 })
+    expect(questions.progress('12')).toEqual({ open: 2, answered: 3 })
+  })
+
+  it('SURVIVES A RESTART: a fresh engine over the same directory sees the answer', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    questions.recordAnswer('12', target.id, { freeText: 'Карточками' })
+
+    // A brand-new engine — the daemon restarted, nothing carried in memory.
+    const restarted = createQuestions({ projectDir: PROJECT, fsImpl: fs })
+    expect(restarted.progress('12')).toEqual({ open: 2, answered: 3 })
+    const same = restarted.readCheckpoint('12').questions.find((q: any) => q.id === target.id)
+    expect(same.answered).toBe(true)
+    expect(same.answer).toBe('Карточками')
+  })
+
+  it('answers the queue down one question at a time, in file order', () => {
+    const { questions } = parked()
+
+    questions.recordAnswer('12', questions.openQuestions('12')[0].id, { optionId: 'o0' })
+    expect(questions.openQuestions('12')[0].text).toBe('Нужен ли свой ответ?')
+
+    questions.recordAnswer('12', questions.openQuestions('12')[0].id, { optionId: 'o0' })
+    expect(questions.openQuestions('12')[0].text).toBe('Показывать ли номер раунда?')
+
+    questions.recordAnswer('12', questions.openQuestions('12')[0].id, { freeText: 'Да, показывать' })
+    expect(questions.openQuestions('12')).toEqual([])
+    expect(questions.progress('12')).toEqual({ open: 0, answered: 5 })
+  })
+})
+
+describe('questions.mjs — a secret NEVER reaches the checkpoint', () => {
+  it('refuses a token-shaped answer and writes NOTHING', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+    const before = fs.read(CHECKPOINT)
+
+    expect(() =>
+      questions.recordAnswer('12', target.id, { freeText: 'ключ sk-abcdefghijklmnop1234567890' }),
+    ).toThrow(AnswerSecretError)
+
+    expect(fs.read(CHECKPOINT)).toBe(before)
+    expect(questions.progress('12')).toEqual({ open: 3, answered: 2 })
+  })
+
+  it('refuses a long opaque run — the entropy screen, not just a known prefix', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+    const before = fs.read(CHECKPOINT)
+
+    expect(() =>
+      questions.recordAnswer('12', target.id, {
+        freeText: 'вот он: aZ3kQ9mB7xR2tL5vN8pW4jH6yC1sD0gF7uK3eA9iO2zX5bT',
+      }),
+    ).toThrow(AnswerSecretError)
+
+    expect(fs.read(CHECKPOINT)).toBe(before)
+  })
+
+  it('the name of an environment variable is a FACT, not a secret — it is accepted', () => {
+    const { questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    const result = questions.recordAnswer('12', target.id, {
+      freeText: 'адрес берём из DATABASE_URL, значение не пишем',
+    })
+
+    expect(result.answer).toContain('DATABASE_URL')
+  })
+})
+
+describe('questions.mjs — the answer form refuses by name, before it writes', () => {
+  it('an unknown field is refused WITH ITS OWN NAME in the message', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+    const before = fs.read(CHECKPOINT)
+
+    expect(() => questions.recordAnswer('12', target.id, { evil: 1 } as any)).toThrow(
+      UnknownAnswerKeyError,
+    )
+    expect(() => questions.recordAnswer('12', target.id, { evil: 1 } as any)).toThrow(/evil/)
+    expect(fs.read(CHECKPOINT)).toBe(before)
+  })
+
+  it('an answer that is both a choice and a text, or neither, is a contradiction', () => {
+    const { questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    expect(() =>
+      questions.recordAnswer('12', target.id, { optionId: 'o0', freeText: 'и то и другое' }),
+    ).toThrow(AnswerRejectedError)
+    expect(() => questions.recordAnswer('12', target.id, {})).toThrow(AnswerRejectedError)
+  })
+
+  it('free text longer than the cap is refused, and the boundary itself is accepted', () => {
+    const { questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    expect(() =>
+      questions.recordAnswer('12', target.id, { freeText: 'я'.repeat(MAX_FREE_TEXT + 1) }),
+    ).toThrow(AnswerRejectedError)
+
+    const atCap = questions.recordAnswer('12', target.id, { freeText: 'я'.repeat(MAX_FREE_TEXT) })
+    expect(atCap.answer).toHaveLength(MAX_FREE_TEXT)
+  })
+
+  it('a blank answer is not an answer — the question stays open', () => {
+    const { questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    expect(() => questions.recordAnswer('12', target.id, { freeText: '   \n  ' })).toThrow(
+      AnswerRejectedError,
+    )
+    expect(questions.progress('12')).toEqual({ open: 3, answered: 2 })
+  })
+
+  it('an unknown question, and an option nobody offered, are refused by name', () => {
+    const { questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    expect(() => questions.recordAnswer('12', 'nope-7', { optionId: 'o0' })).toThrow(
+      UnknownQuestionError,
+    )
+    expect(() => questions.recordAnswer('12', target.id, { optionId: 'o9' })).toThrow(/o9/)
+  })
+
+  it('answering when nothing is parked is refused, and no checkpoint is invented', () => {
+    const { fs, questions } = engineOver({ [`${PHASE_DIR}/NOTES.md`]: '# notes' })
+
+    expect(() => questions.recordAnswer('12', 'anything-0', { optionId: 'o0' })).toThrow(
+      UnknownQuestionError,
+    )
+    expect(fs.paths()).toEqual([`${PHASE_DIR}/NOTES.md`])
+  })
+
+  it('THE FIRST ANSWER STANDS: answering the same question twice is refused, not overwritten', () => {
+    const { fs, questions } = parked()
+    const target = questions.openQuestions('12')[0]
+
+    questions.recordAnswer('12', target.id, { freeText: 'первый ответ' })
+    const after = fs.read(CHECKPOINT)
+
+    expect(() => questions.recordAnswer('12', target.id, { freeText: 'второй ответ' })).toThrow(
+      AnswerRejectedError,
+    )
+    expect(fs.read(CHECKPOINT)).toBe(after)
+    expect(JSON.parse(fs.read(CHECKPOINT) as string).decisions['Экран решений'][0].answer).toBe(
+      'первый ответ',
+    )
+  })
+
+  it('an answer already written by the TERMINAL is equally untouchable', () => {
+    const { questions } = parked()
+    const answeredByTerminal = questions
+      .readCheckpoint('12')
+      .questions.find((q: any) => q.answered)
+
+    expect(() =>
+      questions.recordAnswer('12', answeredByTerminal.id, { freeText: 'передумал' }),
+    ).toThrow(AnswerRejectedError)
   })
 })
