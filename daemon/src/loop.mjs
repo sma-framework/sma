@@ -93,6 +93,7 @@
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { pipelineEnabled } from './config.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -661,6 +662,17 @@ export async function tick(deps = {}) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const now = () => clock()
   const result = { idle: false }
+
+  // (0) IS THE CONVEYOR SWITCHED ON? Asked FIRST, before the sweep and before the intake,
+  // because «off» here means the machine does nothing at all — not «claims nothing». The
+  // intake would otherwise keep pulling backlog items into the queue and the sweep would keep
+  // writing to durable state, both on behalf of a founder who said stop; and the ONE meaning
+  // that is easy to reason about at three in the morning is «off = nothing moves».
+  //
+  // What is stranded by a mid-flight stop is not lost: the sweep runs on the first tick after
+  // the switch goes back on and requeues whatever lost its live path, which is the job it
+  // already had. The default is OFF and lives in exactly one place — pipelineEnabled().
+  if (!pipelineEnabled(config)) return { idle: true, paused: true }
 
   try {
     // (1) liveness sweep — audit durable state; requeue any task that lost its live path.

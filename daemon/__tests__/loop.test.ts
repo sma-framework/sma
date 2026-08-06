@@ -115,6 +115,10 @@ function makeDeps(over: any = {}) {
       agingHours: 24,
       backlogScanMinutes: 60,
       repoDir: '/repo',
+      // The conveyor is OFF unless a person switched it on, so every case that expects the
+      // tick to DO something has to say so. Stated once here rather than per case, and left
+      // overridable below — the «off does nothing» cases pass `pipeline: {enabled:false}`.
+      pipeline: { enabled: true },
       ...over.config,
     },
     routing: { resolveRoute },
@@ -133,6 +137,66 @@ function makeDeps(over: any = {}) {
 }
 
 const GREEN_REVERIFY = { code: 0, stdout: JSON.stringify({ verdict: 'green', receiptRef: 'reverify:abc', diffStat: '+10 -2' }) }
+
+/**
+ * ═══════════ THE CONVEYOR'S OWN SWITCH, AND THE PROOF THAT IT GATES ══════════════
+ *
+ * A toggle that does not gate anything is worse than no toggle: it tells a person the
+ * machine is stopped while the machine keeps spending his subscription. So the cases below
+ * do not check a flag — they check that with the switch off the tick touches NOTHING it can
+ * be observed touching: no verb is invoked, no process is spawned, no row is claimed, no
+ * report is sent, and the queue's own state is byte-identical afterwards.
+ *
+ * «Off» here is the absence of a `pipeline` block as well as an explicit false, because that
+ * is the shape every install that upgrades into this version actually has.
+ */
+describe('the conveyor is off until a person switches it on', () => {
+  const OFF_SHAPES: any[] = [undefined, { enabled: false }, { enabled: 'true' }, { enabled: 1 }]
+
+  for (const pipeline of OFF_SHAPES) {
+    it(`does NOTHING with pipeline = ${JSON.stringify(pipeline) ?? 'absent'}`, async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(backlogTask())
+      const { deps, order, reports } = makeDeps({
+        adapter,
+        clockObj: c,
+        config: { pipeline },
+        responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }, worktree: { code: 0, stdout: '{}' }, reverify: GREEN_REVERIFY },
+      })
+
+      const res = await tick(deps)
+
+      expect(res).toEqual({ idle: true, paused: true })
+      expect(order).toEqual([]) // no verb invoked, no worker spawned
+      expect(reports).toEqual([]) // nothing reported to anybody
+      const [row] = await adapter.list({})
+      expect(row.status).toBe('queued') // the work was NOT claimed
+      expect(row.attempt).toBe(1)
+    })
+  }
+
+  it('the SAME deps with the switch on run the work — so the case above proves the gate, not a broken fixture', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps, order } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { pipeline: { enabled: true } },
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+  })
+})
 
 describe('tick — the stateless composed tick', () => {
   it('runs the full trace in order: preflight → worktree → spawn → reverify → complete', async () => {

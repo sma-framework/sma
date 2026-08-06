@@ -37,7 +37,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Readable } from 'node:stream'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 
@@ -52,6 +52,9 @@ import {
   renameProject,
   selectProject,
   addAccount,
+  applyPipelineToggle,
+  applyBudgetStop,
+  pipelineEnabled,
   stripDerivedDirs,
   ENV_NAME_RE,
   FEDERATION_ROLES,
@@ -781,5 +784,254 @@ describe('POST /api/account/add — the door in front of it', () => {
 
   it('the slot lost its key in the same commit that filled it', () => {
     expect(PENDING_ROUTES.has('POST /api/account/add')).toBe(false)
+  })
+})
+
+/**
+ * ═══════════ THE THREE SWITCHES A PERSON HOLDS ═══════════════════════════════════
+ *
+ * The conveyor, the money and the model. Two properties are tested for all three, because
+ * both have already cost this product an incident:
+ *
+ *   1. OFF IS THE DEFAULT, and it is the default by CONSTRUCTION rather than by a written
+ *      default that a second reader could disagree with. Every falsy-and-truthy near-miss
+ *      («true», 1, «on») is asserted to be off, because the tick compares `=== true` and a
+ *      truthy string is exactly how a screen shows «on» over a machine that is not.
+ *   2. THE PROCESS RE-READS WHAT IT WROTE. A write that lands on disk while this process
+ *      keeps serving the old object is indistinguishable from a button that did nothing —
+ *      the founder pressed «Включить команду» once and got exactly that. So the applier is
+ *      a SPY and the in-process config object is inspected afterwards.
+ */
+
+describe('pipelineEnabled — off by construction, on only by the literal true', () => {
+  it('every shape that is not the boolean true is OFF', () => {
+    for (const config of [
+      undefined,
+      null,
+      {},
+      { pipeline: null },
+      { pipeline: {} },
+      { pipeline: { enabled: undefined } },
+      { pipeline: { enabled: false } },
+      { pipeline: { enabled: 'true' } },
+      { pipeline: { enabled: 1 } },
+      { pipeline: { enabled: 'on' } },
+    ] as any[]) {
+      expect(pipelineEnabled(config), JSON.stringify(config)).toBe(false)
+    }
+    expect(pipelineEnabled({ pipeline: { enabled: true } } as any)).toBe(true)
+  })
+
+  it('a FRESH install ships the switch off, and says so in the file rather than by omission', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.pipeline).toEqual({ enabled: false })
+    expect(pipelineEnabled(cfg)).toBe(false)
+    const onDisk = JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
+    expect(onDisk.pipeline).toEqual({ enabled: false })
+  })
+
+  it('applyPipelineToggle persists a real boolean, both ways', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const on = applyPipelineToggle(cfg, { enabled: true }, { env: {}, homedir, launchDir: repo })
+    expect(pipelineEnabled(on)).toBe(true)
+    expect(JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8')).pipeline.enabled).toBe(true)
+    const off = applyPipelineToggle(on, { enabled: false }, { env: {}, homedir, launchDir: repo })
+    expect(pipelineEnabled(off)).toBe(false)
+  })
+})
+
+describe('applyBudgetStop — the money the machine may spend without asking again', () => {
+  it('writes the ONE number policy/budget.mjs reads, and leaves the rest of the block alone', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(cfg.budget.monthlyApiCapEur).toBe(0) // the shipped value: the API lane has no money
+    const next = applyBudgetStop(cfg, { limit: 50 }, { env: {}, homedir, launchDir: repo })
+    expect(next.budget.monthlyApiCapEur).toBe(50)
+    expect(next.budget.warnPct).toEqual(cfg.budget.warnPct) // untouched
+    expect(JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8')).budget.monthlyApiCapEur).toBe(50)
+  })
+
+  it('refuses anything that is not a non-negative finite number', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    for (const limit of ['50', -1, NaN, Infinity, null, undefined, {}] as any[]) {
+      expect(() => applyBudgetStop(cfg, { limit }, { env: {}, homedir, launchDir: repo })).toThrow(InvalidWorkerProfileError)
+    }
+    expect(() => applyBudgetStop(cfg, { limit: 0 }, { env: {}, homedir, launchDir: repo })).not.toThrow()
+  })
+})
+
+describe('the three doors: strict bodies, and the process re-reads what it wrote', () => {
+  const TOKEN = 'b'.repeat(64)
+
+  function mkReq(url: string, body: any) {
+    const payload = JSON.stringify(body)
+    const req: any = Readable.from([Buffer.from(payload, 'utf8')])
+    req.method = 'POST'
+    req.url = url
+    req.headers = { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }
+    req.socket = { remoteAddress: '127.0.0.1' }
+    return req
+  }
+
+  function mkRes() {
+    const res: any = {
+      statusCode: 0,
+      body: '',
+      headersSent: false,
+      writeHead(code: number) {
+        res.statusCode = code
+        res.headersSent = true
+        return res
+      },
+      end(chunk?: any) {
+        if (chunk != null) res.body += String(chunk)
+        return res
+      },
+    }
+    return res
+  }
+
+  /** The applier is a SPY that RECORDS its call and returns the next config; the order of
+   *  the two events (applier, then refresh) is what the last case reads out of `order`. */
+  function mkFront() {
+    const order: string[] = []
+    const config: any = {
+      token: TOKEN,
+      pipeline: { enabled: false },
+      budget: { monthlyApiCapEur: 0, warnPct: [70, 90] },
+      workers: [{ id: 'max-1', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
+    }
+    const deps = {
+      launchDir: repo,
+      applyPipelineToggle: (cfg: any, { enabled }: any, io: any) => {
+        order.push(`applyPipelineToggle:${enabled}:${io.launchDir}`)
+        return { ...cfg, pipeline: { enabled } }
+      },
+      applyBudgetStop: (cfg: any, { limit }: any) => {
+        order.push(`applyBudgetStop:${limit}`)
+        return { ...cfg, budget: { ...cfg.budget, monthlyApiCapEur: limit } }
+      },
+      applyAgentModel: ({ id, model, effort }: any) => {
+        order.push(`applyAgentModel:${id}:${model}:${effort}`)
+        return { ...config, workers: config.workers.map((w: any) => (w.id === id ? { ...w, model, effort } : w)) }
+      },
+    }
+    return { front: createFrontServer({ config, deps }), order, config }
+  }
+
+  const call = async (front: any, url: string, body: any) => {
+    const res = mkRes()
+    await front.handle(mkReq(url, body), res)
+    return res
+  }
+
+  it('the toggle needs the literal boolean — a truthy string is a 400 and writes nothing', async () => {
+    for (const enabled of ['true', 1, 'on', null, undefined] as any[]) {
+      const { front, order } = mkFront()
+      expect((await call(front, '/api/pipeline/toggle', { enabled })).statusCode).toBe(400)
+      expect(order).toEqual([])
+    }
+  })
+
+  it('switching the conveyor on writes AND lands in this process — not after a restart', async () => {
+    const { front, order, config } = mkFront()
+    const res = await call(front, '/api/pipeline/toggle', { enabled: true })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, pipeline: { enabled: true } })
+    // the applier ran, with the LAUNCH directory as the write baseline…
+    expect(order).toEqual([`applyPipelineToggle:true:${repo}`])
+    // …and the object this process serves moved with it (the refresh, which is the point)
+    expect(config.pipeline).toEqual({ enabled: true })
+    expect(pipelineEnabled(config)).toBe(true)
+  })
+
+  it('an unknown key on the toggle is a 400 before the applier', async () => {
+    const { front, order } = mkFront()
+    const res = await call(front, '/api/pipeline/toggle', { enabled: true, lane: 'prod' })
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toContain('lane')
+    expect(order).toEqual([])
+  })
+
+  it('a budget limit sent as a STRING is a 400 — a cap that is not a number is not a cap', async () => {
+    const { front, order } = mkFront()
+    const res = await call(front, '/api/budget/set', { limit: '50' })
+    expect(res.statusCode).toBe(400)
+    expect(order).toEqual([])
+  })
+
+  it('a budget limit lands, refreshes in process, and zero is legitimate', async () => {
+    const { front, order, config } = mkFront()
+    const res = await call(front, '/api/budget/set', { lane: 'all', limit: 50 })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, budget: { lane: 'all', limit: 50 } })
+    expect(order).toEqual(['applyBudgetStop:50'])
+    expect(config.budget.monthlyApiCapEur).toBe(50)
+    expect(config.budget.warnPct).toEqual([70, 90]) // the rest of the block survived
+    expect((await call(front, '/api/budget/set', { limit: 0 })).statusCode).toBe(200)
+  })
+
+  it('a NAMED lane is refused with the honest reason, rather than writing a cap nobody reads', async () => {
+    const { front, order } = mkFront()
+    const res = await call(front, '/api/budget/set', { lane: 'prod', limit: 50 })
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toContain('machine-wide')
+    expect(order).toEqual([])
+  })
+
+  it('the model door sets what it was given and refreshes the pool', async () => {
+    const { front, order, config } = mkFront()
+    const res = await call(front, '/api/agent/model', { agent: 'max-1', model: 'claude-opus-5[1m]', effort: 'high' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, agent: { id: 'max-1', model: 'claude-opus-5[1m]', effort: 'high' } })
+    expect(order).toEqual(['applyAgentModel:max-1:claude-opus-5[1m]:high'])
+    expect(config.workers.find((w: any) => w.id === 'max-1').model).toBe('claude-opus-5[1m]')
+  })
+
+  it('the model door refuses a flag-shaped value and an empty request', async () => {
+    for (const body of [{ agent: 'max-1' }, { agent: 'max-1', model: '--dangerously-skip-permissions' }, { agent: 'max-1', model: 'a b' }] as any[]) {
+      const { front, order } = mkFront()
+      expect((await call(front, '/api/agent/model', body)).statusCode).toBe(400)
+      expect(order).toEqual([])
+    }
+  })
+
+  it('all three answer 501 on a daemon wired with none of them', async () => {
+    const front = createFrontServer({ config: { token: TOKEN }, deps: {} })
+    expect((await call(front, '/api/pipeline/toggle', { enabled: true })).statusCode).toBe(501)
+    expect((await call(front, '/api/budget/set', { limit: 1 })).statusCode).toBe(501)
+    expect((await call(front, '/api/agent/model', { agent: 'max-1', model: 'opus' })).statusCode).toBe(501)
+  })
+
+  it('the three slots lost their keys — and PENDING_ROUTES is down to the screens still to come', () => {
+    for (const key of ['POST /api/pipeline/toggle', 'POST /api/budget/set', 'POST /api/agent/model']) {
+      expect(PENDING_ROUTES.has(key)).toBe(false)
+    }
+  })
+})
+
+/**
+ * THE BUDGET STOP IS A HUMAN-ONLY BOUNDARY, and this is the case that makes that a fact
+ * about the code rather than a promise in a comment: the daemon's own source is READ and
+ * searched for any path to the applier other than the door and its wiring. A worker, a
+ * workflow or a verb that grew one would be named here by its file.
+ */
+describe('no path reaches the budget stop except the founder at the door', () => {
+  it('applyBudgetStop is referenced ONLY by its definition, the door and the composition root', () => {
+    const src = join(__dirname, '..', 'src')
+    const files: string[] = []
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name)
+        if (entry.isDirectory()) walk(p)
+        else if (entry.name.endsWith('.mjs')) files.push(p)
+      }
+    }
+    walk(src)
+    expect(files.length).toBeGreaterThan(10) // the walk found the tree, not an empty one
+    const callers = files
+      .filter((f) => /applyBudgetStop/.test(readFileSync(f, 'utf8')))
+      .map((f) => f.slice(src.length + 1).split(/[/\\]/).join('/'))
+      .sort()
+    expect(callers).toEqual(['config.mjs', 'front/server.mjs', 'main.mjs'])
   })
 })

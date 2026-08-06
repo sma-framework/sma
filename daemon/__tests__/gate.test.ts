@@ -55,7 +55,9 @@ function makeDeps({ adapter, clock, responses, spawnWorker }: any) {
   const deps = {
     adapter,
     ledger: { recordAttempt: (a: any) => (attempts.push(a), a), readAttempts: (id: string) => attempts.filter((x) => x.taskId === id) },
-    config: { workers: WORKERS, agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo' },
+    // `pipeline.enabled` is the conveyor's own switch and it ships OFF — a tick case that
+    // expects work to happen has to say the founder switched it on.
+    config: { workers: WORKERS, agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo', pipeline: { enabled: true } },
     routing: { resolveRoute },
     windows: () => true,
     buildArgs: () => ({ bin: 'exec', args: ['-'], env: {}, prompt: 'p' }),
