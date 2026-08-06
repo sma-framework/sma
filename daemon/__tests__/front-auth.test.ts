@@ -5,8 +5,9 @@
  *   - token on EVERY route — the sweep is DERIVED from the frozen table itself, so a
  *     route added without a gate cannot hide behind a stale literal list,
  *   - the closed table (a non-allowlisted path → 404 with no route reflection; a bad
- *     dynamic segment → 400), ROUTES↔HANDLERS one-to-one, and the route COUNT asserted
- *     in exactly ONE place in the tree (this file),
+ *     dynamic segment → 400), ROUTES↔HANDLERS one-to-one, and the route COUNT, whose
+ *     canonical assertion lives HERE (three feature suites re-state it as their own «my
+ *     feature added no route» guard, and none of them may be the place it is decided),
  *   - timing-safe token compare + the ?token= → HttpOnly-cookie bootstrap + a constant
  *     401 body (no oracle),
  *   - a per-remote failure-window rate limit (the 11th failure → 429).
@@ -20,7 +21,7 @@
 import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -28,6 +29,7 @@ import {
   createFrontServer,
   ROUTES,
   HANDLERS,
+  PENDING_ROUTES,
   matchRoute,
 } from '../src/front/server.mjs'
 import { QueueEncodingError } from '../src/queue/encoding.mjs'
@@ -112,13 +114,50 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
 })
 
 /**
- * The bare-stub shape a declared-but-unfilled route used to have: a handler whose whole
- * body is `send501(res)`. The V5.1 freeze declared sixteen of them at once so every screen
- * was built against the final contract; the last five (import + onboarding) have since been
- * filled and the list of unfilled routes is now EMPTY — which is why it is a shape, not a
- * list, that guards the table from here on.
+ * The bare-stub shape a declared-but-unfilled route has: a handler whose whole body is
+ * `send501(res)`. The V5.1 freeze declared sixteen of them at once so every screen was built
+ * against the final contract, and every one has since been filled; the V5.4 freeze declared
+ * twenty-three more the same way, and those are being filled one at a time.
+ *
+ * So the shape alone is no longer the whole guard — «is this handler a stub» has to be asked
+ * TOGETHER WITH «is its route declared pending», which is what PENDING_ROUTES answers.
  */
 const BARE_STUB = /\)\s*\{\s*(return\s+)?send501\(res\)\s*;?\s*\}\s*$/
+
+/**
+ * The KEYS of the V5.4 section of the route table, read out of server.mjs ITSELF rather than
+ * copied into this file: a hand-kept second list is a hand-kept second truth, and this one
+ * exists precisely to catch a key that does not belong. The section is delimited by its own
+ * marker comment and ends where the ROUTES literal does.
+ */
+const V54_SECTION_KEYS: Set<string> = (() => {
+  const src = readFileSync(fileURLToPath(new URL('../src/front/server.mjs', import.meta.url)), 'utf8')
+  const marker = '// ── the V5.4 growth (declared here, filled one at a time) ──'
+  const start = src.indexOf(marker)
+  if (start < 0) throw new Error('the V5.4 section marker is missing from server.mjs')
+  const section = src.slice(start, src.indexOf('\n})', start))
+  return new Set([...section.matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1]))
+})()
+
+/**
+ * bareStubsOutside(handlers, routes, pending) — every handler that is a bare 501 AND whose
+ * route is not declared pending, i.e. every route that rotted back into a stub.
+ *
+ * It is a pure function so the very same predicate can be pointed at a deliberately broken
+ * fixture below. A guard nobody has ever watched fail is a guard nobody knows the shape of —
+ * and this one replaced a guard («ZERO stubs, full stop») that could not survive the V5.4
+ * declaration, so its teeth are worth showing.
+ */
+function bareStubsOutside(
+  handlers: Record<string, any>,
+  routes: Record<string, string>,
+  pending: Set<string>,
+): string[] {
+  const pendingHandlers = new Set([...pending].map((key) => routes[key]))
+  return Object.entries(handlers)
+    .filter(([name, fn]) => BARE_STUB.test(String(fn)) && !pendingHandlers.has(name))
+    .map(([name]) => name)
+}
 
 // ── auth.mjs unit invariants ──
 
@@ -166,11 +205,13 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed THIRTY-route table', () => {
+describe('server.mjs — the closed FIFTY-THREE-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
-  // change again, that change is a declared re-freeze revision, not a routine edit.
-  it('the frozen table has EXACTLY thirty routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(30)
+  // change again, that change is a declared re-freeze revision, not a routine edit. FILLING
+  // a declared slot does not change it — that is the entire point of declaring them all at
+  // once, and it is why no fill plan of the release has to come back and edit this line.
+  it('the frozen table has EXACTLY fifty-three routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(53)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
@@ -187,11 +228,59 @@ describe('server.mjs — the closed THIRTY-route table', () => {
     expect(Object.isFrozen(HANDLERS)).toBe(true)
   })
 
-  it('ZERO STUBS: not one handler of the table is a bare 501 any more', () => {
-    const stubs = Object.entries(HANDLERS)
-      .filter(([, fn]) => BARE_STUB.test(String(fn)))
-      .map(([name]) => name)
-    expect(stubs).toEqual([])
+  it('ZERO STUBS OUTSIDE THE DECLARED SET: a bare 501 is legitimate only where it was declared', () => {
+    expect(bareStubsOutside(HANDLERS, ROUTES, PENDING_ROUTES)).toEqual([])
+  })
+
+  /**
+   * The other half of the same law, and the half a fill plan can forget: a route that is
+   * NAMED pending must actually still be a stub. Without this, deleting the key could be
+   * postponed «until later» while the handler goes live — and the Set would quietly become
+   * a licence for a real door to rot back into a 501 instead of a list of promises.
+   */
+  it('every route named in PENDING_ROUTES is still a bare stub — a filled slot loses its key', () => {
+    for (const key of PENDING_ROUTES) {
+      const name = ROUTES[key]
+      expect(BARE_STUB.test(String(HANDLERS[name])), `${key} is declared pending but is no longer a stub`).toBe(true)
+    }
+  })
+
+  it('the guard BITES: a bare 501 on a route OUTSIDE the declared set is named, not tolerated', () => {
+    // A stand-in written exactly as a real stub is written. It is never CALLED — only read —
+    // so `send501` here is a local no-op standing in for the server's own responder.
+    const send501 = (_res: unknown) => undefined
+    const stub = function handleRotted({ res }: any) {
+      send501(res)
+    }
+    // The shape is asserted BEFORE it is relied on: this fixture goes through the same
+    // transpiler as the source, and a fixture that quietly stopped matching would turn the
+    // two cases below into two tests that pass without testing anything.
+    expect(BARE_STUB.test(String(stub))).toBe(true)
+
+    // a LIVE door of the original thirty rotted back into a stub → named
+    expect(bareStubsOutside({ ...HANDLERS, handleState: stub }, ROUTES, PENDING_ROUTES)).toEqual(['handleState'])
+    // the same shape on a DECLARED-pending route → silence, which is what «pending» means
+    const pendingKey = [...PENDING_ROUTES][0]
+    expect(bareStubsOutside({ ...HANDLERS, [ROUTES[pendingKey]]: stub }, ROUTES, PENDING_ROUTES)).toEqual([])
+  })
+
+  /**
+   * PENDING_ROUTES may only ever SHRINK, and only ever inside the V5.4 section. Its size is
+   * deliberately NOT asserted against a literal: it goes down by one every time a plan fills
+   * a slot, and a test that had to be edited on every fill would be a counter to chase.
+   * What IS asserted against a literal is the size of the declaration itself — the twenty-three
+   * that were written down once and may not grow.
+   */
+  it('PENDING_ROUTES is a shrinking subset of the V5.4 section, and the section is exactly 23', () => {
+    expect(Object.isFrozen(PENDING_ROUTES)).toBe(true)
+    expect(V54_SECTION_KEYS.size).toBe(23)
+    expect(PENDING_ROUTES.size).toBeLessThanOrEqual(V54_SECTION_KEYS.size)
+    for (const key of PENDING_ROUTES) {
+      expect(ROUTES[key], `${key} is pending but is not in the table at all`).toBeTruthy()
+      expect(V54_SECTION_KEYS.has(key), `${key} is pending but is not part of the V5.4 section`).toBe(true)
+    }
+    // and the section is genuinely part of the table, not a comment that drifted off it
+    for (const key of V54_SECTION_KEYS) expect(ROUTES[key], key).toBeTruthy()
   })
 
   it('the five last-filled handlers delegate to their engines, they do not re-implement them', () => {
@@ -208,6 +297,19 @@ describe('server.mjs — the closed THIRTY-route table', () => {
     expect(matchRoute('GET', '/api/task/bad$id')).toEqual({ badId: true })
     expect(matchRoute('GET', `/api/task/${'x'.repeat(65)}`)).toEqual({ badId: true })
     expect(matchRoute('GET', '/api/exec')).toBeNull()
+  })
+
+  it('the two V5.4 dynamic segments keep the SAME shape: a bad id is a 400, never a 404', () => {
+    expect(matchRoute('GET', '/api/phase/12')).toMatchObject({ handler: 'handlePhaseCard', params: { id: '12' } })
+    expect(matchRoute('GET', '/api/attempt/R-9')).toMatchObject({ handler: 'handleAttempt', params: { id: 'R-9' } })
+    // the reserved literal: «the list of phases», riding the card's own door
+    expect(matchRoute('GET', '/api/phase/index')).toMatchObject({ handler: 'handlePhaseCard', params: { id: 'index' } })
+    for (const bad of ['/api/phase/bad$id', '/api/attempt/bad$id', '/api/phase/../../etc/passwd']) {
+      expect(matchRoute('GET', bad), bad).toEqual({ badId: true })
+    }
+    expect(matchRoute('GET', `/api/attempt/${'x'.repeat(65)}`)).toEqual({ badId: true })
+    // the POST siblings are NOT reachable by the dynamic GET branch — a method is not an id
+    expect(matchRoute('POST', '/api/phase/anything')).toBeNull()
   })
 
   it('an asset name is FLAT: traversal and nesting die at the name parse, not in a handler', () => {

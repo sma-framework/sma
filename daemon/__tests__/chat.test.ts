@@ -473,7 +473,7 @@ describe('the free branch (outside the queue)', () => {
 
 // ═══════ the conversation reached THROUGH THE FRONT ═══════
 //
-// The two chat routes fill their FROZEN slots (the table stays at thirty). They are
+// The two chat routes fill their FROZEN slots (they added no route). They are
 // DELEGATES: the door checks the shape, the engine answers, the door explicit-picks what
 // leaves. Three things are load-bearing and are proved here rather than asserted in prose:
 //
@@ -707,8 +707,8 @@ describe('GET /api/chat/history — the transcript, read back as data', () => {
 })
 
 describe('the chat routes filled a FROZEN slot', () => {
-  it('the table is still exactly thirty routes and both chat routes are real handlers', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(30)
+  it('the table is still exactly fifty-three routes and both chat routes are real handlers', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(53)
     expect(ROUTES['POST /api/chat']).toBe('handleChat')
     expect(ROUTES['GET /api/chat/history']).toBe('handleChatHistory')
   })

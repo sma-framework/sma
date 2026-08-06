@@ -9,11 +9,17 @@
  * whole agents screen and all three toggles — while the suite stayed green. Grep cannot
  * see an absence; a test that builds an artificial server cannot see it either. So this
  * one builds THE REAL ONE — `createDaemon()` with NO collaborator overrides — and sweeps
- * the entire frozen route table asserting that not one route answers 501.
+ * the entire frozen route table asserting that no FILLED route answers 501.
  *
  * WHAT A 501 MEANS (server.mjs law): «a collaborator THIS daemon was not wired with» —
  * never «not written yet». On a fully-configured daemon (the config here declares the hub
  * role, so the federation engine is constructed too) that answer must be unreachable.
+ *
+ * THE ONE EXCEPTION IS DECLARED, NOT ASSUMED: the routes named in PENDING_ROUTES were
+ * written into the frozen table before their handlers existed, so that every screen is built
+ * against the final contract. They are skipped by the sweep above and get a sweep of their
+ * OWN below — where 501 is the assertion rather than the failure, because for a declared
+ * slot the question is not «does it work» but «can it be reached at all».
  *
  * NOTHING REAL IS TOUCHED: SMA_DAEMON_CONFIG points at a temp config whose repoDir,
  * dataDir and ledgerDir are temp dirs, and whose queueUrl points at a closed port — the
@@ -30,7 +36,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createDaemon, describeBootFailure } from '../src/main.mjs'
-import { ROUTES } from '../src/front/server.mjs'
+import { ROUTES, PENDING_ROUTES } from '../src/front/server.mjs'
 import { resolveExpireMs } from '../src/queue/adapter.mjs'
 
 const TOKEN = 'c'.repeat(64)
@@ -221,13 +227,37 @@ describe('the production composition root is COMPLETE', () => {
     expect(deps.launchDir).not.toBe(deps.repoDir)
   })
 
-  it('answers 501 on NO route of the frozen table', async () => {
+  it('answers 501 on NO route of the frozen table, except the ones declared unfilled', async () => {
     const stubs: string[] = []
     for (const r of ALL_ROUTES) {
+      // A route named in PENDING_ROUTES is SUPPOSED to answer 501 — it was declared before it
+      // was written, on purpose. The exemption is read from the export rather than listed
+      // here, so a slot that gets filled rejoins this sweep automatically, with no edit.
+      if (PENDING_ROUTES.has(r.key)) continue
       const res = await call(r.method, r.path, r.key)
       if (res.statusCode === 501) stubs.push(r.key)
     }
     expect(stubs, `these routes answered «not implemented» from the PRODUCTION build: ${stubs.join(', ')}`).toEqual([])
+  })
+
+  /**
+   * The other side of the same coin, and the one a declared-first table actually needs: an
+   * unfilled route must still be REACHED. 501 here is the proof of reachability — the path
+   * resolved through matchRoute, the token was accepted, and the handler ran. A 404 would
+   * mean the table and the matcher disagree; a 401 would mean the gate does not know the
+   * route; a 500 would mean it was reached and broke. Any of those would let a screen be
+   * built against a door that is not merely empty but absent, which is the exact failure
+   * declaring the whole table at once exists to prevent.
+   */
+  it('every declared-but-unfilled route is REACHABLE from the production build', async () => {
+    const wrong: string[] = []
+    for (const key of PENDING_ROUTES) {
+      const [method, pattern] = key.split(' ')
+      const path = pattern.replace(':id', 'R-1')
+      const res = await call(method, path, key)
+      if (res.statusCode !== 501) wrong.push(`${key} → ${res.statusCode}`)
+    }
+    expect(wrong, `a declared route did not answer «not implemented»: ${wrong.join(', ')}`).toEqual([])
   })
 
   it('names the cause when the boot dies on an unreachable queue', () => {

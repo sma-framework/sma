@@ -1209,7 +1209,7 @@ describe('deriveState — memory and style ride the SAME route as everything els
 //   - a preview writes NOTHING into the connected project — asserted by a byte snapshot of
 //     the whole fixture tree taken before the first call and after the second;
 //   - applying rides the EXISTING approve door under a reserved target, one file at a time,
-//     and the route table is still exactly thirty.
+//     and the route table did not grow.
 
 const PROJ = '/founder/sma-dev'
 const PROJ_MEM = `${PROJ}/.claude/memory`
@@ -1514,7 +1514,7 @@ describe('applyProjectMigration — one file, one yes, through the door that alr
   })
 })
 
-// ── the door: POST /api/approve, by dispatch, with the table still frozen at thirty ──
+// ── the door: POST /api/approve, by dispatch, with the table still frozen ──
 
 const MIGRATION_TOKEN = 'b'.repeat(64)
 
@@ -1561,8 +1561,8 @@ async function callApprove(front: any, body: any) {
 }
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly thirty entries and carries no migration route', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(30)
+  it('the route table is still exactly fifty-three entries and carries no migration route', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(53)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
