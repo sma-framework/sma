@@ -25,6 +25,11 @@
  *   - an execute stage's blocking checkpoint parks the SAME way, checked BEFORE the code gate
  *   - the gate is a FILE check: the suite never feeds the daemon a line of worker stdout to
  *     decide an outcome with, and the code gate is byte-for-byte what it was (regression)
+ *
+ * WHY THIS FILE IS NOT PINNED SERIAL (vitest.config.mjs SERIAL_SUITES): the gate cases above
+ * drive an in-memory filesystem and a git that is one function returning a string. Not one of
+ * them starts a process, opens a real repository or writes outside a temp dir, so they carry
+ * none of the contention that made the six pinned suites flaky beside eleven other workers.
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
