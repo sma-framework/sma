@@ -1,7 +1,6 @@
 /**
  * args.mjs — the SMA V5 headless-runner arg-builders + the forbidden-flag guard +
- * per-account env assembly + the task-prompt DoD builder (Phase 9.5 Plan 04, Task 1;
- * D-9.5-03/03a/03b, D-9.5-04a, D-9.5-07, D-9.5-11).
+ * per-account env assembly + the task-prompt DoD builder.
  *
  * WHAT IT IS: the ONLY place that turns a routed task into the exact argument ARRAY
  * a worker CLI child is spawned with, and the exact ENV that child runs under. Pure
@@ -11,7 +10,7 @@
  * 3a727bf7, 2026-07-15) and the Codex teardown — PATTERN provenance, our implementation.
  *
  * SECURITY POSTURE (the whole reason this module is careful):
- *   - FORBIDDEN-FLAG GUARD (T-9.5-10, the named Paperclip anti-lesson). The
+ *   - FORBIDDEN-FLAG GUARD (the named Paperclip anti-lesson). The
  *     permissions-skip flag («--dangerously-skip-permissions», Paperclip's LOCAL
  *     default) is STRUCTURALLY IMPOSSIBLE here: (a) an option KEY that reads as a
  *     permissions-skip request throws ForbiddenFlagError; (b) every produced array is
@@ -20,10 +19,10 @@
  *     worker session — a skip flag would gut it.
  *   - FIELD-ALLOWLIST. Both builders reject any unknown option key (a typo or a smuggle
  *     attempt never silently becomes a flag). Values are coerced to strings and scanned.
- *   - TOKENS BY ENV-VAR NAME (T-9.5-12). buildAccountEnv reads an account's OAuth token
+ *   - TOKENS BY ENV-VAR NAME. buildAccountEnv reads an account's OAuth token
  *     from the process env BY THE NAME the config records (account.oauthTokenEnv) — the
  *     value crosses into the child env only, never onto disk, never into a usage row.
- *   - PER-SPAWN ISOLATION (T-9.5-11, Multica #3130). Every env is assembled per spawn
+ *   - PER-SPAWN ISOLATION (Multica #3130). Every env is assembled per spawn
  *     from one account profile — never process-global, never shared. Claude accounts get
  *     their own CLAUDE_CONFIG_DIR; Codex tasks get a FRESH per-task CODEX_HOME (never
  *     account-shared) seeded with native memories OFF.
@@ -52,19 +51,19 @@
  *      harness preamble (loop.mjs resolveWorkerContext) names the enabled ones.
  *   5. MODEL/EFFORT are the one thing that does NOT come from the checkout — they come from
  *      the worker profile in the config. assertProfileParity is the guard that a spawn never
- *      quietly runs a different model than the one the founder assigned (T-9-15).
+ *      quietly runs a different model than the one the founder assigned.
  *
  * The ONLY accepted differences from the founder's terminal are procedural, not
  * environmental: his steering moves BEFORE the task (acceptance, DoR) and AFTER it (the
  * approval queue); a task that needs a judgment mid-flight is RETURNED, never guessed.
  *
- * FRESH-SESSION DISCIPLINE (Paperclip PF-4, Pitfall 11): a resumeId must be a valid
+ * FRESH-SESSION DISCIPLINE (the Paperclip lesson): a resumeId must be a valid
  * UUID (Multica resolveSessionID lesson) AND is refused outright for timer/new-task
  * wakes — resume is only for event-continuation of the SAME task, never a fresh wake
  * (timer-resumed sessions bloat to compaction).
  *
- * TASK CONTENT IS DATA (D-9.5-11 item 1): buildTaskPrompt renders task id/title/note
- * and the D-9.5-10 acceptance criteria as FENCED untrusted data with a fence longer
+ * TASK CONTENT IS DATA: buildTaskPrompt renders task id/title/note
+ * and the acceptance criteria as FENCED untrusted data with a fence longer
  * than any backtick run inside — acceptance is the DoD contract the worker reads («что
  * должно быть правдой, чтобы работа считалась сделанной; reverify проверит именно это»),
  * NEVER an instruction to the daemon itself.
@@ -86,7 +85,7 @@ export class ForbiddenFlagError extends Error {
   }
 }
 
-/** Named error for a spawn whose model/effort does not match the worker profile (T-9-15). */
+/** Named error for a spawn whose model/effort does not match the worker profile. */
 export class ProfileParityError extends Error {
   constructor(message) {
     super(message)
@@ -170,7 +169,7 @@ function assertCleanArgs(args) {
   return args
 }
 
-// ── model/effort parity with the worker profile (chain step 5, T-9-15) ─────────
+// ── model/effort parity with the worker profile (chain step 5) ─────────────────
 
 /** Codex encodes effort as a `-c model_reasoning_effort=<E>` pair rather than a flag. */
 const CODEX_EFFORT_PREFIX = 'model_reasoning_effort='
@@ -224,7 +223,7 @@ export function expectedModelEffort({ worker, task } = {}) {
 
 /**
  * assertProfileParity({args, worker, task}) → the observed {model, effort}, or throws
- * ProfileParityError naming the field that diverged. THE GUARD THAT SCREAMS (T-9-15): a
+ * ProfileParityError naming the field that diverged. THE GUARD THAT SCREAMS: a
  * profile that says «sonnet» and an arg array that says «opus» is a silent substitution —
  * the run would look green while the founder's assignment was ignored. Model and effort are
  * the ONE part of the session that does not come from the checkout, so they are the one part
@@ -256,7 +255,7 @@ const CLAUDE_OPTION_KEYS = new Set(['prompt', 'resumeId', 'model', 'effort', 'ma
  * stdin (the '-' after --print); the base shape is exactly
  * `--print - --output-format stream-json --verbose`. Optional flags append in a fixed
  * order; addDir lands LAST. resumeId must be a UUID and is refused for fresh wakes.
- * `mcpConfigPath` (D-9.5-09) appends `--mcp-config <path>` BEFORE addDir — the path points
+ * `mcpConfigPath` appends `--mcp-config <path>` BEFORE addDir — the path points
  * at a per-spawn file built from ENABLED registry entries only (buildMcpConfigFile). NEVER
  * emits --dangerously-skip-permissions (there is no path to it; the guard still scans the path).
  *
@@ -289,7 +288,7 @@ export function buildClaudeArgs(opts = {}) {
 
 /**
  * buildMcpConfigFile({servers, taskDir, fsImpl}) → the path of a per-spawn MCP config file
- * (D-9.5-09). Writes a JSON `{mcpServers: {...}}` containing ONLY the ENABLED registry
+ * Writes a JSON `{mcpServers: {...}}` containing ONLY the ENABLED registry
  * entries — command/args/envNames verbatim from the registry — into the task's own temp dir
  * and returns its path. DISABLED entries never reach a spawn. The registry is human-edited on
  * the host (harness.mjs law); this function only SELECTS the enabled subset, it never mutates
@@ -318,7 +317,7 @@ export function buildMcpConfigFile({ servers, taskDir, fsImpl } = {}) {
   return path
 }
 
-// ── Codex lane (D-9.5-04 — research/drafts/paperwork, exit-gate enforcement) ────
+// ── Codex lane (research/drafts/paperwork, exit-gate enforcement) ──────────────
 
 const CODEX_OPTION_KEYS = new Set(['model', 'effort', 'resumeThreadId'])
 
@@ -343,7 +342,7 @@ export function buildCodexArgs(opts = {}) {
   return assertCleanArgs(args)
 }
 
-// ── per-account env assembly (T-9.5-11/12, Multica #3130) ───────────────────────
+// ── per-account env assembly (Multica #3130) ───────────────────────────────────
 
 /**
  * codexConfigSeed() → the config object the spawn writes into a FRESH per-task
@@ -404,15 +403,15 @@ export function buildAccountEnv({
   return out
 }
 
-// ── task-prompt DoD builder (D-9.5-11 item 1) ───────────────────────────────────
+// ── task-prompt DoD builder ────────────────────────────────────────────────────
 
 /**
  * buildTaskPrompt({task}) → the worker prompt for the prod/research/paperwork lanes
- * (the forge lane has its own builder in plan 11). The task id/title/note render as
+ * (the forge lane has its own builder). The task id/title/note render as
  * fenced untrusted DATA; when task.acceptance is present, a «Критерии приёмки» block
  * frames it as the DoD contract the worker must satisfy AND reverify will check — the
- * D-9.5-10 field is READ, not merely stored. Absent acceptance (roster/return exempt,
- * D-9.5-10) → the block is omitted with no placeholder. Acceptance content is DATA in
+ * acceptance field is READ, not merely stored. Absent acceptance (roster/return tasks
+ * are exempt) → the block is omitted with no placeholder. Acceptance content is DATA in
  * the fence, NEVER an instruction to the daemon.
  *
  * THE MEMORY DIRECTIVE (terminal parity, chain step 3): the corpus is REACHABLE in the
@@ -422,7 +421,7 @@ export function buildAccountEnv({
  * opportunity. This is also what makes the memory receipt of the parity check observable: an
  * instructed read leaves a trace in the session transcript.
  *
- * THE APPROACH NOTE (D-9.7-14): the prompt states the note requirement explicitly and names
+ * THE APPROACH NOTE: the prompt states the note requirement explicitly and names
  * the exact markers the worker must print at the end of the attempt. An attempt without a
  * note is INCOMPLETE by the same law that makes it incomplete without a receipt — so the
  * contract is stated in the same place the DoD is stated, not left to habit. The markers are

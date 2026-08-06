@@ -13,8 +13,8 @@
  * distinct front port (7788), and o.verbRunner — a recording echo runner that answers the
  * `preflight` verb with a GREEN 'built' verdict. That drives the tick's LEGITIMATE
  * preflight-'built' door (loop.mjs step 4) to a completed receipt with zero LLM spend and
- * no worker spawn. It is the contour proof, NOT a bypass of the reverify exit gate
- * (D-9.5-04a): reverify stays the door for real work; this proves enqueue -> claim ->
+ * no worker spawn. It is the contour proof, NOT a bypass of the reverify exit gate:
+ * reverify stays the door for real work; this proves enqueue -> claim ->
  * durable complete -> front, cheaply.
  *
  * Synthetic echo FIRST (pilot scope). The real size:S backlog run is the founder-
@@ -74,7 +74,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /**
  * Ensure the shared dead-letter queue exists BEFORE the backend's start() references it.
- * FINDING (parked plan 9.5-10): pgboss-backend.mjs start() creates each lane queue with
+ * A KNOWN, PARKED FINDING: pgboss-backend.mjs start() creates each lane queue with
  * `{ deadLetter: 'sma.task.dead' }` but never creates 'sma.task.dead' itself. Under
  * pg-boss v11 createQueue VALIDATES the deadLetter target and throws «Queue sma.task.dead
  * does not exist», so a fresh boot crashes. The deploy wave must create the dead-letter

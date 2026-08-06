@@ -1,7 +1,6 @@
 /**
  * forge.mjs — THE «СОЗДАТЕЛЬ» POLICY MODULE: описание словами → черновик определения
- * через штатную очередь, детерминированный lint-гейт вместо reverify (Phase 9.5 Plan 11,
- * Task 1; D-9.5-09, wireframe modules 8 + 9 + 12).
+ * через штатную очередь, детерминированный lint-гейт вместо reverify.
  *
  * ═══════════════════════ DRAFTS-ONLY — THIS MODULE NEVER ACTIVATES ════════════════
  * The plan-02 drafts-only idiom, lifted to the harness. This module ONLY builds prompts,
@@ -11,7 +10,7 @@
  * harness.mjs). A worker forges a draft FILE and commits it on its task branch
  * `wt/<taskId>`; the file becomes a live role only after a human approves the merge AND
  * an explicit toggle writes the config from the FILE's fields. Request text never reaches
- * a config file or a spawn command (T-9.5-37/39).
+ * a config file or a spawn command.
  *
  * ═══════════════════════ THE ROLE FRAMING (уточнение 17.07.2026) ══════════════════
  * forge.mjs IS the policy of the «Создатель» roster role — the default-shipped worker
@@ -23,7 +22,7 @@
  * forge task travels the SAME tick → claim → worktree → headless-runner → exit-gate trace
  * as code work (loop.mjs), so it inherits routing/windows/budget/isolation for free.
  *
- * ═══════════════════════ THE CAPABILITY CEILING (T-9.5-40) ═══════════════════════
+ * ═══════════════════════ THE CAPABILITY CEILING ══════════════════════════════════
  * A drafted role may not grant itself powers the runner structurally forbids: workers
  * never push, never merge, never approve, never publish (the founder-push law). `lintDraft`
  * enforces this deterministically — a draft whose `can[]` (agent) or whole body (mcp

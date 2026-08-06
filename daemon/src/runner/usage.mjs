@@ -1,11 +1,10 @@
 /**
- * usage.mjs — usage capture into the spend book, incl. the Codex gap (Phase 9.5 Plan
- * 04, Task 3; D-9.5-03, Pitfall 5; Assumption A4).
+ * usage.mjs — usage capture into the spend book, incl. the Codex gap.
  *
  * WHAT IT IS: the runner's OWN honest usage ledger. Every worker session — Claude or
  * Codex, subscription or API — books a canonical usage row so subscription work is NEVER
- * counted as $0 (Pitfall 5, «Subscriptions as $0 in budgets» — our differentiator). The
- * window/budget layer (plan 9.5-05) and the roster window bars (plan 9.5-08) read these
+ * counted as $0 («Subscriptions as $0 in budgets» — our differentiator). The
+ * window/budget layer and the roster window bars read these
  * rows; this module is their data source.
  *
  * THE SEAM (researcher left it open — decided here): the runner books its OWN canonical
@@ -18,16 +17,16 @@
  *   1. THIS module — the runner books per-session rows from the parsed stream/final events.
  *   2. The EXISTING `sma spend` ledger — because args.mjs sets SMA_SPEND_LOGS_DIR per
  *      worker env, the ledger's adapter also sees each Claude account's session JSONL.
- *   Plan 9.5-08 displays both; they cross-check each other. Codex has no vendor JSONL the
+ *   The roster displays both; they cross-check each other. Codex has no vendor JSONL the
  *   `sma spend` adapter understands (the GAP), so for Codex THIS module is the only source.
  *
- * COST HONESTY (Pitfall 5): a Claude `result` event carries `total_cost_usd` verbatim
+ * COST HONESTY: a Claude `result` event carries `total_cost_usd` verbatim
  * (source 'stream-result'). A Codex `turn.completed` event carries token counts (source
  * 'codex-final'). When the Codex final event LACKS tokens (A4 unverified), we book a
  * time-based estimate (source 'estimate') — a non-zero row, never a blind $0.
  *
  * SECURITY: a usage row carries ids + token counts + optional cost ONLY — never an OAuth
- * token, never task content, never an env-var name (T-9.5-12).
+ * token, never task content, never an env-var name.
  *
  * Node built-ins only; fs is dependency-injectable so tests never touch a real ledger.
  * Zero deps; zero network.
@@ -99,7 +98,7 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, m
  * codexUsageFromFinal(finalEvent, ctx) → a canonical usage row from a parsed Codex
  * `turn.completed` event (parseCodexEvent output). When the event carries token counts →
  * source 'codex-final'. When it does NOT (the A4 gap) → falls back to estimateUsage
- * (source 'estimate') so the row is never a blind $0 (Pitfall 5).
+ * (source 'estimate') so the row is never a blind $0.
  *
  * @param {{usage?:object}} finalEvent
  * @param {{accountName?:string, taskId?:string, model?:string, startedAt?:number, endedAt?:number}} [ctx]
@@ -128,7 +127,7 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
 /**
  * estimateUsage(ctx) → a time-based usage row (source 'estimate') when no token counts
  * are available. Books a NON-ZERO output-token estimate from the session duration so
- * subscription work is never silently $0 (Pitfall 5). Coarse by design; labeled honestly.
+ * subscription work is never silently $0. Coarse by design; labeled honestly.
  *
  * @param {{accountName?:string, taskId?:string, model?:string, startedAt?:number, endedAt?:number}} [ctx]
  * @returns {object}
@@ -240,7 +239,7 @@ function round2(n) {
  *
  * TOKENS AND MONEY BOTH TRAVEL. A subscription session books no dollar cost — it is paid
  * for by the plan, not by the invoice — so a series that carried euros alone would show a
- * night of real work as a flat zero (Pitfall 5, in the one place a founder actually looks
+ * night of real work as a flat zero (in the one place a founder actually looks
  * for it). Every point therefore carries the token counts it is made of; the euro figure is
  * the API-fallback money, and it is honestly zero when nothing was billed.
  *
@@ -294,7 +293,7 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
  * readUsage({dataDir, accountName, windowMs, clock, fsImpl}) → per-account rolling-window
  * totals. Sums input/output tokens + cost over rows for `accountName` whose `ts` falls
  * inside [now - windowMs, now]. A missing book → all-zero totals (fail-open, never throws).
- * This is the input for plan 9.5-05's window bars.
+ * This is the input for the window bars.
  *
  * @param {{dataDir:string, accountName?:string, windowMs?:number, clock?:Function, fsImpl?:object}} opts
  * @returns {{accountName:string|undefined, inputTokens:number, outputTokens:number, costUsd:number, rows:number, windowMs:number|undefined}}

@@ -1,12 +1,11 @@
 /**
- * stream.mjs — the NDJSON stream parsers for both worker lanes (Phase 9.5 Plan 04,
- * Task 2; D-9.5-04a, T-9.5-13; Assumption A4).
+ * stream.mjs — the NDJSON stream parsers for both worker lanes.
  *
  * WHAT IT IS: two pure functions that turn ONE line of a worker's stdout into a small
  * typed event the runner acts on. They are the boundary between hostile child output and
  * the daemon tick.
  *
- * NEVER-THROW CONTRACT (T-9.5-13, journal.mjs / spend-adapter.mjs fail-open posture): a
+ * NEVER-THROW CONTRACT (journal.mjs / spend-adapter.mjs fail-open posture): a
  * worker's garbage output must NOT kill the tick. Any non-JSON / non-object / unexpected
  * line returns `{ type: 'unparsed', raw }` — the parsers never throw on any input. An
  * unparsed line is counted by the caller as drift; the tick survives.
@@ -18,7 +17,7 @@
  * ASSUMPTION A4 (Codex, MEDIUM confidence — verified in the pilot): `codex exec --json`
  * emits a thread-start event carrying `thread_id` and a final `turn.completed` event
  * carrying a `usage` object with token counts sufficient for the ledger. If the final
- * event lacks tokens, usage.mjs books a time-based estimate (never $0-blind, Pitfall 5).
+ * event lacks tokens, usage.mjs books a time-based estimate (never $0-blind).
  *
  * Node built-ins only; zero deps; zero network; zero LLM. Pure transforms.
  */
@@ -86,7 +85,7 @@ export function parseClaudeEvent(line) {
 /**
  * parseCodexEvent(line) → typed event. Extracts `threadId` when the line carries a thread
  * id (thread.started), and `usage` when the line is the final token-count event
- * (turn.completed, Assumption A4). A malformed line → { type: 'unparsed', raw }. NEVER throws.
+ * (turn.completed). A malformed line → { type: 'unparsed', raw }. NEVER throws.
  *
  * @param {string} line
  * @returns {object}
@@ -101,7 +100,7 @@ export function parseCodexEvent(line) {
   const threadId = obj.thread_id ?? obj.threadId ?? (obj.thread && typeof obj.thread === 'object' ? obj.thread.id : undefined)
   if (threadId) out.threadId = String(threadId)
 
-  // Final usage event (Assumption A4). Preserve the raw usage shape for usage.mjs mapping.
+  // Final usage event. Preserve the raw usage shape for usage.mjs mapping.
   if (obj.usage && typeof obj.usage === 'object') out.usage = obj.usage
 
   return out

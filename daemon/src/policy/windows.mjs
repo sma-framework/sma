@@ -1,6 +1,5 @@
 /**
- * windows.mjs — per-account rolling-window state, honest by construction (Phase 9.5 Plan
- * 05, Task 2; Assumption A3, RESEARCH «Window awareness»).
+ * windows.mjs — per-account rolling-window state, honest by construction.
  *
  * WHAT IT IS: the model behind the roster's % window bars. It answers, per account: how
  * full is the 5h / weekly window, and is the account currently open for work?

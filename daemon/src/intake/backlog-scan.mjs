@@ -1,6 +1,5 @@
 /**
- * backlog-scan.mjs — the BACKLOG.md intake edge (Phase 9.5 Plan 07, Task 1;
- * D-9.5-06, D-9.5-10, D-9.5-11, Pitfall 13).
+ * backlog-scan.mjs — the BACKLOG.md intake edge.
  *
  * WHAT IT IS: the SECONDARY intake path. `parseBacklogContent` is a faithful JS port
  * of the origin project's backlog parser — SAME line
@@ -9,14 +8,14 @@
  * mini reads the founder's latest pushed BACKLOG, not a stale clone) + the DoR split +
  * a data-age label; `toTask` maps a ready line to the canonical task shape.
  *
- * INTAKE PRECEDENCE (Q2 default, pending grill): the roster button is the PRIMARY
+ * INTAKE PRECEDENCE: the roster button is the PRIMARY
  * intake (expedite, founder-explicit); the BACKLOG scan is SECONDARY, run per cadence
- * (config.backlogScanMinutes, default 60) after a `git fetch`. Pitfall 13 (BACKLOG.md
- * on the mini is stale — unpushed founder edits): the scan is age-labeled (dataAgeMs
+ * (config.backlogScanMinutes, default 60) after a `git fetch`. The BACKLOG.md on the
+ * mini is routinely stale (unpushed founder edits): the scan is age-labeled (dataAgeMs
  * from the last commit that touched BACKLOG.md) so the roster can show its freshness
  * rather than trusting a stale clone silently.
  *
- * THE DoR GATE (D-9.5-10 / D-9.5-11 item 5): «без оценки задачу нельзя выдавать в
+ * THE DoR GATE: «без оценки задачу нельзя выдавать в
  * работу». An open, non-promoted line is only enqueued when it carries a valid `sp:N`
  * estimate ≤ 13. Two notReady classes are SURFACED (never silently dropped, never
  * enqueued):
@@ -25,7 +24,7 @@
  *                               full decomposition via «Создатель» forge kind
  *                               'decompose' is deferred)
  *
- * EXTERNAL INTAKE (D-9.5-06): the external intake bridge is DEFERRED post-pilot. Wave-1 intake is the
+ * EXTERNAL INTAKE: the external intake bridge is DEFERRED post-pilot. Intake today is the
  * BACKLOG scan + the roster button only.
  *
  * Node built-ins only where used at all; execGit / clock / fsImpl are dependency-
@@ -38,10 +37,10 @@ const ITEM_RE = /^-\s+\[([ xX])\]\s+\*\*(BL-\d+)\*\*\s*(.*)$/
 /** A `key:value` tag in backticks, e.g. `size:M` / `sp:3`. Ported verbatim. */
 const TAG_RE = /`([a-z]+):([^`]+)`/gi
 
-/** Size → priority (D-9.5-10 intake): S is smallest+fastest, fetch it first. */
+/** Size → priority: S is smallest+fastest, fetch it first. */
 const SIZE_PRIORITY = Object.freeze({ S: 2, M: 1, L: 0 })
 
-/** The Fibonacci decomposition ceiling (D-9.5-10 запрет п.4): anything above waits. */
+/** The Fibonacci decomposition ceiling: anything above waits. */
 const SP_CEILING = 13
 
 /**
@@ -118,7 +117,7 @@ export function parseBacklogContent(raw) {
 
 /**
  * laneForItem(item) → the execution lane heuristic (documented, deterministic —
- * D-9.5-10 план 07). The `— why` sentence + area drive it:
+ * The `— why` sentence + area drive it:
  *   - research  — a research-flavoured line (title/desc signals исследование/research)
  *   - paperwork — governance/os area or a .planning/docs-only line (no prod code)
  *   - prod      — everything else (the default; incl. size:S + area:tech)
@@ -136,7 +135,7 @@ function laneForItem(item) {
  * toTask(item) → the canonical task shape (adapter.mjs TASK SHAPE) for a READY backlog
  * line. lane from the size/area heuristic; source 'backlog'; priority from size
  * (S=2/M=1/L=0, missing→0); storyPoints from the `sp:N` tag; acceptance from the
- * post-delimiter detail sentence (the ` — what & why` part) — the D-9.5-10 DoD contract
+ * post-delimiter detail sentence (the ` — what & why` part) — the DoD contract
  * the worker reads. Falls back to the title when a line carries no detail so acceptance
  * is never empty (validateTask requires it for backlog).
  *
@@ -160,7 +159,7 @@ export function toTask(item) {
 /**
  * scanBacklog({repoDir, execGit, clock, fsImpl}) → {items, notReady, dataAgeMs}.
  *
- * (1) `git fetch` via the injected execGit (freshness on the mini — Pitfall 13); a fetch
+ * (1) `git fetch` via the injected execGit (freshness on the mini); a fetch
  *     failure (offline) is swallowed, the LOCAL BACKLOG is still read.
  * (2) read `<repoDir>/.planning/BACKLOG.md` via the injected fsImpl.
  * (3) parse; keep open, non-phase-promoted lines as intake candidates.
@@ -211,7 +210,7 @@ export async function scanBacklog({ repoDir, execGit, clock = Date.now, fsImpl }
     items.push(toTask(item))
   }
 
-  // (5) data-age label from the last commit touching BACKLOG.md (Pitfall 13).
+  // (5) data-age label from the last commit touching BACKLOG.md.
   let dataAgeMs = null
   try {
     const out = String(execGit(['log', '-1', '--format=%ct', '--', '.planning/BACKLOG.md'])).trim()

@@ -1,6 +1,5 @@
 /**
- * budget.mjs — the sub→API switch + the monthly budget stop (Phase 9.5 Plan 05, Task 3;
- * D-9.5-03b, RESEARCH Pitfall 9).
+ * budget.mjs — the sub→API switch + the monthly budget stop.
  *
  * WHAT IT IS: a PURE decision — should THIS task fall back from the subscription pool to
  * the paid API lane right now? The answer is bounded by real € so the fallback can never
@@ -17,7 +16,7 @@
  * WARN BEFORE THE STOP: at ≥70% and ≥90% of the cap the decision carries `warn: 70|90` so
  * the roster shows the founder the budget filling BEFORE the hard stop at 100%
  * (reason:'budget_stop'). The stop halts the API lane in real € — it never touches the
- * honesty of the accounting (subscription work is still booked at token value, Pitfall 5).
+ * honesty of the accounting (subscription work is still booked at token value).
  *
  * PITFALL 9 — ANTHROPIC REPRICING is the main economic risk (not a ban). The budget stop
  * IS the hedge: the architecture must stay economical under repricing because the paid lane
@@ -31,7 +30,7 @@
  *
  * SEAM (documentation, not a test dependency): this function returns a DECISION only. The
  * env application (ANTHROPIC_API_KEY precedence over subscription auth) is buildAccountEnv's
- * job in the runner (plan 04) — the switch is env-only downstream.
+ * job in the runner — the switch is env-only downstream.
  *
  * Node built-ins only; no imports; spend read via the injected usageReader; no process.env.
  */
