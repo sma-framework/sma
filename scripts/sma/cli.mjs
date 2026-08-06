@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * cli.mjs — the single `pnpm sma <cmd>` entrypoint (D-9-10), built on the
+ * cli.mjs — the single `pnpm sma <cmd>` entrypoint, built on the
  * gsd-tools.cjs dispatch shape (a subcommand → async handler map; PATTERNS:
  * reference only — internals not copied). One command surface for humans, hooks,
- * skills and the statusline, so the hooks (9-12) stay 3-line wrappers.
+ * skills and the statusline, so the hook scripts stay 3-line wrappers.
  *
  * CONTRACT (the fail-open policy lives HERE, not in the hooks):
  *   - Hook-facing subcommands (session-start, collision-check, heartbeat) exit 0
@@ -11,19 +11,19 @@
  *   - Direct-CLI subcommands (status, claim, release, next-slot, force-clear,
  *     lint, build-index, load, snapshot) may exit 1 on a real error.
  *   - Every handler lazy `await import('./lib/<mod>.mjs')` so a module that has
- *     not landed yet (snapshot arrives with 9-13) degrades to a clean RU
+ *     not landed yet (a module can arrive later than its command) degrades to a clean RU
  *     'недоступно' message instead of a parse-time crash.
  *   - Output convention: human-readable RU by default; `--raw`/`--json` emits a
  *     single JSON object (gsd-tools pattern) for the statusline/hook consumers.
  *
- * D-9-02 / P4 / C9: collision-check + session-start are WARN-only — they NEVER
- * emit permissionDecision 'deny'; they carry Terraform-style advisories in
+ * ADVISORY, NEVER BLOCKING: collision-check + session-start are WARN-only — they
+ * NEVER emit permissionDecision 'deny'; they carry Terraform-style advisories in
  * additionalContext and always allow the operation.
- * D-9-09 / P3: force-clear is the ONLY foreign-claim removal path — it prints
+ * ONE STEAL PATH: force-clear is the ONLY foreign-claim removal path — it prints
  * the holder first, requires an explicit --yes, and journals a 'steal' event
  * with provenance. Never automatic.
  *
- * COMMENT-TEXT DISCIPLINE (SMA-3): scripts/sma/** is grepped for the two-word
+ * COMMENT-TEXT DISCIPLINE: scripts/sma/** is grepped for the two-word
  * git deploy invocation. The Bash push-detector below is built with an escaped
  * regex so the source never carries the adjacent literal; comments say 'push'
  * alone.
@@ -77,37 +77,37 @@ function dirsFrom(root) {
     sessionsDir: join(root, 'sessions'),
     claimsDir: join(root, 'claims'),
     journalDir: join(root, 'journal'),
-    calibrationDir: join(root, 'calibration'), // 9.1-08 (B20) — prediction-calibration ledger
-    reflexDir: join(root, 'reflex'), // 9.1-10 (B2) — per-session reflex seen-store
-    usageDir: join(root, 'usage'), // 9.1-11 (B4) — usage-citation ledger
-    gatesDir: join(root, 'gates'), // 9.1-17 (D-9.1-13) — soft-deny evidence markers + override tokens
-    execDir: join(root, 'exec'), // 9.1-20 (B14) — per-plan execution progress journal
-    stallDir: join(root, 'stall'), // 9.1-21 (B16) — per-session rolling PostToolUse window
-    benchDir: join(root, 'bench'), // 9.2-01 (D-9.2-02) — bench markers: ttc/, exam/, selfcost.json
-    perfDir: join(root, 'perf'), // 9.2-02 (D-9.2-04) — `sma pre` per-stream timing samples (pre.jsonl)
-    subagentsDir: join(root, 'subagents'), // 9.2-04 (D-9.2-10) — spawn records + receipt stats
-    flightDir: join(root, 'flight'), // 9.2-06 (D-9.2-09) — pre-compaction capsule + session flight marks
-    spendDir: join(root, 'spend'), // 9.2-09 (D-9.2-13) — spend book incremental cache + window budget
-    breakerDir: join(root, 'breaker'), // 9.2-09 (D-9.2-13) — loop-breaker markers (per-ruleId)
-    grillDir: join(root, 'grill'), // 9.2-07 (D-9.2-11) — per-plan adversarial challenge ledger
-    blindDir: join(root, 'blind'), // 9.2-07 (D-9.2-11) — frozen blind-verify verdicts (info barrier)
-    evidenceDir: join(root, 'evidence'), // 9.2-07 (D-9.2-11) — burden-of-proof records for risky ops
-    skepticDir: join(root, 'skeptic'), // 9.2-10 (D-9.2-14) — skeptic countersign files
-    canaryDir: join(root, 'canary'), // 9.2-10 (D-9.2-14) — sealed canary ledger (blind verifier NEVER reads)
-    nearmissDir: join(root, 'nearmiss'), // 9.2-10 (D-9.2-14) — scoring-immune near-miss channel (ASRS)
-    disarmDir: join(root, 'disarm'), // 9.2-10 (D-9.2-14) — kill-switch provenance leases (auto-re-arm)
-    modelDir: join(root, 'model'), // 9.3-02 (D-9.3-10) — model-version sightings for the stale-priors badge guard
-    curriculumDir: join(root, 'curriculum'), // 9.3-06 (D-9.3-16) — weekly miss-curriculum: templates.jsonl + brief-*.md
-    catalogDir: join(root, 'catalog'), // 9.3-05 (D-9.3-06) — deterministic file catalog (cards.jsonl)
-    contextDir: join(root, 'context'), // 9.3-05 (D-9.3-07) — context packs + active.json + exam.jsonl
-    statuslineDir: join(root, 'statusline'), // 9.3-07 (D-9.3-13) — statusline TTL cache + webhook config + cooldown marker
-    manifestDir: join(root, 'manifest'), // 9.3-08 (D-9.3-11) — PR evidence passport pack (<headSha>.json + .md)
+    calibrationDir: join(root, 'calibration'), // prediction-calibration ledger
+    reflexDir: join(root, 'reflex'), // per-session reflex seen-store
+    usageDir: join(root, 'usage'), // usage-citation ledger
+    gatesDir: join(root, 'gates'), // soft-deny evidence markers + override tokens
+    execDir: join(root, 'exec'), // per-plan execution progress journal
+    stallDir: join(root, 'stall'), // per-session rolling PostToolUse window
+    benchDir: join(root, 'bench'), // bench markers: ttc/, exam/, selfcost.json
+    perfDir: join(root, 'perf'), // `sma pre` per-stream timing samples (pre.jsonl)
+    subagentsDir: join(root, 'subagents'), // spawn records + receipt stats
+    flightDir: join(root, 'flight'), // pre-compaction capsule + session flight marks
+    spendDir: join(root, 'spend'), // spend book incremental cache + window budget
+    breakerDir: join(root, 'breaker'), // loop-breaker markers (per-ruleId)
+    grillDir: join(root, 'grill'), // per-plan adversarial challenge ledger
+    blindDir: join(root, 'blind'), // frozen blind-verify verdicts (info barrier)
+    evidenceDir: join(root, 'evidence'), // burden-of-proof records for risky ops
+    skepticDir: join(root, 'skeptic'), // skeptic countersign files
+    canaryDir: join(root, 'canary'), // sealed canary ledger (blind verifier NEVER reads)
+    nearmissDir: join(root, 'nearmiss'), // scoring-immune near-miss channel (ASRS)
+    disarmDir: join(root, 'disarm'), // kill-switch provenance leases (auto-re-arm)
+    modelDir: join(root, 'model'), // model-version sightings for the stale-priors badge guard
+    curriculumDir: join(root, 'curriculum'), // weekly miss-curriculum: templates.jsonl + brief-*.md
+    catalogDir: join(root, 'catalog'), // deterministic file catalog (cards.jsonl)
+    contextDir: join(root, 'context'), // context packs + active.json + exam.jsonl
+    statuslineDir: join(root, 'statusline'), // statusline TTL cache + webhook config + cooldown marker
+    manifestDir: join(root, 'manifest'), // PR evidence passport pack (<headSha>.json + .md)
     baselineDir: join(root, 'baseline'), // v5.1 — recorded baseline receipts (receipts.json) for replay
     indexDir: join(root, 'index'), // v5.2 — derived lexical index (memory-lexical.sqlite + .meta.json), rebuildable
   }
 }
 
-/** The TRACKED tier registry path (repo root, NOT under gitignored .sma/ — 9.3-06). */
+/** The TRACKED tier registry path (repo root, NOT under gitignored .sma/). */
 async function ladderPathFrom(dirs) {
   const { LADDER_FILE } = await import('./lib/constants.mjs')
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
@@ -187,7 +187,7 @@ function readStdinJson() {
  * windowTokenFrom(evt) → the stable per-window token, or null. Claude Code delivers a
  * `session_id` on the hook stdin JSON that is constant across SessionStart + every
  * PreToolUse of ONE window and distinct between concurrent windows — exactly the
- * renewal-safe disambiguator resolveTerminalIdentity wants (R7/D-9-01). Env overrides
+ * renewal-safe disambiguator resolveTerminalIdentity wants. Env overrides
  * (SMA_WINDOW_TOKEN / CLAUDE_SESSION_ID) are consulted by resolveTerminalIdentity itself;
  * this only lifts the stdin value the env cannot carry.
  */
@@ -200,7 +200,7 @@ function windowTokenFrom(evt) {
  * truncateRestore(body, maxBytes) — cap the restored capsule to maxBytes (UTF-8),
  * appending a `node scripts/sma/cli.mjs resume` pointer line when it had to be cut. Byte-safe: the
  * Buffer slice may drop a partial multibyte char at the boundary (rendered as the
- * replacement char), never a torn sequence. 9.2-06 restore reflex.
+ * replacement char), never a torn sequence — the restore reflex depends on it.
  */
 function truncateRestore(body, maxBytes) {
   const text = String(body ?? '')
@@ -233,17 +233,18 @@ async function gatherSummary(dirs) {
     pushClaim: null,
   }
 
-  // Best-effort reap of stale, CLEAN sessions BEFORE counting (R7 fix step 3). reapStale
+  // Best-effort reap of stale, CLEAN sessions BEFORE counting (fix step 3). reapStale
   // is otherwise exported-but-never-invoked, so .sma/sessions grew unboundedly (hundreds
   // of write-once leases from the pre-fix pid churn). This is the cheapest correct call
   // site: session-start (once per window) + manual status, never the hot per-Edit/Write
-  // collision-check path. A real scope-mtime probe is passed so P3 holds — a stale lease
+  // collision-check path. A real scope-mtime probe is passed so the never-touch-live-work
+  // rule holds — a stale lease
   // with FRESH edits inside its claimed globs is classified needs-human and NEVER deleted;
   // only genuinely idle (no-glob / cold) leases are removed. Fail-open (never wedges).
   try {
     const registry = await import('./lib/registry.mjs')
     const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-    // D-9.3-22f: reapStaleObservable journals a countable reap / reap-fail signal
+    // reapStaleObservable journals a countable reap / reap-fail signal
     // so a silently-broken reaper is no longer invisible (the prior bare reapStale swallowed
     // every failure). Still fail-open — a reap bug NEVER wedges status/session-start.
     registry.reapStaleObservable({
@@ -283,7 +284,7 @@ async function gatherSummary(dirs) {
     /* fail-open */
   }
 
-  // collision count from the journal (collisions journaled by 9-05). WR-04: bound
+  // collision count from the journal (collisions are journaled by the claim path). Bound
   // to TODAY's events, mirroring the statusline — the journal is append-only and never
   // pruned, so an unbounded count grows monotonically for the life of the checkout and
   // becomes noise within days.
@@ -318,9 +319,9 @@ async function gatherSummary(dirs) {
  * yields zeros, never an error.
  */
 async function cmdStatus({ flags, dirs }) {
-  // ── 9.3-13 coordination-trust instruments (bare-numeric LAST line = scorer contract) ──
+  // ── coordination-trust instruments (bare-numeric LAST line = scorer contract) ──
   if (flags['stale-warn-share']) {
-    // P9.3-13-A: the deterministic stale share of SHOWN collision warns over 7d.
+    // the deterministic stale share of SHOWN collision warns over 7d.
     let pct = 0
     try {
       const fingerprint = await import('./lib/fingerprint.mjs')
@@ -334,7 +335,7 @@ async function cmdStatus({ flags, dirs }) {
     return 0
   }
   if (flags['stale-count']) {
-    // P9.3-13-C: how many dead/stale sessions SURVIVE (reap-clean | needs-human). 0 is clean.
+    // how many dead/stale sessions SURVIVE (reap-clean | needs-human). 0 is clean.
     let n = 0
     try {
       const registry = await import('./lib/registry.mjs')
@@ -349,7 +350,7 @@ async function cmdStatus({ flags, dirs }) {
     return 0
   }
   if (flags['cleanup-stale']) {
-    // D-9.3-22d: the ONE-TIME cleanup — reap the accumulated dead sessions + reconcile the
+    // the ONE-TIME cleanup — reap the accumulated dead sessions + reconcile the
     // expired (unconsumed) claims via the existing provenance-kept paths. Prints the count.
     let reaped = 0
     let reconciled = 0
@@ -396,7 +397,7 @@ async function cmdStatus({ flags, dirs }) {
     `SMA: активных сессий ${s.activeSessions} · устаревших ${s.staleSessions} · ` +
       `коллизий ${s.collisions} · claim-слотов ${s.claims}\n`,
   )
-  // FI-10 — one founder-readable «P<phase> <Name> — <label>» line per LIVE session.
+  // one founder-readable «P<phase> <Name> — <label>» line per LIVE session.
   try {
     const registry = await import('./lib/registry.mjs')
     for (const sess of s.sessions || []) {
@@ -427,7 +428,7 @@ async function cmdHeartbeat({ flags, dirs }) {
   const globs = typeof flags.scope === 'string' ? flags.scope.split(',').map((g) => g.trim()).filter(Boolean) : []
   const desc = typeof flags.desc === 'string' ? flags.desc : ''
   const status = typeof flags.status === 'string' ? flags.status : 'working'
-  // FI-10 — refresh the founder-readable work label from live context on every beat.
+  // refresh the founder-readable work label from live context on every beat.
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const label = registry.resolveWorkLabel({
     claimScope: desc,
@@ -451,25 +452,25 @@ async function cmdHeartbeat({ flags, dirs }) {
 }
 
 /**
- * session-start — compose the D-9-02 start summary (active sessions, live
+ * session-start — compose the start summary (active sessions, live
  * collisions, open push-claim, needs-human entries) and emit it as SessionStart
- * hook JSON per RESEARCH Pattern 1 (hookSpecificOutput.additionalContext).
+ * hook JSON in the harness's documented shape (hookSpecificOutput.additionalContext).
  * ALWAYS exit 0. Also piggybacks a heartbeat so a fresh terminal registers.
  */
 async function cmdSessionStart({ dirs }) {
   // The SessionStart hook receives the same stdin JSON as every PreToolUse — read the
   // stable window token (session_id) so THIS terminal registers under the window-stable
-  // terminalId that later collision-check invocations will renew (R7/D-9-01). Keep the
-  // whole event: 9.2-06's restore reflex reads its `source` field (compact vs startup).
+  // terminalId that later collision-check invocations will renew. Keep the
+  // whole event: the restore reflex reads its `source` field (compact vs startup).
   const evt = readStdinJson()
   const sessionToken = windowTokenFrom(evt)
 
   // register/refresh this terminal (best-effort; never fatal). The own claimed
-  // scope is captured BEFORE the registering beat (9.1-11: the beat writes an
+  // scope is captured BEFORE the registering beat (the beat writes an
   // empty scope, and the pre-act injection needs the live claim as its trigger).
   let identity = null
   let ownScope = null
-  let ownLastHeartbeat = null // this window's PRE-beat renewTime (for the digest B12)
+  let ownLastHeartbeat = null // this window's PRE-beat renewTime (for the cross-terminal digest)
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   try {
     const registry = await import('./lib/registry.mjs')
@@ -482,7 +483,7 @@ async function cmdSessionStart({ dirs }) {
     } catch {
       /* fail-open */
     }
-    // FI-10 — resolve the founder-readable work label from live context (claimed scope >
+    // resolve the founder-readable work label from live context (claimed scope >
     // STATE phase > command) and fold it into the registering beat.
     const label = registry.resolveWorkLabel({
       claimScope: ownScope && ownScope.description ? ownScope.description : '',
@@ -494,10 +495,10 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open */
   }
 
-  // 9.3-02 (D-9.3-10) — record which Claude model produced this session so the
+  // record which Claude model produced this session so the
   // calibration-passport badge can detect a model swap and hide its hit-rate claim
   // until fresh priors accrue. Its OWN try/catch: a sighting bug must never dent the
-  // start summary (fail-open, substrate law C9 — proven by model-version test 7).
+  // start summary (fail-open by law — proven by model-version test 7).
   try {
     const mv = await import('./lib/model-version.mjs')
     const sighting = mv.resolveModelId({ stdinJson: evt, env: process.env })
@@ -518,10 +519,10 @@ async function cmdSessionStart({ dirs }) {
   }
   lines.push('Подробнее: `node scripts/sma/cli.mjs status`.')
 
-  // 9.1-11 (B1): budgeted pre-act periphery injection — relevant memory arrives
+  // budgeted pre-act periphery injection — relevant memory arrives
   // BEFORE the first act, matched to the session's live context (claimed scope /
   // current phase). CORE already auto-loads via MEMORY.md; ONLY trigger-matched
-  // periphery lands here, under a hard 2048-byte budget (T-9.1-22). Fail-open:
+  // periphery lands here, under a hard 2048-byte budget. Fail-open:
   // an injection failure never blocks the session (HOOK_FACING).
   let preAct = ''
   try {
@@ -535,9 +536,9 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open */
   }
 
-  // 9.1-18 (B12): the cross-terminal digest «Что изменилось с вашего последнего
+  // the cross-terminal digest «Что изменилось с вашего последнего
   // heartbeat» — commits since my last beat, who claims what now (named identities),
-  // the live push signal, and low-calibration escalations (the B20 consumer). Pure
+  // the live push signal, and low-calibration escalations (the calibration consumer). Pure
   // assembly over injected sources; every source is fail-open, so a git error or a
   // missing ledger degrades to a partial digest and never wedges session-start.
   let digest = ''
@@ -547,7 +548,7 @@ async function cmdSessionStart({ dirs }) {
     const others = (s.sessions || [])
       .filter((sess) => sess && sess._file !== `${identity ? identity.terminalId : ''}.json`)
       .map((sess) => ({ holderIdentity: sess.holderIdentity, label: sess.label, scope: sess.scope }))
-    // Low-calibration escalations (9.1-08) -> digest lines.
+    // Low-calibration escalations -> digest lines.
     let escalations = []
     try {
       const calibration = await import('./lib/calibration.mjs')
@@ -566,11 +567,11 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the digest is a briefing convenience, never a gate */
   }
 
-  // 9.2-10 (D-9.2-14) — the STPA disarm-path guard runs at session-start ONLY
+  // the STPA disarm-path guard runs at session-start ONLY
   // (never the per-tool-call hot path — plan 02 SLO). It shadow-runs each disarmed
   // gate's birth fixture and computes auto-re-arm decisions; a one-line summary
   // surfaces ONLY when a kill env is actually set. Bounded, try/catch, fail-open —
-  // a guard that wedged the hooks would be its own STPA violation (CONS-9.2-B).
+  // a guard that wedged the hooks would be its own STPA violation.
   let disarmLine = ''
   try {
     const stpa = await import('./lib/stpa.mjs')
@@ -588,7 +589,7 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the disarm guard never wedges session-start */
   }
 
-  // 9.3-06 (D-9.3-16) — the weekly miss-curriculum staleness nudge. ONE bounded line
+  // the weekly miss-curriculum staleness nudge. ONE bounded line
   // at session-start (never the per-tool-call hot path) when the newest weak-spots brief
   // is stale or missing. Try/catch, fail-open — a nudge bug never wedges session-start.
   let curriculumLine = ''
@@ -600,14 +601,14 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the curriculum nudge never wedges session-start */
   }
 
-  // FI-10 — prompt ONCE for a human window name when this window is still anonymous, so
+  // prompt ONCE for a human window name when this window is still anonymous, so
   // the journal + digest stop showing t-<hash> and become «P<phase> <Name>».
   let namePrompt = ''
   if (identity && typeof identity.holderIdentity === 'string' && /^T-/i.test(identity.holderIdentity)) {
     namePrompt = 'Задайте имя окна: переменная SMA_TERMINAL_NAME (например «Tom»), чтобы журналы были читаемы.'
   }
 
-  // 9.2-06 (D-9.2-09) — the post-compact RESTORE REFLEX. Claude Code re-fires
+  // the post-compact RESTORE REFLEX. Claude Code re-fires
   // SessionStart after a compaction with stdin `source: "compact"`; we re-inject the
   // pre-written flight capsule as the FIRST additionalContext part so the session
   // resumes knowing its current task, constraints, and recent decisions. NO new hook
@@ -670,12 +671,12 @@ async function cmdSessionStart({ dirs }) {
   return 0
 }
 
-// ── 9.1-11 (B1): pre-act injection helpers ──────────────────────────────────
+// ── pre-act injection helpers ──────────────────────────────────
 
-/** Hard byte budget of the injected periphery section (T-9.1-22, acceptance-checked). */
+/** Hard byte budget of the injected periphery section (acceptance-checked). */
 const PRE_ACT_BUDGET_BYTES = 2048
 
-/** Truncation caps — descriptions + extracts only, never whole bodies (T-9.1-21). */
+/** Truncation caps — descriptions + extracts only, never whole bodies. */
 const PRE_ACT_DESC_MAX = 200
 const PRE_ACT_EXTRACT_MAX = 240
 
@@ -700,7 +701,7 @@ function howToApplyExtract(body) {
  * STATE.md Current-Position phase when cheaply readable), query the loader ONE
  * tag at a time (a multi-tag query would AND across facets and over-restrict),
  * union the matched periphery, select by importance under the byte budget, and
- * record a 'load' citation per injected note (B4). Returns '' when nothing
+ * record a 'load' citation per injected note. Returns '' when nothing
  * relevant — the caller then omits the section entirely.
  */
 async function buildPreActInjection({ dirs, ownScope, terminalId, sessionToken }) {
@@ -802,7 +803,7 @@ async function buildPreActInjection({ dirs, ownScope, terminalId, sessionToken }
   }
   if (!included.length) return ''
 
-  // (6) B4: each injected note is a 'load' citation (fail-open inside recordCitation).
+  // (6) each injected note is a 'load' citation (fail-open inside recordCitation).
   try {
     const citations = await import('./lib/citations.mjs')
     for (const f of included) {
@@ -837,7 +838,7 @@ async function cmdClaim({ positionals, flags, dirs }) {
   const collision = await import('./lib/collision.mjs')
   const identity = registry.resolveTerminalIdentity({})
 
-  // Fold the scope into this terminal's lease (the scope is the claim). FI-10: the
+  // Fold the scope into this terminal's lease (the scope is the claim). The
   // claimed scope IS the work label — «P<phase> <Name>» now reads «правит <desc>».
   registry.heartbeat(
     { scope: { globs, description: desc }, status: 'working', label: registry.resolveWorkLabel({ claimScope: desc }) },
@@ -904,7 +905,7 @@ async function cmdRelease({ positionals, flags, dirs }) {
   registry.heartbeat({ scope: { globs: [], description: '' }, status: 'working' }, { ...dirs, identity })
 
   // Remove the OWN claims-dir entry (best-effort). releaseSlot refuses a foreign entry
-  // (P3); force-clear remains the only foreign-removal path.
+  // force-clear remains the only foreign-removal path.
   try {
     claims.releaseSlot(slug, { by: identity.holderIdentity, claimsDir: dirs.claimsDir })
   } catch {
@@ -958,7 +959,7 @@ async function cmdNextSlot({ positionals, flags, dirs }) {
     return 0
   }
 
-  // B11 all-counter slots: bl / action / decision / phase. Paths derive from the
+  // all-counter slots: bl / action / decision / phase. Paths derive from the
   // repo root's .planning/ (read-only scan, never mutated). `--dry-run` reports the
   // next number without claiming; `--phase` is required for the decision counter.
   if (slots.COUNTER_KINDS.includes(kind)) {
@@ -990,7 +991,7 @@ async function cmdNextSlot({ positionals, flags, dirs }) {
 }
 
 /**
- * tia [--against <ref>] [--json] — regex-based test-impact analysis (9.1-23, B17).
+ * tia [--against <ref>] [--json] — regex-based test-impact analysis.
  * Derives the changed files from a READ-ONLY `git diff --name-only <ref>` (default
  * origin/main), maps their exported symbols to referencing test files via tia.mjs, and
  * prints the suggested vitest command. ADVISORY sizing between dev-loop tiers — the
@@ -1029,7 +1030,7 @@ async function cmdTia({ flags }) {
 
 /**
  * consume <kind> <n> [--phase P] — mark a claimed slot number as ACTUALLY used
- * (9.1-23, B17). Writes the `consumed` marker inside the claim dir so the next-slot
+ * Writes the `consumed` marker inside the claim dir so the next-slot
  * reconcile leaves it alone; an UNconsumed claim that outlives its TTL is treated as
  * abandoned and re-issued (the claimed-number-lost class ends). Direct-CLI.
  */
@@ -1059,7 +1060,7 @@ async function cmdConsume({ positionals, flags, dirs }) {
 
 /**
  * lint [--json] — run the memory-lint over .claude/memory. Exit 1 on criticals
- * (the commit-hook tier, 9-12). corpusDir/tagsPath/indexPath default to the
+ * (the commit-hook tier). corpusDir/tagsPath/indexPath default to the
  * real memory dir but read-only — no write path here.
  */
 async function cmdLint({ flags }) {
@@ -1068,7 +1069,7 @@ async function cmdLint({ flags }) {
   const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
   const tagsPath = join(corpusDir, 'TAGS.md')
 
-  // Wire the generator into MEM-REGEN (9-14): once MEMORY.md carries the GENERATED
+  // Wire the generator into MEM-REGEN: once MEMORY.md carries the GENERATED
   // header, the byte-compare goes ACTIVE. The commit hash is parsed FROM the
   // artifact's own anchor so the compare stays byte-stable after HEAD moves; the
   // dateMap is one read-only git pass (fail-open to empty).
@@ -1086,10 +1087,10 @@ async function cmdLint({ flags }) {
     return { corpusDir, tagsPath, commitHash, dateMap }
   }
   const generate = (committed) => generator.buildIndex(regenInputs(committed))
-  // FI-11 (9.1-13): MEM-REGEN staleness covers the per-area INDEX files too.
+  // MEM-REGEN staleness covers the per-area INDEX files too.
   const generateAreas = (committed) => generator.buildAreaIndexes(regenInputs(committed))
 
-  // PRED family (9.1-09): lint plan predictions when a plans tree exists.
+  // PRED family: lint plan predictions when a plans tree exists.
   // --plans overrides; default is .planning/phases when present. The git runner
   // is read-only (rev-parse/log/show) — the lint's no-write invariant holds.
   const { existsSync } = await import('node:fs')
@@ -1097,12 +1098,12 @@ async function cmdLint({ flags }) {
   const plansDir = typeof flags.plans === 'string' ? flags.plans : existsSync(defaultPlans) ? defaultPlans : undefined
   const execGit = (args, o = {}) => execFileSync('git', args, { encoding: 'utf8', ...o })
 
-  // STATE-SIZE (9.1-13): the state path is injected — --state overrides; the
+  // STATE-SIZE: the state path is injected — --state overrides; the
   // default is the house .planning/STATE.md when present (fail-soft to none).
   const defaultState = join('.planning', 'STATE.md')
   const statePath = typeof flags.state === 'string' ? flags.state : existsSync(defaultState) ? defaultState : undefined
 
-  // PROFILE family (9.3-01): PROFILE-SCHEMA/PROFILE-SECRET run only when a
+  // PROFILE family: PROFILE-SCHEMA/PROFILE-SECRET run only when a
   // profile.json exists (a missing profile is a valid state, fail-open);
   // PROFILE-DEADFIELD is schema-level and always runs. --profile overrides; the
   // default is .sma/profile.json when present.
@@ -1147,9 +1148,9 @@ async function cmdLint({ flags }) {
 
 /**
  * profile [--json] | --lint [--json] | --coverage | --recap [--out <path>] [--check]
- * — the deterministic profile surface (9.3-01, D-9.3-04). Reads .sma/profile.json
+ * — the deterministic profile surface. Reads .sma/profile.json
  * through lib/profile.mjs (never re-parses it here). The numeric-last-line outputs
- * (--lint / --coverage / --recap --check) are the P9.3-01-A/B/C scorer instruments.
+ * (--lint / --coverage / --recap --check) are the scorer instruments.
  * Direct-CLI (may exit 1 on a lint violation); never hook-facing.
  */
 async function cmdProfile({ flags, dirs }) {
@@ -1157,7 +1158,7 @@ async function cmdProfile({ flags, dirs }) {
   const { readFileSync, existsSync } = await import('node:fs')
   // --profile <path> overrides the default .sma/profile.json for ALL modes, so a
   // check run from a different repo root can target a specific profile
-  // unambiguously (P9.4-04-B). A missing/unreadable path degrades through
+  // unambiguously. A missing/unreadable path degrades through
   // readProfile's tolerant reader to the empty state, never a throw.
   const profilePath = typeof flags.profile === 'string' ? flags.profile : join(dirs.smaRoot, 'profile.json')
   // The teaching source ships with the install (sma-core/references) — renderRecap
@@ -1186,11 +1187,11 @@ async function cmdProfile({ flags, dirs }) {
       return violations.length ? 1 : 0
     }
     for (const v of violations) process.stdout.write(`  [${v.rule}] ${v.field}: ${v.message}\n`)
-    process.stdout.write(`${violations.length}\n`) // numeric last line (P9.3-01-A)
+    process.stdout.write(`${violations.length}\n`) // numeric last line
     return violations.length ? 1 : 0
   }
 
-  // ── --coverage: answered-field count as the last line (P9.3-01-C) ────────────
+  // ── --coverage: answered-field count as the last line ────────────
   if (flags.coverage === true) {
     const { profile } = prof.readProfile({ profilePath })
     const answered = prof.answeredFields(prof.normalizeProfile(profile))
@@ -1224,7 +1225,7 @@ async function cmdProfile({ flags, dirs }) {
           ok = false
         }
       }
-      process.stdout.write(`${ok ? 1 : 0}\n`) // numeric last line (P9.3-01-B)
+      process.stdout.write(`${ok ? 1 : 0}\n`) // numeric last line
       return ok ? 0 : 1
     }
 
@@ -1238,7 +1239,7 @@ async function cmdProfile({ flags, dirs }) {
     return 0
   }
 
-  // ── --selftest: profileSelftest()'s 1/0 as the last line (P9.4-04-A scorer) ──
+  // ── --selftest: profileSelftest()'s 1/0 as the last line (scorer) ──
   if (flags.selftest === true) {
     process.stdout.write(`${prof.profileSelftest()}\n`)
     return 0
@@ -1297,11 +1298,11 @@ async function cmdProfile({ flags, dirs }) {
 }
 
 /**
- * explain [topic] [--list] [--coverage] [--count] [--lang en|ru] [--json] (9.3-09,
- * D-9.3-15) — the in-product teaching surface. Prints a plain-language explainer for
+ * explain [topic] [--list] [--coverage] [--count] [--lang en|ru] [--json] — the
+ * in-product teaching surface. Prints a plain-language explainer for
  * every concept and every CLI command (via COMMAND_TOPICS). An unknown topic lists the
  * catalog and exits 0 (never punishes curiosity). `--coverage` prints the count of
- * HANDLERS keys with no resolvable explainer as its LAST line — the P9.3-09-A scorer
+ * HANDLERS keys with no resolvable explainer as its LAST line — the scorer
  * contract. Reads cli.mjs as TEXT (never imports it). NOT hook-facing.
  */
 async function cmdExplain({ positionals, flags }) {
@@ -1309,7 +1310,7 @@ async function cmdExplain({ positionals, flags }) {
   const explainersDir = join(MODULE_DIR, 'explainers')
   const cliPath = join(MODULE_DIR, 'cli.mjs')
 
-  // ── --coverage: uncovered command count as the bare last line (P9.3-09-A) ────
+  // ── --coverage: uncovered command count as the bare last line ────
   if (flags.coverage === true) {
     let cliSource = ''
     try {
@@ -1359,10 +1360,10 @@ async function cmdExplain({ positionals, flags }) {
 }
 
 /**
- * doc-audit [--target manual|readme|all] [--count] [--json] (9.3-09, D-9.3-01/15) —
+ * doc-audit [--target manual|readme|all] [--count] [--json] —
  * the deterministic honesty audit over the manual (sma:v35 region) and README positioning
  * (sma:positioning region). Zero-LLM, read-only. `--count` prints the bare total violation
- * count as the LAST line and exits 0 (the P9.3-09-B/C scorer contract); `--json` prints
+ * count as the LAST line and exits 0 (the scorer contract); `--json` prints
  * the violation records (exit 0); human mode prints them readably and exits 1 when count>0
  * (CI-friendly). NOT hook-facing.
  */
@@ -1396,7 +1397,7 @@ async function cmdDocAudit({ flags, dirs }) {
  * build-index [--check] [--write] — regenerate the MEMORY.md index. Default is
  * DRY (print to stdout / report); --check compares against the committed file
  * without writing; --write is the ONLY path that touches .claude/memory/MEMORY.md
- * (kept off until the 9-14 flip). Corpus is fixture-safe via --corpus.
+ * (kept off until the index flip). Corpus is fixture-safe via --corpus.
  */
 async function cmdBuildIndex({ flags }) {
   const generator = await import('./lib/generator.mjs')
@@ -1426,7 +1427,7 @@ async function cmdBuildIndex({ flags }) {
   }
 
   const generated = generator.buildIndex({ corpusDir, tagsPath, commitHash, dateMap })
-  // FI-11 (9.1-13): the regen artifact set = MEMORY.md + INDEX-<area>.md files.
+  // the regen artifact set = MEMORY.md + INDEX-<area>.md files.
   const areaFiles = generator.buildAreaIndexes({ corpusDir, tagsPath, commitHash, dateMap })
 
   if (flags.check === true) {
@@ -1461,7 +1462,7 @@ async function cmdBuildIndex({ flags }) {
   }
 
   if (flags.write === true) {
-    // Writing the REAL index is gated to 9-14. --write exists for fixture
+    // Writing the REAL index is gated behind the index flip. --write exists for fixture
     // corpora + the future flip; fs-atomics has no raw-text writer, so the plain
     // node fs write is used directly here.
     const { writeFileSync } = await import('node:fs')
@@ -1487,11 +1488,11 @@ async function cmdBuildIndex({ flags }) {
  * emit [--check] [--formats <csv>] [--target-dir <d>] [--budget <id>=<bytes>]
  *      [--count <drift|over-budget|corrupt|missing>] [--json]
  *
- * One corpus, any agent (D-9.3-08): compile the learned memory corpus into
+ * One corpus, any agent: compile the learned memory corpus into
  * CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md under per-format byte budgets,
  * via managed export blocks — regenerable, never hand-edited in place. NOT
  * hook-facing: emit never commits/pushes; the diff is the user's to review
- * (T-9.3-03). commitHash + dateMap come from the same read-only execGit path
+ * commitHash + dateMap come from the same read-only execGit path
  * cmdBuildIndex uses. --count implies --check and prints the bare number last.
  */
 async function cmdEmit({ flags, dirs }) {
@@ -1584,7 +1585,7 @@ async function cmdLoad({ flags, dirs }) {
     /* fail-open */
   }
 
-  // 9.1-11 (B4): every note load via `sma load` is recorded as a citation.
+  // every note load via `sma load` is recorded as a citation.
   // Best-effort wiring — a citation failure never breaks the load (fail-open
   // at both layers: the loader swallows a throwing cite, recordCitation never throws).
   let cite
@@ -1614,7 +1615,7 @@ async function cmdLoad({ flags, dirs }) {
   return 0
 }
 
-// ── 9.3-05 (D-9.3-06/07): fragment catalog + `sma context` compiler ─────────
+// ── fragment catalog + `sma context` compiler ─────────
 
 /** ONE read-only git-log pass → {gitStats:{path:{lastCommit,commits}}} (mirrors
  * generator.computeDateMap posture: newest-first, first-seen date wins). A `%H|%cI`
@@ -1644,9 +1645,9 @@ function collectGitStats(execGit) {
 
 /**
  * catalog refresh [--full] | find <query> [--limit N] | --check [--count]
- * — the deterministic file catalog (9.3-05, D-9.3-06). cards.jsonl lives in the
+ * — the deterministic file catalog. cards.jsonl lives in the
  * gitignored .sma/catalog/. `--check --count` prints the drift count (0 clean, -1 when
- * no catalog is built — the honest not-built sentinel, P9.3-05-A's instrument).
+ * no catalog is built — the honest not-built sentinel, the instrument).
  * Direct-CLI, never hook-facing.
  */
 async function cmdCatalog({ positionals, flags, dirs }) {
@@ -1778,8 +1779,8 @@ async function cmdCatalog({ positionals, flags, dirs }) {
 /**
  * context "<task>" [--budget N] | score [--count] | miss "<q>" --expected <path> |
  *         exam [--count] | --selftest
- * — the deterministic budgeted context compiler (9.3-05, D-9.3-07). The numeric-last-line
- * instruments (`--selftest`, `score --count`, `exam --count`) are the P9.3-05-B/C scorers.
+ * — the deterministic budgeted context compiler. The numeric-last-line
+ * instruments (`--selftest`, `score --count`, `exam --count`) are the scorers.
  * Direct-CLI, never hook-facing.
  */
 async function cmdContext({ positionals, flags, dirs }) {
@@ -1804,7 +1805,7 @@ async function cmdContext({ positionals, flags, dirs }) {
     const b = pack.compilePack(args)
     const identical = a.packMd === b.packMd && a.manifestJson === b.manifestJson ? 1 : 0
     if (wantsJson(flags)) printJson({ selftest: true, deterministic: identical === 1, packId: a.packId, bytes: a.manifest.bytes })
-    process.stdout.write(`${identical}\n`) // numeric last line (P9.3-05-B)
+    process.stdout.write(`${identical}\n`) // numeric last line
     return identical === 1 ? 0 : 1
   }
 
@@ -1838,7 +1839,7 @@ async function cmdContext({ positionals, flags, dirs }) {
     const grown = pack.growExam({ contextDir: dirs.contextDir })
     if (wantsJson(flags)) printJson({ ...scored, examAdded: grown.added, examTotal: grown.total })
     else if (flags.count !== true) process.stdout.write(`SMA context score: purity ${scored.purityPct}% · settled ${scored.settledPacks} · exam +${grown.added}\n`)
-    if (flags.count === true) process.stdout.write(`${scored.purityPct}\n`) // numeric last line (P9.3-05-C)
+    if (flags.count === true) process.stdout.write(`${scored.purityPct}\n`) // numeric last line
     return 0
   }
 
@@ -1916,11 +1917,12 @@ async function cmdContext({ positionals, flags, dirs }) {
 }
 
 /**
- * pre — the `sma pre` PreToolUse MULTIPLEXER (9.2-02, D-9.2-04). ONE node run per
+ * pre — the `sma pre` PreToolUse MULTIPLEXER. ONE node run per
  * Edit/Write/Bash: reads the event once, builds the SHARED ctx (identity + heartbeat
  * + seen loaded once), dispatches the ordered PRE_CHECKS pipeline (collision → reflex
  * → gates, later + airbag + spend), merges output under the fail-open WARN / soft-deny
- * posture, and appends a bounded per-stream timing sample so S7 stays measurable in
+ * posture, and appends a bounded per-stream timing sample so the self-cost of the
+ * hook set stays measurable in
  * the field. Replaces the 3 legacy spawns. Hook-facing: exit 0 always.
  */
 async function cmdPre({ dirs }) {
@@ -1959,7 +1961,7 @@ async function runSingleStream(dirs, id) {
  * runStreamCollect(dirs, id, evt) → {warns, deny}. Runs ONE PRE_CHECKS stream against an
  * ALREADY-READ event (stdin is read once by the caller) and returns its collected output
  * WITHOUT printing — the shared seam that lets a single hook process host a stream inline
- * (gap C: fold the Task-cap spend stream into the one pretask-pack spawn). Honors the
+ * (folding the Task-cap spend stream into the one pretask-pack spawn). Honors the
  * stream's tool scope, opt-in gate + kill-switch (the stream owns them), mayDeny, and the
  * shared-seen save. Fail-open by construction — never throws.
  */
@@ -2011,7 +2013,7 @@ async function cmdReflexCheck({ dirs }) {
  * only mayDeny stream — a soft-deny still surfaces permissionDecision 'deny').
  */
 async function cmdGatesCheck({ dirs }) {
-  // 9.2-10 (D-9.2-14) — STPA auto-re-arm on the RARE path ONLY: consult the disarm
+  // STPA auto-re-arm on the RARE path ONLY: consult the disarm
   // leases solely when a gate's own kill env is actually set (zero extra IO otherwise —
   // plan 02 SLO untouched). A 're-arm' decision scrubs that kill env from THIS one-shot
   // process's env so the gate fires its advisory WARN again (WARN tier only; never a
@@ -2034,7 +2036,7 @@ async function cmdGatesCheck({ dirs }) {
 }
 
 /**
- * airbag-check — the git airbag hook (9.2-05, D-9.2-08). The pre-less FALLBACK for
+ * airbag-check — the git airbag hook. The pre-less FALLBACK for
  * an install that has not adopted the `sma pre` multiplexer; the canonical wiring is
  * `pre` (the airbag rides inside it). Delegates to the SAME airbag stream in PRE_CHECKS
  * (the only extra deny-capable stream) — honoring its kill-switch (SMA_AIRBAG_DISABLE)
@@ -2045,9 +2047,9 @@ async function cmdAirbagCheck({ dirs }) {
 }
 
 /**
- * spend-check — the deterministic spend-ledger hook (9.2-09, D-9.2-13). A pre-less
+ * spend-check — the deterministic spend-ledger hook. A pre-less
  * FALLBACK verb for an install that wires it standalone; the canonical wiring is NOT a
- * separate spawn — the Task-cap spend stream rides inside `pretask-pack` (gap C, one Task
+ * separate spawn — the Task-cap spend stream rides inside `pretask-pack` (one Task
  * spawn) and inside the `pre` multiplexer. Delegates to the SAME spend stream in PRE_CHECKS
  * (a deny-capable stream that denies ONLY the Task tool past a configured cap) — honoring
  * its opt-in gate (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE). HOOK_FACING: exit 0.
@@ -2078,7 +2080,7 @@ async function makeRepoGitRunner() {
 
 /**
  * undo [--to <id>] [--dry-run] [--yes] [--json] — the one-action airbag restore
- * (9.2-05). NOT hook-facing (writes the working tree — an explicit user action).
+ * NOT hook-facing (writes the working tree — an explicit user action).
  * Without --yes it PREVIEWS the restore plan (zero writes) + the --yes command;
  * --dry-run always previews; --yes executes restoreSnapshot (which self-snapshots first).
  */
@@ -2125,8 +2127,8 @@ async function cmdUndo({ flags, dirs }) {
 }
 
 /**
- * airbag <list|prune|probe|stats> [--json] — snapshot admin + the S2 instruments.
- * NOT hook-facing. probe prints 0/1 as the LAST line (P9.2-05-C scorer); stats +
+ * airbag <list|prune|probe|stats> [--json] — snapshot admin + its instruments.
+ * NOT hook-facing. probe prints 0/1 as the LAST line (scorer); stats +
  * coverage/latency come from the ONE airbag.benchProviders path (no drift vs bench).
  */
 async function cmdAirbag({ positionals, flags, dirs }) {
@@ -2137,7 +2139,7 @@ async function cmdAirbag({ positionals, flags, dirs }) {
     const p = airbag.nativeCheckpointProbe({ env: process.env })
     if (wantsJson(flags)) printJson(p)
     else process.stdout.write(`SMA airbag probe: native=${p.native} (probeVersion ${p.probeVersion})\n`)
-    process.stdout.write(`${p.native ? 1 : 0}\n`) // numeric LAST line — the P9.2-05-C scorer
+    process.stdout.write(`${p.native ? 1 : 0}\n`) // numeric LAST line — the scorer
     return 0
   }
 
@@ -2191,7 +2193,7 @@ async function cmdAirbag({ positionals, flags, dirs }) {
   return sub ? 1 : 0
 }
 
-// ── 9.2-09 (D-9.2-13): the deterministic spend ledger ──────────────────────────
+// ── the deterministic spend ledger ──────────────────────────
 
 /** Resolve the repo root for local-session-log discovery (fail-open → cwd). */
 async function resolveRepoRootForSpend() {
@@ -2210,9 +2212,9 @@ async function resolveRepoRootForSpend() {
  * The `sma spend` report — "where did the window go" from local files alone, in
  * O(appended bytes) via the incremental cache. NOT hook-facing (the hot path is
  * `spend-check`). `--stat <name>` prints EXACTLY ONE number as the final stdout line
- * (the predict-score scorer contract, 9.1-08). `set-cap` writes the window budget
+ * (the predict-score scorer contract). `set-cap` writes the window budget
  * with provenance. When probeNativeSpend().native, the report leads with the
- * standing-down banner (D-9.2-05a). Fail-open — never wedges anything.
+ * standing-down banner. Fail-open — never wedges anything.
  */
 async function cmdSpend({ positionals, flags, dirs }) {
   const spend = await import('./lib/spend.mjs')
@@ -2235,9 +2237,9 @@ async function cmdSpend({ positionals, flags, dirs }) {
     return 0
   }
 
-  // lane <open|close|report|derive> — the per-lane economy budgets (9.4-06).
+  // lane <open|close|report|derive> — the per-lane economy budgets.
   if (sub === 'lane') return cmdSpendLane({ positionals, flags, dirs })
-  // self-cost — SMA's own static per-session injection overhead (9.4-06).
+  // self-cost — SMA's own static per-session injection overhead.
   if (sub === 'self-cost') return cmdSpendSelfCost({ flags, dirs })
 
   const repoRoot = await resolveRepoRootForSpend()
@@ -2312,12 +2314,12 @@ async function cmdSpend({ positionals, flags, dirs }) {
 /**
  * spend lane <open <fix|quick|batch|build>|close [--lane L] [--abandon]|reap [--hours N]|
  *   report|derive> [--json] | spend lane --selftest | spend lane --stat
- *   max-lane-closed-runs — the per-lane economy budgets (9.4-06). Budgets derive ONLY
+ *   max-lane-closed-runs — the per-lane economy budgets. Budgets derive ONLY
  *   from OUR own closed-run percentiles (p75); a lane with fewer than 5 closed clean runs
  *   stays report-only. `close` attributes the run from the book, and on an over-budget
  *   CLEAN run CONSUMES calibration.appendVerdict + predict.draftLessonFromMiss (the
  *   2026-06-19 incident as a mechanism). Overlap-flagged runs are excluded from
- *   derivation and never score a miss (CH-9.4-06-1). Fail-open. 2026-07-21: close
+ *   derivation and never score a miss. Fail-open. 2026-07-21: close
  *   pairs via pickOpenRunToClose (own newest → newest overall, cross-terminal noted) —
  *   per-process terminal ids never matched, the ledger had 0 closed runs ever; `reap`
  *   closes stranded opens as abandoned (overlap:true, never shape a budget).
@@ -2330,14 +2332,14 @@ async function cmdSpendLane({ positionals, flags, dirs }) {
   if (flags.selftest === true) {
     const ok = await economy.laneSelftest()
     if (wantsJson(flags)) printJson({ selftest: 'spend-lane', ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract, P9.4-06-B)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
   if (flags.stat) {
     const name = String(flags.stat)
     const { runs } = economy.readLaneRuns({ spendDir })
     const value = name === 'max-lane-closed-runs' ? economy.maxLaneClosedRuns(runs) : 0
-    process.stdout.write(`${value}\n`) // numeric LAST line (P9.4-06-F accrual)
+    process.stdout.write(`${value}\n`) // numeric LAST line (accrual)
     return 0
   }
 
@@ -2509,7 +2511,7 @@ async function cmdSpendLane({ positionals, flags, dirs }) {
 
 /**
  * spend self-cost [--json] | spend self-cost --stat self-cost-tokens — the SMA self-cost
- * meter (9.4-06). Measures the framework's OWN static per-session injection overhead
+ * meter. Measures the framework's OWN static per-session injection overhead
  * (SMA:RULES span + emitted corpus block span in CLAUDE.md + MEMORY.md core load) and
  * names what is NOT counted (variable per-turn hook stdout). caveman's ~1-1.5k/turn caveat
  * turned into our feature; no other framework meters its own overhead. Read-only, fail-open.
@@ -2523,7 +2525,7 @@ async function cmdSpendSelfCost({ flags, dirs }) {
   if (flags.stat) {
     const name = String(flags.stat)
     const value = name === 'self-cost-tokens' ? report.total : 0
-    process.stdout.write(`${value}\n`) // numeric LAST line (P9.4-06-C scorer)
+    process.stdout.write(`${value}\n`) // numeric LAST line (scorer)
     return 0
   }
   if (wantsJson(flags)) {
@@ -2541,7 +2543,7 @@ async function cmdSpendSelfCost({ flags, dirs }) {
 /**
  * memory stats [--json] [--top N] | memory stats --stat core-tokens|corpus-tokens |
  *   memory stats --selftest — the deterministic, VERSIONED corpus token-cost report
- *   (9.4-06). Prices MEMORY.md (core load), each note, each INDEX-*.md, and the top-N
+ * Prices MEMORY.md (core load), each note, each INDEX-*.md, and the top-N
  *   heaviest, with ESTIMATOR_VERSION stamped so numbers reproduce run-to-run and are never
  *   billing truth. NOT hook-facing. Compress is DEFERRED by design (memory stats is its
  *   evidence gate — no corpus rewrite in this plan). Fail-open.
@@ -2573,7 +2575,7 @@ async function cmdMemory({ positionals, flags, dirs }) {
   if (flags.selftest === true) {
     const ok = economy.memoryStatsSelftest()
     if (wantsJson(flags)) printJson({ selftest: 'memory-stats', ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (P9.4-06-A)
+    process.stdout.write(`${ok}\n`) // numeric LAST line
     return ok === 1 ? 0 : 1
   }
 
@@ -2847,8 +2849,8 @@ const ERASE_SURFACE_WORDS = Object.freeze({
 /**
  * The four transitions in the words a person actually needs, and nothing else.
  *
- * D-11-06 says the internal states live underneath and nobody is obliged to
- * learn the difference between them. «Underneath» is not «hidden»: the command
+ * The rule the table encodes: the internal states live underneath and nobody is
+ * obliged to learn the difference between them. «Underneath» is not «hidden»: the command
  * prints WHICH state it applied and what that means, and the state is in the
  * record's own frontmatter afterwards. A machine can read `status`; a person
  * reads the sentence. Both come from this one table, so they cannot disagree.
@@ -2876,7 +2878,7 @@ const FORGET_STATES = Object.freeze({
   }),
 })
 
-/** The storage classes in the who-sees-it words D-11-04 asked for. */
+/** The storage classes in who-sees-it words, not in engine vocabulary. */
 const STORAGE_CLASS_WORDS = Object.freeze({
   shared: 'общая память проекта, едет с репозиторием',
   'this-machine-only': 'только на этой машине, в git не попадает',
@@ -2904,12 +2906,12 @@ function forgetLocate(id, stores) {
 
 /**
  * memory forget <id> — the ONE user-facing way to make the system stop believing
- * something (D-11-06).
+ * something.
  *
  * A subcommand of `memory`, not a verb of its own: the corpus namespace already
  * exists and this is something done TO the corpus. The top-level HANDLERS table
  * gains no key, so the documented verb count is unchanged — the same precedent
- * `memory index` set in phase 10 (D-11-08).
+ * `memory index` set in phase 10.
  *
  * THE STATE IS CHOSEN FOR THE PERSON, AND THEN SHOWN. A forget that names a
  * replacement supersedes. A forget that names none REVOKES — the strongest
@@ -3120,7 +3122,7 @@ async function refreshForgetIndexes({ corpusDir, repoRoot }) {
  * a terminal, so a missing one cannot be mistaken for agreement — the failure
  * mode that turns a guard into decoration.
  *
- * THE CALLER CONTRACT IS HONOURED HERE OR NOWHERE (D-11-DEFER-14). `eraseRecord`
+ * THE CALLER CONTRACT IS HONOURED HERE OR NOWHERE. `eraseRecord`
  * refuses to invent the paths of the `.sma` stores it would delete from, and it
  * cannot run git to order a rebuilt index. Both are passed from here: without
  * the store paths an erase silently skips the this-machine-only store and the
@@ -3620,10 +3622,10 @@ function truncate(s, n) {
 }
 
 /**
- * breaker [list|re-arm <ruleId>] [--json] — the loop-breaker admin (9.2-09). NOT
+ * breaker [list|re-arm <ruleId>] [--json] — the loop-breaker admin. NOT
  * hook-facing. `list` shows every soft-disabled SMA rule + its compensating control;
  * `re-arm <ruleId>` deletes the marker (re-enabling the rule) and journals the re-arm
- * with provenance (the D-9-09 force-clear idiom). Markers are plan 10's disarm-path input.
+ * with provenance (the force-clear idiom). Markers are plan 10's disarm-path input.
  */
 async function cmdBreaker({ positionals, flags, dirs }) {
   const breaker = await import('./lib/breaker.mjs')
@@ -3657,7 +3659,7 @@ async function cmdBreaker({ positionals, flags, dirs }) {
   return 0
 }
 
-// ── 9.2-06 (D-9.2-09): the flight recorder — capsule / restore / resume / handoff ─
+// ── the flight recorder — capsule / restore / resume / handoff ─
 
 /**
  * extractStateSlices(statePath) -> {position, blockers}. Reads STATE.md raw and pulls
@@ -3721,7 +3723,7 @@ async function gatherExecState(dirs) {
   }
   if (!best) return null
   const planId = best.replace(/\.jsonl$/, '')
-  const [phase, plan] = planId.split(/-(?=[^-]*$)/) // split on the LAST dash: "9.2-06" -> ["9.2","06"]
+  const [phase, plan] = planId.split(/-(?=[^-]*$)/) // split on the LAST dash: "3.1-04" -> ["3.1","04"]
   try {
     const ej = await import('./lib/exec-journal.mjs')
     const { events } = ej.read({ phase, plan, execDir: dirs.execDir })
@@ -3858,12 +3860,12 @@ function resumeNextStep(inputs) {
  * precompact-capsule (HOOK_FACING) — the NEW PreCompact hook. Kill-switch/probe first,
  * then GATHER (each source fail-open) -> buildCapsule -> writeCapsule. NO stdout on
  * success (hooks stay silent). Exit 0 unconditionally (main() wraps HOOK_FACING). A
- * capsule failure degrades to no-capsule, NEVER a blocked compaction (T-9.2-06B).
+ * capsule failure degrades to no-capsule, NEVER a blocked compaction.
  */
 async function cmdPrecompactCapsule({ dirs }) {
   if (isEnvOn(process.env.SMA_FLIGHT_DISABLE)) return 0
   const flight = await import('./lib/flight.mjs')
-  if (flight.nativeProbe({ env: process.env }).native) return 0 // bridge stands down (D-9.2-05)
+  if (flight.nativeProbe({ env: process.env }).native) return 0 // bridge stands down
 
   const evt = readStdinJson()
   const sessionToken = windowTokenFrom(evt)
@@ -3921,9 +3923,9 @@ async function cmdHandoff({ flags, dirs }) {
 
 /**
  * flight <probe|determinism-check|tail [n]> — the bridge instruments. Direct-CLI.
- *   probe             -> prints the digit 0|1 as the LAST line (P9.2-06-03 scorer).
+ *   probe             -> prints the digit 0|1 as the LAST line (scorer).
  *   determinism-check -> gathers inputs ONCE, buildCapsule twice with identical inputs
- *                        (+ injected now), byte-compares, prints 1|0 last (P9.2-06-02).
+ *                        (+ injected now), byte-compares, prints 1|0 last.
  *   tail [n]          -> prints the last n flight marks.
  */
 async function cmdFlight({ positionals, flags, dirs }) {
@@ -3934,7 +3936,7 @@ async function cmdFlight({ positionals, flags, dirs }) {
     const p = flight.nativeProbe({ env: process.env })
     if (wantsJson(flags)) printJson(p)
     else process.stdout.write(`SMA flight probe: native=${p.native} (${p.reason})\n`)
-    process.stdout.write(`${p.native ? 1 : 0}\n`) // numeric LAST line — the P9.2-06-03 scorer
+    process.stdout.write(`${p.native ? 1 : 0}\n`) // numeric LAST line — the scorer
     return 0
   }
 
@@ -3944,7 +3946,7 @@ async function cmdFlight({ positionals, flags, dirs }) {
     const b = flight.buildCapsule(inputs)
     const identical = Buffer.from(a, 'utf8').equals(Buffer.from(b, 'utf8')) ? 1 : 0
     if (wantsJson(flags)) printJson({ deterministic: identical === 1, bytes: Buffer.byteLength(a, 'utf8') })
-    process.stdout.write(`${identical}\n`) // numeric LAST line — the P9.2-06-02 scorer
+    process.stdout.write(`${identical}\n`) // numeric LAST line — the scorer
     return 0
   }
 
@@ -3999,7 +4001,7 @@ function spawnCountFromSettings(settingsPath) {
 }
 
 /**
- * pre-bench — the deterministic, re-runnable SLO instrument (9.2-02, D-9.2-04).
+ * pre-bench — the deterministic, re-runnable SLO instrument.
  * NOT hook-facing (direct CLI; may exit 1). The V2 scorer parses the bare numeric
  * LAST line, so every scorer-facing mode ends with one.
  *
@@ -4046,7 +4048,7 @@ async function cmdPreBench({ flags }) {
       // A FRESH throwaway .sma per fixture — each golden fixture is an INDEPENDENT single
       // tool call (one window, one session). A shared root would let fixture N see fixture
       // N-1's session lease, which never happens in a real tool call and would spuriously
-      // trip the always-on fingerprint stream's ambient digest (9.3-13). Per-fixture
+      // trip the always-on fingerprint stream's ambient digest. Per-fixture
       // isolation is the faithful model of the consolidation the parity metric verifies.
       const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-parity-'))
       const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
@@ -4100,7 +4102,7 @@ async function cmdPreBench({ flags }) {
       const input = JSON.stringify(fx.evt)
       const t0 = process.hrtime.bigint()
       try {
-        // fixed literal argv — no user-input interpolation (T-9.2-06); fresh temp
+        // fixed literal argv — no user-input interpolation; fresh temp
         // .sma so bench runs never pollute the live journal/seen/perf stores.
         execFileSync(process.execPath, [cliPath, 'pre'], {
           input,
@@ -4133,22 +4135,22 @@ async function cmdPreBench({ flags }) {
     `SMA pre-bench — FULL child-spawn wall-clock (node boot included), n=${durations.length}\n` +
       `  p50 ${p50} ms · p95 ${p95} ms · p99 ${p99} ms · max ${max} ms · SLO p95 <= 300 ms\n`,
   )
-  // the bare numeric LAST line — what the V2 scorer parses (PRED-9.2-02-A).
+  // the bare numeric LAST line — what the V2 scorer parses.
   process.stdout.write(`${p95}\n`)
   return 0
 }
 
 /**
- * stall-check — the P5 stall detector consumer (9.1-21, B16). A PostToolUse
+ * stall-check — the stall detector consumer. A PostToolUse
  * hook (NEW hook type for SMA — the security guard's Stop/SubagentStop are a
  * different, untouched surface). Reads the tool event JSON from stdin, appends
  * a compact event to the per-session rolling window (.sma/stall/<session>.json),
- * runs the four DETERMINISTIC StuckDetector rules (never LLM-judged — RESEARCH
- * Anti-pattern A1), and on detection emits an ADVISORY additionalContext nudge
- * naming the pattern + a break action. NEVER blocks the tool call (T-9.1-45:
- * fail-open parse + bounded state + HOOK_FACING exit-0). Dedup: one nudge per
+ * runs the four DETERMINISTIC StuckDetector rules (never LLM-judged — an
+ * LLM-judged stall detector is a documented anti-pattern), and on detection emits
+ * an ADVISORY additionalContext nudge naming the pattern + a break action. NEVER
+ * blocks the tool call (fail-open parse + bounded state + HOOK_FACING exit-0). Dedup: one nudge per
  * pattern per session via the reflex seen-store under 'stall:' keys.
- * Kill-switch: SMA_STALL_DISABLE (T-9.1-46).
+ * Kill-switch: SMA_STALL_DISABLE.
  */
 async function cmdStallCheck({ dirs }) {
   const evt = readStdinJson()
@@ -4164,10 +4166,10 @@ async function cmdStallCheck({ dirs }) {
     const events = stall.recordEvent(evt, { stallDir: dirs.stallDir, sessionToken })
     const detection = stall.detect(events)
 
-    // ttc first-edit recorder (9.2-01, S5 instrument). Additive, fail-open: on the
+    // ttc first-edit recorder (a time-to-first-change instrument). Additive, fail-open: on the
     // FIRST Edit|Write of a session write ONE ttc marker so bench can measure
     // session-start -> first-Edit. A bench bug here must NEVER break stall-check, so
-    // the whole call is wrapped (T-9.2-03). Plan 02's `sma pre` multiplexer will
+    // the whole call is wrapped. Plan 02's `sma pre` multiplexer will
     // absorb this like every other consumer.
     try {
       const toolName = typeof evt.tool_name === 'string' ? evt.tool_name : ''
@@ -4187,7 +4189,7 @@ async function cmdStallCheck({ dirs }) {
         bench.recordFirstEdit({ toolName, sessionToken, dirs, registeredAt })
       }
     } catch {
-      /* fail-open — the ttc recorder never wedges stall-check (T-9.2-03) */
+      /* fail-open — the ttc recorder never wedges stall-check */
     }
 
     if (detection) {
@@ -4231,14 +4233,14 @@ async function cmdStallCheck({ dirs }) {
       }
     }
   } catch {
-    /* fail-open (C9) — a stall-check failure can NEVER wedge a session */
+    /* fail-open — a stall-check failure can NEVER wedge a session */
   }
 
-  // 9.2-06 (D-9.2-09) FLIGHT MARK SEAM — generalize the V2 exec-journal to ALL
+  // FLIGHT MARK SEAM — generalize the V2 exec-journal to ALL
   // sessions: every PostToolUse appends ONE mark line via THIS existing stall-check
-  // spawn (ZERO new per-tool-call process, D-9.2-04). Best-effort, fail-open. `target`
+  // spawn (ZERO new per-tool-call process). Best-effort, fail-open. `target`
   // is a file path for Edit/Write/Read or a first-token command SLUG for Bash — NEVER
-  // the full command line (secrets ride in command args, T-9.2-06A). When plan 02's
+  // the full command line (secrets ride in command args). When plan 02's
   // `sma pre` multiplexer absorbs stall-check, this seam rides along untouched.
   try {
     if (!isEnvOn(process.env.SMA_FLIGHT_DISABLE)) {
@@ -4265,10 +4267,10 @@ async function cmdStallCheck({ dirs }) {
       }
     }
   } catch {
-    /* fail-open — a mark append never wedges stall-check (D-9.2-04 premise) */
+    /* fail-open — a mark append never wedges stall-check (the one-spawn premise) */
   }
 
-  // 9.3-07 (D-9.3-13) — the WORKING-PULSE piggyback. PostToolUse activity IS the working
+  // the WORKING-PULSE piggyback. PostToolUse activity IS the working
   // signal, so the pulse rides THIS existing stall-check spawn — ZERO new per-tool-call
   // process (scorecard metric 6, the Track B cost envelope). setPulse writes the lease ONLY
   // on a transition (prev != 'working'), so a steady working session adds no fs churn; a
@@ -4282,7 +4284,7 @@ async function cmdStallCheck({ dirs }) {
       await notify.setPulse('working', { dirs, identity, sessionToken, env: process.env })
     }
   } catch {
-    /* fail-open — the pulse never wedges stall-check (P4/C9) */
+    /* fail-open — the pulse never wedges stall-check */
   }
 
   // ADVISORY output only — a PostToolUse additionalContext nudge, never a block.
@@ -4297,7 +4299,7 @@ async function cmdStallCheck({ dirs }) {
   return 0
 }
 
-// ── 9.3-07 (D-9.3-13) — native statusline segment + pulse CLI ────────────────
+// ── native statusline segment + pulse CLI ────────────────
 
 /** The canonical statusLine command this repo installs, and its wrap variant. */
 const SMA_STATUSLINE_CMD = 'node scripts/sma/cli.mjs statusline'
@@ -4483,7 +4485,7 @@ async function applyStatuslineInstall(sub, { settingsPath, dirs, by, now }) {
 /**
  * writeSettingsStatusLineOnly(path, settings, before) — assert every NON-statusLine key is
  * deep-equal to the pre-edit snapshot, then write with 2-space indent. If any other key would
- * change, abort WITHOUT writing (return false) — the never-clobber guarantee (T-9.3-07-03).
+ * change, abort WITHOUT writing (return false) — the never-clobber guarantee.
  */
 function writeSettingsStatusLineOnly(path, settings, before) {
   try {
@@ -4538,9 +4540,9 @@ async function statuslineSetWebhook({ positionals, flags, dirs }) {
 
 /**
  * statuslineStat(name, {dirs}) — the predict-score `--stat` contract: EACH prints a single
- * finite number as its LAST stdout line (9.1-08 parser). bench-render-p95-ms measures 20
+ * finite number as its LAST stdout line (parser). bench-render-p95-ms measures 20
  * warm renders; selftest-webhook-dedup / selftest-wrap-preserve run against throwaway temp
- * dirs (the real .sma/ and settings are NEVER touched — 9.2-08 preship selftest posture).
+ * dirs (the real .sma/ and settings are NEVER touched — preship selftest posture).
  */
 async function statuslineStat(name, { dirs }) {
   try {
@@ -4565,7 +4567,7 @@ async function statuslineStat(name, { dirs }) {
 }
 
 /** 20 warm renders (cache primed once) -> p95 in ms, rounded to 2 dp.
- * SCOPE HONESTY (P9.3-07-1): this measures the SMA SEGMENT render (readStatuslineState +
+ * SCOPE HONESTY: this measures the SMA SEGMENT render (readStatuslineState +
  * renderSegment) — the piece the <=100 ms prediction governs and the TTL cache controls.
  * The COMPOSED render additionally runs the user's own wrapped statusline command, which is
  * user code (typically 100-300 ms, acceptable for Claude Code statuslines) and deliberately
@@ -4593,7 +4595,7 @@ async function benchRenderP95(dirs) {
   return Math.round(p95 * 100) / 100
 }
 
-/** Run the P9.3-07-2 flap against a throwaway .sma + an injected in-process fetch recorder;
+/** Run the flap against a throwaway .sma + an injected in-process fetch recorder;
  * return the delivery count (expected 1). The real .sma/ is NEVER touched. */
 async function selftestWebhookDedup() {
   const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = await import('node:fs')
@@ -4686,7 +4688,7 @@ async function cmdPulse({ positionals, flags, dirs }) {
 }
 
 /**
- * gates-report [--json] — the D-9.1-13 promotion-evidence surface. Reads the
+ * gates-report [--json] — the promotion-evidence surface. Reads the
  * journal for 'gate' fires + 'gate-ack' false-positive acks and renders per-gate
  * fire counts and ack counts. NOT hook-facing (may exit 1 on a real error).
  */
@@ -4694,7 +4696,7 @@ async function cmdGatesReport({ flags, dirs }) {
   const journal = await import('./lib/journal.mjs')
   const { events, corrupt } = journal.readJournal({ journalDir: dirs.journalDir })
 
-  // ── --promotion-readiness (D-9.1-13): the ONLY sanctioned justification to arm a
+  // ── --promotion-readiness: the ONLY sanctioned justification to arm a
   // soft-deny gate. Per soft-deny-capable gate: observed fires, false-positive acks,
   // observation-window days, and a READY/NOT-READY verdict. READY requires >=7 days
   // observed AND >=5 fires AND 0 false-positive acks — an honest NOT-READY default on
@@ -4792,7 +4794,7 @@ async function cmdGatesReport({ flags, dirs }) {
 /**
  * gates-ack <eventRef> [--false-positive] [--gate <GATE-ID>] — record a
  * false-positive acknowledgement for a gate fire. Appends a 'gate-ack' journal
- * event that gates-report surfaces, feeding the D-9.1-13 promotion evidence
+ * event that gates-report surfaces, feeding the promotion evidence
  * (a gate with persistent false positives is NOT promoted). NOT hook-facing.
  */
 async function cmdGatesAck({ positionals, flags, dirs }) {
@@ -4824,11 +4826,11 @@ async function cmdGatesAck({ positionals, flags, dirs }) {
   return 0
 }
 
-/** The two gates that carry a soft-deny capability (D-9.1-13: 1-2 gates only). */
+/** The two gates that carry a soft-deny capability (1-2 gates only). */
 const SOFT_DENY_GATE_IDS = ['GATE-PUSH', 'GATE-MEMEDIT']
 
 /**
- * gates <override|mark-fullgate> — the D-9.1-13 soft-deny operator surface.
+ * gates <override|mark-fullgate> — the soft-deny operator surface.
  * NOT hook-facing (may exit 1 on a real error).
  */
 async function cmdGates({ positionals, flags, dirs }) {
@@ -4841,7 +4843,7 @@ async function cmdGates({ positionals, flags, dirs }) {
 
 /**
  * gates override <gateId> --yes --reason "..." — write a one-shot override token for a
- * soft-deny gate (force-clear-with-provenance UX, D-9.1-13). Prints gate/terminal/reason
+ * soft-deny gate (force-clear-with-provenance UX). Prints gate/terminal/reason
  * FIRST, requires an explicit --yes (the flag IS the confirmation — no TTY in this repo)
  * AND a --reason (provenance). The token is consumed on the next gate check and the
  * override use is journaled there — no silent bypass exists.
@@ -4896,7 +4898,7 @@ async function cmdGatesOverride({ positionals, flags, dirs }) {
 
 /**
  * gates mark-fullgate [--sha <sha>] [--json] — write the full-gate evidence marker for
- * HEAD (D-9.1-13). Called by /sma-ship AFTER the heavy gate passes: it lands
+ * HEAD. Called by /sma-ship AFTER the heavy gate passes: it lands
  * .sma/gates/fullgate-<sha>.json {sha, at, gate:'full', terminal} — exactly what
  * GATE-PUSH's soft-deny tier checks before allowing a push. The marker format lives here
  * (one place). NOT hook-facing.
@@ -4940,8 +4942,8 @@ async function cmdGatesMarkFullgate({ flags, dirs }) {
 }
 
 /**
- * force-clear <claim> [--yes] — the ONLY foreign-claim removal path (D-9-09,
- * terraform force-unlock style). Prints {who holds it, what, since when} first;
+ * force-clear <claim> [--yes] — the ONLY foreign-claim removal path
+ * (terraform force-unlock style). Prints {who holds it, what, since when} first;
  * requires an explicit --yes (an explicit flag IS the confirmation — no TTY
  * prompts in this repo's automation). On confirm: releaseSlot force path +
  * journal a 'steal' event with full provenance. Without --yes: refuse, exit 1,
@@ -4982,8 +4984,8 @@ async function cmdForceClear({ positionals, flags, dirs }) {
     return 1
   }
 
-  // 9.2-07 (D-9.2-11): a foreign-claim clear is a RISKY OP — it carries a burden-of-proof
-  // evidence record IN ADDITION to the D-9-09 --yes confirmation (this ADDS, replaces nothing).
+  // a foreign-claim clear is a RISKY OP — it carries a burden-of-proof
+  // evidence record IN ADDITION to the --yes confirmation (this ADDS, replaces nothing).
   const evidence = await import('./lib/evidence.mjs')
   const inlineChecks = typeof flags.checked === 'string' ? flags.checked.split(';').map((s) => s.trim()).filter(Boolean) : []
   let evidenceId = null
@@ -5014,7 +5016,7 @@ async function cmdForceClear({ positionals, flags, dirs }) {
     return 1
   }
 
-  // Journal the steal with full provenance (D-9-09).
+  // Journal the steal with full provenance.
   journal.appendEvent(
     {
       type: 'steal',
@@ -5025,7 +5027,7 @@ async function cmdForceClear({ positionals, flags, dirs }) {
     { terminalId: identity.terminalId, journalDir: dirs.journalDir },
   )
 
-  // 9.2-07 (D-9.2-11): journal the risky-op with its evidenceId — the P9.2-07-C denominator.
+  // journal the risky-op with its evidenceId — the denominator.
   journal.appendEvent(
     {
       type: 'risky-op',
@@ -5041,12 +5043,12 @@ async function cmdForceClear({ positionals, flags, dirs }) {
 }
 
 /**
- * preship — the consequences-law auto-block consumer the /sma-ship ritual runs
- * (9.2-08, D-9.2-12, ICE 648). Reads the V2 calibration ledger and BLOCKS
+ * preship — the consequences-law auto-block consumer the /sma-ship ritual runs.
+ * Reads the V2 calibration ledger and BLOCKS
  * (exit 1) on ANY open class-A event (a prediction miss in a trust domain, or a
  * claimed-pass / reproduced-fail divergence). NOT hook-facing — never spawned by
  * PreToolUse; enforcement is the exit code the ship ritual consumes, never a
- * hard deny (prohibition). Fail-open C9: a missing/empty ledger prints clean and
+ * hard deny (prohibition). Fail-open: a missing/empty ledger prints clean and
  * exits 0 (an absent ledger cannot block ship — the block needs POSITIVE evidence).
  *
  *   preship             plain: print open blocks + class-B WARN lines; exit 1 iff blocks
@@ -5058,7 +5060,7 @@ async function cmdForceClear({ positionals, flags, dirs }) {
 async function cmdPreship({ flags, dirs }) {
   const consequences = await import('./lib/consequences.mjs')
 
-  // --selftest: prove the engine cannot go blind silently (P9.2-08-2). The real
+  // --selftest: prove the engine cannot go blind silently. The real
   // ledger is NEVER read here — a throwaway mkdtemp dir with two synthetic events.
   if (flags.selftest) {
     const { mkdtempSync, rmSync } = await import('node:fs')
@@ -5147,7 +5149,7 @@ async function cmdPreship({ flags, dirs }) {
 
 /**
  * disposition <eventKey> --verdict <v> --reason <r> --yes — the founder gate and
- * the ONLY unblock path (D-9.2-12). Mirrors force-clear's provenance posture
+ * the ONLY unblock path. Mirrors force-clear's provenance posture
  * EXACTLY: prints what is being dispositioned FIRST, refuses without BOTH an
  * explicit --yes AND a --reason (an explicit flag IS the confirmation — no TTY
  * prompts in this repo's automation), then appends an append-only disposition
@@ -5221,7 +5223,7 @@ async function cmdDisposition({ positionals, flags, dirs }) {
 }
 
 /**
- * snapshot — the corpus snapshot lands with 9-13. Until then, degrade to a
+ * snapshot — the corpus snapshot ships in its own module. Until it is present, degrade to a
  * clean RU 'недоступно' message (no stack trace). Hook paths → exit 0; direct
  * CLI → exit 1 (module genuinely absent).
  */
@@ -5236,7 +5238,7 @@ async function cmdSnapshot({ flags, dirs }) {
       return 0
     }
   } catch {
-    /* module not present yet (9-13) — fall through to the clean message */
+    /* module not present yet — fall through to the clean message */
   }
   const msg = 'SMA: snapshot недоступен — модуль появится в 9-13 (snapshot).'
   if (wantsJson(flags)) {
@@ -5268,15 +5270,15 @@ function resolveCurrentVersion(flags, repoRoot) {
 
 /**
  * predict-score <plan-path> [--current-version <v>] [--json] — score a PLAN.md's `predictions:` block
- * DETERMINISTICALLY (9.1-08, B18): allowlist check -> run check_command ->
+ * DETERMINISTICALLY: allowlist check -> run check_command ->
  * numeric compare -> append every verdict to the per-domain calibration
  * ledger. Zero LLM anywhere in scoring. NOT hook-facing: exits 1 when any
  * 'error' verdict occurs (callers decide); a miss is a valid scoring outcome
  * -> exit 0.
  *
- * Scores `predictions:` ONLY. A `receipts:` block (SUMMARY build-time claims,
- * D-9.2-06) is `sma reverify` territory — never scored here, only reported as
- * skipped (R1/R2 false class-A lesson, 2026-07-10: wholesale-run re-scores of
+ * Scores `predictions:` ONLY. A `receipts:` block (SUMMARY build-time claims)
+ * is `sma reverify` territory — never scored here, only reported as
+ * skipped (a false class-A lesson, 2026-07-10: wholesale-run re-scores of
  * expected_sha256 receipts pinned over accruing .sma state are guaranteed
  * drift-misses).
  */
@@ -5291,7 +5293,7 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const { execSync } = await import('node:child_process')
 
   // The allowlist (SAFE_COMMAND_PATTERNS) has already gated BEFORE this
-  // runner is ever invoked (T-9.1-14) — scorePlan never calls it for a
+  // runner is ever invoked — scorePlan never calls it for a
   // non-matching command.
   const runCommand = (cmd) => execSync(cmd, { encoding: 'utf8', timeout: 120_000 })
 
@@ -5303,11 +5305,11 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   // A prediction whose horizon has not arrived is REGISTERED, not scored: no
   // verdict reaches the ledger, and it becomes scoreable once the horizon does.
   const notDue = scored.notDue ?? []
-  // R1/R2 false class-A lesson (2026-07-10): a SUMMARY's `receipts:` block is
+  // The false class-A lesson (2026-07-10): a SUMMARY's `receipts:` block is
   // `sma reverify` territory — predict-score NEVER scores it. Count it so a
   // wholesale run over SUMMARYs sees the skip explicitly instead of silence.
   const receiptsSkipped = predict.parseFrontmatterEntries(planPath, 'receipts').entries.length
-  // 9.3-02 (D-9.3-10) — stamp every verdict with the CURRENT model before it
+  // stamp every verdict with the CURRENT model before it
   // lands in the ledger, so the stale-priors guard can tell which model produced
   // each hit/miss. Fail-open: a stamp failure -> unstamped records, which the
   // guard's legacy fallback already handles (an unstamped prefix stays valid).
@@ -5319,7 +5321,7 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   }
   for (const r of records) calibration.appendVerdict(r, { calibrationDir: dirs.calibrationDir })
 
-  // B19 (9.1-09): every MISS auto-drafts a bug-lesson candidate into
+  // every MISS auto-drafts a bug-lesson candidate into
   // .claude/memory/drafts/ — draft only, never indexed; promotion is a
   // reviewed move gated by the 3 conditions documented in the draft header.
   const { basename: baseOf } = await import('node:path')
@@ -5391,7 +5393,7 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   return exitCode
 }
 
-// ── 9.2-03 (D-9.2-06/07): receipts reverify + journal chain CLI ─────────────
+// ── receipts reverify + journal chain CLI ─────────────
 
 /** Recursively list *-SUMMARY.md under a dir (sorted, fail-soft). */
 function walkSummaries(dir) {
@@ -5435,7 +5437,7 @@ async function cmdReverify({ flags, dirs }) {
 
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
 
-  // ── footprint receipt modes (9.4-07) — the economy ladder's deterministic
+  // ── footprint receipt modes — the economy ladder's deterministic
   // «claim vs git diff --numstat» receipt. Separate concern from the structural
   // receipts walk below, so these branch early. Zero LLM anywhere.
   if (flags['footprint-selftest']) {
@@ -5445,7 +5447,7 @@ async function cmdReverify({ flags, dirs }) {
     return ok === 1 ? 0 : 1
   }
   if (flags['footprint-overruns']) {
-    // count of undispositioned sma.economy footprint_overrun misses (scorer contract, P9.4-07-C).
+    // count of undispositioned sma.economy footprint_overrun misses (scorer contract).
     const { records } = calibration.readLedger({ calibrationDir: dirs.calibrationDir, domain: 'sma.economy' })
     const n = records.filter(
       (r) => r && r.metric === 'footprint_overrun' && r.verdict === 'miss' && (r.disposition == null || r.disposition === ''),
@@ -6204,18 +6206,18 @@ function normEol(s) {
 }
 
 /**
- * passport [--build | --verify | --check-badge | --json] (9.3-02, D-9.3-10) —
+ * passport [--build | --verify | --check-badge | --json] —
  * the calibration-passport surface. NOT hook-facing.
  *   --build       : buildSnapshot(live dirs) -> renderPassport -> PASSPORT.md,
  *                   renderBadgeBlock -> README managed block. Exit 0 always
  *                   (an honest hidden badge is a success, not an error).
  *   --verify      : fresh clone (committed evidence only) -> re-render from the
  *                   embedded snapshot -> byte-compare PASSPORT.md + README badge.
- *                   Prints 1/0 as the LAST line, ALWAYS exit 0 (P9.3-02-A).
+ *                   Prints 1/0 as the LAST line, ALWAYS exit 0.
  *   --check-badge : committed snapshot -> renderBadgeBlock vs the live README
- *                   block. 1/0 last line, exit 0 (P9.3-02-B).
+ *                   block. 1/0 last line, exit 0.
  *   --json (bare) : canonicalJson(parseSnapshot(committed PASSPORT.md)) — the
- *                   telemetry read surface for 9.3-07/08/09; missing -> {}.
+ *                   telemetry read surface every downstream reader uses; missing -> {}.
  *   --schema-check: bare 1/0 LAST line, always exit 0 — structural validity of
  *                   the read surface (accrual-proof receipt pin).
  */
@@ -6273,7 +6275,7 @@ async function cmdPassport({ flags, dirs }) {
     }
     const ok = passportMatch && badgeMatch ? 1 : 0
     if (wantsJson(flags)) printJson({ reproduced: ok, passportMatch, badgeMatch })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (P9.3-02-A scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return 0
   }
 
@@ -6293,7 +6295,7 @@ async function cmdPassport({ flags, dirs }) {
       ok = 0
     }
     if (wantsJson(flags)) printJson({ consistent: ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (P9.3-02-B scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return 0
   }
 
@@ -6340,9 +6342,9 @@ async function cmdPassport({ flags, dirs }) {
 }
 
 /**
- * model [--json] [--count sightings] [--set <id>] [--schema-check] (9.3-02,
- * D-9.3-10) — the model-version guard surface. `--count sightings` prints the
- * integer LAST line (P9.3-02-C). `--set <id>` records a manual sighting
+ * model [--json] [--count sightings] [--set <id>] [--schema-check] — the
+ * model-version guard surface. `--count sightings` prints the
+ * integer LAST line. `--set <id>` records a manual sighting
  * (source 'manual') for a harness that exposes no model id. `--schema-check`
  * prints bare 1/0, always exit 0 — the timeline's SHAPE, never its accruing
  * count (accrual-proof receipt pin). NOT hook-facing.
@@ -6375,7 +6377,7 @@ async function cmdModel({ flags, dirs }) {
   if (typeof flags.count === 'string') {
     const n = flags.count === 'sightings' ? timeline.sightings.length : 0
     if (wantsJson(flags)) printJson({ count: n, of: flags.count })
-    process.stdout.write(`${n}\n`) // integer LAST line (P9.3-02-C scorer contract)
+    process.stdout.write(`${n}\n`) // integer LAST line (scorer contract)
     return 0
   }
 
@@ -6398,7 +6400,7 @@ async function cmdModel({ flags, dirs }) {
  * excavate [repo-path] [--json] [--limit N] [--since ISO] [--max-catches N]
  *          [--write-drafts] [--stats --metric <approved-lessons|firing-ready-pct|determinism>]
  *
- * The adoption wedge (9.3-03, D-9.3-09): mine a STRANGER's git history READ-ONLY
+ * The adoption wedge: mine a STRANGER's git history READ-ONLY
  * and DETERMINISTICALLY for commit↔revert / typo-fix / red-CI fix-forward evidence,
  * and print CATCHES — «this reflex would have fired before this push, here». NOT
  * hook-facing (a direct CLI command; failures exit 1 honestly). Zero network, zero
@@ -6424,7 +6426,7 @@ async function cmdExcavate({ positionals, flags, dirs }) {
     } catch {
       n = metric === 'determinism' ? 0 : 0
     }
-    process.stdout.write(`${n}\n`) // numeric LAST line (D-9.3-16)
+    process.stdout.write(`${n}\n`) // numeric LAST line
     return 0
   }
 
@@ -6466,7 +6468,7 @@ async function cmdExcavate({ positionals, flags, dirs }) {
     return 0
   }
 
-  // opt-in draft writing (T-9.3-03C: default only PRINTS).
+  // opt-in draft writing (default only PRINTS).
   if (flags['write-drafts']) {
     const repoLabel = remoteUrl || repoPath
     const draftsDir = join('.claude', 'memory', 'drafts')
@@ -6491,7 +6493,7 @@ async function cmdExcavate({ positionals, flags, dirs }) {
 }
 
 /**
- * cmdDecisions — 9.5-02 (D-9.5-08) — the founder decision-corpus miner.
+ * cmdDecisions — the founder decision-corpus miner.
  *
  * `sma decisions mine [--limit N] [--dry] [--transcripts-dir P]` retrospectively
  * mines the founder's real decisions from LOCAL session transcripts into
@@ -6576,7 +6578,7 @@ async function cmdDecisions({ positionals, flags }) {
 }
 
 /**
- * cmdExam — 9.5-06 (D-9.5-08) — the replay exam (calibration metric).
+ * cmdExam — the replay exam (calibration metric).
  *
  * `sma exam build --seed N [--holdout P]` samples held-out founder-decision notes
  * deterministically, strips the real decision into a hidden `-key.jsonl`, and writes
@@ -6639,7 +6641,7 @@ async function cmdExam({ positionals, flags }) {
 
 /**
  * graderSelftest() -> 1|0 — the grade-the-grader pipeline proves itself end to
- * end in a THROWAWAY ledger (9.4-02, P9.4-02-A). The real .sma/ is NEVER
+ * end in a THROWAWAY ledger. The real .sma/ is NEVER
  * touched: record a satisfied verdict → inject a revert evidence within horizon
  * → score 'contradicted' → graderContradictionEvent → openBlocks counts 1 → a
  * founder disposition clears it → counts 0. Returns 1 iff the whole chain holds.
@@ -6681,17 +6683,17 @@ async function graderSelftest() {
 }
 
 /**
- * calibration [--domain <d>] [--json] — the B20 answer surface: per-domain
+ * calibration [--domain <d>] [--json] — the calibration answer surface: per-domain
  * hit-rate table + the low-calibration escalation list (hitRate < 0.6 при
  * n >= 5). Empty ledger -> honest empty state, exit 0.
  *
- * Grade-the-grader (9.4-02): `--grader` lists the graded track record of
+ * Grade-the-grader: `--grader` lists the graded track record of
  * separate-context verdicts with per-judge hit-rate + per-evidence-type
  * accounting; `--grader --stat recorded-verdicts` prints the bare count (scorer
- * contract, P9.4-02-C starvation sentinel); `--grader-record --plan <id>
+ * contract — a starvation sentinel); `--grader-record --plan <id>
  * --verdict <satisfied|unsatisfied> --source <...> [--horizon <spec>]` is the
- * MANDATORY feeding entry point (CH-9.4-02-1); `--grader-selftest` prints 1/0
- * (P9.4-02-A). Grader verdicts are themselves predictions — scored against
+ * MANDATORY feeding entry point; `--grader-selftest` prints 1/0
+ * Grader verdicts are themselves predictions — scored against
  * ground truth and sliced by judge model.
  */
 async function cmdCalibration({ flags, dirs }) {
@@ -6704,7 +6706,7 @@ async function cmdCalibration({ flags, dirs }) {
     return ok === 1 ? 0 : 1
   }
 
-  // ── --grader-record: the MANDATORY-feeding entry point (CH-9.4-02-1) ────────
+  // ── --grader-record: the MANDATORY-feeding entry point ────────
   if (flags['grader-record'] === true) {
     const planId = typeof flags.plan === 'string' ? flags.plan : null
     const verdict = flags.verdict
@@ -6738,7 +6740,7 @@ async function cmdCalibration({ flags, dirs }) {
     const graderRecords = records.filter((r) => r && r.kind === 'grader-verdict')
 
     // --stat recorded-verdicts: bare count as the LAST stdout line (scorer
-    // contract; the P9.4-02-C starvation sentinel — 0 is an HONEST miss).
+    // contract; the starvation sentinel — 0 is an HONEST miss).
     if (flags.stat === 'recorded-verdicts') {
       process.stdout.write(`${graderRecords.length}\n`)
       return 0
@@ -6749,7 +6751,7 @@ async function cmdCalibration({ flags, dirs }) {
     const byJudge = calibration.hitRateByJudge(scored)
 
     // Per-evidence-type accounting: revert/founder-rejection have live producers;
-    // red-ci/rework stay «manual until CI-terminal wiring» (CH-9.4-02-1) — the
+    // red-ci/rework stay «manual until CI-terminal wiring» — the
     // starvation is VISIBLE, never silent.
     const LIVE = ['revert', 'founder-rejection']
     const MANUAL = ['red-ci', 'rework']
@@ -6828,10 +6830,10 @@ async function cmdCalibration({ flags, dirs }) {
 }
 
 /**
- * usage [--dead-weight] [--json] — the B4 answer surface: per-note citation
+ * usage [--dead-weight] [--json] — the citation answer surface: per-note citation
  * counts (loads + reflex fires) with lastCitedAt; --dead-weight adds the
  * zero-citation list over the last N sessions (--sessions, default 10) — the
- * FI-9 demotion-ordering data source (least-recently-cited demotes first).
+ * the demotion-ordering data source (least-recently-cited demotes first).
  * Honest empty state when no ledger exists. NOT hook-facing.
  */
 async function cmdUsage({ flags, dirs }) {
@@ -6877,11 +6879,11 @@ async function cmdUsage({ flags, dirs }) {
 }
 
 /**
- * consolidate [--propose] [--digest] [--json] — the P3 consolidation review
- * pass (9.1-12, B5). PROPOSE-ONLY: renders consolidate.mjs's propose() output
+ * consolidate [--propose] [--digest] [--json] — the consolidation review
+ * pass. PROPOSE-ONLY: renders consolidate.mjs's propose() output
  * in the Pattern-3 contract (MERGE/PROMOTE/CONTRADICT/DIGEST lines under the
  * nothing-auto-committed banner). The lib NEVER writes; APPLYING any proposal
- * is the operator's reviewed edit (T-9.1-23). FI-9: memory is never deleted
+ * is the operator's reviewed edit. By law, memory is never deleted
  * or time-decayed — merge/promote/supersede only. --digest alone renders just
  * the reflection digest. NOT hook-facing: may exit 1 on a real error.
  */
@@ -6940,11 +6942,11 @@ async function cmdConsolidate({ flags, dirs }) {
 }
 
 /**
- * trim [--apply] [--json] [--corpus <dir>] [--state <path>] — the FI-9
- * demotion-only trimmer (9.1-13): the auto-repair the size lints name.
+ * trim [--apply] [--json] [--corpus <dir>] [--state <path>] — the
+ * demotion-only trimmer: the auto-repair the size lints name.
  * DRY-RUN by default (proposal print mirrors consolidate's banner); --apply
  * performs the demotions/splits/state-move through fs-atomics. Memory is
- * NEVER deleted or time-decayed — overflow moves DOWN a layer (FI-9).
+ * NEVER deleted or time-decayed — overflow moves DOWN a layer.
  * NOT hook-facing: may exit 1 on a real error.
  */
 async function cmdTrim({ flags, dirs }) {
@@ -7017,7 +7019,7 @@ async function cmdTrim({ flags, dirs }) {
 }
 
 /**
- * state <set-position|add-blocker|resolve-blocker|set-session> — the D-9.1-14
+ * state <set-position|add-blocker|resolve-blocker|set-session> — the
  * snapshot-semantics writer for STATE.md's machine-managed fenced region. Thin
  * wrappers over state-section.mjs; the fenced zones (Current Position / Open
  * Blockers / Active Sessions) are written ONLY here, atomically, with a
@@ -7108,16 +7110,16 @@ async function cmdState({ positionals, flags, dirs }) {
   return 1
 }
 
-// ─────────────────────────── exec-journal (P5, B14) ──────────────────────────
+// ─────────────────────────── exec-journal ──────────────────────────
 
 /**
  * `exec-journal append --phase X --plan NN --event task_complete --task n
  *   --wave w --commit <sha> --test "<cmd>" --file <path> --status green [--json]`
  * `exec-journal read --phase X --plan NN [--json]`
  *
- * The per-plan execution progress journal (9.1-20). NOT hook-facing — it is
+ * The per-plan execution progress journal. NOT hook-facing — it is
  * called at the workflow's task-commit / plan-complete steps and read at the
- * resume-ritual step. Appends are best-effort at the call site (T-9.1-44).
+ * resume-ritual step. Appends are best-effort at the call site.
  */
 async function cmdExecJournal({ positionals, flags, dirs }) {
   const sub = positionals[0]
@@ -7159,7 +7161,7 @@ async function cmdExecJournal({ positionals, flags, dirs }) {
     commitSha: flags.commit ?? null,
     status: flags.status ?? null,
   }
-  if (flags.reason != null) entry.reason = flags.reason // blocked-event payload (9.1-21)
+  if (flags.reason != null) entry.reason = flags.reason // blocked-event payload
   const record = execJournal.append(entry, key)
   if (wantsJson(flags)) {
     printJson({ ok: true, record })
@@ -7170,7 +7172,7 @@ async function cmdExecJournal({ positionals, flags, dirs }) {
 }
 
 /**
- * metrics [--json] — read-only process telemetry (9.1-24, B23, D-9.1-07). Reads
+ * metrics [--json] — read-only process telemetry. Reads
  * exec journals + the coordination journal + `git log` (READ-ONLY --name-only) and
  * prints lead time / rework rate / deviation counts. No writes, no network. Every
  * source is fail-open — a missing source yields that metric's honest empty marker.
@@ -7204,7 +7206,7 @@ async function cmdMetrics({ flags, dirs }) {
 
 /**
  * report [--out <path>] — render the LOCAL, self-contained static HTML report
- * (9.1-24, D-9.1-07): sessions, predictions, calibration, reflex firings,
+ * sessions, predictions, calibration, reflex firings,
  * collisions, corpus health, process metrics. Default out is <smaRoot>/report/
  * index.html (gitignored). Gathers every source FAIL-OPEN — a missing source
  * renders its honest empty state, never a fabricated number. Zero server, zero DB.
@@ -7310,7 +7312,7 @@ async function cmdReport({ flags, dirs }) {
 }
 
 /**
- * bench — the W0 measurement harness surface (9.2-01, D-9.2-02). Runs the
+ * bench — the measurement harness surface. Runs the
  * deterministic, zero-LLM 8-metric scorecard over the V2 journals + git history.
  * NOT hook-facing (a direct CLI; --freeze may hard-refuse before the freeze date).
  *
@@ -7419,14 +7421,14 @@ async function cmdBench({ positionals, flags, dirs }) {
     return res.ok ? 0 : 1
   }
 
-  // ── --coverage (P9.2-01-A instrument) ────────────────────────────────────
+  // ── --coverage (instrument) ────────────────────────────────────
   if (flags.coverage) {
     const metrics = bench.runAllMetrics(ctx)
     process.stdout.write(`${bench.coverageCount(metrics)}\n`)
     return 0
   }
 
-  // ── --timing (P9.2-01-B instrument) ──────────────────────────────────────
+  // ── --timing (instrument) ──────────────────────────────────────
   if (flags.timing) {
     const t0 = Number(process.hrtime.bigint())
     bench.runAllMetrics(ctx)
@@ -7442,7 +7444,7 @@ async function cmdBench({ positionals, flags, dirs }) {
       process.stderr.write(`SMA bench: неизвестная метрика «${flags.metric}»\n`)
       return 1
     }
-    // S7 self-cost: the base is a LIVE timing capture (spawn the wired hook set over
+    // self-cost: the base is a LIVE timing capture (spawn the wired hook set over
     // the fixture). Run it on demand when no base is persisted yet, or on --capture,
     // then read it back. The hooks are advisory/read-only (HOOK_FACING, exit 0).
     if (entry.id === 'self-cost' && (flags.capture || bench.readSelfCostBase(ctx).status !== 'measured')) {
@@ -7474,7 +7476,7 @@ async function cmdBench({ positionals, flags, dirs }) {
 }
 
 /**
- * captureSelfCost(bench, repoRoot, dirs, flags) — the S7 LIVE timing capture. Replays
+ * captureSelfCost(bench, repoRoot, dirs, flags) — the LIVE timing capture. Replays
  * the wired hook set over the fixture with a real execFile runner + hrtime clock and
  * persists `.sma/bench/selfcost.json` so readSelfCostBase surfaces it as measured.
  * The hooks are advisory/read-only and exit 0 (HOOK_FACING); a spawn failure just
@@ -7495,7 +7497,7 @@ async function captureSelfCost(bench, repoRoot, dirs, flags) {
     const hrtime = () => Number(process.hrtime.bigint() / 1000000n)
     bench.measureSelfCost({ fixturePath, cliPath, exec, hrtime, dirs, persist: true })
   } catch {
-    /* capture is best-effort — S7 stays pending-instrument if it fails */
+    /* capture is best-effort — self-cost stays pending-instrument if it fails */
   }
 }
 
@@ -7510,7 +7512,7 @@ function readFileSafe(path) {
 
 /**
  * buildBenchContext({dirs, repoRoot, flags}) — assemble the shared ctx the registry
- * measures read: dirs, planPaths (default S1 10-plan set), summaryPaths (2 dogfood
+ * measures read: dirs, planPaths (the default frozen 10-plan set), summaryPaths (2 dogfood
  * phases), runCommand (allowlisted execFile runner), gitLog, journalReader. Every
  * resolver is fail-open — a missing input yields an honest empty status downstream.
  */
@@ -7519,11 +7521,11 @@ async function buildBenchContext({ dirs, repoRoot, flags }) {
   const journal = await import('./lib/journal.mjs')
 
   // runCommand: OPT-IN (--run-verify). The blind re-verify's DETERMINISTIC, fresh-
-  // clone-reproducible base (P9.2-01-C) is the artifact contains-grep — pure file
+  // clone-reproducible base is the artifact contains-grep — pure file
   // reads. Re-running each plan's `pnpm vitest`/`node` verify command is expensive,
   // environment-sensitive (Windows cannot execFile `pnpm` directly), and therefore
   // NON-reproducible — so it is NOT wired into the routine snapshot. When wired, the
-  // inner is ALREADY isSafeCommand-checked upstream (T-9.2-01); split on spaces (the
+  // inner is ALREADY isSafeCommand-checked upstream; split on spaces (the
   // allowlist guarantees a safe charset) and execFile — NO shell.
   const runCommand =
     flags && flags['run-verify']
@@ -7586,7 +7588,7 @@ function existsSyncSafe(p) {
 }
 
 /**
- * resolveS1PlanSet(repoRoot) — the default frozen S1 sample: the last 10 completed
+ * resolveS1PlanSet(repoRoot) — the default frozen sample: the last 10 completed
  * 9.1 plans (sorted by plan number; completion = a sibling SUMMARY EXISTS). Blind:
  * only EXISTENCE is consulted, never a SUMMARY body.
  */
@@ -7605,7 +7607,7 @@ function resolveS1PlanSet(repoRoot) {
   }
 }
 
-/** resolveDogfoodSummaries(repoRoot) — the 2 most recent 9.1 phase SUMMARYs (S4 window). */
+/** resolveDogfoodSummaries(repoRoot) — the 2 most recent dogfood phase SUMMARYs (the sample window). */
 function resolveDogfoodSummaries(repoRoot) {
   try {
     const dir = join(repoRoot, '.planning/phases/9.1-sma-v2-prediction-reflex-10x')
@@ -7654,7 +7656,7 @@ ${rows}
 `
 }
 
-// ─────────────── 9.2-04 (D-9.2-10): subagent write-receipts + pack inheritance ───────
+// ─────────────── subagent write-receipts + pack inheritance ───────
 
 /** Resolve the parent terminalId for a window token (fail-open to 'unknown'). */
 async function resolveTerminalId(sessionToken) {
@@ -7810,15 +7812,15 @@ async function buildPackSources({ dirs, repoRoot }) {
 }
 
 /**
- * pretask-pack — the PreToolUse(matcher "Task") hook (9.2-04, D-9.2-10). Injects
+ * pretask-pack — the PreToolUse(matcher "Task") hook. Injects
  * the assembled context pack into every subagent spawn via `updatedInput` —
  * inheritance by construction. Acts ONLY on Task; anything else is a silent
  * pass-through. Kill-switch SMA_PACK_DISABLE=1 → no pack injection (compensating
  * control: subagent-verify still receipts every stop). Measures durationMs, writes a
  * spawn record, and journals a `subagent-pack` event so the p95 SLO stays measurable.
  *
- * gap C / PRED-9.2-02-B (D-9.2-04 one-spawn): this is the SOLE scripts/sma spawn on the
- * Task matcher — the 9.2-09 Task-cap spend soft-deny stream rides INSIDE it (runStreamCollect
+ * ONE SPAWN: this is the SOLE scripts/sma spawn on the
+ * Task matcher — the Task-cap spend soft-deny stream rides INSIDE it (runStreamCollect
  * over the one 'spend' PRE_CHECK), so there is never a second node process per Task PreToolUse.
  * A spend soft-deny short-circuits (deny wins, no pack injection); spend warns merge into the
  * pack output's additionalContext. Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE)
@@ -7828,7 +7830,7 @@ async function cmdPretaskPack({ dirs }) {
   const evt = readStdinJson()
   if (!evt || evt.tool_name !== 'Task') return 0 // non-Task → silent pass-through
 
-  // gap C / PRED-9.2-02-B (D-9.2-04 one-spawn): the Task-cap spend soft-deny stream rides
+  // ONE SPAWN: the Task-cap spend soft-deny stream rides
   // INSIDE this single Task PreToolUse spawn — never a second scripts/sma process. Same
   // consolidation seam as plan 02's `pre` multiplexer (runStreamCollect over the ONE stream).
   // Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE) are unchanged — the stream owns
@@ -7933,7 +7935,7 @@ async function cmdPretaskPack({ dirs }) {
 }
 
 /**
- * subagent-verify — the SubagentStop hook (9.2-04, D-9.2-10). Extracts every
+ * subagent-verify — the SubagentStop hook. Extracts every
  * claimed write from the stop's transcript and verifies each against the REAL git
  * tree (existence + dirty-state + commits-since-spawn), landing ONE receipt in the
  * shared journal with phantom writes flagged. Kill-switch SMA_RECEIPTS_DISABLE=1 →
@@ -8077,7 +8079,7 @@ async function cmdSubagentReceipts({ flags, dirs }) {
   return 0
 }
 
-// ── 9.3-06 (D-9.3-12): self-tuning enforcement — ladder / tune / curriculum ───
+// ── self-tuning enforcement — ladder / tune / curriculum ───
 
 /**
  * Assemble the ladder engine's inputs ONCE from the live journal + calibration
@@ -8120,7 +8122,7 @@ function isDemotedNoise(r) {
 /**
  * ladder [--json | --count-autofix | --noise-demoted-pct] — the tier table + benefit
  * stats. Each --count/--pct flag prints a BARE integer last line (the scorer contract)
- * and exits 0. This plan's own predictions (P9.3-06-01/02) are scored from these.
+ * and exits 0. The tier table's own predictions are scored from these.
  */
 async function cmdLadder({ flags, dirs }) {
   const { ladder, stats } = await ladderInputs(dirs)
@@ -8318,7 +8320,7 @@ async function cmdCurriculum({ flags, dirs }) {
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
-// ── 9.2-07 (D-9.2-11): /sma-grill adversarial gate + blind verifier + evidence ───
+// ── /sma-grill adversarial gate + blind verifier + evidence ───
 
 /** planId from a plan path: basename minus the -PLAN.md / -SUMMARY.md suffix. */
 function planIdFromPath(p) {
@@ -8396,23 +8398,23 @@ function parseYamlListBlock(text, key) {
 }
 
 /**
- * grill — the adversarial challenge gate CLI (D-9.2-11). Modes:
+ * grill — the adversarial challenge gate CLI. Modes:
  *   grill <plan> --challenge "promise::attack"        register a challenge
  *   grill <plan> --resolve <CH-id> --as converted --prediction <P-id>
  *   grill <plan> --resolve <CH-id> --as withdrawn|accepted-risk --reason|--disposition
  *   grill <plan> --gate                                print allowed/blocked; exit 1 if blocked
  *   grill <plan> --standing                            the economy-ladder standing challenge «which ladder rung?»
- *   grill --standing-selftest                          1/0 last line (P9.4-07-A)
+ *   grill --standing-selftest                          1/0 last line
  *   grill <plan> --land <CH-id>                        tag a landed pre-push defect
  *   grill --pre-push [--budget 3]                      budget-aware pre-push depth plan
- *   grill --stats --metric challenge-yield             numeric last line (P9.2-07-A)
+ *   grill --stats --metric challenge-yield             numeric last line
  * NOT hook-facing — the caller decides on the exit code.
  */
 async function cmdGrill({ positionals, flags, dirs }) {
   const grill = await import('./lib/grill.mjs')
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
 
-  // --standing-selftest → 1/0 last line (P9.4-07-A; no plan path needed).
+  // --standing-selftest → 1/0 last line (no plan path needed).
   if (flags['standing-selftest']) {
     const footprint = await import('./lib/footprint.mjs')
     const ok = await footprint.standingSelftest()
@@ -8469,8 +8471,8 @@ async function cmdGrill({ positionals, flags, dirs }) {
   const by = await resolveTerminalId().catch(() => 'unknown')
 
   // --standing → the economy ladder's standing challenge «which ladder rung?»
-  // (9.4-07). No claim -> register an open challenge (so --gate blocks per
-  // D-9.2-11, zero new gate code). A claim present -> resolve it as withdrawn.
+  // No claim -> register an open challenge (so --gate blocks through the
+  // existing gate, zero new gate code). A claim present -> resolve it as withdrawn.
   if (flags.standing) {
     const footprint = await import('./lib/footprint.mjs')
     const claim = footprint.parseFootprintClaim(planPath)
@@ -8558,9 +8560,9 @@ async function cmdGrill({ positionals, flags, dirs }) {
 }
 
 /**
- * blind-verify — tree-only re-derivation with the information barrier (D-9.2-11).
+ * blind-verify — tree-only re-derivation with the information barrier.
  *   blind-verify <plan>                        freeze blind verdicts, THEN compare claimed
- *   blind-verify --stats --metric divergence-count   numeric last line (P9.2-07-B)
+ *   blind-verify --stats --metric divergence-count   numeric last line
  * The blind pass NEVER reads a SUMMARY; the CLI parses the claimed side ONLY after the
  * freeze lands on disk. NOT hook-facing.
  */
@@ -8579,7 +8581,7 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
     process.stderr.write('usage: node scripts/sma/cli.mjs blind-verify <plan-path> | blind-verify --stats --metric divergence-count\n')
     return 1
   }
-  // INPUT BARRIER (D-9.2-11): the blind pass accepts ONLY a -PLAN.md. A SUMMARY/exec-journal
+  // INPUT BARRIER: the blind pass accepts ONLY a -PLAN.md. A SUMMARY/exec-journal
   // positional is refused HERE — before any freeze or ledger write — so an operator error can
   // never diff a report against itself and manufacture false class-A divergences (gap 2).
   if (blind.isForbiddenBlindPath(planPath)) {
@@ -8651,9 +8653,9 @@ function parseClaimedFromSummary(summaryPath) {
 }
 
 /**
- * evidence — write a burden-of-proof record for a risky op (D-9.2-11).
+ * evidence — write a burden-of-proof record for a risky op.
  *   evidence <op> --target ... --reason ... --checked "a; b; c"
- *   evidence --stats --metric coverage         numeric last line (P9.2-07-C)
+ *   evidence --stats --metric coverage         numeric last line
  * NOT hook-facing.
  */
 async function cmdEvidence({ positionals, flags, dirs }) {
@@ -8682,7 +8684,7 @@ async function cmdEvidence({ positionals, flags, dirs }) {
     process.stderr.write(`SMA evidence: запись отклонена — не хватает: ${res.missing.join(', ')}\n`)
     return 1
   }
-  // Journal the risky-op event referencing the evidenceId — the P9.2-07-C denominator.
+  // Journal the risky-op event referencing the evidenceId — the denominator.
   try {
     const journal = await import('./lib/journal.mjs')
     const terminalId = await resolveTerminalId().catch(() => 'unknown')
@@ -8700,7 +8702,7 @@ async function cmdEvidence({ positionals, flags, dirs }) {
 
 /**
  * integrity <hazards|shadow|disarms|disarm-renew> — the STPA disarm-path guard
- * admin (9.2-10, D-9.2-14). NOT hook-facing. Every --count-* flag prints a BARE
+ * admin. NOT hook-facing. Every --count-* flag prints a BARE
  * integer as the LAST output line (the V2 scorer's numeric-last-line contract).
  */
 async function cmdIntegrity({ positionals, flags, dirs }) {
@@ -8777,7 +8779,7 @@ async function cmdIntegrity({ positionals, flags, dirs }) {
 }
 
 /**
- * skeptic <sign|verify> <plan-path> — the Goodhart skeptic countersign (9.2-10).
+ * skeptic <sign|verify> <plan-path> — the Goodhart skeptic countersign.
  * `sign` MUST be run from a terminal DISTINCT from the plan's implementer (a
  * self-sign is rejected at verify time). NOT hook-facing.
  */
@@ -8819,9 +8821,9 @@ async function cmdSkeptic({ positionals, flags, dirs }) {
 }
 
 /**
- * canary <plant|score|sweep> — planted false-«done» canaries (9.2-10, S8). NOT
+ * canary <plant|score|sweep> — planted false-«done» canaries. NOT
  * hook-facing. `score --count-scored` prints the count of scored canaries as a
- * bare integer last line (P9.2-10-03, honest 0 on an empty ledger).
+ * bare integer last line (honest 0 on an empty ledger).
  */
 async function cmdCanary({ positionals, flags, dirs }) {
   const sub = positionals[0]
@@ -8886,7 +8888,7 @@ async function cmdCanary({ positionals, flags, dirs }) {
 }
 
 /**
- * nearmiss <text> — append a scoring-IMMUNE near-miss note (9.2-10, ASRS class).
+ * nearmiss <text> — append a scoring-IMMUNE near-miss note (ASRS class).
  * NO scoring path ever reads .sma/nearmiss/, so reporting is free. NOT hook-facing.
  */
 async function cmdNearmiss({ positionals, flags, dirs }) {
@@ -8910,7 +8912,7 @@ async function cmdNearmiss({ positionals, flags, dirs }) {
 }
 
 /**
- * cmdPreflight — 9.3-10 (D-9.3-17): the already-built pre-dispatch gate. Given a
+ * cmdPreflight — the already-built pre-dispatch gate. Given a
  * plan file it prints the deterministic built / partial / absent verdict of the plan's
  * must_haves against the REAL tree, before any executor is dispatched. Zero LLM tokens.
  *
@@ -8930,7 +8932,7 @@ async function cmdPreflight({ positionals, flags, dirs }) {
   const preflight = await import('./lib/preflight.mjs')
   const repoRoot = join(MODULE_DIR, '..', '..') // scripts/sma → repo root (cwd-independent)
 
-  // ── selftest: three bundled fixtures, twice, must be correct AND identical (P9.3-10-A).
+  // ── selftest: three bundled fixtures, twice, must be correct AND identical.
   if (flags.selftest === true) {
     const fixtures = [
       { name: 'built', expect: 0 },
@@ -8948,7 +8950,7 @@ async function cmdPreflight({ positionals, flags, dirs }) {
     } catch {
       ok = 0
     }
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
@@ -8981,7 +8983,7 @@ async function cmdPreflight({ positionals, flags, dirs }) {
   })
 
   if (flags.count === true) {
-    process.stdout.write(`${result.code}\n`) // verdict CODE as LAST line (P9.3-10-C)
+    process.stdout.write(`${result.code}\n`) // verdict CODE as LAST line
     return result.code === 0 ? 0 : result.code
   }
 
@@ -9008,9 +9010,9 @@ async function cmdPreflight({ positionals, flags, dirs }) {
 }
 
 /**
- * `sma arena` — the comparative benchmark arena scorer + static graphs page (9.3-11,
- * D-9.3-18). Direct-CLI, NOT hook-facing; the score path spends zero LLM tokens
- * and reads the 9.2-09 spend-adapter's version tags as its SOLE cost source (D-9.3-02).
+ * `sma arena` — the comparative benchmark arena scorer + static graphs page.
+ * Direct-CLI, NOT hook-facing; the score path spends zero LLM tokens
+ * and reads the spend-adapter's version tags as its SOLE cost source.
  *
  *   arena report <records.json> [--out <html>] [--json]
  *        Score every arm, aggregate on cost-per-RESULT (M1+M2, cost carried not sorted),
@@ -9020,14 +9022,15 @@ async function cmdPreflight({ positionals, flags, dirs }) {
  *   arena --selftest
  *        Re-score + re-render the committed fixture TWICE (at two different clocks); print 1
  *        iff the aggregate is byte-identical AND the report BODY (footer excluded) is
- *        byte-identical — the determinism proof (P9.3-11-A). Numeric LAST line.
+ *        byte-identical — the determinism proof. Numeric LAST line.
  *   arena --selftest-negative
  *        Score the fixture where SMA is the MOST expensive per task; print 1 iff SMA's cost
  *        row is present AND the ranking is by cost-per-result (SMA ranked first on M1+M2),
- *        NOT cost-per-task — the anti-cherry-pick proof (P9.3-11-B). Numeric LAST line.
+ *        NOT cost-per-task — the anti-cherry-pick proof. Numeric LAST line.
  *
  * The negatives are structurally un-droppable (aggregateArena's `suppressed` is empty by
- * construction); a suppressed negative or a non-reproducible page is CONS-9.3-11-A.
+ * construction); a suppressed negative or a non-reproducible page is a registered
+ * consequence event, not a cosmetic defect.
  */
 async function cmdArena({ positionals, flags }) {
   const arena = await import('./lib/arena.mjs')
@@ -9041,7 +9044,7 @@ async function cmdArena({ positionals, flags }) {
     return arms.map((r) => arena.scoreArm(r, { adapterVersions: knownVersions }))
   }
 
-  // ── --selftest: deterministic re-score + re-render (P9.3-11-A). Numeric last line.
+  // ── --selftest: deterministic re-score + re-render. Numeric last line.
   if (flags.selftest === true) {
     let ok = 1
     try {
@@ -9055,11 +9058,11 @@ async function cmdArena({ positionals, flags }) {
     } catch {
       ok = 0
     }
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
-  // ── --selftest-negative: the negative result survives (P9.3-11-B). Numeric last line.
+  // ── --selftest-negative: the negative result survives. Numeric last line.
   if (flags['selftest-negative'] === true) {
     let ok = 1
     try {
@@ -9082,7 +9085,7 @@ async function cmdArena({ positionals, flags }) {
     } catch {
       ok = 0
     }
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
@@ -9120,22 +9123,22 @@ async function cmdArena({ positionals, flags }) {
 }
 
 /**
- * `sma batch` — the /sma-batch MIDDLE lane (9.3-12, D-9.3-19). The lane between
+ * `sma batch` — the /sma-batch MIDDLE lane. The lane between
  * an inline fix and a full phase: 2-4 named backlog items (or a self-assembled compatible
  * set), grill-lite per item, ONE executor (atomic commit each), MANDATORY `sma reverify`
  * receipts, a surgical backlog check-off, and ONE batch note — never a phase folder.
  *
  * Two hard guards (batch.mjs, deterministic): a RISK FILTER rejects anything phase-class
  * («this is a phase») up front, and an EJECT rule throws a growing item back to the backlog
- * while the batch continues. Consume-never-reimplement (D-9.3-02): the backlog
- * grammar reads, grill.mjs gates, `sma reverify` (9.2-03) verifies, `sma preflight`
- * (9.3-10) guards — batch composes; the only new writer is `checkOffBacklogItem`.
+ * while the batch continues. Consume-never-reimplement: the backlog
+ * grammar reads, grill.mjs gates, `sma reverify` verifies, `sma preflight`
+ * guards — batch composes; the only new writer is `checkOffBacklogItem`.
  *
  *   batch <BL-ids...>            select the named items (2-4), risk-filter up front, prepare the ordered run
  *   batch --assemble            auto-pick a compatible set (same area, S/M, non-overlapping files)
  *   batch ... --json            emit the prepared batch object (ordered items + guard status)
- *   batch --selftest-riskfilter classify a bundled fixture set; print 1 iff every classification is correct (P9.3-12-A)
- *   batch --selftest-checkoff   flip one line in a bundled fixture BACKLOG.md; print 1 iff surgical (P9.3-12-C)
+ *   batch --selftest-riskfilter classify a bundled fixture set; print 1 iff every classification is correct
+ *   batch --selftest-checkoff   flip one line in a bundled fixture BACKLOG.md; print 1 iff surgical
  *
  * Direct-CLI, NOT hook-facing (it may exit 1). node cannot spawn a Claude executor, so the
  * CLI does the DETERMINISTIC half (parse + risk gate + selection + preflight) and prepares
@@ -9145,7 +9148,7 @@ async function cmdArena({ positionals, flags }) {
 async function cmdBatch({ positionals, flags, dirs }) {
   const batch = await import('./lib/batch.mjs')
 
-  // ── --selftest-riskfilter: bundled fixture, every classification must match (P9.3-12-A).
+  // ── --selftest-riskfilter: bundled fixture, every classification must match.
   if (flags['selftest-riskfilter'] === true) {
     const fixture = [
       { item: { id: 'BL-901', title: 'Add migration 099', description: 'schema change' }, allowed: false },
@@ -9166,11 +9169,11 @@ async function cmdBatch({ positionals, flags, dirs }) {
       ok = 0
     }
     if (wantsJson(flags)) printJson({ selftest: 'riskfilter', ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
-  // ── --selftest-checkoff: surgical single-line flip over a bundled fixture (P9.3-12-C).
+  // ── --selftest-checkoff: surgical single-line flip over a bundled fixture.
   if (flags['selftest-checkoff'] === true) {
     const fixture = [
       '# Backlog',
@@ -9259,7 +9262,7 @@ async function cmdBatch({ positionals, flags, dirs }) {
 /**
  * readBacklogItems(text) — the CLI-side reader over the `## Backlog` grammar
  * (`- [ ] **BL-NNN** · Title — desc \`size:\` \`area:\` \`added:\` \`files:\``). batch.mjs
- * (the lib named by the D-9.3-02 prohibition) writes NO parser; this thin grammar-follower
+ * (the lib named by the prohibition) writes NO parser; this thin grammar-follower
  * lives at the CLI boundary only, mirroring the inline BL-id reader slots.mjs already uses.
  * An optional \`files:a.ts;b.ts\` tag feeds the overlap guard; items without it are treated
  * as non-overlapping.
@@ -9330,7 +9333,7 @@ async function cmdDeleteme({ flags, dirs }) {
       }
     }
     if (wantsJson(flags)) printJson({ selftest: 'deleteme', ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
@@ -9402,7 +9405,7 @@ async function cmdUpdate({ flags, dirs }) {
       }
     }
     if (wantsJson(flags)) printJson({ selftest: 'update', ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
@@ -9510,7 +9513,7 @@ async function cmdMemoryPreview({ flags, dirs }) {
   if (flags.selftest === true) {
     const ok = preview.previewSelftest()
     if (wantsJson(flags)) printJson({ selftest: 'memory-preview', ok })
-    process.stdout.write(`${ok}\n`) // numeric LAST line (D-9.3-16 scorer contract)
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return ok === 1 ? 0 : 1
   }
 
@@ -9527,10 +9530,11 @@ async function cmdMemoryPreview({ flags, dirs }) {
 }
 
 /**
- * session-end (HOOK_FACING) — 9.3-13 (D-9.3-22a) TRIGGER 1: the NEW SessionEnd hook.
+ * session-end (HOOK_FACING) — the SessionEnd hook.
  * Release ALL of this window's own claims (marked «сессия завершена»). Silent, exit-0
- * unconditional (main() wraps HOOK_FACING). It does NOT touch the Stop hook (Stop fires
- * per turn — RESEARCH Pitfall 1). Tolerant hook-stdin read; fully fail-open.
+ * unconditional (main() wraps HOOK_FACING). It does NOT touch the Stop hook — Stop
+ * fires per turn, so releasing claims there would drop a live claim mid-session.
+ * Tolerant hook-stdin read; fully fail-open.
  */
 async function cmdSessionEnd({ dirs }) {
   try {
@@ -9547,11 +9551,11 @@ async function cmdSessionEnd({ dirs }) {
 }
 
 /**
- * ask (direct-CLI, NOT hook-facing) — 9.3-13 (D-9.3-23) the DEMAND STUB. `ask <terminal>
+ * ask (direct-CLI, NOT hook-facing) — the DEMAND STUB. `ask <terminal>
  * "<question>"` prints the target's FULL fingerprint + journals the unmet question so demand
  * is MEASURED, not assumed (>=10 unmet cases = the V3.1 ask-bus trigger). `ask --unmet-count`
  * prints the unmet count as a bare LAST line (scorer contract). It is a STUB: opens no
- * socket, routes no message — the ask-bus is DEFERRED to V3.1 (D-9.2-05 BRIDGE).
+ * socket, routes no message — the ask-bus itself is DEFERRED to V3.1.
  */
 async function cmdAsk({ positionals, flags, dirs }) {
   const fingerprint = await import('./lib/fingerprint.mjs')
@@ -9617,7 +9621,7 @@ async function buildManifestPlanIndex(repoRoot) {
 }
 
 /**
- * Resolve the 9.3-02 stale-priors guard state as the manifest's `staleness`
+ * Resolve the stale-priors guard state as the manifest's `staleness`
  * value ('ok' | 'stale-priors' | 'unavailable'). Tolerance rule: lazy-import the
  * model-version guard, compute over the prediction-domain ledger + the sighting
  * timeline (the passport's own filter — sma.receipts excluded), and map
@@ -9704,15 +9708,15 @@ async function assembleManifest({ dirs, range, now }) {
 
 /**
  * manifest [--range <a>..<b>] [--json|--md|--dense] [--stat <name>] — the PR EVIDENCE
- * PASSPORT (9.3-08, D-9.3-11). Deterministically assembles the Track A evidence
+ * PASSPORT. Deterministically assembles the Track A evidence
  * pack and writes .sma/manifest/<headSha>.{json,md}. READER-ONLY: computes no
  * verdict, opens no network. NOT hook-facing; plain mode always exits 0 (the
- * manifest OBSERVES — preship, 9.2-08, owns the ship gate).
+ * manifest OBSERVES — preship owns the ship gate).
  *
  *   --stat determinism        two builds with one pinned now, byte-compare -> 1|0
  *   --stat prediction-coverage manifestStats over a fresh build
  *   --stat bench-build-ms     p95 ms over 5 warm builds
- * Every --stat prints a single numeric last line and exits 0 (the 9.1-08 scorer contract).
+ * Every --stat prints a single numeric last line and exits 0 (the scorer contract).
  */
 async function cmdManifest({ flags, dirs }) {
   const manifestLib = await import('./lib/manifest.mjs')
@@ -9808,15 +9812,15 @@ async function cmdManifest({ flags, dirs }) {
  *   ship-lane --stat quick-active-p50-min|quick-red-minus-full-red-pct   bare numeric last line
  *   ship-lane --selftest                                                  prints 1/0
  *
- * The SHIP LANES substrate (9.4-08). READ-ONLY: it checks, drafts, and records —
+ * The SHIP LANES substrate. READ-ONLY: it checks, drafts, and records —
  * it NEVER pushes, tags, or deploys (pushing stays inside the founder-ordered skill
- * rituals, D-9.3-24d). NOT hook-facing. Subcommands:
+ * rituals). NOT hook-facing. Subcommands:
  *   - check     runs the real precondition (real execGit at the repo root + real
  *               checkPushClaim over dirs.claimsDir) and prints eligible / every failing leg;
  *               exit 1 on a refuse (the skill stops there and routes to the full lane).
  *   - changelog prints the deterministic conventional-commit grouped draft over the delta.
  *   - record    appends a lane run {lane, outcome, startedAt, endedAt?} to ship-lanes.jsonl.
- *   - report    lists pending runs first + flags >24h orphaned watches (CH-9.4-08-2).
+ *   - report    lists pending runs first + flags >24h orphaned watches.
  * Fail-open on git reads; over-refusal is the safe direction.
  */
 async function cmdShipLane({ positionals, flags, dirs }) {
@@ -9841,7 +9845,7 @@ async function cmdShipLane({ positionals, flags, dirs }) {
         : name === 'quick-red-minus-full-red-pct'
           ? stats.quickRedMinusFullRedPct
           : 0
-    process.stdout.write(`${value}\n`) // numeric LAST line (P9.4-08-B/C scorer contract)
+    process.stdout.write(`${value}\n`) // numeric LAST line (scorer contract)
     return 0
   }
 
@@ -9927,14 +9931,14 @@ async function cmdShipLane({ positionals, flags, dirs }) {
 
 /**
  * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force] [--json]
- *   worktree --selftest           base + teleport guards over a mock-git recorder (P9.3-14-A)
- *   worktree --selftest-sibling   sibling-repo resolution order over injected readers (P9.3-14-C)
+ *   worktree --selftest           base + teleport guards over a mock-git recorder
+ *   worktree --selftest-sibling   sibling-repo resolution order over injected readers
  *
- * Per-terminal worktree isolation (9.3-14, D-9.3-24a/b). Provisions or reuses a
+ * Per-terminal worktree isolation. Provisions or reuses a
  * per-SESSION worktree directory so parallel human Claude Code sessions physically
  * cannot overwrite each other on this shared, auto-deploy checkout. `.sma/`
- * coordination stays shared for free (registry.smaRoot, D-9.3-02 — NOT re-plumbed
- * here). A worktree branch enters `main` ONLY via 9.3-15's `sma merge`; push stays
+ * coordination stays shared for free (registry.smaRoot — NOT re-plumbed
+ * here). A worktree branch enters `main` ONLY via `sma merge`; push stays
  * founder-ordered via /sma-ship. Direct-CLI (may exit 1), NEVER hook-facing.
  */
 async function cmdWorktree({ positionals, flags, dirs }) {
@@ -9977,7 +9981,7 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       if (Array.isArray(c.args) && /(^|\s)cd\s/.test(c.args.join(' '))) ok = 0
     }
     if (wantsJson(flags)) printJson({ selftest: true, pass: ok === 1 })
-    process.stdout.write(`${ok}\n`) // numeric last line (P9.3-14-A)
+    process.stdout.write(`${ok}\n`) // numeric last line
     return ok === 1 ? 0 : 1
   }
 
@@ -10004,7 +10008,7 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       if (c.path && r.path !== c.path) ok = 0
     }
     if (wantsJson(flags)) printJson({ selftestSibling: true, pass: ok === 1 })
-    process.stdout.write(`${ok}\n`) // numeric last line (P9.3-14-C)
+    process.stdout.write(`${ok}\n`) // numeric last line
     return ok === 1 ? 0 : 1
   }
 
@@ -10116,18 +10120,18 @@ async function cmdWorktree({ positionals, flags, dirs }) {
 }
 
 /**
- * merge — 9.3-15 (D-9.3-24c/d): the serialized merge ritual + the two numeric
+ * merge — the serialized merge ritual + the two numeric
  * self-tests. `merge <branch>` integrates a worktree branch into main LOCALLY under the
  * merge-claim slot (concurrent → soft-deny + override; targeted tests on the MERGE RESULT;
  * journaled receipt) — NEVER a push (push stays founder-ordered via /sma-ship). direct-CLI:
  * may exit 1, NOT hook-facing. `--selftest` / `--selftest-enforce` print a bare numeric last
- * line (predict.mjs scorer contract, P9.3-15-A/C) over a mock — no real merge, no real deny.
+ * line (predict.mjs scorer contract) over a mock — no real merge, no real deny.
  */
 async function cmdMerge({ positionals, flags, dirs }) {
   const mg = await import('./lib/merge-gate.mjs')
 
   // ── --selftest: mock-recorder ritual (claim → tests-on-result → receipt → release) + a
-  //    concurrent soft-deny — print 1 iff both hold (P9.3-15-A). No real merge, no real deny.
+  //    concurrent soft-deny — print 1 iff both hold. No real merge, no real deny.
   if (flags.selftest === true) {
     let ok = 1
     const os = await import('node:os')
@@ -10167,12 +10171,12 @@ async function cmdMerge({ positionals, flags, dirs }) {
       }
     }
     if (wantsJson(flags)) printJson({ selftest: true, pass: ok === 1 })
-    process.stdout.write(`${ok}\n`) // numeric last line (P9.3-15-A)
+    process.stdout.write(`${ok}\n`) // numeric last line
     return ok === 1 ? 0 : 1
   }
 
   // ── --selftest-enforce: verified-live → soft-deny+override; stale → warn; error → allow;
-  //    none → allow; cooling-down → warn — print 1 iff all hold (P9.3-15-C). No real deny.
+  //    none → allow; cooling-down → warn — print 1 iff all hold. No real deny.
   if (flags['selftest-enforce'] === true) {
     let ok = 1
     try {
@@ -10192,7 +10196,7 @@ async function cmdMerge({ positionals, flags, dirs }) {
       ok = 0
     }
     if (wantsJson(flags)) printJson({ selftestEnforce: true, pass: ok === 1 })
-    process.stdout.write(`${ok}\n`) // numeric last line (P9.3-15-C)
+    process.stdout.write(`${ok}\n`) // numeric last line
     return ok === 1 ? 0 : 1
   }
 
@@ -10242,7 +10246,7 @@ async function cmdMerge({ positionals, flags, dirs }) {
 }
 
 /**
- * vendor [--json] | --count untriaged | --selftest (9.4-01) — the
+ * vendor [--json] | --count untriaged | --selftest — the
  * standing Anthropic-update triage ledger linter. Deterministic READER/LINTER
  * over docs/VENDOR-LEDGER.md: it parses the append-only table, fails rows that
  * are missing a verdict or disposition, and never fetches anything. Zero
@@ -10310,19 +10314,19 @@ const HANDLERS = {
   status: cmdStatus,
   heartbeat: cmdHeartbeat,
   'session-start': cmdSessionStart,
-  'session-end': cmdSessionEnd, // 9.3-13 (D-9.3-22a) — SessionEnd hook: release own claims
-  ask: cmdAsk, // 9.3-13 (D-9.3-23) — fingerprint demand stub (+ --unmet-count)
+  'session-end': cmdSessionEnd, // SessionEnd hook: release own claims
+  ask: cmdAsk, // fingerprint demand stub (+ --unmet-count)
   pre: cmdPre,
   'pre-bench': cmdPreBench,
   'collision-check': cmdCollisionCheck,
   'reflex-check': cmdReflexCheck,
   'gates-check': cmdGatesCheck,
-  'airbag-check': cmdAirbagCheck, // 9.2-05 (D-9.2-08) — pre-less fallback for the airbag stream
-  undo: cmdUndo, // 9.2-05 — one-action airbag restore
-  airbag: cmdAirbag, // 9.2-05 — snapshot admin (list|prune|probe|stats)
-  spend: cmdSpend, // 9.2-09 (D-9.2-13) — deterministic spend ledger report + set-cap + --stat scorer
-  'spend-check': cmdSpendCheck, // 9.2-09 — pre-less fallback for the spend stream (budget reflexes + loop-breaker)
-  breaker: cmdBreaker, // 9.2-09 — loop-breaker admin (list|re-arm)
+  'airbag-check': cmdAirbagCheck, // pre-less fallback for the airbag stream
+  undo: cmdUndo, // one-action airbag restore
+  airbag: cmdAirbag, // snapshot admin (list|prune|probe|stats)
+  spend: cmdSpend, // deterministic spend ledger report + set-cap + --stat scorer
+  'spend-check': cmdSpendCheck, // pre-less fallback for the spend stream (budget reflexes + loop-breaker)
+  breaker: cmdBreaker, // loop-breaker admin (list|re-arm)
   'stall-check': cmdStallCheck,
   'gates-report': cmdGatesReport,
   'gates-ack': cmdGatesAck,
@@ -10336,9 +10340,9 @@ const HANDLERS = {
   preship: cmdPreship,
   disposition: cmdDisposition,
   lint: cmdLint,
-  profile: cmdProfile, // 9.3-01 (D-9.3-04) — deterministic profile surface (--json|--lint|--coverage|--recap)
+  profile: cmdProfile, // deterministic profile surface (--json|--lint|--coverage|--recap)
   'build-index': cmdBuildIndex,
-  emit: cmdEmit, // 9.3-04 (D-9.3-08) — one corpus -> CLAUDE.md/AGENTS.md/.cursorrules/GEMINI.md managed blocks
+  emit: cmdEmit, // one corpus -> CLAUDE.md/AGENTS.md/.cursorrules/GEMINI.md managed blocks
   load: cmdLoad,
   snapshot: cmdSnapshot,
   'predict-score': cmdPredictScore,
@@ -10353,49 +10357,49 @@ const HANDLERS = {
   bench: cmdBench,
   baseline: cmdBaseline, // v5.1 — the memory-track measurement instrument (capture|replay + one verb per metric)
   eval: cmdEval, // v5.2 — the measurement namespace (memory: canon §8 metrics + floors as the exit code; north-star: cost per verified correct result + the guardrail panel; gate: the five-element feature admission check)
-  reverify: cmdReverify, // 9.2-03 (D-9.2-06) — re-verify structural receipts
-  'receipt-hash': cmdReceiptHash, // 9.2-03 — the receipt emit path
-  'chain-tip': cmdChainTip, // 9.2-03 (D-9.2-07) — merged journal chain tip (release-tag pin)
-  'chain-verify': cmdChainVerify, // 9.2-03 — tamper detector over the journal chain
-  'pretask-pack': cmdPretaskPack, // 9.2-04 (D-9.2-10) — PreToolUse(Task) pack injection
-  'subagent-verify': cmdSubagentVerify, // 9.2-04 — SubagentStop tree-verified receipts
-  'subagent-receipts': cmdSubagentReceipts, // 9.2-04 — receipt coverage/phantoms/pack-p95 report
-  'precompact-capsule': cmdPrecompactCapsule, // 9.2-06 (D-9.2-09) — PreCompact deterministic capsule
-  resume: cmdResume, // 9.2-06 — continuation brief from the flight recorder
-  handoff: cmdHandoff, // 9.2-06 — teammate brief + claim-transfer steps
-  flight: cmdFlight, // 9.2-06 — flight instruments (probe|determinism-check|tail)
-  grill: cmdGrill, // 9.2-07 (D-9.2-11) — adversarial challenge gate + budget-aware pre-push
-  'blind-verify': cmdBlindVerify, // 9.2-07 — tree-only re-derivation + divergence detection
-  evidence: cmdEvidence, // 9.2-07 — burden-of-proof records for risky ops
-  integrity: cmdIntegrity, // 9.2-10 (D-9.2-14) — STPA disarm-path guard (hazards|shadow|disarms|disarm-renew)
-  skeptic: cmdSkeptic, // 9.2-10 — Goodhart skeptic countersign (sign|verify)
-  canary: cmdCanary, // 9.2-10 — planted false-done canaries (plant|score|sweep) — S8
-  nearmiss: cmdNearmiss, // 9.2-10 — scoring-immune near-miss channel (ASRS)
-  passport: cmdPassport, // 9.3-02 (D-9.3-10) — calibration passport (--build|--verify|--check-badge|--json)
-  model: cmdModel, // 9.3-02 — model-version guard surface (--json|--count sightings|--set <id>)
-  excavate: cmdExcavate, // 9.3-03 (D-9.3-09) — adoption wedge: read-only history miner + CATCHES + --stats instrument
-  ladder: cmdLadder, // 9.3-06 (D-9.3-12) — tier table + benefit stats (--json|--count-autofix|--noise-demoted-pct)
-  tune: cmdTune, // 9.3-06 — the tuner (propose|apply|benefit|fix|incident) — never commits, never pushes
-  curriculum: cmdCurriculum, // 9.3-06 (D-9.3-16) — weekly miss-curriculum: clusters -> templates -> weak-spots brief
-  preflight: cmdPreflight, // 9.3-10 (D-9.3-17) — already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
-  arena: cmdArena, // 9.3-11 (D-9.3-18) — benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
-  batch: cmdBatch, // 9.3-12 (D-9.3-19) — /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
+  reverify: cmdReverify, // re-verify structural receipts
+  'receipt-hash': cmdReceiptHash, // the receipt emit path
+  'chain-tip': cmdChainTip, // merged journal chain tip (release-tag pin)
+  'chain-verify': cmdChainVerify, // tamper detector over the journal chain
+  'pretask-pack': cmdPretaskPack, // PreToolUse(Task) pack injection
+  'subagent-verify': cmdSubagentVerify, // SubagentStop tree-verified receipts
+  'subagent-receipts': cmdSubagentReceipts, // receipt coverage/phantoms/pack-p95 report
+  'precompact-capsule': cmdPrecompactCapsule, // PreCompact deterministic capsule
+  resume: cmdResume, // continuation brief from the flight recorder
+  handoff: cmdHandoff, // teammate brief + claim-transfer steps
+  flight: cmdFlight, // flight instruments (probe|determinism-check|tail)
+  grill: cmdGrill, // adversarial challenge gate + budget-aware pre-push
+  'blind-verify': cmdBlindVerify, // tree-only re-derivation + divergence detection
+  evidence: cmdEvidence, // burden-of-proof records for risky ops
+  integrity: cmdIntegrity, // STPA disarm-path guard (hazards|shadow|disarms|disarm-renew)
+  skeptic: cmdSkeptic, // Goodhart skeptic countersign (sign|verify)
+  canary: cmdCanary, // planted false-done canaries (plant|score|sweep)
+  nearmiss: cmdNearmiss, // scoring-immune near-miss channel (ASRS)
+  passport: cmdPassport, // calibration passport (--build|--verify|--check-badge|--json)
+  model: cmdModel, // model-version guard surface (--json|--count sightings|--set <id>)
+  excavate: cmdExcavate, // adoption wedge: read-only history miner + CATCHES + --stats instrument
+  ladder: cmdLadder, // tier table + benefit stats (--json|--count-autofix|--noise-demoted-pct)
+  tune: cmdTune, // the tuner (propose|apply|benefit|fix|incident) — never commits, never pushes
+  curriculum: cmdCurriculum, // weekly miss-curriculum: clusters -> templates -> weak-spots brief
+  preflight: cmdPreflight, // already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
+  arena: cmdArena, // benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
+  batch: cmdBatch, // /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
   deleteme: cmdDeleteme, // 9.4 (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
   'memory-preview': cmdMemoryPreview, // 9.4 (v3.6) — onboarding ASCII memory-graph preview (--project|--lang|--json|--selftest)
-  catalog: cmdCatalog, // 9.3-05 (D-9.3-06) — deterministic file catalog (refresh|find|--check --count)
-  context: cmdContext, // 9.3-05 (D-9.3-07) — context compiler (compile|score|miss|exam|--selftest)
-  statusline: cmdStatusline, // 9.3-07 (D-9.3-13) — native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)
-  pulse: cmdPulse, // 9.3-07 (D-9.3-13) — hook-facing attention pulse (working|waiting-for-human); idle is derived
-  manifest: cmdManifest, // 9.3-08 (D-9.3-11) — PR evidence passport reader (--range|--json|--md|--stat)
-  worktree: cmdWorktree, // 9.3-14 (D-9.3-24a/b) — per-terminal worktree isolation (provision|list|remove|sibling; --selftest|--selftest-sibling)
-  merge: cmdMerge, // 9.3-15 (D-9.3-24c/d) — serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
-  explain: cmdExplain, // 9.3-09 (D-9.3-15) — in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
-  'doc-audit': cmdDocAudit, // 9.3-09 (D-9.3-01/15) — deterministic docs honesty audit (--target manual|readme|all|--count|--json)
-  vendor: cmdVendor, // 9.4-01 — standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
-  memory: cmdMemory, // 9.4-06 — deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
-  'ship-lane': cmdShipLane, // 9.4-08 — ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
-  decisions: cmdDecisions, // 9.5-02 (D-9.5-08) — decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
-  exam: cmdExam, // 9.5-06 (D-9.5-08) — replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
+  catalog: cmdCatalog, // deterministic file catalog (refresh|find|--check --count)
+  context: cmdContext, // context compiler (compile|score|miss|exam|--selftest)
+  statusline: cmdStatusline, // native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)
+  pulse: cmdPulse, // hook-facing attention pulse (working|waiting-for-human); idle is derived
+  manifest: cmdManifest, // PR evidence passport reader (--range|--json|--md|--stat)
+  worktree: cmdWorktree, // per-terminal worktree isolation (provision|list|remove|sibling; --selftest|--selftest-sibling)
+  merge: cmdMerge, // serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
+  explain: cmdExplain, // in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
+  'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|all|--count|--json)
+  vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
+  memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  'ship-lane': cmdShipLane, // ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
+  decisions: cmdDecisions, // decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
+  exam: cmdExam, // replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
   update: cmdUpdate, // v5 — consumer-side updater: version report (installed vs npm vs local source) | --yes re-runs the standard installer | --selftest; memory corpus + .sma state PRESERVED (installer guarantee)
 }
 
@@ -10429,7 +10433,7 @@ async function main() {
   const dirs = dirsFrom(root)
 
   if (HOOK_FACING.has(cmd)) {
-    // Fail-open contract: hook-facing handlers exit 0 no matter what (P4/C9).
+    // Fail-open contract: hook-facing handlers exit 0 no matter what.
     try {
       await handler({ positionals, flags, dirs })
     } catch {
