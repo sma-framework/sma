@@ -520,6 +520,11 @@ export function createPgBossQueue({
    * the job it belongs to, on the key the live database confirmed: the approval row's `id`
    * IS the task id, which is what the job payload carries at `data->>'id'`.
    *
+   * Spelled out, because the table name below arrives as the constant approval-store.mjs
+   * owns and a reader grepping for the relationship would otherwise not find it here:
+   *
+   *     LEFT JOIN sma_task_attempts a ON a.id = (j.data->>'id')
+   *
    * Table and column names are TRUSTED DAEMON CONSTANTS (the cas.mjs law) and the only
    * value in the statement is the lane-name array, passed as $1. Nothing a person typed
    * reaches this SQL.
