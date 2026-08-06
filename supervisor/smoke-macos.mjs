@@ -1,6 +1,6 @@
 /**
- * smoke-macos.mjs — the FIRST post-clone setup step on the Mac mini (D-9.5-02b:
- * «первый пункт настройки — проверка кроссплатформенности SMA-верб на macOS»). The
+ * smoke-macos.mjs — the FIRST post-clone setup step on the Mac mini: the very first
+ * thing to settle on a new host is whether the SMA verbs are cross-platform. The
  * entire SMA обвязка has, until this host, run ONLY on Windows; this suite proves the
  * verbs and their host prerequisites work on macOS BEFORE the daemon, the workers, or
  * the roster ever run.
@@ -11,7 +11,7 @@
  * = every check green; exit N = N failing checks. This mirrors live-smoke-windows.mjs's
  * pass/fail/info posture, but this suite verifies HOST + VERB portability rather than the
  * live queue contour — the queue contour smoke (the live-smoke-windows.mjs shape) arrives
- * on macOS together with the deploy-wave daemon fixes (parked plan 9.5-10 findings).
+ * on macOS together with the deploy-wave daemon fixes.
  *
  * COVERAGE (Windows->macOS Portability Audit rows 4, 5, 7, 10, 11 + host prereqs):
  *   1  node >= 22.5 (product engine field) + git present

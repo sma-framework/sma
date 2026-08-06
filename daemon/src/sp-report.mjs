@@ -1,6 +1,5 @@
 /**
- * sp-report.mjs — SP-калибровка «оценил ↔ факт» (Phase 9.5 Plan 07, Task 4;
- * D-9.5-11 item 2, D-9.5-10).
+ * sp-report.mjs — SP-калибровка «оценил ↔ факт».
  *
  * WHAT IT IS: a deterministic, ZERO-LLM report that lets the founder compare the CUE
  * estimate against reality per SP bucket. It groups COMPLETED tasks by storyPoints and,
@@ -8,13 +7,13 @@
  * (claimedAt→completedAt), € (total + median) and diff size, plus a 3×-median cycle-time
  * outlier cut. Tasks missing a needed timestamp are SKIPPED and counted — never a crash.
  *
- * WHY IT LIVES DAEMON-SIDE (D-9.5-11 item 2): the queue timestamps this report consumes
- * (enqueuedAt/claimedAt/completedAt — D-9.5-10) live in the daemon's Postgres; the
+ * WHY IT LIVES DAEMON-SIDE: the queue timestamps this report consumes
+ * (enqueuedAt/claimedAt/completedAt) live in the daemon's Postgres; the
  * daemon owns the data. This module is PURE — no I/O, an injectable clock, every reader
  * injected (adapter.list, a per-task usageReader, an optional ledger) — so the suite runs
  * on fixtures alone.
  *
- * ═══ THE PROHIBITION IS STRUCTURAL (D-9.5-10 запрет п.4) ═══
+ * ═══ THE PROHIBITION IS STRUCTURAL ═══
  * renderSpReport's FIRST content line after the title is ALWAYS, verbatim:
  *   «SP не переводятся в часы и не используются как KPI»
  * A test greps the rendered output for that exact sentence. This is what makes the report
@@ -24,10 +23,10 @@
  * Node built-ins only (in fact none needed). Zero deps; zero network.
  */
 
-/** The prohibition line — printed verbatim as the report's first content line (D-9.5-10). */
+/** The prohibition line — printed verbatim as the report's first content line. */
 export const SP_PROHIBITION = 'SP не переводятся в часы и не используются как KPI'
 
-/** The Fibonacci SP buckets (D-9.5-10). A no-SP bucket ('none') catches roster/return tasks. */
+/** The Fibonacci SP buckets. A no-SP bucket ('none') catches roster/return tasks. */
 const SP_BUCKETS = Object.freeze([1, 2, 3, 5, 8, 13])
 
 const HOUR_MS = 3600000
@@ -181,7 +180,7 @@ function hrs(ms) {
 
 /**
  * renderSpReport(data) → a plain-text RU report. The FIRST content line after the title is
- * the D-9.5-10 prohibition VERBATIM (structurally mandatory). Then one line per bucket and
+ * the prohibition VERBATIM (structurally mandatory). Then one line per bucket and
  * an outliers section. Display hours are for reading the medians only — they are NOT an
  * SP→hours conversion (the prohibition line says so).
  *
@@ -192,7 +191,7 @@ export function renderSpReport(data = {}) {
   const windowDays = data.windowDays ?? 30
   const lines = []
   lines.push(`Отчёт SP-калибровки «оценил ↔ факт» (окно ${windowDays} дн.)`)
-  lines.push(SP_PROHIBITION) // ← first content line after the title, verbatim (D-9.5-10)
+  lines.push(SP_PROHIBITION) // ← first content line after the title, verbatim
   lines.push('')
 
   const buckets = Array.isArray(data.buckets) ? data.buckets : []

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!--
   sma-daemon-windows.task.xml — the Windows sibling of com.sma.daemon.plist
-  (the launchd LaunchAgent). A thin supervisor layer only (D-9.5-02a: the daemon
-  core is host-agnostic; the OS binding is a template).
+  (the launchd LaunchAgent). A thin supervisor layer only: the daemon core is
+  host-agnostic, and the OS binding is a template.
 
   SHIPPED DISABLED, NEVER REGISTERED BY THE PILOT. <Settings><Enabled>false</Enabled>
   means that even an accidental import cannot auto-run the worker. Registering AND
@@ -11,8 +11,8 @@
 
   No-admin by design: LogonType is InteractiveToken (the current interactive user),
   NOT a SYSTEM/service principal — this host has no admin rights. A real Windows
-  service (NSSM / a native service) stays a later product drop-in (the deferred
-  supervisor item in 9.5-CONTEXT), untouched here.
+  service (NSSM / a native service) stays a later product drop-in — a deferred
+  supervisor item, untouched here.
 
   Import (founder-only): schtasks /Create /TN SMA-Daemon /XML supervisor\sma-daemon-windows.task.xml
   Replace <SMA_HOME> below with the absolute path of the SMA product clone before import

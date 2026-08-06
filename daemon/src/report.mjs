@@ -1,9 +1,8 @@
 /**
- * report.mjs — the outbound report-back edge (Phase 9.5 Plan 07, Task 1;
- * D-9.5-06, D-9.5-11 item 3; researcher Q3).
+ * report.mjs — the outbound report-back edge.
  *
  * THE ONE OUTBOUND SEAM FOR TASK EVENTS. Its posture is COPIED VERBATIM from
- * scripts/sma/lib/notify.mjs (the sanctioned waiting-for-human webhook, D-9.3-13) —
+ * scripts/sma/lib/notify.mjs (the sanctioned waiting-for-human webhook) —
  * the same product-side boundary, made total here:
  *   - OUTBOUND EVENTS ONLY. A task lifecycle event fires exactly ONE HTTP POST to a
  *     USER-configured URL. Nothing else ever leaves.
@@ -19,7 +18,7 @@
  *   - FAIL-OPEN. Every failure is swallowed to a journal event + a safe return — a
  *     webhook error can NEVER block the tick (2s AbortController timeout on the POST).
  *
- * Q3 (researcher, planned default pending grill): report-back is a PRODUCT-SIDE
+ * THE PLANNED DEFAULT: report-back is a PRODUCT-SIDE
  * configurable webhook seam; a Telegram bot is its first consumer. The pilot
  * W1 keeps its own Telegram plumbing (out of this plan) — this module is the generic seam.
  *
@@ -29,7 +28,7 @@
 
 /**
  * The EXPLICIT payload allowlist — the exact + ONLY key set a report body carries.
- * The ninth key `queuedForHours` is the DELIBERATE D-9.5-11 item-3 expansion carrying
+ * The ninth key `queuedForHours` is a DELIBERATE expansion carrying
  * the aging signal (event 'task.aging'). EXPANDING THIS LIST IS A DECISION ANCHORED IN A
  * D-число, never a convenience — a new key means a new decision, documented here first.
  */

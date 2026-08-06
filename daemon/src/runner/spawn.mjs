@@ -1,6 +1,5 @@
 /**
- * spawn.mjs — the shell-disabled worker child (Phase 9.5 Plan 04, Task 2;
- * D-9.5-03/04a, T-9.5-10).
+ * spawn.mjs — the shell-disabled worker child.
  *
  * WHAT IT IS: the single function that turns an arg array (from args.mjs) + a per-account
  * env (from args.mjs) + a task prompt into a running CLI child, and line-buffers its

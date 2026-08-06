@@ -1,14 +1,14 @@
 /**
  * routing.mjs — the executor-routing POLICY: which provider/model/effort runs a task,
- * on which worker/account, and why (Phase 9.5 Plan 05, Task 1; D-9.5-04 / D-9.5-03a).
+ * on which worker/account, and why.
  *
  * WHAT IT IS: a PURE, DI-clocked decision function. Given a task + the worker pool + a
  * window predicate + a clock, it returns exactly ONE routing decision with a human
  * `reason` string the roster renders. It NEVER spawns, NEVER reads process.env, NEVER
- * decides what "done" means (that is D-9.5-04a's unified reverify gate, plan 07) — it
+ * decides what "done" means (that is the unified reverify gate's job) — it
  * only decides WHO runs.
  *
- * D-9.5-04 — ROUTING IS A CONFIGURABLE POLICY, NOT HARDWIRED. The default lane→provider
+ * ROUTING IS A CONFIGURABLE POLICY, NOT HARDWIRED. The default lane→provider
  * map (prod→claude, research/paperwork→codex, forge→claude) is only a default. On top of
  * it, provider AND model AND effort are re-assignable at TWO levels, in strict precedence:
  *
@@ -18,7 +18,7 @@
  *
  * D-9.5-03a — DAYTIME PRIORITY IS ABSOLUTE. A worker whose account carries
  * `dayPriorityOwner:true` is ALWAYS skipped during the founder's active hours
- * (config.activeHours, default 09–22 local). Grill CH-9.5-05-1 KILLED the earlier
+ * (config.activeHours, default 09–22 local). Review KILLED the earlier
  * «unless it is the ONLY open window» carve-out: that exception would drain the founder's
  * account at exactly the moment D-9.5-03a forbids. So when the founder's account is the
  * only open window, the task WAITS ({workerId:null, reason:'window_exhausted'}) — the
@@ -29,7 +29,7 @@
  * open) → {workerId:null, reason:'window_exhausted'}. The task is never FAILED by routing;
  * it waits for a window or the loop composes the API fallback (budget.mjs).
  *
- * D-9.7-14 — THE ROUTER EXPLAINS ITSELF AT THE DECISION. Every outcome carries a
+ * THE ROUTER EXPLAINS ITSELF AT THE DECISION. Every outcome carries a
  * `reasonCode` from the CLOSED DISPATCH_REASONS vocabulary (the human `reason` string stays
  * for the roster, but it is no longer the machine-readable answer), and — when a
  * `decisionJournal` sink is injected AND the call is about a real task — the code is
@@ -44,7 +44,7 @@
 
 import { DISPATCH_REASONS } from '../front/journal.mjs'
 
-/** Default lane → provider routing (D-9.5-04). Config may override via config.laneRouting. */
+/** Default lane → provider routing. Config may override via config.laneRouting. */
 export const DEFAULT_LANE_ROUTING = Object.freeze({
   prod: { provider: 'claude' },
   research: { provider: 'codex' },
@@ -100,7 +100,7 @@ function journalDecision(sink, task, code, fields) {
  *   windows?: (worker:object)=>boolean, // window predicate: is this worker's window open?
  *   clock?: ()=>number,          // injected epoch-ms clock
  *   config?: {activeHours?:{start:number,end:number}, laneRouting?:object},
- *   decisionJournal?: (entry:object)=>void, // dispatcher-layer sink (D-9.7-14), optional
+ *   decisionJournal?: (entry:object)=>void, // dispatcher-layer sink, optional
  * }} deps
  * @returns {{workerId:string|null, provider:string|null, model:(string|null), effort:(string|null), useApiFallback:boolean, reason:string, reasonCode:string}}
  */
@@ -139,7 +139,7 @@ export function resolveRoute(task = {}, deps = {}) {
   // Candidate workers: enabled, provider matches the target, window open, and NOT the
   // founder's protected day-priority account during active hours (D-9.5-03a, absolute).
   // `heldByDayPriority` remembers WHY the pool emptied, so the wait can name its own cause
-  // instead of collapsing two different situations into one code (D-9.7-14).
+  // instead of collapsing two different situations into one code.
   let heldByDayPriority = false
   const candidates = workers.filter((w) => {
     if (!w || w.enabled === false) return false
@@ -154,7 +154,7 @@ export function resolveRoute(task = {}, deps = {}) {
   })
 
   if (candidates.length === 0) {
-    // The task WAITS — routing never fails it. Grill CH-9.5-05-1: no only-open-window
+    // The task WAITS — routing never fails it. By review: no only-open-window
     // carve-out for the protected account.
     const code = heldByDayPriority ? 'day_priority_protected' : 'window_exhausted'
     journalDecision(sink, task, code, { lane, provider: targetProvider ?? undefined })
