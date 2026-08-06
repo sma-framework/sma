@@ -156,6 +156,11 @@ In `~/.sma-daemon/config.json` set:
   database.
 - `bind` — `127.0.0.1` to check it locally; `0.0.0.0` only deliberately, so that
   the roster opens from other devices over the LAN.
+- `expireMs` — how long a worker may stay silent before its task is taken back, in
+  milliseconds (default `120000`, two minutes). One setting, one clock: the same
+  number is the queue's own lease and the sweep that requeues a silent worker's
+  task, so raising it moves both. Anything that is not a positive number is
+  ignored and the default stands.
 - `workers` — the pool's accounts: each with its own `account.configDir` and the
   name of the environment variable holding its token in `account.oauthTokenEnv`
   (the token value lives only in the environment, never on disk).
