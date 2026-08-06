@@ -1,6 +1,6 @@
 /**
  * config.mjs — the SMA V5 daemon config loader: worker profiles, the 0600 secrets
- * file, and the front-auth token (Phase 9.5 Plan 01; D-9.5-03/03a/05a, 09, 11).
+ * file, and the front-auth token.
  *
  * WHAT IT IS: the single source of truth for the worker pool the daemon runs and
  * the secrets it must never leak. The file lives at ~/.sma-daemon/config.json
@@ -8,7 +8,7 @@
  * token. Everything downstream (runner routing, front auth, roster toggle applier)
  * reads THIS shape.
  *
- * SECURITY POSTURE (T-9.5-01, the whole reason this module is careful):
+ * SECURITY POSTURE — the whole reason this module is careful:
  *   - 0600 FILE. The config carries the front token; it is written mode 0600 so only
  *     the daemon user can read it. On win32 chmod is a documented no-op — we attempt
  *     it and swallow the failure (never crash the boot on a platform that ignores it).
@@ -20,18 +20,16 @@
  *     account.oauthTokenEnv to '[set]'/'[unset]' — no secret and no env-var name
  *     ever leaves the process.
  *
- * D-9.5-09 HARNESS TRIO: each worker carries `enabled` (roster on/off switch flipped
- * by plan 11's toggle applier — defaults true), `roleFile` (a merged
- * .claude/agents/<slug>.md definition), and `skills` (assigned skill slugs). The
- * `creator` role (lane 'forge') is shipped enabled-but-inert: the forge lane does
- * nothing without a task, and everything it produces is drafts-only behind plan 11's
- * lint gate + two-step human activation.
+ * THE HARNESS TRIO: each worker carries `enabled` (the roster's on/off switch —
+ * defaults true), `roleFile` (a merged .claude/agents/<slug>.md definition), and
+ * `skills` (assigned skill slugs). The `creator` role (lane 'forge') is shipped
+ * enabled-but-inert: the forge lane does nothing without a task, and everything it
+ * produces is drafts-only behind a lint gate + two-step human activation.
  *
- * D-9.5-03a DAYTIME PRIORITY: exactly one Max account carries `dayPriorityOwner:true`
- * — the founder's daytime account the scheduler must not drain while the founder works
- * (consumed by plan 9.5-05).
+ * DAYTIME PRIORITY: exactly one Max account carries `dayPriorityOwner:true` — the
+ * founder's daytime account the scheduler must not drain while the founder works.
  *
- * ═══════════════ V5.1: A PROJECT IS A FIRST-CLASS FIELD (D-9.7-01) ═══════════════
+ * ═══════════════ V5.1: A PROJECT IS A FIRST-CLASS FIELD ═════════════════════════
  * The project registry lives HERE, in the daemon config, and it exists BEFORE the first
  * screen does. `projects[]` is the list, `activeProject` is the one currently selected,
  * `workers[].project` optionally pins a worker to one (absent = the active project). The
@@ -42,25 +40,25 @@
  * federation aggregates VIEWS across machines, never credentials. No peer entry carries
  * an account, and no account is ever addressed across a peer boundary.
  *
- * ═══════════════ V5.1: ZERO-FRICTION MIGRATION (D-9.7-08) ═══════════════════════
- * `ensureDefaultProject` runs at LOAD time, not as a migration script — a script would
- * be the one manual action D-9.7-08 forbids. On a config with no registry it mints
- * exactly one entry (name from the install profile `.sma/profile.json` when present,
- * else the repository directory name) and selects it. It is IDEMPOTENT: once a registry
- * exists it returns the SAME object it was given, so a second load mints nothing
- * (T-9.7-06). Existing tasks are attached by the queue's read-time backfill — nothing
- * rewrites a stored row.
+ * ═══════════════ V5.1: ZERO-FRICTION MIGRATION ══════════════════════════════════
+ * `ensureDefaultProject` runs at LOAD time, not as a migration script — upgrading to a
+ * project registry must cost the operator no manual action at all, and a script IS a
+ * manual action. On a config with no registry it mints exactly one entry (name from the
+ * install profile `.sma/profile.json` when present, else the repository directory name)
+ * and selects it. It is IDEMPOTENT: once a registry exists it returns the SAME object it
+ * was given, so a second load mints nothing. Existing tasks are attached by the queue's
+ * read-time backfill — nothing rewrites a stored row.
  *
  * A name with no latin characters still yields a valid slug (the id falls back to
  * `project`/`project-2`…): the id is an opaque key, the NAME is what a human reads.
  *
- * ═══════════════ V5.1: FEDERATION IS AN ADDITIVE BLOCK (D-9.7-04) ═══════════════
+ * ═══════════════ V5.1: FEDERATION IS AN ADDITIVE BLOCK ══════════════════════════
  * `federation` is optional: `{role: standalone|hub|peer, peers:[{id,url,token}]}`. An
  * ABSENT block means role `standalone` and today's behaviour exactly. A malformed peer
  * (bad url, empty token) refuses the whole load with a named error — the daemon never
- * starts with a half-alive registry it would silently ignore (T-9.7-07).
+ * starts with a half-alive registry it would silently ignore.
  *
- * PEER TOKENS COLLAPSE FROM DAY ONE (T-9.7-05). secretsView folds every
+ * PEER TOKENS COLLAPSE FROM DAY ONE. secretsView folds every
  * `federation.peers[].token` into '[set]'/'[unset]' in the SAME change that introduces
  * the field — a secret that lands in the schema a week before its collapse is a week of
  * leaking into every payload.
@@ -95,7 +93,7 @@ export class InvalidProjectError extends Error {
   }
 }
 
-/** Named error for a structurally-invalid federation block or peer entry (T-9.7-07). */
+/** Named error for a structurally-invalid federation block or peer entry. */
 export class InvalidFederationError extends Error {
   constructor(message) {
     super(message)
@@ -126,7 +124,7 @@ export class UnknownPeerError extends Error {
 /** The project id grammar — a slug, because the id is a key tasks and rows carry. */
 export const PROJECT_ID_RE = /^[a-z0-9-]{1,64}$/
 
-/** The three federation roles. An absent block means `standalone` (D-9.7-04). */
+/** The three federation roles. An absent block means `standalone`. */
 export const FEDERATION_ROLES = Object.freeze(['standalone', 'hub', 'peer'])
 
 /**
@@ -143,9 +141,9 @@ export function resolveConfigPath({ env = process.env, homedir = osHomedir } = {
 }
 
 /**
- * defaultConfig(token) — the D-9.5-03 default pool with placeholder account dirs.
+ * defaultConfig(token) — the default worker pool with placeholder account dirs.
  * 3 × Claude Max (one dayPriorityOwner) + 1 × Codex/Pro + the `creator` forge role
- * riding max-1's account (a ROLE, not a fifth subscription — D-9.5-09).
+ * riding max-1's account (a ROLE, not a fifth subscription).
  */
 function defaultConfig(token) {
   const maxAccount = (n) => ({
@@ -162,31 +160,31 @@ function defaultConfig(token) {
   }
   return {
     queueUrl: 'postgres://localhost:5432/sma_daemon',
-    bind: '127.0.0.1', // D-9.5-05: 0.0.0.0 is explicit opt-in only
+    bind: '127.0.0.1', // 0.0.0.0 is explicit opt-in only
     port: 7777,
     token,
     backlogScanMinutes: 60,
-    agingHours: 24, // D-9.5-11: queued tasks older than this raise the «застряла» flow signal
+    agingHours: 24, // queued tasks older than this raise the «застряла» flow signal
     webhookUrl: '', // empty = report-back off (notify.mjs off-by-default posture)
     budget: {
-      monthlyApiCapEur: 0, // 0 = no API fallback budget until the founder sets one (D-9.5-03b)
+      monthlyApiCapEur: 0, // 0 = no API fallback budget until the operator sets one
       warnPct: [70, 90],
     },
     workers: [
-      // D-9.5-03a: max-1 is the founder's daytime-priority account.
+      // max-1 is the founder's daytime-priority account.
       { id: 'max-1', lane: 'prod', provider: 'claude', account: maxAccount(1), dayPriorityOwner: true, enabled: true },
       { id: 'max-2', lane: 'prod', provider: 'claude', account: maxAccount(2), enabled: true },
       { id: 'max-3', lane: 'prod', provider: 'claude', account: maxAccount(3), enabled: true },
-      // Codex/Pro rides the research/paperwork lane (D-9.5-04 default routing).
+      // Codex/Pro rides the research/paperwork lane by default routing.
       { id: 'pro-1', lane: 'research', provider: 'codex', account: proAccount, enabled: true },
-      // D-9.5-09: the «Создатель» forge role — rides max-1's account, enabled but inert.
+      // the «Создатель» forge role — rides max-1's account, enabled but inert.
       { id: 'creator', lane: 'forge', provider: 'claude', account: maxAccount(1), enabled: true },
     ],
   }
 }
 
 /**
- * validateProject(p, {seen}) — structural gate for ONE registry entry (D-9.7-01).
+ * validateProject(p, {seen}) — structural gate for ONE registry entry.
  * Requires a slug `id` (PROJECT_ID_RE) and a non-empty `name`. `seen` is an optional Set
  * carried across a registry pass so a duplicate id is a named error rather than a silent
  * shadow. Throws InvalidProjectError; the handler maps a named error to 400/404.
@@ -218,7 +216,7 @@ function validateProjects(list) {
   return list.map((p) => validateProject(p, { seen }))
 }
 
-/** A peer entry: slug id, a syntactically valid http(s) url, a non-empty token (T-9.7-07). */
+/** A peer entry: slug id, a syntactically valid http(s) url, a non-empty token. */
 function validatePeer(peer, seen) {
   if (!peer || typeof peer !== 'object') throw new InvalidFederationError('peer entry is not an object')
   if (!peer.id || typeof peer.id !== 'string' || !PROJECT_ID_RE.test(peer.id)) {
@@ -242,10 +240,10 @@ function validatePeer(peer, seen) {
 }
 
 /**
- * validateFederation(f) — the additive federation block (D-9.7-04). An absent/null block
+ * validateFederation(f) — the additive federation block. An absent/null block
  * normalizes to `{role:'standalone', peers:[]}` — standalone IS today's behaviour, so an
  * install that never heard of federation keeps working untouched. A malformed peer throws
- * InvalidFederationError, refusing the load outright (T-9.7-07): a half-alive peer registry
+ * InvalidFederationError, refusing the load outright: a half-alive peer registry
  * silently ignored is worse than a daemon that will not start.
  *
  * @param {object|undefined|null} f
@@ -266,8 +264,8 @@ export function validateFederation(f) {
 
 /**
  * validateWorker(w, knownProjects) — structural gate: id, lane, and account.configDir are
- * required. Normalizes the D-9.5-09 harness trio (enabled defaults true; roleFile/skills
- * accepted) and the D-9.7-01 optional `project` by the SAME conditional-spread idiom:
+ * required. Normalizes the harness trio (enabled defaults true; roleFile/skills
+ * accepted) and the optional `project` by the SAME conditional-spread idiom:
  * absent means «the active project», present must reference a registry entry.
  * Throws InvalidWorkerProfileError on a missing required field or a dangling project.
  */
@@ -360,9 +358,9 @@ function profileProjectName(repoDir, fsImpl) {
 }
 
 /**
- * ensureDefaultProject(config, {repoDir, fsImpl, projectName}) — the quiet migration
- * (D-9.7-08). A config that already carries a registry is returned UNCHANGED (the same
- * object reference — that is the idempotence proof, T-9.7-06); a config without one gains
+ * ensureDefaultProject(config, {repoDir, fsImpl, projectName}) — the quiet migration.
+ * A config that already carries a registry is returned UNCHANGED (the same
+ * object reference — that is the idempotence proof); a config without one gains
  * exactly ONE entry and has `activeProject` pointed at it. The name comes from the install
  * profile when there is one, otherwise from the repository directory name.
  *
@@ -395,7 +393,7 @@ export const DERIVED_DIR_KEYS = Object.freeze(['dataDir', 'ledgerDir', 'repoDir'
  * What the derive would produce for this config path and this LAUNCH directory — i.e. what
  * `withDerivedDirs` gives a file that names none of the three. `launchDir` is the directory
  * the daemon process was started in and NOTHING else: never the repoDir the daemon is
- * currently serving, which may well be a pin the file itself carries (LP-3).
+ * currently serving, which may well be a pin the file itself carries.
  */
 function derivedDirsFor({ configPath, launchDir }) {
   const root = dirname(configPath)
@@ -404,7 +402,7 @@ function derivedDirsFor({ configPath, launchDir }) {
 
 /**
  * stripDerivedDirs(config, {configPath, launchDir}) — the PERSISTED shape of a config that
- * has been through `withDerivedDirs` (D-11-DEFER-19).
+ * has been through `withDerivedDirs`.
  *
  * WHY THIS EXISTS. `loadConfig` returns the config WITH the three working directories
  * attached, and every registry door (addProject / selectProject / renameProject) and every
@@ -421,8 +419,8 @@ function derivedDirsFor({ configPath, launchDir }) {
  * must not quietly move it. So the value is compared against what the derive would give, and
  * only an exact match is removed.
  *
- * THE BASELINE IS `launchDir`, AND THE NAME IS THE POINT (LP-3, the live incident of
- * 05.08.2026). The comparison only means «storing it would change nothing» when it is made
+ * THE BASELINE IS `launchDir`, AND THE NAME IS THE POINT — this is not a style choice but
+ * the fix for a live incident. The comparison only means «storing it would change nothing» when it is made
  * against what a file with NO value would derive. Handed the EFFECTIVE repoDir instead —
  * `o.repoDir ?? config.repoDir`, which the composition root computes and the front hands to
  * every door — the test for `repoDir` degenerates into «pin === pin», and one press in the
@@ -494,7 +492,7 @@ function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, l
  * returned untouched, and a file that omits them is NOT rewritten — the same config stays
  * portable between machines whose homes differ. The «never persisted» half is enforced by
  * `stripDerivedDirs` at the writer, because this object is what the registry doors and the
- * harness appliers hand back to be written (D-11-DEFER-19).
+ * harness appliers hand back to be written.
  */
 function withDerivedDirs(config, { configPath, repoDir }) {
   // `repoDir` here is the LAUNCH directory: this runs before any value from the file has
@@ -511,7 +509,7 @@ function withDerivedDirs(config, { configPath, repoDir }) {
 /**
  * loadConfig({env, homedir, fsImpl, repoDir}) — read the daemon config, creating a 0600
  * default (with a fresh 64-hex token) on first boot. Existing files are parsed and
- * validated, then run through the D-9.7-08 quiet migration: a config with no project
+ * validated, then run through the quiet migration: a config with no project
  * registry gains one and is persisted, in place, with no manual action. The migration is
  * idempotent, so every later load is a pure read. The returned object always carries the
  * three working directories (withDerivedDirs) whether or not the file names them.
@@ -519,7 +517,7 @@ function withDerivedDirs(config, { configPath, repoDir }) {
  * `repoDir` is the daemon's LAUNCH directory — the fallback the derive uses when the file
  * names no tree, and, at this one point in the program, the same thing as `launchDir`
  * (nothing has read the file's value yet). It is NEVER the effective repoDir a caller
- * computed from a loaded config: that direction is exactly the LP-3 defect.
+ * computed from a loaded config: that direction is exactly the defect described above.
  *
  * @param {{env?:object, homedir?:Function, fsImpl?:object, repoDir?:string}} [opts]
  * @returns {object} the normalized config
@@ -551,7 +549,7 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
  * plus the derive baseline. `launchDir` is the directory the daemon process was started in,
  * NOT the repoDir it is serving. The doors are handed the whole loaded config, working
  * directories and all, and `stripDerivedDirs` decides which of the three were derived; that
- * decision is only right against a launch directory (LP-3). A door never needs to know which
+ * decision is only right against a launch directory. A door never needs to know which
  * tree is being served, so `repoDir` does not appear in this file's write path at all.
  */
 
@@ -611,7 +609,7 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
 
 /**
  * addPeer(config, {id, name, url, token}, io) — take a machine into the PEER registry and
- * persist, atomically (D-9.7-06).
+ * persist, atomically.
  *
  * THE REGISTRY HAS EXACTLY ONE WRITE PATH — this door and its sibling below. The whole
  * candidate goes back through `validateFederation`, so a joining machine is held to the
@@ -621,7 +619,7 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
  *
  * `token` here is the PEER'S OWN daemon token, the credential this hub will present when
  * it calls that machine. It is stored, and it is collapsed by secretsView on the way out
- * (T-9.7-05) — it never rides a payload.
+ * by secretsView on the way out — it never rides a payload.
  *
  * @returns {object} the updated config
  * @throws {InvalidFederationError}
@@ -658,7 +656,7 @@ export function removePeer(config, { id } = {}, { env = process.env, homedir = o
  * secretsView(config, {env}) — THE ONLY loggable shape. Deep-copies the config with
  * `token`, every `account.oauthTokenEnv` AND every `federation.peers[].token` collapsed
  * to '[set]'/'[unset]'. The raw token, the env-var NAMES and every peer token never
- * appear in the returned object (T-9.5-01, T-9.7-05).
+ * appear in the returned object.
  *
  * `[set]`/`[unset]` for an account reflects whether the NAMED env var is populated in
  * `env` (default process.env) — operational insight with zero leakage. A peer token, by
