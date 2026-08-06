@@ -73,6 +73,30 @@ export const MEMORY_ID_CAP = 64
 export const STRUCT_FIELD_CAP = 200
 
 /**
+ * ═══════════ THE LIVE ATTEMPT LOG — what the worker is saying WHILE it says it ═══════
+ * The three layers above explain an attempt AFTER it decided something. The live log is the
+ * other half: every line of the worker's stdout, appended as it arrives, so the screen can
+ * show a running attempt instead of a spinner. It is the same law in a different tense.
+ *
+ * WHAT LIVES HERE AND WHAT DOES NOT — the same split the decision journal already made:
+ * this module owns the RECORD (its shape, its caps, how a tail is selected) and stays a
+ * leaf; `queue/attempt-ledger.mjs` owns the FILE, because the ledger dir and the
+ * `<id>` → filename rule live there and a second copy of that rule is how two answers start.
+ *
+ * THE LINE IS DATA, EXACTLY AS THE NOTE IS. It is text a worker printed and a screen will
+ * render. It is capped, flattened to one line (an NDJSON row is one line by definition) and
+ * stored verbatim otherwise — this module does NOT interpret it, does NOT strip markup and
+ * does NOT decide it is safe. Whatever renders it renders it as TEXT, never as markup.
+ */
+
+/** One line of worker output, capped — the same posture as the approach note. */
+export const ATTEMPT_LOG_LINE_CAP = 4096
+/** How many entries a tail read returns when the caller names no number. */
+export const ATTEMPT_LOG_TAIL_DEFAULT = 200
+/** The hard ceiling on one tail read — a growing log can never become a growing response. */
+export const ATTEMPT_LOG_TAIL_MAX = 1000
+
+/**
  * What an id may look like in the memory layer. Deliberately narrow: a note BODY (spaces,
  * punctuation, newlines) cannot match, so content can never ride into the journal disguised
  * as an identifier.
@@ -248,6 +272,49 @@ export function journalComplete({ attemptId, taskId, attempt, ledger, entries } 
     if (rowId === wanted && row.payload && String(row.payload.approach ?? '').trim()) return true
   }
   return false
+}
+
+/**
+ * normalizeAttemptLogEntry(entry, {now}) → the row as it will be stored:
+ * `{ts, line, subagent?, parentId?}`. PURE, never throws — a live log that could refuse a
+ * line would be a live log that can stop the work it is describing.
+ *
+ * `subagent` and `parentId` are written ONLY when the line really came from a delegated
+ * session (stream.mjs reads that off `parent_tool_use_id`), so an ordinary row stays two
+ * fields wide and a reader never has to tell `false` from «this build did not know».
+ *
+ * @param {{line?:string, ts?:string, subagent?:boolean, parentId?:string}} entry
+ * @param {{now?:()=>number}} [opts]
+ * @returns {{ts:string, line:string, subagent?:true, parentId?:string}}
+ */
+export function normalizeAttemptLogEntry(entry = {}, { now } = {}) {
+  const e = entry && typeof entry === 'object' ? entry : {}
+  const clock = typeof now === 'function' ? now : Date.now
+  const ts = typeof e.ts === 'string' && e.ts ? e.ts : new Date(clock()).toISOString()
+  const out = { ts, line: boundedText(e.line, ATTEMPT_LOG_LINE_CAP) }
+  if (e.subagent === true) {
+    out.subagent = true
+    const parentId = boundedText(e.parentId, STRUCT_FIELD_CAP)
+    if (parentId) out.parentId = parentId
+  }
+  return out
+}
+
+/**
+ * attemptLogTail(rows, tail) → `{entries, total, truncated}` — the LAST `tail` rows, with
+ * `truncated` saying out loud that older lines exist. `tail` is clamped into
+ * [1, ATTEMPT_LOG_TAIL_MAX]; anything unreadable falls back to the default. PURE.
+ *
+ * @param {object[]} rows
+ * @param {number} [tail]
+ * @returns {{entries:object[], total:number, truncated:boolean}}
+ */
+export function attemptLogTail(rows, tail) {
+  const all = Array.isArray(rows) ? rows : []
+  const asked = Number(tail)
+  const n = Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), ATTEMPT_LOG_TAIL_MAX) : ATTEMPT_LOG_TAIL_DEFAULT
+  const entries = all.length > n ? all.slice(all.length - n) : all
+  return { entries, total: all.length, truncated: entries.length < all.length }
 }
 
 /**
