@@ -69,6 +69,9 @@ import {
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
+import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { secretShaped } from '../../../scripts/sma/lib/profile.mjs'
+
 /** Named error: the file on disk is torn, or carries a shape this engine does not know. */
 export class CheckpointFormatError extends Error {
   constructor(message) {
@@ -370,5 +373,119 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl 
     return { open, answered }
   }
 
-  return { checkpointPath, readCheckpoint, openQuestions, progress }
+  /**
+   * recordAnswer(phaseId, questionId, {optionId?, freeText?}) — answer ONE parked
+   * question and write it back into the artifact.
+   *
+   * The order of the gates is the whole safety story, and it is the same order the
+   * first-run interview uses: refuse the shape, refuse the secret, and only then
+   * open the file. A refusal at any gate leaves the checkpoint byte-for-byte as it
+   * was — including the case where the file was never read at all.
+   *
+   * An answer is DATA. It is stored verbatim in the artifact and read back by the
+   * next round as the workflow's own decision record; it is never concatenated into
+   * a prompt from here.
+   *
+   * @param {string} phaseId
+   * @param {string} questionId
+   * @param {{optionId?:string, freeText?:string}} input
+   */
+  function recordAnswer(phaseId, questionId, input = {}) {
+    // ── gate 1: the shape of the request ──────────────────────────────────────
+    if (!isPlainObject(input)) {
+      throw new UnknownAnswerKeyError('ответ передаётся объектом с полем optionId или freeText')
+    }
+    for (const key of Object.keys(input)) {
+      if (key !== 'optionId' && key !== 'freeText') {
+        throw new UnknownAnswerKeyError(
+          `неизвестное поле ответа «${key}» — форма ответа принимает только optionId или freeText`,
+        )
+      }
+    }
+
+    const hasOption = input.optionId !== undefined && input.optionId !== null
+    const hasText = input.freeText !== undefined && input.freeText !== null
+    // Exactly one of the two: both set is a contradiction, neither is not an answer.
+    if (hasOption === hasText) {
+      throw new AnswerRejectedError(
+        'ответ — это либо выбранный вариант (optionId), либо свой текст (freeText), ровно одно из двух',
+      )
+    }
+
+    let text = null
+    if (hasText) {
+      if (typeof input.freeText !== 'string') {
+        throw new AnswerRejectedError('поле freeText должно быть строкой')
+      }
+      if (input.freeText.length > MAX_FREE_TEXT) {
+        throw new AnswerRejectedError(
+          `ответ длиннее ${MAX_FREE_TEXT} символов — это уже файл, а файлу место в репозитории, не в записи решения`,
+        )
+      }
+      text = normalizeText(input.freeText)
+      if (text === '') {
+        throw new AnswerRejectedError('пустой ответ не записывается — вопрос остаётся открытым')
+      }
+
+      // ── gate 2: the secret, BEFORE the artifact is opened ────────────────────
+      // The heuristic is the product's own, imported rather than copied: one screen,
+      // one place. A refusal here means nothing was even read, let alone written.
+      if (secretShaped(text)) {
+        throw new AnswerSecretError(
+          'ответ похож на ключ или токен — в запись решения попадают НАЗВАНИЯ переменных и факты, никогда значение ключа',
+        )
+      }
+    }
+
+    // ── gate 3: the question itself, resolved against the file as it is NOW ────
+    const loaded = loadRaw(phaseId)
+    if (!loaded) {
+      throw new UnknownQuestionError(
+        `для фазы «${phaseId}» не припарковано ни одного вопроса — отвечать не на что`,
+      )
+    }
+    const state = parseCheckpoint(loaded.data, loaded.path)
+    const question = state.questions.find((q) => q.id === String(questionId))
+    if (!question) {
+      throw new UnknownQuestionError(
+        `неизвестный вопрос «${questionId}» — в чекпойнте фазы «${phaseId}» такого нет`,
+      )
+    }
+    if (question.answered) {
+      throw new AnswerRejectedError(
+        `на вопрос «${questionId}» уже отвечено — прежний ответ не перезаписывается`,
+      )
+    }
+
+    if (hasOption) {
+      const chosen = question.options.find((o) => o.id === String(input.optionId))
+      if (!chosen) {
+        throw new AnswerRejectedError(
+          `вариант «${input.optionId}» вопросу «${questionId}» не предлагался`,
+        )
+      }
+      // The stored answer is the option's own wording: the next round reads `answer`
+      // as prose, exactly as it does for an answer typed by hand.
+      text = chosen.label
+    }
+
+    // ── the write: one field, atomically, everything else carried through ──────
+    const next = loaded.data
+    next.decisions[question.area][question.index].answer = text
+    atomicWriteJson(loaded.path, next, {
+      mkdirFn: io.mkdirSync,
+      writeFn: io.writeFileSync,
+      renameFn: io.renameSync,
+    })
+
+    return {
+      id: question.id,
+      area: question.area,
+      answer: text,
+      round: state.round,
+      progress: progress(phaseId),
+    }
+  }
+
+  return { checkpointPath, readCheckpoint, openQuestions, progress, recordAnswer }
 }
