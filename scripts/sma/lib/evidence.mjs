@@ -1,10 +1,10 @@
 /**
- * evidence.mjs — burden-of-proof evidence records for risky ops (9.2-07, D-9.2-11).
+ * evidence.mjs — burden-of-proof evidence records for risky ops.
  *
  * A risky op — git force-push, an edit to the SAFE_COMMAND allowlist (predict.mjs), a
  * foreign-claim force-clear — must carry a burden-of-proof record in .sma/evidence/
  * naming the reason AND the verifications performed BEFORE it proceeds. The record
- * follows the force-clear-with-provenance shape (D-9-09, claims.mjs lineage):
+ * follows the force-clear-with-provenance shape (claims.mjs lineage):
  * append-only, actor+pid+ts stamped, NEVER overwritten and NEVER deleted (T-9.2-07C —
  * there is no unlink path in this module). The risky-op gates (gates.mjs) consult
  * hasFreshEvidence for their DORMANT soft-deny tier; the advisory WARN + the journaled
@@ -68,7 +68,7 @@ export function writeEvidence({ op, target, reason, checks, actor } = {}, opts =
     id,
   }
   const path = join(opts.evidenceDir, `${id}.json`)
-  atomicWriteJson(path, record) // append-only; never unlinked (T-9.2-07C)
+  atomicWriteJson(path, record) // append-only; never unlinked
   return { ok: true, id, path, record }
 }
 

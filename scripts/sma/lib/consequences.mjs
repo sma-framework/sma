@@ -1,6 +1,6 @@
 /**
  * consequences.mjs — Consequences-as-LAW: the single step from RECORDING to
- * CONTROL (9.2-08, D-9.2-12, ICE 648). Verified claims must control behavior:
+ * CONTROL (ICE 648). Verified claims must control behavior:
  * a class-A prediction miss OR a claimed-pass/reproduced-fail divergence stops
  * `sma ship` until the founder dispositions it, and a divergence leaves a ready
  * rollback candidate branch.
@@ -123,7 +123,7 @@ export function eventKey(record) {
 export function classifyEvent(record) {
   const r = record ?? {}
   if (r.kind === 'disposition') return null // a disposition is not itself an event
-  // Grade-the-grader (9.4-02): a scored grader-contradiction (a `satisfied`
+  // Grade-the-grader: a scored grader-contradiction (a `satisfied`
   // verdict ground-truth refutes, or an `unsatisfied` one clean ground truth
   // refutes) is class-A via the EXISTING sma.verification domain boundary — a
   // NEW event type, never a new domain (CLASS_A_DOMAINS untouched).
@@ -233,7 +233,7 @@ export function openRollbackCandidate({ slug, sha, execGit }) {
 
 /**
  * graderContradictionEvent(scored, opts) -> the canonical class-A event a
- * contradicted grader verdict becomes (9.4-02). A thin adapter over a scored
+ * contradicted grader verdict becomes. A thin adapter over a scored
  * grader-verdict record (calibration.scoreGraderVerdicts output whose outcome is
  * 'contradicted'): it builds the `type:'grader-contradiction'` shape classifyEvent
  * scores class-A, in the sma.verification domain (already frozen class-A —

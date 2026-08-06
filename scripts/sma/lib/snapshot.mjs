@@ -16,13 +16,13 @@
  * runSnapshot() is the CLI entry (cli.mjs `snapshot` subcommand, 9-10): build →
  * send → return a small JSON status. It too never throws.
  *
- * ── ONE-WAY MIRROR (D-9-05) ────────────────────────────────────────────────
+ * ── ONE-WAY MIRROR ─────────────────────────────────────────────────────────
  * The authoritative coordination state is the repo's `.sma/` filesystem. This
  * module only projects a bounded, allowlisted view of it toward the CRM so the
  * founder can SEE the terminals. Nothing here reads the mirror back to make a
  * decision.
  *
- * ── DAEMON-FREE (D-9-11) ───────────────────────────────────────────────────
+ * ── DAEMON-FREE ────────────────────────────────────────────────────────────
  * The cadence is driven by registry.heartbeat: a successful (non-skipped)
  * heartbeat spawns a detached one-shot `node scripts/sma/cli.mjs snapshot` and
  * unrefs it (fire-and-forget). This module is the body that short-lived child
@@ -63,8 +63,8 @@ const PAYLOAD_KEYS = [
   'sentAt',
   'collisionFeed',
   'memoryHealth',
-  // ── v2 (9.1-25, B21) — the extended cockpit blocks ──────────────────────────
-  // Each is assembled from the SAME shared `.sma/` sources `sma report` (9.1-24)
+  // ── v2 (B21) — the extended cockpit blocks ──────────────────────────────────
+  // Each is assembled from the SAME shared `.sma/` sources `sma report`
   // reads: one data layer, two projections (static HTML / home cockpit). A failing
   // reader nulls its block (the cockpit renders a provisioning/empty hint from null,
   // never a fabricated zero — feedback_no_fake_dashboard_data).
@@ -74,7 +74,7 @@ const PAYLOAD_KEYS = [
   'reflexFires',
   'gates',
   'corpusHealth',
-  // ── 9.2-09 (D-9.2-13) — the deterministic spend ledger block ───────────────
+  // ── the deterministic spend ledger block ───────────────────────────────────
   'spend',
 ]
 
@@ -173,7 +173,7 @@ export async function defaultLoadMemoryHealth(opts = {}) {
 
 /**
  * gatherCalibration(calibrationDir) → {predictions, calibration}. Reads the shared
- * calibration ledger (9.1-08) and projects (a) recent verdicts newest-first and
+ * calibration ledger and projects (a) recent verdicts newest-first and
  * (b) per-domain hit-rate. An absent/empty ledger yields BOTH blocks null (honest
  * empty — the cockpit renders a provisioning hint, not a fabricated 0%). Fail-open.
  */
@@ -206,7 +206,7 @@ function gatherCalibration(calibrationDir) {
 
 /**
  * gatherJournalFires(journalDir) → {reflexFires, gates}. Reads the shared journal
- * and projects the reflex (9.1-10) + gate (9.1-16) firings newest-first, each
+ * and projects the reflex + gate firings newest-first, each
  * narrowed to display scalars. No such events → the block is null. Fail-open.
  */
 function gatherJournalFires(journalDir) {
@@ -362,7 +362,7 @@ export function buildSnapshotPayload(opts = {}) {
   payload.collisionFeed = feed
   payload.memoryHealth = memoryHealth
 
-  // ── v2 blocks (9.1-25, B21) — the SAME shared sources `sma report` reads ─────
+  // ── v2 blocks (B21) — the SAME shared sources `sma report` reads ─────────────
   payload.schemaVersion = 2
   const { predictions, calibration } = gatherCalibration(calibrationDir)
   payload.predictions = predictions
@@ -373,7 +373,7 @@ export function buildSnapshotPayload(opts = {}) {
   // corpusHealth carries the same memory-health summary the report's corpus panel
   // shows (defaultLoadMemoryHealth) — null when the source is absent.
   payload.corpusHealth = memoryHealth
-  // ── 9.2-09 (D-9.2-13) — the deterministic spend ledger block (aggregates only) ──
+  // ── the deterministic spend ledger block (aggregates only) ──────────────────────
   payload.spend = gatherSpend({ spendDir: opts.spendDir ?? SPEND_DIR, repoRoot: opts.repoRoot, now: opts.now ?? Date.now() })
 
   // Defensive: strip any key that is not in the allowlist (belt + braces, P1).
@@ -496,7 +496,7 @@ export async function runSnapshot(flags = {}) {
     const journalDir = flags.journalDir ?? join(root, 'journal')
     const calibrationDir = flags.calibrationDir ?? join(root, 'calibration')
     const spendDir = flags.spendDir ?? join(root, 'spend')
-    const repoRoot = smaRoot() // repo root for local-session-log discovery (D-9.2-13)
+    const repoRoot = smaRoot() // repo root for local-session-log discovery
     const memoryHealth = await defaultLoadMemoryHealth({})
     const payload = buildSnapshotPayload({ identity, sessionsDir, journalDir, calibrationDir, spendDir, repoRoot, memoryHealth })
     return await sendSnapshot({ payload, identity, sessionsDir, journalDir })

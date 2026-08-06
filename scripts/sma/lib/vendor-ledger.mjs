@@ -11,7 +11,7 @@
  * network (the ledger is written by whoever read the release notes; the verb
  * only counts and lints).
  *
- * CONSUME-NEVER-REIMPLEMENT (D-9.3-02), the house patterns this mirrors:
+ * CONSUME-NEVER-REIMPLEMENT, the house patterns this mirrors:
  *   - journal.mjs's tolerant-reader posture: a missing/corrupt ledger never
  *     throws — a missing file is a warning + empty rows, a malformed table line
  *     is skip-and-counted into `errors`.

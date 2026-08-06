@@ -1,6 +1,6 @@
 /**
  * spend.mjs — the deterministic spend BOOK, the rolling window budget, and the
- * hot-path spend-check decision core (9.2-09, D-9.2-13).
+ * hot-path spend-check decision core.
  *
  * ═══════════════════════════ THE BOOK ═════════════════════════════════════════
  *
@@ -24,7 +24,7 @@
  * ═══════════════════════════ THE WINDOW BUDGET ════════════════════════════════
  *
  * .sma/spend/budget.json = {windowHours, capUsd, warnAt:[0.7,0.9], by, at}. The
- * 70/90 warn levels are LOCKED (D-9.2-13). capUsd defaults null → report-only: a
+ * 70/90 warn levels are LOCKED. capUsd defaults null → report-only: a
  * soft-deny must NEVER fire off an assumed number (Claude's-discretion default).
  *
  * Node built-ins only; every fs touch is behind try/catch and dependency-injectable.
@@ -46,7 +46,7 @@ import {
 /** The current (latest) adapter version — stamped into every book. */
 const CURRENT_ADAPTER_VERSION = ADAPTER_VERSIONS[ADAPTER_VERSIONS.length - 1].version
 
-/** The LOCKED safe-default budget (D-9.2-13). capUsd null = report-only, never deny. */
+/** The LOCKED safe-default budget. capUsd null = report-only, never deny. */
 export const DEFAULT_BUDGET = { windowHours: 5, capUsd: null, warnAt: [0.7, 0.9] }
 
 /** Round a USD amount to 1e-6 (never carry float noise into a report). */
@@ -324,7 +324,7 @@ export function windowSpend({ book, now, windowHours } = {}) {
 /**
  * readBudget({spendDir}) -> budget. Reads spendDir/budget.json; a missing OR corrupt
  * file yields the LOCKED safe default {windowHours:5, capUsd:null, warnAt:[0.7,0.9]}.
- * The 70/90 warnAt levels are always re-applied (locked, D-9.2-13) — a tampered
+ * The 70/90 warnAt levels are always re-applied (locked) — a tampered
  * warnAt in the file is ignored. capUsd null → report-only.
  * @param {{spendDir?:string}} [opts]
  * @returns {object}
@@ -463,7 +463,7 @@ export function checkSpend(ctx = {}, opts = {}) {
     if (truthy(env.SMA_SPEND_DISABLE)) return out // kill-switch first
 
     const probeFn = typeof opts.probe === 'function' ? opts.probe : probeNativeSpend
-    if (probeFn({ env }).native) return out // native surface detected → silent (D-9.2-05a)
+    if (probeFn({ env }).native) return out // native surface detected → silent
 
     const budget = opts.budget || readBudget({ spendDir: opts.spendDir })
     const cap = budget.capUsd

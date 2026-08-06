@@ -1,10 +1,9 @@
 /**
  * passport.mjs — the calibration passport: a deterministic, reproducible
- * function of COMMITTED data that writes PASSPORT.md + a public README badge
- * (9.3-02, D-9.3-10).
+ * function of COMMITTED data that writes PASSPORT.md + a public README badge.
  *
- * The moment we publish a trust number we acquire the incentive to fake it
- * (T-9.3-01). This module makes the honest path the ONLY path:
+ * The moment we publish a trust number we acquire the incentive to fake it.
+ * This module makes the honest path the ONLY path:
  *
  *   - The badge is a PURE FUNCTION of the committed PASSPORT.md snapshot
  *     (parseSnapshot -> renderBadgeBlock), NEVER the live gitignored ledger —
@@ -18,8 +17,8 @@
  *     badge is its own kind of lie).
  *
  * This is a READER over the Track A artifacts — the V2 calibration ledger
- * (calibration.mjs, 9.1-08), the reverify receipt verdicts (9.2-03), the
- * journal chainTip (9.2-03) — and re-implements NONE of them (D-9.3-02). The
+ * (calibration.mjs), the reverify receipt verdicts, the
+ * journal chainTip — and re-implements NONE of them. The
  * prediction-calibration claim EXCLUDES sma.receipts (which get their own
  * PASSPORT.md section); inflating the badge n with receipt hits is exactly the
  * statistical dishonesty this plan guards against. It also counts UNIQUE
@@ -313,7 +312,7 @@ export function parseSnapshot(passportText) {
  * (2026-07-10): a structural receipt over the passport read surface
  * must pin its SHAPE, never its CONTENTS — the passport is rebuilt each
  * release, so hashing `passport --json` output re-fails on every reverify by
- * construction (the 9.3-02 R2 lesson). Valid: null (PASSPORT.md absent or no
+ * construction (the R2 lesson). Valid: null (PASSPORT.md absent or no
  * fenced block — the --json surface honestly prints {}), OR a schema-1
  * snapshot carrying the seven top-level sections with structurally sound
  * types (guard status string + finite freshN; calibration domains array +
@@ -405,7 +404,7 @@ export function readManagedBlock(text, beginMarker = BADGE_BEGIN, endMarker = BA
 /**
  * writeManagedBlock({filePath, content, beginMarker, endMarker}) — read the
  * file (fail-open to ''), splice the managed block, write atomically. Exported
- * for 9.3-04's emit reuse (the MEMORY.md/MEM-REGEN managed-artifact pattern).
+ * for the emit reuse (the MEMORY.md/MEM-REGEN managed-artifact pattern).
  *
  * @param {{filePath:string, content:string, beginMarker?:string, endMarker?:string, fs?:object}} args
  * @returns {{filePath:string, bytes:number}}

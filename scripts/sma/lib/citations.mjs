@@ -1,9 +1,9 @@
 /**
- * citations.mjs — the B4 usage-citation ledger of the layered memory (9.1-11).
+ * citations.mjs — the B4 usage-citation ledger of the layered memory.
  *
  * Every note consumption is a citation event: a 'load' (the loader returned the
  * note to a session — `sma load`, pre-act injection) or a 'fire' (a promoted
- * reflex surfaced it via 9.1-10's PreToolUse consumer). One usage model over
+ * reflex surfaced it via the PreToolUse consumer). One usage model over
  * both makes «which notes are actually used and which are dead weight»
  * answerable with data — the input FI-9's demotion ordering needs.
  *
@@ -129,7 +129,7 @@ export function readUsage(opts = {}) {
     corrupt += c
   }
 
-  // Fold reflex fires from the journal (event kind 'reflex', 9.1-10).
+  // Fold reflex fires from the journal (event kind 'reflex').
   if (opts.journalDir) {
     try {
       const { events } = readJournal({ journalDir: opts.journalDir })
@@ -185,7 +185,7 @@ export function usageStats(opts = {}) {
 }
 
 /** List corpus note files (*.md, non-structural) — mirrors loader.mjs's listing.
- * The FI-11 per-area INDEX-<area>.md files (9.1-13) are structural, not notes. */
+ * The FI-11 per-area INDEX-<area>.md files are structural, not notes. */
 function listCorpusNotes(corpusDir) {
   let entries
   try {

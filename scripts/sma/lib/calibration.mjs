@@ -1,11 +1,11 @@
 /**
- * calibration.mjs — per-domain prediction-calibration ledger (9.1-08, B20).
+ * calibration.mjs — per-domain prediction-calibration ledger (B20).
  *
  * Answers "in which areas are our plans historically wrong" with DATA:
  * every predict-score verdict is appended to .sma/calibration/<domain>.jsonl,
  * and hitRate/escalations() compute per-domain hit-rates + the
  * low-calibration domain list for auto-escalation (stricter gates / founder
- * review surface via 9.1-18's digest and 9.1-24's report — this module
+ * review surface via the digest and the report — this module
  * only COMPUTES, it never gates).
  *
  * Structure mirrors journal.mjs EXACTLY (PATTERNS analog): one append-only
@@ -13,7 +13,7 @@
  * line appends, tolerant skip-and-count line reader (fail-open C9), missing
  * dir -> honest empty report. Ledger integrity is accepted-risk T-9.1-15:
  * the dir lives in gitignored .sma/; the committed rollup lands with
- * 9.1-24's report.
+ * the report.
  *
  * Node built-ins only; the ledger dir is dependency-injectable via
  * opts.calibrationDir (default CALIBRATION_DIR from constants.mjs — never
@@ -27,8 +27,8 @@ import { CALIBRATION_DIR } from './constants.mjs'
 import { resolveModelId } from './model-version.mjs'
 
 /**
- * The GROUND-TRUTH evidence vocabulary the grade-the-grader pipeline CONSUMES
- * (9.4-02). A grader's verdict is a PREDICTION; deterministic ground truth
+ * The GROUND-TRUTH evidence vocabulary the grade-the-grader pipeline CONSUMES.
+ * A grader's verdict is a PREDICTION; deterministic ground truth
  * settles it. Evidence records have the shape { type, planId, at } and are
  * produced by EXISTING mechanisms — never fabricated here (this module only
  * reads them):
@@ -186,7 +186,7 @@ export function escalations(opts = {}) {
   return flagged
 }
 
-// ── Grade the grader (9.4-02) ────────────────────────────────────────────────
+// ── Grade the grader ─────────────────────────────────────────────────────────
 //
 // Any separate-context LLM verdict — the blind verifier's, or a vendor
 // outcomes-style grader's if ever consumed — is recorded as a PREDICTION here

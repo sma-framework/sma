@@ -23,16 +23,16 @@
  * (9.2-03 `sma reverify`) after its atomic commit BEFORE its backlog checkbox flips. A
  * green-looking item with no reproduced receipt does NOT get checked off. «Light» means
  * fewer AGENTS (no research / plan-checker / discuss), never fewer RECEIPTS
- * (D-9.3-19: «light does not mean unaccountable»).
+ * («light does not mean unaccountable»).
  *
- * Consume-never-reimplement (D-9.3-02): this module writes NO second backlog parser, NO
+ * Consume-never-reimplement: this module writes NO second backlog parser, NO
  * second challenge ledger, NO second reverifier, NO second preflight. It COMPOSES the
  * existing substrate, all handed in by DI at the CLI boundary:
  *   - the backlog parser's `parseBacklogContent` reads the `- [ ] **BL-NNN** …` grammar
  *     (the CLI parses; these functions consume the parsed items — this lib has no reader);
  *   - grill.mjs's `grillGate` is grill-lite (the SAME gate, a lighter registration);
- *   - `sma reverify` (9.2-03) produces the receipt;
- *   - `sma preflight` (9.3-10) is the per-item already-built guard.
+ *   - `sma reverify` produces the receipt;
+ *   - `sma preflight` is the per-item already-built guard.
  * The ONLY new markdown surface is `checkOffBacklogItem` — the companion WRITER that flips
  * exactly the matched `[ ]`→`[x]` line and leaves every other byte identical.
  *
@@ -171,7 +171,7 @@ function escapeId(id) {
 
 /**
  * checkOffBacklogItem({backlogText, id}) -> {changed, backlogText}. The surgical WRITER
- * (the one new markdown surface, D-9.3-02): flips EXACTLY the matched `- [ ] **BL-NNN**`
+ * (the one new markdown surface): flips EXACTLY the matched `- [ ] **BL-NNN**`
  * line to `- [x] **BL-NNN**` and leaves every other byte identical. An already-`[x]` line
  * is a no-op; a missing id returns {changed:false} without touching the text.
  */
@@ -226,10 +226,10 @@ export function ejectItem({ item, backlogText, note }) {
  * runBatch({items, runPreflight, grillGate, runExecutor, runReverify, backlogIo, now})
  * -> {items:[result], note}. The driver. Per item, in THIS order:
  *   1. RISK FILTER — a phase-class item is rejected «this is a phase», batch continues.
- *   2. preflight (9.3-10) — a `built` verdict SKIPS the item (no tokens on built work).
+ *   2. preflight — a `built` verdict SKIPS the item (no tokens on built work).
  *   3. grill-lite gate (grill.mjs, fail-open) — an open challenge BLOCKS that item.
  *   4. ONE executor pass — an atomic commit per item (targeted tests inside the executor).
- *   5. reverify (9.2-03) — the mandatory receipt.
+ *   5. reverify — the mandatory receipt.
  *   6. checkOffBacklogItem — flips the box ONLY on a clean reverify receipt; a divergent
  *      receipt records a FAILED item and leaves the box `[ ]`.
  * Every runner is injected; the lib spawns nothing. `backlogIo` = {read, write}.

@@ -1,5 +1,5 @@
 /**
- * economy.mjs — the SMA economy meters (9.4-06). The caveman
+ * economy.mjs — the SMA economy meters. The caveman
  * absorption done the SMA way (9.4-RESEARCH-ECONOMY §2 rows 4/6): their local
  * token estimates become a VERSIONED estimator, their per-turn overhead caveat
  * becomes our own self-cost meter, and — unlike them — every savings number is
@@ -32,7 +32,7 @@
  * this module. Every input is dependency-injectable ({readFile, spendDir, corpusDir,
  * now, book, appendVerdict, draftLesson}); the CLI layer injects the real io. The
  * scored-miss row is shaped EXACTLY as a scorePlan miss so predict.draftLessonFromMiss
- * works UNMODIFIED (D-9.3-02: consume, never reimplement).
+ * works UNMODIFIED (consume, never reimplement).
  */
 
 import {
@@ -184,7 +184,7 @@ function spanTokens(text, beginPrefix, endMarker) {
  *   - the emitted corpus block span in CLAUDE.md (emit anchorMarkers 'md'),
  *   - the MEMORY.md core load.
  * A surface that is absent is simply not listed (a repo with only a MEMORY.md returns
- * that one surface with total > 0 — the dogfood-repo shape, P9.4-06-C). The honest
+ * that one surface with total > 0 — the dogfood-repo shape). The honest
  * not-counted line (variable per-turn hook stdout) is part of the report object.
  *
  * @param {{readFile?:Function, paths:{claudeMd?:string, memoryMd?:string}}} opts
@@ -439,7 +439,7 @@ export function deriveLaneBudgets({ runs, pct = 75, minRuns = 5, now } = {}) {
 
 /**
  * maxLaneClosedRuns(runs) -> the max count of closed CLEAN runs across lanes (0 when
- * none). The P9.4-06-F accrual stat: >= 5 means at least one lane can derive a budget.
+ * none). The accrual stat: >= 5 means at least one lane can derive a budget.
  * @param {object[]} runs
  * @returns {number}
  */
@@ -542,7 +542,7 @@ export function readLaneBudgets({ spendDir } = {}) {
 /**
  * memoryStatsSelftest() -> 1|0. Runs corpusStats over an inline fixture corpus in a temp
  * dir TWICE and requires byte-identical JSON both times with ESTIMATOR_VERSION stamped
- * (P9.4-06-A: deterministic + versioned).
+ * (deterministic + versioned).
  * @returns {number}
  */
 export function memoryStatsSelftest() {

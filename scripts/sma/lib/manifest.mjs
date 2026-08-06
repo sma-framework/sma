@@ -1,6 +1,6 @@
 /**
  * manifest.mjs — the PR EVIDENCE PASSPORT: a deterministic, reader-only
- * assembler over the Track A trust-spine outputs (9.3-08, D-9.3-11, D-9.3-02).
+ * assembler over the Track A trust-spine outputs.
  *
  * WHAT IT IS: `sma manifest` deterministically packs the evidence a reviewer (or
  * a regulator) needs into ONE object + ONE markdown render — which predictions
@@ -12,7 +12,7 @@
  * number it emits is READ from a calibration-ledger record (predict-score
  * verdicts, sma.receipts records, kind:'divergence' events), a frozen
  * .sma/blind/<planId>.json file, or the spend book. Re-grading is exactly the
- * self-grading dishonesty V3 exists to kill (D-9.3-02) — so it is structurally
+ * self-grading dishonesty V3 exists to kill — so it is structurally
  * impossible here: the public API takes NO command runner / no network seam at
  * all. The blind-verify barrier idiom, applied to assembly.
  *
@@ -345,7 +345,7 @@ export function buildManifest({
     range: String(range ?? ''),
     headSha: String(headSha ?? ''),
     plans: planIds,
-    // The loss detector (P9.3-08-2): registeredPredictions is the recount from
+    // The loss detector: registeredPredictions is the recount from
     // the same inputs; manifestStats('prediction-coverage') = present/registered.
     coverage: { registeredPredictions: predictions.length },
     predictions,
@@ -608,7 +608,7 @@ export function renderManifestDense(manifest) {
 }
 
 /**
- * manifestStats(manifest, name) -> a single finite number (the 9.1-08 scorer
+ * manifestStats(manifest, name) -> a single finite number (the scorer
  * contract). 'prediction-coverage' = present/registered * 100 computed against
  * the manifest's own recount, so a build that DROPS a prediction from the present
  * list scores below 100 while an honest empty set scores 100. determinism and

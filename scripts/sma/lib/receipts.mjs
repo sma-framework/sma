@@ -1,6 +1,6 @@
 /**
  * receipts.mjs — STRUCTURAL receipts: the claims schema over the V2 coverage
- * block (9.2-03, D-9.2-06). The single new-CLASS capability of V3.
+ * block. The single new-CLASS capability of V3.
  *
  * A `done` stops being a sentence and becomes a data structure: a claim
  * {id, assertion, re-runnable check_command, expected hash} that any machine
@@ -38,11 +38,11 @@
  * expected_sha256 = sha256(observation), machine-comparable, uniform schema
  * whether or not stdout is hashed.
  *
- * SECURITY BOUNDARY (T-9.2-03-01, Elevation of Privilege — mitigate): receipt
+ * SECURITY BOUNDARY (Elevation of Privilege — mitigate): receipt
  * check_command strings arrive from SUMMARY files (which may be imported from
  * untrusted sources) and get EXECUTED. The boundary is NOT re-derived here — it
  * is the SAME isSafeCommand + SAFE_COMMAND_PATTERNS imported from predict.mjs
- * (the 9.1-08 single-execution-boundary lock, T-9.1-14 extension). Every path
+ * (the single-execution-boundary lock, T-9.1-14 extension). Every path
  * that would run a command — verifyReceipts AND the emit path recordReceipt —
  * gates on isSafeCommand FIRST; a non-matching command scores 'skipped-unsafe'
  * and the runner is NEVER invoked.
@@ -143,7 +143,7 @@ export function parseReceipts(summaryPath, opts = {}) {
  * indented 6+ spaces, treating them as part of the current entry rather than a
  * block-closer). Extracts ONLY {id, human_judgment} per coverage item.
  * human_judgment absent -> false: a coverage item is machine-verifiable BY
- * DEFAULT and must OPT OUT of receipts, never silently evade them (D-9.2-06).
+ * DEFAULT and must OPT OUT of receipts, never silently evade them.
  *
  * @param {string} summaryPath
  * @param {{readFn?:Function}} [opts]
@@ -270,7 +270,7 @@ function runOne(runCommand, cmd, cwd) {
 /**
  * verifyReceipt(entry, {runCommand, cwd, now, summary}) -> one verdict record.
  *
- * Allowlist gate FIRST (T-9.2-03-01) -> run -> recompute observation hash ->
+ * Allowlist gate FIRST -> run -> recompute observation hash ->
  * compare. Never throws. Verdicts: 'verified' | 'divergent' | 'skipped-unsafe'
  * | 'error'. A divergent record carries BOTH observed_sha256 and
  * expected_sha256 — the observed-vs-expected diff is the product.
@@ -293,7 +293,7 @@ export function verifyReceipt(entry, { runCommand, cwd, now, summary } = {}) {
     domain: 'sma.receipts',
   }
 
-  // T-9.2-03-01: allowlist BEFORE any run — the runner is never invoked for a
+  // allowlist BEFORE any run — the runner is never invoked for a
   // non-matching command. An `unsafe_ack` stamp does NOT re-open the boundary
   // here: the ack was a human's one-time waiver at emit time, and verification
   // runs unattended over receipts that may have arrived from anywhere. The
@@ -353,7 +353,7 @@ export function verifyReceipts({ summaryPath, receipts, runCommand, cwd, now, re
  *
  * Allowlist gate FIRST: refuses (returns {error}) for a non-allowlisted
  * command — forging a receipt for an unrunnable command is structurally
- * impossible (T-9.2-03-03). recordReceipt is the programmatic twin of the
+ * impossible. recordReceipt is the programmatic twin of the
  * `sma receipt-hash` CLI.
  *
  * `unsafeAck: true` is the explicit, human-supplied waiver (`receipt-hash

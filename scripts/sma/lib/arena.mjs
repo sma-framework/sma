@@ -1,27 +1,27 @@
 /**
- * arena.mjs — the comparative benchmark arena scorer (9.3-11, D-9.3-18).
+ * arena.mjs — the comparative benchmark arena scorer.
  *
  * ═══════════════════════════ WHAT THIS IS ════════════════════════════════════
  *
- * The passport (9.3-02) proves calibration on OUR repo; the arena proves the
+ * The passport proves calibration on OUR repo; the arena proves the
  * adoption claim against named rivals on NEUTRAL ground. It hardens the founder-run
  * n=1 pilot (9.3-11-PILOT-*) into a reproducible n>=4 four-arm comparison — vanilla
  * Claude Code / GSD only / Superpowers only / SMA — over a FIXED ticket set on a
  * public repo, scored FULLY DETERMINISTICALLY (git-diff LOC, acceptance test pass
- * count, tokens+cost via the 9.2-09 spend-adapter, plus a separate adversarial
+ * count, tokens+cost via the spend-adapter, plus a separate adversarial
  * safety tier). This module is the in-repo surface: the deterministic scorer /
  * aggregator + the static-HTML report generator. The harness proper (the four
  * isolated per-arm runs) is OUTSIDE this repo, founder-driven (see the ARENA runbook).
  *
  * ═══════════════════════════ THE THREE LOCKS ═════════════════════════════════
  *
- * D-9.3-18 — the tested claim is cost-per-RESULT, not cost-per-task. The headline is
+ * the tested claim is cost-per-RESULT, not cost-per-task. The headline is
  *   M1 (done-right-first-time) + M2 (rework rounds). M3 (raw tokens/$) is REPORTED but
  *   NEVER the headline and NEVER the sort key. A run where SMA is the most expensive
  *   per task is PUBLISHED as-is — suppressing a negative result is a class-A miss. The
  *   `suppressed` guard is empty BY CONSTRUCTION; no arm is ever dropped for looking bad.
  *
- * D-9.3-02 — consume, never reimplement. The 9.2-09 spend-adapter is the SOLE
+ * consume, never reimplement. The spend-adapter is the SOLE
  *   token/cost source across all four arms. The operator gathers per-arm cost by running
  *   `SMA_SPEND_LOGS_DIR=<arm-cfg>/... node scripts/sma/cli.mjs spend` from each arm's
  *   clone; arena.mjs INGESTS those version-tagged totals as records — it writes NO second
@@ -193,7 +193,7 @@ export function scoreArm(rawArmRecord, opts = {}) {
 /**
  * rankByCostPerResult(scoredArms) → a NEW array ordered by the done-right-first-time
  * composite: m1FirstDoneRate DESC, then m2MeanRounds ASC. m3MeanCost is a CARRIED
- * column, NEVER the sort key (D-9.3-18) — so an arm that is expensive per task can
+ * column, NEVER the sort key — so an arm that is expensive per task can
  * still rank first if it gets the result right first time. A tie on both keys preserves
  * input order (stable), independent of raw cost. Does not mutate the input.
  */
@@ -254,8 +254,8 @@ const GEN_CLOSE = '</span>'
 
 /**
  * stripGeneratedTimestamp(html) → the report BODY with the footer timestamp removed, so
- * two renders at DIFFERENT wall-clock times can be byte-compared for body determinism
- * (P9.3-11-A). The timestamp is the only field that legitimately varies over time.
+ * two renders at DIFFERENT wall-clock times can be byte-compared for body determinism.
+ * The timestamp is the only field that legitimately varies over time.
  */
 export function stripGeneratedTimestamp(html) {
   const start = String(html).indexOf(GEN_OPEN)
@@ -293,7 +293,7 @@ function munichStamp(now) {
  *   - the provisional (underpowered n<4) note,
  *   - a Munich last-updated footer timestamp (the sole dated field; opts.now).
  * The BODY is a pure function of `aggregate`; only the footer varies with `opts.now`.
- * Plain language, formal Вы, NO em-dashes in the RU copy (D-9.3-15).
+ * Plain language, formal Вы, NO em-dashes in the RU copy.
  */
 export function renderArenaReport(aggregate, opts = {}) {
   const agg = aggregate || {}

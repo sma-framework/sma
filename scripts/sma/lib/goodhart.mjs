@@ -1,5 +1,5 @@
 /**
- * goodhart.mjs — the Goodhart integrity guards (9.2-10, D-9.2-14).
+ * goodhart.mjs — the Goodhart integrity guards.
  *
  * The moment trust numbers are published, the incentive to game them exists.
  * This module is the anti-gaming layer for the receipts/predictions spine:
@@ -23,7 +23,7 @@
  *      bench, audit, digest) ever reads .sma/nearmiss/, so reporting a near-miss
  *      can never hurt a number — immunity is what makes reporting rational.
  *
- * Security boundary (T-9.2-30): the audit executes check_command strings sourced
+ * Security boundary: the audit executes check_command strings sourced
  * from claims files. The audit reuses receipts.verifyReceipt, which enforces the
  * ONE isSafeCommand boundary (imported from predict.mjs) BEFORE any run — a
  * non-allowlisted command scores 'skipped-unsafe' with the runner never invoked.

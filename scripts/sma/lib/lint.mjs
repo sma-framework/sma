@@ -10,7 +10,7 @@
  *     statSync). Auto-fix is out of scope for V1.
  *   - DETERMINISTIC: same tree → byte-identical report. Findings are sorted by
  *     (checkId, file, message); no timestamps inside the report body.
- *   - FAIL-SOFT (T-9-08-02): a check that throws is converted to a WARN finding
+ *   - FAIL-SOFT: a check that throws is converted to a WARN finding
  *     rather than crashing the whole run — the commit hook (9-12) is additionally
  *     fail-open.
  *
@@ -30,30 +30,30 @@ import { createHash } from 'node:crypto'
 
 import { parseNote, serializeNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { parsePredictions, validatePrediction, isSafeCommand } from './predict.mjs'
-// 9.3-01 (D-9.3-04): the PROFILE family delegates ALL schema/secret/dead-field
+// the PROFILE family delegates ALL schema/secret/dead-field
 // judgment to the profile lib — one boundary, never duplicated (same lock as
 // PRED → predict.mjs). lint renders findings, it never re-implements the checks.
 import { validateProfile, normalizeProfile, deadFields, readProfile } from './profile.mjs'
-// 9.2-08 (D-9.2-12): the CONS lint family delegates field validation to the
+// the CONS lint family delegates field validation to the
 // consequences lib — one boundary, never duplicated (same posture as PRED → predict.mjs).
 import { parseConsequences, validateConsequence } from './consequences.mjs'
-// 9.2-03 (D-9.2-06): RECEIPT-PROSE delegates ALL parsing/validation to the
+// RECEIPT-PROSE delegates ALL parsing/validation to the
 // receipts lib (parseReceipts + parseCoverage + validateReceipt) — lint renders
 // findings, it NEVER re-implements a parser (same lock as PRED → predict.mjs).
 import { parseReceipts, parseCoverage, validateReceipt, isAckedReceipt } from './receipts.mjs'
-// 9.2-10 (D-9.2-14): PRED-SKEPTIC delegates the countersign verdict to the
+// PRED-SKEPTIC delegates the countersign verdict to the
 // Goodhart guard (verifySkeptic) — lint renders the advisory, it never re-checks
 // the hash. goodhart.mjs imports extractPredictionsBlock BACK from this module
 // (one extraction truth); the cycle is safe because both sides use the imported
 // binding only inside functions, never at module-eval time.
 import { verifySkeptic } from './goodhart.mjs'
-// 9.2-10 (D-9.2-14): HAZARD-NOCONTROL is the ENV-INDEPENDENT git-side check that
+// HAZARD-NOCONTROL is the ENV-INDEPENDENT git-side check that
 // every kill-switch cites a compensating control — it is itself the control cited
 // by SMA_STPA_OFF's HAZARDS row (the guard cannot silently kill the guard). No cycle:
 // stpa.mjs imports gates/journal/calibration, never lint.
 import { uncompensatedKillSwitches } from './stpa.mjs'
 import { GATES } from './gates.mjs'
-// 9.3-06 (D-9.3-12): LADDER-EVIDENCE reads the TRACKED tier registry through the
+// LADDER-EVIDENCE reads the TRACKED tier registry through the
 // ladder lib (readLadder) — the same delegation lock as PRED → predict.mjs. It is the
 // env-independent compensating control the SMA_LADDER_OFF HAZARDS row cites: an
 // evidence-free tier escalation, or an unchecked retirement, cannot survive a commit.
@@ -73,12 +73,12 @@ import { readEpisodes, episodeRequiredFields, EPISODES_DIRNAME, EPISODE_MEMORY_T
 // The personal-shape vocabulary is the write pipeline's: it screens this material
 // on its way IN, this file screens what is already on disk. Same shapes, one list.
 import { PERSONAL_PATTERNS } from './write-pipeline.mjs'
-// 9.3-05 (D-9.3-07): the FRAG family delegates ALL fragment schema/byte/trigger
+// the FRAG family delegates ALL fragment schema/byte/trigger
 // judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
 // fragments/ dir is a valid state (listFragments returns []) — fail-open.
 import { listFragments, validateFragment } from './fragments.mjs'
-// FI-9/FI-11 layer budgets (9.1-13): the four size lints reference these ONLY —
+// FI-9/FI-11 layer budgets: the four size lints reference these ONLY —
 // no magic byte numbers live in this module.
 import {
   CORE_BUDGET,
@@ -109,7 +109,7 @@ const GENERATOR_PATH = join(__dirname, 'generator.mjs')
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 
 /**
- * The FI-11 on-demand per-area index files (INDEX-<area>.md, 9.1-13) are
+ * The FI-11 on-demand per-area index files (INDEX-<area>.md) are
  * structural artifacts too: never notes, never counted against the always-load
  * budget (they are pulled by tag on demand, not loaded whole).
  */
@@ -210,8 +210,8 @@ function parseIndexLinks(indexText) {
 
 /**
  * Recursively list files with a given suffix under plansDir (sorted, fail-soft).
- * The PRED/CONS families (9.1-09 / 9.2-08) lint `-PLAN.md` frontmatter; the
- * RECEIPT-PROSE check (9.2-03) lints `-SUMMARY.md` frontmatter. One walk,
+ * The PRED/CONS families lint `-PLAN.md` frontmatter; the
+ * RECEIPT-PROSE check lints `-SUMMARY.md` frontmatter. One walk,
  * parameterized by suffix — never a duplicated tree walk.
  */
 function listPlanFiles(plansDir, suffix = '-PLAN.md') {
@@ -294,7 +294,7 @@ function isSmaRegimeSummary(text) {
  * Extract the RAW `<key>:` dash-list block text from a PLAN.md's frontmatter
  * ('' when absent). POSTEDIT lints hash THIS block only — not the whole file —
  * so unrelated frontmatter edits never false-positive (Pitfall 3). The key is
- * parameterized (9.2-08) so PRED-POSTEDIT and CONS-POSTEDIT share one extractor.
+ * parameterized so PRED-POSTEDIT and CONS-POSTEDIT share one extractor.
  */
 function extractFrontmatterBlock(text, key) {
   const t = String(text).replace(/\r\n/g, '\n')
@@ -319,7 +319,7 @@ function extractFrontmatterBlock(text, key) {
 
 /**
  * Predictions-block extractor — a thin wrapper so PRED-POSTEDIT is byte-identical.
- * EXPORTED (9.2-10): goodhart.mjs's skeptic countersign hashes THIS exact block
+ * EXPORTED: goodhart.mjs's skeptic countersign hashes THIS exact block
  * so the countersign voids on any post-sign edit, mirroring PRED-POSTEDIT's
  * immutability — one extraction truth, two consumers (never re-derived).
  */
@@ -406,7 +406,7 @@ function buildContext(opts) {
     indexText = ''
   }
 
-  // FI-11 (9.1-13): the catalog is now MEMORY.md + the per-area INDEX-<area>.md
+  // FI-11: the catalog is now MEMORY.md + the per-area INDEX-<area>.md
   // files. MEM-ORPHAN's "absent from the index" direction must see the union of
   // links across all of them, or every periphery note would false-positive.
   const indexLinks = parseIndexLinks(indexText)
@@ -425,7 +425,7 @@ function buildContext(opts) {
     /* fail-soft — unreadable corpus dir */
   }
 
-  // STATE-SIZE (9.1-13): the state path is dependency-injected so the
+  // STATE-SIZE: the state path is dependency-injected so the
   // platform's .planning/STATE.md and any user's path both work. Absent path
   // or unreadable file → null → the check degrades to silence (fail-soft).
   let stateText = null
@@ -437,7 +437,7 @@ function buildContext(opts) {
     }
   }
 
-  // PROFILE family (9.3-01): read .sma/profile.json ONCE here (tolerant reader).
+  // PROFILE family: read .sma/profile.json ONCE here (tolerant reader).
   // A missing profile is a valid state → profile:null → PROFILE-SCHEMA/PROFILE-SECRET
   // skip (fail-open); PROFILE-DEADFIELD is schema-level and always runs.
   let profile = null
@@ -445,7 +445,7 @@ function buildContext(opts) {
     profile = readProfile({ profilePath: opts.profilePath }).profile
   }
 
-  // LADDER-EVIDENCE (9.3-06): the tracked tier registry, read ONCE here. A missing
+  // LADDER-EVIDENCE: the tracked tier registry, read ONCE here. A missing
   // file is a valid state (no overlay) → ladder:null → the check is silent (fail-open).
   let ladder = null
   if (typeof opts.ladderPath === 'string' && opts.ladderPath.trim() !== '' && existsSync(opts.ladderPath)) {
@@ -498,13 +498,13 @@ function buildContext(opts) {
     generate: opts.generate,
     generateAreas: opts.generateAreas,
     claudeMdPath: opts.claudeMdPath,
-    // PRED family (9.1-09): plan files are read ONCE here, like the corpus.
+    // PRED family: plan files are read ONCE here, like the corpus.
     // execGit is an injected read-only git runner (args, {cwd}) => stdout.
     // plansDir travels with them: the POSTEDIT batch maps a plan path
     // back into git's path space from it.
     plansDir: opts.plansDir,
     plans: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-PLAN.md')) : [],
-    // RECEIPT-PROSE (9.2-03): SUMMARY files are read ONCE here, same posture as
+    // RECEIPT-PROSE: SUMMARY files are read ONCE here, same posture as
     // plans — no check re-reads the disk.
     summaries: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-SUMMARY.md')) : [],
     execGit: opts.execGit,
@@ -900,7 +900,7 @@ const MEM_REGEN = {
       out.push(finding('MEM-REGEN', 'critical', ctx.indexPath, `MEMORY.md differs from regeneration — the GENERATED artifact was hand-edited; regenerate it (do not hand-edit)`))
     }
 
-    // FI-11 (9.1-13): the per-area INDEX-<area>.md files are GENERATED
+    // FI-11: the per-area INDEX-<area>.md files are GENERATED
     // artifacts too — staleness covers them when an area regenerator is wired.
     const generateAreas = ctx.generateAreas
     if (typeof generateAreas === 'function') {
@@ -975,7 +975,7 @@ const MEM_CLAUDEDUP = {
   },
 }
 
-// ── 9.1-12: MEM-CONTRADICT — bi-temporal same-subject conflicts (B5) ─────────
+// ── MEM-CONTRADICT — bi-temporal same-subject conflicts (B5) ─────────────────
 
 const MEM_CONTRADICT = {
   id: 'MEM-CONTRADICT',
@@ -997,7 +997,7 @@ const MEM_CONTRADICT = {
   },
 }
 
-// ── 9.1-09: PRED family — pre-registration integrity for plan predictions ───
+// ── PRED family — pre-registration integrity for plan predictions ───────────
 
 const PRED_NOMETRIC = {
   id: 'PRED-NOMETRIC',
@@ -1184,7 +1184,7 @@ const PRED_POSTEDIT = {
   },
 }
 
-// ── 9.2-10 (D-9.2-14): PRED-SKEPTIC — predictions need an adversarial countersign ─
+// ── PRED-SKEPTIC — predictions need an adversarial countersign ────────────────────
 
 const PRED_SKEPTIC = {
   id: 'PRED-SKEPTIC',
@@ -1275,7 +1275,7 @@ const PRED_DUPDOD = {
   },
 }
 
-// ── 9.2-08: CONS family — the consequences block is LAW after first commit ──
+// ── CONS family — the consequences block is LAW after first commit ──────────
 
 const CONS_SCHEMA = {
   id: 'CONS-SCHEMA',
@@ -1357,7 +1357,7 @@ const CONS_NOBLOCK = {
   },
 }
 
-// ── 9.2-03: RECEIPT-PROSE — a machine «done» must carry a re-runnable receipt ─
+// ── RECEIPT-PROSE — a machine «done» must carry a re-runnable receipt ─────────
 
 const RECEIPT_PROSE = {
   id: 'RECEIPT-PROSE',
@@ -1383,7 +1383,7 @@ const RECEIPT_PROSE = {
 
       // A malformed receipt, or one whose check_command evades the SAFE_COMMAND
       // boundary, is its OWN critical finding — the lint cannot claim to enforce
-      // a boundary receipts routinely evade (CONS-9.2-03-B).
+      // a boundary receipts routinely evade.
       //
       // THE WAIVER: a receipt may carry `unsafe_ack: true` — the stamp
       // `receipt-hash --unsafe-ack` writes when a human deliberately admits one
@@ -1427,7 +1427,7 @@ const RECEIPT_PROSE = {
   },
 }
 
-// ── 9.2-10 (D-9.2-14): HAZARD-NOCONTROL — every kill-switch cites a control ──
+// ── HAZARD-NOCONTROL — every kill-switch cites a control ─────────────────────
 
 const HAZARD_NOCONTROL = {
   id: 'HAZARD-NOCONTROL',
@@ -1446,7 +1446,7 @@ const HAZARD_NOCONTROL = {
   },
 }
 
-// ── 9.3-06 (D-9.3-12): LADDER-EVIDENCE — no evidence-free tier escalation ────
+// ── LADDER-EVIDENCE — no evidence-free tier escalation ───────────────────────
 
 const LADDER_EVIDENCE = {
   id: 'LADDER-EVIDENCE',
@@ -1472,7 +1472,7 @@ const LADDER_EVIDENCE = {
         }
       }
       // (b) a 'retired' rule must carry a fixtureCheck record (the STPA birth-fixture
-      //     sign-off — a rule can never auto-tune into silent removal, D-9.2-14).
+      //     sign-off — a rule can never auto-tune into silent removal).
       if (tier === 'retired' && (!rule.fixtureCheck || typeof rule.fixtureCheck !== 'object')) {
         out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} is 'retired' without a fixtureCheck record — retirement requires the 9.2-10 birth-fixture sign-off (D-9.2-14)`))
       }
@@ -1485,7 +1485,7 @@ const LADDER_EVIDENCE = {
   },
 }
 
-// ── 9.1-13: FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─
+// ── FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─────────
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
 function byteLen(s) {
@@ -1597,12 +1597,12 @@ const STATE_SIZE = {
   },
 }
 
-// ── 9.1-14: MEM-SECRET — screen secrets at the corpus door (T-9.1-27) ───────
+// ── MEM-SECRET — screen secrets at the corpus door ──────────────────────────
 //
 // The note author -> corpus trust boundary: anything written becomes injectable
 // context forever, so a leaked secret would be echoed by any reflex that surfaces
 // the note. Write-time screening beats fire-time filtering — this lands BEFORE
-// reflex injection goes live platform-wide (9.1-26). Aligned with the security
+// reflex injection goes live platform-wide. Aligned with the security
 // guard's secret-pattern conventions (checks.mjs SEC-11/SEC-12/R2-MOUNT-1):
 // unambiguous token prefixes + assignment-shaped literals + high-entropy runs,
 // with the false-positive classes (env var NAMES, git shas) explicitly allowlisted
@@ -1721,7 +1721,7 @@ const MEM_SECRET = {
   },
 }
 
-// ── 9.3-01 (D-9.3-04): PROFILE family — the profile is schema-bound, secret-free,
+// ── PROFILE family — the profile is schema-bound, secret-free,
 // and every schema field has a live consumer (adoption scorecard metric 5) ──────
 
 const PROFILE_DEADFIELD = {
@@ -1767,7 +1767,7 @@ const PROFILE_SECRET = {
   },
 }
 
-// ── 9.3-05 (D-9.3-07): FRAG family — fragments are atomic (one fact, <= 400 bytes),
+// ── FRAG family — fragments are atomic (one fact, <= 400 bytes),
 // carry a parseable trigger, and are schema-valid (id == filename stem) ──────────
 const FRAG_LINT = {
   id: 'FRAG',
@@ -2293,7 +2293,7 @@ const MEM_EPISODE = {
 }
 
 // The check registry — the full R5 class list plus the two D-9-15 checks
-// plus the 9.1-09 PRED family (pre-registration integrity).
+// plus the PRED family (pre-registration integrity).
 export const LINT_CHECKS = [
   MEM_VOCAB,
   MEM_ALIAS,
@@ -2399,7 +2399,7 @@ function sortFindings(findings) {
  * @param {string} opts.indexPath  path to MEMORY.md (the index)
  * @param {(committed:string)=>string} [opts.generate]  regeneration fn (9-09 / test)
  * @param {string} [opts.claudeMdPath]  path to CLAUDE.md (for MEM-CLAUDEDUP)
- * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family, 9.1-09)
+ * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family)
  * @param {(args:string[], o?:{cwd?:string})=>string} [opts.execGit]  read-only git runner (PRED-POSTEDIT)
  * @param {number} [opts.budgetMs]  wall-clock budget; past it the run STOPS and says what it did not check
  * @param {(line:string)=>void} [opts.progress]  progress sink (default: stderr when it is a terminal)
@@ -2446,7 +2446,7 @@ export function runLint(opts) {
       const res = check.run(ctx)
       if (Array.isArray(res)) findings.push(...res)
     } catch (err) {
-      // FAIL-SOFT (T-9-08-02): a broken check becomes a WARN, never a crash.
+      // FAIL-SOFT: a broken check becomes a WARN, never a crash.
       findings.push(finding(check.id, 'warn', '', `lint check ${check.id} threw and was skipped: ${err.message}`))
     }
   }

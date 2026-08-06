@@ -1,5 +1,5 @@
 /**
- * predict.mjs — the P1 prediction engine core (9.1-08, B18; D-9.1-10).
+ * predict.mjs — the P1 prediction engine core (B18; D-9.1-10).
  *
  * A PLAN.md may carry an optional `predictions:` block in frontmatter — a
  * pre-registered, machine-checkable claim set scored DETERMINISTICALLY at
@@ -12,7 +12,7 @@
  * verbalized-confidence anti-pattern lock carried forward from V1 (RESEARCH
  * cites systematic LLM overconfidence).
  *
- * Security boundary (T-9.1-14, Elevation of Privilege — mitigate): plan files
+ * Security boundary (Elevation of Privilege — mitigate): plan files
  * can arrive via import from untrusted sources, and check_command strings get
  * executed. SAFE_COMMAND_PATTERNS is the anchored allowlist enforced BEFORE
  * any run; a non-matching command scores 'skipped-unsafe' with the runner
@@ -37,7 +37,7 @@ import { serializeNote } from './frontmatter.mjs'
 
 /**
  * Anchored command allowlist — the ONLY shapes a check_command may take.
- * Exported so 9.1-09's PRED-* lint reuses the exact same boundary.
+ * Exported so the PRED-* lint reuses the exact same boundary.
  */
 export const SAFE_COMMAND_PATTERNS = [
   /^node scripts\/sma\//,
@@ -237,7 +237,7 @@ export function isReceiptEntry(entry) {
 
 /**
  * Charset guard closing the shell-injection gap the prefix allowlist alone
- * leaves open (T-9.1-14): `node scripts/sma/x.mjs; rm -rf /` matches the
+ * leaves open: `node scripts/sma/x.mjs; rm -rf /` matches the
  * prefix but carries shell metacharacters. Only plain words, spaces, and
  * path/flag characters may appear — no ; & | ` $ < > ( ) quotes or newlines.
  */
@@ -310,7 +310,7 @@ export function horizonReached(horizon, { now, currentVersion } = {}) {
  * excluded, notDue}.
  *
  * Scores plan-frontmatter `predictions:` entries ONLY — the `receipts:` block
- * (a SUMMARY's build-time structural claims, D-9.2-06) is NEVER consumed
+ * (a SUMMARY's build-time structural claims) is NEVER consumed
  * here; re-verifying receipts is `sma reverify`'s territory (R1/R2 false
  * class-A lesson, 2026-07-10). A receipt-shaped entry misfiled inside
  * `predictions:` (see isReceiptEntry) lands in `excluded` with NO verdict and
@@ -385,7 +385,7 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       continue
     }
 
-    // T-9.1-14: allowlist BEFORE any run — the runner is never invoked for a
+    // allowlist BEFORE any run — the runner is never invoked for a
     // non-matching command.
     if (!isSafeCommand(entry.check_command)) {
       records.push({ ...base, actual: null, hit: false, verdict: 'skipped-unsafe' })

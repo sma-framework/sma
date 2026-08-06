@@ -1,5 +1,5 @@
 /**
- * statusline.mjs — the native Claude Code statusline SEGMENT (9.3-07, D-9.3-13).
+ * statusline.mjs — the native Claude Code statusline SEGMENT.
  *
  * ONE segment of the founder's existing statusline (NEVER a whole-line takeover)
  * that keeps the coordination + budget state always in view: the terminal's own
@@ -16,7 +16,7 @@
  * surface built to create trust. A missing 9.2 module (spend/consequences/breaker)
  * degrades its OWN sub-segment to null (rendered '—'), everything else still works.
  *
- * COST DISCIPLINE (P9.3-07-1): a two-tier TTL cache under dirs.statuslineDir keeps
+ * COST DISCIPLINE: a two-tier TTL cache under dirs.statuslineDir keeps
  * the warm render cheap. The fast tier (window-budget % + open gates) refreshes on
  * STATUSLINE_TTL_MS; the EXPENSIVE unscored-predictions scan refreshes on its own
  * slower PREDS_TTL_MS. A warm render touches ONE json file (cache.json) plus the
@@ -54,7 +54,7 @@ export const PREDS_TTL_MS = 120000
 export const WRAPPED_TIMEOUT_MS = 2000
 
 /** The three pulse states + their glyphs. Canonical value set lives on the lease as
- * `fpStatus` (registry.FP_STATUS_VALUES, D-9.3-21) and in notify.PULSE_VALUES; kept
+ * `fpStatus` (registry.FP_STATUS_VALUES) and in notify.PULSE_VALUES; kept
  * local here so the display module imports no network/heavy graph. */
 const PULSE_GLYPH = { working: '▸', 'waiting-for-human': '◆', idle: '·' }
 
@@ -216,7 +216,7 @@ export function parseStatusStdin(raw) {
   }
 }
 
-// ── COMPOSITION with a pre-existing user statusline (segment-not-takeover, D-9.3-13) ──
+// ── COMPOSITION with a pre-existing user statusline (segment-not-takeover) ────────────
 //
 // A PROJECT-scope statusLine entry SHADOWS the user-scope ~/.claude/settings.json one in
 // Claude Code — installing our segment must not cost the adopter the statusline they
@@ -378,7 +378,7 @@ export async function countUnscoredPredictions(opts = {}) {
 
 // ── default lazy-tolerant loaders (each individually try/caught; absence -> null) ──
 
-/** window-budget % from spend.mjs (9.2-09); null when no cap set or the module is absent. */
+/** window-budget % from spend.mjs; null when no cap set or the module is absent. */
 async function defaultLoadSpend(dirs = {}) {
   try {
     const spend = await import('./spend.mjs')
@@ -394,8 +394,8 @@ async function defaultLoadSpend(dirs = {}) {
   }
 }
 
-/** open-gates count = consequences openBlocks (9.2-08) + tripped breaker markers
- * (9.2-09); null ONLY when BOTH modules are absent (so a genuine 0 shows as 0). */
+/** open-gates count = consequences openBlocks + tripped breaker markers;
+ * null ONLY when BOTH modules are absent (so a genuine 0 shows as 0). */
 async function defaultLoadGates(dirs = {}) {
   let any = false
   let count = 0
@@ -462,7 +462,7 @@ function ownClaimLabel(lease) {
 }
 
 /** The pulse to render: an explicitly-derived value wins (notify.derivePulse in the CLI),
- * else the lease's own fpStatus (the attention axis, D-9.3-21), else idle. */
+ * else the lease's own fpStatus (the attention axis), else idle. */
 function resolvePulse(explicit, lease) {
   if (PULSE_GLYPH[explicit]) return explicit
   if (lease && typeof lease === 'object' && PULSE_GLYPH[lease.fpStatus]) return lease.fpStatus
