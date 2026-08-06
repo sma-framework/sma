@@ -29,13 +29,15 @@
  *      database is RENAMED, never dropped — this module contains no DROP.
  *
  * ═══════════ WHY `client_encoding` IS PART OF THIS AND NOT A DETAIL ═══════════════════
- * node-postgres decodes everything the server sends as UTF-8 unconditionally, but it does
- * NOT ask the server for UTF-8 unless it is told to: with no `client_encoding` in the
- * connection it inherits the server's. On a WIN1252 database the server therefore sends
- * WIN1252 bytes and the driver reads them as UTF-8 — every accented character comes back
- * mangled, silently, on a path that never errors. Asking for UTF8 explicitly makes the
- * SERVER transcode on the wire, which is also what makes this migration correct: text
- * already stored in the old encoding arrives intact and lands intact in the new database.
+ * node-postgres decodes everything the server sends as UTF-8 unconditionally, but it never
+ * ASKS the server for an encoding: with no `client_encoding` in the connection the session
+ * runs on whatever the cluster's configuration decides. Where that is not UTF-8, the server
+ * sends WIN1252 bytes and the driver reads them as UTF-8 — accented text comes back mangled,
+ * silently, on a path that never errors. Asking for UTF8 by name makes the SERVER transcode
+ * on the wire, which is also what makes this migration correct: text already stored in the
+ * old encoding arrives intact and lands intact in the new database. (On the reference
+ * machine the session already reported UTF8 because that cluster is configured so — a
+ * property of one machine, which is precisely why it is now stated rather than inherited.)
  *
  * NOTHING IS DELETED, AND WHAT DOES NOT TRAVEL IS PRINTED. A migration that quietly loses
  * the queue's history would be worse than the fault it repairs, so the report carries an
