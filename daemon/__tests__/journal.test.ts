@@ -375,6 +375,8 @@ describe('the completion gate asks for the note where it asks for the receipt', 
       config: {
         workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
         repoDir: '/repo',
+        // the conveyor's own switch ships OFF — a tick case that expects work says so
+        pipeline: { enabled: true },
         ...over.config,
       },
       routing: { resolveRoute },

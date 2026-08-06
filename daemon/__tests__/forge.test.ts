@@ -385,7 +385,8 @@ function makeForgeDeps(adapter: any, clock: () => number, order: string[], over:
   const deps = {
     adapter,
     ledger: { recordAttempt: () => {}, readAttempts: () => [] },
-    config: { workers: WORKERS, agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo' },
+    // the conveyor's own switch ships OFF — a tick case that expects work says so
+    config: { workers: WORKERS, agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo', pipeline: { enabled: true } },
     routing: { resolveRoute },
     windows: () => true,
     buildArgs: () => ({ bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'IGNORED — forge overrides' }),

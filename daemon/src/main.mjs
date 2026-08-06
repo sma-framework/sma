@@ -44,7 +44,18 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer, addAccount } from './config.mjs'
+import {
+  loadConfig,
+  addProject,
+  renameProject,
+  selectProject,
+  addPeer,
+  removePeer,
+  addAccount,
+  applyPipelineToggle,
+  applyBudgetStop,
+  pipelineEnabled,
+} from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
@@ -59,6 +70,7 @@ import {
   applySkillAssign,
   applyMcpToggle,
   applyStockTeamToggle,
+  applyAgentModel,
 } from './front/harness.mjs'
 import {
   applyProjectMigration,
@@ -310,6 +322,11 @@ export function createDaemon(o = {}) {
         // The account door — the same posture again: a subscription joins the pool through
         // the config module's own applier, DISABLED, and its token never crosses this line.
         addAccount,
+        // The three switches a person holds. `applyBudgetStop` is wired ONLY here and reached
+        // ONLY from the door: how much of the founder's money the machine may spend is not a
+        // decision any worker, workflow or verb gets a path to.
+        applyPipelineToggle,
+        applyBudgetStop,
         federation, // the action-proxy engine + the pairing book
         aggregator,
         // the «Разговор» engine — INJECTED, because its free branch spawns a child: a
@@ -343,6 +360,9 @@ export function createDaemon(o = {}) {
         // The one act that switches the whole shipped SMA team on — it rides the agent
         // toggle door under a reserved target, so the route table stayed at thirty.
         applyStockTeamToggle,
+        // Which model this agent runs — the one part of a worker's session that does not come
+        // from the project checkout, and therefore the one worth a door of its own.
+        applyAgentModel,
         // The connected project's corpus: read on every poll, previewed only when the corpus
         // is still in the older format, and applied ONE file at a time behind the approve
         // door. The applier is a CLOSURE over «which project» and «where the staging lives»
@@ -426,6 +446,14 @@ export function createDaemon(o = {}) {
       retargetProjectWatch()
       front.listen()
       daemon.start()
+      // SAY IT OUT LOUD. The conveyor ships off, so a daemon that starts and then does
+      // nothing is the NORMAL state — and it is indistinguishable from a broken one unless
+      // the boot says which. One line, naming the state and the way out of it.
+      console.log(
+        pipelineEnabled(config)
+          ? '[SmaDaemon] конвейер ВКЛЮЧЁН — задачи будут разбираться по мере появления.'
+          : '[SmaDaemon] конвейер ВЫКЛЮЧЕН — ничего не запускается само. Включить: тумблер в окне (POST /api/pipeline/toggle {"enabled":true}).',
+      )
     },
     async stop() {
       stopWatch(projectWatch)

@@ -301,9 +301,6 @@ export const PENDING_ROUTES = Object.freeze(
     'POST /api/ship/gate',
     'POST /api/ship/publish',
     'GET /api/search',
-    'POST /api/pipeline/toggle',
-    'POST /api/budget/set',
-    'POST /api/agent/model',
   ]),
 )
 
@@ -2061,14 +2058,144 @@ function handleShipPublish({ res }) {
 function handleSearch({ res }) {
   send501(res)
 }
-function handlePipelineToggle({ res }) {
-  send501(res)
+
+// ── the three switches a person holds: the conveyor, the money, the model ──
+//
+// They share one shape and one law. The shape: explicit-pick the body, hand it to an
+// INJECTED applier, refresh the in-process config from what the applier returned, hint. The
+// law is the refresh — the process holds ONE config object, and a write that lands on disk
+// while this process keeps serving the old one is indistinguishable from a button that did
+// nothing (refreshWorkers above carries the live proof of that lesson in its own words).
+
+/**
+ * The reserved `lane` of POST /api/budget/set meaning «the whole machine».
+ *
+ * THE ONLY BUDGET STOP THIS PRODUCT HAS IS MACHINE-WIDE — `budget.monthlyApiCapEur`, the
+ * number policy/budget.mjs actually reads before it allows the sub→API fallback. The field
+ * is accepted because the screen sends it, and its ONLY legal value is this literal: writing
+ * a per-lane cap that nothing on earth reads would be worse than having no field, because a
+ * person would then believe a limit was in force. A named lane is a 400 with that reason.
+ */
+export const BUDGET_SCOPE_ALL = 'all'
+
+/** The in-process half of the one-config rule for the conveyor switch (see refreshWorkers). */
+function refreshPipeline(config, next) {
+  if (!next || typeof next !== 'object' || typeof next.pipeline !== 'object') return
+  config.pipeline = next.pipeline
 }
-function handleBudgetSet({ res }) {
-  send501(res)
+
+/** The in-process half of the one-config rule for the budget stop (see refreshWorkers). */
+function refreshBudget(config, next) {
+  if (!next || typeof next !== 'object' || typeof next.budget !== 'object') return
+  config.budget = next.budget
 }
-function handleAgentModel({ res }) {
-  send501(res)
+
+/**
+ * POST /api/pipeline/toggle — body {enabled:boolean}. The conveyor's own switch.
+ *
+ * `enabled` is STRICTLY a boolean: `"true"`, `1` and `"on"` are 400s, because the tick reads
+ * `=== true` and a truthy string would show as on while the machine stayed off. There is no
+ * default here at all — the door has one job, and it takes a word to do it.
+ */
+async function handlePipelineToggle({ req, res, config, deps }) {
+  if (typeof deps.applyPipelineToggle !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['enabled']))) return undefined
+  if (typeof b.enabled !== 'boolean') return send400(res, 'enabled must be a boolean')
+  let next
+  try {
+    next = deps.applyPipelineToggle(config, { enabled: b.enabled }, configIo(deps))
+  } catch (err) {
+    return applierError(res, err)
+  }
+  refreshPipeline(config, next)
+  emitSafe(deps, { event: 'harness.updated' })
+  return sendJson(res, 200, { ok: true, pipeline: { enabled: b.enabled } })
+}
+
+/**
+ * POST /api/budget/set — body {limit:number, lane?}. How much of the founder's money the
+ * machine may spend on the API lane in a month, in euro.
+ *
+ * A HUMAN-ONLY BOUNDARY, and the door is where that is enforced structurally: it exists only
+ * behind the founder's token, it is called by nothing inside this daemon, and no verb path
+ * reaches it. `0` is legitimate and is the shipped value — it means the API lane has no money
+ * and the fallback cannot be taken. A string is a 400 BEFORE the applier: `"50"` compared
+ * against a number is how a cap silently stops being one.
+ */
+async function handleBudgetSet({ req, res, config, deps }) {
+  if (typeof deps.applyBudgetStop !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['lane', 'limit']))) return undefined
+  if (b.lane !== undefined && b.lane !== BUDGET_SCOPE_ALL) {
+    return send400(res, `the only budget stop is machine-wide — lane must be "${BUDGET_SCOPE_ALL}" or absent`)
+  }
+  if (typeof b.limit !== 'number' || !Number.isFinite(b.limit) || b.limit < 0) {
+    return send400(res, 'limit must be a non-negative number of euro')
+  }
+  let next
+  try {
+    next = deps.applyBudgetStop(config, { limit: b.limit }, configIo(deps))
+  } catch (err) {
+    return applierError(res, err)
+  }
+  refreshBudget(config, next)
+  emitSafe(deps, { event: 'harness.updated' })
+  return sendJson(res, 200, { ok: true, budget: { lane: BUDGET_SCOPE_ALL, limit: b.limit } })
+}
+
+/**
+ * POST /api/agent/model — body {agent, model?, effort?}, at least one of the two.
+ *
+ * The model and the effort are the ONE part of a worker's session that does not come from the
+ * project checkout, so this is where the founder's assignment is written down — and
+ * `assertProfileParity` (runner/args.mjs) is what screams if a spawn ever runs a different
+ * one. The applier owns the grammar and the unknown-agent refusal; the door owns the shape.
+ *
+ * The value grammar is a LOCAL copy of the applier's, for the reason MACHINE_ID_RE and
+ * ENV_NAME_RE are: importing it would put an appliers module on this file's import graph.
+ * It is deliberately NOT `ID_RE` — a shipped model name carries characters an id may not
+ * (`claude-opus-5[1m]`), and a door stricter than its applier refuses the founder's newest
+ * model for no reason. What both sides really forbid is a leading dash: these values become
+ * one element of a spawn's argument array, so the only harmful shape is «looks like a flag».
+ */
+const PROFILE_VALUE_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/
+async function handleAgentModel({ req, res, config, deps }) {
+  if (typeof deps.applyAgentModel !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['agent', 'model', 'effort']))) return undefined
+  if (typeof b.agent !== 'string' || !ID_RE.test(b.agent)) return send400(res, 'invalid agent')
+  if (b.model === undefined && b.effort === undefined) return send400(res, 'model or effort required')
+  for (const field of ['model', 'effort']) {
+    if (b[field] !== undefined && (typeof b[field] !== 'string' || !PROFILE_VALUE_RE.test(b[field]))) {
+      return send400(res, `invalid ${field}`)
+    }
+  }
+  let next
+  try {
+    next = deps.applyAgentModel({
+      config,
+      id: b.agent,
+      ...(b.model !== undefined ? { model: b.model } : {}),
+      ...(b.effort !== undefined ? { effort: b.effort } : {}),
+      ...configIo(deps),
+    })
+  } catch (err) {
+    return applierError(res, err)
+  }
+  refreshWorkers(config, next)
+  const worker = (next && next.workers ? next.workers : []).find((w) => w && w.id === b.agent)
+  emitSafe(deps, { event: 'harness.updated' })
+  return sendJson(res, 200, {
+    ok: true,
+    agent: { id: b.agent, model: (worker && worker.model) ?? null, effort: (worker && worker.effort) ?? null },
+  })
 }
 
 // ── the account door: a subscription joins the pool, its secret does not ──

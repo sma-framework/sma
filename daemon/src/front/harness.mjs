@@ -528,6 +528,59 @@ function profileFromDefinition(id, enabled, config, repoDir, fsImpl, source) {
 }
 
 /**
+ * The grammar of a model name and of an effort level, as they may be SET on a profile.
+ *
+ * Bounded, no whitespace, no quote, and — the load-bearing part — it may not START with a
+ * dash. Both values end their lives as one element of a spawn's argument ARRAY
+ * (`--model <value>`), so there is no shell to escape for; the only way such a value could
+ * mean anything other than itself is by looking like the NEXT flag, and that is the shape
+ * refused here. The set of legal models is deliberately NOT enumerated: the vendor renames
+ * them, and a list in this file would refuse the founder's newest model on the day it ships.
+ */
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/
+
+/**
+ * applyAgentModel({config, id, model, effort, launchDir, fsImpl, env, homedir}) → the
+ * updated config, with THIS agent's model and/or effort moved and persisted atomically.
+ *
+ * It sits beside the toggle because it is the same act on the same card. The profile is the
+ * one part of a worker's session that does NOT come from the project checkout (args.mjs's
+ * parity chain, step 5) — which is why it is worth an explicit door, and why
+ * `assertProfileParity` screams if a spawn ever disagrees with what is written here.
+ *
+ * Unlike the toggle, an unknown id is NEVER created from a definition file: assigning a model
+ * to an agent that does not exist is a typo, not an intention (UnknownProfileError → 404).
+ * A field that is not passed is left ALONE — this door cannot clear one back to the lane
+ * default, which is a different act and would need its own word.
+ */
+export function applyAgentModel({ config, id, model, effort, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
+  if (!config || !Array.isArray(config.workers)) throw new UnknownProfileError('applyAgentModel: config.workers required')
+  if (typeof id !== 'string' || !id) throw new UnknownProfileError('applyAgentModel: id required')
+  if (model === undefined && effort === undefined) {
+    throw new UnknownProfileError('applyAgentModel: nothing to set — pass "model", "effort" or both')
+  }
+  for (const [field, value] of [
+    ['model', model],
+    ['effort', effort],
+  ]) {
+    if (value === undefined) continue
+    if (typeof value !== 'string' || !MODEL_RE.test(value)) {
+      throw new UnknownProfileError(`applyAgentModel: "${field}" must match ${MODEL_RE.source}`)
+    }
+  }
+  const idx = config.workers.findIndex((w) => w && w.id === id)
+  if (idx === -1) throw new UnknownProfileError(`applyAgentModel: unknown agent "${id}"`)
+  const nextConfig = {
+    ...config,
+    workers: config.workers.map((w, i) =>
+      i === idx ? { ...w, ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) } : w,
+    ),
+  }
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
+  return nextConfig
+}
+
+/**
  * applyAgentToggle({config, id, enabled, repoDir, launchDir, fsImpl, env, homedir}) → the
  * updated config. An EXISTING profile: flip its `enabled`. A NEW id: the definition file
  * `.claude/agents/<id>.md` MUST exist (already approve-merged) — the profile is built from

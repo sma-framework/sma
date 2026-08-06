@@ -178,6 +178,10 @@ function defaultConfig(token) {
     backlogScanMinutes: 60,
     agingHours: 24, // queued tasks older than this raise the «застряла» flow signal
     webhookUrl: '', // empty = report-back off (notify.mjs off-by-default posture)
+    // THE CONVEYOR'S OWN SWITCH, shipped OFF. Written into the default file rather than
+    // left implicit so a person opening the config sees the switch and knows it exists.
+    // What actually makes «absent» mean «off» is pipelineEnabled below — see it for why.
+    pipeline: { enabled: false },
     budget: {
       monthlyApiCapEur: 0, // 0 = no API fallback budget until the operator sets one
       warnPct: [70, 90],
@@ -615,6 +619,69 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
     throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
   }
   const next = { ...config, activeProject: id }
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
+ * pipelineEnabled(config) — DOES THE TICK DO ANYTHING AT ALL? The single predicate, with
+ * exactly one owner, that the whole conveyor is gated on.
+ *
+ * IT IS `=== true`, AND THAT IS THE DEFAULT. A config with no `pipeline` block, a block with
+ * no `enabled`, `enabled:"yes"`, `enabled:1` — every one of them is OFF. The default is not
+ * declared a second time anywhere; it falls out of the comparison, so there is no pair of
+ * statements that can drift apart. Turning the conveyor on takes the literal boolean `true`
+ * in the file, put there by the door below, pressed by a person.
+ *
+ * WHY OFF IS THE DEFAULT AT ALL. Everything this daemon can do costs the founder's own
+ * subscription minutes and writes to his own repositories, unattended, at night. «Nothing
+ * switches itself on» is the law of the product; a conveyor that starts because a process
+ * started is the largest possible violation of it. The price is stated openly: an install
+ * that upgrades into this version does NOT resume work on its next restart until somebody
+ * presses the switch — which is the correct direction to fail in.
+ *
+ * @param {object} [config]
+ * @returns {boolean}
+ */
+export function pipelineEnabled(config) {
+  return !!(config && config.pipeline && config.pipeline.enabled === true)
+}
+
+/**
+ * applyPipelineToggle(config, {enabled}, io) — move the conveyor's switch and persist.
+ * `enabled` is coerced to a real boolean here so the file can never grow a truthy string
+ * that `pipelineEnabled` would then read as off while the screen shows it as on.
+ *
+ * @returns {object} the updated config
+ */
+export function applyPipelineToggle(config, { enabled } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
+  const current = config && typeof config.pipeline === 'object' && config.pipeline !== null ? config.pipeline : {}
+  const next = { ...config, pipeline: { ...current, enabled: enabled === true } }
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
+ * applyBudgetStop(config, {limit}, io) — set the monthly API budget stop, in euro, and
+ * persist. `0` is a meaningful value and the shipped one: no money for the API lane at all,
+ * so the sub→API fallback cannot be taken (policy/budget.mjs reads exactly this number).
+ *
+ * A HUMAN-ONLY BOUNDARY. This is the amount of the founder's money the machine may spend
+ * without asking again, so it is moved by a person at a door and by nothing else: no worker,
+ * no workflow and no verb has a path to this function, and the suite asserts that by reading
+ * the daemon's own source rather than by trusting the sentence you just read.
+ *
+ * The rest of the budget block (warnPct, usdToEur, the per-task ceiling) is preserved
+ * untouched — this door owns one number.
+ *
+ * @returns {object} the updated config
+ */
+export function applyBudgetStop(config, { limit } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 0) {
+    throw new InvalidWorkerProfileError('applyBudgetStop: "limit" must be a non-negative finite number of euro')
+  }
+  const current = config && typeof config.budget === 'object' && config.budget !== null ? config.budget : {}
+  const next = { ...config, budget: { ...current, monthlyApiCapEur: limit } }
   writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
