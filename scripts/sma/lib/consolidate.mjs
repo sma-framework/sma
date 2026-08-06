@@ -210,7 +210,7 @@ function rawTokens(s) {
  * forms are listed, so «должна»/«запрещена» and other inflections are not
  * reached, and neither is the harder case — an opposition carried by VERB
  * ANTONYMY («снимок остаётся на месте» versus «удалите ночной снимок») rather
- * than by sentence polarity. No marker list of any size reaches that one; it is
+ * than by clause polarity. No marker list of any size reaches that one; it is
  * pinned as a known limit in consolidate.test.ts (Test 7b).
  */
 const NEG_MARKERS = new Set([
@@ -247,6 +247,32 @@ function subjectTokens(raws) {
     out.add(t)
   }
   return out
+}
+
+/**
+ * The parts of a claim that can each carry their own polarity.
+ *
+ * A claim is one SENTENCE in this corpus, but rarely one statement: the rules
+ * people actually write hang several assertions off one period — a rule, its
+ * scope, an example, a closing aside. Reading polarity over the whole sentence
+ * lets a marker in the closing aside speak for a subject named three clauses
+ * earlier, which is how two rules that merely MENTION the same two words end up
+ * reported as denying each other. Splitting first is what makes the co-location
+ * rule below expressible at all.
+ *
+ * Boundaries are the ones the language marks: sentence punctuation, the
+ * semicolon and colon that join independent statements, the comma that opens a
+ * subordinate or coordinate clause, and a newline. A period is a boundary only
+ * when whitespace or the end follows it, so `package.json` and a file name stay
+ * whole. Dashes are deliberately NOT boundaries — in Russian the dash is most
+ * often the copula, and splitting there would cut a statement from its subject.
+ */
+function clausesOf(s) {
+  const parts = String(s ?? '')
+    .split(/[.!?…](?=\s|$)|[;:,\n]/)
+    .map((c) => c.trim())
+    .filter(Boolean)
+  return parts.length ? parts : [String(s ?? '')]
 }
 
 /** Claim polarity: negation dominates ("never use X" is negative). */
@@ -343,9 +369,55 @@ function sharesAny(a, b) {
 // ── contradiction detection (the ONE implementation — lint imports this) ─────
 
 /**
+ * The polarity channel's evidence: the overlap of two clauses that are BOTH
+ * about the same thing and opposed about it. Returns the shared subject tokens
+ * of the strongest such clause pair, or null when no clause of one claim denies
+ * a clause of the other.
+ *
+ * CO-LOCATION IS THE RULE, and it is a statement about what an opposition IS,
+ * not a threshold: a claim denies another claim only where they are speaking of
+ * the same subject. Whole-sentence polarity had no way to say this, so a
+ * negation anywhere in a long rule opposed an affirmation anywhere in another,
+ * and the shared subject that licensed the pair could sit in clauses neither
+ * marker belonged to. Measured on a live 35-note corpus, that shape was the
+ * whole of the rule's output: two critical findings, both false, zero true —
+ * and both disappear here while every true positive above still fires, because
+ * a real opposition puts the marker and the subject in one clause.
+ */
+function opposedClauseOverlap(descA, descB) {
+  const analyse = (desc) =>
+    clausesOf(desc)
+      .map((c) => {
+        const raws = rawTokens(c)
+        return { pol: polarity(raws), subj: subjectTokens(raws) }
+      })
+      .filter((c) => c.pol !== null)
+  const ca = analyse(descA)
+  const cb = analyse(descB)
+
+  let best = null
+  for (const a of ca) {
+    for (const b of cb) {
+      if (a.pol === b.pol) continue
+      const shared = [...a.subj].filter((t) => b.subj.has(t)).sort()
+      if (shared.length < MIN_SHARED_SUBJECT) continue
+      if (best === null || shared.length > best.length) best = shared
+    }
+  }
+  return best
+}
+
+/**
  * detectClaimConflict(descA, descB) — deterministic same-subject conflict
- * heuristic: enough shared subject tokens AND (opposing polarity markers OR
- * numeric disagreement). Returns {shared, opposing, numeric} or null.
+ * heuristic: enough shared subject tokens AND (opposing polarity markers on the
+ * same subject OR numeric disagreement). Returns {shared, opposing, numeric} or
+ * null.
+ *
+ * The numeric channel stays whole-claim on purpose: a quantity in dispute is
+ * already pinned to its own subject by being a number this corpus does not
+ * write twice, and date stripping above removed the false shape that channel
+ * actually produced. Narrowing a channel nobody measured as wrong would be
+ * tuning, not a correction.
  */
 export function detectClaimConflict(descA, descB) {
   const rawA = rawTokens(descA)
@@ -355,16 +427,18 @@ export function detectClaimConflict(descA, descB) {
   const shared = [...subjA].filter((t) => subjB.has(t)).sort()
   if (shared.length < MIN_SHARED_SUBJECT) return null
 
-  const pa = polarity(rawA)
-  const pb = polarity(rawB)
-  const opposing = (pa === 'neg' && pb === 'pos') || (pa === 'pos' && pb === 'neg')
+  const opposedOn = opposedClauseOverlap(descA, descB)
+  const opposing = opposedOn !== null
 
   const na = numbersOf(descA)
   const nb = numbersOf(descB)
   const numeric = na.length > 0 && nb.length > 0 && JSON.stringify(na) !== JSON.stringify(nb)
 
   if (!opposing && !numeric) return null
-  return { shared, opposing, numeric }
+  // What the operator is shown is what is actually in dispute: the opposed
+  // clauses' overlap when polarity is the reason, the claims' overlap when the
+  // reason is a quantity.
+  return { shared: opposing ? opposedOn : shared, opposing, numeric }
 }
 
 /**
