@@ -16,11 +16,11 @@
  *
  * («я хочу переставлять модели и поставщиков, а также их effort» — the founder's mandate.)
  *
- * D-9.5-03a — DAYTIME PRIORITY IS ABSOLUTE. A worker whose account carries
+ * DAYTIME PRIORITY IS ABSOLUTE. A worker whose account carries
  * `dayPriorityOwner:true` is ALWAYS skipped during the founder's active hours
  * (config.activeHours, default 09–22 local). Review KILLED the earlier
  * «unless it is the ONLY open window» carve-out: that exception would drain the founder's
- * account at exactly the moment D-9.5-03a forbids. So when the founder's account is the
+ * account at exactly the moment the rule forbids. So when the founder's account is the
  * only open window, the task WAITS ({workerId:null, reason:'window_exhausted'}) — the
  * budget rule (budget.mjs) may then choose the API lane, but routing never picks the
  * protected account during active hours.
@@ -137,7 +137,7 @@ export function resolveRoute(task = {}, deps = {}) {
   const founderActive = withinActiveHours(clock(), activeHours)
 
   // Candidate workers: enabled, provider matches the target, window open, and NOT the
-  // founder's protected day-priority account during active hours (D-9.5-03a, absolute).
+  // founder's protected day-priority account during active hours (absolute, no carve-out).
   // `heldByDayPriority` remembers WHY the pool emptied, so the wait can name its own cause
   // instead of collapsing two different situations into one code.
   let heldByDayPriority = false

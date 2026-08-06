@@ -246,7 +246,7 @@ export function assertProfileParity({ args, worker, task } = {}) {
   return observed
 }
 
-// ── Claude lane (D-9.5-04a — prod code, hooks enforced in-session) ──────────────
+// ── Claude lane (prod code, hooks enforced in-session) ──────────────────────────
 
 const CLAUDE_OPTION_KEYS = new Set(['prompt', 'resumeId', 'model', 'effort', 'maxTurns', 'mcpConfigPath', 'addDir', 'wakeKind'])
 
@@ -362,7 +362,7 @@ export function codexConfigSeed() {
  *     `env` BY THE NAME account.oauthTokenEnv (unset name → no token key) + SMA_SPEND_LOGS_DIR.
  *   Codex account: a FRESH per-task CODEX_HOME under the account dir (two tasks → two
  *     dirs) — never account-shared; the caller seeds it with codexConfigSeed().
- *   useApiFallback (D-9.5-03b): the API key (read from `env` by apiKeyEnv name) is added
+ *   useApiFallback: the API key (read from `env` by apiKeyEnv name) is added
  *     as ANTHROPIC_API_KEY — it takes precedence over subscription auth, the whole switch.
  *
  * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string}} opts
@@ -397,7 +397,7 @@ export function buildAccountEnv({
 
   if (useApiFallback) {
     const key = env[apiKeyEnv]
-    if (key) out.ANTHROPIC_API_KEY = key // precedence over subscription auth — D-9.5-03b
+    if (key) out.ANTHROPIC_API_KEY = key // precedence over subscription auth — that IS the switch
   }
 
   return out

@@ -169,8 +169,9 @@ function writeText(file, text) {
 /**
  * For --local installs, installed markdown references global paths like
  * `$HOME/.claude/sma-core/...` — rewrite them to the project-relative
- * `.claude/sma-core/...` so a clean machine without a global install works
- * (FI-13 packaging honesty). Global installs keep the $HOME form.
+ * `.claude/sma-core/...` so a clean machine without a global install works:
+ * an installed tree may only point at paths that its own install mode creates.
+ * Global installs keep the $HOME form.
  */
 function rewriteMarkdownPaths(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

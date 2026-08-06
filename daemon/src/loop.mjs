@@ -650,7 +650,7 @@ export async function tick(deps = {}) {
       fleetState = 'RUNNING'
       const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
 
-      // (7) reverify GATE in the worktree — the ONLY door to completed (D-9.5-04a).
+      // (7) reverify GATE in the worktree — the ONLY door to completed (receipts or nothing).
       const rv = exit.spawnError ? { code: 1 } : await invokeVerb(verbRunner, 'reverify', ['--branch', branch], worktreePath)
       let receipt = null
       if (rv.receiptRef) {
@@ -725,9 +725,9 @@ function listCommittedDrafts(execGit, branch, cwd, kind) {
 /**
  * runForgeTask(deps, task, route, result, now) — the forge-lane branch. Reuses claim (already
  * done) / worktree / spawn / touch VERBATIM; SKIPS preflight; swaps the reverify exit gate for
- * `lintDraft`. Green + committed → complete on the FORGE receipt (D-9.5-04a for the forge
- * lane); red lint or an uncommitted draft → fail('agent_error') with the lint detail on the
- * attempt row. A return-with-note re-forges: the note flows into buildForgePrompt.
+ * `lintDraft`. Green + committed → complete on the FORGE receipt (receipts or nothing,
+ * in the forge lane); red lint or an uncommitted draft → fail('agent_error') with the lint
+ * detail on the attempt row. A return-with-note re-forges: the note flows into buildForgePrompt.
  *
  * THE ENVELOPE IS CONSULTED TWICE HERE: once before the spawn, exactly as
  * the code path does, and once over the committed draft's PATH before the draft is

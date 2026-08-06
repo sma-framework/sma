@@ -5,7 +5,7 @@
  * the paid API lane right now? The answer is bounded by real € so the fallback can never
  * run away.
  *
- * D-9.5-03b — «ПОДПИСКА → API» IS A FIRST-DAY SWITCH WITH A BUDGET STOP. The fallback is
+ * «ПОДПИСКА → API» IS A FIRST-DAY SWITCH WITH A BUDGET STOP. The fallback is
  * permitted ONLY when BOTH hold:
  *   1. the task's lane worker windows are ALL closed (there is no subscription seat to wait
  *      a short moment for — otherwise the honest answer is «wait_for_window», not spend), AND

@@ -31,7 +31,7 @@
  * runner/args.mjs (ForbiddenFlagError guard) and loop.mjs (no origin-push path) lack the
  * mechanism entirely. The lint is the FIRST wall, the runner the second.
  *
- * ═══════════════════════ RECEIPTS-OR-NOTHING FOR THE FORGE LANE (D-9.5-04a) ══════
+ * ═══════════════════════ RECEIPTS-OR-NOTHING FOR THE FORGE LANE ══════════════════
  * A forge task can complete ONLY with a deterministic draft-lint receipt. Reverify checks
  * CODE; a draft is a definition FILE, so `lintDraft` is the forge lane's verifier and its
  * receipt (`writeForgeReceipt`) is the ONLY door to `completed`. The receipts-or-nothing
@@ -309,7 +309,7 @@ function check(name, ok, detail) {
  * lintDraft({kind, filePath, fsImpl}) → {passed, checks:[{name, ok, detail}], sha256}.
  *
  * The forge lane's DETERMINISTIC verifier — the ONLY thing that lets a forge task complete
- * (D-9.5-04a for the forge lane). Named checks:
+ * (receipts or nothing, as the rule applies to this lane). Named checks:
  *   - `artifact-path`  — filePath is the expected draftPathFor(kind, slug) with a valid slug;
  *   - `readable`       — the file exists and reads (existence is part of «exactly one artifact»);
  *   - `frontmatter`    — parses and carries the kind's required fields (+ non-empty array fields);
@@ -414,7 +414,7 @@ export function lintDraft({ kind, filePath, fsImpl } = {}) {
  * writeForgeReceipt({dataDir, taskId, kind, filePath, lint, sha256, fsImpl}) → receiptRef.
  *
  * Append one JSONL row under `<dataDir>/receipts/forge.jsonl` recording the forge outcome
- * (the forge lane's completion evidence — D-9.5-04a) and return the `receiptRef` string
+ * (the forge lane's completion evidence) and return the `receiptRef` string
  * the loop hands to `adapter.complete`. fs calls are injectable; a write failure is
  * swallowed (the receiptRef is still returned — the gate already PASSED, the append is a
  * durable log, not the gate itself).

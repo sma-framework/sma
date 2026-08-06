@@ -85,10 +85,11 @@ function firstToken(...candidates) {
  *     SMA_WINDOW_TOKEN / CLAUDE_SESSION_ID from the env) is STABLE across SessionStart +
  *     every PreToolUse of ONE window -> sequential hooks renew the SAME lease file; and
  *   - it is DISTINCT between two concurrent windows (two Claude sessions have two
- *     session_ids) -> same-name windows stay distinct (the WR-05 goal), WITHOUT the pid
- *     fragmenting identity across a window's own sequential invocations.
+ *     session_ids) -> same-name windows stay distinct (the whole point of having a
+ *     disambiguator at all), WITHOUT the pid fragmenting identity across a window's
+ *     own sequential invocations.
  * The pid remains ONLY as a last-resort tiebreaker when no window token is available at
- * all (e.g. a bare manual `pnpm sma …` run outside a hook) — the exact WR-05 fallback,
+ * all (e.g. a bare manual `pnpm sma …` run outside a hook) — the same fallback as before,
  * now scoped to the genuinely-tokenless case instead of every invocation.
  *
  * @param {{env?:Object, pid?:number, sessionToken?:string}} [opts]
@@ -109,7 +110,7 @@ export function resolveTerminalIdentity(opts = {}) {
 
   const named = env && typeof env.SMA_TERMINAL_NAME === 'string' && env.SMA_TERMINAL_NAME.trim()
   // Disambiguator: the STABLE window-token hash when present (renewal-safe), else the pid
-  // (WR-05 tiebreaker, now only for the tokenless manual case).
+  // (last-resort tiebreaker, now only for the tokenless manual case).
   const disambig = sessionToken ? tokenHash(sessionToken) : String(pid)
   const holderIdentity = named
     ? env.SMA_TERMINAL_NAME.trim()
@@ -121,7 +122,7 @@ export function resolveTerminalIdentity(opts = {}) {
 
 /**
  * Lowercase, keep [a-z0-9-]; collapse runs of other chars to a single dash; ALWAYS
- * suffix the disambiguator so same-named windows are distinct (WR-05). An empty slug
+ * suffix the disambiguator so same-named windows are distinct. An empty slug
  * (non-latin name) degrades to the disambiguator-only `t-<disambig>` form. When the slug
  * already carries the disambiguator (the auto `T-<disambig>` fallback identity), it is
  * NOT appended twice.
@@ -134,7 +135,7 @@ function slugify(name, disambig) {
     .replace(/^-+|-+$/g, '')
   if (!slug) return `t-${suffix}` // non-latin/empty name -> disambiguator-only
   if (slug === `t-${suffix}` || slug.endsWith(`-${suffix}`)) return slug // already carries it
-  return `${slug}-${suffix}` // disambiguator always present (WR-05)
+  return `${slug}-${suffix}` // disambiguator always present
 }
 
 /**
@@ -313,7 +314,7 @@ function spawnDetachedSnapshot(opts = {}) {
     // returns 'no-token' immediately, so spawning it buys nothing and costs a process per
     // beat — on Windows, historically a process AND a console window.
     if (!hasSnapshotReceiver(opts.env ?? process.env)) return
-    // WR-10: never launch a real detached snapshot child under a test runner or when the
+    // Never launch a real detached snapshot child under a test runner or when the
     // kill-switch is set. Otherwise every non-throttled beat in the suite spawns a stray
     // unref'd Node child that reads the real repo .sma/ and (if a token is present) POSTs
     // to the production receiver from a test run. An injected spawnFn (tests) still runs,
@@ -325,7 +326,7 @@ function spawnDetachedSnapshot(opts = {}) {
       return
     }
     const spawnFn = opts.spawnFn ?? childSpawn
-    // WR-06: resolve cli.mjs ABSOLUTELY (relative to THIS module) so the detached child
+    // Resolve cli.mjs ABSOLUTELY (relative to THIS module) so the detached child
     // finds it regardless of the child's inherited cwd — a relative 'scripts/sma/cli.mjs'
     // silently no-ops when the beat fires from outside the repo root (e.g. a worktree).
     const cliPath = opts.cliPath ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs')
@@ -613,7 +614,7 @@ export function reapStaleObservable(opts = {}) {
   }
 }
 
-/** Directory names never worth walking for a scope-mtime probe (WR-01). */
+/** Directory names never worth walking for a scope-mtime probe. */
 const PROBE_SKIP_DIRS = new Set(['.git', 'node_modules', '.next', '.sma'])
 
 /**
@@ -623,7 +624,7 @@ const PROBE_SKIP_DIRS = new Set(['.git', 'node_modules', '.next', '.sma'])
  * probe; this helper is exported for the CLI and the hooks so the mtime source
  * lives in one place. Fail-open: any error -> 0 (treated as clean).
  *
- * WR-01: previously this walked the ENTIRE tree (incl. .git/node_modules) and returned
+ * Previously this walked the ENTIRE tree (incl. .git/node_modules) and returned
  * the newest mtime anywhere, so any scoped reap-eligible session was classified
  * needs-human forever on an active repo, and the unbounded walk blew the 5s hook budget.
  * It now compiles the claimed globs, skips heavy dirs, and only considers matching files.
@@ -665,11 +666,11 @@ export function probeScopeMtime(session, opts = {}) {
     }
     for (const e of entries) {
       if (e.isDirectory()) {
-        if (PROBE_SKIP_DIRS.has(e.name)) continue // WR-01: never recurse .git/node_modules/…
+        if (PROBE_SKIP_DIRS.has(e.name)) continue // never recurse .git/node_modules/…
         walk(join(dir, e.name))
       } else {
         const full = join(dir, e.name)
-        // WR-01: only files matching a claimed glob count toward the scope mtime.
+        // Only files matching a claimed glob count toward the scope mtime.
         if (!matchers.some((m) => m.test(relNorm(full)))) continue
         try {
           const m = statFn(full).mtimeMs

@@ -55,7 +55,7 @@ export function defaultExecGit(args) {
 }
 
 /**
- * journalOpt(o) — the appendEvent dir opt for slot events (WR-03). Slot activity is
+ * journalOpt(o) — the appendEvent dir opt for slot events. Slot activity is
  * journal data (read by readJournal, the status collision counter, the snapshot
  * collisionFeed, the statusline) — it MUST land in the journal dir. Prefer an explicit
  * o.journalDir; fall back to o.claimsDir ONLY for backward compat with callers that have
@@ -64,7 +64,7 @@ export function defaultExecGit(args) {
  */
 function journalOpt(o) {
   if (o && o.journalDir) return { journalDir: o.journalDir }
-  if (o && o.claimsDir) return { journalDir: o.claimsDir } // legacy fallback (WR-03)
+  if (o && o.claimsDir) return { journalDir: o.claimsDir } // legacy fallback
   return {}
 }
 
@@ -104,7 +104,7 @@ function padMigration(n) {
  * @param {string} o.by                                 holder identity
  * @param {string} [o.session]
  * @param {string} [o.claimsDir]                        test override for the claims dir
- * @param {string} [o.journalDir]                       journal dir (WR-03: events go here,
+ * @param {string} [o.journalDir]                       journal dir (events go here,
  *                                                       NOT the claims dir)
  * @param {string} [o.terminalId]                       journal terminal id
  */
