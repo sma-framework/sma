@@ -18,7 +18,7 @@ import { candidateKey, KIND_WORD, resultKey } from './shared'
  *
  * So the button here does exactly one thing — /api/agent/toggle — and the card says so out
  * loud. It is pressed per card, never for a batch, and never by an effect: no code path in
- * this screen enables anything without a person's click (T-9-56). The daemon holds the door
+ * this screen enables anything without a person's click. The daemon holds the door
  * regardless: its toggle refuses an id with no definition file, and it is the forge's own
  * lint — not this screen — that decided whether the definition passed at all.
  *
@@ -31,7 +31,7 @@ import { candidateKey, KIND_WORD, resultKey } from './shared'
  * way there rather than inventing an act.
  *
  * Every name and every phrase below came out of somebody else's file and is rendered as a
- * TEXT CHILD. No raw-HTML escape hatch is used anywhere on this screen (T-9-55).
+ * TEXT CHILD. No raw-HTML escape hatch is used anywhere on this screen.
  */
 
 /** What the import door says happened to one chosen item. */

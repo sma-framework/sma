@@ -24,14 +24,14 @@ import { candidateKey, isEnrollable } from './shared'
  *   scan   — on entry, because looking changes nothing: the scanner writes no byte, so
  *            calling it twice is calling it once. «Посмотреть снова» is the same look.
  *   enroll — ONLY from «Сделать черновики». There is no code path in this screen that
- *            enrols anything from an effect, a timer, or a re-render (T-9-56).
+ *            enrols anything from an effect, a timer, or a re-render.
  *   enable — one card at a time, on the third step, by hand. See DraftsStep for why the
  *            imported draft's remaining act is one and not two.
  *
  * ════════════════════════════ SOMEBODY ELSE'S TEXT IS DATA ═══════════════════════════
  *
  * Names and descriptions come out of foreign files. They are rendered as text children,
- * everywhere, and no raw-HTML escape hatch is used on any of the three steps (T-9-55). The
+ * everywhere, and no raw-HTML escape hatch is used on any of the three steps. The
  * daemon has already stripped the paths: a person sees «из файлов проекта», never a folder.
  */
 

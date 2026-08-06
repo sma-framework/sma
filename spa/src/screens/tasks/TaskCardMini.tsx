@@ -9,7 +9,7 @@ import type { BoardCard } from './Board'
  * daemon's own words for why. Everything else is one click away in the panel.
  *
  * Every value on it is a TEXT node. The reading's strings are put on the glass as text and
- * never as markup: a title is a title, not a small program (T-9-19).
+ * never as markup: a title is a title, not a small program.
  *
  * The card is a button in everything but the tag — it cannot BE a button, because the two
  * decisions live inside it and a button inside a button is not a thing. So it carries the

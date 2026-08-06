@@ -24,12 +24,12 @@ import type { DraftCard as DraftRow, TaskStatus } from '../../api/types'
  *
  * This is not the front guarding the door: the daemon refuses an unapproved id regardless of
  * what this card does. It is the front refusing to LIE about which of the two steps a person
- * has actually taken (T-9-48).
+ * has actually taken.
  *
  * Every line here is a text node. The draft's title comes from a person's own description, so
  * it is rendered as text and never as markup: no escape hatch for raw HTML is used anywhere on
- * this screen, which is the whole of the answer to a description that tries to be markup
- * (T-9-49). React escapes a text child; a description that looks like a tag reads as one.
+ * this screen, which is the whole of the answer to a description that tries to be markup.
+ * React escapes a text child; a description that looks like a tag reads as one.
  */
 
 /** What the harness calls each kind of draft, in the words the window uses. */
