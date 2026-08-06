@@ -408,7 +408,7 @@ describe('sendSnapshot — no token (Test 4)', () => {
   })
 })
 
-describe('runSnapshot — honors supplied dirs (WR-06)', () => {
+describe('runSnapshot — honors supplied dirs', () => {
   // runSnapshot must PREFER caller-supplied sessionsDir/journalDir over its own
   // smaRoot() derivation, so SMA_ROOT_OVERRIDE (threaded from the CLI) is honored. Guard
   // the token so the no-token fast-path keeps this hermetic (no real network).
