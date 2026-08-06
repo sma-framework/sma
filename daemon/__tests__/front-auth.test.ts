@@ -30,6 +30,7 @@ import {
   HANDLERS,
   matchRoute,
 } from '../src/front/server.mjs'
+import { QueueEncodingError } from '../src/queue/encoding.mjs'
 import {
   authed,
   tokenEquals,
@@ -375,6 +376,33 @@ describe('server.mjs — POST /api/enqueue', () => {
       body: { title: 'x', lane: 'not-a-lane' },
     })
     expect(badLane.statusCode).toBe(400)
+  })
+
+  /**
+   * A queue database created in a Windows ANSI code page refuses every title that is not
+   * plain ASCII. The founder types their own language, presses the button, and the whole
+   * diagnosis — what happened and the one command that repairs it — used to collapse into
+   * «internal error» at the dispatcher's catch-all. The request is not what is wrong here,
+   * so it does not answer 400; the SERVICE cannot store this until someone migrates it.
+   */
+  it('a title the queue database cannot store answers with the reason, not «internal error»', async () => {
+    const said =
+      'the queue database sma_queue (WIN1252) cannot store this text: run node supervisor/queue-utf8-migrate.mjs --apply'
+    const adapter = {
+      enqueue: async () => {
+        throw new QueueEncodingError(said)
+      },
+    }
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter } })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/enqueue',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body: { title: 'сделай отчёт', lane: 'prod' },
+    })
+    expect(res.statusCode).toBe(503)
+    expect(res.body).toContain('queue-utf8-migrate')
+    expect(res.body).not.toContain('internal error')
   })
 })
 
