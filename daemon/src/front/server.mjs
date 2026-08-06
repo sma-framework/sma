@@ -63,7 +63,7 @@
  */
 
 import { createServer } from 'node:http'
-import { readFileSync as fsReadFileSync, statSync as fsStatSync, readdirSync as fsReaddirSync } from 'node:fs'
+import { readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { join, extname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -2614,31 +2614,21 @@ async function handlePhaseUat({ req, res, deps }) {
   return sendJson(res, 200, { ok: true, phase, item, verdict })
 }
 
-/** A phase's acceptance document, as `/sma-verify-work` names it. */
-const UAT_FILE_RE = /-UAT[^/\\]*\.md$/
-
 /**
  * The door-relative path of a phase's acceptance document, or null when it keeps none.
  *
- * WHICH DIRECTORY IS PHASE N is asked of the CARD, not answered again here: the card resolves
- * it through the same `findPhaseDir` the daemon's exit gate uses, so a phase number, a
- * directory name and a `phase-`-prefixed name all reach the same document from every door.
+ * ASKED OF THE CARD, NEVER LOOKED UP AGAIN. The card already answers both questions this door
+ * needs — which directory is phase N (through the same `findPhaseDir` the daemon's exit gate
+ * uses) and which file in it is the acceptance — so a phase number, a directory name and a
+ * `phase-`-prefixed name all reach the same document from every door. A second lookup here
+ * would be a second answer, and the day they disagreed the screen would be showing one file
+ * while this write landed in another.
  */
 function uatDocumentOf(deps, projectDir, phase) {
   if (typeof deps.derivePhaseCard !== 'function') return null
   const card = deps.derivePhaseCard({ projectDir, phaseId: phase, fsImpl: deps.fsImpl })
-  if (!card || !card.id) return null
-
-  const readdirSync = (deps.fsImpl && deps.fsImpl.readdirSync) || fsReaddirSync
-  let names = []
-  try {
-    const entries = readdirSync(join(projectDir, ARTIFACT_ROOT, 'phases', card.id))
-    names = Array.isArray(entries) ? entries.map(String) : []
-  } catch {
-    return null // an unreadable phase directory keeps no acceptance this door can write to
-  }
-  const file = names.filter((f) => UAT_FILE_RE.test(f)).sort()[0]
-  return file ? `${ARTIFACT_ROOT}/phases/${card.id}/${file}` : null
+  const document = card && card.uatDocument
+  return document && typeof document.path === 'string' ? document.path : null
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──
