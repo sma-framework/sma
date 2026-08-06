@@ -76,6 +76,10 @@ import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
 import { scanEstate, enrollSelections } from './import-scanner.mjs'
 import { createOnboarding } from './onboarding.mjs'
+import { collectDiagnostics } from './diagnostics.mjs'
+// NOTE: diagnostics.mjs is STATICALLY imported for the same reason as the two below: it is
+// pure over an injected os/process/fs, it writes nothing, it reaches no model and no spawn,
+// and its whole job is to REFUSE to carry anything — there is no capability here to gate.
 // NOTE: the import scanner and the onboarding interview are STATICALLY imported — unlike
 // the appliers and the chat engine — because neither holds a capability worth gating: both
 // are pure over an INJECTED fs, neither reaches a model or a spawn (their suites prove it
@@ -299,8 +303,6 @@ export const PENDING_ROUTES = Object.freeze(
     'GET /api/search',
     'POST /api/account/add',
     'POST /api/pipeline/toggle',
-    'GET /api/diagnostics',
-    'POST /api/update/run',
     'POST /api/budget/set',
     'POST /api/agent/model',
   ]),
@@ -1990,10 +1992,11 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
   }
 }
 
-// ── the V5.4 twenty-three: declared here, filled one at a time ──
+// ── the V5.4 growth: declared once, filled one at a time ──
 //
-// Every one of them is a NAMED function whose whole body is `send501(res)`, and every one of
-// them is listed in PENDING_ROUTES. That pairing is the contract:
+// The ones BELOW are the still-unfilled slots: each is a NAMED function whose whole body is
+// `send501(res)`, and each is listed in PENDING_ROUTES. The ones already filled live with
+// their own family further down and are gone from that Set. That pairing is the contract:
 //   - the route EXISTS from this commit — it is in the frozen table, it is auth-gated by the
 //     dispatcher like every other, and an anonymous caller cannot tell it apart from a live
 //     one, so no screen is ever built against an imagined path;
@@ -2065,17 +2068,117 @@ function handleAccountAdd({ res }) {
 function handlePipelineToggle({ res }) {
   send501(res)
 }
-function handleDiagnostics({ res }) {
-  send501(res)
-}
-function handleUpdateRun({ res }) {
-  send501(res)
-}
 function handleBudgetSet({ res }) {
   send501(res)
 }
 function handleAgentModel({ res }) {
   send501(res)
+}
+
+// ── «Дом системы»: the two doors that describe and renew the install itself ──
+//
+// They are neighbours because they answer the same person in the same minute: something is
+// wrong → what am I even running → is there a newer one. Both are READS by default, and
+// the one that is not a read cannot happen without a word from a human in its body.
+
+/**
+ * GET /api/diagnostics — the four facts the feedback window is allowed to quote.
+ *
+ * The window's channel is a PUBLIC GitHub issue (the founder's decision; e-mail was
+ * refused), so this is the one response of this file whose reader is the open internet.
+ * The picking is therefore done TWICE — once inside collectDiagnostics, which assembles the
+ * four keys by name, and once here, which names them again on the way out. That is not
+ * belt-and-braces for its own sake: the two lists are in different modules, so a field added
+ * to one of them cannot ride out through the other, and the equality test on the key set
+ * turns red the moment they disagree.
+ *
+ * Every source is DI-able through deps (a suite reads no real tree), and there is no
+ * dependency check: this route can always answer, because a person who cannot open the
+ * feedback window cannot report the bug that broke it.
+ */
+function handleDiagnostics({ res, deps }) {
+  const d = collectDiagnostics({
+    ...(deps.capabilityPath ? { capabilityPath: deps.capabilityPath } : {}),
+    ...(deps.osImpl ? { osImpl: deps.osImpl } : {}),
+    ...(deps.processImpl ? { processImpl: deps.processImpl } : {}),
+    ...(deps.fsImpl ? { fsImpl: deps.fsImpl } : {}),
+  })
+  sendJson(res, 200, { version: d.version, platform: d.platform, release: d.release, node: d.node })
+}
+
+/**
+ * The receipt an APPLIED update leaves, spelled out where a reader will look for it rather
+ * than only inside the function that builds it: `update:<from>-><to>@<source>`. It is the
+ * update door's analogue of `reverify:<ref>` and `artifact:<path>@<sha>` — one greppable
+ * word saying which version replaced which, from where.
+ */
+export const UPDATE_RECEIPT_FORMAT = 'update:<from>-><to>@<source>'
+
+/** At most this many version sources ride a response (npm + a local checkout is two). */
+const UPDATE_SOURCE_CAP = 4
+
+/**
+ * POST /api/update/run — the version report, and, on an explicit word, the update itself.
+ *
+ * Body {confirm:boolean}, and `confirm` is REQUIRED. `false` is the dry run: versions are
+ * compared (installed vs the registry vs a local checkout) and NOTHING is written. `true`
+ * runs the ordinary updater — which is the ONE standard installer, so every preservation
+ * guarantee (the memory corpus, .sma state, foreign settings keys, the человеческие bytes of
+ * CLAUDE.md) is the installer's own and this door invents no second write path.
+ *
+ * AN UPDATE NEVER STARTS BY ITSELF. There is no timer, no «check on boot», no auto-apply:
+ * the only way the applying path runs is a human's POST carrying `confirm:true`. Requiring
+ * the field even for the dry run is deliberate — an empty body reaching this door means
+ * somebody swept the route table, not that somebody asked a question, and the answer to a
+ * sweep is 400.
+ *
+ * THE RUNNER IS INJECTED and takes one flag: `{apply:boolean}`. It is NOT `deps.verbRunner`
+ * — that name already belongs to the merge verb of the approve path, and a door that could
+ * name the command it runs is exactly the command-exec endpoint this file promises never to
+ * grow. The composition root decides WHICH updater this is; the request decides only whether
+ * to apply. Paths (`plan.args`, a source's `detail`, the local checkout's directory) are
+ * DROPPED here: the report names versions and verdicts, never places on the founder's disk.
+ */
+async function handleUpdateRun({ req, res, deps }) {
+  if (typeof deps.updateRunner !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['confirm']))) return undefined
+  if (typeof b.confirm !== 'boolean') return send400(res, 'confirm must be a boolean')
+
+  let report
+  try {
+    report = await deps.updateRunner({ apply: b.confirm })
+  } catch {
+    // The updater's own message is discarded rather than wrapped: it quotes a command line
+    // and a directory. The status says what happened; the daemon log keeps the detail.
+    return send503(res, 'the updater did not answer')
+  }
+  const r = report && typeof report === 'object' ? report : {}
+  const sources = (Array.isArray(r.sources) ? r.sources : []).slice(0, UPDATE_SOURCE_CAP).map((s) => ({
+    id: String((s && s.id) ?? ''),
+    version: s && typeof s.version === 'string' ? s.version : null,
+    verdict: String((s && s.verdict) ?? 'unknown'),
+  }))
+  const installed = typeof r.installed === 'string' ? r.installed : null
+  const to = typeof r.to === 'string' ? r.to : null
+  const source = typeof r.source === 'string' ? r.source : null
+
+  if (!b.confirm) {
+    return sendJson(res, 200, { ok: r.ok !== false, dryRun: true, installed, sources })
+  }
+  const applied = { ran: !!(r.applied && r.applied.ran), exitCode: Number.isInteger(r.applied && r.applied.exitCode) ? r.applied.exitCode : null }
+  const ok = r.ok === true && applied.ran && applied.exitCode === 0
+  if (ok) emitSafe(deps, { event: 'harness.updated' })
+  return sendJson(res, 200, {
+    ok,
+    dryRun: false,
+    installed,
+    sources,
+    applied,
+    ...(ok ? { receipt: `update:${installed ?? '(none)'}->${to ?? '(none)'}@${source ?? '(none)'}` } : {}),
+  })
 }
 
 /** HANDLERS — the frozen name→function map. Exported for ONE reason: the shape test
