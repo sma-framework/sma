@@ -14,7 +14,7 @@
  * Asserted-tier precision (the phantom-write forensics proved
  * all 9 asserted phantoms were instrument noise, 0 real). Three false-positive
  * mechanisms fixed:
- *   1. Repo-root basename resolution — a bare basename («Wrote 46.2-DOD.json») no longer
+ *   1. Repo-root basename resolution — a bare basename («Wrote DOD.json») no longer
  *      resolves to <repo>/basename → phantom; it cross-matches the SAME receipt's
  *      tool-call paths (endsWith), then `git ls-files`, and demotes to
  *      `unverifiable: ambiguous-basename` when unresolved. NEVER phantom for a bare
@@ -220,7 +220,7 @@ function isBareBasename(path) {
 
 /**
  * Resolve a bare-basename claim WITHOUT ever scoring it phantom (precision mechanism 1,
- * forensics rows 1/3/4/9). Prose names files by basename («Wrote 46.2-DOD.json»), which
+ * forensics rows 1/3/4/9). Prose names files by basename («Wrote DOD.json»), which
  * `resolve(repoRoot, basename)` would falsely map to <repo>/basename → phantom-missing.
  * Instead:
  *   (a) endsWith-match the basename against the SAME receipt's tool-call claim paths
@@ -265,7 +265,7 @@ function verifyOne(c, { repoRoot, spawnedAt, runGit, statFile, toolCallPaths }) 
   if (c.toolResultOk === false) return { ...base, verdict: 'divergent', reason: 'tool-error-claimed' }
 
   // mechanism 1: an ASSERTED bare basename (prose naming a file by name, «Wrote
-  // 46.2-DOD.json») resolves against the receipt's own tool-call paths / the tree BEFORE
+  // DOD.json») resolves against the receipt's own tool-call paths / the tree BEFORE
   // any repo-root disk check — never phantom for a basename. Tool-call claims carry an
   // authoritative file_path from the tool input and keep the normal disk/git checks.
   if (tier === 'asserted' && isBareBasename(path)) return resolveBasename(base, path, { runGit, toolCallPaths })

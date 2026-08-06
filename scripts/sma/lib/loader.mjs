@@ -2,10 +2,10 @@
  * loader.mjs — the R4 read engine of pillar 1's layered memory.
  *
  * Resolves a task's tag set into CORE (always-load) + tag-matched periphery, with
- * a stable, repeatable ordering. This is what agents/sessions run AFTER the flip
- * (9-14) to pull only the notes a task needs — the cure for the flat-index ceiling.
+ * a stable, repeatable ordering. This is what agents/sessions run AFTER the index
+ * flip, to pull only the notes a task needs — the cure for the flat-index ceiling.
  *
- * AGENT PROTOCOL (summary; the full doc lands in 9-14's README + a memory note):
+ * AGENT PROTOCOL (summary; the full doc lands in the README + a memory note):
  *   A query is the set of facet tags describing the task at hand — one or more
  *   `area` tags, one or more `kind` tags, plus any free topic tags. The loader
  *   resolves aliases (B2), then intersects facets:
@@ -19,7 +19,7 @@
  * name asc. Recency is NEVER the primary filter. The comparator is the SAME one
  * the generator writes with (imported from generator.mjs) — one ordering truth.
  *
- * Exports (consumed by the CLI 9-10, flip 9-14):
+ * Exports (consumed by the CLI and the index flip):
  *   - resolvePeriphery({tags, corpusDir, tagsPath, dateMap}) → {core, periphery, matched, warnings, meta}
  *   - orderNotes(notes, dateMap) — the shared comparator applied to a note list.
  *
@@ -35,7 +35,7 @@
  * do not re-introduce a local readNotes here.
  *
  * Corpus + registry access is ONLY through frontmatter.mjs (parseNote +
- * loadTagsRegistry + resolveAlias) — the single shared read path (9-04). The
+ * loadTagsRegistry + resolveAlias) — the single shared read path. The
  * ordering comparator, the corpus read and the CORE rule come from generator.mjs.
  * Node built-ins; zero deps.
  */

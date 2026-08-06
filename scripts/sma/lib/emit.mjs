@@ -29,7 +29,7 @@
  * commits or pushes — output lands as a reviewable working-tree diff.
  *
  * Corpus access is ONLY through frontmatter.mjs (parseNote) — the single shared
- * read path (9-04). Node built-ins only; zero npm deps, no LLM, no network.
+ * read path. Node built-ins only; zero npm deps, no LLM, no network.
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
