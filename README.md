@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.2.0-3B82F6" alt="version 5.2.0">
+  <img src="https://img.shields.io/badge/version-5.3.0-3B82F6" alt="version 5.3.0">
   <img src="https://img.shields.io/badge/tests-2478%2F2478-3CC0A0" alt="tests 2478/2478">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
@@ -20,8 +20,11 @@
 > ### 🗺️ [Open the live system map →](https://sma-framework.github.io/sma/master-graph.html)
 > Every subsystem of SMA on one interactive page — the fastest way to see how everything connects.
 
+> ### 🆕 [What's new in V5.3 →](#whats-new-in-v53)
+> Governable memory, the shipped team in the window, a task named in any language, and a fleet that consults its own written rules — with the diagrams.
+
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — built and tested, not yet released.**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -101,6 +104,102 @@ Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-
 - [docs/DETAILS.md](docs/DETAILS.md) — the engineering deep dive, once you want to know how it works inside.
 - `node scripts/sma/cli.mjs explain <name>` — run from your project root: a plain-language explanation of any SMA command.
 
+## What's new in V5.3
+
+V5.2 made the memory layer **measurable**. V5.3 makes it **governable** — and does the same to the optional fleet: rules that had been written down as prose are now the rules the running code actually asks. Four directions, one release. Everything below is described in full further down this page; this is the map.
+
+```mermaid
+flowchart LR
+    V53(["V5.3"])
+
+    V53 --> M["Memory you can govern"]
+    V53 --> W["The window, and the team that arrived in it"]
+    V53 --> L["A task named in any language"]
+    V53 --> F["A fleet whose written rules are consulted"]
+
+    M --> M1["Three storage classes on the who-sees-it axis —<br>placement enforced before the first byte, fail-closed"]
+    M --> M2["A note that talks to the agent is refused at read time,<br>in English and in Russian"]
+    M --> M3["forget, and erase — every surface named,<br>removed, then read back to confirm"]
+    M --> M4["A contradiction is scoped to one clause,<br>so a red result is worth acting on"]
+    M --> M5["A confirmed draft finally has a door into the corpus"]
+
+    W --> W1["The whole shipped team on one screen —<br>one control turns the pipeline on, and reports what moved"]
+    W --> W2["A project is connected from the window,<br>then watched live and read-only"]
+    W --> W3["The first run has a way out —<br>postponing it writes nothing into your project"]
+
+    L --> L1["The queue accepts a title in any script"]
+    L --> L2["A non-UTF-8 queue database is named at boot,<br>together with the command that repairs it"]
+
+    F --> F1["Eleven named states, a contract per legal transition"]
+    F --> F2["A capability envelope gates the spawn"]
+    F --> F3["An attempt stamp, and a per-tick reconciliation<br>for what ended while the daemon was down"]
+```
+
+### Memory you can govern
+
+The three storage classes are the headline: a note marked as restricted is refused entry to any git-backed path **before a single byte is written**, in both write doors, and lands in `.sma/local-memory` instead. Retrieved text is now data rather than instruction — a note carrying "ignore your previous instructions", or the same trick in Russian, is withheld with the reason named. `memory forget` retires a note; `--erase` removes it physically from every surface a copy can live on, naming each one and reading it back — and it **declines** when an archived episode shares the record's id, because history is a different asset class from truth.
+
+The write pipeline gained the door it was missing. Step 7 stages anything that is not a low-risk working observation as a draft — and until this release a confirmed draft had no path into the corpus at all:
+
+```mermaid
+flowchart TD
+    E["something happened"] --> S1["1 observe · 2 classify<br>the machine never classifies —<br>the two fields that decide meaning come from the caller"]
+    S1 --> S3["3 redact<br>before any write path exists in the sequence"]
+    S3 --> S4["4 extract · 5 compare · 6 evidence"]
+    S4 --> S7{"7 risk<br>which of the seven doors is this record entitled to?"}
+
+    S7 -->|"auto-ttl"| S8["8 persist — the corpus"]
+    S7 -->|"the other six paths"| DR["drafts/ — explicitly not memory<br>no reader, no index, no check descends into it"]
+    S7 -->|"class missing or out of vocabulary"| DR
+
+    DR --> DOOR["a person confirms ONE draft, by file name,<br>with an explicit yes"]
+    DOOR --> RECHECK["classify, redact, extract and compare are asked AGAIN<br>against the corpus as it is now — a confirmation is not provenance"]
+    RECHECK --> S8
+    S8 --> S9["9 index · 10 measure · 11 consolidate · 12 lifecycle"]
+```
+
+The one automatic path — `auto-ttl` — is the only one that writes without a human, and it additionally demands a retention window. Anything whose class cannot be determined falls closed to the strictest door. The command behind that confirmation is `sma memory write --apply <draft> --confirm <id>.md --yes`; the schema migration keeps the same shape — preview by default, one proposal applied at a time, by hand.
+
+The contradiction detector became worth listening to. It reads every kind of note that *states a rule*, and it reads a Russian corpus as well as an English one — so a clean result now means «nothing was found» instead of «nothing was examined». It calls two notes contradictory only where one denies the other **about the same subject, inside the same clause**, and it no longer reads a date as a quantity. Measured on a live corpus, that turned two critical findings — both false — into zero, with every true positive still firing.
+
+### A task named in any language
+
+PostgreSQL fixes a database's encoding at CREATE time, and the Windows `initdb` default is the ANSI code page. A queue created there used to answer a Cyrillic, Greek, Japanese or emoji title with a driver stack trace. Now the daemon asks the database its encoding at boot, says what will happen and which command repairs it, and refuses such a title with that same sentence. `node supervisor/queue-utf8-migrate.mjs --apply` builds a UTF-8 database, carries the waiting tasks and the attempt rows over, and **keeps** the old one — there is no `DROP` in it.
+
+That title then walks the fleet's eleven named states. Every arrow below is a contract in the shipped state machine — who may perform it, what must be true first, and what it writes:
+
+```mermaid
+flowchart LR
+    T(["a task, named in any language"]) --> R
+
+    R["READY"] -->|"dispatcher"| C["CLAIMED"]
+    C -->|"worker"| RUN["RUNNING"]
+    RUN -->|"worker"| P["PRODUCED<br>artifact manifest + execution receipt"]
+    P -->|"verifier"| V["VERIFYING"]
+
+    V -->|"receipt + authorized disposition"| A["ACCEPTED"]
+    V -->|"receipt"| RJ["REJECTED"]
+    V -->|"a human must decide"| H["WAITING_HUMAN"]
+    H -->|"human"| A
+    H -->|"human"| RJ
+
+    C -.->|"lease expired"| RT["RETRYABLE"]
+    RUN -.->|"lease expired"| RT
+    V -.->|"lease expired"| RT
+    RT -.->|"budget left — a NEW attempt, never a rerun"| R
+    RT -.->|"budget exhausted"| DL["DEAD_LETTER"]
+```
+
+`ACCEPTED`, `REJECTED`, `DEAD_LETTER` and `CANCELLED` are terminal — and terminality is the *absence* of any outgoing contract rather than a flag, so a state cannot be terminal in one place and leaky in another. `ACCEPTED` is reachable only with a verification receipt **and** an authorised disposition. The full table, the seven invariants and — in §5 — what is deliberately not a goal: [docs/FLEET-INVARIANTS.md](docs/FLEET-INVARIANTS.md).
+
+### The rest of the release, in one breath
+
+- **The whole team ships, and the window shows it.** Every agent that comes with the product appears on the team screen beside the ones you wrote, marked as stock, yours, or a stock definition you have edited. The switch is a panel now, at the top of the section it acts on: the state in words, the count in figures, what one press will do — and a result either way, because an action that ends in silence is a defect on its own.
+- **A project is connected from the window** — a form, not a hand-made HTTP request — and its files are then followed as they change. What the window shows of that project's memory is read-only, and the migration preview is bounded: a corpus over 200 notes reports its size instead of building a preview of that scale.
+- **The first run can wait.** «Позже» — the "later" button — closes the onboarding interview having written nothing into your project; the answer is kept daemon-side, so the window stops asking and the door stays open.
+- **The release gate is runnable again.** `lint` over a real planning tree of 151 plans took ~193 s, and 92 % of it was two checks spawning 604 git processes to answer one question twice. It now asks git once per run: **193 s → 3.5 s, 604 spawns → 27**, with a byte-identical report. A check that costs more than the whole test suite is a check that stops being run. It also gained progress on stderr and a wall-clock budget that says `PARTIAL` and exits non-zero rather than truncating silently.
+- **The suite grew with it** — 2050 cases at the v5.2.0 stamp to the figure in the badge at the top of this page, which is written from a measured run by `badge.mjs` and never typed by hand: the publish gate refuses a tarball whose badge disagrees with the receipt.
+
 ## The window — V5.1's app, served by the daemon
 
 V5 shipped the engine and a deliberately thin operations panel. V5.1 builds the app on top of it: **seventeen screens**, compiled once and served by the daemon itself, behind the same token and the same frozen route table. No second web server appears, no extra port is opened, nothing new listens.
@@ -139,7 +238,7 @@ That single visit exchanges the token for an HttpOnly session cookie and every l
 
 **Always-on wiring** — a launchd job on macOS, a Scheduled Task on Windows — is written up in the [supervisor/](supervisor/) checklists, together with the smoke run that proves the loop end to end before you leave it running overnight.
 
-**Your day, not a dashboard.** *Today* opens on what the fleet did overnight and what is waiting on you; the board holds every task; the team screen shows each worker with its lane and its window; the live stream is the work as it happens; costs read straight from the spend book, per day, per lane and per account. The app is built for a desktop screen (1440 px and up) — the phone gets its own design pass, deliberately, in V5.2/V5.3.
+**Your day, not a dashboard.** *Today* opens on what the fleet did overnight and what is waiting on you; the board holds every task; the team screen shows each worker with its lane and its window; the live stream is the work as it happens; costs read straight from the spend book, per day, per lane and per account. The app is built for a desktop screen (1440 px and up) — the phone still waits for its own design pass, and V5.3 shipped without it rather than pretending otherwise.
 
 **Every task card answers WHY.** The decision journal rides the same attempt ledger the receipts do, in three layers: the dispatcher's own reasons (why this lane, this worker, this window — structured codes from a closed vocabulary, never free text), the worker's mandatory approach note (what it chose, what it rejected, which rules and memories shaped it), and the memory trace (which notes loaded, which reflexes fired). An attempt without its note is as incomplete as one without its receipt.
 
@@ -348,7 +447,7 @@ The full reference lives in [scripts/sma/README.md](scripts/sma/README.md). A fe
 Everything above is the core. The detail lives one link away:
 
 - **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history V1 → V5.1 with the trust spine process by process.
-- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, then V5.3 — measured memory, governance, the hardened fleet, and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
+- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, V5.3 shipped as v5.3.0 — and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
 - **[docs/MEMORY-MODEL.md](docs/MEMORY-MODEL.md)** — the schema law of the memory layer: what one record may claim and must carry, the closed vocabularies, provenance and its fingerprint, the temporal model, the storage classes, the one-claim law, and the corpus checks that hold all of it up.
 - **[docs/MEMORY-LIFECYCLE.md](docs/MEMORY-LIFECYCLE.md)** — how a memory is written, approved and retired: the twelve-step write pipeline with every refusal it can make, the risk-approval ladder, drafts, the four lifecycle transitions, and the preview-only migration ritual.
 - **[docs/MEMORY-THREAT-MODEL.md](docs/MEMORY-THREAT-MODEL.md)** — the security posture: which storage class may hold what, what fails open and what fails closed, how retrieved text stays data instead of becoming an instruction, and the encryption policy — decided on 2026-08-04: no cipher in this version, the restricted class is enforced as placement and its bytes are plain text on disk.
