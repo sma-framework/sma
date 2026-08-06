@@ -27,10 +27,10 @@ flowchart LR
 | V3.5 | Adoption & trust telemetry | ✅ shipped |
 | V3.6 | The one-command door: npm install, off-ramp, memory preview | ✅ shipped |
 | V4 | Grade the grader: graded verdicts, economy meters, vendor triage | ✅ shipped |
-| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.2.0, July–August 2026) |
+| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.3.0, July–August 2026) |
 | V5.1 | Works with what you have + the working front | ✅ **shipped** (v5.1.0, August 2026) |
 | V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | ✅ **shipped** (v5.2.0, 3 August 2026) |
-| V5.3 | Memory governance, hardened fleet, external validation | 🔵 planned |
+| V5.3 | Memory governance, hardened fleet | ✅ **shipped** (v5.3.0, 6 August 2026) — the external-validation pilots carry forward |
 
 ## V5 — Orchestration: a 24/7 worker fleet ✅
 
@@ -69,7 +69,7 @@ A fleet rarely lives on one computer: the realistic shape is a small always-on m
 
 The network layer is **yours, not ours**: a private mesh (WireGuard, Tailscale, or a self-hosted coordinator) connects your machines and your phone. The daemon never asks to be exposed to the public internet — the docs say so in bold — and no vendor cloud appears anywhere in this design. Your fleet, your queue, your tokens, your machines.
 
-All three laws are built: projects are a dimension of the task, the introduction of a peer is a single-use invitation carried by hand from the hub, and the hub proxies an action to the machine that owns it rather than re-playing its logic. A peer opened directly still shows its own machine, with a quiet banner when the hub is unreachable, so the hub is not a single point of failure. Two deliberate gaps remain and are named rather than hidden: the **phone** gets its own design pass in V5.2/V5.3 (V5.1 is built for a desktop screen), and the loop has so far been proven with two daemons on one machine — repeating it across two physical machines is a smoke test still to run.
+All three laws are built: projects are a dimension of the task, the introduction of a peer is a single-use invitation carried by hand from the hub, and the hub proxies an action to the machine that owns it rather than re-playing its logic. A peer opened directly still shows its own machine, with a quiet banner when the hub is unreachable, so the hub is not a single point of failure. Two deliberate gaps remain and are named rather than hidden: the **phone** still awaits its own design pass in a later 5.x release (V5.1–V5.3 are built for a desktop screen), and the loop has so far been proven with two daemons on one machine — repeating it across two physical machines is a smoke test still to run.
 
 V5.1 ships two more things. **The working front** — the owner's rich app (today view, task board, roster, task card, live work stream, costs, rules, and the settings the fleet used to need a text editor for) has gone from design to a running build the daemon serves itself: `cd spa && npm run build`, and there is no second server. And **Memory Model 1.0** — the start of the memory-foundation program below: freeze the surface baseline (reproducible install, current receipts green, current retrieval/latency/cost measured), then formalize what a memory IS. Schema v2 turns a note into a **claim**: memory type (working / semantic / episodic / procedural / prospective / normative / preference), truth mode (observed / inferred / factual / hypothesis / decision / normative), source authority, evidence links, scope, `observed_at`/`recorded_at`/valid time, sensitivity, retention, and a verification command. The overloaded single "importance" number splits into criticality, frequency, confidence, freshness, context priority, and risk. Agents write the full schema — the discipline costs model tokens, not human patience. The whole v1 corpus stays readable; migration is preview-only; nothing is rewritten silently.
 
@@ -90,9 +90,13 @@ Prove the memory works before making it cleverer.
 - **Explainable hybrid retrieval** — deterministic facets stay the always-available substrate; add exact path/symbol retrieval and a rebuildable FTS/BM25 index; fuse and rerank by relevance, criticality, temporal state, and authority under a hard context budget. Optional multilingual dense retrieval only after measured lift — and the system keeps working with the vector layer removed.
 - The front keeps maturing here, on top of what V5.1 shipped.
 
-## V5.3 — Memory governance and the hardened fleet
+## V5.3 — Memory governance and the hardened fleet ✅ (v5.3.0, 6 August 2026)
 
-Make memory governable and the fleet's semantics formal — then prove the value on strangers' repositories. The multi-machine window reaches its full federated form here at the latest.
+Make memory governable and the fleet's semantics formal. Shipped as planned below, with one
+honest carry: the **external-validation pilots on strangers' repositories** (last bullet) did
+not run inside this release — they move to the next cycle, and the memory benchmark closed
+with four known misses, recorded rather than retuned away. The multi-machine window reached
+its federated form.
 
 - **Temporal graph and typed links** — machine-readable relations (`derived_from`, `supports`, `contradicts`, `supersedes`, `applies_to`, `requires`, `exception_to`, `verified_by`), full `observed_at`/`recorded_at`/valid-time semantics, immutable episodes stored apart from compact reviewed claims. An edge is added only when it improves a concrete retrieval, temporal, or verification query — never for beauty.
 - **The full memory lifecycle** — the old "memory is never deleted" invariant is replaced with the precise rule: reviewed organizational knowledge never disappears *by accident*, but the system supports supersede, **revoke**, **expire**, **archive**, and physical **erase** where safety, law, or the owner requires it — with erasure tests covering copies and indexes. Risk-based approval per memory class: low-risk observations auto-persist with TTL; procedural recommendations need an evidence threshold; hard reflexes need human approval or deterministic proof; security rules and decision policies are governed, versioned, human-only.
