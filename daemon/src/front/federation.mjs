@@ -38,7 +38,7 @@
  * The hub polls each peer's ORDINARY `GET /api/state` on the same 2-5s rhythm the SPA
  * already uses. There is no persistent socket between daemons in V5.1 (no reconnect and
  * no backpressure failure modes to own) and the peer grows NO federated door — its
- * attack surface is the same thirty routes it had before. Push aggregation is recorded as
+ * attack surface is the same route table it had before. Push aggregation is recorded as
  * a possible V5.2 improvement, not a V5.1 requirement.
  *
  * ═══════════════════ SSRF GUARD, AND THE ONE ESCAPE HATCH ════════════════════════

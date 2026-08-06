@@ -18,7 +18,7 @@
  *     install layouts (project-local and the global config dir), and no body / no absolute path;
  *   - applyStockTeamToggle: one act enables the shipped roster through the EXISTING toggle door,
  *     recording each activated definition's pristine digest as the baseline readStockTeam reads
- *     back — with the route table still frozen at thirty.
+ *     back — with the route table still frozen.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -635,7 +635,7 @@ describe('applyStockTeamToggle — one act, through the door that already exists
   })
 })
 
-// ── the door: the reserved target rides POST /api/agent/toggle, the table stays at thirty ──
+// ── the door: the reserved target rides POST /api/agent/toggle, the table does not grow ──
 
 const TOKEN = 'a'.repeat(64)
 
@@ -670,8 +670,8 @@ async function call(front: any, opts: any) {
 }
 
 describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no route added)', () => {
-  it('the route table is still exactly thirty entries and carries no stock-team route', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(30)
+  it('the route table is still exactly fifty-three entries and carries no stock-team route', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(53)
     expect(Object.keys(ROUTES).filter((k) => /stock/i.test(k))).toEqual([])
   })
 

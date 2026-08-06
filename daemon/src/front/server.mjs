@@ -6,13 +6,13 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY THIRTY routes
- *     (re-frozen 2026-08-01 — the V5.1 growth is EXPLICIT, declared ONCE
- *     for the whole release and never incremental; the previous freeze was FOURTEEN,
- *     2026-07-17). A path outside the table is 404 BEFORE any auth-error
- *     detail (no route reflection). No command-exec endpoint exists or ever may —
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FIFTY-THREE routes
+ *     (re-frozen 2026-08-06 — the V5.4 growth is EXPLICIT, declared ONCE
+ *     for the whole release and never incremental; the previous freezes were THIRTY,
+ *     2026-08-01, and FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
+ *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 30 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 53 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -39,10 +39,22 @@
  * the first commit of the release, so every screen was built against the final contract
  * instead of an imagined one. Their handlers landed in plans 9.7-09 (static + projects),
  * 9.7-15 (machines + chat) and 9.7-20 (import + onboarding), and no plan of the release
- * added a route. THE TABLE IS NOW FULL: every one of the thirty answers for real, and
- * ZERO handlers are stubs (a test asserts the shape, not a list). A 501 that remains means
- * one thing only — a collaborator THIS daemon was not wired with (no derive, no federation,
- * no applier): «not available here», never «not written yet».
+ * added a route. EVERY ONE OF THOSE THIRTY ANSWERS FOR REAL — the precedent this file is
+ * governed by: the table is written down in full on the first day and never moves again.
+ *
+ * The TWENTY-THREE V5.4 routes (phase stages and decisions, the memory workbench,
+ * coordination and backlog, attempts and shipping, search, accounts and diagnostics) are
+ * declared the SAME way — named 501 stubs, present and auth-gated from the first commit of
+ * the release, so every screen is built against the final contract instead of an imagined
+ * one. WHICH OF THEM ARE STILL UNFILLED IS NOT A COMMENT AND NOT A GUESS: `PENDING_ROUTES`
+ * is an exported frozen Set of exactly those keys, and the plan that fills a slot deletes
+ * its key from that Set in the SAME commit that lands the live handler. So a bare 501 is
+ * legitimate for a route inside that Set and a DEFECT for any route outside it — which is
+ * what the shape test asserts (a shape and a Set, never a hand-kept list).
+ *
+ * A 501 from a route OUTSIDE PENDING_ROUTES means one thing only — a collaborator THIS
+ * daemon was not wired with (no derive, no federation, no applier): «not available here»,
+ * never «not written yet».
  *
  * Node built-ins only (node:http). Every collaborator (deriveState, adapter, ledger,
  * the merge verbRunner, execGit, the event hub, clock) is dependency-injected via
@@ -99,7 +111,7 @@ export const STOCK_TEAM_TARGET = '__stock-team__'
  * The reserved POST /api/approve target PREFIX meaning «apply the migration proposal for one
  * note of the connected project» rather than «approve a task». It rides the approve door
  * for the same reason the stock team rides the toggle door:
- * the route table is frozen at thirty and a per-file yes is, structurally, exactly what
+ * the route table is FROZEN and a per-file yes is, structurally, exactly what
  * approve already is — a human's word, serialized, on one named unit of work.
  *
  * The suffix is the note's stem; `<prefix><stem>` stays inside ID_RE, so the id validation
@@ -167,18 +179,20 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-01; the single freeze revision
- * of the V5.1 release, superseding the FOURTEEN before it). Exactly THIRTY
- * entries mapping `${METHOD} ${path-pattern}` → handler name. `:id` marks the two
- * dynamic id segments (/api/task/:id, /api/diff/:id), both bound to ID_RE; `:file` marks
- * the one dynamic asset segment (/assets/:file), bound to ASSET_RE. This object IS the
- * contract the guard invariant polices — its size is a test
- * (Object.keys(ROUTES).length === 30) and no route may be added without also touching
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-06; the single freeze revision
+ * of the V5.4 release, superseding the THIRTY before it). Exactly FIFTY-THREE
+ * entries mapping `${METHOD} ${path-pattern}` → handler name. `:id` marks the four
+ * dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id, /api/attempt/:id),
+ * all bound to ID_RE; `:file` marks the one dynamic asset segment (/assets/:file), bound
+ * to ASSET_RE. This object IS the contract the guard invariant polices — its size is a test
+ * (Object.keys(ROUTES).length === 53) and no route may be added without also touching
  * that guard invariant.
  *
- * The first fourteen are the original surface; the sixteen below them are the declared-once
- * V5.1 growth. ALL THIRTY ARE LIVE: the table was written down once, at the start of the
- * release, and every slot was filled by its own plan without the table ever moving.
+ * The first fourteen are the original surface; the sixteen after them were the declared-once
+ * V5.1 growth and are all live; the twenty-three below THOSE are the declared-once V5.4
+ * growth, and they are filled one at a time — see PENDING_ROUTES, which is the machine-
+ * readable answer to «which ones are not filled in yet», kept honest by a test rather than
+ * by this sentence. The table itself does not move again either way.
  */
 export const ROUTES = Object.freeze({
   // ── the original fourteen (live) ──
@@ -213,7 +227,77 @@ export const ROUTES = Object.freeze({
   'GET /api/onboarding': 'handleOnboarding',
   'POST /api/onboarding/answer': 'handleOnboardingAnswer',
   'POST /api/onboarding/complete': 'handleOnboardingComplete',
+  // ── the V5.4 growth (declared here, filled one at a time) ──
+  'POST /api/phase/stage': 'handlePhaseStage',
+  'GET /api/phase/:id': 'handlePhaseCard',
+  'POST /api/phase/uat': 'handlePhaseUat',
+  'POST /api/decision/answer': 'handleDecisionAnswer',
+  'GET /api/artifact': 'handleArtifact',
+  'GET /api/memory/drafts': 'handleMemoryDrafts',
+  'POST /api/memory/apply': 'handleMemoryApply',
+  'POST /api/memory/index': 'handleMemoryIndex',
+  'GET /api/memory/lint': 'handleMemoryLint',
+  'GET /api/coordination': 'handleCoordination',
+  'POST /api/claim/clear': 'handleClaimClear',
+  'GET /api/backlog': 'handleBacklog',
+  'POST /api/backlog/promote': 'handleBacklogPromote',
+  'GET /api/attempt/:id': 'handleAttempt',
+  'POST /api/ship/gate': 'handleShipGate',
+  'POST /api/ship/publish': 'handleShipPublish',
+  'GET /api/search': 'handleSearch',
+  'POST /api/account/add': 'handleAccountAdd',
+  'POST /api/pipeline/toggle': 'handlePipelineToggle',
+  'GET /api/diagnostics': 'handleDiagnostics',
+  'POST /api/update/run': 'handleUpdateRun',
+  'POST /api/budget/set': 'handleBudgetSet',
+  'POST /api/agent/model': 'handleAgentModel',
 })
+
+/**
+ * PENDING_ROUTES — the declared-but-unfilled slots of the V5.4 growth, as a frozen Set of
+ * route keys. THE ONE MACHINE-READABLE ANSWER to «is this 501 a promise or a defect».
+ *
+ * It is a SEPARATE literal rather than a slice derived from the table, and that is the whole
+ * mechanism: a plan that fills a slot deletes ITS key from here in the same commit that
+ * lands the live handler, so the Set shrinks by one per fill and the table never moves at
+ * all. Derived from the table it could not shrink without deleting a route, which is exactly
+ * the edit the freeze exists to forbid.
+ *
+ * Two invariants ride it (front-auth.test.ts): a bare `send501(res)` handler is tolerated
+ * ONLY for a route named here, and every key here must belong to the V5.4 section of the
+ * table — so no live door of the first thirty can ever be excused back into a stub.
+ *
+ * When it is empty, the release is done and this constant becomes an empty Set, not a
+ * deleted one: an emptiable list of exceptions beats a list that disappears when it stops
+ * being convenient.
+ */
+export const PENDING_ROUTES = Object.freeze(
+  new Set([
+    'POST /api/phase/stage',
+    'GET /api/phase/:id',
+    'POST /api/phase/uat',
+    'POST /api/decision/answer',
+    'GET /api/artifact',
+    'GET /api/memory/drafts',
+    'POST /api/memory/apply',
+    'POST /api/memory/index',
+    'GET /api/memory/lint',
+    'GET /api/coordination',
+    'POST /api/claim/clear',
+    'GET /api/backlog',
+    'POST /api/backlog/promote',
+    'GET /api/attempt/:id',
+    'POST /api/ship/gate',
+    'POST /api/ship/publish',
+    'GET /api/search',
+    'POST /api/account/add',
+    'POST /api/pipeline/toggle',
+    'GET /api/diagnostics',
+    'POST /api/update/run',
+    'POST /api/budget/set',
+    'POST /api/agent/model',
+  ]),
+)
 
 // ── response helpers (explicit-pick, no-store, nosniff; constant 401 body) ──
 
@@ -277,11 +361,23 @@ function remoteAddr(req) {
 }
 
 /**
+ * The one reserved segment of GET /api/phase/:id: «not one phase — the list of them».
+ *
+ * The index rides the card's own route rather than a route of its own, for the reason every
+ * reserved target in this file exists: the table is frozen and a list is, structurally, what
+ * you ask the same door when you do not name a card. It is spelled out as a constant so the
+ * decision is greppable — ID_RE would accept the word anyway, and a rule nobody can find is
+ * a rule that gets re-litigated. The handler owns what it MEANS; matchRoute only admits it.
+ */
+const PHASE_INDEX_SEGMENT = 'index'
+
+/**
  * matchRoute(method, pathname) → { handler, params } | { badId:true } | null.
- * Static routes hit the frozen table by key; the three dynamic routes match a prefix and
- * validate their segment against ID_RE (task/diff) or ASSET_RE (assets) — a failing
- * segment → badId → 400, never a 404 that would hint the route shape. Anything else →
- * null → 404.
+ * Static routes hit the frozen table by key; the five dynamic routes match a prefix and
+ * validate their segment against ID_RE (task/diff/phase/attempt) or ASSET_RE (assets) — a
+ * failing segment → badId → 400, never a 404 that would hint the route shape. Anything else
+ * → null → 404. Every branch below is the SAME shape on purpose: an error that varies with
+ * the route is an error that maps the surface.
  */
 export function matchRoute(method, pathname) {
   const key = `${method} ${pathname}`
@@ -292,6 +388,18 @@ export function matchRoute(method, pathname) {
     if (diff) return ID_RE.test(diff[1]) ? { handler: 'handleDiff', params: { id: diff[1] } } : { badId: true }
     const task = pathname.match(/^\/api\/task\/(.+)$/)
     if (task) return ID_RE.test(task[1]) ? { handler: 'handleTask', params: { id: task[1] } } : { badId: true }
+    const phase = pathname.match(/^\/api\/phase\/(.+)$/)
+    if (phase) {
+      const seg = phase[1]
+      // the reserved literal is admitted EXPLICITLY, not by accident of ID_RE being wide
+      return seg === PHASE_INDEX_SEGMENT || ID_RE.test(seg)
+        ? { handler: 'handlePhaseCard', params: { id: seg } }
+        : { badId: true }
+    }
+    const attempt = pathname.match(/^\/api\/attempt\/(.+)$/)
+    if (attempt) {
+      return ID_RE.test(attempt[1]) ? { handler: 'handleAttempt', params: { id: attempt[1] } } : { badId: true }
+    }
     const asset = pathname.match(/^\/assets\/(.+)$/)
     if (asset) return ASSET_RE.test(asset[1]) ? { handler: 'handleAsset', params: { file: asset[1] } } : { badId: true }
   }
@@ -867,7 +975,7 @@ function emitSafe(deps, event) {
   }
 }
 
-// ── the five harness handlers (the route table stays FROZEN at 14) ──
+// ── the five harness handlers (the route table stayed FROZEN at 14 back then) ──
 //
 // All consume readHarness + the appliers via INJECTED deps (never a static import), so no
 // request path reaches a config/registry write except through the wired applier. Every body
@@ -999,7 +1107,7 @@ async function handleForge({ req, res, deps }) {
  * when `id` is the reserved STOCK_TEAM_TARGET, → applyStockTeamToggle: the one act that
  * switches the whole shipped SMA team on.
  *
- * The reserved target rides THIS door on purpose. The route table is frozen at thirty and its
+ * The reserved target rides THIS door on purpose. The route table is FROZEN and its
  * size is the guard invariant; a «switch the team on» route would have had to move it. So the
  * whole team is addressed the way one agent is — same validation, same applier posture, same
  * refusal shape, same harness.updated hint — and the table did not move.
@@ -1095,7 +1203,7 @@ async function handleMcpToggle({ req, res, deps }) {
 // authed() BEFORE any handler, so an unauthenticated call to any route looks identical
 // from outside and cannot map the surface by status code.
 
-// ── the four project doors (the route table stays FROZEN at 30) ──
+// ── the four project doors (the route table stays FROZEN) ──
 //
 // A registry WRITE is a config write, so — exactly like the harness appliers — the three
 // config.mjs doors (addProject / renameProject / selectProject) arrive through INJECTED
@@ -1245,7 +1353,7 @@ async function handleProjectSelect({ req, res, config, deps }) {
   }
 }
 
-// ── the four machine doors (the route table stays FROZEN at 30) ──
+// ── the four machine doors (the route table stays FROZEN) ──
 //
 // INTRODUCTION IS THE ONE MOMENT A DAEMON TOKEN LEAVES ITS MACHINE, so these four are the
 // most careful handlers in the file, and every one of them is a DELEGATE:
@@ -1430,7 +1538,7 @@ async function handleMachineRemove({ req, res, config, deps }) {
   return sendJson(res, 200, { ok: true, id: b.id })
 }
 
-// ── the two conversation doors (the route table stays FROZEN at 30) ──
+// ── the two conversation doors (the route table stays FROZEN) ──
 //
 // The engine is INJECTED (deps.handleChatTurn / deps.readChatHistory), not imported: the
 // free branch of a conversation spawns a child process, and a capability like that reaches
@@ -1773,7 +1881,7 @@ function onboardingError(res, err) {
  * WITHOUT writing a profile and WITHOUT seeding a single note into the project.
  *
  * It rides this door for the same reason the whole shipped team rides the agent toggle: the
- * route table is frozen at thirty and its size is a guard invariant, so a second way out of
+ * route table is FROZEN and its size is a guard invariant, so a second way out of
  * the interview is a reserved ARGUMENT to the way out that already exists — same validation,
  * same refusal shape, same table. And it is one boolean: a caller still cannot name a target
  * directory or smuggle an overwrite, which is what the empty-body contract was protecting.
@@ -1875,6 +1983,94 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
   }
 }
 
+// ── the V5.4 twenty-three: declared here, filled one at a time ──
+//
+// Every one of them is a NAMED function whose whole body is `send501(res)`, and every one of
+// them is listed in PENDING_ROUTES. That pairing is the contract:
+//   - the route EXISTS from this commit — it is in the frozen table, it is auth-gated by the
+//     dispatcher like every other, and an anonymous caller cannot tell it apart from a live
+//     one, so no screen is ever built against an imagined path;
+//   - the handler is HONEST about being empty — 501, no invented shape, no placeholder body
+//     a screen could start believing;
+//   - the plan that fills one replaces THIS function and deletes its key from PENDING_ROUTES
+//     in the same commit. Neither half is optional: a filled handler still named in the Set
+//     would license a real door to rot back into a stub, and a deleted key with a stub behind
+//     it turns the shape test red immediately. That is why they are checked against each
+//     other rather than each against a comment.
+// Nothing is validated here on purpose. A body check written before the handler that consumes
+// it is a guess about a contract that does not exist yet, and it would have to be re-read and
+// re-argued by the plan that actually fills the slot.
+
+function handlePhaseStage({ res }) {
+  send501(res)
+}
+function handlePhaseCard({ res }) {
+  send501(res)
+}
+function handlePhaseUat({ res }) {
+  send501(res)
+}
+function handleDecisionAnswer({ res }) {
+  send501(res)
+}
+function handleArtifact({ res }) {
+  send501(res)
+}
+function handleMemoryDrafts({ res }) {
+  send501(res)
+}
+function handleMemoryApply({ res }) {
+  send501(res)
+}
+function handleMemoryIndex({ res }) {
+  send501(res)
+}
+function handleMemoryLint({ res }) {
+  send501(res)
+}
+function handleCoordination({ res }) {
+  send501(res)
+}
+function handleClaimClear({ res }) {
+  send501(res)
+}
+function handleBacklog({ res }) {
+  send501(res)
+}
+function handleBacklogPromote({ res }) {
+  send501(res)
+}
+function handleAttempt({ res }) {
+  send501(res)
+}
+function handleShipGate({ res }) {
+  send501(res)
+}
+function handleShipPublish({ res }) {
+  send501(res)
+}
+function handleSearch({ res }) {
+  send501(res)
+}
+function handleAccountAdd({ res }) {
+  send501(res)
+}
+function handlePipelineToggle({ res }) {
+  send501(res)
+}
+function handleDiagnostics({ res }) {
+  send501(res)
+}
+function handleUpdateRun({ res }) {
+  send501(res)
+}
+function handleBudgetSet({ res }) {
+  send501(res)
+}
+function handleAgentModel({ res }) {
+  send501(res)
+}
+
 /** HANDLERS — the frozen name→function map. Exported for ONE reason: the shape test
  *  proves ROUTES↔HANDLERS is one-to-one, so neither a route without a handler nor a
  *  handler without a route can survive a commit. Importing it opens no request path. */
@@ -1909,6 +2105,30 @@ export const HANDLERS = Object.freeze({
   handleOnboarding,
   handleOnboardingAnswer,
   handleOnboardingComplete,
+  // the V5.4 twenty-three (see PENDING_ROUTES)
+  handlePhaseStage,
+  handlePhaseCard,
+  handlePhaseUat,
+  handleDecisionAnswer,
+  handleArtifact,
+  handleMemoryDrafts,
+  handleMemoryApply,
+  handleMemoryIndex,
+  handleMemoryLint,
+  handleCoordination,
+  handleClaimClear,
+  handleBacklog,
+  handleBacklogPromote,
+  handleAttempt,
+  handleShipGate,
+  handleShipPublish,
+  handleSearch,
+  handleAccountAdd,
+  handlePipelineToggle,
+  handleDiagnostics,
+  handleUpdateRun,
+  handleBudgetSet,
+  handleAgentModel,
 })
 
 // ── the dispatcher ──
