@@ -110,6 +110,20 @@ export const TERMINAL_PARITY_PATHS = Object.freeze([
 /** The memory index every session reads first — the prompt names it by this exact path. */
 export const MEMORY_INDEX_PATH = '.claude/memory/MEMORY.md'
 
+/**
+ * The env var that tells a worker session THERE IS NOBODY AT THE KEYBOARD.
+ *
+ * Every session this module assembles an env for is started by the daemon, on a stream, with
+ * no terminal attached — so the flag is set unconditionally here rather than guessed by the
+ * session itself. It exists because the difference matters exactly once: when a workflow
+ * reaches a blocking checkpoint. In the founder's terminal it asks him; started from the
+ * screen it must PARK the question as an artifact and end the turn honestly — never answer
+ * on his behalf (which is also why `--auto` is a forbidden flag two constants below). The
+ * name is stated once, here, so the workflow that branches on it and the spawn that sets it
+ * cannot drift apart.
+ */
+export const HEADLESS_ENV = 'SMA_HEADLESS'
+
 // ── guard primitives ───────────────────────────────────────────────────────────
 
 /**
@@ -119,7 +133,7 @@ export const MEMORY_INDEX_PATH = '.claude/memory/MEMORY.md'
  * option that would point the session at other settings is the same class of smuggle as a
  * permissions-skip — it reads as a bypass, not as a typo, and gets the named error.
  */
-const FORBIDDEN_KEY_RE = /danger|skip[-_]?permission|bypass[-_]?permission|no[-_]?permission|hook|setting|permission[-_]?mode/i
+const FORBIDDEN_KEY_RE = /danger|skip[-_]?permission|bypass[-_]?permission|no[-_]?permission|hook|setting|permission[-_]?mode|^bare$|^auto$/i
 
 /**
  * A produced argument string that starts with a forbidden flag family (guard vector B).
@@ -127,8 +141,19 @@ const FORBIDDEN_KEY_RE = /danger|skip[-_]?permission|bypass[-_]?permission|no[-_
  * `.claude/settings` — hooks off, a substituted settings file or source, a permission mode
  * override, a tool allow/deny list, or MCP strictness that ignores the project config. Every
  * one of them silently de-parities the session while the run still looks green.
+ *
+ * TWO ADDITIONS THAT ARE ABOUT THE SAME PROPERTY, ONE LAYER UP:
+ *   - `--bare` is the CLI's own minimal mode: it skips hooks, LSP and plugins in one word.
+ *     A worker started that way is NOT the founder's session — it is a stripped one that
+ *     still reports green, which is precisely the failure this whole guard family exists
+ *     to make impossible. It is refused for the same reason the settings flags are.
+ *   - `--auto` (and any `--auto-…` companion) hands the judgment calls to the machine. A
+ *     stage started from the screen must return a question to a person, never answer it on
+ *     his behalf: a decision nobody made is worse than a stage that waits. The negative
+ *     lookahead keeps the legitimate neighbour `--autocompact` reachable — the ban is on
+ *     the word, not on everything that starts like it.
  */
-const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-mode|allowed-tools|disallowed-tools|strict-mcp-config)/i
+const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-mode|allowed-tools|disallowed-tools|strict-mcp-config|bare|auto(?![a-z]))/i
 
 /** Strict RFC-4122-ish UUID shape — resume only ever accepts this (resolveSessionID lesson). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -248,7 +273,10 @@ export function assertProfileParity({ args, worker, task } = {}) {
 
 // ── Claude lane (prod code, hooks enforced in-session) ──────────────────────────
 
-const CLAUDE_OPTION_KEYS = new Set(['prompt', 'resumeId', 'model', 'effort', 'maxTurns', 'mcpConfigPath', 'addDir', 'wakeKind'])
+const CLAUDE_OPTION_KEYS = new Set([
+  'prompt', 'resumeId', 'model', 'effort', 'maxTurns', 'mcpConfigPath', 'addDir', 'wakeKind',
+  'forwardSubagentText',
+])
 
 /**
  * buildClaudeArgs(opts) → the headless Claude Code argument array. Prompt is ALWAYS on
@@ -259,12 +287,19 @@ const CLAUDE_OPTION_KEYS = new Set(['prompt', 'resumeId', 'model', 'effort', 'ma
  * at a per-spawn file built from ENABLED registry entries only (buildMcpConfigFile). NEVER
  * emits --dangerously-skip-permissions (there is no path to it; the guard still scans the path).
  *
- * @param {{prompt?:string, resumeId?:string, model?:string, effort?:string, maxTurns?:number, mcpConfigPath?:string, addDir?:string, wakeKind?:string}} [opts]
+ * `forwardSubagentText: true` appends `--forward-subagent-text`, which makes the CLI emit the
+ * text and thinking of SUBAGENTS on the same stream as the main session (each line tagged with
+ * its parent tool use). The live attempt log on the screen shows what the session is doing
+ * right now; without this flag a session that delegates goes silent for minutes at a time and
+ * the screen has nothing to show but a spinner. It is an OPT-IN option, off by default, so no
+ * existing spawn changes shape.
+ *
+ * @param {{prompt?:string, resumeId?:string, model?:string, effort?:string, maxTurns?:number, mcpConfigPath?:string, addDir?:string, wakeKind?:string, forwardSubagentText?:boolean}} [opts]
  * @returns {string[]}
  */
 export function buildClaudeArgs(opts = {}) {
   validateOptions(opts, CLAUDE_OPTION_KEYS, 'buildClaudeArgs')
-  const { resumeId, model, effort, maxTurns, mcpConfigPath, addDir, wakeKind } = opts
+  const { resumeId, model, effort, maxTurns, mcpConfigPath, addDir, wakeKind, forwardSubagentText } = opts
 
   const args = ['--print', '-', '--output-format', 'stream-json', '--verbose']
 
@@ -281,7 +316,8 @@ export function buildClaudeArgs(opts = {}) {
   if (effort !== undefined) args.push('--effort', String(effort))
   if (maxTurns !== undefined) args.push('--max-turns', String(maxTurns))
   if (mcpConfigPath !== undefined) args.push('--mcp-config', String(mcpConfigPath))
-  if (addDir !== undefined) args.push('--add-dir', String(addDir))
+  if (forwardSubagentText === true) args.push('--forward-subagent-text')
+  if (addDir !== undefined) args.push('--add-dir', String(addDir)) // addDir lands LAST (documented order)
 
   return assertCleanArgs(args)
 }
@@ -364,6 +400,8 @@ export function codexConfigSeed() {
  *     dirs) — never account-shared; the caller seeds it with codexConfigSeed().
  *   useApiFallback: the API key (read from `env` by apiKeyEnv name) is added
  *     as ANTHROPIC_API_KEY — it takes precedence over subscription auth, the whole switch.
+ *   EVERY account, both lanes: HEADLESS_ENV=1 — there is nobody at the keyboard of a session
+ *     the daemon starts, and a workflow that hits a blocking checkpoint has to know it.
  *
  * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string}} opts
  * @returns {object}
@@ -380,6 +418,10 @@ export function buildAccountEnv({
   if (!account || typeof account !== 'object') throw new Error('buildAccountEnv: account is required')
   const prov = provider ?? account.provider
   const out = { ...baseEnv }
+
+  // Nobody is at the keyboard of a session the daemon starts. Stated in the env so a workflow
+  // that reaches a blocking checkpoint parks the question instead of asking the void.
+  out[HEADLESS_ENV] = '1'
 
   if (prov === 'codex') {
     if (!taskId) throw new Error('buildAccountEnv: a Codex account requires a taskId for a FRESH per-task CODEX_HOME')

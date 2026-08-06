@@ -46,6 +46,13 @@
  *              tool allowlists).
  *   - Test 21: model+effort must match the worker profile; a substitution throws
  *              ProfileParityError, a per-task override is the documented precedence.
+ *   - Test 23: A STAGE STARTED FROM THE SCREEN CANNOT BE STRIPPED OR AUTOMATED — one case
+ *              per forbidden flag: --bare (skips hooks/LSP/plugins), --auto (answers for the
+ *              founder), --dangerously-skip-permissions, --permission-mode dontAsk. The ban
+ *              is on the word: the legitimate neighbour --autocompact still passes.
+ *   - Test 24: forwardSubagentText → '--forward-subagent-text' in the produced array, and
+ *              addDir still lands last.
+ *   - Test 25: every daemon-assembled env says NOBODY IS AT THE KEYBOARD (HEADLESS_ENV).
  *
  *   THE ONE FENCE (untrusted data never breaks out, and there is only one copy of the rule):
  *   - Test 22: the shared fence module scales the fence past ANY backtick run inside the
@@ -67,6 +74,7 @@ import {
   ProfileParityError,
   TERMINAL_PARITY_PATHS,
   MEMORY_INDEX_PATH,
+  HEADLESS_ENV,
   modelEffortOf,
   expectedModelEffort,
   assertProfileParity,
@@ -333,6 +341,62 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
       effort: 'high',
     })
     expect(expectedModelEffort({ worker, task: { effort: 'low' } })).toEqual({ model: 'sonnet', effort: 'low' })
+  })
+})
+
+// ── a stage started from the screen is the founder's own session, or it does not start ──
+//
+// The four flags below are the four ways a headless spawn could stop being that session and
+// still report green. Each one gets its own case, because a guard family asserted in bulk is
+// a guard family that silently loses a member.
+
+describe('the forbidden-flag guard covers stripping AND automating, one case each', () => {
+  it('--bare is refused — a session with no hooks, no LSP and no plugins is not the founder’s', () => {
+    expect(() => buildClaudeArgs({ bare: true } as any)).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ model: '--bare' })).toThrow(ForbiddenFlagError)
+    expect(() => buildCodexArgs({ model: '--bare' })).toThrow(ForbiddenFlagError)
+  })
+
+  it('--auto is refused — a question only the founder can answer is never answered for him', () => {
+    expect(() => buildClaudeArgs({ auto: true } as any)).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ model: '--auto' })).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ addDir: '--auto-approve' })).toThrow(ForbiddenFlagError)
+    // …and the ban is on the WORD: a legitimate neighbour is not collateral damage
+    expect(() => buildClaudeArgs({ model: '--autocompact' })).not.toThrow()
+  })
+
+  it('--dangerously-skip-permissions is refused from both vectors', () => {
+    expect(() => buildClaudeArgs({ dangerouslySkipPermissions: true } as any)).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ addDir: '--dangerously-skip-permissions' })).toThrow(ForbiddenFlagError)
+  })
+
+  it('--permission-mode dontAsk is refused — the mode flag itself never reaches an array', () => {
+    expect(() => buildClaudeArgs({ permissionMode: 'dontAsk' } as any)).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ model: '--permission-mode' })).toThrow(ForbiddenFlagError)
+    // a legitimately built array carries none of the four
+    const clean = buildClaudeArgs({ model: 'sonnet', forwardSubagentText: true, addDir: '/wt/1' })
+    expect(clean.some((a) => /^--(bare|auto|dangerous|permission-mode)/i.test(String(a)))).toBe(false)
+  })
+})
+
+describe('forwardSubagentText — the live log can see what a delegating session is doing', () => {
+  it('appends --forward-subagent-text, and addDir still lands last', () => {
+    const args = buildClaudeArgs({ forwardSubagentText: true, addDir: '/wt/task-1' })
+    expect(args).toContain('--forward-subagent-text')
+    expect(args.slice(-2)).toEqual(['--add-dir', '/wt/task-1'])
+    // opt-in: absent by default, so no existing spawn changes shape
+    expect(buildClaudeArgs({})).not.toContain('--forward-subagent-text')
+    expect(buildClaudeArgs({ forwardSubagentText: false })).not.toContain('--forward-subagent-text')
+  })
+})
+
+describe('every daemon-assembled env says there is nobody at the keyboard', () => {
+  it('HEADLESS_ENV is set on both lanes — the workflow branches on a fact, not a guess', () => {
+    const claude = buildAccountEnv({ account: { configDir: '/a' }, provider: 'claude', env: {} })
+    const codex = buildAccountEnv({ account: { configDir: '/b' }, provider: 'codex', taskId: 't-1' })
+    expect(claude[HEADLESS_ENV]).toBe('1')
+    expect(codex[HEADLESS_ENV]).toBe('1')
+    expect(HEADLESS_ENV).toBe('SMA_HEADLESS')
   })
 })
 
