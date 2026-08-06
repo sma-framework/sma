@@ -1,6 +1,6 @@
 /**
  * state-machine.mjs — the fleet's NAMED state vocabulary and its transition contracts
- * (Phase 11 Plan 04; canon §10 «V5 fleet: надежная orchestration»).
+ * (the rules are stated in docs/FLEET-INVARIANTS.md).
  *
  * WHY THIS FILE EXISTS: the fleet speaks four statuses — queued, claimed, completed,
  * failed — plus a dead-letter queue. Four values collapse three genuinely different
@@ -29,7 +29,7 @@
  * survivable is the canon's practical semantics — immutable attempts, idempotent effects,
  * and transactional state transitions. That is why every contract below declares its
  * `externalEffects` EXPLICITLY rather than by omission: a redelivered transition whose
- * effect was never declared is exactly the case canon invariant 4 exists to survive («истечение
+ * effect was never declared is exactly the case fleet invariant four exists to survive («истечение
  * lease не означает, что внешний side effect не произошел»).
  *
  * ═══════════ WHICH INVARIANTS LIVE HERE, AND WHICH DELIBERATELY DO NOT ════════════
@@ -84,7 +84,7 @@ export const FLEET_STATES = Object.freeze([
 ])
 
 /**
- * The four states a task never leaves. DEAD_LETTER is terminal ON PURPOSE: canon invariant 7
+ * The four states a task never leaves. DEAD_LETTER is terminal ON PURPOSE: fleet invariant seven
  * («dead-letter task не возвращается в READY без явного disposition») is honoured by the
  * RETRYABLE→READY edge, which is where a retry legitimately re-enters the queue. Once a task
  * has been dead-lettered, no transition moves it — a human disposition opens a NEW attempt
@@ -93,7 +93,7 @@ export const FLEET_STATES = Object.freeze([
 export const TERMINAL_STATES = Object.freeze(['ACCEPTED', 'REJECTED', 'DEAD_LETTER', 'CANCELLED'])
 
 /**
- * The version an attempt is stamped with (canon invariant 6; plan 11-05 writes it into the
+ * The version an attempt is stamped with (fleet invariant six; the ledger writes it into the
  * attempt ledger). Bumped whenever the vocabulary or a contract changes, so an old attempt
  * stays readable as what it actually ran under.
  */
@@ -106,14 +106,14 @@ const QUEUE_STATUSES = Object.freeze(['queued', 'claimed', 'completed', 'failed'
 const ACTORS = Object.freeze(['dispatcher', 'worker', 'verifier', 'supervisor', 'human'])
 
 /**
- * What counts as an authorized disposition for ACCEPTED (canon invariant 1). A closed
+ * What counts as an authorized disposition for ACCEPTED (fleet invariant one). A closed
  * vocabulary on purpose: free text here would let «the worker says it is fine» pass for a
  * human decision, which is the exact elevation this invariant exists to stop.
  */
 const AUTHORIZED_DISPOSITIONS = Object.freeze(['human-approved', 'authorized-policy'])
 
 /**
- * Capability tokens no transition may ever grant (canon invariant 2 + the human-only push
+ * Capability tokens no transition may ever grant (fleet invariant two + the human-only push
  * law). Matched as a SUBSTRING, case-insensitively: over-refusing a capability named
  * `merge-report-read` is the correct direction of error for a gate that decides what a
  * worker may do to the world — «a subsystem that decides ... must refuse».
@@ -167,7 +167,7 @@ export const TRANSITIONS = Object.freeze({
       preconditions: Object.freeze(['active_lease_matches_attempt', 'capability_envelope_present']),
       writes: Object.freeze(['attempt_row']),
       // A worker process starts here: a real thing happens outside the queue, and it may
-      // have happened even if the lease later expires (canon invariant 4).
+      // have happened even if the lease later expires (fleet invariant four).
       externalEffects: Object.freeze(['worker_process_started']),
       retryPolicy: 'create_new_attempt',
       nextStates: Object.freeze(['PRODUCED', 'RETRYABLE', 'CANCELLED']),
@@ -286,7 +286,7 @@ export const TRANSITIONS = Object.freeze({
 
   RETRYABLE: Object.freeze({
     // The ONE legitimate way back into the queue — and it is a NEW attempt, never a rerun
-    // of the old one (canon invariant 3: many immutable attempts, at most one active lease).
+    // of the old one (fleet invariant three: many immutable attempts, at most one active lease).
     READY: Object.freeze({
       actor: 'dispatcher',
       preconditions: Object.freeze(['retry_budget_remaining', 'new_attempt_created']),
@@ -383,7 +383,7 @@ const lengthPrefixed = (part) => `${part.length}:${part}`
  * DETERMINISTIC BY CONSTRUCTION: a hash of exactly the canon's three inputs and nothing
  * else. No clock, no counter, no randomness — so the same effect retried under the same
  * attempt composes the same key across process restarts, which is the whole mechanism that
- * makes at-least-once delivery survivable (canon invariant 5). The parts are length-prefixed,
+ * makes at-least-once delivery survivable (fleet invariant five). The parts are length-prefixed,
  * so ('ab','c') and ('a','bc') can never collide into one key.
  *
  * Throws on a missing part: hashing an empty string would mint a real-looking key for a
@@ -418,13 +418,13 @@ function refusal(reason, extra = {}) {
  *
  * PURE over an INJECTED state value: it reads `input.state`, writes nothing, opens nothing,
  * and never mutates its argument. Persisting the result — and holding the set of keys that
- * have already been applied — belongs to the ledger (plan 11-05), not here.
+ * have already been applied — belongs to the ledger, not here.
  *
  * The applied result is shaped so `recordAttempt(ledgerDir, result)` accepts it directly:
  * the ledger's explicit-pick allowlist takes the keys it knows and ignores the rest, so the
  * allowlist discipline survives without a spread at the call site.
  *
- * REFUSAL REASONS CARRY STATE NAMES, ACTOR NAMES AND IDS ONLY (T-11-04-06). Caller-supplied
+ * REFUSAL REASONS CARRY STATE NAMES, ACTOR NAMES AND IDS ONLY. Caller-supplied
  * text — a disposition string, a capability name, a receipt reference — is never echoed
  * back, so a connection string handed in by mistake cannot ride out in an error message.
  *
@@ -547,7 +547,7 @@ export function applyTransition(input = {}) {
     ...landed,
     applied: true,
     alreadyApplied: false,
-    // What this module could not decide, said plainly. Plan 11-08 property-tests these.
+    // What this module could not decide, said plainly. The property suite tests these.
     deferredPreconditions: Object.freeze(
       contract.preconditions.filter((p) => !DECIDABLE_PRECONDITIONS.includes(p)),
     ),

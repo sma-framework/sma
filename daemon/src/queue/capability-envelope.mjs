@@ -1,6 +1,6 @@
 /**
- * capability-envelope.mjs — what a task may touch, DECLARED and VALIDATED
- * (Phase 11 Plan 05, Task 1; canon §10 «Capability envelope worker», invariant 2).
+ * capability-envelope.mjs — what a task may touch, DECLARED and VALIDATED: the bound
+ * on what a worker may be handed (fleet invariant two; docs/FLEET-INVARIANTS.md §3.2).
  *
  * WHY THIS FILE EXISTS: today a task declares its lane, its provider, its model, its
  * effort and its story points — and nothing at all about what it may touch. A worker's
@@ -76,7 +76,7 @@ export const CAPABILITY_KEYS = Object.freeze([
 export const ENVELOPE_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
 
 /**
- * Actions no envelope may ever grant to a worker. `push` and `merge` are canon invariant
+ * Actions no envelope may ever grant to a worker. `push` and `merge` are fleet invariant
  * 2; `tag` and `deploy` join them because `ship-lane.mjs` states the same boundary in the
  * same breath («never pushes, tags, or deploys») and an envelope that denied two of the
  * three would read as a permit for the third.
@@ -85,7 +85,7 @@ export const HUMAN_ONLY_ACTIONS = Object.freeze(['push', 'merge', 'tag', 'deploy
 
 /**
  * The tokens whose mere appearance in a GRANTING dimension refuses the envelope. Kept to
- * the two canon invariant 2 names, matched exactly as `state-machine.mjs` matches them, so
+ * the two invariant-two names, matched exactly as `state-machine.mjs` matches them, so
  * the two modules speak one law rather than two dialects of it.
  */
 const FORBIDDEN_CAPABILITY_TOKENS = Object.freeze(['push', 'merge'])
@@ -230,7 +230,7 @@ function isNonEmptyStringList(value) {
  *
  * Order matters and is deliberate:
  *   0. the human-only scan runs FIRST, before shape, before completeness — exactly as
- *      `applyTransition` checks canon invariant 2 before anything else can matter. A
+ *      `applyTransition` checks fleet invariant two before anything else can matter. A
  *      half-built envelope must not be able to smuggle a push capability past the gate by
  *      failing some other check first and being retried without it.
  *   1. missing key — a dimension left unsaid is not a dimension left open.
@@ -249,7 +249,7 @@ export function validateEnvelope(env) {
     return refuse('an envelope must be a plain object naming every capability dimension')
   }
 
-  // 0. canon invariant 2, first and unconditionally.
+  // 0. fleet invariant two, first and unconditionally.
   for (const key of GRANTING_KEYS) {
     const value = env[key]
     if (!Array.isArray(value)) continue

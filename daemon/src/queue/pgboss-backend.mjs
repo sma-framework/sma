@@ -1,27 +1,26 @@
 /**
- * pgboss-backend.mjs — the durable QueueAdapter over pg-boss (Phase 9.5 Plan 03,
- * Task 1; D-9.5-02, D-9.5-02c).
+ * pgboss-backend.mjs — the durable QueueAdapter over pg-boss.
  *
  * WHAT: a certified QueueAdapter (the adapter.mjs contract) whose task truth lives
  * ENTIRELY in Postgres via pg-boss. The daemon holds NO task state — kill it at any
- * line and no task is lost (D-9.5-02). This backend re-runs the SAME
- * `queueAdapterContractSuite` the in-memory reference passes (plan 9.5-01): a backend
+ * line and no task is lost. This backend re-runs the SAME
+ * `queueAdapterContractSuite` the in-memory reference passes: a backend
  * that passes the suite IS a conforming adapter; nothing else certifies it.
  *
- * WHERE THE QUEUE DB LIVES (D-9.5-02 / D-9.5-02c): a **LOCAL Postgres owned by the
+ * WHERE THE QUEUE DB LIVES: a **LOCAL Postgres owned by the
  * daemon host** (Homebrew postgresql@16 on the Mac mini for the pilot). The connection
  * string comes from config `queueUrl`. A production application's `DATABASE_URI`
  * MUST NEVER appear in this file or its config — SMA is a standalone product, and
  * worker churn (fetch polling, touch ticks) never belongs in a production medical CRM.
  *
- * PER-LANE QUEUES (grill CH-9.5-07-1): pg-boss `fetch` cannot filter by payload, and a
+ * PER-LANE QUEUES: pg-boss `fetch` cannot filter by payload, and a
  * `fetch` IS a claim — one shared queue would force fetch-then-unfetch to honour lane
  * eligibility. So each lane is its OWN queue `sma.task.<lane>` (prod / research /
  * paperwork / forge), sharing one deadLetter `sma.task.dead`. claimNext fetches the
  * eligible lanes in a documented stable order (prod → research → paperwork → forge), so
  * a claimed task is BY CONSTRUCTION one an open worker can run.
  *
- * READ-ONLY-BY-CONTRACT list() (grill CH-9.5-03-1): the roster feed + D-9.5-10
+ * READ-ONLY-BY-CONTRACT list(): the roster feed + the flow
  * timestamps need to enumerate jobs with their payloads across states — which no
  * pg-boss API exposes. So list() is ONE read-only SELECT over the pg-boss job tables
  * via an injected `execSql` (the SAME DI seam as cas.mjs), and taskId→job resolution
@@ -43,7 +42,7 @@
  * задача вернулась в очередь»). The explicit sweep (liveness.mjs) is the belt-and-
  * suspenders audit on top.
  *
- * LOGGING (T-9.5-09): task ids + masked errors ONLY — never task payloads, never the
+ * LOGGING: task ids + masked errors ONLY — never task payloads, never the
  * connection string (agent-run-queue maskSecrets discipline).
  *
  * DI: `boss` (a pg-boss instance or a fake), `execSql`, `clock`, and `ledgerDir` are
@@ -51,7 +50,7 @@
  * imported — EVERY unit test runs against a fake. pg-boss is imported LAZILY inside
  * start() only when we own the connection.
  *
- * ═══════ THE STATUS CHANGES ARE ROUTED THROUGH THE STATE MACHINE (D-11-DEFER-23) ═══════
+ * ═══════ THE STATUS CHANGES ARE ROUTED THROUGH THE STATE MACHINE ══════════════════════
  * Until 2026-08-05 nothing in production called `applyTransition`: the fleet's fine
  * vocabulary was a formal reference the tests held the code to, and the four coarse queue
  * statuses moved without ever passing it. Now each of the three mutations names the fine
@@ -103,7 +102,7 @@ import { applyTransition } from './state-machine.mjs'
 import { defaultEnvelope } from './capability-envelope.mjs'
 import { attemptIdFor } from '../front/journal.mjs'
 
-/** The four execution lanes, in the documented stable claim order (grill CH-9.5-07-1). */
+/** The four execution lanes, in the documented stable claim order. */
 export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
 
 /** Shared dead-letter queue for exhausted retries → the roster's red «не справился» card. */
@@ -167,7 +166,7 @@ function attemptNumberOf(data, retryCount) {
 /**
  * transitionStamp({from, to, actor, taskId, attempt, log}) → `{idempotencyKey,
  * stateMachineVersion}` for a status change routed through the fleet state machine, or
- * `null` when it could not be minted (D-11-DEFER-23).
+ * `null` when it could not be minted.
  *
  * Null has exactly two causes and both are honest absences: the attempt number was not
  * observable (no truthful `attemptId`, and `idempotencyKey` refuses an invented one), or
@@ -244,7 +243,7 @@ export function createPgBossQueue({
     }
     // Idempotent queue provisioning: the shared dead-letter FIRST — pg-boss v11 rejects a
     // lane queue whose deadLetter target does not exist yet (the pilot fresh-boot
-    // finding) — then the per-lane queues (grill CH-9.5-07-1).
+    // finding) — then the per-lane queues.
     await bossInstance.createQueue(DEAD_LETTER_QUEUE)
     for (const lane of TASK_QUEUE_LANES) {
       await bossInstance.createQueue(laneQueue(lane), { deadLetter: DEAD_LETTER_QUEUE })
@@ -309,7 +308,7 @@ export function createPgBossQueue({
    * in-process taskId→job map (that would be lost on a kill). The `state = 'active'`
    * marker also lets the fake execSql distinguish this query from list().
    *
-   * It also reads `data` and `retry_count` (D-11-DEFER-23) so complete/fail can stamp the
+   * It also reads `data` and `retry_count` so complete/fail can stamp the
    * attempt row with the number and the lane THE QUEUE ITSELF holds, rather than with a
    * value the caller supplied about itself. Both are optional on the returned object: a
    * seam that does not surface them leaves `attempt` NaN and `lane` undefined, and the
@@ -337,7 +336,7 @@ export function createPgBossQueue({
    * ran under (`recordAttempt` hashes the envelope itself and keeps only the digest).
    *
    * FOUR OF THE SEVEN STAMP FIELDS ARE ABSENT HERE, AND THIS IS THE ONE PLACE THAT SAYS WHY
-   * (canon invariant 6; D-11-DEFER-23 — never invent a value):
+   * (fleet invariant six — the stamp is fixed at creation, so never invent a value):
    *   - `memorySnapshotHash` — this backend does not know which memory corpus the worker
    *     read. The tick does, because it is what handed the worker its work, and it stamps
    *     the digest on its own ledger row (loop.mjs). Re-deriving it here would mean
@@ -361,7 +360,7 @@ export function createPgBossQueue({
   }
 
   async function claimNext(workerId, { lanes } = {}) {
-    // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation (grill CH-9.5-07-1).
+    // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation.
     if (Array.isArray(lanes) && lanes.length === 0) return null
     const eligible = Array.isArray(lanes)
       ? TASK_QUEUE_LANES.filter((l) => lanes.includes(l)) // restricted, but keep the stable order
@@ -402,7 +401,7 @@ export function createPgBossQueue({
   }
 
   async function complete(taskId, result) {
-    // Pitfall 6: no self-certified done — refuse BEFORE any mutation.
+    // No self-certified done — refuse BEFORE any mutation.
     if (!result || !result.receiptRef) {
       throw new NoReceiptError(`complete("${taskId}") refused: result must carry a receiptRef (Pitfall 6)`)
     }

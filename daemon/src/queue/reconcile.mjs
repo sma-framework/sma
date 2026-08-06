@@ -1,6 +1,6 @@
 /**
- * reconcile.mjs — the attempt ledger, reconciled against the queue's own retry count
- * (D-11-DEFER-07, 2026-08-05; canon invariant 4, the repudiation leg).
+ * reconcile.mjs — the attempt ledger, reconciled against the queue's own retry count:
+ * the repudiation leg of fleet invariant four (a lease expiry unsays nothing).
  *
  * WHY THIS FILE EXISTS. A task has TWO recovery paths and until now only one of them left
  * evidence. When the liveness sweep notices a silent worker first, it calls
@@ -55,7 +55,7 @@
  *
  * WHAT IT COSTS, SAID OUT LOUD: one durable `adapter.list({})` per pass, plus one ledger
  * file read per task the queue reports with `attempt > 1`. The pass holds no state between
- * calls (D-9.5-02 — the daemon is killable at any line), so it cannot remember which tasks
+ * calls (the daemon is killable at any line), so it cannot remember which tasks
  * it has already found complete and re-reads them every tick. On a queue whose retried
  * tasks number in the thousands that is the cost to watch, and the narrowing that would pay
  * for itself first is a time bound on how far back the pass looks.
