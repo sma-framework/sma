@@ -872,7 +872,7 @@ const MEM_REGEN = {
     const committed = ctx.indexText
     // Pre-flip: no GENERATED marker → the index is still hand-written. Neutral.
     if (!committed.includes(GENERATED_MARKER)) {
-      out.push(finding('MEM-REGEN', 'info', ctx.indexPath, `MEMORY.md carries no ${GENERATED_MARKER} header — pending flip (9-14); regeneration byte-compare is not yet enforced`))
+      out.push(finding('MEM-REGEN', 'info', ctx.indexPath, `MEMORY.md carries no ${GENERATED_MARKER} header — pending the index flip; regeneration byte-compare is not yet enforced`))
       return out
     }
     // Post-flip: byte-compare the committed artifact against regeneration.
@@ -883,7 +883,7 @@ const MEM_REGEN = {
       const landed = existsSync(GENERATOR_PATH)
       const why = landed
         ? 'generator.mjs is present but no generate() was supplied to runLint'
-        : 'generator.mjs has not landed yet (9-09)'
+        : 'generator.mjs has not landed yet'
       out.push(finding('MEM-REGEN', 'warn', ctx.indexPath, `generator unavailable — cannot byte-compare the GENERATED artifact (${why}); rerun once wired`))
       return out
     }
@@ -1216,7 +1216,7 @@ const PRED_SKEPTIC = {
             'PRED-SKEPTIC',
             'warn',
             basename(plan.path),
-            `predictions block in ${basename(plan.path)} ${why}. Advisory here; the blocking gate is /sma-grill's unresolved-challenge check (D-9.2-11).`,
+            `predictions block in ${basename(plan.path)} ${why}. Advisory here; the blocking gate is /sma-grill's unresolved-challenge check.`,
           ),
         )
       }
@@ -1468,17 +1468,17 @@ const LADDER_EVIDENCE = {
       //     an evidence-free enforcement escalation (the exact self-grading V3 kills).
       if (tier && tier !== 'warn') {
         if (!evidence.length || !hasRefs) {
-          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden (D-9.3-12); tune only via \`node scripts/sma/cli.mjs tune --apply\`, never a hand-edit`))
+          out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} sits at tier '${tier}' with no evidence rows carrying journalRefs — a tier change without measured benefit is forbidden; tune only via \`node scripts/sma/cli.mjs tune --apply\`, never a hand-edit`))
         }
       }
       // (b) a 'retired' rule must carry a fixtureCheck record (the STPA birth-fixture
       //     sign-off — a rule can never auto-tune into silent removal).
       if (tier === 'retired' && (!rule.fixtureCheck || typeof rule.fixtureCheck !== 'object')) {
-        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} is 'retired' without a fixtureCheck record — retirement requires the 9.2-10 birth-fixture sign-off (D-9.2-14)`))
+        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} is 'retired' without a fixtureCheck record — retirement requires the birth-fixture sign-off`))
       }
       // (c) a registered fix command must pass the imported isSafeCommand allowlist.
       if (rule.fix && rule.fix.command && !isSafeCommand(rule.fix.command)) {
-        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} registers a fix command that fails isSafeCommand — fix commands go through predict.mjs's single allowlist ONLY (T-9.3-60)`))
+        out.push(finding('LADDER-EVIDENCE', 'critical', file, `rule ${rule.ruleId} registers a fix command that fails isSafeCommand — fix commands go through predict.mjs's single allowlist ONLY`))
       }
     }
     return out

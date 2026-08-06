@@ -257,7 +257,7 @@ export function validateProfile(profile) {
     collectStrings(p[key], strings)
     for (const s of strings) {
       if (secretShaped(s)) {
-        violations.push({ rule: 'PROFILE-SECRET', field: key, message: `field "${key}" carries a secret-shaped value — the profile stores env-var NAMES and tool facts only, never a secret value (T-9.3-06)` })
+        violations.push({ rule: 'PROFILE-SECRET', field: key, message: `field "${key}" carries a secret-shaped value — the profile stores env-var NAMES and tool facts only, never a secret value` })
         break // one violation per field is enough
       }
     }
