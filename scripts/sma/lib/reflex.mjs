@@ -16,7 +16,7 @@
  * `use-when-pattern` precision glob on notes. This module NEVER walks the
  * corpus directory itself — retrieval goes through loader.mjs only.
  *
- * CR-01 discipline (RESEARCH Pitfall 1): hooks deliver ABSOLUTE Windows paths;
+ * Absolute-path discipline (RESEARCH Pitfall 1): hooks deliver ABSOLUTE Windows paths;
  * deriveTags relativizes against the repo root BEFORE any matching, reusing
  * collision.mjs's normalizePath/relativizePath so there is ONE path truth.
  *
@@ -58,7 +58,7 @@ const BASH_CLASSES = [
  * deriveTags(toolInput, root) → {tags, target, targetClass}.
  *
  * Edit/Write (`file_path`): relativize the ABSOLUTE hook path against the repo
- * root FIRST (CR-01), then emit each path segment (+ extension-stripped stem)
+ * root FIRST, then emit each path segment (+ extension-stripped stem)
  * as a facet-tag candidate. targetClass = the directory portion — the dedup
  * granularity ("this class of file"), so two edits to the same module dedup.
  *

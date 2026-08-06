@@ -451,7 +451,7 @@ function numOrNull(v) {
   return Number.isFinite(v) ? v : null
 }
 
-/** The own-claim label: the lease work label (FI-10), else the claimed scope description,
+/** The own-claim label: the lease work label, else the claimed scope description,
  * else null (rendered '—' = unclaimed). 'idle' work label counts as unclaimed. */
 function ownClaimLabel(lease) {
   if (!lease || typeof lease !== 'object') return null

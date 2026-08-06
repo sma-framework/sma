@@ -1,8 +1,8 @@
 /**
- * trim.mjs — the FI-9 demotion-only trimmer: the auto-repair for the
+ * trim.mjs — the demotion-only trimmer: the auto-repair for the
  * four size lints (MEM-CORESIZE / MEM-NOTESIZE / MEM-INDEXSIZE / STATE-SIZE).
  *
- * FOUNDER LOCK (FI-9, verbatim): «система никогда ничего не забывает» — overflow
+ * FOUNDER LOCK (verbatim): «система никогда ничего не забывает» — overflow
  * moves DOWN a layer, it is NEVER deleted and NEVER time-decayed:
  *   - CORE overflow  → the least-recently-cited CORE members fall back to
  *     periphery (importance drops below the generator's CORE threshold — the
@@ -180,7 +180,7 @@ function setImportance(text, value) {
 }
 
 /**
- * FI-9 post-condition: the demotion rewrite changed EXACTLY one line, and that
+ * The no-loss post-condition: the demotion rewrite changed EXACTLY one line, and that
  * line is the importance field. Anything else → throw before the write.
  */
 function assertOnlyImportanceChanged(before, after) {
@@ -231,7 +231,7 @@ export function demoteCore(opts = {}) {
       skipped.push(d.file) // no importance line — never guess, never rewrite
       continue
     }
-    assertOnlyImportanceChanged(text, updated) // FI-9: content preserved or no write
+    assertOnlyImportanceChanged(text, updated) // content preserved or no write
     atomicWriteText(path, updated)
     demoted.push(d.file)
   }
@@ -243,7 +243,7 @@ export function demoteCore(opts = {}) {
 /**
  * splitNote(opts) — split an over-budget note: the head stays in place (with a
  * pointer wikilink), the tail moves VERBATIM into `<stem>_archive.md` carrying
- * a `supersedes` back-link to the source (FI-9 + bi-temporal P3 shape).
+ * a `supersedes` back-link to the source (the no-loss rule + the bi-temporal P3 shape).
  * Dry by default; apply:true writes archive FIRST, then the trimmed note — a
  * failure between the two duplicates content, never loses it.
  *
@@ -278,7 +278,7 @@ export function splitNote(opts = {}) {
     return { split: false, file, reason: `archive note ${archiveFile} already exists` }
   }
 
-  const pointer = `\n> Продолжение: [[${stem}_archive]] — эпизодический хвост вынесен \`sma trim\` (FI-9: ничего не удалено).\n`
+  const pointer = `\n> Продолжение: [[${stem}_archive]] — эпизодический хвост вынесен \`sma trim\` (ничего не удалено).\n`
   const bodyLines = parsed.body.split('\n')
   const kept = []
   let i = 0
@@ -300,17 +300,17 @@ export function splitNote(opts = {}) {
   const src = projectNoteAxis(parsed.frontmatter, { file, schemaVersion: parsed.schemaVersion })
   const archiveText = serializeNote({
     frontmatter: {
-      description: `Архивный хвост заметки ${file}, вынесен командой sma trim (FI-9)`,
+      description: `Архивный хвост заметки ${file}, вынесен командой sma trim`,
       kind: src.kind || 'episodic',
       tags: src.tags,
       'use-when': `при обращении к полной истории ${stem}`,
       importance: 2,
-      supersedes: file, // the FI-9 back-link to the source note
+      supersedes: file, // the back-link to the source note
     },
     body: tail.join('\n') + (tail.length && tail[tail.length - 1] !== '' ? '\n' : ''),
   })
 
-  // FI-9 post-condition BEFORE any write: every original body line survives
+  // The no-loss post-condition BEFORE any write: every original body line survives
   // in the combined (trimmed + archive) content.
   const combined = new Set([...trimmedText.split('\n'), ...archiveText.split('\n')])
   for (const line of bodyLines) {
@@ -334,7 +334,7 @@ export function splitNote(opts = {}) {
 const PROTECTED_STATE_HEADINGS = /current position|open blockers|active sessions/i
 
 /** Static banner between archive appends (deterministic — no clock). */
-const STATE_ARCHIVE_BANNER = '\n<!-- sma trim: перенесено из STATE.md (FI-9: ничего не удалено) -->\n'
+const STATE_ARCHIVE_BANNER = '\n<!-- sma trim: перенесено из STATE.md (ничего не удалено) -->\n'
 
 /**
  * trimState(opts) — move whole trailing `## ` sections of an over-budget
@@ -411,7 +411,7 @@ export function trimState(opts = {}) {
   if (opts.apply !== true) return result
 
   // Archive FIRST (append semantics), then the trimmed snapshot — a failure
-  // in between duplicates content, never loses it (FI-9-safe write order).
+  // in between duplicates content, never loses it (a no-loss write order).
   let archiveText = ''
   try {
     archiveText = readFileSync(archivePath, 'utf8')

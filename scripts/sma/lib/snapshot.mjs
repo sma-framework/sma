@@ -28,7 +28,7 @@
  * unrefs it (fire-and-forget). This module is the body that short-lived child
  * runs; there is no long-lived process.
  *
- * COMMENT-TEXT DISCIPLINE (SMA-3): scripts/sma/** is grepped for the two-word git
+ * COMMENT-TEXT DISCIPLINE: scripts/sma/** is grepped for the two-word git
  * deploy verb — this file only ever mentions 'push' alone (never the pair).
  *
  * Node built-ins only; zero npm deps. The fetch impl + fs dirs + identity are all

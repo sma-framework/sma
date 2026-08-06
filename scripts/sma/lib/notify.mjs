@@ -290,7 +290,7 @@ async function journalNotify(opts = {}, type, detail) {
   }
 }
 
-/** The short work label carried on the lease (FI-10), else the fingerprint intent, else ''. */
+/** The short work label carried on the lease, else the fingerprint intent, else ''. */
 function leaseLabel(lease) {
   if (!lease || typeof lease !== 'object') return ''
   if (typeof lease.label === 'string' && lease.label.trim() && lease.label.trim() !== 'idle') return lease.label.trim()

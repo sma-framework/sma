@@ -204,7 +204,7 @@ export function overlapInjection(opts = {}) {
   const sessions = Array.isArray(opts.sessions) ? opts.sessions : []
   const rawTouch = typeof opts.ownTouch === 'string' ? opts.ownTouch : opts.ownTouch && opts.ownTouch.path
   let pathNorm = normalizePath(rawTouch || '')
-  // Relativize an absolute hook path against the repo root (mirrors collision.mjs CR-01).
+  // Relativize an absolute hook path against the repo root (mirrors collision.mjs).
   if (opts.root) {
     const rootNorm = normalizePath(opts.root).replace(/\/+$/, '') + '/'
     if (pathNorm.startsWith(rootNorm)) pathNorm = pathNorm.slice(rootNorm.length)

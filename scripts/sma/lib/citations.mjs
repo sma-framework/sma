@@ -5,7 +5,7 @@
  * note to a session — `sma load`, pre-act injection) or a 'fire' (a promoted
  * reflex surfaced it via the PreToolUse consumer). One usage model over
  * both makes «which notes are actually used and which are dead weight»
- * answerable with data — the input FI-9's demotion ordering needs.
+ * answerable with data — the input the demotion ordering needs.
  *
  * Ledger shape mirrors journal.mjs exactly (PATTERNS exact analog): one
  * append-only JSONL file PER terminal under `.sma/usage/<terminal>.jsonl` — no
@@ -185,7 +185,7 @@ export function usageStats(opts = {}) {
 }
 
 /** List corpus note files (*.md, non-structural) — mirrors loader.mjs's listing.
- * The FI-11 per-area INDEX-<area>.md files are structural, not notes. */
+ * The per-area INDEX-<area>.md files are structural, not notes. */
 function listCorpusNotes(corpusDir) {
   let entries
   try {
@@ -200,7 +200,7 @@ function listCorpusNotes(corpusDir) {
 
 /**
  * deadWeight(opts) -> {dead, cited, sessionsConsidered}. Notes present in the
- * corpus with ZERO citations across the last N sessions — FI-9's demotion
+ * corpus with ZERO citations across the last N sessions — the demotion
  * ordering data source (least-recently-cited demotes first).
  *
  * A "session" is the citation event's session key (evt.session when recorded,

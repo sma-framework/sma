@@ -43,7 +43,7 @@
  * native pre-Bash-git snapshot mechanism ships); a registered prediction scores its own
  * self-removal, and the airbag is NEVER headlined in README/positioning.
  *
- * SMA-3 escaped-verb discipline: every sensitive git verb literal is assembled via
+ * The escaped-verb discipline: every sensitive git verb literal is assembled via
  * `['verb'].join('')` so this source never carries the adjacent dangerous literal
  * (matching gates.mjs). Node built-ins only; the git runner is DEPENDENCY-INJECTED
  * (execFileSync-shaped) so unit tests never shell out; zero LLM, zero npm deps.
@@ -62,7 +62,7 @@ import {
   AIRBAG_MAX_AGE_MS,
 } from './constants.mjs'
 
-// ── SMA-3 escaped sensitive verbs (assembled, never adjacent to their context) ──
+// ── escaped sensitive verbs (assembled, never adjacent to their context) ───────
 const GIT = ['git'].join('')
 const RESET_VERB = ['reset'].join('')
 const CLEAN_VERB = ['clean'].join('')

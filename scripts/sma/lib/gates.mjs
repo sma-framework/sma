@@ -14,12 +14,12 @@
  * gate's matcher runs in its own try/catch, so a bug in one gate can neither wedge
  * a session nor stop the other gates. Node built-ins only; zero npm deps.
  *
- * SMA-3 escaped-verb isolation: every sensitive command literal is assembled via
+ * The escaped-verb isolation: every sensitive command literal is assembled via
  * `['verb'].join('')` so this source tree never carries the adjacent dangerous
  * literal (e.g. the two-word deploy invocation), matching the push-claim channel
  * in cli.mjs.
  *
- * CR-01 discipline (RESEARCH Pitfall 1): Edit/Write hooks deliver ABSOLUTE Windows
+ * Absolute-path discipline (RESEARCH Pitfall 1): Edit/Write hooks deliver ABSOLUTE Windows
  * paths; buildCtx relativizes against the repo root BEFORE any path matching,
  * reusing collision.mjs's normalizePath/relativizePath so there is ONE path truth.
  *
@@ -39,7 +39,7 @@ import { hasFreshEvidence } from './evidence.mjs'
 // satisfies GATE-PUSH (the tree moved on since the heavy gate ran). 6 hours.
 const FULLGATE_TTL_MS = 6 * 60 * 60 * 1000
 
-// ── SMA-3 escaped sensitive verbs (assembled, never adjacent to their context) ──
+// ── escaped sensitive verbs (assembled, never adjacent to their context) ───────
 const PUSH_VERB = ['push'].join('') //         the deploy verb
 const STASH_VERB = ['stash'].join('') //       the shared-stack verb
 const ADD_VERB = ['add'].join('') //           the stage verb
@@ -150,7 +150,7 @@ function dodHumanPass(content) {
  * GATES — the checkable HARD-RULE inventory. Each entry:
  *   id      — GATE-<NAME>
  *   tools   — which PreToolUse tools it matches (Bash | Edit | Write)
- *   match   — (ctx) => boolean over the relativized tool input (CR-01)
+ *   match   — (ctx) => boolean over the relativized tool input
  *   warn    — self-sufficient advisory text: rule + the correct alternative
  *   killEnv — per-gate kill switch (SMA_GATE_<NAME>_OFF)
  *
@@ -458,7 +458,7 @@ function evaluateSoftDeny(gate, opts = {}) {
 }
 
 /**
- * buildCtx(toolName, input, root) — the relativized evaluation context (CR-01).
+ * buildCtx(toolName, input, root) — the relativized evaluation context.
  * Edit/Write: relativize the ABSOLUTE hook path; content = new content or the
  * Edit new_string (what the tool is about to WRITE). Bash: the raw command.
  * `root` is carried verbatim for matchers that need the repo context.
