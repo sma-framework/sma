@@ -74,6 +74,10 @@ written in plain language; the engineering detail follows in separate blocks.
   > delete it yourself once you are satisfied. What it does not carry (the finished job
   > history, the original timestamps, a task a worker was holding at that moment) is
   > printed by the command itself, before and after.
+  >
+  > Until you run it, nothing is silently swallowed either: a task title such a database
+  > cannot store is refused with that same sentence — the database, the consequence and
+  > the repair command — instead of an "internal error".
 - **Daemon dependencies.** `pgboss-backend.mjs` imports `pg-boss` and `pg`
   lazily. These packages are not declared in the product's root `package.json`;
   install them machine-locally into `node_modules` (they stay out of git). The
@@ -101,6 +105,11 @@ Then set in it:
   dedicated queue database on :5433. NEVER the `postgres` database and NEVER a
   production database.
 - `bind` = `127.0.0.1` (0.0.0.0 only by explicit consent).
+- `expireMs` — how long a worker may stay silent before its task is taken back, in
+  milliseconds (default `120000`, two minutes). One setting, one clock: the same
+  number is the queue's own lease and the sweep that requeues a silent worker's
+  task, so raising it moves both. Anything that is not a positive number is
+  ignored and the default stands.
 - `workers` — for this PC, a single honest local worker:
 
   ```json
