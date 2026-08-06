@@ -87,7 +87,9 @@ describe('one gate for all executors: green reverify receipt or nothing', () => 
       const res = await tick(deps)
       expect(res.completed).toBe(task.id)
       const [row] = await adapter.list({})
-      expect(row.status).toBe('completed')
+      // the gate let the work THROUGH; acceptance is a person's word, so the row now waits
+      // for one rather than reading as finished business
+      expect(row.status).toBe('awaiting_approval')
     })
 
     it(`${name}: a worker exiting 0 WITHOUT a receipt → fail('no_receipt')`, async () => {
