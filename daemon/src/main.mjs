@@ -39,7 +39,7 @@
  * Node built-ins + the daemon's own modules only. Zero new deps.
  */
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -77,6 +77,66 @@ import { readUsage, usageSeries } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
+
+/**
+ * runUpdateVerb({apply, projectDir}) — the update door's ONE collaborator, wired here and
+ * nowhere else, so the request path can name whether to apply and never what to run.
+ *
+ * IT IS THE SAME UPDATER THE TERMINAL RUNS — `scripts/sma/lib/update.mjs`, the library
+ * behind `sma update` — CONSUMED, not re-implemented: the version single-source law (the
+ * installed stamp is capability.json), the honesty rule (installed newer than a source is
+ * never phrased as an update) and the one write path (the standard installer, which owns
+ * every preservation guarantee) all come along unchanged. Calling the CLI as a child would
+ * have assumed the SERVED tree carries `scripts/sma/cli.mjs`; an installed consumer project
+ * does not, and this daemon's own package always does.
+ *
+ * The module is imported LAZILY: it opens a network call to the registry, and a capability
+ * like that is loaded when a person asks for it, not at boot.
+ *
+ * @param {{apply?:boolean, projectDir:string}} o
+ * @returns {Promise<{ok:boolean, installed:(string|null), to:(string|null), source:(string|null), sources:object[], applied?:{ran:boolean, exitCode:(number|null)}}>}
+ */
+async function runUpdateVerb({ apply = false, projectDir }) {
+  const upd = await import('../../scripts/sma/lib/update.mjs')
+  const installed = upd.readInstalledVersion({ configDir: join(projectDir, '.claude') })
+  const npm = await upd.fetchNpmVersion({}) // an unreachable registry is a verdict, never a throw
+  const localDir = upd.detectLocalSource({ projectDir })
+  const localRead = localDir ? upd.readSourceVersion({ sourceDir: localDir }) : null
+  const local = localRead ? { ok: localRead.version != null, version: localRead.version, dir: localDir } : null
+  const report = upd.buildReport({ installed: installed.version, npm, local })
+  // npm is the default source and stays it unless the registry is unreachable and a local
+  // checkout is not — the same precedence `sma update` uses without a --source flag.
+  const npmSource = report.sources.find((s) => s.id === 'npm')
+  const source = npmSource && npmSource.ok ? 'npm' : local && local.ok ? 'local' : 'npm'
+  const chosen = report.sources.find((s) => s.id === source) || null
+  // The reduction is where the PATHS stop: `label` names the local checkout's directory and
+  // `detail` quotes an fs/network error, so neither is carried past this line.
+  const base = {
+    installed: installed.version ?? null,
+    to: (chosen && chosen.version) ?? null,
+    source,
+    sources: report.sources.map((s) => ({ id: s.id, version: s.version ?? null, verdict: s.verdict })),
+  }
+  if (!apply) return { ...base, ok: true }
+  if (!chosen || chosen.ok !== true || chosen.verdict === 'installed-newer') {
+    // Nothing to apply, or applying would be a downgrade — refused, exactly as the verb does.
+    return { ...base, ok: false, applied: { ran: false, exitCode: null } }
+  }
+  const plan = upd.planUpdate({ source, localDir, isGlobal: false })
+  const applied = upd.applyUpdate({
+    plan,
+    runner: ({ command, args }) => {
+      const res = spawnSync(command, args, {
+        cwd: projectDir,
+        stdio: 'inherit',
+        // npx is a .cmd shim on Windows and needs a shell; node never does.
+        shell: process.platform === 'win32' && command === 'npx',
+      })
+      return { exitCode: typeof res.status === 'number' ? res.status : 1 }
+    },
+  })
+  return { ...base, ok: applied.ran && applied.exitCode === 0, applied: { ran: applied.ran, exitCode: applied.exitCode ?? null } }
+}
 
 /**
  * createDaemon(overrides) — wire the whole daemon and return its handles WITHOUT starting
@@ -302,6 +362,10 @@ export function createDaemon(o = {}) {
         }),
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
         verbRunner: (m) => runMerge({ ...m, execGit, runTests: o.runTests }),
+        // «Дом системы»: the updater behind POST /api/update/run. A SEPARATE name from
+        // `verbRunner` above on purpose — one door's collaborator is not the other's, and a
+        // shared generic runner would be a request path that can name a command.
+        updateRunner: o.updateRunner ?? (({ apply } = {}) => runUpdateVerb({ apply, projectDir: repoDir })),
       },
     })
 
