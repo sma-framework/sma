@@ -28,9 +28,13 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// the discussion checkpoint's SHIPPED template, imported as DATA — the exec checkpoint is
+// asserted to be this exact shape plus a position block, never a second schema
+import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
 import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
@@ -647,6 +651,43 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
     // …and the position is not thrown away: the row parks instead of failing, so the answer
     // wakes a CONTINUATION of the stage rather than a fresh attempt from zero
     expect(adapter.calls.some((x: any) => x.op === 'fail')).toBe(false)
+  })
+
+  it('the shape it parks on is the SHIPPED workflow’s own — read out of execute-phase.md, not typed here', async () => {
+    // The strongest form of «one parser, one card»: the artifact the workflow documents is
+    // lifted off disk and fed to the daemon. A fixture typed out in this file would only
+    // prove that the gate reads what its own author wrote.
+    const workflow = readFileSync(join('sma-core', 'workflows', 'execute-phase.md'), 'utf8')
+    const block = workflow.slice(workflow.indexOf('EXEC-CHECKPOINT.json`'))
+    const json = block.slice(block.indexOf('```json') + 7, block.indexOf('```', block.indexOf('```json') + 7))
+    // two placeholders stand where numbers go; everything else is literal JSON
+    const documented = JSON.parse(json.replace('{task_number}', '3').replace('{wave_number}', '2'))
+
+    // it IS the discussion checkpoint's shape, plus a position block and nothing else
+    expect(Object.keys(documented).sort()).toEqual(
+      [...Object.keys(discussTemplate), 'position'].sort(),
+    )
+    expect(documented.position).toEqual({ plan: '{plan_id}', task: 3, wave: 2 })
+    // …and the question it carries is OPEN by the shared convention: an empty answer
+    expect(Object.values(documented.decisions as any)[0][0].answer).toBe('')
+
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const { deps } = stageDeps({
+      adapter,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/repo' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-EXEC-CHECKPOINT.json`]: JSON.stringify(documented) }),
+        execGit: makeGit({ '.planning/phases/12-front/12-EXEC-CHECKPOINT.json': 'd0cf00d' }),
+      },
+    })
+
+    const res = await tick(deps)
+    expect(res.completed).toBe('ST-1')
+    expect(adapter.calls[0].result.receiptRef).toContain('12-EXEC-CHECKPOINT.json@d0cf00d')
   })
 
   it('REGRESSION — an execute stage with NO checkpoint runs the code gate exactly as before', async () => {

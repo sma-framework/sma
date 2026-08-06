@@ -9,6 +9,7 @@ Plans execute autonomously. Checkpoints formalize interaction points where human
 3. **User only does what requires human judgment** - Visual checks, UX evaluation, "does this feel right?"
 4. **Secrets come from user, automation comes from Claude** - Ask for API keys, then Claude uses them via CLI
 5. **Auto-mode bypasses verification/decision checkpoints** — When `workflow._auto_chain_active` or `workflow.auto_advance` is true in config: human-verify auto-approves, decision auto-selects first option, human-action still stops (auth gates cannot be automated)
+6. **Nobody at the keyboard? PARK the question — never answer it** — when `SMA_HEADLESS=1` (the daemon sets it in every worker env it starts), rule 5 does NOT apply: a blocking checkpoint of any type is written out as `{PADDED_PHASE}-EXEC-CHECKPOINT.json` (the discussion checkpoint's own shape plus a `position` block), committed, and the turn ends honestly. The answer arrives later from the screen and RESUMES the phase from that position instead of restarting it. See `<step name="checkpoint_handling">` in `workflows/execute-phase.md`.
 </overview>
 
 <checkpoint_types>
