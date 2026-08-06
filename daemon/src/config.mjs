@@ -124,6 +124,18 @@ export class UnknownPeerError extends Error {
 /** The project id grammar — a slug, because the id is a key tasks and rows carry. */
 export const PROJECT_ID_RE = /^[a-z0-9-]{1,64}$/
 
+/**
+ * The grammar of an ENVIRONMENT VARIABLE NAME — the shape `account.oauthTokenEnv` is
+ * allowed to be, and the reason a token value cannot be stored there by accident.
+ *
+ * It is UPPER_SNAKE and nothing else, which is not a style preference: every credential
+ * this product ever sees (`sk-ant-oat01-…`, a hex string, a JWT) carries lowercase letters,
+ * dashes or dots, so a value pasted into the field where a NAME belongs is refused by the
+ * shape rather than by a heuristic about what secrets look like. The check therefore holds
+ * for a credential format nobody has invented yet.
+ */
+export const ENV_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/
+
 /** The three federation roles. An absent block means `standalone`. */
 export const FEDERATION_ROLES = Object.freeze(['standalone', 'hub', 'peer'])
 
@@ -603,6 +615,64 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
     throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
   }
   const next = { ...config, activeProject: id }
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
+ * addAccount(config, {id, lane, configDir, oauthTokenEnv, spendLogsDir}, io) — take one more
+ * subscription account into the worker pool and persist.
+ *
+ * ═══════════════ THE SECRET IS NOT HERE, AND CANNOT BE ══════════════════════════
+ * What is stored is the NAME of the environment variable that holds the account's token
+ * (ENV_NAME_RE), never the token. The value lives in the process environment of the machine
+ * the founder set it on and nowhere else — not in this file, not in a payload, not in a
+ * browser. `secretsView` collapses even the NAME to '[set]'/'[unset]' on the way out, so the
+ * roster learns whether an account is authenticated and never how.
+ *
+ * ═══════════════ AND IT ARRIVES SWITCHED OFF ════════════════════════════════════
+ * `enabled:false`, always, with no way to ask otherwise: adding an account and being able to
+ * USE it are two different acts, because between them stands a step no daemon can perform —
+ * a human logging that account in. Enabling is the agent toggle that already exists, pressed
+ * afterwards, deliberately. «Nothing switches itself on» is the law; this is one of its doors.
+ *
+ * A duplicate id is an InvalidWorkerProfileError rather than a silent shadow: the id is what
+ * routing, the ledger and every attempt row reference.
+ *
+ * @returns {object} the updated config
+ * @throws {InvalidWorkerProfileError}
+ */
+export function addAccount(
+  config,
+  { id, lane, configDir, oauthTokenEnv, spendLogsDir } = {},
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {},
+) {
+  const workers = Array.isArray(config && config.workers) ? config.workers : []
+  if (workers.some((w) => w && w.id === id)) {
+    throw new InvalidWorkerProfileError(`addAccount: worker "${id}" already exists`)
+  }
+  if (typeof oauthTokenEnv !== 'string' || !ENV_NAME_RE.test(oauthTokenEnv)) {
+    // The message names the SHAPE, never the offending input: a rejected field may well be
+    // the token itself, and an error that quotes it has just written it into a log.
+    throw new InvalidWorkerProfileError(`addAccount: "oauthTokenEnv" must be the NAME of an environment variable (${ENV_NAME_RE.source})`)
+  }
+  if (typeof configDir !== 'string' || configDir.trim() === '') {
+    throw new InvalidWorkerProfileError(`addAccount: worker "${id}" needs an "account.configDir"`)
+  }
+  if (spendLogsDir !== undefined && (typeof spendLogsDir !== 'string' || spendLogsDir.trim() === '')) {
+    throw new InvalidWorkerProfileError(`addAccount: worker "${id}" has an invalid "account.spendLogsDir"`)
+  }
+  const entry = validateWorker(
+    {
+      id,
+      lane,
+      provider: 'claude',
+      account: { configDir, oauthTokenEnv, ...(spendLogsDir !== undefined ? { spendLogsDir } : {}) },
+      enabled: false,
+    },
+    new Set((Array.isArray(config && config.projects) ? config.projects : []).map((p) => p && p.id)),
+  )
+  const next = { ...config, workers: [...workers, entry] }
   writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }

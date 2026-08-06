@@ -36,6 +36,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { Readable } from 'node:stream'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
@@ -50,13 +51,16 @@ import {
   addProject,
   renameProject,
   selectProject,
+  addAccount,
   stripDerivedDirs,
+  ENV_NAME_RE,
   FEDERATION_ROLES,
   InvalidWorkerProfileError,
   InvalidProjectError,
   InvalidFederationError,
   UnknownProjectError,
 } from '../src/config.mjs'
+import { createFrontServer, PENDING_ROUTES } from '../src/front/server.mjs'
 
 let home: string
 let repo: string
@@ -565,5 +569,217 @@ describe('a pinned repoDir is not a derive, and survives every door', () => {
     expect(() => stripDerivedDirs({ repoDir: PIN }, { configPath: '/c/config.json', repoDir: PIN } as any)).toThrow(TypeError)
     expect(stripDerivedDirs({ repoDir: PIN }, { configPath: '/c/config.json', launchDir: repo })).toEqual({ repoDir: PIN })
     expect(stripDerivedDirs({ repoDir: repo }, { configPath: '/c/config.json', launchDir: repo })).toEqual({})
+  })
+})
+
+/**
+ * ═══════════ ONE MORE ACCOUNT — AND ITS SECRET STAYS ON THE MACHINE ═══════════════
+ *
+ * The privacy boundary of the whole product runs through `addAccount` and the door in
+ * front of it, so the cases below are written the way a leak is actually found: a
+ * FICTITIOUS token value is planted in the environment, the account is added, and then the
+ * BYTES of everything that leaves the process — the config file on disk, the loggable view,
+ * the door's own response — are searched for it. A test that asserts «the field is a name»
+ * proves the author's intention; a test that greps the artefact proves the property.
+ *
+ * The second law tested here is «nothing switches itself on»: a profile arrives disabled,
+ * and no body can ask otherwise, because `enabled` is not in the door's allowlist at all.
+ */
+
+const FAKE_TOKEN_VALUE = 'sk-ant-oat01-FICTITIOUS-VALUE-THAT-MUST-NEVER-BE-STORED'
+const ACCOUNT_TOKEN_ENV = 'SMA_MAX_9_TOKEN'
+const ACCOUNT_DIR = process.platform === 'win32' ? 'C:/sma-accounts/max-9' : '/opt/sma-accounts/max-9'
+
+describe('addAccount — the account joins the pool, the token does not', () => {
+  const io = () => ({ env: { [ACCOUNT_TOKEN_ENV]: FAKE_TOKEN_VALUE }, homedir, launchDir: repo })
+  const newAccount = { id: 'max-9', lane: 'prod', configDir: ACCOUNT_DIR, oauthTokenEnv: ACCOUNT_TOKEN_ENV }
+  const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
+  const rawFile = () => readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8')
+
+  it('CASE 1 — the token VALUE is nowhere in the config file after the add', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    addAccount(cfg, newAccount, io())
+    // the file grew the account…
+    expect(readFile().workers.map((w: any) => w.id)).toContain('max-9')
+    // …and the value it authenticates with is not in it, by the bytes
+    expect(rawFile()).not.toContain(FAKE_TOKEN_VALUE)
+    // what IS stored is the NAME — the whole mechanism, so it is asserted too
+    const stored = readFile().workers.find((w: any) => w.id === 'max-9')
+    expect(stored.account.oauthTokenEnv).toBe(ACCOUNT_TOKEN_ENV)
+    expect(stored.account.configDir).toBe(ACCOUNT_DIR)
+  })
+
+  it('CASE 2 — what leaves the process is [set]/[unset]: neither the value NOR the name', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const next = addAccount(cfg, newAccount, io())
+    const populated = { [ACCOUNT_TOKEN_ENV]: FAKE_TOKEN_VALUE }
+    const view = JSON.stringify(secretsView(next, { env: populated }))
+    expect(view).not.toContain(FAKE_TOKEN_VALUE)
+    expect(view).not.toContain(ACCOUNT_TOKEN_ENV)
+    const seen = (env: any) => secretsView(next, { env }).workers.find((w: any) => w.id === 'max-9').account.oauthTokenEnv
+    expect(seen(populated)).toBe('[set]')
+    // an account whose variable is NOT populated says so — the operational half of the view
+    expect(seen({})).toBe('[unset]')
+  })
+
+  it('CASE 3 — the new profile is DISABLED; adding and using are two acts', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    const next = addAccount(cfg, newAccount, io())
+    expect(next.workers.find((w: any) => w.id === 'max-9').enabled).toBe(false)
+    expect(readFile().workers.find((w: any) => w.id === 'max-9').enabled).toBe(false)
+    // the SHIPPED pool is untouched — the added one is the ONLY disabled profile
+    expect(next.workers.filter((w: any) => w.enabled === false).map((w: any) => w.id)).toEqual(['max-9'])
+  })
+
+  it('a token pasted where a NAME belongs is refused by the SHAPE, not by a guess', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(() => addAccount(cfg, { ...newAccount, oauthTokenEnv: FAKE_TOKEN_VALUE }, io())).toThrow(InvalidWorkerProfileError)
+    // …and the refusal does not quote what it refused — the log must not learn it either
+    try {
+      addAccount(cfg, { ...newAccount, oauthTokenEnv: FAKE_TOKEN_VALUE }, io())
+    } catch (err: any) {
+      expect(String(err.message)).not.toContain(FAKE_TOKEN_VALUE)
+    }
+    // every credential shape this product can meet is lowercase / dashed / dotted somewhere
+    for (const looksLikeAValue of [FAKE_TOKEN_VALUE, 'ghp_abcdef', 'eyJhbGciOi.J9.x', 'abc123', 'sma-max-1']) {
+      expect(ENV_NAME_RE.test(looksLikeAValue)).toBe(false)
+    }
+    expect(ENV_NAME_RE.test(ACCOUNT_TOKEN_ENV)).toBe(true)
+  })
+
+  it('a duplicate id is a named error, never a silent shadow of a live account', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    expect(() => addAccount(cfg, { ...newAccount, id: 'max-1' }, io())).toThrow(InvalidWorkerProfileError)
+  })
+
+  it('the write obeys the launchDir discipline — no derived directory lands in the file', () => {
+    const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
+    addAccount(cfg, newAccount, io())
+    const onDisk = readFile()
+    expect(onDisk.repoDir).toBeUndefined()
+    expect(onDisk.dataDir).toBeUndefined()
+    expect(onDisk.ledgerDir).toBeUndefined()
+  })
+})
+
+describe('POST /api/account/add — the door in front of it', () => {
+  const TOKEN = 'a'.repeat(64)
+
+  function mkReq(body: any) {
+    const payload = body === undefined ? '' : JSON.stringify(body)
+    const req: any = Readable.from(payload ? [Buffer.from(payload, 'utf8')] : [])
+    req.method = 'POST'
+    req.url = '/api/account/add'
+    req.headers = { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }
+    req.socket = { remoteAddress: '127.0.0.1' }
+    return req
+  }
+
+  function mkRes() {
+    const res: any = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '',
+      headersSent: false,
+      writeHead(code: number, headers: Record<string, string> = {}) {
+        res.statusCode = code
+        res.headers = { ...res.headers, ...headers }
+        res.headersSent = true
+        return res
+      },
+      end(chunk?: any) {
+        if (chunk != null) res.body += String(chunk)
+        return res
+      },
+    }
+    return res
+  }
+
+  function mkFront(over: any = {}) {
+    const calls: any[] = []
+    const config: any = {
+      token: TOKEN,
+      workers: [{ id: 'max-1', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
+    }
+    const addAccountSpy = (cfg: any, entry: any, io: any) => {
+      calls.push({ entry, io })
+      if (over.throws) throw over.throws
+      return {
+        ...cfg,
+        workers: [
+          ...cfg.workers,
+          { id: entry.id, lane: entry.lane, provider: 'claude', account: { configDir: entry.configDir, oauthTokenEnv: entry.oauthTokenEnv }, enabled: false },
+        ],
+      }
+    }
+    const front = createFrontServer({ config, deps: { addAccount: addAccountSpy, launchDir: repo, ...over.deps } })
+    return { front, calls, config }
+  }
+
+  const call = async (front: any, body: any) => {
+    const res = mkRes()
+    await front.handle(mkReq(body), res)
+    return res
+  }
+
+  const GOOD = { id: 'max-9', lane: 'prod', configDir: ACCOUNT_DIR, oauthTokenEnv: ACCOUNT_TOKEN_ENV }
+
+  it('CASE 4 — an unknown key is a 400, named, BEFORE the applier runs', async () => {
+    const { front, calls } = mkFront()
+    const res = await call(front, { ...GOOD, enabled: true })
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toContain('enabled')
+    expect(calls).toEqual([]) // zero writes: the refusal happens at the parse layer
+  })
+
+  it('the happy path answers the login scenario, and carries no token and no [object', async () => {
+    const { front, calls, config } = mkFront()
+    const res = await call(front, GOOD)
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({
+      ok: true,
+      id: 'max-9',
+      enabled: false,
+      login: { env: { CLAUDE_CONFIG_DIR: ACCOUNT_DIR }, cmd: 'claude setup-token', tokenEnv: ACCOUNT_TOKEN_ENV },
+    })
+    // the serialization is clean: no accidental object-to-string, no value of any secret
+    expect(res.body).not.toContain('[object')
+    expect(res.body).not.toContain(FAKE_TOKEN_VALUE)
+    // and the process re-read what it wrote — otherwise the next roster read is a lie
+    expect(config.workers.map((w: any) => w.id)).toContain('max-9')
+    expect(config.workers.find((w: any) => w.id === 'max-9').enabled).toBe(false)
+    // the write seam was handed the LAUNCH directory, not the served tree
+    expect(calls[0].io.launchDir).toBe(repo)
+  })
+
+  it('a token pasted into the field is refused, and the refusal does not echo it back', async () => {
+    const { front, calls } = mkFront()
+    const res = await call(front, { ...GOOD, oauthTokenEnv: FAKE_TOKEN_VALUE })
+    expect(res.statusCode).toBe(400)
+    expect(res.body).not.toContain(FAKE_TOKEN_VALUE)
+    expect(calls).toEqual([])
+  })
+
+  it('a relative or tilde configDir is refused — nothing in this product expands a ~', async () => {
+    for (const configDir of ['~/.sma-accounts/max-9', 'accounts/max-9', '', './x']) {
+      const { front, calls } = mkFront()
+      expect((await call(front, { ...GOOD, configDir })).statusCode).toBe(400)
+      expect(calls).toEqual([])
+    }
+  })
+
+  it('a lane outside the closed vocabulary is refused', async () => {
+    const { front, calls } = mkFront()
+    expect((await call(front, { ...GOOD, lane: 'night' })).statusCode).toBe(400)
+    expect(calls).toEqual([])
+  })
+
+  it('a daemon wired with no applier answers 501, never a silent success', async () => {
+    const front = createFrontServer({ config: { token: TOKEN }, deps: {} })
+    expect((await call(front, GOOD)).statusCode).toBe(501)
+  })
+
+  it('the slot lost its key in the same commit that filled it', () => {
+    expect(PENDING_ROUTES.has('POST /api/account/add')).toBe(false)
   })
 })

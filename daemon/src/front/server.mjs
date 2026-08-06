@@ -64,11 +64,11 @@
 
 import { createServer } from 'node:http'
 import { readFileSync as fsReadFileSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { REASON_LABELS, validateTask } from '../queue/adapter.mjs'
+import { REASON_LABELS, TASK_LANES, validateTask } from '../queue/adapter.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
@@ -301,7 +301,6 @@ export const PENDING_ROUTES = Object.freeze(
     'POST /api/ship/gate',
     'POST /api/ship/publish',
     'GET /api/search',
-    'POST /api/account/add',
     'POST /api/pipeline/toggle',
     'POST /api/budget/set',
     'POST /api/agent/model',
@@ -2062,9 +2061,6 @@ function handleShipPublish({ res }) {
 function handleSearch({ res }) {
   send501(res)
 }
-function handleAccountAdd({ res }) {
-  send501(res)
-}
 function handlePipelineToggle({ res }) {
   send501(res)
 }
@@ -2073,6 +2069,97 @@ function handleBudgetSet({ res }) {
 }
 function handleAgentModel({ res }) {
   send501(res)
+}
+
+// ── the account door: a subscription joins the pool, its secret does not ──
+//
+// THE PRIVACY BOUNDARY OF THIS WHOLE PRODUCT RUNS THROUGH THIS HANDLER, so it is stated
+// here in one sentence: an account's token exists in the environment of the machine the
+// founder set it on, and NOWHERE ELSE — not in the config file, not in this response, not
+// in a browser, not in a log, and above all not in the public package. What crosses this
+// door is the NAME of the environment variable that holds it, and a name is not a secret.
+//
+// The door writes through the config module's own applier (INJECTED, like every other
+// config write), so the grammar, the duplicate check and the atomic write have exactly one
+// owner. Two facts are the door's own: the path must be ABSOLUTE (nothing in this product
+// expands a `~`, so a tilde would be created as a literal directory named «~»), and the
+// answer carries the login SCENARIO — the environment and the command a human runs in his
+// own terminal. The daemon does not run it: an interactive login is the one step of taking
+// on an account that has no headless form, and pretending otherwise would mean a daemon
+// holding a browser session on the founder's behalf.
+
+/** An env-var NAME, kept LOCAL for the same reason MACHINE_ID_RE is: importing the config
+ *  module's copy would put a config WRITE module on this file's import graph. The applier
+ *  re-checks the same shape on its own side, which is where the grammar actually lives. */
+const ENV_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/
+
+/** A directory typed by a human is a path, not a document. */
+const ACCOUNT_PATH_CAP = 4096
+
+/** What an account id may be — the same bounded identifier every other id of this file is. */
+function invalidAccountPath(v) {
+  return typeof v !== 'string' || v === '' || v.length > ACCOUNT_PATH_CAP || v.includes('\0') || !isAbsolute(v)
+}
+
+/**
+ * POST /api/account/add — body {id, lane, configDir, oauthTokenEnv, spendLogsDir?}.
+ *
+ * The profile is written DISABLED and the response says so: `enabled:false` is not a default
+ * the caller may override, because between «this account exists» and «this account may be
+ * spent» stands a human logging it in. The enabling act is the agent toggle that already
+ * exists — one door per action, pressed on purpose, afterwards.
+ */
+async function handleAccountAdd({ req, res, config, deps }) {
+  if (typeof deps.addAccount !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id', 'lane', 'configDir', 'oauthTokenEnv', 'spendLogsDir']))) return undefined
+  if (typeof b.id !== 'string' || !ID_RE.test(b.id)) return send400(res, 'invalid id')
+  if (typeof b.lane !== 'string' || !TASK_LANES.includes(b.lane)) return send400(res, 'invalid lane')
+  // The directory may be EMPTY on disk and that is normal: it is created by the login the
+  // response is about, so its existence is deliberately NOT a condition of adding the account.
+  if (invalidAccountPath(b.configDir)) return send400(res, 'configDir must be an absolute path')
+  if (typeof b.oauthTokenEnv !== 'string' || !ENV_NAME_RE.test(b.oauthTokenEnv)) {
+    // The refusal names the SHAPE and never echoes the field: what was sent may be the token.
+    return send400(res, 'oauthTokenEnv must be the NAME of an environment variable (UPPER_SNAKE)')
+  }
+  if (b.spendLogsDir !== undefined && invalidAccountPath(b.spendLogsDir)) {
+    return send400(res, 'spendLogsDir must be an absolute path')
+  }
+
+  let next
+  try {
+    next = deps.addAccount(
+      config,
+      {
+        id: b.id,
+        lane: b.lane,
+        configDir: b.configDir,
+        oauthTokenEnv: b.oauthTokenEnv,
+        ...(b.spendLogsDir !== undefined ? { spendLogsDir: b.spendLogsDir } : {}),
+      },
+      configIo(deps),
+    )
+  } catch (err) {
+    return applierError(res, err)
+  }
+  // The written file is re-read INTO THIS PROCESS, or the very next roster read would serve
+  // a pool without the account somebody just added — the «ничего не произошло» lesson.
+  refreshWorkers(config, next)
+  emitSafe(deps, { event: 'harness.updated' })
+  return sendJson(res, 200, {
+    ok: true,
+    id: b.id,
+    // Stated, not implied: the screen must be able to say «добавлен, но выключен» without
+    // knowing this file's laws.
+    enabled: false,
+    // The scenario, in two separate fields rather than one shell line: the founder's machine
+    // may be Windows, macOS or Linux and each spells «set this variable» differently, so the
+    // screen composes the line and the daemon states the facts. `configDir` is echoed back
+    // because the caller just typed it — it never came from this process's own knowledge.
+    login: { env: { CLAUDE_CONFIG_DIR: b.configDir }, cmd: 'claude setup-token', tokenEnv: b.oauthTokenEnv },
+  })
 }
 
 // ── «Дом системы»: the two doors that describe and renew the install itself ──
