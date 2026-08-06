@@ -1,20 +1,20 @@
 /**
- * events.mjs — the SSE event hub + the durable-commit event decorator: the Phase 9.6
- * SPA's live-hint foundation (Phase 9.5 Plan 08, Task 4; D-9.5-02/05 РЕВИЗИЯ 16.07.2026).
+ * events.mjs — the SSE event hub + the durable-commit event decorator: the live-hint
+ * foundation the screens are built on.
  *
  * ═══════════════════════ ABSORPTION NOTE (IDEA-level, zero code copied) ═══════════
  * This event VOCABULARY is our analog of Paperclip's heartbeat.run.* / agent.status
  * push vocabulary — IDEA-level absorption only; NO code is copied from their MIT tree.
- * If any LITERAL code is ever absorbed here (or in the 9.6 SPA), it takes the
- * THIRD-PARTY-LICENSES.md attribution step exactly as plan 9.5-03 did for the CAS
- * pattern. Nothing in this file derives from a third-party source.
+ * If any LITERAL code is ever absorbed here (or in the SPA), it takes the
+ * THIRD-PARTY-LICENSES.md attribution step exactly as the CAS pattern did.
+ * Nothing in this file derives from a third-party source.
  *
- * ═══════════════════════ HINT, NEVER TRUTH ═══════════════════════════════════════
+ * ═══════════════════════ HINT, NEVER TRUTH ════════════════════════════════════════
  * The governing posture (RESEARCH State-of-the-Art): a push is an OPTIONAL HINT; the
  * durable queue + a poll of GET /api/state is the truth. So:
  *   - The hub holds ONLY live response handles + a monotonic per-boot event id. It holds
  *     NO task state. A daemon restart drops every connection and LOSES NOTHING — clients
- *     re-derive from GET /api/state (D-9.5-02 statelessness is preserved because truth
+ *     re-derive from GET /api/state (statelessness is preserved because truth
  *     never lives in the hub).
  *   - EMIT-AFTER-DURABLE-COMMIT: wrapAdapterWithEvents awaits the underlying durable call
  *     FIRST, then emits. A dropped emit only costs a client one poll of latency; it can
@@ -22,16 +22,16 @@
  *     promise resolves).
  *   - EXPLICIT-PICK PAYLOADS, PER TYPE. An event frame carries {id, event, ts} plus ONLY
  *     the fields its own type declares in EVENT_FIELDS — never titles, notes, diffs,
- *     tokens, or receipt bodies (T-9.5-35). A field that belongs to another type is
+ *     tokens, or receipt bodies. A field that belongs to another type is
  *     dropped, so a hostile or careless emit cannot smuggle a payload through a frame
  *     shape. The SPA fetches details via the auth'd read endpoints.
- *     Two bans are ABSOLUTE and hold for every future type (D-9.7-09, T-9.7-02): the
+ *     Two bans are ABSOLUTE and hold for every future type: the
  *     TEXT of a conversation turn never enters a frame (chat.reply carries a turn id and
  *     a status, never the reply), and a peer's TOKEN or URL never enters a frame
  *     (machine.presence carries a machine id and a boolean, never an address). A frame is
  *     a doorbell: it says something changed, never what was said.
  *   - DoS BOUNDS: maxClients cap (→ the handler answers 503), a 25s heartbeat, and
- *     reap-on-write-failure keep stale handles from accumulating (T-9.5-36).
+ *     reap-on-write-failure keep stale handles from accumulating.
  *
  * The decorator's per-task «running» dedup map is HINT PLUMBING — loss-safe, never
  * consulted for truth (losing it only risks one extra task.running frame). The
@@ -43,9 +43,9 @@
  */
 
 /**
- * The frozen event vocabulary — the SPA contract. FOURTEEN types (re-frozen 2026-08-01
- * per D-9.7-09, the single revision of the V5.1 release; the previous freeze was TEN,
- * D-9.5-09). Emitting an unlisted event is a no-op. The «hint, never truth» contract is
+ * The frozen event vocabulary — the SPA contract. FOURTEEN types (re-frozen 2026-08-01,
+ * the single revision of the V5.1 release; the previous freeze was TEN).
+ * Emitting an unlisted event is a no-op. The «hint, never truth» contract is
  * UNCHANGED by the revision: the four new types announce that something changed, and the
  * client re-reads the auth'd endpoint to learn what.
  */
@@ -59,18 +59,18 @@ export const EVENT_TYPES = Object.freeze([
   'task.failed',
   'worker.presence',
   'spend.updated',
-  'harness.updated', // D-9.5-09: a harness config/registry change hint (agents/skills/mcp)
-  'chat.reply', // D-9.7-09: a conversation turn finished (the TEXT rides the read model)
-  'machine.presence', // D-9.7-09: a peer went online/offline (never its url, never its token)
-  'project.updated', // D-9.7-09: the project registry changed
-  'import.updated', // D-9.7-09: a batch of import drafts was produced
+  'harness.updated', // a harness config/registry change hint (agents/skills/mcp)
+  'chat.reply', // a conversation turn finished (the TEXT rides the read model)
+  'machine.presence', // a peer went online/offline (never its url, never its token)
+  'project.updated', // the project registry changed
+  'import.updated', // a batch of import drafts was produced
 ])
 
 /**
  * EVENT_FIELDS — the per-type explicit pick. A frame carries {id, event, ts} plus ONLY
  * the fields listed here for its own type; everything else on the emitted object is
  * dropped. Every entry is an IDENTIFIER, a short status, a boolean or a count — never
- * free text, never a secret, never an address (T-9.5-35, T-9.7-02).
+ * free text, never a secret, never an address.
  */
 const EVENT_FIELDS = Object.freeze({
   'task.queued': ['taskId', 'workerId', 'status'],
@@ -96,7 +96,7 @@ const NUMBER_FIELDS = new Set(['count'])
 /** Dedup window for the touch→task.running hint (mirrors the loop's 30s touch throttle). */
 const RUNNING_DEDUP_MS = 30000
 
-/** explicit-pick an event frame payload — NEVER titles/notes/diffs/tokens (T-9.5-35). */
+/** explicit-pick an event frame payload — NEVER titles/notes/diffs/tokens. */
 function pickEvent(evt, id, tsMs) {
   const out = { id, event: evt.event, ts: new Date(tsMs).toISOString() }
   for (const field of EVENT_FIELDS[evt.event] || []) {
@@ -150,7 +150,7 @@ export function createEventHub({
 
   function beat() {
     for (const c of [...clients]) {
-      if (!writeTo(c, ': hb\n\n')) drop(c) // reap-on-write-failure (T-9.5-36)
+      if (!writeTo(c, ': hb\n\n')) drop(c) // reap-on-write-failure
     }
   }
   function startHeartbeat() {

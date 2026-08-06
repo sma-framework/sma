@@ -39,9 +39,10 @@
  * normalizer live in ../front/journal.mjs, which is an import-free leaf module — depending
  * on it here inverts no layer and closes no cycle.
  *
- * ═══════ THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN ══════════════════════════
+ * ═══════ THE ATTEMPT STAMP — THE WORLD AN ATTEMPT RAN IN ════════════════════════
  * Fleet invariant six (docs/FLEET-INVARIANTS.md): policy, memory snapshot, model and
- * harness version are fixed at the moment the attempt is created. Until now a row recorded WHO ran the work and HOW it ended, and nothing about
+ * harness version are fixed at the moment the attempt is created. Until now a row
+ * recorded WHO ran the work and HOW it ended, and nothing about
  * the world it ran in — so a result could not be replayed against the state that produced
  * it. Seven names join the allowlist: policyVersion, memorySnapshotHash, planHash,
  * harnessVersion, stateMachineVersion, idempotencyKey and capabilityEnvelopeHash.

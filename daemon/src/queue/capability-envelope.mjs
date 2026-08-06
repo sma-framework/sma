@@ -7,7 +7,7 @@
  * reach is bounded by convention: the checkout it stands in, the settings that checkout
  * carries, and the habit of the person who wrote the prompt. Convention is not a boundary
  * that can be checked, replayed, or shown to have held. This module gives every task an
- * explicit envelope over the canon's eight dimensions, and a fail-closed validator that
+ * explicit envelope over the fleet's eight dimensions, and a fail-closed validator that
  * refuses anything it cannot read.
  *
  * BACKEND-FREE AND EFFECT-FREE BY LAW (adapter.mjs's posture, adopted verbatim): no
@@ -24,7 +24,8 @@
  * refusals. An unrecognised permission is not a permit.
  *
  * ═══════════ PUSH AND MERGE ARE NOT GRANTABLE — BY CONSTRUCTION, NOT BY BRANCH ═══════
- * Canon invariant 2: «Worker не имеет push/merge capability независимо от prompt». The
+ * Fleet invariant two: a worker holds no push or merge capability, whatever the prompt
+ * says. The
  * human-only set below is a module constant the validator reads; there is no parameter,
  * option or input path that moves a member out of it, and `defaultEnvelope` puts the whole
  * set into every lane's envelope. `ship-lane.mjs` states the same law from the other side —
@@ -51,7 +52,7 @@ import { createHash } from 'node:crypto'
 // ── the closed vocabularies ──
 
 /**
- * The canon's eight capability dimensions, verbatim (roadmap txt: «read paths, write
+ * The fleet's eight capability dimensions, verbatim («read paths, write
  * paths, allowed tools, network destinations, secret scopes, budget, max runtime,
  * human-only actions»). Frozen: a ninth dimension is a policy decision that must also
  * teach the validator and every lane default what to say about it.
@@ -107,7 +108,7 @@ const GRANTING_KEYS = Object.freeze([
 /** The dimensions carried as a list of non-empty strings. */
 const LIST_KEYS = Object.freeze([...GRANTING_KEYS, 'humanOnlyActions'])
 
-/** The canon's own duration notation — the transition contracts write `timeout: 45m`. */
+/** The fleet's own duration notation — the transition contracts write `timeout: 45m`. */
 const DURATION_RE = /^\d+[mh]$/
 
 /**
@@ -128,7 +129,7 @@ const REQUEST_ACTIONS = Object.freeze(['read', 'write', 'tool', 'network', 'spen
 const LANE_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'])
 
 /**
- * The canon's RUNNING→PRODUCED timeout, the one runtime number this codebase has actually
+ * The fleet's RUNNING→PRODUCED timeout, the one runtime number this codebase has actually
  * written down (state-machine.mjs `timeout: '45m'`). It is used for every lane because a
  * per-lane cap would need a measurement of real run durations that we do not have; an
  * invented per-lane number would read as evidence and be none.

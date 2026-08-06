@@ -1,7 +1,6 @@
 /**
- * project-sync.mjs — THE CONNECTED PROJECT: watched live, read read-only (phase 11 plan 09;
- * SB-031 part 2, ROADMAP addition 8). Phase 12 «Рабочее место» consumes this and does not
- * build it.
+ * project-sync.mjs — THE CONNECTED PROJECT: watched live, read read-only. The
+ * «Рабочее место» screen consumes this and does not build it.
  *
  * ═══════════════════════ THE TRUTH STAYS IN THE FILES ════════════════════════════
  * This module inherits harness.mjs's law verbatim: the truth lives in the connected
@@ -17,7 +16,7 @@
  * path and no note text ever rides a frame, so a hostile filename cannot travel.
  *
  * ═══════════════════════ WHY A RECONCILE EXISTS AT ALL ═══════════════════════════
- * The plan runs under RESEARCH assumption A1: node's native recursive watch is enough, and
+ * This runs on a researched assumption: node's native recursive watch is enough, and
  * the product ships no watcher dependency. The honest risk is that recursive watch behaves
  * differently per platform — rename versus change, coalescing, and network or virtualised
  * filesystems where events are dropped outright. A dropped event would leave the screen
@@ -37,7 +36,7 @@
  * ═══════════════════════ SCOPED, NOT RECURSIVE OVER A REPO ═══════════════════════
  * A connected project is arbitrary content on disk. The watch is scoped to the project's
  * configuration directory and its memory corpus — never the whole tree — so a huge or
- * hostile repository cannot exhaust the daemon's handles (T-11-09-03). A watch failure
+ * hostile repository cannot exhaust the daemon's handles. A watch failure
  * degrades once; it is never retried in a loop.
  *
  * Node built-ins only. The watch implementation, the one-shot debounce scheduler, the
@@ -331,7 +330,7 @@ export function stopWatch(handle) {
  * no reason to answer: how many of these notes are still written in the v1 format.
  *
  * NOTHING IS CACHED and no path travels: `projectDir` is used to read and is deliberately
- * absent from the return value (T-11-09-01 — an absolute path on the wire is a disclosure,
+ * absent from the return value (an absolute path on the wire is a disclosure,
  * and a payload that named the founder's home directory would leak it to any browser that
  * reached the front).
  *
@@ -389,7 +388,7 @@ export function readProjectMemory({ projectDir, fsImpl } = {}) {
   }
 }
 
-// ═══════════════ the migration preview + the per-file apply (phase 8, reused) ═══════════
+// ═══════════════ the migration preview + the per-file apply (reused) ═════════════
 //
 // NOT A SECOND MIGRATION. `previewMigration` and `applyProposal` are the phase-8 engine and
 // they are called here, not reimplemented: the transform table, the validation, the
@@ -406,7 +405,7 @@ export function readProjectMemory({ projectDir, fsImpl } = {}) {
 // lands in the project is `applyProposal`, one file at a time, behind a human's approval.
 //
 // WHAT REACHES THE BROWSER. A proposal carries a unified DIFF, and a diff is the note's
-// body. The payload contract forbids that (T-11-09-01), so the surface below carries a
+// body. The payload contract forbids that, so the surface below carries a
 // CLOSED vocabulary instead: the disposition, a reason CODE, the frontmatter keys that would
 // be dropped, how many lines would move, and the validation counts. That is a real answer to
 // «что изменится» with no prose on the wire — and it also means an unreadable note's raw
@@ -453,8 +452,7 @@ function proposalSurface(p) {
 }
 
 /**
- * How large a corpus may be before the preview stops being something a POLL can carry
- * (D-11-DEFER-10).
+ * How large a corpus may be before the preview stops being something a POLL can carry.
  *
  * WHY A CAP AT ALL. `deriveState` runs on every GET /api/state (2-5s), and for a connected
  * project still in the older format that call ALSO ran this preview over the whole corpus:
@@ -533,7 +531,7 @@ export function previewProjectMigration({ projectDir, stagingDir, now, previewIm
 }
 
 /**
- * How long a staged migration draft is kept (D-11-DEFER-10, second half).
+ * How long a staged migration draft is kept.
  *
  * A preview stages a COMPLETE v2 rendering of a foreign project's note — body and all —
  * beside the daemon's own data, and nothing ever deleted one. Two weeks is the retention:

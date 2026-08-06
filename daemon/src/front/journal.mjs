@@ -1,6 +1,6 @@
 /**
  * journal.mjs — THE DECISION JOURNAL: the read model over the three layers every attempt
- * must carry, plus the closed vocabularies those layers are written in (D-9.7-14).
+ * must carry, plus the closed vocabularies those layers are written in.
  *
  * ═══════════════════════ THE LAW OF THREE LAYERS ═════════════════════════════════
  * Every attempt explains ITSELF, at the moment it happens, in three appended layers:
@@ -23,7 +23,7 @@
  * The approach note is text a MODEL wrote and another model may later read. It is stored
  * as DATA and is capped (APPROACH_NOTE_CAP). Wherever it reaches a prompt it MUST travel
  * inside the untrusted-data fence the runner already uses for task titles and notes
- * (args.mjs `fencedBlock`) — the same containment, no exception (T-9-08).
+ * (args.mjs `fencedBlock`) — the same containment, no exception.
  *
  * ═══════════════════════ SUBSTRATE ═══════════════════════════════════════════════
  * The journal rides the EXISTING per-task attempt ledger — the same directory, the same
@@ -61,7 +61,7 @@ export const DISPATCH_REASONS = Object.freeze({
   budget_declined: 'отказано по бюджету',
 })
 
-/** The approach note cap — the note is DATA and data is bounded (T-9-08). */
+/** The approach note cap — the note is DATA and data is bounded. */
 export const APPROACH_NOTE_CAP = 4096
 /** How many rejected alternatives / influences one note may carry. */
 export const APPROACH_LIST_CAP = 12
@@ -75,7 +75,7 @@ export const STRUCT_FIELD_CAP = 200
 /**
  * What an id may look like in the memory layer. Deliberately narrow: a note BODY (spaces,
  * punctuation, newlines) cannot match, so content can never ride into the journal disguised
- * as an identifier (T-9-10).
+ * as an identifier.
  */
 const MEMORY_ID_RE = /^[A-Za-z0-9._/@-]{1,120}$/
 
@@ -165,7 +165,7 @@ export function normalizeJournalPayload(layer, payload = {}) {
   }
 
   // memory — IDS ONLY. Anything that does not read as an identifier is dropped, so a note
-  // body can never travel in the journal (T-9-10).
+  // body can never travel in the journal.
   const ids = (value) => {
     if (!Array.isArray(value)) return []
     const out = []

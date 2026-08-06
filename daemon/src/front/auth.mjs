@@ -1,6 +1,6 @@
 /**
  * auth.mjs — timing-safe bearer/cookie auth + a per-remote failure-window rate
- * limiter for the roster front (Phase 9.5 Plan 08, Task 1; D-9.5-05a, T-9.5-24).
+ * limiter for the roster front.
  *
  * ═══════════════════════ POSTURE: notify.mjs INVERTED ═════════════════════════════
  * notify.mjs is the sanctioned OUTBOUND-only path: no server, no listener, response
@@ -8,13 +8,13 @@
  * inverts that discipline into an equally-total defensive posture:
  *   - TOKEN ON EVERY ROUTE. Nothing here is reachable without the bearer token the
  *     founder holds — compared with crypto.timingSafeEqual on equal-length buffers so
- *     the comparison leaks no timing oracle (T-9.5-24). A length mismatch returns
+ *     the comparison leaks no timing oracle. A length mismatch returns
  *     false WITHOUT calling timingSafeEqual (which throws on unequal lengths) — never
  *     an exception, never a per-byte early exit.
  *   - QUERY STRING IS NEVER A CREDENTIAL SOURCE. authed() reads the Authorization
  *     header OR the HttpOnly session cookie ONLY. A `?token=` is honoured EXACTLY once,
  *     by the GET / bootstrap in server.mjs, to mint the cookie — never by authed(), so
- *     /api/events rejects a query-string token even when it is correct (T-9.5-34).
+ *     /api/events rejects a query-string token even when it is correct.
  *   - HttpOnly + SameSite=Strict COOKIE. The bootstrap exchange is the only place the
  *     token ever rides a URL; from then on it lives in a cookie JS cannot read.
  *   - FAILURE RATE LIMIT. Repeated auth failures from one remote address trip a 429
@@ -89,7 +89,7 @@ export function cookieToken(req) {
 /**
  * authed(req, expectedToken) — TRUE iff the request carries the correct token via the
  * Authorization header OR the session cookie (both timing-safe). The query string is
- * NEVER consulted (that is the bootstrap's job alone — T-9.5-34).
+ * NEVER consulted (that is the bootstrap's job alone).
  *
  * @param {object} req
  * @param {string} expectedToken
@@ -117,7 +117,7 @@ export function sessionCookie(token) {
 
 /**
  * createFailureLimiter({windowMs, maxFailures, clock}) — a per-remote-address auth-
- * failure window (V2, T-9.5-24). record(addr) stamps one failure; isLimited(addr) is
+ * failure window. record(addr) stamps one failure; isLimited(addr) is
  * true once the failures within the rolling window EXCEED maxFailures (so the
  * (maxFailures+1)-th failure trips it — the 11th at the default 10). Holds only
  * ephemeral timestamps; a restart forgets them (never task truth).

@@ -69,7 +69,7 @@
  *     it did not see.
  *   - PRODUCED -> VERIFYING -> ACCEPTED. `complete()` is not acceptance: it hands the task
  *     to a human (`markAwaitingApproval`), and the front's approve path is where a
- *     disposition appears. Routing a completion through ACCEPTED would need canon
+ *     disposition appears. Routing a completion through ACCEPTED would need the fleet's
  *     invariant 1's receipt AND authorized disposition, and manufacturing the disposition
  *     here is exactly the self-certification that invariant exists to forbid.
  *

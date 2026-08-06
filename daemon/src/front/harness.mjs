@@ -1,20 +1,20 @@
 /**
- * harness.mjs — THE HARNESS READ MODEL + THE TWO-STEP ACTIVATION APPLIERS (Phase 9.5
- * Plan 11, Task 2; D-9.5-09, wireframe modules 8/9/12). The data contract the Phase 9.6
- * SPA renders modules 8 (агенты), 9 (навыки), 12 (MCP-подключения) against — engine only.
+ * harness.mjs — THE HARNESS READ MODEL + THE TWO-STEP ACTIVATION APPLIERS. The data
+ * contract the SPA renders the агенты / навыки / MCP-подключения screens against —
+ * engine only.
  *
- * ═══════════════════════ THE TWO-STEP ACTIVATION LAW ══════════════════════════════
+ * ═══════════════════════ THE TWO-STEP ACTIVATION LAW ═════════════════════════════
  * «Включить» is TWO human acts, and this module owns the second one only:
  *   (1) APPROVE — the EXISTING serialized merge verb (server.mjs handleApprove) lands the
  *       forged definition FILE in the host clone's tree. Not here.
  *   (2) TOGGLE / ASSIGN — an applier here writes the roster config FROM THE FILE'S FIELDS
  *       (lane/provider/model/effort read out of the merged `.claude/agents/<id>.md`) + pool
  *       defaults. The request contributes ONLY an id and a boolean — the founder's free-text
- *       description NEVER crosses into a config file or a spawn command (T-9.5-37/39).
+ *       description NEVER crosses into a config file or a spawn command.
  * So a new profile can only be built from a definition file that a human already approved
  * into the tree; an unknown id with no file is refused. Request text → data, never config.
  *
- * ═══════════════════════ THE MCP REGISTRY LAW (T-9.5-38, RCE-closed) ═════════════
+ * ═══════════════════════ THE MCP REGISTRY LAW (RCE-closed) ═══════════════════════
  * The live registry `~/.sma-daemon/mcp.json` (SMA_DAEMON_MCP override) maps id →
  * {command, args, envNames, enabled}. Entries — command, args, env-var NAMES — are created
  * and edited ONLY by a human on the host; NO daemon code path here writes them. The front
@@ -24,12 +24,12 @@
  * «+ Подключить инструмент» is a forge PROPOSAL draft (kind 'mcp'), which a human copies into
  * the registry by hand — never an automatic launch command.
  *
- * ═══════════════════════ SECRETS-VIEW POSTURE (T-9.5-41) ═════════════════════════
+ * ═══════════════════════ SECRETS-VIEW POSTURE ════════════════════════════════════
  * The read model is EXPLICIT-PICK. It exposes env-var NAMES with a '[set]'/'[unset]' status
  * (whether the NAMED var is populated in the process env) — never a token, never a command,
  * never a file body. Env VALUES never appear in a harness payload.
  *
- * ═══════════════════════ THE STOCK TEAM (SB-031 part 1, phase 11) ════════════════
+ * ═══════════════════════ THE STOCK TEAM ══════════════════════════════════════════
  * `readStockTeam` is the SECOND read model in this module and it answers a different
  * question than `agents` does. `agents` is the PIPELINE: the worker profiles the roster
  * config declares. The stock team is what ARRIVED — every definition file the installer
@@ -39,7 +39,7 @@
  * Fork state is a CONTENT DIGEST comparison, never a modification time: the installer also
  * leaves a pristine copy of every shipped definition at `<config>/sma-core/agents/<id>.md`,
  * so «edited» is «the editable copy no longer digests to the pristine one». A reinstall
- * rewrites mtimes and would otherwise report the whole roster as edited (T-11-06-04).
+ * rewrites mtimes and would otherwise report the whole roster as edited.
  *
  * «A newer shipped version is available» needs a recorded baseline, and there is exactly one
  * honest place to keep it: the worker profile, written at the moment of activation by
@@ -124,7 +124,7 @@ function unquote(v) {
  * for it — which does not look like a failure anywhere downstream: an agent card lost its
  * can/cannot, and profileFromDefinition quietly built a DEFAULT profile instead of the
  * file's declared lane/provider/model, breaking the two-step activation law's promise that
- * a profile comes out of the file. A CRLF checkout is the same file (phase 11 plan 06).
+ * a profile comes out of the file. A CRLF checkout is the same file.
  */
 function readFrontmatter(text) {
   const s = String(text ?? '').replace(/\r\n/g, '\n')
@@ -258,7 +258,7 @@ function scanSkills(config, repoDir, fsImpl) {
   return out
 }
 
-// ── the stock team read model (SB-031 part 1) ──
+// ── the stock team read model ──
 
 /**
  * The reserved toggle target meaning «the whole shipped team», not one agent id. It is
@@ -423,7 +423,7 @@ function mcpEntry(server, env) {
  * approval (kind + draftPath); stockTeam is the installed roster (readStockTeam). No field
  * carries tokens, commands, or file bodies.
  *
- * `stockTeam` is ADDITIVE (phase 11 plan 06): the four keys modules 8/9/12 already read keep
+ * `stockTeam` is ADDITIVE: the four keys the existing screens already read keep
  * their shape exactly, the way the queue side's `project` field was added.
  *
  * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
@@ -464,12 +464,13 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
  * Write the PERSISTED shape of the config atomically to its resolved path (fsImpl fs
  * overrides). The appliers here receive the object `loadConfig` returned, which carries the
  * three read-time working directories; `stripDerivedDirs` is what keeps a toggle from
- * pinning them into the file (D-11-DEFER-19 — the same law the registry doors obey).
+ * pinning them into the file — the same law the registry doors obey.
  *
  * THE BASELINE IS `launchDir`, NOT `repoDir`. Every applier in this file needs BOTH: the
  * repoDir to READ from (role files, the skills tree, the installed roster) and the launch
  * directory to decide what counts as derived when it WRITES. Handing the repoDir to the
- * writer is the LP-3 defect — a toggle then deletes the operator's pin from the file. The
+ * writer is the defect that deleted a pin once already — a toggle then removes the
+ * operator's pin from the file. The
  * default is this process's own cwd, so a caller that omits it still compares against a
  * launch directory rather than against a served tree.
  */
@@ -557,7 +558,7 @@ export function applyAgentToggle({ config, id, enabled, repoDir, launchDir, fsIm
 /**
  * applyStockTeamToggle({config, enabled, repoDir, launchDir, fsImpl, env, homedir}) → the
  * updated config.
- * THE single «switch the pipeline on» act (SB-031 part 1), reached through the EXISTING
+ * THE single «switch the pipeline on» act, reached through the EXISTING
  * POST /api/agent/toggle door under the reserved target STOCK_TEAM_TARGET — no route added.
  *
  * It obeys the two-step activation law exactly as applyAgentToggle does: it only ever acts on
@@ -662,7 +663,7 @@ export function applySkillAssign({ config, skillId, workerIds, repoDir, launchDi
  * serverId must match an EXISTING entry (MCP_ID_RE); ONLY the `enabled` boolean changes — the
  * applier reads the entry, flips one boolean, rewrites via atomicWriteJson. There is NO input
  * by which command/args/envNames could be altered, so the post-toggle registry deep-equals the
- * original except `enabled` (T-9.5-38, RCE-closed). Unknown id → UnknownMcpServerError.
+ * original except `enabled` (RCE-closed). Unknown id → UnknownMcpServerError.
  */
 export function applyMcpToggle({ registry, serverId, enabled, homedir = osHomedir, env = process.env, fsImpl }) {
   if (typeof serverId !== 'string' || !MCP_ID_RE.test(serverId)) {

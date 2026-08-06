@@ -1,6 +1,6 @@
 /**
  * onboarding.mjs — the first-run interview: the engine behind the «Первый запуск»
- * screen (D-9.7-16, T-9.7-43/44).
+ * screen.
  *
  * WHAT IT IS: a state machine over four steps of plain-language questions —
  * «О проекте · Как выкатываете · Что значит готово · Записная книжка» — asked one
@@ -8,7 +8,7 @@
  * interview ends it produces EXACTLY the artifacts the terminal onboarding
  * produces: `.sma/profile.json` and the starter corpus notes.
  *
- * THE LAW IT ENFORCES — ONE WRITER (D-9.7-16). This module writes NO profile and
+ * THE LAW IT ENFORCES — ONE WRITER. This module writes NO profile and
  * NO note of its own. `complete()` hands the collected answers to
  * `scripts/sma/lib/profile-writer.mjs` and returns what that module reports. The
  * screen and the terminal flow therefore cannot drift: they are not two writers
@@ -34,13 +34,13 @@
  *     nobody has visited, in screen order. A skipped question is VISITED but
  *     UNANSWERED, so the cursor moves on and the answer stays absent — a skip is
  *     an answer the profile simply will not carry.
- *   - SECRETS ARE REFUSED AT THE DOOR (T-9.7-43). The writer's own heuristic runs
+ *   - SECRETS ARE REFUSED AT THE DOOR. The writer's own heuristic runs
  *     on every answer BEFORE it reaches memory or the draft file: a token typed
  *     into a text box must not survive in a file on the way to the profile that
  *     would have rejected it.
  *   - UNKNOWN KEYS ARE REFUSED BY NAME. A key from another step, or no step at
  *     all, throws instead of silently landing in a map nobody reads.
- *   - THERE IS AN EXIT THAT WRITES NOTHING (D-11-DEFER-17). `complete()` is one way
+ *   - THERE IS AN EXIT THAT WRITES NOTHING. `complete()` is one way
  *     out of the interview and `declineForNow()` is the other: it records «позже»
  *     in the DAEMON's own data directory and leaves the project untouched — no
  *     profile, no starter notes, not even the draft, which stays so the interview
@@ -87,7 +87,7 @@ export const DRAFT_FILE = 'onboarding-draft.json'
 
 /**
  * Where «спросите меня позже» is remembered — in the DAEMON's own data directory, never in
- * the project (D-11-DEFER-17).
+ * the project.
  *
  * THE EXIT THAT LEAVES THE DISK ALONE. Until now the only way out of the interview was
  * `complete()`, which writes `.sma/profile.json` AND seeds starter notes into the project.
@@ -385,7 +385,7 @@ export function createOnboarding({ targetDir = process.cwd(), stateDir, fsImpl, 
   const declinedRecord = declinedPath ? readJsonSafe(declinedPath, { readFn: io.readFileSync }) : null
   let declined = !!(declinedRecord && declinedRecord.declined === true)
 
-  // Resume: a draft left by a previous engine over this directory (T-9.7-44).
+  // Resume: a draft left by a previous engine over this directory.
   const draft = readJsonSafe(draftPath, { readFn: io.readFileSync })
   if (draft && draft.version === DRAFT_VERSION) {
     for (const [key, text] of Object.entries(draft.answers ?? {})) {
@@ -509,7 +509,7 @@ export function createOnboarding({ targetDir = process.cwd(), stateDir, fsImpl, 
    *
    * Order is the safety story: locate the question, screen the text for secrets,
    * and only then touch memory or the draft. A refusal at either gate leaves both
-   * exactly as they were (T-9.7-43).
+   * exactly as they were.
    *
    * An empty text is a SKIP: visited, unanswered, cursor moves on.
    */

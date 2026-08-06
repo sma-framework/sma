@@ -1,6 +1,5 @@
 /**
- * server.mjs — the roster front's node:http server + the CLOSED route table (Phase
- * 9.5 Plan 08; D-9.5-05/05a/09/11, T-9.5-24/25/26/27/34/35).
+ * server.mjs — the roster front's node:http server + the CLOSED route table.
  *
  * ═══════════════════════ THE FIRST SANCTIONED INBOUND SURFACE ═════════════════════
  * The whole SMA product has, until now, had NO inbound socket (the guard's SMA-NOTIFY-1
@@ -8,11 +7,11 @@
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
  *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY THIRTY routes
- *     (re-frozen 2026-08-01 per D-9.7-09 — the V5.1 growth is EXPLICIT, declared ONCE
+ *     (re-frozen 2026-08-01 — the V5.1 growth is EXPLICIT, declared ONCE
  *     for the whole release and never incremental; the previous freeze was FOURTEEN,
- *     2026-07-17, D-9.5-09). A path outside the table is 404 BEFORE any auth-error
- *     detail (no route reflection). No command-exec endpoint exists or ever may
- *     (T-9.5-25) — adding a route requires touching THIS table AND the guard
+ *     2026-07-17). A path outside the table is 404 BEFORE any auth-error
+ *     detail (no route reflection). No command-exec endpoint exists or ever may —
+ *     adding a route requires touching THIS table AND the guard
  *     invariant that polices it. Object.keys(ROUTES).length === 30 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
@@ -20,22 +19,22 @@
  *     the address is resolved server-side from the peers registry and a request can
  *     never name an arbitrary host. The entry point stays the same and only the
  *     addressee changes, so the DoR/approve gates can never be re-implemented a second
- *     time behind a parallel «peer» route (D-9.7-07).
+ *     time behind a parallel «peer» route.
  *   - TOKEN EVERYWHERE. Every route (including GET /api/state) is auth-gated before its
  *     handler runs (auth.mjs, timing-safe). Constant-body 401 (no oracle), 429 on a
- *     failure-window breach (T-9.5-24).
+ *     failure-window breach.
  *   - REQUEST TEXT IS NEVER EXECUTED. Handlers explicit-pick their inputs and route
  *     them through validateTask / the merge verb / CAS — founder free text becomes
- *     DATA (a task title, a return note), never a command (T-9.5-25).
+ *     DATA (a task title, a return note), never a command.
  *   - EXPLICIT-PICK RESPONSES, SIZE CAPS. JSON bodies are explicit-pick objects; POST
  *     bodies are capped at 16 KB with a strict content-type check; diffs are capped and
- *     auth'd (T-9.5-27/35).
+ *     auth'd.
  *
- * The five D-9.5-09 harness routes (GET /api/harness + POST /api/forge, /api/agent/
- * toggle, /api/skill/assign, /api/mcp/toggle) shipped as NAMED 501 stubs so the table
- * was complete and frozen from the first commit; their handlers landed in plan 9.5-11.
+ * The five harness routes (GET /api/harness + POST /api/forge, /api/agent/toggle,
+ * /api/skill/assign, /api/mcp/toggle) shipped as NAMED 501 stubs so the table was
+ * complete and frozen from the first commit; their handlers landed later.
  *
- * The SIXTEEN D-9.7-09 routes (SPA asset serving, projects, machines/federation, chat,
+ * The SIXTEEN V5.1 routes (SPA asset serving, projects, machines/federation, chat,
  * import, onboarding) shipped the SAME way — named 501 stubs, present and auth-gated from
  * the first commit of the release, so every screen was built against the final contract
  * instead of an imagined one. Their handlers landed in plans 9.7-09 (static + projects),
@@ -74,10 +73,10 @@ import { createOnboarding } from './onboarding.mjs'
 // NOTE: only the pairing INSTRUCTION BUILDER is imported from federation.mjs — a pure text
 // function with no fetch and no state. The federation ENGINE (poll/aggregate/proxy/pairing
 // book) is injected via deps.federation, so no request path can open an outbound daemon→
-// daemon call except through the instance the composition root wired (D-9.7-07).
+// daemon call except through the instance the composition root wired.
 // NOTE: readHarness + the appliers (harness.mjs) are INJECTED via deps — never statically
 // imported here — so each per-task commit stays independently green and no request path can
-// reach a config/registry write except through the wired applier (T-9.5-38/39). DRAFT_KINDS
+// reach a config/registry write except through the wired applier. DRAFT_KINDS
 // is a frozen leaf constant (forge.mjs), imported for the /api/forge body validation.
 // NOTE: parseReceiptSummary (state.mjs, Task 2) is INJECTED via deps.parseReceiptSummary
 // — never statically imported here — so server.mjs carries no build edge onto state.mjs
@@ -89,7 +88,7 @@ const ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 
 /**
  * The reserved POST /api/agent/toggle target meaning «the whole shipped SMA team» rather than
- * one agent id (SB-031 part 1). DECLARED HERE rather than imported, because harness.mjs is the
+ * one agent id. DECLARED HERE rather than imported, because harness.mjs is the
  * appliers module and this file must carry no static edge onto it — the same reason readHarness
  * and the appliers arrive through deps. It is the same literal as harness.mjs's
  * STOCK_TEAM_TARGET, and harness.test.ts asserts the two never drift apart.
@@ -98,8 +97,8 @@ export const STOCK_TEAM_TARGET = '__stock-team__'
 
 /**
  * The reserved POST /api/approve target PREFIX meaning «apply the migration proposal for one
- * note of the connected project» rather than «approve a task» (SB-031 part 2, phase 11 plan
- * 09). It rides the approve door for the same reason the stock team rides the toggle door:
+ * note of the connected project» rather than «approve a task». It rides the approve door
+ * for the same reason the stock team rides the toggle door:
  * the route table is frozen at thirty and a per-file yes is, structurally, exactly what
  * approve already is — a human's word, serialized, on one named unit of work.
  *
@@ -112,7 +111,7 @@ export const PROJECT_MIGRATION_TARGET_PREFIX = '__migrate__'
 /** POST JSON body cap (V5) — a roster body is a handful of short fields, never a blob. */
 const JSON_BODY_CAP = 16 * 1024
 
-/** Diff response cap (T-9.5-27) — a raw diff over LAN is auth'd AND size-bounded. */
+/** Diff response cap — a raw diff over LAN is auth'd AND size-bounded. */
 const DIFF_CAP = 500 * 1024
 
 /** Commit-log cap on the task-timeline read (bounded, never unbounded git output). */
@@ -168,8 +167,8 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (D-9.7-09, re-frozen 2026-08-01; the single freeze
- * revision of the V5.1 release, superseding the FOURTEEN of D-9.5-09). Exactly THIRTY
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-01; the single freeze revision
+ * of the V5.1 release, superseding the FOURTEEN before it). Exactly THIRTY
  * entries mapping `${METHOD} ${path-pattern}` → handler name. `:id` marks the two
  * dynamic id segments (/api/task/:id, /api/diff/:id), both bound to ID_RE; `:file` marks
  * the one dynamic asset segment (/assets/:file), bound to ASSET_RE. This object IS the
@@ -177,12 +176,12 @@ const BUILD_INSTRUCTION_HTML =
  * (Object.keys(ROUTES).length === 30) and no route may be added without also touching
  * that guard invariant.
  *
- * The first fourteen are the D-9.5-09 surface; the sixteen below them are the declared-once
+ * The first fourteen are the original surface; the sixteen below them are the declared-once
  * V5.1 growth. ALL THIRTY ARE LIVE: the table was written down once, at the start of the
  * release, and every slot was filled by its own plan without the table ever moving.
  */
 export const ROUTES = Object.freeze({
-  // ── the D-9.5-09 fourteen (live) ──
+  // ── the original fourteen (live) ──
   'GET /': 'handleIndex',
   'GET /api/state': 'handleState',
   'GET /api/done': 'handleDone',
@@ -197,7 +196,7 @@ export const ROUTES = Object.freeze({
   'POST /api/agent/toggle': 'handleAgentToggle',
   'POST /api/skill/assign': 'handleSkillAssign',
   'POST /api/mcp/toggle': 'handleMcpToggle',
-  // ── the D-9.7-09 sixteen (declared here, filled by their own plans) ──
+  // ── the V5.1 sixteen (declared here, filled one at a time) ──
   'GET /assets/:file': 'handleAsset',
   'GET /api/projects': 'handleProjects',
   'POST /api/project/add': 'handleProjectAdd',
@@ -249,7 +248,7 @@ function sendStatic(res, body, contentType, cacheControl) {
   res.end(body)
 }
 
-/** The 401 body is a CONSTANT — no reason, no route, no oracle (T-9.5-24). */
+/** The 401 body is a CONSTANT — no reason, no route, no oracle. */
 const UNAUTHORIZED_BODY = 'unauthorized'
 const send401 = (res) => sendText(res, 401, UNAUTHORIZED_BODY)
 const send404 = (res) => sendText(res, 404, 'not found')
@@ -358,7 +357,7 @@ function staticReader(deps) {
 }
 
 /**
- * GET / — THE APP RIDES WITH THE DAEMON (D-9.7-04). The built index.html is read off disk
+ * GET / — THE APP RIDES WITH THE DAEMON. The built index.html is read off disk
  * and served behind the SAME token as every other route: no second web server, no second
  * port, no second auth story. A missing build is a normal state, not a fault — it answers
  * 200 with the one command that fixes it (a 500 would tell the founder nothing).
@@ -377,7 +376,7 @@ function handleIndex({ res, deps }) {
 /**
  * GET /assets/:file — the hashed bundles of that same build.
  *
- * TRAVERSAL IS IMPOSSIBLE BY CONSTRUCTION (T-9.7-21): the name was already matched against
+ * TRAVERSAL IS IMPOSSIBLE BY CONSTRUCTION: the name was already matched against
  * ASSET_RE by matchRoute — a name carrying a separator, a `..`, a percent-escape or a
  * leading dot is a 400 BEFORE this function is entered, so the disk is never touched for a
  * hostile name. The re-test below is defence in depth for a direct handler call; the
@@ -441,7 +440,7 @@ function stateDeps(config, deps, project) {
 /**
  * GET /api/state — the one-poll roster payload (deriveState; Task 2 + costs in Task 4).
  * The optional `?project=` narrows the TASKS of the payload and nothing else — the project
- * switcher itself has to keep seeing every project (D-9.7-01).
+ * switcher itself has to keep seeing every project.
  */
 async function handleState({ res, query, config, deps }) {
   if (typeof deps.deriveState !== 'function') return send501(res)
@@ -506,7 +505,7 @@ function readTaskJournal(id, deps) {
 
 /**
  * GET /api/task/:id — the explicit-pick task-timeline read model (Task 4). Surfaces the
- * task's `acceptance` (D-9.5-11 item 1 — the DoR contract wherever the task is judged),
+ * task's `acceptance` (the DoR contract wherever the task is judged),
  * the per-attempt chain (readAttempts) with failure_reason + reasonLabel, a parsed
  * receipt summary per attempt, the branch, a capped commit log, and returned notes. The
  * 9.6 Task-card renders from this alone. Unknown id → 404.
@@ -535,7 +534,7 @@ async function handleTask({ res, params, config, deps }) {
   } catch {
     rawAttempts = []
   }
-  // THE THREE LAYERS (D-9.7-14). The journal rides the SAME ledger seam as the attempts —
+  // THE THREE LAYERS. The journal rides the SAME ledger seam as the attempts —
   // no second store — and a task created before the journal existed reads as empty layers,
   // never as an error: backward compatibility is a hard requirement, not a nicety.
   const journal = readTaskJournal(id, deps)
@@ -551,7 +550,7 @@ async function handleTask({ res, params, config, deps }) {
     failureReason: a.failureReason ?? null,
     reasonLabel: a.failureReason ? REASON_LABELS[a.failureReason] ?? null : null,
     receipt: parseReceipt(a.receiptRef, { execGit: deps.execGit }),
-    // A row the reconciliation pass appended after the fact (D-11-DEFER-07) says so on the
+    // A row the reconciliation pass appended after the fact says so on the
     // card too. Without this a card would show an attempt with no worker and no provider as
     // though somebody had watched it produce nothing; the flag exists precisely so a reader
     // never has to guess which kind of row is in front of them. Absent (never false) on
@@ -587,7 +586,7 @@ async function handleTask({ res, params, config, deps }) {
       lane: row.lane ?? null,
       status: row.status ?? null,
       attempt: row.attempt ?? null,
-      acceptance: row.acceptance ?? null, // D-9.5-11 item 1 — DoR contract, «обещано»
+      acceptance: row.acceptance ?? null, // the DoR contract, «обещано»
     },
     attempts,
     branch,
@@ -598,7 +597,7 @@ async function handleTask({ res, params, config, deps }) {
 }
 
 /**
- * GET /api/diff/:id — the plain-text worktree-branch diff, auth'd (T-9.5-27) and capped
+ * GET /api/diff/:id — the plain-text worktree-branch diff, auth'd and capped
  * at DIFF_CAP. The id already passed ID_RE, so it is safe to hand to the injected git.
  */
 async function handleDiff({ res, params, config, deps }) {
@@ -618,8 +617,8 @@ async function handleDiff({ res, params, config, deps }) {
 /**
  * GET /api/events — the SSE handshake. Auth already happened in the dispatcher (like
  * every route); a query-string token is rejected there because authed() never reads the
- * query (T-9.5-34). addClient returns the SSE stream, or false at capacity → 503
- * (T-9.5-36). The stream is left open — no res.end here.
+ * query. addClient returns the SSE stream, or false at capacity → 503.
+ * The stream is left open — no res.end here.
  */
 function handleEvents({ res, deps }) {
   const hub = deps.hub
@@ -630,7 +629,7 @@ function handleEvents({ res, deps }) {
 }
 
 /**
- * relayPeerAnswer(res, answer) — the peer's own status and body, unmodified (D-9.7-07).
+ * relayPeerAnswer(res, answer) — the peer's own status and body, unmodified.
  * A JSON body is re-serialized as JSON, anything else as text; an implausible status
  * degrades to 502 rather than being echoed into a response line.
  */
@@ -641,10 +640,10 @@ function relayPeerAnswer(res, { status, body } = {}) {
 }
 
 /**
- * The OPTIONAL `machine` field of the three action bodies (D-9.7-07) — the whole of
+ * The OPTIONAL `machine` field of the three action bodies — the whole of
  * «do it on another machine». It is an IDENTIFIER matched by ID_RE, never a url: the
  * hub resolves the address from its own peers registry, so a request can never point an
- * action at an arbitrary host (T-9.7-04). Absent/empty = this machine, and that path is
+ * action at an arbitrary host. Absent/empty = this machine, and that path is
  * left exactly as it was — this function returns FALSE and the local handler continues.
  *
  * WHEN THE FIELD IS SET, THE HUB RE-ISSUES AND RELAYS. It runs none of the action's logic:
@@ -655,7 +654,7 @@ function relayPeerAnswer(res, { status, body } = {}) {
  *     request, so it cannot re-proxy it onward: a proxy chain is structurally impossible.
  *   - a transport failure is reduced to a STATUS. The peer's (or the runtime's) message is
  *     discarded rather than wrapped — the same discipline federation.mjs keeps on the way
- *     out, because a message may quote the outgoing header (T-9.7-31).
+ *     out, because a message may quote the outgoing header.
  *
  * @returns {Promise<boolean>} true when a response was already sent (proxied or refused)
  */
@@ -690,8 +689,7 @@ async function proxyToMachine(res, body, deps, path) {
  * POST /api/enqueue — a founder roster button. Body {title, lane, provider?, model?,
  * effort?, priority?, machine?}. Explicit-pick: an unknown key → 400 before anything
  * runs. validateTask gates it; the id is minted `R-<epochMs>` with source:'roster'
- * (founder-explicit → DoR-exempt). Founder text becomes a task TITLE, never a command
- * (T-9.5-25).
+ * (founder-explicit → DoR-exempt). Founder text becomes a task TITLE, never a command.
  */
 async function handleEnqueue({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -732,7 +730,7 @@ async function handleEnqueue({ req, res, config, deps }) {
  * founder holds; the daemon never calls it). Body {taskId, machine?}. CAS the row
  * awaiting_approval→approving (claim generation), run the EXISTING serialized merge verb
  * on wt/<taskId> LOCALLY (never a push), then CAS to approved on green / back to
- * awaiting_approval on red with the merge receipt. A lost CAS race → 409 (T-9.5-26).
+ * awaiting_approval on red with the merge receipt. A lost CAS race → 409.
  *
  * OR, when the id carries the reserved PROJECT_MIGRATION_TARGET_PREFIX, → the connected
  * project's per-file migration applier. Same door, same token, same «a human said yes to
@@ -810,7 +808,7 @@ async function handleApprove({ req, res, deps }) {
 /**
  * POST /api/return — return-with-comment. Body {taskId, note, title?, lane?, machine?}
  * (note <= 2000). CAS awaiting_approval→returned, then re-enqueue with source:'return' +
- * the note + attempt+1. The note is DATA (T-9.5-25). A lost race → 409.
+ * the note + attempt+1. The note is DATA. A lost race → 409.
  */
 async function handleReturn({ req, res, deps }) {
   const body = await readJsonBody(req)
@@ -869,13 +867,13 @@ function emitSafe(deps, event) {
   }
 }
 
-// ── the five D-9.5-09 harness handlers (the route table stays FROZEN at 14) ──
+// ── the five harness handlers (the route table stays FROZEN at 14) ──
 //
 // All consume readHarness + the appliers via INJECTED deps (never a static import), so no
 // request path reaches a config/registry write except through the wired applier. Every body
 // is EXPLICIT-PICK: an unknown key → 400 BEFORE any applier runs (a smuggled `command` on
 // /api/mcp/toggle is rejected at the parse layer, so RCE-through-the-toggle is structurally
-// impossible — T-9.5-38). Applier named errors map to 404 (unknown id / missing definition
+// impossible). Applier named errors map to 404 (unknown id / missing definition
 // file) or 400 (validation). Success returns the updated slice + a `harness.updated` hint.
 
 /** Reject any body key outside `allowed` (explicit-pick) → returns true if a 400 was sent. */
@@ -890,7 +888,7 @@ function rejectUnknownKeys(res, body, allowed) {
 }
 
 /**
- * refreshWorkers(config, next) — the roster half of the ONE-config rule (LP-2-02).
+ * refreshWorkers(config, next) — the roster half of the ONE-config rule.
  *
  * WHY THIS EXISTS, in the words of the live proof: the founder pressed «Включить команду» in
  * the window and «ничего не произошло» — no effect, no error. The door was fine. The applier
@@ -999,7 +997,7 @@ async function handleForge({ req, res, deps }) {
 /**
  * POST /api/agent/toggle — body {id, enabled:boolean} → applyAgentToggle (file-derived), OR,
  * when `id` is the reserved STOCK_TEAM_TARGET, → applyStockTeamToggle: the one act that
- * switches the whole shipped SMA team on (SB-031 part 1, phase 11 plan 06).
+ * switches the whole shipped SMA team on.
  *
  * The reserved target rides THIS door on purpose. The route table is frozen at thirty and its
  * size is the guard invariant; a «switch the team on» route would have had to move it. So the
@@ -1019,7 +1017,7 @@ async function handleAgentToggle({ req, res, config, deps }) {
     try {
       // BOTH directories: `repoDir` is the tree the applier READS the installed roster from,
       // and `configIo` carries the write seam — including the launchDir baseline, which is
-      // never the served repoDir (LP-3).
+      // never the served repoDir.
       const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, ...configIo(deps) })
       refreshWorkers(config, next)
       const touched = (next && next.workers ? next.workers : []).filter((w) => w && w.stockDigest !== undefined)
@@ -1069,7 +1067,7 @@ async function handleSkillAssign({ req, res, config, deps }) {
  * POST /api/mcp/toggle — body {serverId, enabled:boolean} → applyMcpToggle (boolean-only). A
  * smuggled `command` (or any other) key is rejected by rejectUnknownKeys BEFORE the registry
  * is even loaded, so zero applier calls occur — RCE-through-the-toggle is impossible by
- * construction (T-9.5-38).
+ * construction.
  */
 async function handleMcpToggle({ req, res, deps }) {
   if (typeof deps.applyMcpToggle !== 'function' || typeof deps.loadMcpRegistry !== 'function') return send501(res)
@@ -1089,15 +1087,15 @@ async function handleMcpToggle({ req, res, deps }) {
   }
 }
 
-// ── the D-9.7-09 sixteen, all filled (the route table stayed FROZEN at 30 throughout) ──
+// ── the V5.1 sixteen, all filled (the route table stayed FROZEN at 30 throughout) ──
 //
 // Declared once, filled by their own plans, in the order the release needed them. Not one
 // of them is a stub any longer, and the table they live in never changed a single key —
 // which was the point of writing it down in full on the first day. The dispatcher runs
 // authed() BEFORE any handler, so an unauthenticated call to any route looks identical
-// from outside and cannot map the surface by status code (T-9.7-01).
+// from outside and cannot map the surface by status code.
 
-// ── the four project doors (D-9.7-01/08; the route table stays FROZEN at 30) ──
+// ── the four project doors (the route table stays FROZEN at 30) ──
 //
 // A registry WRITE is a config write, so — exactly like the harness appliers — the three
 // config.mjs doors (addProject / renameProject / selectProject) arrive through INJECTED
@@ -1120,12 +1118,12 @@ function configIo(deps) {
     ...(deps.fsImpl ? { fsImpl: deps.fsImpl } : {}),
     // The daemon's LAUNCH directory — the fallback the load-time derive used. The writer
     // needs it to tell a value it would derive again from one an operator typed, so a
-    // registry write persists neither (D-11-DEFER-19).
+    // registry write persists neither.
     //
     // NOT `deps.repoDir`. That one is the tree this daemon SERVES, which for a config
     // carrying a pin IS the pin, and handing it to the writer made the strip's test read
     // «pin === pin»: one press in the window deleted the founder's pin from the file
-    // (LP-3, 05.08.2026). The two facts travel together to the same doors and are told
+    // once already. The two facts travel together to the same doors and are told
     // apart only by their names.
     ...(deps.launchDir ? { launchDir: deps.launchDir } : {}),
   }
@@ -1158,7 +1156,7 @@ function pickProject(entry) {
  * GET /api/projects — the switcher's read model: every project with its per-project task
  * counts, plus the active one. It is a SLICE of the same derive /api/state serves (the
  * counts are derived, never stored), explicit-picked to two fields — so no token of the
- * config and no token of a peer can ride out of here by construction (T-9.7-23).
+ * config and no token of a peer can ride out of here by construction.
  */
 async function handleProjects({ res, config, deps }) {
   if (typeof deps.deriveState !== 'function') return send501(res)
@@ -1197,7 +1195,7 @@ async function handleProjectAdd({ req, res, config, deps }) {
 
 /**
  * POST /api/project/rename — body {id, name}. The NAME moves; the id does not, because the
- * id is what rows and worker profiles reference (D-9.7-08). Unknown id → 404.
+ * id is what rows and worker profiles reference. Unknown id → 404.
  */
 async function handleProjectRename({ req, res, config, deps }) {
   if (typeof deps.renameProject !== 'function') return send501(res)
@@ -1228,7 +1226,7 @@ async function handleProjectSelect({ req, res, config, deps }) {
   try {
     const next = deps.selectProject(config, { id: b.id }, configIo(deps))
     refreshRegistry(config, next)
-    // The watcher binds to ONE tree, and the tree just changed (D-11-DEFER-09). The seam is a
+    // The watcher binds to ONE tree, and the tree just changed. The seam is a
     // callback rather than a watcher handle on purpose: a request handler that could stop and
     // start watchers would be a request handler holding a lifecycle, and the composition root
     // is where a lifecycle belongs. It is best-effort — a connection that cannot be re-watched
@@ -1247,7 +1245,7 @@ async function handleProjectSelect({ req, res, config, deps }) {
   }
 }
 
-// ── the four machine doors (D-9.7-06; the route table stays FROZEN at 30) ──
+// ── the four machine doors (the route table stays FROZEN at 30) ──
 //
 // INTRODUCTION IS THE ONE MOMENT A DAEMON TOKEN LEAVES ITS MACHINE, so these four are the
 // most careful handlers in the file, and every one of them is a DELEGATE:
@@ -1256,7 +1254,7 @@ async function handleProjectSelect({ req, res, config, deps }) {
 //   - the registry WRITE goes through the injected config door (addPeer / removePeer),
 //     exactly like the project doors: no request path reaches the config any other way;
 //   - the SSRF guard runs on the joining url BEFORE the write, so a loopback or metadata
-//     address never lands on disk (T-9.7-32);
+//     address never lands on disk;
 //   - THE WIZARD PREPARES, IT DOES NOT EXECUTE: /api/machine/pair returns a SENTENCE for a
 //     human to carry to the other machine. The daemon opens no socket to it and configures
 //     no network — the private mesh stays the founder's own deliberate act.
@@ -1290,7 +1288,7 @@ function hubUrlOf(req, config) {
   return `http://${(config && config.bind) || '127.0.0.1'}:${(config && config.port) || 7777}`
 }
 
-/** The federation role this daemon declares. An absent block means standalone (D-9.7-04). */
+/** The federation role this daemon declares. An absent block means standalone. */
 function federationRole(config) {
   return (config && config.federation && config.federation.role) || 'standalone'
 }
@@ -1310,8 +1308,8 @@ function pickMachine(m) {
  * GET /api/machines — the «Машины и проекты» read model: this machine, then every peer,
  * with presence and the age of what is being shown. It is the SAME shape `machines[]`
  * carries inside /api/state (the screen types it once), explicit-picked again here so
- * neither a peer url nor a peer token can ride out even if the registry grows a field
- * (T-9.7-05). A standalone daemon answers honestly with exactly one machine: its own.
+ * neither a peer url nor a peer token can ride out even if the registry grows a field.
+ * A standalone daemon answers honestly with exactly one machine: its own.
  */
 function handleMachines({ res, config, deps }) {
   const self = {
@@ -1334,7 +1332,7 @@ function handleMachines({ res, config, deps }) {
  * Hub-only: a standalone or peer daemon has nobody to introduce anybody to, and answering
  * anyway would mint live secrets on a machine that will never consume them. The response
  * carries the invitation (its whole purpose) and NOT the hub's own token — the instruction
- * NAMES that token as a placeholder so the reader knows what to paste (T-9.7-05).
+ * NAMES that token as a placeholder so the reader knows what to paste.
  */
 async function handleMachinePair({ req, res, config, deps }) {
   if (federationRole(config) !== 'hub') {
@@ -1397,7 +1395,7 @@ async function handleMachineAdd({ req, res, config, deps }) {
 
   const entry = { id: m.id, name, url: m.url, token: m.token }
   try {
-    fed.validatePeerUrl(entry) // the SSRF guard runs BEFORE the write (T-9.7-32)
+    fed.validatePeerUrl(entry) // the SSRF guard runs BEFORE the write
     const next = deps.addPeer(config, entry, configIo(deps))
     config.federation = next.federation // the next read must not serve the old registry
     fed.registerPeer(entry) // live now, not after a restart
@@ -1432,7 +1430,7 @@ async function handleMachineRemove({ req, res, config, deps }) {
   return sendJson(res, 200, { ok: true, id: b.id })
 }
 
-// ── the two conversation doors (D-9.7-13/15; the route table stays FROZEN at 30) ──
+// ── the two conversation doors (the route table stays FROZEN at 30) ──
 //
 // The engine is INJECTED (deps.handleChatTurn / deps.readChatHistory), not imported: the
 // free branch of a conversation spawns a child process, and a capability like that reaches
@@ -1516,7 +1514,7 @@ function pickTurn(t) {
  * The `chat.reply` hint fires AFTER the engine has returned, which is after both turns are
  * on the transcript — a screen that re-reads on the hint can never find the book behind the
  * event. The hint carries a turn id and a status and NOTHING ELSE: the founder's question
- * and the answer's words go to the caller that asked, not to every open screen (T-9.7-39).
+ * and the answer's words go to the caller that asked, not to every open screen.
  */
 async function handleChat({ req, res, config, deps }) {
   if (typeof deps.handleChatTurn !== 'function') return send501(res)
@@ -1582,14 +1580,14 @@ function handleChatHistory({ res, query, deps }) {
 // the request — and it owns it strictly, because a foreign definition is THIRD-PARTY TEXT:
 //   - NO PATH EVER COMES FROM THE REQUEST. `scan` takes an EMPTY body and `enroll` takes
 //     selections only; the estate that is read and the tree drafts land in are BOTH the
-//     project this daemon serves. No caller can point the scanner at another directory
-//     (T-9.7-50), so «прочитай мне /etc» is not a validation failure — it has no field.
+//     project this daemon serves. No caller can point the scanner at another
+//     directory, so «прочитай мне /etc» is not a validation failure — it has no field.
 //   - A BATCH IS BOUNDED AND ITEM-WISE. SELECTIONS_CAP bounds the party; a refusal (a taken
 //     name with no rename) travels in the RESPONSE BODY as that item's status, so one bad
 //     item can neither bury the batch in a 500 nor stop the rest from landing.
 //   - THE HINT SAYS NOTHING. `import.updated` carries a batch id and a count — never a
 //     name, never a slug: an open screen learns THAT the drafts moved, not what was in
-//     them (T-9.7-51). What was found is read back through the authed route.
+//     them. What was found is read back through the authed route.
 //   - NOTHING IS ENABLED. The engine writes drafts and a forge receipt and touches neither
 //     the roster config nor the tool registry; activation stays two deliberate human steps.
 
@@ -1723,7 +1721,7 @@ async function handleImportEnroll({ req, res, config, deps }) {
   return sendJson(res, 200, { drafts })
 }
 
-// ── the first-run interview: three doors in front of ONE writer (D-9.7-16) ──
+// ── the first-run interview: three doors in front of ONE writer ──
 //
 // The screen «Первый запуск» asks four steps of plain-language questions and ends with
 // the SAME artifacts the terminal flow produces — because `complete()` hands the answers
@@ -1748,8 +1746,7 @@ const ONBOARDING_STEP_MAX = 16
  *
  * `stateDir` is the daemon's OWN data directory and it is what makes the «позже» exit
  * possible: the one fact «this person asked to be left alone for now» is the daemon's, not
- * the project's, so it is remembered here and never written into somebody else's tree
- * (D-11-DEFER-17).
+ * the project's, so it is remembered here and never written into somebody else's tree.
  */
 function onboardingEngine(config, deps) {
   return createOnboarding({
@@ -1926,14 +1923,14 @@ async function dispatch(req, res, ctx) {
   const { pathname, query } = parseTarget(req.url)
 
   const match = matchRoute(req.method, pathname)
-  if (!match) return send404(res) // closed table — no route reflection (T-9.5-25)
+  if (!match) return send404(res) // closed table — no route reflection
   if (match.badId) return send400(res, 'invalid id')
 
   const addr = remoteAddr(req)
   if (limiter.isLimited(addr)) return send429(res)
 
   // Bootstrap: GET / with ?token= exchanges a CORRECT token (once) for the HttpOnly
-  // cookie. A query token is honoured ONLY here — never by authed() (T-9.5-34).
+  // cookie. A query token is honoured ONLY here — never by authed().
   if (match.handler === 'handleIndex' && query.token != null) {
     if (tokenEquals(query.token, expectedToken)) {
       res.writeHead(302, {

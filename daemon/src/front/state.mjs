@@ -1,41 +1,40 @@
 /**
- * state.mjs — the roster's ONE-POLL payload: derive everything, store nothing (Phase
- * 9.5 Plan 08, Task 2; D-9.5-02, D-9.5-11, Pitfall 2).
+ * state.mjs — the roster's ONE-POLL payload: derive everything, store nothing.
  *
- * ═══════════════════════ DERIVE, NEVER STORE ═════════════════════════════════════
+ * ═══════════════════════ DERIVE, NEVER STORE ════════════════════════════════════
  * deriveState re-computes the WHOLE roster truth from durable sources every call — the
  * pg-boss rows (adapter.list), the per-attempt ledger, the honest window model, and the
  * usage book. No cache, no memo: a poll after ANY daemon restart is correct by
- * construction (D-9.5-02 statelessness). The poll cadence (2-5s) is the researched
+ * construction (the daemon holds no task state). The poll cadence (2-5s) is the researched
  * choice; the live-hint SSE layer (Task 4) is additive, never the source of truth.
  *
- * ═══════════════════════ PATTERN 2 — TWO LIVENESS AXES ═══════════════════════════
+ * ═══════════════════════ PATTERN 2 — TWO LIVENESS AXES ══════════════════════════
  * The payload exposes BOTH axes but labels them: the QUEUE axis (counts, status,
  * agedForHours) drives requeue decisions UPSTREAM (the tick), never the roster; the
  * PULSE axis (pulseAgeSec) is an attention hint for the human. `presence` is a PURE
  * derive (window open × active task × touch freshness) — there is NO stored «working»
- * flag anywhere for it to read (Pitfall 2, Multica's top prod complaint).
+ * flag anywhere for it to read — a stored «working» flag was Multica's top prod complaint.
  *
- * ═══════════════════════ D-9.5-11 CARRY (plan 09 renders) ═══════════════════════
+ * ═══════════════════════ WHAT THE ROSTER RENDERS ════════════════════════════════
  *   - agedForHours on a queue row ONLY when it has been queued past config.agingHours
- *     (pure derive from the D-9.5-10 enqueuedAt timestamp, never a stored flag);
+ *     (pure derive from the enqueuedAt timestamp, never a stored flag);
  *   - `acceptance` («обещано») carried onto done rows when the task had one, omitted
  *     when it did not (roster/return tasks are DoR-exempt);
  *   - failed rows carry {reason, reasonLabel} — reasonLabel from REASON_LABELS
  *     (adapter.mjs, the single source); the raw code still travels for machines.
  *
- * ═══════════ V5.1 — PROJECTS, MACHINES, FEDERATION (D-9.7-01 / D-9.7-04) ═════════
+ * ═══════════ V5.1 — PROJECTS, MACHINES, FEDERATION ══════════════════════════════
  * The payload gains `projects[]`, `activeProject`, `machines[]` and `federation` — all
  * DERIVED, none stored: projects come from the config registry, their counts from the
  * queue selection, the machine from the config plus its federation role.
  *
  * THE SHAPE IS FINAL NOW, ON PURPOSE. `machines[]` holds this machine
  * ({id, title, role:'self', online:true}) and `federation.hubReachable` exists before
- * anything probes a hub. The SPA (plan 9.7-04) types the contract once and never revises it.
+ * anything probes a hub. The SPA types the contract once and never revises it.
  * `hubReachable` is an injectable seam (`deps.hubReachable`) defaulting to true: nothing
  * has proven a hub unreachable until a probe is wired.
  *
- * ═══════════ THE AGGREGATOR SEAM — FILLED, NEVER REDEFINED (D-9.7-01) ════════════
+ * ═══════════ THE AGGREGATOR SEAM — FILLED, NEVER REDEFINED ══════════════════════
  * A HUB daemon injects `deps.aggregator`: the last step of the derive hands the finished
  * local payload to it and returns what comes back — federation.mjs merges each peer's
  * machines[] entry and its rows into the SAME key set. Three properties make this seam
@@ -52,10 +51,10 @@
  * NOT narrow `projects[]` or `machines[]` — the project switcher has to see all of them,
  * and per-project counts are what make it useful.
  *
- * Nothing here carries a peer url, a peer token or free text (T-9.7-05): the federation
+ * Nothing here carries a peer url, a peer token or free text: the federation
  * field is a role and a boolean, and that is the whole of it.
  *
- * ═══════════ V5.1 — THE SETTINGS READ MODELS (D-9.7-09 holds) ═══════════════════
+ * ═══════════ V5.1 — THE SETTINGS READ MODELS ════════════════════════════════════
  * The settings screens («Правила», «Аккаунты») ride the payload of the EXISTING state
  * route. The frozen table is the table of ROUTES; the shape of a payload was never the
  * frozen thing, and a new route per screen would have been the expensive way to say the
@@ -128,7 +127,7 @@ function round2(n) {
 
 /**
  * derivePresence({windowOpen, hasActiveTask, pulseAgeSec}) → 'работает'|'ждёт окно'|
- * 'свободен'. PURE (Pitfall 2): a CLOSED window dominates (→ «ждёт окно») even with
+ * 'свободен'. PURE: a CLOSED window dominates (→ «ждёт окно») even with
  * queued work; an OPEN window with an active task freshly touched → «работает»;
  * everything else → «свободен». No storage is ever read — the fixtures carry no such
  * field to read.
@@ -242,13 +241,13 @@ function projectOf(row, activeProject) {
  * Counts are per project by construction, so they are computed from every row regardless
  * of an active filter — that is exactly what makes the switcher readable.
  *
- * `connected` is whether the registry entry names a folder on disk (D-11-DEFER-18). The
+ * `connected` is whether the registry entry names a folder on disk. The
  * default entry every install mints carries a NAME and no path, so the screens showed a
  * project they could not read a single file of: «Память» answered «нет подключённого
  * проекта» while «Машины и проекты» listed the project by name. An entry that names a
  * project it cannot open is the worst of the three states, so the fact travels and the
- * screens say it. The PATH itself never does — an absolute path on the wire is a disclosure
- * (T-11-09-01), and a boolean is the whole of what a screen needs.
+ * screens say it. The PATH itself never does — an absolute path on the wire is a
+ * disclosure, and a boolean is the whole of what a screen needs.
  */
 function deriveProjects(rows, config) {
   const registry = Array.isArray(config.projects) ? config.projects : []
@@ -265,7 +264,7 @@ function deriveProjects(rows, config) {
 
 /**
  * deriveMachines(config) → the LOCAL machine list: exactly this machine. The injected
- * aggregator appends the peers into the SAME shape (T-9.7-05 keeps their url/token out).
+ * aggregator appends the peers into the SAME shape (their url/token stay out).
  */
 function deriveMachines(config) {
   return [
@@ -290,7 +289,7 @@ function deriveMachines(config) {
  *
  * WHAT IT DELIBERATELY DROPS: the account OBJECT. A worker's account carries `configDir` (a
  * local path) and `oauthTokenEnv` (the NAME of the env var holding the token — a secret in
- * its own right, T-9.5-01). The read model carries the account NAME and nothing else, so a
+ * its own right). The read model carries the account NAME and nothing else, so a
  * payload that travels the LAN can never carry either.
  *
  * @param {object} config
@@ -373,7 +372,7 @@ export function deriveAccounts(config = {}, windows) {
       byName.set(name, entry)
       out.push(entry)
     }
-    // the founder's daytime account (D-9.5-03a) — a property of the ACCOUNT, flagged by
+    // the founder's daytime account — a property of the ACCOUNT, flagged by
     // whichever worker profile carries it
     if (w.dayPriorityOwner) entry.dayPriorityOwner = true
     entry.workers.push(w.id)
@@ -434,7 +433,7 @@ function noteFrontmatter(text, file) {
 }
 
 /**
- * The note's own line, in whichever generation of the schema wrote it (D-11-DEFER-20).
+ * The note's own line, in whichever generation of the schema wrote it.
  *
  * A schema-v2 record states its subject in `claim`; the v1 note that came before it used
  * `description`. This read model was written against v1 and only ever looked at
@@ -491,7 +490,7 @@ function mtimeOf(io, path) {
  * what it is about, and what moved recently — a note's BODY is deliberately not in the
  * contract. Reading a note is a terminal's job with the whole loader behind it; a LAN
  * payload that carried note bodies would be a copy of the memory tree leaving the machine
- * every few seconds for no screen that needed it (T-9.7-35).
+ * every few seconds for no screen that needed it.
  *
  * The cost is bounded by the note count, and notes are small by budget (the corpus lint
  * caps them), so this stays a few milliseconds on a poll that already talks to Postgres.
@@ -546,7 +545,7 @@ export function deriveMemory({ memoryDir, fsImpl } = {}) {
  * material inside fenced `untrusted-evidence` blocks AFTER running it through the secret
  * scrubber; anything a human typed around those fences went through no scrubber at all.
  * Publishing only what is inside a fence means the payload can carry a decision the miner
- * produced and can NEVER carry a sentence nobody redacted (D-9.5-08, T-9.7-35).
+ * produced and can NEVER carry a sentence nobody redacted.
  */
 function fencedEvidence(section) {
   const text = String(section ?? '')
@@ -658,7 +657,7 @@ function windowBar(win) {
 
 // ══════════════ the CONNECTED PROJECT's corpus — a surface over a foreign tree ═══════════
 //
-// SB-031 part 2 (phase 11 plan 09). The window shows a project the daemon does not own: its
+// The window shows a project the daemon does not own: its
 // memory, READ-ONLY, plus — when the corpus is still in the older format — a per-file
 // preview of what a migration would change. Three properties are load-bearing:
 //
@@ -672,7 +671,7 @@ function windowBar(win) {
 //     whole reconcile exists to prevent, so the DEFAULT here is the modest claim.
 //   - READ-ONLY IS ON THE WIRE. `readOnly: true` is carried rather than left implicit, so
 //     the screen states the boundary from the payload rather than from a hard-coded belief
-//     about what the daemon happens to do today (founder decision SB-031 / D-11-08).
+//     about what the daemon happens to do today.
 
 /**
  * The connected project: the ACTIVE registry entry, and only when it names a folder on disk.
@@ -763,7 +762,7 @@ export function deriveProjectMemory(deps = {}) {
  * @param {{
  *   adapter: {list:Function},
  *   ledgerDir?: string,
- *   windows?: (account:any)=>object,      // windowState per account (plan 05 seam)
+ *   windows?: (account:any)=>object,      // windowState per account (an injected seam)
  *   config?: object,                      // workers[], agingHours, budget
  *   usageReader?: (args:object)=>{costUsd?:number},
  *   readReceipt?: Function,               // resolve a receiptRef string → receipt object
@@ -848,7 +847,7 @@ export async function deriveState(deps = {}) {
     .sort((a, b) => (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0))
     .map(toTaskRow)
 
-  // ── workers[] — presence is a PURE derive (Pitfall 2). The roster is ALSO the only list
+  // ── workers[] — presence is a PURE derive. The roster is ALSO the only list
   // that names a claimed task, so the three facts a screen needs to place that task travel
   // with it: its id, its NAME and its PROJECT. Without the last two a board can only print
   // the routing id where a title belongs, and its project filter has to let every running
@@ -909,7 +908,7 @@ export async function deriveState(deps = {}) {
     },
   }
 
-  // ── costs.series — the SPA (9.6) cost view rides GET /api/state (D-9.5-05 РЕВИЗИЯ):
+  // ── costs.series — the SPA's cost view rides GET /api/state:
   // cheaper than a new endpoint since this derive already holds the usage seam. A
   // dedicated per-account/per-day reader is injected (usageSeries); absent → an empty
   // (but always-present) series, so the 9.6 contract is stable from day one. ──
@@ -934,7 +933,7 @@ export async function deriveState(deps = {}) {
     windowsOpen,
   }
 
-  // ── the settings read models — the SAME route, a fuller payload (D-9.7-09) ──
+  // ── the settings read models — the SAME route, a fuller payload ──
   const rules = deriveRules(config, { switchMode })
   // The corpus lives in the repository the daemon serves; an explicit memoryDir wins, so a
   // test (and a future multi-repo wiring) never has to own the layout convention.
@@ -1064,7 +1063,7 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject
   }
   // acceptance («обещано») — carried ONLY when the task had one (roster/return exempt).
   if (r.acceptance != null && String(r.acceptance).trim() !== '') out.acceptance = r.acceptance
-  // failed red-card fields (D-9.5-11).
+  // failed red-card fields.
   if (r.status === 'failed') {
     const reason = r.failure_reason ?? (last && last.failureReason) ?? null
     out.failed = {
