@@ -6,7 +6,9 @@
  * `queueAdapterContractSuite` the in-memory reference passes, here
  * against a STATEFUL FAKE pg-boss (send/fetch/touch/complete/fail/getQueueStats over
  * Maps, honouring singletonKey + priority + expireInSeconds) plus a fake execSql over
- * the same store. NO live Postgres, NO real pg-boss is ever loaded (boss is injected).
+ * the same store — jobs AND the daemon's own approval table, so «a live queue with its
+ * side table» is a fixture rather than a database. NO live Postgres, NO real pg-boss is
+ * ever loaded (boss is injected).
  *
  * Direct grep-visible invariants pinned below:
  *   - every enqueue send carries singletonKey=task.id + expireInSeconds (recorded)
@@ -14,6 +16,12 @@
  *   - complete() without a receiptRef throws NoReceiptError
  *   - start() creates the four lane queues idempotently with a shared deadLetter
  *   - recordAttempt/readAttempts append-and-read the per-task ledger (Task 2)
+ *   - completed work is reported as awaiting approval — the approval row joins back onto
+ *     the job it belongs to, and stats() counts it out of `completed` rather than twice
+ *   - the side table may overrule pg-boss ONLY about finished work, and a decided task
+ *     never leaves the contract's closed five-status vocabulary
+ *   - fail-open: a database refusing the approval join still answers about the WORK, and
+ *     says so once rather than once per poll
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
@@ -63,6 +71,14 @@ function makeFakeBackend({
 }) {
   const now = () => (typeof clock === 'function' ? clock() : (clock as unknown as number))
   const jobs = new Map<string, any>()
+  /**
+   * The daemon's OWN approval table, modelled beside the job store: taskId -> {status,
+   * returned_note, merge_receipt}. The backend writes it through the same injected execSql
+   * it reads it back through, so the fixture is a live queue AND its side table without a
+   * Postgres anywhere — which is what lets the contract case «completed work is reported as
+   * awaiting approval» run against this backend at all.
+   */
+  const attempts = new Map<string, any>()
   let seq = 0
   const sendCalls: any[] = []
   const createQueueCalls: any[] = []
@@ -189,6 +205,20 @@ function makeFakeBackend({
 
   const execSql = async (sql: string, params: any[]) => {
     maintain()
+    if (sql.includes('CREATE TABLE')) return { rows: [] }
+    if (sql.includes('INSERT INTO sma_task_attempts')) {
+      // markAwaitingApproval's upsert: ($1 id, $2 status), the note cleared on re-entry
+      const [id, status] = params
+      attempts.set(String(id), { ...(attempts.get(String(id)) || {}), status, returned_note: null })
+      return { rows: [] }
+    }
+    if (sql.includes('count(*)') && sql.includes('sma_task_attempts')) {
+      // stats()'s separate counter: waiting rows that still have a job to belong to
+      const [status] = params
+      const live = new Set([...jobs.values()].map((j) => j.data && j.data.id))
+      const n = [...attempts.entries()].filter(([id, a]) => a.status === status && live.has(id)).length
+      return { rows: [{ n }] }
+    }
     if (sql.includes("state = 'active'")) {
       // taskId → active job resolution (touch/complete/fail). `data` and `retry_count` come
       // back as well (2026-08-05): the backend's SELECT asks for them so complete/fail can
@@ -202,25 +232,37 @@ function makeFakeBackend({
         rows: match ? [{ id: match.id, name: match.name, data: match.data, retry_count: match.retry_count }] : [],
       }
     }
-    // list(): all jobs; the adapter maps + filters
+    // list(): all jobs, LEFT JOINed onto the approval table on the key the live database
+    // confirmed — the approval row's id IS the task id the job payload carries.
+    const withApproval = sql.includes('sma_task_attempts')
     return {
-      rows: [...jobs.values()].map((j) => ({
-        id: j.id,
-        name: j.name,
-        priority: j.priority,
-        data: j.data,
-        state: j.state,
-        retry_count: j.retry_count,
-        created_on: j.created_on,
-        started_on: j.started_on,
-        completed_on: j.completed_on,
-        output: j.output,
-      })),
+      rows: [...jobs.values()].map((j) => {
+        const a = (j.data && attempts.get(j.data.id)) || null
+        return {
+          id: j.id,
+          name: j.name,
+          priority: j.priority,
+          data: j.data,
+          state: j.state,
+          retry_count: j.retry_count,
+          created_on: j.created_on,
+          started_on: j.started_on,
+          completed_on: j.completed_on,
+          output: j.output,
+          ...(withApproval
+            ? {
+                approval_status: a ? a.status : null,
+                returned_note: a ? a.returned_note : null,
+                merge_receipt: a ? a.merge_receipt : null,
+              }
+            : {}),
+        }
+      }),
     }
   }
 
   const adapter = createPgBossQueue({ boss, execSql, clock, expireMs, ledgerDir })
-  return { adapter, boss, sendCalls, createQueueCalls, jobs }
+  return { adapter, boss, execSql, sendCalls, createQueueCalls, jobs, attempts }
 }
 
 // ── the reusable contract suite, run against the pg-boss backend (DI fake boss) ──
@@ -388,6 +430,95 @@ describe('the queue adapter stamps the attempt row it writes', () => {
     for (const absent of ['attempt', 'idempotencyKey', 'stateMachineVersion', 'capabilityEnvelopeHash']) {
       expect(Object.hasOwn(row, absent)).toBe(false)
     }
+  })
+})
+
+// ═══ the approval row is read back, and only where it may speak ═══════════════════════
+//
+// Writing the row was half a sentence: while list() read the job table alone, work that had
+// finished and was waiting for a person looked exactly like work a person had accepted, so
+// the screen showing what waits had nothing to draw and its counter read zero. These cases
+// pin the join, the one place the side table is allowed to overrule pg-boss, and the
+// fail-open that keeps a restricted database from costing the rows themselves.
+
+describe('the approval row reaches the read path', () => {
+  it('completed work is reported as awaiting approval, and stats() moves it out of completed', async () => {
+    const c = mkClock()
+    const { adapter, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+
+    // the durable half: complete() wrote the row through the very seam list() reads
+    expect(attempts.get('BL-196').status).toBe('awaiting_approval')
+
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('awaiting_approval')
+    expect(await adapter.list({ status: 'awaiting_approval' })).toHaveLength(1)
+
+    const s = await adapter.stats()
+    expect(s.awaiting_approval).toBe(1)
+    // ONE population, read twice — counting it in both places would make stats() disagree
+    // with list(), where a row holds exactly one status.
+    expect(s.completed).toBe(0)
+    expect(s.total).toBe(1)
+  })
+
+  it('a decided task does NOT leave the closed vocabulary: approved reads as completed, not as "approved"', async () => {
+    const c = mkClock()
+    const { adapter, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+    // the front's approve path CASed the row to its decided value
+    attempts.set('BL-196', { status: 'approved', merge_receipt: 'merge:abc' })
+
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('completed') // the night's finished work still has a place to appear
+    expect(row.mergeReceipt).toBe('merge:abc')
+    expect((await adapter.stats()).awaiting_approval).toBe(0)
+  })
+
+  it('the side table may speak ONLY about finished work: a live claim is never overruled', async () => {
+    const c = mkClock()
+    const { adapter, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    // a stale row from a PREVIOUS decision on the same task, while the job is active again
+    attempts.set('BL-196', { status: 'approved' })
+    expect((await adapter.list({}))[0].status).toBe('claimed')
+
+    attempts.set('BL-196', { status: 'awaiting_approval' })
+    expect((await adapter.list({}))[0].status).toBe('claimed') // still running — nobody is waiting yet
+  })
+
+  it('FAIL-OPEN: a database that refuses the approval join still answers about the WORK', async () => {
+    const c = mkClock()
+    const logged: string[] = []
+    const { boss, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    // the restricted database: every statement naming the approval table is refused —
+    // the join, the counter and the write alike (no CREATE right, the approval-store case)
+    const restricted = createPgBossQueue({
+      boss,
+      execSql: async (sql: string, params: any[]) => {
+        if (sql.includes('sma_task_attempts')) throw new Error('permission denied for relation sma_task_attempts')
+        return execSql(sql, params)
+      },
+      clock: c.clock,
+      expireMs: 5000,
+      log: (m: string) => logged.push(m),
+    })
+    await restricted.enqueue(backlog({ id: 'BL-OPEN' }))
+    await restricted.claimNext('w1', {})
+    await restricted.complete('BL-OPEN', { receiptRef: 'reverify:green' })
+
+    const rows = await restricted.list({}) // does not throw
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status).toBe('completed') // the job's own state, the pre-join reading
+    expect((await restricted.stats()).awaiting_approval).toBe(0)
+    expect(logged.some((m) => m.includes('approval join unavailable'))).toBe(true)
+    // one broken permission polled every few seconds is still ONE log line
+    expect(logged.filter((m) => m.includes('approval join unavailable'))).toHaveLength(1)
   })
 })
 

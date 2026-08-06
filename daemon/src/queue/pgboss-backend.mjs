@@ -31,6 +31,14 @@
  * own approval row (approval-store.mjs), provisioned at start() and stamped at complete()
  * so the front's approve/return have a durable state to compare-and-set against.
  *
+ * ...AND THAT ROW IS READ BACK. Writing it was only ever half the sentence: for as long as
+ * list() read the job table alone, work that had finished and was waiting for a person was
+ * indistinguishable from work a person had already accepted, so the screen that shows what
+ * is waiting had nothing to draw and its counter said zero while the pile grew. list() now
+ * joins the approval row onto the job it belongs to, and stats() asks a second statement
+ * for the count `getQueueStats` cannot know. Both are FAIL-OPEN: a side table that will not
+ * answer costs the rows their waiting-for-a-person reading, never the rows themselves.
+ *
  * STATELESSNESS NOTE: the only in-process state is a SOFT coalesce-display counter
  * (how many times a still-pending item was re-requested). It is NOT task truth —
  * losing it on a restart resets pending counts to 1 and loses NO task. All
@@ -97,7 +105,7 @@ import {
   UTF8,
 } from './encoding.mjs'
 import { recordAttempt } from './attempt-ledger.mjs'
-import { ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
+import { APPROVAL_TABLE, AWAITING_APPROVAL, ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
 import { applyTransition } from './state-machine.mjs'
 import { defaultEnvelope } from './capability-envelope.mjs'
 import { attemptIdFor } from '../front/journal.mjs'
@@ -136,6 +144,21 @@ const STATE_TO_STATUS = Object.freeze({
   failed: 'failed',
   cancelled: 'failed',
 })
+
+/**
+ * The approval-row statuses that mean «this task still owes a PERSON a word», and the ONLY
+ * ones allowed to overrule what pg-boss says about a job.
+ *
+ * The side table's full vocabulary is wider — a decided task reads `approved` or
+ * `returned`, and `approving` is the in-flight claim of a decision being made. Those two
+ * decided values are deliberately NOT surfaced: the adapter contract has a closed
+ * five-status vocabulary, and a row answering `approved` would leave it — vanishing from
+ * every screen that filters by the five, including the one that shows the night's finished
+ * work. What a decision produced is the approval path's own subject, and the front reads it
+ * from the row it CASes; the queue's job is the coarse truth, and the coarse truth about a
+ * decided task is that pg-boss finished it.
+ */
+const AWAITING_APPROVAL_STATUSES = Object.freeze([AWAITING_APPROVAL, 'approving'])
 
 /**
  * Module-scoped guard against duplicate createQueue / worker init for a real (owned)
@@ -450,6 +473,21 @@ export function createPgBossQueue({
     return true
   }
 
+  /**
+   * statusOf(r) → the contract status of a job row, approval row included.
+   *
+   * THE SIDE TABLE IS ONLY CONSULTED FOR FINISHED WORK. A task that was approved once and
+   * later re-dispatched keeps its old approval row, and letting that row speak would report
+   * a running task as decided — so pg-boss's own state wins for everything it still owns,
+   * and the approval row is asked exactly one question: does this FINISHED work still owe a
+   * person a word?
+   */
+  function statusOf(r) {
+    const base = STATE_TO_STATUS[r.state] ?? r.state
+    if (base !== 'completed') return base
+    return AWAITING_APPROVAL_STATUSES.includes(r.approval_status) ? AWAITING_APPROVAL : base
+  }
+
   function mapRow(r) {
     const data = r.data || {}
     const retries = r.retry_count ?? 0
@@ -460,7 +498,11 @@ export function createPgBossQueue({
       lane: data.lane,
       title: data.title,
       priority: data.priority ?? r.priority ?? 0,
-      status: STATE_TO_STATUS[r.state] ?? r.state,
+      status: statusOf(r),
+      // The two facts a decision leaves behind, carried only when they exist: a row that
+      // was never returned states nothing about a note rather than carrying a null one.
+      ...(r.returned_note ? { returnedNote: r.returned_note } : {}),
+      ...(r.merge_receipt ? { mergeReceipt: r.merge_receipt } : {}),
       attempt: (data.attempt ?? 1) + retries,
       coalesceCount: coalesce.get(data.id) ?? 1,
       workerId: null, // pg-boss does not record the fetching worker; presence is derived elsewhere
@@ -473,14 +515,51 @@ export function createPgBossQueue({
     }
   }
 
+  /**
+   * The two forms of the same read. The join brings the daemon's own approval row alongside
+   * the job it belongs to, on the key the live database confirmed: the approval row's `id`
+   * IS the task id, which is what the job payload carries at `data->>'id'`.
+   *
+   * Table and column names are TRUSTED DAEMON CONSTANTS (the cas.mjs law) and the only
+   * value in the statement is the lane-name array, passed as $1. Nothing a person typed
+   * reaches this SQL.
+   */
+  const JOB_COLUMNS = `j.id, j.name, j.priority, j.data, j.state, j.retry_count,
+         j.created_on, j.started_on, j.completed_on, j.output`
+  const LIST_WITH_APPROVAL = `SELECT ${JOB_COLUMNS},
+              a.status AS approval_status, a.returned_note, a.merge_receipt
+         FROM pgboss.job j
+         LEFT JOIN ${APPROVAL_TABLE} a ON a.id = (j.data->>'id')
+        WHERE j.name = ANY($1)`
+  const LIST_JOBS_ONLY = `SELECT ${JOB_COLUMNS}
+         FROM pgboss.job j
+        WHERE j.name = ANY($1)`
+
+  /** The last approval-read failure already spoken about — so a poll every few seconds
+   *  cannot turn one broken permission into a log of its own. */
+  let lastApprovalFailure = null
+
+  /** Say a repeated approval-read failure ONCE, and again only if the reason changes. */
+  function noteApprovalFailure(err) {
+    const said = maskError(err)
+    if (said === lastApprovalFailure) return
+    lastApprovalFailure = said
+    log(`approval join unavailable, falling back to job states only: ${said}`)
+  }
+
   async function list(filter = {}) {
     const names = TASK_QUEUE_LANES.map(laneQueue)
-    const res = await runSql(
-      `SELECT id, name, priority, data, state, retry_count, created_on, started_on, completed_on, output
-         FROM pgboss.job
-        WHERE name = ANY($1)`,
-      [names],
-    )
+    // FAIL-OPEN, the approval-store law: a database that will not answer about approvals
+    // must still answer about WORK. A restricted or absent side table costs the rows their
+    // «waiting for a person» reading — never the rows themselves.
+    let res
+    try {
+      res = await runSql(LIST_WITH_APPROVAL, [names])
+      lastApprovalFailure = null
+    } catch (err) {
+      noteApprovalFailure(err)
+      res = await runSql(LIST_JOBS_ONLY, [names])
+    }
     const rows = (res && Array.isArray(res.rows) ? res.rows : []).map(mapRow)
     let out = rows
     if (filter.status) out = out.filter((r) => r.status === filter.status)
@@ -488,8 +567,39 @@ export function createPgBossQueue({
     return out
   }
 
+  /**
+   * countAwaitingApproval() → how many FINISHED tasks still owe a person a word.
+   *
+   * A SEPARATE STATEMENT, and deliberately not part of the per-lane API path above:
+   * `getQueueStats` counts pg-boss's own states and has never heard of this one, so the
+   * number can only come from the daemon's own table. The EXISTS clause is the whole point
+   * of asking it this way — pg-boss archives a finished job after its retention window
+   * while the approval row stays, and counting the table alone would report tasks waiting
+   * that no screen can show, growing forever.
+   *
+   * Fail-open like every other approval read: an unanswerable side table means zero, and
+   * the counts about WORK are unaffected.
+   */
+  async function countAwaitingApproval(names) {
+    try {
+      const res = await runSql(
+        `SELECT count(*)::int AS n
+           FROM ${APPROVAL_TABLE} a
+          WHERE a.status = $1
+            AND EXISTS (SELECT 1 FROM pgboss.job j
+                         WHERE j.data->>'id' = a.id AND j.name = ANY($2))`,
+        [AWAITING_APPROVAL, names],
+      )
+      const row = res && Array.isArray(res.rows) ? res.rows[0] : null
+      return Number(row && row.n) || 0
+    } catch (err) {
+      noteApprovalFailure(err)
+      return 0
+    }
+  }
+
   async function stats() {
-    const agg = { queued: 0, claimed: 0, completed: 0, failed: 0, total: 0 }
+    const agg = { queued: 0, claimed: 0, awaiting_approval: 0, completed: 0, failed: 0, total: 0 }
     for (const lane of TASK_QUEUE_LANES) {
       const s = (await bossInstance.getQueueStats(laneQueue(lane))) || {}
       const queued = s.queued ?? s.created ?? 0
@@ -502,6 +612,13 @@ export function createPgBossQueue({
       agg.failed += failed
       agg.total += queued + active + completed + failed
     }
+    // The two counts are ONE population read twice: pg-boss calls these jobs completed and
+    // the approval row says they are still waiting. Counting them in both places would make
+    // stats() disagree with list(), where each row holds exactly one status — so the
+    // waiting ones move over rather than being added. `total` does not change: nothing
+    // appeared, a name did.
+    agg.awaiting_approval = await countAwaitingApproval(TASK_QUEUE_LANES.map(laneQueue))
+    agg.completed = Math.max(0, agg.completed - agg.awaiting_approval)
     return agg
   }
 
