@@ -19,6 +19,9 @@
  *   - Test 5: parseCodexEvent over the whole codex fixture — thread.started yields threadId,
  *             turn.completed yields the usage token counts.
  *   - Test 6: a garbage line returns { type: 'unparsed' } from BOTH parsers and never throws.
+ *   - Test 6b: SUBAGENT PROVENANCE — a frame carrying parent_tool_use_id parses as
+ *             {subagent:true, parentId}, a frame without it as {subagent:false} and NO id,
+ *             and the result frame keeps handing out its sessionId either way (regression).
  *
  *   usage.mjs (honest per-account booking):
  *   - Test 7: claudeUsageFromResult maps the fixture result → a stream-result row w/ cost.
@@ -137,6 +140,51 @@ describe('parsers never throw on hostile output', () => {
     expect(parseClaudeEvent(garbage).type).toBe('unparsed')
     expect(parseCodexEvent(garbage).type).toBe('unparsed')
     expect(parseClaudeEvent('').type).toBe('unparsed')
+  })
+})
+
+describe('subagent provenance — the live log can tell a delegated line from the session’s own', () => {
+  it('a frame with parent_tool_use_id → {subagent:true} + the opaque parent id', () => {
+    const frame = JSON.stringify({
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_01ABCdefGHIjkl',
+      message: { model: 'claude-opus-4-8', usage: { input_tokens: 10, output_tokens: 2 } },
+    })
+    const e = parseClaudeEvent(frame)
+    expect(e.subagent).toBe(true)
+    expect(e.parentId).toBe('toolu_01ABCdefGHIjkl')
+    expect(e.model).toBe('claude-opus-4-8') // the existing extraction is untouched
+  })
+
+  it('a frame WITHOUT it → {subagent:false} and no parentId key at all', () => {
+    const events = claudeFixture.split('\n').filter((l) => l.trim()).map(parseClaudeEvent)
+    for (const e of events) {
+      expect(e.subagent).toBe(false)
+      expect('parentId' in e).toBe(false) // an absent id is absent, never the empty string
+    }
+  })
+
+  it('the result frame still yields its sessionId — with a parent id and without one', () => {
+    const plain = parseClaudeEvent(JSON.stringify({ type: 'result', session_id: 'sess-plain', total_cost_usd: 1 }))
+    const nested = parseClaudeEvent(
+      JSON.stringify({ type: 'result', session_id: 'sess-nested', parent_tool_use_id: 'toolu_XYZ' }),
+    )
+    expect(plain.sessionId).toBe('sess-plain')
+    expect(plain.subagent).toBe(false)
+    expect(nested.sessionId).toBe('sess-nested')
+    expect(nested.subagent).toBe(true)
+    expect(nested.parentId).toBe('toolu_XYZ')
+  })
+
+  it('a hostile parent id does not change the never-throw contract, and is passed through opaque', () => {
+    const hostile = JSON.stringify({ type: 'assistant', parent_tool_use_id: '../../etc/passwd ' })
+    expect(() => parseClaudeEvent(hostile)).not.toThrow()
+    const e = parseClaudeEvent(hostile)
+    expect(e.subagent).toBe(true)
+    expect(e.parentId).toBe('../../etc/passwd ') // NOT interpreted here — capped/sanitized at storage
+    // and a broken line is still shapeless: no invented provenance
+    expect(parseClaudeEvent('}{ not json').type).toBe('unparsed')
+    expect('subagent' in parseClaudeEvent('}{ not json')).toBe(false)
   })
 })
 
