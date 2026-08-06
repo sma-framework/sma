@@ -78,7 +78,7 @@ import { PERSONAL_PATTERNS } from './write-pipeline.mjs'
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
 // fragments/ dir is a valid state (listFragments returns []) — fail-open.
 import { listFragments, validateFragment } from './fragments.mjs'
-// FI-9/FI-11 layer budgets: the four size lints reference these ONLY —
+// Layer byte budgets: the four size lints reference these ONLY —
 // no magic byte numbers live in this module.
 import {
   CORE_BUDGET,
@@ -109,7 +109,7 @@ const GENERATOR_PATH = join(__dirname, 'generator.mjs')
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 
 /**
- * The FI-11 on-demand per-area index files (INDEX-<area>.md) are
+ * The on-demand per-area index files (INDEX-<area>.md) are
  * structural artifacts too: never notes, never counted against the always-load
  * budget (they are pulled by tag on demand, not loaded whole).
  */
@@ -406,7 +406,7 @@ function buildContext(opts) {
     indexText = ''
   }
 
-  // FI-11: the catalog is now MEMORY.md + the per-area INDEX-<area>.md
+  // The catalog is now MEMORY.md + the per-area INDEX-<area>.md
   // files. MEM-ORPHAN's "absent from the index" direction must see the union of
   // links across all of them, or every periphery note would false-positive.
   const indexLinks = parseIndexLinks(indexText)
@@ -900,7 +900,7 @@ const MEM_REGEN = {
       out.push(finding('MEM-REGEN', 'critical', ctx.indexPath, `MEMORY.md differs from regeneration — the GENERATED artifact was hand-edited; regenerate it (do not hand-edit)`))
     }
 
-    // FI-11: the per-area INDEX-<area>.md files are GENERATED
+    // The per-area INDEX-<area>.md files are GENERATED
     // artifacts too — staleness covers them when an area regenerator is wired.
     const generateAreas = ctx.generateAreas
     if (typeof generateAreas === 'function') {
@@ -1485,7 +1485,7 @@ const LADDER_EVIDENCE = {
   },
 }
 
-// ── FI-9/FI-11 size lints — budgets are law, `sma trim` is the repair ─────────
+// ── size lints — budgets are law, `sma trim` is the repair ─────────────────────
 
 /** UTF-8 byte length (budgets are BYTES, not chars — Cyrillic is 2 bytes/char). */
 function byteLen(s) {
@@ -1501,13 +1501,13 @@ function sizeTier(bytes, budget) {
 
 /**
  * One uniform size finding. Every CRITICAL names `sma trim` as the auto-repair
- * (FI-9: the trimmer DEMOTES overflow down a layer — nothing is ever deleted).
+ * (the trimmer DEMOTES overflow down a layer — nothing is ever deleted).
  */
 function sizeFinding(checkId, tier, file, surface, bytes, budget) {
   const pct = Math.round((bytes / budget) * 100)
   const message =
     tier === 'critical'
-      ? `${surface} exceeds its ${budget}-byte budget (${bytes} bytes, ${pct}%) — run \`sma trim\` to demote the overflow down a layer (FI-9: demotion, never deletion)`
+      ? `${surface} exceeds its ${budget}-byte budget (${bytes} bytes, ${pct}%) — run \`sma trim\` to demote the overflow down a layer (demotion, never deletion)`
       : `${surface} is at ${pct}% of its ${budget}-byte budget (${bytes} bytes) — approaching the cap; \`sma trim\` demotes overflow before it blocks`
   return finding(checkId, tier, file, message)
 }
@@ -1540,7 +1540,7 @@ function extractCoreSection(indexText) {
 
 const MEM_CORESIZE = {
   id: 'MEM-CORESIZE',
-  title: 'CORE section within its byte budget (FI-9)',
+  title: 'CORE section within its byte budget',
   tier: 'critical',
   run(ctx) {
     const core = extractCoreSection(ctx.indexText)
@@ -1554,7 +1554,7 @@ const MEM_CORESIZE = {
 
 const MEM_NOTESIZE = {
   id: 'MEM-NOTESIZE',
-  title: 'Each memory note within its byte budget (FI-9)',
+  title: 'Each memory note within its byte budget',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1571,12 +1571,12 @@ const MEM_NOTESIZE = {
 
 const MEM_INDEXSIZE = {
   id: 'MEM-INDEXSIZE',
-  title: 'Always-load payload within its byte budget (FI-11)',
+  title: 'Always-load payload within its byte budget',
   tier: 'critical',
   run(ctx) {
     // The ALWAYS-LOAD payload = MEMORY.md whole (CORE + the thin discovery
     // block). The per-area INDEX-<area>.md files are pulled on demand and
-    // NEVER count against this budget (FI-11).
+    // NEVER count against this budget.
     const bytes = byteLen(ctx.indexText)
     const tier = sizeTier(bytes, ALWAYS_LOAD_BUDGET)
     if (!tier) return []
@@ -1586,7 +1586,7 @@ const MEM_INDEXSIZE = {
 
 const STATE_SIZE = {
   id: 'STATE-SIZE',
-  title: 'STATE.md snapshot within its byte budget (FI-9, house rule)',
+  title: 'STATE.md snapshot within its byte budget (house rule)',
   tier: 'critical',
   run(ctx) {
     if (typeof ctx.stateText !== 'string') return [] // no injected path → silent

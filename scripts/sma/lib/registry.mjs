@@ -200,7 +200,7 @@ export function heartbeat(beat, opts = {}) {
     const blockers = Array.isArray(beat.blockers) ? beat.blockers : []
 
     const existing = readJsonSafe(file)
-    // FI-10 work label — the founder-readable «what this window works on». Provided by
+    // The work label — the founder-readable «what this window works on». Provided by
     // the caller (resolveWorkLabel, recomputed from live context on every beat); when a
     // beat omits it we PRESERVE the existing label rather than blanking it.
     const label =
@@ -256,7 +256,7 @@ export function heartbeat(beat, opts = {}) {
       scope: { globs: Array.isArray(scope.globs) ? scope.globs : [], description: scope.description ?? '' },
       status, // self-reported (B16)
       blockers,
-      label, // FI-10 — founder-readable work label, refreshed from live context
+      label, // founder-readable work label, refreshed from live context
       intent, // fingerprint intent line («чиню тест dispatcher…»)
       fpStatus, // fingerprint attention axis (working|waiting-for-human|idle)
       filesRecent, // self-captured touch trail (mutated by the `sma pre` stream)
@@ -688,7 +688,7 @@ export function probeScopeMtime(session, opts = {}) {
   return max
 }
 
-// ── FI-10 — named sessions: work label + founder-readable display identity ──────────
+// ── named sessions: work label + founder-readable display identity ──────────────────
 //
 // Identity = SMA_TERMINAL_NAME (the human window name) + a WORK LABEL that follows the
 // work. The label is recomputed on EVERY heartbeat from live context so a window is
@@ -708,7 +708,7 @@ function readStatePhase(statePath, readFileFn) {
 }
 
 /**
- * resolveWorkLabel(o) — the FI-10 work label, by precedence:
+ * resolveWorkLabel(o) — the work label, by precedence:
  *   (1) an ACTIVE claimed scope (o.claimScope — the scope this window claimed) wins;
  *   (2) else the phase named in STATE.md Current Position (o.statePath) -> `phase:<N>`;
  *   (3) else the invoking /sma-* command (first non-flag token of o.argv);
@@ -732,7 +732,7 @@ export function resolveWorkLabel(o = {}) {
 }
 
 /**
- * displayIdentity(o) -> founder-readable «P<phase> <Name>» (FI-10). The phase is parsed
+ * displayIdentity(o) -> founder-readable «P<phase> <Name>». The phase is parsed
  * from the work label (`phase:9` / a `P9` token) or o.phase; the name is the human
  * SMA_TERMINAL_NAME. An auto `T-<hash>` fallback counts as «no human name» and is dropped
  * (the anti-anonymous goal): with a phase it degrades to «P<phase>», else to the raw
@@ -758,7 +758,7 @@ export function displayIdentity(o = {}) {
 
 /**
  * buildJournalActors({self, other}) -> [selfDisplay, otherDisplay] named identities for a
- * collision/gate journal event (FI-10 — every event records WHO, both terminals, so the
+ * collision/gate journal event (every event records WHO, both terminals, so the
  * journal's who column is never empty and forensics is not manual).
  *
  * @param {{self?:object, other?:object}} [o] each {holderIdentity,label,phase}

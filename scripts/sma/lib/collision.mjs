@@ -87,7 +87,7 @@ function terminalIdOf(session) {
  * path so an ABSOLUTE hook path (`C:\Users\...\repo\src\x.ts` → `c:/users/.../repo/src/x.ts`)
  * becomes repo-relative (`src/x.ts`) before it is matched against repo-relative globs.
  * A path that is already relative (does not start with the root prefix) passes through
- * unchanged. CR-01: Claude Code PreToolUse hooks deliver absolute `file_path` values, but
+ * unchanged. Note: Claude Code PreToolUse hooks deliver absolute `file_path` values, but
  * scope globs + HOT_FILES are repo-relative — without this strip they can never match.
  * @param {string} p          normalized candidate path
  * @param {string} rootNorm   normalized repo root WITH a trailing slash, or '' to skip
@@ -105,7 +105,7 @@ export function relativizePath(p, rootNorm) {
  * Additionally emit an info warn for any input path on HOT_FILES when >=2
  * sessions are fresh — even with no claim. Fail-open: any error -> [].
  *
- * CR-01: when `root` (the repo root) is supplied, each candidate is relativized against
+ * When `root` (the repo root) is supplied, each candidate is relativized against
  * it FIRST, so an absolute hook path is matched against repo-relative globs. Pure-relative
  * inputs are unaffected. NTFS case-insensitivity is handled by normalizePath running on
  * both the candidate and the root before the prefix strip.
@@ -119,7 +119,7 @@ export function checkScopeCollision(paths, opts = {}) {
     const sessions = Array.isArray(opts.sessions) ? opts.sessions : []
     const self = opts.selfTerminalId ?? null
     const now = opts.now ?? Date.now()
-    // CR-01: derive a normalized root prefix (with trailing slash) so absolute hook
+    // Derive a normalized root prefix (with trailing slash) so absolute hook
     // paths are relativized to repo-relative before glob/HOT_FILES matching.
     const rootNorm = opts.root ? normalizePath(opts.root).replace(/\/+$/, '') + '/' : ''
     const normPaths = (Array.isArray(paths) ? paths : [])
@@ -314,7 +314,7 @@ export function recordCollisions(warns, opts = {}) {
   for (const w of Array.isArray(warns) ? warns : []) {
     if (!w || w.tier !== 'warn') continue
     try {
-      // FI-10 — when the caller supplies NAMED display identities (opts.selfDisplay +
+      // When the caller supplies NAMED display identities (opts.selfDisplay +
       // per-warn w.whoDisplay, «P9 Tom» / «P52 Anna»), the who column carries those so
       // forensics reads real windows, not t-<hash>. Backward-compatible: without them the
       // actors stay the original [own terminalId, owner holderIdentity] shape.

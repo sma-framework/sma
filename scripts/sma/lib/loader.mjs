@@ -296,7 +296,7 @@ export function resolvePeriphery(opts) {
 
   const core = coreNotes.map((n) => n.file)
 
-  // FI-11: the on-demand discovery fallback — for every queried AREA
+  // The on-demand discovery fallback — for every queried AREA
   // facet whose per-area index file exists, name it, so the caller can read
   // the full catalog line for a match (discovery line → INDEX file → note).
   const indexFiles = [...buckets.area]

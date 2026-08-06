@@ -107,7 +107,7 @@ async function runCollision(ctx) {
     }
     if (candidatePaths.length && collision && registry) {
       const sessions = ctx.sessions
-      // CR-01: pass the repo root so ABSOLUTE hook paths are relativized to
+      // Pass the repo root so ABSOLUTE hook paths are relativized to
       // repo-relative BEFORE matching the repo-relative globs + HOT_FILES.
       const warnObjs = collision.checkScopeCollision(candidatePaths, {
         sessions,
@@ -115,7 +115,7 @@ async function runCollision(ctx) {
         root: ctx.repoRoot,
       })
       for (const w of warnObjs) warns.push(collision.buildWarnText(w))
-      // journal the collisions (tier:'warn' only; fail-open). FI-10: enrich the
+      // journal the collisions (tier:'warn' only; fail-open). Enrich the
       // who column with NAMED identities from the live leases.
       if (identity) {
         const own = sessions.find((sess) => sess._file === `${identity.terminalId}.json`)
@@ -133,7 +133,7 @@ async function runCollision(ctx) {
 
   // (2) push-claim channel (Bash git deploy invocation) — the second channel.
   // The two-word deploy invocation is detected with an ESCAPED regex so this
-  // source file never carries the adjacent literal (SMA-3 discipline).
+  // source file never carries the adjacent literal (the escaped-verb discipline).
   try {
     if (ctx.toolName === 'Bash' && typeof ctx.toolInput.command === 'string' && slots) {
       const pushWord = ['push'].join('') // the deploy verb, isolated

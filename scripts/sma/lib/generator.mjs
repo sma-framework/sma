@@ -437,7 +437,7 @@ export const GENERATED_MARKER =
  */
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])
 
-/** The FI-11 per-area index files are structural artifacts, never notes. */
+/** The per-area index files are structural artifacts, never notes. */
 function isStructuralFile(f) {
   return STRUCTURAL_FILES.has(f) || /^INDEX-[^/\\]+\.md$/.test(f)
 }
@@ -836,7 +836,7 @@ export function buildIndex(opts) {
     out.push('')
   }
 
-  // ── Thin discovery layer (FI-11) ───────────────────────────────────────
+  // ── Thin discovery layer ───────────────────────────────────────────────
   // One line per AREA with a count; the full one-line-per-note catalog lives
   // in the per-area INDEX-<area>.md files, pulled by tag on demand via
   // `node scripts/sma/cli.mjs load` — always-load stays within its byte budget with zero loss
@@ -858,7 +858,7 @@ export function buildIndex(opts) {
   return out.join('\n')
 }
 
-// ─────────────────────────── per-area index files (FI-11) ────────────────────
+// ─────────────────────────── per-area index files ────────────────────────────
 
 /**
  * A note's discovery areas: its alias-resolved tags that are registered area

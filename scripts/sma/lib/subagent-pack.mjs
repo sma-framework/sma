@@ -28,7 +28,7 @@
 
 import { displayIdentity } from './registry.mjs'
 
-/** Hard byte budget of the whole assembled pack (UTF-8 bytes; FI-9 budget convention). */
+/** Hard byte budget of the whole assembled pack (UTF-8 bytes; the layer-budget convention). */
 export const PACK_BUDGET_BYTES = 8192
 
 /** Sentinel lines bounding the pack — the grep-able marker the dogfood probe looks for. */

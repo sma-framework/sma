@@ -10,7 +10,7 @@
  *   - Read-only git: this module issues ONLY read subcommands (fetch/show/tag/
  *     rev-parse/log). It NEVER performs the founder-reserved deploy operation
  *     (git-push) — that stays a human action outside SMA (P5). The
- *     SMA-3 guard greps this file for the two-word invocation; every reference here
+ *     the escaped-verb guard greps this file for the two-word invocation; every reference here
  *     is hyphenated ("git-push") or phrased as "отправка в origin" so it never
  *     matches, and the args-array runner never yields the adjacent literal.
  *   - Numeric domain: counters are compared as INTEGERS (parseInt/Number), never
@@ -386,7 +386,7 @@ export function checkPushClaim(o = {}) {
 // The A-202 anomaly class (a hand-typed ID far above the real max, so the next naive
 // scan collided) ends here: EVERY shared counter that lives in a planning source file
 // gets one generic next-free-number allocator. The founder's repeated auto-numbering
-// asks are the demand evidence (FI-5) — proof the slot concept deserves this reach.
+// asks are the demand evidence — proof the slot concept deserves this reach.
 //
 // Each kind is a READ-ONLY scanner over its source file(s) (prohibition: next-slot never
 // mutates BACKLOG/ACTIONS/ROADMAP/CONTEXT), reusing the exact claim + sorted-insert

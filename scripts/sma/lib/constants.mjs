@@ -86,15 +86,15 @@ export const MANIFEST_DIR = join(SMA_ROOT, 'manifest')
 // joins it against dirname(dirs.smaRoot) = the repo root.
 export const LADDER_FILE = 'sma-ladder.json'
 
-// ── FI-9 / FI-11 layer byte budgets ─────────────────────────────────────────
+// ── layer byte budgets ──────────────────────────────────────────────────────
 // Machine-enforced hot-surface budgets, measured in UTF-8 BYTES (not chars).
 // Lint (MEM-CORESIZE / MEM-NOTESIZE / MEM-INDEXSIZE / STATE-SIZE) warns at 80%
 // and goes critical at 100%; `sma trim` is the auto-repair — overflow DEMOTES
-// down a layer, it is never deleted (FI-9 founder lock).
+// down a layer, it is never deleted (a founder lock).
 export const CORE_BUDGET = 6144 //          6 KB — the CORE section of MEMORY.md
 export const NOTE_BUDGET = 8192 //          8 KB — each individual memory note
 export const ALWAYS_LOAD_BUDGET = 12288 // 12 KB — MEMORY.md whole (CORE + discovery block)
-export const STATE_BUDGET = 40960 //       40 KB — STATE.md snapshot (the house rule, FI-9)
+export const STATE_BUDGET = 40960 //       40 KB — STATE.md snapshot (the house rule)
 export const CAPSULE_BUDGET = 8192 //       8 KB — the pre-compaction flight capsule
 export const RESTORE_BUDGET = 6144 //       6 KB — the post-compact restore injection cap
 export const BUDGET_WARN_FRACTION = 0.8 //  WARN threshold as a fraction of each budget

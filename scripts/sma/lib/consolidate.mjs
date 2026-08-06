@@ -1,5 +1,5 @@
 /**
- * consolidate.mjs — the P3 consolidation core (B5/FI-9): a PROPOSE-ONLY
+ * consolidate.mjs — the P3 consolidation core (B5): a PROPOSE-ONLY
  * review pass over the memory corpus. Structural analog of lint.mjs's runLint —
  * pure read → collect proposals → structured return. The lib NEVER writes;
  * rendering/persisting is the CLI layer's job and APPLYING any proposal is the
@@ -10,7 +10,7 @@
  * milestone-complete. No scheduler, no background process — the single
  * HIGH-confidence constraint across all research lanes (RESEARCH Pattern 3).
  *
- * FI-9 (carried-forward lock): memory is NEVER deleted or time-decayed.
+ * THE CARRIED-FORWARD LOCK: memory is NEVER deleted or time-decayed.
  * Promotion counters are usage-evidence based (the citation ledger);
  * dead weight demotes via the trim, consolidation only proposes.
  *
@@ -101,7 +101,7 @@ function listNoteFiles(corpusDir) {
     return []
   }
   return entries
-    // The FI-11 per-area INDEX-<area>.md files are structural, not notes.
+    // The per-area INDEX-<area>.md files are structural, not notes.
     .filter((f) => f.endsWith('.md') && !STRUCTURAL_FILES.has(f) && !/^INDEX-[^/\\]+\.md$/.test(f))
     .filter((f) => {
       try {
@@ -519,7 +519,7 @@ function findMerges(notes, registry, threshold) {
 }
 
 /**
- * Promotion counters (promotion-NOT-time-decay, FI-9): an episodic note cited
+ * Promotion counters (promotion-NOT-time-decay): an episodic note cited
  * by >= PROMOTION_THRESHOLD DISTINCT task-tag-sets in the usage ledger
  * (the citation data) is proposed for episodic→semantic promotion.
  * A citation event's task-tag-set key = its sorted `tags` array when recorded;
@@ -607,7 +607,7 @@ export function digest(opts = {}) {
 /**
  * propose(opts) — the pure review pass: merges + promotions + contradictions +
  * reflection digest, NEVER a disk write (runLint contract — the CLI renders,
- * a human applies). FI-9: nothing here deletes or decays memory.
+ * a human applies). Nothing here deletes or decays memory.
  *
  * @param {object} opts
  * @param {string} opts.corpusDir   directory of the memory notes
