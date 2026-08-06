@@ -78,6 +78,7 @@
 import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { pipelineEnabled } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
 import { REASON_LABELS } from '../queue/adapter.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
@@ -327,6 +328,13 @@ export function deriveRules(config = {}, { switchMode } = {}) {
   return {
     lanes,
     workers,
+    // THE CONVEYOR'S OWN SWITCH, READ. A toggle that can only be written is a toggle no
+    // screen can show as off, and «off» is the state this product ships in — so a window
+    // that could not read it would present a stopped machine as a running one. It is
+    // DERIVED here by the same predicate the tick is gated on (config.mjs pipelineEnabled),
+    // never stored a second time: the answer on the screen and the answer in the tick are
+    // one comparison, so they cannot come to disagree.
+    pipeline: { enabled: pipelineEnabled(config) },
     ...(budget
       ? {
           budgetStops: {
