@@ -369,7 +369,7 @@ export function measureGitLossRecoverability(opts = {}) {
         value: cov.value,
         unit: 'percent',
         n: cov.n,
-        method: `ok airbag receipts / all airbag firings in the last ${windowDays}d (9.2-05 receipt-primary)`,
+        method: `ok airbag receipts / all airbag firings in the last ${windowDays}d (receipt-primary)`,
         status: 'measured',
       })
     }
@@ -407,7 +407,7 @@ export function measureGitLossRecoverability(opts = {}) {
     value,
     unit: 'percent',
     n: firings,
-    method: `destructive-gate firings in the last ${windowDays}d = ${firings}; airbag snapshot mechanism arrives plan 05 (numerator structurally 0 until then)`,
+    method: `destructive-gate firings in the last ${windowDays}d = ${firings}; no airbag snapshot mechanism exists yet (numerator structurally 0 until then)`,
     status,
   })
 }
@@ -639,7 +639,7 @@ export function readSelfCostBase(opts = {}) {
       value: 0,
       unit: 'ms-per-tool-call',
       n: 0,
-      method: 'hook wall-time proxy; run `sma bench --metric self-cost` (timing harness) to capture; spend-share instrument arrives plan 09',
+      method: 'hook wall-time proxy; run `sma bench --metric self-cost` (timing harness) to capture; spend-share instrument not built yet',
       status: 'pending-instrument',
     })
   }
@@ -671,7 +671,7 @@ export function measureCanaryCatch() {
     value: 0,
     unit: 'percent',
     n: 0,
-    method: 'no mechanism exists — blind verifier + planted-canary audit arrive plan 10',
+    method: 'no mechanism exists — blind verifier + planted-canary audit not built yet',
     status: 'registered',
   })
 }
@@ -867,7 +867,7 @@ export function measureSelfCost(opts = {}) {
     value: msPerToolCall,
     unit: 'ms-per-tool-call',
     n,
-    method: 'hook wall-time proxy; spend-share instrument arrives plan 09',
+    method: 'hook wall-time proxy; spend-share instrument not built yet',
     status: n > 0 ? 'measured' : 'insufficient-data',
   })
 }
