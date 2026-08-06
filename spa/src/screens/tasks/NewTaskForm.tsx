@@ -11,7 +11,7 @@ import { useEnqueue } from '../../api/queries'
  * last: the door explicit-picks the fields below out of the body and refuses anything else,
  * and it is the door — not this form — that decides what a valid task is. The form asks for
  * the fields the door names and nothing more, so a field can never be smuggled in from the
- * window, and a green form is never mistaken for a green gate (T-9-20).
+ * window, and a green form is never mistaken for a green gate.
  *
  * The choices are the daemon's own closed vocabularies, written here as the words a person
  * uses for them. «Кузница» is deliberately absent: a forge task needs a draft brief the

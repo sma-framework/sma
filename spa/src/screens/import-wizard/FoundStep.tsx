@@ -19,7 +19,7 @@ import { candidateKey, isEnrollable, KIND_GROUP } from './shared'
  * A name and a description come out of somebody else's file. They are rendered as TEXT
  * CHILDREN and nothing else: a description that looks like markup reads as markup, because
  * React escapes a text child and no escape hatch for raw HTML is used on this screen at
- * all (T-9-55).
+ * all.
  */
 
 /** How many rows of a group are shown before the rest fold into one line. */
