@@ -210,7 +210,7 @@ describe('continuation briefs', () => {
     expect(() => buildResumeBrief({})).not.toThrow()
   })
 
-  it('Test 8: buildHandoffBrief = resume + claim-transfer (exact release/claim commands + D-9-09 warning); write scrubs secrets', () => {
+  it('Test 8: buildHandoffBrief = resume + claim-transfer (exact release/claim commands + the force-clear warning); write scrubs secrets', () => {
     const brief = buildHandoffBrief({ ...capsuleFixture(), capsuleFresh: '2026-07-08T12:00:00.000Z' })
     // everything resume has
     expect(brief).toContain('следующая задача 2')
@@ -219,7 +219,7 @@ describe('continuation briefs', () => {
     expect(brief).toContain('node scripts/sma/cli.mjs release flight-slot')
     expect(brief).toContain('node scripts/sma/cli.mjs claim')
     expect(brief).toContain('force-clear')
-    expect(brief).toContain('D-9-09')
+    expect(brief).toContain('снять чужой claim может только человек')
 
     // the handoff write path routes through scanForSecrets before disk
     const flightDir = join(tmp, 'flight')
