@@ -845,7 +845,7 @@ async function cmdClaim({ positionals, flags, dirs }) {
     { ...dirs, identity },
   )
 
-  // WR-02: ALSO create a claims-dir entry named after the scope slug — the SAME string
+  // ALSO create a claims-dir entry named after the scope slug — the SAME string
   // the collision WARN's `force-clear <slug>` remediation suggests — so a foreign
   // stale scope claim can actually be force-cleared (previously the WARN's command
   // always failed «claim не найден»). Best-effort: a lost race / fs error never blocks.
@@ -889,7 +889,7 @@ async function cmdRelease({ positionals, flags, dirs }) {
   const collision = await import('./lib/collision.mjs')
   const identity = registry.resolveTerminalIdentity({})
 
-  // WR-02: derive the same slug used at claim time (prefer the lease's current scope
+  // derive the same slug used at claim time (prefer the lease's current scope
   // description, fall back to <name>) so the matching claims-dir entry is removed. The
   // owner removes its OWN entry directly (no cooldown — cooldown is for contended slots).
   let desc = name
@@ -936,7 +936,7 @@ async function cmdNextSlot({ positionals, flags, dirs }) {
   const identity = registry.resolveTerminalIdentity({})
 
   if (kind === 'migration') {
-    // WR-03: pass journalDir so slot events land in .sma/journal/, not .sma/claims/.
+    // pass journalDir so slot events land in .sma/journal/, not .sma/claims/.
     const res = slots.nextMigrationSlot({ by: identity.holderIdentity, terminalId: identity.terminalId, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir })
     if (wantsJson(flags)) {
       printJson(res)
@@ -2418,7 +2418,7 @@ async function cmdSpendLane({ positionals, flags, dirs }) {
     } else if (decision.reportOnly) {
       const why =
         decision.reason === 'overlap'
-          ? 'параллельный терминал жёг расход в окне — только отчёт, промах не засчитывается (CH-9.4-06-1)'
+          ? 'параллельный терминал жёг расход в окне — только отчёт, промах не засчитывается'
           : decision.reason === 'no-budget'
             ? 'бюджет ещё не выведен (мало прогонов) — только отчёт'
             : 'только отчёт'
@@ -5232,7 +5232,7 @@ async function cmdSnapshot({ flags, dirs }) {
     const mod = await import('./lib/snapshot.mjs')
     // If the module lands later, delegate to its default/exported handler.
     if (mod && typeof mod.runSnapshot === 'function') {
-      // WR-06: thread the CLI's resolved dirs so SMA_ROOT_OVERRIDE is honored here too.
+      // thread the CLI's resolved dirs so SMA_ROOT_OVERRIDE is honored here too.
       const res = await mod.runSnapshot({ ...flags, sessionsDir: dirs.sessionsDir, journalDir: dirs.journalDir })
       if (wantsJson(flags)) printJson(res)
       return 0
@@ -5240,7 +5240,7 @@ async function cmdSnapshot({ flags, dirs }) {
   } catch {
     /* module not present yet — fall through to the clean message */
   }
-  const msg = 'SMA: snapshot недоступен — модуль появится в 9-13 (snapshot).'
+  const msg = 'SMA: snapshot недоступен — модуль snapshot в этой установке отсутствует.'
   if (wantsJson(flags)) {
     printJson({ available: false, message: msg })
     return 1
@@ -6917,7 +6917,7 @@ async function cmdConsolidate({ flags, dirs }) {
   // Pattern-3 output contract: a reviewable proposal list, never auto-applied.
   process.stdout.write('Proposed changes (review before applying — nothing auto-committed):\n')
   process.stdout.write(
-    '  Память не удаляется и не распадается по времени (FI-9) — только слияние, продвижение и supersession руками оператора.\n',
+    '  Память не удаляется и не распадается по времени — только слияние, продвижение и supersession руками оператора.\n',
   )
   for (const m of res.merges) {
     process.stdout.write(
@@ -6968,7 +6968,7 @@ async function cmdTrim({ flags, dirs }) {
     // Pattern-3 output contract (mirrors consolidate): reviewable, never auto-applied.
     process.stdout.write('Proposed demotions (review before applying — nothing auto-committed):\n')
     process.stdout.write(
-      '  Память не удаляется и не распадается по времени (FI-9) — переполнение спускается на слой ниже: ядро → периферия, хвост заметки → архивная заметка, STATE → STATE-ARCHIVE.\n',
+      '  Память не удаляется и не распадается по времени — переполнение спускается на слой ниже: ядро → периферия, хвост заметки → архивная заметка, STATE → STATE-ARCHIVE.\n',
     )
     for (const d of p.coreDemotions) {
       process.stdout.write(
@@ -7003,7 +7003,7 @@ async function cmdTrim({ flags, dirs }) {
     printJson({ applied: true, core, splits, state })
     return 0
   }
-  process.stdout.write('SMA trim — применено (ничего не удалено, FI-9):\n')
+  process.stdout.write('SMA trim — применено (ничего не удалено):\n')
   for (const f of core.demoted ?? []) process.stdout.write(`  ядро → периферия: ${f}\n`)
   for (const s of splits) {
     if (s.split && s.applied) process.stdout.write(`  заметка разделена: ${s.file} → ${s.archiveFile} (${s.movedLines} строк в архив)\n`)
@@ -8623,7 +8623,7 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
   process.stdout.write(`SMA blind-verify [${res.planId}] — ${res.verdicts.length} проверок из дерева (executor report НЕ читался):\n`)
   for (const v of res.verdicts) process.stdout.write(`  [${v.verdict}] ${v.source}:${v.id}\n`)
   if (cmp.ok && cmp.divergences && cmp.divergences.length) {
-    process.stdout.write(`\nРАСХОЖДЕНИЯ (claimed pass / blind fail) — тяжелейшее событие реестра, блокирует sma ship (CONS-9.2-07-A):\n`)
+    process.stdout.write(`\nРАСХОЖДЕНИЯ (claimed pass / blind fail) — тяжелейшее событие реестра, блокирует sma ship:\n`)
     for (const d of cmp.divergences) process.stdout.write(`  ${d.checkId} (${d.domain})\n`)
     return 1
   }
@@ -10115,7 +10115,7 @@ async function cmdWorktree({ positionals, flags, dirs }) {
     process.stdout.write(`SMA worktree: создано -> ${res.path}  (ветка ${branch})\n`)
     if (res.baseFixed) process.stdout.write(`  ⚠ база разошлась с HEAD — выполнен git reset --hard ${String(res.expectedBase).slice(0, 12)} (Windows worktree-base guard)\n`)
   }
-  process.stdout.write('  Координация (.sma/) остаётся общей для всех деревьев; в main только через `sma merge` (9.3-15), push — по команде основателя.\n')
+  process.stdout.write('  Координация (.sma/) остаётся общей для всех деревьев; в main только через `sma merge`, push — по команде основателя.\n')
   return 0
 }
 

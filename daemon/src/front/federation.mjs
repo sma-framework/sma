@@ -1,6 +1,6 @@
 /**
- * federation.mjs — the daemon's FIRST sanctioned OUTBOUND daemon→daemon contour
- * (Plan 9.7-13; D-9.7-01 / D-9.7-03 / D-9.7-04 / D-9.7-07).
+ * federation.mjs — the daemon's FIRST sanctioned OUTBOUND daemon→daemon contour:
+ * one machine's view of the others.
  *
  * ═══════════════════ A NEW CLASS OF BEHAVIOUR, DECLARED ══════════════════════════
  * Until this file, the daemon held exactly ONE outbound path — notify.mjs, which posts
@@ -8,7 +8,7 @@
  * opens a THIRD kind: an outbound call whose RESPONSE IS CONSUMED. That is a genuine new
  * trust edge, so it carries its laws in the open, the way auth.mjs and notify.mjs do:
  *
- *   1. THE TOKEN LIVES IN THE OUTGOING HEADER AND NOWHERE ELSE (T-9.7-31). It is never
+ *   1. THE TOKEN LIVES IN THE OUTGOING HEADER AND NOWHERE ELSE. It is never
  *      put in a url, never in a status object, never in an event frame, and never in an
  *      error message — transport errors are reduced to a fixed CODE (`unreachable` /
  *      `http_status` / `bad_payload`) before anything is stored, so there is no string
@@ -20,19 +20,19 @@
  *      unauthorized or answering garbage NEVER breaks the founder's own view: pollPeers
  *      resolves always, and the hub's own rows are rendered regardless.
  *
- *   3. THE OFFLINE SNAPSHOT IS A DOCUMENTED EXCEPTION TO «DERIVE, NEVER STORE»
- *      (T-9.7-34). state.mjs stores nothing; here the hub keeps each peer's LAST
+ *   3. THE OFFLINE SNAPSHOT IS A DOCUMENTED EXCEPTION TO «DERIVE, NEVER STORE».
+ *      state.mjs stores nothing; here the hub keeps each peer's LAST
  *      successful /api/state response IN PROCESS MEMORY so an unreachable machine's work
  *      stays visible instead of vanishing mid-night. The exception is bounded three ways:
  *      it is in memory only (never on disk — the disk must not become a second source of
  *      truth), it is always age-labelled (`lastSeenSec` next to `online:false`), and a hub
  *      restart honestly loses it (peers are re-polled within one tick).
  *
- *   4. THE HUB NEVER RE-PLAYS A PEER'S LOGIC (D-9.7-07). proxyAction re-issues the SAME
+ *   4. THE HUB NEVER RE-PLAYS A PEER'S LOGIC. proxyAction re-issues the SAME
  *      request against the peer's own handler with the peer's token and relays the peer's
  *      status and body VERBATIM. CAS races, merge gates and validation stay where the task
  *      actually lives. The proxyable paths are a FROZEN set of three — proxying an
- *      arbitrary path is structurally impossible, not merely discouraged (T-9.7-33).
+ *      arbitrary path is structurally impossible, not merely discouraged.
  *
  * ═══════════════════ PROTOCOL: POLL, OVER THE EXISTING FRONT ═════════════════════
  * The hub polls each peer's ORDINARY `GET /api/state` on the same 2-5s rhythm the SPA
@@ -41,13 +41,13 @@
  * attack surface is the same thirty routes it had before. Push aggregation is recorded as
  * a possible V5.2 improvement, not a V5.1 requirement.
  *
- * ═══════════════════ SSRF GUARD, AND THE ONE ESCAPE HATCH (T-9.7-32) ═════════════
+ * ═══════════════════ SSRF GUARD, AND THE ONE ESCAPE HATCH ════════════════════════
  * A peer url is validated ONCE, at construction: http(s) only, and loopback / link-local
  * hosts are refused — a peer registry is written by a human through the pairing wizard, so
  * a same-host or metadata-service address in it means something is wrong. PRIVATE MESH
  * addresses (10/8, 172.16/12, 192.168/16, and a VPN's own range) are the SANCTIONED
  * deployment and pass. The single escape hatch is `federation.allowLoopbackPeers: true`,
- * which exists for the D-9.7-03 two-daemons-on-one-machine verification run and is
+ * which exists for the two-daemons-on-one-machine verification run and is
  * documented as such: a production federation runs over a private mesh, and a bare daemon
  * port exposed to the internet is forbidden.
  *
@@ -55,12 +55,12 @@
  * The project REGISTRY stays the hub's own. A peer's rows arrive carrying their project id
  * as a label (rows already carry `project` from 9.7-02), but a foreign registry is not
  * spliced into `projects[]` — how a foreign project reads on screen is the «Машины и
- * проекты» screen's decision (plan 9.7-18), and inventing it here would freeze it wrong.
- * Federation is COMPUTER-TO-COMPUTER only (D-9.7-02): no phone is part of this contour.
+ * проекты» screen's decision, and inventing it here would freeze it wrong.
+ * Federation is COMPUTER-TO-COMPUTER only: no phone is part of this contour.
  *
  * ═══════════════════ INTRODUCTION: THE WIZARD PREPARES, THE HUMAN APPLIES ════════
  * A peer registry entry carries the PEER'S OWN DAEMON TOKEN — the one moment a token
- * leaves the machine that minted it (D-9.7-06, T-9.7-37). The pairing book below is what
+ * leaves the machine that minted it. The pairing book below is what
  * makes that moment safe, and it is deliberately small:
  *
  *   - The hub mints a ONE-SHOT invitation (32 bytes of crypto randomness) with a TTL and
@@ -85,7 +85,7 @@ import { randomBytes } from 'node:crypto'
 
 import { tokenEquals } from './auth.mjs'
 
-/** The ONLY paths a hub may re-issue on a peer's behalf (T-9.7-33). Frozen on purpose. */
+/** The ONLY paths a hub may re-issue on a peer's behalf. Frozen on purpose. */
 export const PROXYABLE_PATHS = Object.freeze(new Set(['/api/approve', '/api/return', '/api/enqueue']))
 
 /** Poll budget for one peer's /api/state — a slow peer must not stall the founder's poll. */
@@ -94,7 +94,7 @@ export const POLL_TIMEOUT_MS = 4000
 /** Proxy budget — an approve runs a real merge on the peer, so it gets a longer rope. */
 export const PROXY_TIMEOUT_MS = 20000
 
-/** Named error: a peer url that the SSRF guard refuses (T-9.7-32). */
+/** Named error: a peer url that the SSRF guard refuses. */
 export class InvalidPeerUrlError extends Error {
   constructor(message) {
     super(message)
@@ -110,7 +110,7 @@ export class UnknownPeerError extends Error {
   }
 }
 
-/** Named error: a path outside the frozen proxy list (T-9.7-33). */
+/** Named error: a path outside the frozen proxy list. */
 export class ProxyPathNotAllowedError extends Error {
   constructor(message) {
     super(message)
@@ -128,7 +128,7 @@ export class PeerUnreachableError extends Error {
 }
 
 /**
- * Named error: an invitation that is unknown, already used or expired (T-9.7-37). The
+ * Named error: an invitation that is unknown, already used or expired. The
  * MESSAGE is a constant — `reason` exists for the daemon's own reading and is never put
  * on the wire, because «expired» versus «never existed» is exactly the difference an
  * attacker would use to map which invitations were ever minted.
@@ -141,7 +141,7 @@ export class PairingTokenError extends Error {
   }
 }
 
-// ── the pairing book (D-9.7-06) ────────────────────────────────────────────────
+// ── the pairing book ────────────────────────────────────────────────
 
 /** How long an unused invitation lives. Long enough to walk to the other machine. */
 export const PAIRING_TTL_MS = 15 * 60 * 1000
@@ -228,8 +228,7 @@ export function createPairingBook({ clock = Date.now, ttlMs = PAIRING_TTL_MS } =
  * IT IS TEXT, NOT A SCRIPT. The daemon never executes it and never sends it anywhere: the
  * founder reads it, walks to the other machine and types it. Everything secret in it is a
  * PLACEHOLDER except the invitation itself — the hub's own token is NAMED so the reader
- * knows what to paste, and never carried, so this string may safely ride a response
- * (T-9.7-05).
+ * knows what to paste, and never carried, so this string may safely ride a response.
  *
  * @param {{hubUrl:string, pairingToken:string, expiresSec:number}} args
  * @returns {string}
@@ -367,7 +366,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
   const doFetch = typeof fetchImpl === 'function' ? fetchImpl : (...a) => globalThis.fetch(...a)
   const pairing = createPairingBook({ clock })
 
-  /** peerId → {state, at} — the LAST successful snapshot (in memory; T-9.7-34). */
+  /** peerId → {state, at} — the LAST successful snapshot (in memory). */
   const snapshots = new Map()
   /** peerId → boolean — reachability as of the most recent poll. */
   const online = new Map()
@@ -398,7 +397,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
       lastFailure.delete(peer.id)
     } catch {
       // The caught error is DISCARDED, not inspected: a transport message may quote the
-      // outgoing header, and a discarded message cannot leak (T-9.7-31).
+      // outgoing header, and a discarded message cannot leak.
       online.set(peer.id, false)
       lastFailure.set(peer.id, FAIL_UNREACHABLE)
     }
@@ -419,7 +418,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
    * peerStatus() — the machines[] entries for the peers, in the FROZEN 9.7-02 shape
    * {id, title, role, online} plus `lastSeenSec`, the age of the snapshot being shown.
    * A peer never yet reached carries NO age — there is no last-seen moment to claim.
-   * No url and no token appear here, by construction (T-9.7-31 / T-9.7-05).
+   * No url and no token appear here, by construction.
    */
   function peerStatus() {
     const now = clock()
@@ -521,7 +520,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
   /**
    * proxyAction({machineId, method, path, body}) — re-issue ONE already-validated founder
    * action against the peer that owns the task, with THAT peer's token, and relay the
-   * peer's status and body verbatim (D-9.7-07). The hub adds no logic: the peer's own
+   * peer's status and body verbatim. The hub adds no logic: the peer's own
    * handler runs its own CAS, its own merge gate and its own validation.
    *
    * @param {{machineId:string, method?:string, path:string, body?:object}} o
@@ -556,7 +555,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
   /**
    * validatePeerUrl(entry) — run the SSRF guard on a CANDIDATE without touching the live
    * registry. The join door calls this BEFORE it writes anything, so a loopback or
-   * metadata address never reaches disk (T-9.7-32).
+   * metadata address never reaches disk.
    *
    * @param {object} entry a {id, url, token} candidate
    * @throws {InvalidPeerUrlError}

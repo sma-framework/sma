@@ -2,7 +2,7 @@
  * loop.mjs — THE STATELESS TICK: the core of the daemon, where the operator stops being
  * the runtime.
  *
- * ═══════════════════════ STATELESS CONSUMER ══════════════════════════════════════
+ * ═══════════════════════ STATELESS CONSUMER ═══════════════════════════════════════
  * The daemon is a POLL over durable state. `tick(deps)` executes ONE pass and holds NO
  * task memory: every tick re-derives from the QueueAdapter (Postgres truth) + the
  * attempt ledger. The process is KILLABLE AT ANY LINE — restart = resume; a lost tick
@@ -25,7 +25,7 @@
  * that spawns `node scripts/sma/cli.mjs <verb> …` with the shell disabled. Tests inject a
  * recorder; production injects the real child runner.
  *
- * ═══════════════════════ THE FOUNDER-PUSH LAW ════════════════════════════════════
+ * ═══════════════════════ THE FOUNDER-PUSH LAW ═════════════════════════════════════
  * This process holds NO origin-push path. Approved work travels back by the FOUNDER
  * pulling the worker host as a git remote — the daemon
  * never talks to origin. COMMENT DISCIPLINE: the two-word push invocation literal
@@ -33,7 +33,7 @@
  * is «the push verb». Workers never push; the loop's only git surface is worktree/merge
  * verbs, both local by construction.
  *
- * ═══════════════════════ AN ATTEMPT MUST EXPLAIN ITSELF ══════════════════════════
+ * ═══════════════════════ AN ATTEMPT MUST EXPLAIN ITSELF ═══════════════════════════
  * The exit gate asks TWO questions, in the same place, under the same law:
  *   - is there a GREEN reverify receipt?         (the work is certified)
  *   - did the attempt leave an APPROACH NOTE?    (the work is explained)
@@ -69,7 +69,7 @@
  * `planHash` stay ABSENT; `attemptStamp` says once, in one place, why each of them has no
  * real value to carry.
  *
- * ═══════════════ THE LEDGER IS RECONCILED ONCE A TICK ══════════════════════════════
+ * ═══════════════ THE LEDGER IS RECONCILED ONCE A TICK ═════════════════════════════
  * Step (1b) runs `reconcileAttempts` straight after the liveness sweep: the sweep writes
  * the rows it can observe, and the pass then appends the rows for attempts NOBODY observed
  * — the ones pg-boss's own lease expiry retried while this daemon was down. Those rows are

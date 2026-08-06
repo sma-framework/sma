@@ -1,5 +1,5 @@
 /**
- * chat.mjs — the engine behind the «Разговор» screen (D-9.7-13/15).
+ * chat.mjs — the engine behind the «Разговор» screen.
  *
  * WHAT IT IS: one door (`handleChatTurn`) for a question asked in plain words, and the
  * machinery that answers it. Not a chatbot bolted onto the daemon — a lane with three laws
@@ -11,14 +11,14 @@
  * That formula is the UI contract (CHAT_BOUNDARY_FORMULA below — the screen renders this
  * exact string). Here is what makes it honest:
  *
- * ── LAW 1 · HYBRID (D-9.7-13). A factual question is not a job for a model. «Почему упала
+ * ── LAW 1 · HYBRID. A factual question is not a job for a model. «Почему упала
  *    задача X» is a dictionary lookup over the SAME failure vocabulary the roster renders;
  *    «что съело лимит» is arithmetic over the spend book; «что с задачей» is a status read.
  *    Those three branches are pure functions over injected sources — instant, free, and
  *    incapable of spawning anything. Only a genuinely open question reaches a model session.
  *    A misclassification is SAFE by design: the free branch answers honestly too, just dearer.
  *
- * ── LAW 2 · HANDS TIED (D-9.7-13). The one «action» this engine can take is to put a task
+ * ── LAW 2 · HANDS TIED. The one «action» this engine can take is to put a task
  *    DRAFT in its answer — a card with a title, a proposed worker, a mode and acceptance.
  *    The human presses «Создать»; the SPA then posts the ordinary task-creation request that
  *    any screen posts. This module has NO path to the queue: it reads the adapter and never
@@ -26,7 +26,7 @@
  *    is absent cannot be smuggled — which is why the worst outcome of a successful prompt
  *    injection here is a draft a human declines.
  *
- * ── LAW 3 · OUTSIDE THE QUEUE (D-9.7-15). A conversation builds nothing, so it takes no
+ * ── LAW 3 · OUTSIDE THE QUEUE. A conversation builds nothing, so it takes no
  *    queue slot, no worktree, no receipt, and never appears among the tasks. The free branch
  *    calls the spawn primitive DIRECTLY (see dispatchFreeTurn) — never the tick/claim path —
  *    and books its spend under a reserved task id (`chat-<ts>`), which is what makes the
@@ -474,7 +474,7 @@ const DRAFT_MARKER_RE = /^DRAFT:\s*(\{[\s\S]*?\})\s*$/gm
 /**
  * resolvePolicyVoice({policyDir, fsImpl}) → {source, text}.
  *
- * THE VOICE IS THE POLICY (D-9.7-14). The conversation speaks with the same judgment that
+ * THE VOICE IS THE POLICY. The conversation speaks with the same judgment that
  * accepts and returns work — not a second personality maintained separately, which would
  * inevitably say something the system does not actually do.
  *
@@ -558,7 +558,7 @@ export function buildChatPrompt({ voice, text, workers } = {}) {
 /**
  * validateDraft(draft, {workers}) → a normalized draft, or null when it is not sound.
  *
- * THE STRUCTURAL GATE before the «Создать» button (T-9.7-24). A model's output becomes a
+ * THE STRUCTURAL GATE before the «Создать» button. A model's output becomes a
  * PROPOSAL OF ACTION here, so it passes an explicit pick: a non-empty title, a worker that
  * actually exists in the roster, a known mode. Unknown keys are dropped rather than carried.
  * A draft that fails goes nowhere — the human sees the text answer and no button.

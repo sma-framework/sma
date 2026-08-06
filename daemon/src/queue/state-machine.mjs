@@ -6,7 +6,7 @@
  * failed — plus a dead-letter queue. Four values collapse three genuinely different
  * situations into one bit: work PRODUCED but not yet checked, work being VERIFYING,
  * and work WAITING_HUMAN. Nothing can be asserted about a fleet whose vocabulary cannot
- * express what is true, so this module gives the canon's eleven states names, a contract
+ * express what is true, so this module gives the fleet's eleven states names, a contract
  * per legal transition, and a version an attempt can be stamped with.
  *
  * IT WRAPS THE QUEUE, IT DOES NOT REPLACE IT. pg-boss stays the coarse truth: it still
@@ -26,14 +26,14 @@
  * The fleet promises AT-LEAST-ONCE delivery. It does not promise exactly-once, and this
  * module must never be read as providing it: the queue underneath cannot keep that promise,
  * and a promise the layer below cannot keep is worse than none. What makes at-least-once
- * survivable is the canon's practical semantics — immutable attempts, idempotent effects,
+ * survivable is the fleet's practical semantics — immutable attempts, idempotent effects,
  * and transactional state transitions. That is why every contract below declares its
  * `externalEffects` EXPLICITLY rather than by omission: a redelivered transition whose
  * effect was never declared is exactly the case fleet invariant four exists to survive («истечение
  * lease не означает, что внешний side effect не произошел»).
  *
- * ═══════════ WHICH INVARIANTS LIVE HERE, AND WHICH DELIBERATELY DO NOT ════════════
- * Four of the canon's seven invariants are decidable from a SINGLE transition, and
+ * ═══════════ WHICH INVARIANTS LIVE HERE, AND WHICH DELIBERATELY DO NOT ═════════════
+ * Four of the seven fleet invariants are decidable from a SINGLE transition, and
  * `applyTransition` enforces them as refusals:
  *   1 — ACCEPTED requires a verification receipt AND an authorized disposition, so no
  *       worker can accept its own work.
@@ -45,19 +45,20 @@
  * no single-transition function can see them: at most one active lease per task alongside
  * many immutable attempts (3); a lease expiry never implying the external effect did not
  * happen (4); and the policy / memory-snapshot / model / harness stamp being fixed on the
- * attempt (6). They are property-tested in PLAN 11-08. Do not mistake this module for the
+ * attempt (6). They are property-tested by the invariants suite. Do not mistake this
+ * module for the
  * whole guarantee — it is the part of it a pure function can hold, and it says so out loud.
  *
- * THE CONTRACT SHAPE is the canon's, field for field (roadmap txt line 515 onward):
+ * THE CONTRACT SHAPE is the fleet spec's, field for field:
  *   actor · preconditions · idempotency_key · writes · external_effects · timeout ·
  *   retry_policy · next_states
  * `nextStates` are the states reachable AFTER landing in `to`. They are written out per
- * contract rather than derived, so the table reads as the canon writes it — and the test
+ * contract rather than derived, so the table reads as the spec writes it — and the test
  * suite compares every one of them against the destination's own outgoing set, so the
- * duplication cannot drift. One deliberate difference from the canon's worked example
+ * duplication cannot drift. One deliberate difference from the spec's worked example
  * (RUNNING→PRODUCED, next_states [VERIFYING, RETRYABLE]): CANCELLED is reachable from every
  * non-terminal state, so it appears in every non-terminal `nextStates`. A human may stop
- * work at any point before it is finished; the canon's own diagram draws that edge.
+ * work at any point before it is finished; the spec's own diagram draws that edge.
  */
 
 import { createHash } from 'node:crypto'
@@ -65,7 +66,7 @@ import { createHash } from 'node:crypto'
 // ── the closed vocabularies ──
 
 /**
- * The canon's eleven fleet states, verbatim (roadmap txt lines 512-514). Frozen: adding a
+ * The eleven fleet states, verbatim. Frozen: adding a
  * state is a policy decision that must also add its contracts, and the suite fails when it
  * does not.
  */
@@ -132,7 +133,7 @@ const DECIDABLE_PRECONDITIONS = Object.freeze([
 
 // ── the transition contract table ──
 
-/** The human abort edge, available from every non-terminal state (canon diagram). */
+/** The human abort edge, available from every non-terminal state. */
 const cancelContract = () =>
   Object.freeze({
     actor: 'human',
@@ -184,7 +185,7 @@ export const TRANSITIONS = Object.freeze({
   }),
 
   RUNNING: Object.freeze({
-    // The canon's worked example (roadmap txt lines 516-530), field for field.
+    // The spec's worked example, field for field.
     PRODUCED: Object.freeze({
       actor: 'worker',
       preconditions: Object.freeze(['active_lease_matches_attempt', 'capability_allows_write_scope']),
@@ -368,7 +369,7 @@ export function toQueueStatus(state) {
   return QUEUE_STATUSES.includes(status) ? status : null
 }
 
-// ── the idempotency key (canon line 523: task_id + attempt_id + transition) ──
+// ── the idempotency key (task_id + attempt_id + transition) ──
 
 /**
  * `12:some-task-id` — the length, a colon, the value. An injective encoding, so no choice
@@ -380,7 +381,7 @@ const lengthPrefixed = (part) => `${part.length}:${part}`
 /**
  * idempotencyKey(taskId, attemptId, transition) → a short, stable hex string.
  *
- * DETERMINISTIC BY CONSTRUCTION: a hash of exactly the canon's three inputs and nothing
+ * DETERMINISTIC BY CONSTRUCTION: a hash of exactly those three inputs and nothing
  * else. No clock, no counter, no randomness — so the same effect retried under the same
  * attempt composes the same key across process restarts, which is the whole mechanism that
  * makes at-least-once delivery survivable (fleet invariant five). The parts are length-prefixed,
