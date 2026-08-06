@@ -126,7 +126,8 @@ function checkGraphifyVersion() {
 }
 /**
  * Safely read and parse a JSON file. Returns null on missing file or parse error.
- * Prevents crashes on malformed JSON (T-02-01 mitigation).
+ * Prevents crashes on malformed JSON: a hand-edited or half-written file
+ * must degrade to "absent", never take the caller down.
  */
 function safeReadJson(filePath) {
     try {

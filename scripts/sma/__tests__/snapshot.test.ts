@@ -376,7 +376,7 @@ describe('sendSnapshot — fail-open (Test 3, R12)', () => {
 })
 
 describe('sendSnapshot — no token (Test 4)', () => {
-  // WR-09: sendSnapshot falls through to process.env.SMA_SNAPSHOT_TOKEN when no token is
+  // sendSnapshot falls through to process.env.SMA_SNAPSHOT_TOKEN when no token is
   // passed. On any machine where A-047 has provisioned the token, that env var is set,
   // fetch would be called, and the no-token assertion would red the whole pre-push suite.
   // Stash + delete the env var so this test is hermetic regardless of the machine.
@@ -409,7 +409,7 @@ describe('sendSnapshot — no token (Test 4)', () => {
 })
 
 describe('runSnapshot — honors supplied dirs (WR-06)', () => {
-  // WR-06: runSnapshot must PREFER caller-supplied sessionsDir/journalDir over its own
+  // runSnapshot must PREFER caller-supplied sessionsDir/journalDir over its own
   // smaRoot() derivation, so SMA_ROOT_OVERRIDE (threaded from the CLI) is honored. Guard
   // the token so the no-token fast-path keeps this hermetic (no real network).
   let savedToken: string | undefined

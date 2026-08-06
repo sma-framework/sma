@@ -470,7 +470,7 @@ function failOpen(journalDir, identity, reason) {
  * runSnapshot(flags) — the CLI entry (cli.mjs `snapshot`). Build the payload
  * (with the async default memory-health loader) then send it. Never throws.
  *
- * WR-06: PREFER caller-supplied dirs (flags.sessionsDir / flags.journalDir) over the
+ * PREFER caller-supplied dirs (flags.sessionsDir / flags.journalDir) over the
  * module's own smaRoot() derivation, so SMA_ROOT_OVERRIDE — which the CLI resolves once
  * and threads down — is honored here too. Without this, a test/tooling override was
  * silently ignored by this ONE subcommand and it read (and journaled snapshot-fail

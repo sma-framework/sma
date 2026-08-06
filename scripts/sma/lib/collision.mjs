@@ -195,9 +195,9 @@ export function checkScopeCollision(paths, opts = {}) {
 
 /**
  * scopeClaimSlug(descriptionOrHolder) — the stable claims-dir entry name for a scope
- * claim, and the exact string the force-clear remediation suggests. WR-02: cmdClaim
- * creates a claims-dir entry under THIS name so `force-clear <slug>` from a collision
- * WARN actually resolves. Exported so the CLI and the WARN builder share one derivation.
+ * claim, and the exact string the force-clear remediation suggests. cmdClaim creates
+ * a claims-dir entry under THIS name so `force-clear <slug>` from a collision WARN
+ * actually resolves — a remediation we print must name an entry that exists. Exported so the CLI and the WARN builder share one derivation.
  * @param {string} src   the scope description (preferred) or holder identity
  * @returns {string}
  */

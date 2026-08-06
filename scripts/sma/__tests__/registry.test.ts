@@ -395,7 +395,7 @@ describe('heartbeat snapshot spawn — suppressed under the test runner (WR-10)'
     // VITEST is set during the suite, so the kill-switch inside spawnDetachedSnapshot
     // must short-circuit. We assert indirectly: with no spawnFn injected the beat still
     // succeeds and writes the lease, and (critically) no real child is launched. If a
-    // real child were spawned it would read the real repo .sma/ — the WR-10 hazard.
+    // real child were spawned it would read the real repo .sma/ — the whole hazard.
     const identity = { holderIdentity: 'Мозг', terminalId: 'wr10a', pid: 111 }
     const res = heartbeat(
       { scope: { globs: ['src/**'], description: 'x' }, status: 'working' },
@@ -740,7 +740,7 @@ describe('probeScopeMtime — only matching globs, skips heavy dirs (WR-01)', ()
 
   it('considers ONLY files matching a claimed glob, not the whole tree', () => {
     // In-scope file is OLD; an out-of-scope file (docs/) is NEW. The probe must
-    // return the in-scope mtime, not the newest-anywhere mtime (the WR-01 bug).
+    // return the in-scope mtime, not the newest-anywhere mtime (the bug this guards).
     mkdirSync(join(root, 'src'), { recursive: true })
     mkdirSync(join(root, 'docs'), { recursive: true })
     const oldMs = Date.parse('2026-07-01T00:00:00.000Z')
