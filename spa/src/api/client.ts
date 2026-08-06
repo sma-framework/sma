@@ -1,7 +1,17 @@
 import type {
+  AccountAddResult,
+  AgentModelResult,
   ApproveResult,
+  AttemptLog,
+  Backlog,
+  BacklogPromoteResult,
+  BudgetSetResult,
   ChatHistory,
   ChatReply,
+  ClaimClearResult,
+  CoordinationSnapshot,
+  DecisionAnswerResult,
+  Diagnostics,
   DraftKind,
   EnqueueResult,
   ForgeResult,
@@ -10,16 +20,30 @@ import type {
   ImportScanResult,
   ImportSelection,
   MachinesPayload,
+  MemoryApplyResult,
+  MemoryDrafts,
+  MemoryIndexResult,
+  MemoryLintReport,
   OkResult,
   OnboardingResult,
   OnboardingState,
   PairingInvitation,
+  PhaseCard,
+  PhaseIndex,
+  PhaseStage,
+  PhaseStageResult,
+  PhaseUatResult,
+  PipelineToggleResult,
   ProjectsPayload,
   ProjectWriteResult,
   ReturnResult,
+  SearchResults,
+  ShipGateReport,
+  ShipPublishResult,
   StatePayload,
   TaskDetail,
   ToggleResult,
+  UpdateReport,
 } from './types'
 
 /**
@@ -355,4 +379,249 @@ export function answerOnboarding(input: { step: number; key: string; text: strin
  */
 export function completeOnboarding(opts: { later?: boolean } = {}): Promise<OnboardingResult> {
   return postJson<OnboardingResult>('/api/onboarding/complete', opts.later ? { later: true } : {})
+}
+
+// ── the conveyor of phases ──────────────────────────────────────────────────────────
+
+/**
+ * The reserved segment that means «all of them» on the phase card's own address.
+ *
+ * The index of phases rides the CARD's route rather than a route of its own — the daemon
+ * admits this one literal where an identifier goes, exactly as the toggle door admits one
+ * reserved id for «the whole shipped team». It is written down here, once, so that a screen
+ * asking for the index cannot spell it differently from the daemon that answers.
+ */
+export const PHASE_INDEX_SEGMENT = 'index'
+
+/** Every phase of the project, and where each one stands. */
+export function getPhaseIndex(): Promise<PhaseIndex> {
+  return getJson<PhaseIndex>(`/api/phase/${PHASE_INDEX_SEGMENT}`)
+}
+
+/** One phase in full: its stages, its questions, its plans and what they concluded. */
+export function getPhase(id: string): Promise<PhaseCard> {
+  return getJson<PhaseCard>(`/api/phase/${encodeURIComponent(id)}`)
+}
+
+/** Start a stage of a phase. It becomes a task in the queue like any other work. */
+export function postPhaseStage(input: { phase: string; stage: PhaseStage }): Promise<PhaseStageResult> {
+  return postJson<PhaseStageResult>('/api/phase/stage', { phase: input.phase, stage: input.stage })
+}
+
+/** Say what one line of a phase's acceptance looked like to a person. */
+export function postPhaseUat(input: {
+  phase: string
+  item: string
+  verdict: 'pass' | 'fail'
+  note?: string
+}): Promise<PhaseUatResult> {
+  return postJson<PhaseUatResult>(
+    '/api/phase/uat',
+    withOptional({ phase: input.phase, item: input.item, verdict: input.verdict }, { note: input.note }),
+  )
+}
+
+/**
+ * Answer one parked question.
+ *
+ * The answer is recorded first and only then, if it was the last one open, does the round it
+ * was blocking wake up. So answering is always safe to do: nothing starts because a person
+ * typed, only because a person FINISHED.
+ */
+export function postDecisionAnswer(input: {
+  phase: string
+  questionId: string
+  taskId?: string
+  optionId?: string
+  freeText?: string
+}): Promise<DecisionAnswerResult> {
+  return postJson<DecisionAnswerResult>(
+    '/api/decision/answer',
+    withOptional({ phase: input.phase, questionId: input.questionId }, {
+      taskId: input.taskId,
+      optionId: input.optionId,
+      freeText: input.freeText,
+    }),
+  )
+}
+
+/**
+ * Read one document of the project, as plain text.
+ *
+ * The path travels RELATIVE and the daemon accepts exactly one root; rendering is the
+ * screen's business, so what comes back is text and never markup.
+ */
+export function getArtifact(path: string): Promise<string> {
+  return getText(`/api/artifact?path=${encodeURIComponent(path)}`)
+}
+
+// ── the memory workbench ────────────────────────────────────────────────────────────
+
+/** The lessons waiting for a yes, each with the change it proposes. */
+export function getMemoryDrafts(): Promise<MemoryDrafts> {
+  return getJson<MemoryDrafts>('/api/memory/drafts')
+}
+
+/**
+ * Agree to ONE lesson. There is no function here that applies them all, because there is no
+ * such door — a corpus changed by one click nobody read is a corpus nobody trusts.
+ */
+export function postMemoryApply(input: { draftId: string }): Promise<MemoryApplyResult> {
+  return postJson<MemoryApplyResult>('/api/memory/apply', { draftId: input.draftId, accept: true })
+}
+
+/** Rebuild the index over the corpus. */
+export function postMemoryIndex(): Promise<MemoryIndexResult> {
+  return postJson<MemoryIndexResult>('/api/memory/index', {})
+}
+
+/** What the corpus's own checker says about it. */
+export function getMemoryLint(): Promise<MemoryLintReport> {
+  return getJson<MemoryLintReport>('/api/memory/lint')
+}
+
+// ── who else is working here ────────────────────────────────────────────────────────
+
+/** The terminals open on this checkout, what they reserved, and where two of them overlap. */
+export function getCoordination(): Promise<CoordinationSnapshot> {
+  return getJson<CoordinationSnapshot>('/api/coordination')
+}
+
+/** Release somebody else's reservation. The reason is required: it is the evidence, not a label. */
+export function postClaimClear(input: { claim: string; reason: string }): Promise<ClaimClearResult> {
+  return postJson<ClaimClearResult>('/api/claim/clear', { claim: input.claim, reason: input.reason })
+}
+
+// ── the backlog ─────────────────────────────────────────────────────────────────────
+
+/** The project's own backlog file, read as rows. */
+export function getBacklog(): Promise<Backlog> {
+  return getJson<Backlog>('/api/backlog')
+}
+
+/** Put a backlog line into the queue. The line stays in the file — that file is a hand, not a store. */
+export function postBacklogPromote(input: { id: string; lane: string; title?: string }): Promise<BacklogPromoteResult> {
+  return postJson<BacklogPromoteResult>(
+    '/api/backlog/promote',
+    withOptional({ id: input.id, lane: input.lane }, { title: input.title }),
+  )
+}
+
+// ── watching one attempt ────────────────────────────────────────────────────────────
+
+/** The tail of one attempt's log. `tail` asks for a length; the daemon owns the ceiling. */
+export function getAttempt(id: string, opts: { tail?: number } = {}): Promise<AttemptLog> {
+  const q = opts.tail ? `?tail=${encodeURIComponent(String(opts.tail))}` : ''
+  return getJson<AttemptLog>(`/api/attempt/${encodeURIComponent(id)}${q}`)
+}
+
+// ── the release ─────────────────────────────────────────────────────────────────────
+
+/** Run the gate. It reports its steps as they finish; this answers with the run itself. */
+export function postShipGate(): Promise<ShipGateReport> {
+  return postJson<ShipGateReport>('/api/ship/gate', {})
+}
+
+/**
+ * Publish — the most dangerous act this product can perform, and the only one that asks for
+ * two separate proofs: the receipt of a GREEN gate run, and the version string typed out in
+ * full. Both are checked by the daemon; neither is a checkbox.
+ */
+export function postShipPublish(input: { gateReceipt: string; confirm: string }): Promise<ShipPublishResult> {
+  return postJson<ShipPublishResult>('/api/ship/publish', {
+    gateReceipt: input.gateReceipt,
+    confirm: input.confirm,
+  })
+}
+
+// ── one question, every corpus ──────────────────────────────────────────────────────
+
+/** Ask once and hear from every corpus at once. An empty question is an empty answer. */
+export function getSearch(q: string): Promise<SearchResults> {
+  return getJson<SearchResults>(`/api/search?q=${encodeURIComponent(q)}`)
+}
+
+// ── the machine itself: accounts, the conveyor, the money, the models ───────────────
+
+/**
+ * Take on a subscription.
+ *
+ * What crosses this door is the NAME of the environment variable that holds the token, never
+ * the token. The account arrives switched off and the answer says so, together with the login
+ * a human then runs in his own terminal — the daemon does not run it, and could not.
+ */
+export function postAccountAdd(input: {
+  id: string
+  lane: string
+  configDir: string
+  oauthTokenEnv: string
+  spendLogsDir?: string
+}): Promise<AccountAddResult> {
+  return postJson<AccountAddResult>(
+    '/api/account/add',
+    withOptional(
+      {
+        id: input.id,
+        lane: input.lane,
+        configDir: input.configDir,
+        oauthTokenEnv: input.oauthTokenEnv,
+      },
+      { spendLogsDir: input.spendLogsDir },
+    ),
+  )
+}
+
+/**
+ * The conveyor's switch. `enabled` is strictly a word — the daemon refuses `"true"` and `1`,
+ * because a truthy string shown as «on» over a machine that is not running is the exact lie
+ * this switch exists to prevent.
+ */
+export function postPipelineToggle(enabled: boolean): Promise<PipelineToggleResult> {
+  return postJson<PipelineToggleResult>('/api/pipeline/toggle', { enabled })
+}
+
+/**
+ * The reserved `lane` of the money stop, meaning «the whole machine».
+ *
+ * There is exactly one budget stop in this product and it is machine-wide. The field exists
+ * so the screen can say WHICH stop it is setting; any other value is refused, rather than
+ * written as a limit nothing would ever consult.
+ */
+export const BUDGET_SCOPE_ALL = 'all'
+
+/** How much of the founder's money the machine may spend on the paid channel in a month. */
+export function postBudgetSet(limit: number): Promise<BudgetSetResult> {
+  return postJson<BudgetSetResult>('/api/budget/set', { lane: BUDGET_SCOPE_ALL, limit })
+}
+
+/** Assign a model, or an effort, or both, to one helper. Clearing one back is not an act yet. */
+export function postAgentModel(input: { agent: string; model?: string; effort?: string }): Promise<AgentModelResult> {
+  return postJson<AgentModelResult>(
+    '/api/agent/model',
+    withOptional({ agent: input.agent }, { model: input.model, effort: input.effort }),
+  )
+}
+
+// ── the house of the system ─────────────────────────────────────────────────────────
+
+/**
+ * The four facts a bug report may quote.
+ *
+ * The window must send EXACTLY what this returns and nothing else — not the project's name,
+ * not the current screen, not a task title. The four exist because the destination is a
+ * public issue, and the daemon's guard covers the daemon's half only.
+ */
+export function getDiagnostics(): Promise<Diagnostics> {
+  return getJson<Diagnostics>('/api/diagnostics')
+}
+
+/**
+ * Ask about a newer version, and — only on an explicit `true` — take it.
+ *
+ * `confirm` is required either way. `false` compares versions and writes nothing; `true` runs
+ * the ordinary installer, which is the one write path there is. Nothing here happens on a
+ * timer, at boot, or by itself.
+ */
+export function postUpdateRun(confirm: boolean): Promise<UpdateReport> {
+  return postJson<UpdateReport>('/api/update/run', { confirm })
 }
