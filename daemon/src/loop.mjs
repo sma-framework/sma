@@ -1,12 +1,12 @@
 /**
- * loop.mjs — THE STATELESS TICK: the phase's core, where the founder stops being the
- * runtime (Phase 9.5 Plan 07, Task 2; D-9.5-02, D-9.5-04a, D-9.5-11).
+ * loop.mjs — THE STATELESS TICK: the core of the daemon, where the operator stops being
+ * the runtime.
  *
- * ═══════════════════════ D-9.5-02 — STATELESS CONSUMER ═══════════════════════════
+ * ═══════════════════════ STATELESS CONSUMER ══════════════════════════════════════
  * The daemon is a POLL over durable state. `tick(deps)` executes ONE pass and holds NO
  * task memory: every tick re-derives from the QueueAdapter (Postgres truth) + the
  * attempt ledger. The process is KILLABLE AT ANY LINE — restart = resume; a lost tick
- * self-heals on the next one (Pitfall 1). There is NO in-process registry of live tasks
+ * self-heals on the next one. There is NO in-process registry of live tasks
  * here: this file constructs NO Map and NO Set anywhere (a literal grep gate). Any keyed
  * lookup belongs in the adapter/ledger or a helper module — never in the tick.
  *
@@ -15,8 +15,8 @@
  *   - preflight  — verify-before-execute mechanized: 'built' → complete on the preflight
  *                  receipt, skip the spawn entirely (the work already exists).
  *   - worktree   — per-task branch `wt/<taskId>`; the worktree.mjs EXPECTED_BASE guard
- *                  (Pitfall 7, platform-neutral) stays ON inside the provision verb.
- *   - reverify   — THE exit gate (D-9.5-04a): done = a GREEN reverify receipt, whoever
+ *                  (platform-neutral) stays ON inside the provision verb.
+ *   - reverify   — THE exit gate: done = a GREEN reverify receipt, whoever
  *                  the executor was. No receipt → fail('no_receipt'); never completed on
  *                  the daemon's word (the Multica «completed = слово демона» anti-lesson).
  *   - merge      — stays a serialized verb invoked ONLY from the front's approve path.
@@ -27,13 +27,13 @@
  *
  * ═══════════════════════ THE FOUNDER-PUSH LAW ════════════════════════════════════
  * This process holds NO origin-push path. Approved work travels back by the FOUNDER
- * pulling the worker host as a git remote (assumption Q1, pending grill) — the daemon
- * never talks to origin. SMA-3 COMMENT DISCIPLINE: the two-word push invocation literal
+ * pulling the worker host as a git remote — the daemon
+ * never talks to origin. COMMENT DISCIPLINE: the two-word push invocation literal
  * is never written in this file or any daemon source; where the concept is unavoidable it
  * is «the push verb». Workers never push; the loop's only git surface is worktree/merge
  * verbs, both local by construction.
  *
- * ═══════════════════════ AN ATTEMPT MUST EXPLAIN ITSELF (D-9.7-14) ═══════════════
+ * ═══════════════════════ AN ATTEMPT MUST EXPLAIN ITSELF ══════════════════════════
  * The exit gate asks TWO questions, in the same place, under the same law:
  *   - is there a GREEN reverify receipt?         (the work is certified)
  *   - did the attempt leave an APPROACH NOTE?    (the work is explained)
@@ -44,7 +44,7 @@
  * fail-open: an unwritable journal can never wedge a tick, and never lies a status.
  *
  * ═══════════════ THE CAPABILITY ENVELOPE IS RESOLVED WHERE WORK IS HANDED OVER ════
- * (D-11-DEFER-02, 2026-08-05.) The envelope used to be a declaration with no consumer.
+ * The envelope used to be a declaration with no consumer.
  * Now the lane's envelope is resolved the moment a task is claimed — it is a property of
  * the LANE, so it is known before the route is — validated once, and consulted through
  * `envelopeAllows` at the two points THIS PROCESS actually mediates:
@@ -61,7 +61,7 @@
  * task whose work already exists completes without any worker, so refusing it for a tool
  * nothing was going to use would be a gate inventing work to refuse.
  *
- * ═══════════════ THE ATTEMPT ROW CARRIES THE WORLD IT RAN IN (D-11-DEFER-23) ═══════
+ * ═══════════════ THE ATTEMPT ROW CARRIES THE WORLD IT RAN IN ══════════════════════
  * Both `recordAttempt` call sites below stamp what this file can TRUTHFULLY compute: the
  * digest of the lane envelope resolved above, the digest of the memory corpus the worker
  * stood in, and — from `applyTransition` — the idempotency key and state-machine version
@@ -69,7 +69,7 @@
  * `planHash` stay ABSENT; `attemptStamp` says once, in one place, why each of them has no
  * real value to carry.
  *
- * ═══════════════ THE LEDGER IS RECONCILED ONCE A TICK (D-11-DEFER-07) ══════════════
+ * ═══════════════ THE LEDGER IS RECONCILED ONCE A TICK ══════════════════════════════
  * Step (1b) runs `reconcileAttempts` straight after the liveness sweep: the sweep writes
  * the rows it can observe, and the pass then appends the rows for attempts NOBODY observed
  * — the ones pg-boss's own lease expiry retried while this daemon was down. Those rows are
@@ -80,7 +80,8 @@
  * The whole tick is wrapped fail-open: any thrown error is journaled and the affected
  * task is FAILED HONESTLY ('runtime_offline' on spawn infra errors) — a tick bug can
  * never wedge the daemon and never lie a status. An empty tick short-circuits with
- * {idle:true} and no spawn (skipTimerWhenNoActionableWork — Pitfall 10).
+ * {idle:true} and no spawn (skipTimerWhenNoActionableWork): a timer that fires on an
+ * empty queue is the cheapest way to burn a machine for nothing.
  *
  * Node built-ins only; every collaborator injected. Zero deps; zero network in this file.
  */
@@ -109,15 +110,15 @@ const LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
  */
 const SPAWN_TOOL = 'Bash'
 
-const TOUCH_THROTTLE_MS = 30000 // touch at most once per 30s while streaming (Pitfall 2)
+const TOUCH_THROTTLE_MS = 30000 // touch at most once per 30s while streaming
 const HOUR_MS = 3600000
 
-/** Worker final-output markers — a SOFT protocol the worker MAY emit (D-9.5-11 item 4). */
+/** Worker final-output markers — a SOFT protocol the worker MAY emit. */
 const MARKER_RE = /^\s*(NEEDS_DECISION|MISSING_ACCESS)\s*:/
 
 /**
  * classifyFailure({spawnError, exitCode, receipt, workerMarker}) → a FAIL_REASONS code.
- * Pure. Maps a non-completing outcome onto the D-9.5-11 taxonomy, sharpest signal first:
+ * Pure. Maps a non-completing outcome onto the failure taxonomy, sharpest signal first:
  *   spawnError                     → 'runtime_offline'  (the process never ran)
  *   worker marker NEEDS_DECISION   → 'needs_decision'   (a call only a human can make)
  *   worker marker MISSING_ACCESS   → 'missing_access'   (credentials/permissions absent)
@@ -205,7 +206,7 @@ function executorBlocker(deps) {
 
 /**
  * envelopeBlocker(envelope) → {reason, detail} when THIS LANE'S ENVELOPE does not permit
- * starting a worker process, or null when it does (D-11-DEFER-02).
+ * starting a worker process, or null when it does.
  *
  * FAIL-CLOSED ON BOTH LEGS. An envelope the validator refuses grants nothing — a task whose
  * lane is not one of the four resolves to `defaultEnvelope`'s LOCKED envelope, whose
@@ -237,7 +238,8 @@ function envelopeBlocker(envelope) {
 
 /**
  * attemptStamp(deps, task, {from, to, actor, envelope}) → the stamp fields THIS FILE can
- * truthfully compute for one attempt row (canon invariant 6; D-11-DEFER-23).
+ * truthfully compute for one attempt row (fleet invariant six — the attempt stamp is
+ * fixed at creation; see docs/FLEET-INVARIANTS.md).
  *
  * WHAT IT WRITES:
  *   - `capabilityEnvelope` — the lane envelope this attempt ran under. `recordAttempt`
@@ -346,7 +348,7 @@ async function invokeVerb(verbRunner, verb, args, cwd) {
  * Appends the approach layer when it did. The answer is about the NOTE, not about the
  * journal's disk: an unwritable journal must not fail a worker that did explain itself.
  * The note text is DATA — it is stored capped by the normalizer, and any later prompt that
- * shows it must fence it (T-9-08).
+ * shows it must fence it.
  */
 function recordApproachNote(deps, task, note) {
   if (!note || !note.approach) return false
@@ -372,8 +374,8 @@ function detectMarker(lines) {
  * eligibleLanes(deps) — the lanes with at least one runnable worker RIGHT NOW, derived by
  * asking the routing policy (CONSUME-NEVER-REIMPLEMENT: the day-priority + window rules
  * live in routing.mjs, never re-encoded here). A lane is eligible when a lane-probe yields
- * a workerId or an explicit API fallback. Deriving eligibility BEFORE the claim is grill
- * CH-9.5-07-1: the per-lane queues make a claimed task runnable by construction.
+ * a workerId or an explicit API fallback. Eligibility is derived BEFORE the claim on
+ * purpose: the per-lane queues make a claimed task runnable by construction.
  */
 function eligibleLanes(deps) {
   const { routing, config, windows, clock } = deps
@@ -418,7 +420,7 @@ function toEpochMs(v) {
   return Number.isFinite(t) ? t : NaN
 }
 
-/** Fresh-derive the aging signal every tick — nothing stored (D-9.5-11 item 3). */
+/** Fresh-derive the aging signal every tick — nothing stored. */
 async function deriveAging(deps, now) {
   const { adapter, config, report, journal } = deps
   const agingMs = (config.agingHours ?? 24) * HOUR_MS
@@ -436,7 +438,7 @@ async function deriveAging(deps, now) {
     const queuedForHours = Math.floor(ageMs / HOUR_MS)
     if (typeof journal === 'function') journal({ type: 'task.aging', taskId: row.id, queuedForHours })
     if (typeof report === 'function') {
-      // fire-and-forget; consumers dedup by taskId (the same signal reaches plan 08/09)
+      // fire-and-forget; consumers dedup by taskId (the same signal reaches the read model)
       await report({ event: 'task.aging', taskId: row.id, title: row.title, lane: row.lane, queuedForHours })
     }
   }
@@ -490,7 +492,7 @@ export async function tick(deps = {}) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }
 
-    // (1b) reconcile the ledger against the queue's own retry count (D-11-DEFER-07). AFTER
+    // (1b) reconcile the ledger against the queue's own retry count. AFTER
     // the sweep on purpose: the sweep writes the rows it can observe, and this pass then
     // appends only the attempts NOBODY observed — the ones the queue's own lease expiry
     // retried while this daemon was down. Fail-open exactly like the sweep.
@@ -506,7 +508,7 @@ export async function tick(deps = {}) {
     // (2b) aging signal — derived fresh, nothing stored (runs whether or not we claim).
     await deriveAging(deps, now())
 
-    // (3) claim — eligible lanes FIRST, then a lane-restricted claim (grill CH-9.5-07-1).
+    // (3) claim — eligible lanes FIRST, then a lane-restricted claim.
     const lanes = eligibleLanes(deps)
     if (lanes.length === 0) {
       result.idle = true
@@ -515,12 +517,12 @@ export async function tick(deps = {}) {
     const workerId = 'daemon' // the claim is against durable state; identity is the ledger's job
     const task = await adapter.claimNext(workerId, { lanes })
     if (!task) {
-      result.idle = true // skipTimerWhenNoActionableWork (Pitfall 10)
+      result.idle = true // skipTimerWhenNoActionableWork
       return result
     }
     result.claimed = task.id
 
-    // (3a0) THE LANE'S CAPABILITY ENVELOPE (D-11-DEFER-02). Resolved here because it is a
+    // (3a0) THE LANE'S CAPABILITY ENVELOPE. Resolved here because it is a
     // property of the LANE the task was claimed into — known before the route is, and
     // therefore available to stamp on EVERY attempt row this tick can write, including the
     // rows of attempts that never reach a spawn.
@@ -532,7 +534,7 @@ export async function tick(deps = {}) {
 
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
-      // The router writes its OWN dispatcher layer at the decision (D-9.7-14) — the tick
+      // The router writes its OWN dispatcher layer at the decision — the tick
       // only hands it the sink; it never narrates the routing reason on the router's behalf.
       const route = deps.routing.resolveRoute(task, {
         workers: config.workers,
@@ -561,7 +563,7 @@ export async function tick(deps = {}) {
         return result
       }
 
-      // (3b) FORGE LANE (D-9.5-09) — a described-in-words draft. Same claim/route/worktree/
+      // (3b) FORGE LANE — a described-in-words draft. Same claim/route/worktree/
       // spawn as code work, but preflight is SKIPPED (nothing to already-build) and the exit
       // gate is a DETERMINISTIC draft lint, not reverify (a draft is a definition file). The
       // «Создатель» never activates anything — it commits a draft on the branch, full stop.
@@ -593,7 +595,7 @@ export async function tick(deps = {}) {
         return result
       }
 
-      // (4c) MAY THIS LANE START A PROCESS AT ALL? (D-11-DEFER-02.) The envelope is
+      // (4c) MAY THIS LANE START A PROCESS AT ALL? The envelope is
       // consulted here — after the preflight door, which completes without any worker, and
       // before the worktree, which is the first thing provisioned FOR one. Fail-closed: a
       // lane whose envelope grants no execution surface is refused by name, on the record.
@@ -612,7 +614,7 @@ export async function tick(deps = {}) {
 
       // (6) spawn the routed worker; touch (throttled) on every stream line.
       const spec = buildArgs(task, route)
-      // D-9.5-09: prepend the enabled agent's role/skills preamble (resolveWorkerContext) so
+      // prepend the enabled agent's role/skills preamble (resolveWorkerContext) so
       // «включён» is real in the session. Optional + DI-guarded — skipped when not injected.
       if (typeof deps.resolveWorkerContext === 'function' && route && route.workerId) {
         const worker = (config.workers || []).find((w) => w && w.id === route.workerId)
@@ -620,7 +622,7 @@ export async function tick(deps = {}) {
           const ctx = deps.resolveWorkerContext({ worker, repoDir: config.repoDir, fsImpl: deps.fsImpl })
           if (ctx && ctx.rolePreamble) spec.prompt = `${ctx.rolePreamble}\n\n${spec.prompt ?? ''}`
           // The MEMORY layer of the journal: which notes were loaded, which reflexes fired.
-          // IDS ONLY — the loaded role BODY never travels into the journal (T-9-10); the
+          // IDS ONLY — the loaded role BODY never travels into the journal; the
           // normalizer drops anything that does not read as an identifier.
           writeJournal(deps, {
             taskId: task.id,
@@ -727,7 +729,7 @@ function listCommittedDrafts(execGit, branch, cwd, kind) {
  * lane); red lint or an uncommitted draft → fail('agent_error') with the lint detail on the
  * attempt row. A return-with-note re-forges: the note flows into buildForgePrompt.
  *
- * THE ENVELOPE IS CONSULTED TWICE HERE (D-11-DEFER-02): once before the spawn, exactly as
+ * THE ENVELOPE IS CONSULTED TWICE HERE: once before the spawn, exactly as
  * the code path does, and once over the committed draft's PATH before the draft is
  * accepted. The second one is the check with teeth — `listCommittedDrafts` filters by a
  * string prefix, and `envelopeAllows` answers on a SEGMENT boundary with traversal refused,
@@ -800,7 +802,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   }
   const draftPath = drafts[0]
 
-  // (7a) THE DRAFT'S PATH AGAINST THE LANE'S DECLARED WRITE SCOPE (D-11-DEFER-02). The
+  // (7a) THE DRAFT'S PATH AGAINST THE LANE'S DECLARED WRITE SCOPE. The
   // draft is a file a spawned agent chose the name of, and this is the moment the daemon
   // decides to accept it. `envelopeAllows` refuses anything outside the forge lane's three
   // draft directories, refuses a traversal instead of resolving it, and matches on a
@@ -892,7 +894,7 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
         provider: route && route.provider,
         outcome: 'failed',
         failureReason: reason,
-        receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row (D-9.5-11)
+        receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row
         endedAt: new Date(now).toISOString(),
         ...attemptStamp(deps, task, { from, to: from ? 'RETRYABLE' : undefined, actor: 'supervisor', envelope }),
       })
@@ -907,7 +909,7 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
 
 /**
  * runDaemon({tickMs, onTick}) — a thin setInterval wrapper. The ONLY state is the interval
- * handle (D-9.5-02: no task state lives in the process). start/stop are idempotent; a
+ * handle (no task state lives in the process). start/stop are idempotent; a
  * thrown tick is swallowed so one bad tick never stops the schedule.
  *
  * @param {{tickMs?:number, onTick?:()=>any}} [opts]

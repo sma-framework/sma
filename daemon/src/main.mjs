@@ -1,6 +1,6 @@
 /**
  * main.mjs — THE DAEMON COMPOSITION ROOT: the process entrypoint the supervisor plist
- * targets (Phase 9.5 Plan 08, Task 4; D-9.5-02/04/05 РЕВИЗИЯ).
+ * targets.
  *
  * ═══════════════════════ PURE WIRING, NO LOGIC ═══════════════════════════════════
  * This file COMPOSES; it computes nothing. It constructs the config, the durable queue,
@@ -16,12 +16,12 @@
  * resolves (events.mjs). The tick drives the durable side; the front's approve/return
  * handlers emit their own post-CAS hints through the same hub. Truth always lives in the
  * queue + `.sma/`; the hub is a hint transport that a restart may drop losslessly
- * (D-9.5-02 statelessness holds because truth never lives in the hub).
+ * (statelessness holds because truth never lives in the hub).
  *
  * ═══════════════════════ THE FOUNDER-PUSH LAW (carried) ══════════════════════════
  * This process holds NO origin-push path (loop.mjs law). The front's approve runs the
  * EXISTING merge verb LOCALLY (runMerge, serialized by its own slot); nothing here talks
- * to origin. SMA-3: the push literal appears in no daemon source.
+ * to origin: the push literal appears in no daemon source.
  *
  * Importing this module is SIDE-EFFECT-FREE — `createDaemon()` only wires, and the
  * process only starts under the `isMain` guard at the bottom.
@@ -90,7 +90,7 @@ export function createDaemon(o = {}) {
   const clock = typeof o.clock === 'function' ? o.clock : Date.now
   // THE DIRECTORY THIS PROCESS WAS STARTED IN — a fact about the process, decided before
   // anything is read, and the ONLY honest baseline for «would the derive produce this
-  // value again?». Everything that ends in a config write is handed this one (LP-3).
+  // value again?». Everything that ends in a config write is handed this one.
   const launchDir = o.launchDir ?? process.cwd()
   const config = o.config ?? loadConfig({ repoDir: launchDir })
   const dataDir = o.dataDir ?? config.dataDir
@@ -98,7 +98,7 @@ export function createDaemon(o = {}) {
   // THE TREE THIS DAEMON SERVES — the file's pin when it has one, the launch directory when
   // it does not. Everything that READS a repository (the roster, git log, the interview's
   // target) uses this. It is NOT a write baseline: for a pinned config it IS the pin, and
-  // comparing the pin against itself is what deleted it from the founder's file (LP-3).
+  // comparing the pin against itself is what deleted it from the founder's file.
   const repoDir = o.repoDir ?? config.repoDir
 
   // (1) durable queue truth (Postgres via pg-boss) — the ONLY task store; plus the
@@ -115,7 +115,7 @@ export function createDaemon(o = {}) {
     o.ledger ?? {
       readAttempts: (taskId) => readAttempts(ledgerDir, taskId),
       recordAttempt: (row) => recordAttempt(ledgerDir, row),
-      // the decision journal rides the same ledger dir (D-9.7-14) — same seam, same object
+      // the decision journal rides the same ledger dir — same seam, same object
       appendJournal: (entry) => appendJournalEntry(ledgerDir, entry),
       readJournalEntries: (taskId) => readJournalEntries(ledgerDir, taskId),
     }
@@ -159,7 +159,7 @@ export function createDaemon(o = {}) {
       }
     : undefined
 
-  // (4b) THE CONNECTED PROJECT (SB-031 part 2). The window shows a project the daemon does
+  // (4b) THE CONNECTED PROJECT. The window shows a project the daemon does
   // not own — read-only, live while the watcher holds, and honest about it when it does not.
   // Three things are composed here and nowhere else:
   //   - WHICH project is connected. The registry's active entry, re-read on every call, so a
@@ -188,7 +188,7 @@ export function createDaemon(o = {}) {
 
   /**
    * Start a watcher on whatever project is connected RIGHT NOW, replacing the one that was
-   * running. Called at boot and again on every project select (D-11-DEFER-09).
+   * running. Called at boot and again on every project select.
    *
    * WHY IT IS ONE FUNCTION AND NOT TWO. The watcher used to be started once, inside `start()`,
    * from the project that happened to be connected at boot. Switching projects therefore left
@@ -247,7 +247,7 @@ export function createDaemon(o = {}) {
         // config only through these, and only after a one-shot invitation was consumed.
         addPeer,
         removePeer,
-        federation, // the action-proxy engine + the pairing book (D-9.7-06/07)
+        federation, // the action-proxy engine + the pairing book
         aggregator,
         // the «Разговор» engine — INJECTED, because its free branch spawns a child: a
         // capability like that reaches a request path only through deliberate wiring.
@@ -267,10 +267,10 @@ export function createDaemon(o = {}) {
         casExec: o.casExec ?? (typeof durable.execSql === 'function' ? durable.execSql : undefined),
         taskTable: o.taskTable ?? APPROVAL_TABLE,
         // The harness read model + the three appliers (agents / skills / MCP screens).
-        // Injected, never statically imported by the front (T-9.5-38/39) — this is the
+        // Injected, never statically imported by the front — this is the
         // wiring that makes «включить агента» a real switch instead of a 501.
         // The harness read model + the three appliers (agents / skills / MCP screens).
-        // Injected, never statically imported by the front (T-9.5-38/39) — this is the
+        // Injected, never statically imported by the front — this is the
         // wiring that makes «включить агента» a real switch instead of a 501.
         readHarness,
         loadMcpRegistry: o.loadMcpRegistry ?? (() => loadMcpRegistry({})),
@@ -289,8 +289,8 @@ export function createDaemon(o = {}) {
         projectLiveness,
         migrationStagingDir,
         // A project switch moves the tree the watcher is on. Without this the watcher stayed
-        // bound to whatever was connected at boot, and the only recovery was a restart
-        // (D-11-DEFER-09). The switch is also the moment the previous project's staged
+        // bound to whatever was connected at boot, and the only recovery was a restart.
+        // The switch is also the moment the previous project's staged
         // previews become residue, so the retention sweep runs here too.
         onProjectSelected: () => {
           retargetProjectWatch()
@@ -354,7 +354,7 @@ export function createDaemon(o = {}) {
       // queue and BEFORE the front only for tidiness — it owns nothing the others need, and
       // a project that cannot be watched degrades inside watchProject rather than here.
       // Staged previews are complete v2 renderings of a FOREIGN project's notes. Nothing used
-      // to delete one; the sweep runs at boot and on every project switch (D-11-DEFER-10).
+      // to delete one; the sweep runs at boot and on every project switch.
       pruneMigrationStaging({ stagingDir: migrationStagingDir })
       retargetProjectWatch()
       front.listen()
@@ -378,7 +378,7 @@ function maskSecrets(text) {
   return String(text ?? '').replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
 }
 
-/** One tick-journal entry as ONE operator line: ids + reasons, never a task payload (T-9.5-09). */
+/** One tick-journal entry as ONE operator line: ids + reasons, never a task payload. */
 function describeTickEvent(entry) {
   const e = entry && typeof entry === 'object' ? entry : { type: String(entry ?? 'event') }
   const parts = [String(e.type ?? 'event')]
