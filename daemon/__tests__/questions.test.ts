@@ -7,17 +7,37 @@
  * workflow's own checkpoint shape, and every answer it writes lands in that shape
  * atomically or does not land at all.
  *
- * The whole engine runs here over an in-memory fs — no real file is created and no
- * socket is opened, which is why this suite belongs with the parallel ones.
+ * The whole engine runs here over an IN-MEMORY fs — no real file is created, no
+ * child process is spawned and no socket is opened. That is why this suite stays in
+ * the parallel project rather than the serial one: it has nothing to serialise.
+ *
+ * The fixture is the workflow's own checkpoint template, filled in: two areas, five
+ * questions, two of them already answered by the terminal. The three open ones spell
+ * the three ways a real file says «not answered yet» — an explicit null, an absent
+ * field, and a blank string.
  *
  * Direct grep-visible invariants pinned below:
  *   - the engine reads the workflow's own checkpoint, with its options, unchanged
- *   - progress is DERIVED from the artifact on every call, never stored
+ *   - the round is DERIVED — the schema has no round field and none is added
+ *   - progress is derived from the artifact on every call, never stored
  *   - an unanswered entry is the queue: open questions come back in file order
  *   - a phase with no parked discussion is zero of zero, not an error
+ *   - a foreign or torn file is named by the offending field, never crashed through
+ *   - an answer is mirrored atomically: a same-directory temp file, then a rename
+ *   - every other field of the workflow's file is carried through verbatim
+ *   - an answer survives a restart, because the artifact is the only store
+ *   - a secret never reaches the checkpoint — and nothing is written when it is refused
+ *   - an unknown answer field is refused WITH ITS OWN NAME, before any write
+ *   - the first answer stands: answering twice is an error, never an overwrite
  */
 
 import { describe, it, expect } from 'vitest'
+
+// The workflow's OWN checkpoint template, imported as data rather than retyped.
+// This is the fixture's ground truth: if the terminal ever writes a different
+// shape, the parity case below fails instead of this suite quietly certifying an
+// engine against a file nobody writes any more.
+import template from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
 import {
   createQuestions,
@@ -176,6 +196,34 @@ function engineOver(seed: Record<string, string>) {
 function parked() {
   return engineOver({ [CHECKPOINT]: fixture() })
 }
+
+describe('questions.mjs — the fixture IS the workflow’s own shape', () => {
+  it('the fixture carries exactly the template’s top-level fields, no more and no fewer', () => {
+    const mine = Object.keys(JSON.parse(fixture())).sort()
+    const theirs = Object.keys(template as Record<string, unknown>).sort()
+
+    expect(mine).toEqual(theirs)
+  })
+
+  it('a decision entry is the template’s entry — question, answer, options_presented', () => {
+    const theirEntry = (template as any).decisions['Area 1'][0]
+    expect(Object.keys(theirEntry).sort()).toEqual(['answer', 'options_presented', 'question'])
+
+    const myEntry = JSON.parse(fixture()).decisions['Очередь задач'][0]
+    expect(Object.keys(myEntry).sort()).toEqual(['answer', 'options_presented', 'question'])
+  })
+
+  it('the engine reads the TEMPLATE itself — the shipped file, placeholders and all', () => {
+    const { questions } = engineOver({ [CHECKPOINT]: JSON.stringify(template) })
+    const state = questions.readCheckpoint('12')
+
+    // Two areas, three questions, every one of them already answered in the
+    // template — so the engine reports nothing open and does not throw on it.
+    expect(state.questions).toHaveLength(3)
+    expect(questions.progress('12')).toEqual({ open: 0, answered: 3 })
+    expect(state.round).toBe((template as any).areas_completed.length + 1)
+  })
+})
 
 describe('questions.mjs — the engine reads the workflow’s own checkpoint', () => {
   it('finds the parked checkpoint of a phase by its number', () => {
