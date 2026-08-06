@@ -315,7 +315,7 @@ export interface MemorySurface {
 
 export type MemorySection = MemorySurface | AbsentSection
 
-// ── the CONNECTED project's memory (SB-031 part 2) ──────────────────────────────────
+// ── the CONNECTED project's memory ──────────────────────────────────
 //
 // A different question from `memory` above, which is the notebook of the repository this
 // daemon serves. This one is a project the founder CONNECTED — its notebook is shown and,
@@ -336,8 +336,8 @@ export interface ProjectMemoryPointer {
 /**
  * What a migration would do to ONE note, described without quoting it.
  *
- * There is no diff here on purpose. A diff is the note's body, and a body never travels
- * (T-11-09-01). What travels instead is a closed vocabulary: what the note would BECOME
+ * There is no diff here on purpose. A diff is the note's body, and a body never travels.
+ * What travels instead is a closed vocabulary: what the note would BECOME
  * (`disposition`), WHY in one code the screen renders in words (`reasonCode`), which
  * frontmatter keys would be dropped, how many lines would move, and whether the proposal
  * validates. `applicable` is the daemon's own answer to «can this one be applied at all».

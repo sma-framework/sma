@@ -2,8 +2,8 @@
 /**
  * sma-framework installer — `npx sma-framework init [--claude] [--local|--global] [--with-gsd-aliases]`
  *
- * Mirrors the upstream `npx @opengsd/gsd-core --claude --local` installer pattern
- * (D-9.1-06): copy the engine payload, derive the /sma-* command skills from the
+ * Mirrors the upstream `npx @opengsd/gsd-core --claude --local` installer pattern:
+ * copy the engine payload, derive the /sma-* command skills from the
  * user-facing workflow set, merge hooks into .claude/settings.json additively and
  * idempotently, scaffold the .sma/ runtime. Node built-ins only — zero dependencies.
  *
@@ -12,7 +12,7 @@
  *   scripts/sma/         -> <project>/scripts/sma/      (V1 runtime: cli.mjs + lib — path parity with hooks)
  *   sma-core/agents      -> <config>/agents/            (subagent definitions, sma-<name>.md)
  *   derived skills       -> <config>/skills/sma-<cmd>/  (thin SKILL.md wrappers over sma-core/workflows)
- *   sma-core/aliases     -> <config>/skills/gsd-<cmd>/  (ONLY with --with-gsd-aliases, D-9.1-02)
+ *   sma-core/aliases     -> <config>/skills/gsd-<cmd>/  (ONLY with --with-gsd-aliases)
  *   hooks                -> <config>/settings.json      (additive merge, foreign entries preserved;
  *                                                        SMA's own legacy per-stream PreToolUse
  *                                                        entries migrate to the `pre` multiplexer)
@@ -74,7 +74,7 @@ const COMMANDS = [
 
 const SMA_HOOKS = [
   { event: 'SessionStart', matcher: null, command: 'node scripts/sma/cli.mjs session-start', timeout: 10 },
-  // 9.2-02 (D-9.2-04): the whole PreToolUse pipeline is ONE `pre` multiplexer
+  // the whole PreToolUse pipeline is ONE `pre` multiplexer
   // spawn — collision → reflex → gates run as ordered streams inside a single
   // node process, so sibling ordering is internal to the CLI, not a property
   // of hook wiring anymore. The old per-stream entries (collision-check /
@@ -82,7 +82,7 @@ const SMA_HOOKS = [
   // STALE_SMA_HOOK_COMMANDS below and removed by mergeHooks, so an existing
   // install heals to the single spawn on update.
   { event: 'PreToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs pre', timeout: 5 },
-  // 9.1-21 (B16): the stall detector feeds on PostToolUse — a NEW hook type
+  // the stall detector feeds on PostToolUse — a NEW hook type
   // for SMA (any pre-existing Stop/SubagentStop entries, e.g. a project's
   // security guard, live under different events and are untouched by the
   // additive merge). Advisory additionalContext nudge only, never a block.
@@ -130,7 +130,7 @@ function printHelp() {
     --claude             Install for Claude Code (default and only runtime today)
     -l, --local          Install into the current project (default)
     -g, --global         Install into $CLAUDE_CONFIG_DIR or ~/.claude
-    --with-gsd-aliases   Also install the transitional /gsd-* alias skills (D-9.1-02)
+    --with-gsd-aliases   Also install the transitional /gsd-* alias skills
     -h, --help           Show this help
 
   Examples:
@@ -215,7 +215,7 @@ export function removeStaleSmaHooks(settings) {
  * Merge SMA hook entries into a parsed settings object IN PLACE.
  * - first drops SMA's OWN known-stale entries (removeStaleSmaHooks) so an
  *   install carrying the legacy 3-spawn PreToolUse chains heals on update
- * - never removes or reorders FOREIGN entries (T-9.1-08)
+ * - never removes or reorders FOREIGN entries
  * - idempotent: an entry whose command string already exists under the same
  *   event (and matcher, for matcher events) is skipped
  * Returns { added, removedStale }.
@@ -335,7 +335,7 @@ async function main() {
   }
   console.log(`  + skills        ${skillCount} /sma-* commands -> ${destSkills}`);
 
-  // 5. Transitional /gsd-* aliases — ONLY with --with-gsd-aliases (D-9.1-02)
+  // 5. Transitional /gsd-* aliases — ONLY with --with-gsd-aliases
   if (flags.withGsdAliases) {
     const srcAliases = path.join(srcCore, 'aliases');
     let aliasCount = 0;
@@ -350,7 +350,7 @@ async function main() {
   }
 
   // 6. Hooks merge into <config>/settings.json — additive + idempotent for
-  // foreign entries (T-9.1-08); SMA's own legacy per-stream PreToolUse chains
+  // foreign entries; SMA's own legacy per-stream PreToolUse chains
   // are migrated to the single `pre` multiplexer entry.
   const settingsPath = path.join(configDir, 'settings.json');
   let settings = {};

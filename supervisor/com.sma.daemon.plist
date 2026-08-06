@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   com.sma.daemon.plist — the macOS launchd LaunchAgent that supervises the SMA V5
-  daemon on the first 24/7 host, the Mac mini (D-9.5-02b). This is the thin
-  supervisor layer ONLY (D-9.5-02a): the daemon process itself is host-agnostic;
+  daemon on the first 24/7 host, the Mac mini. This is the thin
+  supervisor layer ONLY: the daemon process itself is host-agnostic;
   launchd binds it to macOS, exactly as sma-daemon-windows.task.xml binds it to the
   Windows Task Scheduler and a systemd unit would bind it to Linux. All three are
   add-only siblings over the SAME host-neutral core.
@@ -29,16 +29,16 @@
     (used below). On an Intel Mac mini it is /usr/local/bin/node — swap if needed.
     Confirm with `which node` during setup.
 
-  ProgramArguments targets main.mjs — the composition root from plan 9.5-08 task 4.
+  ProgramArguments targets main.mjs — the composition root.
   It wires config -> durable queue -> event hub -> event-wrapped adapter into BOTH the
-  stateless tick AND the roster front (one process, one adapter). The 9.5-RESEARCH
-  launchd example still named loop.mjs; that reference predates the D-9.5-05 РЕВИЗИЯ
+  stateless tick AND the roster front (one process, one adapter). An earlier research
+  launchd example still named loop.mjs; that reference predates the revised
   entrypoint. main.mjs is the correct target — loop.mjs is a library the root imports.
 
   KeepAlive true = launchd restarts the process on any exit (crash, kill, OOM). Combined
-  with the daemon's statelessness (D-9.5-02: all truth in Postgres + .sma/ + git), a
+  with the daemon's statelessness (all truth in Postgres + .sma/ + git), a
   restart resumes losslessly — this is the macOS half of the kill-drill proven in the
-  bring-up pass (plan 9.5-10 task 3).
+  bring-up pass.
 
   INSTALL (founder, per setup-macos.md):
     cp supervisor/com.sma.daemon.plist ~/Library/LaunchAgents/com.sma.daemon.plist

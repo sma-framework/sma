@@ -31,7 +31,7 @@ import { TagCloud } from './TagCloud'
  * The corpus lives inside the project and travels with it to the owner's own machines. No
  * third-party service holds a copy, and the line at the bottom of the screen says so.
  *
- * ═════════════ THE CONNECTED PROJECT — SHOWN, NEVER EDITED (SB-031 part 2) ═════════════
+ * ═════════════ THE CONNECTED PROJECT — SHOWN, NEVER EDITED ═════════════
  *
  * Below the local notebook the screen shows the notebook of the project that is currently
  * CONNECTED. It obeys the same laws — a row is a pointer, no body travels — plus one more
@@ -438,7 +438,7 @@ export function Screen() {
             <ConnectedProject project={connected} />
           ) : notConnected ? (
             /* The register names a project; nothing on this machine says WHERE it is. Saying
-               that plainly is the whole of D-11-DEFER-18 on this screen — the alternative was
+               that plainly is the whole of this branch — the alternative was
                a screen naming a project it could not read one line of. */
             <div className="overflow-hidden rounded-[14px] border border-bd bg-card shadow-panel">
               <CardHead title={`Подключённый проект — ${notConnected.name}`} />
