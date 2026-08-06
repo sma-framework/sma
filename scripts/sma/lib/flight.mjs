@@ -438,6 +438,6 @@ export function buildHandoffBrief(inputs = {}) {
   const lines = ['# SMA Handoff Brief', '', ...briefBody(inputs), '', '## Передача claim (claim transfer)', '']
   lines.push(`- Отпустить ваш claim: \`node scripts/sma/cli.mjs release ${slot ?? '<slot>'}\``)
   lines.push('- Принять на другом терминале: `node scripts/sma/cli.mjs claim <globs> --description "<что>"`')
-  lines.push('- ⚠ Чужой claim снимается только через `node scripts/sma/cli.mjs force-clear <slot> --yes` — force-clear показывает владельца и требует явного подтверждения (D-9-09).')
+  lines.push('- ⚠ Чужой claim снимается только через `node scripts/sma/cli.mjs force-clear <slot> --yes` — force-clear показывает владельца и требует явного подтверждения: снять чужой claim может только человек, автоматика — никогда.')
   return lines.join('\n') + '\n'
 }
