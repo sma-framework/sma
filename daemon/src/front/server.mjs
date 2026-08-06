@@ -720,7 +720,9 @@ async function handleEnqueue({ req, res, config, deps }) {
   } catch (err) {
     return send400(res, String((err && err.message) || 'invalid task'))
   }
-  const result = await adapter.enqueue(norm)
+  const enq = await enqueueOrExplain(res, adapter, norm)
+  if (enq.answered) return undefined // the database refused the text; the reason is already sent
+  const result = enq.result
   emitSafe(deps, { event: 'task.queued', taskId: norm.id })
   sendJson(res, 200, { ok: true, id: result.id, coalesced: !!result.coalesced })
 }
@@ -843,7 +845,7 @@ async function handleReturn({ req, res, deps }) {
   } catch {
     /* fail-open — default to attempt 1 → requeue as attempt 2 */
   }
-  await deps.adapter.enqueue({
+  const requeue = await enqueueOrExplain(res, deps.adapter, {
     id: taskId,
     source: 'return',
     title: v.title || `return:${taskId}`,
@@ -851,6 +853,7 @@ async function handleReturn({ req, res, deps }) {
     note,
     attempt: prevAttempt + 1,
   })
+  if (requeue.answered) return undefined // the database refused the note; the reason is already sent
 
   emitSafe(deps, { event: 'task.returned', taskId })
   emitSafe(deps, { event: 'task.queued', taskId })
@@ -903,6 +906,33 @@ function rejectUnknownKeys(res, body, allowed) {
 function refreshWorkers(config, next) {
   if (!next || typeof next !== 'object' || !Array.isArray(next.workers)) return
   config.workers = next.workers
+}
+
+/**
+ * enqueueOrExplain(res, adapter, task) → the enqueue result, or NULL when the queue's own
+ * database refused the text and the caller has already been answered.
+ *
+ * WHY IT IS NOT A 400, AND WHY IT IS NOT SWALLOWED. A queue database created in a Windows
+ * ANSI code page cannot store a title that is not plain ASCII: someone writes a task in their
+ * own language and the database says no. The request is not what is wrong — the SERVICE
+ * cannot hold that text until an operator migrates it, which is what 503 means. And the
+ * message matters more than the code: the backend turns the driver's byte-sequence error
+ * into a sentence with the repairing command in it, and this is the seam that lets that
+ * sentence reach the screen instead of dying as the dispatcher's «internal error».
+ *
+ * Any other failure is re-thrown untouched — this door explains ONE fault, not all of them.
+ */
+async function enqueueOrExplain(res, adapter, task) {
+  try {
+    // `answered` rather than a falsy result: whether the caller has been answered is not
+    // the same question as what the adapter returned, and collapsing the two would make a
+    // backend that answers nothing look like a refusal.
+    return { answered: false, result: await adapter.enqueue(task) }
+  } catch (err) {
+    if (!err || err.name !== 'QueueEncodingError') throw err
+    send503(res, String(err.message))
+    return { answered: true, result: null }
+  }
 }
 
 /** Map an applier's named error → 404 (unknown/missing) or 400 (validation). */
@@ -960,9 +990,10 @@ async function handleForge({ req, res, deps }) {
   } catch (err) {
     return send400(res, String((err && err.message) || 'invalid forge task'))
   }
-  const result = await adapter.enqueue(norm)
+  const enq = await enqueueOrExplain(res, adapter, norm)
+  if (enq.answered) return undefined // the database refused the text; the reason is already sent
   emitSafe(deps, { event: 'task.queued', taskId: norm.id })
-  sendJson(res, 202, { ok: true, id: result.id, kind: b.kind })
+  sendJson(res, 202, { ok: true, id: enq.result.id, kind: b.kind })
 }
 
 /**
