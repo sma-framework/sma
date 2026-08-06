@@ -214,6 +214,40 @@ fi
 Pure doc-only / config-only / test-only tasks return `is_behavior_adding=false` and are exempt. When the gate trips, Read `$HOME/.claude/sma-core/references/execute-mvp-tdd.md` for the exact halt report format.
 </step>
 
+<step name="headless_checkpoint_gate" priority="first">
+**Is anybody at the keyboard, and is this phase already waiting on an answer?**
+
+A phase can be started two ways: by a person in his own terminal, and by the daemon on his
+behalf while he is asleep. The two differ in exactly one thing — whether a blocking checkpoint
+can be *asked*. Everything else about the run is identical, and this step is the only place
+that branches on it.
+
+```bash
+# The daemon sets this in every worker env it assembles. Unset ⇒ a person is here.
+HEADLESS="${SMA_HEADLESS:-}"
+EXEC_CHECKPOINT="${phase_dir}/${PADDED_PHASE}-EXEC-CHECKPOINT.json"
+```
+
+**A parked checkpoint is read BEFORE any work, in either mode.** If `${EXEC_CHECKPOINT}`
+exists, this phase already stopped on a question and nothing may be executed until it is
+settled:
+
+1. **It carries an answer** — an entry of `decisions[<area>]` whose `answer` is a non-empty
+   string → APPLY that answer as the decision it settles, `git rm` the checkpoint, commit the
+   removal, and **CONTINUE FROM THE RECORDED `position`** — do not restart the phase. What is
+   already finished is determined exactly as it always is: a plan with a `SUMMARY.md` is
+   complete, and a task whose commit is in `git log` is complete. Re-doing finished work
+   because a question interrupted the phase is the failure this whole protocol exists to
+   prevent — it is why a blocking checkpoint parks instead of failing the attempt.
+2. **It carries no answer yet** → the question is still on somebody's screen. Do NOT start a
+   plan and do NOT spawn an executor. Name the open question, print the approach-note markers,
+   and end the turn. An idle turn costs one tick; work started against an unanswered decision
+   costs a rewrite.
+
+**If no checkpoint exists:** proceed normally. In headless mode remember `HEADLESS` — it is
+consumed by `<step name="checkpoint_handling">` the moment a blocking checkpoint is reached.
+</step>
+
 <step name="check_blocking_antipatterns" priority="first">
 **MANDATORY — Check for blocking anti-patterns before any other work.**
 
@@ -1133,7 +1167,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
 </step>
 <step name="checkpoint_handling">
 Plans with `autonomous: false` require user interaction.
-**Auto-mode checkpoint handling:**
+**Auto-mode checkpoint handling** (a person IS at the keyboard and asked for auto-advance;
+when `SMA_HEADLESS=1` the headless flow below wins and nothing here applies):
 Read auto-advance config (chain flag OR user preference — same boolean as `check.auto-mode`):
 ```bash
 AUTO_MODE=$(sma_run query check auto-mode --pick active 2>/dev/null || echo "false")
@@ -1144,7 +1179,64 @@ When executor returns a checkpoint AND `AUTO_MODE` is `true`:
 - **decision** → Auto-spawn continuation agent with `{user_response}` = first option from checkpoint details. Log `⚡ Auto-selected: [option]`.
 - **human-action** → Auth gates cannot be automated. In autonomous mode do not sit on the gate: apply the park-and-continue protocol (step 7.4) — park the plan (exec-journal `blocked` + `state add-blocker`), continue the wave, and present the gate to the user at the next natural pause.
 
-**Standard flow (not auto-mode, or human-action type):**
+**HEADLESS flow — nobody is at the keyboard (`SMA_HEADLESS=1`, resolved in
+`<step name="headless_checkpoint_gate">`). This branch OVERRIDES the auto-mode rules above.**
+
+When there is no person to ask, the orchestrator does two things it must never do: it does
+not ask, and it does not decide instead of him. Auto-approving a checkpoint on a phase the
+founder started from his screen would hand a judgment call to the machine — the whole reason
+`--auto` is a forbidden flag for these runs. So a blocking checkpoint of ANY type PARKS:
+
+1. **Write the checkpoint artifact** at `${phase_dir}/${PADDED_PHASE}-EXEC-CHECKPOINT.json`.
+   It is the SAME shape as the discussion checkpoint
+   (`$HOME/.claude/sma-core/workflows/discuss-phase/templates/checkpoint.json`) plus one
+   block — `position` — naming where the phase stopped. One shape means one parser and one
+   card: the question an executor asks and the question a discussion asks reach the person
+   through the same screen and are answered the same way.
+
+   ```json
+   {
+     "phase": "{PHASE_NUM}",
+     "phase_name": "{phase_name}",
+     "timestamp": "{ISO timestamp}",
+     "areas_completed": [],
+     "areas_remaining": ["{plan_id}"],
+     "decisions": {
+       "{plan_id} — {task_name}": [
+         {
+           "question": "{the checkpoint's own question, verbatim}",
+           "answer": "",
+           "options_presented": ["{option}", "{option}"]
+         }
+       ]
+     },
+     "deferred_ideas": [],
+     "canonical_refs": [],
+     "position": { "plan": "{plan_id}", "task": {task_number}, "wave": {wave_number} }
+   }
+   ```
+
+   **An empty `answer` is what makes the question OPEN** — that is the convention the reader
+   uses, and it is why the field is written empty rather than omitted-with-a-comment. A
+   `human-verify` checkpoint becomes a question with two options («принято» / «есть
+   замечания»); a `human-action` gate becomes a question naming the one manual step. Never
+   invent an answer, and never write a checkpoint that is already answered.
+
+2. **Commit it** (`git add` the exact path, then commit). A question that exists only in a
+   working tree is invisible to everything but this machine's disk, and the gate that reads it
+   refuses an uncommitted checkpoint by design.
+
+3. **End the turn honestly.** Report which plan and task stopped, and print the approach-note
+   markers. Do NOT spawn a continuation agent, do NOT proceed to the next wave, do NOT mark
+   the phase complete.
+
+The daemon reads the committed checkpoint, sees an unanswered question, and treats the
+attempt as a SUCCESSFUL round: the row parks in `awaiting_approval` and the screen renders the
+card. When the answer lands in the artifact, the next run of this workflow consumes it in
+`<step name="headless_checkpoint_gate">` and CONTINUES from `position` — the phase is resumed,
+not restarted.
+
+**Standard flow (a person is here, and not auto-mode / human-action type):**
 
 1. Spawn agent for checkpoint plan
 2. Agent runs until checkpoint task or auth gate → returns structured state
