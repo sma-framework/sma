@@ -44,7 +44,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer } from './config.mjs'
+import { loadConfig, addProject, renameProject, selectProject, addPeer, removePeer, addAccount } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
@@ -307,6 +307,9 @@ export function createDaemon(o = {}) {
         // config only through these, and only after a one-shot invitation was consumed.
         addPeer,
         removePeer,
+        // The account door — the same posture again: a subscription joins the pool through
+        // the config module's own applier, DISABLED, and its token never crosses this line.
+        addAccount,
         federation, // the action-proxy engine + the pairing book
         aggregator,
         // the «Разговор» engine — INJECTED, because its free branch spawns a child: a
