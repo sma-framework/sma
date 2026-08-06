@@ -138,6 +138,12 @@ const HOUR_MS = 3600000
 // purpose: a stage whose artifact is not declared here fails by name rather than picking
 // whichever gate happens to be looser.
 //
+// THE RECEIPT A DOCUMENTARY OUTCOME COMPLETES ON is `artifact:<checkout-relative path>@<short
+// sha>` — written once, by artifactReceipt() below, and spelled out here so the format is
+// findable by the word rather than only by the function that assembles it. It stands where a
+// `reverify:` receipt stands for code, and it names both halves of the proof: which file, and
+// which commit carries it.
+//
 // WHAT THIS GATE HONESTLY DOES NOT PROVE: that the document on disk is THIS attempt's work
 // rather than a previous one's. It proves that the stage's product exists and is in the
 // repository's history — which is what makes the outcome inspectable by a person. The
