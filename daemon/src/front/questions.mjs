@@ -55,6 +55,22 @@
  *     verbatim in the artifact and read back by the next round as workflow data. It
  *     is never concatenated into a prompt from here.
  *
+ * ═════════════ THE PHASE-CYCLE FACTS THIS MODULE OWNS FOR EVERYONE ═════════════
+ * Three things below are NOT about questions, and they live here anyway, for one
+ * reason each reader can check: more than one module needs them, and a rule with two
+ * copies has two answers the day either is edited.
+ *
+ *   - `findPhaseDir` — «which directory is phase N». The engine finds a checkpoint
+ *     with it; the daemon's exit gate finds the document a stage owes with it; the
+ *     read model behind the phase card lists phases with it.
+ *   - `CHECKPOINT_SUFFIX` / `EXEC_CHECKPOINT_SUFFIX` — the two files a stage may park.
+ *   - `STAGE_ARTIFACTS` — «stage → the document that proves it, and the checkpoint it
+ *     may park instead». The map used to be assembled in the tick out of the two
+ *     suffixes above, which meant HALF of it lived here and half there; the card that
+ *     shows a stage as done has to read the same map the gate closes a stage on, or
+ *     the screen and the daemon disagree about the same directory. So the whole map
+ *     lives where its halves already did.
+ *
  * Node built-ins only; zero npm deps. Every fs call is dependency-injectable.
  */
 
@@ -126,6 +142,49 @@ export const CHECKPOINT_SUFFIX = '-DISCUSS-CHECKPOINT.json'
  * carried through the writer verbatim, so the extra block costs the engine nothing.
  */
 export const EXEC_CHECKPOINT_SUFFIX = '-EXEC-CHECKPOINT.json'
+
+/**
+ * BOTH names a parked question can wear, as one frozen list.
+ *
+ * A door that serves «the questions of this phase» cannot know in advance which stage
+ * parked them — a discussion round and an execute stage ask the same person the same kind
+ * of question, and the screen renders one card for both. Pointing the engine at a single
+ * suffix would therefore make one of the two invisible, silently, with a green suite: the
+ * file simply would not be found and the phase would report zero questions waiting.
+ *
+ * The tick still names ONE suffix at a time, because it is asking about one stage it is
+ * running. This list is for the readers that are asking about a PHASE.
+ */
+export const ALL_CHECKPOINT_SUFFIXES = Object.freeze([CHECKPOINT_SUFFIX, EXEC_CHECKPOINT_SUFFIX])
+
+/**
+ * STAGE_ARTIFACTS — «stage → what proves it», the ONE map of the phase cycle.
+ *
+ * `produces` is the document the stage owes: it is what the daemon's documentary exit gate
+ * looks for on disk (and in the history) before it calls a stage done, and it is what the
+ * phase card reads to show a stage as done. Those two must be the same question asked twice,
+ * never two similar questions — a card that used its own criteria would show a stage the
+ * daemon is still failing as finished.
+ *
+ * `checkpoint` is the file that stage may park INSTEAD, when it reaches a question only a
+ * person can answer. `null` means that stage has no parking file of its own.
+ *
+ * ONE HONEST LIMIT, inherited by every reader: a phase produces MANY plans and MANY
+ * summaries, and this map answers «does at least one exist», not «are they all there». The
+ * gate has always worked that way; the card says exactly what the gate says, so the screen
+ * cannot present a stricter or a looser truth than the machine acts on.
+ */
+export const STAGE_ARTIFACTS = Object.freeze({
+  // a discussion ends in the phase's context file, and PARKS in its own checkpoint
+  discuss: Object.freeze({ produces: '-CONTEXT.md', checkpoint: CHECKPOINT_SUFFIX }),
+  // planning ends in plan files — one per plan of the phase
+  plan: Object.freeze({ produces: '-PLAN.md', checkpoint: null }),
+  // acceptance ends in the verification record
+  verify: Object.freeze({ produces: '-VERIFICATION.md', checkpoint: null }),
+  // an execute stage produces CODE (it rides the reverify gate), but it can still stop on a
+  // question only a person may answer — and then it parks exactly like a discussion round
+  execute: Object.freeze({ produces: '-SUMMARY.md', checkpoint: EXEC_CHECKPOINT_SUFFIX }),
+})
 
 /** Where phases live, relative to a project root. */
 export const PHASES_DIR = join('.planning', 'phases')
@@ -308,42 +367,60 @@ function parseCheckpoint(data, path) {
  * so the whole engine — including the atomic write — runs in a test with no real
  * files and no socket.
  *
- * `checkpointSuffix` selects WHICH checkpoint file the engine reads. It defaults to the
- * discussion's own; the execute stage's parked question is the same shape in a different file
- * (EXEC_CHECKPOINT_SUFFIX) and is read by the same engine rather than a second copy of it.
+ * `checkpointSuffix` selects WHICH checkpoint file(s) the engine reads. It takes one name or
+ * a LIST of them, and defaults to the discussion's own. The execute stage's parked question is
+ * the same shape in a different file (EXEC_CHECKPOINT_SUFFIX) and is read by the same engine
+ * rather than a second copy of it; a caller asking about a PHASE rather than about one running
+ * stage passes ALL_CHECKPOINT_SUFFIXES and gets both files as one queue.
  *
- * @param {{projectDir?:string, phasesDir?:string, fsImpl?:object, checkpointSuffix?:string}} [args]
+ * @param {{projectDir?:string, phasesDir?:string, fsImpl?:object,
+ *          checkpointSuffix?:string|string[]}} [args]
  */
 export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl, checkpointSuffix } = {}) {
   const io = resolveIo(fsImpl)
   const rootDir =
     typeof phasesDir === 'string' && phasesDir.trim() !== '' ? phasesDir : join(projectDir, PHASES_DIR)
-  const suffix =
-    typeof checkpointSuffix === 'string' && checkpointSuffix.trim() !== '' ? checkpointSuffix : CHECKPOINT_SUFFIX
+  // one name or a list of them; an empty or malformed ask falls back to the discussion's own
+  const asked = (Array.isArray(checkpointSuffix) ? checkpointSuffix : [checkpointSuffix])
+    .filter((s) => typeof s === 'string' && s.trim() !== '')
+  const suffixes = asked.length > 0 ? asked : [CHECKPOINT_SUFFIX]
 
   /**
-   * The checkpoint file of one phase, or null when no discussion is parked.
-   * Accepts a phase number («12»), a directory name («12-name», «phase-12-name»),
-   * because both spellings reach the daemon from different callers.
+   * EVERY checkpoint file of one phase, in the order the suffixes were asked for and
+   * alphabetically within a suffix. Empty when nothing is parked.
+   *
+   * Accepts a phase number («12»), a directory name («12-name», «phase-12-name»), because
+   * both spellings reach the daemon from different callers.
    */
-  function checkpointPath(phaseId) {
+  function checkpointPaths(phaseId) {
     const wanted = String(phaseId ?? '').trim()
     if (wanted === '') {
       throw new UnknownQuestionError('не указана фаза — у вопросов дискуссии нет адреса без неё')
     }
-    if (!io.existsSync(rootDir)) return null
+    if (!io.existsSync(rootDir)) return []
 
     const dir = findPhaseDir(io.readdirSync(rootDir), wanted)
-    if (!dir) return null
+    if (!dir) return []
 
     const phaseDir = join(rootDir, dir)
-    if (!io.existsSync(phaseDir)) return null
-    const file = io
-      .readdirSync(phaseDir)
-      .map(String)
-      .sort()
-      .find((name) => name.endsWith(suffix))
-    return file ? join(phaseDir, file) : null
+    if (!io.existsSync(phaseDir)) return []
+    const names = io.readdirSync(phaseDir).map(String).sort()
+    const found = []
+    for (const suffix of suffixes) {
+      for (const name of names) {
+        if (name.endsWith(suffix)) found.push(join(phaseDir, name))
+      }
+    }
+    return found
+  }
+
+  /**
+   * The FIRST checkpoint file of one phase, or null when none is parked. Kept as the
+   * single-file question every caller before the two-name glob was asking, so a reader that
+   * names one suffix sees exactly what it always saw.
+   */
+  function checkpointPath(phaseId) {
+    return checkpointPaths(phaseId)[0] ?? null
   }
 
   /**
@@ -352,8 +429,7 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl,
    * the two must never be confused, because the first is normal and the second is a
    * fact somebody has to see.
    */
-  function loadRaw(phaseId) {
-    const path = checkpointPath(phaseId)
+  function loadAt(path) {
     if (!path || !io.existsSync(path)) return null
 
     let text
@@ -373,8 +449,28 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl,
     return { path, data }
   }
 
+  /** The first parked checkpoint of a phase, exactly as it sits on disk, or null. */
+  function loadRaw(phaseId) {
+    return loadAt(checkpointPath(phaseId))
+  }
+
+  /** Every parked checkpoint of a phase, in glob order. A torn one is still an error. */
+  function loadAll(phaseId) {
+    const out = []
+    for (const path of checkpointPaths(phaseId)) {
+      const loaded = loadAt(path)
+      if (loaded) out.push(loaded)
+    }
+    return out
+  }
+
   /**
    * readCheckpoint(phaseId) -> the parked discussion, or null when none is parked.
+   *
+   * The FIRST parked file, because the fields it carries besides the questions — the round,
+   * the areas — belong to ONE round of ONE stage and cannot be merged across two. The queue
+   * of QUESTIONS is the thing that spans both files, and `openQuestions` / `progress` /
+   * `recordAnswer` below all read every file for exactly that reason.
    *
    * @returns {{phase:string|null, phaseName:string|null, round:number, areasCompleted:string[], areasRemaining:string[], questions:object[], path:string}|null}
    */
@@ -385,14 +481,26 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl,
   }
 
   /**
-   * openQuestions(phaseId) -> every question still waiting, in the order the file
-   * asks them. The first element is «the next one»; the whole list is the queue the
+   * allQuestions(phaseId) -> every question this phase has parked, from every checkpoint
+   * file the engine was pointed at, each carrying the path of the file that asked it.
+   */
+  function allQuestions(phaseId) {
+    const out = []
+    for (const loaded of loadAll(phaseId)) {
+      for (const question of parseCheckpoint(loaded.data, loaded.path).questions) {
+        out.push({ ...question, path: loaded.path })
+      }
+    }
+    return out
+  }
+
+  /**
+   * openQuestions(phaseId) -> every question still waiting, in the order the files
+   * ask them. The first element is «the next one»; the whole list is the queue the
    * cards render.
    */
   function openQuestions(phaseId) {
-    const state = readCheckpoint(phaseId)
-    if (!state) return []
-    return state.questions.filter((q) => !q.answered)
+    return allQuestions(phaseId).filter((q) => !q.answered)
   }
 
   /**
@@ -401,11 +509,9 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl,
    * means nothing is waiting, which is zero of zero, not an error.
    */
   function progress(phaseId) {
-    const state = readCheckpoint(phaseId)
-    if (!state) return { open: 0, answered: 0 }
     let open = 0
     let answered = 0
-    for (const question of state.questions) {
+    for (const question of allQuestions(phaseId)) {
       if (question.answered) answered += 1
       else open += 1
     }
@@ -476,15 +582,29 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl,
       }
     }
 
-    // ── gate 3: the question itself, resolved against the file as it is NOW ────
-    const loaded = loadRaw(phaseId)
-    if (!loaded) {
+    // ── gate 3: the question itself, resolved against the files as they are NOW ────
+    // EVERY parked file is searched, not just the first: a phase may have a discussion round
+    // and an execute stage waiting at the same time, and an answer belongs to whichever of
+    // them asked it. Refusing after one file would refuse a question that plainly exists.
+    const parked = loadAll(phaseId)
+    if (parked.length === 0) {
       throw new UnknownQuestionError(
         `для фазы «${phaseId}» не припарковано ни одного вопроса — отвечать не на что`,
       )
     }
-    const state = parseCheckpoint(loaded.data, loaded.path)
-    const question = state.questions.find((q) => q.id === String(questionId))
+    let loaded = null
+    let state = null
+    let question = null
+    for (const candidate of parked) {
+      const parsed = parseCheckpoint(candidate.data, candidate.path)
+      const found = parsed.questions.find((q) => q.id === String(questionId))
+      if (found) {
+        loaded = candidate
+        state = parsed
+        question = found
+        break
+      }
+    }
     if (!question) {
       throw new UnknownQuestionError(
         `неизвестный вопрос «${questionId}» — в чекпойнте фазы «${phaseId}» такого нет`,
@@ -526,5 +646,5 @@ export function createQuestions({ projectDir = process.cwd(), phasesDir, fsImpl,
     }
   }
 
-  return { checkpointPath, readCheckpoint, openQuestions, progress, recordAnswer }
+  return { checkpointPath, checkpointPaths, readCheckpoint, allQuestions, openQuestions, progress, recordAnswer }
 }

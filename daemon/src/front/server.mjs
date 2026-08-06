@@ -68,7 +68,7 @@ import { join, extname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { REASON_LABELS, TASK_LANES, validateTask } from '../queue/adapter.mjs'
+import { REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
@@ -284,8 +284,6 @@ export const ROUTES = Object.freeze({
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([
-    'POST /api/phase/stage',
-    'GET /api/phase/:id',
     'POST /api/phase/uat',
     'POST /api/decision/answer',
     'GET /api/artifact',
@@ -2007,12 +2005,6 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handlePhaseStage({ res }) {
-  send501(res)
-}
-function handlePhaseCard({ res }) {
-  send501(res)
-}
 function handlePhaseUat({ res }) {
   send501(res)
 }
@@ -2057,6 +2049,175 @@ function handleShipPublish({ res }) {
 }
 function handleSearch({ res }) {
   send501(res)
+}
+
+// ══════════════ the conveyor of phases: start a stage, read a card ══════════════
+//
+// A STAGE IS WORK IN THE QUEUE, NOT A REQUEST HANDLER. Pressing «начать обсуждение» puts a
+// task in the paperwork lane and returns; the tick claims it, a worker runs the stage, and the
+// daemon's own exit gate decides whether it finished. Nothing about a phase happens inside an
+// HTTP request — which is what makes a stage started from this window and a stage started in a
+// terminal the same event, resumable, inspectable and interruptible in exactly the same way.
+//
+// THE COMMAND IS DATA, AND THE DICTIONARY IS FROZEN. The door does not compose an instruction
+// out of anything a person typed: it LOOKS UP one of four constants and substitutes the phase,
+// whose grammar is bounded and cannot begin with a dash. That is the whole of the assembly.
+//
+// NO PATH TO AUTO-MODE EXISTS HERE, BY CONSTRUCTION. None of the four commands carries a flag
+// that would let the machine answer a question in the founder's place, and none is assembled
+// with one — `assertNoAutomation` refuses the command if it ever grows one, so the law is
+// enforced at the point of use rather than remembered at the point of editing. This is the
+// door's half of the same guard the runner keeps on its argument list.
+
+/** The phase a stage may be started for: bounded, and unable to READ as a flag. */
+const PHASE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/**
+ * THE FOUR COMMANDS OF THE PHASE CYCLE — one per stage, frozen, with `{phase}` as their only
+ * hole. A stage the table does not name has no command and is refused by name.
+ *
+ * `--text` and `--batch` are the shape of a stage RUN BY A DAEMON: no interactive prompt to
+ * answer and no terminal to answer it at. What a stage does when it nevertheless reaches a
+ * question is park it as an artefact — the headless branch of the workflow — and the answer
+ * arrives later through the decision door, which starts the very same command again.
+ */
+export const STAGE_COMMANDS = Object.freeze({
+  discuss: '/sma-discuss-phase {phase} --batch --text',
+  plan: '/sma-plan-phase {phase} --text',
+  execute: '/sma-execute-phase {phase}',
+  verify: '/sma-verify-work {phase} --text',
+})
+
+/**
+ * Which exit gate a stage's work is judged by: `execute` produces CODE and rides the reverify
+ * receipt; the other three produce a DOCUMENT and ride the artefact gate. The word is the
+ * queue's own frozen vocabulary, and the tick reads it off the task's `data` envelope.
+ */
+const EXECUTE_STAGE = 'execute'
+const stageKind = (stage) => (stage === EXECUTE_STAGE ? 'code' : 'document')
+
+/** The lane every stage of the phase cycle rides. There is no second lane and no new one. */
+const STAGE_LANE = 'paperwork'
+
+/**
+ * The flags that would hand a founder's decision to a machine, or strip the session that is
+ * supposed to make it. A command carrying one is a defect in THIS file, so it throws rather
+ * than answering 400: no request can produce it, and no request should be told about it.
+ */
+const AUTOMATION_FLAGS = /(^|\s)--(auto|bare|dangerously-skip-permissions|permission-mode)(\s|=|$)/
+
+function assertNoAutomation(command) {
+  if (AUTOMATION_FLAGS.test(command)) {
+    throw new Error(`stage command carries an automation flag: ${command}`)
+  }
+  return command
+}
+
+/** The command a stage is started with, or null for a stage nobody declared. */
+function stageCommand(stage, phase) {
+  const template = Object.prototype.hasOwnProperty.call(STAGE_COMMANDS, stage) ? STAGE_COMMANDS[stage] : null
+  return template === null ? null : assertNoAutomation(template.replace('{phase}', String(phase)))
+}
+
+/** A row that is still in play: nobody may start the same stage of the same phase twice. */
+const LIVE_STATUSES = Object.freeze(['queued', 'claimed', 'awaiting_approval'])
+
+/**
+ * WHERE THE PHASE CYCLE LIVES: the tree this daemon SERVES.
+ *
+ * Not the connected project's folder, and the difference is deliberate rather than convenient:
+ * the tick stands a documentary stage in `config.repoDir` and its exit gate looks for the
+ * stage's document under that same root. A card that read a different directory than the gate
+ * writes into would show a stage as never started while the daemon was completing it. One
+ * root, one truth — and if the phase cycle should ever follow the CONNECTED project instead,
+ * that is one change in the tick and this function, not a disagreement to live with.
+ */
+function phaseCycleDir(deps) {
+  return typeof deps.repoDir === 'string' && deps.repoDir.trim() !== '' ? deps.repoDir : null
+}
+
+/**
+ * POST /api/phase/stage — body {phase, stage}. Start one stage of one phase.
+ *
+ * The row is minted like any other: `S-<epochMs>`, source `roster` (a person pressed it, so it
+ * is founder-explicit and DoR-exempt), lane `paperwork`, and the `data` envelope {kind, stage,
+ * phase} the tick reads to pick which gate judges the work. A stage already in play answers
+ * 409 rather than queueing a second one — two workers running the same stage of the same phase
+ * would write the same documents from two directories.
+ */
+async function handlePhaseStage({ req, res, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.enqueue !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['phase', 'stage']))) return undefined
+
+  const stage = b.stage
+  if (typeof stage !== 'string' || !TASK_STAGES.includes(stage)) {
+    return send400(res, `stage must be one of ${TASK_STAGES.join('|')}`)
+  }
+  const phase = b.phase === undefined || b.phase === null ? '' : String(b.phase)
+  if (!PHASE_RE.test(phase)) return send400(res, 'invalid phase')
+
+  // ALREADY RUNNING? The envelope is what identifies a stage row, so this asks the queue the
+  // same question the tick answers from — never a name or a title, which a person can retype.
+  if (typeof adapter.list === 'function') {
+    const rows = await adapter.list({})
+    const live = (Array.isArray(rows) ? rows : []).find((r) => {
+      const d = r && r.data
+      return (
+        d &&
+        d.stage === stage &&
+        String(d.phase ?? '') === phase &&
+        LIVE_STATUSES.includes(r.status)
+      )
+    })
+    if (live) return send409(res, `stage "${stage}" of phase "${phase}" is already running`)
+  }
+
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  const task = {
+    id: `S-${clock()}`,
+    source: 'roster',
+    // THE COMMAND RIDES AS THE TASK'S OWN TEXT. It is a constant of this file with one bounded
+    // substitution — never anything a person composed — and it is the whole instruction: what
+    // the stage should do about the phase is written down in the workflow, not in this door.
+    title: stageCommand(stage, phase),
+    lane: STAGE_LANE,
+    data: { kind: stageKind(stage), stage, phase },
+  }
+  let norm
+  try {
+    norm = validateTask(task)
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'invalid task'))
+  }
+  const enq = await enqueueOrExplain(res, adapter, norm)
+  if (enq.answered) return undefined
+  emitSafe(deps, { event: 'phase.stage', taskId: norm.id, phase, stage })
+  return sendJson(res, 200, { ok: true, taskId: norm.id, phase, stage })
+}
+
+/**
+ * GET /api/phase/:id — one phase card, or the whole index under the reserved segment.
+ *
+ * Both are DERIVES over the phase directory (derive-never-store), injected like every other
+ * read model so this file carries no build edge onto state.mjs. A phase the project does not
+ * have is a 404: the index is how a screen learns which ids exist.
+ */
+function handlePhaseCard({ res, params, deps }) {
+  const id = String((params && params.id) || '')
+  const projectDir = phaseCycleDir(deps)
+
+  if (id === PHASE_INDEX_SEGMENT) {
+    if (typeof deps.derivePhaseIndex !== 'function') return send501(res)
+    return sendJson(res, 200, deps.derivePhaseIndex({ projectDir, fsImpl: deps.fsImpl }))
+  }
+  if (typeof deps.derivePhaseCard !== 'function') return send501(res)
+  const card = deps.derivePhaseCard({ projectDir, phaseId: id, fsImpl: deps.fsImpl })
+  if (!card) return send404(res)
+  return sendJson(res, 200, card)
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──

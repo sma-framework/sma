@@ -428,6 +428,12 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       title: rec.task.title,
       priority: rec.task.priority,
       status: rec.status,
+      // THE STAGE ENVELOPE TRAVELS ON THE ROW. Without it the only thing a reader could
+      // recognise a phase stage by is its title — text a person can retype — and the door
+      // that must refuse to start the same stage twice would have nothing to ask. It is the
+      // same object the tick reads to choose a gate; carried only when the task has one, so a
+      // row of ordinary code work states nothing about a stage rather than carrying a null.
+      ...(rec.task.data ? { data: rec.task.data } : {}),
       attempt: rec.attempt,
       coalesceCount: rec.coalesceCount,
       workerId: rec.workerId,

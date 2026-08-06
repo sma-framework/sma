@@ -1063,9 +1063,18 @@ export interface PhaseArtifact {
   path: string
 }
 
-/** One line of a phase's acceptance, and what a person said about it. */
+/**
+ * One line of a phase's acceptance, and what a person said about it.
+ *
+ * `item` is the line's NUMBER as the acceptance document writes it — the address the whole
+ * workflow already uses for a test, and the one thing about a line that does not change when
+ * somebody rewords it. `name` is that same line's title, carried because a column of numbers
+ * is not something a person can answer; it was added by the door that fills this shape, which
+ * is exactly what the note above says to do when a door answers more than was guessed for it.
+ */
 export interface PhaseUatItem {
   item: string
+  name?: string
   verdict: 'pass' | 'fail' | null
   note?: string
 }

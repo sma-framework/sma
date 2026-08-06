@@ -88,7 +88,7 @@ import {
 } from './front/project-sync.mjs'
 import { tick, runDaemon } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
-import { deriveState, parseReceiptSummary } from './front/state.mjs'
+import { deriveState, parseReceiptSummary, derivePhaseIndex, derivePhaseCard } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries } from './runner/usage.mjs'
@@ -329,6 +329,12 @@ export function createDaemon(o = {}) {
         launchDir, // the process's own start directory — the write-time derive baseline
         deriveState,
         parseReceiptSummary,
+        // The phase cycle's two read models. Injected like every other derive, so the door
+        // carries no build edge onto state.mjs; both read the SERVED tree, which is the same
+        // root the tick stands a documentary stage in and its gate looks for the document
+        // under — one directory, one truth about whether a stage is done.
+        derivePhaseIndex,
+        derivePhaseCard,
         // the project registry doors — the ONLY way a request reaches a config write
         addProject,
         renameProject,

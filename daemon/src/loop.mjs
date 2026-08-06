@@ -104,7 +104,7 @@ import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './f
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
 import { parseClaudeEvent } from './runner/stream.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
-import { createQuestions, findPhaseDir, CHECKPOINT_SUFFIX, EXEC_CHECKPOINT_SUFFIX } from './front/questions.mjs'
+import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
 /** The execution lanes, in the documented stable order (mirrors the adapter's lanes). */
 const LANES = Object.freeze(['prod', 'research', 'paperwork', 'forge'])
@@ -148,9 +148,12 @@ const SPAWN_OPTIONS = Object.freeze({ forwardSubagentText: true })
 // that announces «документ готов» without writing one is the first threat this gate exists
 // for, and prose is trivially easy to announce.
 //
-// THE MAP BELOW IS THE WHOLE «which document proves which stage» RULE, in one place, on
-// purpose: a stage whose artifact is not declared here fails by name rather than picking
-// whichever gate happens to be looser.
+// THE MAP `STAGE_ARTIFACTS` IS THE WHOLE «which document proves which stage» RULE, in one
+// place, on purpose: a stage whose artifact is not declared there fails by name rather than
+// picking whichever gate happens to be looser. It is IMPORTED from questions.mjs rather than
+// written here, because the phase card on the screen has to call a stage done on exactly the
+// criteria this gate closes it on — two copies would be two answers about one directory, and
+// the half of the map that names the checkpoint files always lived in that module anyway.
 //
 // THE RECEIPT A DOCUMENTARY OUTCOME COMPLETES ON is `artifact:<checkout-relative path>@<short
 // sha>` — written once, by artifactReceipt() below, and spelled out here so the format is
@@ -164,18 +167,6 @@ const SPAWN_OPTIONS = Object.freeze({ forwardSubagentText: true })
 // attempt-scoped question is answered one layer up, by the approach note the gate still
 // requires and by the commit the reviewer opens.
 const DOCUMENT_KIND = 'document'
-
-const STAGE_ARTIFACTS = Object.freeze({
-  // a discussion ends in the phase's context file, and PARKS in its own checkpoint
-  discuss: Object.freeze({ produces: '-CONTEXT.md', checkpoint: CHECKPOINT_SUFFIX }),
-  // planning ends in plan files — one per plan of the phase
-  plan: Object.freeze({ produces: '-PLAN.md', checkpoint: null }),
-  // acceptance ends in the verification record
-  verify: Object.freeze({ produces: '-VERIFICATION.md', checkpoint: null }),
-  // an execute stage produces CODE (it rides the reverify gate), but it can still stop on a
-  // question only a person may answer — and then it parks exactly like a discussion round
-  execute: Object.freeze({ produces: '-SUMMARY.md', checkpoint: EXEC_CHECKPOINT_SUFFIX }),
-})
 
 /** Where phases live under a checkout, in the forward-slashed form git pathspecs want. */
 const PHASES_PATH = '.planning/phases'
