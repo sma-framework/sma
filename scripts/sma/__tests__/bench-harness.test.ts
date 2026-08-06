@@ -134,7 +134,7 @@ describe('A/B replay (S7)', () => {
     expect(out.n).toBe(2) // two tool calls
     // 2 tool calls * 4 spawns * 5ms = 40ms total / 2 = 20 ms per tool call
     expect(out.value).toBe(20)
-    expect(out.method).toMatch(/spend-share instrument arrives plan 09/)
+    expect(out.method).toMatch(/spend-share instrument not built yet/)
     // persisted so readSelfCostBase / bench --json can surface it
     expect(existsSync(join(benchDir, 'selfcost.json'))).toBe(true)
   })

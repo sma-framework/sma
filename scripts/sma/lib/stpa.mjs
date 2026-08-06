@@ -81,7 +81,7 @@ export const HAZARDS = [
     gateId: 'GATE-PUSH',
     kind: 'gate',
     hazard: 'a push ships without the full gate / origin-diff review / V1.N tag',
-    compensatingControl: 'the founder-only push ritual (/sma-ship) still runs the full gate; the pre-push grill (plan 07) inspects origin..main independently of this WARN',
+    compensatingControl: 'the founder-only push ritual (/sma-ship) still runs the full gate; the pre-push grill inspects origin..main independently of this WARN',
     fixture: { tool_name: 'Bash', tool_input: { command: PUSH_FIXTURE } },
   },
   {
@@ -97,7 +97,7 @@ export const HAZARDS = [
     gateId: 'GATE-STASH',
     kind: 'gate',
     hazard: 'a `git stash` applies a sibling worktree\'s WIP from the shared stash stack',
-    compensatingControl: 'the destructive-git-prohibition house rule bans git stash outright; the airbag gate (plan 05) snapshots before destructive git regardless',
+    compensatingControl: 'the destructive-git-prohibition house rule bans git stash outright; the airbag gate snapshots before destructive git regardless',
     fixture: { tool_name: 'Bash', tool_input: { command: 'git stash' } },
   },
   {
@@ -114,7 +114,7 @@ export const HAZARDS = [
     kind: 'gate',
     hazard: 'a human DoD gate is self-certified pass by a file write instead of the founder',
     compensatingControl: 'the DoD honesty house rule + /crm/projects human-gate toggles are the source of truth; a file-written pass is visible in the board audit',
-    fixture: { tool_name: 'Write', tool_input: { file_path: 'phases/9.2-DOD.json', content: '{"kind":"human","status":"pass"}' } },
+    fixture: { tool_name: 'Write', tool_input: { file_path: 'phases/12-DOD.json', content: '{"kind":"human","status":"pass"}' } },
   },
   {
     killEnv: 'SMA_GATE_NEXTBUILD_OFF',
@@ -129,7 +129,7 @@ export const HAZARDS = [
     gateId: 'GATE-CHECKOUT',
     kind: 'gate',
     hazard: 'a `git checkout -- .` / `git restore .` destroys another terminal\'s uncommitted work',
-    compensatingControl: 'the destructive-git-prohibition house rule bans blanket checkout/restore; the airbag gate (plan 05) snapshots the tree before destructive git',
+    compensatingControl: 'the destructive-git-prohibition house rule bans blanket checkout/restore; the airbag gate snapshots the tree before destructive git',
     fixture: { tool_name: 'Bash', tool_input: { command: 'git checkout -- .' } },
   },
   {
