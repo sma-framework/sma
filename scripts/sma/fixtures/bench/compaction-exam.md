@@ -1,10 +1,10 @@
 # Compaction survival exam (S3) — 10 locked questions
 
-The deterministic post-compact exam (D-9.2-09 measurement, scorecard S3). After a
+The deterministic post-compact exam (scorecard S3). After a
 real auto-compact the operator answers these in a plain file; `sma bench exam --grade`
 scores the answers against the pre-written answer key with NORMALIZED KEYWORD MATCHING
 (casefold + trim) — never LLM judgment. The base is measured BEFORE the capsule exists
-(plan 06); the protocol needs >=3 graded exams by the 2026-07-21 freeze.
+the protocol needs >=3 graded exams by the 2026-07-21 freeze.
 
 Each question carries its DETERMINISTIC extraction rule: the same repo state always
 yields the same answer key (`buildAnswerKey` in bench.mjs). Zero LLM anywhere.
