@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/notify.mjs (Phase 9.3 Plan 07 — D-9.3-13).
+ * Tests for scripts/sma/lib/notify.mjs.
  *
  * The claim PULSE (on the EXISTING lease `fpStatus` field — no parallel store) + the
  * edge-triggered outbound waiting-for-human webhook: outbound events only, explicit-pick
@@ -76,7 +76,7 @@ function recorder(impl?: (url: string, init: any) => any) {
   return { calls, fetchImpl }
 }
 
-describe('notify.mjs — pulse + edge-triggered webhook (D-9.3-13)', () => {
+describe('notify.mjs — pulse + edge-triggered webhook', () => {
   it('Test 1: a working -> waiting-for-human transition fires exactly one explicit-pick delivery', async () => {
     seedLease('working')
     const { calls, fetchImpl } = recorder()

@@ -344,11 +344,11 @@ describe('state add-decision — a phase number or nothing, never "[Phase ?]"', 
 
   it('at the operator terminal: no --phase still writes a real number, and reports its source', () => {
     const proj = makeProject('d4-resolve', { state: LIVE_STATE })
-    const out = runJson(proj, ['state', 'add-decision', '--summary', '11-16: wave-2 fix batch'])
+    const out = runJson(proj, ['state', 'add-decision', '--summary', 'tighten the retry backoff'])
     expect(out).toMatchObject({ added: true, phase: '11', phase_source: 'state_frontmatter' })
-    expect(String(out.decision)).toBe('- [Phase 11]: 11-16: wave-2 fix batch')
+    expect(String(out.decision)).toBe('- [Phase 11]: tighten the retry backoff')
     const after = readFileSync(join(proj, '.planning', 'STATE.md'), 'utf8')
-    expect(after).toContain('- [Phase 11]: 11-16: wave-2 fix batch')
+    expect(after).toContain('- [Phase 11]: tighten the retry backoff')
     expect(after).not.toContain('[Phase ?]')
   })
 

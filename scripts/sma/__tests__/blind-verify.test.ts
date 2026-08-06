@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/blind-verify.mjs (Phase 9.2 Plan 07, Task 2 — D-9.2-11).
+ * Tests for scripts/sma/lib/blind-verify.mjs.
  *
  * The tree-only re-derivation with a STRUCTURAL information barrier: «done» is
  * re-derived from the plan file + the code tree ALONE — the verifier takes NO
@@ -175,7 +175,7 @@ describe('blind-verify.mjs — tree-only re-derivation + divergence-as-heaviest-
     expect(divergenceStats({ calibrationDir: dirs.calibrationDir }).count).toBe(1)
   })
 
-  it('Test 6 — INPUT BARRIER: a SUMMARY input path is structurally refused, nothing frozen, ledger untouched (D-9.2-11, gap 2)', () => {
+  it('Test 6 — INPUT BARRIER: a SUMMARY input path is structurally refused, nothing frozen, ledger untouched (gap 2)', () => {
     // A SUMMARY-class input is refused by the predicate the CLI guards on.
     const summaryInput = join(root, '9.2-03-SUMMARY.md')
     writeFileSync(

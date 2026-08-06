@@ -70,7 +70,7 @@ function makeProject(name: string, phaseDirs: string[], roadmap: string): string
  * child that never printed throws `SyntaxError: Unexpected end of JSON input` —
  * a message that names neither the command, nor its exit code, nor the stderr
  * that would say why, and that is the exact red on record for this file under
- * full-suite load (D-11-DEFER-05). A starved, killed or crashed child is a
+ * full-suite load. A starved, killed or crashed child is a
  * legitimate failure; it just has to arrive readable. Nothing is retried and
  * nothing is swallowed: this converts an opaque crash into a diagnosis.
  */

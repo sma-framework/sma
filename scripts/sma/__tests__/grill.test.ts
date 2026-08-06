@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/grill.mjs (Phase 9.2 Plan 07, Task 1 — D-9.2-11).
+ * Tests for scripts/sma/lib/grill.mjs.
  *
  * The /sma-grill challenge ledger: an unresolved challenge blocks the build; a
  * conversion is VERIFIED against the plan's real predictions block (parsePredictions

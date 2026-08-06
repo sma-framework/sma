@@ -1,8 +1,7 @@
 /**
- * Tests for scripts/sma/lib/merge-gate.mjs (Phase 9.3 Plan 15).
+ * Tests for scripts/sma/lib/merge-gate.mjs.
  *
- * 9.3-15 (D-9.3-24c/d/e/f) — the serialized merge gate + the verified-live-only
- * enforcing-scope predicate.
+ * The serialized merge gate + the verified-live-only enforcing-scope predicate.
  *
  * Task 1 — merge-claim triplet + the `sma merge` ritual:
  *   - Test 1: the merge-claim triplet mirrors the push-claim (acquire/second-fails/check/release)
@@ -293,7 +292,7 @@ describe('9.3-15 Task 2 — enforcing scopes (verified-live-only soft-deny + opt
       evidence: { scopeDirtyVsHead: true }, // would be LIVE...
       env: {},
       verifyClaimEvidence,
-      coolingDown: true, // ...but a cooling-down scope is never enforced (D-9-09).
+      coolingDown: true, // ...but a cooling-down scope is never enforced.
     })
     expect(cooling.action).toBe('warn')
     expect(cooling.action).not.toBe('soft-deny')

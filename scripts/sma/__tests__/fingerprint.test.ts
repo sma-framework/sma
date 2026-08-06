@@ -1,5 +1,5 @@
 /**
- * Tests for the live work fingerprint + claim trust repair (9.3-13, D-9.3-21/22/23).
+ * Tests for the live work fingerprint + claim trust repair.
  *
  * 14 behaviors:
  *   1  recordTouch — self-capture, NEVER a git read, windowed + capped
@@ -72,7 +72,7 @@ function lease(over: any = {}) {
 }
 
 // ── 1: recordTouch — self-capture, never git ─────────────────────────────────
-describe('recordTouch (self-capture, D-9.3-21a)', () => {
+describe('recordTouch (self-capture)', () => {
   it('appends the passed filePath with a ts, drops entries older than the window, never reads git', () => {
     const git = vi.fn(() => 'SHOULD NOT BE CALLED')
     const old = { path: 'src/old.ts', ts: NOW - FINGERPRINT_FILES_WINDOW_MS - 1 } // outside window
@@ -97,7 +97,7 @@ describe('recordTouch (self-capture, D-9.3-21a)', () => {
 })
 
 // ── 2: buildFingerprint — shape ──────────────────────────────────────────────
-describe('buildFingerprint (shape, D-9.3-21)', () => {
+describe('buildFingerprint (shape)', () => {
   it('returns {terminalId, phasePlan, filesRecent, lastEvents<=3, claims, intent, status}', () => {
     const l = lease({
       globs: ['src/**'],
@@ -125,7 +125,7 @@ describe('buildFingerprint (shape, D-9.3-21)', () => {
 })
 
 // ── 3: ambientDigest — throttle + determinism ────────────────────────────────
-describe('ambientDigest (throttle, D-9.3-21c)', () => {
+describe('ambientDigest (throttle)', () => {
   const sessions = [
     lease({ _file: 'a.json', extra: { holderIdentity: 'A' }, intent: 'правлю pre.mjs', fpStatus: 'working' }),
     lease({ _file: 'b.json', extra: { holderIdentity: 'B' }, label: 'phase:50', fpStatus: 'idle' }),
@@ -146,7 +146,7 @@ describe('ambientDigest (throttle, D-9.3-21c)', () => {
 })
 
 // ── 4: overlapInjection — immediate + full + no self-inject ───────────────────
-describe('overlapInjection (channel 2, D-9.3-21c)', () => {
+describe('overlapInjection (channel 2)', () => {
   const B = lease({ _file: 'b.json', extra: { holderIdentity: 'B' }, globs: ['src/crm/**'], intent: 'B работает тут' })
   const sessions = [lease({ _file: 'a.json', extra: { holderIdentity: 'A' } }), B]
 
@@ -166,7 +166,7 @@ describe('overlapInjection (channel 2, D-9.3-21c)', () => {
 })
 
 // ── 5: attention ≠ fully-active ──────────────────────────────────────────────
-describe('attention split (D-9.3-22f)', () => {
+describe('attention split', () => {
   it('the WARN text for an attention owner reads «внимание», a fresh owner reads «занято»', () => {
     const fresh = buildWarnText({ tier: 'warn', who: 'A', pid: 1, operation: 'x', scope: 'src/**', since: null, staleness: 'fresh', howToClear: 'wait' })
     const att = buildWarnText({ tier: 'warn', who: 'A', pid: 1, operation: 'x', scope: 'src/**', since: null, staleness: 'attention', howToClear: 'wait' })
@@ -188,7 +188,7 @@ describe('attention split (D-9.3-22f)', () => {
 })
 
 // ── 6: verifyClaimEvidence — self-verifying banner ───────────────────────────
-describe('verifyClaimEvidence (self-verifying banner, D-9.3-22)', () => {
+describe('verifyClaimEvidence (self-verifying banner)', () => {
   it('STALE when clean vs HEAD AND a post-renew in-scope commit landed -> «можно работать»', () => {
     const r = verifyClaimEvidence({ claim: { by: 'A' }, scopeDirtyVsHead: false, commitInScopeAfterRenew: 'abc1234def', mtimeAgeMin: 20 })
     expect(r.live).toBe(false)
@@ -248,7 +248,7 @@ describe('fingerprint stream (fail-open + no-op + renewTime-only liveness)', () 
   })
 })
 
-// ── 15: SB-041 — ONE activity logic on the hook path and the `status` path ───
+// ── 15: ONE activity logic on the hook path and the `status` path ───────────
 //
 // The recorded defect (executor, 03.08.2026): inside PreToolUse-hook context the
 // fingerprint printed 20–80 «working» terminals while `sma status` at the very same
@@ -256,11 +256,11 @@ describe('fingerprint stream (fail-open + no-op + renewTime-only liveness)', () 
 // liveness was renewTime-only, so every one-shot CLI lease (`T-<pid>`, written by a
 // `sma claim` / `sma status` process that exited milliseconds later) stayed «fresh» for
 // the full 45-minute window and impersonated a live terminal. `status` had been taught
-// the dead-pid rule by SB-021; the hook had not. Two counters, one question.
+// the dead-pid rule earlier; the hook had not. Two counters, one question.
 //
 // pid-liveness here is REAL, no injection: the test's own pid is the live one and an
 // absurd pid is the dead one (ESRCH on Windows too — verified on this platform).
-describe('SB-041 — the hook counts exactly the terminals `status` counts', () => {
+describe('the hook counts exactly the terminals `status` counts', () => {
   const DEAD_PID = 999999999 // absurd -> ESRCH everywhere; the process cannot exist
   const STALE_AGE = SESSION_TTL_MS + GRACE_MS + 1000
 
@@ -375,7 +375,7 @@ describe('claim trust repair', () => {
   })
 
   // 10
-  it('there is NO idle-timer release path (D-9.3-22a) — a fresh claim with no evidence is never released', async () => {
+  it('there is NO idle-timer release path — a fresh claim with no evidence is never released', async () => {
     const claims = await import('../lib/claims.mjs')
     const names = Object.keys(claims)
     // no function names the idle-release concept

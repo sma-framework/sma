@@ -2,7 +2,7 @@
  * Tests for scripts/sma/lib/spend-adapter.mjs (Phase 9.2 Plan 09, Task 1).
  *
  * The versioned log-format adapter — the ONLY module in the tree that knows the
- * vendor's local session-transcript shape (D-9.2-13 quarantine). All vendor-drift
+ * vendor's local session-transcript shape (a deliberate quarantine). All vendor-drift
  * risk is confined here; a Claude Code log-format change is a one-file fix.
  *
  *   - Test 1 (normalize): a v1 assistant transcript line → the canonical event with

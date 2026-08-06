@@ -1,6 +1,6 @@
 /**
- * Tests for the deterministic pre-compaction FLIGHT RECORDER (Phase 9.2 Plan 06,
- * D-9.2-09). Lib core (Task 1, tests 1-8) + CLI wiring (Task 2, tests 9-13).
+ * Tests for the deterministic pre-compaction FLIGHT RECORDER. Lib core
+ * (tests 1-8) + CLI wiring (tests 9-13).
  *
  * The capsule makes auto-compaction survivable with PURE file assembly — zero LLM,
  * zero network, zero child_process in the path. Every lib fs dependency is injected

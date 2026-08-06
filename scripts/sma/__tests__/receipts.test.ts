@@ -1,7 +1,7 @@
 /**
  * Tests for scripts/sma/lib/receipts.mjs (Phase 9.2 Plan 03, Task 1).
  *
- * Structural receipts — the claims schema over the V2 coverage block (D-9.2-06):
+ * Structural receipts — the claims schema over the V2 coverage block:
  *   - Test 1: parseReceipts extracts a flat `receipts:` dash-list; missing file /
  *     no fence / no block -> {receipts: []} honest-empty, never a throw.
  *   - Test 2: validateReceipt rejects a missing locked field; enforces the 64-hex

@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/report.mjs (Phase 9.1 Plan 24, Task 2 — D-9.1-07, B23).
+ * Tests for scripts/sma/lib/report.mjs.
  *
  * The LOCAL static-HTML report: zero server, zero daemon, zero DB. renderReport is
  * a pure transform (fixtures in, one self-contained HTML string out). The four

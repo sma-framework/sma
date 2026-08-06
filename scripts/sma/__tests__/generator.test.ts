@@ -11,7 +11,7 @@
  *   - Test 4: ordering within a section = importance desc → dateMap desc → name asc
  *     (ties proven by fixture).
  *   - Test 5: a kind='status' high-importance note renders in CORE's active-blockers
- *     subsection first (D-9-08: CORE = blockers + current pointer + top facts).
+ *     subsection first (CORE = blockers + current pointer + top facts).
  *
  * Determinism: the generator NEVER reads Date.now()/mtime/HEAD in the output path;
  * commitHash + dateMap are injected. Tests never shell out.

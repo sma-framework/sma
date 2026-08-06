@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/state-section.mjs (Phase 9.1 Plan 19 — D-9.1-14).
+ * Tests for scripts/sma/lib/state-section.mjs.
  *
  * The machine-managed STATE.md section: the three contended zones (Current
  * Position / Open Blockers / Active Sessions) live inside a `<!-- SMA-MANAGED -->`

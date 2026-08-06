@@ -871,7 +871,7 @@ describe('applyLifecycle — the transitions, and the one it refuses', () => {
   })
 
   it('Test 50: erase is PERFORMED — the refusal became a delegation, and the record is gone', () => {
-    // The contract this case pins CHANGED in 11-11 (D-11-05). It used to assert
+    // The contract this case pins CHANGED. It used to assert
     // that erase was refused with a policy pointer and was not in the vocabulary
     // at all. It is rewritten rather than deleted so the change of contract is
     // visible in a test diff instead of only in an absence: the destructive
@@ -1157,7 +1157,7 @@ describe('the apply door — the dead end it was built to close', () => {
 
     const res = applyProposal({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE })
 
-    // The honest refusal SB-038 reports — a staged record is not a migration
+    // The honest refusal — a staged record is not a migration
     // proposal, and the migration engine was never entitled to apply one.
     expect(res.applied).toBe(false)
     expect(res.reason).toMatch(/not a migration proposal/i)

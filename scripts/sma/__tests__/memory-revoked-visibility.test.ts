@@ -23,8 +23,8 @@
  * describe block records, as an executable fact, that `archived` and a bare
  * `status: expired` are NOT withheld by the read-time filter today —
  * CORE_EXCLUDED_STATUSES holds exactly `superseded` and `revoked`. That gap is real
- * and it belongs to plan 11-03, which owns generator.mjs. Asserting the true
- * behaviour here (rather than the wished-for one) is what makes 11-03's change
+ * and it belongs to the plan that owns generator.mjs. Asserting the true
+ * behaviour here (rather than the wished-for one) is what makes that change
  * visible as a change instead of silent.
  */
 
@@ -95,7 +95,7 @@ function writeCorpus() {
   // ONE variable per note, which is this file's own stated discipline. This note
   // carried `status: expired` AND a past `valid_until` until 2026-08-04 — two
   // signals for one question, and it only stayed readable while the status half
-  // was inert. Once plan 11-14 widened CORE_EXCLUDED_STATUSES to all four
+  // was inert. Once CORE_EXCLUDED_STATUSES widened to all four
   // retirements the status began winning first, and the two tests below stopped
   // measuring the clock they are named after. The note is `active` so that the
   // window, and nothing else, decides its fate.
@@ -211,7 +211,7 @@ describe('ACC-2 — a retired record never reaches the pack (compilePack, real r
   })
 })
 
-describe('the other two retirements — the recorded gap, CLOSED by plan 11-14 on 2026-08-04', () => {
+describe('the other two retirements — the recorded gap, CLOSED on 2026-08-04', () => {
   /**
    * THIS BLOCK WAS DELIBERATELY GREEN ON THE WRONG BEHAVIOUR, and it is now
    * flipped. Until 2026-08-04 `CORE_EXCLUDED_STATUSES` (generator.mjs) held exactly
@@ -219,10 +219,10 @@ describe('the other two retirements — the recorded gap, CLOSED by plan 11-14 o
    * `write-pipeline.mjs` `LIFECYCLE_ACTIONS` and `migrate-v1-v2.mjs`
    * `RETIRED_STATUSES` both name `expired` and `archived` too. A record the pipeline
    * had archived was still delivered, with no verdict in the trace. The block below
-   * asserted that true-but-unwanted behaviour on purpose (D-11-DEFER-01), so that the
+   * asserted that true-but-unwanted behaviour on purpose, so that the
    * day the gap closed, it would fail loudly and be flipped by hand instead of the
    * behaviour changing under a silently green suite. That day was 2026-08-04, when
-   * plan 11-14 put the retirement states behind a user-facing verb: `memory forget
+   * the retirement states moved behind a user-facing verb: `memory forget
    * --archive` that leaves the record quotable is a verb that lies about what it did.
    *
    * The assertions are inverted, not deleted. A reader comparing this file across

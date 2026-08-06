@@ -251,7 +251,7 @@ describe('deploy-signal advisory claim — queue-never-cancel (R9c, B23, P3)', (
   })
 })
 
-describe('P5 — no push subcommand across the whole module (T-9-06-01)', () => {
+describe('P5 — no push subcommand across the whole module', () => {
   it('every git call in nextReleaseVersion + verify is a read subcommand', () => {
     const { runner, calls } = makeFakeGit({ tags: ['V1.10'] })
     nextReleaseVersion({ execGit: runner })
@@ -265,7 +265,7 @@ describe('P5 — no push subcommand across the whole module (T-9-06-01)', () => 
 // ── B11 — all-counter slots (bl / action / decision / phase) ────────────────────────
 //
 // Fixtures mirror the LIVE .planning source files' parse-relevant syntax verbatim (the
-// `- [ ] **BL-NNN** ·` / `**A-NNN**` bullets, `D-9.1-NN` decision tags, `### Phase N`
+// `- [ ] **BL-NNN** ·` / `**A-NNN**` bullets, `D-<phase>-NN` decision tags, `### Phase N`
 // headings) per feedback_test_fixtures_mirror_live_files — a dead scanner is caught.
 
 // Verbatim-format excerpt of .planning/BACKLOG.md (## Backlog section).

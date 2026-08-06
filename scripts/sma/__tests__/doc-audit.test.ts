@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/doc-audit.mjs (Phase 9.3 Plan 09, Task 2 — D-9.3-01/15).
+ * Tests for scripts/sma/lib/doc-audit.mjs.
  *
  *  - Test 1: extractRegion returns the content between paired markers; missing/unpaired
  *    markers return {found:false}.

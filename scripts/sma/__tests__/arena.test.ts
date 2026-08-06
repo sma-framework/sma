@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/arena.mjs (Phase 9.3 Plan 11, D-9.3-18).
+ * Tests for scripts/sma/lib/arena.mjs.
  *
  * The comparative benchmark arena scorer: harden the n=1 pilot into a reproducible
  * n>=4 four-arm comparison (vanilla / GSD / Superpowers / SMA), scored FULLY
@@ -11,8 +11,8 @@
  *
  * Everything is DI: raw per-arm records + an injected spend-adapter version set, so
  * no test touches a real log, spawns a process, or spends a token. arena.mjs imports
- * no LLM/network/child_process on the score path (D-9.3-02: the 9.2-09 spend-adapter
- * is the SOLE cost source; the arena CONSUMES version-tagged totals, never re-parses).
+ * no LLM/network/child_process on the score path (the spend-adapter is the SOLE
+ * cost source; the arena CONSUMES version-tagged totals, never re-parses).
  *
  * Test 1 — per-arm score determinism (two calls deep-equal)
  * Test 2 — cost-per-result is the headline (rank by M1+M2, cost carried not sorted)
@@ -43,7 +43,7 @@ const FIXTURE = JSON.parse(
 const KNOWN_VERSIONS = ADAPTER_VERSIONS.map((a) => a.version)
 const armByName = (name: string) => FIXTURE.arms.find((a: any) => a.arm === name)
 
-describe('arena.mjs — deterministic four-arm benchmark scorer (9.3-11)', () => {
+describe('arena.mjs — deterministic four-arm benchmark scorer', () => {
   it('Test 1: scoreArm is deterministic — two calls on identical input are deep-equal', () => {
     const rec = armByName('vanilla')
     const a = scoreArm(rec, { adapterVersions: KNOWN_VERSIONS })
@@ -115,7 +115,7 @@ describe('arena.mjs — deterministic four-arm benchmark scorer (9.3-11)', () =>
     expect(clean.unknownAdapterVersions).toEqual([])
 
     // Inject a spend-adapter DOUBLE whose known-set EXCLUDES the record's version →
-    // the version is flagged as drift, never silently mis-scored (fail-open, D-9.2-13).
+    // the version is flagged as drift, never silently mis-scored (fail-open).
     const flagged = scoreArm(armByName('vanilla'), { adapterVersions: ['v-something-else'] })
     expect(flagged.unknownAdapterVersions).toEqual(['v1-claude-jsonl-2026-07'])
     // The cost is still BOOKED (counted as drift, never lost) — the total is non-zero.

@@ -2,7 +2,7 @@
  * Tests for scripts/sma/lib/vendor-ledger.mjs (9.4-01 — the standing
  * Anthropic-update triage ledger linter).
  *
- * The load-bearing behaviors (plan 9.4-01 Task 1):
+ * The load-bearing behaviors:
  *   Test 1 — parseLedger (tolerant reader): a missing file returns
  *            { rows: [], errors: [] } + a warning, never throws; a corrupt
  *            table line lands in errors while valid rows still parse.

@@ -1,6 +1,6 @@
 /**
  * Tests for scripts/sma/lib/profile-writer.mjs — the ONE writer of the install
- * profile and its starter corpus notes (D-9.7-16, T-9.7-43 / T-9.7-44).
+ * profile and its starter corpus notes.
  *
  * The law under test: the profile schema, its serialization and its secret
  * screening live in EXACTLY ONE callable place. The first-run screen and the

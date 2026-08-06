@@ -2,14 +2,14 @@
  * memory-forget.test.ts — the ONE user-facing way to make the system stop
  * believing something, and the one flag that destroys it.
  *
- * The product decision behind this file (D-11-06): a person types ONE command to
+ * The product decision behind this file: a person types ONE command to
  * forget a record and ONE flag to erase it completely. The five internal
  * lifecycle states — supersede, revoke, expire, archive, erase — live underneath
  * and are visible in the record's own history afterwards, but nobody is obliged
  * to learn the difference between them in order to forget something.
  *
  *   THE VERB SURFACE DOES NOT GROW. `forget` is a SUBCOMMAND of the existing
- *   `memory` namespace (D-11-08), exactly as `memory index` was in phase 10. The
+ *   `memory` namespace, exactly as `memory index` was before it. The
  *   top-level HANDLERS table is asserted below to gain no key.
  *
  *   THE DESTRUCTIVE PATH IS NEVER THE DEFAULT AND NEVER IMPLICIT. `--erase`
@@ -24,7 +24,7 @@
  *   reached a commit is still in that commit and in every clone. The destructive
  *   path says so in its own words, both when it refuses and when it succeeds.
  *
- *   THE CALLER CONTRACT IS ASSERTED, NOT ASSUMED (D-11-DEFER-14). `eraseRecord`
+ *   THE CALLER CONTRACT IS ASSERTED, NOT ASSUMED. `eraseRecord`
  *   refuses to invent the paths of the `.sma` stores it would delete from, so an
  *   erase whose caller forgets to pass them silently skips the this-machine-only
  *   store and the lexical index. The mechanical check is one line: `unverified`
@@ -265,7 +265,7 @@ describe('memory forget — one command, and it says which state it applied', ()
     expect(frontmatterOf(corpusDir, NEIGHBOUR)?.status).toBe('archived')
   })
 
-  it('Test 7b: --archive really removes the record from the pack (D-11-DEFER-01, closed here)', () => {
+  it('Test 7b: --archive really removes the record from the pack', () => {
     // `--archive` promises «out of active retrieval, kept for history» while the
     // read path acted on two of the four retirements, so an archived record was
     // still delivered. A forget flag that leaves the record quotable is a flag
@@ -284,7 +284,7 @@ describe('memory forget — one command, and it says which state it applied', ()
     // for it would pass without the status filter existing at all.
   })
 
-  it('Test 8: the top-level verb table gains NO key — forget is a subcommand (D-11-08)', () => {
+  it('Test 8: the top-level verb table gains NO key — forget is a subcommand', () => {
     const source = readFileSync(CLI, 'utf8')
     const start = source.indexOf('const HANDLERS = {')
     expect(start).toBeGreaterThan(0)
@@ -391,7 +391,7 @@ describe('memory forget --erase — irreversible, confirmed once, honest about h
     expect(result.applied).toBe(true)
     expect(result.failures).toEqual([])
 
-    // D-11-DEFER-14, the mechanical check: the caller passed the store paths, so
+    // The mechanical check: the caller passed the store paths, so
     // no surface came back unreachable. An empty array here is the difference
     // between an erase that worked and one that only reported success.
     expect(result.unverified).toEqual([])
@@ -419,7 +419,7 @@ describe('memory forget --erase — irreversible, confirmed once, honest about h
     // The module-level proof is erase.test.ts Tests 29-32; this one asserts the
     // refusal survives the trip to the operator's terminal, because a decline
     // that exits 0 or prints nothing is indistinguishable from a completed
-    // erase (D-11-DEFER-15).
+    // erase.
     seedCorpus()
     seed(join(corpusDir, 'episodes'), record({ status: 'archived', memory_type: 'episodic' }))
     seedDerivedIndexes()
