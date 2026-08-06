@@ -53,6 +53,22 @@
  * already sees, and no second code path, spread or passthrough exists to keep in step. The
  * suite asserts that row byte-for-byte.
  *
+ * ══════════════ THE LIVE ATTEMPT LOG RIDES HERE TOO ═════════════════════════════
+ * `<attemptId>.log.ndjson`, a third sibling in this same dir, holds every line the worker
+ * printed — appended WHILE the process is alive, so a screen can watch a running attempt
+ * instead of reading a post-mortem. Same dir, same append-only law, same fail-open reader.
+ *
+ * PER ATTEMPT, NOT PER TASK, and that is the whole reason it is a separate file rather than
+ * more rows in the journal: a retry of a task is a DIFFERENT transcript, and the screen asks
+ * for one attempt at a time. The record's shape and its caps live in ../front/journal.mjs
+ * with every other vocabulary; only the file lives here.
+ *
+ * THE WRITER IS FAIL-OPEN, WITHOUT EXCEPTION. A log is an observation of the work, never a
+ * condition of it: an unwritable directory, a full disk or a revoked permission must cost
+ * the founder the picture and nothing else. Every write is wrapped, `append` returns a
+ * boolean instead of throwing, and the failure is handed to an injected `onError` so it can
+ * reach the daemon's log — silence would be the one outcome worse than losing the lines.
+ *
  * ONLY DIGESTS, NEVER THE THING ITSELF. A ledger row is read by anything that
  * reads the ledger — the liveness sweep, the roster cards, a human with `cat`. So the memory
  * snapshot is recorded as a digest and never as paths, file names or note text, and a
@@ -73,7 +89,7 @@ import { appendFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
-import { attemptIdFor, normalizeJournalPayload } from '../front/journal.mjs'
+import { attemptIdFor, normalizeJournalPayload, normalizeAttemptLogEntry, attemptLogTail } from '../front/journal.mjs'
 import { envelopeHash } from './capability-envelope.mjs'
 import { listNoteFiles } from '../../../scripts/sma/lib/generator.mjs'
 
@@ -105,11 +121,17 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'reconstructed',
 ])
 
-/** `<ledgerDir>/<safeTaskId>.jsonl`. taskId is a queue id WE mint ('BL-…'/'R-…'/'F-…');
- *  still sanitize it to a safe filename (defense in depth — never a path traversal). */
+/** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
+ *  ('BL-…'/'R-…'/'F-…', or '<taskId>#<attempt>'); it is still sanitized (defense in depth —
+ *  never a path traversal). Every file in this module goes through here, so the three
+ *  siblings of one task can never come to disagree about what its name is. */
+function safeName(id) {
+  return String(id).replace(/[^A-Za-z0-9._-]/g, '_')
+}
+
+/** `<ledgerDir>/<safeTaskId>.jsonl` — the attempt rows of one task. */
 function ledgerFile(ledgerDir, taskId) {
-  const safe = String(taskId).replace(/[^A-Za-z0-9._-]/g, '_')
-  return join(ledgerDir, `${safe}.jsonl`)
+  return join(ledgerDir, `${safeName(taskId)}.jsonl`)
 }
 
 /**
@@ -266,8 +288,7 @@ export const ALLOWED_JOURNAL_KEYS = Object.freeze(['taskId', 'attempt', 'attempt
 
 /** `<ledgerDir>/<safeTaskId>.journal.jsonl` — the attempt rows' sibling, same dir. */
 function journalFile(ledgerDir, taskId) {
-  const safe = String(taskId).replace(/[^A-Za-z0-9._-]/g, '_')
-  return join(ledgerDir, `${safe}.journal.jsonl`)
+  return join(ledgerDir, `${safeName(taskId)}.journal.jsonl`)
 }
 
 /**
@@ -339,4 +360,115 @@ export function readJournalEntries(ledgerDir, taskId, { fsImpl } = {}) {
     }
   }
   return rows
+}
+
+// ── the live attempt log: the worker's stdout, while the worker is still alive ──
+
+/** `<ledgerDir>/<safeAttemptId>.log.ndjson` — the transcript of ONE attempt. */
+function attemptLogFile(dir, attemptId) {
+  return join(dir, `${safeName(attemptId)}.log.ndjson`)
+}
+
+/**
+ * createAttemptLogWriter({dir, attemptId, …}) → `{append, attemptId, file}`.
+ * `append(entry)` writes ONE normalized NDJSON row and returns `true` / `false` — it NEVER
+ * throws, whatever the filesystem does (see THE WRITER IS FAIL-OPEN above). A missing dir or
+ * attemptId yields a writer whose `append` is an honest `false`, so a caller never needs a
+ * null check around a line of logging.
+ *
+ * The directory is made ONCE here rather than per row: a stream is thousands of lines and a
+ * mkdir per line is a syscall bought for nothing.
+ *
+ * @param {{dir?:string, attemptId?:string, fsImpl?:object, clock?:()=>number,
+ *          onError?:(err:Error)=>void}} [o]
+ * @returns {{append:(entry:object)=>boolean, attemptId:string, file:(string|null)}}
+ */
+export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError } = {}) {
+  const fs = fsImpl || {}
+  const mkdir = fs.mkdirSync || mkdirSync
+  const append = fs.appendFileSync || appendFileSync
+  const id = String(attemptId ?? '')
+  const file = dir && id ? attemptLogFile(dir, id) : null
+
+  // One failure is reported once. A stream that cannot be written produces a line per line
+  // of output otherwise, and the real reason drowns in its own repetition.
+  let reported = false
+  const complain = (err) => {
+    if (reported) return
+    reported = true
+    if (typeof onError === 'function') {
+      try {
+        onError(err)
+      } catch {
+        /* even the complaint is fail-open */
+      }
+    }
+  }
+
+  let ready = false
+  if (file) {
+    try {
+      mkdir(dir, { recursive: true })
+      ready = true
+    } catch (err) {
+      complain(err)
+    }
+  }
+
+  return {
+    attemptId: id,
+    file,
+    append(entry) {
+      if (!file || !ready) return false
+      try {
+        append(file, `${JSON.stringify(normalizeAttemptLogEntry(entry, { now: clock }))}\n`)
+        return true
+      } catch (err) {
+        complain(err)
+        return false
+      }
+    },
+  }
+}
+
+/**
+ * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated}` — the
+ * LAST `tail` lines of one attempt (default 200, hard ceiling 1000), with `truncated` saying
+ * that older lines exist. A missing log reads as an EMPTY log, never an error, and a corrupt
+ * row is skipped — the same fail-open posture as every other reader here.
+ *
+ * THE ENTRIES ARE DATA AND ARE RETURNED AS THEY WERE STORED. This reader does not interpret
+ * a line, does not strip anything out of it and makes no claim that it is safe: it is worker
+ * output, and whatever shows it shows it as TEXT.
+ *
+ * COST, STATED HONESTLY: the file is read whole and the tail is taken in memory. That is
+ * bounded by the log of ONE attempt and is the cheap correct thing today; if an attempt's
+ * transcript ever grows past comfort, the fix is a reverse chunked reader here — the
+ * signature already hides it.
+ *
+ * @param {{dir?:string, attemptId?:string, tail?:number, fsImpl?:object}} [o]
+ * @returns {{attemptId:string, entries:object[], total:number, truncated:boolean}}
+ */
+export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
+  const id = String(attemptId ?? '')
+  const empty = { attemptId: id, entries: [], total: 0, truncated: false }
+  if (!dir || !id) return empty
+  const read = (fsImpl && fsImpl.readFileSync) || readFileSync
+  let raw
+  try {
+    raw = String(read(attemptLogFile(dir, id), 'utf8'))
+  } catch {
+    return empty // no log yet (fail-open) — an attempt that printed nothing is not an error
+  }
+  const rows = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    try {
+      rows.push(JSON.parse(t))
+    } catch {
+      /* skip corrupt line (fail-open) */
+    }
+  }
+  return { attemptId: id, ...attemptLogTail(rows, tail) }
 }

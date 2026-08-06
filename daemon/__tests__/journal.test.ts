@@ -18,6 +18,19 @@
  * version, the state-machine version, the idempotency key and the capability envelope's
  * digest. The cases live HERE rather than in a third file because they are cases about
  * `attempt-ledger.mjs`, which this suite already drives — the plan's own instruction.
+ *
+ * ════════ THE LIVE ATTEMPT LOG — the same ledger, the other tense ════════════════
+ * The three layers explain an attempt after it decided something; the live log is every line
+ * the worker printed, appended WHILE it printed them, so a screen can watch a running attempt
+ * instead of a spinner. Its cases live here for the same reason the stamp's do: same dir,
+ * same append-only law, same fail-open reader. What they pin:
+ *   - two appends → two NDJSON rows in the ATTEMPT's own file; tail:1 → the last row and
+ *     truncated:true; the tail is clamped (default 200, hard ceiling 1000);
+ *   - a delegated line keeps {subagent, parentId}, an ordinary one carries neither;
+ *   - FAIL-OPEN twice over: an fs that refuses everything, and a real path that is a file —
+ *     `append` returns false, never throws, and complains exactly once;
+ *   - the line is DATA: markup rides through verbatim, a newline can never split a row, and
+ *     an over-long line is capped rather than refused.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -34,6 +47,10 @@ import {
   readJournal,
   journalComplete,
   parseApproachNote,
+  attemptLogTail,
+  ATTEMPT_LOG_LINE_CAP,
+  ATTEMPT_LOG_TAIL_DEFAULT,
+  ATTEMPT_LOG_TAIL_MAX,
 } from '../src/front/journal.mjs'
 import {
   appendJournalEntry,
@@ -43,6 +60,8 @@ import {
   memorySnapshotHash,
   MEMORY_SNAPSHOT_ABSENT,
   ALLOWED_ATTEMPT_KEYS,
+  createAttemptLogWriter,
+  readAttemptLog,
 } from '../src/queue/attempt-ledger.mjs'
 import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
 import { applyTransition, STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
@@ -796,13 +815,160 @@ describe('memorySnapshotHash — what the worker knew, as a digest and nothing m
   })
 })
 
+// ═══════ the LIVE attempt log — the transcript, written while the worker still speaks ═══
+
+describe('the live attempt log — every line, appended as it arrives', () => {
+  const logFile = (attemptId: string) => join(dir, `${attemptId.replace(/[^A-Za-z0-9._-]/g, '_')}.log.ndjson`)
+
+  it('two appends → two NDJSON rows in the attempt’s own file, in order', () => {
+    const attemptId = attemptIdFor('BL-9', 1)
+    const w = createAttemptLogWriter({ dir, attemptId })
+    expect(w.append({ line: 'первая строка' })).toBe(true)
+    expect(w.append({ line: 'вторая строка' })).toBe(true)
+
+    const rows = readFileSync(logFile(attemptId), 'utf8').split('\n').filter((l) => l.trim())
+    expect(rows).toHaveLength(2)
+    const parsed = rows.map((r) => JSON.parse(r))
+    expect(parsed.map((p) => p.line)).toEqual(['первая строка', 'вторая строка'])
+    for (const p of parsed) expect(typeof p.ts).toBe('string')
+  })
+
+  it('reader with tail:1 → the LAST row and truncated:true (the older lines are said to exist)', () => {
+    const attemptId = attemptIdFor('BL-9', 1)
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: 'one' })
+    w.append({ line: 'two' })
+
+    const tailed = readAttemptLog({ dir, attemptId, tail: 1 })
+    expect(tailed.entries).toHaveLength(1)
+    expect(tailed.entries[0].line).toBe('two')
+    expect(tailed.total).toBe(2)
+    expect(tailed.truncated).toBe(true)
+
+    const whole = readAttemptLog({ dir, attemptId })
+    expect(whole.entries).toHaveLength(2)
+    expect(whole.truncated).toBe(false)
+  })
+
+  it('a subagent line keeps its flag and its opaque parent id; an ordinary line carries neither', () => {
+    const attemptId = attemptIdFor('BL-9', 2)
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: 'main session', subagent: false })
+    w.append({ line: 'delegated text', subagent: true, parentId: 'toolu_01ABC' })
+
+    const { entries } = readAttemptLog({ dir, attemptId })
+    expect('subagent' in entries[0]).toBe(false) // absent, not false — the row stays two fields wide
+    expect(entries[1].subagent).toBe(true)
+    expect(entries[1].parentId).toBe('toolu_01ABC')
+  })
+
+  it('FAIL-OPEN: a filesystem that refuses every write never throws — append says false, complained once', () => {
+    const complaints: any[] = []
+    const angryFs = {
+      mkdirSync: () => {
+        throw new Error('EACCES: permission denied')
+      },
+      appendFileSync: () => {
+        throw new Error('EACCES: permission denied')
+      },
+    }
+    let w: any
+    expect(() => {
+      w = createAttemptLogWriter({ dir, attemptId: 'BL-9#3', fsImpl: angryFs, onError: (e: any) => complaints.push(e) })
+    }).not.toThrow()
+    expect(() => w.append({ line: 'x' })).not.toThrow()
+    expect(w.append({ line: 'x' })).toBe(false)
+    expect(w.append({ line: 'y' })).toBe(false)
+    expect(complaints).toHaveLength(1) // one failure is reported ONCE, not once per line
+  })
+
+  it('FAIL-OPEN over a REAL unreachable directory — a path that is a file, not a dir', () => {
+    const notADir = join(dir, 'a-file')
+    writeFileSync(notADir, 'i am a file')
+    const w = createAttemptLogWriter({ dir: join(notADir, 'nested'), attemptId: 'BL-9#4' })
+    expect(() => w.append({ line: 'x' })).not.toThrow()
+    expect(w.append({ line: 'x' })).toBe(false)
+  })
+
+  it('a writer with no dir or no attemptId is a working no-op, so no caller needs a null check', () => {
+    for (const bad of [{}, { dir }, { attemptId: 'BL-9#5' }]) {
+      const w = createAttemptLogWriter(bad as any)
+      expect(() => w.append({ line: 'x' })).not.toThrow()
+      expect(w.append({ line: 'x' })).toBe(false)
+    }
+  })
+
+  it('a missing log reads as an EMPTY log, and a corrupt row is skipped rather than thrown', () => {
+    expect(readAttemptLog({ dir, attemptId: 'BL-NOBODY#1' })).toEqual({
+      attemptId: 'BL-NOBODY#1',
+      entries: [],
+      total: 0,
+      truncated: false,
+    })
+
+    const attemptId = 'BL-9#6'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: 'good' })
+    appendFileSync(logFile(attemptId), '{ this is not json\n')
+    w.append({ line: 'also good' })
+    const { entries, total } = readAttemptLog({ dir, attemptId })
+    expect(total).toBe(2)
+    expect(entries.map((e: any) => e.line)).toEqual(['good', 'also good'])
+  })
+
+  it('the tail is clamped: an absurd ask is capped at 1000, a nonsense ask falls back to 200', () => {
+    const huge = Array.from({ length: 1500 }, (_, i) => ({ line: String(i) }))
+    expect(attemptLogTail(huge, 99_999).entries).toHaveLength(ATTEMPT_LOG_TAIL_MAX)
+    expect(ATTEMPT_LOG_TAIL_MAX).toBe(1000)
+    const many = Array.from({ length: 500 }, (_, i) => ({ line: String(i) }))
+    expect(attemptLogTail(many, undefined).entries).toHaveLength(ATTEMPT_LOG_TAIL_DEFAULT)
+    expect(attemptLogTail(many, -5).entries).toHaveLength(ATTEMPT_LOG_TAIL_DEFAULT)
+    expect(ATTEMPT_LOG_TAIL_DEFAULT).toBe(200)
+  })
+
+  it('the line is DATA: markup rides through verbatim, is capped, and never splits a row', () => {
+    const attemptId = 'BL-9#7'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: '<script>alert(1)</script> & <b>bold</b>' })
+    w.append({ line: 'a\nb\nc' }) // a newline can never split an NDJSON row
+    w.append({ line: 'x'.repeat(ATTEMPT_LOG_LINE_CAP + 500) })
+
+    const rawRows = readFileSync(logFile(attemptId), 'utf8').split('\n').filter((l) => l.trim())
+    expect(rawRows).toHaveLength(3)
+    const { entries } = readAttemptLog({ dir, attemptId })
+    expect(entries[0].line).toBe('<script>alert(1)</script> & <b>bold</b>') // NOT escaped, NOT stripped
+    expect(entries[1].line).toBe('a b c')
+    expect(entries[2].line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+  })
+
+  it('the transcript is PER ATTEMPT: a retry writes its own file and cannot overwrite the first', () => {
+    const first = attemptIdFor('BL-9', 1)
+    const second = attemptIdFor('BL-9', 2)
+    createAttemptLogWriter({ dir, attemptId: first }).append({ line: 'attempt one' })
+    createAttemptLogWriter({ dir, attemptId: second }).append({ line: 'attempt two' })
+    expect(readAttemptLog({ dir, attemptId: first }).entries[0].line).toBe('attempt one')
+    expect(readAttemptLog({ dir, attemptId: second }).entries[0].line).toBe('attempt two')
+    expect(existsSync(logFile(first))).toBe(true)
+    expect(existsSync(logFile(second))).toBe(true)
+  })
+})
+
 describe('the ledger keeps its stated disciplines', () => {
   const ledgerSrc = readFileSync(new URL('../src/queue/attempt-ledger.mjs', import.meta.url), 'utf8')
 
   it('exposes only append and read functions — no rewrite, no delete', () => {
     const exported = [...ledgerSrc.matchAll(/^export function (\w+)/gm)].map((m) => m[1])
     expect(exported.sort()).toEqual(
-      ['appendJournalEntry', 'memorySnapshotHash', 'readAttempts', 'readJournalEntries', 'recordAttempt'].sort(),
+      [
+        'appendJournalEntry',
+        'memorySnapshotHash',
+        'readAttempts',
+        'readJournalEntries',
+        'recordAttempt',
+        // the live attempt log: a writer that only appends and a reader that only reads
+        'createAttemptLogWriter',
+        'readAttemptLog',
+      ].sort(),
     )
     for (const forbidden of ['unlinkSync', 'rmSync', 'writeFileSync', 'truncateSync']) {
       expect(ledgerSrc).not.toContain(forbidden)
