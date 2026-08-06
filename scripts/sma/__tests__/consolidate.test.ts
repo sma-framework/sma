@@ -421,8 +421,9 @@ describe('consolidate.mjs — polarity answers Russian (D-11-DEFER-12)', () => {
   })
 
   it('Test 7b: the honest limit — a pair opposed by VERB ANTONYMY is still not detected', () => {
-    // Both halves of the real poisoned pair contain «не», so both score `neg`
-    // and nothing opposes. The opposition is «снимок остаётся на месте» versus
+    // No clause of one half denies a clause of the other on a shared subject:
+    // the markers either agree or land where the subject is not. The opposition
+    // that IS there reads «снимок остаётся на месте» versus
     // «удалите ночной снимок» — verb antonymy, which no marker list reaches.
     // This test exists so the limit is PINNED rather than discovered later as a
     // surprise: the goal of the Russian markers is a detector that is honest
@@ -475,6 +476,40 @@ describe('consolidate.mjs — what the two channels are allowed to read (11-POST
     const aboutHistory = 'В 2026 команда никогда не трогает историю коммитов.'
 
     expect(detectClaimConflict(aboutReadme, aboutHistory)).toBeNull()
+  })
+
+  it('Test 10: an opposition must sit WHERE the shared subject sits — a marker in an unrelated clause is not a disagreement', () => {
+    // The remaining false-positive shape, measured on a live corpus: two long
+    // multi-clause rules that mention the same two things IN PASSING, in
+    // different clauses, and each happen to carry a polarity marker SOMEWHERE
+    // else in the sentence. Whole-sentence polarity then reads «neg» against
+    // «pos» and reports a critical contradiction between clauses that never
+    // met. Below, the shared subject is «очереди» + «журнала»; the negation
+    // lives in a closing aside about a manual edit, the affirmation in a
+    // closing aside about where a document is kept. Nothing is denied.
+    const aboutTheSnapshot =
+      'Снимок очереди делают ночью; строки журнала чистят по расписанию, а ручная правка — нарушение, а не мелочь.'
+    const aboutTheDocument =
+      'Описание очереди живёт в приватном документе, его перечитывают перед правкой журнала, а поскольку документ несёт внутренние пометки, он лежит ТОЛЬКО в защищённом хранилище.'
+
+    expect(detectClaimConflict(aboutTheSnapshot, aboutTheDocument)).toBeNull()
+  })
+
+  it('Test 10b: co-location is not blindness — a real opposition inside a multi-clause rule still fires', () => {
+    // The guard on the rule above. Narrowing the scope to the clause must not
+    // cost the detector a genuine contradiction that happens to be written in a
+    // sentence with more than one part: here the SAME clause of each rule holds
+    // both the shared subject and the opposed marker.
+    const updateIt = 'Когда выпускаешь версию, README продукта обновляют всегда, даже если правка мелкая.'
+    const dontUpdateIt = 'Когда выпускаешь версию, README продукта не обновляют, чтобы не плодить шум.'
+
+    const conflict = detectClaimConflict(updateIt, dontUpdateIt)
+    expect(conflict).not.toBeNull()
+    expect(conflict!.opposing).toBe(true)
+    // The evidence reported is the overlap of the OPPOSED clauses, not of the
+    // whole sentences — the operator is sent to the words actually in dispute.
+    expect(conflict!.shared).toContain('readme')
+    expect(conflict!.shared).not.toContain('выпускаешь')
   })
 })
 
