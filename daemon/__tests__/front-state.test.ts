@@ -747,6 +747,22 @@ describe('deriveRules — the «Правила» screen rides the config, never 
     // no cap set → no API fallback is budgeted at all
     expect(deriveRules({ workers: [] }).subApiSwitch).toEqual({ mode: 'subscription', capEur: 0, budgeted: false })
   })
+
+  /**
+   * The conveyor's switch is READ here so a screen can show a stopped machine as stopped.
+   * The field is DERIVED by the same predicate the tick is gated on, so the two answers are
+   * one comparison — the cases below therefore assert the same near-misses the tick refuses,
+   * because a truthy string rendered as «on» over a machine that is off is the whole defect.
+   */
+  it('the conveyor state is readable, and every shape but the literal true reads as off', () => {
+    expect(deriveRules({ workers: [], pipeline: { enabled: true } } as any).pipeline).toEqual({ enabled: true })
+    for (const pipeline of [undefined, null, {}, { enabled: false }, { enabled: 'true' }, { enabled: 1 }] as any[]) {
+      expect(deriveRules({ workers: [], pipeline } as any).pipeline, JSON.stringify(pipeline)).toEqual({ enabled: false })
+    }
+    // an install that has never heard of the switch reads as off, not as absent: a screen
+    // must never have to decide what a missing field means about a running machine
+    expect(deriveRules({ workers: [] }).pipeline).toEqual({ enabled: false })
+  })
 })
 
 describe('deriveAccounts — an account lives on exactly ONE machine, and it is visible', () => {
