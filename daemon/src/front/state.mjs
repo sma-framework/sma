@@ -84,6 +84,7 @@ import { REASON_LABELS } from '../queue/adapter.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
+import { createQuestions, findPhaseDir, STAGE_ARTIFACTS, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
@@ -756,6 +757,237 @@ export function deriveProjectMemory(deps = {}) {
     }
   }
   return out
+}
+
+// ══════════════ THE PHASE CYCLE, DERIVED FROM THE DIRECTORY IT LIVES IN ══════════
+//
+// The card of a phase is READ, never remembered. Every number on it — which stages are done,
+// how many questions are waiting, which plans exist and what a person said about each line of
+// the acceptance — is counted off `.planning/phases/<dir>` at the moment the screen asks, for
+// the same reason the discussion engine stores nothing: a phase is worked on from a terminal
+// as often as from this window, and a daemon that kept its own copy would be the one holding
+// the stale one.
+//
+// TWO RULES ARE BORROWED, NOT RESTATED. «Which directory is phase N» is `findPhaseDir`, the
+// same function the daemon's exit gate finds a stage's document with. «Which document proves
+// which stage» is `STAGE_ARTIFACTS`, the same map that gate closes a stage on. A card that
+// answered either question its own way would show a stage as finished while the machine kept
+// failing it — which is worse than showing nothing, because it looks like an answer.
+//
+// NO PATH ON THE FOUNDER'S DISK LEAVES HERE. What travels for a document is the name it has
+// and the REPOSITORY-RELATIVE path the artefact door accepts, rooted at `.planning/` — which
+// is the only root that door opens. The directory this all sits under stays on this side.
+
+/** The four stages, in the order a phase goes through them. */
+const PHASE_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'])
+
+/** Where phases live under a checkout, in the forward-slashed form the artefact door takes. */
+const PHASES_PATH = '.planning/phases'
+
+/** A UAT file of a phase: the acceptance record `/sma-verify-work` keeps. */
+const UAT_FILE_RE = /-UAT[^/\\]*\.md$/
+
+/** One test block of that file: `### N. Name` / `expected:` / `result:` (+ an optional note). */
+const UAT_ITEM_RE =
+  /^###\s*(\d+)\.\s*(.+?)\s*$\n(?:expected:[^\n]*\n)?result:\s*\[?([A-Za-z_]+)\]?\s*$(?:\n(?:reported|reason):\s*([^\n]*))?/gm
+
+/**
+ * What a recorded UAT result means as a verdict.
+ *
+ * The template's own vocabulary is pass / issue / pending / skipped / blocked, and the door
+ * that writes a verdict writes THAT vocabulary — `fail` is the word the screen uses and
+ * `issue` is the word the file uses, and translating at the boundary is what keeps the file
+ * readable by the workflow that owns it. Anything not yet decided is `null`, never `fail`:
+ * «nobody has looked at this» and «somebody looked and it was broken» are different facts.
+ */
+function uatVerdictOf(result) {
+  if (result === 'pass') return 'pass'
+  if (result === 'issue' || result === 'fail') return 'fail'
+  return null
+}
+
+/** Read a directory, or nothing at all. An unreadable phase root is «no phases», not a fault. */
+function safeList(io, dir) {
+  try {
+    const entries = io.readdirSync(dir)
+    return Array.isArray(entries) ? entries.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+/** Is this entry of the phases root a directory? An unstattable entry is not one. */
+function isDir(io, path) {
+  try {
+    const st = io.statSync(path)
+    return !!(st && typeof st.isDirectory === 'function' && st.isDirectory())
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The human half of a phase directory's name: `phase-12-front-workplace` → `front-workplace`.
+ * A directory that carries no number is its own name — inventing one would be a guess.
+ */
+function phaseNameOf(dir) {
+  const m = String(dir).match(/^(?:phase-)?\d+(?:\.\d+)?[-_.]?(.*)$/i)
+  const rest = m && m[1] ? m[1].trim() : ''
+  return rest === '' ? String(dir) : rest
+}
+
+/** Where a stage stands, read off the files of the phase directory and nothing else. */
+function stageStatusOf(files, spec) {
+  if (!spec) return 'none'
+  if (files.some((f) => f.endsWith(spec.produces))) return 'done'
+  // a parked checkpoint is the honest middle state: the stage ran, and it stopped to ask
+  if (spec.checkpoint && files.some((f) => f.endsWith(spec.checkpoint))) return 'in-progress'
+  return 'none'
+}
+
+/** {discuss,plan,execute,verify} → 'none' | 'in-progress' | 'done'. */
+function stagesOf(files) {
+  const out = {}
+  for (const stage of PHASE_STAGES) out[stage] = stageStatusOf(files, STAGE_ARTIFACTS[stage])
+  return out
+}
+
+/** The documents of one kind, as {name, path} the artefact door will accept. */
+function artifactsOf(files, dir, suffix) {
+  return files
+    .filter((f) => f.endsWith(suffix))
+    .sort()
+    .map((name) => ({ name, path: `${PHASES_PATH}/${dir}/${name}` }))
+}
+
+/** The questions engine over a project's phases, reading BOTH parking files as one queue. */
+function questionsEngine(projectDir, fsImpl) {
+  return createQuestions({ projectDir, fsImpl, checkpointSuffix: ALL_CHECKPOINT_SUFFIXES })
+}
+
+/**
+ * {open, answered} for one phase — and zero of zero for a phase whose checkpoint is torn.
+ *
+ * A single unreadable file on disk must not take the whole index down with it: the index is
+ * how a person finds the phase they need, including the one they need in order to fix that
+ * file. The engine names a torn checkpoint by throwing; here that is one row's counters, not
+ * the poll.
+ */
+function progressOf(engine, phaseId) {
+  try {
+    return engine.progress(phaseId)
+  } catch {
+    return { open: 0, answered: 0 }
+  }
+}
+
+/**
+ * derivePhaseIndex({projectDir, fsImpl}) → {phases:[{id, name, stages, open, answered}]}.
+ *
+ * Every directory of `.planning/phases`, in name order, with where each stage of it stands and
+ * how many questions it is holding. `id` is the DIRECTORY NAME — the one spelling that is
+ * unambiguous, and one both this module and the daemon's gate resolve through the same
+ * `findPhaseDir`, so a phase number reaches the same row.
+ *
+ * @param {{projectDir?:string, fsImpl?:object}} [deps]
+ * @returns {{phases:object[]}}
+ */
+export function derivePhaseIndex({ projectDir, fsImpl } = {}) {
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return { phases: [] }
+  const io = fsSeam(fsImpl)
+  const root = join(projectDir, '.planning', 'phases')
+  const dirs = safeList(io, root)
+    .filter((name) => isDir(io, join(root, name)))
+    .sort()
+  const engine = questionsEngine(projectDir, fsImpl)
+
+  return {
+    phases: dirs.map((dir) => {
+      const files = safeList(io, join(root, dir))
+      const { open, answered } = progressOf(engine, dir)
+      return { id: dir, name: phaseNameOf(dir), stages: stagesOf(files), open, answered }
+    }),
+  }
+}
+
+/**
+ * derivePhaseCard({projectDir, phaseId, fsImpl}) → one phase in full, or null when the
+ * project has no such directory.
+ *
+ * {id, name, stages, questions, plans, summaries, uat}. The plans and summaries travel as
+ * NAMES and door-relative paths — never their contents: a card is a table of contents, and the
+ * document itself is one click through the artefact door, which is the one place the reading
+ * of a file is bounded.
+ *
+ * @param {{projectDir?:string, phaseId?:string|number, fsImpl?:object}} [deps]
+ * @returns {object|null}
+ */
+export function derivePhaseCard({ projectDir, phaseId, fsImpl } = {}) {
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
+  const wanted = String(phaseId ?? '').trim()
+  if (wanted === '') return null
+
+  const io = fsSeam(fsImpl)
+  const root = join(projectDir, '.planning', 'phases')
+  const dirs = safeList(io, root).filter((name) => isDir(io, join(root, name)))
+  const dir = findPhaseDir(dirs, wanted)
+  if (!dir) return null
+
+  const files = safeList(io, join(root, dir))
+  const engine = questionsEngine(projectDir, fsImpl)
+
+  let questions = []
+  try {
+    questions = engine.allQuestions(dir).map((q) => ({
+      id: q.id,
+      area: q.area,
+      question: q.text,
+      options: q.options,
+      answer: q.answer,
+    }))
+  } catch {
+    // a torn checkpoint costs the card its question list, never the card
+    questions = []
+  }
+
+  return {
+    id: dir,
+    name: phaseNameOf(dir),
+    stages: stagesOf(files),
+    questions,
+    plans: artifactsOf(files, dir, '-PLAN.md'),
+    summaries: artifactsOf(files, dir, '-SUMMARY.md'),
+    uat: readUatItems(io, root, dir, files),
+  }
+}
+
+/**
+ * The acceptance lines of a phase and what a person said about each one.
+ *
+ * Read out of the phase's own UAT file in the format `/sma-verify-work` writes and the
+ * `audit-uat` verb parses — this module neither invents a second format nor migrates the one
+ * that exists. No UAT file is an empty list: a phase nobody has accepted yet is a normal
+ * state, not a missing one.
+ */
+function readUatItems(io, root, dir, files) {
+  const file = files.filter((f) => UAT_FILE_RE.test(f)).sort()[0]
+  if (!file) return []
+  const text = readTextOrNull(io, join(root, dir, file))
+  if (text == null) return []
+
+  const items = []
+  UAT_ITEM_RE.lastIndex = 0
+  let m
+  while ((m = UAT_ITEM_RE.exec(text)) !== null) {
+    const note = typeof m[4] === 'string' ? m[4].trim().replace(/^"|"$/g, '') : ''
+    items.push({
+      item: m[1],
+      name: m[2],
+      verdict: uatVerdictOf(m[3]),
+      ...(note ? { note } : {}),
+    })
+  }
+  return items
 }
 
 /**

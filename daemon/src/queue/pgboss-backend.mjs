@@ -499,6 +499,9 @@ export function createPgBossQueue({
       title: data.title,
       priority: data.priority ?? r.priority ?? 0,
       status: statusOf(r),
+      // the stage envelope, carried exactly as the reference backend carries it — see the
+      // note there: a phase stage is recognised by this object and never by its title
+      ...(data.data ? { data: data.data } : {}),
       // The two facts a decision leaves behind, carried only when they exist: a row that
       // was never returned states nothing about a note rather than carrying a null one.
       ...(r.returned_note ? { returnedNote: r.returned_note } : {}),
