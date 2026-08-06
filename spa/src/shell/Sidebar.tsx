@@ -12,6 +12,10 @@ import { useTheme } from './ThemeProvider'
  * the rules. Everything that is set up once and rarely touched sits below, under its own
  * heading.
  *
+ * The lines that came with the conveyor of phases sit at the end of the upper group rather
+ * than among the older ones: adding a screen must not quietly move the line a person's hand
+ * already knows the position of.
+ *
  * The project switcher sits at the very top, under the mark, because it governs
  * everything below it. The settings group ends with «Машины и проекты»: the same line
  * that used to be about this computer alone now covers every machine in the household
@@ -60,6 +64,41 @@ const ICONS: Record<ScreenId, ReactNode> = {
       <circle cx="8" cy="8" r="2" />
     </>
   ),
+  // The lines the release added, in the registry's own order. Each glyph says what the screen
+  // IS rather than what it does: stages in a row, a tray of things not started, two claims
+  // over the same ground, a lens, a way out, and the machine itself.
+  pipeline: (
+    <>
+      <path d="M3.6 8h8.8" strokeLinecap="round" />
+      <circle cx="3.2" cy="8" r="1.5" />
+      <circle cx="8" cy="8" r="1.5" />
+      <circle cx="12.8" cy="8" r="1.5" />
+    </>
+  ),
+  backlog: (
+    <>
+      <path d="M2.4 9.2 4.3 3.6h7.4l1.9 5.6v2.8a1.6 1.6 0 0 1-1.6 1.6H4a1.6 1.6 0 0 1-1.6-1.6Z" />
+      <path d="M2.4 9.2h3l1 1.8h3.2l1-1.8h3" strokeLinecap="round" strokeLinejoin="round" />
+    </>
+  ),
+  coordination: (
+    <>
+      <circle cx="6.2" cy="8" r="4" />
+      <circle cx="9.8" cy="8" r="4" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="7.2" cy="7.2" r="4.4" />
+      <path d="M10.5 10.5 13.8 13.8" strokeLinecap="round" />
+    </>
+  ),
+  ship: (
+    <>
+      <path d="M8 2.6v7.4M5.2 5.4 8 2.6l2.8 2.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.8 10.6v1.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6v-1.4" />
+    </>
+  ),
   agents: (
     <>
       <rect x="2.6" y="2.8" width="10.8" height="4.4" rx="1.8" />
@@ -90,6 +129,15 @@ const ICONS: Record<ScreenId, ReactNode> = {
     <>
       <rect x="2" y="3" width="12" height="8" rx="1.8" />
       <path d="M6 13.4h4" strokeLinecap="round" />
+    </>
+  ),
+  system: (
+    <>
+      <rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.4" />
+      <path
+        d="M6.6 2v2.4M9.4 2v2.4M6.6 11.6V14M9.4 11.6V14M2 6.6h2.4M2 9.4h2.4M11.6 6.6H14M11.6 9.4H14"
+        strokeLinecap="round"
+      />
     </>
   ),
   'task-card': null,

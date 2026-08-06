@@ -2,6 +2,12 @@ import type { ComponentType } from 'react'
 
 import { Screen as Today } from '../screens/today'
 import { Screen as Tasks } from '../screens/tasks'
+import { Screen as Pipeline } from '../screens/pipeline'
+import { Screen as Backlog } from '../screens/backlog'
+import { Screen as Coordination } from '../screens/coordination'
+import { Screen as Search } from '../screens/search'
+import { Screen as Ship } from '../screens/ship'
+import { Screen as System } from '../screens/system'
 import { Screen as Team } from '../screens/team'
 import { Screen as LiveStream } from '../screens/live-stream'
 import { Screen as Chat } from '../screens/chat'
@@ -34,11 +40,23 @@ import { Screen as FirstRun } from '../screens/first-run'
  *
  * Each import above names its screen's own folder deliberately — the registry is the one
  * place where the map from a name to a folder is written down.
+ *
+ * The screens of a release are therefore declared HERE IN ONE GO, before any of them is
+ * built — exactly as the daemon declares all of its addresses in one revision. This file and
+ * the three api files are the only shared ground the screens have; if each screen added its
+ * own line when its turn came, every screen built in the same week would collide with its
+ * neighbours on these four files and nothing could be built in parallel at all.
  */
 
 export type ScreenId =
   | 'today'
   | 'tasks'
+  | 'pipeline'
+  | 'backlog'
+  | 'coordination'
+  | 'search'
+  | 'ship'
+  | 'system'
   | 'team'
   | 'live-stream'
   | 'chat'
@@ -80,12 +98,22 @@ export const SCREENS: readonly ScreenEntry[] = [
   { id: 'costs', title: 'Расходы', group: 'main', Screen: Costs },
   { id: 'rules', title: 'Правила', group: 'main', Screen: Rules },
   { id: 'style', title: 'Мой стиль', group: 'main', Screen: Style },
+  // The new work of the release, APPENDED rather than woven in among the lines above: the
+  // order here is the order on the glass, so interleaving them would silently rearrange a
+  // sidebar a person already has habits about. Where they finally belong is a judgment for
+  // whoever looks at the finished screens.
+  { id: 'pipeline', title: 'Конвейер фаз', group: 'main', Screen: Pipeline },
+  { id: 'backlog', title: 'Бэклог', group: 'main', Screen: Backlog },
+  { id: 'coordination', title: 'Координация', group: 'main', Screen: Coordination },
+  { id: 'search', title: 'Поиск', group: 'main', Screen: Search },
+  { id: 'ship', title: 'Выкат', group: 'main', Screen: Ship },
   { id: 'agents', title: 'Агенты', group: 'settings', Screen: Agents },
   { id: 'skills', title: 'Навыки', group: 'settings', Screen: Skills },
   { id: 'memory', title: 'Память', group: 'settings', Screen: Memory },
   { id: 'accounts', title: 'Аккаунты', group: 'settings', Screen: Accounts },
   { id: 'connections', title: 'Подключения', group: 'settings', Screen: Connections },
   { id: 'machines', title: 'Машины и проекты', group: 'settings', Screen: Machines },
+  { id: 'system', title: 'Дом системы', group: 'settings', Screen: System },
   { id: 'task-card', title: 'Карточка задачи', group: null, Screen: TaskCard },
   { id: 'import-wizard', title: 'Привести своих', group: null, Screen: ImportWizard },
   { id: 'first-run', title: 'Первый запуск', group: null, Screen: FirstRun },
