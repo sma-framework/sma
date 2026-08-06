@@ -270,6 +270,13 @@ export const ROUTES = Object.freeze({
  * When it is empty, the release is done and this constant becomes an empty Set, not a
  * deleted one: an emptiable list of exceptions beats a list that disappears when it stops
  * being convenient.
+ *
+ * ONE HONEST LIMIT: `Object.freeze` on a Set seals the OBJECT, not its entries — `.add()`
+ * still works at runtime. The freeze says «this is a declaration, not a scratchpad» and keeps
+ * the binding from being swapped; what actually holds the list to its promises is the pair of
+ * tests named above, which is where every other law of this table lives too. No request path
+ * reads this constant, so there is no attack in that gap — only a reader who might otherwise
+ * believe the runtime is enforcing what the suite is.
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([
