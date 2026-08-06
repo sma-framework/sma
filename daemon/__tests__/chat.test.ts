@@ -1,13 +1,13 @@
 /**
- * chat.test.ts — the «Разговор» engine (D-9.7-13/14/15).
+ * chat.test.ts — the «Разговор» engine.
  *
  * Proves the three laws of the conversation lane by mechanism, not by prose:
  *
- *   HYBRID (D-9.7-13) — a factual question is answered by a deterministic read-model with
+ *   HYBRID — a factual question is answered by a deterministic read-model with
  *   NO model session at all. Every fact branch runs with a spawner SPY injected; the spy
  *   must stay untouched. Instant and free is not an optimization here, it is the contract.
  *
- *   HANDS TIED (D-9.7-13) — the engine's only «action» is a task DRAFT in the answer. The
+ *   HANDS TIED — the engine's only «action» is a task DRAFT in the answer. The
  *   queue adapter is injected with an enqueue SPY that must never be called, and the module
  *   source itself must not contain the word: a path that does not exist cannot be walked.
  *
@@ -143,7 +143,7 @@ function deps(dir: string, extra: any = {}) {
   }
 }
 
-describe('classifyTurn (the hybrid split — D-9.7-13)', () => {
+describe('classifyTurn (the hybrid split)', () => {
   it('routes the founder’s own phrasings to the branch that can answer them', () => {
     for (const q of ['Почему упала задача про значок тестов?', 'Что не получилось с задачей про почту?']) {
       expect(classifyTurn(q)).toBe('fail-reason')
@@ -166,7 +166,7 @@ describe('classifyTurn (the hybrid split — D-9.7-13)', () => {
   })
 })
 
-describe('fact models (no session, no cost — D-9.7-13)', () => {
+describe('fact models (no session, no cost)', () => {
   it('«почему упала» → one short reason from the shared dictionary + the task card', async () => {
     const dir = tmp()
     const { deps: d, spawner, q } = deps(dir)
@@ -217,7 +217,7 @@ describe('fact models (no session, no cost — D-9.7-13)', () => {
   })
 })
 
-describe('history (append-only transcript, capped — T-9.7-26)', () => {
+describe('history (append-only transcript, capped)', () => {
   it('appends, caps by turn count, and reads back the tail per conversation', () => {
     const dir = tmp()
     for (let i = 0; i < HISTORY_TURN_CAP + 5; i += 1) {
@@ -273,7 +273,7 @@ describe('handleChatTurn (the single door)', () => {
   })
 })
 
-// ── the free branch: a short session outside the queue (D-9.7-14/15) ────────────
+// ── the free branch: a short session outside the queue ────────────
 
 const ACCOUNT = {
   name: 'max-1',
@@ -343,7 +343,7 @@ function freeDeps(dir: string, session: any, extra: any = {}) {
   }
 }
 
-describe('the free branch (outside the queue — D-9.7-15)', () => {
+describe('the free branch (outside the queue)', () => {
   it('answers from a session spawned DIRECTLY: no queue row, no branch, no receipt', async () => {
     const dir = tmp()
     const session = fakeSession([resultLine('Начал бы с разбора писем за неделю.')])
@@ -471,7 +471,7 @@ describe('the free branch (outside the queue — D-9.7-15)', () => {
   })
 })
 
-// ═══════ Plan 9.7-15 Task 2: the conversation reached THROUGH THE FRONT ═══════
+// ═══════ the conversation reached THROUGH THE FRONT ═══════
 //
 // The two chat routes fill their FROZEN slots (the table stays at thirty). They are
 // DELEGATES: the door checks the shape, the engine answers, the door explicit-picks what

@@ -1,9 +1,9 @@
 /**
- * Tests for daemon/src/queue/pgboss-backend.mjs (Phase 9.5 Plan 03, Task 1) +
+ * Tests for daemon/src/queue/pgboss-backend.mjs +
  * daemon/src/queue/attempt-ledger.mjs (Task 2, direct invariants).
  *
  * The pg-boss backend is a certified QueueAdapter: it re-runs the SAME
- * `queueAdapterContractSuite` the in-memory reference passes (plan 9.5-01), here
+ * `queueAdapterContractSuite` the in-memory reference passes, here
  * against a STATEFUL FAKE pg-boss (send/fetch/touch/complete/fail/getQueueStats over
  * Maps, honouring singletonKey + priority + expireInSeconds) plus a fake execSql over
  * the same store. NO live Postgres, NO real pg-boss is ever loaded (boss is injected).
@@ -11,7 +11,7 @@
  * Direct grep-visible invariants pinned below:
  *   - every enqueue send carries singletonKey=task.id + expireInSeconds (recorded)
  *   - singletonKey coalescing is observable via the send-call recorder
- *   - complete() without a receiptRef throws NoReceiptError (Pitfall 6)
+ *   - complete() without a receiptRef throws NoReceiptError
  *   - start() creates the four lane queues idempotently with a shared deadLetter
  *   - recordAttempt/readAttempts append-and-read the per-task ledger (Task 2)
  */
@@ -276,10 +276,10 @@ describe('pg-boss backend — job-option contract', () => {
     expect(second.coalesced).toBe(true)
     expect(second.coalesceCount).toBe(2)
     expect(sendCalls).toHaveLength(2) // both sends attempted
-    expect(jobs.size).toBe(1) // but only ONE job row exists (Pattern 5)
+    expect(jobs.size).toBe(1) // but only ONE job row exists
   })
 
-  it('complete without a receiptRef throws NoReceiptError (Pitfall 6) and does not mutate the job', async () => {
+  it('complete without a receiptRef throws NoReceiptError and does not mutate the job', async () => {
     const c = mkClock()
     const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
     await adapter.enqueue(backlog())
@@ -303,7 +303,7 @@ describe('pg-boss backend — job-option contract', () => {
   })
 })
 
-// ═══ the attempt stamp on the ADAPTER's own rows (D-11-DEFER-23, 2026-08-05) ═══════
+// ═══ the attempt stamp on the ADAPTER's own rows (2026-08-05) ═══════
 //
 // Until this landed the backend's two `recordAttempt` call sites passed none of the seven
 // stamp fields and no status change was ever routed through `applyTransition`. These cases
@@ -322,7 +322,7 @@ describe('the queue adapter stamps the attempt row it writes', () => {
     expect(row.attempt).toBe(1) // the number the QUEUE holds, not one the caller supplied
     expect(row.stateMachineVersion).toBe(STATE_MACHINE_VERSION)
     expect(row.idempotencyKey).toBe(idempotencyKey('BL-196', 'BL-196#1', 'RUNNING->PRODUCED'))
-    // The envelope reaches the durable row as a DIGEST and never as paths (T-11-05-04).
+    // The envelope reaches the durable row as a DIGEST and never as paths.
     expect(row.capabilityEnvelopeHash).toBe(envelopeHash(defaultEnvelope('prod')))
     expect(row.capabilityEnvelope).toBeUndefined()
   })

@@ -1,6 +1,5 @@
 /**
- * Tests for daemon/src/front/onboarding.mjs — the first-run interview engine
- * (D-9.7-16, T-9.7-44).
+ * Tests for daemon/src/front/onboarding.mjs — the first-run interview engine.
  *
  * The screen «Первый запуск» asks four steps of plain-language questions and then
  * produces the SAME artifacts the terminal onboarding produces. This suite pins
@@ -26,7 +25,7 @@
  *   - Test 11: complete() delegates — with a writer that writes nothing, NOTHING is
  *     written; the engine has no write path of its own.
  *   - Test 12: a secret-shaped answer is refused at the door and never reaches the
- *     draft on disk (T-9.7-43).
+ *     draft on disk.
  *   - Tests 13-17: THE THREE HTTP DOORS of the interview — the last three slots of
  *     the frozen route table. A full pass over the routes writes the profile through
  *     the SAME writer (bytes compared against the writer called directly); a second
@@ -292,7 +291,7 @@ describe('complete()', () => {
 
 // ─────────────────────────── Test 12 ───────────────────────────
 
-describe('secrets at the door (T-9.7-43)', () => {
+describe('secrets at the door', () => {
   it('refuses a secret-shaped answer before it reaches the draft', () => {
     const engine = createOnboarding({ targetDir: dir })
     engine.answer({ step: 1, key: 'about', text: FULL.about })
@@ -427,7 +426,7 @@ describe('POST /api/onboarding/answer — one answer at a time', () => {
     expect(readFileSync(draftPath(dir), 'utf8')).toBe(before)
   })
 
-  it('a secret typed into the box dies at the door over HTTP too (T-9.7-43)', async () => {
+  it('a secret typed into the box dies at the door over HTTP too', async () => {
     const call = door(dir)
     await call('POST', '/api/onboarding/answer', { step: 1, key: 'about', text: FULL.about })
     const res = await call('POST', '/api/onboarding/answer', {
@@ -476,7 +475,7 @@ describe('POST /api/onboarding/complete — the ONE writer, called from the scre
 })
 
 /**
- * D-11-DEFER-17 — the interview had exactly one exit, and it wrote into the project.
+ * The interview had exactly one exit, and it wrote into the project.
  *
  * `App.tsx` gives the whole window to the first run whenever `GET /api/onboarding` answers
  * `needed: true`, and the only way to make it answer false was `complete()`, which writes
@@ -487,7 +486,7 @@ describe('POST /api/onboarding/complete — the ONE writer, called from the scre
  * The exit is «позже», and the case that matters is the one about the disk: after it, the
  * project is byte-for-byte what it was — the draft included, so the interview resumes.
  */
-describe('«позже» — the exit that leaves the project untouched (D-11-DEFER-17)', () => {
+describe('«позже» — the exit that leaves the project untouched', () => {
   /** The door with the daemon's own data directory wired, as the composition root wires it. */
   function doorWithState(root: string, stateDir: string) {
     const front = createFrontServer({ config: { token: TOKEN }, deps: { repoDir: root, dataDir: stateDir } })

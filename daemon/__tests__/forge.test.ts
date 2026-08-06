@@ -1,9 +1,9 @@
 /**
- * forge.test.ts — the «Создатель» forge lane (Phase 9.5 Plan 11, Task 1; D-9.5-09).
+ * forge.test.ts — the «Создатель» forge lane.
  *
  * Proves the drafts-only forge: a described-in-words worker becomes a LINTED draft file
  * committed on the task branch, and a forge task completes ONLY on a deterministic draft-lint
- * receipt (D-9.5-04a for the forge lane). Nothing here spawns a real CLI or spends a token —
+ * receipt (for the forge lane). Nothing here spawns a real CLI or spends a token —
  * the worker child and the git reads are fakes/fixtures.
  *
  * One group deliberately breaks the fakes-only habit: «forge.mjs on the real disk» writes to
@@ -368,7 +368,7 @@ function makeSpawnWorker(order: string[]) {
   return (spec: any) => {
     order.push('spawn')
     spec.onLine?.('forging…')
-    // the forge lane owes an approach note like any other lane (D-9.7-14)
+    // the forge lane owes an approach note like any other lane
     spec.onLine?.('APPROACH_NOTE: описал черновик по образцу существующего')
     spec.onExit?.({ code: 0, signal: null })
     return { pid: 7, kill: () => {} }
@@ -410,7 +410,7 @@ const forgeTask = (over: any = {}) => ({
   ...over,
 })
 
-describe('the forge-path trace (D-9.5-09) — draft, lint gate, no activation', () => {
+describe('the forge-path trace — draft, lint gate, no activation', () => {
   it('SKIPS preflight, uses lintDraft (not reverify) as the gate, completes on a forge receiptRef', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
@@ -478,7 +478,7 @@ describe('the forge-path trace (D-9.5-09) — draft, lint gate, no activation', 
 
   /**
    * The forge lane's capability envelope declares WHERE it may write — the three draft
-   * directories — and until 2026-08-05 nothing consulted that declaration (D-11-DEFER-02).
+   * directories — and until 2026-08-05 nothing consulted that declaration.
    * The tick now asks it about the committed path before the draft is accepted.
    *
    * `listCommittedDrafts` filters by a string PREFIX, so a path that walks back out of the

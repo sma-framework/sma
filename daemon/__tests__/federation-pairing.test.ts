@@ -1,6 +1,6 @@
 /**
  * federation-pairing.test.ts — MACHINE INTRODUCTION, the one moment a daemon token
- * leaves its own machine (D-9.7-06; T-9.7-37).
+ * leaves its own machine.
  *
  * The wizard PREPARES; the human APPLIES. The hub mints a ONE-SHOT invitation and hands
  * back a sentence a person can carry to the second machine; the daemon itself opens no
@@ -370,7 +370,7 @@ describe('POST /api/machine/add — the join, and everything it refuses', () => 
     expect(onDisk()).toBeNull() // not a single write happened
   })
 
-  it('a loopback / metadata url is refused BEFORE the write (T-9.7-32)', async () => {
+  it('a loopback / metadata url is refused BEFORE the write', async () => {
     for (const url of ['http://127.0.0.1:7777', 'http://localhost:7777', 'http://169.254.169.254/']) {
       const { front, config } = mkHub()
       const { pairingToken } = await pair(front)
@@ -426,7 +426,7 @@ describe('POST /api/machine/add — the join, and everything it refuses', () => 
 
 // ══════════════════════════ GET /api/machines ══════════════════════════
 
-describe('GET /api/machines — presence, never a secret (T-9.7-05)', () => {
+describe('GET /api/machines — presence, never a secret', () => {
   it('lists this machine and its peers with no token anywhere in the payload', async () => {
     const config = hubConfig([{ id: 'mac-mini', name: 'Mac mini', url: 'http://10.0.0.4:7777', token: PEER_TOKEN }])
     const { front } = mkHub(config)

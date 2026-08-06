@@ -1,13 +1,12 @@
 /**
- * Tests for the federation module — the daemon's FIRST outbound daemon→daemon contour
- * (Plan 9.7-13; D-9.7-01 / D-9.7-03 / D-9.7-04 / D-9.7-07).
+ * Tests for the federation module — the daemon's FIRST outbound daemon→daemon contour.
  *
  * The UNIT groups drive createFederation through an INJECTED fetch, so no socket is
  * opened there: aggregation of two peers, the offline degrade (last snapshot + its age),
  * the url guard at construction, the token-never-serializes law and the frozen proxy list.
  *
  * The LIVE group at the bottom injects NOTHING: two real front servers, two ports, two
- * tokens, the real fetch. That is the D-9.7-03 verification — the contour proved by live
+ * tokens, the real fetch. That is the verification — the contour proved by live
  * processes on this machine before any second computer exists.
  */
 
@@ -38,7 +37,7 @@ function res(status: number, body: any) {
   }
 }
 
-/** A peer /api/state payload in the 9.7-02 frozen shape (only the fields we merge). */
+/** A peer /api/state payload in the frozen shape (only the fields we merge). */
 function peerState(o: { machine: string; title: string; project: string; queueId: string; doneId: string }) {
   return {
     kpis: { workersBusy: 1, workersTotal: 2, queued: 1, awaitingApproval: 1, spentTodayEur: 1.5, windowsOpen: 1 },
@@ -88,7 +87,7 @@ const twoPeerConfig = {
 
 // ── the SSRF guard: a peer url is validated at CONSTRUCTION, never at call time ──
 
-describe('createFederation — the peer-url guard (T-9.7-32)', () => {
+describe('createFederation — the peer-url guard', () => {
   it('refuses a non-http(s) peer url with a named error', () => {
     expect(() =>
       createFederation({
@@ -109,7 +108,7 @@ describe('createFederation — the peer-url guard (T-9.7-32)', () => {
     }
   })
 
-  it('accepts a loopback peer ONLY under the explicit same-host verification flag (D-9.7-03)', () => {
+  it('accepts a loopback peer ONLY under the explicit same-host verification flag', () => {
     const fed = createFederation({
       config: {
         federation: {
@@ -131,7 +130,7 @@ describe('createFederation — the peer-url guard (T-9.7-32)', () => {
 
 // ── poll + aggregate ──
 
-describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
+describe('createFederation — pollPeers + aggregateState', () => {
   it('polls each peer\'s OWN /api/state with ITS bearer token and aggregates both', async () => {
     const calls: Array<{ url: string; auth: string }> = []
     const fetchImpl = async (url: string, init: any) => {
@@ -152,7 +151,7 @@ describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
 
     const agg = fed.aggregateState(selfState())
 
-    // machines = self + every peer, in the 9.7-02 frozen shape (id/title/role/online)
+    // machines = self + every peer, in the frozen shape (id/title/role/online)
     expect(agg.machines.map((m: any) => [m.id, m.role, m.online])).toEqual([
       ['this-pc', 'self', true],
       ['mac-mini', 'peer', true],
@@ -181,7 +180,7 @@ describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
     expect(agg.kpis.workersTotal).toBe(5)
     expect(agg.kpis.awaitingApproval).toBe(3) // 1 self + 1 + 1 — as many as the list shows
     expect(agg.kpis.awaitingApproval).toBe(agg.awaiting.length)
-    // the payload key set is UNCHANGED — 9.7-13 fills the 9.7-02 shape, never redefines it
+    // the payload key set is UNCHANGED — the aggregator fills the shape, never redefines it
     expect(Object.keys(agg).sort()).toEqual(Object.keys(selfState()).sort())
   })
 
@@ -210,7 +209,7 @@ describe('createFederation — pollPeers + aggregateState (D-9.7-01)', () => {
     expect(status.lastSeenSec).toBe(42)
 
     // the LAST successful snapshot is still visible — the documented exception to
-    // «derive, never store» (T-9.7-34): in memory, age-labelled, lost on restart
+    // «derive, never store»: in memory, age-labelled, lost on restart
     const agg = fed.aggregateState(selfState())
     expect(agg.queue.map((q: any) => q.id)).toEqual(['BL-self', 'BL-A1'])
     expect(agg.machines[1]).toMatchObject({ id: 'mac-mini', online: false, lastSeenSec: 42 })
@@ -308,9 +307,9 @@ describe('createFederation — the cost history merges like the rows do', () => 
   })
 })
 
-// ── T-9.7-31: the peer token never leaves the outgoing header ──
+// ──: the peer token never leaves the outgoing header ──
 
-describe('federation — the peer token never serializes (T-9.7-31)', () => {
+describe('federation — the peer token never serializes', () => {
   it('no status, no aggregate and no error message ever contains a peer token', async () => {
     const fetchImpl = async () => {
       throw new Error(`socket hang up while sending Bearer ${TOKEN_A}`) // worst case
@@ -335,9 +334,9 @@ describe('federation — the peer token never serializes (T-9.7-31)', () => {
   })
 })
 
-// ── the closed proxy list (T-9.7-33) ──
+// ── the closed proxy list ──
 
-describe('federation — proxyAction (D-9.7-07)', () => {
+describe('federation — proxyAction', () => {
   const okState = async () => res(200, { ok: true, taskId: 'BL-1', merged: true })
 
   it('exposes EXACTLY the three proxyable paths, frozen', () => {
@@ -405,7 +404,7 @@ describe('federation — proxyAction (D-9.7-07)', () => {
   })
 })
 
-// ════════════════ THE LIVE TWO-DAEMON CONTOUR (D-9.7-03) ═══════════════════════════
+// ════════════════ THE LIVE TWO-DAEMON CONTOUR ═══════════════════════════
 //
 // Everything above proves the module's SHAPE against a fake. This group proves the
 // CONTOUR: two real front servers on two ephemeral ports, two different configs, two
@@ -436,7 +435,7 @@ function closeServer(server: any): Promise<void> {
   })
 }
 
-describe('federation — TWO LIVE DAEMONS on this machine (D-9.7-03)', () => {
+describe('federation — TWO LIVE DAEMONS on this machine', () => {
   const teardown: Array<() => Promise<void>> = []
 
   afterEach(async () => {

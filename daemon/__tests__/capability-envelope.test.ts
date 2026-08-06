@@ -1,6 +1,6 @@
 /**
- * Tests for the capability envelope — what a task may touch, declared and validated
- * (Phase 11 Plan 05, Task 1; canon §10 «Capability envelope worker», invariant 2).
+ * Tests for the capability envelope — what a task may touch, declared and validated.
+ * This is the fleet's second invariant made executable.
  *
  * The law under test: a task's reach is bounded by a DECLARATION, not by convention.
  * Every task carries an envelope naming what it may read, write, run, reach, spend and

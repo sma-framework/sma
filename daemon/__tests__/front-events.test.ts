@@ -1,7 +1,7 @@
 /**
- * Tests for the SPA data foundation (Phase 9.5 Plan 08, Task 4; D-9.5-05 РЕВИЗИЯ).
+ * Tests for the SPA data foundation.
  *
- * The Phase 9.6 SPA consumes THREE seams built here — proven against THIS server with
+ * The SPA consumes THREE seams built here — proven against THIS server with
  * zero SPA work:
  *   - the SSE hint hub (createEventHub): explicit-pick frames {id,event,taskId?,
  *     workerId?,status?,ts}, a capacity cap, reap-on-write-failure;
@@ -81,7 +81,7 @@ describe('events.mjs — EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('spend.updated')
   })
 
-  it('the frozen vocabulary is EXACTLY fourteen types (D-9.7-09) with no duplicates', () => {
+  it('the frozen vocabulary is EXACTLY fourteen types with no duplicates', () => {
     expect(EVENT_TYPES).toHaveLength(14)
     expect(new Set(EVENT_TYPES).size).toBe(14)
     for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated']) {
@@ -90,7 +90,7 @@ describe('events.mjs — EVENT_TYPES', () => {
   })
 })
 
-// ── the V5.1 types: a frame is a doorbell, never the message (T-9.7-02) ──
+// ── the V5.1 types: a frame is a doorbell, never the message ──
 
 /** Emit one event into a throwaway hub and return {raw, payload} of its frame. */
 function emitOne(evt: any) {
@@ -104,7 +104,7 @@ function emitOne(evt: any) {
   return { delivered, raw, payload: dataLine ? JSON.parse(dataLine.slice(6)) : null }
 }
 
-describe('events.mjs — the four D-9.7-09 hint types leak nothing', () => {
+describe('events.mjs — the four hint types leak nothing', () => {
   it('chat.reply carries the turn id and status ONLY — never the text of the reply', () => {
     const secret = 'мой пароль от банка — hunter2'
     const { delivered, raw, payload } = emitOne({
@@ -179,7 +179,7 @@ describe('createEventHub — SSE frames + capacity + explicit-pick', () => {
       workerId: 'w1',
       status: 'queued',
     })
-    // titles / notes are NEVER on the wire (T-9.5-35)
+    // titles / notes are NEVER on the wire
     expect(payload.title).toBeUndefined()
     expect(payload.note).toBeUndefined()
   })
@@ -329,7 +329,7 @@ describe('server.mjs — GET /api/task/<id> timeline', () => {
     const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
     expect(res.statusCode).toBe(200)
     const out = JSON.parse(res.body)
-    expect(out.task.acceptance).toBe('зелёные тесты') // «обещано» surfaces on the read (D-9.5-11)
+    expect(out.task.acceptance).toBe('зелёные тесты') // «обещано» surfaces on the read
     expect(out.attempts).toHaveLength(2)
     expect(out.attempts[0].failureReason).toBe('tests_red')
     expect(out.attempts[0].reasonLabel).toBe(REASON_LABELS['tests_red']) // from adapter.mjs REASON_LABELS

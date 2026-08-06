@@ -1,6 +1,5 @@
 /**
- * invariants.test.ts — the fleet's SEVEN invariants, attacked by seeded random sequences
- * (Phase 11 Plan 08, Task 1; canon §10 «Ключевые invariants»).
+ * invariants.test.ts — the fleet's SEVEN invariants, attacked by seeded random sequences.
  *
  * WHY THIS FILE EXISTS: `state-machine.test.ts` and `capability-envelope.test.ts` prove
  * that each module refuses the cases their authors thought of. Neither proves anything

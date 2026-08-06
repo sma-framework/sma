@@ -1,6 +1,5 @@
 /**
- * Tests for the connected project's watcher + read model (phase 11 plan 09, Task 1;
- * SB-031 part 2, ROADMAP addition 8).
+ * Tests for the connected project's watcher + read model.
  *
  * WHY THIS FILE IS ENTIRELY INJECTED. The module under test is the daemon's first and only
  * file watcher, and the assumption it runs under (RESEARCH A1: node's native recursive watch
@@ -415,7 +414,7 @@ describe('readProjectMemory — a surface over a project the daemon does not own
   })
 })
 
-// ── D-11-DEFER-10: the preview is bounded, and its staging is swept ──
+// ──: the preview is bounded, and its staging is swept ──
 //
 // `deriveState` runs on every GET /api/state (2-5s), and for a connected project still in the
 // older format that call also ran the whole phase-8 preview over the whole corpus: read every
@@ -424,7 +423,7 @@ describe('readProjectMemory — a surface over a project the daemon does not own
 // open window. And the drafts it staged — complete v2 renderings of a FOREIGN project's notes,
 // bodies included — were never deleted by anything.
 
-describe('previewProjectMigration — bounded by the corpus size (D-11-DEFER-10)', () => {
+describe('previewProjectMigration — bounded by the corpus size', () => {
   const STAGING = join('/tmp', 'sma-staging')
 
   /** A corpus of `n` notes on the fake disk, and a preview engine that records its runs. */
@@ -472,7 +471,7 @@ describe('previewProjectMigration — bounded by the corpus size (D-11-DEFER-10)
   })
 })
 
-describe('pruneMigrationStaging — the staged renderings have a retention (D-11-DEFER-10)', () => {
+describe('pruneMigrationStaging — the staged renderings have a retention', () => {
   let staging: string
   beforeEach(() => {
     staging = mkdtempSync(join(tmpdir(), 'sma-staging-'))

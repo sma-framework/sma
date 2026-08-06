@@ -1,5 +1,5 @@
 /**
- * Tests for daemon/src/queue/liveness.mjs (Phase 9.5 Plan 03, Task 3) +
+ * Tests for daemon/src/queue/liveness.mjs +
  * daemon/src/queue/cas.mjs (Task 2, CAS lost-race cases live here per the plan).
  *
  * Liveness contract (Paperclip §8 as ТЗ): «every non-terminal task must have a durable
@@ -151,7 +151,7 @@ describe('livenessSweep — durable live-path audit', () => {
     expect(attempts[0].failureReason).toBe('runtime_offline')
   })
 
-  it('a task with >= 2 prior no-progress attempts is throttled on requeue (Pattern 4)', async () => {
+  it('a task with >= 2 prior no-progress attempts is throttled on requeue', async () => {
     const c = mkClock(1000)
     const ledger = makeFakeLedger()
     // two prior failed attempts already on record

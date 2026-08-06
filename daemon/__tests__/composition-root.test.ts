@@ -208,7 +208,7 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
-   * LP-3 — the config here PINS a repoDir, exactly like the founder's does. TWO different
+   * The config here PINS a repoDir, exactly like the founder's does. TWO different
    * facts leave this root: the tree being served (the pin — every read uses it) and the
    * directory this process started in (the write-time derive baseline). Wiring the served
    * tree into the write seam is what deleted the pin from the founder's file on 05.08.2026,
@@ -251,7 +251,7 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
-   * D-11-DEFER-09 — the watcher used to bind ONCE, at boot, to whatever project was connected
+   * The watcher used to bind ONCE, at boot, to whatever project was connected
    * then. Switching projects left it on the old tree: the new project's changes reached the
    * screen only through the SPA's own poll, and the recovery was restarting the daemon.
    * Nothing lied (the liveness seam compares directories and answers `polling` when they
@@ -260,7 +260,7 @@ describe('the production composition root is COMPLETE', () => {
    * This is asserted through the PRODUCTION wiring rather than a hand-built server, because
    * the bug was in the wiring: the handler and the watcher were each fine on their own.
    */
-  it('a project switch re-targets the watcher, with no restart (D-11-DEFER-09)', async () => {
+  it('a project switch re-targets the watcher, with no restart', async () => {
     const liveness = park.front.deps.projectLiveness
     expect(park.front.deps.onProjectSelected, 'the select door has no re-target seam wired').toBeTypeOf('function')
     expect(liveness()).toBe('polling') // p1 names no folder: nothing to watch, and it says so
