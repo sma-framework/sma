@@ -41,27 +41,55 @@ import { CardHead, corpusWords } from './shared'
  */
 
 /**
+ * The kind whose door is the OTHER panel of this screen — the migration of a note still written
+ * in the older format, live here since V5.1.
+ *
+ * It is named as a constant rather than inlined because the sentence about it has two versions
+ * and both have to mean the same draft. The value is the project's own word out of the draft
+ * file; this window does not decide it and does not translate it.
+ */
+const MIGRATION_KIND = 'v2-migration'
+
+/**
  * Where a draft's «да» lives, when it does not live here.
  *
- * A vocabulary with a fallback, like the two beside it on this screen: an unknown kind SHOWS
- * ITSELF rather than being explained wrongly, because the kind is data out of a file this window
- * does not own and inventing a meaning for it is how a screen starts lying.
+ * ═══════ A POINTER MUST POINT AT SOMETHING THAT IS ON THE SCREEN ═══════
+ *
+ * «Записи старого образца» renders only while the connected project HAS notes of the older
+ * format. A corpus can keep a staged migration record after the note it was written for is
+ * already migrated — and then a row saying «делается ниже» would send a person to a panel that
+ * is not there, which is worse than saying nothing. So the sentence asks whether that panel is
+ * on the glass, and when it is not it says the honest thing instead: this record's door has
+ * nothing left to work on.
+ *
+ * On the founder's own machine that is not the rare branch — it is every row he has. Measured
+ * rather than assumed.
+ *
+ * An unknown kind SHOWS ITSELF rather than being explained wrongly, like the two vocabularies
+ * beside it on this screen: the kind is data out of a file this window does not own, and
+ * inventing a meaning for it is how a screen starts lying.
  */
-const OTHER_DOOR: Record<string, string> = {
-  'v2-migration':
-    'Это перенос записи старого образца. Он делается ниже, в разделе «Записи старого образца» — тоже по одному файлу.',
-}
-
-function otherDoorWords(kind: string | undefined): string {
-  const known = kind ? OTHER_DOOR[kind] : undefined
-  if (known) return known
+function otherDoorWords(kind: string | undefined, migrationShown: boolean): string {
+  if (kind === MIGRATION_KIND) {
+    return migrationShown
+      ? 'Это перенос записи старого образца. Он делается ниже, в разделе «Записи старого образца» — тоже по одному файлу.'
+      : 'Это перенос записи старого образца, а таких записей в проекте сейчас нет — переносить нечего, и эта заготовка так и останется лежать файлом.'
+  }
   return kind
     ? `Этот черновик заведён как «${kind}» — его принимает не эта кнопка.`
     : 'Этот черновик принимает не эта кнопка.'
 }
 
 /** One staged lesson: what would be written, and the one act that is a person's. */
-function DraftCard({ draft, first }: { draft: MemoryDraftRow; first: boolean }) {
+function DraftCard({
+  draft,
+  first,
+  migrationShown,
+}: {
+  draft: MemoryDraftRow
+  first: boolean
+  migrationShown: boolean
+}) {
   const apply = useMemoryApply()
   const [asking, setAsking] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
@@ -108,7 +136,9 @@ function DraftCard({ draft, first }: { draft: MemoryDraftRow; first: boolean }) 
       {done ? (
         <span className="text-[11.5px] text-ok-tx">Записано в корпус.</span>
       ) : !mine ? (
-        <span className="text-[11.5px] leading-[1.5] text-tx3">{otherDoorWords(draft.kind)}</span>
+        <span className="text-[11.5px] leading-[1.5] text-tx3">
+          {otherDoorWords(draft.kind, migrationShown)}
+        </span>
       ) : asking ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[11.5px] text-tx">Записать именно этот урок в корпус?</span>
@@ -147,8 +177,12 @@ function DraftCard({ draft, first }: { draft: MemoryDraftRow; first: boolean }) 
  * The panel is MOUNTED only while a project is connected, so it takes no «enabled» of its own:
  * the read starts when the panel appears and stops when it goes, and there is no second place
  * where somebody could decide the same thing differently.
+ *
+ * `migrationShown` is the one thing it cannot read for itself — whether the panel a foreign
+ * draft would be sent to is on the screen. It comes from the same reading that decides whether
+ * to draw that panel, so the two cannot disagree.
  */
-export function DraftsPanel() {
+export function DraftsPanel({ migrationShown }: { migrationShown: boolean }) {
   const drafts = useMemoryDraftsQuery()
   const rows = drafts.data?.drafts ?? []
 
@@ -181,7 +215,9 @@ export function DraftsPanel() {
           Ничего не ждёт решения — всё, что команда записала, уже в корпусе.
         </p>
       ) : (
-        rows.map((row, i) => <DraftCard key={row.id} draft={row} first={i === 0} />)
+        rows.map((row, i) => (
+          <DraftCard key={row.id} draft={row} first={i === 0} migrationShown={migrationShown} />
+        ))
       )}
     </div>
   )
