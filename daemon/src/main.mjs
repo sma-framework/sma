@@ -95,6 +95,7 @@ import {
   derivePhaseCard,
   deriveMemoryDrafts,
   deriveCoordination,
+  deriveBacklog,
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
@@ -546,6 +547,9 @@ export function createDaemon(o = {}) {
         // The coordination snapshot: the ledger's own readers do the reading, the derive does
         // the shaping, and neither of them is in the door.
         deriveCoordination: (args) => deriveCoordination({ ...args, readLedger: readCoordinationLedger }),
+        // The backlog board reads the project's own file and NEVER writes it — there is no
+        // writing collaborator here at all, which is the strongest form the rule can take.
+        deriveBacklog,
         // TAKING A RESERVATION AWAY IS A RISKY OPERATION and the verb says so: it refuses
         // without a written reason AND a stated check, and it journals the steal with the
         // former holder's name. None of that is re-implemented here — which is precisely why
