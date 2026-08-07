@@ -376,16 +376,18 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
     const res = await call(front, { url: '/api/phase/index' })
     expect(res.statusCode).toBe(200)
     const payload = JSON.parse(res.body)
-    expect(payload.phases.map((p: any) => p.id)).toEqual(['12-front', '13-next'])
+    // NEWEST FIRST: the phase somebody is working on is the highest-numbered one, and it should
+    // be the first row rather than something to scroll past.
+    expect(payload.phases.map((p: any) => p.id)).toEqual(['13-next', '12-front'])
 
-    const worked = payload.phases[0]
+    const worked = payload.phases[1]
     // The NUMBER leads, then the words. A phase is asked for by number everywhere else in this
     // product, so the row has to say both what it is and how to ask for it.
     expect(worked.name).toBe('12 · front')
     expect(worked.stages).toEqual({ discuss: 'done', plan: 'done', execute: 'done', verify: 'none' })
     expect(worked).toMatchObject({ open: 0, answered: 0 })
 
-    const parked = payload.phases[1]
+    const parked = payload.phases[0]
     // ONE answered, ONE still open — counted off the artefact, never stored
     expect(parked).toMatchObject({ open: 1, answered: 1 })
     expect(parked.stages.discuss).toBe('in-progress')
@@ -531,6 +533,48 @@ describe('a phase is named the way its author named it', () => {
     }
     expect(row.name).toBe('47.3 · legacy thing')
     expect(derivePhaseCard({ projectDir: PROJECT, phaseId: '', fsImpl: fixture() })).toBeNull()
+  })
+
+  /**
+   * A DIRECTORY OUTLIVES A RENUMBERING, and the roadmap says so in its own heading:
+   * «### Phase 3: (экс-49.2) …» means the folder still called `49.2-…` is phase three now.
+   * Reading that turns a column of slugs into names.
+   *
+   * The rule is narrow ON PURPOSE, and the second case is why. A heading whose aside is PROSE
+   * may mention somebody ELSE's number — the real roadmap carries «(новая … выделена из
+   * экс-49.7 аудитом K1)» on phase 8, and 49.7 belongs to phase 9. A rule that scanned asides
+   * for any number would have handed phase 9's directory phase 8's name. So an alias is taken
+   * only from a SHORT aside carrying EXACTLY ONE number: shape decides, not hope.
+   */
+  const RENUMBERED = [
+    '### Phase 3: (экс-49.2) SMA V3 — The Trust Spine',
+    '### Phase 4: (новая — выделена из экс-49.9 аудитом) SMA V3.5 — Onboarding',
+    '',
+  ].join('\n')
+
+  const renumberedFixture = (over = {}) => fixture({ [`${PROJECT}/.planning/ROADMAP.md`]: RENUMBERED, ...over })
+
+  it('reads the old number out of a SHORT aside, and names the historic directory', () => {
+    const io = renumberedFixture({ [`${PROJECT}/.planning/phases/49.2-sma-v3-trust-spine/x.md`]: '# x' })
+    const row = nameOf(io, '49.2-sma-v3-trust-spine') as { name: string }
+    // named by the roadmap — and numbered the way the roadmap numbers it NOW
+    expect(row.name).toBe('3 · SMA V3 — The Trust Spine')
+  })
+
+  it('REFUSES an alias out of prose — a number inside a sentence belongs to somebody else', () => {
+    const io = renumberedFixture({ [`${PROJECT}/.planning/phases/49.9-someone-elses/x.md`]: '# x' })
+    const row = nameOf(io, '49.9-someone-elses') as { name: string }
+    // 49.9 is MENTIONED by phase 4's prose aside; it must not inherit phase 4's title
+    expect(row.name).toBe('49.9 · someone elses')
+  })
+
+  it('lists newest first, by the number the roadmap gives — not by directory name', () => {
+    const io = renumberedFixture({ [`${PROJECT}/.planning/phases/49.2-sma-v3-trust-spine/x.md`]: '# x' })
+    const ids = derivePhaseIndex({ projectDir: PROJECT, fsImpl: io as never }).phases.map(
+      (p: never) => (p as { id: string }).id,
+    )
+    // the historic directory sorts as THREE, not as forty-nine-point-two
+    expect(ids).toEqual(['13-next', '12-front', '49.2-sma-v3-trust-spine'])
   })
 })
 
