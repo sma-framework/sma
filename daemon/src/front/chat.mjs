@@ -459,6 +459,79 @@ export function draftFromIntent({ text, kind } = {}) {
   }
 }
 
+// ── documents mentioned in a reply become ATTACHMENTS ──────────────────────────
+//
+// ══════════════ THE CHAT GUARANTEES NOTHING ABOUT THESE PATHS ═════════════
+//
+// A reply that says «итог лежит в .planning/phases/…-SUMMARY.md» is asking the person to go
+// and open a file. Making that a button is worth doing; making the chat responsible for
+// whether the file may be read is not. The artefact door already resolves, contains and
+// bounds every path it is given, and it answers every violation with one indistinguishable
+// refusal — that is where the security lives, and it is not repeated here.
+//
+// What this extraction is, then, is a CONSERVATIVE OFFER: it recognises only what plainly
+// looks like a document under the one root that door opens, and it drops everything it is
+// not sure about. The three rules below exist so that the offer is never a surprise:
+//
+//   IT MUST START AT A BOUNDARY. `../.planning/x.md` mentions a NEIGHBOUR'S tree; taking
+//   `.planning/x.md` out of the middle of it would quietly offer a different file than the
+//   one the sentence named. A path glued to anything on its left is not extracted at all.
+//
+//   A TRAVERSAL SEGMENT IS DROPPED, not repaired. The door would refuse it anyway; a button
+//   that is certain to fail is worse than no button, because it teaches a person to distrust
+//   the ones that work.
+//
+//   FIVE PER REPLY, AT MOST. A reply is a sentence with some documents beside it. Anything
+//   that produced more than five was not naming documents — it was pasting a listing.
+
+/** The only root the artefact door opens, spelled here as the only prefix worth offering. */
+const ATTACHMENT_PREFIX = '.planning/'
+
+/** As many documents as one reply may carry. Past this it is a listing, not a mention. */
+export const ATTACHMENT_CAP = 5
+
+/** The artefact door's own ceiling on a path, named here so a button is never born refused. */
+const ATTACHMENT_PATH_CAP = 512
+
+/** A run of path characters starting at the permitted root. Whitespace ends it by construction. */
+const ATTACHMENT_SCAN_RE = /\.planning\/[A-Za-z0-9._/-]+/g
+
+/** What may sit to the LEFT of a path and still leave it a path of its own. */
+const ATTACHMENT_GLUE_RE = /[A-Za-z0-9._/\\-]/
+
+/** …and it must end in a file name with an extension, or it is a directory, not a document. */
+const ATTACHMENT_FILE_RE = /\/[^/]*[A-Za-z0-9]\.[A-Za-z0-9]{1,8}$/
+
+/**
+ * extractAttachments(text) → [{rel}] — the documents a reply mentions, at most ATTACHMENT_CAP.
+ *
+ * The field is EXPLICIT-PICKED into `{rel}` rather than carried as a matched string, so the
+ * screen consumes a shape and never a fragment of somebody's prose. Duplicates collapse: the
+ * same document named twice in one reply is one button.
+ *
+ * @param {string} text
+ * @returns {{rel:string}[]}
+ */
+export function extractAttachments(text) {
+  const said = String(text ?? '')
+  const out = []
+  const seen = new Set()
+  for (const m of said.matchAll(ATTACHMENT_SCAN_RE)) {
+    const before = m.index > 0 ? said[m.index - 1] : ''
+    if (before && ATTACHMENT_GLUE_RE.test(before)) continue // it is part of a longer path
+    const rel = m[0].replace(/[.,;:!?)\]}»"'—-]+$/, '') // sentence punctuation is not a path
+    if (!rel.startsWith(ATTACHMENT_PREFIX)) continue
+    if (rel.length > ATTACHMENT_PATH_CAP) continue
+    if (rel.split('/').includes('..')) continue
+    if (!ATTACHMENT_FILE_RE.test(rel)) continue
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    out.push({ rel })
+    if (out.length >= ATTACHMENT_CAP) break
+  }
+  return out
+}
+
 // ── the transcript (append-only ndjson, capped) ────────────────────────────────
 
 /** The transcript lives beside the daemon's config, under the same directory discipline. */
@@ -491,6 +564,7 @@ export function appendTurn({ dir, turn = {}, fsImpl, clock = Date.now, cap = HIS
   }
   if (turn.taskRef) record.taskRef = turn.taskRef
   if (turn.draft) record.draft = turn.draft
+  if (Array.isArray(turn.attachments) && turn.attachments.length) record.attachments = turn.attachments
   if (turn.error) record.error = String(turn.error)
 
   const file = historyFile(dir)
@@ -585,6 +659,12 @@ export async function handleChatTurn({ text, conversationId, deps = {} } = {}) {
     answer = kind === 'fail-reason' ? answerFailReason({ text, rows }) : answerStatus({ text, rows })
   }
 
+  // Documents named in the REPLY become buttons. Only the reply's: what the person typed is
+  // their own sentence, and turning their words into an opener would be this lane deciding
+  // that a path someone pasted is a path someone wants read.
+  const attachments = extractAttachments(answer.text)
+  if (attachments.length) answer.attachments = attachments
+
   const dir = deps.historyDir
   if (dir) {
     appendTurn({ dir, clock, fsImpl: deps.fsImpl, turn: { conversationId: convId, role: 'user', kind, text } })
@@ -599,6 +679,7 @@ export async function handleChatTurn({ text, conversationId, deps = {} } = {}) {
         text: answer.text ?? '',
         taskRef: answer.taskRef,
         draft: answer.draft,
+        attachments,
         error: answer.error,
       },
     })

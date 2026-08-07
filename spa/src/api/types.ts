@@ -712,8 +712,22 @@ export interface PairingInvitation {
 
 // ── the conversation ────────────────────────────────────────────────────────────────
 
-/** How a question was READ. The engine's own closed vocabulary, never a screen's guess. */
-export type ChatTurnKind = 'fail-reason' | 'spend' | 'status' | 'free'
+/**
+ * How a question was READ. The engine's own closed vocabulary, never a screen's guess.
+ *
+ * The four work-putting kinds are answered by dictionary rather than by a session: a sentence
+ * that already names its lane — or names a stage of a phase — has been thought about by the
+ * person who wrote it. What comes back is still only a draft.
+ */
+export type ChatTurnKind =
+  | 'fail-reason'
+  | 'spend'
+  | 'status'
+  | 'free'
+  | 'stage'
+  | 'task-prod'
+  | 'task-research'
+  | 'task-debug'
 
 /**
  * What an answer IS: a fact taken from the read models, prose from the free lane, or a
@@ -731,16 +745,45 @@ export interface ChatTaskRef {
 }
 
 /**
- * A task the answer OFFERS to create — checked against the roster before it left the
- * daemon. It is a proposal and nothing else: the conversation has no path to the queue.
+ * What a drafted piece of work IS, beyond its title. Absent on an ordinary task, which says
+ * nothing extra about itself. `stage` is the one kind whose confirmation is NOT the task
+ * door: it carries a GOAL — which stage of which phase — and the phase cycle's own door
+ * decides the lane and the command.
+ */
+export type ChatDraftData =
+  | { kind: 'debug' }
+  | { kind: 'stage'; stage: PhaseStage; phase: string }
+
+/**
+ * A task the answer OFFERS to create. It is a proposal and nothing else: the conversation
+ * has no path to the queue.
+ *
+ * A draft arrives one of two ways, and the pair below says which. A SESSION proposes a
+ * `worker`, checked against the roster before it left the daemon, and the screen takes that
+ * worker's lane. A sentence that already named its own lane is read by dictionary and
+ * proposes the `lane` directly — the thing a roster pick could never express.
  */
 export interface ChatDraft {
   title: string
-  /** The proposed worker, by id. */
-  worker: string
+  /** The proposed worker, by id. Absent on a draft the dictionary built. */
+  worker?: string
+  /** The lane the work belongs to. Absent on a draft a session built. */
+  lane?: string
   mode: string
   /** What must become true for the work to count as done. */
   acceptance?: string
+  data?: ChatDraftData
+}
+
+/**
+ * A document a reply mentioned, offered as a path the artefact door will take.
+ *
+ * The chat guarantees NOTHING about it: it recognised something that plainly looks like a
+ * document under the one root that door opens, and dropped everything it was unsure of.
+ * Whether the path may be read is answered by the door, once, for every screen.
+ */
+export interface ChatAttachment {
+  rel: string
 }
 
 /** One line of the spend answer: a share of the window's tokens, in whole percent. */
@@ -763,6 +806,8 @@ export interface ChatAnswer {
   draft?: ChatDraft
   spend?: ChatSpendShare[]
   link?: ChatAnswerLink
+  /** Documents this reply named — at most five, and only ever the reply's own. */
+  attachments?: ChatAttachment[]
 }
 
 /** What POST /api/chat answers: the conversation it belongs to, and the answer itself. */
@@ -785,6 +830,8 @@ export interface ChatTurn {
   text: string
   taskRef?: ChatTaskRef
   draft?: ChatDraft
+  /** The documents that reply named. Kept, because a stored reply still points at them. */
+  attachments?: ChatAttachment[]
 }
 
 export interface ChatHistory {
