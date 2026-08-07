@@ -7,6 +7,7 @@ import type { OpenScreenDetail } from '../../shell/navigation'
 import { accentFor, initialOf } from '../../shell/format'
 import { DraftCard } from './DraftCard'
 import { ForgeDialog } from './ForgeDialog'
+import { ModelDialog } from './ModelDialog'
 
 /**
  * «Агенты» — the forge, with its lid off: who is on the roster, what is still a draft, and
@@ -16,14 +17,16 @@ import { ForgeDialog } from './ForgeDialog'
  *
  * Everything on the glass comes out of ONE reading — /api/harness — and every change goes
  * through a door that already exists: /api/forge to ask for a draft, /api/approve to land it,
- * /api/agent/toggle to switch a worker on or off. There is no fourth door, so there is no
- * fourth thing this screen can do.
+ * /api/agent/toggle to switch a worker on or off, /api/agent/model to move the one field of a
+ * session that is not decided by the project. There is no fifth door, so there is no fifth
+ * thing this screen can do.
  *
- * Which is why a worker's provider, model and effort are shown here and NOT edited here. Those
- * fields live in the role file, and the toggle applier reads them out of it; the daemon offers
- * no route that rewrites them, so an editor for them would be a control that quietly does
- * nothing. A fact a person cannot change is still worth seeing — it is shown as a fact, under
- * «Подробнее», with the file it came from named.
+ * A worker's PROVIDER is still shown and not edited: it is declared in the role file and no
+ * route rewrites it, so an editor for it would be a control that quietly does nothing. Model
+ * and effort used to be in that same sentence and are not any more — they live on the profile
+ * in the settings, and a door that writes them now exists. They are edited behind a dialog,
+ * because the value applies to the next spawn of a worker who may be running right now, and
+ * because a model name typed by mistake is a worker that fails on its first task.
  *
  * «Привести своих» is a door to another screen, not another API: it asks the shell for the
  * import wizard, which owns bringing in helpers that already live in the project.
@@ -66,10 +69,11 @@ function KpiPill({ value, label, tone }: { value: number; label: string; tone: s
   )
 }
 
-/** One worker on the roster: what they are, and the single switch that is really ours. */
-function WorkerRow({ agent }: { agent: AgentCard }) {
+/** One worker on the roster: what they are, and the two acts that are really ours. */
+function WorkerRow({ agent, roster }: { agent: AgentCard; roster: readonly AgentCard[] }) {
   const toggle = useToggleAgent()
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
   const laneLabel = agent.lane ? (LANE_LABEL[agent.lane] ?? agent.lane) : null
@@ -153,24 +157,32 @@ function WorkerRow({ agent }: { agent: AgentCard }) {
             <span>
               Исполнитель: <span className="font-semibold text-tx">{providerLabel}</span>
             </span>
-            {agent.model ? (
-              <span>
-                Модель: <span className="font-semibold text-tx">{agent.model}</span>
-              </span>
-            ) : null}
-            {agent.effort ? (
-              <span>
-                Режим: <span className="font-semibold text-tx">{agent.effort}</span>
-              </span>
-            ) : null}
+            <span>
+              Модель:{' '}
+              <span className="font-semibold text-tx">{agent.model ?? 'по умолчанию исполнителя'}</span>
+            </span>
+            <span>
+              Усилие: <span className="font-semibold text-tx">{agent.effort ?? 'по умолчанию исполнителя'}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="rounded-[8px] border border-bd2 px-[13px] py-1 text-[11.5px] whitespace-nowrap text-tx2 hover:border-blue hover:text-blue"
+            >
+              Изменить модель
+            </button>
           </div>
           <div className="text-[11px] text-tx3">
+            Модель и усилие лежат в настройках работника и правятся отсюда — применяются со
+            следующего запуска.{' '}
             {agent.roleFile
-              ? `Эти поля читаются из файла роли ${agent.roleFile} — меняются там, не отсюда.`
-              : 'Файла роли нет — поля взяты из настроек работника.'}
+              ? `Остальное — границы, название, исполнитель — читается из файла роли ${agent.roleFile} и меняется там.`
+              : 'Файла роли нет — остальные поля взяты из настроек работника.'}
           </div>
         </div>
       ) : null}
+
+      {editing ? <ModelDialog agent={agent} roster={roster} onClose={() => setEditing(false)} /> : null}
 
       <div className="pl-11 text-[11.5px] leading-[1.5] text-tx3">
         {agent.can.length > 0 || agent.cannot.length > 0 ? (
@@ -446,7 +458,7 @@ export function Screen() {
             ) : (
               <div className="flex flex-col gap-3">
                 {agents.map((a) => (
-                  <WorkerRow key={a.id} agent={a} />
+                  <WorkerRow key={a.id} agent={a} roster={agents} />
                 ))}
               </div>
             )}
