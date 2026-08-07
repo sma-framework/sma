@@ -467,6 +467,67 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
   it('a project with no phases at all is an empty index, not an error', () => {
     expect(derivePhaseIndex({ projectDir: '/nothing', fsImpl: fixture() })).toEqual({ phases: [] })
     expect(derivePhaseIndex({})).toEqual({ phases: [] })
+  })
+})
+
+/**
+ * WHAT A PERSON READS ON THE SCREEN.
+ *
+ * A phase directory is a file-system identifier and it reads like one — `11-49-9-sma-v5-3`,
+ * `49.2-sma-v3-trust-spine`. On the screen that exists so the founder can stop using a
+ * terminal, a column of those is noise: he recognises none of his own work in it. The roadmap
+ * already holds each phase's name in the words its author chose, so the screen shows those.
+ *
+ * The rule refuses to guess. A phase the roadmap does not mention keeps its OWN words, only
+ * spelled with spaces — because a slug is honest and a mis-mapped title is a lie on a screen.
+ */
+describe('a phase is named the way its author named it', () => {
+  const ROADMAP = [
+    '# Roadmap',
+    '',
+    '### Phase 12: SMA — Рабочее место во фронте (полный переход с терминала)',
+    'some prose about the phase',
+    '',
+    '### Phase 13: (экс-49.9) Управление памятью + укреплённый парк',
+    '',
+    '### Phase 12: a SECOND mention that must not win',
+    '',
+  ].join('\n')
+
+  const withRoadmap = (over = {}) => fixture({ [`${PROJECT}/.planning/ROADMAP.md`]: ROADMAP, ...over })
+
+  const nameOf = (io: unknown, id: string) =>
+    derivePhaseIndex({ projectDir: PROJECT, fsImpl: io as never }).phases.find((p: never) => (p as { id: string }).id === id)
+
+  it('takes the title out of the roadmap, by phase number', () => {
+    const row = nameOf(withRoadmap(), '12-front') as { name: string }
+    expect(row.name).toBe('SMA — Рабочее место во фронте (полный переход с терминала)')
+  })
+
+  it('drops a LEADING bracketed aside — bookkeeping in front of a name is not the name', () => {
+    const row = nameOf(withRoadmap(), '13-next') as { name: string }
+    expect(row.name).toBe('Управление памятью + укреплённый парк')
+    // …and a bracket INSIDE the sentence stays, because there it is part of the title
+    const twelve = nameOf(withRoadmap(), '12-front') as { name: string }
+    expect(twelve.name).toContain('(полный переход с терминала)')
+  })
+
+  it('the FIRST heading for a number wins — a later mention is a reference, not a rename', () => {
+    const row = nameOf(withRoadmap(), '12-front') as { name: string }
+    expect(row.name).not.toContain('SECOND mention')
+  })
+
+  it('falls back to the directory own words, made readable, when the roadmap says nothing', () => {
+    // no ROADMAP.md at all — the ordinary state of a project that never wrote one
+    const row = nameOf(fixture(), '12-front') as { name: string }
+    expect(row.name).toBe('front')
+  })
+
+  it('never invents: a phase the roadmap does not mention is NOT given a neighbour title', () => {
+    const row = nameOf(withRoadmap({ [`${PROJECT}/.planning/phases/47.3-legacy-thing/x.md`]: '# x' }), '47.3-legacy-thing') as {
+      name: string
+    }
+    expect(row.name).toBe('legacy thing')
     expect(derivePhaseCard({ projectDir: PROJECT, phaseId: '', fsImpl: fixture() })).toBeNull()
   })
 })

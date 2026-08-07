@@ -85,7 +85,7 @@ import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
 import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
-import { createQuestions, findPhaseDir, STAGE_ARTIFACTS, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
+import { createQuestions, findPhaseDir, phaseNumberOf, STAGE_ARTIFACTS, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
@@ -1102,6 +1102,74 @@ function phaseNameOf(dir) {
   return rest === '' ? String(dir) : rest
 }
 
+/** `front-workplace` → `front workplace`. A slug is a file name; a screen is read by a person. */
+function readableSlug(slug) {
+  return String(slug).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/** `### Phase 12: SMA — Рабочее место во фронте` → title, keyed by phase number. */
+const ROADMAP_HEADING = /^#{2,4}\s*Phase\s+(\d+(?:\.\d+)?)\s*[:.—-]\s*(.+?)\s*$/i
+
+/**
+ * A title that OPENS with a bracketed aside is carrying bookkeeping in front of its name —
+ * «(экс-49.7) SMA V5.1 — Импорт…», «(new, split out by the audit) …». The aside is written for
+ * whoever maintains the roadmap; the person looking at the screen wants the name. Only a
+ * LEADING group is removed, and only when something is left after it: a bracket in the middle
+ * is part of the sentence, and a title that is nothing but an aside keeps it rather than
+ * becoming blank.
+ */
+function stripLeadingAside(title) {
+  const text = String(title).trim()
+  const m = text.match(/^\([^)]*\)\s*(.+)$/)
+  return m && m[1].trim() !== '' ? m[1].trim() : text
+}
+
+/**
+ * roadmapTitles(projectDir, io) → Map(phase number → the title the ROADMAP gives it).
+ *
+ * WHY THE ROADMAP AND NOT THE DIRECTORY NAME. A directory name is a file-system identifier and
+ * it reads like one: `11-49-9-sma-v5-3`, `49.2-sma-v3-trust-spine`. Shown on a screen that is
+ * the whole point of not using a terminal, that is noise — the person recognises none of their
+ * own work in it. The roadmap already holds the phase's name in the words its author chose,
+ * and those words are what the person is looking for.
+ *
+ * Read once per derive, never cached: the roadmap is edited by hand and a screen that shows
+ * yesterday's title is a smaller bug than one nobody can explain. A project without a roadmap,
+ * or with headings in another shape, simply gets an empty map and the fallback below.
+ */
+function roadmapTitles(projectDir, io) {
+  const titles = new Map()
+  for (const rel of ['ROADMAP.md', 'ROADMAP.ru.md']) {
+    let raw = ''
+    try {
+      raw = String(io.readFileSync(join(projectDir, '.planning', rel), 'utf8'))
+    } catch {
+      continue // no roadmap of that name — not an error, just no titles from it
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(ROADMAP_HEADING)
+      if (!m) continue
+      const n = Number(m[1])
+      // FIRST heading wins: a roadmap that mentions a phase twice is naming it once and
+      // referring to it afterwards.
+      if (!titles.has(n)) titles.set(n, stripLeadingAside(m[2]))
+    }
+  }
+  return titles
+}
+
+/**
+ * The name a PERSON should see for a phase directory: the roadmap's title when the phase
+ * number is in the roadmap, and a readable version of the directory's own slug when it is not.
+ * Never invents: a phase the roadmap does not mention keeps its own words, only spelled with
+ * spaces instead of dashes.
+ */
+function phaseTitleOf(dir, titles) {
+  const n = phaseNumberOf(dir)
+  const fromRoadmap = n === null ? null : titles.get(n)
+  return fromRoadmap && fromRoadmap.trim() !== '' ? fromRoadmap : readableSlug(phaseNameOf(dir))
+}
+
 /** Where a stage stands, read off the files of the phase directory and nothing else. */
 function stageStatusOf(files, spec) {
   if (!spec) return 'none'
@@ -1166,12 +1234,15 @@ export function derivePhaseIndex({ projectDir, fsImpl } = {}) {
     .filter((name) => isDir(io, join(root, name)))
     .sort()
   const engine = questionsEngine(projectDir, fsImpl)
+  // Read ONCE for the whole list rather than per row: the roadmap is one file and this is the
+  // screen that shows every phase at once.
+  const titles = roadmapTitles(projectDir, io)
 
   return {
     phases: dirs.map((dir) => {
       const files = safeList(io, join(root, dir))
       const { open, answered } = progressOf(engine, dir)
-      return { id: dir, name: phaseNameOf(dir), stages: stagesOf(files), open, answered }
+      return { id: dir, name: phaseTitleOf(dir, titles), stages: stagesOf(files), open, answered }
     }),
   }
 }
@@ -1220,7 +1291,7 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl } = {}) {
 
   return {
     id: dir,
-    name: phaseNameOf(dir),
+    name: phaseTitleOf(dir, roadmapTitles(projectDir, io)),
     stages: stagesOf(files),
     questions,
     plans: artifactsOf(files, dir, '-PLAN.md'),
