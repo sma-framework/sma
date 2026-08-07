@@ -12,7 +12,23 @@
  */
 
 import { isNotReady, isRaceLost } from '../api/client'
-import type { ReceiptSummary, TaskStatus } from '../api/types'
+import type { PhaseStage, ReceiptSummary, TaskStatus } from '../api/types'
+
+/**
+ * What each of the four stages is called on the glass.
+ *
+ * It began beside «Конвейер фаз», the first screen with stages on it, and moved here the day
+ * the conversation grew a stage draft of its own — the registry's rule for a thing two
+ * screens both need, applied rather than quietly copied. Two spellings of «Приёмка» would be
+ * two screens naming one stage differently, which is exactly how a person learns to check
+ * which screen they are on before believing it.
+ */
+export const STAGE_LABEL: Record<PhaseStage, string> = {
+  discuss: 'Обсуждение',
+  plan: 'План',
+  execute: 'Исполнение',
+  verify: 'Приёмка',
+}
 
 /** Russian counts three ways. This is that rule, written once. */
 export function plural(n: number, one: string, few: string, many: string): string {

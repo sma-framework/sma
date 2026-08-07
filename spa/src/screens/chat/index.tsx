@@ -186,7 +186,11 @@ export function Screen() {
     const worker = draft.worker ? state.data?.rules.workers.find((w) => w.id === draft.worker) : undefined
     const lane = draft.lane ?? worker?.lane ?? null
     if (!lane) {
-      setProblem(`Не удалось поставить: у исполнителя «${draft.worker}» не назначена линия работы.`)
+      setProblem(
+        draft.worker
+          ? `Не удалось поставить: у исполнителя «${draft.worker}» не назначена линия работы.`
+          : 'Не удалось поставить: в черновике не названа линия работы.',
+      )
       return
     }
     setProblem(null)

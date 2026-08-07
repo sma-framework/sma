@@ -1,4 +1,5 @@
 import type { ChatDraft } from '../../api/types'
+import { STAGE_LABEL } from '../../shell/format'
 
 /** What a lane is called on the glass. An unknown lane is shown as the daemon spelled it. */
 const LANE_WORD: Record<string, string> = {
@@ -6,14 +7,6 @@ const LANE_WORD: Record<string, string> = {
   research: 'исследование',
   paperwork: 'документы',
   forge: 'кузница',
-}
-
-/** What each stage is called, in the same words «Конвейер фаз» uses for it. */
-const STAGE_WORD: Record<string, string> = {
-  discuss: 'Обсуждение',
-  plan: 'План',
-  execute: 'Исполнение',
-  verify: 'Приёмка',
 }
 
 /**
@@ -79,7 +72,7 @@ export function DraftCard({
             <>
               <span className="text-[11.5px] text-tx3">Стадия</span>
               <span className="text-[11.5px] font-semibold text-tx">
-                {STAGE_WORD[stage.stage] ?? stage.stage}
+                {STAGE_LABEL[stage.stage] ?? stage.stage}
               </span>
               <span className="text-[11.5px] text-tx3">Фаза</span>
               <span className="text-[11.5px] font-semibold text-tx">{stage.phase}</span>
