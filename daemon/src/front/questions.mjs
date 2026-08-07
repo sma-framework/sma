@@ -224,7 +224,7 @@ function normalizeText(value) {
  * wild: `12-name`, `012-name`, `phase-12-name`, and decimal phases like `01.1-fix`.
  * Returns null when the name carries no phase number at all.
  */
-function phaseNumberOf(name) {
+export function phaseNumberOf(name) {
   const withoutPrefix = String(name ?? '').replace(/^phase-/i, '')
   const match = withoutPrefix.match(/^(\d+(?:\.\d+)?)/)
   return match ? Number(match[1]) : null
