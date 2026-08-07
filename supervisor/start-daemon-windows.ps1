@@ -1,4 +1,4 @@
-<#
+﻿<#
   start-daemon-windows.ps1 — the no-admin start wrapper the Task Scheduler task
   targets. The Windows sibling of what launchd invokes on the Mac mini: it brings up
   the local queue Postgres, ensures the dedicated queue database exists, and launches
@@ -14,6 +14,16 @@
 
   Usage (the task supplies -SmaHome; run standalone for a manual boot):
     powershell -NoProfile -ExecutionPolicy Bypass -File start-daemon-windows.ps1 -SmaHome C:\path\to\sma
+
+  ENCODING - DO NOT SAVE THIS FILE WITHOUT A BOM. It carries non-ASCII characters (the
+  em dashes in these comments and in the log lines below). Windows PowerShell 5.1 - the
+  shell that ships with Windows, and the one the Scheduled Task invokes - reads a file
+  with no byte-order mark as ANSI, and an em dash then decodes into a character that
+  PowerShell accepts as a STRING DELIMITER. What follows is not a mangled comment: the
+  first log line closes its string early, the brace balance collapses, and the whole
+  script fails to parse with "Missing closing brace" pointing at a block that is
+  perfectly balanced. Nothing runs, and no log is written to say so. A test in the suite
+  holds every shipped .ps1 to "pure ASCII, or a BOM", so this cannot come back quietly.
 #>
 [CmdletBinding()]
 param(
