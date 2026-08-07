@@ -68,6 +68,7 @@ import {
   readAttemptLog,
 } from './queue/attempt-ledger.mjs'
 import { attemptIdFor } from './front/journal.mjs'
+import { collectDiagnostics } from './front/diagnostics.mjs'
 import { createSearch } from './front/search.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
@@ -396,6 +397,152 @@ async function readProjectNotes({ projectDir, query, limit }) {
 }
 
 /**
+ * ═══════════════ THE RELEASE GATE: three deterministic verbs, and their exit codes ═══════════
+ *
+ * WHAT A GATE IS MADE OF IS DECLARED HERE, ONCE, as data — never assembled from a request and
+ * never named by a door. Each step is a verb the connected project's own runtime already
+ * carries, each answers `--json`, and each decides GREEN by something the daemon can read
+ * rather than something a model can claim:
+ *
+ *   консеквенции — `preship`, the product's own ship gate: open class-A events block, and the
+ *                  verb says so with its exit code. This is not a check invented for a window;
+ *                  it is the check the release ritual already refuses to ship past.
+ *   корпус       — `lint`, the corpus linter: a critical finding exits non-zero.
+ *   бейдж        — `passport --check-badge`, which answers whether the badge a reader sees
+ *                  still matches the snapshot that was committed. It always exits 0 and
+ *                  answers with a NUMBER, so this one step is judged by its verdict.
+ *
+ * WHAT IS NOT HERE, SAID OUT LOUD: the test suite. There is no verb in this product that runs
+ * a project's tests, and there could not be one that a door may call — a door that took a
+ * command to run is the single endpoint this whole front promises never to grow. The suite is
+ * run by the person or by CI, and the gate reports on the evidence that IS machine-readable.
+ */
+const SHIP_GATE_STEPS = Object.freeze([
+  {
+    step: 'консеквенции',
+    verb: 'preship',
+    args: ['--json'],
+    detail: (r, code) => (code === 0 ? 'открытых блокирующих событий нет' : `${(r.blocks || []).length} открытых блокирующих событий`),
+  },
+  {
+    step: 'корпус',
+    verb: 'lint',
+    args: ['--json'],
+    detail: (r, code) => (code === 0 ? 'критических находок нет' : `${(r.critical || []).length || '≥1'} критических находок`),
+  },
+  {
+    step: 'бейдж',
+    verb: 'passport',
+    args: ['--check-badge', '--json'],
+    ok: (r) => Number(r && r.consistent) === 1,
+    detail: (r) => (Number(r && r.consistent) === 1 ? 'бейдж совпадает со снимком' : 'бейдж разошёлся со снимком'),
+  },
+])
+
+/**
+ * ═══════════════ AND WHAT PUBLISHING IS, IN THIS PRODUCT ═══════════════════════════════════
+ *
+ * This is the honest answer, and it is better than the obvious one. This product has NO verb
+ * that pushes — every one of them says so in its own header, and the queue's capability rules
+ * refuse the token by name. What it has instead is a soft-deny gate, GATE-PUSH, which lets a
+ * push proceed only when the full gate has left its EVIDENCE MARKER for the current HEAD. So
+ * «опубликовать» here is: put the run on the record, and write that marker.
+ *
+ * That is not a half-built door. It is the product's own model of a release: the machine does
+ * every part it can be trusted with and GRANTS THE PERMISSION; the person performs the act.
+ * A browser button that pushed would be this product disagreeing with its own law in the one
+ * place the law was written for.
+ */
+const SHIP_PUBLISH_STEPS = Object.freeze([
+  { step: 'полоса', verb: 'ship-lane', args: ['record', '--lane', 'full', '--outcome', 'green', '--json'] },
+  { step: 'отметка ворот', verb: 'gates', args: ['mark-fullgate', '--json'] },
+])
+
+/**
+ * THE RECORD OF WHAT THIS DAEMON WATCHED GO GREEN.
+ *
+ * It lives in this PROCESS and nowhere else, and that is a decision rather than a shortcut: a
+ * gate receipt is a statement about the tree AT A MOMENT, and a receipt that outlived the
+ * daemon that issued it would be a statement about a tree nobody was watching. A restart
+ * therefore invalidates every outstanding receipt — which is the correct direction of error
+ * for the lock in front of the most expensive act in the product, and it also means no receipt
+ * can ever be forged by writing a file.
+ *
+ * The Map is bounded: a run that is not the newest few is forgotten, because a person
+ * publishes from the gate they just watched, never from one from last Tuesday.
+ */
+const SHIP_GATE_RUNS = new Map()
+const SHIP_GATE_RUNS_KEPT = 8
+/** Which run, if any, is in flight. A lock held by whoever RUNS the thing, not by a door. */
+let shipGateInFlight = null
+let shipPublishInFlight = false
+
+/** runShipGate({onStep, projectDir, clock}) — the steps above, in order, by their exit codes. */
+async function runShipGate({ onStep, projectDir, clock = Date.now } = {}) {
+  if (shipGateInFlight) return { busy: true, taskId: shipGateInFlight }
+  const taskId = `G-${clock()}`
+  shipGateInFlight = taskId
+  const checks = []
+  try {
+    for (const s of SHIP_GATE_STEPS) {
+      const run = await runProjectVerb({ verb: s.verb, args: s.args, projectDir })
+      const result = run.result || {}
+      const ok = run.ok === false ? false : typeof s.ok === 'function' ? !!s.ok(result) : run.code === 0
+      checks.push({
+        step: s.step,
+        ok,
+        detail: run.ok === false ? withoutPaths(run.reason ?? 'верб не ответил', projectDir) : String(s.detail(result, run.code)),
+      })
+      // AFTER each step, never before: a hint that a step «started» is a hint that says
+      // nothing a spinner does not already say.
+      if (typeof onStep === 'function') {
+        try {
+          onStep({ taskId, step: s.step, ok })
+        } catch {
+          /* a hint failure never affects the gate */
+        }
+      }
+    }
+  } finally {
+    shipGateInFlight = null
+  }
+  const ok = checks.length === SHIP_GATE_STEPS.length && checks.every((c) => c.ok)
+  const receipt = `ship-gate:${taskId}`
+  SHIP_GATE_RUNS.set(receipt, { green: ok, at: clock() })
+  while (SHIP_GATE_RUNS.size > SHIP_GATE_RUNS_KEPT) SHIP_GATE_RUNS.delete(SHIP_GATE_RUNS.keys().next().value)
+  return { taskId, ok, checks, ...(ok ? { receipt } : {}) }
+}
+
+/** verifyGateReceipt(receipt) — was THIS the receipt of a run this process watched go green. */
+function verifyGateReceipt(receipt) {
+  const row = SHIP_GATE_RUNS.get(String(receipt ?? ''))
+  if (!row) return { green: false, reason: 'этот прогон воротам неизвестен — прогоните ворота заново' }
+  if (row.green !== true) return { green: false, reason: 'этот прогон ворот не был зелёным' }
+  return { green: true }
+}
+
+/** publishRelease({version, projectDir, clock}) — the record and the marker, in that order. */
+async function publishRelease({ version, projectDir, clock = Date.now } = {}) {
+  if (shipPublishInFlight) return { busy: true }
+  shipPublishInFlight = true
+  const startedAt = new Date(clock()).toISOString()
+  const receipts = []
+  try {
+    for (const s of SHIP_PUBLISH_STEPS) {
+      const args = s.verb === 'ship-lane' ? [...s.args, '--started', startedAt, '--ended', new Date(clock()).toISOString()] : s.args
+      const run = await runProjectVerb({ verb: s.verb, args, projectDir })
+      if (!run.ok || run.code !== 0) {
+        return { ok: false, reason: `${s.step}: ${withoutPaths(run.reason ?? 'верб отказал', projectDir)}` }
+      }
+      receipts.push(`${s.step}=${run.result && run.result.sha ? String(run.result.sha).slice(0, 12) : 'ok'}`)
+    }
+  } finally {
+    shipPublishInFlight = false
+  }
+  return { ok: true, receipt: `ship-publish:${version}@${receipts.join('+')}` }
+}
+
+/**
  * createDaemon(overrides) — wire the whole daemon and return its handles WITHOUT starting
  * anything. Every collaborator is overridable so a future integration harness can drive
  * it; production calls it with no overrides.
@@ -689,6 +836,26 @@ export function createDaemon(o = {}) {
         // Injected, never statically imported by the front — this is the
         // wiring that makes «включить агента» a real switch instead of a 501.
         // The harness read model + the three appliers (agents / skills / MCP screens).
+        // ── THE RELEASE: the gate, its record, the version, and the publication ──
+        // Four narrow collaborators, each taking DATA and each with its verbs baked in here.
+        // They are wired into the FRONT and nowhere else: `tickDeps` below names none of them,
+        // which is what makes «a worker cannot publish» a property of the assembly rather than
+        // a rule somebody has to keep.
+        runShipGate: o.runShipGate ?? ((args) => runShipGate({ ...args, projectDir: connectedProjectDir(), clock })),
+        verifyGateReceipt: o.verifyGateReceipt ?? ((receipt) => verifyGateReceipt(receipt)),
+        // The version this machine states it is about to publish — the SAME single source the
+        // diagnostics door reads, so the string a person is asked to type is the string the
+        // product answers with everywhere else. The connected project's own stamp wins; a
+        // daemon serving a tree that carries none falls back to its own.
+        releaseVersion:
+          o.releaseVersion ??
+          (() => {
+            const projectDir = connectedProjectDir()
+            const own = join(projectDir ?? '.', 'sma-core', 'capabilities', 'sma', 'capability.json')
+            return collectDiagnostics(projectDir && existsSync(own) ? { capabilityPath: own } : {}).version
+          }),
+        publishRelease:
+          o.publishRelease ?? ((args) => publishRelease({ ...args, projectDir: connectedProjectDir(), clock })),
         // ONE QUESTION, FIVE CORPORA. The projection is injected like every other read model;
         // what is composed HERE is which reader answers for which corpus, and each of them is
         // the reader that corpus already has. Nothing below tokenizes, parses or indexes
