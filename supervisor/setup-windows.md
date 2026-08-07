@@ -172,6 +172,139 @@ not start a worker. To remove it later: `schtasks /Delete /TN SMA-Daemon /F`.
   not on the synthetic smoke. The smoke is deliberately cheap: it proves the
   loop, it does not fill the nightly statistics.
 
+## 6. The first run from the app
+
+Everything above brings the machine up. This section prepares the machine for the
+run where the work itself is started from the app instead of from a command line —
+and, more importantly, for **proving that afterwards**. The claim being made is a
+plain one: for a stretch of working days the only things left at a terminal were
+the four kinds that were agreed to stay there — a measuring run, git history
+surgery, removing the framework from a project, and starting or debugging the
+daemon itself. Nobody can prove that from memory, so the machine writes it down.
+
+Do these in order. Steps 1 and 5 are the machine owner's own decisions and are
+written here as decisions, not as setup.
+
+### 6.1. The terminal journal — a SessionStart hook
+
+One line per terminal session, appended to
+`~/.sma-daemon/terminal-sessions.ndjson`. Add this to your **user-level** Claude
+Code settings (`~/.claude/settings.json`) so it covers every project on the
+machine, not only this checkout — replace `<SMA_HOME>` with the absolute path of
+the SMA clone and keep the forward slashes:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node <SMA_HOME>/supervisor/terminal-journal.mjs log", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If the file already has a `hooks` block, add the entry to it — the settings file
+is yours; nothing here rewrites it for you.
+
+Two properties worth knowing before you rely on it:
+
+- **It cannot get in your way.** Any failure — an unwritable directory, a full
+  disk — is swallowed and the command exits 0. A journal that could stop a session
+  from starting would be worse than no journal at all.
+- **It does not record the daemon's own sessions.** A worker the daemon spawns
+  carries `SMA_HEADLESS` in its environment, and those sessions are skipped. They
+  are the work being done from the app — counting them as terminal runs would bury
+  the evidence in the very thing it measures.
+
+A session start knows *when* a terminal opened and cannot know *what for*. When you
+open a terminal on purpose for one of the four, say so — either set
+`SMA_TERMINAL_REASON` in that terminal, or write the reason by hand:
+
+```powershell
+$env:SMA_TERMINAL_REASON = "git history surgery: rebasing the release branch"
+# or, without touching the environment:
+node <SMA_HOME>/supervisor/terminal-journal.mjs log baseline measurement before the release
+```
+
+An unlabelled session counts as **outside** the list. That is deliberate: the
+burden is on the run that wants to be excused.
+
+### 6.2. The queue's encoding
+
+The run is conducted in the language you actually work in, so a task title has to
+survive the round trip. A queue database created before the starter learned to ask
+for UTF-8 is still on the machine's ANSI code page and will refuse every non-ASCII
+title. Check first, migrate only if the check says so:
+
+```powershell
+cd <SMA_HOME>
+node supervisor/queue-utf8-migrate.mjs            # report only: the encoding, and what is waiting
+# if it is not UTF8 — stop the daemon, then:
+node supervisor/queue-utf8-migrate.mjs --apply
+```
+
+The old database is renamed and **kept**, never dropped, and the export is written
+to a file before anything changes. What a migration does not carry is printed by
+the command itself, before and after. Details in §1.
+
+### 6.3. Account tokens in the daemon's environment
+
+Every worker profile names an environment variable (`account.oauthTokenEnv`); the
+token itself is never written into the config. The variable has to be set **in the
+environment the daemon starts in**, before it spawns anything — a worker that
+starts without it spends a session discovering it is not authenticated. If the
+daemon runs from the Scheduled Task, the task's environment is the one that has to
+carry it, not the shell you happen to be typing in.
+
+### 6.4. Turning the pipeline on
+
+The switch lives on the **«Дом системы»** screen, on the **«Конвейер»** card. Use
+it there — do not edit `~/.sma-daemon/config.json` by hand. The switch is the door
+that both writes the setting and reports back what the daemon then says about it;
+a hand-edited config is a setting nobody confirmed.
+
+A restarted daemon comes up with the pipeline **off** unless it has been turned on
+(a config without the key means off), and it says so in its boot line. If the card
+reads «Состояние неизвестно», the running daemon predates the switch — restart it
+and the line becomes honest.
+
+### 6.5. The Scheduled Task — a decision, with a receipt
+
+Registering and enabling the nightly task is §4, and it stays where it is: the
+machine's owner does it by hand, by explicit decision. It is not a step this
+section performs for you, and nothing automates it quietly. Whichever way you
+decide, write the decision down — «registered on <date>» or «deliberately not
+registered» — so the acceptance run reports a fact rather than a shrug.
+
+### 6.6. Before the run, and how it is read afterwards
+
+Two things to note down **before** the first day:
+
+- **The starting spend.** Open the **«Расходы»** screen and record the number. The
+  price of moving to the app is then a number, not a feeling.
+- **The current bundle.** Anything that changed the app's screens has to have been
+  rebuilt (`cd spa && npm run build`) and the daemon restarted, or the run measures
+  yesterday's code. The daemon serves the bundle from disk and picks a rebuilt one
+  up without a restart — but new **doors** live in its code and do not appear until
+  it is restarted.
+
+Afterwards, the journal is read by one command:
+
+```powershell
+cd <SMA_HOME>
+node supervisor/terminal-journal.mjs report --since 2026-08-10
+```
+
+It prints every session it recorded, marks the ones outside the list with `!`,
+counts each of the four kinds, and the **last line it prints is the number of runs
+outside the list** — the whole claim, in one number a script can read. If there is
+no journal at all it says so and exits 3 rather than printing a comfortable zero:
+absence of a record is not a record of absence.
+
 ---
 
 ## First run
