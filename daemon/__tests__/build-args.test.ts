@@ -1,0 +1,202 @@
+/**
+ * The executor's missing half — `buildArgs`.
+ *
+ * The tick spawns in two moves: `buildArgs(task, route, options)` assembles the spec and
+ * `spawnWorker(spec)` starts it. Only the second was ever wired, so `executorBlocker` refused
+ * every task with «задачу некому запустить» — truthfully, on every tick, since the fleet
+ * shipped. These cases pin the composition that closes that gap.
+ *
+ * What is being tested is deliberately NOT the argument builders — those have their own
+ * suites and are imported here as collaborators. What is tested is the seam nobody owned:
+ * which worker the route named, which account is behind it, which of the two CLIs runs, and
+ * that the parity guard is really in the path rather than merely mentioned in a comment.
+ *
+ * The refusals matter as much as the happy path. A route with no worker is a REAL routing
+ * outcome (the API-fallback and window-exhausted branches produce one), and the honest answer
+ * is a named error the tick records as a task failure — never a guess at whose account to
+ * spend from.
+ */
+
+import { describe, it, expect } from 'vitest'
+
+import { createBuildArgs, NoWorkerForRouteError, CLAUDE_BIN, CODEX_BIN } from '../src/runner/build-args.mjs'
+import { ProfileParityError, assertProfileParity } from '../src/runner/args.mjs'
+
+const claudeWorker = {
+  id: 'max-1',
+  lane: 'prod',
+  provider: 'claude',
+  enabled: true,
+  account: {
+    name: 'max-1',
+    configDir: '/accounts/max-1',
+    oauthTokenEnv: 'SMA_MAX_1_TOKEN',
+    spendLogsDir: '/accounts/max-1/spend',
+  },
+}
+
+const codexWorker = {
+  id: 'pro-1',
+  lane: 'research',
+  provider: 'codex',
+  enabled: true,
+  account: { name: 'pro-1', configDir: '/accounts/pro-1', spendLogsDir: '/accounts/pro-1/spend' },
+}
+
+const CONFIG = { workers: [claudeWorker, codexWorker] }
+const ENV = { SMA_MAX_1_TOKEN: 'oauth-token-value', ANTHROPIC_API_KEY: 'api-key-value' }
+
+const task = (over: Record<string, unknown> = {}) => ({
+  id: 'T-0001',
+  title: 'задача с кириллицей в названии',
+  note: 'подробности задачи',
+  lane: 'prod',
+  ...over,
+})
+
+const route = (over: Record<string, unknown> = {}) => ({
+  workerId: 'max-1',
+  provider: 'claude',
+  model: null,
+  effort: null,
+  useApiFallback: false,
+  reason: 'profile',
+  ...over,
+})
+
+// The product is plain JS with JSDoc types; the spec it returns is a bag of strings. `any`
+// here keeps the suite about behaviour rather than about the editor's view of an untyped module.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const build = (cfg: any = CONFIG, env: any = ENV): any => createBuildArgs({ config: cfg, env })
+
+describe('buildArgs — the spec the tick spawns', () => {
+  it('assembles a Claude session: binary, base args, account env and the task prompt', () => {
+    const spec = build()(task(), route())
+
+    expect(spec.bin).toBe(CLAUDE_BIN)
+    expect(spec.args.slice(0, 5)).toEqual(['--print', '-', '--output-format', 'stream-json', '--verbose'])
+    expect(spec.workerId).toBe('max-1')
+    expect(spec.provider).toBe('claude')
+
+    // the account's own isolation, and the headless marker — nobody is at this keyboard
+    expect(spec.env.CLAUDE_CONFIG_DIR).toBe('/accounts/max-1')
+    expect(spec.env.SMA_SPEND_LOGS_DIR).toBe('/accounts/max-1/spend')
+    expect(spec.env.SMA_HEADLESS).toBe('1')
+
+    // the task travels as prompt DATA, on stdin — never as an argument
+    expect(spec.prompt).toContain('T-0001')
+    expect(spec.prompt).toContain('задача с кириллицей в названии')
+    expect(spec.args.join(' ')).not.toContain('задача с кириллицей')
+  })
+
+  it('carries the account token BY NAME out of the injected env, into the child env only', () => {
+    const spec = build()(task(), route())
+    expect(spec.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-token-value')
+    // the NAME is config; the VALUE never becomes an argument
+    expect(spec.args.join(' ')).not.toContain('oauth-token-value')
+  })
+
+  it('leaves the token out when the account names no token variable', () => {
+    const cfg = { workers: [{ ...claudeWorker, account: { ...claudeWorker.account, oauthTokenEnv: undefined } }] }
+    const spec = build(cfg)(task(), route())
+    expect(spec.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+  })
+
+  it('adds --forward-subagent-text only when asked — the live attempt log is the reason it exists', () => {
+    const withFlag = build()(task(), route(), { forwardSubagentText: true })
+    const without = build()(task(), route())
+
+    expect(withFlag.args).toContain('--forward-subagent-text')
+    expect(without.args).not.toContain('--forward-subagent-text')
+  })
+
+  it('routes a Codex worker to the other CLI, with a per-task CODEX_HOME', () => {
+    const spec = build()(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
+
+    expect(spec.bin).toBe(CODEX_BIN)
+    expect(spec.args.slice(0, 2)).toEqual(['exec', '--json'])
+    expect(spec.args[spec.args.length - 1]).toBe('-') // prompt on stdin, same law as the other lane
+    expect(String(spec.env.CODEX_HOME)).toContain('codex-tasks')
+    expect(String(spec.env.CODEX_HOME)).toContain('T-0001')
+    expect(spec.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+  })
+})
+
+describe('buildArgs — model and effort come from the profile, and the guard is in the path', () => {
+  it('emits no model/effort flag when neither the task nor the profile names one', () => {
+    const spec = build()(task(), route())
+    expect(spec.args).not.toContain('--model')
+    expect(spec.args).not.toContain('--effort')
+  })
+
+  it('takes the worker profile when the task says nothing', () => {
+    const cfg = { workers: [{ ...claudeWorker, model: 'opus', effort: 'high' }] }
+    const spec = build(cfg)(task(), route())
+    expect(spec.args).toContain('--model')
+    expect(spec.args[spec.args.indexOf('--model') + 1]).toBe('opus')
+    expect(spec.args[spec.args.indexOf('--effort') + 1]).toBe('high')
+  })
+
+  it('lets a per-task override win over the profile', () => {
+    const cfg = { workers: [{ ...claudeWorker, model: 'opus' }] }
+    const spec = build(cfg)(task({ model: 'sonnet' }), route())
+    expect(spec.args[spec.args.indexOf('--model') + 1]).toBe('sonnet')
+  })
+
+  it('the route is NOT a source of model truth — a route naming another model does not move the spec', () => {
+    const cfg = { workers: [{ ...claudeWorker, model: 'opus' }] }
+    const spec = build(cfg)(task(), route({ model: 'haiku' }))
+    // The profile (and a per-task override) decide; a route that disagreed would be a silent
+    // substitution, which is exactly what the parity guard exists to refuse.
+    expect(spec.args[spec.args.indexOf('--model') + 1]).toBe('opus')
+  })
+
+  it('the guard in the path really bites — stated honestly: today it cannot fire from here', () => {
+    // buildArgs derives model/effort from `expectedModelEffort`, the SAME function
+    // `assertProfileParity` measures against, so the assertion inside buildArgs is a tautology
+    // BY CONSTRUCTION and no input can make it throw. It is kept as a tripwire for the edit
+    // that would break it — someone taking model from the route, or from a lane default.
+    // Pretending a test proves otherwise would be theatre, so what is proved here is that the
+    // imported guard is a real one: given divergent args, it throws.
+    expect(() =>
+      assertProfileParity({ args: ['--model', 'haiku'], worker: { model: 'opus' }, task: {} }),
+    ).toThrow(ProfileParityError)
+  })
+})
+
+describe('buildArgs — what it refuses by name instead of guessing', () => {
+  it('refuses a route that named no worker, and says which routing outcome it was', () => {
+    expect(() => build()(task(), route({ workerId: null, reason: 'window_exhausted' }))).toThrow(NoWorkerForRouteError)
+    try {
+      build()(task(), route({ workerId: null, reason: 'window_exhausted' }))
+    } catch (err) {
+      expect(String((err as Error).message)).toContain('window_exhausted')
+    }
+  })
+
+  it('refuses a worker id that is not in this daemon config', () => {
+    expect(() => build()(task(), route({ workerId: 'ghost-9' }))).toThrow(/not in this daemon's config/)
+  })
+
+  it('refuses a worker with no account block — a session needs something to run under', () => {
+    const cfg = { workers: [{ id: 'max-1', lane: 'prod', provider: 'claude', enabled: true }] }
+    expect(() => build(cfg)(task(), route())).toThrow(/no account block/)
+  })
+
+  it('refuses a missing task or route rather than assembling half a spec', () => {
+    expect(() => build()(null as never, route())).toThrow(NoWorkerForRouteError)
+    expect(() => build()(task(), null as never)).toThrow(NoWorkerForRouteError)
+  })
+})
+
+describe('buildArgs — the API fallback', () => {
+  it('adds the API key when the route asked for the fallback', () => {
+    const spec = build()(task(), route({ useApiFallback: true }))
+    expect(spec.env.ANTHROPIC_API_KEY).toBe('api-key-value')
+  })
+
+  it('leaves the API key out of an ordinary subscription spawn', () => {
+    const spec = build()(task(), route())
+    expect(spec.env.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+})
