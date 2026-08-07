@@ -214,6 +214,26 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * THE GAP THIS CASE EXISTS FOR — the most expensive one this root ever had.
+   *
+   * A worker is spawned in two moves: `buildArgs` assembles the spec, `spawnWorker` starts it.
+   * Only the second was ever wired. The loop guards against that honestly — `executorBlocker`
+   * refused every task with «задачу некому запустить» — so the daemon never lied; it simply
+   * could not run a single task, for an entire release line, while its screens, its queue and
+   * its gates all worked.
+   *
+   * Why no existing test caught it: every loop test injects its OWN buildArgs, because that is
+   * how you test a loop. The parts were all green. A wiring gap is invisible to the parts and
+   * visible only here, where the question is «what did the root actually build?» — so the root
+   * returns what it wired, and this asks it.
+   */
+  it('wires BOTH halves of the executor — a task has someone to run it', () => {
+    for (const name of ['buildArgs', 'spawnWorker']) {
+      expect(typeof park.tickDeps[name], `tickDeps.${name} must be a function or no task can ever run`).toBe('function')
+    }
+  })
+
+  /**
    * The config here PINS a repoDir, exactly like the founder's does. TWO different
    * facts leave this root: the tree being served (the pin — every read uses it) and the
    * directory this process started in (the write-time derive baseline). Wiring the served

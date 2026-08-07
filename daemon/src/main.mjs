@@ -106,6 +106,7 @@ import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
+import { createBuildArgs } from './runner/build-args.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
 
@@ -951,6 +952,12 @@ export function createDaemon(o = {}) {
     routing: { resolveRoute },
     windows: windowsOpenFor,
     spawnWorker,
+    // THE OTHER HALF OF THE EXECUTOR. spawnWorker has been wired since the fleet shipped;
+    // buildArgs had no implementation to wire, so `executorBlocker` refused every task with
+    // «задачу некому запустить» — truthfully, on every tick. Both halves are present now, and
+    // the closure is what lets the tick keep its three-argument call: a route names a worker
+    // by id, and the account behind that id lives in config, which never travels through the tick.
+    buildArgs: o.buildArgs ?? createBuildArgs({ config, env: o.env ?? process.env }),
     verbRunner: o.verbRunner,
     report: o.report,
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
@@ -973,6 +980,13 @@ export function createDaemon(o = {}) {
     federation,
     front,
     daemon,
+    // WHAT THE ROOT ACTUALLY WIRED, returned so it can be asserted rather than assumed. This
+    // exists because half the executor was missing for an entire release line: spawnWorker was
+    // wired, buildArgs was not, and every task was refused with «задачу некому запустить» —
+    // truthfully, and invisibly to a suite that injected its own fake into every loop test.
+    // A wiring gap is not findable by testing the parts; it is findable only by asking the
+    // root what it built. Nothing secret is added — `config` is already on this object.
+    tickDeps,
     async start() {
       // The daemon makes its OWN home before anything writes into it: a ledger dir that
       // does not exist is how an attempt's «почему» used to be thrown away (the writer
