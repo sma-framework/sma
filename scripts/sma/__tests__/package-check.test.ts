@@ -71,6 +71,40 @@ describe('package-check — violation classes (Test 2)', () => {
     const clean = checkPackage({ pkgRoot: ROOT, io: io(GOOD, { version: '3.6.0' }, ['bin', 'bin/init.mjs']) })
     expect(clean.violations).toEqual([])
   })
+
+  /**
+   * THE WINDOW HAS TO BE IN THE TARBALL.
+   *
+   * `daemon/static/app/` is gitignored on purpose — a 480 KB minified artefact in every diff
+   * is worse than rebuilding it — and `files[]` packs `daemon/` whole, FROM DISK. Those two
+   * facts together decide what a published release actually contains: the right window, or
+   * none at all. In the second case somebody who has just installed a release opens the app
+   * and is told to go and build one.
+   *
+   * The sentinel is the other half of the rule: only a tree that HAS the window's source is
+   * asked for its output. An installed copy, or a mirror of scripts/sma, never had a `spa/`
+   * and must not be failed for a bundle it was never meant to produce.
+   */
+  const BASE = ['bin', 'bin/init.mjs']
+
+  it('flags a package that would ship without the window', () => {
+    const res = checkPackage({ pkgRoot: ROOT, io: io(GOOD, { version: '3.6.0' }, [...BASE, 'spa/package.json']) })
+    expect(res.violations.map((v) => v.code)).toContain('bundle-missing')
+    // the message has to say what to DO, not only what is wrong
+    expect(res.violations.find((v) => v.code === 'bundle-missing')?.detail).toContain('build:spa')
+  })
+
+  it('is satisfied once the window is built', () => {
+    const present = [...BASE, 'spa/package.json', 'daemon/static/app/index.html']
+    const res = checkPackage({ pkgRoot: ROOT, io: io(GOOD, { version: '3.6.0' }, present) })
+    expect(res.violations).toEqual([])
+  })
+
+  it('never asks a tree without a window source for a window', () => {
+    // no spa/ at all — an installed copy. Absence of the bundle is not a violation there.
+    const res = checkPackage({ pkgRoot: ROOT, io: io(GOOD, { version: '3.6.0' }, BASE) })
+    expect(res.violations.map((v) => v.code)).not.toContain('bundle-missing')
+  })
 })
 
 describe('package-check — the badge law, and only the badge law (Test 4)', () => {

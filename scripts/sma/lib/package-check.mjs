@@ -24,6 +24,11 @@
  *      packages, and the install page PROMISES their licences are tracked here
  *   8. a vendored package whose license sits outside the permissive allowlist —
  *      that is a decision a human makes BEFORE it rides in a published package
+ *   9. the built window (`daemon/static/app/index.html`) missing from disk — it is
+ *      gitignored on purpose and `files[]` packs `daemon/` FROM DISK, so without it a
+ *      release ships with no app at all and tells the person who just installed it to
+ *      go and build one. Only asked where `spa/` exists: an installed copy has no
+ *      window source and is not held to a bundle it was never meant to produce
  *
  * Honest sentinel: run in a tree that is NOT the product package (no
  * capability.json next to the runtime — e.g. a consumer mirror of scripts/sma),
@@ -85,6 +90,34 @@ export function checkPackage({ pkgRoot, io } = {}) {
   // ships with, and every license in it must be one we may vendor. Re-rendered
   // from disk each time: the ledger is compared, never trusted.
   violations.push(...checkDaemonLicenses({ pkgRoot, io: read }).violations)
+
+  // 9. THE WINDOW MUST BE IN THE TARBALL.
+  //
+  // The built app (`daemon/static/app/`) is gitignored on purpose — a 480 KB minified
+  // artefact in every diff is worse than rebuilding it — and `files[]` packs `daemon/`
+  // whole, FROM DISK. Those two facts together mean the published package contains
+  // whatever happened to be sitting in that directory at pack time: the right window, an
+  // old window, or no window at all. In the last case a person who has just installed a
+  // release opens the app and is told to go and build it.
+  //
+  // Staleness is not checked here, and deliberately: `prepublishOnly` now BUILDS the SPA
+  // before this runs, so a stale bundle cannot exist by the time the question is asked.
+  // What can still happen is a build that produced nothing, and that is what this catches.
+  //
+  // Narrow sentinel, in the spirit of the daemon-license ones above: the requirement holds
+  // only where the SOURCE of the window lives. An installed copy, or a consumer mirror of
+  // scripts/sma, has no `spa/` and is not asked for a bundle it was never meant to build.
+  if (read.exists(join(pkgRoot, 'spa', 'package.json'))) {
+    const bundleEntry = join(pkgRoot, 'daemon', 'static', 'app', 'index.html')
+    if (!read.exists(bundleEntry)) {
+      violations.push({
+        code: 'bundle-missing',
+        detail:
+          'daemon/static/app/index.html is not on disk — the package would ship without the window. ' +
+          'Build it first: npm run build:spa',
+      })
+    }
+  }
 
   return { applicable: true, violations }
 }
