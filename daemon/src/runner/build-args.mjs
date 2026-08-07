@@ -61,6 +61,46 @@ export class NoWorkerForRouteError extends Error {
 export const CLAUDE_BIN = 'claude'
 export const CODEX_BIN = 'codex'
 
+/** Names that carry an account secret and are set for the child DELIBERATELY, never inherited. */
+const ALWAYS_STRIPPED = Object.freeze(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'])
+
+/**
+ * workerBaseEnv(env, config) → the environment a child process needs from the operating
+ * system, with every account secret removed.
+ *
+ * THE MISTAKE THIS EXISTS TO PREVENT, measured on the first live spawn: passing only the
+ * account's own three variables as the child's env REPLACES the environment rather than
+ * extending it — so the child had no PATH, could not find its own binary, and the spawn died
+ * with ENOENT. A worker session is an ordinary program: it needs PATH, the system root, a
+ * temp directory, a home. Those come from the daemon's own environment.
+ *
+ * What must NOT come from there is anyone else's key. The daemon holds the token variables of
+ * EVERY configured account; inheriting them wholesale would put account B's credential inside
+ * account A's session — the exact opposite of the per-spawn isolation buildAccountEnv exists
+ * for. So every name any account declares is stripped, and the ONE credential this spawn is
+ * entitled to is put back by buildAccountEnv, under the standard name, from the account it
+ * was routed to.
+ *
+ * @param {object} env
+ * @param {object} config
+ * @returns {object}
+ */
+function workerBaseEnv(env, config) {
+  const secretNames = new Set(ALWAYS_STRIPPED)
+  for (const w of Array.isArray(config.workers) ? config.workers : []) {
+    const account = w && w.account
+    if (!account) continue
+    if (account.oauthTokenEnv) secretNames.add(String(account.oauthTokenEnv))
+    if (account.apiKeyEnv) secretNames.add(String(account.apiKeyEnv))
+  }
+  const out = {}
+  for (const [key, value] of Object.entries(env || {})) {
+    if (secretNames.has(key)) continue
+    out[key] = value
+  }
+  return out
+}
+
 /**
  * createBuildArgs({config, env}) → the `buildArgs(task, route, options)` the tick wants.
  *
@@ -137,6 +177,9 @@ export function createBuildArgs({ config = {}, env = process.env } = {}) {
     // token BY NAME, its spend directory, and the headless marker.
     const spawnEnv = buildAccountEnv({
       account: worker.account,
+      // The OS environment the child cannot run without, minus every account's secrets — see
+      // workerBaseEnv. Without it the child inherits nothing at all, not even PATH.
+      baseEnv: workerBaseEnv(env, config),
       provider,
       env,
       useApiFallback: route.useApiFallback === true,

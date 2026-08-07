@@ -636,9 +636,16 @@ function eligibleLanes(deps) {
 }
 
 /**
- * runSpawn(spawnWorker, spec, onLine) — await a worker child to exit, collecting a
- * synchronous spawn failure as spawnError. Resolves {code, signal, spawnError}. The child
- * is driven entirely through the injected spawnWorker (spawn.mjs in production).
+ * runSpawn(spawnWorker, spec, onLine) — await a worker child to exit, collecting a spawn
+ * failure as spawnError. Resolves {code, signal, spawnError}. The child is driven entirely
+ * through the injected spawnWorker (spawn.mjs in production).
+ *
+ * BOTH SHAPES OF FAILURE, because they arrive by different roads. A refusal spawnWorker can
+ * see for itself — a missing cwd — is thrown, and the catch below collects it. «The program
+ * could not be started» is not a throw at all: Node emits it on the child, asynchronously,
+ * after this function has already returned, so it arrives through onError. Only the first of
+ * the two was ever collected, which is how a binary missing from the child's PATH took the
+ * whole daemon down instead of failing one task.
  */
 function runSpawn(spawnWorker, spec, onLine) {
   return new Promise((resolve) => {
@@ -654,6 +661,7 @@ function runSpawn(spawnWorker, spec, onLine) {
         ...spec,
         onLine,
         onExit: ({ code, signal } = {}) => done({ code: code ?? null, signal: signal ?? null, spawnError: null }),
+        onError: (err) => done({ code: null, signal: null, spawnError: err }),
       })
     } catch (err) {
       done({ code: null, signal: null, spawnError: err })

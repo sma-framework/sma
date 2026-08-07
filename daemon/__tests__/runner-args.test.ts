@@ -287,6 +287,69 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
     }
   })
 
+  it('a spawn that never starts fails ONE task — it does not take the daemon down', async () => {
+    // MEASURED, not imagined. The first live spawn ran a binary that was not on the child's
+    // PATH, and the daemon died: `Error: spawn claude ENOENT`, thrown by EventEmitter because
+    // nothing listened for the child's 'error' event. Node reports that failure
+    // ASYNCHRONOUSLY, after spawnWorker has already returned, so the caller's try/catch —
+    // the only collector there was — could never see it. The loop's own spawnError branch,
+    // written for exactly this case, was never reached.
+    const failure = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT', syscall: 'spawn claude' })
+    // A child that never started, shaped the way Node shapes one: the 'error' arrives later.
+    const neverStarts = () => {
+      const child: any = {
+        pid: undefined,
+        kill: () => {},
+        stdin: { write: () => {}, end: () => {} },
+        on: (event: string, fn: (e: unknown) => void) => {
+          if (event === 'error') setTimeout(() => fn(failure), 0)
+          return child
+        },
+      }
+      return child
+    }
+
+    let reported: unknown = null
+    expect(() =>
+      spawnWorker({
+        bin: 'claude',
+        args: [],
+        cwd: __dirname,
+        env: {},
+        prompt: 'p',
+        spawnImpl: neverStarts,
+        onError: (e: unknown) => {
+          reported = e
+        },
+      }),
+    ).not.toThrow()
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(reported).toBe(failure)
+  })
+
+  it('a child with no usable stdin does not turn one failure into two', () => {
+    // Belt and braces: a child that never started has no pipe to write the prompt into. That
+    // write must not escape as an exception of its own — the failure is already being reported.
+    const brokenPipe = () => {
+      const child: any = {
+        pid: undefined,
+        kill: () => {},
+        stdin: {
+          write: () => {
+            throw Object.assign(new Error('EPIPE'), { code: 'EPIPE' })
+          },
+          end: () => {},
+        },
+        on: () => child,
+      }
+      return child
+    }
+    expect(() =>
+      spawnWorker({ bin: 'claude', args: [], cwd: __dirname, env: {}, prompt: 'p', spawnImpl: brokenPipe, onError: () => {} }),
+    ).not.toThrow()
+  })
+
   it('an absent cwd is REFUSED — a session in the daemon directory is a de-parified session', () => {
     expect(() => spawnWorker({ bin: 'claude', args: [], env: {}, prompt: 'p', spawnImpl: recordingSpawn({}) })).toThrow(
       MissingWorkerCwdError,
