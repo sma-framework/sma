@@ -227,8 +227,13 @@ describe('the production composition root is COMPLETE', () => {
    * visible only here, where the question is «what did the root actually build?» — so the root
    * returns what it wired, and this asks it.
    */
-  it('wires BOTH halves of the executor — a task has someone to run it', () => {
-    for (const name of ['buildArgs', 'spawnWorker']) {
+  it('wires everything a task needs to actually run — all three, not two of three', () => {
+    // Each of these was missing at some point, and each failure looked like something else:
+    // buildArgs → «задачу некому запустить» on every tick; verbRunner → a code task dying in
+    // 300 ms with «среда исполнения недоступна» while the routing journal showed a perfectly
+    // good worker, because the worktree verb could not run and the spawn got a cwd that does
+    // not exist. Listing them together is the point: two of three wired is still zero tasks.
+    for (const name of ['buildArgs', 'spawnWorker', 'verbRunner']) {
       expect(typeof park.tickDeps[name], `tickDeps.${name} must be a function or no task can ever run`).toBe('function')
     }
   })

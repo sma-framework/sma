@@ -615,6 +615,32 @@ export function createDaemon(o = {}) {
     o.execGit ??
     ((args, opts = {}) => execFileSync('git', args, { cwd: opts.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
 
+  // (2c) THE TICK'S VERB RUNNER — the third collaborator the loop declares and production
+  // never wired. `invokeVerb` runs one SMA CLI verb (`worktree provision` above all) through
+  // it; with nothing injected it called `undefined(...)`, its own catch turned that into
+  // `{code:1}`, the tick fell back to a worktree path that does not exist, and the spawn then
+  // failed on a missing cwd. Measured: a code task died in 300 ms with «среда исполнения
+  // недоступна» while the routing journal showed a perfectly good worker.
+  //
+  // NOT the same collaborator as the front's `verbRunner` further down — that one is the
+  // merge verb and takes a merge description. This one takes (bin, args, {cwd}) and answers
+  // {code, stdout}, which is what invokeVerb parses.
+  //
+  // ASYNC on purpose, unlike execGit above: a worktree provision is seconds of git, and a
+  // synchronous child would freeze the front while a task starts.
+  const cliVerbRunner = (bin, args, opts = {}) =>
+    new Promise((resolve) => {
+      execFile(bin, args, { cwd: opts.cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+        // A non-zero verb is DATA, not an exception: the verb prints its own envelope on the
+        // way out and the tick reads it. Only the code changes.
+        resolve({
+          code: err && Number.isFinite(err.code) ? err.code : err ? 1 : 0,
+          stdout: String(stdout ?? ''),
+          stderr: String(stderr ?? ''),
+        })
+      })
+    })
+
   // (3) read seams for the front derive (windows state + usage), thin wiring only.
   const usageReader = (args) => readUsage({ dataDir, ...args })
   // The cost history the spend screen draws — the SAME book, read per day and per lane. The
@@ -958,7 +984,7 @@ export function createDaemon(o = {}) {
     // the closure is what lets the tick keep its three-argument call: a route names a worker
     // by id, and the account behind that id lives in config, which never travels through the tick.
     buildArgs: o.buildArgs ?? createBuildArgs({ config, env: o.env ?? process.env }),
-    verbRunner: o.verbRunner,
+    verbRunner: o.verbRunner ?? cliVerbRunner,
     report: o.report,
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
     // refused task became a silence — every reason the tick names has to reach a log.
