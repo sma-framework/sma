@@ -259,9 +259,14 @@ describe('server.mjs — the closed FIFTY-THREE-route table', () => {
 
     // a LIVE door of the original thirty rotted back into a stub → named
     expect(bareStubsOutside({ ...HANDLERS, handleState: stub }, ROUTES, PENDING_ROUTES)).toEqual(['handleState'])
-    // the same shape on a DECLARED-pending route → silence, which is what «pending» means
-    const pendingKey = [...PENDING_ROUTES][0]
-    expect(bareStubsOutside({ ...HANDLERS, [ROUTES[pendingKey]]: stub }, ROUTES, PENDING_ROUTES)).toEqual([])
+    // The same shape on a DECLARED-pending route → silence, which is what «pending» means.
+    // WITH EVERY SLOT NOW FILLED the real Set is empty, so the second half of the law is
+    // demonstrated against a NAMED one rather than against whatever happened to be left: the
+    // point was always «being named is what buys the silence», and an empty Set is the state
+    // the constant's own header describes as the release being done — not a reason to stop
+    // checking that naming still works.
+    const named = new Set(['GET /api/state'])
+    expect(bareStubsOutside({ ...HANDLERS, handleState: stub }, ROUTES, named)).toEqual([])
   })
 
   /**

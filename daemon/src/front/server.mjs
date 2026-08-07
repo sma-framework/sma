@@ -300,7 +300,7 @@ export const ROUTES = Object.freeze({
  * believe the runtime is enforcing what the suite is.
  */
 export const PENDING_ROUTES = Object.freeze(
-  new Set(['POST /api/ship/gate', 'POST /api/ship/publish']),
+  new Set([]),
 )
 
 // ── response helpers (explicit-pick, no-store, nosniff; constant 401 body) ──
@@ -2036,11 +2036,169 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handleShipGate({ res }) {
-  send501(res)
+// ══════════════ the release: a gate anybody may run, a publication only a person may ══════════════
+//
+// THIS IS THE MOST DANGEROUS PAIR OF DOORS IN THE PRODUCT, and everything below is written
+// against one sentence: NOTHING LEAVES THIS MACHINE WITHOUT A PERSON, AND A PERSON'S WORD IS
+// NOT A CHECKBOX.
+//
+//   - THE GATE IS RUN BY THE DAEMON, NOT BY A WORKER. Its steps are deterministic verbs with
+//     exit codes and machine-readable verdicts, and its receipt is what later unlocks the
+//     publication. Putting that run in the task queue would have made a MODEL the author of
+//     the verdict that opens the most expensive door here — and «the worker said it was
+//     green» is precisely the elevation the queue's own capability rules exist to refuse. So
+//     the run happens where the exit codes are read, and the door answers with the report.
+//   - THE PUBLICATION HAS TWO LOCKS AND THEY ARE DIFFERENT IN KIND. One is a MACHINE fact —
+//     the receipt of a gate run this daemon itself watched go green. The other is a HUMAN
+//     fact — the version string, typed out in full, compared against what the machine says it
+//     is about to publish. A replayed body has the first and cannot have the second; a person
+//     who mistyped the version has the second and learns it before anything moves. Neither
+//     lock can be satisfied by merely REACHING this door, which is the property a checkbox
+//     never has.
+//   - A WORKER HAS NO PATH HERE, STRUCTURALLY. The collaborators are wired into the FRONT's
+//     dependency set and nowhere else; the tick is assembled from a different object and
+//     names neither of them. This is the same containment the conversation door has, and it
+//     is checked by a case rather than promised by this comment.
+//   - THE LOCK LIVES WITH WHOEVER RUNS THE THING. A second gate run while one is in flight,
+//     and a second publication while one is in flight, are both refused by the collaborator
+//     that owns the run — a lock held by anyone else is not a lock.
+
+/**
+ * The receipt formats, as WORDS rather than only as assembled strings — the same device the
+ * workbench receipts use, so a reader can grep the format instead of an example of it.
+ */
+export const SHIP_GATE_RECEIPT_FORMAT = 'ship-gate:<run>'
+export const SHIP_PUBLISH_RECEIPT_FORMAT = 'ship-publish:<version>@<run>'
+
+/** A gate receipt as it may arrive back on the wire. Narrow by construction: it is a string
+ *  THIS daemon issued, and nothing about it needs to be wide. */
+const GATE_RECEIPT_RE = /^ship-gate:[A-Za-z0-9._-]{1,64}$/
+
+/** The longest version string this door will compare — a stamp, never a paragraph. */
+const VERSION_CAP = 64
+
+/**
+ * POST /api/ship/gate — body EMPTY by contract. Run the release gate and report every step.
+ *
+ * The steps are named by the COLLABORATOR, not here: which checks make up a gate is a
+ * property of the project's own runtime, and a door that listed them would be a second
+ * opinion about what «green» means. What this door owns is that every step is reported as it
+ * finishes — a gate that only spoke at the end would be a spinner with extra steps — and that
+ * the report is explicit-picked on the way out.
+ */
+async function handleShipGate({ req, res, deps }) {
+  if (typeof deps.runShipGate !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  if (rejectUnknownKeys(res, body.value || {}, NO_FIELDS)) return undefined
+
+  let run
+  try {
+    run = await deps.runShipGate({
+      // The progress hint. It carries the run and the step and nothing else: an open screen
+      // learns WHERE the gate is, and reads the verdict back through this same answer.
+      onStep: (s) =>
+        emitSafe(deps, {
+          event: 'ship.gate',
+          taskId: String((s && s.taskId) || ''),
+          step: String((s && s.step) || ''),
+        }),
+    })
+  } catch (err) {
+    return send409(res, String((err && err.message) || 'the gate did not run'))
+  }
+  if (run && run.busy === true) {
+    return send409(res, `a gate run is already in flight${run.taskId ? ` (${run.taskId})` : ''}`)
+  }
+  if (!run || typeof run.taskId !== 'string') return send409(res, 'the gate did not run')
+
+  const checks = (Array.isArray(run.checks) ? run.checks : []).map((c) => ({
+    step: String((c && c.step) || ''),
+    ok: !!(c && c.ok),
+    detail: c && typeof c.detail === 'string' && c.detail !== '' ? c.detail : null,
+  }))
+  const green = run.ok === true
+  return sendJson(res, 200, {
+    ok: green,
+    taskId: run.taskId,
+    checks,
+    // A RECEIPT ONLY FOR A GREEN RUN. A red run has nothing to hand the publication door, and
+    // issuing a receipt «for the record» would put a string in a person's hands whose only
+    // possible use is to be pasted into the one field that must not accept it.
+    ...(green && run.receipt ? { receipt: String(run.receipt) } : {}),
+  })
 }
-function handleShipPublish({ res }) {
-  send501(res)
+
+/**
+ * POST /api/ship/publish — body {gateReceipt, confirm}. THE DOOR WITH TWO LOCKS.
+ *
+ * The gate receipt is checked FIRST and against the daemon's own record of what it watched
+ * run — never against the string's shape, which anybody can imitate. Only then is the version
+ * read and compared, character for character, with what was typed.
+ *
+ * BOTH REFUSALS ARE 400 AND SAY WHICH LOCK HELD. That is deliberate: this is not a place to
+ * be coy. A person who pasted a stale receipt or mistyped a version needs to know which of
+ * the two happened, and neither fact tells an attacker anything they could not learn by
+ * looking at the release they are trying to publish.
+ */
+async function handleShipPublish({ req, res, deps }) {
+  if (typeof deps.publishRelease !== 'function' || typeof deps.verifyGateReceipt !== 'function') {
+    return send501(res)
+  }
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['confirm', 'gateReceipt']))) return undefined
+
+  const gateReceipt = b.gateReceipt
+  if (typeof gateReceipt !== 'string' || !GATE_RECEIPT_RE.test(gateReceipt)) {
+    return send400(res, 'gateReceipt must be the receipt of a green gate run')
+  }
+  const confirm = b.confirm
+  if (typeof confirm !== 'string' || confirm.length > VERSION_CAP) {
+    return send400(res, 'confirm must be the exact version string')
+  }
+
+  // ── LOCK ONE: a green run of the gate, as THIS daemon watched it ──
+  let verdict
+  try {
+    verdict = deps.verifyGateReceipt(gateReceipt)
+  } catch {
+    verdict = null
+  }
+  if (!verdict || verdict.green !== true) {
+    return send400(res, String((verdict && verdict.reason) || 'that receipt does not name a green gate run'))
+  }
+
+  // ── LOCK TWO: the version, typed out, matching what this machine states ──
+  let version = null
+  try {
+    version = typeof deps.releaseVersion === 'function' ? deps.releaseVersion() : null
+  } catch {
+    version = null
+  }
+  if (typeof version !== 'string' || version === '') {
+    return send409(res, 'this machine does not state a version — there is nothing to publish')
+  }
+  if (confirm !== version) return send400(res, 'confirm must be the exact version string being published')
+
+  let result
+  try {
+    result = await deps.publishRelease({ version, gateReceipt })
+  } catch (err) {
+    return send409(res, String((err && err.message) || 'the release was not published'))
+  }
+  if (result && result.busy === true) return send409(res, 'a publication is already in flight')
+  if (!result || result.ok !== true) {
+    return send409(res, String((result && result.reason) || 'the release was not published'))
+  }
+
+  emitSafe(deps, { event: 'ship.published', version })
+  return sendJson(res, 200, {
+    ok: true,
+    version,
+    receipt: String(result.receipt || `ship-publish:${version}@${gateReceipt.slice('ship-gate:'.length)}`),
+  })
 }
 
 // ══════════ watching one attempt, and asking one question of every corpus ══════════
