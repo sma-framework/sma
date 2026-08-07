@@ -206,6 +206,37 @@ V5 shipped the engine and a deliberately thin operations panel. V5.1 builds the 
 
 The app arrives already compiled: the npm package carries the built front in `daemon/static/app`, so there is nothing to build before you can open it. The daemon's own dependencies ride inside the package the same way — nineteen packages, about 6 MB, vendored in `daemon/node_modules` — so there is no second `npm install` for it either; the full list, with the licence each one carries, is in [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). From a git clone, `cd spa && npm run build` rebuilds it into that same folder. The daemon needs no further wiring, and the panel it already served stays exactly where it was, as the emergency view. A clean boot says so out loud — one line, *«Buckle up, soldier — the park is live»*, naming the exact address to open; failure was always loud, and success no longer whispers.
 
+### The whole working day, without the terminal
+
+V5.1 put seventeen screens behind the daemon. What came after turned them into a place you can
+actually work from: the route table went from thirty doors to **fifty-three**, declared once and
+frozen, and every one of them is live — there is no «coming soon» handler left in it.
+
+- **The phase cycle, run from the app.** An index of every phase with «N open / M answered», a
+  card per phase with its four stages and a button on each, plans and summaries opened in place
+  as plain text, and the acceptance list answered line by line. A phase is named the way *you*
+  named it in the roadmap, not by its directory.
+- **A parked question is answered on a card.** When a stage stops to ask, the question arrives in
+  the window in exactly the shape the engine parked it — a variant or your own words, one of the
+  two, and the form says which to remove rather than silently dropping one.
+- **The live attempt log.** A worker's output streams into the screen *while it is still talking*,
+  including the text of its subagents — so a session that delegates does not go silent behind a
+  spinner for minutes.
+- **The memory workbench.** Drafts are reviewed and applied one at a time, each with its own
+  preview and its own yes; the lint report, the index rebuild and the corpus doors are all in the
+  window. Nothing is written to your corpus without a per-file confirmation.
+- **Coordination and backlog.** Who is holding what, which claims collide, and the backlog with a
+  «promote to a task» door — the same state the terminal reads, in one place.
+- **The ship card — and it never pushes.** It runs the gate, records the run, and marks the
+  result. **The publish itself stays a human action**, by construction: there is no path from the
+  daemon to `origin`, and this card does not invent one.
+- **Search across everything, and Ctrl+K.** One search over tasks, phases, memory and backlog with
+  a visibility filter, and a command palette. The palette **opens the thing that acts** rather than
+  acting itself — a keystroke is not consent.
+- **Several accounts, secrets staying local.** Accounts are added from the window; the value of a
+  token never travels through it, only the NAME of the variable it lives in. Each worker session
+  is assembled with one account's credentials and no other's.
+
 ### Opening the window — what a first run actually needs
 
 The app belongs to the **optional** V5 layer, and that layer asks for two things the memory and coordination core never does: a process that stays up, and somewhere durable to keep the work. Nothing below is needed to use SMA's memory, coordination or accountability — skip the whole section and everything else still works.
