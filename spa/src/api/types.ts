@@ -1131,6 +1131,17 @@ export interface MemoryDraftRow {
   targetFile: string
   preview: string
   age: string
+  /**
+   * The draft's own declared kind, as data out of the file. The window does not interpret it —
+   * it shows it, so a row that this door cannot apply says which door it belongs to.
+   */
+  kind?: string
+  /**
+   * Whether the APPLY door in front of this list is the one that owns this draft. A corpus
+   * keeps drafts of more than one kind and each has its own door; a button that is always going
+   * to be refused should be off, and say why, rather than teach that by failing.
+   */
+  applicable?: boolean
 }
 
 export interface MemoryDrafts {

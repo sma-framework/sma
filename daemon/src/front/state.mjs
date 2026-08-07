@@ -83,6 +83,7 @@ import { isOpen } from '../policy/windows.mjs'
 import { REASON_LABELS } from '../queue/adapter.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
+import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
 import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 
@@ -887,10 +888,13 @@ export function deriveMemoryDrafts({ config, fsImpl, clock } = {}) {
     }
 
     let targetFile = name
+    let kind = ''
     try {
       const parsed = parseNote(text, { file: name })
-      const recordId = parsed && parsed.frontmatter ? String(parsed.frontmatter.id ?? '').trim() : ''
+      const fm = (parsed && parsed.frontmatter) || null
+      const recordId = fm ? String(fm.id ?? '').trim() : ''
       if (recordId !== '') targetFile = `${recordId}.md`
+      kind = fm ? String(fm.draft_kind ?? '').trim() : ''
     } catch {
       /* an unparseable draft keeps its own name as its target — see the header */
     }
@@ -912,6 +916,16 @@ export function deriveMemoryDrafts({ config, fsImpl, clock } = {}) {
       // is no other side to show, and rendering an empty left column would invent one.
       preview: text.length > DRAFT_PREVIEW_CAP ? text.slice(0, DRAFT_PREVIEW_CAP) : text,
       age: humanAge(ageMs),
+      // WHICH DOOR OWNS THIS DRAFT, said out loud on the row.
+      //
+      // A corpus keeps drafts of more than one kind, and the apply door in front of this list
+      // is the STAGED-RECORD one — the pipeline refuses anything else, by name and correctly. A
+      // list that did not carry the kind would be a panel of rows whose button always fails,
+      // and the reader would learn why only by pressing it. `applicable` is not a second
+      // decision: the pipeline still decides, and this is the same fact read early so a screen
+      // can show the difference instead of discovering it.
+      kind,
+      applicable: kind === PIPELINE_DRAFT_KIND,
     })
   }
   return { drafts }
