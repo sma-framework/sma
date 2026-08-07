@@ -447,7 +447,9 @@ export function Screen() {
           {connected ? (
             <>
               <ConnectedProject project={connected} />
-              <DraftsPanel />
+              {/* Whether «Записи старого образца» is on the glass is decided one line above; a
+                  draft belonging to that panel is told where to go only when there is a there. */}
+              <DraftsPanel migrationShown={connected.migratable === true} />
               <LintPanel />
               <IndexPanel />
             </>
