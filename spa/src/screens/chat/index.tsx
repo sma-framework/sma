@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useChatHistoryQuery, useEnqueue, useSendChat, useStateQuery } from '../../api/queries'
+import { useChatHistoryQuery, useEnqueue, usePhaseStage, useSendChat, useStateQuery } from '../../api/queries'
 import type { ChatTurn } from '../../api/types'
 import { refusalWords } from '../../shell/format'
 import { openScreen } from '../../shell/navigation'
 import { TaskPanel } from '../../shell/TaskPanel'
 import type { ScreenId } from '../registry'
+import { AttachmentViewer } from './AttachmentViewer'
+import { Awaiting } from './Awaiting'
 import { Composer } from './Composer'
 import { TurnList } from './TurnList'
 import type { ChatEntry } from './TurnList'
@@ -35,6 +37,14 @@ import type { ChatEntry } from './TurnList'
  * the truth about the park, which is always the reading. Every turn taken while the screen
  * is open is appended here as it happens, keeping the one thing the book does not keep: the
  * figures behind a spend answer.
+ *
+ * ═════════════ A WORKPLACE: THE QUESTIONS, THE DOCUMENTS, THE WORK ═════════════
+ *
+ * Above the feed sit the questions the machine stopped on, on the shell's own card — the same
+ * card the phase screen mounts, because answering is the same act wherever it is done. Beside
+ * a reply sit the documents it named, opened here as plain text instead of in a terminal. And
+ * a sentence that puts work becomes a draft with a lane, or — for a stage of a phase — a
+ * draft whose button is the phase cycle's own door, never a second way in.
  */
 
 /** Where an answer's link is allowed to send the reader — its name for a screen, and ours. */
@@ -54,6 +64,7 @@ function entryOf(turn: ChatTurn, index: number): ChatEntry {
     ts: turn.ts,
     ...(turn.taskRef ? { taskRef: turn.taskRef } : {}),
     ...(turn.draft ? { draft: turn.draft } : {}),
+    ...(turn.attachments ? { attachments: turn.attachments } : {}),
   }
 }
 
@@ -71,11 +82,13 @@ export function Screen() {
   const history = useChatHistoryQuery()
   const send = useSendChat()
   const enqueue = useEnqueue()
+  const startStage = usePhaseStage()
 
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [text, setText] = useState('')
   const [conversationId, setConversationId] = useState<string | undefined>(undefined)
   const [openTaskId, setOpenTaskId] = useState<string | null>(null)
+  const [reading, setReading] = useState<string | null>(null)
   const [createdTasks, setCreatedTasks] = useState<Record<string, string>>({})
   const [creatingKey, setCreatingKey] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
@@ -122,6 +135,7 @@ export function Screen() {
             ...(answer.draft ? { draft: answer.draft } : {}),
             ...(answer.spend ? { spend: answer.spend } : {}),
             ...(answer.link ? { link: answer.link } : {}),
+            ...(answer.attachments ? { attachments: answer.attachments } : {}),
           })
         },
         onError: (err) => {
@@ -132,17 +146,45 @@ export function Screen() {
   }
 
   /**
-   * «Создать» — the person's own hand, and the ONLY path from a conversation to the queue.
+   * The person's own hand — the ONLY path from a conversation to work of any kind.
    *
-   * The draft names a worker; the queue takes a LANE and routes within it, so the worker's
-   * own lane is what travels. A worker with no lane cannot be routed to, and that is said
-   * plainly rather than posted as a guess.
+   * A STAGE goes to the phase cycle's door, the very same one «Конвейер фаз» presses. It does
+   * NOT go to the queue directly: which lane a stage runs on and what command it carries are
+   * that door's business, and a second author of either would be a second way to start a
+   * stage — which is precisely the thing the frozen dictionary behind that door exists to
+   * prevent. This screen sends a phase and a stage name and nothing else.
+   *
+   * A TASK goes to the ordinary queue door every other screen posts to. Its lane comes from
+   * the draft when the draft named one; otherwise from the proposed worker's own lane, since
+   * the queue takes a lane and routes within it. A worker with no lane cannot be routed to,
+   * and that is said plainly rather than posted as a guess.
    */
   const createFromDraft = (entry: ChatEntry) => {
     const draft = entry.draft
     if (!draft || creatingKey) return
-    const worker = state.data?.rules.workers.find((w) => w.id === draft.worker)
-    const lane = worker?.lane ?? null
+
+    if (draft.data && draft.data.kind === 'stage') {
+      const { phase, stage } = draft.data
+      setProblem(null)
+      setCreatingKey(entry.key)
+      startStage.mutate(
+        { phase, stage },
+        {
+          onSuccess: (result) => {
+            setCreatingKey(null)
+            setCreatedTasks((prev) => ({ ...prev, [entry.key]: result.taskId }))
+          },
+          onError: (err) => {
+            setCreatingKey(null)
+            setProblem(refusalWords(err))
+          },
+        },
+      )
+      return
+    }
+
+    const worker = draft.worker ? state.data?.rules.workers.find((w) => w.id === draft.worker) : undefined
+    const lane = draft.lane ?? worker?.lane ?? null
     if (!lane) {
       setProblem(`Не удалось поставить: у исполнителя «${draft.worker}» не назначена линия работы.`)
       return
@@ -201,6 +243,10 @@ export function Screen() {
         ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {/* Questions first: work is standing still while they wait, and a thing to answer
+              belongs above the thing to read. It renders nothing at all when nothing is open. */}
+          <Awaiting onOpenAttachment={setReading} />
+
           {empty ? (
             <div className="flex flex-1 items-center justify-center p-10">
               <span className="text-[13.5px] text-tx2">Спросите о работе команды или продиктуйте задачу.</span>
@@ -215,6 +261,7 @@ export function Screen() {
               onFollowLink={followLink}
               onCreateDraft={createFromDraft}
               onAmendDraft={amendDraft}
+              onOpenAttachment={setReading}
             />
           )}
           <div ref={bottom} />
@@ -225,6 +272,7 @@ export function Screen() {
 
       {/* The same panel «Сегодня» opens, borrowed from the shell — never a second copy of it. */}
       {openTaskId ? <TaskPanel taskId={openTaskId} onClose={() => setOpenTaskId(null)} /> : null}
+      {reading ? <AttachmentViewer rel={reading} onClose={() => setReading(null)} /> : null}
     </section>
   )
 }

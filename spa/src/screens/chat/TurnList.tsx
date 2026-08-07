@@ -1,4 +1,4 @@
-import type { ChatAnswerLink, ChatDraft, ChatSpendShare, ChatTaskRef } from '../../api/types'
+import type { ChatAnswerLink, ChatAttachment, ChatDraft, ChatSpendShare, ChatTaskRef } from '../../api/types'
 import { statusTone, statusWord } from '../../shell/format'
 import { DraftCard } from './DraftCard'
 
@@ -31,6 +31,8 @@ export interface ChatEntry {
   /** Present only on the live answer — the transcript keeps figures nowhere. */
   spend?: ChatSpendShare[]
   link?: ChatAnswerLink
+  /** Documents this reply named. The transcript DOES keep these — a reply still points. */
+  attachments?: ChatAttachment[]
 }
 
 /** The clock face of a turn. A turn with no moment shows nothing rather than a guess. */
@@ -129,6 +131,46 @@ function SpendLines({
   )
 }
 
+/**
+ * The documents a reply named, as buttons.
+ *
+ * The path is shown as it arrived and handed to the viewer untouched: a person can see WHICH
+ * file they are about to open, and the door — not this row — decides whether it may be. The
+ * label is the file's own name, because that is what a person recognises; the path underneath
+ * is there so a button never opens something other than what it says.
+ */
+function Attachments({
+  attachments,
+  onOpen,
+}: {
+  attachments: ChatAttachment[]
+  onOpen: (rel: string) => void
+}) {
+  return (
+    <div className="flex max-w-[640px] flex-col gap-1">
+      {attachments.map((a) => (
+        <button
+          key={a.rel}
+          type="button"
+          onClick={() => onOpen(a.rel)}
+          className="flex w-full items-center gap-2.5 rounded-[10px] border border-bd bg-surf px-[11px] py-[9px] text-left hover:border-bd2"
+        >
+          <span aria-hidden className="flex-none text-[12px] text-tx3">
+            ▤
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] font-medium text-tx">
+              {a.rel.split('/').filter(Boolean).pop() ?? a.rel}
+            </span>
+            <span className="block truncate font-mono text-[10.5px] text-tx3">{a.rel}</span>
+          </span>
+          <span className="flex-none text-[11.5px] font-medium text-blue">Открыть</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function HumanTurn({ entry }: { entry: ChatEntry }) {
   const time = timeOf(entry.ts)
   return (
@@ -151,6 +193,7 @@ function LeadTurn({
   onFollowLink,
   onCreateDraft,
   onAmendDraft,
+  onOpenAttachment,
 }: {
   entry: ChatEntry
   createdTaskId?: string
@@ -159,6 +202,7 @@ function LeadTurn({
   onFollowLink: (screen: string) => void
   onCreateDraft: (entry: ChatEntry) => void
   onAmendDraft: (entry: ChatEntry) => void
+  onOpenAttachment: (rel: string) => void
 }) {
   return (
     <div className="flex items-start gap-2.5">
@@ -175,6 +219,9 @@ function LeadTurn({
           <SpendLines spend={entry.spend} link={entry.link} onFollow={onFollowLink} />
         ) : null}
         {entry.taskRef ? <TaskLink taskRef={entry.taskRef} onOpen={onOpenTask} /> : null}
+        {entry.attachments && entry.attachments.length > 0 ? (
+          <Attachments attachments={entry.attachments} onOpen={onOpenAttachment} />
+        ) : null}
         {entry.draft ? (
           <DraftCard
             draft={entry.draft}
@@ -199,6 +246,7 @@ export function TurnList({
   onFollowLink,
   onCreateDraft,
   onAmendDraft,
+  onOpenAttachment,
 }: {
   entries: ChatEntry[]
   /** Which drafts have already become tasks, and which task each one became. */
@@ -210,6 +258,7 @@ export function TurnList({
   onFollowLink: (screen: string) => void
   onCreateDraft: (entry: ChatEntry) => void
   onAmendDraft: (entry: ChatEntry) => void
+  onOpenAttachment: (rel: string) => void
 }) {
   return (
     <div className="mx-auto flex w-full max-w-[800px] flex-col gap-[18px] px-7 pt-5 pb-6">
@@ -226,6 +275,7 @@ export function TurnList({
             onFollowLink={onFollowLink}
             onCreateDraft={onCreateDraft}
             onAmendDraft={onAmendDraft}
+            onOpenAttachment={onOpenAttachment}
           />
         ),
       )}

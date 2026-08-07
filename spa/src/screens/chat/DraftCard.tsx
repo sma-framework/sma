@@ -1,5 +1,21 @@
 import type { ChatDraft } from '../../api/types'
 
+/** What a lane is called on the glass. An unknown lane is shown as the daemon spelled it. */
+const LANE_WORD: Record<string, string> = {
+  prod: 'основная',
+  research: 'исследование',
+  paperwork: 'документы',
+  forge: 'кузница',
+}
+
+/** What each stage is called, in the same words «Конвейер фаз» uses for it. */
+const STAGE_WORD: Record<string, string> = {
+  discuss: 'Обсуждение',
+  plan: 'План',
+  execute: 'Исполнение',
+  verify: 'Приёмка',
+}
+
 /**
  * DraftCard — a task the conversation OFFERS, and the two things a person can do with it.
  *
@@ -17,6 +33,15 @@ import type { ChatDraft } from '../../api/types'
  * own gate behind that anyway; this is the half a person can SEE.
  *
  * The line under the buttons says so out loud, in the founder's own words.
+ *
+ * ═══════════════ A DRAFT ARRIVES ONE OF THREE WAYS, AND SAYS WHICH ═══════════════
+ *
+ * A session proposes a WORKER, checked against the roster before it left the daemon. A
+ * sentence that already named its own lane proposes the LANE directly — the thing a roster
+ * pick could never express. And a stage of a phase proposes neither: it carries a goal, and
+ * the button behind it presses the phase cycle's own door, exactly as «Конвейер фаз» does.
+ * All three are the same mechanic — a card, a click, a door — and the card names which one it
+ * is rather than showing a blank where a worker used to be.
  */
 export function DraftCard({
   draft,
@@ -35,21 +60,51 @@ export function DraftCard({
   onOpenTask: (taskId: string) => void
 }) {
   const done = !!createdTaskId
+  const stage = draft.data && draft.data.kind === 'stage' ? draft.data : null
+  const debug = !!(draft.data && draft.data.kind === 'debug')
 
   return (
     <div className="max-w-[480px] overflow-hidden rounded-[11px] border border-bd2 bg-card shadow-panel">
       <div className="flex items-center gap-2 border-b border-bd bg-surf px-3 py-2">
-        <span className="text-[10.5px] tracking-[0.1em] text-tx3 uppercase">Черновик задачи</span>
+        <span className="text-[10.5px] tracking-[0.1em] text-tx3 uppercase">
+          {stage ? 'Черновик стадии' : 'Черновик задачи'}
+        </span>
       </div>
 
       <div className="p-3">
         <div className="mb-2.5 text-[13.5px] font-semibold text-tx">{draft.title}</div>
 
         <div className="mb-3 grid grid-cols-[auto_1fr] gap-x-3.5 gap-y-1.5">
-          <span className="text-[11.5px] text-tx3">Предлагаемый исполнитель</span>
-          <span className="text-[11.5px] font-semibold text-tx">{draft.worker}</span>
-          <span className="text-[11.5px] text-tx3">Режим</span>
-          <span className="text-[11.5px] font-semibold text-tx">{draft.mode}</span>
+          {stage ? (
+            <>
+              <span className="text-[11.5px] text-tx3">Стадия</span>
+              <span className="text-[11.5px] font-semibold text-tx">
+                {STAGE_WORD[stage.stage] ?? stage.stage}
+              </span>
+              <span className="text-[11.5px] text-tx3">Фаза</span>
+              <span className="text-[11.5px] font-semibold text-tx">{stage.phase}</span>
+            </>
+          ) : null}
+          {draft.worker ? (
+            <>
+              <span className="text-[11.5px] text-tx3">Предлагаемый исполнитель</span>
+              <span className="text-[11.5px] font-semibold text-tx">{draft.worker}</span>
+            </>
+          ) : null}
+          {draft.lane ? (
+            <>
+              <span className="text-[11.5px] text-tx3">Линия работы</span>
+              <span className="text-[11.5px] font-semibold text-tx">
+                {LANE_WORD[draft.lane] ?? draft.lane}
+              </span>
+            </>
+          ) : null}
+          {stage ? null : (
+            <>
+              <span className="text-[11.5px] text-tx3">Режим</span>
+              <span className="text-[11.5px] font-semibold text-tx">{draft.mode}</span>
+            </>
+          )}
           {draft.acceptance ? (
             <>
               <span className="text-[11.5px] text-tx3">Признак готовности</span>
@@ -58,9 +113,17 @@ export function DraftCard({
           ) : null}
         </div>
 
+        {debug ? (
+          <div className="mb-3 text-[11.5px] leading-[1.5] text-tx2">
+            Разбор поломки идёт обычной задачей — ход будет виден в журнале попыток на её карточке.
+          </div>
+        ) : null}
+
         {done ? (
           <div className="flex items-center gap-2.5">
-            <span className="text-[12.5px] font-semibold text-ok-tx">Задача поставлена.</span>
+            <span className="text-[12.5px] font-semibold text-ok-tx">
+              {stage ? 'Стадия в очереди.' : 'Задача поставлена.'}
+            </span>
             <button
               type="button"
               onClick={() => onOpenTask(createdTaskId)}
@@ -77,7 +140,7 @@ export function DraftCard({
               onClick={onCreate}
               className="rounded-[8px] bg-blue-d px-3.5 py-[7px] text-[12.5px] font-semibold text-white disabled:opacity-60"
             >
-              {creating ? 'Ставлю…' : 'Создать'}
+              {creating ? 'Ставлю…' : stage ? 'Запустить стадию' : 'Создать'}
             </button>
             <button
               type="button"
