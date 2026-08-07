@@ -41,9 +41,14 @@ import { Readable } from 'node:stream'
 
 import { describe, it, expect } from 'vitest'
 
-import { createFrontServer, ROUTES, CHAT_BODY_CAP } from '../src/front/server.mjs'
+import { TASK_LANES } from '../src/queue/adapter.mjs'
+import { createFrontServer, ROUTES, CHAT_BODY_CAP, STAGE_COMMANDS } from '../src/front/server.mjs'
 import {
   classifyTurn,
+  draftFromIntent,
+  DRAFT_INTENTS,
+  STAGE_TITLES,
+  CHAT_DRAFT_TITLE_CAP,
   answerFailReason,
   answerSpend,
   answerStatus,
@@ -214,6 +219,121 @@ describe('fact models (no session, no cost)', () => {
     expect(answerFailReason({ text: 'почему упала задача', rows: [] }).taskRef).toBe(null)
     expect(answerStatus({ text: 'что с задачей', rows: [] }).taskRef).toBe(null)
     expect(answerSpend({ rows: [], workers: WORKERS }).spend).toEqual([])
+  })
+})
+
+// ═══════ putting work: any lane, by words, and still only a draft ═══════
+//
+// The quick task was always reachable here through the free lane. What that lane could never
+// SAY is the part of the work that is not a title: the lane it belongs to, that a request is
+// a hunt for a cause, and that «стадия N фазы M» is not a task at all. Those sentences are
+// now read by dictionary — instantly, freely, and, most importantly, INERTLY:
+//
+//   NO SESSION. The spawner spy must stay untouched for every one of them. Recognising an
+//   order a person already phrased is not a job for a model.
+//
+//   NO QUEUE, STILL. The enqueue tripwire must stay untouched too. What leaves is a
+//   description of work; the hand that starts it is the person's, on the next screen.
+//
+//   A STAGE DRAFT CARRIES A GOAL. It names no lane and no command — only which stage of
+//   which phase — because the door it belongs to is the phase cycle's, not the task door's.
+
+describe('putting work from a sentence (drafts of every lane, no model)', () => {
+  it('reads each new intent from the founder’s own phrasings', () => {
+    for (const q of ['Запусти стадию планирования фазы 12', 'Начни стадию проверки фазы 7']) {
+      expect(classifyTurn(q), q).toBe('stage')
+    }
+    for (const q of ['Разберись, почему падает сборка окна', 'Отладь импорт агентов — он молчит']) {
+      expect(classifyTurn(q), q).toBe('task-debug')
+    }
+    for (const q of ['Исследуй, как устроен поиск по корпусу', 'Разведай, чем это решают сегодня']) {
+      expect(classifyTurn(q), q).toBe('task-research')
+    }
+    for (const q of ['Поставь длинную задачу: переписать импорт агентов', 'Заведи крупную работу по переносу писем']) {
+      expect(classifyTurn(q), q).toBe('task-prod')
+    }
+    // and the four older classes are read exactly as before — the new patterns are asked
+    // first, so this is the case that would catch them stealing somebody else's question
+    expect(classifyTurn('Добавь задачу: разобраться с письмами о сбоях проверки')).toBe('free')
+    expect(classifyTurn('Почему упала задача про значок тестов?')).toBe('fail-reason')
+    expect(classifyTurn('Что съело ночной лимит?')).toBe('spend')
+    expect(classifyTurn('Что с задачей про импорт?')).toBe('status')
+  })
+
+  it('a long task and a research task carry a LANE, and the words stay the person’s', () => {
+    const long = draftFromIntent({ text: 'Поставь длинную задачу: переписать импорт агентов', kind: 'task-prod' })
+    expect(long!.kind).toBe('draft')
+    expect(long!.draft).toMatchObject({ title: 'Переписать импорт агентов', lane: 'prod' })
+    expect(long!.draft.data).toBeUndefined() // an ordinary task says nothing extra about itself
+
+    const research = draftFromIntent({ text: 'Исследуй, как устроен поиск по корпусу', kind: 'task-research' })
+    expect(research!.draft).toMatchObject({ title: 'Исследуй, как устроен поиск по корпусу', lane: 'research' })
+
+    // the lanes offered are the queue's own frozen four, never a fifth spelling invented here
+    for (const d of [long!, research!]) expect(TASK_LANES).toContain(d.draft.lane)
+  })
+
+  it('a debug request is an ORDINARY task that says what it is — the journal shows the hunt', async () => {
+    const dir = tmp()
+    const { deps: d, spawner, q } = deps(dir)
+    const res = await handleChatTurn({ text: 'Разберись, почему падает сборка окна', deps: d })
+
+    expect(res.kind).toBe('task-debug')
+    expect(res.answer.kind).toBe('draft')
+    expect(res.answer.draft).toMatchObject({ lane: 'prod', data: { kind: 'debug' } })
+    expect(res.answer.draft.title).toBe('Разберись, почему падает сборка окна')
+    expect(spawner.calls).toHaveLength(0) // instant and free — the sentence was already an order
+    expect(q.enqueued).toHaveLength(0) // and inert: the hands are as tied as they ever were
+  })
+
+  it('a stage draft carries the GOAL — which stage of which phase — and no launch of anything', async () => {
+    const dir = tmp()
+    const { deps: d, spawner, q } = deps(dir)
+    const res = await handleChatTurn({ text: 'Запусти стадию планирования фазы 12', deps: d })
+
+    expect(res.kind).toBe('stage')
+    expect(res.answer.draft).toEqual({
+      title: `Стадия «${STAGE_TITLES.plan}» фазы 12`,
+      mode: 'обычный',
+      data: { kind: 'stage', stage: 'plan', phase: '12' },
+    })
+    // a stage names no lane and no command: which lane it runs on and what it runs is the
+    // phase cycle door's business, and repeating either here would be a second author of it
+    expect(res.answer.draft.lane).toBeUndefined()
+    expect(JSON.stringify(res.answer)).not.toContain('/sma-')
+    expect(spawner.calls).toHaveLength(0)
+    expect(q.enqueued).toHaveLength(0)
+
+    // every stage this engine can name is one the phase door actually knows
+    for (const [text, stage] of [
+      ['Запусти стадию обсуждения фазы 3', 'discuss'],
+      ['Начни стадию исполнения фазы 4', 'execute'],
+      ['Проведи стадию проверки фазы 5', 'verify'],
+    ] as const) {
+      const draft = draftFromIntent({ text, kind: 'stage' })!.draft
+      expect(draft.data.stage, text).toBe(stage)
+      expect(Object.keys(STAGE_COMMANDS)).toContain(draft.data.stage)
+    }
+  })
+
+  it('a sentence that names a stage but no phase is a free question, not a stage nobody meant', () => {
+    expect(classifyTurn('Запусти стадию планирования')).toBe('free')
+    expect(classifyTurn('Начни стадию фазы 12')).toBe('free') // which stage? unsaid → unstarted
+    expect(draftFromIntent({ text: 'Запусти стадию планирования', kind: 'stage' })).toBe(null)
+  })
+
+  it('a title is a line: the request after a colon, never longer than the gate allows', () => {
+    const long = 'я'.repeat(CHAT_DRAFT_TITLE_CAP + 80)
+    const draft = draftFromIntent({ text: `Поставь длинную задачу: ${long}`, kind: 'task-prod' })!.draft
+    expect(draft.title.length).toBeLessThanOrEqual(CHAT_DRAFT_TITLE_CAP)
+    // the same ceiling the structural gate applies to a model's draft — one number, not two
+    expect(validateDraft({ ...draft, worker: 'max-1' }, { workers: WORKERS })).not.toBe(null)
+  })
+
+  it('the drafting intents still have NO path to the queue — the word is absent from the module', () => {
+    const src = readFileSync(new URL('../src/front/chat.mjs', import.meta.url), 'utf8')
+    expect(src.includes('enqueue')).toBe(false)
+    expect(DRAFT_INTENTS).toEqual(['stage', 'task-debug', 'task-research', 'task-prod'])
   })
 })
 
