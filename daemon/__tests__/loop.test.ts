@@ -1286,3 +1286,119 @@ describe('runDaemon — a thin setInterval wrapper, no state beyond the handle',
     d.stop() // idempotent
   })
 })
+
+/**
+ * ═════════════ AN ANSWER IS ALSO WORK — AND THE CODE LAW IS UNTOUCHED ══════════════
+ *
+ * «Разберись и скажи» used to end in fail('no_receipt'): the only door to done demanded a
+ * receipt over code that was never supposed to exist. The founder ruled that such a task
+ * ends with the worker's answer, taken to approval to be acknowledged.
+ *
+ * ONE case below opens that door. The other FOUR exist to prove it is a door and not a
+ * hole — each is an attempt that also lacks a receipt, and each must still go red:
+ * a commit on the branch, an edit left uncommitted, an attempt that never explained
+ * itself, and a git that cannot answer. The gate opens ONLY for a repository that cannot
+ * tell the attempt ever happened.
+ */
+describe('a task that needed no code completes on its answer — and nothing else does', () => {
+  const CODE_RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+    reverify: { code: 0, stdout: '{}' }, // exits green, names NO receipt — the old red path
+  }
+
+  /** A git that answers the gate's two questions, and can be told to fail at either. */
+  const makeAnswerGit = ({ commits = '0', dirty = '', throwOn = '' } = {}) =>
+    (args: string[]) => {
+      const verb = args[0]
+      if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
+      if (verb === 'rev-list') return commits
+      if (verb === 'status') return dirty
+      return ''
+    }
+
+  it('changed nothing and explained itself → completes on an answer receipt, and reverify is never asked', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, order, journalled } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: { execGit: makeAnswerGit() },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const [call] = adapter.calls
+    expect(call.op).toBe('complete')
+    expect(call.result.receiptRef).toBe('answer:BL-1#1')
+    // there was nothing to certify, so the verb that certifies was not spent on it
+    expect(order).toEqual(['preflight', 'worktree', 'spawn'])
+    // and the outcome is on the operator's record, never silent
+    expect(journalled.some((e: any) => e.type === 'task.answered' && e.taskId === 'BL-1')).toBe(true)
+  })
+
+  it('a commit on the branch → the code law stands: fail("no_receipt")', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, order } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: { execGit: makeAnswerGit({ commits: '1' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    expect(order).toContain('reverify') // it WAS asked — this is code work
+  })
+
+  it('an edit left uncommitted is unfinished work, not an answer → fail("no_receipt")', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: { execGit: makeAnswerGit({ dirty: ' M daemon/src/loop.mjs' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+  })
+
+  it('an answer nobody wrote down is not an answer → fail("no_receipt")', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line'] }), // no APPROACH_NOTE
+      deps: { execGit: makeAnswerGit() },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+  })
+
+  for (const verb of ['rev-list', 'status']) {
+    it(`git cannot answer "${verb}" → the gate fails SAFE, the old outcome stands`, async () => {
+      const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+      const { deps } = makeDeps({
+        adapter,
+        responses: CODE_RESPONSES,
+        deps: { execGit: makeAnswerGit({ throwOn: verb }) },
+      })
+
+      const res = await tick(deps)
+
+      expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    })
+  }
+
+  it('no git surface at all → the gate cannot open', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({ adapter, responses: CODE_RESPONSES })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+  })
+})
