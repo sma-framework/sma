@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useStateQuery } from '../../api/queries'
 import type { CostPoint, MachineRow } from '../../api/types'
+import { BudgetDialog } from './BudgetDialog'
 import { SpendTable, formatEur, formatTokens } from './SpendTable'
 import type { SpendRow } from './SpendTable'
 import { WindowBars, accountWindows } from './WindowBars'
@@ -73,6 +74,11 @@ function Pill({ value, label, tone = 'text-tx' }: { value: string; label: string
 /**
  * The paid channel in one block: what today cost, what the month has cost, and how much of
  * the ceiling is gone. The ceiling bar changes colour before it is reached, not after.
+ *
+ * The ceiling is also the one number on this screen a person may MOVE — the money boundary is
+ * the founder's own to draw, and it is drawn here, where the spending it governs is visible,
+ * behind a dialog. It is machine-wide: there is exactly one budget stop in this product and it
+ * is the one the fallback rule reads.
  */
 function FallbackCard({
   todayEur,
@@ -85,14 +91,25 @@ function FallbackCard({
   capEur: number
   switchMode: 'subscription' | 'api'
 }) {
+  const [editing, setEditing] = useState(false)
   const pct = capEur > 0 ? Math.max(0, Math.min(100, (monthEur / capEur) * 100)) : 0
   const tone = pct >= 90 ? 'bg-err' : pct >= 70 ? 'bg-warn' : 'bg-green'
 
   return (
     <section className="rounded-[14px] border border-bd bg-card px-6 py-[22px] shadow-panel">
-      <h2 className="m-0 mb-4 text-[14px] font-semibold text-tx">
-        Запасной канал <span className="text-[12px] font-medium text-tx3">(платный)</span>
-      </h2>
+      <div className="mb-4 flex items-center gap-3">
+        <h2 className="m-0 text-[14px] font-semibold text-tx">
+          Запасной канал <span className="text-[12px] font-medium text-tx3">(платный)</span>
+        </h2>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="flex-none rounded-[8px] border border-bd2 px-[13px] py-1.5 text-[11.5px] whitespace-nowrap text-tx2 hover:border-blue hover:text-blue"
+        >
+          Изменить потолок
+        </button>
+      </div>
 
       <div className="mb-5 flex gap-3.5">
         <div className="flex-1 rounded-[10px] border border-bd bg-surf px-4 py-3">
@@ -121,7 +138,9 @@ function FallbackCard({
         </div>
       ) : (
         <p className="m-0 text-[12.5px] text-tx3">
-          Потолок расходов не задан — платный канал ничем не ограничен. Он задаётся в настройках, на «Правилах».
+          Потолок — ноль. Это не «без ограничения»: платный канал не используется вовсе, и при
+          закрытых окнах работа ждёт их открытия, а не уходит за деньги. Это состояние, в котором
+          SMA приезжает.
         </p>
       )}
 
@@ -130,6 +149,13 @@ function FallbackCard({
           ? 'Сейчас включён платный канал: окна подписок исчерпаны, работа идёт за деньги.'
           : 'Сейчас работа идёт по подпискам — платный канал молчит.'}
       </p>
+
+      <p className="m-0 mt-2 text-[11.5px] leading-[1.55] text-tx3">
+        Бюджет-стоп один на всю машину: пока месячные расходы под потолком, машина может уходить
+        на платный канал; как только дошли — перестаёт. Тот же потолок виден среди правил.
+      </p>
+
+      {editing ? <BudgetDialog current={capEur} onClose={() => setEditing(false)} /> : null}
     </section>
   )
 }
