@@ -1159,15 +1159,25 @@ function roadmapTitles(projectDir, io) {
 }
 
 /**
- * The name a PERSON should see for a phase directory: the roadmap's title when the phase
- * number is in the roadmap, and a readable version of the directory's own slug when it is not.
+ * The name a PERSON should see for a phase directory: its NUMBER, then the roadmap's title
+ * when the phase number is in the roadmap, and a readable version of the directory's own slug
+ * when it is not.
+ *
+ * THE NUMBER LEADS, and it is not decoration. A phase is referred to by number in every other
+ * surface of this product — the commands take one, the plans are named by one, and a person
+ * saying «двенадцатая» means the number. Taking the title from the roadmap dropped it, because
+ * a roadmap heading names the phase and the heading's own number is stripped as part of
+ * parsing it; the screen then read as a list of unrelated sentences. Restored here rather than
+ * by keeping the slug, so the row says both what it IS and how to ask for it.
+ *
  * Never invents: a phase the roadmap does not mention keeps its own words, only spelled with
- * spaces instead of dashes.
+ * spaces instead of dashes — and still carries its number.
  */
 function phaseTitleOf(dir, titles) {
   const n = phaseNumberOf(dir)
   const fromRoadmap = n === null ? null : titles.get(n)
-  return fromRoadmap && fromRoadmap.trim() !== '' ? fromRoadmap : readableSlug(phaseNameOf(dir))
+  const words = fromRoadmap && fromRoadmap.trim() !== '' ? fromRoadmap : readableSlug(phaseNameOf(dir))
+  return n === null ? words : `${n} · ${words}`
 }
 
 /** Where a stage stands, read off the files of the phase directory and nothing else. */

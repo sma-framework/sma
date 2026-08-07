@@ -379,7 +379,9 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
     expect(payload.phases.map((p: any) => p.id)).toEqual(['12-front', '13-next'])
 
     const worked = payload.phases[0]
-    expect(worked.name).toBe('front')
+    // The NUMBER leads, then the words. A phase is asked for by number everywhere else in this
+    // product, so the row has to say both what it is and how to ask for it.
+    expect(worked.name).toBe('12 · front')
     expect(worked.stages).toEqual({ discuss: 'done', plan: 'done', execute: 'done', verify: 'none' })
     expect(worked).toMatchObject({ open: 0, answered: 0 })
 
@@ -501,12 +503,12 @@ describe('a phase is named the way its author named it', () => {
 
   it('takes the title out of the roadmap, by phase number', () => {
     const row = nameOf(withRoadmap(), '12-front') as { name: string }
-    expect(row.name).toBe('SMA — Рабочее место во фронте (полный переход с терминала)')
+    expect(row.name).toBe('12 · SMA — Рабочее место во фронте (полный переход с терминала)')
   })
 
   it('drops a LEADING bracketed aside — bookkeeping in front of a name is not the name', () => {
     const row = nameOf(withRoadmap(), '13-next') as { name: string }
-    expect(row.name).toBe('Управление памятью + укреплённый парк')
+    expect(row.name).toBe('13 · Управление памятью + укреплённый парк')
     // …and a bracket INSIDE the sentence stays, because there it is part of the title
     const twelve = nameOf(withRoadmap(), '12-front') as { name: string }
     expect(twelve.name).toContain('(полный переход с терминала)')
@@ -520,14 +522,14 @@ describe('a phase is named the way its author named it', () => {
   it('falls back to the directory own words, made readable, when the roadmap says nothing', () => {
     // no ROADMAP.md at all — the ordinary state of a project that never wrote one
     const row = nameOf(fixture(), '12-front') as { name: string }
-    expect(row.name).toBe('front')
+    expect(row.name).toBe('12 · front')
   })
 
   it('never invents: a phase the roadmap does not mention is NOT given a neighbour title', () => {
     const row = nameOf(withRoadmap({ [`${PROJECT}/.planning/phases/47.3-legacy-thing/x.md`]: '# x' }), '47.3-legacy-thing') as {
       name: string
     }
-    expect(row.name).toBe('legacy thing')
+    expect(row.name).toBe('47.3 · legacy thing')
     expect(derivePhaseCard({ projectDir: PROJECT, phaseId: '', fsImpl: fixture() })).toBeNull()
   })
 })
