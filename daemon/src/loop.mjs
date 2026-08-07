@@ -21,7 +21,9 @@
  *                  the daemon's word (the Multica «completed = слово демона» anti-lesson).
  *                  Work whose product is PROSE passes the SECOND gate instead (see
  *                  STAGE_ARTIFACTS below): the document its stage owes, on disk AND in the
- *                  history. Two gates, one law — the daemon decides from what it can see for
+ *                  history. Work whose product is an ANSWER passes the THIRD (see
+ *                  answerOnlyGate below): the attempt changed nothing at all and said so.
+ *                  Three gates, one law — the daemon decides from what it can see for
  *                  itself, never from what the worker said about itself.
  *   - merge      — stays a serialized verb invoked ONLY from the front's approve path.
  *                  The loop itself NEVER merges.
@@ -297,6 +299,64 @@ function documentGate(deps, task, cwd) {
     return { reason: 'no_artifact', detail: `${relPath} есть на диске, но не закоммичен — истории он не достался` }
   }
   return { receiptRef: artifactReceipt(relPath, sha) }
+}
+
+/** The receipt an ANSWER completes on: the attempt whose journal carries the words. */
+function answerReceipt(attemptId) {
+  return `answer:${attemptId}`
+}
+
+/**
+ * answerOnlyGate(deps, config, task, branch, workDir, noteWritten) → {receiptRef} when this
+ * attempt is an ANSWER — it changed nothing whatsoever and explained itself — or null when
+ * it is not, and the caller's own gate decides.
+ *
+ * WHY THIS GATE EXISTS. «Разберись и скажи» is real work, and it used to end in
+ * fail('no_receipt'): the worker read, understood, answered — and the queue called it a
+ * defect, because the only door to done demanded a receipt over code that was never
+ * supposed to exist. Twice observed live. The founder's ruling: such a task ends with the
+ * worker's answer, taken to approval to be acknowledged, not with a red row.
+ *
+ * WHY IT DOES NOT WEAKEN «RECEIPTS OR NOTHING». The law it must not touch is about work
+ * that TOUCHED THE REPOSITORY. So this gate opens only when the attempt provably touched
+ * nothing, and it asks git twice, never the worker:
+ *
+ *   1. ZERO COMMITS on the task branch beyond the base the worktree was cut from. The base
+ *      is the main checkout's HEAD — the same anchor `worktree provision` captured as
+ *      EXPECTED_BASE, and the daemon never commits there while a task runs.
+ *   2. A CLEAN worktree. Files edited and left uncommitted are unfinished code work, not an
+ *      answer; that attempt keeps failing exactly as it does today.
+ *
+ * Both questions fail SAFE: no git surface, a throw, a count that is not a plain zero, or a
+ * single dirty line, and the answer is null — the attempt falls through to the code gate and
+ * the old outcome stands. The only way through this door is a repository that cannot tell the
+ * attempt ever happened.
+ *
+ * THE NOTE IS REQUIRED, exactly as everywhere else. An answer nobody wrote down is not an
+ * answer, and the note IS the artefact here — the receipt names the attempt whose journal
+ * holds it, so what the founder acknowledges on the card is the worker's own words.
+ */
+function answerOnlyGate(deps, config, task, branch, workDir, noteWritten) {
+  if (!noteWritten) return null
+  if (typeof deps.execGit !== 'function') return null
+
+  let commits
+  try {
+    commits = String(deps.execGit(['rev-list', '--count', branch, '^HEAD'], { cwd: config.repoDir }) || '').trim()
+  } catch {
+    return null
+  }
+  if (commits !== '0') return null
+
+  let dirty
+  try {
+    dirty = String(deps.execGit(['status', '--porcelain'], { cwd: workDir }) || '').trim()
+  } catch {
+    return null
+  }
+  if (dirty) return null
+
+  return { receiptRef: answerReceipt(attemptIdFor(task.id, task.attempt)) }
 }
 
 /** Worker final-output markers — a SOFT protocol the worker MAY emit. */
@@ -1033,6 +1093,22 @@ export async function tick(deps = {}) {
           await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
           result.completed = task.id
         }
+        return result
+      }
+
+      // (7c) AN ANSWER IS ALSO WORK — and it is asked BEFORE reverify, because an attempt
+      // that touched nothing has nothing for reverify to certify: running it would spend a
+      // verb to learn what git already said. Founder's ruling, in his words: «задача без
+      // кода завершается ответом моим что принято к сведению, в аппрувале». Completing on
+      // the answer receipt parks the row in `awaiting_approval`, where the screen renders
+      // the worker's note as a card to acknowledge — instead of the red row this used to be.
+      const answered = infraReason ? null : answerOnlyGate(deps, config, task, branch, workDir, noteWritten)
+      if (answered) {
+        // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
+        // so «the worker answered» can never be mistaken for «the worker's code passed».
+        writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef: answered.receiptRef })
+        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
+        result.completed = task.id
         return result
       }
 
