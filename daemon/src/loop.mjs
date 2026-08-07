@@ -892,8 +892,23 @@ export async function tick(deps = {}) {
       let workDir = config.repoDir
       if (!isDocument) {
         branch = `wt/${task.id}`
-        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch], config.repoDir)
-        workDir = wt.worktreePath || `${config.repoDir ?? '.'}/../${branch}`
+        // `--json` is not decoration. Without it the verb prints prose for a person —
+        // «SMA worktree: создано -> …» — and parseVerbResult, which looks for the last line
+        // that is a JSON object, finds nothing at all. Asked properly, the verb answers
+        // {ok, path, branch, reused}: `path` is the directory it actually made, and it is not
+        // the directory this code used to guess.
+        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], config.repoDir)
+        // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
+        // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
+        // whose worktree was sitting on disk under a different name died on a missing cwd and
+        // reported «среда исполнения недоступна» — a true sentence about an invented place.
+        if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
+          throw new Error(
+            `worktree provision answered no path for ${branch}` +
+              `${wt && wt.error ? ` (${wt.error})` : ''} — refusing to spawn a session into a directory nobody made`,
+          )
+        }
+        workDir = wt.path
       }
 
       // (6) spawn the routed worker; log + touch (throttled) on every stream line.

@@ -390,7 +390,7 @@ function makeForgeDeps(adapter: any, clock: () => number, order: string[], over:
     routing: { resolveRoute },
     windows: () => true,
     buildArgs: () => ({ bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'IGNORED — forge overrides' }),
-    verbRunner: makeVerbRunner({ worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/F-1' }) } }, order),
+    verbRunner: makeVerbRunner({ worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-1', branch: 'wt/F-1' }) } }, order),
     spawnWorker: makeSpawnWorker(order),
     execGit: over.execGit ?? (() => '.claude/agents/twitter-parser.md'),
     fsImpl: fsFor({ '.claude/agents/twitter-parser.md': AGENT_OK }),

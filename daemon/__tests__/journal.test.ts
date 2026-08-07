@@ -404,7 +404,7 @@ describe('the completion gate asks for the note where it asks for the receipt', 
       verbRunner: async (_bin: string, argsArray: string[]) => {
         const verb = argsArray[1]
         if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
-        if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/x' }) }
+        if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) }
         if (verb === 'reverify') return GREEN_REVERIFY
         return { code: 0, stdout: '{}' }
       },
