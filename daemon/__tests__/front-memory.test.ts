@@ -246,6 +246,32 @@ describe('GET /api/memory/drafts — THE DRAFTS LIST IS DERIVED, NEVER STORED', 
     expect(drafts[0].targetFile).toBe('broken.md')
   })
 
+  it('A ROW SAYS WHICH DOOR OWNS IT — a draft this apply path does not take is marked, not hidden', () => {
+    // a corpus keeps drafts of more than one kind, and the door in front of this list owns one
+    const io = fakeFs({
+      [`${DRAFTS}/lesson_one.md`]: draft('lesson_one', 'первый урок'),
+      [`${DRAFTS}/migration--old_note.md`]: [
+        '---',
+        'id: old_note',
+        'schema_version: 2',
+        'status: draft',
+        'draft_kind: v2-migration',
+        'draft_source: old_note.md',
+        '---',
+        '',
+        'перенос старой заметки',
+      ].join('\n'),
+    })
+    const { drafts } = deriveMemoryDrafts({ config: CONNECTED, fsImpl: io, clock: () => NOW }) as any
+
+    expect(drafts.map((d: any) => [d.id, d.kind, d.applicable])).toEqual([
+      ['lesson_one', 'pipeline-write', true],
+      ['migration--old_note', 'v2-migration', false],
+    ])
+    // it is SHOWN, not filtered away: a draft nobody can act on from here is still a fact
+    expect(drafts).toHaveLength(2)
+  })
+
   it('no path of this machine rides out on the list', async () => {
     const { front } = mkFront()
     const res = await call(front, { url: '/api/memory/drafts' })
