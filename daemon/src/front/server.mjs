@@ -291,8 +291,6 @@ export const ROUTES = Object.freeze({
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([
-    'GET /api/backlog',
-    'POST /api/backlog/promote',
     'GET /api/attempt/:id',
     'POST /api/ship/gate',
     'POST /api/ship/publish',
@@ -2003,12 +2001,6 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handleBacklog({ res }) {
-  send501(res)
-}
-function handleBacklogPromote({ res }) {
-  send501(res)
-}
 function handleAttempt({ res }) {
   send501(res)
 }
@@ -2866,6 +2858,95 @@ async function handleClaimClear({ req, res, deps }) {
 
   emitSafe(deps, { event: 'coordination.updated' })
   return sendJson(res, 200, { ok: true, claim, receipt: `claim-clear:${claim}@${result.by ?? '(unknown)'}` })
+}
+
+// ══════════ the backlog: a board over a file that belongs to a person ══════════
+//
+// THE FILE IS A HAND, NOT A STORE. `.planning/BACKLOG.md` is written by whoever keeps it —
+// sorted, annotated, argued with in prose — and this door reads it and NOTHING ELSE. Putting a
+// line into the queue does not strike it out, does not move it and does not rewrite a byte:
+// deciding a line is done is that person's edit, and a window that quietly kept the file for
+// them would be a window they could no longer trust to be showing what they wrote.
+//
+// THE IDENTIFIER IS DATA, AND THE PARSER KNOWS ONE SHAPE. A bulleted entry whose bold lead is
+// «some letters, a dash, a number» is a row; anything else on the line is prose. WHICH letters
+// is the project's own business, and this daemon carries no list of them — the moment it did,
+// it would be a board that works for one backlog and silently shows nothing for every other.
+//
+// AND NOTHING HERE MINTS A NUMBER. The row already has one, out of the file. This door allocates
+// no identifier and reads no «last one», so the rule that a shared counter is allocated by its
+// own allocator has nothing to break here — there is no allocation to do.
+
+/** The lane a promoted line rides, when the person did not choose one: ordinary work. */
+const BACKLOG_DEFAULT_LANE = 'prod'
+
+/** A backlog identifier as it may arrive on the wire — the SAME shape the board parses by. */
+const BACKLOG_WIRE_ID_RE = /^[A-Z][A-Z0-9]{1,7}-\d{1,6}$/
+
+/** A title a person retyped is a line, not a document — validateTask bounds it again. */
+const BACKLOG_TITLE_CAP = 400
+
+/**
+ * GET /api/backlog — the project's own backlog file, as rows.
+ *
+ * No file is an empty board and not a 404: a project that keeps no backlog is not a broken one,
+ * and a fault code here would send somebody looking for a bug in the door.
+ */
+function handleBacklog({ res, config, deps }) {
+  if (typeof deps.deriveBacklog !== 'function') return send501(res)
+  return sendJson(res, 200, deps.deriveBacklog({ config, fsImpl: deps.fsImpl }))
+}
+
+/**
+ * POST /api/backlog/promote — body {id, lane?, title?}. One line becomes work in the queue.
+ *
+ * THE LINE MUST BE IN THE FILE. The board and this door read it the same way, through the same
+ * derive, so an identifier that is not an open row is a 404 rather than a phantom task nobody
+ * can trace back to anything. That is also where the title comes from when the person did not
+ * retype one — the file's own words, never composed here.
+ *
+ * The row is minted like every other roster task (`R-<epochMs>`, source `roster`, DoR-exempt
+ * because a person pressed it) and goes through the SAME `validateTask` gate: this door adds no
+ * second way into the queue.
+ */
+async function handleBacklogPromote({ req, res, config, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.enqueue !== 'function' || typeof deps.deriveBacklog !== 'function') {
+    return send501(res)
+  }
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id', 'lane', 'title']))) return undefined
+
+  const id = b.id
+  if (typeof id !== 'string' || !BACKLOG_WIRE_ID_RE.test(id)) return send400(res, 'invalid id')
+  const lane = b.lane === undefined || b.lane === null ? BACKLOG_DEFAULT_LANE : String(b.lane)
+  if (!TASK_LANES.includes(lane)) return send400(res, `lane must be one of ${TASK_LANES.join('|')}`)
+  if (b.title !== undefined && (typeof b.title !== 'string' || b.title.length > BACKLOG_TITLE_CAP)) {
+    return send400(res, 'invalid title')
+  }
+
+  const { rows } = deps.deriveBacklog({ config, fsImpl: deps.fsImpl }) || { rows: [] }
+  const row = (Array.isArray(rows) ? rows : []).find((r) => r && r.id === id)
+  if (!row) return send404(res)
+
+  const typed = typeof b.title === 'string' && b.title.trim() !== '' ? b.title.trim() : row.title
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  // The identifier rides in front of the text so a queue row can be read back to the line it
+  // came from. Both halves are the project's own words — nothing is composed by this file.
+  const task = { id: `R-${clock()}`, source: 'roster', title: `${id} · ${typed}`, lane }
+  let norm
+  try {
+    norm = validateTask(task)
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'invalid task'))
+  }
+  const enq = await enqueueOrExplain(res, adapter, norm)
+  if (enq.answered) return undefined
+
+  emitSafe(deps, { event: 'task.queued', taskId: norm.id })
+  return sendJson(res, 200, { ok: true, id, taskId: norm.id })
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──

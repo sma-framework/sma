@@ -1,6 +1,6 @@
 /**
- * Tests for the coordination panel — who else has this checkout open, what they reserved, and
- * where two reservations met.
+ * Tests for the coordination panel and the backlog board — who else has this checkout open,
+ * what they reserved, where two reservations met, and the line a person puts into the queue.
  *
  * WHY THESE DOORS EXIST AT ALL: a shared checkout has always been the product's assumption, and
  * the leases, the reservations and the collisions have always been on disk. What was missing was
@@ -16,7 +16,13 @@
  *       never reached, because a foreign clear is a risky operation with a written record.
  *   4.  A NAME THAT COULD READ AS A FLAG NEVER REACHES THE COMMAND — the reservation's name is
  *       held to a grammar before anything is assembled from it.
- *   5.  THE SLOTS ARE FILLED — the two keys are gone from PENDING_ROUTES, and the doors answer.
+ *   5.  THE BACKLOG IS PARSED BY SHAPE, NEVER BY DICTIONARY — the identifier is data out of the
+ *       project's own file and this daemon holds no list of what the letters may be.
+ *   6.  PROMOTING A LINE DOES NOT TOUCH THE FILE — the queue gains a task, the backlog keeps
+ *       every byte it had. That file is a hand, not a store.
+ *   7.  NO NUMBER IS MINTED HERE — the door allocates nothing and reads no «last one», so the
+ *       counter law has nothing to break.
+ *   8.  THE SLOTS ARE FILLED — the four keys are gone from PENDING_ROUTES, and the doors answer.
  *
  * Every ledger read and every verb is injected. No temp directory, no child process, no socket,
  * and no `.sma/` on this machine is opened by this file.
@@ -26,7 +32,7 @@ import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
 
 import { createFrontServer, PENDING_ROUTES, CLAIM_CLEAR_RECEIPT_FORMAT } from '../src/front/server.mjs'
-import { deriveCoordination } from '../src/front/state.mjs'
+import { deriveCoordination, deriveBacklog, BACKLOG_ID_RE } from '../src/front/state.mjs'
 
 const TOKEN = 'k'.repeat(64)
 const PROJECT = '/proj'
@@ -129,7 +135,7 @@ async function call(front: any, o: any) {
   return res
 }
 
-/** A front wired with the coordination collaborators, all of them recording fakes. */
+/** A front wired with the coordination + backlog collaborators, all of them recording fakes. */
 function mkFront(over: any = {}) {
   const cleared: any[] = []
   const enqueued: any[] = []
@@ -150,6 +156,7 @@ function mkFront(over: any = {}) {
         },
       },
       deriveCoordination: (args: any) => deriveCoordination({ ...args, readLedger: () => ledger }),
+      deriveBacklog,
       clearClaim: async (a: any) => {
         cleared.push(a)
         return over.clearResult ?? { cleared: true, by: 'P12 Оля' }
@@ -285,13 +292,132 @@ describe('POST /api/claim/clear — NO RESERVATION IS CLEARED WITHOUT A REASON',
   })
 })
 
+// ═══════════════ THE BACKLOG IS PARSED BY SHAPE, NEVER BY DICTIONARY ═══════════════
+
+describe('GET /api/backlog — THE BACKLOG IS PARSED BY SHAPE, NEVER BY DICTIONARY', () => {
+  it('three open entries become three cards, whatever the letters in front of the number mean', async () => {
+    const { front } = mkFront()
+    const res = await call(front, { url: '/api/backlog' })
+
+    expect(res.statusCode).toBe(200)
+    const { rows } = JSON.parse(res.body)
+    expect(rows).toHaveLength(3)
+    expect(rows.map((r: any) => r.id)).toEqual(['AB-205', 'QQQ-7', 'ZZ-1'])
+    expect(rows[0].title).toBe('Вторая волна методологий очереди — по данным пилота решить, что докручиваем. `size:M` `area:os` `added:2026-07-17`')
+    expect(rows[0].ageLine).toBe('added:2026-07-17')
+    // a line with no date tag says nothing rather than guessing one
+    expect(rows[2].ageLine).toBe('added:2026-08-01')
+  })
+
+  it('a finished line is not work waiting, and prose is not a row', async () => {
+    const { front } = mkFront()
+    const { rows } = JSON.parse((await call(front, { url: '/api/backlog' })).body)
+    expect(rows.some((r: any) => r.id === 'AB-100')).toBe(false)
+    expect(rows.some((r: any) => r.title.includes('Свободный текст'))).toBe(false)
+    expect(rows.some((r: any) => r.title.includes('просто пункт'))).toBe(false)
+  })
+
+  it('this daemon holds NO list of known prefixes — the shape is the whole rule', () => {
+    // an identifier nobody in this product has ever seen is a row like any other
+    const io = fakeFs({ [`${PROJECT}/.planning/BACKLOG.md`]: '- [ ] **XYZW-42** · Чужой реестр, чужие буквы.' })
+    const { rows } = deriveBacklog({ config: CONNECTED, fsImpl: io }) as any
+    expect(rows).toEqual([{ id: 'XYZW-42', title: 'Чужой реестр, чужие буквы.', ageLine: '' }])
+    // and the door's own guard is the SAME shape, not a second one
+    expect(BACKLOG_ID_RE.test('XYZW-42')).toBe(true)
+    expect(BACKLOG_ID_RE.test('не-идентификатор')).toBe(false)
+  })
+
+  it('no backlog file is an empty board, honestly — never a 404 that reads as a fault', async () => {
+    const { front } = mkFront({ fsImpl: fakeFs({}) })
+    const res = await call(front, { url: '/api/backlog' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ rows: [] })
+    expect(deriveBacklog({ config: {}, fsImpl: fakeFs({}) })).toEqual({ rows: [] })
+  })
+})
+
+// ═══════════════ PROMOTING A LINE DOES NOT TOUCH THE FILE ═══════════════
+
+describe('POST /api/backlog/promote — PROMOTING A LINE DOES NOT TOUCH THE FILE', () => {
+  it('the queue gains a task, and the backlog keeps every byte it had', async () => {
+    const { front, enqueued, emitted, io } = mkFront()
+    const before = io.files.get(`${PROJECT}/.planning/BACKLOG.md`)
+
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/backlog/promote',
+      body: { id: 'AB-205', lane: 'research' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0].lane).toBe('research')
+    expect(enqueued[0].source).toBe('roster')
+    expect(enqueued[0].title).toContain('AB-205')
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, id: 'AB-205', taskId: enqueued[0].id })
+    expect(emitted).toContainEqual({ event: 'task.queued', taskId: enqueued[0].id })
+    // THE FILE IS A HAND, NOT A STORE — byte for byte what it was
+    expect(io.files.get(`${PROJECT}/.planning/BACKLOG.md`)).toBe(before)
+  })
+
+  it('a title the person typed wins over the line, and the id still names the row', async () => {
+    const { front, enqueued } = mkFront()
+    await call(front, {
+      method: 'POST',
+      url: '/api/backlog/promote',
+      body: { id: 'QQQ-7', lane: 'prod', title: 'сузить до одного работника' },
+    })
+    expect(enqueued[0].title).toBe('QQQ-7 · сузить до одного работника')
+  })
+
+  it('a line that is not in the file is a 404 — the queue never gains a phantom', async () => {
+    const { front, enqueued } = mkFront()
+    const res = await call(front, { method: 'POST', url: '/api/backlog/promote', body: { id: 'AB-999', lane: 'prod' } })
+    expect(res.statusCode).toBe(404)
+    expect(enqueued).toHaveLength(0)
+  })
+
+  it('a finished line cannot be promoted — the board and the door read the file the same way', async () => {
+    const { front, enqueued } = mkFront()
+    const res = await call(front, { method: 'POST', url: '/api/backlog/promote', body: { id: 'AB-100', lane: 'prod' } })
+    expect(res.statusCode).toBe(404)
+    expect(enqueued).toHaveLength(0)
+  })
+
+  it('an id outside the shape, an unknown lane and an unknown key are all a 400', async () => {
+    for (const body of [
+      { id: '../../etc', lane: 'prod' },
+      { id: 'AB-205', lane: 'whatever' },
+      { id: 'AB-205', lane: 'prod', corpus: '/elsewhere' },
+      { lane: 'prod' },
+    ]) {
+      const { front, enqueued } = mkFront()
+      const res = await call(front, { method: 'POST', url: '/api/backlog/promote', body })
+      expect(res.statusCode, JSON.stringify(body)).toBe(400)
+      expect(enqueued, JSON.stringify(body)).toHaveLength(0)
+    }
+  })
+
+  it('NO NUMBER IS MINTED HERE — the door allocates nothing and reads no «last one»', async () => {
+    const slots: any[] = []
+    const { front, enqueued } = mkFront({ deps: { nextSlot: (...a: any[]) => slots.push(a) } })
+    await call(front, { method: 'POST', url: '/api/backlog/promote', body: { id: 'AB-205', lane: 'prod' } })
+    // the identifier on the queue row is the one the FILE already carries — nothing was allocated
+    expect(slots).toHaveLength(0)
+    expect(enqueued[0].title.startsWith('AB-205')).toBe(true)
+    expect(JSON.parse(String(JSON.stringify(enqueued[0])))).not.toHaveProperty('slot')
+  })
+})
+
 // ═══════════════════════════ THE SLOTS ARE FILLED ═══════════════════════════
 
-describe('THE SLOTS ARE FILLED — two keys gone, and the doors answer', () => {
-  it('neither of the two is named in PENDING_ROUTES any more', () => {
+describe('THE SLOTS ARE FILLED — four keys gone, and the doors answer', () => {
+  it('none of the four is named in PENDING_ROUTES any more', () => {
     for (const key of [
       'GET /api/coordination',
       'POST /api/claim/clear',
+      'GET /api/backlog',
+      'POST /api/backlog/promote',
     ]) {
       expect(PENDING_ROUTES.has(key), key).toBe(false)
     }
@@ -302,6 +428,8 @@ describe('THE SLOTS ARE FILLED — two keys gone, and the doors answer', () => {
     for (const [method, url] of [
       ['GET', '/api/coordination'],
       ['POST', '/api/claim/clear'],
+      ['GET', '/api/backlog'],
+      ['POST', '/api/backlog/promote'],
     ]) {
       const res = await call(front, { method, url, body: method === 'POST' ? {} : undefined })
       expect(res.statusCode, url).toBe(501)
