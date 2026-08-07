@@ -189,6 +189,61 @@ describe('buildArgs — what it refuses by name instead of guessing', () => {
   })
 })
 
+describe('buildArgs — the child gets an environment it can actually run in', () => {
+  // MEASURED ON THE FIRST LIVE SPAWN. Handing the child only the account's own three
+  // variables REPLACES its environment rather than extending it: no PATH, so the CLI could
+  // not find its own binary, and the spawn died with ENOENT. A worker session is an ordinary
+  // program — it needs the operating system's environment. What it must NOT get is anyone
+  // else's key, because the daemon holds every configured account's token at once.
+  const OS_ENV = {
+    PATH: 'C:\\Windows\\System32;C:\\Users\\me\\.local\\bin',
+    SystemRoot: 'C:\\Windows',
+    TEMP: 'C:\\Temp',
+    SMA_MAX_1_TOKEN: 'token-of-account-one',
+    SMA_MAX_2_TOKEN: 'token-of-account-TWO',
+    ANTHROPIC_API_KEY: 'api-key-value',
+  }
+  const TWO_ACCOUNTS = {
+    workers: [
+      claudeWorker,
+      {
+        id: 'max-2',
+        lane: 'prod',
+        provider: 'claude',
+        enabled: true,
+        account: { name: 'max-2', configDir: '/accounts/max-2', oauthTokenEnv: 'SMA_MAX_2_TOKEN' },
+      },
+    ],
+  }
+
+  it('inherits the operating system environment — PATH above all', () => {
+    const spec = build(TWO_ACCOUNTS, OS_ENV)(task(), route())
+    expect(spec.env.PATH).toBe(OS_ENV.PATH)
+    expect(spec.env.SystemRoot).toBe('C:\\Windows')
+    expect(spec.env.TEMP).toBe('C:\\Temp')
+  })
+
+  it('carries THIS account credential, under the standard name, and no raw token variable', () => {
+    const spec = build(TWO_ACCOUNTS, OS_ENV)(task(), route())
+    expect(spec.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('token-of-account-one')
+    // the raw names are stripped from the base: a name is config, a value is a secret
+    expect(spec.env.SMA_MAX_1_TOKEN).toBeUndefined()
+  })
+
+  it('never lets one account see another account key — the whole point of per-spawn assembly', () => {
+    const spec = build(TWO_ACCOUNTS, OS_ENV)(task(), route())
+    expect(spec.env.SMA_MAX_2_TOKEN).toBeUndefined()
+    expect(JSON.stringify(spec.env)).not.toContain('token-of-account-TWO')
+  })
+
+  it('does not leak the API key into a spawn that did not ask for the fallback', () => {
+    const spec = build(TWO_ACCOUNTS, OS_ENV)(task(), route())
+    expect(spec.env.ANTHROPIC_API_KEY).toBeUndefined()
+    // …and puts it back when the route DID ask
+    expect(build(TWO_ACCOUNTS, OS_ENV)(task(), route({ useApiFallback: true })).env.ANTHROPIC_API_KEY).toBe('api-key-value')
+  })
+})
+
 describe('buildArgs — the API fallback', () => {
   it('adds the API key when the route asked for the fallback', () => {
     const spec = build()(task(), route({ useApiFallback: true }))

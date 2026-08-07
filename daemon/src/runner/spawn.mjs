@@ -52,11 +52,12 @@ export class MissingWorkerCwdError extends Error {
  *
  * @param {{
  *   bin:string, args:string[], cwd:string, env:object, prompt?:string,
- *   spawnImpl?:Function, onLine?:(line:string)=>void, onExit?:(e:{code:number|null,signal:string|null})=>void
+ *   spawnImpl?:Function, onLine?:(line:string)=>void, onExit?:(e:{code:number|null,signal:string|null})=>void,
+ *   onError?:(err:Error)=>void
  * }} opts
  * @returns {{pid:number|undefined, kill:()=>void}}
  */
-export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSpawn, onLine, onExit } = {}) {
+export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSpawn, onLine, onExit, onError } = {}) {
   // TERMINAL PARITY (header): no cwd would mean the daemon's own directory, i.e. a session
   // outside the task's checkout — every hook, note and skill silently different. Refuse.
   if (typeof cwd !== 'string' || cwd.trim() === '') {
@@ -66,10 +67,35 @@ export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSp
   }
   const child = spawnImpl(bin, args, { shell: false, cwd, env })
 
+  // A FAILED SPAWN IS AN EVENT, NOT A THROW — and this listener is what keeps it from being
+  // fatal. Node reports «the program could not be started» (ENOENT, EACCES) by EMITTING
+  // 'error' on the child, asynchronously. An 'error' event with no listener is re-thrown by
+  // EventEmitter as an uncaught exception, so the caller's try/catch — which has already
+  // returned — cannot see it and THE WHOLE DAEMON DIES. Measured exactly that way: one task
+  // whose binary was not on the child's PATH took the entire fleet down with
+  // `Error: spawn claude ENOENT`, while the loop's own spawnError branch, written for this
+  // very case, was never reached.
+  //
+  // Attached BEFORE the stdin write below, because that write is the first thing that can
+  // fail on a child which never started.
+  let failed = false
+  if (typeof child.on === 'function') {
+    child.on('error', (err) => {
+      failed = true
+      if (onError) onError(err)
+    })
+  }
+
   // Task content crosses into the child ONLY here, as stdin data — never a shell arg.
   if (child.stdin) {
-    if (prompt !== undefined && prompt !== null) child.stdin.write(String(prompt))
-    child.stdin.end()
+    try {
+      if (prompt !== undefined && prompt !== null) child.stdin.write(String(prompt))
+      child.stdin.end()
+    } catch (err) {
+      // A child that never started has no pipe to write into. The 'error' event above is the
+      // report; this catch only stops the write from becoming a second, louder failure.
+      if (!failed && onError) onError(err)
+    }
   }
 
   let buf = ''
