@@ -3,6 +3,9 @@ import { useState } from 'react'
 import { useApprove, useStateQuery } from '../../api/queries'
 import type { MemoryNotePointer, ProjectMemorySurface, ProjectMigrationFile } from '../../api/types'
 import { plural } from '../../shell/format'
+import { IndexPanel, LintPanel } from './CorpusPanel'
+import { DraftsPanel } from './DraftsPanel'
+import { CardHead, useMemoryBells } from './shared'
 import { TagCloud } from './TagCloud'
 
 /**
@@ -49,6 +52,19 @@ import { TagCloud } from './TagCloud'
  * written in the older format, and it is deliberately slow: the daemon previews what would
  * change per file, the screen shows that, and each file needs its own «да» before anything
  * is applied. There is no «применить всё» and there must never be one.
+ *
+ * ═════════════════════════ AND, SINCE V5.4, A WORKBENCH ═════════════════════════
+ *
+ * Three more acts over the CONNECTED project's corpus live at the bottom of this screen, each
+ * in its own file in this folder: the lessons the write pipeline staged and stopped on, the
+ * corpus's own check, and the button that regenerates the index. They obey the same law the
+ * migration list has obeyed since V5.1 — a change is SHOWN before it is offered, and it is
+ * agreed to one file at a time.
+ *
+ * They are shown only while a project is connected, and they ask nothing while it is not. That
+ * is not caution about an empty answer: the workbench reads THE CONNECTED PROJECT's corpus, the
+ * same one the panel above it reads, and a workbench that quietly worked on a different tree
+ * than the notebook beside it would be one screen whose two halves disagree without saying so.
  */
 
 /** A byte count in the words a person reads without translating. */
@@ -65,15 +81,6 @@ function Pill({ value, label }: { value: string; label: string }) {
     <div className="flex flex-none items-baseline gap-2 rounded-[9px] border border-bd bg-card px-3.5 py-1.5 shadow-panel">
       <span className="text-[16px] font-bold text-tx tabular-nums">{value}</span>
       <span className="text-[11.5px] text-tx2">{label}</span>
-    </div>
-  )
-}
-
-function CardHead({ title, note }: { title: string; note?: string }) {
-  return (
-    <div className="flex items-baseline gap-2.5 border-b border-bd px-[18px] py-[13px]">
-      <span className="text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">{title}</span>
-      {note ? <span className="text-[11px] text-tx3 tabular-nums">{note}</span> : null}
     </div>
   )
 }
@@ -333,6 +340,9 @@ function ConnectedProject({ project }: { project: ProjectMemorySurface }) {
 
 export function Screen() {
   const state = useStateQuery()
+  // The corpus does not move under the eye, so its two reads are not on the steady rhythm and
+  // this one bell is how the screen learns that a terminal changed something.
+  useMemoryBells()
   const memory = state.data?.memory
   const filled = memory && !memory.absent ? memory : null
   const projectMemory = state.data?.projectMemory
@@ -435,7 +445,12 @@ export function Screen() {
           )}
 
           {connected ? (
-            <ConnectedProject project={connected} />
+            <>
+              <ConnectedProject project={connected} />
+              <DraftsPanel />
+              <LintPanel />
+              <IndexPanel />
+            </>
           ) : notConnected ? (
             /* The register names a project; nothing on this machine says WHERE it is. Saying
                that plainly is the whole of this branch — the alternative was
