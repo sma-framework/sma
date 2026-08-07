@@ -258,6 +258,43 @@ Across machines, daemons federate. You nominate one daemon as the **hub** and in
 
 The network between your machines is **yours, not ours**: a private mesh (WireGuard, Tailscale, or a self-hosted coordinator). **The daemon never asks to be exposed to the public internet**, and no vendor cloud appears anywhere in this design.
 
+### What the machine needs — measured, not guessed
+
+The core of SMA needs nothing: it is plain files next to your code. The **fleet** is what asks for a
+machine, so here is what each part of it actually costs, measured on a reference Windows host
+(12 logical processors, 13 GB) running this repository's own suite and real worker sessions:
+
+| | Measured |
+|---|---|
+| The daemon itself | **22 MB** |
+| PostgreSQL (the queue) | **~30 MB** idle |
+| One worker session | **~310 MB** average, ~380 MB at its peak |
+| One full parallel test run | **~1 GB** peak, and it takes *cores − 1* workers |
+
+Those four numbers are the whole model. A machine running **W** windows at once, with **T** test
+runs happening at the same time, wants roughly `W × 0.4 GB + T × 1 GB` of working set, plus your
+operating system, plus as much again for the file cache — and the cache is not optional comfort: it
+is what keeps `git` fast when every worker has its own worktree of a thousand-file checkout.
+
+**Worked example — three projects, three windows each (nine sessions):** about 3.6 GB of sessions,
+two suites running at once ≈ 2 GB, daemon and queue ≈ 0.5 GB. Call it **6 GB of working set**, and
+then leave room for the OS and the cache:
+
+- **RAM — 16 GB is the floor, 32 GB is where it stops being tight.** Prefer a machine whose memory
+  you can add to later over one where it is soldered.
+- **CPU — 8 cores / 16 threads minimum.** The heaviest thing this fleet ever does is your own test
+  suite, run in parallel, several times a day; two suites at once will use every thread you have.
+- **Disk — an NVMe SSD, 1 TB works and 2 TB is comfortable.** Size is not the interesting number:
+  **write endurance is**. Provisioning and removing worktrees is a constant stream of small-file
+  writes, so prefer a drive with DRAM cache and a TBW rating you can look up.
+- **No GPU.** The model runs on the provider's side; nothing here is local inference. A machine sold
+  on its graphics is money spent on a capability this fleet never uses.
+
+Two honest caveats. These are measurements from **one** machine and **one** codebase — the variable
+that moves them most is your own test suite, so measure yours before buying for it. And a session
+that mostly waits on the network costs far less than one that is running your build; the 310 MB
+average above is real work, not idling.
+
 ## Before SMA → After SMA
 
 The whole point of SMA is the second column. Same agent, same model — a different discipline around it.
