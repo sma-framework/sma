@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { navScreens } from '../screens/registry'
 import type { ScreenId } from '../screens/registry'
+import { NotifyToggle } from './NotifyToggle'
 import { ProjectSelector } from './ProjectSelector'
 import { useTheme } from './ThemeProvider'
 
@@ -231,6 +232,8 @@ export function Sidebar({ active, onOpen }: { active: ScreenId; onOpen: (id: Scr
           <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">K</kbd>
           <span>поиск и действия</span>
         </div>
+
+        <NotifyToggle />
 
         <button
           type="button"

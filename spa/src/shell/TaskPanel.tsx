@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApprove, useReturnTask, useTaskQuery } from '../api/queries'
 import type { TaskAttempt } from '../api/types'
+import { AttemptLog } from './AttemptLog'
 import { attemptsLabel, clockLabel, refusalWords, statusTone, statusWord } from './format'
 import { openScreen } from './navigation'
 
@@ -23,7 +24,25 @@ import { openScreen } from './navigation'
  * The detail is read while the panel is open and not a moment before or after. Approving
  * and returning go through the same actions every other screen uses, so the picture is
  * re-read once, in the one place that knows something changed.
+ *
+ * Since the day the workers' transcripts became readable, the panel also shows the LATEST
+ * attempt as it happens — the same short read, one layer deeper: what was promised, what the
+ * runs said, and what the one still going is saying right now. It is the newest attempt and
+ * only the newest: the older ones are finished work, and finished work is the card's job.
  */
+
+/**
+ * The run whose log is worth watching: the highest-numbered one. The list arrives in the
+ * ledger's order and this does not depend on that order being what anybody assumes.
+ */
+function newestAttempt(attempts: TaskAttempt[]): TaskAttempt | null {
+  let newest: TaskAttempt | null = null
+  for (const a of attempts) {
+    if (a.attempt === null) continue
+    if (newest === null || (newest.attempt ?? -1) < a.attempt) newest = a
+  }
+  return newest
+}
 
 function AttemptLine({ attempt }: { attempt: TaskAttempt }) {
   const started = clockLabel(attempt.startedAt)
@@ -89,6 +108,7 @@ export function TaskPanel({
   const task = detail.data?.task
   const status = task?.status ?? null
   const attempts = detail.data?.attempts ?? []
+  const live = newestAttempt(attempts)
   const returnedNotes = detail.data?.returnedNotes ?? []
   const busy = approve.isPending || returnTask.isPending
 
@@ -199,6 +219,8 @@ export function TaskPanel({
               </div>
             )}
           </div>
+
+          {live ? <AttemptLog taskId={taskId} attempt={live} /> : null}
 
           <button
             type="button"
