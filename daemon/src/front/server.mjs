@@ -2358,16 +2358,27 @@ function stageCommand(stage, phase) {
 const LIVE_STATUSES = Object.freeze(['queued', 'claimed', 'awaiting_approval'])
 
 /**
- * WHERE THE PHASE CYCLE LIVES: the tree this daemon SERVES.
+ * WHERE THE PHASE CYCLE LIVES — decided by the composition root, read here.
  *
- * Not the connected project's folder, and the difference is deliberate rather than convenient:
- * the tick stands a documentary stage in `config.repoDir` and its exit gate looks for the
- * stage's document under that same root. A card that read a different directory than the gate
- * writes into would show a stage as never started while the daemon was completing it. One
- * root, one truth — and if the phase cycle should ever follow the CONNECTED project instead,
- * that is one change in the tick and this function, not a disagreement to live with.
+ * This used to answer `deps.repoDir`, the tree the daemon SERVES, with a reason that still
+ * holds: the tick stands a documentary stage in one root and its exit gate looks for the
+ * stage's document under that same root, so a card reading a DIFFERENT directory would show a
+ * stage as never started while the daemon was completing it. One root, one truth. It also said
+ * that moving the cycle to the CONNECTED project would be «one change in the tick and this
+ * function, not a disagreement to live with». That change is now made — for the reason the
+ * abstract argument could not see: on a real installation the served tree is the product and
+ * the phases live in the workshop beside it, so the screen honestly listed ZERO phases while
+ * twelve sat one directory away.
+ *
+ * The root supplies `phaseCycleDir` and hands the tick the SAME expression, so the pair cannot
+ * drift. `repoDir` stays the fallback for a daemon wired without it — an older composition, or
+ * a test that injects only the served tree.
  */
 function phaseCycleDir(deps) {
+  if (typeof deps.phaseCycleDir === 'function') {
+    const chosen = deps.phaseCycleDir()
+    if (typeof chosen === 'string' && chosen.trim() !== '') return chosen
+  }
   return typeof deps.repoDir === 'string' && deps.repoDir.trim() !== '' ? deps.repoDir : null
 }
 

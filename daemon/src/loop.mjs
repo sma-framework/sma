@@ -889,7 +889,13 @@ export async function tick(deps = {}) {
       // document one merge away from the person who asked for it. The isolation a worktree
       // buys is worth its price for parallel code and is a pure cost for a document.
       let branch = null
-      let workDir = config.repoDir
+      // A DOCUMENTARY stage stands in the project the window is showing, not in the tree this
+      // daemon serves. The two are the same directory on a single-project install and are NOT
+      // the same when the product is served from beside the workshop the phases live in — and
+      // then a card reading one root while the stage writes into the other shows work as never
+      // started while it is being completed. The front's phaseCycleDir is the same expression,
+      // supplied by the same composition root, so the pair cannot drift.
+      let workDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
       if (!isDocument) {
         branch = `wt/${task.id}`
         // `--json` is not decoration. Without it the verb prints prose for a person —

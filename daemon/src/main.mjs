@@ -747,11 +747,26 @@ export function createDaemon(o = {}) {
         deriveState,
         parseReceiptSummary,
         // The phase cycle's two read models. Injected like every other derive, so the door
-        // carries no build edge onto state.mjs; both read the SERVED tree, which is the same
-        // root the tick stands a documentary stage in and its gate looks for the document
-        // under — one directory, one truth about whether a stage is done.
+        // carries no build edge onto state.mjs.
         derivePhaseIndex,
         derivePhaseCard,
+        // WHICH TREE THE PHASE CYCLE LIVES IN — the CONNECTED project, not the served one.
+        //
+        // It used to be repoDir, and the reasoning was sound in the abstract: the tick stands
+        // a documentary stage in one root and its gate looks for the document under that same
+        // root, so a card reading a different directory would show a stage as never started
+        // while the daemon was completing it. One root, one truth.
+        //
+        // The trouble is which root. On this installation the served tree is the product and
+        // the phases live in the workshop beside it, so the screen honestly listed ZERO phases
+        // while twelve sat one directory away — a correct answer to a question nobody asked.
+        // The founder chose the connected project, and the tick was moved with it in the same
+        // change (tickDeps.projectDir below): the two must never disagree, which is why this
+        // is one decision expressed in two places rather than two settings.
+        //
+        // The workbench below has always followed the connected project. Now the whole window
+        // speaks about one project — the one the person selected.
+        phaseCycleDir: () => connectedProjectDir() ?? repoDir,
         // ── the workbench: three read models and four acts, all over the CONNECTED project ──
         // Unlike the phase cycle above, these follow the project the founder SELECTED, because
         // that is the corpus, the checkout and the backlog the window is already showing him.
@@ -984,6 +999,10 @@ export function createDaemon(o = {}) {
     // the closure is what lets the tick keep its three-argument call: a route names a worker
     // by id, and the account behind that id lives in config, which never travels through the tick.
     buildArgs: o.buildArgs ?? createBuildArgs({ config, env: o.env ?? process.env }),
+    // The tree a DOCUMENTARY stage stands in. The same answer the front's phaseCycleDir
+    // gives, and deliberately the same expression: a card that reads one directory while the
+    // stage writes into another shows work as never started while it is being completed.
+    projectDir: o.tickProjectDir ?? (() => connectedProjectDir() ?? config.repoDir),
     verbRunner: o.verbRunner ?? cliVerbRunner,
     report: o.report,
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
