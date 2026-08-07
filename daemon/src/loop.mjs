@@ -557,8 +557,15 @@ function attemptStream(deps, task, streamLines, now) {
   return { onLine, sessionOf: () => state.sessionId }
 }
 
-/** Parse the last JSON object on a verb's stdout; fail-open to {} (never throws). */
-function parseVerbResult(stdout) {
+/**
+ * Parse the last JSON object on a verb's stdout; fail-open to {} (never throws).
+ *
+ * EXPORTED because the front runs verbs too (the memory workbench, the coordination doors) and
+ * «where does a verb's answer end and its chatter begin» must have exactly ONE answer in this
+ * daemon. A second parser would be a second contract with the same CLI, and the day one of them
+ * learned about a new preamble line the other would still be reading it as the result.
+ */
+export function parseVerbResult(stdout) {
   const text = typeof stdout === 'string' ? stdout : ''
   const lines = text.split(/\r?\n/)
   for (let i = lines.length - 1; i >= 0; i -= 1) {

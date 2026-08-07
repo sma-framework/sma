@@ -291,10 +291,6 @@ export const ROUTES = Object.freeze({
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([
-    'GET /api/memory/drafts',
-    'POST /api/memory/apply',
-    'POST /api/memory/index',
-    'GET /api/memory/lint',
     'GET /api/coordination',
     'POST /api/claim/clear',
     'GET /api/backlog',
@@ -2009,18 +2005,6 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handleMemoryDrafts({ res }) {
-  send501(res)
-}
-function handleMemoryApply({ res }) {
-  send501(res)
-}
-function handleMemoryIndex({ res }) {
-  send501(res)
-}
-function handleMemoryLint({ res }) {
-  send501(res)
-}
 function handleCoordination({ res }) {
   send501(res)
 }
@@ -2629,6 +2613,186 @@ function uatDocumentOf(deps, projectDir, phase) {
   const card = deps.derivePhaseCard({ projectDir, phaseId: phase, fsImpl: deps.fsImpl })
   const document = card && card.uatDocument
   return document && typeof document.path === 'string' ? document.path : null
+}
+
+// ══════════ the memory workbench: four doors in front of a conveyor that exists ══════════
+//
+// NOTHING HERE IS A NEW MECHANISM, AND THAT IS THE WHOLE POINT. The write pipeline already
+// refuses to put a lesson into the corpus without a person's word: it STAGES the record in
+// `drafts/` and stops. What it never had was a way for that person to say the word from
+// anywhere but a terminal. These four doors are that way, and they add no second path — the
+// apply runs the pipeline's OWN per-file confirmation, the index runs the generator's own
+// rebuild, the lint runs the corpus linter, and the list is a read off the disk.
+//
+// ONE DOOR IS ONE DRAFT, BY CONSTRUCTION AND NOT BY POLICY. There is no bulk apply in this
+// file, there is no field that could ask for one, and the collaborator behind the door takes a
+// single draft's name. «Принять всё» is not a button somebody decided not to draw — it is a
+// request this surface cannot express. The pipeline's own confirmation is per file for exactly
+// this reason, and a door that batched it would have been the one place the rule dissolved.
+//
+// THE REFUSAL IS THE PRODUCT'S, AND IT ARRIVES INTACT. A staged record that trips the
+// pipeline's secret screen, a draft of a kind this path does not apply, a record whose identity
+// is already taken — none of those is re-decided here. The collaborator returns what the
+// pipeline said and the reason travels to the caller in the pipeline's own words: a door that
+// re-worded a refusal would be a door that could, one day, soften one.
+//
+// THE PROJECT IS NEVER NAMED BY A REQUEST. Which corpus is worked on is the CONNECTED project,
+// resolved by the read models and by the composition root's closures — never a field. There is
+// no body on any of these four that could point at a directory.
+
+/** How many lint findings one report carries — a panel is bounded like every other answer. */
+const LINT_FINDINGS_CAP = 200
+
+/**
+ * The receipt formats, as WORDS rather than only as assembled strings.
+ *
+ * Exported so a reader (and a test) can grep for the format itself instead of for an example
+ * of it — the lesson the update door's receipt paid for.
+ */
+export const MEMORY_APPLY_RECEIPT_FORMAT = 'memory-apply:<draft>-><target>'
+export const MEMORY_INDEX_RECEIPT_FORMAT = 'memory-index:<bytes>b+<area-files>'
+export const CLAIM_CLEAR_RECEIPT_FORMAT = 'claim-clear:<claim>@<by>'
+
+/**
+ * A draft's name as it may arrive on the wire: the stem of a file inside the drafts directory.
+ * No separator and no leading dot, so the collaborator's `join` can only ever land inside that
+ * directory — the same grammar the read model shows a row under, kept here rather than imported
+ * because this file carries no build edge onto the read models.
+ */
+const DRAFT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+/**
+ * How a collaborator's refusal answers.
+ *
+ * A REFUSAL IS NOT A BAD REQUEST. The body was well formed, the door did its job and the
+ * mechanism behind it said no — that is a CONFLICT with the state of this machine, and 400
+ * would send a person to re-read their own typing. The reason travels as the mechanism wrote
+ * it; a missing draft is the one case that is genuinely a 404.
+ */
+function workbenchRefusal(res, result) {
+  if (result && result.missing) return send404(res)
+  return send409(res, String((result && result.reason) || 'refused'))
+}
+
+/**
+ * GET /api/memory/drafts — the lessons waiting for a yes, read off the disk on every call.
+ *
+ * Derived like every other read model and injected the same way, so this file carries no build
+ * edge onto state.mjs. A project with no drafts, and a daemon with no project connected, both
+ * answer an empty list: the panel is empty because there is nothing in it, which is a fact and
+ * not a failure.
+ */
+function handleMemoryDrafts({ res, config, deps }) {
+  if (typeof deps.deriveMemoryDrafts !== 'function') return send501(res)
+  return sendJson(res, 200, deps.deriveMemoryDrafts({ config, fsImpl: deps.fsImpl, clock: deps.clock }))
+}
+
+/**
+ * POST /api/memory/apply — body {draftId, accept}. ONE draft into the corpus.
+ *
+ * `accept` must be the literal `true`. It is not a formality and it is not a default: the field
+ * exists so that a request which merely REACHED this door — a swept route table, a replayed
+ * body, a page that posted early — cannot be read as a person agreeing to a lesson. The same
+ * reasoning the update door's `confirm` carries, applied to the one act in this product that
+ * changes what the machine believes.
+ *
+ * There is no `all`, no array and no glob. `draftId` is one name.
+ */
+async function handleMemoryApply({ req, res, deps }) {
+  if (typeof deps.applyMemoryDraft !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['draftId', 'accept']))) return undefined
+  if (b.accept !== true) return send400(res, 'accept must be true — a draft is accepted one at a time, by hand')
+  const draftId = b.draftId
+  if (typeof draftId !== 'string' || !DRAFT_ID_RE.test(draftId)) return send400(res, 'invalid draftId')
+
+  let result
+  try {
+    result = await deps.applyMemoryDraft({ draftId })
+  } catch (err) {
+    return send409(res, String((err && err.message) || 'the draft could not be applied'))
+  }
+  if (!result || result.applied !== true) return workbenchRefusal(res, result)
+
+  // AFTER the record is in the corpus: a screen that re-reads on the doorbell can never find
+  // the draft it just accepted still sitting in the list. The frame carries nothing.
+  emitSafe(deps, { event: 'memory.drafts' })
+  return sendJson(res, 200, {
+    ok: true,
+    draftId,
+    receipt: `memory-apply:${draftId}->${result.targetFile ?? '(corpus)'}`,
+  })
+}
+
+/**
+ * POST /api/memory/index — body EMPTY by contract. Rebuild the corpus index.
+ *
+ * The index is GENERATED and never hand-edited; the corpus linter has a check that says so out
+ * loud. This door is the button behind that rule — it runs the same regeneration the terminal
+ * runs, in the connected project, and answers with a receipt of what was written.
+ */
+async function handleMemoryIndex({ req, res, deps }) {
+  if (typeof deps.rebuildMemoryIndex !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  if (rejectUnknownKeys(res, body.value || {}, NO_FIELDS)) return undefined
+
+  let result
+  try {
+    result = await deps.rebuildMemoryIndex()
+  } catch (err) {
+    return send409(res, String((err && err.message) || 'the index could not be rebuilt'))
+  }
+  if (!result || result.ok !== true) return workbenchRefusal(res, result)
+  const areas = Array.isArray(result.areaFiles) ? result.areaFiles.length : 0
+  emitSafe(deps, { event: 'memory.drafts' })
+  return sendJson(res, 200, { ok: true, receipt: `memory-index:${result.bytes ?? 0}b+${areas}` })
+}
+
+/**
+ * GET /api/memory/lint — the corpus linter's report, explicit-picked.
+ *
+ * WHAT DOES NOT TRAVEL IS THE POINT: the linter names files by PATH and this answer names them
+ * by NAME, because a note's name is what a person acts on and the directory it sits in is this
+ * machine's business. The linter's third tier (`info`) has no field in the contract and is not
+ * folded into `warnings` — a count that quietly included advisories would be a number nobody
+ * could reconcile with the list beside it.
+ */
+async function handleMemoryLint({ res, deps }) {
+  if (typeof deps.readMemoryLint !== 'function') return send501(res)
+  let answer
+  try {
+    answer = await deps.readMemoryLint()
+  } catch (err) {
+    return send503(res, String((err && err.message) || 'the corpus could not be linted'))
+  }
+  if (!answer || answer.ok !== true) return send503(res, String((answer && answer.reason) || 'unavailable'))
+  const report = answer.report || {}
+
+  const all = (Array.isArray(report.findings) ? report.findings : []).filter(
+    (f) => f && (f.tier === 'critical' || f.tier === 'warn'),
+  )
+  const findings = all.slice(0, LINT_FINDINGS_CAP).map((f) => ({
+    rule: String(f.checkId ?? ''),
+    severity: f.tier === 'critical' ? 'critical' : 'warning',
+    note: String(f.message ?? ''),
+    file: nameOnly(f.file),
+  }))
+  return sendJson(res, 200, {
+    ok: Number(report.critical ?? 0) === 0,
+    critical: Number(report.critical ?? 0),
+    warnings: Number(report.warn ?? 0),
+    findings,
+    ...(all.length > findings.length ? { truncated: true } : {}),
+  })
+}
+
+/** The last segment of a path — a note is named, never located, on the way out of here. */
+function nameOnly(p) {
+  const parts = String(p ?? '').split(/[/\\]+/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : ''
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──

@@ -1161,6 +1161,11 @@ export interface MemoryLintReport {
   critical: number
   warnings: number
   findings: MemoryLintFinding[]
+  /**
+   * The list was cut, and the counts above are still the whole truth. A panel that showed a
+   * bounded list beside an unbounded number without saying so would read as an arithmetic bug.
+   */
+  truncated?: boolean
 }
 
 /** A terminal that has this checkout open right now. */

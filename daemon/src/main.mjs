@@ -39,9 +39,9 @@
  * Node built-ins + the daemon's own modules only. Zero new deps.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -86,9 +86,15 @@ import {
   stopWatch,
   watchProject,
 } from './front/project-sync.mjs'
-import { tick, runDaemon } from './loop.mjs'
+import { tick, runDaemon, parseVerbResult } from './loop.mjs'
 import { createFrontServer } from './front/server.mjs'
-import { deriveState, parseReceiptSummary, derivePhaseIndex, derivePhaseCard } from './front/state.mjs'
+import {
+  deriveState,
+  parseReceiptSummary,
+  derivePhaseIndex,
+  derivePhaseCard,
+  deriveMemoryDrafts,
+} from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries } from './runner/usage.mjs'
@@ -154,6 +160,89 @@ async function runUpdateVerb({ apply = false, projectDir }) {
     },
   })
   return { ...base, ok: applied.ran && applied.exitCode === 0, applied: { ran: applied.ran, exitCode: applied.exitCode ?? null } }
+}
+
+// ══════════ THE WORKBENCH'S COLLABORATORS: the project's OWN runtime, run in place ══════════
+//
+// The memory workbench, the coordination panel and the backlog board all act on the CONNECTED
+// project, and every act they offer ALREADY EXISTS there as a verb of that project's own SMA
+// runtime. So the wiring below runs THAT runtime, in THAT directory, and nothing here
+// re-implements a single rule it holds.
+//
+// WHY THE CHILD PROCESS RATHER THAN AN IMPORT, for these and not for the updater. The corpus
+// linter and the index generator resolve `.claude/memory`, `CLAUDE.md`, `.planning/` and
+// `.sma/` RELATIVE TO THE WORKING DIRECTORY. Imported into this process they would read the
+// tree the DAEMON was started in and report it as the project's — the same class of mistake
+// that once handed the served tree to a config writer and deleted the founder's pin. A child
+// process with `cwd` set is the one arrangement in which «which project» is unambiguous.
+//
+// NO REQUEST NAMES A COMMAND. Each door gets a collaborator that takes DATA — a draft's name, a
+// reservation's name, a reason — and the verb it runs is a constant of this file. A shared
+// generic runner reaching a request path is the endpoint the front promises never to grow.
+
+/** Where a project keeps its own SMA runtime — the layout the installer writes, and only it. */
+const PROJECT_CLI_SEGMENTS = Object.freeze(['scripts', 'sma', 'cli.mjs'])
+
+/** A verb of somebody else's checkout gets a bounded run: two minutes, eight megabytes. */
+const PROJECT_VERB_TIMEOUT_MS = 120000
+const PROJECT_VERB_MAX_BUFFER = 8 * 1024 * 1024
+
+/** How much of a mechanism's refusal travels back — a sentence, never a transcript. */
+const REFUSAL_CAP = 500
+
+/**
+ * A refusal with this machine's geography taken out of it.
+ *
+ * THE REDUCTION WHERE PATHS STOP, for the same reason the update door has one: the pipeline
+ * writes honest messages that quote the file they are about, and a file is quoted BY ITS FULL
+ * PATH. The words are the mechanism's; the directory they sit in is this machine's business.
+ */
+function withoutPaths(text, projectDir) {
+  let out = String(text ?? '')
+  for (const form of [projectDir, String(projectDir ?? '').replace(/\\/g, '/')]) {
+    if (typeof form === 'string' && form.trim() !== '') out = out.split(form).join('…')
+  }
+  return out.slice(0, REFUSAL_CAP)
+}
+
+/**
+ * runProjectVerb({verb, args, projectDir}) → {ok, code, result, reason}.
+ *
+ * One verb of the connected project's own runtime, run in that project's directory, with no
+ * shell anywhere (an argument array, always). A project that is not connected and a project
+ * with no SMA runtime are both an honest refusal — never a throw and never a silent zero.
+ */
+function runProjectVerb({ verb, args = [], projectDir }) {
+  return new Promise((resolve) => {
+    if (typeof projectDir !== 'string' || projectDir.trim() === '') {
+      resolve({ ok: false, code: 1, reason: 'no project is connected' })
+      return
+    }
+    const cli = join(projectDir, ...PROJECT_CLI_SEGMENTS)
+    if (!existsSync(cli)) {
+      resolve({ ok: false, code: 1, reason: `the connected project carries no SMA runtime (${PROJECT_CLI_SEGMENTS.join('/')})` })
+      return
+    }
+    execFile(
+      process.execPath,
+      [cli, verb, ...args],
+      { cwd: projectDir, encoding: 'utf8', timeout: PROJECT_VERB_TIMEOUT_MS, maxBuffer: PROJECT_VERB_MAX_BUFFER, windowsHide: true },
+      (err, stdout) => {
+        const parsed = parseVerbResult(String(stdout ?? ''))
+        const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0
+        // A NON-ZERO EXIT IS NOT AUTOMATICALLY A FAILURE: these verbs answer «no» with an exit
+        // code AND a parsed verdict, and the verdict is what the door reports. `ok` says only
+        // whether the run produced one at all.
+        const spoke = parsed && Object.keys(parsed).length > 0
+        resolve({
+          ok: spoke,
+          code,
+          result: parsed,
+          ...(spoke ? {} : { reason: withoutPaths((err && err.message) || 'the verb printed no result', projectDir) }),
+        })
+      },
+    )
+  })
 }
 
 /**
@@ -335,6 +424,43 @@ export function createDaemon(o = {}) {
         // under — one directory, one truth about whether a stage is done.
         derivePhaseIndex,
         derivePhaseCard,
+        // ── the workbench: three read models and four acts, all over the CONNECTED project ──
+        // Unlike the phase cycle above, these follow the project the founder SELECTED, because
+        // that is the corpus, the checkout and the backlog the window is already showing him.
+        deriveMemoryDrafts,
+        // ONE DRAFT, ONE YES. The collaborator takes a draft's NAME and runs the write
+        // pipeline's own apply path — per-file confirmation, secret screen, validation and the
+        // consumed marker all belong to that path and none of them is re-decided at the door.
+        applyMemoryDraft: async ({ draftId }) => {
+          const projectDir = connectedProjectDir()
+          const relative = `${['.claude', 'memory', 'drafts'].join('/')}/${draftId}.md`
+          if (!projectDir) return { applied: false, reason: 'no project is connected' }
+          if (!existsSync(join(projectDir, relative))) return { applied: false, missing: true }
+          const run = await runProjectVerb({
+            verb: 'memory',
+            args: ['write', '--apply', relative, '--confirm', `${draftId}.md`, '--yes', '--json'],
+            projectDir,
+          })
+          if (!run.ok) return { applied: false, reason: run.reason ?? 'the apply path did not answer' }
+          const r = run.result || {}
+          return r.applied === true
+            ? { applied: true, targetFile: r.target_path ? basename(String(r.target_path)) : `${draftId}.md` }
+            : { applied: false, reason: withoutPaths(r.reason ?? 'refused', projectDir) }
+        },
+        rebuildMemoryIndex: async () => {
+          const projectDir = connectedProjectDir()
+          const run = await runProjectVerb({ verb: 'build-index', args: ['--write', '--json'], projectDir })
+          if (!run.ok) return { ok: false, reason: run.reason ?? 'the index was not rebuilt' }
+          const r = run.result || {}
+          return { ok: run.code === 0, bytes: r.bytes ?? 0, areaFiles: r.areaFiles ?? [], ...(run.code === 0 ? {} : { reason: 'the index was not rebuilt' }) }
+        },
+        readMemoryLint: async () => {
+          const projectDir = connectedProjectDir()
+          const run = await runProjectVerb({ verb: 'lint', args: ['--json'], projectDir })
+          // A corpus WITH critical findings exits 1 and is a perfectly good report: the verdict
+          // is the payload, never the exit code.
+          return run.ok ? { ok: true, report: run.result } : { ok: false, reason: run.reason ?? 'unavailable' }
+        },
         // the project registry doors — the ONLY way a request reaches a config write
         addProject,
         renameProject,
