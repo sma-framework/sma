@@ -4,6 +4,7 @@ import { ApiError, isRaceLost } from '../../api/client'
 import { onFrame } from '../../api/hints'
 import { PHASE_KEY } from '../../api/queries'
 import type { PhaseQuestion, PhaseStage, PhaseStageStatus } from '../../api/types'
+import { isOpen } from '../../shell/DecisionCard'
 import { refusalWords } from '../../shell/format'
 
 /**
@@ -56,14 +57,15 @@ export const STATUS_TONE: Record<PhaseStageStatus, string> = {
 
 /**
  * An OPEN question is a record with no answer — absent, null or blank. That is the whole of
- * the convention, and it is the daemon's, not this screen's: the same sentence is written into
- * the engine that parks them. The screen must not invent a second definition of «open», or the
- * count on the card and the count the daemon acts on would drift apart.
+ * the convention, and it is the daemon's, not this screen's.
+ *
+ * The definition MOVED to the shell, beside the card that renders one, the day a second
+ * screen needed it — the registry's own rule for a thing two screens both need. It is
+ * re-exported here so this folder's readers still find it where they expect, and so there is
+ * still exactly ONE function: a second definition of «open» is a count on a screen that
+ * drifts from the count the daemon acts on.
  */
-export function isOpen(question: PhaseQuestion): boolean {
-  const answer = question.answer
-  return answer === undefined || answer === null || answer.trim() === ''
-}
+export { isOpen }
 
 /** «N открыто / M отвечено», counted off the questions in hand. */
 export function progressOf(questions: PhaseQuestion[]): { open: number; answered: number } {

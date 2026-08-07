@@ -66,6 +66,20 @@ export interface DecisionQuestion {
 /** The daemon's own ceiling on a written answer. Longer than this is a file, not a decision. */
 export const MAX_FREE_TEXT = 2000
 
+/**
+ * An OPEN question is a record with no answer — absent, null or blank. That is the whole of
+ * the convention, and it is the DAEMON'S: the same sentence is written into the engine that
+ * parks them. It lives here, beside the card that renders one, because it is now needed by
+ * two screens — the phase card and the conversation — and the registry's rule for a thing
+ * two screens both need is that it moves to the shell out loud instead of being copied.
+ * A second definition of «open» is a count on a screen that drifts from the count the
+ * daemon acts on.
+ */
+export function isOpen(question: { answer?: string | null }): boolean {
+  const answer = question.answer
+  return answer === undefined || answer === null || answer.trim() === ''
+}
+
 /** What the person has said so far on one card — a chosen option, some words, or both. */
 export interface DecisionDraft {
   optionId: string | null
