@@ -759,6 +759,258 @@ export function deriveProjectMemory(deps = {}) {
   return out
 }
 
+// ══════════════ THE WORKBENCH: DRAFTS, RESERVATIONS, THE BACKLOG ════════════════
+//
+// Three read models over the CONNECTED project — the same project «Память» already shows,
+// resolved through the same `connectedProject`. That is not a detail: the drafts panel and the
+// corpus panel sit on one screen, and a drafts list read out of a different tree than the
+// corpus beside it would be a screen where two halves disagree and neither says so.
+//
+// ALL THREE DERIVE AND STORE NOTHING. A draft is a file the write pipeline put in `drafts/`; a
+// reservation is a directory in `.sma/claims`; a backlog line is a line of a markdown file a
+// person edits by hand. Every one of them changes without this daemon's knowledge — which is
+// exactly why none of them may be remembered here.
+//
+// AND NONE OF THEM WRITES. Applying a draft, clearing a reservation and putting a backlog line
+// into the queue are three other doors, each standing in front of a mechanism that already
+// exists. What is here is only the reading.
+
+/** How many drafts / backlog rows one answer carries — a panel, never a feed. */
+const DRAFTS_CAP = 200
+const BACKLOG_CAP = 500
+
+/**
+ * How much of a draft travels as its preview.
+ *
+ * A person agreeing to a lesson is agreeing to WHAT IT SAYS, so the preview is the record
+ * itself rather than its title. It is capped because a card is not a document — and a draft
+ * past this size is one a person should open in an editor before saying yes to it.
+ */
+const DRAFT_PREVIEW_CAP = 16 * 1024
+
+/** Where the corpus of a project sits, and where the pipeline stages what it will not write. */
+const CORPUS_SEGMENTS = Object.freeze(['.claude', 'memory'])
+const DRAFTS_SEGMENT = 'drafts'
+
+/** The consumed-draft marker the apply doors leave behind — a spent draft is not a draft. */
+const APPLIED_DRAFT_SUFFIX = '.applied.md'
+
+/**
+ * A draft's addressable name: the file's own stem, bounded so it can only ever name a file
+ * INSIDE the drafts directory. No separator, no leading dot — the same posture the record-id
+ * law of the write pipeline holds, for the same reason: this string is joined onto a path.
+ */
+const DRAFT_STEM_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+/**
+ * ONE BACKLOG LINE, BY SHAPE AND NEVER BY DICTIONARY.
+ *
+ * A bulleted entry, optionally carrying a task checkbox, whose bold lead is an identifier:
+ * some letters, a dash, a number. WHICH letters is the project's business — this daemon does
+ * not know what they mean and must never grow an opinion about them, because the moment it
+ * carries a list of known prefixes it is a window that works for one backlog and silently
+ * shows nothing for everybody else's.
+ */
+export const BACKLOG_ID_RE = /^[A-Z][A-Z0-9]{1,7}-\d{1,6}$/
+const BACKLOG_LINE_RE = /^[-*]\s+(?:\[([ xX])\]\s+)?\*\*([A-Z][A-Z0-9]{1,7}-\d{1,6})\*\*\s*(.*)$/
+
+/** A `key:2026-08-07`-shaped inline-code tag — a date by SHAPE, not by the word in front. */
+const BACKLOG_AGE_TAG_RE = /`([A-Za-z][A-Za-z0-9_-]{0,31}:\d{4}-\d{2}-\d{2})`/
+
+/** A row's own text is a line on a board, not the paragraph the file keeps behind it. */
+const BACKLOG_TITLE_CAP = 400
+
+/**
+ * How long ago, in the words a person uses.
+ *
+ * ONE implementation for every «age» on the workbench (a draft, a session, a reservation),
+ * because three of them formatted three ways is how one panel ends up saying «2 ч» beside
+ * «2 hours» beside an ISO timestamp. The contract calls this field a string and means a
+ * duration; a timestamp under that name would be a fact the screen has to undo.
+ */
+function humanAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 1) return 'только что'
+  if (minutes < 60) return `${minutes} мин`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} ч`
+  return `${Math.floor(hours / 24)} дн`
+}
+
+/** The «now» every age on this screen is measured against — injected like everywhere else. */
+function nowOf(clock) {
+  return typeof clock === 'function' ? clock() : Date.now()
+}
+
+/**
+ * deriveMemoryDrafts({config, fsImpl, clock}) → {drafts:[{id, targetFile, preview, age}]}.
+ *
+ * Every staged record of the connected project's corpus, read off disk on every call. A
+ * project that is not connected, a corpus that has no drafts directory and a directory that
+ * cannot be read are all the SAME answer — an empty list — because from the screen's chair
+ * they are the same fact and none of them is an error.
+ *
+ * A draft that cannot be parsed still travels: it is a file somebody has to look at, and a
+ * list that silently dropped it would be a list that hides the one row that needs a person.
+ * Its `targetFile` then falls back to its own name, which is the honest answer to «what would
+ * this become» for a file whose frontmatter nobody can read.
+ *
+ * @param {{config?:object, fsImpl?:object, clock?:Function}} [deps]
+ * @returns {{drafts:object[]}}
+ */
+export function deriveMemoryDrafts({ config, fsImpl, clock } = {}) {
+  const project = connectedProject(config || {})
+  if (!project) return { drafts: [] }
+
+  const io = fsSeam(fsImpl)
+  const dir = join(project.dir, ...CORPUS_SEGMENTS, DRAFTS_SEGMENT)
+  const now = nowOf(clock)
+
+  const names = safeList(io, dir)
+    .filter((f) => f.endsWith('.md') && !f.endsWith(APPLIED_DRAFT_SUFFIX))
+    .sort()
+    .slice(0, DRAFTS_CAP)
+
+  const drafts = []
+  for (const name of names) {
+    const id = name.slice(0, -3)
+    // A name this daemon could not hand back to the apply door is a name it does not show:
+    // a row a person can see and cannot act on is worse than a row that is not there.
+    if (!DRAFT_STEM_RE.test(id)) continue
+
+    let text = ''
+    try {
+      text = String(io.readFileSync(join(dir, name), 'utf8'))
+    } catch {
+      continue // the file went away between the listing and the read — it is simply not a row
+    }
+
+    let targetFile = name
+    try {
+      const parsed = parseNote(text, { file: name })
+      const recordId = parsed && parsed.frontmatter ? String(parsed.frontmatter.id ?? '').trim() : ''
+      if (recordId !== '') targetFile = `${recordId}.md`
+    } catch {
+      /* an unparseable draft keeps its own name as its target — see the header */
+    }
+
+    let ageMs = 0
+    try {
+      const st = io.statSync(join(dir, name))
+      const mtime = st && Number.isFinite(st.mtimeMs) ? st.mtimeMs : NaN
+      ageMs = Number.isFinite(mtime) ? now - mtime : 0
+    } catch {
+      ageMs = 0
+    }
+
+    drafts.push({
+      id,
+      targetFile,
+      // THE WHOLE FILE IS THE DIFF. The apply path refuses to write over a record that already
+      // exists, so what a person is agreeing to is a NEW note — every line of it added. There
+      // is no other side to show, and rendering an empty left column would invent one.
+      preview: text.length > DRAFT_PREVIEW_CAP ? text.slice(0, DRAFT_PREVIEW_CAP) : text,
+      age: humanAge(ageMs),
+    })
+  }
+  return { drafts }
+}
+
+/**
+ * deriveCoordination({config, readLedger, clock}) → {sessions, claims, collisions}.
+ *
+ * WHO ELSE HAS THIS CHECKOUT OPEN, what they reserved before touching it, and where two
+ * reservations met. The ledger itself is read by the INJECTED reader — the composition root
+ * hands over the coordination runtime's own readers, so this daemon never grows a second
+ * parser of `.sma/`. What happens here is the shaping: explicit-pick, one age format, and
+ * NOT ONE PATH from the founder's disk (a glob is a pattern the person typed; a session's
+ * file name and a claim's directory are this machine's business).
+ *
+ * @param {{config?:object, readLedger?:Function, clock?:Function}} [deps]
+ * @returns {{sessions:object[], claims:object[], collisions:object[]}}
+ */
+export function deriveCoordination({ config, readLedger, clock } = {}) {
+  const empty = { sessions: [], claims: [], collisions: [] }
+  const project = connectedProject(config || {})
+  if (!project || typeof readLedger !== 'function') return empty
+
+  let ledger
+  try {
+    ledger = readLedger({ projectDir: project.dir })
+  } catch {
+    return empty // an unreadable ledger is «nobody is holding anything», never a wedged poll
+  }
+  if (!ledger || typeof ledger !== 'object') return empty
+
+  const now = nowOf(clock)
+  const list = (v) => (Array.isArray(v) ? v : [])
+
+  return {
+    sessions: list(ledger.sessions).map((s) => ({
+      id: String((s && s.id) ?? ''),
+      title: String((s && s.title) ?? ''),
+      age: humanAge(Number.isFinite(s && s.ageMs) ? s.ageMs : now - toMs((s && s.since) ?? NaN)),
+    })),
+    claims: list(ledger.claims).map((c) => ({
+      name: String((c && c.name) ?? ''),
+      globs: list(c && c.globs).map(String),
+      desc: String((c && c.desc) ?? ''),
+      age: humanAge(Number.isFinite(c && c.ageMs) ? c.ageMs : now - toMs((c && c.since) ?? NaN)),
+    })),
+    collisions: list(ledger.collisions).map((x) => ({
+      a: String((x && x.a) ?? ''),
+      b: String((x && x.b) ?? ''),
+      overlap: list(x && x.overlap).map(String),
+    })),
+  }
+}
+
+/**
+ * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine}]}.
+ *
+ * The project's own `.planning/BACKLOG.md`, read as rows. NO FILE IS AN EMPTY LIST, honestly:
+ * a project that keeps no backlog is not a broken project, and a 404 here would make the panel
+ * look like a fault instead of an absence.
+ *
+ * The parser knows one SHAPE and no vocabulary (see BACKLOG_LINE_RE). A line that does not
+ * carry an identifier is not a row — it is prose, a heading or a note to self, and the board
+ * shows what the file marked as an entry rather than everything it happens to contain.
+ *
+ * @param {{config?:object, fsImpl?:object}} [deps]
+ * @returns {{rows:object[]}}
+ */
+export function deriveBacklog({ config, fsImpl } = {}) {
+  const project = connectedProject(config || {})
+  if (!project) return { rows: [] }
+
+  const io = fsSeam(fsImpl)
+  let text = ''
+  try {
+    text = String(io.readFileSync(join(project.dir, '.planning', 'BACKLOG.md'), 'utf8'))
+  } catch {
+    return { rows: [] }
+  }
+
+  const rows = []
+  for (const line of text.split(/\r?\n/)) {
+    const m = BACKLOG_LINE_RE.exec(line)
+    if (!m) continue
+    // A finished line is not work waiting to be done. The file's own checkbox says so, and
+    // dropping it here is the difference between a board and a history.
+    if (m[1] && m[1].toLowerCase() === 'x') continue
+    const tail = String(m[3] ?? '').trim()
+    const age = BACKLOG_AGE_TAG_RE.exec(tail)
+    rows.push({
+      id: m[2],
+      title: tail.replace(/^[·—–\-:]\s*/, '').slice(0, BACKLOG_TITLE_CAP),
+      ageLine: age ? age[1] : '',
+    })
+    if (rows.length >= BACKLOG_CAP) break
+  }
+  return { rows }
+}
+
 // ══════════════ THE PHASE CYCLE, DERIVED FROM THE DIRECTORY IT LIVES IN ══════════
 //
 // The card of a phase is READ, never remembered. Every number on it — which stages are done,
