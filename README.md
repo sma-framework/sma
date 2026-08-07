@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.3.1-3B82F6" alt="version 5.3.1">
-  <img src="https://img.shields.io/badge/tests-2516%2F2516-3CC0A0" alt="tests 2516/2516">
+  <img src="https://img.shields.io/badge/version-5.4.0-3B82F6" alt="version 5.4.0">
+  <img src="https://img.shields.io/badge/tests-2882%2F2882-3CC0A0" alt="tests 2882/2882">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -20,11 +20,11 @@
 > ### 🗺️ [Open the live system map →](https://sma-framework.github.io/sma/master-graph.html)
 > Every subsystem of SMA on one interactive page — the fastest way to see how everything connects.
 
-> ### 🆕 [What's new in V5.3 →](#whats-new-in-v53)
-> Governable memory, the shipped team in the window, a task named in any language, and a fleet that consults its own written rules — with the diagrams.
+> ### 🆕 [What's new in V5.4 →](#whats-new-in-v54)
+> The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, current v5.3.1).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, current).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -103,6 +103,45 @@ Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-
 - [docs/INSTALL.md](docs/INSTALL.md) — install options, what lands where, updating and removing.
 - [docs/DETAILS.md](docs/DETAILS.md) — the engineering deep dive, once you want to know how it works inside.
 - `node scripts/sma/cli.mjs explain <name>` — run from your project root: a plain-language explanation of any SMA command.
+
+## What's new in V5.4
+
+V5.1 put the window there. V5.3 filled it with the shipped team. **V5.4 makes it a place you can work from all day** — the route table went from thirty doors to **fifty-three**, declared once and frozen, and there is no «coming soon» handler left in it. The full walk-through is [further down this page](#the-whole-working-day-without-the-terminal); this is the map.
+
+```mermaid
+flowchart LR
+    V54(["V5.4"])
+
+    V54 --> D["The day's work, in the window"]
+    V54 --> A["An answer is also work"]
+    V54 --> P["Proof that the move happened"]
+
+    D --> D1["The phase cycle run from a card —<br>four stages, plans and summaries read in place"]
+    D --> D2["A parked question arrives in the shape<br>the engine parked it, answered on a card"]
+    D --> D3["A worker's output streams in while it is<br>still talking, subagents included"]
+    D --> D4["Memory, coordination, backlog and search —<br>one place, per-file consent kept"]
+    D --> D5["The ship card runs the gate and never pushes"]
+
+    A --> A1["A task that needed no code completes<br>on its answer instead of failing 'no receipt'"]
+    A --> A2["The code law is untouched: git is asked twice,<br>and an uncommitted edit is not an answer"]
+
+    P --> P1["Every terminal session leaves one line;<br>the report's last line is the number outside the list"]
+    P --> P2["An attempt books what it cost, so the<br>spend screen answers a real question"]
+```
+
+### An answer is also work
+
+«Look into it and tell me» is real work, and until this release it ended in a red row: the only door to done demanded a receipt over code that was never supposed to exist. Now such a task completes on an **answer receipt** and lands in approval, where the worker's own note is the card a person acknowledges.
+
+The law it must not touch is the one about work that touched the repository, and that law is intact. The new gate opens only when the repository cannot tell the attempt ever happened — git is asked twice, never the worker: **zero commits** on the task branch, and a **clean worktree**. An edit left uncommitted is unfinished work, not an answer, and still fails exactly as before. Every question fails safe: no git surface, a throw, or a count that is not a plain zero, and the old outcome stands.
+
+### Proof that the move actually happened
+
+A claim of «I worked only from the app» is worth what it can be checked with, so this release ships the check. A session-start hook writes one line per terminal run, and `terminal-journal.mjs report --since <date>` sorts each line into one of the **four kinds of work that were agreed to stay at a terminal** — measuring runs, git history surgery, removing the framework, and repairing the daemon itself — then prints, as its **last line**, the count of runs outside that list. A missing journal is not reported as a zero: the command says so and exits 3, because the absence of a record is not a record of absence. Sessions the daemon spawns are skipped entirely — counting them would drown the proof in the thing it measures.
+
+An attempt now also books what it cost, so the spend screen answers with real numbers instead of zero.
+
+**What this release does not claim.** The five-day run that proves the move — a full phase cycle driven from the window, start to finish — is live operation *after* this version, not a receipt inside it.
 
 ## What's new in V5.3
 
@@ -515,7 +554,7 @@ The full reference lives in [scripts/sma/README.md](scripts/sma/README.md). A fe
 Everything above is the core. The detail lives one link away:
 
 - **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history V1 → V5.1 with the trust spine process by process.
-- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, V5.3 shipped as v5.3.0 — and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
+- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, V5.3 shipped as v5.3.0, V5.4 shipped as v5.4.0 — and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
 - **[docs/MEMORY-MODEL.md](docs/MEMORY-MODEL.md)** — the schema law of the memory layer: what one record may claim and must carry, the closed vocabularies, provenance and its fingerprint, the temporal model, the storage classes, the one-claim law, and the corpus checks that hold all of it up.
 - **[docs/MEMORY-LIFECYCLE.md](docs/MEMORY-LIFECYCLE.md)** — how a memory is written, approved and retired: the twelve-step write pipeline with every refusal it can make, the risk-approval ladder, drafts, the four lifecycle transitions, and the preview-only migration ritual.
 - **[docs/MEMORY-THREAT-MODEL.md](docs/MEMORY-THREAT-MODEL.md)** — the security posture: which storage class may hold what, what fails open and what fails closed, how retrieved text stays data instead of becoming an instruction, and the encryption policy — decided on 2026-08-04: no cipher in this version, the restricted class is enforced as placement and its bytes are plain text on disk.
