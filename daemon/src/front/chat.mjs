@@ -110,24 +110,109 @@ const STATUS_RE = /статус|что с |как дела|где сейчас|�
 /** Something in the sentence points at a task — otherwise a failure word is just a mood. */
 const TASK_REF_RE = /задач|карточк|про /i
 
+// ── putting work: the intents that become a DRAFT with no model at all ─────────
+//
+// ═══════════ AN ORDER ALREADY PHRASED IS NOT A QUESTION FOR A MODEL ═══════════
+//
+// The quick task has always been reachable from here — by the free lane, where a session
+// reads the sentence and proposes a card. That path stays exactly as it was. What it could
+// never express is the part of the work that is not a title: which LANE the work belongs to,
+// that a request is a hunt for a cause rather than a build, and that «стадия N фазы M» is not
+// a task at all but a door of its own.
+//
+// So a sentence that already SAYS those things is answered the way «почему упала» is
+// answered — by a dictionary, instantly and free. This is LAW 1 applied to putting work
+// rather than to reading it: a model is asked only when there is genuinely something to
+// think about, and a person who wrote «Исследуй, как устроен retrieval» has already thought.
+//
+// The three properties that make this safe are the same three the rest of the lane has:
+//   - the human's words become a TITLE and nothing else — never a command, never a prompt;
+//   - what leaves is a DRAFT, and LAW 2 is untouched: this file still has no path to the
+//     queue, and the stage draft carries a GOAL rather than a launched stage;
+//   - a miss is safe, because the sentence that does not match falls through to the free
+//     lane, which answers honestly — the same safety the failure branch already relies on.
+
+/** An imperative to hunt a cause. Only imperatives: «разобраться» is a plan, «разберись» is an order. */
+const DEBUG_RE = /дебаг|отлад|почини|почините|исправь|исправьте|разберись|разберитесь|найди причину|найдите причину|воспроизведи/i
+
+/** An imperative to go and find out — the research lane, where nothing in the project is edited. */
+const RESEARCH_RE = /исследуй|исследуйте|исследован|разведай|разведка|разведку|изучи|изучите|изучение|собери материал/i
+
+/** A request to PUT work, in the founder's own openings. */
+const PUT_RE = /поставь|поставьте|добавь|добавьте|заведи|заведите|создай|создайте|запланируй|запланируйте/i
+
+/** …and the mark that says it is the long kind, which is what the free lane could not name. */
+const LONG_RE = /длинн|больш|крупн|основн|боев|надолго|серьёзн|серьезн|капитальн/i
+
+/** A launch of a stage — the only intent here whose confirmation is NOT the ordinary task door. */
+const STAGE_START_RE = /запусти|запустите|начни|начните|стартуй|проведи|проведите/i
+/** …and it must actually say «стадия»/«этап», or it is a sentence about something else. */
+const STAGE_WORD_RE = /стади|этап/i
+/** …and it must name WHICH phase, by number. A stage of no phase is not a stage. */
+const PHASE_NUMBER_RE = /фаз[аыуеои]?\s*№?\s*(\d{1,3})/i
+
 /**
- * classifyTurn(text) → 'fail-reason' | 'spend' | 'status' | 'free'.
+ * Which stage a sentence names. The order is deliberate — «планирование» must be read before
+ * the bare «план», or every mention of planning would resolve on the shorter word first.
+ * The keys are the daemon's own four stages; a fifth spelling resolves to nothing and the
+ * sentence falls through to the free lane rather than starting a stage nobody meant.
+ */
+const STAGE_WORDS = Object.freeze([
+  [/обсужд|дискусс/i, 'discuss'],
+  [/планир|план/i, 'plan'],
+  [/исполн|выполн|реализ/i, 'execute'],
+  [/провер|приёмк|приемк|приём|прием/i, 'verify'],
+])
+
+/** The stage in the words a person reads on the card. */
+export const STAGE_TITLES = Object.freeze({
+  discuss: 'обсуждение',
+  plan: 'планирование',
+  execute: 'исполнение',
+  verify: 'проверка',
+})
+
+/** stageIntent(text) → {stage, phase} when the sentence names both, else null. */
+function stageIntent(text) {
+  const s = String(text ?? '')
+  if (!STAGE_START_RE.test(s) || !STAGE_WORD_RE.test(s)) return null
+  const phase = s.match(PHASE_NUMBER_RE)
+  if (!phase) return null
+  const named = STAGE_WORDS.find(([re]) => re.test(s))
+  if (!named) return null
+  return { stage: named[1], phase: phase[1] }
+}
+
+/**
+ * classifyTurn(text) → the branch that can answer it.
  *
- * Dictionary patterns over the founder's own phrasings, in a fixed order: spend, then a
- * failure question that actually names a task, then status, else free. No model is consulted
- * to decide whether a model is needed — that would defeat the point of the split.
+ * Dictionary patterns over the founder's own phrasings, in a fixed order. The four
+ * work-putting intents are asked FIRST, because a sentence that puts work may perfectly well
+ * mention money or a failure inside its own title («поставь задачу разобраться с расходами»),
+ * and the branch that reads a question about the park would answer a question nobody asked.
+ * Then spend, then a failure question that actually names a task, then status, else free.
+ *
+ * No model is consulted to decide whether a model is needed — that would defeat the point of
+ * the split, and it is why every pattern here is a word a person wrote.
  *
  * @param {string} text
- * @returns {'fail-reason'|'spend'|'status'|'free'}
+ * @returns {'stage'|'task-debug'|'task-research'|'task-prod'|'fail-reason'|'spend'|'status'|'free'}
  */
 export function classifyTurn(text) {
   const s = String(text ?? '')
   if (!s.trim()) return 'free'
+  if (stageIntent(s)) return 'stage'
+  if (DEBUG_RE.test(s)) return 'task-debug'
+  if (RESEARCH_RE.test(s)) return 'task-research'
+  if (PUT_RE.test(s) && LONG_RE.test(s)) return 'task-prod'
   if (SPEND_RE.test(s)) return 'spend'
   if (FAIL_RE.test(s) && TASK_REF_RE.test(s)) return 'fail-reason'
   if (STATUS_RE.test(s)) return 'status'
   return 'free'
 }
+
+/** The kinds of turn that produce a draft by dictionary rather than by session. */
+export const DRAFT_INTENTS = Object.freeze(['stage', 'task-debug', 'task-research', 'task-prod'])
 
 // ── shared helpers for the fact models ─────────────────────────────────────────
 
@@ -286,6 +371,94 @@ export function answerStatus({ text, rows } = {}) {
   return { kind: 'fact', text: STATUS_SENTENCE[row.status] ?? 'Статус неизвестен.', taskRef: taskCard(row) }
 }
 
+// ── fact model 4: «поставь такую-то работу» → a draft, by dictionary ───────────
+
+/** A title is a line, not a document. ONE ceiling, read by the builder and by the gate below. */
+export const CHAT_DRAFT_TITLE_CAP = 200
+
+/** Below this, the tail after a colon is a fragment rather than the request itself. */
+const TITLE_TAIL_MIN = 8
+
+/** What each intent is, said back in one sentence, so a misread is visible before the click. */
+const INTENT_SENTENCE = Object.freeze({
+  'task-prod': 'Понял как длинную работу основной полосы.',
+  'task-research': 'Понял как исследование — отдельная полоса, в проекте оно ничего не правит.',
+  'task-debug':
+    'Понял как разбор поломки. Это обычная задача; ход разбора будет виден в журнале попыток на её карточке.',
+})
+
+/** Which lane an intent proposes. A stage names none — its own door decides that. */
+const INTENT_LANE = Object.freeze({
+  'task-prod': 'prod',
+  'task-research': 'research',
+  'task-debug': 'prod',
+})
+
+/**
+ * titleFromText(text) → the person's own words as a task title.
+ *
+ * NOTHING IS INVENTED HERE. The title is the sentence a person wrote, with one
+ * concession to how people actually write: «Поставь длинную задачу: переписать импорт» puts
+ * the request after a colon, and carrying the opening into the title would name every task
+ * «Поставь…». A tail too short to be the request is ignored and the whole sentence stands.
+ */
+function titleFromText(text) {
+  const said = String(text ?? '').replace(/\s+/g, ' ').trim()
+  const colon = said.lastIndexOf(':')
+  const tail = colon >= 0 ? said.slice(colon + 1).trim() : ''
+  const chosen = tail.length >= TITLE_TAIL_MIN ? tail : said
+  const trimmed = chosen.replace(/[.?!]+$/, '').trim()
+  const capped =
+    trimmed.length <= CHAT_DRAFT_TITLE_CAP
+      ? trimmed
+      : `${trimmed.slice(0, CHAT_DRAFT_TITLE_CAP - 1).replace(/\s+\S*$/, '')}…`
+  return capped ? `${capped[0].toUpperCase()}${capped.slice(1)}` : ''
+}
+
+/**
+ * draftFromIntent({text, kind}) → the answer a work-putting sentence gets: one sentence of
+ * understanding, and a DRAFT.
+ *
+ * ══════════════ A DRAFT OF A STAGE CARRIES A GOAL, NOT A LAUNCH ══════════════
+ *
+ * Every draft this builds is inert. The three task intents carry a lane and become the
+ * ORDINARY task the «Создать» button has always posted. The stage intent carries
+ * `data: {kind:'stage', stage, phase}` — a GOAL — and the button behind it presses the phase
+ * cycle's own door, the same one «Конвейер фаз» presses. Neither path exists in this file:
+ * what leaves here is a description of work, and the hand that starts it is a person's.
+ *
+ * @param {{text?:string, kind?:string}} args
+ * @returns {{kind:'draft', text:string, draft:object}|null}
+ */
+export function draftFromIntent({ text, kind } = {}) {
+  const said = String(text ?? '')
+  if (kind === 'stage') {
+    const intent = stageIntent(said)
+    if (!intent) return null
+    const title = `Стадия «${STAGE_TITLES[intent.stage]}» фазы ${intent.phase}`
+    return {
+      kind: 'draft',
+      text: `Понял как стадию «${STAGE_TITLES[intent.stage]}» фазы ${intent.phase}. Подтверждение отправит её в ту же дверь, что и «Конвейер фаз».`,
+      draft: { title, mode: CHAT_DRAFT_MODES[0], data: { kind: 'stage', stage: intent.stage, phase: intent.phase } },
+    }
+  }
+
+  const lane = INTENT_LANE[kind]
+  if (!lane) return null
+  const title = titleFromText(said)
+  if (!title) return null
+  return {
+    kind: 'draft',
+    text: INTENT_SENTENCE[kind],
+    draft: {
+      title,
+      lane,
+      mode: CHAT_DRAFT_MODES[0],
+      ...(kind === 'task-debug' ? { data: { kind: 'debug' } } : {}),
+    },
+  }
+}
+
 // ── the transcript (append-only ndjson, capped) ────────────────────────────────
 
 /** The transcript lives beside the daemon's config, under the same directory discipline. */
@@ -392,8 +565,17 @@ export async function handleChatTurn({ text, conversationId, deps = {} } = {}) {
   const convId = conversationId || newConversationId(clock)
   const kind = classifyTurn(text)
 
-  let answer
-  if (kind === 'free') {
+  // a sentence that already names its own lane (or its stage) is answered by dictionary:
+  // no session, no cost, and — since a draft is inert — no reach toward anything either
+  let answer = DRAFT_INTENTS.includes(kind) ? draftFromIntent({ text, kind }) : null
+
+  if (answer) {
+    // the draft IS the answer; nothing else is consulted
+  } else if (kind === 'free' || DRAFT_INTENTS.includes(kind)) {
+    // the second clause is a GUARD, not a path: the classifier and the builder read the same
+    // sentence, so a work-putting intent whose draft came back empty would mean the two had
+    // drifted apart. It answers by falling through to the lane that answers anything honestly
+    // rather than by refusing — the same safety the failure branch already relies on.
     const dispatch = deps.dispatchFree ?? dispatchFreeTurn
     answer = await dispatch({ text, conversationId: convId, deps })
   } else if (kind === 'spend') {
@@ -570,7 +752,7 @@ export function buildChatPrompt({ voice, text, workers } = {}) {
 export function validateDraft(draft, { workers } = {}) {
   if (!draft || typeof draft !== 'object') return null
   const title = String(draft.title ?? '').trim()
-  if (!title || title.length > 200) return null
+  if (!title || title.length > CHAT_DRAFT_TITLE_CAP) return null
 
   const roster = Array.isArray(workers) ? workers : []
   const asked = String(draft.worker ?? '').trim()
