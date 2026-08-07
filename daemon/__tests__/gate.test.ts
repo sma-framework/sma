@@ -85,7 +85,7 @@ describe('one gate for all executors: green reverify receipt or nothing', () => 
       const c = mkClock()
       const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
       await adapter.enqueue(task)
-      const { deps } = makeDeps({ adapter, clock: c.clock, responses: { preflight: NOT_BUILT, worktree: { code: 0, stdout: '{}' }, reverify: GREEN } })
+      const { deps } = makeDeps({ adapter, clock: c.clock, responses: { preflight: NOT_BUILT, worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/gate', branch: 'wt/gate' }) }, reverify: GREEN } })
       const res = await tick(deps)
       expect(res.completed).toBe(task.id)
       const [row] = await adapter.list({})
@@ -101,7 +101,7 @@ describe('one gate for all executors: green reverify receipt or nothing', () => 
       const { deps } = makeDeps({
         adapter,
         clock: c.clock,
-        responses: { preflight: NOT_BUILT, worktree: { code: 0, stdout: '{}' }, reverify: { code: 0, stdout: '{}' } },
+        responses: { preflight: NOT_BUILT, worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/gate', branch: 'wt/gate' }) }, reverify: { code: 0, stdout: '{}' } },
         spawnWorker: makeSpawnWorker({ code: 0 }), // exits 0 — but reverify produced no receipt
       })
       const res = await tick(deps)
@@ -119,7 +119,7 @@ describe('one gate for all executors: green reverify receipt or nothing', () => 
     const { deps, attempts } = makeDeps({
       adapter,
       clock: c.clock,
-      responses: { preflight: NOT_BUILT, worktree: { code: 0, stdout: '{}' }, reverify: { code: 1, stdout: JSON.stringify({ verdict: 'red', receiptRef: 'reverify:red-BL-R' }) } },
+      responses: { preflight: NOT_BUILT, worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/gate', branch: 'wt/gate' }) }, reverify: { code: 1, stdout: JSON.stringify({ verdict: 'red', receiptRef: 'reverify:red-BL-R' }) } },
     })
     const res = await tick(deps)
     expect(res.failed).toEqual({ taskId: 'BL-R', reason: 'tests_red' })

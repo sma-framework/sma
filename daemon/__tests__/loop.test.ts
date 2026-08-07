@@ -173,7 +173,7 @@ describe('the conveyor is off until a person switches it on', () => {
         adapter,
         clockObj: c,
         config: { pipeline },
-        responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }, worktree: { code: 0, stdout: '{}' }, reverify: GREEN_REVERIFY },
+        responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }, worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) }, reverify: GREEN_REVERIFY },
       })
 
       const res = await tick(deps)
@@ -197,7 +197,7 @@ describe('the conveyor is off until a person switches it on', () => {
       config: { pipeline: { enabled: true } },
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
     })
@@ -219,7 +219,7 @@ describe('tick — the stateless composed tick', () => {
       clockObj: c,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
     })
@@ -262,7 +262,7 @@ describe('tick — the stateless composed tick', () => {
       clockObj: c,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: '{}' },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: { code: 0, stdout: '{}' }, // green exit, but NO receiptRef → no receipt
       },
     })
@@ -300,7 +300,7 @@ describe('tick — the stateless composed tick', () => {
       clockObj: c,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: '{}' },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
     })
@@ -713,7 +713,7 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
       adapter,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/repo' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/repo', branch: 'wt/exec' }) },
         reverify: GREEN_REVERIFY,
       },
       deps: {
@@ -756,7 +756,7 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
       adapter,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/repo' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/repo', branch: 'wt/exec' }) },
         reverify: GREEN_REVERIFY,
       },
       deps: {
@@ -776,7 +776,7 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
       adapter,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/repo' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/repo', branch: 'wt/exec' }) },
         reverify: GREEN_REVERIFY,
       },
       deps: { fsImpl: makeFs({}), execGit: makeGit({}) },
@@ -798,7 +798,7 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
       clockObj: c,
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-REG' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-REG', branch: 'wt/x' }) },
         reverify: GREEN_REVERIFY,
       },
     })
@@ -850,7 +850,7 @@ describe('the tick stamps its attempt rows', () => {
       config: { repoDir },
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
       // The REAL ledger, so the digest that lands on disk is the one asserted — not the
@@ -1087,7 +1087,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
           spawnWorker: makeSpawnWorker(undefined, { lines: DELEGATING_STREAM }),
           responses: {
             preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-            worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+            worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
             reverify: GREEN_REVERIFY,
           },
           deps: { ledger: realLedger(ledgerDir, over) },
@@ -1140,7 +1140,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
       spawnWorker: makeSpawnWorker(undefined, { lines: ['plain text', 'APPROACH_NOTE: прямой путь'] }),
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
       deps: { ledger: realLedger(ledgerDir) },
@@ -1212,7 +1212,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
       spawnWorker: makeSpawnWorker(undefined, { lines: DELEGATING_STREAM }),
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/BL-1' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
       deps: {
@@ -1248,7 +1248,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
       clockObj: c,
       config: { workers: [{ id: 'max-2', lane: 'forge', provider: 'claude', account: { configDir: '/x' }, enabled: true }] },
       spawnWorker: makeSpawnWorker(undefined, { lines: DELEGATING_STREAM }),
-      responses: { worktree: { code: 0, stdout: JSON.stringify({ worktreePath: '/wt/F-1' }) } },
+      responses: { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-1', branch: 'wt/x' }) } },
       deps: {
         ledger: realLedger(ledgerDir),
         execGit: () => '',
