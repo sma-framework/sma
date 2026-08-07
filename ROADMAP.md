@@ -17,6 +17,7 @@ flowchart LR
     V5 -.-> V51["V5.1<br>works with what you have<br>+ memory model 1.0 + the front"]
     V51 -.-> V52["V5.2<br>measured memory:<br>benchmark · explain · hybrid retrieval"]
     V52 -.-> V53["V5.3<br>governance · hardened fleet ·<br>external validation"]
+    V53 -.-> V54["V5.4<br>the whole working day<br>without the terminal"]
 ```
 
 | Version | Theme | Status |
@@ -27,10 +28,11 @@ flowchart LR
 | V3.5 | Adoption & trust telemetry | ✅ shipped |
 | V3.6 | The one-command door: npm install, off-ramp, memory preview | ✅ shipped |
 | V4 | Grade the grader: graded verdicts, economy meters, vendor triage | ✅ shipped |
-| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.3.0, July–August 2026) |
+| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.4.0, July–August 2026) |
 | V5.1 | Works with what you have + the working front | ✅ **shipped** (v5.1.0, August 2026) |
 | V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | ✅ **shipped** (v5.2.0, 3 August 2026) |
 | V5.3 | Memory governance, hardened fleet | ✅ **shipped** (v5.3.0, 6 August 2026) — the external-validation pilots carry forward |
+| V5.4 | The whole working day without the terminal | ✅ **shipped** (v5.4.0, 7 August 2026) — the five-day proving run is live operation after the release |
 
 ## V5 — Orchestration: a 24/7 worker fleet ✅
 
@@ -104,6 +106,40 @@ its federated form.
 - **Memory as untrusted input** — retrieved content is data, never policy: source, trust level, and sensitivity travel separately from the text; a retrieved document can never widen tool permissions; external content passes secret scan and suspicious-instruction detection.
 - **Fleet hardening** — the task lifecycle becomes a versioned state machine (ready → claimed → running → produced → verifying → waiting-human → accepted / rejected / retryable / dead-letter) with transition contracts, immutable attempts, single-active-lease semantics, idempotency keys for side effects, per-worker capability envelopes, and dead-letter recovery drills. Every attempt is stamped with the policy version, memory snapshot hash, plan hash, model, and harness version. No exactly-once promises — at-least-once delivery with idempotent effects, stated plainly. Workers keep zero push/merge capability, no matter what any prompt says.
 - **External validation and the product core** — counterfactual pilots (bare agent vs current SMA vs experimental SMA on the same tasks and repo states) across several external repositories and stacks; the default command surface shrinks to a small core path with advanced instruments discoverable but secondary; the evidence report is published including negative results. Acceptance is blunt: a lower cost per verified correct result in the target segment, and a new user reaching first value **without the author's help** — onboarding sells value, not terminology.
+
+## V5.4 — The whole working day, without the terminal ✅ (v5.4.0, 7 August 2026)
+
+V5.1 put the window there and V5.3 filled it with the shipped team. V5.4 turns it into the
+place the day's work actually happens. The route table went from thirty doors to
+**fifty-three**, declared once and frozen, and every one of them is live — the shape test that
+guards the table is unconditional again, so there is no «coming soon» handler left in it.
+
+- **The phase cycle, run from the app** — an index of phases, a card per phase with its four
+  stages and a button on each, plans and summaries read in place, the acceptance list answered
+  line by line. A stage that stops to ask parks its question and the window renders it in the
+  shape the engine parked it, answered on a card rather than retyped into a terminal.
+- **The workbench** — memory drafts reviewed one at a time with a per-file yes, the lint report
+  and the corpus doors, live claims and collisions, the backlog with a «promote to a task» door,
+  one search across everything with a visibility filter, and a command palette that **opens the
+  thing that acts** rather than acting itself.
+- **The live attempt log** — a worker's output reaches the screen while it is still talking,
+  subagents included, so a delegating session does not go silent behind a spinner.
+- **The ship card, which never pushes** — it runs the gate, records the run, marks the result.
+  There is no path from the daemon to `origin` and this card does not invent one.
+- **An answer is also work** — a task that needed no code completes on an answer receipt and
+  lands in approval, instead of failing for want of a receipt over code that was never supposed
+  to exist. The gate opens only when git says the attempt touched nothing: zero commits on the
+  branch and a clean worktree. An edit left uncommitted is unfinished work, not an answer.
+- **Proof that the move happened** — a session-start hook writes one line per terminal run, and
+  the journal report sorts each into one of the four kinds of work agreed to stay at a terminal
+  (measuring runs, git history surgery, removing the framework, repairing the daemon), printing
+  the count outside that list as its last line. A missing journal exits 3 rather than reporting
+  a zero: the absence of a record is not a record of absence.
+- **An attempt books what it cost**, so the spend screen answers a real question.
+
+One honest carry, stated rather than hidden: **the five-day proving run** — a full phase cycle
+driven from the window, start to finish, with the journal reading zero outside the list — is
+live operation *after* this release, not a receipt inside it.
 
 ## Not building yet — on purpose
 
