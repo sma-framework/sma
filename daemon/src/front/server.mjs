@@ -1588,6 +1588,12 @@ function chatDeps(config, deps) {
  * code — operational detail that would put a local binary path (or a runtime's own words)
  * on the wire in exchange for nothing the founder can act on. The honest sentence the
  * engine already produced is the answer; the code rides the `status` of the hint instead.
+ *
+ * `attachments` DOES ride out, and it is picked field by field rather than passed through:
+ * the engine offers `{rel}` and that is the whole of what a screen may turn into a button.
+ * The paths are not re-checked here — a screen hands them to the artefact door, which
+ * resolves and contains every path it is given and refuses the rest in one voice. Checking
+ * them twice in two places is how two spellings of one rule are born.
  */
 function pickAnswer(answer) {
   const a = answer && typeof answer === 'object' ? answer : {}
@@ -1598,7 +1604,17 @@ function pickAnswer(answer) {
     ...(a.draft ? { draft: a.draft } : {}),
     ...(Array.isArray(a.spend) ? { spend: a.spend } : {}),
     ...(a.link ? { link: a.link } : {}),
+    ...pickAttachments(a),
   }
+}
+
+/** The documents a reply offers, as `{rel}` and nothing else — a shape, never a fragment. */
+function pickAttachments(r) {
+  if (!Array.isArray(r.attachments) || r.attachments.length === 0) return {}
+  const list = r.attachments
+    .filter((a) => a && typeof a.rel === 'string' && a.rel !== '')
+    .map((a) => ({ rel: a.rel }))
+  return list.length ? { attachments: list } : {}
 }
 
 /** A stored turn as it leaves the process — the same picking, plus who said it and when. */
@@ -1612,6 +1628,7 @@ function pickTurn(t) {
     text: typeof r.text === 'string' ? r.text : '',
     ...(r.taskRef ? { taskRef: r.taskRef } : {}),
     ...(r.draft ? { draft: r.draft } : {}),
+    ...pickAttachments(r),
   }
 }
 

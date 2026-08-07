@@ -46,9 +46,11 @@ import { createFrontServer, ROUTES, CHAT_BODY_CAP, STAGE_COMMANDS } from '../src
 import {
   classifyTurn,
   draftFromIntent,
+  extractAttachments,
   DRAFT_INTENTS,
   STAGE_TITLES,
   CHAT_DRAFT_TITLE_CAP,
+  ATTACHMENT_CAP,
   answerFailReason,
   answerSpend,
   answerStatus,
@@ -334,6 +336,64 @@ describe('putting work from a sentence (drafts of every lane, no model)', () => 
     const src = readFileSync(new URL('../src/front/chat.mjs', import.meta.url), 'utf8')
     expect(src.includes('enqueue')).toBe(false)
     expect(DRAFT_INTENTS).toEqual(['stage', 'task-debug', 'task-research', 'task-prod'])
+  })
+})
+
+// ═══════ a reply that names a document offers to open it ═══════
+//
+// The extraction is a CONSERVATIVE OFFER, not a permission: whether a path may be read is the
+// artefact door's question and it is answered there, once, for everybody. What is proved here
+// is that the offer never surprises — it starts at a boundary, it drops a traversal segment
+// instead of repairing it, and it is bounded, so no reply can turn into a listing.
+
+describe('attachments (documents a reply mentions)', () => {
+  it('a reply that names a document carries it as a structural field', () => {
+    const found = extractAttachments(
+      'Итог здесь: .planning/phases/12-front/12-08-SUMMARY.md, а приёмка — .planning/phases/12-front/12-UAT.md.',
+    )
+    expect(found).toEqual([
+      { rel: '.planning/phases/12-front/12-08-SUMMARY.md' },
+      { rel: '.planning/phases/12-front/12-UAT.md' },
+    ])
+    // the trailing full stop of the sentence is not part of the second path
+    expect(found[1].rel.endsWith('.md')).toBe(true)
+  })
+
+  it('a traversal segment is DROPPED, and a path glued to a neighbour’s tree is not taken apart', () => {
+    expect(extractAttachments('лежит в .planning/../../etc/passwd')).toEqual([])
+    expect(extractAttachments('смотри .planning/phases/../../../secrets.md')).toEqual([])
+    // `../.planning/x.md` names SOMEBODY ELSE'S tree; lifting `.planning/x.md` out of the
+    // middle of it would offer a different file than the sentence named
+    expect(extractAttachments('в соседнем дереве: ../.planning/VERIFICATION.md')).toEqual([])
+    // and neither a foreign root nor a bare directory is a document
+    expect(extractAttachments('открой /etc/passwd и docs/plan.md')).toEqual([])
+    expect(extractAttachments('каталог .planning/phases/12-front/')).toEqual([])
+  })
+
+  it('five per reply, at most — and the same document named twice is one button', () => {
+    const many = Array.from({ length: 9 }, (_, i) => `.planning/notes/${i}.md`).join(' и ')
+    expect(extractAttachments(many)).toHaveLength(ATTACHMENT_CAP)
+    expect(extractAttachments('.planning/a.md и снова .planning/a.md')).toEqual([{ rel: '.planning/a.md' }])
+  })
+
+  it('the reply carries them, the transcript keeps them, and what the PERSON typed does not', async () => {
+    const dir = tmp()
+    const said = 'Что с задачей про импорт? Смотри .planning/phases/12-front/12-11-SUMMARY.md'
+    const { deps: d } = deps(dir, {
+      rows: [{ id: 'b-13', title: 'Импорт чужих агентов', status: 'queued' }],
+      dispatchFree: async () => ({ kind: 'text', text: 'Итог здесь: .planning/STATE.md' }),
+    })
+
+    const res = await handleChatTurn({ text: said, deps: d })
+    // the question was a status question; its answer names no document, so there is no button
+    expect(res.answer.attachments).toBeUndefined()
+    const turns = readHistory({ dir, conversationId: res.conversationId })
+    expect(turns[0].attachments).toBeUndefined() // the person's own path is not an offer
+
+    const free = await handleChatTurn({ text: 'Как лучше подойти к переносу писем?', deps: d })
+    expect(free.answer.attachments).toEqual([{ rel: '.planning/STATE.md' }])
+    const kept = readHistory({ dir, conversationId: free.conversationId })
+    expect(kept[kept.length - 1].attachments).toEqual([{ rel: '.planning/STATE.md' }])
   })
 })
 
@@ -781,6 +841,33 @@ describe('POST /api/chat — the conversation, reached through the front', () =>
     const front = createFrontServer({ config: { token: FRONT_TOKEN }, deps: {} })
     const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'привет' } })
     expect(res.statusCode).toBe(501)
+  })
+
+  it('attachments survive the door’s pick — as {rel} and nothing more', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir, {
+      handleChatTurn: async () => ({
+        conversationId: 'conv-9',
+        kind: 'free',
+        answer: {
+          kind: 'text',
+          text: 'Итог в .planning/phases/12-front/12-08-SUMMARY.md',
+          // whatever else an engine might one day hang on a mention, the door lets ONE field
+          // through: a screen builds a button out of a path, not out of somebody's notes
+          attachments: [{ rel: '.planning/phases/12-front/12-08-SUMMARY.md', note: 'секрет' }, { rel: '' }],
+        },
+      }),
+    })
+    const res = await hit(front, {
+      method: 'POST',
+      url: '/api/chat',
+      headers: chatHeaders(),
+      body: { text: 'Чем кончился тот план?' },
+    })
+    expect(JSON.parse(res.body).answer.attachments).toEqual([
+      { rel: '.planning/phases/12-front/12-08-SUMMARY.md' },
+    ])
+    expect(res.body).not.toContain('секрет')
   })
 
   it('a draft leaves the engine intact — the card the «Создать» button is built from', async () => {
