@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  sma-daemon-logon-windows.task.xml — the AT-LOGON sibling of sma-daemon-windows.task.xml.
+
+  THE DECLARATION SAYS UTF-16 AND THE FILE ON DISK IS UTF-8, and that is not a mistake — it
+  is the shape the importer needs, copied from the sibling and then verified by importing it.
+  Task Scheduler takes this document as a STRING (Register-ScheduledTask -Xml, or schtasks
+  reading it as text): a .NET string is UTF-16, so a declaration that says UTF-8 makes MSXML
+  refuse with «unable to switch the encoding» at column 40 — the end of this very line.
+  Measured, both ways round, before this file was committed.
+
+  WHY A SECOND TASK RATHER THAN A SECOND TRIGGER ON THE FIRST. The two answer different
+  questions and a person should be able to say yes to one and no to the other:
+
+    sma-daemon-windows.task.xml  — «run the night worker at 23:30». A schedule.
+    this file                    — «the window should be there whenever I am logged in».
+
+  A machine that is only ever used for the nightly run needs the first. A machine somebody
+  opens during the day — or reaches from another machine over a private network — needs this
+  one, because NOTHING on Windows brings the daemon back after a restart on its own: it is
+  not a service, and the calendar trigger above does not fire until half past eleven at night.
+
+  IMPORTANT — it is a LOGON trigger, not a boot trigger, and that is deliberate. The task
+  runs under InteractiveToken (this host has no admin rights and the daemon must stand in the
+  interactive user's own environment: its PATH, its home, its account credentials). A boot
+  trigger would fire before any of that exists. The practical consequence, stated plainly:
+  after a restart the machine must be LOGGED IN for the daemon to come back. On a box that is
+  meant to be reachable while nobody sits at it, pair this with automatic sign-in, or accept
+  that a reboot needs one manual login.
+
+  Starting it twice is safe. start-daemon-windows.ps1 checks the front port first and exits
+  as a no-op when a daemon is already answering, so the nightly task and this one cannot end
+  up fighting over the same port and the same queue.
+
+  SHIPPED DISABLED, exactly like its sibling: <Settings><Enabled>false</Enabled>. Registering
+  AND enabling are the machine owner's explicit decision, never a side effect of an install.
+
+  Import (owner only):
+    schtasks /Create /TN SMA-Daemon-Logon /XML supervisor\sma-daemon-logon-windows.task.xml
+  Replace <SMA_HOME> below with the absolute path of the SMA product clone before import.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>SMA V5 daemon — brought up at logon so the window is there without a manual start. Shipped disabled.</Description>
+    <URI>\SMA-Daemon-Logon</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <!-- A short delay so the desktop, the network and any VPN/private-network client are
+           up before the daemon reaches for the queue. Without it the first start can race
+           the network stack and burn its retry budget on a machine that was simply not
+           ready yet. -->
+      <Delay>PT30S</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <!-- Delivered OFF. The owner enables it after deciding this machine should always serve. -->
+    <Enabled>false</Enabled>
+    <!-- IgnoreNew, not Parallel: one daemon per machine. The script's own port check is the
+         belt; this is the braces. -->
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- PT0S = no time limit. A daemon that is killed after 72 hours is not a daemon. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <!-- The daemon is long-lived; if it ever exits, bring it back rather than leaving the
+         machine silently unserved until the next logon. -->
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "&lt;SMA_HOME&gt;\supervisor\start-daemon-windows.ps1"</Arguments>
+      <WorkingDirectory>&lt;SMA_HOME&gt;</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

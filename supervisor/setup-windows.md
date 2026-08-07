@@ -305,6 +305,54 @@ outside the list** — the whole claim, in one number a script can read. If ther
 no journal at all it says so and exits 3 rather than printing a comfortable zero:
 absence of a record is not a record of absence.
 
+### 6.7. Making it come back by itself
+
+Windows does **not** bring the daemon back after a restart: it is not a service, and the
+nightly task from §4 does not fire until 23:30. A machine you open during the day — still
+more one you reach from somewhere else over a private network — has no window until somebody
+starts it by hand.
+
+Two routes; one is enough.
+
+**(a) A Startup-folder shortcut — no administrator rights.** The right choice on a host
+without an admin, which is exactly the kind of host this harness is written for:
+
+```powershell
+$sma = 'C:\path\to\sma'
+$su  = [Environment]::GetFolderPath('Startup')
+$w   = New-Object -ComObject WScript.Shell
+$s   = $w.CreateShortcut((Join-Path $su 'SMA daemon.lnk'))
+$s.TargetPath       = 'powershell.exe'
+$s.Arguments        = "-NoProfile -ExecutionPolicy Bypass -File `"$sma\supervisor\start-daemon-windows.ps1`""
+$s.WorkingDirectory = $sma
+$s.WindowStyle      = 7   # minimised: the process stays visible on the taskbar and closable
+$s.Save()
+```
+
+**(b) A logon Scheduled Task** — `supervisor/sma-daemon-logon-windows.task.xml`, shipped
+disabled like its nightly sibling. Registering it **requires an elevated console** (measured:
+without one `Register-ScheduledTask` answers «Access is denied»), so on a host without an
+admin use route (a).
+
+```powershell
+$sma = 'C:\path\to\sma'
+$xml = (Get-Content "$sma\supervisor\sma-daemon-logon-windows.task.xml" -Raw -Encoding UTF8).Replace('<SMA_HOME>', $sma)
+Register-ScheduledTask -TaskName 'SMA-Daemon-Logon' -Xml $xml -Force
+Enable-ScheduledTask   -TaskName 'SMA-Daemon-Logon'
+```
+
+**The two triggers do not fight.** `start-daemon-windows.ps1` looks at the window's port
+first and exits without doing anything when a daemon is already answering, so the nightly
+task and the at-logon start cannot end up with two daemons on one queue.
+
+**The honest limit: it is logon, not boot.** The daemon has to stand in the interactive
+user's environment — their PATH, their home, their account's credentials — so the trigger
+fires after a sign-in. On a box you reach from far away with nobody sitting at it that means
+either automatic sign-in, or one manual login after a restart.
+
+Verified from a cold start: with both Postgres and the daemon stopped, the shortcut brings
+back **both** — the database sandbox first, then the daemon, and the window answers on 7777.
+
 ---
 
 ## First run
