@@ -110,6 +110,16 @@ import { collectDiagnostics } from './diagnostics.mjs'
 const ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 
 /**
+ * An ATTEMPT's id shape: a task id, optionally followed by `#<n>` — the exact literal the
+ * ledger mints (`attemptIdFor`), and the one identity in this product that cannot be spelled
+ * inside ID_RE. It is NARROWER than ID_RE everywhere except that single character: the task
+ * half is the same grammar, and the attempt half is digits and nothing else, so nothing that
+ * reads as a separator, a traversal or a shell metacharacter can be expressed here either.
+ * The optional half keeps the bare shape the route guard was declared with still matching.
+ */
+const ATTEMPT_ID_RE = /^[A-Za-z0-9._-]{1,64}(#\d{1,4})?$/
+
+/**
  * The reserved POST /api/agent/toggle target meaning «the whole shipped SMA team» rather than
  * one agent id. DECLARED HERE rather than imported, because harness.mjs is the
  * appliers module and this file must carry no static edge onto it — the same reason readHarness
@@ -290,12 +300,7 @@ export const ROUTES = Object.freeze({
  * believe the runtime is enforcing what the suite is.
  */
 export const PENDING_ROUTES = Object.freeze(
-  new Set([
-    'GET /api/attempt/:id',
-    'POST /api/ship/gate',
-    'POST /api/ship/publish',
-    'GET /api/search',
-  ]),
+  new Set(['POST /api/ship/gate', 'POST /api/ship/publish']),
 )
 
 // ── response helpers (explicit-pick, no-store, nosniff; constant 401 body) ──
@@ -397,7 +402,20 @@ export function matchRoute(method, pathname) {
     }
     const attempt = pathname.match(/^\/api\/attempt\/(.+)$/)
     if (attempt) {
-      return ID_RE.test(attempt[1]) ? { handler: 'handleAttempt', params: { id: attempt[1] } } : { badId: true }
+      // THE ONE SEGMENT THAT IS DECODED, and it is decoded because an attempt's real identity
+      // carries a character no path segment may carry raw: `<taskId>#<n>`. A client that
+      // spells it correctly sends `%23`, which is not `#` to any regex here — so an id shaped
+      // like every attempt this daemon has ever minted would have answered 400, and only ids
+      // that no attempt actually has would have got through. Decoding is safe HERE and only
+      // here because what follows is an ALLOW-LIST rather than a deny-list: a separator, a
+      // dot-dot or a metacharacter cannot survive ATTEMPT_ID_RE, encoded or not.
+      let seg
+      try {
+        seg = decodeURIComponent(attempt[1])
+      } catch {
+        return { badId: true } // malformed percent-encoding is a bad id, never a throw
+      }
+      return ATTEMPT_ID_RE.test(seg) ? { handler: 'handleAttempt', params: { id: seg } } : { badId: true }
     }
     const asset = pathname.match(/^\/assets\/(.+)$/)
     if (asset) return ASSET_RE.test(asset[1]) ? { handler: 'handleAsset', params: { file: asset[1] } } : { badId: true }
@@ -2018,17 +2036,96 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handleAttempt({ res }) {
-  send501(res)
-}
 function handleShipGate({ res }) {
   send501(res)
 }
 function handleShipPublish({ res }) {
   send501(res)
 }
-function handleSearch({ res }) {
-  send501(res)
+
+// ══════════ watching one attempt, and asking one question of every corpus ══════════
+//
+// TWO DOORS THAT SHARE A POSTURE: both answer with things a WORKER produced or a CORPUS
+// holds, and neither of them interprets what it carries.
+//
+//   - THE LOG LINE IS WORKER OUTPUT AND IS NEVER TREATED AS ANYTHING ELSE. It is stored
+//     verbatim, returned verbatim, and rendered as TEXT by whatever shows it. This door does
+//     not strip markup out of it and makes no claim that it is safe — three places in the
+//     code already say so, and this is the fourth, because this is where it leaves the
+//     process.
+//   - THE SESSION IDENTIFIER DOES NOT TRAVEL. It sits on the attempt's LEDGER row for audit
+//     and has no business on a screen; the payload here is an explicit pick, and a case
+//     checks the BYTES of the answer rather than the shape of an object.
+//   - THE QUESTION IS DATA. `q` crosses this boundary toward five corpora at once, so it is
+//     bounded before it goes anywhere and it is a PARAMETER on every path beneath (the
+//     lexical layer binds it, never concatenates it). A question longer than the cap is a
+//     400 rather than a silent truncation: a box that quietly searched for half of what was
+//     typed would report «ничего не найдено» about a question nobody asked.
+
+/** The longest question this door will carry — the same number the projection layer caps at. */
+const SEARCH_Q_CAP = 256
+
+/**
+ * GET /api/attempt/:id — the tail of one attempt's live log, plus the worker's own note.
+ *
+ * `?tail=` asks for a length and the LEDGER owns the ceiling: the reader clamps into
+ * [1, 1000] itself, so this door hands the asked-for number over as it is rather than
+ * growing a second, quietly different limit beside the real one.
+ *
+ * An attempt with no log yet answers an EMPTY log — a worker that has not printed anything is
+ * a normal state of a running attempt, not a 404. What IS a 404 is nothing here: this door
+ * cannot tell an attempt that never existed from one that has been silent, and inventing the
+ * difference would make the answer an existence oracle over the queue.
+ */
+function handleAttempt({ res, params, query, deps }) {
+  const ledger = deps.ledger
+  if (!ledger || typeof ledger.readAttemptLog !== 'function') return send501(res)
+  const attemptId = String((params && params.id) || '')
+
+  let log
+  try {
+    log = ledger.readAttemptLog({ attemptId, tail: query && query.tail })
+  } catch {
+    log = null // an unreadable transcript is an EMPTY one, never a 500
+  }
+  const rows = Array.isArray(log && log.entries) ? log.entries : []
+  const note = log && log.note && typeof log.note.approach === 'string' ? log.note.approach : null
+  return sendJson(res, 200, {
+    // explicit pick, three fields: the stored row also carries an opaque parent id, and a
+    // screen that shows «делегировано» needs the FACT, not the identifier behind it
+    lines: rows.map((r) => ({ ts: String((r && r.ts) || ''), line: String((r && r.line) || ''), subagent: r && r.subagent === true })),
+    truncated: !!(log && log.truncated),
+    note,
+  })
+}
+
+/**
+ * GET /api/search?q= — one question, every corpus.
+ *
+ * An empty question is an empty answer and costs nothing: no reader is touched. An
+ * over-long one is a 400 — see the section note above on why it is not silently cut.
+ */
+async function handleSearch({ res, query, deps }) {
+  if (!deps.search || typeof deps.search.search !== 'function') return send501(res)
+  const q = typeof (query && query.q) === 'string' ? query.q : ''
+  if (q.length > SEARCH_Q_CAP) return send400(res, `q must be at most ${SEARCH_Q_CAP} characters`)
+  if (!q.trim()) return sendJson(res, 200, { hits: [] })
+
+  let answer
+  try {
+    answer = await deps.search.search(q)
+  } catch {
+    answer = null // one bad corpus is not an error page; the projection is fail-open itself
+  }
+  const hits = Array.isArray(answer && answer.hits) ? answer.hits : []
+  return sendJson(res, 200, {
+    hits: hits.map((h) => ({
+      kind: String((h && h.kind) || ''),
+      title: String((h && h.title) || ''),
+      hint: String((h && h.hint) || ''),
+      ref: h && h.ref && typeof h.ref === 'object' ? h.ref : {},
+    })),
+  })
 }
 
 // ══════════════ the conveyor of phases: start a stage, read a card ══════════════

@@ -65,7 +65,10 @@ import {
   appendJournalEntry,
   readJournalEntries,
   createAttemptLogWriter,
+  readAttemptLog,
 } from './queue/attempt-ledger.mjs'
+import { attemptIdFor } from './front/journal.mjs'
+import { createSearch } from './front/search.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
 import { handleChatTurn, readHistory } from './front/chat.mjs'
@@ -96,6 +99,7 @@ import {
   deriveMemoryDrafts,
   deriveCoordination,
   deriveBacklog,
+  deriveRules,
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
@@ -329,6 +333,69 @@ async function readCoordinationLedger({ projectDir, now = Date.now() }) {
 }
 
 /**
+ * The memory corpus, read for a search — through the SAME projection the loader uses.
+ *
+ * ONE READ PATH, and it is not this file's. `readNotes` + `projectNoteAxis` + `isVisibleNow`
+ * are the corpus's own projection and its own read-time filters; the lexical layer above them
+ * (with its FTS probe and its BM25 fallback) is the corpus's own retrieval. A daemon that
+ * tokenized note files itself would be the second read path that layer's header names as the
+ * main anti-pattern — and the two would drift apart silently the first time either changed.
+ *
+ * WHAT THE LAYER DOES NOT ANSWER, THE SHARED GRAMMAR DOES. `queryLexical` needs a BUILT index
+ * (a derived artifact under `.sma/`, absent until somebody rebuilds it), and on a machine
+ * without one it honestly answers «индекс не построен» and nothing else. So the visible axis
+ * travels too, unscored: the projector ranks a scored row by the layer's score and an unscored
+ * one by the same textual grammar the other four sources use. That is not a second READ — it
+ * is the same projection, the same filter and the same rows, ranked by the box's own rule when
+ * the corpus's own rule has nothing to say.
+ *
+ * The bodies are never read on any of these paths — the axis is the whole surface.
+ */
+async function readProjectNotes({ projectDir, query, limit }) {
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return []
+  const corpusDir = join(projectDir, '.claude', 'memory')
+  if (!existsSync(corpusDir)) return []
+
+  const generator = await import('../../scripts/sma/lib/generator.mjs')
+  const fts = await import('../../scripts/sma/lib/fts-index.mjs')
+
+  const visible = (generator.readNotes(corpusDir) || []).filter((n) => generator.isVisibleNow(n))
+  const byFile = new Map(visible.map((n) => [String(n.file ?? ''), n]))
+
+  const scores = new Map()
+  const note = (id, score) => {
+    const prev = scores.get(id)
+    if (prev === undefined || score > prev) scores.set(id, score)
+  }
+  try {
+    const lexical = fts.queryLexical({ query, dbPath: join(projectDir, '.sma', fts.LEXICAL_INDEX_FILE), limit })
+    for (const r of lexical.results || []) note(String(r.id), Number(r.score) || 0)
+  } catch {
+    /* an unreadable index is an absent one — the deterministic layers keep working */
+  }
+  try {
+    // The exact layer is separate and CHEAP: it answers a path or a symbol somebody pasted,
+    // needs no index at all, and is the reason a corpus with no built index is not silent.
+    const exact = fts.queryExact({ query, notes: visible, limit })
+    for (const r of exact.results || []) note(String(r.id), Number.MAX_SAFE_INTEGER)
+  } catch {
+    /* fail-open per layer */
+  }
+
+  const rows = []
+  for (const [id, score] of scores) {
+    const axis = byFile.get(id)
+    if (axis) rows.push({ file: id, title: axis.description, hint: axis.useWhen, score })
+  }
+  const scored = new Set(scores.keys())
+  for (const axis of visible) {
+    if (scored.has(String(axis.file ?? ''))) continue
+    rows.push({ file: String(axis.file ?? ''), title: axis.description, hint: axis.useWhen })
+  }
+  return rows
+}
+
+/**
  * createDaemon(overrides) — wire the whole daemon and return its handles WITHOUT starting
  * anything. Every collaborator is overridable so a future integration harness can drive
  * it; production calls it with no overrides.
@@ -372,6 +439,10 @@ export function createDaemon(o = {}) {
       // alive, one file per attempt. A write that fails reaches the daemon's log ONCE and
       // changes nothing else — the transcript is an observation of the work, not a condition
       // of it, and a founder who loses the picture must not lose the task with it.
+      // …and the other half of that log: the READ. Same directory, same one file per attempt,
+      // and the ceiling on a tail belongs to the reader rather than to whoever asks — so the
+      // door hands the asked-for number through untouched instead of growing a second limit.
+      readAttemptLog: ({ attemptId, tail }) => readAttemptLog({ dir: ledgerDir, attemptId, tail }),
       attemptLog: ({ attemptId }) =>
         createAttemptLogWriter({
           dir: ledgerDir,
@@ -618,6 +689,50 @@ export function createDaemon(o = {}) {
         // Injected, never statically imported by the front — this is the
         // wiring that makes «включить агента» a real switch instead of a 501.
         // The harness read model + the three appliers (agents / skills / MCP screens).
+        // ONE QUESTION, FIVE CORPORA. The projection is injected like every other read model;
+        // what is composed HERE is which reader answers for which corpus, and each of them is
+        // the reader that corpus already has. Nothing below tokenizes, parses or indexes
+        // anything itself — the one source with real retrieval (the memory axis) is consumed
+        // through its own layer, and the other four are asked the question they can answer.
+        search: o.search ??
+          createSearch({
+            listTasks: async () => (typeof adapter.list === 'function' ? await adapter.list({}) : []),
+            queryNotes: (query, limit) => readProjectNotes({ projectDir: connectedProjectDir(), query, limit }),
+            readRegistries: async () => {
+              // Names and descriptions, and nothing that is a VALUE: a lane is a name, a
+              // helper's «can» is a description of what it does. A model id, an account, a
+              // budget number and an environment block all live one field away and none of
+              // them is read — a search box is the widest surface in the window, and the
+              // cheapest way for it to never disclose a setting is to never look at one.
+              const rules = (deriveRules(config).lanes || []).map((l) => ({
+                id: String(l.lane ?? ''),
+                title: `Полоса «${l.lane ?? '—'}»`,
+                description: `работают: ${(l.workers || []).join(', ') || '—'}`,
+              }))
+              let agents = []
+              try {
+                const harness = await readHarness({ config, registry: loadMcpRegistry({}), repoDir })
+                agents = [
+                  ...(harness.agents || []).map((a) => ({
+                    id: a.id,
+                    title: a.title,
+                    description: (a.can || []).join(' · '),
+                  })),
+                  ...(harness.stockTeam || []).map((a) => ({ id: a.id, title: a.title ?? a.id, description: a.description })),
+                ]
+              } catch {
+                /* an unreadable registry is an absent source, never an empty search */
+              }
+              return { rules, agents }
+            },
+            listAttempts: async () => {
+              const rows = typeof adapter.list === 'function' ? await adapter.list({}) : []
+              return (Array.isArray(rows) ? rows : [])
+                .filter((r) => r && Number.isFinite(Number(r.attempt)) && Number(r.attempt) >= 1)
+                .map((r) => ({ attemptId: attemptIdFor(r.id, r.attempt), taskId: r.id, title: r.title }))
+            },
+            statusLabel: (s) => String(s ?? ''),
+          }),
         // Injected, never statically imported by the front — this is the
         // wiring that makes «включить агента» a real switch instead of a 501.
         readHarness,
