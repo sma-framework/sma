@@ -221,7 +221,17 @@ export function Sidebar({ active, onOpen }: { active: ScreenId; onOpen: (id: Scr
         ))}
       </nav>
 
-      <div className="border-t border-side-bd px-3 py-3">
+      <div className="flex flex-col gap-1.5 border-t border-side-bd px-3 py-3">
+        {/*
+          A shortcut nobody is told about is a shortcut nobody has. One line, under everything,
+          where the eye lands after it has run out of lines to click.
+        */}
+        <div className="flex items-center gap-[9px] px-2.5 text-[11.5px] text-side-tx3">
+          <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">Ctrl</kbd>
+          <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">K</kbd>
+          <span>поиск и действия</span>
+        </div>
+
         <button
           type="button"
           onClick={toggle}
