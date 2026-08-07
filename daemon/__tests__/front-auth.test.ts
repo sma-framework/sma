@@ -119,8 +119,11 @@ const ALL_ROUTES: Array<{ method: string; path: string; key: string }> = Object.
  * against the final contract, and every one has since been filled; the V5.4 freeze declared
  * twenty-three more the same way, and those are being filled one at a time.
  *
- * So the shape alone is no longer the whole guard — «is this handler a stub» has to be asked
- * TOGETHER WITH «is its route declared pending», which is what PENDING_ROUTES answers.
+ * While that batch was being filled, the shape alone was not the whole guard: «is this handler
+ * a stub» had to be asked together with «is its route declared pending». EVERY SLOT IS FILLED
+ * NOW, so the shape is the whole guard again — the case below passes an empty Set literal and
+ * asks no list for permission. The mechanism stays demonstrated in its own case, because the
+ * next growth wave will need it.
  */
 const BARE_STUB = /\)\s*\{\s*(return\s+)?send501\(res\)\s*;?\s*\}\s*$/
 
@@ -228,21 +231,30 @@ describe('server.mjs — the closed FIFTY-THREE-route table', () => {
     expect(Object.isFrozen(HANDLERS)).toBe(true)
   })
 
-  it('ZERO STUBS OUTSIDE THE DECLARED SET: a bare 501 is legitimate only where it was declared', () => {
-    expect(bareStubsOutside(HANDLERS, ROUTES, PENDING_ROUTES)).toEqual([])
+  /**
+   * ZERO STUBS, UNCONDITIONALLY — and the load-bearing detail is what is NOT passed in.
+   *
+   * While the release was being filled this asked `PENDING_ROUTES`, so a bare 501 was
+   * legitimate for a declared-pending route and a defect for any other. Every slot is filled
+   * now and that Set is empty — so this passes an EMPTY SET LITERAL instead of the constant.
+   * The difference is the whole point: reading the constant, anyone could re-license a stub by
+   * adding one key; reading a literal, the law has no door left to be weakened through.
+   *
+   * The constant is deliberately KEPT (see its note in server.mjs). Across this suite every
+   * fill plan left an assertion that its own key is gone from it — those proofs need it to
+   * exist. It is a record of how the batch was grown, not a licence.
+   */
+  it('ZERO STUBS, UNCONDITIONALLY: no handler of this table is a bare 501', () => {
+    expect(bareStubsOutside(HANDLERS, ROUTES, new Set())).toEqual([])
   })
 
   /**
-   * The other half of the same law, and the half a fill plan can forget: a route that is
-   * NAMED pending must actually still be a stub. Without this, deleting the key could be
-   * postponed «until later» while the handler goes live — and the Set would quietly become
-   * a licence for a real door to rot back into a 501 instead of a list of promises.
+   * The exception set is EMPTY, and that is asserted rather than assumed. It is the other half
+   * of the law above: the test now refuses to consult this Set, so the only thing that keeps
+   * the two facts in agreement — «no stubs» and «nothing is excused» — is this line.
    */
-  it('every route named in PENDING_ROUTES is still a bare stub — a filled slot loses its key', () => {
-    for (const key of PENDING_ROUTES) {
-      const name = ROUTES[key]
-      expect(BARE_STUB.test(String(HANDLERS[name])), `${key} is declared pending but is no longer a stub`).toBe(true)
-    }
+  it('the exception set is empty: nothing is declared pending any more', () => {
+    expect([...PENDING_ROUTES]).toEqual([])
   })
 
   it('the guard BITES: a bare 501 on a route OUTSIDE the declared set is named, not tolerated', () => {
@@ -257,14 +269,14 @@ describe('server.mjs — the closed FIFTY-THREE-route table', () => {
     // two cases below into two tests that pass without testing anything.
     expect(BARE_STUB.test(String(stub))).toBe(true)
 
-    // a LIVE door of the original thirty rotted back into a stub → named
-    expect(bareStubsOutside({ ...HANDLERS, handleState: stub }, ROUTES, PENDING_ROUTES)).toEqual(['handleState'])
-    // The same shape on a DECLARED-pending route → silence, which is what «pending» means.
-    // WITH EVERY SLOT NOW FILLED the real Set is empty, so the second half of the law is
-    // demonstrated against a NAMED one rather than against whatever happened to be left: the
-    // point was always «being named is what buys the silence», and an empty Set is the state
-    // the constant's own header describes as the release being done — not a reason to stop
-    // checking that naming still works.
+    // a LIVE door rotted back into a stub → named. An EMPTY SET LITERAL, exactly as the law
+    // above uses: this case must bite under the rule as it now stands, not under whatever the
+    // constant happens to hold.
+    expect(bareStubsOutside({ ...HANDLERS, handleState: stub }, ROUTES, new Set())).toEqual(['handleState'])
+    // The same shape on a route that IS named → silence, which is what «pending» meant. The
+    // mechanism itself is still demonstrated here, against a set named for this case, because
+    // the next growth wave will re-wire the shape test to a real one and this is the proof
+    // that naming is what buys the silence.
     const named = new Set(['GET /api/state'])
     expect(bareStubsOutside({ ...HANDLERS, handleState: stub }, ROUTES, named)).toEqual([])
   })

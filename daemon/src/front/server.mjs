@@ -46,15 +46,19 @@
  * coordination and backlog, attempts and shipping, search, accounts and diagnostics) are
  * declared the SAME way — named 501 stubs, present and auth-gated from the first commit of
  * the release, so every screen is built against the final contract instead of an imagined
- * one. WHICH OF THEM ARE STILL UNFILLED IS NOT A COMMENT AND NOT A GUESS: `PENDING_ROUTES`
- * is an exported frozen Set of exactly those keys, and the plan that fills a slot deletes
- * its key from that Set in the SAME commit that lands the live handler. So a bare 501 is
- * legitimate for a route inside that Set and a DEFECT for any route outside it — which is
- * what the shape test asserts (a shape and a Set, never a hand-kept list).
+ * one. While that release was being filled, an exported Set named the slots that were still
+ * stubs, and the shape test excused a bare 501 for exactly those keys. THAT SET IS GONE: the
+ * release filled every slot, so the mechanism was removed with it rather than left behind as
+ * an empty relic. An exception list that still exists is an exception list that can be used
+ * again — and four test files imported this one, which is an invitation to re-wire it.
  *
- * A 501 from a route OUTSIDE PENDING_ROUTES means one thing only — a collaborator THIS
- * daemon was not wired with (no derive, no federation, no applier): «not available here»,
- * never «not written yet».
+ * The rule it enforced is now unconditional: **no handler of this table is a bare 501.** A
+ * later growth wave that wants to declare a batch of routes ahead of their handlers will
+ * re-introduce a mechanism deliberately, with its own argument, instead of inheriting one.
+ *
+ * A 501 from a route therefore means one thing only — a collaborator THIS daemon was not
+ * wired with (no derive, no federation, no applier): «not available here», never «not
+ * written yet».
  *
  * Node built-ins only (node:http). Every collaborator (deriveState, adapter, ledger,
  * the merge verbRunner, execGit, the event hub, clock) is dependency-injected via
@@ -210,10 +214,9 @@ const BUILD_INSTRUCTION_HTML =
  * that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
- * V5.1 growth and are all live; the twenty-three below THOSE are the declared-once V5.4
- * growth, and they are filled one at a time — see PENDING_ROUTES, which is the machine-
- * readable answer to «which ones are not filled in yet», kept honest by a test rather than
- * by this sentence. The table itself does not move again either way.
+ * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
+ * a time. ALL FIFTY-THREE ARE LIVE — the table carries no stub, and the shape test says so
+ * without consulting any list of exceptions. The table itself does not move.
  */
 export const ROUTES = Object.freeze({
   // ── the original fourteen (live) ──
@@ -275,29 +278,36 @@ export const ROUTES = Object.freeze({
 })
 
 /**
- * PENDING_ROUTES — the declared-but-unfilled slots of the V5.4 growth, as a frozen Set of
- * route keys. THE ONE MACHINE-READABLE ANSWER to «is this 501 a promise or a defect».
+ * PENDING_ROUTES — EMPTY, and kept. The declared-but-unfilled slots of a growth wave, as a
+ * frozen Set of route keys: the machine-readable answer to «is this 501 a promise or a defect»
+ * while a batch of doors is being filled one at a time.
  *
- * It is a SEPARATE literal rather than a slice derived from the table, and that is the whole
- * mechanism: a plan that fills a slot deletes ITS key from here in the same commit that
- * lands the live handler, so the Set shrinks by one per fill and the table never moves at
- * all. Derived from the table it could not shrink without deleting a route, which is exactly
- * the edit the freeze exists to forbid.
+ * It is a SEPARATE literal rather than a slice derived from the table, and that was the whole
+ * mechanism: a plan that filled a slot deleted ITS key here in the same commit that landed the
+ * live handler, so the Set shrank by one per fill and the frozen table never moved at all.
  *
- * Two invariants ride it (front-auth.test.ts): a bare `send501(res)` handler is tolerated
- * ONLY for a route named here, and every key here must belong to the V5.4 section of the
- * table — so no live door of the first thirty can ever be excused back into a stub.
+ * THE GROWTH IS FINISHED AND THE SET IS EMPTY. Two decisions were taken at that moment, and
+ * they pull in opposite directions on purpose:
  *
- * When it is empty, the release is done and this constant becomes an empty Set, not a
- * deleted one: an emptiable list of exceptions beats a list that disappears when it stops
- * being convenient.
+ *   1. The Set STAYS, empty. Deleting it would have destroyed something real: across the
+ *      suite, each fill plan left an assertion that ITS key is gone from here — better than
+ *      forty separate proofs that the work was actually done, and they only mean anything
+ *      while this constant exists. An emptiable list of exceptions beats a list that
+ *      disappears the moment it stops being convenient.
+ *
+ *   2. The shape test NO LONGER ASKS IT. It passes an empty Set literal instead, so the law it
+ *      enforces — NO HANDLER OF THIS TABLE IS A BARE 501 — is unconditional and cannot be
+ *      weakened by anybody adding a key here. The list survives as a record; it is no longer
+ *      a licence.
+ *
+ * A later growth wave that wants to declare routes ahead of their handlers re-wires the shape
+ * test to consult this Set again, deliberately and in the open, exactly as the first one did.
  *
  * ONE HONEST LIMIT: `Object.freeze` on a Set seals the OBJECT, not its entries — `.add()`
  * still works at runtime. The freeze says «this is a declaration, not a scratchpad» and keeps
- * the binding from being swapped; what actually holds the list to its promises is the pair of
- * tests named above, which is where every other law of this table lives too. No request path
- * reads this constant, so there is no attack in that gap — only a reader who might otherwise
- * believe the runtime is enforcing what the suite is.
+ * the binding from being swapped. No request path reads this constant, so there is no attack
+ * in that gap — only a reader who might otherwise believe the runtime enforces what the suite
+ * does.
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([]),
@@ -2017,24 +2027,17 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
   }
 }
 
-// ── the V5.4 growth: declared once, filled one at a time ──
+// ── the V5.4 growth: declared once, filled one at a time — AND NOW ALL FILLED ──
 //
-// The ones BELOW are the still-unfilled slots: each is a NAMED function whose whole body is
-// `send501(res)`, and each is listed in PENDING_ROUTES. The ones already filled live with
-// their own family further down and are gone from that Set. That pairing is the contract:
-//   - the route EXISTS from this commit — it is in the frozen table, it is auth-gated by the
-//     dispatcher like every other, and an anonymous caller cannot tell it apart from a live
-//     one, so no screen is ever built against an imagined path;
-//   - the handler is HONEST about being empty — 501, no invented shape, no placeholder body
-//     a screen could start believing;
-//   - the plan that fills one replaces THIS function and deletes its key from PENDING_ROUTES
-//     in the same commit. Neither half is optional: a filled handler still named in the Set
-//     would license a real door to rot back into a stub, and a deleted key with a stub behind
-//     it turns the shape test red immediately. That is why they are checked against each
-//     other rather than each against a comment.
-// Nothing is validated here on purpose. A body check written before the handler that consumes
-// it is a guess about a contract that does not exist yet, and it would have to be re-read and
-// re-argued by the plan that actually fills the slot.
+// This is where the still-unfilled slots used to sit: named functions whose whole body was
+// `send501(res)`, each one present and auth-gated from the first commit of the release so
+// that no screen was ever built against an imagined path, and each one honest about being
+// empty rather than carrying a placeholder body a screen could start believing.
+//
+// There are none left. Every door of the release has its handler, living with its own family
+// further down, and the exception list that used to license the stubs has been removed along
+// with them (see the note where it was declared). The marker is kept as the record of how the
+// batch was grown — declared whole, filled one at a time, never moving the frozen table.
 
 // ══════════════ the release: a gate anybody may run, a publication only a person may ══════════════
 //
