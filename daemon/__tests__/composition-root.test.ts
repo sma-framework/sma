@@ -233,7 +233,7 @@ describe('the production composition root is COMPLETE', () => {
     // 300 ms with «среда исполнения недоступна» while the routing journal showed a perfectly
     // good worker, because the worktree verb could not run and the spawn got a cwd that does
     // not exist. Listing them together is the point: two of three wired is still zero tasks.
-    for (const name of ['buildArgs', 'spawnWorker', 'verbRunner']) {
+    for (const name of ['buildArgs', 'spawnWorker', 'verbRunner', 'bookUsage']) {
       expect(typeof park.tickDeps[name], `tickDeps.${name} must be a function or no task can ever run`).toBe('function')
     }
   })

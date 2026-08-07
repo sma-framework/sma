@@ -102,7 +102,8 @@ import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capab
 import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
-import { parseClaudeEvent } from './runner/stream.mjs'
+import { parseClaudeEvent, parseCodexEvent } from './runner/stream.mjs'
+import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
@@ -669,6 +670,52 @@ function runSpawn(spawnWorker, spec, onLine) {
   })
 }
 
+/**
+ * bookAttemptUsage(deps, task, route, streamLines, now) — what this attempt cost, into the book.
+ *
+ * THE GAP THIS CLOSES, and it is the same shape as the executor's: both halves existed and
+ * nothing joined them. `usage.mjs` has the parser for the CLI's own `result` event AND the
+ * writer for the spend book, and the only caller was the chat door. So a task run by the tick
+ * — a real session, real tokens, a transcript on disk — booked nothing at all, and the
+ * «Расходы» screen answered ZERO to a question that had a real answer. A zero that is wrong is
+ * worse than a blank: it reads as «this cost nothing».
+ *
+ * The row is read off the LAST `result` (or Codex `turn.completed`) line of the attempt's own
+ * stream — the same lines the approach note and the failure marker are read from, so no second
+ * source of truth about what happened.
+ *
+ * Never fatal. The price of an attempt is bookkeeping; an attempt that did its work must not be
+ * failed because the book could not be written.
+ */
+function bookAttemptUsage(deps, task, route, streamLines, now) {
+  if (typeof deps.bookUsage !== 'function') return
+  try {
+    const workers = Array.isArray(deps.config && deps.config.workers) ? deps.config.workers : []
+    const worker = route && route.workerId ? workers.find((w) => w && w.id === route.workerId) : null
+    const ctx = {
+      accountName: (worker && worker.account && worker.account.name) || (route && route.workerId) || null,
+      taskId: task.id,
+      model: (route && route.model) || undefined,
+    }
+    const isCodex = String((route && route.provider) || '') === 'codex'
+    for (let i = streamLines.length - 1; i >= 0; i -= 1) {
+      const line = streamLines[i]
+      if (isCodex) {
+        const event = parseCodexEvent(line)
+        if (!event || event.type !== 'turn.completed') continue
+        deps.bookUsage(codexUsageFromFinal(event, { ...ctx, endedAt: now }))
+        return
+      }
+      const event = parseClaudeEvent(line)
+      if (!event || event.type !== 'result') continue
+      deps.bookUsage(claudeUsageFromResult(event, ctx))
+      return
+    }
+  } catch {
+    /* the price of an attempt never fails the attempt */
+  }
+}
+
 /** Coerce an enqueuedAt (number ms or ISO string) to epoch ms, or NaN. */
 function toEpochMs(v) {
   if (typeof v === 'number') return v
@@ -948,6 +995,11 @@ export async function tick(deps = {}) {
       const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
 
       const marker = detectMarker(streamLines)
+
+      // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
+      // fate. A refused attempt still spent the tokens, so the book is written for every
+      // attempt and not only for the ones that end well.
+      bookAttemptUsage(deps, task, route, streamLines, now())
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.

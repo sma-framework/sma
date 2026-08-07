@@ -104,7 +104,7 @@ import {
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
-import { readUsage, usageSeries } from './runner/usage.mjs'
+import { readUsage, usageSeries, bookUsage } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
 import { createBuildArgs } from './runner/build-args.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
@@ -1003,6 +1003,11 @@ export function createDaemon(o = {}) {
     // gives, and deliberately the same expression: a card that reads one directory while the
     // stage writes into another shows work as never started while it is being completed.
     projectDir: o.tickProjectDir ?? (() => connectedProjectDir() ?? config.repoDir),
+    // WHAT AN ATTEMPT COST, into the same book the «Расходы» screen reads. The parser and the
+    // writer both lived in runner/usage.mjs and only the chat door called them, so every task
+    // the tick ran booked nothing and the screen answered zero. Same family as buildArgs above:
+    // built, tested, and never joined to the thing that needed it.
+    bookUsage: o.bookUsage ?? ((event) => bookUsage({ dataDir, event, clock })),
     verbRunner: o.verbRunner ?? cliVerbRunner,
     report: o.report,
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
