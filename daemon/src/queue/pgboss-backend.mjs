@@ -293,6 +293,29 @@ export function createPgBossQueue({
       await bossInstance.stop()
       startedUrls.delete(queueUrl)
     }
+    // The lazy pool above is OURS, and stopping pg-boss does not touch it. A stop() that
+    // leaves it open hands the caller a lie: it has awaited the shutdown and still holds
+    // live connections to the database. That is not theoretical — it is why the encoding
+    // migration could never finish. The migration opens the NEW database through this
+    // adapter (start() provisions the approval table, and that first execSql is what
+    // creates the pool), stops it, then renames it — and Postgres refuses to rename a
+    // database while any connection remains. Every run ended in the rollback branch with
+    // «is being accessed by other users», so a queue created with the wrong encoding could
+    // never be moved off it.
+    //
+    // The handle is DROPPED, not merely closed, so a later execSql opens a fresh pool
+    // rather than awaiting an ended one: stop() stays the reversible operation the rest of
+    // this file assumes it is.
+    if (poolPromise) {
+      const closing = poolPromise
+      poolPromise = null
+      try {
+        const pool = await closing
+        await pool.end()
+      } catch {
+        // a pool that never finished opening, or one already ended: nothing left to close
+      }
+    }
     return true
   }
 
