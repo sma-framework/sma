@@ -23,6 +23,11 @@
  *       two lists are held to each other.
  *   8.  THE ORDER IS TOTAL — exact before prefix before substring, and two identical
  *       questions cannot answer in two orders.
+ *   9.  A QUESTION IS BOUNDED AT THE DOOR — over the cap is a 400, never a silent half-search.
+ *   10. AN ATTEMPT'S IDENTITY REACHES ITS OWN DOOR — `<taskId>#<n>` is what the ledger mints
+ *       and what the route must therefore accept, encoded as a client has to send it.
+ *   11. NO SESSION IDENTIFIER TRAVELS — checked on the BYTES of the answer, not on a shape.
+ *   12. THE SLOTS ARE FILLED — both keys are gone from PENDING_ROUTES, and both doors answer.
  *
  * Every reader is injected. No temp directory, no child process, no socket, and no corpus on
  * this machine is opened by this file.
@@ -31,7 +36,9 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { Readable } from 'node:stream'
 
+import { createFrontServer, PENDING_ROUTES, matchRoute } from '../src/front/server.mjs'
 import {
   createSearch,
   matchRank,
@@ -410,5 +417,269 @@ describe('search.mjs — THE ORDER IS TOTAL', () => {
   it('a task hit carries its status as the hint — the queue is the one who knows it', () => {
     const rows = projectTasks('BL-201', { rows: TASKS, statusLabel: (s: string) => `статус: ${s}` })
     expect(rows[0].hint).toBe('статус: queued')
+  })
+})
+
+// ══════════════════════════ the two doors ══════════════════════════
+
+const TOKEN = 'k'.repeat(64)
+
+/** A ledger row as the live log actually stores it: two fields, plus provenance when there is any. */
+const LOG_ROWS = [
+  { ts: '2026-08-07T01:00:00.000Z', line: 'APPROACH_NOTE: сначала прочитал соседний модуль' },
+  { ts: '2026-08-07T01:00:01.000Z', line: 'смотрю на дверь поиска' },
+  { ts: '2026-08-07T01:00:02.000Z', line: 'делегирую разбор', subagent: true, parentId: 'toolu_01OPAQUE' },
+]
+
+function mkReq(o: any = {}) {
+  const { method = 'GET', url = '/', headers = {}, body, remote = '10.0.0.11' } = o
+  const payload = body == null ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
+  const req: any = Readable.from(payload)
+  req.method = method
+  req.url = url
+  req.headers = { ...headers }
+  req.socket = { remoteAddress: remote }
+  return req
+}
+
+function mkRes() {
+  const res: any = {
+    statusCode: 0,
+    headers: {} as Record<string, any>,
+    body: '',
+    headersSent: false,
+    writeHead(code: number, h?: any) {
+      res.statusCode = code
+      res.headersSent = true
+      if (h) for (const [k, v] of Object.entries(h)) res.headers[k.toLowerCase()] = v
+      return res
+    },
+    end(c?: any) {
+      if (c != null) res.body += String(c)
+      res.ended = true
+      return res
+    },
+  }
+  return res
+}
+
+async function call(front: any, o: any) {
+  const req = mkReq({
+    ...o,
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      ...(o.method === 'POST' ? { 'content-type': 'application/json' } : {}),
+      ...(o.headers || {}),
+    },
+  })
+  const res = mkRes()
+  await front.handle(req, res)
+  return res
+}
+
+/** A front wired with the two collaborators of this plan, both recording fakes. */
+function mkFront(over: any = {}) {
+  const asked: any[] = []
+  const projection = mkSearch().search
+  const front = createFrontServer({
+    config: { token: TOKEN },
+    deps: {
+      ledger: over.ledger ?? {
+        readAttemptLog: (a: any) => {
+          asked.push(a)
+          const rows = over.rows ?? LOG_ROWS
+          const n = Number(a.tail)
+          const cut = Number.isFinite(n) && n > 0 ? rows.slice(-n) : rows
+          return {
+            attemptId: a.attemptId,
+            entries: cut,
+            total: rows.length,
+            truncated: cut.length < rows.length,
+            note: over.note === undefined ? { approach: 'сначала прочитал соседний модуль', rejected: [], influences: [] } : over.note,
+          }
+        },
+      },
+      search: over.search ?? projection,
+      ...over.deps,
+    },
+  })
+  return { front, asked }
+}
+
+// ═══════════════ A QUESTION IS BOUNDED AT THE DOOR ═══════════════
+
+describe('GET /api/search — A QUESTION IS BOUNDED AT THE DOOR', () => {
+  it('a question over the cap is a 400 — never a silent half-search', async () => {
+    const { front } = mkFront()
+    const res = await call(front, { url: `/api/search?q=${'x'.repeat(SEARCH_QUERY_CAP + 1)}` })
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toContain('256')
+  })
+
+  it('an empty question is an empty answer, and the projection is never even called', async () => {
+    let touched = 0
+    const { front } = mkFront({ search: { search: async () => ((touched += 1), { hits: [] }) } })
+    for (const url of ['/api/search', '/api/search?q=', '/api/search?q=%20%20']) {
+      const res = await call(front, { url })
+      expect(res.statusCode).toBe(200)
+      expect(JSON.parse(res.body)).toEqual({ hits: [] })
+    }
+    expect(touched).toBe(0)
+  })
+
+  it('a real question answers with hits, explicit-picked to the four declared fields', async () => {
+    const { front } = mkFront()
+    const res = await call(front, { url: '/api/search?q=поиск' })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.hits.length).toBeGreaterThan(0)
+    for (const h of body.hits) expect(Object.keys(h).sort()).toEqual(['hint', 'kind', 'ref', 'title'])
+  })
+
+  it('a projection that THROWS is an empty answer, never a 500', async () => {
+    const { front } = mkFront({
+      search: {
+        search: async () => {
+          throw new Error('every corpus is on fire')
+        },
+      },
+    })
+    const res = await call(front, { url: '/api/search?q=поиск' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ hits: [] })
+  })
+
+  it('the question travels as DATA — a MATCH operator and a quote are just letters', async () => {
+    const seen: string[] = []
+    const { front } = mkFront({ search: { search: async (q: string) => (seen.push(q), { hits: [] }) } })
+    const nasty = `" OR 1=1; DROP TABLE docs --`
+    const res = await call(front, { url: `/api/search?q=${encodeURIComponent(nasty)}` })
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual([nasty]) // handed over whole, interpreted by nobody on the way
+  })
+})
+
+// ═══════════════ AN ATTEMPT'S IDENTITY REACHES ITS OWN DOOR ═══════════════
+
+describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR', () => {
+  it('«<taskId>#<n>» is what the ledger mints — and, encoded, what the route accepts', () => {
+    expect(matchRoute('GET', '/api/attempt/BL-201%231')).toMatchObject({
+      handler: 'handleAttempt',
+      params: { id: 'BL-201#1' },
+    })
+    // the bare shape the guard was declared with still matches
+    expect(matchRoute('GET', '/api/attempt/R-9')).toMatchObject({ handler: 'handleAttempt', params: { id: 'R-9' } })
+  })
+
+  it('a decoded segment is still held to an ALLOW-LIST — a traversal cannot ride in encoded', () => {
+    for (const bad of [
+      '/api/attempt/%2e%2e%2f%2e%2e%2fetc%2fpasswd',
+      '/api/attempt/BL-201%2F..%2Fx',
+      '/api/attempt/bad$id',
+      '/api/attempt/BL-201%23notanumber',
+      '/api/attempt/%E0%A4%A', // malformed percent-encoding: a bad id, never a throw
+    ]) {
+      expect(matchRoute('GET', bad)).toEqual({ badId: true })
+    }
+  })
+
+  it('the tail travels to the LEDGER as it was asked — the ceiling belongs to the reader', async () => {
+    const { front, asked } = mkFront()
+    await call(front, { url: '/api/attempt/BL-201%231?tail=2' })
+    expect(asked[0]).toEqual({ attemptId: 'BL-201#1', tail: '2' })
+    await call(front, { url: '/api/attempt/BL-201%231' })
+    expect(asked[1]).toEqual({ attemptId: 'BL-201#1', tail: undefined })
+  })
+
+  it('a cut tail says so, and a delegated line arrives WITH its flag', async () => {
+    const { front } = mkFront()
+    const res = await call(front, { url: '/api/attempt/BL-201%231?tail=2' })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.truncated).toBe(true)
+    expect(body.lines).toHaveLength(2)
+    expect(body.lines[1]).toEqual({ ts: '2026-08-07T01:00:02.000Z', line: 'делегирую разбор', subagent: true })
+    // an ordinary line carries the flag as FALSE rather than as an absence: the screen shows
+    // «делегировано» or it does not, and «this build did not know» is not a third answer
+    expect(body.lines[0].subagent).toBe(false)
+  })
+
+  it("the worker's own note rides along, and a note that was never left is null", async () => {
+    const withNote = mkFront()
+    expect(JSON.parse((await call(withNote.front, { url: '/api/attempt/R-9%231' })).body).note).toBe(
+      'сначала прочитал соседний модуль',
+    )
+    const without = mkFront({ note: null })
+    expect(JSON.parse((await call(without.front, { url: '/api/attempt/R-9%231' })).body).note).toBe(null)
+  })
+
+  it('an attempt with no log is an EMPTY log — a silent worker is not a 404', async () => {
+    const { front } = mkFront({ rows: [], note: null })
+    const res = await call(front, { url: '/api/attempt/R-9%231' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ lines: [], truncated: false, note: null })
+  })
+
+  it('a ledger that THROWS is an empty log, never a 500', async () => {
+    const { front } = mkFront({
+      ledger: {
+        readAttemptLog: () => {
+          throw new Error('the transcript is unreadable')
+        },
+      },
+    })
+    const res = await call(front, { url: '/api/attempt/R-9%231' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).lines).toEqual([])
+  })
+})
+
+// ═══════════════ NO SESSION IDENTIFIER TRAVELS ═══════════════
+
+describe('GET /api/attempt/:id — NO SESSION IDENTIFIER TRAVELS', () => {
+  it('a row carrying a session and a parent id gives up NEITHER — checked on the BYTES', async () => {
+    const { front } = mkFront({
+      rows: [
+        {
+          ts: '2026-08-07T01:00:00.000Z',
+          line: 'обычная строка',
+          sessionId: 'sess_01SECRETSESSION',
+          subagent: true,
+          parentId: 'toolu_01OPAQUEPARENT',
+        },
+      ],
+    })
+    const res = await call(front, { url: '/api/attempt/R-9%231' })
+    expect(res.body).not.toContain('sess_01SECRETSESSION')
+    expect(res.body).not.toContain('toolu_01OPAQUEPARENT')
+    // the fact survives; the identifier does not
+    expect(JSON.parse(res.body).lines[0]).toEqual({ ts: '2026-08-07T01:00:00.000Z', line: 'обычная строка', subagent: true })
+  })
+})
+
+// ═══════════════ THE SLOTS ARE FILLED ═══════════════
+
+describe('the two slots of this plan — THE SLOTS ARE FILLED', () => {
+  it('both keys are gone from PENDING_ROUTES, and neither door answers 501 any more', async () => {
+    expect(PENDING_ROUTES.has('GET /api/search')).toBe(false)
+    expect(PENDING_ROUTES.has('GET /api/attempt/:id')).toBe(false)
+    const { front } = mkFront()
+    expect((await call(front, { url: '/api/search?q=поиск' })).statusCode).toBe(200)
+    expect((await call(front, { url: '/api/attempt/R-9%231' })).statusCode).toBe(200)
+  })
+
+  it('a daemon wired with NEITHER collaborator answers 501 — «not available here», not «not written»', async () => {
+    const bare = createFrontServer({ config: { token: TOKEN }, deps: {} })
+    expect((await call(bare, { url: '/api/search?q=поиск' })).statusCode).toBe(501)
+    expect((await call(bare, { url: '/api/attempt/R-9%231' })).statusCode).toBe(501)
+  })
+
+  it('both doors are auth-gated exactly like every other', async () => {
+    const { front } = mkFront()
+    for (const url of ['/api/search?q=поиск', '/api/attempt/R-9%231']) {
+      const res = mkRes()
+      await front.handle(mkReq({ url }), res)
+      expect(res.statusCode).toBe(401)
+    }
   })
 })

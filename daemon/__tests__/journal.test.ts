@@ -921,6 +921,8 @@ describe('the live attempt log — every line, appended as it arrives', () => {
       entries: [],
       total: 0,
       truncated: false,
+      // an attempt that printed nothing left no note either — absent, never invented
+      note: null,
     })
 
     const attemptId = 'BL-9#6'
@@ -931,6 +933,32 @@ describe('the live attempt log — every line, appended as it arrives', () => {
     const { entries, total } = readAttemptLog({ dir, attemptId })
     expect(total).toBe(2)
     expect(entries.map((e: any) => e.line)).toEqual(['good', 'also good'])
+  })
+
+  it('THE NOTE IS READ OFF THE WHOLE LOG, NEVER OFF THE TAIL — the worker states it FIRST', () => {
+    // The approach note is printed in the opening minutes of an attempt. A reader that
+    // parsed only what it returns would report «no note» for exactly the long attempt a
+    // person most wants explained — so the note is taken before the tail is cut.
+    const attemptId = 'BL-9#7'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: 'APPROACH_NOTE: сначала прочитал соседний модуль' })
+    w.append({ line: 'APPROACH_REJECTED: свой парсер потока' })
+    for (let i = 0; i < 50; i += 1) w.append({ line: `работаю ${i}` })
+
+    const tailed = readAttemptLog({ dir, attemptId, tail: 3 })
+    expect(tailed.entries).toHaveLength(3)
+    expect(tailed.truncated).toBe(true)
+    expect(tailed.note!.approach).toBe('сначала прочитал соседний модуль')
+    expect(tailed.note!.rejected).toEqual(['свой парсер потока'])
+    // …and the note is not in the tail it returned, which is the whole point
+    expect(tailed.entries.some((e: any) => e.line.includes('APPROACH_NOTE'))).toBe(false)
+  })
+
+  it('an attempt that left no marker carries note:null — an absence, never an empty string', () => {
+    const attemptId = 'BL-9#8'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: 'просто работаю' })
+    expect(readAttemptLog({ dir, attemptId }).note).toBe(null)
   })
 
   it('the tail is clamped: an absurd ask is capped at 1000, a nonsense ask falls back to 200', () => {

@@ -89,7 +89,13 @@ import { appendFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
-import { attemptIdFor, normalizeJournalPayload, normalizeAttemptLogEntry, attemptLogTail } from '../front/journal.mjs'
+import {
+  attemptIdFor,
+  normalizeJournalPayload,
+  normalizeAttemptLogEntry,
+  attemptLogTail,
+  parseApproachNote,
+} from '../front/journal.mjs'
 import { envelopeHash } from './capability-envelope.mjs'
 import { listNoteFiles } from '../../../scripts/sma/lib/generator.mjs'
 
@@ -440,7 +446,7 @@ export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError 
 }
 
 /**
- * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated}` — the
+ * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated, note}` — the
  * LAST `tail` lines of one attempt (default 200, hard ceiling 1000), with `truncated` saying
  * that older lines exist. A missing log reads as an EMPTY log, never an error, and a corrupt
  * row is skipped — the same fail-open posture as every other reader here.
@@ -449,17 +455,25 @@ export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError 
  * a line, does not strip anything out of it and makes no claim that it is safe: it is worker
  * output, and whatever shows it shows it as TEXT.
  *
+ * WHY THE NOTE IS TAKEN HERE AND NOT BY THE CALLER. The worker states its approach on the
+ * SAME stream, in the first minutes of the attempt — so a caller who parsed the returned
+ * `entries` would be parsing a TAIL, and would report «no note» for exactly the long attempt
+ * a person most wants explained. This function already holds every row in memory one line
+ * above, so the note costs nothing extra and there is one place, not two, that reads the
+ * file. It is the same soft marker protocol the tick reads to fill the decision journal, so
+ * a running attempt and a finished one answer the same sentence.
+ *
  * COST, STATED HONESTLY: the file is read whole and the tail is taken in memory. That is
  * bounded by the log of ONE attempt and is the cheap correct thing today; if an attempt's
  * transcript ever grows past comfort, the fix is a reverse chunked reader here — the
  * signature already hides it.
  *
  * @param {{dir?:string, attemptId?:string, tail?:number, fsImpl?:object}} [o]
- * @returns {{attemptId:string, entries:object[], total:number, truncated:boolean}}
+ * @returns {{attemptId:string, entries:object[], total:number, truncated:boolean, note:object|null}}
  */
 export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
   const id = String(attemptId ?? '')
-  const empty = { attemptId: id, entries: [], total: 0, truncated: false }
+  const empty = { attemptId: id, entries: [], total: 0, truncated: false, note: null }
   if (!dir || !id) return empty
   const read = (fsImpl && fsImpl.readFileSync) || readFileSync
   let raw
@@ -478,5 +492,7 @@ export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
       /* skip corrupt line (fail-open) */
     }
   }
-  return { attemptId: id, ...attemptLogTail(rows, tail) }
+  // The note is read off EVERY row, before the tail is taken — see the header.
+  const note = parseApproachNote(rows.map((r) => String((r && r.line) || '')))
+  return { attemptId: id, ...attemptLogTail(rows, tail), note }
 }
