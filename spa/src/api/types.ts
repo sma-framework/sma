@@ -253,6 +253,16 @@ export interface SubApiSwitch {
 export interface Rules {
   lanes: RulesLane[]
   workers: RulesWorker[]
+  /**
+   * The conveyor's own switch, READ. The daemon derives it with the same predicate the tick
+   * is gated on, so the answer on the glass and the answer in the machine are one comparison.
+   *
+   * Optional because a daemon built before the switch existed does not carry the key at all —
+   * and absent must NEVER be rendered as «running». That guess is the exact lie this field
+   * was added to prevent, one layer down; a screen that meets `undefined` here is looking at
+   * an older process and has to say so instead of picking a state for it.
+   */
+  pipeline?: { enabled: boolean }
   budgetStops?: BudgetStops
   subApiSwitch: SubApiSwitch
 }
