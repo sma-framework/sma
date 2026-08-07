@@ -1138,7 +1138,9 @@ function stripLeadingAside(title) {
  * or with headings in another shape, simply gets an empty map and the fallback below.
  */
 function roadmapTitles(projectDir, io) {
-  const titles = new Map()
+  const byNumber = new Map()
+  const headings = []
+
   for (const rel of ['ROADMAP.md', 'ROADMAP.ru.md']) {
     let raw = ''
     try {
@@ -1150,12 +1152,47 @@ function roadmapTitles(projectDir, io) {
       const m = line.match(ROADMAP_HEADING)
       if (!m) continue
       const n = Number(m[1])
+      const full = m[2].trim()
+      headings.push({ n, full })
       // FIRST heading wins: a roadmap that mentions a phase twice is naming it once and
       // referring to it afterwards.
-      if (!titles.has(n)) titles.set(n, stripLeadingAside(m[2]))
+      if (!byNumber.has(n)) byNumber.set(n, { n, title: stripLeadingAside(full) })
     }
   }
-  return titles
+
+  // SECOND PASS — the old number a phase used to carry, when the roadmap says so plainly.
+  //
+  // Directories outlive renumbering: `49.2-sma-v3-trust-spine` is «Phase 3» in the roadmap now,
+  // and its heading says which one it used to be — «(экс-49.2)». Reading that turns six historic
+  // directories from slugs into names.
+  //
+  // THE RULE IS DELIBERATELY NARROW, because the naive version is WRONG here and it is worth
+  // saying how. Phase 8's aside reads «(новая — «дни 1–30» канона, выделена из экс-49.7 аудитом
+  // K1)» — it MENTIONS 49.7, which belongs to Phase 9, and a rule that scanned asides for any
+  // number would have given Phase 9's directory Phase 8's name. So an alias is taken only from a
+  // SHORT aside carrying EXACTLY ONE number: prose is refused, and «is this an identifier or a
+  // sentence» is decided by shape rather than by hope. A number already claimed by a heading of
+  // its own is never overwritten — second pass, and primaries win.
+  for (const { n, full } of headings) {
+    const alias = shortAsideNumber(full)
+    if (alias === null || byNumber.has(alias)) continue
+    const primary = byNumber.get(n)
+    if (primary) byNumber.set(alias, primary)
+  }
+
+  return byNumber
+}
+
+/**
+ * `(экс-49.2)` → 49.2. `(ex-3)` → 3. Long prose, or a bracket holding two numbers, or none →
+ * null. Fourteen characters is the whole of the judgement: an identifier is short, a sentence
+ * is not.
+ */
+function shortAsideNumber(title) {
+  const m = String(title).match(/^\(([^)]{0,14})\)/)
+  if (!m) return null
+  const numbers = m[1].match(/\d+(?:\.\d+)?/g)
+  return numbers && numbers.length === 1 ? Number(numbers[0]) : null
 }
 
 /**
@@ -1174,10 +1211,29 @@ function roadmapTitles(projectDir, io) {
  * spaces instead of dashes — and still carries its number.
  */
 function phaseTitleOf(dir, titles) {
-  const n = phaseNumberOf(dir)
-  const fromRoadmap = n === null ? null : titles.get(n)
-  const words = fromRoadmap && fromRoadmap.trim() !== '' ? fromRoadmap : readableSlug(phaseNameOf(dir))
-  return n === null ? words : `${n} · ${words}`
+  const dirNumber = phaseNumberOf(dir)
+  const entry = dirNumber === null ? null : titles.get(dirNumber)
+  // The ROADMAP's number when the roadmap knows this phase — including through the old number
+  // its directory still carries. `49.2-sma-v3-trust-spine` is «3 · SMA V3 — The Trust Spine»,
+  // because three is what the phase is called now and the directory is only where it lives.
+  if (entry) return `${entry.n} · ${entry.title}`
+  const words = readableSlug(phaseNameOf(dir))
+  return dirNumber === null ? words : `${dirNumber} · ${words}`
+}
+
+/**
+ * The number a phase is SORTED by: the roadmap's, when it has one, and the directory's when it
+ * does not. Newest first is the order a person wants — the phase they are working on is the one
+ * they open, and it is the highest number, not the first line of an alphabet.
+ *
+ * Sorting by directory name put `10-…` before `9-…` and buried phase 12 under six directories
+ * numbered 49.x that are, in the roadmap's own numbering, the OLDEST work in the project.
+ */
+function phaseOrderOf(dir, titles) {
+  const dirNumber = phaseNumberOf(dir)
+  const entry = dirNumber === null ? null : titles.get(dirNumber)
+  if (entry) return entry.n
+  return dirNumber === null ? Number.NEGATIVE_INFINITY : dirNumber
 }
 
 /** Where a stage stands, read off the files of the phase directory and nothing else. */
@@ -1240,13 +1296,16 @@ export function derivePhaseIndex({ projectDir, fsImpl } = {}) {
   if (typeof projectDir !== 'string' || projectDir.trim() === '') return { phases: [] }
   const io = fsSeam(fsImpl)
   const root = join(projectDir, '.planning', 'phases')
-  const dirs = safeList(io, root)
-    .filter((name) => isDir(io, join(root, name)))
-    .sort()
   const engine = questionsEngine(projectDir, fsImpl)
   // Read ONCE for the whole list rather than per row: the roadmap is one file and this is the
-  // screen that shows every phase at once.
+  // screen that shows every phase at once. It decides both the names and the order below.
   const titles = roadmapTitles(projectDir, io)
+  const dirs = safeList(io, root)
+    .filter((name) => isDir(io, join(root, name)))
+    // NEWEST FIRST. The phase somebody is working on is the highest-numbered one, and it should
+    // be the first row rather than something to scroll past. Ties and unnumbered directories
+    // fall back to their name so the order is total and stable.
+    .sort((a, b) => phaseOrderOf(b, titles) - phaseOrderOf(a, titles) || String(a).localeCompare(String(b)))
 
   return {
     phases: dirs.map((dir) => {
