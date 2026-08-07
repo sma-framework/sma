@@ -239,6 +239,22 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * The phase cycle is ONE decision expressed in two places: which tree the card reads, and
+   * which tree a documentary stage is written into. They are allowed to be any directory; they
+   * are not allowed to be DIFFERENT directories. A card reading one root while the stage writes
+   * into another shows work as never started while the daemon is completing it — and it is the
+   * kind of disagreement that survives every unit test on either side, because each half is
+   * correct on its own.
+   */
+  it('the phase card and the tick look at the SAME tree', () => {
+    const front = park.front.deps.phaseCycleDir
+    const tick = park.tickDeps.projectDir
+    expect(typeof front, 'the front must be told where the phase cycle lives').toBe('function')
+    expect(typeof tick, 'the tick must be told where a documentary stage stands').toBe('function')
+    expect(front()).toBe(tick())
+  })
+
+  /**
    * The config here PINS a repoDir, exactly like the founder's does. TWO different
    * facts leave this root: the tree being served (the pin — every read uses it) and the
    * directory this process started in (the write-time derive baseline). Wiring the served
