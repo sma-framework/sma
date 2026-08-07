@@ -94,6 +94,7 @@ import {
   derivePhaseIndex,
   derivePhaseCard,
   deriveMemoryDrafts,
+  deriveCoordination,
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
@@ -243,6 +244,87 @@ function runProjectVerb({ verb, args = [], projectDir }) {
       },
     )
   })
+}
+
+/**
+ * The coordination ledger of one project, read by that runtime's OWN readers.
+ *
+ * This is a READ and it is done in-process on purpose — unlike the linter, these readers take
+ * their directories as arguments rather than deriving them from a working directory, so there
+ * is no ambiguity to resolve with a child process. What matters is that they are the readers
+ * `status` itself uses: a second parser of `.sma/` is exactly what this daemon must not grow.
+ *
+ * Collisions are the JOURNALLED ones of today — the same window `status` counts, for the same
+ * reason: the journal is append-only and never pruned, so an unbounded count becomes noise
+ * within days of a busy checkout.
+ */
+async function readCoordinationLedger({ projectDir, now = Date.now() }) {
+  const out = { sessions: [], claims: [], collisions: [] }
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return out
+  const smaRoot = join(projectDir, '.sma')
+  const dirs = { smaRoot, sessionsDir: join(smaRoot, 'sessions'), claimsDir: join(smaRoot, 'claims'), journalDir: join(smaRoot, 'journal') }
+
+  // WHAT A RESERVATION IS, IN THIS PRODUCT, IS TWO RECORDS. The scope a terminal reserved
+  // (its globs and what it is doing) rides that terminal's own LEASE; the force-clearable
+  // ENTRY is a directory named after the scope's slug. The join between them is the runtime's
+  // own `scopeClaimSlug` — the same derivation the collision warning's «force-clear <slug>»
+  // remediation uses — so a name shown here is a name that command will actually resolve.
+  const scopes = new Map()
+  try {
+    const registry = await import('../../scripts/sma/lib/registry.mjs')
+    const collision = await import('../../scripts/sma/lib/collision.mjs')
+    const { sessions } = registry.readSessions(dirs)
+    for (const s of sessions || []) {
+      if (!registry.isSessionLive(s, { now })) continue // a graveyard lease is not somebody working
+      out.sessions.push({
+        id: registry.displayIdentity({ holderIdentity: s.holderIdentity, label: s.label }),
+        title: s.label ?? '',
+        since: s.acquireTime ?? s.renewTime ?? null,
+      })
+      const desc = s.scope && typeof s.scope.description === 'string' ? s.scope.description : ''
+      if (desc !== '') {
+        scopes.set(collision.scopeClaimSlug(desc), {
+          globs: s.scope && Array.isArray(s.scope.globs) ? s.scope.globs : [],
+          desc,
+        })
+      }
+    }
+  } catch {
+    /* fail-open per source — one unreadable book never empties the other two */
+  }
+
+  try {
+    const claims = await import('../../scripts/sma/lib/claims.mjs')
+    for (const c of claims.readClaims(dirs) || []) {
+      const scope = scopes.get(c.name) || null
+      out.claims.push({
+        name: c.name,
+        globs: scope ? scope.globs : [],
+        // A held slot whose owner's lease is gone still shows: the provenance line is what the
+        // force-clear command prints, and «somebody reserved this and left» is the single most
+        // useful row on this panel.
+        desc: scope ? scope.desc : String(((c && c.provenance) || {}).reason ?? ''),
+        ageMs: c.ageMs,
+      })
+    }
+  } catch {
+    /* fail-open */
+  }
+
+  try {
+    const journal = await import('../../scripts/sma/lib/journal.mjs')
+    const { events } = journal.readJournal(dirs)
+    const today = new Date(now).toISOString().slice(0, 10)
+    for (const e of events || []) {
+      if (!e || e.type !== 'collision') continue
+      if (typeof e.ts !== 'string' || e.ts.slice(0, 10) !== today) continue
+      const actors = Array.isArray(e.actors) ? e.actors : []
+      out.collisions.push({ a: actors[0] ?? '', b: actors[1] ?? '', overlap: e.scope ? [e.scope] : [] })
+    }
+  } catch {
+    /* fail-open */
+  }
+  return out
 }
 
 /**
@@ -460,6 +542,38 @@ export function createDaemon(o = {}) {
           // A corpus WITH critical findings exits 1 and is a perfectly good report: the verdict
           // is the payload, never the exit code.
           return run.ok ? { ok: true, report: run.result } : { ok: false, reason: run.reason ?? 'unavailable' }
+        },
+        // The coordination snapshot: the ledger's own readers do the reading, the derive does
+        // the shaping, and neither of them is in the door.
+        deriveCoordination: (args) => deriveCoordination({ ...args, readLedger: readCoordinationLedger }),
+        // TAKING A RESERVATION AWAY IS A RISKY OPERATION and the verb says so: it refuses
+        // without a written reason AND a stated check, and it journals the steal with the
+        // former holder's name. None of that is re-implemented here — which is precisely why
+        // none of it can be skipped from a browser.
+        clearClaim: async ({ claim, reason }) => {
+          const projectDir = connectedProjectDir()
+          const run = await runProjectVerb({
+            verb: 'force-clear',
+            args: [
+              claim,
+              '--yes',
+              '--reason',
+              reason,
+              // THE CHECK IS ONE THIS SYSTEM ACTUALLY MADE. The panel this button sits on shows
+              // the holder and the age of every reservation, read live from the ledger, before
+              // anything can be pressed. That is a true statement; a fabricated «I verified the
+              // owner is gone» would make the evidence record worse than empty.
+              '--checked',
+              'holder and age read live from the coordination ledger and shown in the window before the clear',
+              '--json',
+            ],
+            projectDir,
+          })
+          if (!run.ok) return { cleared: false, reason: run.reason ?? 'the reservation was not cleared' }
+          const r = run.result || {}
+          return r.cleared === true
+            ? { cleared: true, by: r.formerHolder ?? '(unknown)' }
+            : { cleared: false, reason: withoutPaths(r.reason ?? 'the runtime refused the clear', projectDir) }
         },
         // the project registry doors — the ONLY way a request reaches a config write
         addProject,

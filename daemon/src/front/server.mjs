@@ -291,8 +291,6 @@ export const ROUTES = Object.freeze({
  */
 export const PENDING_ROUTES = Object.freeze(
   new Set([
-    'GET /api/coordination',
-    'POST /api/claim/clear',
     'GET /api/backlog',
     'POST /api/backlog/promote',
     'GET /api/attempt/:id',
@@ -2005,12 +2003,6 @@ async function handleOnboardingComplete({ req, res, config, deps }) {
 // it is a guess about a contract that does not exist yet, and it would have to be re-read and
 // re-argued by the plan that actually fills the slot.
 
-function handleCoordination({ res }) {
-  send501(res)
-}
-function handleClaimClear({ res }) {
-  send501(res)
-}
 function handleBacklog({ res }) {
   send501(res)
 }
@@ -2793,6 +2785,87 @@ async function handleMemoryLint({ res, deps }) {
 function nameOnly(p) {
   const parts = String(p ?? '').split(/[/\\]+/).filter(Boolean)
   return parts.length ? parts[parts.length - 1] : ''
+}
+
+// ══════════ coordination: who else has this open, and what they reserved ══════════
+//
+// A CHECKOUT IS SHARED, AND THE PRODUCT HAS ALWAYS KNOWN IT. Terminals take leases, reserve
+// scopes before they change them, and journal it when two of those scopes meet. All of that is
+// already on disk in `.sma/`; what it never had was a reader that is not a status line. This
+// panel is that reader, and it reads through the runtime's OWN readers — a second parser of
+// somebody else's coordination ledger is the thing this daemon must never become.
+//
+// AND ONE ACT: TAKING SOMEBODY ELSE'S RESERVATION AWAY. That act exists in the runtime too, and
+// it has always cost more than a confirmation — a foreign clear is a RISKY OPERATION and the
+// verb refuses it without a written reason and a stated check. This door does not soften that
+// by one field: the reason is REQUIRED, it is passed straight through, and the check the door
+// attaches is one the door actually made — never a sentence invented to satisfy a gate.
+//
+// A CLEARED RESERVATION LEAVES A TRAIL BY CONSTRUCTION. The verb writes the evidence record and
+// journals the steal with the former holder's name. Nothing about that is re-implemented here,
+// which is exactly why it cannot be skipped here.
+
+/**
+ * A reservation's name as it may arrive on the wire.
+ *
+ * It becomes a DIRECTORY NAME on this machine and an ARGUMENT of a child process, so it is held
+ * to a grammar with no separator and no leading dash: a name that could read as the next flag
+ * of the command it rides on is refused before the command is assembled, not after.
+ */
+const CLAIM_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/** A reason is a person's sentence, and this is the cap the return door already uses for one. */
+const CLAIM_REASON_CAP = 2000
+
+/**
+ * GET /api/coordination — sessions, reservations and today's collisions of the connected
+ * project, derived on every call.
+ *
+ * A checkout with nobody in it and a daemon with no project connected are the same three empty
+ * lists: an empty panel is a fact about a quiet machine, not a fault of this door.
+ */
+function handleCoordination({ res, config, deps }) {
+  if (typeof deps.deriveCoordination !== 'function') return send501(res)
+  return sendJson(res, 200, deps.deriveCoordination({ config, clock: deps.clock }))
+}
+
+/**
+ * POST /api/claim/clear — body {claim, reason}. Take somebody else's reservation away.
+ *
+ * THE REASON IS NOT A COURTESY FIELD, IT IS THE EVIDENCE. The runtime treats a foreign clear as
+ * a risky operation and will not perform one without a written record of why and of what was
+ * checked; this door therefore refuses an empty reason itself, before the verb is reached, so
+ * the person gets the refusal from the screen they are on rather than from a child process.
+ *
+ * WHAT THE DOOR ATTACHES AS THE CHECK IS SOMETHING THE DOOR DID. It read the ledger and put the
+ * holder and the age of that reservation in front of a person before this call — that is a
+ * true statement about this system, and it is the only one available here. Inventing a check
+ * nobody made would be worse than having no evidence at all, because the record would read as
+ * though somebody had looked.
+ */
+async function handleClaimClear({ req, res, deps }) {
+  if (typeof deps.clearClaim !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['claim', 'reason']))) return undefined
+
+  const claim = b.claim
+  if (typeof claim !== 'string' || !CLAIM_NAME_RE.test(claim)) return send400(res, 'invalid claim')
+  const reason = b.reason == null ? '' : String(b.reason).trim()
+  if (reason === '') return send400(res, 'reason is required — a foreign reservation is never cleared without one')
+  if (reason.length > CLAIM_REASON_CAP) return send400(res, `reason exceeds ${CLAIM_REASON_CAP} chars`)
+
+  let result
+  try {
+    result = await deps.clearClaim({ claim, reason })
+  } catch (err) {
+    return send409(res, String((err && err.message) || 'the reservation was not cleared'))
+  }
+  if (!result || result.cleared !== true) return workbenchRefusal(res, result)
+
+  emitSafe(deps, { event: 'coordination.updated' })
+  return sendJson(res, 200, { ok: true, claim, receipt: `claim-clear:${claim}@${result.by ?? '(unknown)'}` })
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──

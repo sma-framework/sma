@@ -4942,14 +4942,30 @@ async function cmdGatesMarkFullgate({ flags, dirs }) {
 }
 
 /**
- * force-clear <claim> [--yes] — the ONLY foreign-claim removal path
+ * force-clear <claim> [--yes] [--json] — the ONLY foreign-claim removal path
  * (terraform force-unlock style). Prints {who holds it, what, since when} first;
  * requires an explicit --yes (an explicit flag IS the confirmation — no TTY
  * prompts in this repo's automation). On confirm: releaseSlot force path +
  * journal a 'steal' event with full provenance. Without --yes: refuse, exit 1,
  * remove nothing.
+ *
+ * --json answers EVERY exit path as {cleared, claim, formerHolder?, evidenceId?,
+ * reason?} — including each refusal, because a caller that cannot read the
+ * refusal is a caller that will report «it did nothing» for a rule that fired.
+ * The exit code is unchanged on every one of them.
  */
 async function cmdForceClear({ positionals, flags, dirs }) {
+  const asJson = wantsJson(flags)
+  const say = (text) => {
+    if (!asJson) process.stdout.write(text)
+  }
+  const refuse = (reason, { toStderr = false } = {}) => {
+    if (asJson) printJson({ cleared: false, claim: positionals[0] ?? null, reason })
+    else if (toStderr) process.stderr.write(reason)
+    else process.stdout.write(reason)
+    return 1
+  }
+
   const name = positionals[0]
   if (!name) {
     process.stderr.write('usage: node scripts/sma/cli.mjs force-clear <claim> --yes\n')
@@ -4962,26 +4978,20 @@ async function cmdForceClear({ positionals, flags, dirs }) {
 
   const list = claims.readClaims(dirs)
   const entry = list.find((c) => c.name === name)
-  if (!entry) {
-    process.stderr.write(`SMA: claim «${name}» не найден — очищать нечего\n`)
-    return 1
-  }
+  if (!entry) return refuse(`SMA: claim «${name}» не найден — очищать нечего\n`, { toStderr: true })
   const prov = entry.provenance || {}
   const who = prov.by || 'неизвестный терминал'
   const operation = prov.reason || '—'
   const since = prov.at || '—'
 
   // Always print the holder block first (terraform force-unlock style).
-  process.stdout.write(
-    `Claim «${name}» держит терминал ${who}, операция ${operation}, с ${since}.\n`,
-  )
+  say(`Claim «${name}» держит терминал ${who}, операция ${operation}, с ${since}.\n`)
 
   if (flags.yes !== true) {
-    process.stdout.write(
+    return refuse(
       'Принудительная очистка чужого claim требует явного подтверждения: добавьте --yes.\n' +
         'Ничего не удалено.\n',
     )
-    return 1
   }
 
   // a foreign-claim clear is a RISKY OP — it carries a burden-of-proof
@@ -5002,18 +5012,16 @@ async function cmdForceClear({ positionals, flags, dirs }) {
     evidenceId = String(flags.evidence).trim() // a pre-written, still-fresh record satisfies
   }
   if (!evidenceId) {
-    process.stdout.write(
+    return refuse(
       'Принудительная очистка чужого claim — рискованная операция и требует доказательства (burden of proof).\n' +
         `Запишите его в этом же вызове:\n  node scripts/sma/cli.mjs force-clear ${name} --yes --reason "<почему>" --checked "<что проверили>" [--checked "<ещё>"]\n` +
         'или сошлитесь на заранее записанное свежее доказательство: --evidence <id>. Ничего не удалено.\n',
     )
-    return 1
   }
 
   const res = claims.releaseSlot(name, { by: identity.holderIdentity, force: true, claimsDir: dirs.claimsDir })
   if (!res.released) {
-    process.stderr.write(`SMA: не удалось очистить claim «${name}» (${res.reason ?? 'ошибка'})\n`)
-    return 1
+    return refuse(`SMA: не удалось очистить claim «${name}» (${res.reason ?? 'ошибка'})\n`, { toStderr: true })
   }
 
   // Journal the steal with full provenance.
@@ -5038,6 +5046,10 @@ async function cmdForceClear({ positionals, flags, dirs }) {
     { terminalId: identity.terminalId, journalDir: dirs.journalDir },
   )
 
+  if (asJson) {
+    printJson({ cleared: true, claim: name, formerHolder: who, evidenceId })
+    return 0
+  }
   process.stdout.write(`SMA: claim «${name}» принудительно очищен (бывший держатель: ${who}); событие записано в журнал.\n`)
   return 0
 }
