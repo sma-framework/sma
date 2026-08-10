@@ -317,11 +317,12 @@ export function Screen() {
             </div>
 
             <div className="overflow-hidden rounded-[12px] border border-bd bg-card shadow-panel">
-              <div className="grid grid-cols-[minmax(0,1fr)_150px_220px_190px] gap-4 border-b border-bd bg-surf px-[18px] py-2.5 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
+              <div className="grid grid-cols-[minmax(0,1fr)_150px_220px_190px_120px] gap-4 border-b border-bd bg-surf px-[18px] py-2.5 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
                 <span>Машина</span>
                 <span>Состояние</span>
                 <span>Сегодня</span>
                 <span>Окна подписки</span>
+                <span />{/* «Отвязать» стоит без заголовка: столбец действия, а не данных */}
               </div>
               {machines.map((m, i) => {
                 const cell = perMachine.get(m.id) ?? { finished: 0, busy: 0 }

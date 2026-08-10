@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type { AccountEntry, MachineRow as Machine } from '../../api/types'
+import { useRemoveMachine } from '../../api/queries'
 import { hoursLabel, plural } from '../../shell/format'
 
 /**
@@ -87,7 +89,7 @@ export function MachineRow({
 
   return (
     <div
-      className={`grid grid-cols-[minmax(0,1fr)_150px_220px_190px] items-start gap-4 px-[18px] py-[15px] ${
+      className={`grid grid-cols-[minmax(0,1fr)_150px_220px_190px_120px] items-start gap-4 px-[18px] py-[15px] ${
         first ? '' : 'border-t border-bd'
       }`}
     >
@@ -140,6 +142,70 @@ export function MachineRow({
             </span>
           </div>
         )}
+      </div>
+
+      <div className="flex items-start justify-end">{self ? null : <UnlinkButton machine={machine} />}</div>
+    </div>
+  )
+}
+
+/**
+ * ОТВЯЗАТЬ — the door that existed everywhere except on the glass.
+ *
+ * The route was live and auth-gated, the client function was written, the hook was written —
+ * and no screen mounted any of it, so a mistyped or dead machine stayed in the household
+ * list forever and the only way out was editing a config file by hand. That is the same
+ * defect class as everything else fixed this evening: built, tested, never joined.
+ *
+ * TWO PRESSES, NEVER ONE. Removing a machine is not undoable from here, so the button asks
+ * first and names what will happen. THIS machine has no button at all: a window cannot
+ * remove the ground it is standing on.
+ */
+function UnlinkButton({ machine }: { machine: Machine }) {
+  const remove = useRemoveMachine()
+  const [asking, setAsking] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+
+  if (problem) return <span className="text-[11.5px] text-err-tx">{problem}</span>
+
+  if (!asking) {
+    return (
+      <button
+        type="button"
+        onClick={() => setAsking(true)}
+        className="rounded-[8px] border border-bd px-2.5 py-1 text-[11.5px] text-tx3 hover:text-tx2"
+      >
+        Отвязать
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      <span className="text-[11.5px] text-tx2">Убрать «{machine.title}» из дома?</span>
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          disabled={remove.isPending}
+          onClick={() =>
+            remove.mutate(
+              { id: machine.id },
+              {
+                onError: () => setProblem('Не отвязалось. Машина осталась в списке.'),
+              },
+            )
+          }
+          className="rounded-[8px] border border-bd bg-err-s px-2.5 py-1 text-[11.5px] font-semibold text-err-tx disabled:opacity-60"
+        >
+          Отвязать
+        </button>
+        <button
+          type="button"
+          onClick={() => setAsking(false)}
+          className="rounded-[8px] border border-bd px-2.5 py-1 text-[11.5px] text-tx3"
+        >
+          Отмена
+        </button>
       </div>
     </div>
   )
