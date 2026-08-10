@@ -351,9 +351,21 @@ export function Screen() {
   const active = (state.data?.projects ?? []).find((p) => p.id === state.data?.activeProject) ?? null
   const notConnected = !connected && active && active.connected === false ? active : null
 
-  const noteCount = filled?.noteCount ?? 0
-  const tags = filled?.tags ?? []
-  const recent = filled?.recent ?? []
+  /**
+   * WHOSE NOTEBOOK THIS SCREEN IS SHOWING.
+   *
+   * There are two corpora and they are not the same question. `memory` is the corpus of the
+   * repository the DAEMON itself lives in; `projectMemory` is the corpus of the project the
+   * owner selected in the header. The card below is titled «Записи проекта» — so when a
+   * project is connected it must read that project, and until now it read the daemon's own
+   * folder regardless. On a machine where the daemon runs from one checkout and the work
+   * happens in another, the owner was shown a stranger's notebook: seven notes and an empty
+   * table of contents while his project held thirty-six.
+   */
+  const corpus = connected ?? filled
+  const noteCount = corpus?.noteCount ?? 0
+  const tags = corpus?.tags ?? []
+  const recent = corpus?.recent ?? []
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">

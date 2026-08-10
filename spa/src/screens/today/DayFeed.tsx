@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { openScreen } from '../../shell/navigation'
 import type { DoneRow, QueueRow, ReceiptSummary } from '../../api/types'
 import {
   accentFor,
@@ -196,10 +197,35 @@ export function DayFeed({
   const nothingAtAll =
     decisions.length === 0 && failed.length === 0 && finished.length === 0 && waiting.length === 0
 
+  /**
+   * AN EMPTY DAY MUST OFFER THE WAY IN.
+   *
+   * This is the screen the window opens on. It said «Пока тихо — команда ждёт задач» and gave
+   * the reader nothing to press: to begin a day of work a person had to already know that the
+   * door is on another screen. The owner said it plainly — «я вообще не понимаю, как там мне
+   * работать». An empty state that only reports emptiness is a dead end; the one that offers
+   * the next act is the whole difference between a dashboard and a workplace.
+   */
   if (nothingAtAll) {
     return (
-      <section className="flex flex-1 items-center justify-center rounded-[14px] border border-bd bg-card py-16 shadow-panel">
+      <section className="flex flex-1 flex-col items-center justify-center gap-3 rounded-[14px] border border-bd bg-card py-16 shadow-panel">
         <p className="m-0 text-[13px] text-tx2">Пока тихо — команда ждёт задач.</p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => openScreen({ screen: 'tasks' })}
+            className="rounded-[9px] border border-bd bg-accent-s px-3.5 py-1.5 text-[12px] font-semibold text-accent-tx"
+          >
+            Поставить задачу
+          </button>
+          <button
+            type="button"
+            onClick={() => openScreen({ screen: 'chat' })}
+            className="rounded-[9px] border border-bd px-3.5 py-1.5 text-[12px] text-tx2"
+          >
+            Обсудить в разговоре
+          </button>
+        </div>
       </section>
     )
   }
