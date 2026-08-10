@@ -105,7 +105,7 @@ import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
 import { parseClaudeEvent, parseCodexEvent } from './runner/stream.mjs'
-import { markWindowObserved } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -598,14 +598,18 @@ function openAttemptLog(deps, task) {
 function recordWindowReading(deps, subscription, event) {
   const { accountName, dataDir } = subscription || {}
   if (!accountName || !dataDir) return
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   try {
-    markWindowObserved({
-      dataDir,
-      accountName,
-      observation: event,
-      clock: deps.now ?? Date.now,
-      fsImpl: deps.fsImpl,
-    })
+    markWindowObserved({ dataDir, accountName, observation: event, clock, fsImpl: deps.fsImpl })
+    // A WINDOW THE VENDOR SAYS IS FULL IS A CLOSE, AND A CLOSE OUTLIVES THE PERCENTAGE.
+    // `markWindowClosed` has existed, tested, with no caller anywhere since it was written; the
+    // header two modules over describes «the loop calls it» as though it did. This is that
+    // call. It fires on a full window rather than on a refusal wording, because a fraction of
+    // one is unambiguous while the vendor's word for «refused» is not something to guess at —
+    // when a real refusal is observed on a live stream, its status belongs here beside this.
+    if (Number(event.utilization) >= 1 && Number.isFinite(Number(event.resetsAt))) {
+      markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, clock, fsImpl: deps.fsImpl })
+    }
   } catch (err) {
     writeLog(deps, { type: 'window-reading-error', account: accountName, error: String((err && err.message) || err) })
   }
@@ -1250,9 +1254,28 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   }
 
   // (5) worktree provision — per-task branch `wt/<taskId>` (EXPECTED_BASE guard on).
+  //
+  // THE SAME TWO MISTAKES THE CODE PATH ABOVE ALREADY PAID FOR, made once more here and left
+  // behind when that one was fixed. `--json` is not decoration: without it the verb prints
+  // prose for a person and parseVerbResult, which looks for the last line that is a JSON
+  // object, finds nothing — so `wt` was always empty. And the field it then read,
+  // `worktreePath`, is not one the verb answers under any flag; the answer is `{ok, path,
+  // branch, reused}`. Both together meant the fallback ALWAYS won: a sibling of repoDir that
+  // no verb has ever created, into which the forge session was then spawned. Every forge task
+  // died `runtime_offline` on a missing directory, and the suite could not see it because its
+  // fake spawn ignores cwd.
   const branch = `wt/${task.id}`
-  const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch], config.repoDir)
-  const worktreePath = wt.worktreePath || `${config.repoDir ?? '.'}/../${branch}`
+  const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], config.repoDir)
+  if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
+    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState })
+    result.failed = {
+      taskId: task.id,
+      reason: 'runtime_offline',
+      detail: `worktree provision answered no path for ${branch}${wt && wt.error ? ` (${wt.error})` : ''}`,
+    }
+    return result
+  }
+  const worktreePath = wt.path
 
   // (6) spawn the «Создатель» with the FORGE prompt (not the code task prompt); touch on stream.
   const kind = task.forge && task.forge.kind

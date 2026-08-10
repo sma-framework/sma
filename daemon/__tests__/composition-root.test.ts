@@ -239,6 +239,74 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * …AND EVERYTHING A FINISHED TASK NEEDS TO BE JUDGED, WHICH IS A SEPARATE LIST.
+   *
+   * The four above decide whether a session starts. These decide what happens to its work
+   * afterwards, and their absence is far quieter: the task runs, the worker does the job
+   * correctly, and the tick then refuses it.
+   *
+   *   execGit — three of the four exit gates ask git whether the work is really on the branch.
+   *     Unwired, git answers nothing and all three say no: a committed document fails with «есть
+   *     на диске, но не закоммичен», a checkpoint with open questions fails instead of parking
+   *     for a person, and an attempt that correctly changed no code falls through to «нет
+   *     квитанции» — the exact red row the answer-only gate exists to prevent.
+   *   resolveWorkerContext — «включён» in the roster means the role file and skills reach the
+   *     session. Unwired, the switch writes config and changes nothing about any spawn, and the
+   *     journal's memory layer — written inside the same branch — is never recorded either.
+   *   report — the outbound event edge. It stays silent by default and must still be WIRED,
+   *     or `webhookUrl` is a knob connected to nothing.
+   *
+   * Each was fully written and fully tested when this test was added. That is the whole point
+   * of asking the root: a part cannot see that nobody joined it to the machine.
+   */
+  it('wires everything a finished task needs to be JUDGED — not just to start', () => {
+    for (const name of ['execGit', 'resolveWorkerContext', 'report']) {
+      expect(typeof park.tickDeps[name], `tickDeps.${name} must be wired or correct work is refused`).toBe('function')
+    }
+  })
+
+  /**
+   * THE WINDOW GATE IS ASKED WITH A WORKER AND THE WINDOW MODULE ANSWERS ABOUT AN ACCOUNT.
+   *
+   * Two callers, two nouns: the front asks about an account because that is what its screen
+   * lists, the router asks about a WORKER because that is what it is choosing between. The
+   * module reads `.name` off whatever it is handed, and a worker has no `name` — so the
+   * router's question resolved to a state read from a file named after nothing, while the
+   * usage estimate behind it, given no account to filter by, summed the whole machine.
+   *
+   * Both directions were live: a subscription the vendor itself reported as spent still
+   * received work, and on a busy machine every worker could cross 100% together and idle the
+   * conveyor while the real accounts were fresh. No test of either half could see it — the
+   * router's tests inject a predicate, the window's tests pass an account. Only the root joins
+   * the two nouns, so only the root can be asked whether they agree.
+   */
+  it('the window gate answers about the WORKER the router hands it, not about nothing', () => {
+    const open = park.tickDeps.windows
+    expect(typeof open, 'the tick must be given a window predicate').toBe('function')
+
+    // A REAL, SPENT WINDOW ON DISK — the record markWindowObserved writes, for ONE account.
+    // Asserting shapes would prove nothing here: with no data every account reads 0% and the
+    // gate says «open» whatever name it looked up, including no name at all. The bug is only
+    // visible when the answer must DIFFER between two accounts.
+    const windowsDir = join(tmpRoot, 'data', 'windows')
+    mkdirSync(windowsDir, { recursive: true })
+    writeFileSync(
+      join(windowsDir, 'acct-spent.json'),
+      JSON.stringify({
+        accountName: 'acct-spent',
+        observed: { five_hour: { utilization: 1, resetsAt: Date.now() + 3_600_000, at: new Date().toISOString() } },
+      }),
+      'utf8',
+    )
+
+    // the shape routing really passes: a worker whose account is one level down
+    expect(open({ id: 'w1', lane: 'prod', account: { name: 'acct-spent' } }), 'a spent subscription must stop receiving work').toBe(false)
+    expect(open({ id: 'w2', lane: 'prod', account: { name: 'acct-fresh' } }), 'a fresh subscription must keep it').toBe(true)
+    // …and the shape the front passes still works, because it is the same seam
+    expect(open({ name: 'acct-spent' })).toBe(false)
+  })
+
+  /**
    * The phase cycle is ONE decision expressed in two places: which tree the card reads, and
    * which tree a documentary stage is written into. They are allowed to be any directory; they
    * are not allowed to be DIFFERENT directories. A card reading one root while the stage writes
