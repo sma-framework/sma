@@ -80,10 +80,12 @@ function SummaryPart({ part }: { part: AttemptLogSummaryPart }) {
 function LogLine({ line }: { line: AttemptLogLine }) {
   const parts = line.summary ?? []
   return (
-    <div className="flex items-start gap-2 px-2.5 py-[3px]">
+    <div className={`flex items-start gap-2 px-2.5 py-[3px] ${line.subagent ? 'border-l-2 border-idle-s pl-3' : ''}`}>
       <span className="flex-none pt-[1px] font-mono text-[10.5px] text-tx3 tabular-nums">{clockLabel(line.ts)}</span>
       {line.subagent ? (
-        <span className="flex-none rounded-full bg-idle-s px-1.5 py-[1px] text-[10px] text-idle-tx">субагент</span>
+        <span className="flex-none rounded-full bg-idle-s px-1.5 py-[1px] text-[10px] text-idle-tx">
+          {line.group ? `субагент ${line.group}` : 'субагент'}
+        </span>
       ) : null}
       {parts.length ? (
         <div className="flex min-w-0 flex-1 flex-col gap-[2px]">

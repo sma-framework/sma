@@ -598,10 +598,34 @@ describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR'
     const body = JSON.parse(res.body)
     expect(body.truncated).toBe(true)
     expect(body.lines).toHaveLength(2)
-    expect(body.lines[1]).toEqual({ ts: '2026-08-07T01:00:02.000Z', line: 'делегирую разбор', subagent: true })
+    expect(body.lines[1]).toEqual({
+      ts: '2026-08-07T01:00:02.000Z',
+      line: 'делегирую разбор',
+      subagent: true,
+      group: 1, // WHICH delegation, as an ordinal — the id it was made from stays inside
+    })
     // an ordinary line carries the flag as FALSE rather than as an absence: the screen shows
     // «делегировано» or it does not, and «this build did not know» is not a third answer
     expect(body.lines[0].subagent).toBe(false)
+  })
+
+  it('two subagents are two groups, counted in the order they first speak — and the id never leaves', async () => {
+    const rows = [
+      { ts: 'T1', line: 'родитель', subagent: false },
+      { ts: 'T2', line: 'первый', subagent: true, parentId: 'toolu_AAA' },
+      { ts: 'T3', line: 'второй', subagent: true, parentId: 'toolu_BBB' },
+      { ts: 'T4', line: 'снова первый', subagent: true, parentId: 'toolu_AAA' },
+    ]
+    const { front } = mkFront({ rows })
+    const res = await call(front, { url: '/api/attempt/BL-201%231' })
+    const body = JSON.parse(res.body)
+
+    // the SAME delegation keeps the SAME number wherever its lines land in the window
+    expect(body.lines.map((l: any) => l.group)).toEqual([undefined, 1, 2, 1])
+    // and the opaque identifier the ordinal was made from does not travel
+    expect(JSON.stringify(body)).not.toContain('toolu_')
+    // a line the parent spoke itself has no group at all — absence, not a zero
+    expect(Object.keys(body.lines[0])).not.toContain('group')
   })
 
   it("the worker's own note rides along, and a note that was never left is null", async () => {
@@ -652,8 +676,13 @@ describe('GET /api/attempt/:id — NO SESSION IDENTIFIER TRAVELS', () => {
     const res = await call(front, { url: '/api/attempt/R-9%231' })
     expect(res.body).not.toContain('sess_01SECRETSESSION')
     expect(res.body).not.toContain('toolu_01OPAQUEPARENT')
-    // the fact survives; the identifier does not
-    expect(JSON.parse(res.body).lines[0]).toEqual({ ts: '2026-08-07T01:00:00.000Z', line: 'обычная строка', subagent: true })
+    // the fact survives, and WHICH delegation it was survives as an ordinal; the identifier does not
+    expect(JSON.parse(res.body).lines[0]).toEqual({
+      ts: '2026-08-07T01:00:00.000Z',
+      line: 'обычная строка',
+      subagent: true,
+      group: 1,
+    })
   })
 })
 

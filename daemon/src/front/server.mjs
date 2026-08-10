@@ -862,7 +862,7 @@ async function handleEnqueue({ req, res, config, deps }) {
   const enq = await enqueueOrExplain(res, adapter, norm)
   if (enq.answered) return undefined // the database refused the text; the reason is already sent
   const result = enq.result
-  emitSafe(deps, { event: 'task.queued', taskId: norm.id })
+  emitSafe(deps, { event: 'task.queued', taskId: norm.id, status: 'queued' })
   sendJson(res, 200, { ok: true, id: result.id, coalesced: !!result.coalesced })
 }
 
@@ -935,7 +935,10 @@ async function handleApprove({ req, res, deps }) {
     ...(merge && merge.receipt ? { extra: { merge_receipt: JSON.stringify(merge.receipt) } } : {}),
   })
 
-  emitSafe(deps, { event: green ? 'task.approved' : 'task.failed', taskId })
+  // The status is the QUEUE status the row now holds — the vocabulary the screen patches
+  // with. «approved» and «returned» are names of DOORS, not of states: after this door the
+  // row is completed or it is failed, and that is what travels.
+  emitSafe(deps, { event: green ? 'task.approved' : 'task.failed', taskId, status: green ? 'completed' : 'failed' })
   emitSafe(deps, { event: 'worker.presence', taskId })
   sendJson(res, 200, {
     ok: green,
@@ -994,8 +997,8 @@ async function handleReturn({ req, res, deps }) {
   })
   if (requeue.answered) return undefined // the database refused the note; the reason is already sent
 
-  emitSafe(deps, { event: 'task.returned', taskId })
-  emitSafe(deps, { event: 'task.queued', taskId })
+  emitSafe(deps, { event: 'task.returned', taskId, status: 'queued' })
+  emitSafe(deps, { event: 'task.queued', taskId, status: 'queued' })
   sendJson(res, 200, { ok: true, taskId, attempt: prevAttempt + 1 })
 }
 
@@ -1544,7 +1547,9 @@ async function handleMachineAdd({ req, res, config, deps }) {
     return applierError(res, err)
   }
 
-  emitSafe(deps, { event: 'machine.presence', machineId: entry.id })
+  // `online` is what the screen patches with — a peer just registered IS online. Without it
+  // the frame rang a doorbell nobody could answer: the client requires the boolean.
+  emitSafe(deps, { event: 'machine.presence', machineId: entry.id, online: true })
   return sendJson(res, 200, { ok: true, machine: { id: entry.id, title: name, role: 'peer', online: false } })
 }
 
@@ -1567,7 +1572,7 @@ async function handleMachineRemove({ req, res, config, deps }) {
   } catch (err) {
     return applierError(res, err)
   }
-  emitSafe(deps, { event: 'machine.presence', machineId: b.id })
+  emitSafe(deps, { event: 'machine.presence', machineId: b.id, online: false })
   return sendJson(res, 200, { ok: true, id: b.id })
 }
 
@@ -2257,17 +2262,37 @@ function handleAttempt({ res, params, query, deps }) {
   }
   const rows = Array.isArray(log && log.entries) ? log.entries : []
   const note = log && log.note && typeof log.note.approach === 'string' ? log.note.approach : null
+
+  // WHICH DELEGATION A LINE BELONGS TO, without letting the identifier out.
+  //
+  // The stored row carries the opaque parent id the vendor put on the frame. A person does
+  // not need that string and should never be shown it — but they DO need to know that these
+  // eleven lines came from ONE subagent and the next four from another, or a delegated burst
+  // reads as the parent talking to itself. So the id is turned into a small ordinal, counted
+  // in the order the groups first appear in this window, and only the ordinal travels.
+  const groupOf = new Map()
+  for (const r of rows) {
+    const pid = r && typeof r.parentId === 'string' ? r.parentId : ''
+    if (!pid || groupOf.has(pid)) continue
+    groupOf.set(pid, groupOf.size + 1)
+  }
+
   return sendJson(res, 200, {
     // explicit pick: the stored row also carries an opaque parent id, and a screen that
     // shows «делегировано» needs the FACT, not the identifier behind it. `summary` — the
     // sentence a person reads instead of a machine frame — travels when the row has one; it
     // was bounded at the storage door and is passed on as the data it is.
-    lines: rows.map((r) => ({
-      ts: String((r && r.ts) || ''),
-      line: String((r && r.line) || ''),
-      subagent: r && r.subagent === true,
-      ...(Array.isArray(r && r.summary) && r.summary.length ? { summary: r.summary } : {}),
-    })),
+    lines: rows.map((r) => {
+      const pid = r && typeof r.parentId === 'string' ? r.parentId : ''
+      const group = pid ? groupOf.get(pid) : undefined
+      return {
+        ts: String((r && r.ts) || ''),
+        line: String((r && r.line) || ''),
+        subagent: r && r.subagent === true,
+        ...(group ? { group } : {}),
+        ...(Array.isArray(r && r.summary) && r.summary.length ? { summary: r.summary } : {}),
+      }
+    }),
     truncated: !!(log && log.truncated),
     note,
   })
