@@ -186,6 +186,62 @@ export function parseReceiptSummary(receiptRef, { readReceipt } = {}) {
 }
 
 /**
+ * THE SHAPES A RECEIPT REFERENCE REALLY TAKES, and what each one PROVES.
+ *
+ * Every finished attempt carries a `receiptRef` STRING written by the tick at the moment its
+ * exit gate opened. The four numbers `parseReceiptSummary` looks for — tests passed, tests
+ * total, build clean, rules clean — have no producer anywhere in this system: the reverify
+ * verb re-runs a recorded command and compares HASHES, deliberately knowing nothing about
+ * what kind of run is inside, so it reports a verdict and not a count. A card that waits for
+ * those numbers therefore shows nothing, forever, on every task.
+ *
+ * So this reads the proof that DOES exist. Each prefix is written in exactly one place in
+ * loop.mjs and means one thing:
+ *   reverify:<sha>          the code gate opened — the work was re-verified on the branch
+ *   artifact:<path>@<sha>   a documentary stage really produced its document, and committed it
+ *   answer:<attemptId>      the attempt correctly changed no code and answered instead
+ *   preflight:<taskId>      the work was already on the branch before anybody was spawned
+ *   forge:<...>             an agent draft passed its lint and was committed
+ *
+ * PURE, never throws, and it INVENTS NOTHING: an unrecognised reference is returned under
+ * kind 'other' with its text intact rather than dressed up as a pass.
+ */
+const RECEIPT_KINDS = Object.freeze([
+  { kind: 'reverify', re: /^reverify:(.*)$/ },
+  { kind: 'artifact', re: /^artifact:(.*)$/ },
+  { kind: 'answer', re: /^answer:(.*)$/ },
+  { kind: 'preflight', re: /^preflight:(.*)$/ },
+  { kind: 'forge', re: /^forge:(.*)$/ },
+])
+
+/**
+ * parseReceiptProof(receiptRef) → {kind, ref, path?, sha?} | null — the durable proof a
+ * finished attempt left, in a shape a screen can render as a sentence.
+ *
+ * @param {*} receiptRef
+ * @returns {{kind:string, ref:string, path?:string, sha?:string}|null}
+ */
+export function parseReceiptProof(receiptRef) {
+  const ref = typeof receiptRef === 'string' ? receiptRef.trim() : ''
+  if (!ref) return null
+  for (const { kind, re } of RECEIPT_KINDS) {
+    const m = re.exec(ref)
+    if (!m) continue
+    const rest = String(m[1] || '').trim()
+    if (kind === 'artifact') {
+      // `path@sha` — split on the LAST @ so a path may contain one and still resolve.
+      const at = rest.lastIndexOf('@')
+      const path = at > 0 ? rest.slice(0, at) : rest
+      const sha = at > 0 ? rest.slice(at + 1) : ''
+      return { kind, ref, ...(path ? { path } : {}), ...(sha ? { sha } : {}) }
+    }
+    if (kind === 'reverify') return { kind, ref, ...(rest ? { sha: rest } : {}) }
+    return { kind, ref }
+  }
+  return { kind: 'other', ref }
+}
+
+/**
  * attemptsReader(deps) → (taskId) => attempts[]. The per-attempt ledger is a DI SEAM so
  * tests derive from fixtures with no fs: `ledger` may be a function `(taskId)=>rows`, an
  * object `{readAttempts}`, otherwise `ledgerDir` binds the real readAttempts. Always
@@ -1785,6 +1841,8 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject
     finishedAt: r.completedAt ?? null,
     workerId: (last && last.workerId) ?? r.workerId ?? null,
     receipt,
+    // The proof that really exists, beside the summary that waits for numbers nobody writes.
+    proof: parseReceiptProof(last && last.receiptRef),
     diffStat,
     branch,
     commits,

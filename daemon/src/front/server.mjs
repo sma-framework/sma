@@ -80,6 +80,7 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
+import { parseReceiptProof } from './state.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
 import { scanEstate, enrollSelections } from './import-scanner.mjs'
@@ -686,6 +687,10 @@ async function handleTask({ res, params, config, deps }) {
     failureReason: a.failureReason ?? null,
     reasonLabel: a.failureReason ? REASON_LABELS[a.failureReason] ?? null : null,
     receipt: parseReceipt(a.receiptRef, { execGit: deps.execGit }),
+    // The proof this attempt actually left. `receipt` above waits for four numbers no part
+    // of this system produces; this one carries what the tick really wrote when the gate
+    // opened, so a card says «перепроверено» instead of showing nothing at all.
+    proof: parseReceiptProof(a.receiptRef),
     // A row the reconciliation pass appended after the fact says so on the
     // card too. Without this a card would show an attempt with no worker and no provider as
     // though somebody had watched it produce nothing; the flag exists precisely so a reader

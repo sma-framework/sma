@@ -85,6 +85,21 @@ export interface ReceiptSummary {
   guardClean: boolean | null
 }
 
+/**
+ * The proof a finished attempt really left — the reference the tick wrote when its exit gate
+ * opened, split into its parts. This is what a card can show TODAY: the four numbers above
+ * have no producer in the daemon, so `ReceiptSummary` renders nothing on every real task
+ * until a receipt learns to carry a parsed result.
+ */
+export interface ReceiptProof {
+  kind: 'reverify' | 'artifact' | 'answer' | 'preflight' | 'forge' | 'other' | string
+  /** The reference verbatim, as stored — never re-worded. */
+  ref: string
+  /** For a documentary stage: the file it committed, and that commit. */
+  path?: string
+  sha?: string
+}
+
 export interface FailureSummary {
   reason: string | null
   /** The reason in words, from the daemon's own closed vocabulary. */
@@ -516,6 +531,8 @@ export interface TaskAttempt {
   failureReason: string | null
   reasonLabel: string | null
   receipt: ReceiptSummary | null
+  /** The durable proof this attempt left. Absent when the row carries no reference. */
+  proof?: ReceiptProof | null
   /**
    * What the worker chose, and what it turned down. Declared here now; the card's
    * three-layer view is filled when the task read model starts carrying it.
