@@ -251,6 +251,11 @@ export function createBuildArgs({ config = {}, env = process.env } = {}) {
     // door wrote, so the two cannot drift.
     const prompt = stagePromptOf(task) ?? buildTaskPrompt({ task })
 
-    return { bin, args, env: spawnEnv, prompt, workerId: worker.id, provider }
+    // `accountName` rides out because the SUBSCRIPTION, not the worker, is what a rate-limit
+    // reading on the coming stream describes — and the caller reading that stream would
+    // otherwise have to resolve the worker's account a second time, from config it does not hold.
+    const accountName = String((worker.account && worker.account.name) || worker.id)
+
+    return { bin, args, env: spawnEnv, prompt, workerId: worker.id, provider, accountName }
   }
 }

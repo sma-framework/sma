@@ -105,6 +105,7 @@ import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
 import { parseClaudeEvent, parseCodexEvent } from './runner/stream.mjs'
+import { markWindowObserved } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -583,6 +584,34 @@ function openAttemptLog(deps, task) {
 }
 
 /**
+ * Persist ONE window reading the vendor put on this attempt's stream.
+ *
+ * WHY IT IS WRITTEN HERE, IN THE MIDDLE OF A RUNNING ATTEMPT, and not at the end: the reading
+ * is about the ACCOUNT, not about this task, and it is worth exactly as much whether the
+ * attempt goes on to succeed, fail or be killed. A window learned from a session that then
+ * crashed is still the truth about the subscription.
+ *
+ * FAIL-OPEN, like everything else on this line. A window reading that cannot be stored must
+ * never cost the attempt: the bar keeps its old number, the work continues, and the miss is
+ * logged rather than thrown.
+ */
+function recordWindowReading(deps, subscription, event) {
+  const { accountName, dataDir } = subscription || {}
+  if (!accountName || !dataDir) return
+  try {
+    markWindowObserved({
+      dataDir,
+      accountName,
+      observation: event,
+      clock: deps.now ?? Date.now,
+      fsImpl: deps.fsImpl,
+    })
+  } catch (err) {
+    writeLog(deps, { type: 'window-reading-error', account: accountName, error: String((err && err.message) || err) })
+  }
+}
+
+/**
  * attemptStream(deps, task, streamLines) → `{onLine, sessionId}` — the ONE stdout reader both
  * spawn paths use. It does three things per line, in this order and for these reasons:
  *
@@ -600,7 +629,7 @@ function openAttemptLog(deps, task) {
  * The log is read through `parseClaudeEvent`, which never throws on any input: a line that is
  * not JSON is still a line, and it is still logged. NOTHING here can fail the attempt.
  */
-function attemptStream(deps, task, streamLines, now) {
+function attemptStream(deps, task, streamLines, now, subscription = {}) {
   const log = openAttemptLog(deps, task)
   const state = { sessionId: null }
   let lastTouchAt = 0
@@ -608,6 +637,7 @@ function attemptStream(deps, task, streamLines, now) {
     streamLines.push(line)
     const event = parseClaudeEvent(line)
     if (!state.sessionId && event.sessionId) state.sessionId = event.sessionId
+    if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
     log.append({ line, subagent: event.subagent === true, parentId: event.parentId })
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
@@ -1048,7 +1078,10 @@ export async function tick(deps = {}) {
         }
       }
       const streamLines = []
-      const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now)
+      const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now, {
+        accountName: spec.accountName,
+        dataDir: config.dataDir,
+      })
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
@@ -1233,7 +1266,10 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
   // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const { onLine } = attemptStream(deps, task, streamLines, now)
+  const { onLine } = attemptStream(deps, task, streamLines, now, {
+    accountName: spec.accountName,
+    dataDir: config.dataDir,
+  })
   fleetState = 'RUNNING'
   const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
 
