@@ -121,6 +121,47 @@ describe('parseClaudeEvent (pure, never throws)', () => {
   })
 })
 
+/**
+ * THE FRAME THAT WAS FLOWING PAST UNREAD.
+ *
+ * `rate_limit_event` carries the vendor's own view of the subscription window and arrives on
+ * ordinary spawns, not only on failures. It went unparsed for as long as the window model
+ * assumed no such reading existed — which is why the roster's bars sat near zero on an account
+ * that was three quarters spent. The seconds/milliseconds case is the one that would fail
+ * SILENTLY: read as milliseconds, a reset three days out lands in 1970 and every freshness
+ * check throws the measurement away without an error anywhere.
+ */
+describe('parseClaudeEvent — the subscription window reading', () => {
+  const frame = (info: object) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: info, uuid: 'u', session_id: 's' })
+
+  it('reads the window, the fraction spent and the reset — the shape the CLI actually sends', () => {
+    const e: any = parseClaudeEvent(
+      frame({ status: 'allowed_warning', resetsAt: 1786788000, rateLimitType: 'seven_day', utilization: 0.73, isUsingOverage: false }),
+    )
+    expect(e.type).toBe('rate_limit')
+    expect(e.limitType).toBe('seven_day')
+    expect(e.utilization).toBe(0.73) // a FRACTION on the wire, kept as one
+    expect(e.status).toBe('allowed_warning')
+    expect(e.usingOverage).toBe(false)
+  })
+
+  it('normalises the reset to milliseconds — seconds on the wire would silently date to 1970', () => {
+    const seconds: any = parseClaudeEvent(frame({ rateLimitType: 'seven_day', utilization: 0.5, resetsAt: 1786788000 }))
+    expect(seconds.resetsAt).toBe(1786788000000)
+    expect(seconds.resetsAt).toBeGreaterThan(Date.parse('2026-01-01T00:00:00Z'))
+    // …and a stamp already in milliseconds is left alone
+    expect((parseClaudeEvent(frame({ rateLimitType: 'five_hour', utilization: 0.5, resetsAt: 1786788000000 })) as any).resetsAt).toBe(1786788000000)
+  })
+
+  it('a frame with nothing usable in it is still an event, with nulls — never a throw', () => {
+    const e: any = parseClaudeEvent(JSON.stringify({ type: 'rate_limit_event' }))
+    expect(e.type).toBe('rate_limit')
+    expect(e.limitType).toBeNull()
+    expect(e.utilization).toBeNull()
+    expect(e.resetsAt).toBeNull()
+  })
+})
+
 describe('parseCodexEvent (pure, never throws)', () => {
   it('extracts threadId + the final usage token counts over the whole fixture', () => {
     const events = codexFixture.split('\n').filter((l) => l.trim()).map(parseCodexEvent)
