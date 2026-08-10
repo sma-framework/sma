@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useAttemptQuery } from '../api/queries'
-import type { AttemptLogLine, TaskAttempt } from '../api/types'
+import type { AttemptLogLine, AttemptLogSummaryPart, TaskAttempt } from '../api/types'
 import { clockLabel } from './format'
 
 /**
@@ -32,16 +32,70 @@ import { clockLabel } from './format'
 /** How close to the bottom still counts as «watching the end». */
 const AT_BOTTOM_SLACK_PX = 24
 
+/**
+ * What each kind of summarised part is called on screen. A kind this build does not know is
+ * shown WITHOUT a label rather than under a guessed one — the detail beside it is the thing
+ * a person came to read, and an invented word above it would be the only lie on the row.
+ */
+const KIND_LABEL: Record<string, string> = {
+  tool: 'инструмент',
+  handoff: 'передал агенту',
+  tool_result: 'ответ',
+  text: 'сказал',
+  thinking: 'думал',
+  result: 'сессия',
+  limit: 'окно',
+}
+
+/** One part of a frame, as a person reads it. Every value is a TEXT CHILD — see the header. */
+function SummaryPart({ part }: { part: AttemptLogSummaryPart }) {
+  const label = KIND_LABEL[part.kind]
+  const bad = part.ok === false
+  return (
+    <div className="flex items-baseline gap-1.5">
+      {label ? (
+        <span
+          className={`flex-none rounded px-1 py-[1px] text-[10px] ${bad ? 'bg-err-s text-err-tx' : 'bg-idle-s text-idle-tx'}`}
+        >
+          {label}
+        </span>
+      ) : null}
+      {part.tool ? <span className="flex-none text-[11px] font-medium text-tx2">{part.tool}</span> : null}
+      {part.subagent ? <span className="flex-none text-[11px] text-tx3">→ {part.subagent}</span> : null}
+      {part.detail ? (
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-tx3" title={part.detail}>
+          {part.detail}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * ONE ROW. When the daemon could read the frame, the row IS the summary — that is the whole
+ * point of the change: «Ход попытки» stops being timestamped machine JSON and starts saying
+ * which tool ran and what was handed to whom. When it could not, the raw line is shown, which
+ * is what this log has always shown and what a person can still copy out.
+ */
 function LogLine({ line }: { line: AttemptLogLine }) {
+  const parts = line.summary ?? []
   return (
     <div className="flex items-start gap-2 px-2.5 py-[3px]">
       <span className="flex-none pt-[1px] font-mono text-[10.5px] text-tx3 tabular-nums">{clockLabel(line.ts)}</span>
       {line.subagent ? (
         <span className="flex-none rounded-full bg-idle-s px-1.5 py-[1px] text-[10px] text-idle-tx">субагент</span>
       ) : null}
-      <pre className="m-0 min-w-0 flex-1 font-mono text-[11px] leading-[1.5] break-words whitespace-pre-wrap text-tx2">
-        {line.line}
-      </pre>
+      {parts.length ? (
+        <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+          {parts.map((part, i) => (
+            <SummaryPart key={i} part={part} />
+          ))}
+        </div>
+      ) : (
+        <pre className="m-0 min-w-0 flex-1 font-mono text-[11px] leading-[1.5] break-words whitespace-pre-wrap text-tx2">
+          {line.line}
+        </pre>
+      )}
     </div>
   )
 }

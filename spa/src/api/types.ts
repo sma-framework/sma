@@ -1292,11 +1292,31 @@ export interface BacklogPromoteResult extends OkResult {
   taskId: string
 }
 
-/** One line a worker printed, with the one fact about it that matters on screen. */
+/**
+ * One part of what a worker's frame MEANT: which tool it used, what it handed to a subagent,
+ * whether a result came back ok. Built by the daemon off the parsed frame — the screen only
+ * renders it as text, exactly as it renders the raw line.
+ */
+export interface AttemptLogSummaryPart {
+  kind: 'tool' | 'handoff' | 'tool_result' | 'text' | 'thinking' | 'result' | 'limit' | string
+  tool?: string
+  detail?: string
+  subagent?: string
+  ok?: boolean
+}
+
+/**
+ * One line a worker printed, with the one fact about it that matters on screen.
+ *
+ * `summary` is present when the daemon could read the frame — then it is what a person is
+ * shown. Absent means the line was not a frame it understands, and `line` (the raw text) is
+ * the answer, which is what this log has always shown.
+ */
 export interface AttemptLogLine {
   ts: string
   line: string
   subagent: boolean
+  summary?: AttemptLogSummaryPart[]
 }
 
 /**

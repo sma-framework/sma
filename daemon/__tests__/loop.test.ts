@@ -1068,7 +1068,16 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
 
   /** What a delegating session prints: its own line, a SUBAGENT's, a plain note, a result frame. */
   const DELEGATING_STREAM = [
-    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8' } }),
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        model: 'claude-opus-4-8',
+        content: [
+          { type: 'tool_use', name: 'Bash', input: { command: 'npm test', description: 'гоняет сьют' } },
+          { type: 'tool_use', name: 'Task', input: { subagent_type: 'sma-executor', prompt: 'почини гейт' } },
+        ],
+      },
+    }),
     JSON.stringify({ type: 'assistant', parent_tool_use_id: 'toolu_01SUB', message: { model: 'claude-opus-4-8' } }),
     'APPROACH_NOTE: прямой путь',
     JSON.stringify({ type: 'result', session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab', total_cost_usd: 0.03 }),
@@ -1114,6 +1123,34 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(log.entries.some((e: any) => e.line === 'APPROACH_NOTE: прямой путь')).toBe(true)
     // and it was written to the ATTEMPT's file, not the task's
     expect(readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#2' }).total).toBe(0)
+  })
+
+  it('a stored row says WHICH TOOL ran and WHAT was handed to a subagent — not a machine frame', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    const run = greenRun(ledgerDir)
+    await run.adapter.enqueue(backlogTask())
+    const { deps } = run.mk()
+
+    await tick(deps)
+
+    const log = readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#1' })
+    const withSummary = log.entries.filter((e: any) => Array.isArray(e.summary) && e.summary.length)
+    // THIS is the lock the whole class of defect needed: the summariser can be perfect and
+    // fully tested, and the log still shows raw JSON if nobody joins the two. Assert the
+    // JOIN, on a row that came out of a real tick.
+    expect(withSummary.length).toBeGreaterThan(0)
+
+    const parts = withSummary[0].summary
+    const tool = parts.find((p: any) => p.kind === 'tool')
+    expect(tool.tool).toBe('Bash')
+    expect(tool.detail).toBe('npm test') // the command that will really run, not the label somebody wrote
+
+    const handoff = parts.find((p: any) => p.kind === 'handoff')
+    expect(handoff.subagent).toBe('sma-executor')
+    expect(handoff.detail).toBe('почини гейт') // the brief — the single most asked-for line in this log
+
+    // the raw line is still stored beside it: a summary is a glance, never a replacement
+    expect(withSummary[0].line).toContain('tool_use')
   })
 
   it('the sessionId off the result frame lands on the attempt row — the one fact nothing else can recover', async () => {

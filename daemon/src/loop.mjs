@@ -104,7 +104,8 @@ import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capab
 import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
-import { parseClaudeEvent, parseCodexEvent } from './runner/stream.mjs'
+import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
+import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
@@ -639,10 +640,20 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
   let lastTouchAt = 0
   const onLine = (line) => {
     streamLines.push(line)
-    const event = parseClaudeEvent(line)
+    const { event, frame } = parseClaudeFrame(line)
     if (!state.sessionId && event.sessionId) state.sessionId = event.sessionId
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
-    log.append({ line, subagent: event.subagent === true, parentId: event.parentId })
+    // The sentence a person reads is built HERE, off the frame that was just parsed and
+    // BEFORE the line is capped for storage: the biggest frames — a delegation brief, a file
+    // read — are exactly the ones the cap would make unreadable. An unrecognisable frame
+    // summarises to nothing, and nothing means the screen falls back to the raw line.
+    const summary = frame ? summarizeFrame(frame) : []
+    log.append({
+      line,
+      subagent: event.subagent === true,
+      parentId: event.parentId,
+      ...(summary.length ? { summary } : {}),
+    })
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
       lastTouchAt = t

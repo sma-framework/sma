@@ -105,7 +105,31 @@ export function parseClaudeEvent(line) {
   // An unparsed line has no frame to read provenance OFF — claiming `subagent:false` for it
   // would be an answer invented from nothing. It keeps exactly the shape it always had.
   if (!p.ok) return { type: 'unparsed', raw: p.raw }
-  const obj = p.obj
+  return eventFromFrame(p.obj)
+}
+
+/**
+ * parseClaudeFrame(line) → `{ event, frame }` — the SAME typed event as above, plus the
+ * parsed frame it was read off.
+ *
+ * WHY IT EXISTS. Two things now want this line: the tick, which needs the typed event, and
+ * the live log, which needs the frame itself to say WHICH TOOL was used in words a person
+ * reads. Parsing it twice would be one JSON.parse per line per consumer on a stream that
+ * carries every keystroke of a working agent; parsing it once and handing both out is the
+ * whole point. `frame` is null exactly when the line was not JSON — the caller then has
+ * nothing to summarise and shows the raw line, which is what it has always shown.
+ *
+ * @param {string} line
+ * @returns {{event: object, frame: object|null}}
+ */
+export function parseClaudeFrame(line) {
+  const p = safeParse(line)
+  if (!p.ok) return { event: { type: 'unparsed', raw: p.raw }, frame: null }
+  return { event: eventFromFrame(p.obj), frame: p.obj }
+}
+
+/** The typed event of an ALREADY PARSED frame — the shared body of the two functions above. */
+function eventFromFrame(obj) {
   const type = typeof obj.type === 'string' ? obj.type : 'unknown'
   const who = provenanceOf(obj)
 

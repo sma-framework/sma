@@ -2253,9 +2253,16 @@ function handleAttempt({ res, params, query, deps }) {
   const rows = Array.isArray(log && log.entries) ? log.entries : []
   const note = log && log.note && typeof log.note.approach === 'string' ? log.note.approach : null
   return sendJson(res, 200, {
-    // explicit pick, three fields: the stored row also carries an opaque parent id, and a
-    // screen that shows «делегировано» needs the FACT, not the identifier behind it
-    lines: rows.map((r) => ({ ts: String((r && r.ts) || ''), line: String((r && r.line) || ''), subagent: r && r.subagent === true })),
+    // explicit pick: the stored row also carries an opaque parent id, and a screen that
+    // shows «делегировано» needs the FACT, not the identifier behind it. `summary` — the
+    // sentence a person reads instead of a machine frame — travels when the row has one; it
+    // was bounded at the storage door and is passed on as the data it is.
+    lines: rows.map((r) => ({
+      ts: String((r && r.ts) || ''),
+      line: String((r && r.line) || ''),
+      subagent: r && r.subagent === true,
+      ...(Array.isArray(r && r.summary) && r.summary.length ? { summary: r.summary } : {}),
+    })),
     truncated: !!(log && log.truncated),
     note,
   })
