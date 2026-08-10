@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { TaskAttempt } from '../../api/types'
-import { clockLabel, receiptChecks } from '../../shell/format'
+import { clockLabel, receiptChecks, receiptProofLabel } from '../../shell/format'
 
 /**
  * AttemptTimeline — the whole history of one task, in the order it happened.
@@ -38,13 +38,25 @@ function dotTone(attempt: TaskAttempt): string {
   return 'bg-blue'
 }
 
+/**
+ * WHAT THIS ATTEMPT PROVED. Two layers, in order of how much they say:
+ *   1. the parsed checks, when a receipt carried them;
+ *   2. the proof the tick really wrote — the gate that opened and its evidence.
+ *
+ * Until today only (1) was shown, and since nothing in the daemon produces those four
+ * numbers it meant every real attempt read «квитанции нет» — a sentence that was false on a
+ * task whose gate had opened on a re-verified branch. «Нет» is now said only when there is
+ * genuinely nothing: no checks AND no reference.
+ */
 function Checks({ attempt }: { attempt: TaskAttempt }) {
   const checks = receiptChecks(attempt.receipt)
-  if (checks.length === 0) {
+  const proof = receiptProofLabel(attempt.proof)
+  if (checks.length === 0 && !proof) {
     return <p className="m-0 text-[12px] text-tx3">Квитанции нет — проверки не дошли до записи.</p>
   }
   return (
     <div className="flex flex-col gap-1.5">
+      {proof ? <p className="m-0 text-[12px] text-tx2">{proof}</p> : null}
       {checks.map((c) => (
         <div key={c.text} className="flex justify-between gap-3.5 text-[12px]">
           <span className="text-tx2">{c.text}</span>

@@ -59,6 +59,7 @@ import {
   deriveState,
   derivePresence,
   parseReceiptSummary,
+  parseReceiptProof,
   deriveRules,
   deriveAccounts,
   deriveMemory,
@@ -125,6 +126,39 @@ describe('parseReceiptSummary', () => {
       tscClean: null,
       guardClean: null,
     })
+  })
+})
+
+describe('parseReceiptProof — the proof a finished attempt really left', () => {
+  it('reads every reference shape the tick writes, and keeps the text verbatim', () => {
+    expect(parseReceiptProof('reverify:a1b2c3d4e5')).toEqual({
+      kind: 'reverify',
+      ref: 'reverify:a1b2c3d4e5',
+      sha: 'a1b2c3d4e5',
+    })
+    // a documentary stage: the file AND the commit that carries it
+    expect(parseReceiptProof('artifact:.planning/phases/12/PLAN.md@abc1234')).toEqual({
+      kind: 'artifact',
+      ref: 'artifact:.planning/phases/12/PLAN.md@abc1234',
+      path: '.planning/phases/12/PLAN.md',
+      sha: 'abc1234',
+    })
+    expect(parseReceiptProof('answer:BL-1#2').kind).toBe('answer')
+    expect(parseReceiptProof('preflight:BL-9').kind).toBe('preflight')
+    expect(parseReceiptProof('forge:draft-1').kind).toBe('forge')
+  })
+
+  it('invents nothing: an unknown reference keeps its text, and no reference is no proof', () => {
+    expect(parseReceiptProof('something-new:42')).toEqual({ kind: 'other', ref: 'something-new:42' })
+    expect(parseReceiptProof('')).toBe(null)
+    expect(parseReceiptProof(null)).toBe(null)
+    expect(parseReceiptProof({ testsPassed: 12 })).toBe(null) // an object is the OTHER reader's job
+  })
+
+  it('a path containing @ still resolves — the commit is the LAST one', () => {
+    const p = parseReceiptProof('artifact:docs/e@mail.md@deadbee')
+    expect(p.path).toBe('docs/e@mail.md')
+    expect(p.sha).toBe('deadbee')
   })
 })
 

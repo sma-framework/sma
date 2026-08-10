@@ -12,7 +12,7 @@
  */
 
 import { isNotReady, isRaceLost } from '../api/client'
-import type { PhaseStage, ReceiptSummary, TaskStatus } from '../api/types'
+import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus } from '../api/types'
 
 /**
  * What each of the four stages is called on the glass.
@@ -146,6 +146,36 @@ export function receiptChecks(receipt: ReceiptSummary | null | undefined): { tex
   if (receipt.tscClean !== null) checks.push({ text: 'Сборка без ошибок', ok: receipt.tscClean })
   if (receipt.guardClean !== null) checks.push({ text: 'Правила соблюдены', ok: receipt.guardClean })
   return checks
+}
+
+/**
+ * receiptProofLabel(proof) — the ONE sentence a finished attempt earned, from the reference
+ * the daemon really wrote.
+ *
+ * Why this exists beside `receiptChecks`: those four checks wait for numbers nothing in the
+ * system produces, so they render nothing on every real task. This says what actually
+ * happened — the gate that opened and the evidence it opened on. An unknown kind is shown as
+ * its raw reference rather than as a guess: a proof nobody can read is still a proof, and
+ * inventing a friendly word for it would be the only dishonest line on the card.
+ */
+export function receiptProofLabel(proof: ReceiptProof | null | undefined): string | null {
+  if (!proof || !proof.kind) return null
+  switch (proof.kind) {
+    case 'reverify':
+      return proof.sha ? `Перепроверено на ветке · ${proof.sha.slice(0, 7)}` : 'Перепроверено на ветке'
+    case 'artifact': {
+      const where = proof.path ? proof.path : 'документ'
+      return proof.sha ? `Документ записан: ${where} · ${proof.sha.slice(0, 7)}` : `Документ записан: ${where}`
+    }
+    case 'answer':
+      return 'Ответ без правки кода'
+    case 'preflight':
+      return 'Уже было сделано — работник не запускался'
+    case 'forge':
+      return 'Черновик агента принят'
+    default:
+      return proof.ref || null
+  }
 }
 
 /** A refusal, said in the words of the person it happened to. */
