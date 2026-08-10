@@ -283,4 +283,27 @@ describe('usage.mjs — honest per-account booking', () => {
     expect(row.source).toBe('estimate')
     expect(row.outputTokens).toBeGreaterThanOrEqual(1)
   })
+
+  it('a MISSING start is not a session since 1970 — the estimate refuses to invent a duration', () => {
+    // What production really did: no startedAt, endedAt = an epoch timestamp. The old formula
+    // read that as fifty-six years and booked ~35 billion tokens into the book the spending
+    // cap reads from.
+    const row = estimateUsage({ accountName: 'pro-1', taskId: 'z', endedAt: 1786377106855 })
+    expect(row.outputTokens).toBe(1) // the floor: «unknown, and not free»
+    expect(row.outputTokens).toBeLessThan(1000)
+  })
+
+  it('a real pair is still estimated from its real duration', () => {
+    const start = 1786377106855
+    const row = estimateUsage({ accountName: 'pro-1', taskId: 'z', startedAt: start, endedAt: start + 120000 })
+    expect(row.outputTokens).toBe(2400) // two minutes at the documented rate
+  })
+
+  it('an impossible span is a broken pair, not a long attempt', () => {
+    const start = 1786377106855
+    const row = estimateUsage({ accountName: 'pro-1', taskId: 'z', startedAt: start, endedAt: start + 40 * 60 * 60 * 1000 })
+    expect(row.outputTokens).toBe(1)
+    // and a reversed pair likewise
+    expect(estimateUsage({ startedAt: start + 1000, endedAt: start }).outputTokens).toBe(1)
+  })
 })

@@ -116,6 +116,71 @@ describe('policy/routing — default lanes + override precedence + day-priority'
   })
 })
 
+/**
+ * THE MONEY RULE, AS THE DISPATCHER NOW ASKS IT.
+ *
+ * Until 10.08.2026 `shouldApiFallback` had no caller anywhere: an explicit `provider:'api'`
+ * task went straight past the cap, and a fleet with every window shut simply waited while
+ * three screens told the owner it would continue on the paid channel. These cases hold the
+ * JOIN — the router asking, and obeying both answers.
+ */
+describe('policy/routing — the paid channel is asked for permission, not assumed', () => {
+  const allShut = () => false
+
+  it('an explicit «api» task is REFUSED when the cap says no — it waits instead of spending', () => {
+    const r = resolveRoute(
+      { lane: 'prod', provider: 'api' },
+      { workers: pool(), windows: allOpen, clock: nightClock, budget: () => ({ fallback: false, reason: 'budget_stop' }) },
+    )
+    expect(r.useApiFallback).toBe(false)
+    expect(r.provider).toBe(null)
+    expect(r.reasonCode).toBe('budget_stop')
+  })
+
+  it('an explicit «api» task still runs when the cap allows it', () => {
+    const r = resolveRoute(
+      { lane: 'prod', provider: 'api' },
+      { workers: pool(), windows: allOpen, clock: nightClock, budget: () => ({ fallback: true, reason: 'api_fallback' }) },
+    )
+    expect(r.useApiFallback).toBe(true)
+    expect(r.provider).toBe('api')
+  })
+
+  it('every window shut + money allowed → the documented switch finally happens', () => {
+    const r = resolveRoute(
+      { lane: 'prod' },
+      { workers: pool(), windows: allShut, clock: nightClock, budget: () => ({ fallback: true, reason: 'api_fallback' }) },
+    )
+    expect(r.useApiFallback).toBe(true)
+    expect(r.provider).toBe('api')
+    expect(r.reasonCode).toBe('api_fallback')
+  })
+
+  it('every window shut + money refused → the task waits, exactly as before', () => {
+    const r = resolveRoute(
+      { lane: 'prod' },
+      { workers: pool(), windows: allShut, clock: nightClock, budget: () => ({ fallback: false, reason: 'budget_stop' }) },
+    )
+    expect(r.useApiFallback).toBe(false)
+    expect(r.reasonCode).toBe('window_exhausted')
+  })
+
+  it('a budget rule that throws never takes the dispatcher down — no answer leaves the old path', () => {
+    const r = resolveRoute(
+      { lane: 'prod', provider: 'api' },
+      {
+        workers: pool(),
+        windows: allOpen,
+        clock: nightClock,
+        budget: () => {
+          throw new Error('spend book unreadable')
+        },
+      },
+    )
+    expect(r.useApiFallback).toBe(true) // the old behaviour, not an invented refusal
+  })
+})
+
 describe('policy/windows — estimated state + rate-limit ground truth', () => {
   const tmpDirs = []
   afterEach(() => {

@@ -792,7 +792,7 @@ function runSpawn(spawnWorker, spec, onLine) {
  * Never fatal. The price of an attempt is bookkeeping; an attempt that did its work must not be
  * failed because the book could not be written.
  */
-function bookAttemptUsage(deps, task, route, streamLines, now) {
+function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
   if (typeof deps.bookUsage !== 'function') return
   try {
     const workers = Array.isArray(deps.config && deps.config.workers) ? deps.config.workers : []
@@ -808,7 +808,7 @@ function bookAttemptUsage(deps, task, route, streamLines, now) {
       if (isCodex) {
         const event = parseCodexEvent(line)
         if (!event || event.type !== 'turn.completed') continue
-        deps.bookUsage(codexUsageFromFinal(event, { ...ctx, endedAt: now }))
+        deps.bookUsage(codexUsageFromFinal(event, { ...ctx, startedAt, endedAt: now }))
         return
       }
       const event = parseClaudeEvent(line)
@@ -961,6 +961,9 @@ export async function tick(deps = {}) {
         clock,
         config,
         decisionJournal: deps.decisionJournal,
+        // The money rule travels with the route decision — the dispatcher is the only place
+        // that knows both «no seat anywhere» and «this task asked for the paid channel».
+        budget: deps.budget,
       })
       if (!route || (!route.workerId && !route.useApiFallback)) {
         // Claimed but no runnable target after the real route (rare race) — degrade honestly.
@@ -1100,6 +1103,11 @@ export async function tick(deps = {}) {
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
+      // WHEN THIS ATTEMPT STARTED. The fallback that keeps subscription work from booking $0
+      // estimates from a DURATION, and nothing passed it a beginning: it received an epoch
+      // timestamp as the end and zero as the start, so a session that ran two minutes booked
+      // fifty-six years of tokens. One number, captured where the process really begins.
+      const attemptStartedAt = now()
       const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
 
       const marker = detectMarker(streamLines)
@@ -1107,7 +1115,7 @@ export async function tick(deps = {}) {
       // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
       // fate. A refused attempt still spent the tokens, so the book is written for every
       // attempt and not only for the ones that end well.
-      bookAttemptUsage(deps, task, route, streamLines, now())
+      bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
