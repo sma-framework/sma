@@ -16,7 +16,7 @@
  *   report  read the lines, put each in one of the four kinds or outside them, print the
  *           table, and finish with the count of the ones outside.
  *
- * THREE THINGS IT REFUSES TO DO
+ * FOUR THINGS IT REFUSES TO DO
  *   1. It never breaks a terminal. `log` catches everything and exits 0 — an unwritable
  *      directory, a full disk, a file someone made read-only. A journal that can stop a
  *      person from starting their session would be worse than no journal.
@@ -25,7 +25,12 @@
  *      builds, both lanes) — that session IS the work being done from the app, and writing
  *      it down as a terminal run would drown the evidence in the very thing it is measuring.
  *      One import, one name: the constant is imported from where it is set, never retyped.
- *   3. It never answers "zero" out of an empty hand. A journal that does not exist is not
+ *   3. It never counts one terminal twice. The hook fires on four events and only two of
+ *      them are a command line that was not there a moment ago: clearing the context, and
+ *      letting it be compacted, happen INSIDE a session already written down. A window
+ *      cleared ten times in an afternoon must read as one run, not ten — see
+ *      SAME_TERMINAL_SOURCES.
+ *   4. It never answers "zero" out of an empty hand. A journal that does not exist is not
  *      a clean week; `report` says so and exits 3 instead of printing a number nobody
  *      earned.
  *
@@ -65,6 +70,26 @@ export const JOURNAL_ENV = 'SMA_TERMINAL_JOURNAL'
 
 /** The environment variable a person sets when a terminal is opened for one of the four. */
 export const REASON_ENV = 'SMA_TERMINAL_REASON'
+
+/**
+ * The session-start events that are NOT a new terminal.
+ *
+ * The hook this file is registered as fires on four of them: a fresh start, a resumed
+ * session, a cleared context and a compacted one. The first two put a person in front of a
+ * command line that was not there before — that is a terminal run. The last two happen in a
+ * window that is ALREADY in the journal, and writing them down inflates the single number
+ * this file exists to print: an afternoon in one terminal with ten clears would read as ten
+ * terminal runs and quietly fail a week that was in fact clean.
+ *
+ * It lives here and not in the hook registration on purpose. That registration is a block
+ * of JSON copied into a settings file by hand, once per machine; a filter nobody can forget
+ * is worth more than a matcher everybody must remember to type.
+ *
+ * The direction of the mistake it prevents matters too: an over-count can only fail an
+ * honest week, never pass a dishonest one, so this is a correction for READABILITY of the
+ * number, and it is deliberately narrow — anything not named here is still recorded.
+ */
+export const SAME_TERMINAL_SOURCES = Object.freeze(['clear', 'compact'])
 
 /**
  * WHITELIST — the four kinds of terminal work that were agreed to stay at a terminal,
@@ -173,13 +198,16 @@ function readEventJson() {
 }
 
 /**
- * runLog(argv, deps) → 0, always. Two ways it writes nothing and still says 0: a session
- * the daemon spawned (that is the app working, not a terminal), and any failure at all.
+ * runLog(argv, deps) → 0, always. Three ways it writes nothing and still says 0: a session
+ * the daemon spawned (that is the app working, not a terminal), a restart INSIDE a terminal
+ * that is already in the journal (SAME_TERMINAL_SOURCES), and any failure at all.
  */
 export function runLog(argv = [], { env = process.env, cwd = process.cwd(), now = new Date(), event = undefined, file = null } = {}) {
   try {
     if (env && typeof env[HEADLESS_ENV] === 'string' && env[HEADLESS_ENV].trim()) return 0
     const evt = event === undefined ? readEventJson() : event
+    const source = evt && typeof evt.source === 'string' ? evt.source.trim() : ''
+    if (SAME_TERMINAL_SOURCES.includes(source)) return 0
     appendEntry(file || journalPath(env), buildEntry({ argv, env, cwd, now, event: evt }))
   } catch {
     /* a journal never breaks a terminal */

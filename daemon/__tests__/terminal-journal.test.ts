@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import {
   JOURNAL_ENV,
   REASON_ENV,
+  SAME_TERMINAL_SOURCES,
   WHITELIST,
   OUTSIDE,
   appendEntry,
@@ -90,6 +91,28 @@ describe('the journal writes one line per terminal session — and never gets in
     const env = { [JOURNAL_ENV]: journal, SMA_HEADLESS: '1' } as any
     expect(runLog(['a stage the daemon started'], { env, event: null })).toBe(0)
     expect(() => readFileSync(journal, 'utf8')).toThrow()
+  })
+
+  it('clearing or compacting a window already in the journal adds NOTHING — one terminal, one line', () => {
+    const env = { [JOURNAL_ENV]: journal } as any
+    expect(runLog([], { env, event: { cwd: 'C:/work/sma', source: 'startup' } })).toBe(0)
+    for (const source of SAME_TERMINAL_SOURCES) {
+      expect(runLog([], { env, event: { cwd: 'C:/work/sma', source } })).toBe(0)
+      expect(runLog([], { env, event: { cwd: 'C:/work/sma', source: ` ${source} ` } })).toBe(0)
+    }
+    // The afternoon above is ONE terminal that cleared its context four times. Before this
+    // lock the report read it as five runs outside the list and failed a clean day.
+    expect(readJournal()).toHaveLength(1)
+    expect(readJournal()[0].source).toBe('startup')
+  })
+
+  it('a resumed session IS a terminal run — only the two same-window restarts are dropped', () => {
+    const env = { [JOURNAL_ENV]: journal } as any
+    expect(runLog([], { env, event: { cwd: 'C:/work/sma', source: 'resume' } })).toBe(0)
+    // An unknown event name is written, not guessed at: the list of what to drop is closed,
+    // and a run that wants to be excused has to say so.
+    expect(runLog([], { env, event: { cwd: 'C:/work/sma', source: 'something-new' } })).toBe(0)
+    expect(readJournal().map((l) => l.source)).toEqual(['resume', 'something-new'])
   })
 
   it('the hook’s own event supplies the directory and the kind of start, when there is one', () => {
