@@ -38,6 +38,9 @@ import { join } from 'node:path'
 /** Coarse time-based token rate for the estimate fallback (documented heuristic, A4). */
 const EST_OUTPUT_TOKENS_PER_SEC = 20
 
+/** The longest span this module will accept AS a session. Beyond it the pair is broken, not long. */
+const MAX_ESTIMABLE_MS = 24 * 60 * 60 * 1000
+
 /** One calendar day, for the rolling window the cost view reads. */
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -133,7 +136,18 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
  * @returns {object}
  */
 export function estimateUsage({ accountName, taskId, model, startedAt, endedAt } = {}) {
-  const durationMs = Math.max(0, (Number(endedAt) || 0) - (Number(startedAt) || 0))
+  // A DURATION IS ONLY A DURATION WHEN BOTH ENDS ARE REAL.
+  //
+  // This subtracted a missing start from an epoch-millisecond end and called the result a
+  // session length: fifty-six years, booked as tokens, into the same book the spending cap
+  // reads. The guard is not «clamp it smaller» — it is «refuse to invent»: without a
+  // believable pair the estimate falls to its floor, which is what «we do not know, and it
+  // was not free» honestly looks like. An attempt longer than a day is not a long attempt,
+  // it is a broken pair.
+  const from = Number(startedAt)
+  const to = Number(endedAt)
+  const believable = Number.isFinite(from) && Number.isFinite(to) && from > 0 && to >= from && to - from <= MAX_ESTIMABLE_MS
+  const durationMs = believable ? to - from : 0
   const estOutputTokens = Math.max(1, Math.round((durationMs / 1000) * EST_OUTPUT_TOKENS_PER_SEC))
   return {
     accountName: accountName ?? null,

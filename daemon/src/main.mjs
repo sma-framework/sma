@@ -105,6 +105,7 @@ import {
   deriveRules,
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
+import { shouldApiFallback } from './policy/budget.mjs'
 import { windowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries, bookUsage } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
@@ -1013,6 +1014,13 @@ export function createDaemon(o = {}) {
     config,
     ledger,
     routing: { resolveRoute },
+    // THE MONEY RULE, JOINED TO THE DISPATCHER. `shouldApiFallback` was written, tested and
+    // called by nobody: an explicit `provider:'api'` task ran with no ceiling, and the
+    // automatic switch three screens describe («все окна закрыты — продолжаем по платному
+    // каналу») never happened. Bound here, where the cap, the rate and the spend book all
+    // live; the dispatcher only asks.
+    budget: ({ task, allClosed }) =>
+      shouldApiFallback({ task, windows: allClosed, budget: config.budget ?? {}, usageReader, clock }),
     windows: windowsOpenFor,
     spawnWorker,
     // THE OTHER HALF OF THE EXECUTOR. spawnWorker has been wired since the fleet shipped;

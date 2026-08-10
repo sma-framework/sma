@@ -266,6 +266,28 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * THE MONEY RULE MUST REACH THE DISPATCHER.
+   *
+   * `shouldApiFallback` decides two things nothing else decides: whether a task that names
+   * the paid channel by hand is ALLOWED to spend, and whether a fleet with every window shut
+   * may continue on that channel instead of waiting. It was written, tested, and called by
+   * nobody — so an explicit `provider:'api'` task ran with no ceiling at all, while three
+   * screens (Расходы, Правила, Аккаунты) described a budget stop that did not exist.
+   *
+   * A part cannot see that it was never joined. The root can.
+   */
+  it('joins the MONEY rule to the dispatcher — a cap nobody consults is a cap that does not exist', () => {
+    expect(typeof park.tickDeps.budget, 'tickDeps.budget must be wired or the spending cap is decoration').toBe(
+      'function',
+    )
+    // and it must answer in the shape the router reads, for both questions it is asked
+    const verdict = park.tickDeps.budget({ task: { lane: 'prod' }, allClosed: true })
+    expect(verdict).toBeTruthy()
+    expect(typeof verdict.fallback).toBe('boolean')
+    expect(typeof verdict.reason).toBe('string')
+  })
+
+  /**
    * THE WINDOW GATE IS ASKED WITH A WORKER AND THE WINDOW MODULE ANSWERS ABOUT AN ACCOUNT.
    *
    * Two callers, two nouns: the front asks about an account because that is what its screen

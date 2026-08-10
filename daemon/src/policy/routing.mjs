@@ -101,9 +101,33 @@ function journalDecision(sink, task, code, fields) {
  *   clock?: ()=>number,          // injected epoch-ms clock
  *   config?: {activeHours?:{start:number,end:number}, laneRouting?:object},
  *   decisionJournal?: (entry:object)=>void, // dispatcher-layer sink, optional
+ *   budget?: (args:{task:object, allClosed:boolean})=>{fallback:boolean, reason:string},
+ *     // THE MONEY DECISION (policy/budget.mjs, pre-bound at the composition root). Two
+ *     // things depended on it and neither ever asked: an explicit `provider:'api'` task ran
+ *     // with NO ceiling at all, and the documented automatic switch — «all windows closed,
+ *     // continue on the paid channel» — never happened, so tasks simply waited. Both screens
+ *     // that describe those rules described nothing. Absent here → the old behaviour, and
+ *     // the COMPOSITION ROOT is where its presence is locked: a policy a part cannot see is
+ *     // missing is exactly the defect class this codebase keeps paying for.
  * }} deps
  * @returns {{workerId:string|null, provider:string|null, model:(string|null), effort:(string|null), useApiFallback:boolean, reason:string, reasonCode:string}}
  */
+/**
+ * askBudget(seam, task, allClosed) → the money verdict, or null when no seam was supplied.
+ * NEVER throws: a budget rule that fails must not take the dispatcher down with it, and a
+ * failure is treated as «no answer», which leaves the old path intact rather than inventing
+ * a permission.
+ */
+function askBudget(seam, task, allClosed) {
+  if (typeof seam !== 'function') return null
+  try {
+    const v = seam({ task, allClosed })
+    return v && typeof v === 'object' && typeof v.fallback === 'boolean' ? v : null
+  } catch {
+    return null
+  }
+}
+
 export function resolveRoute(task = {}, deps = {}) {
   const workers = Array.isArray(deps.workers) ? deps.workers : []
   const isWindowOpen = typeof deps.windows === 'function' ? deps.windows : () => true
@@ -122,6 +146,22 @@ export function resolveRoute(task = {}, deps = {}) {
   // Explicit API request bypasses the worker pool — the budget rule (budget.mjs) decides
   // whether the fallback is actually permitted; routing only surfaces the intent.
   if (task.provider === 'api') {
+    // ASK THE MONEY RULE FIRST. An explicit request is an intent, not a permission: the cap
+    // is «one stop for the whole machine», and a task that names the paid channel by hand is
+    // exactly the one that would walk past it.
+    const verdict = askBudget(deps.budget, task, true)
+    if (verdict && verdict.fallback === false) {
+      journalDecision(sink, task, verdict.reason, { lane, provider: 'api' })
+      return {
+        workerId: null,
+        provider: null,
+        model: null,
+        effort: null,
+        useApiFallback: false,
+        reason: verdict.reason === 'budget_stop' ? 'budget stop: the paid channel is closed' : 'waiting for a window',
+        reasonCode: verdict.reason,
+      }
+    }
     journalDecision(sink, task, 'api_fallback_requested', { lane, provider: 'api' })
     return {
       workerId: null,
@@ -154,6 +194,25 @@ export function resolveRoute(task = {}, deps = {}) {
   })
 
   if (candidates.length === 0) {
+    // NO SEAT ANYWHERE — this is the moment the paid channel exists for, and until now it was
+    // never asked. The protected account is NOT a closed window: holding work for the
+    // founder's own subscription must never be turned into spending, so the switch is offered
+    // only when the pool emptied because every window is genuinely spent.
+    if (!heldByDayPriority) {
+      const verdict = askBudget(deps.budget, task, true)
+      if (verdict && verdict.fallback === true) {
+        journalDecision(sink, task, 'api_fallback', { lane, provider: 'api' })
+        return {
+          workerId: null,
+          provider: 'api',
+          model: firstDefined(task.model, laneDefault.model) ?? null,
+          effort: firstDefined(task.effort, laneDefault.effort) ?? null,
+          useApiFallback: true,
+          reason: 'all windows closed: continuing on the paid channel',
+          reasonCode: 'api_fallback',
+        }
+      }
+    }
     // The task WAITS — routing never fails it. By review: no only-open-window
     // carve-out for the protected account.
     const code = heldByDayPriority ? 'day_priority_protected' : 'window_exhausted'
