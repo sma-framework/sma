@@ -91,6 +91,8 @@ export const STRUCT_FIELD_CAP = 200
 
 /** One line of worker output, capped — the same posture as the approach note. */
 export const ATTEMPT_LOG_LINE_CAP = 4096
+/** How many parts of ONE frame a row may carry: a glance is a glance, not a transcript. */
+export const ATTEMPT_LOG_SUMMARY_CAP = 8
 /** How many entries a tail read returns when the caller names no number. */
 export const ATTEMPT_LOG_TAIL_DEFAULT = 200
 /** The hard ceiling on one tail read — a growing log can never become a growing response. */
@@ -283,9 +285,16 @@ export function journalComplete({ attemptId, taskId, attempt, ledger, entries } 
  * session (stream.mjs reads that off `parent_tool_use_id`), so an ordinary row stays two
  * fields wide and a reader never has to tell `false` from «this build did not know».
  *
- * @param {{line?:string, ts?:string, subagent?:boolean, parentId?:string}} entry
+ * `summary` is the SENTENCE A PERSON READS, built by the runner off the parsed frame before
+ * the line was capped (runner/frame-summary.mjs). It is bounded here like everything else
+ * that arrives from a worker: a closed number of parts, each field capped, every value
+ * flattened to text. It is written only when there is something to say — a frame that means
+ * nothing to a reader leaves the row exactly as wide as it was, and the screen falls back to
+ * the raw line.
+ *
+ * @param {{line?:string, ts?:string, subagent?:boolean, parentId?:string, summary?:object[]}} entry
  * @param {{now?:()=>number}} [opts]
- * @returns {{ts:string, line:string, subagent?:true, parentId?:string}}
+ * @returns {{ts:string, line:string, subagent?:true, parentId?:string, summary?:object[]}}
  */
 export function normalizeAttemptLogEntry(entry = {}, { now } = {}) {
   const e = entry && typeof entry === 'object' ? entry : {}
@@ -296,6 +305,30 @@ export function normalizeAttemptLogEntry(entry = {}, { now } = {}) {
     out.subagent = true
     const parentId = boundedText(e.parentId, STRUCT_FIELD_CAP)
     if (parentId) out.parentId = parentId
+  }
+  const summary = boundedSummary(e.summary)
+  if (summary.length) out.summary = summary
+  return out
+}
+
+/** The parts of a row's summary, bounded: at most ATTEMPT_LOG_SUMMARY_CAP, each field text. */
+function boundedSummary(value) {
+  if (!Array.isArray(value)) return []
+  const out = []
+  for (const part of value) {
+    if (out.length >= ATTEMPT_LOG_SUMMARY_CAP) break
+    if (!part || typeof part !== 'object') continue
+    const kind = boundedText(part.kind, STRUCT_FIELD_CAP)
+    if (!kind) continue
+    const row = { kind }
+    const tool = boundedText(part.tool, STRUCT_FIELD_CAP)
+    if (tool) row.tool = tool
+    const detail = boundedText(part.detail, STRUCT_FIELD_CAP)
+    if (detail) row.detail = detail
+    const subagent = boundedText(part.subagent, STRUCT_FIELD_CAP)
+    if (subagent) row.subagent = subagent
+    if (typeof part.ok === 'boolean') row.ok = part.ok
+    out.push(row)
   }
   return out
 }
