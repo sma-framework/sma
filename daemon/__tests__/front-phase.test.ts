@@ -39,6 +39,7 @@ import { Readable } from 'node:stream'
 import { createFrontServer, STAGE_COMMANDS, PENDING_ROUTES } from '../src/front/server.mjs'
 import { derivePhaseIndex, derivePhaseCard } from '../src/front/state.mjs'
 import { STAGE_ARTIFACTS, CHECKPOINT_SUFFIX, EXEC_CHECKPOINT_SUFFIX } from '../src/front/questions.mjs'
+import { createBuildArgs } from '../src/runner/build-args.mjs'
 
 const TOKEN = 'd'.repeat(64)
 const PROJECT = '/proj'
@@ -954,6 +955,129 @@ describe('POST /api/phase/uat — A VERDICT IS WRITTEN IN THE FILE’S OWN VOCAB
     expect((await post({ phase: '12', item: '1', verdict: 'fail', note: 'я'.repeat(2001) })).statusCode).toBe(400)
 
     expect(uatText(io)).toBe(before) // not one of the four touched the document
+  })
+})
+
+// ══════════ the question knows the row its answer has to wake ══════════
+//
+// The decision door records an answer always, and wakes the parked round only when the answer
+// was the LAST one AND the caller named the row. Nothing produced that name: the card built a
+// question out of five fields and a task id was not one of them, so the screen had nothing to
+// send and every discussion started from the window stopped dead after its first question —
+// answer on disk, round asleep, no error anywhere. These cases pin the missing field.
+
+describe('a question carries the task id of the round it is blocking', () => {
+  const parkedRow = (over: object = {}) => ({
+    id: 'S-1770000000001',
+    status: 'awaiting_approval',
+    data: { kind: 'document', stage: 'discuss', phase: '13' },
+    ...over,
+  })
+
+  it('the question of a parked stage names its row', () => {
+    const io = fixture()
+    const card: any = derivePhaseCard({ projectDir: PROJECT, phaseId: '13', fsImpl: io, parkedRows: [parkedRow()] })
+    expect(card.questions.length).toBeGreaterThan(0)
+    for (const q of card.questions) expect(q.taskId).toBe('S-1770000000001')
+  })
+
+  it('the row is matched through the ONE rule for «which directory is phase N»', () => {
+    // the row records the phase as a person typed it at the door; the card is a directory name
+    const io = fixture()
+    const card: any = derivePhaseCard({
+      projectDir: PROJECT,
+      phaseId: '13-next',
+      fsImpl: io,
+      parkedRows: [parkedRow({ data: { kind: 'document', stage: 'discuss', phase: '13' } })],
+    })
+    expect(card.questions[0].taskId).toBe('S-1770000000001')
+  })
+
+  it('TWO stages of one phase parked at once: each question names ITS OWN row, not the neighbour', () => {
+    // the queue's 409 forbids two rows for the same STAGE of a phase — and nothing more, so a
+    // discussion and an execute stage can both be waiting, and their questions share one card
+    const io = fixture({
+      [`${PROJECT}/.planning/phases/13-next${'/'}13${EXEC_CHECKPOINT_SUFFIX}`]: checkpoint({
+        'граница исполнения': [{ question: 'Продолжать по плану?', options_presented: ['да', 'нет'] }],
+      }),
+    })
+    const card: any = derivePhaseCard({
+      projectDir: PROJECT,
+      phaseId: '13',
+      fsImpl: io,
+      parkedRows: [
+        parkedRow(),
+        parkedRow({ id: 'S-1770000000002', data: { kind: 'code', stage: 'execute', phase: '13' } }),
+      ],
+    })
+    const byQuestion = new Map(card.questions.map((q: any) => [q.question, q.taskId]))
+    expect(byQuestion.get('Кого зовём тестировать?')).toBe('S-1770000000001')
+    expect(byQuestion.get('Продолжать по плану?')).toBe('S-1770000000002')
+  })
+
+  it('no parked row → the field is ABSENT, which is what the door reads as «wake nothing»', () => {
+    const io = fixture()
+    const card: any = derivePhaseCard({ projectDir: PROJECT, phaseId: '13', fsImpl: io, parkedRows: [] })
+    for (const q of card.questions) expect('taskId' in q).toBe(false)
+  })
+
+  it('a row of ANOTHER phase, or one not parked at all, never lends its id', () => {
+    const io = fixture()
+    const card: any = derivePhaseCard({
+      projectDir: PROJECT,
+      phaseId: '13',
+      fsImpl: io,
+      parkedRows: [
+        parkedRow({ id: 'S-other', data: { kind: 'document', stage: 'discuss', phase: '12' } }),
+        parkedRow({ id: 'S-running', status: 'claimed' }),
+      ],
+    })
+    for (const q of card.questions) expect('taskId' in q).toBe(false)
+  })
+
+  it('the DOOR serves it too — the screen reads the id from the same card it renders', async () => {
+    const { front } = mkFront({ rows: [parkedRow()] })
+    const res = await call(front, { url: '/api/phase/13' })
+    expect(res.statusCode).toBe(200)
+    const card = JSON.parse(res.body)
+    expect(card.questions.every((q: any) => q.taskId === 'S-1770000000001')).toBe(true)
+  })
+
+  it('a queue that cannot be read costs the card its ids and nothing else', async () => {
+    const { front } = mkFront({
+      adapter: {
+        enqueue: async (t: any) => ({ id: t.id, coalesced: false }),
+        list: async () => {
+          throw new Error('the database is down')
+        },
+      },
+    })
+    const res = await call(front, { url: '/api/phase/13' })
+    expect(res.statusCode).toBe(200)
+    const card = JSON.parse(res.body)
+    expect(card.questions.length).toBeGreaterThan(0)
+    for (const q of card.questions) expect(q.taskId).toBeUndefined()
+  })
+})
+
+// ════════ the door and the worker cannot end up with different commands ════════
+
+describe('the command the door writes down is the command the worker is given', () => {
+  it('byte for byte, for every stage of the cycle', async () => {
+    // The door writes the command onto the task; the runner REBUILDS it from the frozen
+    // dictionary rather than reading the title. That is only safe while the two agree — so the
+    // agreement is measured here rather than intended in a comment.
+    const buildArgs: any = createBuildArgs({
+      config: { workers: [{ id: 'w', provider: 'claude', account: { name: 'a', configDir: '/a', spendLogsDir: '/a/s' } }] },
+      env: {},
+    })
+    for (const stage of Object.keys(STAGE_COMMANDS)) {
+      const { front, enqueued } = mkFront()
+      await call(front, { method: 'POST', url: '/api/phase/stage', body: { phase: '12', stage } })
+      const [row] = enqueued
+      const spec = buildArgs(row, { workerId: 'w', provider: 'claude' })
+      expect(spec.prompt, stage).toBe(row.title)
+    }
   })
 })
 

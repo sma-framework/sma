@@ -77,6 +77,7 @@ import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth
 import { REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
+import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
@@ -2297,34 +2298,23 @@ async function handleSearch({ res, query, deps }) {
 // HTTP request — which is what makes a stage started from this window and a stage started in a
 // terminal the same event, resumable, inspectable and interruptible in exactly the same way.
 //
-// THE COMMAND IS DATA, AND THE DICTIONARY IS FROZEN. The door does not compose an instruction
-// out of anything a person typed: it LOOKS UP one of four constants and substitutes the phase,
-// whose grammar is bounded and cannot begin with a dash. That is the whole of the assembly.
+// THE COMMAND IS DATA, AND THE DICTIONARY IS FROZEN — AND IT NO LONGER LIVES HERE. The door
+// does not compose an instruction out of anything a person typed: it LOOKS UP one of four
+// constants and substitutes the phase, whose grammar is bounded and cannot begin with a dash.
+// That is the whole of the assembly, and it now happens in `policy/phase-cycle.mjs`.
 //
-// NO PATH TO AUTO-MODE EXISTS HERE, BY CONSTRUCTION. None of the four commands carries a flag
-// that would let the machine answer a question in the founder's place, and none is assembled
-// with one — `assertNoAutomation` refuses the command if it ever grows one, so the law is
-// enforced at the point of use rather than remembered at the point of editing. This is the
-// door's half of the same guard the runner keeps on its argument list.
+// WHY THE DICTIONARY MOVED OUT. The runner needs the same four strings, to turn a stage into
+// the session's prompt without reading the command off a task's TITLE — a field that can be
+// edited, restored or written by some other path, and therefore cannot be trusted to become a
+// bare instruction. Importing this web server into the worker path to reach the table would
+// have been the wrong direction; a shared frozen module is the right one. Both callers now go
+// through the same `stageCommand`, and the suite pins their outputs equal byte for byte.
+//
+// NO PATH TO AUTO-MODE EXISTS, BY CONSTRUCTION — the guard moved with the dictionary and is
+// applied inside `stageCommand`, so neither caller can assemble a command around it.
 
-/** The phase a stage may be started for: bounded, and unable to READ as a flag. */
-const PHASE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-
-/**
- * THE FOUR COMMANDS OF THE PHASE CYCLE — one per stage, frozen, with `{phase}` as their only
- * hole. A stage the table does not name has no command and is refused by name.
- *
- * `--text` and `--batch` are the shape of a stage RUN BY A DAEMON: no interactive prompt to
- * answer and no terminal to answer it at. What a stage does when it nevertheless reaches a
- * question is park it as an artefact — the headless branch of the workflow — and the answer
- * arrives later through the decision door, which starts the very same command again.
- */
-export const STAGE_COMMANDS = Object.freeze({
-  discuss: '/sma-discuss-phase {phase} --batch --text',
-  plan: '/sma-plan-phase {phase} --text',
-  execute: '/sma-execute-phase {phase}',
-  verify: '/sma-verify-work {phase} --text',
-})
+/** Re-exported for the tests and readers that have always asked this module for the table. */
+export { STAGE_COMMANDS }
 
 /**
  * Which exit gate a stage's work is judged by: `execute` produces CODE and rides the reverify
@@ -2337,25 +2327,9 @@ const stageKind = (stage) => (stage === EXECUTE_STAGE ? 'code' : 'document')
 /** The lane every stage of the phase cycle rides. There is no second lane and no new one. */
 const STAGE_LANE = 'paperwork'
 
-/**
- * The flags that would hand a founder's decision to a machine, or strip the session that is
- * supposed to make it. A command carrying one is a defect in THIS file, so it throws rather
- * than answering 400: no request can produce it, and no request should be told about it.
- */
-const AUTOMATION_FLAGS = /(^|\s)--(auto|bare|dangerously-skip-permissions|permission-mode)(\s|=|$)/
-
-function assertNoAutomation(command) {
-  if (AUTOMATION_FLAGS.test(command)) {
-    throw new Error(`stage command carries an automation flag: ${command}`)
-  }
-  return command
-}
-
-/** The command a stage is started with, or null for a stage nobody declared. */
-function stageCommand(stage, phase) {
-  const template = Object.prototype.hasOwnProperty.call(STAGE_COMMANDS, stage) ? STAGE_COMMANDS[stage] : null
-  return template === null ? null : assertNoAutomation(template.replace('{phase}', String(phase)))
-}
+// `stageCommand`, `PHASE_RE` and the automation guard are imported from policy/phase-cycle.mjs
+// — see the note above the route section. The door validates the request; the module owns the
+// command, so the runner cannot end up with a different one.
 
 /** A row that is still in play: nobody may start the same stage of the same phase twice. */
 const LIVE_STATUSES = Object.freeze(['queued', 'claimed', 'awaiting_approval'])
@@ -2455,7 +2429,7 @@ async function handlePhaseStage({ req, res, deps }) {
  * read model so this file carries no build edge onto state.mjs. A phase the project does not
  * have is a 404: the index is how a screen learns which ids exist.
  */
-function handlePhaseCard({ res, params, deps }) {
+async function handlePhaseCard({ res, params, deps }) {
   const id = String((params && params.id) || '')
   const projectDir = phaseCycleDir(deps)
 
@@ -2464,9 +2438,30 @@ function handlePhaseCard({ res, params, deps }) {
     return sendJson(res, 200, deps.derivePhaseIndex({ projectDir, fsImpl: deps.fsImpl }))
   }
   if (typeof deps.derivePhaseCard !== 'function') return send501(res)
-  const card = deps.derivePhaseCard({ projectDir, phaseId: id, fsImpl: deps.fsImpl })
+  const card = deps.derivePhaseCard({
+    projectDir,
+    phaseId: id,
+    fsImpl: deps.fsImpl,
+    // The rows a question's answer might have to WAKE. Read here because this is the half of
+    // the program that holds the queue; matched to the phase inside the derive, which owns the
+    // one rule for «which directory is phase N». A queue that cannot be read costs the card its
+    // task ids and nothing else — the questions still render and the answers still record.
+    parkedRows: await parkedRowsOf(deps),
+  })
   if (!card) return send404(res)
   return sendJson(res, 200, card)
+}
+
+/** Every row that has stopped to ask, or an empty list when the queue cannot say. */
+async function parkedRowsOf(deps) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.list !== 'function') return []
+  try {
+    const rows = await adapter.list({ status: 'awaiting_approval' })
+    return Array.isArray(rows) ? rows : []
+  } catch {
+    return []
+  }
 }
 
 /**
