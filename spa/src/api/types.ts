@@ -1333,6 +1333,13 @@ export interface AttemptLogLine {
   ts: string
   line: string
   subagent: boolean
+  /**
+   * WHICH delegation this line belongs to — 1, 2, 3… in the order the groups first appear.
+   * The daemon turns the vendor's opaque parent id into this ordinal at its door, so a burst
+   * of eleven lines from one subagent reads as one voice instead of eleven interruptions.
+   * Absent on a line the parent spoke itself.
+   */
+  group?: number
   summary?: AttemptLogSummaryPart[]
 }
 

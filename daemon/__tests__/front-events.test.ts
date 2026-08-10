@@ -17,11 +17,13 @@
 
 import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
+import { readFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 
 import { createEventHub, wrapAdapterWithEvents, EVENT_TYPES } from '../src/front/events.mjs'
 import { createFrontServer } from '../src/front/server.mjs'
 import { deriveState, parseReceiptSummary } from '../src/front/state.mjs'
+import { TASK_STATUSES } from '../src/queue/adapter.mjs'
 import { REASON_LABELS } from '../src/queue/adapter.mjs'
 
 const TOKEN = 'e'.repeat(64)
@@ -81,10 +83,13 @@ describe('events.mjs — EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('spend.updated')
   })
 
-  it('the frozen vocabulary is EXACTLY nineteen types with no duplicates', () => {
-    expect(EVENT_TYPES).toHaveLength(19)
-    expect(new Set(EVENT_TYPES).size).toBe(19)
-    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated']) {
+  it('the frozen vocabulary is EXACTLY twenty types with no duplicates', () => {
+    // TWENTY since 10.08.2026: `ship.published` was being emitted by the release handler into
+    // a vocabulary that did not contain it, so the hub dropped it and the one frame a person
+    // would actually notice — «опубликовано» — never rang. Declaring it is the fix.
+    expect(EVENT_TYPES).toHaveLength(20)
+    expect(new Set(EVENT_TYPES).size).toBe(20)
+    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated', 'ship.published']) {
       expect(EVENT_TYPES).toContain(t)
     }
   })
@@ -289,7 +294,7 @@ describe('wrapAdapterWithEvents — ordering: zero emits before the durable call
     expect(emitted).toHaveLength(0)
     release()
     await p
-    expect(emitted).toEqual([{ event: 'task.queued', taskId: 'T1' }])
+    expect(emitted).toEqual([{ event: 'task.queued', taskId: 'T1', status: 'queued' }])
   })
 
   it('each durable transition emits its hint set after committing; touch dedups', async () => {
@@ -321,6 +326,73 @@ describe('wrapAdapterWithEvents — ordering: zero emits before the durable call
     emitted.length = 0
     await wrapped.fail('T', 'tests_red')
     expect(emitted).toEqual(['task.failed', 'spend.updated', 'worker.presence'])
+  })
+
+  /**
+   * THE CLASS LOCK. `hub.emit` drops an unlisted type SILENTLY — by design, so a hostile emit
+   * cannot invent a frame shape. The cost of that design is that a TYPO or an undeclared new
+   * type is invisible: the code emits, the hub swallows, and the screen waiting for it simply
+   * never updates. That is exactly how `ship.published` came to be emitted for a whole release
+   * without ringing anywhere.
+   *
+   * So this reads the SOURCE of every module that emits and asserts each name it emits is in
+   * the vocabulary. A static read is the only way to see this: no runtime test exercises every
+   * emit site, and the ones that do would pass either way — silence is the failure mode.
+   */
+  it('every event name emitted anywhere in the daemon is DECLARED — an undeclared one is dropped in silence', () => {
+    // ONLY the hub's own doors: `emit({event})` and `emitSafe(deps, {event})`. The outbound
+    // report edge (report.mjs) speaks a DIFFERENT vocabulary through `report({event})` — it
+    // is not this hub and must not be judged by this list.
+    const roots = ['../src/front/server.mjs', '../src/front/events.mjs', '../src/loop.mjs', '../src/main.mjs']
+    const emitted = new Set<string>()
+    const CALL = /\bemit(?:Safe)?\(\s*(?:deps\s*,\s*)?\{[^}]*?event:\s*([^,}]+)/g
+    for (const rel of roots) {
+      const src = readFileSync(new URL(rel, import.meta.url), 'utf8')
+      for (const m of src.matchAll(CALL)) {
+        for (const lit of String(m[1]).matchAll(/'([a-z][a-z.]*)'/g)) emitted.add(lit[1])
+      }
+    }
+    expect(emitted.size).toBeGreaterThan(5) // the scan itself must not silently find nothing
+    for (const name of emitted) {
+      expect(EVENT_TYPES, `«${name}» is emitted but not declared — the hub drops it and no screen ever learns`).toContain(
+        name,
+      )
+    }
+  })
+
+  it('every task frame carries the QUEUE status — and a failure carries «failed», not its reason', async () => {
+    const frames: any[] = []
+    const durable = {
+      enqueue: async () => ({ id: 'T1' }),
+      claimNext: async () => ({ id: 'T1' }),
+      touch: async () => true,
+      complete: async () => true,
+      fail: async () => true,
+    }
+    const wrapped = wrapAdapterWithEvents(durable, { emit: (e: any) => frames.push(e) }, { clock: () => 0 })
+
+    await wrapped.enqueue({ id: 'T1' })
+    await wrapped.claimNext('w1', {})
+    await wrapped.touch('T1')
+    await wrapped.complete('T1', { receiptRef: 'x' })
+    await wrapped.fail('T1', 'no_receipt')
+
+    const statusOf = (name: string) => frames.find((f) => f.event === name).status
+    expect(statusOf('task.queued')).toBe('queued')
+    expect(statusOf('task.claimed')).toBe('claimed')
+    expect(statusOf('task.running')).toBe('claimed') // a touch does not move the row
+    expect(statusOf('task.awaiting_approval')).toBe('awaiting_approval')
+
+    // THE LOCK. Until 10.08 this frame carried the failure REASON in the status field — a
+    // word from another vocabulary that the screen would have written into the row as a
+    // state. The reason belongs to the read model, where it has a label.
+    expect(statusOf('task.failed')).toBe('failed')
+    expect(JSON.stringify(frames)).not.toContain('no_receipt')
+
+    // and every status a frame carries is one the queue itself can hold
+    for (const f of frames.filter((x) => x.event.startsWith('task.'))) {
+      expect(TASK_STATUSES).toContain(f.status)
+    }
   })
 })
 

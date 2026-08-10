@@ -78,6 +78,10 @@ export const EVENT_TYPES = Object.freeze([
   'memory.drafts', // the memory drafts changed — which ones is a read, not a frame
   'coordination.updated', // a claim or a session moved (never a glob, never a path)
   'ship.gate', // a release gate step reported (the step id, never its output)
+  // Declared 10.08.2026, after the release handler was found emitting it into a vocabulary
+  // that did not contain it — so the hub dropped it silently and «опубликовано» never rang
+  // on any screen. That silent drop is exactly what the note above this list warns about.
+  'ship.published', // a release went out (its VERSION, never a token, never a url)
 ])
 
 /**
@@ -112,6 +116,7 @@ const EVENT_FIELDS = Object.freeze({
   'memory.drafts': [], // a pure doorbell: something in the drafts moved, go and look
   'coordination.updated': [], // likewise — who claimed what is a read, never a frame
   'ship.gate': ['taskId', 'step'], // NEVER the gate's output
+  'ship.published': ['version'], // the version string and nothing else
 })
 
 /** Fields serialised as a boolean / a number; everything else is stringified. */
@@ -270,13 +275,13 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
     ...adapter,
     async enqueue(task) {
       const r = await adapter.enqueue(task)
-      emit({ event: 'task.queued', taskId: task && task.id })
+      emit({ event: 'task.queued', taskId: task && task.id, status: 'queued' })
       return r
     },
     async claimNext(workerId, opts) {
       const t = await adapter.claimNext(workerId, opts)
       if (t) {
-        emit({ event: 'task.claimed', taskId: t.id, workerId })
+        emit({ event: 'task.claimed', taskId: t.id, workerId, status: 'claimed' })
         emit({ event: 'worker.presence', workerId })
       }
       return t
@@ -288,14 +293,17 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
         const prev = lastRunning.get(taskId)
         if (prev == null || now - prev >= RUNNING_DEDUP_MS) {
           lastRunning.set(taskId, now)
-          emit({ event: 'task.running', taskId })
+          // A touch does not MOVE the row — it says the claim is alive. The status travels
+          // anyway and equals what the row already is, so a client that missed the claim
+          // frame still converges instead of waiting for the next poll.
+          emit({ event: 'task.running', taskId, status: 'claimed' })
         }
       }
       return ok
     },
     async complete(taskId, result) {
       const r = await adapter.complete(taskId, result)
-      emit({ event: 'task.awaiting_approval', taskId })
+      emit({ event: 'task.awaiting_approval', taskId, status: 'awaiting_approval' })
       emit({ event: 'spend.updated', taskId })
       emit({ event: 'worker.presence', taskId })
       lastRunning.delete(taskId)
@@ -303,7 +311,11 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
     },
     async fail(taskId, reason) {
       const r = await adapter.fail(taskId, reason)
-      emit({ event: 'task.failed', taskId, status: reason })
+      // `status` is the QUEUE status and nothing else. It carried the failure REASON here
+      // until now — a word from a different vocabulary («no_receipt») that a client would
+      // have written into the row as though it were a state. The reason is on the read
+      // model, where it has a label; the frame says only that the row is now failed.
+      emit({ event: 'task.failed', taskId, status: 'failed' })
       emit({ event: 'spend.updated', taskId })
       emit({ event: 'worker.presence', taskId })
       lastRunning.delete(taskId)
