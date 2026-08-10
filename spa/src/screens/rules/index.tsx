@@ -165,7 +165,8 @@ export function Screen() {
 
       <div className="flex flex-none items-center border-b border-bd px-7 py-3">
         <span className="text-[12.5px] text-tx2">
-          Политика парка так, как она записана. Окно её читает; меняется она в конфигурации.
+          Политика парка так, как она записана. Окно её читает; меняется она в конфигурации — кроме
+          потолка расходов, у которого есть своя дверь на «Расходах».
         </span>
       </div>
 
@@ -185,7 +186,10 @@ export function Screen() {
             <RuleRow
               label="Если лимит подписок закончился, продолжать по запасному каналу"
               on={subApiSwitch.budgeted}
-              caption={`${budgetCaption(budgetStops, subApiSwitch)} · ${CONFIGURED_ELSEWHERE}`}
+              // The cap is the ONE rule on this screen with a door in the window: «Расходы»
+              // edits it. Sending a person to a config file for a number they can change two
+              // clicks away is how a product teaches its owner that it needs a terminal.
+              caption={`${budgetCaption(budgetStops, subApiSwitch)} · потолок меняется на «Расходах»`}
               first
             >
               <button
