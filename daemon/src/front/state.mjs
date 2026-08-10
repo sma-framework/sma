@@ -85,7 +85,15 @@ import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
 import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
-import { createQuestions, findPhaseDir, phaseNumberOf, STAGE_ARTIFACTS, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
+import {
+  createQuestions,
+  findPhaseDir,
+  phaseNumberOf,
+  STAGE_ARTIFACTS,
+  ALL_CHECKPOINT_SUFFIXES,
+  CHECKPOINT_SUFFIX,
+  EXEC_CHECKPOINT_SUFFIX,
+} from './questions.mjs'
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
@@ -1316,19 +1324,75 @@ export function derivePhaseIndex({ projectDir, fsImpl } = {}) {
   }
 }
 
+/** The status of a row that has stopped and is waiting for a person — the parked round. */
+const PARKED_STATUS = 'awaiting_approval'
+
 /**
- * derivePhaseCard({projectDir, phaseId, fsImpl}) → one phase in full, or null when the
- * project has no such directory.
+ * Which stage parked this question, read off the checkpoint file that asked it.
+ *
+ * There are exactly two files and therefore exactly two stages that can park a question: a
+ * discussion round and an execute stage. `plan` and `verify` produce documents and never stop
+ * to ask, so a path that is neither is not a stage — it is a file this function does not know,
+ * and it says so rather than guessing.
+ */
+function stageOfCheckpoint(path) {
+  const text = String(path ?? '')
+  if (text.endsWith(EXEC_CHECKPOINT_SUFFIX)) return 'execute'
+  if (text.endsWith(CHECKPOINT_SUFFIX)) return 'discuss'
+  return null
+}
+
+/**
+ * stage → the id of the row parked for it, for ONE phase directory.
+ *
+ * A row is matched to this phase through `findPhaseDir` — the same one rule for «which
+ * directory is phase N» that resolved the card itself. That matters because the row records
+ * the phase AS IT WAS TYPED at the door («12») while the card is a directory name
+ * («phase-12-front-workplace»), and comparing those two strings would find nothing.
+ *
+ * Keyed by STAGE and not by phase, because one phase can hold two parked rows at once: the
+ * queue's 409 forbids two rows for the same stage of the same phase, and nothing more. A
+ * discussion and an execute stage of one phase can both be waiting, their questions arrive on
+ * one card, and answering the last question of one must wake THAT one.
+ */
+function parkedStageTasks(rows, dirs, dir) {
+  const out = new Map()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || row.status !== PARKED_STATUS) continue
+    const data = row.data && typeof row.data === 'object' ? row.data : null
+    const stage = data && data.stage
+    if (!stage || out.has(stage)) continue
+    if (findPhaseDir(dirs, data.phase) !== dir) continue
+    out.set(stage, String(row.id))
+  }
+  return out
+}
+
+/**
+ * derivePhaseCard({projectDir, phaseId, fsImpl, parkedRows}) → one phase in full, or null when
+ * the project has no such directory.
  *
  * {id, name, stages, questions, plans, summaries, uat}. The plans and summaries travel as
  * NAMES and door-relative paths — never their contents: a card is a table of contents, and the
  * document itself is one click through the artefact door, which is the one place the reading
  * of a file is bounded.
  *
- * @param {{projectDir?:string, phaseId?:string|number, fsImpl?:object}} [deps]
+ * WHY A QUESTION CARRIES A TASK ID. The decision door records an answer always, and wakes the
+ * parked round only when the answer was the LAST one AND the caller named the row to wake. The
+ * screen can only name it if something told it which row that is — and this is that something.
+ * Without it the door recorded every answer and woke nothing, so a discussion started from the
+ * window could never get past its first question: the answer was on disk and the round was
+ * still asleep.
+ *
+ * `parkedRows` is the queue's rows, passed IN rather than read here: this module stays a pure
+ * function of the filesystem, and the door that has the adapter is the one that hands them
+ * over. A card built without them is still a card — every question simply carries no id, which
+ * is exactly the state the door treats as «record it, wake nothing».
+ *
+ * @param {{projectDir?:string, phaseId?:string|number, fsImpl?:object, parkedRows?:object[]}} [deps]
  * @returns {object|null}
  */
-export function derivePhaseCard({ projectDir, phaseId, fsImpl } = {}) {
+export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows } = {}) {
   if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
   const wanted = String(phaseId ?? '').trim()
   if (wanted === '') return null
@@ -1342,15 +1406,27 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl } = {}) {
   const files = safeList(io, join(root, dir))
   const engine = questionsEngine(projectDir, fsImpl)
 
+  const parked = parkedStageTasks(parkedRows, dirs, dir)
+
   let questions = []
   try {
-    questions = engine.allQuestions(dir).map((q) => ({
-      id: q.id,
-      area: q.area,
-      question: q.text,
-      options: q.options,
-      answer: q.answer,
-    }))
+    questions = engine.allQuestions(dir).map((q) => {
+      // The question knows which FILE asked it; the file names the stage; the stage names the
+      // row. No step of that chain is a guess, which is why a phase holding two parked stages
+      // still sends every answer to its own round.
+      const stage = stageOfCheckpoint(q.path)
+      const taskId = stage === null ? undefined : parked.get(stage)
+      return {
+        id: q.id,
+        area: q.area,
+        question: q.text,
+        options: q.options,
+        answer: q.answer,
+        // ABSENT, never empty: the door reads «no id» as «record the answer and wake nothing»,
+        // and an empty string would be a value that fails its grammar instead.
+        ...(taskId ? { taskId } : {}),
+      }
+    })
   } catch {
     // a torn checkpoint costs the card its question list, never the card
     questions = []

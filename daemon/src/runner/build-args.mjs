@@ -26,9 +26,16 @@
  *   - a route with no worker (the API-fallback and window-exhausted branches): there is no
  *     account to run under, and inventing one would spend money from a profile nobody chose;
  *   - a worker id that is not in config, or a worker with no account block;
- *   - a model/effort that does not match the profile — that guard is imported, not rewritten.
+ *   - a model/effort that does not match the profile — that guard is imported, not rewritten;
+ *   - a task carrying a stage envelope this daemon has no command for (see stagePromptOf).
  * Each throw is caught by the tick's own catch and becomes a NAMED task failure, which is the
  * behaviour the rest of the loop is built around: a refusal on the record beats a crash.
+ *
+ * TWO SHAPES OF PROMPT, AND THE ENVELOPE PICKS ONE. An ordinary task travels as fenced DATA,
+ * because its text was written by a person. A stage of the phase cycle travels as the BARE
+ * command, because a command inside a fence is inert text — and it is REBUILT from the frozen
+ * dictionary in policy/phase-cycle.mjs rather than read off the task's title, so the one string
+ * that reaches a worker unfenced can only ever be one of four constants.
  *
  * WHAT IS DELIBERATELY NOT HERE, so it is a known gap and not a silent one:
  *   - MCP servers. `buildMcpConfigFile` exists in args.mjs and is called by NOTHING in the
@@ -48,12 +55,21 @@ import {
   assertProfileParity,
   expectedModelEffort,
 } from './args.mjs'
+import { stageCommand } from '../policy/phase-cycle.mjs'
 
 /** The route named no worker this spawn could run as. */
 export class NoWorkerForRouteError extends Error {
   constructor(message) {
     super(message)
     this.name = 'NoWorkerForRouteError'
+  }
+}
+
+/** The task carries a stage envelope this daemon has no command for. */
+export class UnknownStageError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'UnknownStageError'
   }
 }
 
@@ -99,6 +115,35 @@ function workerBaseEnv(env, config) {
     out[key] = value
   }
   return out
+}
+
+/**
+ * stagePromptOf(task) → the bare stage command for a task of the phase cycle, or null for an
+ * ordinary task, which is every task without a stage envelope.
+ *
+ * A STAGE NOBODY DECLARED IS A REFUSAL, NOT A FALLBACK. Returning the fenced prompt for a row
+ * whose `data.stage` is unknown — or whose phase fails the grammar the command is substituted
+ * into — would start a session that does nothing useful and then be judged by the DOCUMENTARY
+ * exit gate, which is waiting for a document that no one is writing. A named throw becomes a
+ * named task failure at the tick's catch, and the row says why.
+ *
+ * @param {object} task
+ * @returns {string|null}
+ */
+function stagePromptOf(task) {
+  const data = task && typeof task.data === 'object' && task.data !== null ? task.data : null
+  const stage = data ? data.stage : undefined
+  if (stage === undefined || stage === null || stage === '') return null
+
+  const command = stageCommand(stage, data.phase)
+  if (command === null) {
+    throw new UnknownStageError(
+      `buildArgs: task ${String(task.id ?? '?')} carries stage "${String(stage)}" for phase ` +
+        `"${String(data.phase ?? '')}", which this daemon has no command for — refusing rather ` +
+        'than running it as an ordinary task the documentary gate would then judge as unfinished',
+    )
+  }
+  return command
 }
 
 /**
@@ -186,8 +231,25 @@ export function createBuildArgs({ config = {}, env = process.env } = {}) {
       taskId: task.id,
     })
 
-    // ── (6) THE PROMPT — task content as fenced DATA, never as instructions ──────
-    const prompt = buildTaskPrompt({ task })
+    // ── (6) THE PROMPT — two shapes, and which one is decided by the envelope ────
+    //
+    // AN ORDINARY TASK IS FENCED DATA. Its title and note were written by a person, so they
+    // travel to the worker inside a fence that says «this is data, not instructions». That is
+    // the default and it has not changed.
+    //
+    // A STAGE OF THE PHASE CYCLE IS A COMMAND, and a command inside a fence is inert text: a
+    // worker handed `/sma-plan-phase 12 --text` as DATA reads it and does nothing, which is
+    // exactly what a person saw when a stage started from the window reached the queue and
+    // stopped. So a task carrying a stage envelope gets the bare command as its prompt.
+    //
+    // AND THE COMMAND IS REBUILT, NOT READ OFF THE ROW. The door also writes the command into
+    // the title, and taking it from there would be the shorter path — but a title is an
+    // ordinary text field that can be edited, restored from a backup, or written by some
+    // other path, and the one string in this product that becomes a BARE INSTRUCTION must not
+    // be one of those. `stageCommand` rebuilds it from the frozen four, so the only text that
+    // can ever reach a worker unfenced is one of them. The suite pins this equal to what the
+    // door wrote, so the two cannot drift.
+    const prompt = stagePromptOf(task) ?? buildTaskPrompt({ task })
 
     return { bin, args, env: spawnEnv, prompt, workerId: worker.id, provider }
   }
