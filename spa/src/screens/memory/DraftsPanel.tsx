@@ -100,6 +100,19 @@ function DraftCard({
   // on a guess.
   const mine = draft.applicable !== false
 
+  /**
+   * A ROW WITH NOTHING BEHIND IT stays folded.
+   *
+   * A migration draft whose migration panel is not on the glass has no door anywhere: the
+   * card below already says so in words. Showing its whole file body anyway turns a screen
+   * that asks for eight decisions into a wall of machine text where none of the eight can be
+   * decided — measured on the founder's own machine, that was EVERY row he had. Folded, the
+   * row still names itself, still says why it is inert, and opens on a click; nothing is
+   * hidden, it is only no longer shouting.
+   */
+  const inert = !mine && draft.kind === MIGRATION_KIND && !migrationShown
+  const [open, setOpen] = useState(false)
+
   const confirm = () => {
     setProblem(null)
     apply.mutate(
@@ -129,9 +142,19 @@ function DraftCard({
         <span className="flex-none text-[11px] text-tx3">{draft.age}</span>
       </div>
 
-      <pre className="m-0 max-h-[280px] overflow-auto rounded-[9px] border border-bd bg-surf px-3 py-2.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap text-tx2">
-        {draft.preview}
-      </pre>
+      {inert && !open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="self-start text-[11.5px] text-tx3 underline decoration-dotted underline-offset-2"
+        >
+          Показать текст записи
+        </button>
+      ) : (
+        <pre className="m-0 max-h-[280px] overflow-auto rounded-[9px] border border-bd bg-surf px-3 py-2.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap text-tx2">
+          {draft.preview}
+        </pre>
+      )}
 
       {done ? (
         <span className="text-[11.5px] text-ok-tx">Записано в корпус.</span>

@@ -6,7 +6,7 @@
  * built into its structure, so the sentence the screen prints under the input box is true by
  * construction and not by good intentions:
  *
- *     «Читает и предлагает. Ничего не запускает сам.»
+ *     «Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.»
  *
  * That formula is the UI contract (CHAT_BOUNDARY_FORMULA below — the screen renders this
  * exact string). Here is what makes it honest:
@@ -63,7 +63,8 @@ import {
 } from '../runner/usage.mjs'
 
 /** The sentence the screen prints under the input box — the boundary, in the founder's words. */
-export const CHAT_BOUNDARY_FORMULA = 'Читает и предлагает. Ничего не запускает сам.'
+export const CHAT_BOUNDARY_FORMULA =
+  'Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.'
 
 /** Short RU chips for a task card. The card says what the park says, in human words. */
 export const STATUS_LABELS = Object.freeze({

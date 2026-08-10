@@ -444,7 +444,12 @@ describe('handleChatTurn (the single door)', () => {
   })
 
   it('carries the boundary formula the screen prints under the input box', () => {
-    expect(CHAT_BOUNDARY_FORMULA).toBe('Читает и предлагает. Ничего не запускает сам.')
+    // The second half was added 10.08.2026: the first half alone is true and was read by the
+    // owner as «here work cannot be started at all». The invariant did not change — a typed
+    // sentence still starts nothing — the caption merely stopped hiding the door that exists.
+    expect(CHAT_BOUNDARY_FORMULA).toBe(
+      'Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.',
+    )
   })
 
   it('has no path to the queue at all — the word is absent from the module', () => {
