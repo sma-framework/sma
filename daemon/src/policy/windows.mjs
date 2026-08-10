@@ -257,5 +257,10 @@ export function isOpen(state, clock = Date.now) {
     if (Number.isFinite(resetMs) && resetMs > clock()) return false
   }
   if (Number(state.pct5h) >= 100) return false
+  // THE WEEKLY WINDOW CLOSES A WORKER TOO. It did not, and while both bars were guesses that
+  // was survivable — a weekly estimate against a coarse capacity constant is not something to
+  // stop work on. Now that the vendor reports this window itself, a full week is as final as a
+  // full five hours: routing past it means spawning a session the subscription will refuse.
+  if (Number(state.pctWeek) >= 100) return false
   return true
 }

@@ -81,7 +81,9 @@ import {
   applyMcpToggle,
   applyStockTeamToggle,
   applyAgentModel,
+  resolveWorkerContext,
 } from './front/harness.mjs'
+import { reportTaskEvent } from './report.mjs'
 import {
   applyProjectMigration,
   previewProjectMigration,
@@ -646,8 +648,28 @@ export function createDaemon(o = {}) {
   // The cost history the spend screen draws — the SAME book, read per day and per lane. The
   // derive declared this seam from its first line; here is where it stops being empty.
   const usageSeriesReader = (args) => usageSeries({ dataDir, ...args })
-  const windowsForState = (account) => windowState({ account, usageReader, clock, dataDir })
-  const windowsOpenFor = (account) => isOpen(windowsForState(account), clock)
+  /**
+   * A WINDOW BELONGS TO AN ACCOUNT, AND TWO CALLERS ASK ABOUT IT WITH DIFFERENT NOUNS.
+   *
+   * The front asks about an account, because that is what its screen lists. The router asks
+   * about a WORKER, because that is what it is choosing between — and a worker is not an
+   * account, it merely has one. The window module reads `.name` off whatever it is given, so
+   * the router's question resolved to `undefined`: the state was read from a file named after
+   * nothing, and the usage estimate behind it, given no account to filter by, summed the whole
+   * machine against one account's capacity.
+   *
+   * Both failure directions were live at once. A subscription the vendor itself reported as
+   * spent still received work, because the gate never saw that reading; and on a busy machine
+   * every worker's estimate could cross 100% together and idle the whole conveyor while the
+   * real accounts were fresh. Neither could be caught by a test: every test of the router
+   * injects its own predicate, and every test of the window module passes an account.
+   */
+  const accountOf = (subject) => {
+    if (!subject || typeof subject !== 'object') return subject
+    return subject.account && typeof subject.account === 'object' ? subject.account : subject
+  }
+  const windowsForState = (subject) => windowState({ account: accountOf(subject), usageReader, clock, dataDir })
+  const windowsOpenFor = (subject) => isOpen(windowsForState(subject), clock)
 
   // (4) federation — a HUB daemon (and only a hub) aggregates its peers. A standalone or
   // peer role wires nothing, so its behaviour is bit-for-bit what it was before V5.1. The
@@ -1009,7 +1031,25 @@ export function createDaemon(o = {}) {
     // built, tested, and never joined to the thing that needed it.
     bookUsage: o.bookUsage ?? ((event) => bookUsage({ dataDir, event, clock })),
     verbRunner: o.verbRunner ?? cliVerbRunner,
-    report: o.report,
+    // GIT, FOR THE THREE EXIT GATES THAT ASK IT WHETHER THE WORK IS REALLY ON THE BRANCH.
+    // Same family as buildArgs and bookUsage above, and the most expensive member of it: the
+    // runner was built here and handed to the front and to the merge verb, and simply never to
+    // the tick. Every gate that asks git therefore answered «no» in production — a documentary
+    // stage whose document WAS committed failed with «есть на диске, но не закоммичен»; a
+    // checkpoint with open questions failed instead of parking for a person; an attempt that
+    // correctly changed no code fell through to «нет квитанции», the exact red row the
+    // answer-only gate exists to remove. The suite never saw it: every test of those gates
+    // injects its own git runner, so the seam was green and the product was dead.
+    execGit,
+    // «ВКЛЮЧЁН» MADE REAL IN THE SESSION. Without this the roster's agent switch changed a
+    // config file and nothing else: no role preamble, no skills list — and because the loop
+    // writes the journal's MEMORY layer inside the same branch, no record of what the worker
+    // was given to remember. The switch answered 200 and meant nothing.
+    resolveWorkerContext: o.resolveWorkerContext ?? resolveWorkerContext,
+    // REPORT-BACK. OFF BY DEFAULT and it stays off: reportTaskEvent returns immediately unless
+    // `webhookUrl` is a real http(s) address, which the shipped config leaves empty. Wiring it
+    // is what makes that knob mean anything — until now setting it produced no webhook ever.
+    report: o.report ?? ((event) => reportTaskEvent({ config, event, clock, journal: o.journal })),
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
     // refused task became a silence — every reason the tick names has to reach a log.
     journal: o.journal ?? ((entry) => console.log(`[SmaDaemon] ${describeTickEvent(entry)}`)),
