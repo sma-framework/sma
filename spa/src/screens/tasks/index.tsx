@@ -77,6 +77,13 @@ export function Screen() {
   const selfMachine = machines.find((m) => m.role === 'self')?.id ?? ''
 
   const cards: BoardCard[] = useMemo(() => {
+    // Why a queued card is NOT moving, in the founder's language. The daemon derives the
+    // code from the same facts the tick runs on; this map only translates it to words.
+    const IDLE_WORDS: Record<string, string> = {
+      pipeline_off: 'Конвейер выключен — задача не начнётся, пока не включите тумблер',
+      windows_closed: 'Все окна подписок закрыты — ждёт окна (платный канал не настроен)',
+      budget_stop: 'Платный канал исчерпан на месяц — ждёт окна подписки',
+    }
     // Every row carries its project and its machine, so both filters are a sieve over the
     // reading in hand — never a narrower question asked of the daemon.
     const mine = <T extends { project: string; machine: string }>(rows: T[]): T[] =>
@@ -91,6 +98,7 @@ export function Screen() {
       role: r.lane,
       machine: r.machine,
       reason: null,
+      idle: r.idleReason ? IDLE_WORDS[r.idleReason] : null,
       agedForHours: r.agedForHours,
       note: queueNote(r),
       live: false,

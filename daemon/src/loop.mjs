@@ -1108,6 +1108,29 @@ export async function tick(deps = {}) {
           })
         }
       }
+      // ── A RETURN CONTINUES THE SAME SESSION (phase «Двигатель», wave 4) ──
+      // A task sent back with a comment used to start attempt N+1 from zero: a fresh
+      // session that re-read the world and re-did the thinking the founder had already
+      // paid for. The prior attempt's session id is on its ledger row, so the new attempt
+      // RESUMES it — the correction lands in a head that still holds the context. Guarded
+      // to re-queues only (attempt > 1): a fresh task always gets a fresh session (PF-4),
+      // and a fresh session is also the safe default whenever the ledger cannot answer.
+      if (spec.bin === CLAUDE_BIN && Number(task.attempt) > 1 && deps.ledger && typeof deps.ledger.readAttempts === 'function') {
+        try {
+          const prior = deps.ledger.readAttempts(task.id) || []
+          for (let i = prior.length - 1; i >= 0; i -= 1) {
+            const sid = prior[i] && prior[i].sessionId
+            if (typeof sid === 'string' && /^[0-9a-f-]{32,40}$/i.test(sid)) {
+              spec.args = [...spec.args, '--resume', sid]
+              writeLog(deps, { type: 'task.session_resumed', taskId: task.id, attempt: task.attempt })
+              break
+            }
+          }
+        } catch {
+          /* an unreadable ledger means a fresh session — never a wedged attempt */
+        }
+      }
+
       const streamLines = []
       const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now, {
         accountName: spec.accountName,
