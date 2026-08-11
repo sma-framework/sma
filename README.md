@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.4.3-3B82F6" alt="version 5.4.3">
-  <img src="https://img.shields.io/badge/tests-2964%2F2964-3CC0A0" alt="tests 2964/2964">
+  <img src="https://img.shields.io/badge/version-5.5.0-3B82F6" alt="version 5.5.0">
+  <img src="https://img.shields.io/badge/tests-2970%2F2970-3CC0A0" alt="tests 2970/2970">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -24,7 +24,7 @@
 > The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3, current).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3) → V5.5 the engine: steering a live session — shipped (v5.5.0, current).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -172,6 +172,19 @@ The new reviewer's first live pass over the product's own window found five defe
 - the memory screen reads the selected project's own table of contents, not the daemon's
 
 The narrow-width overflow it also flagged is recorded as what it is — a standing design decision (the window is built for 1440 px and wider), now visible in the run receipt via `--min-viewport` instead of reddening every pass.
+
+## What's new in 5.5.0 — the engine
+
+The market gap the competitor recon exposed (11.08): **nobody lets you steer a live agent session** — Hermes has the vocabulary but no window, Paperclip has the visibility but no wheel, Multica has the entrance but its stream never started. This release builds the wheel into the window:
+
+- **The task card is a thread.** The order, every numbered attempt as a fold («Подход 2 · готово · 1 мин 20 с»), and the fold opens into the transcript — in three readings: **Лента** (the human feed: tool crumbs, handoffs), **Сырьё** (every stored line verbatim), **Вживую** (pinned to the tail of a running attempt). One transcript, one reader — the same one «Живой поток» uses.
+- **Text typed against running work has a declared fate.** The card of a running task carries a steering composer: **«Перебить сейчас»** kills the run and the SAME session resumes with your correction — everything already done stays in its head; **«После хода»** lets the run finish and the correction rides the continuation. The correction is written to disk BEFORE anything is killed — a daemon restart cannot lose your «нет, не так».
+- **A return continues the same session.** A task sent back with a comment used to start over from zero; now attempt N+1 resumes attempt N's session — the context you already paid for survives the return.
+- **The corpus check speaks Russian** in the Russian window (the budgeted partial-run warning included).
+
+**What this release does not claim.** True mid-turn injection — a correction landing between two tool calls of the CURRENT turn, Hermes-style — is blocked by the CLI's stdin protocol and is NOT built; «Перебить сейчас» is an honest kill-and-resume, named as such. Codex sessions have a different resume protocol: a correction to a Codex task is skipped on the record, never silently. Worker 30-day statistics need a per-worker attempt index the ledger does not have yet — deferred, tracked.
+
+One declared new door (`POST /api/redirect`) — route table re-freeze 54 → 55.
 
 ## What's new in 5.4.3
 
