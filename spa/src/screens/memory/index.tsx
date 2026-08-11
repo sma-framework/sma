@@ -366,6 +366,12 @@ export function Screen() {
   const noteCount = corpus?.noteCount ?? 0
   const tags = corpus?.tags ?? []
   const recent = corpus?.recent ?? []
+  // coreSize reads the SAME corpus as every figure above. The 5.4.3 fix moved the three
+  // counters onto `corpus` and left the two coreSize call sites on `filled` — so the pills
+  // said «27 записей» about the project and «— всегда под рукой» about the daemon's own
+  // folder, on one screen (QA D5, 11.08.2026): the founder was told his 4135-byte index
+  // does not exist.
+  const coreSize = corpus?.coreSize ?? 0
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
@@ -375,7 +381,7 @@ export function Screen() {
           <>
             <Pill value={String(noteCount)} label={plural(noteCount, 'запись', 'записи', 'записей')} />
             <Pill value={String(tags.length)} label={plural(tags.length, 'тема', 'темы', 'тем')} />
-            <Pill value={sizeLabel(filled.coreSize)} label="всегда под рукой" />
+            <Pill value={sizeLabel(coreSize)} label="всегда под рукой" />
           </>
         ) : null}
       </header>
@@ -416,7 +422,7 @@ export function Screen() {
                   letter="О"
                   tone="bg-ok-s text-ok-tx"
                   title="Оглавление"
-                  value={sizeLabel(filled.coreSize)}
+                  value={sizeLabel(coreSize)}
                   desc="то, что команда читает перед каждой работой: короткая выжимка, а не весь корпус"
                 />
               </div>
