@@ -259,6 +259,39 @@ describe('createEventHub — SSE frames + capacity + explicit-pick', () => {
     expect(hub.size).toBe(2)
   })
 
+  it('frees the slot when the tab closes — the 17th window must NOT see 503 (D1, live QA 11.08)', async () => {
+    const hub = createEventHub({ maxClients: 1 })
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { hub } })
+    // The first window subscribes and fills the only slot.
+    const res1 = mkRes()
+    const closeHandlers: Array<() => void> = []
+    res1.on = (evt: string, cb: () => void) => {
+      if (evt === 'close') closeHandlers.push(cb)
+      return res1
+    }
+    await front.handle(mkReq({ url: '/api/events', headers: bearer() }), res1)
+    expect(hub.size).toBe(1)
+    expect(closeHandlers.length).toBe(1) // the route DID register disconnect cleanup
+    // The tab closes. Before the fix nothing happened here — the handle leaked forever.
+    closeHandlers[0]()
+    expect(hub.size).toBe(0)
+    // The next window takes the freed slot instead of 503.
+    const res2 = mkRes()
+    await front.handle(mkReq({ url: '/api/events', headers: bearer() }), res2)
+    expect(res2.statusCode).toBe(200)
+    expect(hub.size).toBe(1)
+  })
+
+  it('reaps a destroyed handle even though its write does not throw (Node buries dead-socket writes)', () => {
+    const hub = createEventHub({})
+    const zombie: any = { writeHead() {}, write: () => true, end() {}, destroyed: false }
+    hub.addClient(zombie)
+    expect(hub.size).toBe(1)
+    zombie.destroyed = true // the socket died; write() would still "succeed" silently
+    hub.emit({ event: 'task.queued', taskId: 'T' })
+    expect(hub.size).toBe(0)
+  })
+
   it('reaps a client whose write throws (stale-handle DoS guard)', () => {
     const hub = createEventHub({})
     const dead: any = {

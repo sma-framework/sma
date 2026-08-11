@@ -766,6 +766,12 @@ function handleEvents({ res, deps }) {
   if (!hub || typeof hub.addClient !== 'function') return send501(res)
   const client = hub.addClient(res)
   if (!client) return send503(res, 'too many event clients')
+  // A closed tab is how EVERY subscription ends in practice, and this is the only place
+  // that can hear it. Without this handler the handle sat in the hub forever: the cap
+  // filled at 16 window-opens and every later window got 503 until a daemon restart —
+  // the first finding of the first live QA run (11.08.2026). Write-failure reaping does
+  // NOT cover this: Node does not throw synchronously on a write into a dead socket.
+  if (typeof res.on === 'function') res.on('close', () => hub.removeClient(client))
   return undefined // SSE stream stays open (hint transport; truth stays in /api/state)
 }
 
