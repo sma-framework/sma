@@ -3140,9 +3140,14 @@ const CLAIM_REASON_CAP = 2000
  * A checkout with nobody in it and a daemon with no project connected are the same three empty
  * lists: an empty panel is a fact about a quiet machine, not a fault of this door.
  */
-function handleCoordination({ res, config, deps }) {
+async function handleCoordination({ res, config, deps }) {
   if (typeof deps.deriveCoordination !== 'function') return send501(res)
-  return sendJson(res, 200, deps.deriveCoordination({ config, clock: deps.clock }))
+  const snap = await deps.deriveCoordination({ config, clock: deps.clock })
+  // An unreadable ledger used to answer 200 with empty lists — indistinguishable from a
+  // quiet checkout, so the screen said «никого нет» about a journal it could not read
+  // (QA D3). A failure to read is a failure to answer.
+  if (snap && snap.unreadable) return send503(res, 'the coordination ledger could not be read')
+  return sendJson(res, 200, snap)
 }
 
 /**
