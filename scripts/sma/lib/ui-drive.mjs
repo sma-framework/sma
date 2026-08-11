@@ -214,7 +214,7 @@ export function classify(observations = {}, { origin = '' } = {}) {
 export function dedupe(findings = []) {
   const seen = new Map()
   for (const f of findings) {
-    const key = `${f.kind} ${f.detail}`
+    const key = `${f.kind}\u0000${f.detail}`
     const hit = seen.get(key)
     if (hit) hit.occurrences += 1
     else seen.set(key, { ...f, occurrences: 1 })
