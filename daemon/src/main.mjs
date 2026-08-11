@@ -72,7 +72,7 @@ import { collectDiagnostics } from './front/diagnostics.mjs'
 import { createSearch } from './front/search.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
-import { handleChatTurn, readHistory } from './front/chat.mjs'
+import { handleChatTurn, readHistory, createTurnRegistry } from './front/chat.mjs'
 import {
   readHarness,
   loadMcpRegistry,
@@ -922,6 +922,9 @@ export function createDaemon(o = {}) {
         // capability like that reaches a request path only through deliberate wiring.
         handleChatTurn,
         readChatHistory: readHistory,
+        // the Стоп button's registry: live chat-turn kill-handles, minted per client turn id.
+        // Hint plumbing (a restart loses only the ability to stop turns that died with it).
+        chatTurns: createTurnRegistry(),
         chatDir: o.chatDir ?? dataDir, // the transcript lives beside the daemon's own data
         dataDir, // the spend book the «что съело лимит» branch reads
         policyDir: o.policyDir ?? dataDir, // where «Мой стиль» puts the distilled voice

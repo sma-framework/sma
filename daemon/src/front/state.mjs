@@ -1746,6 +1746,24 @@ export async function deriveState(deps = {}) {
     clock,
   })
 
+  // ── WHY THE QUEUE IS NOT MOVING, said out loud. A queued row that nothing will pick up
+  // used to look exactly like a queued row seconds from running — the founder learned the
+  // difference by waiting (recon 11.08, the Multica anti-pattern «Queued без причины и
+  // предела»). The reason is a DERIVE from facts this function already holds, in priority
+  // order: a switched-off conveyor beats everything (nothing runs, whatever the windows
+  // say); then all-windows-closed with no paid budget (nowhere to run); then a paid
+  // channel that exists but is already spent (budget stop). Windows closed WITH budget
+  // left is not idle — the fallback engages — so it stays unmarked. ──
+  const monthEurSpent = round2(monthUsd)
+  const queueIdleReason = !pipelineEnabled(config)
+    ? 'pipeline_off'
+    : windowsOpen === 0 && capEur === 0
+      ? 'windows_closed'
+      : windowsOpen === 0 && capEur > 0 && monthEurSpent >= capEur
+        ? 'budget_stop'
+        : null
+  if (queueIdleReason) for (const q of queue) q.idleReason = queueIdleReason
+
   const payload = {
     kpis,
     queue,

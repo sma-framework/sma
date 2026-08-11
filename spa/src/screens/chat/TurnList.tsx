@@ -242,6 +242,7 @@ export function TurnList({
   createdTasks,
   creatingKey,
   thinking,
+  thinkingSec = 0,
   onOpenTask,
   onFollowLink,
   onCreateDraft,
@@ -254,6 +255,9 @@ export function TurnList({
   /** The draft whose «Создать» is in flight, if any. */
   creatingKey: string | null
   thinking: boolean
+  /** Секунды текущего хода — цифра тикает в самом статусе: живую систему видно по движению
+   *  (разведка 11.08, урок Multica «Thinking · 40s»). */
+  thinkingSec?: number
   onOpenTask: (taskId: string) => void
   onFollowLink: (screen: string) => void
   onCreateDraft: (entry: ChatEntry) => void
@@ -285,7 +289,9 @@ export function TurnList({
       {thinking ? (
         <div className="flex items-center gap-2.5">
           <LeadMark />
-          <span className="text-[12.5px] text-tx3">думает…</span>
+          <span className="text-[12.5px] text-tx3 tabular-nums">
+            {thinkingSec > 0 ? `Думает · ${thinkingSec} с` : 'думает…'}
+          </span>
         </div>
       ) : null}
     </div>

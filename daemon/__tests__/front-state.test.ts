@@ -1610,9 +1610,62 @@ async function callApprove(front: any, body: any) {
   return res
 }
 
+// ═══════════ idleReason — WHY the queue is not moving, said on the row (wave 1) ═══════════
+//
+// The anti-pattern this kills (recon 11.08, Multica): «Queued · 4m» ticking forever with no
+// reason and no limit. A queued row nothing will pick up now names its blocker; a row
+// seconds from running carries nothing.
+
+describe('deriveState — idleReason on queued rows', () => {
+  const queuedRow = { id: 'r-idle', title: 'x', lane: 'prod', status: 'queued', enqueuedAt: NOW - 1000, priority: 0 }
+
+  it('a switched-off conveyor marks every queued row pipeline_off — whatever the windows say', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([queuedRow]),
+      windows: makeWindows({}),
+      config, // no pipeline key → the product's own default: OFF
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason).toBe('pipeline_off')
+  })
+
+  it('conveyor on + all windows closed + no paid budget → windows_closed', async () => {
+    const closed = { pct5h: 100, pctWeek: 100, closedUntil: NOW + HOUR }
+    const payload = await deriveState({
+      adapter: mkAdapter([queuedRow]),
+      windows: makeWindows({ 'max-1': closed, 'max-2': closed, 'pro-1': closed }),
+      config: { ...config, budget: { monthlyApiCapEur: 0 }, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason).toBe('windows_closed')
+  })
+
+  it('windows closed WITH paid budget left is NOT idle — the fallback engages', async () => {
+    const closed = { pct5h: 100, pctWeek: 100, closedUntil: NOW + HOUR }
+    const payload = await deriveState({
+      adapter: mkAdapter([queuedRow]),
+      windows: makeWindows({ 'max-1': closed, 'max-2': closed, 'pro-1': closed }),
+      config: { ...config, budget: { monthlyApiCapEur: 50 }, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason).toBeUndefined()
+  })
+
+  it('an open window and a running conveyor mark nothing', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([queuedRow]),
+      windows: makeWindows({}),
+      config: { ...config, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason).toBeUndefined()
+  })
+})
+
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly fifty-three entries and carries no migration route', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(53)
+  it('the route table is still exactly fifty-four entries and carries no migration route', () => {
+    // 53 of the V5.4 freeze + POST /api/chat/stop (the Стоп button's door, phase «Двигатель»).
+    expect(Object.keys(ROUTES)).toHaveLength(54)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 

@@ -323,8 +323,20 @@ export function removeMachine(id: string): Promise<OkResult> {
  * question narrowed by the window's current filter would answer about half the park while
  * looking like it answered about all of it.
  */
-export function sendChat(input: { text: string; conversationId?: string }): Promise<ChatReply> {
-  return postJson<ChatReply>('/api/chat', withOptional({ text: input.text }, { conversationId: input.conversationId }))
+export function sendChat(input: { text: string; conversationId?: string; turnId?: string }): Promise<ChatReply> {
+  return postJson<ChatReply>(
+    '/api/chat',
+    withOptional({ text: input.text }, { conversationId: input.conversationId, turnId: input.turnId }),
+  )
+}
+
+/**
+ * Стоп for a live chat turn. The turn id is CLIENT-minted and travels with the send, so
+ * this door has a name for the turn before the send answers. `stopped: false` is an honest
+ * «уже нечего останавливать», not an error.
+ */
+export function stopChat(input: { turnId: string }): Promise<{ stopped: boolean }> {
+  return postJson<{ stopped: boolean }>('/api/chat/stop', { turnId: input.turnId })
 }
 
 /** What has been said so far. */

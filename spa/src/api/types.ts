@@ -50,6 +50,10 @@ export interface QueueRow {
   position: number
   /** Present only when the task has waited longer than the configured patience. */
   agedForHours?: number
+  /** ПОЧЕМУ очередь не движется — на queued-строке, когда её никто не заберёт: конвейер
+   *  выключен / все окна закрыты без бюджета / платный канал исчерпан. Отсутствует, когда
+   *  задача секунды от запуска (разведка 11.08 — «Queued без причины» больше не бывает). */
+  idleReason?: 'pipeline_off' | 'windows_closed' | 'budget_stop'
 }
 
 export interface WorkerRow {
@@ -757,10 +761,12 @@ export type ChatTurnKind =
   | 'task-debug'
 
 /**
- * What an answer IS: a fact taken from the read models, prose from the free lane, or a
- * PROPOSED task. Only the last one grows a button, and that button is a person's.
+ * What an answer IS: a fact taken from the read models, prose from the free lane, a
+ * PROPOSED task, or a turn the person ENDED with the Стоп button ('stopped' — the text
+ * they sent comes back to the composer, never an apology for a "failure" they ordered).
+ * Only the draft grows a button, and that button is a person's.
  */
-export type ChatAnswerKind = 'fact' | 'text' | 'draft'
+export type ChatAnswerKind = 'fact' | 'text' | 'draft' | 'stopped'
 
 /** The grey link-card an answer carries beside its sentence. */
 export interface ChatTaskRef {
