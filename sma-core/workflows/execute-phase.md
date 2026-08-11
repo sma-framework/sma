@@ -56,6 +56,7 @@ Always use the exact name from this list — do not fall back to 'general-purpos
 - sma-ui-researcher — Researches UI/UX approaches
 - sma-ui-checker — Reviews UI implementation quality
 - sma-ui-auditor — Audits UI against design requirements
+- sma-ui-qa — Runs the app and walks the task path; the only reviewer that presses buttons
 </available_agent_types>
 
 <process>
@@ -1564,6 +1565,69 @@ ${VERIFIER_SKILLS}",
 ```
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+
+### Live QA — after the verifier, before the phase reaches a human
+
+The verifier just answered "does the repository show the goal was met?". That question
+has a twin the repository cannot answer: **does the product do it when someone uses it?**
+A file can be present, imported, covered by a test, and the feature still not work — the
+class that reaches a person as «поиск возвращает не то» and «фича не делает Х».
+
+Run it whenever the phase touched anything a user operates. Skip it only for phases with
+no operable surface at all (pure library, docs, config), and say in the report that it
+was skipped and why.
+
+```bash
+UI_QA_MODEL=$(sma_run query resolve-model sma-ui-qa --raw)
+AGENT_SKILLS_UI_QA=$(sma_run query agent-skills sma-ui-qa)
+```
+
+```
+Agent(
+  prompt="Read $HOME/.claude/agents/sma-ui-qa.md for instructions.
+
+<objective>
+Live QA of Phase {phase_number}: {phase_name}. Load this phase's success criteria and
+must-haves, turn EACH into a test case, and run it against the running app. Report
+defects with repro steps a builder can follow. Press the phase's interactive surface.
+</objective>
+
+<files_to_read>
+- {phase_dir}/*-PLAN.md (must_haves and requirement ids)
+- {phase_dir}/*-SUMMARY.md (what is claimed)
+- {phase_dir}/*-VERIFICATION.md (what the verifier already settled — do not repeat it)
+- {phase_dir}/*-UI-SPEC.md (design contract, if it exists)
+</files_to_read>
+
+${AGENT_SKILLS_UI_QA}
+
+<config>
+phase_dir: {phase_dir}
+app_url: {url if known, else discover on ports 3000, 5173, 8080}
+</config>",
+  subagent_type="sma-ui-qa",
+  model="{UI_QA_MODEL}",
+  description="Live QA Phase {N}"
+)
+```
+
+The agent writes `{phase_dir}/{padded_phase}-UI-QA.md` — same convention as
+VERIFICATION.md, frontmatter first: `verdict`, `criteria`, `surface`,
+`returnable_defects`, `receipts`. Route on the frontmatter, not on prose.
+
+**Routing the result — the rework loop.** Read the `Returnable:` line on each defect:
+
+- **Returnable defects present** → the phase does NOT proceed. Send the work back to the
+  builder with the defect list as the note (`POST /api/return` carries a comment; the
+  card the founder sees names the failing criteria). One rework round per defect.
+- **A defect returned for the second time** → do not dispatch a third attempt. Park it
+  for the founder with both attempts described. A loop that cannot end is worse than a
+  defect that is reported.
+- **Only non-returnable judgment** → the phase proceeds; the judgment rides along on the
+  card as advice.
+- **`NOT RUN`** → report it in those words. The verifier's code-only pass is NOT a
+  substitute — it answers a different question, and presenting it as this one is how a
+  broken feature reaches the founder with a green phase behind it.
 
 Read status via the canonical query (scoped to frontmatter, covers missing/unknown cases):
 ```bash

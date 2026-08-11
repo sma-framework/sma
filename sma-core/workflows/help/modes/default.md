@@ -27,6 +27,7 @@ Existing codebase? Run `/sma-map-codebase` first to ground SMA in your code.
 | `/sma-discuss-phase <N>` | Capture vision and decisions before planning |
 | `/sma-debug "<symptom>"` | Persistent debug session, survives `/clear` |
 | `/sma-capture` | Save an idea, todo, note, seed, or backlog item |
+| `/sma-qa [N]` | Live QA — runs the app, checks each success criterion by using it, files defects |
 | `/sma-verify-work <N>` | Conversational UAT for a completed phase |
 | `/sma-help ship` | The release ritual — how a completed phase becomes a PR |
 | `/sma-help --full` | Complete reference (every command, every flag) |

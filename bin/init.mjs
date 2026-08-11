@@ -59,6 +59,7 @@ const COMMANDS = [
   { name: 'execute-phase', workflow: 'execute-phase.md',  description: 'Execute all plans in a phase with wave-based parallelization' },
   { name: 'discuss-phase', workflow: 'discuss-phase.md',  description: 'Gather phase context through adaptive questioning before planning' },
   { name: 'verify-work',   workflow: 'verify-work.md',    description: 'Validate built features through conversational UAT' },
+  { name: 'qa',            workflow: 'qa.md',             description: 'Live QA: run the app, check every success criterion by using it, press the surface, file defects with repro steps' },
   { name: 'quick',         workflow: 'quick.md',          description: 'Execute a quick task with SMA guarantees (atomic commits, state tracking) but skip optional agents' },
   { name: 'debug',         workflow: 'debug.md',          description: 'Systematic debugging with persistent state across context resets' },
   { name: 'progress',      workflow: 'progress.md',       description: 'Check progress, advance the workflow, or dispatch freeform intent' },

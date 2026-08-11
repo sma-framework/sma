@@ -19,6 +19,7 @@ This doc describes what IS, not what should be. Casing inconsistencies are docum
 | sma-debugger | Debug investigation | `## DEBUG COMPLETE`, `## ROOT CAUSE FOUND`, `## CHECKPOINT REACHED` |
 | sma-roadmapper | Roadmap creation/revision | `## ROADMAP CREATED`, `## ROADMAP REVISED`, `## ROADMAP BLOCKED` |
 | sma-ui-auditor | UI review | `## UI REVIEW COMPLETE` |
+| sma-ui-qa | Live UI run | `## UI QA COMPLETE` |
 | sma-ui-checker | UI validation | `## ISSUES FOUND` |
 | sma-ui-researcher | UI spec creation | `## UI-SPEC COMPLETE`, `## UI-SPEC BLOCKED` |
 | sma-verifier | Post-execution verification | `## Verification Complete` (title case) |

@@ -143,6 +143,24 @@ An attempt now also books what it cost, so the spend screen answers with real nu
 
 **What this release does not claim.** The five-day run that proves the move — a full phase cycle driven from the window, start to finish — is live operation *after* this version, not a receipt inside it.
 
+## What's new in 5.4.2
+
+### QA that uses the product instead of reading it
+
+Every UI review in the fleet read the code. The one path that was supposed to look at a running app shelled out to `npx playwright screenshot … 2>/dev/null` — a command that refuses non-interactively on any machine without that package cached, and fails on a build mismatch when the browser cache is stale. Both errors went to `/dev/null`, so the audit continued as a code-only read **and still produced a score**. A panel wired to nothing photographs as a clean pass, and the operator, told the machine had looked, stops looking.
+
+`sma-ui-qa` is the QA department: it runs after the verifier and before the phase reaches you. The verifier asks whether the **repository** shows the goal was met; this asks whether the **product does it when someone uses it** — and a file can be present, imported, covered by a test, and the feature still not work.
+
+**It compares against the phase's own promises, and invents nothing.** It loads the same contract the verifier loads — the roadmap's success criteria, the plan's must-haves, the requirement ids — and turns each into a test case it *runs*: type in the search box and check the results, press Export and open the file. A criterion it could not test is BLOCKED, never passed. Then it sweeps the surface, pressing every visible control once and reporting which broke, how many it reached **out of how many exist**, and which it refused to press because they destroy data — «Delete», «Publish», «Pay» are left for a human, named in the receipt rather than silently skipped.
+
+Underneath, `scripts/sma/ui-drive.mjs` writes the receipt and exits non-zero on a blocking finding, so it can gate rather than advise. Alongside the contract it reports what is measured rather than judged: content wider than the viewport at phone width, a control that cannot be operated, a control with no accessible name, uncaught exceptions, dead requests, the app's own API at 4xx or 5xx.
+
+**Only measured defects send work back to the builder.** A failing criterion or a dead request reproduces, so a machine may return it. Whether a hierarchy reads well does not reproduce — that lands on the card as advice for a person, because a beauty score with a decimal point is a random number, and one that dispatches rework is an expensive one. And the loop can end: a defect that survives one rework is not dispatched a third time, it is parked for you with both attempts described.
+
+The rule it exists to enforce: **a run that did not happen is never a pass.** No browser driver means exit 3, the word `NOT RUN`, and the one command that fixes it — never an empty finding list that reads as clean. SMA still declares **no runtime dependency**: the driver is resolved at run time, never installed on your behalf, and `SMA_UI_DRIVER` points at one you already have elsewhere so a live check never forces 120 MB into a project that did not ask for it.
+
+**What this release does not claim.** This drives a browser: native and mobile shells are outside it. And the part that judges whether a screen is *good* — legible, honest in failure, findable in two seconds — is a model reading screenshots, which is judgment, not measurement. The runtime defects are the measured half; the receipt keeps the two apart so a reader can tell which is which.
+
 ## What's new in 5.4.1
 
 The fixes that had accumulated on the main branch after the 5.4.0 stamp, cut into a release of their own rather than left to ride along with the next feature:
