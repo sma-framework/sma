@@ -399,6 +399,17 @@ describe('search.mjs — THE ORDER IS TOTAL', () => {
     expect(matchRank('', 'что угодно')).toBe(MATCH_RANKS.NONE)
   })
 
+  it('a Russian word finds its inflections — the search matches words, not letters (D7)', () => {
+    // «память» typed by a person now reaches «памяти» in a note — via the stem, as a substring
+    expect(matchRank('память', 'записки о памяти проекта')).toBe(MATCH_RANKS.SUBSTRING)
+    expect(matchRank('версий', 'закон: версия живёт в двух местах')).toBe(MATCH_RANKS.SUBSTRING)
+    // the exact spelling still outranks the stem
+    expect(matchRank('памяти', 'памяти')).toBe(MATCH_RANKS.EXACT)
+    // a short stem is never maimed below four characters, and English is untouched
+    expect(matchRank('дом', 'дом системы')).toBe(MATCH_RANKS.PREFIX)
+    expect(matchRank('search', 'searching the corpus')).toBe(MATCH_RANKS.PREFIX)
+  })
+
   it('two identical questions answer in exactly one order', async () => {
     const { search } = mkSearch()
     const a = await search.search('поиск')
