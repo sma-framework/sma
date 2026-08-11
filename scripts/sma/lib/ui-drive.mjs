@@ -277,13 +277,22 @@ export function missingDriverMessage(reason = '') {
  * that was all of them; "touched 12 of 31 — 19 not pressed (cap)" cannot be misread.
  * A sweep that never ran says so rather than printing a flattering zero.
  *
- * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean}} [coverage]
+ * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean, viewportsSkipped?:string[]}} [coverage]
  * @returns {string}
  */
 export function renderCoverage(coverage) {
-  if (!coverage || coverage.ran === false) return '_The interactive surface was not swept — only the scripted path was walked._'
+  const declared = (c) =>
+    Array.isArray(c?.viewportsSkipped) && c.viewportsSkipped.length
+      ? `- Viewports NOT opened — the app declares a minimum width: ${c.viewportsSkipped.join(', ')}. This run says nothing about narrower screens.`
+      : ''
+  if (!coverage || coverage.ran === false) {
+    return ['_The interactive surface was not swept — only the scripted path was walked._', declared(coverage)]
+      .filter(Boolean)
+      .join('\n')
+  }
   const { touched = 0, total = 0, skipped = 0, refused = [] } = coverage
   const lines = [`- Interactive controls pressed: **${touched} of ${total}**`]
+  if (declared(coverage)) lines.push(declared(coverage))
   if (skipped) lines.push(`- **${skipped} were NOT pressed** (sweep cap ${SWEEP_CAP}). This review says nothing about them.`)
   if (refused.length) {
     lines.push(
