@@ -797,10 +797,21 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
   try {
     const workers = Array.isArray(deps.config && deps.config.workers) ? deps.config.workers : []
     const worker = route && route.workerId ? workers.find((w) => w && w.id === route.workerId) : null
+    // WHICH MONEY THIS IS travels from the routing verdict to the book. A paid-channel
+    // attempt has NO workerId (that is what the fallback is), so without the explicit
+    // account below its row landed under «unknown» — invisible to the budget reader that
+    // sums the api account, so the cap could never fill. And without the channel field the
+    // row's cost summed into «платный канал сегодня» even when the plan absorbed it
+    // (QA D4, 11.08.2026).
+    const paid = Boolean(route && route.useApiFallback)
+    const apiAccountName = (deps.config && deps.config.budget && deps.config.budget.apiAccountName) || 'api'
     const ctx = {
-      accountName: (worker && worker.account && worker.account.name) || (route && route.workerId) || null,
+      accountName: paid
+        ? apiAccountName
+        : (worker && worker.account && worker.account.name) || (route && route.workerId) || null,
       taskId: task.id,
       model: (route && route.model) || undefined,
+      channel: paid ? 'api' : 'subscription',
     }
     const isCodex = String((route && route.provider) || '') === 'codex'
     for (let i = streamLines.length - 1; i >= 0; i -= 1) {

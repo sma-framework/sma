@@ -79,8 +79,18 @@ describe('usageSeries — one point per day, per account, per lane', () => {
   })
 
   it('sums the api-fallback money when the rows carry it, rounded to cents', () => {
-    const series = call(book([row({ costUsd: 0.014 }), row({ taskId: 'task-2', costUsd: 0.019 })]))
+    const series = call(
+      book([row({ costUsd: 0.014, channel: 'api' }), row({ taskId: 'task-2', costUsd: 0.019, channel: 'api' })]),
+    )
     expect(series[0].eur).toBe(0.03)
+  })
+
+  it('keeps a subscription estimate OUT of the euro column — the plan absorbed it (QA D4)', () => {
+    // One chat message on a subscription window used to render as «платный канал сегодня
+    // 0,12 €» directly above the line saying the paid channel is silent.
+    const series = call(book([row({ costUsd: 0.12 }), row({ taskId: 'task-2', costUsd: 0.05, channel: 'api' })]))
+    expect(series[0].eur).toBe(0.05)
+    expect(series[0].tokensIn).toBeGreaterThan(0) // the work itself still shows, in tokens
   })
 })
 

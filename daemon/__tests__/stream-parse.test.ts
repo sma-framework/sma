@@ -276,6 +276,17 @@ describe('usage.mjs — honest per-account booking', () => {
     expect(summed.outputTokens).toBe(30)
     expect(summed.costUsd).toBeCloseTo(0.03, 6)
     expect(summed.rows).toBe(2)
+    // channel-less rows are subscription work by construction → none of it is paid money
+    expect(summed.apiCostUsd).toBe(0)
+  })
+
+  it('splits the paid-channel share from the plan-absorbed cost (QA D4)', () => {
+    const now = 100_000
+    bookUsage({ dataDir, event: { ts: new Date(now - 1000).toISOString(), accountName: 'api', provider: 'claude', taskId: 'p1', inputTokens: 10, outputTokens: 1, costUsd: 0.05, channel: 'api', source: 'stream-result' } })
+    bookUsage({ dataDir, event: { ts: new Date(now - 2000).toISOString(), accountName: 'api', provider: 'claude', taskId: 'p2', inputTokens: 10, outputTokens: 1, costUsd: 0.12, channel: 'subscription', source: 'stream-result' } })
+    const summed = readUsage({ dataDir, accountName: 'api', windowMs: 60_000, clock: () => now })
+    expect(summed.costUsd).toBeCloseTo(0.17, 6) // the window bars still see all of it
+    expect(summed.apiCostUsd).toBeCloseTo(0.05, 6) // «платный канал» sees ONLY the invoice
   })
 
   it('estimateUsage never books a zero-token row', () => {
