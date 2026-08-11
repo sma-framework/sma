@@ -144,15 +144,43 @@ function text(value, cap) {
 export const MATCH_RANKS = Object.freeze({ EXACT: 3, PREFIX: 2, SUBSTRING: 1, NONE: 0 })
 
 /**
+ * Russian inflection endings, longest first. «Память» and «памяти» are one word to a
+ * person and were two strings to this module (QA finding D7, 11.08.2026): the search
+ * matched letters, not words. A real morphology engine is not worth its weight here; what
+ * is worth it is the cheap truth that Russian mostly inflects at the TAIL — so the query
+ * gets a stemmed VARIANT (ending stripped, stem ≥ 4 chars) that matches as a SUBSTRING.
+ * English is untouched: its endings are not in the list, and the exact/prefix/substring
+ * ladder above the variant behaves exactly as before.
+ */
+const RU_ENDINGS = [
+  'иями', 'ями', 'ами', 'иях', 'ях', 'ах', 'ией', 'ей', 'ой', 'ий', 'ый', 'ая', 'яя', 'ое', 'ее',
+  'ов', 'ев', 'ие', 'ье', 'ия', 'ья', 'ию', 'ью', 'ем', 'ом', 'им', 'ым', 'ах', 'ух', 'ть',
+  'а', 'я', 'о', 'е', 'у', 'ю', 'ы', 'и', 'й', 'ь',
+]
+
+/** The stem variant of one lowercased word, or null when stripping would maim it. */
+function ruStem(word) {
+  if (!/[а-яё]$/i.test(word)) return null
+  for (const end of RU_ENDINGS) {
+    if (word.length - end.length >= 4 && word.endsWith(end)) return word.slice(0, word.length - end.length)
+  }
+  return null
+}
+
+/**
  * matchRank(query, ...fields) → the STRONGEST rank any of the given fields earns.
  *
  * The fields are the ones a projector chose to expose, and that choice is the security
  * boundary — see the header. This function does not know where a string came from and must
  * never be handed a whole record «so it can look everywhere».
+ *
+ * The exact spelling always outranks the stem: «памяти» typed verbatim still wins as an
+ * exact/prefix hit; the stem variant only ADDS substring hits the letters missed.
  */
 export function matchRank(query, ...fields) {
   const q = normalizeQuery(query)
   if (!q) return MATCH_RANKS.NONE
+  const stem = ruStem(q)
   let best = MATCH_RANKS.NONE
   for (const field of fields) {
     const value = String(field ?? '')
@@ -162,6 +190,7 @@ export function matchRank(query, ...fields) {
     if (value === q) return MATCH_RANKS.EXACT // nothing beats it; stop looking
     if (value.startsWith(q)) best = Math.max(best, MATCH_RANKS.PREFIX)
     else if (value.includes(q)) best = Math.max(best, MATCH_RANKS.SUBSTRING)
+    else if (stem && value.includes(stem)) best = Math.max(best, MATCH_RANKS.SUBSTRING)
   }
   return best
 }
