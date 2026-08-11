@@ -48,7 +48,7 @@ Model profiles control which Claude model each SMA agent uses. This allows balan
 | `discuss` | (reserved — no subagent today) |
 | `research` | sma-phase-researcher, sma-project-researcher, sma-research-synthesizer, sma-codebase-mapper, sma-ui-researcher |
 | `execution` | sma-executor, sma-debugger, sma-doc-writer |
-| `verification` | sma-verifier, sma-plan-checker, sma-integration-checker, sma-nyquist-auditor, sma-ui-checker, sma-ui-auditor, sma-doc-verifier |
+| `verification` | sma-verifier, sma-plan-checker, sma-integration-checker, sma-nyquist-auditor, sma-ui-checker, sma-ui-auditor, sma-ui-qa, sma-doc-verifier |
 | `completion` | (reserved — no subagent today) |
 
 ### Resolution precedence (highest to lowest)
@@ -157,7 +157,7 @@ When `dynamic_routing.enabled = true` in `.planning/config.json`, the resolver p
 | Tier | Agents | Use case |
 |---|---|---|
 | `light` | sma-codebase-mapper, sma-pattern-mapper, sma-research-synthesizer, sma-plan-checker, sma-integration-checker, sma-nyquist-auditor, sma-ui-checker, sma-ui-auditor, sma-doc-verifier | Cheap/fast — pure mappers, scanners, low-stakes audits |
-| `standard` | sma-executor, sma-phase-researcher, sma-project-researcher, sma-verifier, sma-doc-writer, sma-ui-researcher | Default workhorse — research, writing, primary verification |
+| `standard` | sma-executor, sma-phase-researcher, sma-project-researcher, sma-verifier, sma-doc-writer, sma-ui-researcher, sma-ui-qa | Default workhorse — research, writing, primary verification |
 | `heavy` | sma-planner, sma-roadmapper, sma-debugger | Deep reasoning — already at top, can't escalate further |
 
 **Escalation flow** (orchestrator-driven):

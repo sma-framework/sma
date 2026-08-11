@@ -1934,11 +1934,13 @@ const capabilities = {
     },
     "skills": [
       "ui-phase",
-      "ui-review"
+      "ui-review",
+      "qa"
     ],
     "agents": [
       "sma-ui-checker",
-      "sma-ui-auditor"
+      "sma-ui-auditor",
+      "sma-ui-qa"
     ],
     "hooks": [],
     "config": {
@@ -2083,7 +2085,8 @@ const byAgent = {
   "sma-phase-researcher": "research",
   "sma-security-auditor": "security",
   "sma-ui-checker": "ui",
-  "sma-ui-auditor": "ui"
+  "sma-ui-auditor": "ui",
+  "sma-ui-qa": "ui"
 };
 
 const byLoopPoint = {

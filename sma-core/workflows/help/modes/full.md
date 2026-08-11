@@ -404,6 +404,21 @@ List and audit captured seeds (read-only).
 Usage: `/sma-capture --list-seeds`
 Usage: `/sma-capture --list-seeds dormant`
 
+### Quality Assurance
+
+**`/sma-qa [phase] [url]`**
+Live QA — the reviewer that uses the product instead of reading it. Runs after the
+verifier and before a human sees the work.
+
+- Loads the phase's success criteria and must-haves, and turns EACH into a test case it runs
+- Presses every interactive control on the phase's screens, refusing destructive ones
+- Reports what is measured, not judged: failing criteria, dead requests, uncaught
+  exceptions, controls that cannot be operated, content wider than a phone screen
+- Files defects with repro steps, each marked returnable or advice-only
+- A run that could not start reports `NOT RUN` — never an empty pass
+
+Usage: `/sma-qa 3` · `/sma-qa 3 http://localhost:4000`
+
 ### User Acceptance Testing
 
 **`/sma-verify-work [phase]`**

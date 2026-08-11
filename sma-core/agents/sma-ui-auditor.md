@@ -105,82 +105,44 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 
 </gitignore_gate>
 
-<playwright_mcp_approach>
-
-## Automated Screenshot Capture via Playwright-MCP (preferred when available)
-
-Before attempting the CLI screenshot approach, check whether `mcp__playwright__*`
-tools are available in this session. If they are, use them instead of the CLI approach:
-
-```
-# Preferred: Playwright-MCP automated verification
-# 1. Navigate to the component URL
-mcp__playwright__navigate(url="http://localhost:3000")
-
-# 2. Take desktop screenshot
-mcp__playwright__screenshot(name="desktop", width=1440, height=900)
-
-# 3. Take mobile screenshot
-mcp__playwright__screenshot(name="mobile", width=375, height=812)
-
-# 4. For specific components listed in UI-SPEC.md, navigate to each
-#    component route and capture targeted screenshots for comparison
-#    against the spec's stated dimensions, colors, and layout.
-
-# 5. Compare screenshots against UI-SPEC.md requirements:
-#    - Dimensions: Is component X width 70vw as specified?
-#    - Color: Is the accent color applied only on declared elements?
-#    - Layout: Are spacing values within the declared spacing scale?
-#    Report any visual discrepancies as automated findings.
-```
-
-**When Playwright-MCP is available:**
-- Use it for all screenshot capture (skip the CLI approach below)
-- Each UI checkpoint from UI-SPEC.md can be verified automatically
-- Discrepancies are reported as pillar findings with screenshot evidence
-- Items requiring subjective judgment are flagged as `needs_human_review: true`
-
-**When Playwright-MCP is NOT available:** fall back to the CLI screenshot approach
-below. Behavior is unchanged from the standard code-only audit path.
-
-</playwright_mcp_approach>
-
 <screenshot_approach>
 
-## Screenshot Capture (CLI only — no MCP, no persistent browser)
+## Screenshot Capture
 
 ```bash
-# Check for running dev server
-DEV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || echo "000")
+# Find a running app — 3000, then 5173 (Vite), then 8080.
+for p in 3000 5173 8080; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$p" || echo 000)
+  [ "$code" = "200" ] && URL="http://localhost:$p" && break
+done
 
-if [ "$DEV_STATUS" = "200" ]; then
-  SCREENSHOT_DIR=".planning/ui-reviews/${PADDED_PHASE}-$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$SCREENSHOT_DIR"
-
-  # Desktop
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/desktop.png" \
-    --viewport-size=1440,900 2>/dev/null
-
-  # Mobile
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/mobile.png" \
-    --viewport-size=375,812 2>/dev/null
-
-  # Tablet
-  npx playwright screenshot http://localhost:3000 \
-    "$SCREENSHOT_DIR/tablet.png" \
-    --viewport-size=768,1024 2>/dev/null
-
-  echo "Screenshots captured to $SCREENSHOT_DIR"
+if [ -n "$URL" ]; then
+  node scripts/sma/ui-drive.mjs "$URL"   # desktop + tablet + mobile, plus a receipt
+  echo "ui-drive exit: $?"               # 0 clean · 1 blocking · 3 NOT RUN
 else
-  echo "No dev server at localhost:3000 — code-only audit"
+  echo "NOT RUN — no app is serving on 3000, 5173 or 8080"
 fi
 ```
 
-If dev server not detected: audit runs on code review only (Tailwind class audit, string audit for generic labels, state handling check). Note in output that visual screenshots were not captured.
+**Never redirect this command's errors to /dev/null.** This block used to call
+`npx playwright screenshot ... 2>/dev/null`, which refuses non-interactively on any
+machine without the package cached ("canceled due to missing packages and no YES
+option") and fails on a build mismatch when the browser cache is stale. Both errors
+were swallowed, the audit continued as a code-only read, and a score was still
+produced — so the operator was told the UI had been looked at when nothing had been
+opened. A silent fallback is the one failure mode this audit cannot afford.
 
-Try port 3000 first, then 5173 (Vite default), then 8080.
+**Reporting rules that follow from that:**
+- Exit 3, or no app serving, means **no screenshots were taken**. Say so in the output
+  header, in those words, and score no pillar that requires seeing the screen.
+- A code-only audit is a legitimate result. A code-only audit reported as a visual one
+  is not.
+
+**Depth of the run.** This block captures. It does not press anything, so it cannot
+tell a working screen from a decorative one. When the phase under review needs its
+interactions checked — and it usually does — the live-run agent (`sma-ui-qa`) walks the
+task path, asserts outcomes, and reports what the walk exposed. Capture answers "does it
+look right"; the walk answers "does it work".
 
 </screenshot_approach>
 

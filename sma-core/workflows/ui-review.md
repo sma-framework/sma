@@ -8,7 +8,8 @@ Retroactive 6-pillar visual audit of implemented frontend code. Standalone comma
 
 <available_agent_types>
 Valid SMA subagent types (use exact names — do not fall back to 'general-purpose'):
-- sma-ui-auditor — Audits UI against design requirements
+- sma-ui-auditor — Audits UI against design requirements (reads the code)
+- sma-ui-qa — Runs the app, walks the task path, reports what it actually does
 </available_agent_types>
 
 <process>
@@ -20,12 +21,14 @@ _SMA_SHIM_NAME="sma-tools.cjs"; _SMA_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 INIT=$(sma_run query init.phase-op "${PHASE_ARG}")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS_UI_REVIEWER=$(sma_run query agent-skills sma-ui-auditor)
+AGENT_SKILLS_UI_QA=$(sma_run query agent-skills sma-ui-qa)
 ```
 
 Parse: `phase_dir`, `phase_number`, `phase_name`, `phase_slug`, `padded_phase`, `commit_docs`.
 
 ```bash
 UI_AUDITOR_MODEL=$(sma_run query resolve-model sma-ui-auditor --raw)
+UI_QA_MODEL=$(sma_run query resolve-model sma-ui-qa --raw)
 ```
 
 Display banner:
@@ -99,6 +102,36 @@ padded_phase: {padded_phase}
 
 Omit null file paths.
 
+## 3b. Spawn sma-ui-qa — the live run
+
+The auditor reads the code; this one runs the app. Both are needed and neither implies
+the other: a screen can match its design contract perfectly and still be wired to
+nothing. Spawn them in ONE message so they run in parallel.
+
+Build prompt:
+
+```markdown
+Read $HOME/.claude/agents/sma-ui-qa.md for instructions.
+
+<objective>
+Live QA of Phase {phase_number}: {phase_name}. Start from the app's primary task for
+this phase and walk the path a real user takes to complete it — not a tour of the
+navigation. Assert the outcome with `expect:`.
+</objective>
+
+<files_to_read>
+- {summary_paths} (What was built — the claim under test)
+- {ui_spec_path} (UI Design Contract, if exists)
+</files_to_read>
+
+${AGENT_SKILLS_UI_QA}
+
+<config>
+phase_dir: {phase_dir}
+app_url: {url if known, else "discover on ports 3000, 5173, 8080"}
+</config>
+```
+
 ```
 Agent(
   prompt=ui_audit_prompt,
@@ -106,7 +139,18 @@ Agent(
   model="{UI_AUDITOR_MODEL}",
   description="UI Audit Phase {N}"
 )
+Agent(
+  prompt=ui_qa_prompt,
+  subagent_type="sma-ui-qa",
+  model="{UI_QA_MODEL}",
+  description="Live UI QA Phase {N}"
+)
 ```
+
+**If sma-ui-qa returns `NOT RUN`:** report that plainly in the summary — the app was
+never opened. Do NOT let the auditor's code-only score stand in for a live verdict; the
+two answer different questions, and presenting one as the other is how a broken panel
+ships with a passing review.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 

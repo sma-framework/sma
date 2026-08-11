@@ -1,0 +1,220 @@
+/**
+ * Tests for scripts/sma/lib/ui-drive.mjs (the live UI run: step parsing, the
+ * severity rubric, the verdict, the receipt).
+ *
+ * The load-bearing behaviors — every one of them guards the same law: A RUN THAT
+ * DID NOT HAPPEN IS NEVER A PASS. The capture path this replaces failed silently
+ * (`npx playwright screenshot ... 2>/dev/null`) and let a code-only read be scored
+ * as if the UI had been looked at, which is why these are pinned:
+ *   Test 1 — parseSteps: a valid script parses; an UNKNOWN verb is an error, not a
+ *            skip (a silently dropped step turns an unrun check into a green one).
+ *   Test 2 — classify: the rubric — page exception / failed request / same-origin
+ *            4xx / any 5xx / failed step BLOCK; cross-origin 4xx and a console
+ *            error WARN.
+ *   Test 3 — classify drops the browser's own echo of a failed fetch, so one defect
+ *            is one line rather than two.
+ *   Test 4 — dedupe: a defect observed once per viewport collapses to one finding
+ *            that KEEPS its occurrence count.
+ *   Test 5 — verdict: blockers FAIL with exit 1; warnings alone still PASS with 0;
+ *            and ran:false is NOT-RUN with exit 3 — never an empty pass.
+ *   Test 6 — missingDriverMessage carries the install command, because a diagnosis
+ *            the operator cannot act on costs the same as no diagnosis.
+ *   Test 7 — renderReceipt states the path walked and both severity lists.
+ *
+ * Zero fs, zero browser — the impure half lives in the runner and is not imported.
+ */
+
+import { describe, it, expect } from 'vitest'
+import {
+  BLOCKER,
+  DESTRUCTIVE_RE,
+  SWEEP_CAP,
+  WARNING,
+  classify,
+  dedupe,
+  missingDriverMessage,
+  parseSteps,
+  renderCoverage,
+  renderReceipt,
+  verdict,
+} from '../lib/ui-drive.mjs'
+
+describe('parseSteps', () => {
+  it('parses every verb shape', () => {
+    const r = parseSteps(['click:Save', 'type:#email=a@b.c', 'wait:500', 'shot:after', 'expect:Done', 'goto:/inbox'])
+    expect(r.ok).toBe(true)
+    expect(r.steps.map((s: { verb: string }) => s.verb)).toEqual(['click', 'type', 'wait', 'shot', 'expect', 'goto'])
+    expect(r.steps[1]).toMatchObject({ selector: '#email', text: 'a@b.c' })
+    expect(r.steps[2]).toMatchObject({ ms: 500 })
+  })
+
+  it('refuses an unknown verb instead of skipping it', () => {
+    const r = parseSteps(['click:Save', 'clik:Save'])
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('unknown verb "clik"')
+  })
+
+  it('refuses a malformed step rather than guessing', () => {
+    expect(parseSteps(['type:#email']).ok).toBe(false)
+    expect(parseSteps(['wait:soon']).ok).toBe(false)
+    expect(parseSteps(['justtext']).ok).toBe(false)
+  })
+})
+
+describe('classify — the severity rubric', () => {
+  const origin = 'http://localhost:5173'
+
+  it('blocks on a page exception, a failed request, and a failed step', () => {
+    const f = classify(
+      {
+        pageErrors: ['x is not a function'],
+        requestFailures: [{ method: 'GET', url: `${origin}/api/state`, error: 'net::ERR_FAILED' }],
+        stepFailures: [{ step: 'click:Save', error: 'element not found' }],
+      },
+      { origin }
+    )
+    expect(f).toHaveLength(3)
+    expect(f.every((x: { severity: string }) => x.severity === BLOCKER)).toBe(true)
+  })
+
+  it('blocks a same-origin 4xx and any 5xx, but only warns on a foreign 4xx', () => {
+    const f = classify(
+      {
+        httpErrors: [
+          { status: 404, method: 'GET', url: `${origin}/api/state` },
+          { status: 404, method: 'GET', url: 'https://cdn.example.com/pixel.gif' },
+          { status: 503, method: 'GET', url: 'https://cdn.example.com/app.js' },
+        ],
+      },
+      { origin }
+    )
+    expect(f.find((x: { detail: string }) => x.detail.includes('/api/state'))?.severity).toBe(BLOCKER)
+    expect(f.find((x: { detail: string }) => x.detail.includes('pixel.gif'))?.severity).toBe(WARNING)
+    expect(f.find((x: { detail: string }) => x.detail.includes('app.js'))?.severity).toBe(BLOCKER)
+  })
+
+  it('drops the browser echo of a failed fetch so one defect is one line', () => {
+    const f = classify(
+      {
+        httpErrors: [{ status: 404, method: 'GET', url: `${origin}/api/state` }],
+        consoleErrors: ['Failed to load resource: the server responded with a status of 404 (Not Found)', 'TypeError: real bug'],
+      },
+      { origin }
+    )
+    expect(f).toHaveLength(2)
+    expect(f.filter((x: { kind: string }) => x.kind === 'console-error')).toHaveLength(1)
+    expect(f.find((x: { kind: string }) => x.kind === 'console-error')?.detail).toContain('real bug')
+  })
+})
+
+describe('the sweep — pressing everything, safely', () => {
+  it('refuses destructive controls in both languages the operator may see', () => {
+    for (const name of ['Delete account', 'Remove', 'Reset settings', 'Sign out', 'Publish', 'Pay now', 'Удалить проект', 'Очистить', 'Выкат', 'Выйти']) {
+      expect(DESTRUCTIVE_RE.test(name), `${name} must be refused`).toBe(true)
+    }
+  })
+
+  it('presses ordinary controls, including words that merely contain a risky substring', () => {
+    for (const name of ['Save', 'Задачи', 'Open backlog', 'Next', 'Undelete']) {
+      expect(DESTRUCTIVE_RE.test(name), `${name} must be pressed`).toBe(false)
+    }
+  })
+
+  it('blocks a control that could not be operated and warns on one nobody can name', () => {
+    const f = classify({
+      deadControls: [{ name: 'Save', error: 'element is not enabled' }],
+      unnamedControls: [{ tag: 'button', hint: 'no aria-label, text, title, placeholder or name' }],
+    })
+    expect(f.find((x: { kind: string }) => x.kind === 'control-dead')?.severity).toBe(BLOCKER)
+    expect(f.find((x: { kind: string }) => x.kind === 'control-unnamed')?.severity).toBe(WARNING)
+  })
+
+  it('blocks sideways scroll, and reports it as the measurement it is', () => {
+    const f = classify({ overflows: [{ scrollWidth: 1360, clientWidth: 375, viewport: 'mobile' }] })
+    expect(f[0].severity).toBe(BLOCKER)
+    expect(f[0].detail).toContain('1360px')
+    expect(f[0].detail).toContain('375px')
+  })
+})
+
+describe('renderCoverage — the denominator is never hidden', () => {
+  it('names what it did not reach rather than reporting only what it touched', () => {
+    const md = renderCoverage({ ran: true, touched: SWEEP_CAP, total: 60, skipped: 18, refused: ['Удалить'] })
+    expect(md).toContain(`${SWEEP_CAP} of 60`)
+    expect(md).toContain('18 were NOT pressed')
+    expect(md).toContain('refused as destructive')
+    expect(md).toContain('Удалить')
+  })
+
+  it('says plainly when the surface was never swept, instead of printing a zero', () => {
+    const md = renderCoverage({ ran: false })
+    expect(md).toContain('not swept')
+    expect(md).not.toMatch(/\b0 of 0\b/)
+  })
+
+  it('claims full coverage only when nothing was left out', () => {
+    expect(renderCoverage({ ran: true, touched: 12, total: 12, skipped: 0, refused: [] })).toContain('Nothing was left untouched')
+  })
+})
+
+describe('dedupe', () => {
+  it('collapses a repeat observation but keeps the count', () => {
+    const out = dedupe([
+      { severity: BLOCKER, kind: 'http-error', detail: '404 GET /api/state' },
+      { severity: BLOCKER, kind: 'http-error', detail: '404 GET /api/state' },
+      { severity: BLOCKER, kind: 'http-error', detail: '404 GET /api/events' },
+    ])
+    expect(out).toHaveLength(2)
+    expect(out[0].occurrences).toBe(2)
+    expect(out[1].occurrences).toBe(1)
+  })
+})
+
+describe('verdict', () => {
+  it('fails on a blocker and passes on warnings alone', () => {
+    expect(verdict([{ severity: BLOCKER }])).toMatchObject({ status: 'FAIL', exitCode: 1, blockers: 1 })
+    expect(verdict([{ severity: WARNING }])).toMatchObject({ status: 'PASS-WITH-WARNINGS', exitCode: 0 })
+    expect(verdict([])).toMatchObject({ status: 'PASS', exitCode: 0 })
+  })
+
+  it('reports a run that never happened as NOT-RUN, never as an empty pass', () => {
+    const v = verdict([], { ran: false })
+    expect(v.status).toBe('NOT-RUN')
+    expect(v.exitCode).toBe(3)
+    expect(v.status).not.toBe('PASS')
+  })
+})
+
+describe('missingDriverMessage', () => {
+  it('says it is not a pass and carries the command that fixes it', () => {
+    const msg = missingDriverMessage('not resolvable')
+    expect(msg).toContain('NOT RUN')
+    expect(msg).toContain('not a pass')
+    expect(msg).toContain('npx playwright install chromium')
+  })
+})
+
+describe('renderReceipt', () => {
+  it('states the path walked and both severity lists', () => {
+    const md = renderReceipt({
+      url: 'http://localhost:5173',
+      steps: [{ raw: 'click:Save' }],
+      shots: ['run/01-open-desktop.png'],
+      findings: [
+        { severity: BLOCKER, kind: 'http-error', detail: '404 GET /api/state', occurrences: 5 },
+        { severity: WARNING, kind: 'console-error', detail: 'deprecation notice', occurrences: 1 },
+      ],
+      verdict: verdict([{ severity: BLOCKER }, { severity: WARNING }]),
+    })
+    expect(md).toContain('click:Save')
+    expect(md).toContain('404 GET /api/state')
+    expect(md).toContain('seen 5×')
+    expect(md).toContain('deprecation notice')
+    expect(md).toContain('**FAIL**')
+  })
+
+  it('says so plainly when no steps were scripted', () => {
+    const md = renderReceipt({ url: 'http://x', verdict: verdict([]) })
+    expect(md).toContain('no steps were scripted')
+  })
+})
