@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { TaskAttempt } from '../../api/types'
+import { AttemptLog } from '../../shell/AttemptLog'
 import { clockLabel, receiptChecks, receiptProofLabel } from '../../shell/format'
 
 /**
@@ -85,11 +86,14 @@ function Row({
   attempt,
   note,
   last,
+  taskId,
 }: {
   attempt: TaskAttempt
   /** The comment that sent this run back, when this run was sent back. */
   note: string | null
   last: boolean
+  /** Whose story this is — the transcript door needs the task to name the attempt. */
+  taskId: string | null
 }) {
   const [open, setOpen] = useState(false)
   const who = [attempt.workerId, attempt.provider].filter(Boolean).join(' · ')
@@ -137,6 +141,13 @@ function Row({
               </p>
             ) : null}
             <Checks attempt={attempt} />
+            {/* Свёртка раскрылась — вот и повесть подхода: приказ, ход, результат на одной
+                странице (разведка 11.08, Paperclip). Тот же читатель, что «Живой поток». */}
+            {taskId ? (
+              <div className="mt-3 border-t border-bd pt-3">
+                <AttemptLog taskId={taskId} attempt={attempt} />
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -154,9 +165,12 @@ function Row({
 export function AttemptTimeline({
   attempts,
   returnedNotes,
+  taskId = null,
 }: {
   attempts: TaskAttempt[]
   returnedNotes: string[]
+  /** Present when the timeline lives on a task card — unlocks the per-attempt transcript. */
+  taskId?: string | null
 }) {
   if (attempts.length === 0) {
     return <p className="m-0 text-[12.5px] text-tx3">Работа ещё не начиналась — задача ждёт своей очереди.</p>
@@ -176,6 +190,7 @@ export function AttemptTimeline({
             attempt={a}
             note={note}
             last={i === attempts.length - 1}
+            taskId={taskId}
           />
         )
       })}

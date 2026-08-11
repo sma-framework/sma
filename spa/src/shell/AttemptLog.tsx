@@ -1,7 +1,16 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAttemptQuery } from '../api/queries'
 import type { AttemptLogLine, AttemptLogSummaryPart, TaskAttempt } from '../api/types'
 import { clockLabel } from './format'
+
+/**
+ * The three READINGS of one transcript (recon 11.08, the Paperclip lesson Nice/Raw/Live):
+ *   nice — the human feed: tool crumbs, handoffs, what was said (the default);
+ *   raw  — every stored line exactly as written, for the person debugging the machine;
+ *   live — the nice feed pinned to the tail: the eye follows the worker, always.
+ * One transcript, one reader, three ways to hold it — never three sources.
+ */
+export type TranscriptView = 'nice' | 'raw' | 'live'
 
 /**
  * AttemptLog — what the worker is saying, while it is saying it.
@@ -77,8 +86,8 @@ function SummaryPart({ part }: { part: AttemptLogSummaryPart }) {
  * which tool ran and what was handed to whom. When it could not, the raw line is shown, which
  * is what this log has always shown and what a person can still copy out.
  */
-function LogLine({ line }: { line: AttemptLogLine }) {
-  const parts = line.summary ?? []
+function LogLine({ line, raw = false }: { line: AttemptLogLine; raw?: boolean }) {
+  const parts = raw ? [] : (line.summary ?? [])
   return (
     <div className={`flex items-start gap-2 px-2.5 py-[3px] ${line.subagent ? 'border-l-2 border-idle-s pl-3' : ''}`}>
       <span className="flex-none pt-[1px] font-mono text-[10.5px] text-tx3 tabular-nums">{clockLabel(line.ts)}</span>
@@ -115,6 +124,7 @@ export function AttemptLog({ taskId, attempt }: { taskId: string; attempt: TaskA
   const attemptId = attempt.attempt === null ? null : `${taskId}#${attempt.attempt}`
   const log = useAttemptQuery(attemptId)
 
+  const [view, setView] = useState<TranscriptView>('nice')
   const boxRef = useRef<HTMLDivElement | null>(null)
   const watchingEnd = useRef(true)
 
@@ -122,9 +132,10 @@ export function AttemptLog({ taskId, attempt }: { taskId: string; attempt: TaskA
 
   useEffect(() => {
     const box = boxRef.current
-    if (!box || !watchingEnd.current) return
+    // «live» pins the eye to the tail unconditionally; «nice»/«raw» keep the reader's place.
+    if (!box || (view !== 'live' && !watchingEnd.current)) return
     box.scrollTop = box.scrollHeight
-  }, [lines.length])
+  }, [lines.length, view])
 
   const onScroll = () => {
     const box = boxRef.current
@@ -141,6 +152,29 @@ export function AttemptLog({ taskId, attempt }: { taskId: string; attempt: TaskA
       <div className="mb-2 flex items-baseline gap-2.5">
         <span className="text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">Ход попытки</span>
         <span className="text-[11px] text-tx3">подход {attempt.attempt ?? '—'}</span>
+        <span className="flex-1" />
+        {/* Три чтения одной стенограммы — переключатель, не три источника. */}
+        <div className="flex gap-1" role="group" aria-label="Вид стенограммы">
+          {(
+            [
+              ['nice', 'Лента'],
+              ['raw', 'Сырьё'],
+              ['live', 'Вживую'],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              aria-pressed={view === v}
+              className={`rounded-[6px] px-2 py-[2px] text-[10px] ${
+                view === v ? 'bg-blue-s font-semibold text-blue' : 'text-tx3 hover:text-tx2'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {note ? (
@@ -172,7 +206,7 @@ export function AttemptLog({ taskId, attempt }: { taskId: string; attempt: TaskA
             className="max-h-[220px] overflow-y-auto rounded-[10px] border border-bd bg-surf py-1.5"
           >
             {lines.map((line, i) => (
-              <LogLine key={`${line.ts}-${i}`} line={line} />
+              <LogLine key={`${line.ts}-${i}`} line={line} raw={view === 'raw'} />
             ))}
           </div>
         </>
