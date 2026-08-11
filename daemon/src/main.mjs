@@ -217,13 +217,29 @@ function withoutPaths(text, projectDir) {
 }
 
 /**
- * runProjectVerb({verb, args, projectDir}) → {ok, code, result, reason}.
+ * runProjectVerb({verb, args, projectDir}, [overrides]) → {ok, code, result, reason}.
  *
  * One verb of the connected project's own runtime, run in that project's directory, with no
  * shell anywhere (an argument array, always). A project that is not connected and a project
  * with no SMA runtime are both an honest refusal — never a throw and never a silent zero.
+ *
+ * TWO LAWS LEARNED FROM A DOOR THAT HUNG FOREVER (QA D2, 11.08.2026 — «Проверяю корпус…»):
+ *
+ * 1. A DAEMON-SPAWNED VERB IS HEADLESS, AND ITS CHILDREN MUST KNOW IT. The project runtime
+ *    spawns a window-snapshot child unless SMA_DISABLE_SNAPSHOT_SPAWN says otherwise. From a
+ *    terminal that is a feature; from a daemon it is a window storm on the operator's desk —
+ *    and the grandchild inherits this child's stdio pipe, which is the mechanism of law 2.
+ * 2. THE DOOR ANSWERS EVEN WHEN THE PIPE NEVER CLOSES. execFile's callback waits for the
+ *    child's stdio to close, not for the child to die: a grandchild holding the inherited
+ *    pipe keeps the callback from firing even after the timeout KILLS the child. So the
+ *    kill-timeout alone left the lint door silent forever, and the browser sat on
+ *    «Проверяю корпус…» with no error branch ever taken. The race below guarantees an
+ *    honest refusal a moment after the kill fires, whatever the pipe does.
+ *
+ * `overrides` exists for the tests (injectable exec + a short deadline), like every other
+ * collaborator in this tree.
  */
-function runProjectVerb({ verb, args = [], projectDir }) {
+export function runProjectVerb({ verb, args = [], projectDir }, { execFileImpl = execFile, timeoutMs = PROJECT_VERB_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     if (typeof projectDir !== 'string' || projectDir.trim() === '') {
       resolve({ ok: false, code: 1, reason: 'no project is connected' })
@@ -234,11 +250,27 @@ function runProjectVerb({ verb, args = [], projectDir }) {
       resolve({ ok: false, code: 1, reason: `the connected project carries no SMA runtime (${PROJECT_CLI_SEGMENTS.join('/')})` })
       return
     }
-    execFile(
+    // Law 2: the answer deadline. Resolve is idempotent, so the late callback (if the pipe
+    // ever closes) is a harmless no-op. unref'd — an answered door must not hold the process.
+    const deadline = setTimeout(
+      () => resolve({ ok: false, code: 1, reason: `the ${verb} verb did not answer within ${Math.round((timeoutMs + 5000) / 1000)}s` }),
+      timeoutMs + 5000,
+    )
+    if (typeof deadline.unref === 'function') deadline.unref()
+    execFileImpl(
       process.execPath,
       [cli, verb, ...args],
-      { cwd: projectDir, encoding: 'utf8', timeout: PROJECT_VERB_TIMEOUT_MS, maxBuffer: PROJECT_VERB_MAX_BUFFER, windowsHide: true },
+      {
+        cwd: projectDir,
+        encoding: 'utf8',
+        timeout: timeoutMs,
+        maxBuffer: PROJECT_VERB_MAX_BUFFER,
+        windowsHide: true,
+        // Law 1: no snapshot children under a daemon — headless, and no pipe for a grandchild.
+        env: { ...process.env, SMA_DISABLE_SNAPSHOT_SPAWN: '1' },
+      },
       (err, stdout) => {
+        clearTimeout(deadline)
         const parsed = parseVerbResult(String(stdout ?? ''))
         const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0
         // A NON-ZERO EXIT IS NOT AUTOMATICALLY A FAILURE: these verbs answer «no» with an exit
