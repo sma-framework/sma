@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.4.0-3B82F6" alt="version 5.4.0">
-  <img src="https://img.shields.io/badge/tests-2882%2F2882-3CC0A0" alt="tests 2882/2882">
+  <img src="https://img.shields.io/badge/version-5.4.1-3B82F6" alt="version 5.4.1">
+  <img src="https://img.shields.io/badge/tests-2928%2F2928-3CC0A0" alt="tests 2928/2928">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -24,7 +24,7 @@
 > The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, current).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1, current).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -142,6 +142,18 @@ A claim of «I worked only from the app» is worth what it can be checked with, 
 An attempt now also books what it cost, so the spend screen answers with real numbers instead of zero.
 
 **What this release does not claim.** The five-day run that proves the move — a full phase cycle driven from the window, start to finish — is live operation *after* this version, not a receipt inside it.
+
+## What's new in 5.4.1
+
+The fixes that had accumulated on the main branch after the 5.4.0 stamp, cut into a release of their own rather than left to ride along with the next feature:
+
+- the spend ceiling starts to exist, and an estimate stops booking centuries
+- live updates arrive, and sub-agent lines group under the worker that spawned them
+- a card shows the receipt it has, instead of «no receipt»
+- signing in leads to work, and memory shows the notes of the **selected** project
+- the park can be stopped from the window, and a machine can be detached
+- a context clear inside the window no longer counts as a new terminal
+- the live log says which tool ran and what was handed to the agent, in words
 
 ## What's new in V5.3
 
@@ -554,7 +566,7 @@ The full reference lives in [scripts/sma/README.md](scripts/sma/README.md). A fe
 Everything above is the core. The detail lives one link away:
 
 - **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history V1 → V5.1 with the trust spine process by process.
-- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, V5.3 shipped as v5.3.0, V5.4 shipped as v5.4.0 — and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
+- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, V5.3 shipped as v5.3.0, V5.4 shipped as v5.4.0 and patched as v5.4.1 — and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
 - **[docs/MEMORY-MODEL.md](docs/MEMORY-MODEL.md)** — the schema law of the memory layer: what one record may claim and must carry, the closed vocabularies, provenance and its fingerprint, the temporal model, the storage classes, the one-claim law, and the corpus checks that hold all of it up.
 - **[docs/MEMORY-LIFECYCLE.md](docs/MEMORY-LIFECYCLE.md)** — how a memory is written, approved and retired: the twelve-step write pipeline with every refusal it can make, the risk-approval ladder, drafts, the four lifecycle transitions, and the preview-only migration ritual.
 - **[docs/MEMORY-THREAT-MODEL.md](docs/MEMORY-THREAT-MODEL.md)** — the security posture: which storage class may hold what, what fails open and what fails closed, how retrieved text stays data instead of becoming an instruction, and the encryption policy — decided on 2026-08-04: no cipher in this version, the restricted class is enforced as placement and its bytes are plain text on disk.
