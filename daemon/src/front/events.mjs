@@ -160,8 +160,14 @@ export function createEventHub({
   let heartbeat = null
 
   function writeTo(client, text) {
+    const res = client.res
+    // A dead socket does not throw on write — Node buffers into the void and reports the
+    // failure asynchronously, so a closed tab passed for a live one and held its slot
+    // until the cap answered 503 (the D1 finding, 11.08.2026). Ask the stream what it is
+    // before trusting the write; the try/catch below still covers streams that DO throw.
+    if (res.destroyed || res.writableEnded) return false
     try {
-      client.res.write(text)
+      res.write(text)
       return true
     } catch {
       return false
