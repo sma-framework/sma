@@ -147,9 +147,21 @@ function driverHint() {
 async function main() {
   const argv = process.argv.slice(2)
   const noSweep = argv.includes('--no-sweep')
-  const [url, ...stepArgv] = argv.filter((a) => a !== '--no-sweep')
+  // --min-viewport <px>: the app DECLARES a minimum width (a deliberate design decision,
+  // not a hole — e.g. «окно сделано под 1440 px и выше»). Widths below the declaration
+  // are then a promise the product never made: opening them would fail a floor the design
+  // explicitly waived. The skip is NAMED in the receipt — silent narrowing of coverage is
+  // the exact sin this engine exists to prevent.
+  const mvIdx = argv.indexOf('--min-viewport')
+  const minViewport = mvIdx >= 0 ? Number(argv[mvIdx + 1]) : 0
+  if (mvIdx >= 0 && (!Number.isFinite(minViewport) || minViewport <= 0)) {
+    process.stdout.write('SMA ui-drive: --min-viewport needs a positive pixel number.\n')
+    process.exit(2)
+  }
+  const positional = argv.filter((a, i) => a !== '--no-sweep' && a !== '--min-viewport' && !(mvIdx >= 0 && i === mvIdx + 1))
+  const [url, ...stepArgv] = positional
   if (!url) {
-    process.stdout.write('usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep]\n')
+    process.stdout.write('usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>]\n')
     process.exit(2)
   }
 
@@ -190,6 +202,9 @@ async function main() {
   const overflows = []
   const shots = []
   let coverage = { ran: false }
+  const stampViewportSkips = () => {
+    if (skippedViewports.length) coverage = { ...coverage, viewportsSkipped: skippedViewports }
+  }
   const origin = (() => {
     try {
       return new URL(url).origin
@@ -216,9 +231,13 @@ async function main() {
     shots.push(join(outDir, file))
   }
 
+  const openedViewports = VIEWPORTS.filter((vp) => vp.width >= minViewport)
+  const skippedViewports = VIEWPORTS.filter((vp) => vp.width < minViewport).map((vp) => `${vp.name} (${vp.width}px)`)
+
   try {
-    // Every width gets opened, because a layout that breaks only on mobile is still broken.
-    for (const vp of VIEWPORTS) {
+    // Every declared width gets opened, because a layout that breaks only on mobile is
+    // still broken — unless the app declares it does not serve that width at all.
+    for (const vp of openedViewports) {
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } })
       watch(page)
       try {
@@ -276,6 +295,7 @@ async function main() {
     await browser.close()
   }
 
+  stampViewportSkips() // both paths — a declared skip is receipt material with or without a sweep
   const findings = classify(
     { consoleErrors, pageErrors, requestFailures, httpErrors, stepFailures, deadControls, unnamedControls, overflows },
     { origin }

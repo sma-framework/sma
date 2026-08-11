@@ -155,6 +155,13 @@ describe('renderCoverage — the denominator is never hidden', () => {
   it('claims full coverage only when nothing was left out', () => {
     expect(renderCoverage({ ran: true, touched: 12, total: 12, skipped: 0, refused: [] })).toContain('Nothing was left untouched')
   })
+
+  it('names viewports skipped by a declared minimum width — a waiver is visible, never silent', () => {
+    const md = renderCoverage({ ran: true, touched: 5, total: 5, skipped: 0, refused: [], viewportsSkipped: ['tablet (768px)', 'mobile (375px)'] })
+    expect(md).toContain('declares a minimum width')
+    expect(md).toContain('tablet (768px)')
+    expect(md).toContain('nothing about narrower screens')
+  })
 })
 
 describe('dedupe', () => {
