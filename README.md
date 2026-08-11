@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.5.0-3B82F6" alt="version 5.5.0">
-  <img src="https://img.shields.io/badge/tests-2970%2F2970-3CC0A0" alt="tests 2970/2970">
+  <img src="https://img.shields.io/badge/version-5.5.1-3B82F6" alt="version 5.5.1">
+  <img src="https://img.shields.io/badge/tests-2971%2F2971-3CC0A0" alt="tests 2971/2971">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -24,7 +24,7 @@
 > The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3) → V5.5 the engine: steering a live session — shipped (v5.5.0, current).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3) → V5.5 the engine: steering a live session — shipped (v5.5.0, patched v5.5.1, current).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
