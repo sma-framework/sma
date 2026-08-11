@@ -108,6 +108,8 @@ import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/st
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
+import { readPendingRedirects, markConsumed, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
+import { CLAUDE_BIN } from './runner/build-args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
@@ -1111,6 +1113,24 @@ export async function tick(deps = {}) {
         accountName: spec.accountName,
         dataDir: config.dataDir,
       })
+      // ── THE STEERING WHEEL (phase «Двигатель», recon 11.08) ──
+      // Every spawn of this attempt registers its kill-handle under the TASK id, so the
+      // redirect door can end the live child («Перебить сейчас») and the correction then
+      // rides the continuation below. Hint plumbing: a restart loses only the ability to
+      // kill children that died with it.
+      const spawnSteered = (o) => {
+        const h = spawnWorker(o)
+        if (deps.attemptTurns && h && typeof h.kill === 'function') {
+          deps.attemptTurns.register(task.id, () => {
+            try {
+              h.kill()
+            } catch {
+              /* a child that cannot be killed is still a turn the founder ended */
+            }
+          })
+        }
+        return h
+      }
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
@@ -1119,7 +1139,44 @@ export async function tick(deps = {}) {
       // timestamp as the end and zero as the start, so a session that ran two minutes booked
       // fifty-six years of tokens. One number, captured where the process really begins.
       const attemptStartedAt = now()
-      const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
+      let exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
+
+      // ── THE CONTINUATION LOOP: a typed correction has a declared fate ──
+      // «Перебить сейчас» killed the child (the door did); «После хода» let it finish.
+      // Either way the correction is HERE, durable, and the same session continues with it
+      // (`--resume <sessionId>`) — what was done stays in context, nothing restarts from
+      // zero. The loop is ENDABLE by construction: each pass consumes its corrections
+      // first, and REDIRECT_HOP_CAP bounds the night. Claude-only: the Codex resume
+      // protocol differs, and a correction it cannot honour is SKIPPED on the record
+      // rather than silently dropped.
+      if (config.dataDir) {
+        let hops = 0
+        for (;;) {
+          const pending = readPendingRedirects({ dataDir: config.dataDir, taskId: task.id, fsImpl: deps.fsImpl })
+          if (!pending.length) break
+          markConsumed({ dataDir: config.dataDir, taskId: task.id, ids: pending.map((p) => p.id), clock: now, fsImpl: deps.fsImpl })
+          const sessionId = sessionOf()
+          const resumable = spec.bin === CLAUDE_BIN && typeof sessionId === 'string' && /^[0-9a-f-]{32,40}$/i.test(sessionId)
+          if (!resumable || hops >= REDIRECT_HOP_CAP) {
+            writeLog(deps, {
+              type: 'task.redirect_skipped',
+              taskId: task.id,
+              reason: hops >= REDIRECT_HOP_CAP ? 'hop_cap' : spec.bin !== CLAUDE_BIN ? 'provider' : 'no_session',
+            })
+            break
+          }
+          hops += 1
+          writeLog(deps, { type: 'task.redirected', taskId: task.id, mode: pending[pending.length - 1].mode, hop: hops })
+          const correction = pending.map((p) => p.text).join('\n\n')
+          const contPrompt = `Поправка от основателя к текущей работе (учти и продолжай ту же задачу):\n\n${correction}`
+          exit = await runSpawn(
+            spawnSteered,
+            { bin: spec.bin, args: [...spec.args, '--resume', sessionId], cwd: workDir, env: spec.env, prompt: contPrompt },
+            onLine,
+          )
+        }
+      }
+      if (deps.attemptTurns) deps.attemptTurns.done(task.id)
 
       const marker = detectMarker(streamLines)
 

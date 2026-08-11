@@ -305,6 +305,17 @@ export function useStopChat() {
   })
 }
 
+/** Руль бегущей задачи: поправка с объявленной судьбой (перебить сейчас / после хода). */
+export function useRedirectTask() {
+  return useMutation<
+    Awaited<ReturnType<typeof api.redirectTask>>,
+    Error,
+    { taskId: string; text: string; mode: 'interrupt' | 'queue' }
+  >({
+    mutationFn: (input) => api.redirectTask(input),
+  })
+}
+
 /** Look through the project for helpers that already live there, and take them in. */
 export function useScanImport() {
   return useAction<void, Awaited<ReturnType<typeof api.scanImport>>>(() => api.scanImport())

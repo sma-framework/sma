@@ -80,6 +80,7 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
+import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { parseReceiptProof } from './state.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
@@ -248,6 +249,7 @@ export const ROUTES = Object.freeze({
   'POST /api/machine/remove': 'handleMachineRemove',
   'POST /api/chat': 'handleChat',
   'POST /api/chat/stop': 'handleChatStop',
+  'POST /api/redirect': 'handleRedirect',
   'GET /api/chat/history': 'handleChatHistory',
   'POST /api/import/scan': 'handleImportScan',
   'POST /api/import/enroll': 'handleImportEnroll',
@@ -1725,6 +1727,39 @@ async function handleChat({ req, res, config, deps }) {
 
 /** A client-minted chat turn id: short, filename-safe, and useless to guess. */
 const TURN_ID_RE = /^ct-[A-Za-z0-9][A-Za-z0-9-]{3,47}$/
+
+/**
+ * POST /api/redirect — body {taskId, text, mode: 'interrupt'|'queue'}. The steering wheel
+ * for a RUNNING task: the correction is written DURABLY first (a restart must not lose a
+ * founder's «нет, не так»), and only then, for 'interrupt', the live child is told to die —
+ * the runner's continuation loop picks the note up and resumes the SAME session with it.
+ * `live` in the answer says whether anything was actually killed; a task between attempts
+ * still gets its correction on the next exit, which is what 'queue' means.
+ */
+async function handleRedirect({ req, res, config, deps }) {
+  if (!config.dataDir) return send501(res)
+  const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'text', 'mode']))) return undefined
+  if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
+  if (b.mode !== 'interrupt' && b.mode !== 'queue') return send400(res, 'mode must be interrupt or queue')
+  const wrote = appendRedirect({
+    dataDir: config.dataDir,
+    taskId: b.taskId,
+    text: b.text,
+    mode: b.mode,
+    clock: deps.clock,
+    fsImpl: deps.fsImpl,
+  })
+  if (!wrote.ok) return send400(res, wrote.error === 'text too long' ? `text exceeds ${REDIRECT_TEXT_CAP} chars` : 'text required')
+  let live = false
+  if (b.mode === 'interrupt' && deps.attemptTurns && typeof deps.attemptTurns.stop === 'function') {
+    live = deps.attemptTurns.stop(b.taskId)
+  }
+  emitSafe(deps, { event: 'task.running', taskId: b.taskId, status: 'claimed' })
+  return sendJson(res, 200, { accepted: true, id: wrote.id, mode: b.mode, live })
+}
 
 /**
  * POST /api/chat/stop — body {turnId}. The Стоп button's door: tell a LIVE chat turn to
@@ -3673,6 +3708,7 @@ export const HANDLERS = Object.freeze({
   handleMachineRemove,
   handleChat,
   handleChatStop,
+  handleRedirect,
   handleChatHistory,
   handleImportScan,
   handleImportEnroll,

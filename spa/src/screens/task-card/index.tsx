@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useApprove, useDiffQuery, useReturnTask, useStateQuery, useTaskQuery } from '../../api/queries'
+import { useApprove, useDiffQuery, useRedirectTask, useReturnTask, useStateQuery, useTaskQuery } from '../../api/queries'
 import type { TaskAttempt } from '../../api/types'
 import {
   accentFor,
@@ -17,6 +17,80 @@ import { openScreen, useOpenedWith } from '../../shell/navigation'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
+
+/**
+ * Steering — the composer that exists WHILE a worker holds the task (phase «Двигатель»,
+ * the Hermes trio brought to the card). Text typed against live work has a DECLARED fate:
+ * «Перебить сейчас» kills the run and the SAME session resumes with the correction —
+ * done work stays in context; «После хода» lets the run finish and the correction rides
+ * the continuation. No third, silent fate exists — that was the whole finding.
+ */
+function Steering({ taskId }: { taskId: string }) {
+  const redirect = useRedirectTask()
+  const [text, setText] = useState('')
+  const [fate, setFate] = useState<string | null>(null)
+
+  const send = (mode: 'interrupt' | 'queue') => {
+    const said = text.trim()
+    if (!said || redirect.isPending) return
+    redirect.mutate(
+      { taskId, text: said, mode },
+      {
+        onSuccess: (r) => {
+          setText('')
+          setFate(
+            mode === 'interrupt'
+              ? r.live
+                ? 'Перебиваю ход — сессия продолжится с вашей поправкой.'
+                : 'Поправка записана — ход уже не бежал, она встанет в ближайшее продолжение.'
+              : 'Поправка встанет сразу после текущего хода, той же сессией.',
+          )
+        },
+        onError: (err) => setFate(refusalWords(err)),
+      },
+    )
+  }
+
+  return (
+    <div className="rounded-[14px] border border-bd bg-card px-6 py-[18px] shadow-panel">
+      <div className="mb-2.5 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">
+        Руль — работник сейчас в деле
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          if (fate) setFate(null)
+        }}
+        placeholder="Поправка к текущей работе: «нет, не так — сделай…»"
+        rows={2}
+        className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12.5px] text-tx outline-none focus:border-blue"
+      />
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => send('interrupt')}
+          disabled={redirect.isPending || text.trim() === ''}
+          className="rounded-[9px] bg-warn-tx px-3.5 py-2 text-[12px] font-semibold text-white disabled:opacity-50"
+        >
+          ■ Перебить сейчас
+        </button>
+        <button
+          type="button"
+          onClick={() => send('queue')}
+          disabled={redirect.isPending || text.trim() === ''}
+          className="rounded-[9px] border border-bd2 px-3.5 py-2 text-[12px] text-tx2 hover:text-tx disabled:opacity-50"
+        >
+          После хода
+        </button>
+        {fate ? <span className="min-w-0 text-[11.5px] leading-[1.4] text-tx2">{fate}</span> : null}
+      </div>
+      <div className="mt-[7px] text-[11px] text-tx3">
+        Сделанное не пропадёт: та же сессия продолжится с учётом поправки, без перезапуска с нуля.
+      </div>
+    </div>
+  )
+}
 
 /**
  * «Карточка задачи» — one task in full: what was promised, what was checked, every run at
@@ -241,6 +315,8 @@ export function Screen() {
               )}
             </div>
           </div>
+
+          {status === 'claimed' && taskId ? <Steering taskId={taskId} /> : null}
 
           <div className="flex items-start gap-7">
             <div className="min-w-0 flex-1 rounded-[14px] border border-bd bg-card px-6 pt-[22px] pb-2 shadow-panel">

@@ -1663,9 +1663,9 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly fifty-four entries and carries no migration route', () => {
-    // 53 of the V5.4 freeze + POST /api/chat/stop (the Стоп button's door, phase «Двигатель»).
-    expect(Object.keys(ROUTES)).toHaveLength(54)
+  it('the route table is still exactly fifty-five entries and carries no migration route', () => {
+    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze).
+    expect(Object.keys(ROUTES)).toHaveLength(55)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
