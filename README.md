@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.4.2-3B82F6" alt="version 5.4.2">
-  <img src="https://img.shields.io/badge/tests-2956%2F2956-3CC0A0" alt="tests 2956/2956">
+  <img src="https://img.shields.io/badge/version-5.4.3-3B82F6" alt="version 5.4.3">
+  <img src="https://img.shields.io/badge/tests-2964%2F2964-3CC0A0" alt="tests 2964/2964">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -24,7 +24,7 @@
 > The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1 and v5.4.2, current).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3, current).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -172,6 +172,18 @@ The new reviewer's first live pass over the product's own window found five defe
 - the memory screen reads the selected project's own table of contents, not the daemon's
 
 The narrow-width overflow it also flagged is recorded as what it is — a standing design decision (the window is built for 1440 px and wider), now visible in the run receipt via `--min-viewport` instead of reddening every pass.
+
+## What's new in 5.4.3
+
+The first wave of «the engine» — five moves that make the window feel alive, each taken from the competitor recon and rebuilt our way:
+
+- the conversation's status **ticks by the second** («Думает · 12 с») — a live system is visible by a moving digit
+- while a turn runs, **Send becomes Стоп** — and a stopped turn answers «остановлено», never an apology for a "failure" you ordered
+- after Стоп **your text returns to the composer** — a stop is a redirect, not a loss
+- a queued task that nothing will pick up **names its blocker on the card** (conveyor off / windows closed / budget spent), and the new-task form warns **before** you submit — «Queued without a reason» no longer exists here
+- a failed attempt reads in **two layers**: the human sentence plus how long the attempt ran, and the raw reason code one click away
+
+One new door (`POST /api/chat/stop`) — a declared re-freeze of the route table, 53 → 54.
 
 ## What's new in 5.4.1
 
