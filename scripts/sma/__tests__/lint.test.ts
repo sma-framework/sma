@@ -1717,8 +1717,8 @@ describe('lint cost + progress + budget', () => {
     const b = findingsOf(res, 'LINT-BUDGET')
     expect(b).toHaveLength(1)
     expect(b[0].tier).toBe('warn')
-    expect(b[0].message).toContain(`${LINT_CHECKS.length} of ${LINT_CHECKS.length} checks did not run`)
-    expect(b[0].message).toContain('NOT a verdict')
+    expect(b[0].message).toContain(`${LINT_CHECKS.length} из ${LINT_CHECKS.length} проверок не запускались`)
+    expect(b[0].message).toContain('не вердикт')
   })
 
   it('Test 6: a budget that runs out during the plans walk stops it and SAYS where it stopped', () => {

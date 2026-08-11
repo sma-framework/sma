@@ -2455,17 +2455,20 @@ export function runLint(opts) {
   // and in the exit code. Silent truncation would turn a budget into a lie.
   const partial = skipped.length > 0 || truncated.length > 0
   if (partial) {
-    const cut = truncated.map((t) => `${t.checkId} stopped at ${t.checked}/${t.total} ${t.unit}`)
+    const cut = truncated.map((t) => `${t.checkId} остановлена на ${t.checked}/${t.total} (${t.unit})`)
     // Name the first few and count the rest; the FULL list is in report.skipped,
-    // which is the surface a machine reads.
-    const named = skipped.slice(0, 8).join(', ') + (skipped.length > 8 ? `, +${skipped.length - 8} more` : '')
-    const notRun = skipped.length ? `${skipped.length} of ${LINT_CHECKS.length} checks did not run (${named})` : ''
+    // which is the surface a machine reads. The SENTENCE is in Russian: it renders verbatim
+    // on the «Память» screen of a Russian window, and an English warning between Russian
+    // findings read as a foreign object there (QA finding D9, 11.08.2026). The check ids
+    // stay latin — they are identifiers, not prose.
+    const named = skipped.slice(0, 8).join(', ') + (skipped.length > 8 ? ` и ещё ${skipped.length - 8}` : '')
+    const notRun = skipped.length ? `${skipped.length} из ${LINT_CHECKS.length} проверок не запускались (${named})` : ''
     findings.push(
       finding(
         'LINT-BUDGET',
         'warn',
         '',
-        `PARTIAL RUN — the ${(budgetMs / 1000).toFixed(1)}s budget (SMA_LINT_BUDGET / --budget) ran out: ${[notRun, ...cut].filter(Boolean).join('; ')}. This report is NOT a verdict on what it did not read; re-run without a budget before quoting it.`,
+        `ЧАСТИЧНЫЙ ПРОГОН — бюджет ${(budgetMs / 1000).toFixed(1)} с (SMA_LINT_BUDGET / --budget) истёк: ${[notRun, ...cut].filter(Boolean).join('; ')}. Этот отчёт — не вердикт о том, чего он не читал; перед тем как его цитировать, прогоните без бюджета.`,
       ),
     )
   }
