@@ -35,7 +35,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createDaemon, describeBootFailure } from '../src/main.mjs'
+import { createDaemon, describeBootFailure, runProjectVerb } from '../src/main.mjs'
 import { ROUTES, PENDING_ROUTES } from '../src/front/server.mjs'
 import { resolveExpireMs } from '../src/queue/adapter.mjs'
 
@@ -455,5 +455,38 @@ describe('the production composition root is COMPLETE', () => {
     // failed attempt used to lose its reason.
     expect(park.front.deps.ledgerDir).toBeTruthy()
     expect(park.front.deps.dataDir).toBeTruthy()
+  })
+})
+
+/**
+ * runProjectVerb — the two laws learned from the lint door that hung forever (QA D2,
+ * 11.08.2026). execFile's callback waits for the child's stdio pipe, not for the child:
+ * a grandchild holding the inherited pipe keeps the callback from firing even after the
+ * timeout kills the child, so the door had NO path to an answer. And the grandchild
+ * existed at all because a daemon-spawned verb was not told it is headless.
+ */
+describe('runProjectVerb — the door answers, and its children are headless', () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'sma-verb-'))
+  beforeAll(() => {
+    // the runtime layout the guard checks for, so the exec path is actually reached
+    mkdirSync(join(projectDir, 'scripts', 'sma'), { recursive: true })
+    writeFileSync(join(projectDir, 'scripts', 'sma', 'cli.mjs'), '// stub — never executed: execFileImpl is injected\n')
+  })
+  afterAll(() => rmSync(projectDir, { recursive: true, force: true }))
+
+  it('answers with an honest refusal when the callback never fires (the held-pipe hang)', async () => {
+    const r = await runProjectVerb({ verb: 'lint', args: ['--json'], projectDir }, { execFileImpl: () => {}, timeoutMs: 20 })
+    expect(r.ok).toBe(false)
+    expect(String(r.reason)).toContain('did not answer')
+  })
+
+  it('tells every child it is headless: SMA_DISABLE_SNAPSHOT_SPAWN rides the env', async () => {
+    let seen: any = null
+    const execFileImpl = (_bin: any, _args: any, opts: any, cb: any) => {
+      seen = opts
+      cb(null, '{"ok":true}')
+    }
+    await runProjectVerb({ verb: 'lint', args: [], projectDir }, { execFileImpl })
+    expect(seen.env.SMA_DISABLE_SNAPSHOT_SPAWN).toBe('1')
   })
 })
