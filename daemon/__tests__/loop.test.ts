@@ -1153,6 +1153,40 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([])
   })
 
+  it('a RETURNED task’s next attempt resumes the prior session — the paid-for context survives', async () => {
+    const ledgerDir = mkDir('sma-loop-res-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice() })
+      spec.onLine?.('APPROACH_NOTE: продолжил')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { ledger: realLedger(ledgerDir) },
+    })
+
+    // The prior run's row carries the session — exactly what the return left behind.
+    deps.ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
+    await adapter.enqueue(backlogTask({ attempt: 2 }))
+
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+    const at = spawns[0].args.indexOf('--resume')
+    expect(at).toBeGreaterThan(-1)
+    expect(spawns[0].args[at + 1]).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+  })
+
   it('every line reaches the attempt’s own file, and the delegated one is marked as delegated', async () => {
     const ledgerDir = mkDir('sma-loop-log-')
     const run = greenRun(ledgerDir)
