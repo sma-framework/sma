@@ -161,6 +161,18 @@ The rule it exists to enforce: **a run that did not happen is never a pass.** No
 
 **What this release does not claim.** This drives a browser: native and mobile shells are outside it. And the part that judges whether a screen is *good* — legible, honest in failure, findable in two seconds — is a model reading screenshots, which is judgment, not measurement. The runtime defects are the measured half; the receipt keeps the two apart so a reader can tell which is which.
 
+### What its first run caught — fixed in this same release
+
+The new reviewer's first live pass over the product's own window found five defects no code read had seen, and they ship fixed here:
+
+- a closed tab now frees its live-events slot — the window no longer goes permanently blind after sixteen opens
+- the corpus check answers in seconds with a budgeted report that names what it skipped, instead of spinning forever
+- the coordination screen shows the live sessions and reservations of the connected checkout; an unreadable journal reports itself instead of posing as an empty room
+- money stops contradicting itself: every spend row now names its channel, and the paid-channel figure counts only paid-channel work
+- the memory screen reads the selected project's own table of contents, not the daemon's
+
+The narrow-width overflow it also flagged is recorded as what it is — a standing design decision (the window is built for 1440 px and wider), now visible in the run receipt via `--min-viewport` instead of reddening every pass.
+
 ## What's new in 5.4.1
 
 The fixes that had accumulated on the main branch after the 5.4.0 stamp, cut into a release of their own rather than left to ride along with the next feature:
