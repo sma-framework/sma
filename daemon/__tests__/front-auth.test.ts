@@ -208,15 +208,15 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed FIFTY-FOUR-route table', () => {
+describe('server.mjs — the closed FIFTY-FIVE-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
   // change again, that change is a declared re-freeze revision, not a routine edit. FILLING
   // a declared slot does not change it — that is the entire point of declaring them all at
   // once, and it is why no fill plan of the release has to come back and edit this line.
   // RE-FREEZE REVISION (phase «Двигатель», 11.08.2026): 53 of the V5.4 freeze
-  // + POST /api/chat/stop — the Стоп button's door. Declared, not drifted.
-  it('the frozen table has EXACTLY fifty-four routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(54)
+  // + POST /api/chat/stop (Стоп) + POST /api/redirect (руль бегущей задачи). Declared, not drifted.
+  it('the frozen table has EXACTLY fifty-five routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(55)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

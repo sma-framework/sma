@@ -64,6 +64,7 @@ import {
   createAttemptLogWriter,
   readAttemptLog,
 } from '../src/queue/attempt-ledger.mjs'
+import { appendRedirect, readPendingRedirects } from '../src/runner/redirects.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
   const s = { now: start }
@@ -1103,6 +1104,54 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
         }),
     }
   }
+
+  it('a queued correction resumes the SAME session after the run — once, consumed, with the correction in the prompt (руль)', async () => {
+    const ledgerDir = mkDir('sma-loop-rd-')
+    const dataDir = mkDir('sma-loop-rd-data-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+
+    // Every spawn is recorded; each emits a session id and exits green.
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      spec.onLine?.(JSON.stringify({ type: 'system', subtype: 'init', session_id: '11111111-2222-4333-8444-555555555555' }))
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { ledger: realLedger(ledgerDir) },
+    })
+    deps.config.dataDir = dataDir // the redirect store's root — the continuation loop's switch
+
+    // The founder's correction is pinned BEFORE the tick — «после хода».
+    appendRedirect({ dataDir, taskId: 'BL-1', text: 'нет, правь шапку, не подвал', mode: 'queue', clock: c.clock })
+
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1') // the corrected attempt still ends through the gates
+
+    // Two spawns: the run, then ONE continuation of the SAME session with the correction.
+    expect(spawns).toHaveLength(2)
+    const resumeAt = spawns[1].args.indexOf('--resume')
+    expect(resumeAt).toBeGreaterThan(-1)
+    expect(spawns[1].args[resumeAt + 1]).toBe('11111111-2222-4333-8444-555555555555')
+    expect(spawns[1].prompt).toContain('нет, правь шапку')
+    expect(spawns[0].args).not.toContain('--resume') // the first run was the ordinary spawn
+
+    // Consumed exactly once — a second tick would find nothing to continue.
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([])
+  })
 
   it('every line reaches the attempt’s own file, and the delegated one is marked as delegated', async () => {
     const ledgerDir = mkDir('sma-loop-log-')

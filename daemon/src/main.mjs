@@ -640,6 +640,12 @@ export function createDaemon(o = {}) {
   const hub = o.hub ?? createEventHub({ clock })
   const adapter = wrapAdapterWithEvents(durable, hub, { clock })
 
+  // ── THE STEERING REGISTRY: one instance, both sides (phase «Двигатель») ──
+  // The redirect door (front) tells a live child to die; the tick registers each child's
+  // kill-handle here. One object, both consumers, same law as the event hub: hint plumbing,
+  // never truth — a restart loses only the ability to kill children that died with it.
+  const attemptTurns = createTurnRegistry()
+
   // (2b) the git runner. ONE instance, handed to every consumer that needs git (the
   // front's diff/timeline, the merge verb approve runs): an args ARRAY, no shell, and the
   // child's stderr CAPTURED rather than inherited. That last part is not cosmetic — asking
@@ -925,6 +931,8 @@ export function createDaemon(o = {}) {
         // the Стоп button's registry: live chat-turn kill-handles, minted per client turn id.
         // Hint plumbing (a restart loses only the ability to stop turns that died with it).
         chatTurns: createTurnRegistry(),
+        // the steering registry the redirect door shares with the tick (declared above).
+        attemptTurns,
         chatDir: o.chatDir ?? dataDir, // the transcript lives beside the daemon's own data
         dataDir, // the spend book the «что съело лимит» branch reads
         policyDir: o.policyDir ?? dataDir, // where «Мой стиль» puts the distilled voice
@@ -1054,6 +1062,7 @@ export function createDaemon(o = {}) {
     adapter,
     config,
     ledger,
+    attemptTurns,
     routing: { resolveRoute },
     // THE MONEY RULE, JOINED TO THE DISPATCHER. `shouldApiFallback` was written, tested and
     // called by nobody: an explicit `provider:'api'` task ran with no ceiling, and the

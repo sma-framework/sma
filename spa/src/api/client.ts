@@ -339,6 +339,20 @@ export function stopChat(input: { turnId: string }): Promise<{ stopped: boolean 
   return postJson<{ stopped: boolean }>('/api/chat/stop', { turnId: input.turnId })
 }
 
+/**
+ * The steering wheel for a running task: a typed correction with a DECLARED fate —
+ * 'interrupt' kills the live child and the same session resumes with the correction;
+ * 'queue' lets the current run finish and the correction rides the continuation.
+ * `live` in the answer says whether anything was actually killed right now.
+ */
+export function redirectTask(input: {
+  taskId: string
+  text: string
+  mode: 'interrupt' | 'queue'
+}): Promise<{ accepted: boolean; id: string; mode: string; live: boolean }> {
+  return postJson('/api/redirect', { taskId: input.taskId, text: input.text, mode: input.mode })
+}
+
 /** What has been said so far. */
 export function getChatHistory(opts: { limit?: number } = {}): Promise<ChatHistory> {
   const q = opts.limit ? `?limit=${encodeURIComponent(String(opts.limit))}` : ''
