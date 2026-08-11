@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useEnqueue } from '../../api/queries'
+import { useEnqueue, useStateQuery } from '../../api/queries'
 
 /**
  * NewTaskForm — putting a task in the queue, in the four decisions the door actually takes.
@@ -79,6 +79,10 @@ function Segmented<T>({
 
 export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const enqueue = useEnqueue()
+  // The one fact worth saying BEFORE the button: a switched-off conveyor takes the task
+  // and runs nothing. Saying it after was the recon's Multica lesson (warn pre-submit).
+  const state = useStateQuery()
+  const pipelineOff = state.data?.rules?.pipeline?.enabled === false
 
   const [title, setTitle] = useState('')
   const [lane, setLane] = useState<string>(LANES[0].value)
@@ -131,6 +135,13 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       <Segmented label="Направление" options={LANES} current={lane} onPick={setLane} />
       <Segmented label="Исполнитель" options={EXECUTORS} current={provider} onPick={setProvider} />
       <Segmented label="Очередь" options={ORDERS} current={priority} onPick={setPriority} />
+
+      {pipelineOff ? (
+        <p className="m-0 rounded-[8px] bg-warn-s px-2.5 py-2 text-[11.5px] leading-[1.4] text-warn-tx">
+          Конвейер выключен: задача встанет в очередь, но никто её не начнёт, пока вы не
+          включите тумблер («Дом системы»).
+        </p>
+      ) : null}
 
       {problem ? <p className="m-0 text-[11.5px] text-err-tx">{problem}</p> : null}
 

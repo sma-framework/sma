@@ -23,11 +23,15 @@ export function Composer({
   value,
   onChange,
   onSend,
+  onStop,
   busy,
 }: {
   value: string
   onChange: (next: string) => void
   onSend: () => void
+  /** Стоп для живого хода. While busy the ONE button is Стоп — the recon lesson
+   *  (Multica, 11.08): interruption belongs a pixel from the hand, not on another screen. */
+  onStop?: () => void
   busy: boolean
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -60,14 +64,25 @@ export function Composer({
             aria-label="Сообщение руководителю команды"
             className="min-w-0 flex-1 border-none bg-transparent py-[5px] text-[13px] text-tx outline-none placeholder:text-tx3"
           />
-          <button
-            type="button"
-            onClick={send}
-            disabled={busy || value.trim() === ''}
-            className="flex-none rounded-[9px] bg-blue-d px-3.5 py-2 text-[12.5px] font-semibold text-white disabled:opacity-50"
-          >
-            Отправить
-          </button>
+          {busy && onStop ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="Остановить ход"
+              className="flex-none rounded-[9px] bg-warn-tx px-3.5 py-2 text-[12.5px] font-semibold text-white"
+            >
+              ■ Стоп
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={send}
+              disabled={busy || value.trim() === ''}
+              className="flex-none rounded-[9px] bg-blue-d px-3.5 py-2 text-[12.5px] font-semibold text-white disabled:opacity-50"
+            >
+              Отправить
+            </button>
+          )}
         </div>
         <div className="mt-[7px] text-[11px] text-tx3">
           Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.

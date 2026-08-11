@@ -79,6 +79,10 @@ export function TaskCardMini({
 
       {card.reason ? <div className="mt-1.5 text-[11.5px] text-err-tx">{card.reason}</div> : null}
 
+      {/* Простой без причины — анти-паттерн, снятый разведкой 11.08: карточка, которую
+          никто не заберёт, говорит почему, тем же тоном, что «застряла». */}
+      {card.idle ? <div className="mt-1.5 text-[11.5px] leading-[1.35] text-warn-tx">{card.idle}</div> : null}
+
       <div className="mt-2.5 flex items-center gap-2">
         <RoleChip role={card.role} title={card.title} />
         <span className="min-w-0 truncate text-[11.5px] text-tx2">{card.role ?? 'без направления'}</span>

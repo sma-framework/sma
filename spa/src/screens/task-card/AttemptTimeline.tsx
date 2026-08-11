@@ -30,6 +30,20 @@ function outcomeWords(attempt: TaskAttempt): string {
   return attempt.endedAt ? 'завершён' : 'идёт сейчас'
 }
 
+/**
+ * Сколько подход длился — вторая половина двухслойной ошибки (разведка 11.08, Multica:
+ * «Failed after 1m 20s»). Цена попытки говорится рядом с исходом, не вычисляется в уме.
+ */
+function durationWords(attempt: TaskAttempt): string | null {
+  if (!attempt.startedAt || !attempt.endedAt) return null
+  const ms = Date.parse(attempt.endedAt) - Date.parse(attempt.startedAt)
+  if (!Number.isFinite(ms) || ms < 0) return null
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec} с`
+  const min = Math.floor(sec / 60)
+  return `${min} мин ${sec % 60} с`
+}
+
 /** The colour of the mark beside a row — the same three tones the rest of the window uses. */
 function dotTone(attempt: TaskAttempt): string {
   if (attempt.outcome === 'failed') return 'bg-err'
@@ -98,6 +112,9 @@ function Row({
         >
           <span className="text-[12.5px] text-tx">
             Подход {attempt.attempt ?? '—'} · {outcomeWords(attempt)}
+            {durationWords(attempt) ? (
+              <span className="text-tx3 tabular-nums"> · {durationWords(attempt)}</span>
+            ) : null}
           </span>
           <span aria-hidden className="text-[9px] text-tx3">
             {open ? '▾' : '▸'}
@@ -112,6 +129,13 @@ function Row({
               <span>начат {clockLabel(attempt.startedAt)}</span>
               <span>завершён {clockLabel(attempt.endedAt)}</span>
             </div>
+            {/* Сырой слой двухслойной ошибки: человеческая строка уже в заголовке ряда
+                (reasonLabel), здесь — код причины как он записан, для баг-репорта. */}
+            {attempt.outcome === 'failed' && attempt.failureReason ? (
+              <p className="m-0 mb-2 rounded-[7px] bg-err-s px-2.5 py-1.5 font-mono text-[11px] text-err-tx">
+                {attempt.failureReason}
+              </p>
+            ) : null}
             <Checks attempt={attempt} />
           </div>
         ) : null}

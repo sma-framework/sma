@@ -247,6 +247,7 @@ export const ROUTES = Object.freeze({
   'POST /api/machine/add': 'handleMachineAdd',
   'POST /api/machine/remove': 'handleMachineRemove',
   'POST /api/chat': 'handleChat',
+  'POST /api/chat/stop': 'handleChatStop',
   'GET /api/chat/history': 'handleChatHistory',
   'POST /api/import/scan': 'handleImportScan',
   'POST /api/import/enroll': 'handleImportEnroll',
@@ -1622,6 +1623,8 @@ function chatDeps(config, deps) {
     // the free branch's spawn seam: undefined in production (chat.mjs owns the default),
     // a spy in the suite that proves a factual answer never reaches for a session
     spawnWorker: deps.spawnWorker,
+    // the Stop button's other half — the live-turn registry the stop door also holds
+    chatTurns: deps.chatTurns,
     ...(typeof deps.readUsageRows === 'function' ? { readUsageRows: deps.readUsageRows } : {}),
   }
 }
@@ -1690,7 +1693,7 @@ async function handleChat({ req, res, config, deps }) {
   const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['text', 'conversationId']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['text', 'conversationId', 'turnId']))) return undefined
   if (typeof b.text !== 'string' || b.text.trim() === '') return send400(res, 'text required')
   if (b.text.length > CHAT_TEXT_CAP) return send400(res, `text exceeds ${CHAT_TEXT_CAP} chars`)
   if (b.conversationId !== undefined && b.conversationId !== null) {
@@ -1698,10 +1701,16 @@ async function handleChat({ req, res, config, deps }) {
       return send400(res, 'invalid conversationId')
     }
   }
+  // The turn id is CLIENT-minted: the stop door needs a name for the turn BEFORE this
+  // request answers, and the client is the only party that has one that early.
+  if (b.turnId !== undefined && b.turnId !== null) {
+    if (typeof b.turnId !== 'string' || !TURN_ID_RE.test(b.turnId)) return send400(res, 'invalid turnId')
+  }
 
   const turn = await deps.handleChatTurn({
     text: b.text,
     ...(b.conversationId ? { conversationId: b.conversationId } : {}),
+    ...(b.turnId ? { turnId: b.turnId } : {}),
     deps: chatDeps(config, deps),
   })
   const answer = pickAnswer(turn && turn.answer)
@@ -1712,6 +1721,27 @@ async function handleChat({ req, res, config, deps }) {
     status: turn && turn.answer && turn.answer.error ? 'failed' : 'ok',
   })
   return sendJson(res, 200, { conversationId: turn.conversationId, kind: turn.kind ?? null, answer })
+}
+
+/** A client-minted chat turn id: short, filename-safe, and useless to guess. */
+const TURN_ID_RE = /^ct-[A-Za-z0-9][A-Za-z0-9-]{3,47}$/
+
+/**
+ * POST /api/chat/stop — body {turnId}. The Стоп button's door: tell a LIVE chat turn to
+ * die. The send request itself then answers `kind: 'stopped'` through its own exit path —
+ * this door only pulls the trigger and reports whether there was anything to shoot.
+ * `stopped: false` is an honest «that turn is not running» (already finished, or a
+ * daemon restart dropped the registry), never an error.
+ */
+async function handleChatStop({ req, res, deps }) {
+  const registry = deps.chatTurns
+  if (!registry || typeof registry.stop !== 'function') return send501(res)
+  const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['turnId']))) return undefined
+  if (typeof b.turnId !== 'string' || !TURN_ID_RE.test(b.turnId)) return send400(res, 'invalid turnId')
+  return sendJson(res, 200, { stopped: registry.stop(b.turnId) })
 }
 
 /**
@@ -3642,6 +3672,7 @@ export const HANDLERS = Object.freeze({
   handleMachineAdd,
   handleMachineRemove,
   handleChat,
+  handleChatStop,
   handleChatHistory,
   handleImportScan,
   handleImportEnroll,

@@ -66,6 +66,8 @@ import {
   CHAT_MAX_TURNS,
   CHAT_TASK_ID_PREFIX,
   CHAT_FALLBACK_TEXT,
+  createTurnRegistry,
+  dispatchFreeTurn,
 } from '../src/front/chat.mjs'
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'sma-chat-'))
@@ -919,9 +921,102 @@ describe('GET /api/chat/history — the transcript, read back as data', () => {
 })
 
 describe('the chat routes filled a FROZEN slot', () => {
-  it('the table is still exactly fifty-three routes and both chat routes are real handlers', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(53)
+  it('the table is fifty-four routes and all three chat routes are real handlers', () => {
+    // 53 of the V5.4 freeze + POST /api/chat/stop (the Стоп door, phase «Двигатель»).
+    expect(Object.keys(ROUTES)).toHaveLength(54)
     expect(ROUTES['POST /api/chat']).toBe('handleChat')
+    expect(ROUTES['POST /api/chat/stop']).toBe('handleChatStop')
     expect(ROUTES['GET /api/chat/history']).toBe('handleChatHistory')
+  })
+})
+
+// ══════════════ Стоп: the live-turn registry and its door (wave 1, «Двигатель») ══════════════
+//
+// The law under test: a founder's Стоп is an OUTCOME, never a failure. The killed child
+// resolves through the same exit path a crash would — the registry is what tells the two
+// apart, so the person who pressed the button is answered «остановлено», not apologised to.
+
+describe('createTurnRegistry — Стоп\'s other half', () => {
+  it('stops only a live turn, remembers it was ON PURPOSE, and forgets on done()', () => {
+    const reg = createTurnRegistry()
+    let killed = 0
+    reg.register('ct-live-1', () => {
+      killed += 1
+    })
+    expect(reg.stop('ct-live-1')).toBe(true)
+    expect(killed).toBe(1)
+    expect(reg.wasStopped('ct-live-1')).toBe(true)
+    reg.done('ct-live-1')
+    expect(reg.wasStopped('ct-live-1')).toBe(false) // forgotten, not sticky
+    expect(reg.stop('ct-live-1')).toBe(false) // nothing live under that name any more
+    expect(reg.stop('ct-never-was')).toBe(false) // honest «нечего останавливать»
+  })
+
+  it('a kill that throws still counts as the founder\'s stop', () => {
+    const reg = createTurnRegistry()
+    reg.register('ct-hard', () => {
+      throw new Error('already dead')
+    })
+    expect(reg.stop('ct-hard')).toBe(true)
+    expect(reg.wasStopped('ct-hard')).toBe(true)
+  })
+})
+
+describe('dispatchFreeTurn — a stopped turn answers «остановлено», never the fallback apology', () => {
+  it('kind: stopped when the registry says the founder ended the turn', async () => {
+    const registry = createTurnRegistry()
+    // A spawn whose child dies the moment Стоп pulls the trigger — the real shape of a kill.
+    const spawnWorker = (o: any) => {
+      const handle = {
+        pid: 1,
+        kill: () => {
+          o.onExit?.({ code: null, signal: 'SIGTERM' })
+        },
+      }
+      // the stop door fires while the child is "running": simulate by stopping on next tick
+      setTimeout(() => registry.stop('ct-stop-me'), 0)
+      return handle
+    }
+    const res = await dispatchFreeTurn({
+      text: 'долгий вопрос',
+      turnId: 'ct-stop-me',
+      deps: {
+        config: { workers: [{ id: 'w1', account: { name: 'a1' }, dayPriorityOwner: true }] },
+        spawnWorker,
+        chatTurns: registry,
+        timeoutMs: 5000,
+      },
+    })
+    expect(res.kind).toBe('stopped')
+    expect(res.text).toContain('Остановлено')
+    expect(registry.size).toBe(0) // the registry forgot the turn on the way out
+  })
+})
+
+describe('POST /api/chat/stop — the door', () => {
+  const stopHeaders = () => ({ authorization: `Bearer ${FRONT_TOKEN}`, 'content-type': 'application/json' })
+
+  it('501 when no registry is wired, 400 on a bad turn id, 200 with the honest boolean', async () => {
+    const bare = createFrontServer({ config: { token: FRONT_TOKEN }, deps: {} })
+    expect((await hit(bare, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'ct-x-1234' } })).statusCode).toBe(501)
+
+    const chatTurns = createTurnRegistry()
+    const front = createFrontServer({ config: { token: FRONT_TOKEN }, deps: { chatTurns } })
+    expect((await hit(front, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'нет' } })).statusCode).toBe(400)
+    expect((await hit(front, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'ct-x-1234', extra: 1 } })).statusCode).toBe(400)
+
+    // nothing live → an honest false, still 200 (already-finished is not an error)
+    const idle = await hit(front, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'ct-x-1234' } })
+    expect(idle.statusCode).toBe(200)
+    expect(JSON.parse(idle.body)).toEqual({ stopped: false })
+
+    let killed = 0
+    chatTurns.register('ct-x-1234', () => {
+      killed += 1
+    })
+    const live = await hit(front, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'ct-x-1234' } })
+    expect(live.statusCode).toBe(200)
+    expect(JSON.parse(live.body)).toEqual({ stopped: true })
+    expect(killed).toBe(1)
   })
 })

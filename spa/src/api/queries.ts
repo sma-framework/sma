@@ -285,12 +285,23 @@ export function useRemoveMachine() {
  */
 export function useSendChat() {
   const queryClient = useQueryClient()
-  return useMutation<Awaited<ReturnType<typeof api.sendChat>>, Error, { text: string; conversationId?: string }>({
+  return useMutation<
+    Awaited<ReturnType<typeof api.sendChat>>,
+    Error,
+    { text: string; conversationId?: string; turnId?: string }
+  >({
     mutationFn: (input) => api.sendChat(input),
     onSuccess: () => {
       // The book has grown by two turns; a screen opened later reads them from it.
       void queryClient.invalidateQueries({ queryKey: CHAT_KEY, refetchType: 'none' })
     },
+  })
+}
+
+/** Стоп для живого хода — судьба самого хода приедет ответом send-запроса (kind: 'stopped'). */
+export function useStopChat() {
+  return useMutation<{ stopped: boolean }, Error, { turnId: string }>({
+    mutationFn: (input) => api.stopChat(input),
   })
 }
 

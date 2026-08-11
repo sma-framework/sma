@@ -635,7 +635,7 @@ function newConversationId(clock) {
  * @param {{text:string, conversationId?:string, deps?:object}} args
  * @returns {Promise<{conversationId:string, kind:string, answer:object}>}
  */
-export async function handleChatTurn({ text, conversationId, deps = {} } = {}) {
+export async function handleChatTurn({ text, conversationId, turnId, deps = {} } = {}) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const convId = conversationId || newConversationId(clock)
   const kind = classifyTurn(text)
@@ -652,7 +652,7 @@ export async function handleChatTurn({ text, conversationId, deps = {} } = {}) {
     // drifted apart. It answers by falling through to the lane that answers anything honestly
     // rather than by refusing — the same safety the failure branch already relies on.
     const dispatch = deps.dispatchFree ?? dispatchFreeTurn
-    answer = await dispatch({ text, conversationId: convId, deps })
+    answer = await dispatch({ text, conversationId: convId, turnId, deps })
   } else if (kind === 'spend') {
     answer = answerSpend({ rows: await spendRows(deps), workers: (deps.config && deps.config.workers) || [] })
   } else {
@@ -703,6 +703,53 @@ async function spendRows(deps) {
   if (typeof deps.readUsageRows === 'function') return (await deps.readUsageRows()) || []
   if (!deps.dataDir) return []
   return readUsageRows({ dataDir: deps.dataDir, windowMs: deps.spendWindowMs, clock: deps.clock, fsImpl: deps.fsImpl })
+}
+
+// ══════════════════ the live-turn registry: the Stop button's other half ═════════
+//
+// While a free turn is running, the ONLY handle that can end it lives inside runSession's
+// closure — which is why for one release the person watching the spinner had nothing to
+// press (recon 11.08, the Multica lesson: Send must become Стоп). This registry is HINT
+// PLUMBING in the hub's tradition: it holds live kill-handles keyed by a client-minted
+// turn id, never any truth — a daemon restart drops it and loses nothing but the ability
+// to stop turns that died with the daemon anyway.
+
+/**
+ * createTurnRegistry() → { register, stop, wasStopped, done, size }.
+ *
+ * `stop` marks BEFORE it kills: the dying child resolves the turn through its exit path,
+ * and the dispatcher then asks `wasStopped` to tell a founder's Стоп apart from a crash —
+ * a stopped turn answers «остановлено», never the fallback apology.
+ */
+export function createTurnRegistry() {
+  const live = new Map() // turnId -> { kill, stopped } — live handles ONLY, never truth
+  return {
+    register(turnId, kill) {
+      if (turnId) live.set(String(turnId), { kill, stopped: false })
+    },
+    /** stop(turnId) → true if a live turn was told to die; false is «nothing to stop». */
+    stop(turnId) {
+      const t = live.get(String(turnId))
+      if (!t) return false
+      t.stopped = true
+      try {
+        t.kill()
+      } catch {
+        /* a child that cannot be killed is still a turn the founder ended */
+      }
+      return true
+    },
+    wasStopped(turnId) {
+      const t = live.get(String(turnId))
+      return t ? t.stopped === true : false
+    },
+    done(turnId) {
+      live.delete(String(turnId))
+    },
+    get size() {
+      return live.size
+    },
+  }
 }
 
 // ══════════════════ the free branch: a short session outside the queue ═════════
@@ -960,7 +1007,7 @@ function runSession({ spawnFn, bin, args, cwd, env, prompt, timeoutMs, setTimeou
  * @param {{text:string, conversationId?:string, deps?:object}} args
  * @returns {Promise<{kind:'text'|'draft', text:string, draft?:object, error?:string}>}
  */
-export async function dispatchFreeTurn({ text, deps = {} } = {}) {
+export async function dispatchFreeTurn({ text, turnId, deps = {} } = {}) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const taskId = `${CHAT_TASK_ID_PREFIX}${clock()}`
   const workers = (deps.config && deps.config.workers) || []
@@ -984,7 +1031,20 @@ export async function dispatchFreeTurn({ text, deps = {} } = {}) {
     return { kind: 'text', text: CHAT_FALLBACK_TEXT, error: `not-ready: ${e && e.message ? e.message : e}` }
   }
 
-  const spawnFn = deps.spawnWorker ?? ((o) => spawnWorker({ ...o, spawnImpl: deps.spawnImpl }))
+  const baseSpawn = deps.spawnWorker ?? ((o) => spawnWorker({ ...o, spawnImpl: deps.spawnImpl }))
+  // The Stop seam: the kill-handle is registered the moment the child exists, under the
+  // client's own turn id — so the stop door can end THIS turn and no other.
+  const registry = deps.chatTurns
+  const spawnFn =
+    registry && turnId
+      ? (o) => {
+          const h = baseSpawn(o)
+          registry.register(turnId, () => {
+            if (h && typeof h.kill === 'function') h.kill()
+          })
+          return h
+        }
+      : baseSpawn
   const { lines, timedOut, error } = await runSession({
     spawnFn,
     bin: deps.bin ?? 'claude',
@@ -1020,6 +1080,15 @@ export async function dispatchFreeTurn({ text, deps = {} } = {}) {
     } catch {
       // an unwritable spend book must not swallow the answer the human is waiting for
     }
+  }
+
+  // A founder's Стоп is an OUTCOME, not a failure: the killed child lands in the same
+  // exit path a crash would, and without this branch the person who pressed the button
+  // would be answered with the fallback apology for a turn they ended on purpose.
+  if (registry && turnId) {
+    const stopped = registry.wasStopped(turnId)
+    registry.done(turnId)
+    if (stopped) return { kind: 'stopped', text: 'Остановлено. Ваш текст возвращён в поле ввода — поправьте и отправьте снова.' }
   }
 
   const spoken = lines.map((l) => textOfLine(l)).filter(Boolean)

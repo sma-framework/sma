@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useChatHistoryQuery, useEnqueue, usePhaseStage, useSendChat, useStateQuery } from '../../api/queries'
+import { useChatHistoryQuery, useEnqueue, usePhaseStage, useSendChat, useStateQuery, useStopChat } from '../../api/queries'
 import type { ChatTurn } from '../../api/types'
 import { refusalWords } from '../../shell/format'
 import { openScreen } from '../../shell/navigation'
@@ -81,6 +81,7 @@ export function Screen() {
   const state = useStateQuery()
   const history = useChatHistoryQuery()
   const send = useSendChat()
+  const stop = useStopChat()
   const enqueue = useEnqueue()
   const startStage = usePhaseStage()
 
@@ -95,6 +96,19 @@ export function Screen() {
 
   const seeded = useRef(false)
   const bottom = useRef<HTMLDivElement | null>(null)
+
+  // ── the live turn: its client-minted id (for Стоп) and a per-second tick (for the
+  // «Думает · Ns» line). The tick is pure presentation — the truth is send.isPending. ──
+  const liveTurnId = useRef<string | null>(null)
+  const [thinkingSec, setThinkingSec] = useState(0)
+  useEffect(() => {
+    if (!send.isPending) {
+      setThinkingSec(0)
+      return
+    }
+    const t = window.setInterval(() => setThinkingSec((s) => s + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [send.isPending])
 
   // The book is read once. Re-reading it during a live conversation would replay turns this
   // screen already holds — with less in them than it holds.
@@ -120,12 +134,25 @@ export function Screen() {
     setProblem(null)
     append({ key: `said-${Date.now()}`, role: 'user', text: said, ts: new Date().toISOString() })
 
+    // The turn id is minted HERE, before the request leaves: Стоп needs a name for the
+    // turn while it is still running, and only the client has one that early.
+    const turnId = `ct-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
+    liveTurnId.current = turnId
+
     send.mutate(
-      { text: said, ...(conversationId ? { conversationId } : {}) },
+      { text: said, turnId, ...(conversationId ? { conversationId } : {}) },
       {
         onSuccess: (reply) => {
+          liveTurnId.current = null
           setConversationId(reply.conversationId)
           const answer = reply.answer
+          // A turn the founder ENDED: the words they sent come back into the composer for
+          // editing — their Стоп is a redirect, not a loss (recon 11.08, Multica idea 3).
+          if (answer.kind === 'stopped') {
+            setText(said)
+            append({ key: `stopped-${Date.now()}`, role: 'assistant', text: answer.text, ts: new Date().toISOString() })
+            return
+          }
           append({
             key: `heard-${Date.now()}`,
             role: 'assistant',
@@ -139,10 +166,17 @@ export function Screen() {
           })
         },
         onError: (err) => {
+          liveTurnId.current = null
           setProblem(isNotReady(err) ? 'Разговор на этой машине пока не включён.' : refusalWords(err))
         },
       },
     )
+  }
+
+  /** Стоп: pull the trigger; the send request itself answers kind:'stopped' and returns the text. */
+  const onStop = () => {
+    const id = liveTurnId.current
+    if (id) stop.mutate({ turnId: id })
   }
 
   /**
@@ -261,6 +295,7 @@ export function Screen() {
               createdTasks={createdTasks}
               creatingKey={creatingKey}
               thinking={send.isPending}
+              thinkingSec={thinkingSec}
               onOpenTask={setOpenTaskId}
               onFollowLink={followLink}
               onCreateDraft={createFromDraft}
@@ -271,7 +306,7 @@ export function Screen() {
           <div ref={bottom} />
         </div>
 
-        <Composer value={text} onChange={setText} onSend={onSend} busy={send.isPending} />
+        <Composer value={text} onChange={setText} onSend={onSend} onStop={onStop} busy={send.isPending} />
       </div>
 
       {/* The same panel «Сегодня» opens, borrowed from the shell — never a second copy of it. */}

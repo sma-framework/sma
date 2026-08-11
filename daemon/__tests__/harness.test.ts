@@ -670,8 +670,9 @@ async function call(front: any, opts: any) {
 }
 
 describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no route added)', () => {
-  it('the route table is still exactly fifty-three entries and carries no stock-team route', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(53)
+  it('the route table is still exactly fifty-four entries and carries no stock-team route', () => {
+    // 53 of the V5.4 freeze + POST /api/chat/stop (phase «Двигатель» re-freeze).
+    expect(Object.keys(ROUTES)).toHaveLength(54)
     expect(Object.keys(ROUTES).filter((k) => /stock/i.test(k))).toEqual([])
   })
 

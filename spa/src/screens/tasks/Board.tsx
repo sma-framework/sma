@@ -56,6 +56,10 @@ export interface BoardCard {
   machine: string
   /** Why it did not make it, in the daemon's own words. Only ever set on a failed card. */
   reason: string | null
+  /** Why the queue is NOT MOVING, in words — set only on a queued card nothing will pick
+   *  up (конвейер выключен / окна закрыты / бюджет исчерпан). A queued card seconds from
+   *  running carries nothing (разведка 11.08: «Queued без причины» — анти-паттерн). */
+  idle?: string | null
   /** Set only when the task has waited longer than the configured patience. */
   agedForHours?: number
   /** A quiet second line: the place in the queue, or the hour it finished. */
