@@ -854,7 +854,13 @@ export function createDaemon(o = {}) {
         },
         readMemoryLint: async () => {
           const projectDir = connectedProjectDir()
-          const run = await runProjectVerb({ verb: 'lint', args: ['--json'], projectDir })
+          // THE WALK GETS A BUDGET, because the browser has one. In a project that carries a
+          // plans tree the linter's prediction checks spawn a git subprocess per fingerprint —
+          // hundreds of them on a mature checkout, minutes on Windows — and the panel sat on
+          // «Проверяю корпус…» past any patience (QA D2, 11.08.2026). The budget is the verb's
+          // OWN honesty mechanism: past it the run stops, exits 2, and NAMES what it did not
+          // check — a bounded honest report, never a silent green and never a spinner.
+          const run = await runProjectVerb({ verb: 'lint', args: ['--json', '--budget', '20'], projectDir })
           // A corpus WITH critical findings exits 1 and is a perfectly good report: the verdict
           // is the payload, never the exit code.
           return run.ok ? { ok: true, report: run.result } : { ok: false, reason: run.reason ?? 'unavailable' }
