@@ -193,19 +193,35 @@ describe('GET /api/coordination — THE SNAPSHOT IS READ, NEVER REMEMBERED', () 
     expect(snap.sessions.map((s: any) => s.age)).toEqual(['2 ч', '45 мин'])
   })
 
-  it('a quiet checkout, an unreadable ledger and no project connected are all the same empty panel', () => {
+  it('a quiet checkout and no project connected are the same empty panel', async () => {
     const empty = { sessions: [], claims: [], collisions: [] }
-    expect(deriveCoordination({ config: CONNECTED, readLedger: () => empty })).toEqual(empty)
-    expect(
-      deriveCoordination({
-        config: CONNECTED,
-        readLedger: () => {
-          throw new Error('EACCES')
-        },
-      }),
-    ).toEqual(empty)
-    expect(deriveCoordination({ config: CONNECTED })).toEqual(empty) // nothing wired to read with
-    expect(deriveCoordination({ config: {}, readLedger: () => LEDGER })).toEqual(empty)
+    expect(await deriveCoordination({ config: CONNECTED, readLedger: () => empty })).toEqual(empty)
+    expect(await deriveCoordination({ config: CONNECTED })).toEqual(empty) // nothing wired to read with
+    expect(await deriveCoordination({ config: {}, readLedger: () => LEDGER })).toEqual(empty)
+  })
+
+  it('an ASYNC reader — the production shape — is awaited, not consumed as a Promise (QA D3)', async () => {
+    // For one release the derive read `.sessions` off the un-awaited Promise: undefined →
+    // empty panel while a live session was editing files in the checkout.
+    const snap = await deriveCoordination({ config: CONNECTED, readLedger: async () => LEDGER, clock: () => NOW })
+    expect(snap.sessions.length).toBeGreaterThan(0)
+    expect(snap.collisions.length).toBeGreaterThan(0)
+  })
+
+  it('an unreadable ledger is REPORTED, never passed off as an empty checkout (QA D3)', async () => {
+    const snap = await deriveCoordination({
+      config: CONNECTED,
+      readLedger: () => {
+        throw new Error('EACCES')
+      },
+    })
+    expect(snap.unreadable).toBe(true)
+    // …and the door turns the marker into 503, which the screen's error branch shows.
+    const { front } = mkFront({
+      deps: { deriveCoordination: async () => ({ sessions: [], claims: [], collisions: [], unreadable: true }) },
+    })
+    const res = await call(front, { url: '/api/coordination' })
+    expect(res.statusCode).toBe(503)
   })
 
   it('nothing of this machine rides out — no path, no pid, no session file name', async () => {

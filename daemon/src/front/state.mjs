@@ -1008,16 +1008,23 @@ export function deriveMemoryDrafts({ config, fsImpl, clock } = {}) {
  * @param {{config?:object, readLedger?:Function, clock?:Function}} [deps]
  * @returns {{sessions:object[], claims:object[], collisions:object[]}}
  */
-export function deriveCoordination({ config, readLedger, clock } = {}) {
+export async function deriveCoordination({ config, readLedger, clock } = {}) {
   const empty = { sessions: [], claims: [], collisions: [] }
   const project = connectedProject(config || {})
   if (!project || typeof readLedger !== 'function') return empty
 
+  // The production reader is ASYNC — it imports the project runtime's own readers — and for
+  // one release this derive consumed its Promise as though it were the ledger: `.sessions`
+  // of a Promise is undefined, so the panel said «кроме Вас никого» while a session was
+  // editing files in the checkout (QA D3, 11.08.2026). The await is the fix. The catch
+  // below is thereby REACHABLE for the first time, and it no longer launders a failure:
+  // an unreadable ledger is reported as such — the door answers 503 and the screen's
+  // error branch shows it — never passed off as an empty checkout.
   let ledger
   try {
-    ledger = readLedger({ projectDir: project.dir })
+    ledger = await readLedger({ projectDir: project.dir })
   } catch {
-    return empty // an unreadable ledger is «nobody is holding anything», never a wedged poll
+    return { ...empty, unreadable: true }
   }
   if (!ledger || typeof ledger !== 'object') return empty
 
