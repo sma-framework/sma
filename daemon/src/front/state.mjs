@@ -1685,8 +1685,9 @@ export async function deriveState(deps = {}) {
   const accounts = deriveAccounts(config, windows)
   const spendAccounts = accounts.map((a) => ({ name: a.name, pct5h: a.windows.pct5h, pctWeek: a.windows.pctWeek }))
 
-  const todayUsd = totalCost(usageReader, workersCfg, DAY_MS, now)
-  const monthUsd = totalCost(usageReader, workersCfg, MONTH_MS, now)
+  const apiAccountName = (config.budget && config.budget.apiAccountName) || 'api'
+  const todayUsd = totalCost(usageReader, workersCfg, DAY_MS, now, apiAccountName)
+  const monthUsd = totalCost(usageReader, workersCfg, MONTH_MS, now, apiAccountName)
   const capEur = Number(config.budget && config.budget.monthlyApiCapEur) || 0
   const anyClosed = workers.some((w) => w.window.closedUntil != null || (w.window.pct5h ?? 0) >= 100)
   const switchMode = anyClosed && capEur > 0 ? 'api' : 'subscription'
@@ -1796,17 +1797,24 @@ async function applyAggregator(payload, aggregator) {
 }
 
 /** Sum costUsd across every account over a rolling window via the injected usageReader. */
-function totalCost(usageReader, workersCfg, windowMs, now) {
+function totalCost(usageReader, workersCfg, windowMs, now, apiAccountName) {
   if (typeof usageReader !== 'function') return 0
   const seen = new Set()
   let sum = 0
-  for (const w of workersCfg) {
-    const name = accountNameOf(w.account, w.id)
+  // The paid channel books under its OWN account (it has no worker — that is what the
+  // fallback is), so a sum that walked only the workers' accounts could never see it.
+  const names = [...workersCfg.map((w) => accountNameOf(w.account, w.id)), ...(apiAccountName ? [apiAccountName] : [])]
+  for (const name of names) {
     if (seen.has(name)) continue
     seen.add(name)
     try {
       const u = usageReader({ accountName: name, windowMs, clock: () => now })
-      sum += Number(u && u.costUsd) || 0
+      // The paid share ONLY. This figure renders under «платный канал», and for one
+      // release it summed every row's costUsd — so a subscription chat message read as
+      // paid-channel spend directly above the line saying the paid channel is silent
+      // (QA D4). The reader separates the two; a reader that predates the split
+      // contributes 0 here rather than a number from the wrong column.
+      sum += Number(u && u.apiCostUsd) || 0
     } catch {
       /* a reader failure contributes 0 — never wedges the poll */
     }

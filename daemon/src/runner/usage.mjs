@@ -70,7 +70,7 @@ function num(v) {
  * @param {{accountName?:string, taskId?:string, model?:string}} [ctx]
  * @returns {object}
  */
-export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, model } = {}) {
+export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, model, channel } = {}) {
   const modelUsage = resultEvent && typeof resultEvent.modelUsage === 'object' ? resultEvent.modelUsage : {}
   const modelKeys = Object.keys(modelUsage || {})
   const modelName = model ?? modelKeys[0] ?? null
@@ -91,6 +91,7 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, m
     inputTokens,
     outputTokens,
     source: 'stream-result',
+    ...(channel !== undefined ? { channel } : {}),
   }
   const cost = Number(resultEvent && resultEvent.totalCostUsd)
   if (Number.isFinite(cost)) row.costUsd = cost
@@ -124,6 +125,7 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
     inputTokens,
     outputTokens,
     source: 'codex-final',
+    ...(ctx.channel !== undefined ? { channel: ctx.channel } : {}),
   }
 }
 
@@ -135,7 +137,7 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
  * @param {{accountName?:string, taskId?:string, model?:string, startedAt?:number, endedAt?:number}} [ctx]
  * @returns {object}
  */
-export function estimateUsage({ accountName, taskId, model, startedAt, endedAt } = {}) {
+export function estimateUsage({ accountName, taskId, model, startedAt, endedAt, channel } = {}) {
   // A DURATION IS ONLY A DURATION WHEN BOTH ENDS ARE REAL.
   //
   // This subtracted a missing start from an epoch-millisecond end and called the result a
@@ -157,6 +159,7 @@ export function estimateUsage({ accountName, taskId, model, startedAt, endedAt }
     inputTokens: 0,
     outputTokens: estOutputTokens,
     source: 'estimate',
+    ...(channel !== undefined ? { channel } : {}),
   }
 }
 
@@ -184,6 +187,14 @@ export function bookUsage({ dataDir, event = {}, clock = Date.now, fsImpl } = {}
     inputTokens: num(event.inputTokens),
     outputTokens: num(event.outputTokens),
     source: event.source ?? 'unknown',
+    // WHICH MONEY THIS IS. A subscription session carries a real costUsd — that is the
+    // «subscriptions are never $0» differentiator — but that figure is what the plan
+    // absorbed, not an invoice. Without this field the two kinds summed into one number,
+    // and one chat message showed up as «платный канал сегодня 0,12 €» directly above the
+    // line «платный канал не используется вовсе» (QA D4, 11.08.2026). Absent on old rows →
+    // read as 'subscription', which is what every row before the paid channel ever engaged
+    // actually was.
+    channel: event.channel === 'api' ? 'api' : 'subscription',
   }
   if (Number.isFinite(Number(event.costUsd))) row.costUsd = Number(event.costUsd)
 
@@ -292,7 +303,10 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
     }
     point.tokensIn += num(r.inputTokens)
     point.tokensOut += num(r.outputTokens)
-    if (Number.isFinite(Number(r.costUsd))) point.eur += Number(r.costUsd)
+    // The point's euro figure is what this file's own header promises: «the API-fallback
+    // money, honestly zero when nothing was billed». Subscription rows ride the token
+    // counts; their estimate never lands in a euro column (QA D4).
+    if (r.channel === 'api' && Number.isFinite(Number(r.costUsd))) point.eur += Number(r.costUsd)
     // The lane is identified by one of its own real bookings — the latest one seen. The
     // point is a day's total, not one turn, and the id says only which lane it belongs to.
     if (conversation) point.taskId = taskId
@@ -310,7 +324,7 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
  * This is the input for the window bars.
  *
  * @param {{dataDir:string, accountName?:string, windowMs?:number, clock?:Function, fsImpl?:object}} opts
- * @returns {{accountName:string|undefined, inputTokens:number, outputTokens:number, costUsd:number, rows:number, windowMs:number|undefined}}
+ * @returns {{accountName:string|undefined, inputTokens:number, outputTokens:number, costUsd:number, apiCostUsd:number, rows:number, windowMs:number|undefined}}
  */
 export function readUsage({ dataDir, accountName, windowMs, clock = Date.now, fsImpl } = {}) {
   let inputTokens = 0
@@ -318,12 +332,19 @@ export function readUsage({ dataDir, accountName, windowMs, clock = Date.now, fs
   let costUsd = 0
   let rows = 0
 
+  let apiCostUsd = 0
   for (const r of readUsageRows({ dataDir, accountName, windowMs, clock, fsImpl })) {
     inputTokens += num(r.inputTokens)
     outputTokens += num(r.outputTokens)
-    if (Number.isFinite(Number(r.costUsd))) costUsd += Number(r.costUsd)
+    if (Number.isFinite(Number(r.costUsd))) {
+      costUsd += Number(r.costUsd)
+      // The paid-channel share, separately: this is the ONLY figure a screen may put under
+      // a label that says «платный канал». A row without a channel predates the field and
+      // was subscription work by construction (QA D4).
+      if (r.channel === 'api') apiCostUsd += Number(r.costUsd)
+    }
     rows += 1
   }
 
-  return { accountName, inputTokens, outputTokens, costUsd, rows, windowMs }
+  return { accountName, inputTokens, outputTokens, costUsd, apiCostUsd, rows, windowMs }
 }
