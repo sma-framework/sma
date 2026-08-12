@@ -1,5 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { openEvents } from './client'
+import { listenToFrames } from './events'
+import type { FrameSource } from './events'
 import { STATE_KEY } from './queries'
 import type { EventFrame, StatePayload } from './types'
 
@@ -110,17 +112,29 @@ function tellListeners(evt: EventFrame): void {
   }
 }
 
+/** A live channel, as this file uses one: something to subscribe to, and a way to end it. */
+export type HintsChannel = FrameSource & { close(): void }
+
 /**
  * subscribeHints(queryClient) — open the live channel and patch the cached picture as
  * bells arrive. Returns a handle; closing it closes the channel.
  *
  * A dropped channel costs one poll of latency and nothing else, so a failure here is
  * quiet by design: the window keeps working on the poll alone.
+ *
+ * `openChannel` is a SEAM and nothing more: the window always gets `openEvents()`. It exists
+ * because the only honest proof that a bell reaches this function is to hand it a REAL stream
+ * off the daemon's own socket and watch a listener fire — and a browser's EventSource cannot
+ * be pointed at one from a test. The daemon injects its clock and its timers for the same
+ * reason.
  */
-export function subscribeHints(queryClient: QueryClient): HintsHandle {
-  let source: EventSource | null = null
+export function subscribeHints(
+  queryClient: QueryClient,
+  { openChannel = openEvents }: { openChannel?: () => HintsChannel } = {},
+): HintsHandle {
+  let source: HintsChannel | null = null
   try {
-    source = openEvents()
+    source = openChannel()
   } catch {
     return { close() {} }
   }
@@ -136,12 +150,15 @@ export function subscribeHints(queryClient: QueryClient): HintsHandle {
     tellListeners(evt)
   }
 
-  source.addEventListener('message', onFrame)
+  // BY NAME, EVERY NAME. The daemon names every frame it writes, and a named frame never
+  // reaches a `message` listener — see events.ts for the whole of that story and for why the
+  // fix belongs here rather than in the daemon's frozen wire.
+  const detach = listenToFrames(source, onFrame)
 
   const handle = source
   return {
     close() {
-      handle.removeEventListener('message', onFrame)
+      detach()
       handle.close()
     },
   }

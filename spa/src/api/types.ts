@@ -12,6 +12,8 @@
  * by a screen at render time.
  */
 
+import type { EventName } from './events'
+
 // ── the one-poll payload: GET /api/state ────────────────────────────────────────────
 
 /**
@@ -684,38 +686,19 @@ export type DraftKind = 'agent' | 'skill' | 'mcp'
 // ── live hints: GET /api/events ─────────────────────────────────────────────────────
 
 /**
- * The nineteen kinds of doorbell. A frame says something changed; it never says what was
- * said. The window then re-reads the truth from the poll.
+ * The kinds of doorbell, and the one place they are written down.
  *
- * This list is the daemon's own vocabulary, transcribed. It has to be, and not approximately:
- * a screen that watches for a bell the daemon really rings, but that is missing from this
- * union, cannot even be WRITTEN — comparing against a name the type does not contain is a
- * compile error, so the screen is forced to drop the live signal and wait for the poll. The
- * daemon's side of that lesson is already written down beside its own list: an unknown name
- * is dropped in silence, and a defect that looks like «slow» rather than like «broken» is the
- * expensive kind.
+ * A frame says something changed; it never says what was said. The window then re-reads the
+ * truth from the poll.
+ *
+ * The names themselves live in `events.ts` — beside the subscription that has to use every
+ * one of them, and nowhere else. They were transcribed here once and the two copies drifted
+ * within days: the daemon declared a bell for a finished release, this union never learned
+ * it, and the window could not have shown that bell even after the subscription was fixed.
+ * So the union is now DERIVED from the list that is actually subscribed to, and that list is
+ * checked against the daemon's frozen vocabulary by a test on the daemon's side.
  */
-export type EventName =
-  | 'task.queued'
-  | 'task.claimed'
-  | 'task.running'
-  | 'task.awaiting_approval'
-  | 'task.approved'
-  | 'task.returned'
-  | 'task.failed'
-  | 'worker.presence'
-  | 'spend.updated'
-  | 'harness.updated'
-  | 'chat.reply'
-  | 'machine.presence'
-  | 'project.updated'
-  | 'import.updated'
-  // ── the five that came with the conveyor of phases ──
-  | 'phase.stage'
-  | 'discussion.updated'
-  | 'memory.drafts'
-  | 'coordination.updated'
-  | 'ship.gate'
+export type { EventName }
 
 /**
  * Every field a frame may carry, and no field it may not.
@@ -744,6 +727,8 @@ export interface EventFrame {
   stage?: string
   /** `ship.gate` — which step of the gate reported. */
   step?: string
+  /** `ship.published` — the version that went out. Never a token, never a url. */
+  version?: string
 }
 
 // ── projects and machines (declared routes, filled by their own work) ───────────────

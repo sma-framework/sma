@@ -96,6 +96,7 @@ import {
   attemptLogTail,
   attemptDigest,
   parseApproachNote,
+  approachLinesFrom,
 } from '../front/journal.mjs'
 import { envelopeHash } from './capability-envelope.mjs'
 import { listNoteFiles } from '../../../scripts/sma/lib/generator.mjs'
@@ -499,7 +500,12 @@ export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
   // taken here for exactly the same reason and no other: counting tools, files and money off
   // the RETURNED rows would count the tail, and would quietly report «два инструмента» about
   // an attempt that used forty. Both readings are already holding every row in memory.
-  const note = parseApproachNote(rows.map((r) => String((r && r.line) || '')))
+  // …and it is read off the lines UNWRAPPED, exactly as the tick reads them. A stored line is
+  // a JSON frame with the worker's words inside it, so the markers are never at the start of a
+  // line: this call passed the raw lines and the panel «что работник собирался сделать» was
+  // therefore empty on every attempt — including the ones the tick had already accepted the
+  // note of, through the same parser, over the same stream, unwrapped.
+  const note = parseApproachNote(approachLinesFrom(rows.map((r) => String((r && r.line) || ''))))
   const digest = attemptDigest(rows)
   return { attemptId: id, ...attemptLogTail(rows, tail), note, digest }
 }
