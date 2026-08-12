@@ -6,13 +6,14 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FIFTY-THREE routes
- *     (re-frozen 2026-08-06 — the V5.4 growth is EXPLICIT, declared ONCE
- *     for the whole release and never incremental; the previous freezes were THIRTY,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FIFTY-FIVE routes
+ *     (re-frozen 2026-08-12 — the growth past the V5.4 fifty-three is EXPLICIT, ONE door
+ *     declared per release: the chat stop button in v5.4.3 and the running-task steering
+ *     wheel in v5.5.0; the previous freezes were FIFTY-THREE, 2026-08-06, THIRTY,
  *     2026-08-01, and FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 53 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 55 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -207,19 +208,21 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-06; the single freeze revision
- * of the V5.4 release, superseding the THIRTY before it). Exactly FIFTY-THREE
- * entries mapping `${METHOD} ${path-pattern}` → handler name. `:id` marks the four
- * dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id, /api/attempt/:id),
- * all bound to ID_RE; `:file` marks the one dynamic asset segment (/assets/:file), bound
- * to ASSET_RE. This object IS the contract the guard invariant polices — its size is a test
- * (Object.keys(ROUTES).length === 53) and no route may be added without also touching
- * that guard invariant.
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-12; the FIFTY-THREE of the V5.4
+ * freeze plus the two chat-surface doors, each declared once by its own release —
+ * the chat stop button in v5.4.3 and the running-task steering wheel in v5.5.0).
+ * Exactly FIFTY-FIVE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
+ * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
+ * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
+ * polices — its size is a test (Object.keys(ROUTES).length === 55) and no route may be
+ * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time. ALL FIFTY-THREE ARE LIVE — the table carries no stub, and the shape test says so
- * without consulting any list of exceptions. The table itself does not move.
+ * a time; the last two joined the chat surface, one per release, additively — nothing was
+ * removed or renamed. ALL FIFTY-FIVE ARE LIVE — the table carries no stub, and the shape
+ * test says so without consulting any list of exceptions. The table itself does not move.
  */
 export const ROUTES = Object.freeze({
   // ── the original fourteen (live) ──
