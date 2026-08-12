@@ -433,16 +433,62 @@ export function createPgBossQueue({
         // than acted on: nothing here can un-fetch a job, and dropping a task the queue
         // has already handed out would strand it until its lease expires.
         transitionStamp({ from: 'READY', to: 'CLAIMED', actor: 'dispatcher', taskId: data.id, attempt, log })
+        // NOTE ON `workerId`: the caller claims as the daemon itself — WHICH worker will run
+        // this task is decided by routing, one step later. So nothing is stamped here; the
+        // executing worker is written by assignWorker() below, once it is actually known.
         return { ...data, attempt }
       }
     }
     return null
   }
 
+  /**
+   * assignWorker(taskId, workerId) — record WHICH worker is executing a claimed task.
+   *
+   * Nothing in pg-boss knows about our workers, and the claim itself is made by the daemon
+   * before routing has chosen one — so without this write the answer to «who is running
+   * this» exists nowhere durable. That is not a cosmetic gap: the board derives «who is
+   * busy» by matching a claimed row's workerId against the configured workers, so an
+   * unwritten id renders as an EMPTY QUEUE AND AN IDLE WORKER while the work is running.
+   * Measured 12.08.2026 — the founder watched his own task disappear off the board and
+   * reasonably concluded the system had lost it.
+   *
+   * Written into the job's own payload so a daemon restart still knows, and scoped to
+   * active rows so a late assignment cannot touch finished work.
+   */
+  async function assignWorker(taskId, workerId) {
+    const job = await resolveActiveJob(taskId)
+    if (!job) return false
+    await runSql(`UPDATE pgboss.job SET data = data || jsonb_build_object('workerId', $2::text) WHERE id = $1`, [
+      job.id,
+      workerId ?? null,
+    ])
+    return true
+  }
+
+  /**
+   * touch(taskId) — push out the lease clock on a job this daemon is actively working.
+   *
+   * PG-BOSS v11 HAS NO RENEWAL METHOD. There is no touch, no renew, no heartbeat, no
+   * extend — verified against the installed instance, not the docs. A job's lease is
+   * `started_on + expire_seconds`, so the ONLY way to keep a long attempt alive is to
+   * restamp `started_on`. The line that used to stand here called `bossInstance.touch(...)`,
+   * which is `undefined` on the instance: every renewal threw TypeError, the caller
+   * discarded it, and so EVERY attempt outliving expireInSeconds was declared
+   * `runtime_offline` while its process kept running and burning the window. Measured
+   * 12.08.2026 on the first live pilot task: three parallel workers on one task, each
+   * started two minutes after the last, while the board showed an empty queue and an idle
+   * worker. The lease is the daemon's whole liveness story — it may never again rest on a
+   * method nobody proved exists.
+   *
+   * The UPDATE rides `runSql`, the same seam list() and resolveActiveJob already use, so the
+   * suite's injected execSql observes it and no second connection is ever opened. Scoped by
+   * `state = 'active'` so a completed or failed job can never be resurrected by a late touch.
+   */
   async function touch(taskId) {
     const job = await resolveActiveJob(taskId)
     if (!job) return false
-    await bossInstance.touch(job.name, job.id)
+    await runSql(`UPDATE pgboss.job SET started_on = now() WHERE id = $1 AND state = 'active'`, [job.id])
     return true
   }
 
@@ -531,7 +577,10 @@ export function createPgBossQueue({
       ...(r.merge_receipt ? { mergeReceipt: r.merge_receipt } : {}),
       attempt: (data.attempt ?? 1) + retries,
       coalesceCount: coalesce.get(data.id) ?? 1,
-      workerId: null, // pg-boss does not record the fetching worker; presence is derived elsewhere
+      // Who holds this task, as written into the payload by claimNext — pg-boss itself
+      // records nothing about the fetching worker. `null` here now means «nobody has
+      // claimed it», which is what every reader already assumed it meant.
+      workerId: data.workerId ?? null,
       storyPoints: data.storyPoints,
       acceptance: data.acceptance,
       enqueuedAt: r.created_on ?? null,
@@ -670,6 +719,7 @@ export function createPgBossQueue({
     enqueue,
     claimNext,
     touch,
+    assignWorker,
     complete,
     fail,
     list,
