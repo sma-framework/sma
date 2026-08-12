@@ -321,6 +321,23 @@ describe('buildArgs — a stage of the phase cycle is a command, everything else
     )
   })
 
+  // THE CONNECTION, NOT THE COMPUTATION. The capability envelope was built, hashed and
+  // journalled for every attempt this fleet ever ran — and never handed to the process, so
+  // the CLI refused Edit/Write/Bash on sight and no worker could change a single file.
+  // Policy that never reaches the thing it governs is bookkeeping; this asserts the wire.
+  it('the envelope tool grant reaches the spawned process', () => {
+    const tools = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']
+    const spec = build()(task(), route(), { allowedTools: tools })
+    const i = spec.args.indexOf('--allowedTools')
+    expect(i, 'the spawn carries no tool grant — the worker would be read-only').toBeGreaterThan(-1)
+    expect(spec.args[i + 1]).toBe(tools.join(' '))
+  })
+
+  it('no grant is passed when the envelope names no tools — absence stays absence', () => {
+    expect(build()(task(), route(), {}).args).not.toContain('--allowedTools')
+    expect(build()(task(), route(), { allowedTools: [] }).args).not.toContain('--allowedTools')
+  })
+
   it('no stage prompt carries an automation flag — the guard travels with the dictionary', () => {
     for (const stage of ['discuss', 'plan', 'execute', 'verify']) {
       const prompt = build()(stageTask({ data: { kind: 'document', stage, phase: '12' } }), route()).prompt

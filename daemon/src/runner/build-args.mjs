@@ -210,7 +210,17 @@ export function createBuildArgs({ config = {}, env = process.env } = {}) {
       bin = CLAUDE_BIN
       // The live attempt log is the reason for this flag: without it a session that delegates
       // to subagents goes silent for minutes and the screen has a spinner and nothing else.
-      args = buildClaudeArgs({ ...argOpts, forwardSubagentText: options.forwardSubagentText === true })
+      // The envelope's tool grant travels WITH the spawn. Policy that is computed and never
+      // reaches the process is not policy but bookkeeping — and for this fleet's whole life
+      // it left every worker read-only: the child refused Edit on sight, the attempt died as
+      // «no receipt», and no screen could name the cause (12.08.2026).
+      args = buildClaudeArgs({
+        ...argOpts,
+        forwardSubagentText: options.forwardSubagentText === true,
+        ...(Array.isArray(options.allowedTools) && options.allowedTools.length > 0
+          ? { allowedTools: options.allowedTools }
+          : {}),
+      })
     }
 
     // THE GUARD THAT SCREAMS — imported, never re-implemented here. It throws

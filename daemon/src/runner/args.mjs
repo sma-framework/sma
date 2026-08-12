@@ -275,7 +275,7 @@ export function assertProfileParity({ args, worker, task } = {}) {
 
 const CLAUDE_OPTION_KEYS = new Set([
   'prompt', 'resumeId', 'model', 'effort', 'maxTurns', 'mcpConfigPath', 'addDir', 'wakeKind',
-  'forwardSubagentText',
+  'forwardSubagentText', 'allowedTools',
 ])
 
 /**
@@ -299,7 +299,7 @@ const CLAUDE_OPTION_KEYS = new Set([
  */
 export function buildClaudeArgs(opts = {}) {
   validateOptions(opts, CLAUDE_OPTION_KEYS, 'buildClaudeArgs')
-  const { resumeId, model, effort, maxTurns, mcpConfigPath, addDir, wakeKind, forwardSubagentText } = opts
+  const { resumeId, model, effort, maxTurns, mcpConfigPath, addDir, wakeKind, forwardSubagentText, allowedTools } = opts
 
   const args = ['--print', '-', '--output-format', 'stream-json', '--verbose']
 
@@ -311,6 +311,24 @@ export function buildClaudeArgs(opts = {}) {
       throw new Error(`buildClaudeArgs: resumeId "${resumeId}" is not a valid session UUID (resolveSessionID lesson)`)
     }
     args.push('--resume', String(resumeId))
+  }
+  // THE TOOLS THE ENVELOPE ALLOWS — carried to the process, not merely computed.
+  //
+  // Until 12.08.2026 this line did not exist, and it is the reason the whole fleet could
+  // never change a single file. The capability envelope was built per lane, hashed into
+  // every attempt row and written to the journal — and then the spawn was made WITHOUT any
+  // tool grant at all. A non-interactive session has nobody to approve a prompt, so the CLI
+  // refused Edit, Write, Bash, Grep and Glob on sight: the worker could read the repository
+  // and nothing else. It diagnosed its task correctly, wrote the exact patch into its final
+  // message, and could not apply it — «применить её не смог». Every task in the product's
+  // history failed downstream of that, on «no receipt» or «tests red», and no screen could
+  // name the cause, because the refusal happened inside the child process.
+  //
+  // The grant is the envelope's own list and nothing more: this widens no policy, it
+  // DELIVERS one. `--dangerously-skip-permissions` stays unreachable (assertCleanArgs still
+  // scans the produced array), so a lane can only ever hold the tools its envelope named.
+  if (Array.isArray(allowedTools) && allowedTools.length > 0) {
+    args.push('--allowedTools', allowedTools.map((t) => String(t)).join(' '))
   }
   if (model !== undefined) args.push('--model', String(model))
   if (effort !== undefined) args.push('--effort', String(effort))

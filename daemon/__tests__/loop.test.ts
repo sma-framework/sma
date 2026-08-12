@@ -1347,7 +1347,15 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     await tick(deps)
 
     expect(seen).toHaveLength(1)
-    expect(seen[0]).toEqual({ forwardSubagentText: true })
+    expect(seen[0].forwardSubagentText).toBe(true)
+    // AND THE TOOL GRANT RIDES THE SAME CALL. The envelope's allowedTools used to stop at the
+    // attempt row's hash: the spawn was assembled without any grant at all, so the CLI refused
+    // Edit/Write/Bash inside the child and no worker in this fleet could change a single file
+    // (measured 12.08.2026). The assertion is on the WIRE — the policy itself was never the
+    // broken half, and a test of the policy would have stayed green through all of it.
+    expect(seen[0].allowedTools, 'spawn options carry no tool grant — the worker would be read-only').toEqual(
+      expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash']),
+    )
   })
 
   it('the same option reaches the FORGE lane’s spawn, and that lane keeps a transcript too', async () => {
