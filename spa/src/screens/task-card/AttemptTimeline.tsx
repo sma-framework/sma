@@ -95,7 +95,23 @@ function Row({
   /** Whose story this is — the transcript door needs the task to name the attempt. */
   taskId: string | null
 }) {
-  const [open, setOpen] = useState(false)
+  /**
+   * ЧТО В ИТОГЕ — РАСКРЫТО НА ТОМ ПОДХОДЕ, РАДИ КОТОРОГО КАРТОЧКУ И ОТКРЫЛИ.
+   *
+   * Everything this window knows about «кто что делал» — the tools, the files, the commands,
+   * the skills, the connections, the handoffs to sub-agents — lives inside this fold, and the
+   * fold used to start shut on every row. So the answer to the one question a task card is
+   * opened with sat behind a control nobody had a reason to press, and was never seen at all.
+   * The freshest run, and any run still going, now opens by itself; the older ones stay
+   * folded, because six attempts unfolded at once is not a card.
+   *
+   * `null` means «никто не трогал»: the row follows the rule above and re-folds by itself
+   * once a NEWER attempt takes its place. A click pins the row either way, and a pin is what
+   * the person said — nothing later un-says it.
+   */
+  const openByDefault = last || !attempt.endedAt
+  const [pinned, setPinned] = useState<boolean | null>(null)
+  const open = pinned ?? openByDefault
   const who = [attempt.workerId, attempt.provider].filter(Boolean).join(' · ')
 
   return (
@@ -110,7 +126,7 @@ function Row({
       <div className="min-w-0 flex-1 pb-6">
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => setPinned(!open)}
           aria-expanded={open}
           className="flex items-baseline gap-2 text-left"
         >

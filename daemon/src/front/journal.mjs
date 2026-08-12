@@ -522,6 +522,53 @@ export function attemptDigest(rows) {
 }
 
 /**
+ * approachLinesFrom(streamLines) → the lines a note parser can actually read.
+ *
+ * THE STREAM IS NOT TEXT. Every line a CLI emits is a JSON frame, and the worker's words live
+ * INSIDE it (`message.content[].text`, or `result` on the final frame). `parseApproachNote`
+ * below matches on `line.startsWith(MARKER)`, so a marker sitting inside a frame is never at
+ * the start of a line and the note is never found — no matter how faithfully the worker
+ * printed it. Measured 12.08.2026: three attempts in a row printed the markers, all three
+ * were failed as «attempt never explained», and the gate's own log showed a green receipt
+ * beside each one.
+ *
+ * It lives HERE, beside the parser, for the reason it was written at all: the unwrapping and
+ * the parsing are one act, and the two callers that must not disagree are the tick (which
+ * gates the attempt on the note) and the read model (which shows it on the card). It was
+ * private to the tick for half a day, and in that half-day the card kept reading raw frames
+ * and kept showing an empty panel beside an attempt whose note the tick had already accepted.
+ * One function, one place.
+ *
+ * Raw lines are kept as well: a plain-text stream (tests, other runners) must keep working
+ * exactly as before. This only ADDS the unwrapped text.
+ *
+ * @param {string[]} streamLines
+ * @returns {string[]}
+ */
+export function approachLinesFrom(streamLines) {
+  const out = []
+  if (!Array.isArray(streamLines)) return out
+  for (const raw of streamLines) {
+    if (typeof raw !== 'string') continue
+    out.push(raw)
+    if (!raw.includes('APPROACH_')) continue // cheap guard: only unwrap frames that can matter
+    try {
+      const frame = JSON.parse(raw)
+      const content = frame && frame.message && frame.message.content
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part && typeof part.text === 'string') out.push(...part.text.split(/\r?\n/))
+        }
+      }
+      if (typeof (frame && frame.result) === 'string') out.push(...frame.result.split(/\r?\n/))
+    } catch {
+      /* not a frame — the raw line above is all there is, and it was already pushed */
+    }
+  }
+  return out
+}
+
+/**
  * parseApproachNote(lines) → {approach, rejected[], influences[]} | null.
  * Reads the worker's note off the session stream lines it already collects — the SAME soft
  * marker protocol shape the failure markers use. PURE, zero-dep, never throws. The text it

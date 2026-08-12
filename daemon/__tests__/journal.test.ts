@@ -959,6 +959,29 @@ describe('the live attempt log — every line, appended as it arrives', () => {
     expect(tailed.entries.some((e: any) => e.line.includes('APPROACH_NOTE'))).toBe(false)
   })
 
+  it('THE STREAM IS NOT TEXT: a note printed INSIDE a machine frame is still found', () => {
+    // What a CLI actually writes into this log is a JSON frame with the worker's words inside
+    // it, so a marker is never at the start of a stored line. This reader used to parse the
+    // raw lines and therefore answered «нет записки» about every real attempt — including the
+    // ones whose note the tick had already ACCEPTED, through this same parser, over the same
+    // stream, unwrapped. One unwrapper now, both callers.
+    const attemptId = 'BL-9#9'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({
+      line: JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'APPROACH_NOTE: взял готовый разворачиватель\nAPPROACH_REJECTED: писать свой' },
+          ],
+        },
+      }),
+    })
+    const { note } = readAttemptLog({ dir, attemptId })
+    expect(note!.approach).toBe('взял готовый разворачиватель')
+    expect(note!.rejected).toEqual(['писать свой'])
+  })
+
   it('an attempt that left no marker carries note:null — an absence, never an empty string', () => {
     const attemptId = 'BL-9#8'
     const w = createAttemptLogWriter({ dir, attemptId })
