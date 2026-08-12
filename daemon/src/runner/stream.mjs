@@ -24,13 +24,18 @@
  * the storage boundary (front/journal.mjs owns every cap in this system) rather than here,
  * so one rule lives in one place.
  *
- * THE RATE-LIMIT FRAME — measured, not assumed. The CLI emits `rate_limit_event` carrying the
- * vendor's own view of the subscription window: which window, what fraction of it is spent,
- * when it resets. This was long believed not to exist (the window model was written around
- * «there is no official quota API» and estimated the bars from the daemon's own token
- * accounting), which made every bar read near zero on a machine whose subscription was mostly
- * spent by a person's own terminal sessions. The frame is real, it arrives on every spawn, and
- * parsing it is what lets the roster stop guessing.
+ * THE RATE-LIMIT FRAME — three facts, and only three. The CLI emits `rate_limit_event` on the
+ * work stream carrying the vendor's own view of the subscription window: WHICH window, WHETHER
+ * it is still allowing work, and WHEN it resets. Verified on a live stream on 12.08.2026:
+ *
+ *     "rate_limit_info": {"status":"allowed","resetsAt":1786539600,
+ *                         "rateLimitType":"five_hour","isUsingOverage":false}
+ *
+ * There is NO fraction of the window spent, and there never has been on this stream. The
+ * window model once filled that hole with an estimate from this daemon's own token accounting;
+ * it read near zero on a subscription mostly spent by a person's own terminal sessions, and it
+ * is gone. `utilization` is still read here, and is null on every real frame today, so that the
+ * day the vendor starts sending a fraction the screen shows its number and nobody's arithmetic.
  *
  * ASSUMPTION A4 (Codex, MEDIUM confidence — verified in the pilot): `codex exec --json`
  * emits a thread-start event carrying `thread_id` and a final `turn.completed` event
@@ -154,15 +159,17 @@ function eventFromFrame(obj) {
   }
 
   // THE ONE FRAME THAT KNOWS THE TRUTH ABOUT THE SUBSCRIPTION. Everything else on this stream
-  // describes the work; this one describes the ACCOUNT — how much of its rolling window is
-  // spent, when that window resets, and whether the vendor is still letting it through. It is
-  // the vendor's own number, not a count of what this daemon happens to have spawned, so it is
-  // the only reading that includes the sessions a person ran in their own terminal.
+  // describes the work; this one describes the ACCOUNT — whether the vendor is still letting
+  // it through and when the window resets. It is the vendor's own word, not a count of what
+  // this daemon happens to have spawned, so it is the only reading that also covers the
+  // sessions a person ran in their own terminal.
   //
-  // `utilization` is a FRACTION on the wire (0.73) and is kept as one here; turning it into a
-  // percentage is the business of whoever draws a bar. `rateLimitType` names WHICH window —
-  // the CLI sends whichever one is closest to biting, so a stream may carry one, both, or
-  // neither, and «neither» is not an error: it means nothing is close.
+  // `status` is the load-bearing field: the healthy values begin with `allowed`, and anything
+  // else is a refusal. `rateLimitType` names WHICH window — the CLI sends whichever one is
+  // closest to biting, so a stream may carry one, both, or neither, and «neither» is not an
+  // error: it means nothing is close. `utilization` would be a FRACTION (0.73) and is kept as
+  // one; today it is absent from every real frame and parses to null, which is the honest
+  // answer and the reason nothing downstream may require it.
   if (type === 'rate_limit_event') {
     const info = obj.rate_limit_info && typeof obj.rate_limit_info === 'object' ? obj.rate_limit_info : {}
     return {

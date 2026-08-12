@@ -285,9 +285,11 @@ function accountNameOf(account, fallback) {
   return (account && account.name) || fallback
 }
 
-/** The window-state function seam: windows(account) → {pct5h, pctWeek, estimated, closedUntil?}. */
+/** The window-state function seam: windows(account) → {fiveHour, week, closedUntil?}. */
 function windowFor(windows, account) {
-  const fallback = { pct5h: 0, pctWeek: 0, estimated: true }
+  // NOT «zero per cent» — nothing heard. A daemon assembled without the seam knows nothing
+  // about any window, and saying so is the whole point of this change.
+  const fallback = { fiveHour: { status: 'unknown' }, week: { status: 'unknown' } }
   if (typeof windows !== 'function') return fallback
   try {
     const w = windows(account)
@@ -719,13 +721,64 @@ export function deriveStyle({ memoryDir, fsImpl } = {}) {
   }
 }
 
-/** A payload window bar — ALWAYS carries estimated (honest labels, A3). */
+/**
+ * ONE window, as it goes on the wire.
+ *
+ * `status` is always one of three words, so a screen never has to tell an absent field from a
+ * false one. `resetsAt` travels as an ISO string because that is what every clock face in the
+ * window already reads. `pct` is null unless the vendor itself sent a fraction — the screens
+ * draw a number only when there is a number, and there is none today.
+ */
+function windowFact(fact) {
+  const f = fact && typeof fact === 'object' ? fact : {}
+  const status = f.status === 'open' || f.status === 'exhausted' ? f.status : 'unknown'
+  const resetsAt = toMs(f.resetsAt)
+  return {
+    status,
+    resetsAt: Number.isFinite(resetsAt) ? new Date(resetsAt).toISOString() : null,
+    // An absent percentage must stay absent. `numOrNull(null)` is 0, because Number(null) is 0 —
+    // so an unknown window went on the wire as «0%», which is the one wrong answer this whole
+    // change exists to stop: a zero bar is read as «the quota is free».
+    pct: f.pct == null ? null : numOrNull(f.pct),
+  }
+}
+
+/** A payload window bar: the two windows, plus a refusal when one is standing. */
 function windowBar(win) {
   return {
-    pct5h: numOrNull(win.pct5h) ?? 0,
-    pctWeek: numOrNull(win.pctWeek) ?? 0,
-    estimated: win.estimated === undefined ? true : Boolean(win.estimated),
+    fiveHour: windowFact(win.fiveHour),
+    week: windowFact(win.week),
     ...(win.closedUntil != null ? { closedUntil: win.closedUntil } : {}),
+  }
+}
+
+/**
+ * The TERMINAL'S OWN window reading, as it goes on the wire.
+ *
+ * It is the one place a real percentage comes from: the provider pipes it to the status line
+ * command of the person's own terminal, and that reading counts the sessions he ran himself —
+ * which on a real machine is most of them. It travels as its own block rather than as an
+ * account's bar because nothing in that payload names an account, and pinning it on one would
+ * be a guess.
+ *
+ * `observed` distinguishes «never heard» from «heard, but that window has since turned over»,
+ * and `observedAt` survives the expiry so the screen can name the moment instead of drawing a
+ * zero. Absent seam → honestly empty, never an error.
+ */
+function terminalBar(read) {
+  const empty = { observed: false, observedAt: null, fiveHour: windowFact(null), week: windowFact(null) }
+  if (typeof read !== 'function') return empty
+  try {
+    const t = read()
+    if (!t || typeof t !== 'object') return empty
+    return {
+      observed: !!t.observed,
+      observedAt: typeof t.observedAt === 'string' ? t.observedAt : null,
+      fiveHour: windowFact(t.fiveHour),
+      week: windowFact(t.week),
+    }
+  } catch {
+    return empty
   }
 }
 
@@ -1555,6 +1608,7 @@ function readAcceptance(io, root, dir, files) {
  *   adapter: {list:Function},
  *   ledgerDir?: string,
  *   windows?: (account:any)=>object,      // windowState per account (an injected seam)
+ *   terminalWindows?: ()=>object,         // the terminal's own window reading (an injected seam)
  *   config?: object,                      // workers[], agingHours, budget
  *   usageReader?: (args:object)=>{costUsd?:number},
  *   readReceipt?: Function,               // resolve a receiptRef string → receipt object
@@ -1683,16 +1737,21 @@ export async function deriveState(deps = {}) {
   // ── accounts — the deduped subscription list the spend strip ALSO rides (one dedup,
   // one window read per account, one order both sections agree on) ──
   const accounts = deriveAccounts(config, windows)
-  const spendAccounts = accounts.map((a) => ({ name: a.name, pct5h: a.windows.pct5h, pctWeek: a.windows.pctWeek }))
+  // The spend strip carries the WHOLE window bar, not two numbers off it. «Расходы» used to
+  // rebuild half of this by hunting for the worker riding each account, which meant an account
+  // nobody was riding lost the very facts the screen is there to state.
+  const spendAccounts = accounts.map((a) => ({ name: a.name, ...a.windows }))
 
   const apiAccountName = (config.budget && config.budget.apiAccountName) || 'api'
   const todayUsd = totalCost(usageReader, workersCfg, DAY_MS, now, apiAccountName)
   const monthUsd = totalCost(usageReader, workersCfg, MONTH_MS, now, apiAccountName)
   const capEur = Number(config.budget && config.budget.monthlyApiCapEur) || 0
-  const anyClosed = workers.some((w) => w.window.closedUntil != null || (w.window.pct5h ?? 0) >= 100)
+  const anyClosed = workers.some((w) => !isOpen(w.window, () => now))
   const switchMode = anyClosed && capEur > 0 ? 'api' : 'subscription'
   const spend = {
     accounts: spendAccounts,
+    // The figure the person reads on his own status line, carried through unchanged.
+    terminal: terminalBar(deps.terminalWindows),
     apiFallback: {
       todayEur: round2(todayUsd), // FX out of scope for the pilot (rate 1); honest label at render
       monthEur: round2(monthUsd),

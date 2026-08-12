@@ -1,13 +1,18 @@
-import type { Kpis, SpendAccount } from '../../api/types'
-import { plural } from '../../shell/format'
+import type { Kpis, SpendAccount, WindowFact } from '../../api/types'
+import { WINDOW_UNKNOWN_HINT, plural, windowWords } from '../../shell/format'
 
 /**
- * KpiStrip — the day in figures, and how much of each subscription window is spent.
+ * KpiStrip — the day in figures, and what each subscription window is doing.
  *
  * Two panels, side by side, exactly as the accepted screen puts them: the counts of the
  * work on the left, the windows on the right. The counts are the ones the reading already
  * carries — nothing is added up here, because a number computed twice is a number two
  * screens can disagree about.
+ *
+ * The windows are words, not bars. The provider says whether a window is still allowing work
+ * and when it resets; it does not say how full it is, and the percentage that used to stand
+ * here was worked out from this daemon's own token count — near zero on a subscription a
+ * person had nearly spent in his own terminal.
  *
  * Money is deliberately absent. Sums belong to «Расходы» and are shown there once; a
  * figure repeated in two places is a figure that will one day contradict itself.
@@ -23,27 +28,17 @@ function Figure({ label, value, note }: { label: string; value: string; note?: s
   )
 }
 
-function Bar({ label, pct }: { label: string; pct: number }) {
-  const safe = Math.max(0, Math.min(100, Math.round(pct)))
+/** One window, said in the words the whole product uses for it. */
+function WindowLine({ label, fact }: { label: string; fact: WindowFact | undefined }) {
+  const words = windowWords(fact)
+  const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-[12px] text-tx2">{label}</span>
-        <span className="text-[12px] text-tx tabular-nums">{safe}%</span>
-      </div>
-      <div
-        className="h-[5px] w-full overflow-hidden rounded-full bg-track"
-        role="progressbar"
-        aria-label={label}
-        aria-valuenow={safe}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div
-          className={safe >= 90 ? 'h-full rounded-full bg-warn' : 'h-full rounded-full bg-blue'}
-          style={{ width: `${safe}%` }}
-        />
-      </div>
+    <div className="flex items-baseline justify-between gap-3" title={unknown ? WINDOW_UNKNOWN_HINT : undefined}>
+      <span className="flex-none text-[12px] text-tx2">{label}</span>
+      <span className="flex min-w-0 items-center gap-[6px]">
+        <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${words.dot}`} />
+        <span className={`truncate text-[12px] ${words.muted ? 'text-tx3' : 'text-tx'}`}>{words.text}</span>
+      </span>
     </div>
   )
 }
@@ -83,8 +78,8 @@ export function KpiStrip({ kpis, accounts }: { kpis: Kpis | undefined; accounts:
           accounts.map((a) => (
             <div key={a.name} className="flex flex-col gap-2">
               <div className="text-[12.5px] font-semibold text-tx">{a.name}</div>
-              <Bar label="Пять часов" pct={a.pct5h} />
-              <Bar label="Неделя" pct={a.pctWeek} />
+              <WindowLine label="Пять часов" fact={a.fiveHour} />
+              <WindowLine label="Неделя" fact={a.week} />
             </div>
           ))
         )}

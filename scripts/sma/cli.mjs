@@ -4346,7 +4346,19 @@ async function renderStatuslineEntry({ flags, dirs }) {
 
   // bounded 64 KB stdin read -> the quarantined vendor-shape adapter (parsed defensively).
   const raw = String(readStdin() || '').slice(0, 64 * 1024)
-  statusline.parseStatusStdin(raw) // reserved display extras; parsed to prove it never throws
+  const status = statusline.parseStatusStdin(raw)
+  // The subscription-window reading rides in on this same stdin, and it is the ONLY source
+  // that counts the sessions a person ran in his own terminal. It is laid down where the
+  // daemon's window store reads it, so the other screen shows the figure this line shows
+  // instead of a guess. Fail-open in both directions: no daemon on the machine -> no write,
+  // and a failed write never costs the render.
+  if (status.rateLimits) {
+    try {
+      statusline.recordTerminalWindows({ rateLimits: status.rateLimits, dataDir: statusline.resolveDaemonDataDir() })
+    } catch {
+      /* a snapshot is a bonus, never a break */
+    }
+  }
 
   const summary = await gatherSummary(dirs)
   const identity = registry.resolveTerminalIdentity({})

@@ -150,7 +150,10 @@ export function Screen() {
 
   /** A machine's own name, when the household knows it; otherwise its identifier, unchanged. */
   const titleOf = new Map(machines.map((m) => [m.id, m.title]))
-  const open = accounts.filter((a) => !a.windows.closedUntil && (a.windows.pct5h ?? 0) < 100).length
+  const open = accounts.filter(
+    (a) =>
+      !a.windows.closedUntil && a.windows.fiveHour?.status !== 'exhausted' && a.windows.week?.status !== 'exhausted',
+  ).length
 
   /** The profiles as the configuration holds them — the same one reading, one key over. */
   const profiles = state.data?.rules.workers ?? []

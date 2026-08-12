@@ -94,6 +94,7 @@ import {
   normalizeJournalPayload,
   normalizeAttemptLogEntry,
   attemptLogTail,
+  attemptDigest,
   parseApproachNote,
 } from '../front/journal.mjs'
 import { envelopeHash } from './capability-envelope.mjs'
@@ -446,10 +447,11 @@ export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError 
 }
 
 /**
- * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated, note}` — the
- * LAST `tail` lines of one attempt (default 200, hard ceiling 1000), with `truncated` saying
- * that older lines exist. A missing log reads as an EMPTY log, never an error, and a corrupt
- * row is skipped — the same fail-open posture as every other reader here.
+ * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated, note, digest}`
+ * — the LAST `tail` lines of one attempt (default 200, hard ceiling 1000), with `truncated`
+ * saying that older lines exist, and `digest` — the roll-up of the WHOLE attempt (tools, files,
+ * connections, cost; ../front/journal.mjs owns it). A missing log reads as an EMPTY log, never
+ * an error, and a corrupt row is skipped — the same fail-open posture as every other reader.
  *
  * THE ENTRIES ARE DATA AND ARE RETURNED AS THEY WERE STORED. This reader does not interpret
  * a line, does not strip anything out of it and makes no claim that it is safe: it is worker
@@ -469,11 +471,12 @@ export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError 
  * signature already hides it.
  *
  * @param {{dir?:string, attemptId?:string, tail?:number, fsImpl?:object}} [o]
- * @returns {{attemptId:string, entries:object[], total:number, truncated:boolean, note:object|null}}
+ * @returns {{attemptId:string, entries:object[], total:number, truncated:boolean,
+ *   note:object|null, digest:object|null}}
  */
 export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
   const id = String(attemptId ?? '')
-  const empty = { attemptId: id, entries: [], total: 0, truncated: false, note: null }
+  const empty = { attemptId: id, entries: [], total: 0, truncated: false, note: null, digest: null }
   if (!dir || !id) return empty
   const read = (fsImpl && fsImpl.readFileSync) || readFileSync
   let raw
@@ -492,7 +495,11 @@ export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
       /* skip corrupt line (fail-open) */
     }
   }
-  // The note is read off EVERY row, before the tail is taken — see the header.
+  // The note is read off EVERY row, before the tail is taken — see the header. The roll-up is
+  // taken here for exactly the same reason and no other: counting tools, files and money off
+  // the RETURNED rows would count the tail, and would quietly report «два инструмента» about
+  // an attempt that used forty. Both readings are already holding every row in memory.
   const note = parseApproachNote(rows.map((r) => String((r && r.line) || '')))
-  return { attemptId: id, ...attemptLogTail(rows, tail), note }
+  const digest = attemptDigest(rows)
+  return { attemptId: id, ...attemptLogTail(rows, tail), note, digest }
 }

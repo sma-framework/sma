@@ -12,7 +12,7 @@
  */
 
 import { isNotReady, isRaceLost } from '../api/client'
-import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus } from '../api/types'
+import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus, WindowFact } from '../api/types'
 
 /**
  * What each of the four stages is called on the glass.
@@ -67,6 +67,35 @@ export function clockLabel(iso: string | null | undefined): string {
   const mm = String(at.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
 }
+
+/**
+ * WHAT A SUBSCRIPTION WINDOW IS DOING, IN ONE SENTENCE — the whole window's vocabulary for it.
+ *
+ * Five screens show these windows, and until now four of them drew a percentage bar. There is
+ * no percentage: the provider tells us which window, whether it is still letting work through,
+ * and when it resets — and nothing else. The figure the bars drew was this daemon's own token
+ * count against an invented capacity, and on a machine where a person also works in his own
+ * terminal it read near zero on a subscription that was nearly spent. A zero bar is read as
+ * «the quota is free», so the bars are gone from every one of the five.
+ *
+ * A window nobody has heard from says «нет данных», never «0%». That distinction is the entire
+ * point: an empty place is honest, a zero is a claim.
+ */
+export function windowWords(fact: WindowFact | null | undefined): { text: string; dot: string; muted: boolean } {
+  const status = fact?.status ?? 'unknown'
+  const at = fact?.resetsAt ? clockLabel(fact.resetsAt) : null
+  if (status === 'exhausted') {
+    return { text: at ? `исчерпано · откроется в ${at}` : 'исчерпано', dot: 'bg-warn', muted: false }
+  }
+  if (status === 'open') {
+    return { text: at ? `принимает работу · сбросится в ${at}` : 'принимает работу', dot: 'bg-green', muted: false }
+  }
+  return { text: 'нет данных', dot: 'bg-tx3', muted: true }
+}
+
+/** Why a window can read «нет данных» — the same explanation wherever that phrase appears. */
+export const WINDOW_UNKNOWN_HINT =
+  'Об этом окне ещё ничего не приходило. Поставщик сообщает о нём в потоке работы — первая же задача на этом аккаунте заполнит строку.'
 
 /** The one letter that stands for a worker's line of work in a small square. */
 export function initialOf(text: string | null | undefined, fallback = '·'): string {

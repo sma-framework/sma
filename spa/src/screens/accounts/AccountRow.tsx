@@ -1,5 +1,5 @@
-import type { AccountEntry } from '../../api/types'
-import { clockLabel } from '../../shell/format'
+import type { AccountEntry, WindowFact } from '../../api/types'
+import { WINDOW_UNKNOWN_HINT, clockLabel, windowWords } from '../../shell/format'
 
 /**
  * AccountRow — one subscription: its windows, the workers riding it, and the machine it
@@ -13,13 +13,12 @@ import { clockLabel } from '../../shell/format'
  * place. The rule used to live in people's heads; here it is a line under every row, which is
  * what makes «why did that account not pick anything up» answerable without asking anyone.
  *
- * The bars are percentages of a window, never money. A plan is already paid for, so the
- * useful question is how much of it is left; the one euro figure on this screen belongs to
- * the paid channel, which is not a subscription at all.
- *
- * An ESTIMATED percentage says so. The daemon marks a window it had to work out from its own
- * spend records rather than read from a counter, and that mark is carried onto the glass
- * instead of being rounded away into false precision.
+ * The windows are stated in words, never in money and no longer in percentages. A plan is
+ * already paid for, so the useful question is whether it is still taking work and when it
+ * turns over — and those two are exactly what the provider tells us. It does not tell us how
+ * much of a window is spent, and the bar that used to stand here filled that hole with the
+ * daemon's own token count against an invented capacity: near zero on a subscription that was
+ * nearly spent. A window nothing has been heard about now says «нет данных».
  */
 
 /** The two letters in the square. Two words give two initials; one word gives its first two. */
@@ -44,30 +43,28 @@ function statusOf(a: AccountEntry): { text: string; dot: string; tone: string } 
   if (a.windows.closedUntil) {
     return { text: `откроется в ${clockLabel(a.windows.closedUntil)}`, dot: 'bg-warn', tone: 'bg-warn-s text-warn-tx' }
   }
-  if ((a.windows.pct5h ?? 0) >= 100) {
+  if (a.windows.fiveHour?.status === 'exhausted' || a.windows.week?.status === 'exhausted') {
     return { text: 'окно исчерпано', dot: 'bg-warn', tone: 'bg-warn-s text-warn-tx' }
   }
   if (a.dayPriorityOwner) return { text: 'днём · Ваш', dot: 'bg-blue', tone: 'bg-blue-s text-blue' }
-  return { text: 'принимает работу', dot: 'bg-green', tone: 'bg-ok-s text-ok-tx' }
+  if (a.windows.fiveHour?.status === 'open') {
+    return { text: 'принимает работу', dot: 'bg-green', tone: 'bg-ok-s text-ok-tx' }
+  }
+  // Nothing has been heard. The row says so rather than showing the green dot of an account
+  // nobody has actually confirmed is taking work.
+  return { text: 'состояние неизвестно', dot: 'bg-tx3', tone: 'bg-idle-s text-idle-tx' }
 }
 
-function Bar({ label, pct, tone }: { label: string; pct: number; tone: string }) {
-  const safe = Math.max(0, Math.min(100, Math.round(pct)))
+/** One window, named and said. No bar: there is no percentage to draw one from. */
+function WindowCell({ label, fact }: { label: string; fact: WindowFact | undefined }) {
+  const words = windowWords(fact)
+  const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
   return (
-    <div className="w-[176px] flex-none">
-      <div className="mb-[5px] flex justify-between">
-        <span className="text-[10.5px] text-tx3">{label}</span>
-        <span className="text-[10.5px] text-tx2 tabular-nums">{safe}%</span>
-      </div>
-      <div
-        className="h-1 w-full overflow-hidden rounded-full bg-track"
-        role="progressbar"
-        aria-label={label}
-        aria-valuenow={safe}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div className={`h-full rounded-full ${safe >= 90 ? 'bg-err' : tone}`} style={{ width: `${safe}%` }} />
+    <div className="w-[196px] flex-none" title={unknown ? WINDOW_UNKNOWN_HINT : undefined}>
+      <div className="mb-[5px] text-[10.5px] text-tx3">{label}</div>
+      <div className="flex items-center gap-[6px]">
+        <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${words.dot}`} />
+        <span className={`truncate text-[11.5px] ${words.muted ? 'text-tx3' : 'text-tx2'}`}>{words.text}</span>
       </div>
     </div>
   )
@@ -84,7 +81,6 @@ export function AccountRow({
   first: boolean
 }) {
   const status = statusOf(account)
-  const shut = !!account.windows.closedUntil
   const riders = account.workers
 
   return (
@@ -105,27 +101,12 @@ export function AccountRow({
           <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${status.dot}`} />
           {status.text}
         </span>
-        {account.windows.estimated ? (
-          <span
-            className="flex-none rounded-full bg-idle-s px-2 py-0.5 text-[10.5px] text-idle-tx"
-            title="Точных счётчиков окна нет — процент посчитан по нашим же записям расхода"
-          >
-            оценка
-          </span>
-        ) : null}
 
         <div className="flex-1" />
 
         <div className="flex flex-none items-center gap-6">
-          {shut ? (
-            <div className="w-[176px] flex-none text-[11px] whitespace-nowrap">
-              <span className="text-tx3">Окно (5 ч): </span>
-              <span className="text-tx2">откроется в {clockLabel(account.windows.closedUntil)}</span>
-            </div>
-          ) : (
-            <Bar label="Окно (5 ч)" pct={account.windows.pct5h} tone="bg-blue" />
-          )}
-          <Bar label="Неделя" pct={account.windows.pctWeek} tone="bg-teal" />
+          <WindowCell label="Окно (5 ч)" fact={account.windows.fiveHour} />
+          <WindowCell label="Неделя" fact={account.windows.week} />
         </div>
       </div>
 

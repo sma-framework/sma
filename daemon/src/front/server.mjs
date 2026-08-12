@@ -555,6 +555,9 @@ function stateDeps(config, deps, project) {
     ledger: deps.ledger,
     ledgerDir: deps.ledgerDir,
     windows: deps.windows,
+    // The reading the person's own terminal lays down for its subscription — a subject of its
+    // own, not any account's bar, and forwarded like every other collaborator.
+    terminalWindows: deps.terminalWindows,
     config,
     usageReader: deps.usageReader,
     usageSeries: deps.usageSeries,
@@ -682,6 +685,27 @@ async function handleTask({ res, params, config, deps }) {
   // never as an error: backward compatibility is a hard requirement, not a nicety.
   const journal = readTaskJournal(id, deps)
 
+  // ONE ATTEMPT, ONE ROW. Two writers append for the same attempt — the state machine puts
+  // down the transition, the tick puts down provider/session/usage — so the ledger holds two
+  // rows per attempt and the card printed «Подход 1 · готово» twice in a row, as if the work
+  // had been done twice. They are merged by attempt number here, later fields winning over
+  // empty ones, so every surface counts attempts the way a person does.
+  const mergedByAttempt = new Map()
+  for (const a of rawAttempts) {
+    const key = Number.isFinite(a && a.attempt) ? a.attempt : `raw-${mergedByAttempt.size}`
+    const prev = mergedByAttempt.get(key)
+    if (!prev) {
+      mergedByAttempt.set(key, { ...a })
+      continue
+    }
+    const merged = { ...prev }
+    for (const [k, v] of Object.entries(a)) {
+      if (v !== null && v !== undefined && v !== '') merged[k] = v
+    }
+    mergedByAttempt.set(key, merged)
+  }
+  rawAttempts = [...mergedByAttempt.values()]
+
   const parseReceipt = typeof deps.parseReceiptSummary === 'function' ? deps.parseReceiptSummary : () => null
   const attempts = rawAttempts.map((a) => ({
     attempt: a.attempt ?? null,
@@ -707,11 +731,38 @@ async function handleTask({ res, params, config, deps }) {
     ...(journal.approachByAttempt.has(a.attempt) ? { approachNote: journal.approachByAttempt.get(a.attempt) } : {}),
   }))
 
+  // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
+  // appended when one ends — so a task with a worker inside it read as «подходов ещё не
+  // было», and the card, the side panel and the timeline all said «Работа ещё не
+  // начиналась» WHILE THE WORK WAS RUNNING. The founder opened his own running task on
+  // 12.08.2026 and every one of those three surfaces denied it had started. A claimed row
+  // IS an attempt in flight; it is named here once, so all three stop lying at the same
+  // time. No `endedAt` and outcome `running` are what mark it unfinished — nothing
+  // downstream has to guess which kind of row this is.
+  if (row.status === 'claimed') {
+    attempts.push({
+      attempt: Number.isFinite(row.attempt) ? row.attempt : attempts.length + 1,
+      workerId: row.workerId ?? null,
+      provider: null,
+      startedAt: row.claimedAt ?? null,
+      endedAt: null,
+      outcome: 'running',
+      failureReason: null,
+      reasonLabel: null,
+      receipt: null,
+      proof: null,
+    })
+  }
+
   const branch = `wt/${id}`
   let commits = []
   if (typeof deps.execGit === 'function') {
     try {
-      const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, branch], { cwd: config.repoDir })
+      // ONLY WHAT THIS TASK DID. `git log <branch>` walks the whole history, so the card
+      // listed every commit the project ever had and the one commit the worker actually
+      // made drowned on line one of forty. `main..<branch>` is the work that exists on this
+      // branch and nowhere else — which is precisely the question «что сделала эта задача».
+      const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, `main..${branch}`], { cwd: config.repoDir })
       commits = String(out || '')
         .split(/\r?\n/)
         .map((l) => l.trim())
@@ -2312,7 +2363,8 @@ async function handleShipPublish({ req, res, deps }) {
 const SEARCH_Q_CAP = 256
 
 /**
- * GET /api/attempt/:id — the tail of one attempt's live log, plus the worker's own note.
+ * GET /api/attempt/:id — the tail of one attempt's live log, the worker's own note, and the
+ * roll-up of everything the attempt did (counted over the whole log, not over the tail).
  *
  * `?tail=` asks for a length and the LEDGER owns the ceiling: the reader clamps into
  * [1, 1000] itself, so this door hands the asked-for number over as it is rather than
@@ -2369,6 +2421,11 @@ function handleAttempt({ res, params, query, deps }) {
     }),
     truncated: !!(log && log.truncated),
     note,
+    // The roll-up of the WHOLE attempt, not of the window above it: the ledger counts it over
+    // every row before the tail is taken, so «инструментов 40 · изменено 6 файлов» stays true
+    // on a transcript whose beginning did not fit. Bounded where it is built; passed on here
+    // as the data it is, like every other thing on this payload.
+    digest: (log && log.digest) || null,
   })
 }
 

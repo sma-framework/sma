@@ -3,7 +3,7 @@
  *
  * Three describe blocks, one per module of the policy layer:
  *   1. routing.mjs  — default lanes + override precedence + day-priority protection
- *   2. windows.mjs  — estimated window state + rate-limit ground truth (Assumption A3)
+ *   2. windows.mjs  — what the provider said about a subscription window, and nothing else
  *   3. budget.mjs   — sub→API switch + monthly budget stop
  *
  * Every module is pure with an injected clock / usageReader; no test spawns a CLI,
@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolveRoute } from '../src/policy/routing.mjs'
-import { windowState, markWindowClosed, markWindowObserved, isOpen } from '../src/policy/windows.mjs'
+import { windowState, markWindowClosed, markWindowObserved, isOpen, readingSaysExhausted } from '../src/policy/windows.mjs'
 import { shouldApiFallback } from '../src/policy/budget.mjs'
 
 // --------------------------------------------------------------------------
@@ -181,10 +181,23 @@ describe('policy/routing — the paid channel is asked for permission, not assum
   })
 })
 
-describe('policy/windows — estimated state + rate-limit ground truth', () => {
-  const tmpDirs = []
+/**
+ * THE BAR STOPPED GUESSING, AND THEN STOPPED PRETENDING.
+ *
+ * The window model was written around «there is no official quota API», so both bars were
+ * estimated from what THIS daemon had spawned. On a machine where a person also works in his
+ * own terminal all day that is not merely coarse: it read near zero on a subscription three
+ * quarters spent, and a zero bar is read as «the quota is free» — the exact opposite of the
+ * question the screen exists to answer.
+ *
+ * The frame the CLI really sends carries three facts and no fourth: which window, whether it
+ * is still allowing work, and when it resets. It has NEVER carried a utilization fraction.
+ * The estimate is gone; what is not known is reported as `unknown`.
+ */
+describe('policy/windows — only what the provider actually said', () => {
+  const tmpDirs: string[] = []
   afterEach(() => {
-    while (tmpDirs.length) rmSync(tmpDirs.pop(), { recursive: true, force: true })
+    while (tmpDirs.length) rmSync(tmpDirs.pop() as string, { recursive: true, force: true })
   })
   const mkTmp = () => {
     const d = mkdtempSync(join(tmpdir(), 'sma-policy-win-'))
@@ -192,171 +205,133 @@ describe('policy/windows — estimated state + rate-limit ground truth', () => {
     return d
   }
   const fixedClock = () => new Date(2026, 6, 17, 12, 0, 0).getTime()
-  // A fake usageReader (windows.mjs never imports usage.mjs — the loop injects readUsage).
-  const fakeReader = ({ inputTokens = 60, outputTokens = 40 } = {}) => () => ({ inputTokens, outputTokens, costUsd: 0, rows: 1 })
-
-  it('derives pct5h/pctWeek from usage against capacity and ALWAYS labels estimated:true', () => {
-    const state = windowState({
-      account: { name: 'max-2' },
-      usageReader: fakeReader(),
-      clock: fixedClock,
-      capacity: { fiveHourTokens: 1000, weekTokens: 10000 },
-    })
-    expect(state.estimated).toBe(true) // honest label, always present
-    expect(state.pct5h).toBe(10) // 100 tokens / 1000
-    expect(state.pctWeek).toBe(1) // 100 tokens / 10000
-    expect(state.closedUntil).toBeUndefined()
-    expect(isOpen(state, fixedClock)).toBe(true)
-  })
-
-  it('ground-truth close (a CLI rate-limit) OVERRIDES a low estimate', () => {
-    const dataDir = mkTmp()
-    const resetAt = fixedClock() + 60 * 60 * 1000 // one hour into the future
-    markWindowClosed({ dataDir, accountName: 'max-2', resetAt, clock: fixedClock })
-
-    const state = windowState({
-      account: { name: 'max-2' },
-      usageReader: fakeReader(), // pct5h would be ~10 — but the ground-truth close wins
-      clock: fixedClock,
-      dataDir,
-      capacity: { fiveHourTokens: 1000, weekTokens: 10000 },
-    })
-    expect(state.pct5h).toBe(10)
-    expect(state.estimated).toBe(true)
-    expect(state.closedUntil).toBeDefined()
-    expect(isOpen(state, fixedClock)).toBe(false) // closed despite the low estimate
-  })
-
-  it('a persisted close whose reset is in the PAST no longer closes the window', () => {
-    const dataDir = mkTmp()
-    const resetAt = fixedClock() - 60 * 1000 // already expired
-    markWindowClosed({ dataDir, accountName: 'max-2', resetAt, clock: fixedClock })
-
-    const state = windowState({
-      account: { name: 'max-2' },
-      usageReader: fakeReader(),
-      clock: fixedClock,
-      dataDir,
-      capacity: { fiveHourTokens: 1000, weekTokens: 10000 },
-    })
-    expect(state.closedUntil).toBeUndefined() // expired close is dropped
-    expect(isOpen(state, fixedClock)).toBe(true)
-  })
-
-  it('isOpen: pct5h >= 100 closes the window even with no ground-truth close', () => {
-    const state = windowState({
-      account: { name: 'max-2' },
-      usageReader: fakeReader({ inputTokens: 700, outputTokens: 400 }), // 1100 / 1000 = 110%
-      clock: fixedClock,
-      capacity: { fiveHourTokens: 1000, weekTokens: 10000 },
-    })
-    expect(state.pct5h).toBe(110)
-    expect(isOpen(state, fixedClock)).toBe(false)
-  })
-
-  it('missing usage book → all-zero estimate, window open (fail-open)', () => {
-    const state = windowState({ account: 'max-9', usageReader: () => ({ inputTokens: 0, outputTokens: 0, costUsd: 0, rows: 0 }), clock: fixedClock })
-    expect(state.pct5h).toBe(0)
-    expect(state.estimated).toBe(true)
-    expect(isOpen(state, fixedClock)).toBe(true)
-  })
-})
-
-/**
- * THE BAR STOPS GUESSING.
- *
- * The window model was written around «there is no official quota API», so both bars were
- * estimated from what THIS daemon had spawned. On a machine where a person also works in their
- * own terminal all day that is not merely coarse: the estimate read near zero on a
- * subscription three quarters spent, which is the exact opposite of the question the screen
- * exists to answer. The CLI has been emitting its own reading on every spawn the whole time.
- */
-describe('policy/windows — the vendor reading beats the estimate', () => {
-  const tmpDirs: string[] = []
-  afterEach(() => {
-    while (tmpDirs.length) rmSync(tmpDirs.pop() as string, { recursive: true, force: true })
-  })
-  const mkTmp = () => {
-    const d = mkdtempSync(join(tmpdir(), 'sma-policy-obs-'))
-    tmpDirs.push(d)
-    return d
-  }
-  const fixedClock = () => new Date(2026, 6, 17, 12, 0, 0).getTime()
   const hour = 60 * 60 * 1000
-  // usage that would estimate a nearly EMPTY window, so a measured bar cannot pass by accident
-  const lowReader = () => () => ({ inputTokens: 10, outputTokens: 10, costUsd: 0, rows: 1 })
-  const cap = { fiveHourTokens: 1_000_000, weekTokens: 10_000_000 }
 
-  it('a seven-day reading replaces the weekly estimate and says so', () => {
+  /**
+   * THE CASE THE OLD MODEL GOT BACKWARDS. Nothing has been heard about this account, so the
+   * only honest answer is «unknown» — and it must not be a zero, because a zero is a claim
+   * that the window is empty.
+   */
+  it('an account nothing has been heard about is UNKNOWN, never zero per cent', () => {
+    const state = windowState({ account: { name: 'max-2' }, clock: fixedClock })
+    expect(state.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(state.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(state.pct5h).toBeUndefined() // the invented percentage is gone from the model entirely
+    expect(state.pctWeek).toBeUndefined()
+    expect(state.closedUntil).toBeUndefined()
+    expect(isOpen(state, fixedClock)).toBe(true) // silence never stops the conveyor
+  })
+
+  /**
+   * THE READING THE STREAM REALLY CARRIES — status and reset, no fraction. This exact shape
+   * was DROPPED on the floor before: the store required a utilization, so every real reading
+   * the daemon was ever handed was thrown away while the tests, which passed a fraction, stayed
+   * green.
+   */
+  it('stores a reading that has NO utilization — status and reset are the whole fact', () => {
+    const dataDir = mkTmp()
+    const resetsAt = fixedClock() + 3 * hour
+    const record = markWindowObserved({
+      dataDir,
+      accountName: 'max-2',
+      observation: { limitType: 'five_hour', status: 'allowed', resetsAt, usingOverage: false },
+      clock: fixedClock,
+    })
+    expect(record).not.toBeNull()
+
+    const state = windowState({ account: { name: 'max-2' }, clock: fixedClock, dataDir })
+    expect(state.fiveHour.status).toBe('open')
+    expect(state.fiveHour.resetsAt).toBe(resetsAt)
+    expect(state.fiveHour.pct).toBeNull() // no fraction was sent, so none is shown
+    expect(state.week.status).toBe('unknown') // the other window was not reported
+    expect(isOpen(state, fixedClock)).toBe(true)
+  })
+
+  it('a refused window is EXHAUSTED, and it closes the account for the router', () => {
     const dataDir = mkTmp()
     markWindowObserved({
       dataDir,
-      accountName: 'max-2',
-      observation: { limitType: 'seven_day', utilization: 0.73, resetsAt: fixedClock() + 48 * hour },
+      accountName: 'm',
+      observation: { limitType: 'five_hour', status: 'rejected', resetsAt: fixedClock() + hour },
       clock: fixedClock,
     })
-    const state = windowState({ account: { name: 'max-2' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.pctWeek).toBe(73) // the subscription's own number, not ours
-    expect(state.pct5h).toBe(0) // nobody reported this window; it stays an estimate
-    expect(state.measured).toEqual({ fiveHour: false, week: true })
-    expect(state.estimated).toBe(true) // one bar is still a guess, and the label still says so
-    expect(state.weekResetsAt).toBe(fixedClock() + 48 * hour)
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.fiveHour.status).toBe('exhausted')
+    expect(isOpen(state, fixedClock)).toBe(false) // the load can be routed elsewhere
   })
 
-  it('both windows reported → nothing on this state is a guess any more', () => {
-    const dataDir = mkTmp()
-    const obs = (limitType: string, utilization: number) =>
-      markWindowObserved({ dataDir, accountName: 'max-2', observation: { limitType, utilization, resetsAt: fixedClock() + 3 * hour }, clock: fixedClock })
-    obs('five_hour', 0.42)
-    obs('seven_day', 0.73)
-    const state = windowState({ account: { name: 'max-2' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.pct5h).toBe(42)
-    expect(state.pctWeek).toBe(73)
-    expect(state.estimated).toBe(false)
-    expect(state.measured).toEqual({ fiveHour: true, week: true })
+  /**
+   * A NEW WORD FOR «REFUSED» MUST READ AS REFUSED. The healthy statuses all begin with
+   * `allowed`; matching on the open wording rather than on a list of refusal words means an
+   * unfamiliar spelling errs towards stopping, not towards spending.
+   */
+  it('an unfamiliar status is treated as a refusal; the allowed-family is treated as open', () => {
+    expect(readingSaysExhausted({ status: 'allowed' })).toBe(false)
+    expect(readingSaysExhausted({ status: 'allowed_warning' })).toBe(false)
+    expect(readingSaysExhausted({ status: 'rejected' })).toBe(true)
+    expect(readingSaysExhausted({ status: 'some_new_refusal_word' })).toBe(true)
+    expect(readingSaysExhausted({})).toBe(false) // nothing said is not a refusal
+    expect(readingSaysExhausted({ utilization: 1 })).toBe(true) // for the day a fraction arrives
+  })
+
+  it('the weekly window is read under either of the names the provider uses for it', () => {
+    for (const limitType of ['seven_day', 'week']) {
+      const dataDir = mkTmp()
+      markWindowObserved({
+        dataDir,
+        accountName: 'm',
+        observation: { limitType, status: 'allowed', resetsAt: fixedClock() + 48 * hour },
+        clock: fixedClock,
+      })
+      const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+      expect(state.week.status, `weekly window under «${limitType}»`).toBe('open')
+      expect(state.week.resetsAt).toBe(fixedClock() + 48 * hour)
+    }
   })
 
   it('WRITING ONE WINDOW DOES NOT ERASE THE OTHER — the CLI reports whichever is closest', () => {
     // consecutive spawns write DIFFERENT keys; a whole-file write would silently drop the rest
     const dataDir = mkTmp()
-    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'seven_day', utilization: 0.9, resetsAt: fixedClock() + 40 * hour }, clock: fixedClock })
-    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', utilization: 0.1, resetsAt: fixedClock() + hour }, clock: fixedClock })
-    const state = windowState({ account: { name: 'm' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.pctWeek).toBe(90)
-    expect(state.pct5h).toBe(10)
+    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'seven_day', status: 'rejected', resetsAt: fixedClock() + 40 * hour }, clock: fixedClock })
+    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', status: 'allowed', resetsAt: fixedClock() + hour }, clock: fixedClock })
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.week.status).toBe('exhausted')
+    expect(state.fiveHour.status).toBe('open')
   })
 
-  it('an observation EXPIRES at its reset — a rolled-over window must not look exhausted', () => {
+  it('an observation EXPIRES at its reset — a rolled-over window goes back to «unknown»', () => {
     const dataDir = mkTmp()
-    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', utilization: 0.99, resetsAt: fixedClock() - 1 }, clock: fixedClock })
-    const state = windowState({ account: { name: 'm' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.pct5h).toBe(0) // back to the estimate, not stuck at 99
-    expect(state.measured.fiveHour).toBe(false)
+    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', status: 'rejected', resetsAt: fixedClock() - 1 }, clock: fixedClock })
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.fiveHour.status).toBe('unknown') // not stuck on a refusal that has since lapsed
+    expect(isOpen(state, fixedClock)).toBe(true)
   })
 
-  it('a real 100% closes the window for the router — exhaustion is now a fact, not a guess', () => {
+  it('a reading that cannot be dated is DROPPED — an answer that never expires is worse than none', () => {
     const dataDir = mkTmp()
-    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', utilization: 1, resetsAt: fixedClock() + hour }, clock: fixedClock })
-    const state = windowState({ account: { name: 'm' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.pct5h).toBe(100)
-    expect(isOpen(state, fixedClock)).toBe(false) // the load can be routed elsewhere
+    expect(markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'seven_day', status: 'allowed' }, clock: fixedClock })).toBeNull()
+    expect(markWindowObserved({ dataDir, accountName: 'm', observation: { status: 'allowed', resetsAt: fixedClock() + hour }, clock: fixedClock })).toBeNull()
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.fiveHour.status).toBe('unknown')
+    expect(state.week.status).toBe('unknown')
   })
 
-  it('a reading that cannot be dated is DROPPED — an unexpiring percentage is worse than an estimate', () => {
+  it('ground-truth close (a persisted refusal) shuts the account whatever the windows say', () => {
     const dataDir = mkTmp()
-    expect(markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'seven_day', utilization: 0.5 }, clock: fixedClock })).toBeNull()
-    expect(markWindowObserved({ dataDir, accountName: 'm', observation: { utilization: 0.5, resetsAt: fixedClock() + hour }, clock: fixedClock })).toBeNull()
-    const state = windowState({ account: { name: 'm' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.estimated).toBe(true)
-  })
-
-  it('a ground-truth CLOSE still outranks a comfortable measured bar', () => {
-    const dataDir = mkTmp()
-    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', utilization: 0.2, resetsAt: fixedClock() + hour }, clock: fixedClock })
+    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', status: 'allowed', resetsAt: fixedClock() + hour }, clock: fixedClock })
     markWindowClosed({ dataDir, accountName: 'm', resetAt: fixedClock() + 2 * hour, clock: fixedClock })
-    const state = windowState({ account: { name: 'm' }, usageReader: lowReader(), clock: fixedClock, dataDir, capacity: cap })
-    expect(state.pct5h).toBe(20) // the reading survives the merge…
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.fiveHour.status).toBe('open') // the reading survives the merge…
+    expect(state.closedUntil).toBeDefined()
     expect(isOpen(state, fixedClock)).toBe(false) // …and a refusal still wins
+  })
+
+  it('a persisted close whose reset is in the PAST no longer closes the window', () => {
+    const dataDir = mkTmp()
+    markWindowClosed({ dataDir, accountName: 'max-2', resetAt: fixedClock() - 60 * 1000, clock: fixedClock })
+    const state = windowState({ account: { name: 'max-2' }, clock: fixedClock, dataDir })
+    expect(state.closedUntil).toBeUndefined() // expired close is dropped
+    expect(isOpen(state, fixedClock)).toBe(true)
   })
 })
 

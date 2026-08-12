@@ -52,6 +52,11 @@ import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/ch
 
 import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
+// Imported for the cases at the foot of this file: the wire from a worker's stdout to the
+// screen's payload. Every joint of that path had a green test of its own while the path
+// itself was cut, so the case has to cross the module boundary the defect hid behind.
+import { deriveState } from '../src/front/state.mjs'
+import { windowState, isOpen } from '../src/policy/windows.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { workerReadiness, poolReadiness } from '../src/runner/readiness.mjs'
 import { defaultEnvelope, envelopeAllows, envelopeHash } from '../src/queue/capability-envelope.mjs'
@@ -1528,5 +1533,130 @@ describe('a task that needed no code completes on its answer — and nothing els
     const res = await tick(deps)
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+  })
+})
+
+/**
+ * ═════════ THE PROVIDER'S WORD ABOUT A WINDOW REACHES THE SCREEN, OR IT IS NOTHING ═════════
+ *
+ * This is a WIRE test, not a calculation test, and the difference is the whole reason it
+ * exists. Every piece of this path already had passing tests of its own on 12.08.2026 — the
+ * parser had one, the store had one, the read model had one — and what travelled between them
+ * was wrong. The provider sends no `utilization`; the parser honestly said null; the store did
+ * `Number(null)`, which is 0, and filed «0% of this window is spent» as a measurement. Every
+ * unit test passed because every unit test handed the store a fraction. «Расходы» therefore
+ * drew a confident 0% forever, and 0% reads as «the quota is free».
+ *
+ * So this case starts where the truth starts — one VERBATIM line of a worker's stdout, copied
+ * from the founder's own ledger — runs it through the real tick, and ends where a person looks:
+ * the payload `deriveState` puts on the screen. Nothing in between is faked or asserted about.
+ * If any joint on that path comes apart again, this goes red.
+ */
+describe('a rate-limit frame travels from the worker stream to the screen', () => {
+  const dirs: string[] = []
+  afterAll(() => {
+    while (dirs.length) rmSync(dirs.pop() as string, { recursive: true, force: true })
+  })
+
+  /** The line as the CLI really emitted it — seconds-epoch reset, status, no utilization. */
+  const RESETS_AT_SEC = 1786539600
+  const RATE_LIMIT_LINE = JSON.stringify({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'allowed',
+      resetsAt: RESETS_AT_SEC,
+      rateLimitType: 'five_hour',
+      overageStatus: 'rejected',
+      overageDisabledReason: 'out_of_credits',
+      isUsingOverage: false,
+    },
+    uuid: 'cd23b1f0-65d4-4c29-90da-c9dfcb6b46bd',
+    session_id: '94c56115-079d-4a99-b414-457167bc90dc',
+  })
+
+  /** A tick that spawns a worker which says exactly that, and nothing else of interest. */
+  async function tickWith(line: string, dataDir: string, now: number) {
+    const c = mkClock(now)
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: {
+        dataDir,
+        pipeline: { enabled: true },
+        workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { name: 'max-2' }, enabled: true }],
+      },
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      spawnWorker: makeSpawnWorker(undefined, { lines: [line, 'APPROACH_NOTE: прямой путь'] }),
+      deps: {
+        // The account this attempt runs on rides out of buildArgs in the real daemon; the fake
+        // one has to carry it too, because the account name is what the reading is filed under.
+        buildArgs: () => ({ bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it', workerId: 'max-2', accountName: 'max-2' }),
+      },
+    })
+    await tick(deps)
+    return { clock: c.clock }
+  }
+
+  it('the window a worker was told about is the window «Расходы» shows, reset time and all', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-win-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000 // an hour before the window turns over
+
+    await tickWith(RATE_LIMIT_LINE, dataDir, now)
+
+    const payload = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: any) => windowState({ account, clock: () => now, dataDir }),
+      config: { workers: [{ id: 'max-2', lane: 'prod', account: { name: 'max-2' } }], machineId: 'self' },
+      clock: () => now,
+    })
+
+    // THE SCREEN'S OWN DATA. «Расходы» reads spend.accounts and nothing else for this section.
+    const [account] = payload.spend.accounts
+    expect(account.name).toBe('max-2')
+    expect(account.fiveHour.status).toBe('open') // the provider said «allowed»
+    expect(account.fiveHour.resetsAt).toBe(new Date(RESETS_AT_SEC * 1000).toISOString())
+    expect(account.fiveHour.pct).toBeNull() // it sent no fraction, so the screen shows none
+    expect(account.week.status).toBe('unknown') // the other window was never mentioned
+  })
+
+  it('a refused window arrives as «exhausted» and stops the account being routed to', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-shut-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'five_hour', isUsingOverage: false },
+    })
+
+    await tickWith(refused, dataDir, now)
+
+    const state = windowState({ account: { name: 'max-2' }, clock: () => now, dataDir })
+    expect(state.fiveHour.status).toBe('exhausted')
+    expect(state.closedUntil).toBeDefined() // the refusal was PERSISTED, not merely noticed
+    expect(isOpen(state, () => now)).toBe(false)
+  })
+
+  it('a machine that has heard nothing says so — no reading is ever invented as a zero', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-quiet-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+
+    const payload = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: any) => windowState({ account, clock: () => now, dataDir }),
+      config: { workers: [{ id: 'max-2', lane: 'prod', account: { name: 'max-2' } }], machineId: 'self' },
+      clock: () => now,
+    })
+
+    const [account] = payload.spend.accounts
+    expect(account.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(account.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
   })
 })

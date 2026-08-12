@@ -106,7 +106,7 @@ import {
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { shouldApiFallback } from './policy/budget.mjs'
-import { windowState, isOpen } from './policy/windows.mjs'
+import { windowState, terminalWindowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries, bookUsage } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
 import { createBuildArgs } from './runner/build-args.mjs'
@@ -707,7 +707,9 @@ export function createDaemon(o = {}) {
     if (!subject || typeof subject !== 'object') return subject
     return subject.account && typeof subject.account === 'object' ? subject.account : subject
   }
-  const windowsForState = (subject) => windowState({ account: accountOf(subject), usageReader, clock, dataDir })
+  // No usage reader here any more: a window is what the vendor said about the ACCOUNT, and
+  // this daemon's own token count could only ever see the sessions it spawned itself.
+  const windowsForState = (subject) => windowState({ account: accountOf(subject), clock, dataDir })
   const windowsOpenFor = (subject) => isOpen(windowsForState(subject), clock)
 
   // (4) federation — a HUB daemon (and only a hub) aggregates its peers. A standalone or
@@ -937,6 +939,11 @@ export function createDaemon(o = {}) {
         dataDir, // the spend book the «что съело лимит» branch reads
         policyDir: o.policyDir ?? dataDir, // where «Мой стиль» puts the distilled voice
         windows: windowsForState,
+        // The person's own terminal reports its subscription windows to its status line, and
+        // that reading — unlike anything on the work stream — carries the percentage AND counts
+        // the sessions he ran himself. The status line lays it down in the same window store;
+        // this is the read side.
+        terminalWindows: () => terminalWindowState({ clock, dataDir }),
         usageReader,
         usageSeries: usageSeriesReader,
         // The read-only git runner behind /api/diff and the task timeline: the SAME

@@ -1,68 +1,80 @@
 /**
- * windows.mjs — per-account rolling-window state, honest by construction.
+ * windows.mjs — per-account subscription windows, said only as far as they are known.
  *
- * WHAT IT IS: the model behind the roster's % window bars. It answers, per account: how
- * full is the 5h / weekly window, and is the account currently open for work?
+ * WHAT IT IS: the model behind everything the window says about a subscription — is this
+ * account taking work right now, and when does its window turn over.
  *
- * THREE SOURCES, IN ORDER OF AUTHORITY:
- *   (a) OBSERVATION — the CLI's own `rate_limit_event` carries the vendor's view of a window:
- *       which one, what fraction of it is spent, when it resets. This is the reading that
- *       includes the sessions a PERSON ran in their own terminal, which is most of them on a
- *       real machine, and it is preferred wherever a live one exists.
- *   (b) ESTIMATE — where nobody has reported a window, pct5h / pctWeek derive from the
- *       runner's OWN token accounting (usageReader = readUsage from usage.mjs, injected)
- *       against coarse per-account capacity constants. `measured` says which bars are which,
- *       and `estimated` stays true while any bar is still a guess.
- *   (c) GROUND-TRUTH CLOSE — when the CLI returns a rate-limit error it carries a reset time;
- *       the loop calls markWindowClosed() to PERSIST that close, and windowState reports
- *       closedUntil until it expires. A refusal outranks any percentage.
+ * WHAT THE VENDOR ACTUALLY SENDS, verified on a live stream on 12.08.2026:
  *
- * THE ASSUMPTION THIS FILE WAS BUILT ON WAS WRONG, AND IT MATTERED. The module was written
- * around «there is no official quota API», so the bars were estimated from what this daemon
- * had spawned — and on a machine where the founder works in his own terminal all day, that is
- * not merely coarse but systematically low. It read near zero on an account three quarters
- * spent, which is the opposite of the question the screen exists to answer. The event was
- * there the whole time, on every spawn, unparsed.
+ *     {"type":"rate_limit_event","rate_limit_info":{
+ *        "status":"allowed","resetsAt":1786539600,"rateLimitType":"five_hour",
+ *        "overageStatus":"rejected","overageDisabledReason":"out_of_credits",
+ *        "isUsingOverage":false}}
+ *
+ * Three facts and no fourth: WHICH window, WHETHER it is still letting work through, and
+ * WHEN it resets. There is no fraction of the window spent. There never was one on this
+ * stream, and no other programmatic source has one either — the interactive `/status`
+ * command is a command of the interface and cannot be called from here.
+ *
+ * WHY THERE IS NO PERCENTAGE HERE ANY MORE. The screen showed «0%» on a subscription that was
+ * being spent all day, and it got there by TWO roads that both ended in a zero:
+ *
+ *   (a) where nothing had been reported, an ESTIMATE — this daemon's own token accounting
+ *       against a made-up per-account capacity constant. On a machine where a person also
+ *       works in his own terminal, that count sees only the sessions this daemon spawned, so
+ *       it reads near zero on an account three quarters spent;
+ *   (b) where a reading HAD arrived, the missing fraction itself. The provider sends no
+ *       `utilization`, the parser honestly reported it as null, and `Number(null)` is 0 — so
+ *       the reading was stored and drawn as «0% spent», labelled as the provider's own
+ *       measurement. That is the worse of the two: an estimate at least admitted to being one.
+ *
+ * A person reads a zero bar as «the quota is free». A number nobody measured, presented as a
+ * measurement, is not a rough answer — it is a confident wrong answer to the exact question the
+ * screen exists to answer. Both roads are closed. What is not known is reported as not known,
+ * and the token count this machine really did spend is shown as OUR count, next to the work it
+ * paid for, where it means what it says.
+ *
+ * WHAT THIS MODULE ANSWERS, per window: `status` — `open`, `exhausted` or `unknown` — plus
+ * `resetsAt` when the vendor named one, and `pct` ONLY on the day the vendor starts sending
+ * a utilization fraction (null until then; never a stand-in).
  *
  * AN OBSERVATION EXPIRES. It describes a rolling window at a moment; past the reset it
- * carries, that window is gone and the number would be a stale high reading that keeps a
- * healthy account looking exhausted. Expiry falls back to the estimate rather than to silence.
+ * carries, that window is gone, so the reading goes back to `unknown` rather than to a stale
+ * `exhausted` that would keep a healthy account looking refused. Expiry falls back to
+ * silence, because silence is the truth at that point.
  *
- * DEGRADATION IS SAFE: with no observation the estimates behave exactly as before; scheduling
- * degrades to reactive (exhaustion → wait or API-fallback per the budget rule) — never a
- * silent stop, never a dishonest bar.
+ * DEGRADATION IS SAFE: `unknown` is treated as open, so a daemon that has never seen a
+ * rate-limit frame behaves exactly as one that has — never a silent stop. A refusal is the
+ * only thing that closes a window, and a refusal is always something the vendor said.
  *
- * SEAM: windows.mjs NEVER imports usage.mjs — the loop wires readUsage in through the
- * `usageReader` DI seam, and tests inject fakes. Persisted closes live under
- * `<dataDir>/windows/<account>.json` written via atomicWriteJson (plan-01 zero-dep posture).
- *
+ * Persisted state lives under `<dataDir>/windows/<account>.json` written via atomicWriteJson.
  * Node built-ins + the zero-dep fs-atomics helper only; clock + fs injectable.
  */
 
 import { atomicWriteJson, readJsonSafe } from '../../../scripts/sma/lib/fs-atomics.mjs'
 import { join } from 'node:path'
 
-/** Rolling-window spans. */
-const FIVE_HOURS_MS = 5 * 60 * 60 * 1000
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+/** The window names the CLI reports, as it spells them. */
+export const FIVE_HOUR_LIMIT = 'five_hour'
+export const SEVEN_DAY_LIMIT = 'seven_day'
 
 /**
- * DEFAULT_CAPACITY — coarse per-account token budgets for the % estimate (A3: no official
- * quota API, so these are honest guesses, config-overridable per account). They exist only
- * to turn a token count into a bar; the rate-limit ground truth is what actually gates work.
+ * The spellings each window has been seen under, most-canonical first. The vendor names the
+ * weekly window `seven_day` on the stream and `week` in its own release notes; reading a
+ * short list of aliases costs nothing and keeps a rename from silently emptying the screen.
+ * A reading under a name that is on neither list is stored but not drawn — inventing which
+ * window an unknown name refers to is exactly the class of guess this module just removed.
  */
-export const DEFAULT_CAPACITY = Object.freeze({ fiveHourTokens: 8_000_000, weekTokens: 80_000_000 })
+const FIVE_HOUR_KEYS = [FIVE_HOUR_LIMIT, 'five_hours', 'fiveHour']
+const WEEK_KEYS = [SEVEN_DAY_LIMIT, 'week', 'weekly', 'seven_days']
+
+/** Nothing has been heard about this window. NOT «empty» — unheard. */
+const UNKNOWN = Object.freeze({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
 
 /** accountName from an account profile (object) or a bare string. */
 function nameOf(account) {
   if (typeof account === 'string') return account
   return account?.name
-}
-
-/** Whole-percent of used vs capacity (0 when capacity is non-positive; never negative). */
-function pctOf(usedTokens, capacityTokens) {
-  if (!(capacityTokens > 0)) return 0
-  return Math.max(0, Math.round((100 * usedTokens) / capacityTokens))
 }
 
 /** Epoch-ms of a resetAt that may be a number or an ISO string; NaN when unparseable. */
@@ -73,60 +85,88 @@ function toMs(resetAt) {
 }
 
 /**
- * windowState({account, usageReader, clock, dataDir, fsImpl, capacity}) → the honest state.
+ * readingSaysExhausted(reading) — does this reading mean the vendor has stopped letting work
+ * through on that window?
  *
- * `estimated` and `measured` are ALWAYS present: the first says «at least one of these bars is
- * a guess», the second says which. `closedUntil` is present ONLY when a persisted ground-truth
- * close has a reset time still in the future, and it outranks every percentage here.
+ * The healthy statuses the CLI sends all begin with `allowed` (`allowed`, and the warning
+ * variant it sends as a window fills). Anything else it puts in that field is a refusal.
+ * Matching on the OPEN wording rather than on a list of refusal words is deliberate: a new
+ * refusal spelling then reads as a refusal — the cautious direction — instead of quietly
+ * passing as healthy, and a new healthy spelling in that family still reads as open.
+ *
+ * A utilization of 1 is honoured too, for the day the vendor starts sending the fraction.
+ *
+ * @param {{status?:string, utilization?:number}} reading
+ * @returns {boolean}
+ */
+export function readingSaysExhausted(reading) {
+  if (!reading || typeof reading !== 'object') return false
+  const util = Number(reading.utilization)
+  if (Number.isFinite(util) && util >= 1) return true
+  const status = typeof reading.status === 'string' ? reading.status.trim().toLowerCase() : ''
+  if (!status) return false
+  return !status.startsWith('allowed')
+}
+
+/**
+ * The stored reading for ONE window, IF it is still about the window we are in.
+ *
+ * Past the reset time it carries, the window it described no longer exists and the reading
+ * would be a stale answer about a window that has since turned over. A reading with no reset
+ * time cannot be aged at all and is therefore never trusted to survive — «unknown» is a better
+ * answer than an undatable one.
+ */
+function factOf(rec, keys, clock) {
+  const all = rec && typeof rec.observed === 'object' && rec.observed !== null ? rec.observed : null
+  if (!all) return UNKNOWN
+  for (const key of keys) {
+    const one = all[key]
+    if (!one || typeof one !== 'object') continue
+    const resetMs = toMs(one.resetsAt)
+    if (!Number.isFinite(resetMs) || resetMs <= clock()) continue
+    const util = Number(one.utilization)
+    return {
+      status: readingSaysExhausted(one) ? 'exhausted' : 'open',
+      resetsAt: resetMs,
+      // Present ONLY when the vendor sent a fraction. It does not today; the field is here so
+      // that the day it does, the number on the glass is its number and nobody's arithmetic.
+      pct: Number.isFinite(util) ? Math.max(0, Math.min(100, Math.round(util * 100))) : null,
+      observedAt: typeof one.at === 'string' ? one.at : null,
+    }
+  }
+  return UNKNOWN
+}
+
+/**
+ * windowState({account, clock, dataDir, fsImpl}) → what is known about this account's windows.
+ *
+ * `fiveHour` and `week` are ALWAYS present and always carry a `status` of `open`, `exhausted`
+ * or `unknown` — a caller never has to tell an absent field from a false one. `closedUntil` is
+ * present ONLY when a persisted refusal has a reset time still in the future, and it outranks
+ * both windows.
  *
  * @param {{
- *   account: (string|{name:string, capacity?:object}),
- *   usageReader: (args:{accountName:string, windowMs:number, clock:Function})=>{inputTokens:number, outputTokens:number},
+ *   account: (string|{name:string}),
  *   clock?: ()=>number,
- *   dataDir?: string,        // when set, the persisted close under <dataDir>/windows/<account>.json is honored
+ *   dataDir?: string,        // when set, the persisted readings under <dataDir>/windows/<account>.json are read
  *   fsImpl?: {readFileSync?:Function},
- *   capacity?: {fiveHourTokens:number, weekTokens:number},
  * }} opts
- * @returns {{accountName:string|undefined, pct5h:number, pctWeek:number, estimated:boolean, measured:{fiveHour:boolean, week:boolean}, fiveHourResetsAt?:number, weekResetsAt?:number, closedUntil?:(number|string)}}
+ * @returns {{accountName:string|undefined, fiveHour:object, week:object, closedUntil?:(number|string)}}
  */
-export function windowState({ account, usageReader, clock = Date.now, dataDir, fsImpl, capacity } = {}) {
+export function windowState({ account, clock = Date.now, dataDir, fsImpl } = {}) {
   const accountName = nameOf(account)
-  const cap = capacity ?? (typeof account === 'object' ? account?.capacity : undefined) ?? DEFAULT_CAPACITY
-  const read = typeof usageReader === 'function' ? usageReader : () => ({ inputTokens: 0, outputTokens: 0 })
-
-  const u5 = read({ accountName, windowMs: FIVE_HOURS_MS, clock }) || {}
-  const uW = read({ accountName, windowMs: WEEK_MS, clock }) || {}
-  const tokens5 = (Number(u5.inputTokens) || 0) + (Number(u5.outputTokens) || 0)
-  const tokensW = (Number(uW.inputTokens) || 0) + (Number(uW.outputTokens) || 0)
 
   const rec = dataDir
     ? readJsonSafe(join(dataDir, 'windows', `${accountName}.json`), { readFn: fsImpl?.readFileSync })
     : null
 
-  // ── the vendor's own reading, when there is a live one ──
-  // A subscription window is a fact about the ACCOUNT, and the estimate below can only ever
-  // see what this daemon spawned. On a machine where a person also works in their own
-  // terminal — which is every machine — the estimate is therefore not merely coarse but
-  // systematically low, and it read near zero on an account that was three quarters spent.
-  // An observation is preferred wherever one exists, per window, and only the windows nobody
-  // has reported stay estimates.
-  const five = liveObservation(rec, FIVE_HOUR_LIMIT, clock)
-  const week = liveObservation(rec, SEVEN_DAY_LIMIT, clock)
-
   const state = {
     accountName,
-    pct5h: five ? pctOfFraction(five.utilization) : pctOf(tokens5, cap.fiveHourTokens),
-    pctWeek: week ? pctOfFraction(week.utilization) : pctOf(tokensW, cap.weekTokens),
-    // The single flag keeps its old meaning — «at least one of these bars is a guess» — so no
-    // reader is newly told that a guess is measured. `measured` says WHICH, for a screen that
-    // wants to label one bar and not the other.
-    estimated: !(five && week),
-    measured: { fiveHour: !!five, week: !!week },
+    fiveHour: factOf(rec, FIVE_HOUR_KEYS, clock),
+    week: factOf(rec, WEEK_KEYS, clock),
   }
-  if (five?.resetsAt != null) state.fiveHourResetsAt = five.resetsAt
-  if (week?.resetsAt != null) state.weekResetsAt = week.resetsAt
 
-  // Ground-truth close: a persisted rate-limit reset that is still in the future overrides.
+  // Ground-truth close: a persisted refusal whose reset time is still in the future overrides.
   if (rec && rec.resetAt != null) {
     const resetMs = toMs(rec.resetAt)
     if (Number.isFinite(resetMs) && resetMs > clock()) state.closedUntil = rec.resetAt
@@ -135,38 +175,68 @@ export function windowState({ account, usageReader, clock = Date.now, dataDir, f
   return state
 }
 
-/** The window names the CLI reports, as it spells them. */
-export const FIVE_HOUR_LIMIT = 'five_hour'
-export const SEVEN_DAY_LIMIT = 'seven_day'
-
-/** A fraction on the wire (0.73) becomes the whole percent a bar is drawn from. */
-function pctOfFraction(fraction) {
-  const n = Number(fraction)
-  if (!Number.isFinite(n)) return 0
-  return Math.max(0, Math.min(100, Math.round(n * 100)))
-}
+/**
+ * The snapshot the terminal's own status line lays down, under the same window store.
+ *
+ * WRITTEN BY scripts/sma/lib/statusline.mjs (recordTerminalWindows), which carries the same
+ * literal — the two sides of a file contract, one writing and one reading, and a test asserts
+ * they agree. The leading underscore keeps it from colliding with the per-account files beside
+ * it, which are named after configured accounts.
+ */
+export const TERMINAL_WINDOWS_FILE = '_terminal.json'
 
 /**
- * The observation of one window, IF it is still about the window we are in.
+ * terminalWindowState({dataDir, clock, fsImpl}) → what the person's OWN terminal last reported
+ * about its subscription windows.
  *
- * An observation is a snapshot of a rolling window that has since kept rolling, so it expires
- * at the reset time it carries: past that moment the window it described no longer exists and
- * its number would be a stale high reading that keeps a healthy account looking exhausted.
- * An observation with no reset time cannot be aged and is therefore not trusted to survive —
- * the estimate is a better answer than an undatable one.
+ * WHY THIS IS A SUBJECT OF ITS OWN, AND NOT AN ACCOUNT'S READING. Claude Code pipes the window
+ * percentages to the status line command it runs, and that is the one place a percentage exists
+ * at all — the work stream this daemon spawns carries the window's name, health and reset, but
+ * never a fraction. It is also a reading about the subscription THAT TERMINAL is signed into,
+ * and nothing on that stdin names an account: attributing it to a configured worker account
+ * would be a guess of exactly the kind this module exists to refuse. So it stands as itself,
+ * labelled as the terminal's own, and no account row inherits it.
+ *
+ * It ages like every other reading: past the reset it carries, `unknown`. `observedAt` survives
+ * that expiry on purpose — a screen that has to say «no fresh reading» still owes the person
+ * the moment of the last one, and «last seen at 15:07» is a fact where a zero would be a claim.
+ *
+ * @param {{dataDir?:string, clock?:()=>number, fsImpl?:{readFileSync?:Function}}} [opts]
+ * @returns {{observed:boolean, observedAt:string|null, fiveHour:object, week:object}}
  */
-function liveObservation(rec, limitType, clock) {
+export function terminalWindowState({ dataDir, clock = Date.now, fsImpl } = {}) {
+  const rec = dataDir
+    ? readJsonSafe(join(dataDir, 'windows', TERMINAL_WINDOWS_FILE), { readFn: fsImpl?.readFileSync })
+    : null
   const all = rec && typeof rec.observed === 'object' && rec.observed !== null ? rec.observed : null
-  const one = all && typeof all[limitType] === 'object' ? all[limitType] : null
-  if (!one || !Number.isFinite(Number(one.utilization))) return null
-  const resetMs = toMs(one.resetsAt)
-  if (!Number.isFinite(resetMs) || resetMs <= clock()) return null
-  return one
+  return {
+    observed: !!all && Object.keys(all).length > 0,
+    observedAt: lastSeenAt(rec),
+    fiveHour: factOf(rec, FIVE_HOUR_KEYS, clock),
+    week: factOf(rec, WEEK_KEYS, clock),
+  }
+}
+
+/** The most recent moment any window in this record was seen — expired readings included. */
+function lastSeenAt(rec) {
+  const all = rec && typeof rec.observed === 'object' && rec.observed !== null ? rec.observed : null
+  let best = null
+  let bestMs = -Infinity
+  for (const one of all ? Object.values(all) : []) {
+    const at = one && typeof one.at === 'string' ? one.at : null
+    const ms = at ? Date.parse(at) : NaN
+    if (Number.isFinite(ms) && ms > bestMs) {
+      bestMs = ms
+      best = at
+    }
+  }
+  if (best) return best
+  return rec && typeof rec.at === 'string' ? rec.at : null
 }
 
 /**
  * markWindowClosed({dataDir, accountName, resetAt, clock, fsImpl}) — persist a ground-truth
- * window close (the CLI rate-limit error carries the reset time). Written atomically under
+ * window close (a refused window carries the reset time). Written atomically under
  * `<dataDir>/windows/<account>.json` so it survives a daemon restart. Returns the record.
  *
  * @param {{dataDir:string, accountName:string, resetAt:(number|string), clock?:()=>number, fsImpl?:object}} opts
@@ -174,10 +244,10 @@ function liveObservation(rec, limitType, clock) {
  */
 export function markWindowClosed({ dataDir, accountName, resetAt, clock = Date.now, fsImpl } = {}) {
   const path = join(dataDir, 'windows', `${accountName}.json`)
-  // MERGE, for the same reason markWindowObserved does: this file now holds the window
-  // READINGS as well as the close, and a whole-file write here would delete them — leaving the
-  // roster back on its estimates the moment an account was refused, which is precisely the
-  // moment a person looks at the bars.
+  // MERGE, for the same reason markWindowObserved does: this file holds the window READINGS as
+  // well as the close, and a whole-file write here would delete them — leaving the screen with
+  // nothing to say at the exact moment an account was refused, which is precisely the moment a
+  // person looks at it.
   const previous = readJsonSafe(path, { readFn: fsImpl?.readFileSync }) || {}
   const record = {
     ...previous,
@@ -198,25 +268,33 @@ export function markWindowClosed({ dataDir, accountName, resetAt, clock = Date.n
  * reading the vendor sent, and return the whole record.
  *
  * MERGE, NEVER REPLACE. Three separate facts share this file: the ground-truth close, the
- * five-hour reading and the seven-day one. The CLI reports whichever window is closest to
- * biting, so consecutive spawns write DIFFERENT keys — and a whole-file write would mean each
- * new reading silently deleted the other two. The record is read first and written back with
- * one key changed.
+ * five-hour reading and the weekly one. The CLI reports whichever window is closest to biting,
+ * so consecutive spawns write DIFFERENT keys — and a whole-file write would mean each new
+ * reading silently deleted the other two. The record is read first and written back with one
+ * key changed.
  *
- * A reading with no window name, no utilization or no reset time is DROPPED rather than
- * stored: the freshness rule that keeps a stale high number off the screen can only work on a
- * reading that can be dated, and a percentage that never expires is worse than an estimate.
+ * WHAT MAKES A READING STORABLE: a window name and a reset time. NOT a utilization — the
+ * vendor does not send one. It used to be required, and the requirement did NOT reject the
+ * readings: `Number(null)` is 0 and 0 is finite, so every real reading passed the guard and was
+ * filed as «0% of this window is spent». That is worse than dropping it would have been — the
+ * screen then showed a MEASURED-looking zero, sourced to the provider, for a quantity the
+ * provider had never mentioned. The reset time is still required, because the freshness rule
+ * that keeps a stale answer off the screen can only work on a reading that can be dated.
  *
  * @param {{dataDir:string, accountName:string, observation:{limitType?:string, utilization?:number, resetsAt?:number, status?:string, usingOverage?:boolean}, clock?:()=>number, fsImpl?:object}} opts
  * @returns {object|null} the record as written, or null when the reading was not storable
  */
 export function markWindowObserved({ dataDir, accountName, observation, clock = Date.now, fsImpl } = {}) {
   const o = observation && typeof observation === 'object' ? observation : {}
-  const limitType = typeof o.limitType === 'string' && o.limitType.trim() ? o.limitType : null
-  const utilization = Number(o.utilization)
+  const limitType = typeof o.limitType === 'string' && o.limitType.trim() ? o.limitType.trim() : null
   const resetsAt = toMs(o.resetsAt)
   if (!dataDir || !accountName || !limitType) return null
-  if (!Number.isFinite(utilization) || !Number.isFinite(resetsAt)) return null
+  if (!Number.isFinite(resetsAt)) return null
+  // AN ABSENT FRACTION MUST NOT BECOME A ZERO ONE. The parser hands `utilization: null` on
+  // every real frame, and `Number(null)` is 0 — which is finite, so a bare Number() here stored
+  // «0% spent» for a window the provider said nothing about, and the screen drew the same
+  // confident zero this whole change exists to remove. Null is checked before the cast.
+  const utilization = o.utilization == null ? NaN : Number(o.utilization)
 
   const path = join(dataDir, 'windows', `${accountName}.json`)
   const previous = readJsonSafe(path, { readFn: fsImpl?.readFileSync }) || {}
@@ -226,8 +304,8 @@ export function markWindowObserved({ dataDir, accountName, observation, clock = 
     observed: {
       ...(previous.observed && typeof previous.observed === 'object' ? previous.observed : {}),
       [limitType]: {
-        utilization,
         resetsAt,
+        ...(Number.isFinite(utilization) ? { utilization } : {}),
         ...(typeof o.status === 'string' && o.status ? { status: o.status } : {}),
         ...(o.usingOverage === true ? { usingOverage: true } : {}),
         at: new Date(clock()).toISOString(),
@@ -243,10 +321,20 @@ export function markWindowObserved({ dataDir, accountName, observation, clock = 
 }
 
 /**
- * isOpen(state, clock) — a window is CLOSED iff a ground-truth close is still in the future
- * OR the 5h estimate has reached 100%. Everything else is open.
+ * isOpen(state, clock) — a window is CLOSED iff a ground-truth close is still in the future,
+ * or the vendor's own reading of either window says it is no longer allowing work.
  *
- * @param {{pct5h?:number, closedUntil?:(number|string)}} state
+ * `unknown` is OPEN. Nothing was heard, and refusing to spawn on the strength of a silence
+ * would idle a healthy machine forever; a real refusal, when it comes, arrives on the stream
+ * of the very next attempt and closes the window then.
+ *
+ * THE WEEKLY WINDOW CLOSES A WORKER TOO. Routing past a spent week means spawning a session
+ * the subscription will refuse, which costs a whole attempt to learn what was already known.
+ *
+ * Accepts the internal state and the payload bar alike — both carry the same two facts under
+ * the same two names, so the screen and the router can never disagree about who is open.
+ *
+ * @param {{fiveHour?:{status?:string}, week?:{status?:string}, closedUntil?:(number|string)}} state
  * @param {()=>number} [clock]
  * @returns {boolean}
  */
@@ -256,11 +344,7 @@ export function isOpen(state, clock = Date.now) {
     const resetMs = toMs(state.closedUntil)
     if (Number.isFinite(resetMs) && resetMs > clock()) return false
   }
-  if (Number(state.pct5h) >= 100) return false
-  // THE WEEKLY WINDOW CLOSES A WORKER TOO. It did not, and while both bars were guesses that
-  // was survivable — a weekly estimate against a coarse capacity constant is not something to
-  // stop work on. Now that the vendor reports this window itself, a full week is as final as a
-  // full five hours: routing past it means spawning a session the subscription will refuse.
-  if (Number(state.pctWeek) >= 100) return false
+  if (state.fiveHour && state.fiveHour.status === 'exhausted') return false
+  if (state.week && state.week.status === 'exhausted') return false
   return true
 }

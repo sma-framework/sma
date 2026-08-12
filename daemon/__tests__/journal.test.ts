@@ -48,9 +48,11 @@ import {
   journalComplete,
   parseApproachNote,
   attemptLogTail,
+  attemptDigest,
   ATTEMPT_LOG_LINE_CAP,
   ATTEMPT_LOG_TAIL_DEFAULT,
   ATTEMPT_LOG_TAIL_MAX,
+  ATTEMPT_DIGEST_LIST_CAP,
 } from '../src/front/journal.mjs'
 import {
   appendJournalEntry,
@@ -923,6 +925,9 @@ describe('the live attempt log — every line, appended as it arrives', () => {
       truncated: false,
       // an attempt that printed nothing left no note either — absent, never invented
       note: null,
+      // …and nothing to roll up. A digest of no rows is null and never a row of zeroes,
+      // which would read as «инструментов 0» about an attempt whose log is simply not there
+      digest: null,
     })
 
     const attemptId = 'BL-9#6'
@@ -995,6 +1000,121 @@ describe('the live attempt log — every line, appended as it arrives', () => {
     expect(readAttemptLog({ dir, attemptId: second }).entries[0].line).toBe('attempt two')
     expect(existsSync(logFile(first))).toBe(true)
     expect(existsSync(logFile(second))).toBe(true)
+  })
+
+  it('THE ROLL-UP IS COUNTED OVER THE WHOLE LOG, NEVER OVER THE TAIL', () => {
+    // Same law as the note one screen up, and it matters for the same reason: a person reads
+    // «инструментов 2» under a window showing two rows and concludes the attempt did two
+    // things, when it did forty. The tail is what fits; the digest is what happened.
+    const attemptId = 'BL-9#9'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: '{}', summary: [{ kind: 'tool', tool: 'Read', detail: '/repo/a.ts' }] })
+    w.append({ line: '{}', summary: [{ kind: 'tool', tool: 'Edit', detail: '/repo/b.ts' }] })
+    for (let i = 0; i < 30; i += 1) {
+      w.append({ line: '{}', summary: [{ kind: 'tool', tool: 'Bash', detail: `echo ${i}` }] })
+    }
+
+    const tailed = readAttemptLog({ dir, attemptId, tail: 3 })
+    expect(tailed.entries).toHaveLength(3)
+    expect(tailed.digest.calls).toBe(32)
+    expect(tailed.digest.commands).toBe(30)
+    expect(tailed.digest.filesRead).toEqual(['/repo/a.ts'])
+    expect(tailed.digest.filesChanged).toEqual(['/repo/b.ts'])
+  })
+})
+
+/**
+ * ЧТО В ИТОГЕ — the roll-up under the transcript.
+ *
+ * The law under test: a person opening an attempt asks four questions the transcript answers
+ * only by being read end to end — which tools, which files, which connections and skills, and
+ * what it cost. The digest answers them by COUNTING what the runner already summarised, and
+ * it must (a) never invent a figure for a row it could not read, (b) stay right about rows
+ * written before the runner could tell a connection from an ordinary tool, and (c) never
+ * throw, on any input, since a screen asks for it while a worker is still writing the file.
+ */
+describe('attemptDigest — what the whole attempt added up to', () => {
+  const row = (...summary: any[]) => ({ ts: 't', line: '{}', summary })
+
+  it('counts tools, commands, files, connections, skills and handoffs', () => {
+    const d = attemptDigest([
+      row({ kind: 'tool', tool: 'Read', detail: '/repo/a.ts' }),
+      row({ kind: 'tool', tool: 'Read', detail: '/repo/a.ts' }), // the same file twice is one file
+      row({ kind: 'tool', tool: 'Edit', detail: '/repo/b.ts' }),
+      row({ kind: 'tool', tool: 'Bash', detail: 'npm test' }),
+      row({ kind: 'mcp', tool: 'Gmail', detail: 'search_messages' }),
+      row({ kind: 'skill', tool: 'ui-qa' }),
+      row({ kind: 'handoff', tool: 'Task', subagent: 'explorer' }),
+      row({ kind: 'tool_result', ok: false, detail: 'boom' }),
+      row({ kind: 'denied', tool: 'PowerShell', detail: 'needs approval' }),
+      row({ kind: 'limit', detail: 'окно подписки (5 часов): 40%' }),
+      row({ kind: 'result', ok: true, detail: '$3.1716 · ходов: 52' }),
+    ])!
+
+    expect(d.steps).toBe(11)
+    expect(d.calls).toBe(7) // four tools + connection + skill + handoff; a result is not a call
+    expect(d.commands).toBe(1)
+    expect(d.tools).toEqual([
+      { name: 'Read', count: 2 },
+      { name: 'Bash', count: 1 },
+      { name: 'Edit', count: 1 },
+    ])
+    expect(d.filesRead).toEqual(['/repo/a.ts'])
+    expect(d.filesChanged).toEqual(['/repo/b.ts'])
+    expect(d.connections).toEqual(['Gmail'])
+    expect(d.skills).toEqual(['ui-qa'])
+    expect(d.handoffs).toBe(1)
+    expect(d.agents).toEqual(['explorer'])
+    expect(d.failures).toBe(1)
+    expect(d.denied).toBe(1)
+    expect(d.subscriptionWindow).toBe(true)
+    expect(d.session).toBe('$3.1716 · ходов: 52')
+  })
+
+  it('READS THE OLDER SHAPE TOO — a transcript from last week is not a transcript it lies about', () => {
+    // Before the runner could tell them apart, a connection was stored as an ordinary tool
+    // under its wire name and a skill as the tool literally called «Skill».
+    const d = attemptDigest([
+      row({ kind: 'tool', tool: 'mcp__claude_ai_Gmail__search_messages', detail: 'inbox' }),
+      row({ kind: 'tool', tool: 'Skill', detail: 'ui-ux-pro-max' }),
+    ])!
+    expect(d.connections).toEqual(['claude_ai_Gmail'])
+    expect(d.skills).toEqual(['ui-ux-pro-max'])
+    // …and neither of them is counted as one more ordinary tool in the tool table
+    expect(d.tools).toEqual([])
+    expect(d.calls).toBe(2)
+  })
+
+  it('the money is passed through as the vendor said it, and the channel is never guessed', () => {
+    const named = attemptDigest([row({ kind: 'apikey', detail: 'ANTHROPIC_API_KEY' }), row({ kind: 'tool', tool: 'Read', detail: '/a' })])!
+    expect(named.apiKey).toBe('ANTHROPIC_API_KEY')
+
+    // No credential named and no window reported → both facts absent. An absence stays an
+    // absence: the screen says «в потоке не назван», it does not print «подписка».
+    const silent = attemptDigest([row({ kind: 'tool', tool: 'Read', detail: '/a' })])!
+    expect(silent.apiKey).toBe(null)
+    expect(silent.subscriptionWindow).toBe(false)
+    expect(silent.session).toBe(null)
+  })
+
+  it('lists are capped and the overflow is stated, never silently cut', () => {
+    const many = Array.from({ length: ATTEMPT_DIGEST_LIST_CAP + 7 }, (_, i) =>
+      row({ kind: 'tool', tool: 'Write', detail: `/repo/f${i}.ts` }),
+    )
+    const d = attemptDigest(many)!
+    expect(d.filesChanged).toHaveLength(ATTEMPT_DIGEST_LIST_CAP)
+    expect(d.filesChangedMore).toBe(7)
+  })
+
+  it('a log with nothing readable in it rolls up to null, not to a row of zeroes', () => {
+    expect(attemptDigest([{ ts: 't', line: '{"type":"system"}' } as any])).toBe(null)
+    expect(attemptDigest([])).toBe(null)
+  })
+
+  it('never throws, whatever the rows are', () => {
+    for (const bad of [null, undefined, 'nonsense', 42, [null], [{ summary: 'no' }], [{ summary: [null, 7] }]] as any[]) {
+      expect(() => attemptDigest(bad)).not.toThrow()
+    }
   })
 })
 
