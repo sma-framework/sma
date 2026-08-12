@@ -283,6 +283,64 @@ describe('deriveState — the one-poll payload', () => {
     expect(d.receipt.testsTotal).toBe(5)
   })
 
+  /**
+   * WHERE THE «СДЕЛАНО» CARD READS ITS GIT FROM — asserted on the WIRE, because the calculation
+   * was never the broken half. Both reads used to be made with no cwd at all, so they ran in
+   * whatever directory the daemon PROCESS was started in; on an install serving one repository
+   * while the founder works in another, `wt/<taskId>` does not exist there and every card
+   * showed no commits and no diff. The second half of the same defect was the branch name
+   * `main`, written out in full: a project whose trunk is called anything else threw on the
+   * range itself, forever.
+   */
+  it('the done card reads git in the CONNECTED project, and names no trunk branch', async () => {
+    const calls: any[] = []
+    const execGit = (args: string[], opts?: any) => {
+      calls.push({ args, opts })
+      return args[0] === 'log' ? 'abc1234 сделал дело' : ' 2 files changed, 9 insertions(+)'
+    }
+    const rows = [{ id: 'BL-done', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      execGit,
+      // the daemon SERVES one tree and the founder has connected another — the shape that
+      // made this defect visible on 12.08.2026
+      repoDir: '/launch-dir',
+      config: {
+        ...config,
+        projects: [{ id: 'sma', name: 'Продукт', path: '/connected/project' }],
+        activeProject: 'sma',
+      },
+      clock: () => NOW,
+    })
+
+    expect(calls).toHaveLength(2)
+    for (const c of calls) expect(c.opts, 'a git read with no cwd runs in the daemon’s launch directory').toMatchObject({ cwd: '/connected/project' })
+    // no hard-coded trunk name anywhere in what was asked of git
+    expect(JSON.stringify(calls.map((c) => c.args))).not.toContain('main')
+    expect(payload.done[0].commits).toEqual(['abc1234 сделал дело'])
+    expect(payload.done[0].diffStat).toBe('2 files changed, 9 insertions(+)')
+  })
+
+  it('with NO project connected the done card falls back to the served tree — never to the launch cwd', async () => {
+    const calls: any[] = []
+    const execGit = (args: string[], opts?: any) => {
+      calls.push({ args, opts })
+      return ''
+    }
+    const rows = [{ id: 'BL-done', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
+    await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      execGit,
+      repoDir: '/served/tree',
+      config, // no projects registry at all
+      clock: () => NOW,
+    })
+
+    for (const c of calls) expect(c.opts).toMatchObject({ cwd: '/served/tree' })
+  })
+
   it('acceptance («обещано») is carried on a done row that had one, omitted otherwise', async () => {
     const rows = [
       { id: 'BL-a', status: 'completed', lane: 'prod', title: 'promised', acceptance: 'green targeted tests', completedAt: NOW },

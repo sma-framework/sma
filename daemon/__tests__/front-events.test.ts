@@ -499,6 +499,89 @@ describe('server.mjs — GET /api/task/<id> timeline', () => {
   })
 })
 
+// ── the two git doors read the CONNECTED project's tree ──
+
+/**
+ * THE DIRECTORY, ASSERTED ON THE WIRE. Both doors used to pass `config.repoDir` — the
+ * directory the daemon PROCESS was launched in. The task branch lives in the project the
+ * founder connected, so on an install where the two differ git was asked about a revision
+ * that is not in that tree: the timeline came back with an empty commit list and the diff
+ * door answered 404 for work sitting on a branch one directory away. The timeline also named
+ * the trunk `main` outright, which is an exception on every project whose trunk is called
+ * anything else.
+ */
+describe('server.mjs — /api/task and /api/diff run git where the branch actually lives', () => {
+  const adapter = { list: async () => [{ id: 'R-9', title: 'ночная', lane: 'prod', status: 'completed', attempt: 1 }] }
+
+  it('the timeline asks the connected project, and asks it without naming a trunk branch', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, repoDir: '/launch-dir' },
+      deps: {
+        adapter,
+        ledger: () => [],
+        repoDir: '/launch-dir',
+        phaseCycleDir: () => '/connected/project',
+        execGit: (args: string[], opts?: any) => {
+          calls.push({ args, opts })
+          return 'abc1234 первый'
+        },
+      },
+    })
+
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+
+    expect(res.statusCode).toBe(200)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].opts).toMatchObject({ cwd: '/connected/project' })
+    expect(calls[0].args.join(' ')).not.toContain('main')
+    expect(JSON.parse(res.body).commits).toEqual(['abc1234 первый'])
+  })
+
+  it('the diff door reads the connected project — and 404s only when git really cannot show the branch', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, repoDir: '/launch-dir' },
+      deps: {
+        adapter,
+        repoDir: '/launch-dir',
+        phaseCycleDir: () => '/connected/project',
+        execGit: (args: string[], opts?: any) => {
+          calls.push({ args, opts })
+          // the real failure mode: a tree that does not hold the branch throws
+          if (opts?.cwd !== '/connected/project') throw new Error('unknown revision wt/R-9')
+          return 'diff --git a/x b/x'
+        },
+      },
+    })
+
+    const res = await call(front, { url: '/api/diff/R-9', headers: bearer() })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('diff --git')
+    expect(calls[0].opts).toMatchObject({ cwd: '/connected/project' })
+  })
+
+  it('a daemon wired with no connected project keeps reading the served tree (regression)', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, repoDir: '/served' },
+      deps: {
+        adapter,
+        ledger: () => [],
+        execGit: (args: string[], opts?: any) => {
+          calls.push({ args, opts })
+          return ''
+        },
+      },
+    })
+
+    await call(front, { url: '/api/task/R-9', headers: bearer() })
+
+    expect(calls[0].opts).toMatchObject({ cwd: '/served' })
+  })
+})
+
 // ── GET /api/state — costs.series ──
 
 describe('server.mjs — costs.series rides GET /api/state', () => {

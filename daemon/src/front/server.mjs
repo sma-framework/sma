@@ -760,9 +760,17 @@ async function handleTask({ res, params, config, deps }) {
     try {
       // ONLY WHAT THIS TASK DID. `git log <branch>` walks the whole history, so the card
       // listed every commit the project ever had and the one commit the worker actually
-      // made drowned on line one of forty. `main..<branch>` is the work that exists on this
+      // made drowned on line one of forty. `HEAD..<branch>` is the work that exists on this
       // branch and nowhere else — which is precisely the question «что сделала эта задача».
-      const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, `main..${branch}`], { cwd: config.repoDir })
+      //
+      // TWO THINGS THIS LINE USED TO GET WRONG, and both emptied the timeline of every task.
+      // It read `config.repoDir`, the directory the daemon was LAUNCHED in, while the branch
+      // lives in the connected project — git then exits non-zero and the catch below answers
+      // an empty list. And it named `main` outright, so a project whose trunk is called
+      // anything else threw on the range itself; `HEAD..` asks the tree where it stands.
+      const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, `HEAD..${branch}`], {
+        cwd: phaseCycleDir(deps) ?? config.repoDir,
+      })
       commits = String(out || '')
         .split(/\r?\n/)
         .map((l) => l.trim())
@@ -804,7 +812,10 @@ async function handleDiff({ res, params, config, deps }) {
   const branch = `wt/${id}`
   let text = ''
   try {
-    text = String(deps.execGit(['show', '--stat', '-p', branch], { cwd: config.repoDir }) || '')
+    // IN THE TREE THAT HOLDS THE BRANCH — the connected project, not the daemon's launch
+    // directory. Reading the wrong tree made `git show wt/<id>` fail on an unknown revision,
+    // and this door answered 404 for work that was sitting on a branch one directory away.
+    text = String(deps.execGit(['show', '--stat', '-p', branch], { cwd: phaseCycleDir(deps) ?? config.repoDir }) || '')
   } catch {
     return send404(res)
   }

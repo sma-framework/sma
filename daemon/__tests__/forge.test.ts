@@ -356,10 +356,11 @@ const WORKERS = [
   { id: 'pro-1', lane: 'research', provider: 'codex', account: { configDir: '/pro' }, enabled: true },
 ]
 
-function makeVerbRunner(responses: Record<string, any>, order: string[]) {
-  return async (_bin: string, argsArray: string[]) => {
+function makeVerbRunner(responses: Record<string, any>, order: string[], seen?: any[]) {
+  return async (_bin: string, argsArray: string[], opts?: any) => {
     const verb = argsArray[1]
     order.push(verb)
+    seen?.push({ verb, cwd: opts && opts.cwd })
     return responses[verb] ?? { code: 0, stdout: '{}' }
   }
 }
@@ -504,6 +505,238 @@ describe('the forge-path trace — draft, lint gate, no activation', () => {
     expect(res.failed.detail).toMatch(/outside the lane's declared write scope/)
     const [row] = await adapter.list({})
     expect(row.status).toBe('failed')
+  })
+
+  /**
+   * ═══════ THE FORGE LANE RIDES THE SAME ENGINE AS THE CODE PATH ════════
+   *
+   * Four fixes made for code work on 12.08.2026 never reached this lane, and the whole class
+   * is the same one: something COMPUTED correctly and never CONNECTED. So every case below
+   * asserts the WIRE — what the spawn was handed, which directory the verb was asked in, what
+   * the ledger row carries — and not what a pure function would have returned.
+   */
+  describe('the forge lane is wired to the same engine as the code path', () => {
+    /** A committed, lint-green draft: the gate opens iff the rest of the lane behaves. */
+    const GREEN_DRAFT = { execGit: () => '.claude/agents/twitter-parser.md' }
+
+    it('the envelope’s tool grant reaches the forge spawn — otherwise the «Создатель» is read-only', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const seen: any[] = []
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          buildArgs: (_t: any, _r: any, opts: any) => {
+            seen.push(opts)
+            return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'x' }
+          },
+        },
+      })
+
+      await tick(deps)
+
+      expect(seen).toHaveLength(1)
+      expect(seen[0].forwardSubagentText).toBe(true)
+      expect(seen[0].allowedTools).toEqual(expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash']))
+    })
+
+    it('the approach note is found INSIDE the CLI’s JSON frames — a lane reading raw lines never finds it', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      // exactly what the CLI really emits: the words live inside message.content[].text,
+      // so `line.startsWith('APPROACH_NOTE:')` is false on every line of this stream
+      const frame = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'APPROACH_NOTE: собрал черновик по образцу соседнего агента' }] },
+      })
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          spawnWorker: (spec: any) => {
+            order.push('spawn')
+            spec.onLine?.(frame)
+            spec.onExit?.({ code: 0, signal: null })
+            return { pid: 8, kill: () => {} }
+          },
+        },
+      })
+
+      const res = await tick(deps)
+
+      // the draft is committed and green; the ONLY thing that can fail this attempt is the note
+      expect(res.failed, 'the note inside the frame was not found — the attempt died «no_journal»').toBeUndefined()
+      expect(res.completed).toBe('F-1')
+    })
+
+    it('the worktree is cut in the CONNECTED project, not in the daemon’s launch directory', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const verbs: any[] = []
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          projectDir: () => '/connected/project',
+          verbRunner: makeVerbRunner(
+            { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-1', branch: 'wt/F-1' }) } },
+            order,
+            verbs,
+          ),
+        },
+      })
+
+      await tick(deps)
+
+      expect(verbs.find((v) => v.verb === 'worktree').cwd).toBe('/connected/project')
+    })
+
+    it('a daemon with no connected project still cuts it in the served tree (regression)', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const verbs: any[] = []
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          verbRunner: makeVerbRunner(
+            { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-1', branch: 'wt/F-1' }) } },
+            order,
+            verbs,
+          ),
+        },
+      })
+
+      await tick(deps)
+
+      expect(verbs.find((v) => v.verb === 'worktree').cwd).toBe('/repo')
+    })
+
+    it('the spawn registers a kill-handle, so «Перебить сейчас» can end a forge turn', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const registered: any[] = []
+      const finished: string[] = []
+      let killed = false
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          attemptTurns: {
+            register: (taskId: string, kill: () => void) => registered.push({ taskId, kill }),
+            done: (taskId: string) => finished.push(taskId),
+          },
+          spawnWorker: (spec: any) => {
+            order.push('spawn')
+            spec.onLine?.('APPROACH_NOTE: выковал')
+            spec.onExit?.({ code: 0, signal: null })
+            return { pid: 9, kill: () => (killed = true) }
+          },
+        },
+      })
+
+      await tick(deps)
+
+      expect(registered.map((r) => r.taskId)).toEqual(['F-1'])
+      registered[0].kill()
+      expect(killed, 'the registered handle does not reach the forge child').toBe(true)
+      expect(finished).toEqual(['F-1'])
+    })
+
+    it('what the forge attempt cost is booked — the lane used to spend a night and report zero', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const booked: any[] = []
+      const result = JSON.stringify({
+        type: 'result',
+        session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab',
+        total_cost_usd: 0.42,
+        modelUsage: { 'claude-x': { inputTokens: 1200, outputTokens: 300 } },
+      })
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          bookUsage: (row: any) => booked.push(row),
+          spawnWorker: (spec: any) => {
+            order.push('spawn')
+            spec.onLine?.('APPROACH_NOTE: выковал')
+            spec.onLine?.(result)
+            spec.onExit?.({ code: 0, signal: null })
+            return { pid: 10, kill: () => {} }
+          },
+        },
+      })
+
+      await tick(deps)
+
+      expect(booked).toHaveLength(1)
+      expect(booked[0]).toMatchObject({ taskId: 'F-1', provider: 'claude', costUsd: 0.42, channel: 'subscription' })
+    })
+
+    it('the attempt row carries the session it ran in and when it started', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const rows: any[] = []
+      const result = JSON.stringify({ type: 'result', session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab' })
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        ...GREEN_DRAFT,
+        deps: {
+          ledger: { recordAttempt: (row: any) => rows.push(row), readAttempts: () => [] },
+          spawnWorker: (spec: any) => {
+            order.push('spawn')
+            spec.onLine?.('APPROACH_NOTE: выковал')
+            spec.onLine?.(result)
+            spec.onExit?.({ code: 0, signal: null })
+            return { pid: 11, kill: () => {} }
+          },
+        },
+      })
+
+      await tick(deps)
+
+      expect(rows).toHaveLength(1)
+      expect(rows[0].outcome).toBe('completed')
+      expect(rows[0].sessionId).toBe('9f8e7d6c-1234-4abc-8def-0123456789ab')
+      // «начат —» under a FINISHED attempt is what an absent startedAt looks like on the card
+      expect(rows[0].startedAt).toBe(new Date(c.clock()).toISOString())
+    })
+
+    it('a FAILED forge attempt keeps its session and its start time too', async () => {
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(forgeTask())
+      const order: string[] = []
+      const rows: any[] = []
+      const result = JSON.stringify({ type: 'result', session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab' })
+      const { deps } = makeForgeDeps(adapter, c.clock, order, {
+        execGit: () => '', // nothing committed → the draft gate fails the attempt
+        deps: {
+          ledger: { recordAttempt: (row: any) => rows.push(row), readAttempts: () => [] },
+          spawnWorker: (spec: any) => {
+            order.push('spawn')
+            spec.onLine?.(result)
+            spec.onExit?.({ code: 0, signal: null })
+            return { pid: 12, kill: () => {} }
+          },
+        },
+      })
+
+      await tick(deps)
+
+      expect(rows[0].outcome).toBe('failed')
+      expect(rows[0].sessionId).toBe('9f8e7d6c-1234-4abc-8def-0123456789ab')
+      expect(rows[0].startedAt).toBe(new Date(c.clock()).toISOString())
+    })
   })
 
   it('a red lint (the committed draft grants a forbidden power) → fail("agent_error")', async () => {

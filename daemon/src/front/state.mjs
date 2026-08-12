@@ -1730,8 +1730,14 @@ export async function deriveState(deps = {}) {
   })
 
   // ── done[] — «сделано за ночь»; durable sources only ──
+  // THE TREE THE WORK HAPPENED IN, resolved through the SAME expression the workbench and the
+  // phase cycle already use: the connected project, and the served tree only when nothing is
+  // connected. Without it the card's git reads ran in the daemon's launch directory.
+  const gitDir =
+    (connectedProject(config) || {}).dir ||
+    (typeof deps.repoDir === 'string' && deps.repoDir.trim() !== '' ? deps.repoDir : null)
   const done = doneRows.map((r) =>
-    buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject, machineId }),
+    buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activeProject, machineId }),
   )
 
   // ── accounts — the deduped subscription list the spend strip ALSO rides (one dedup,
@@ -1899,18 +1905,28 @@ function totalCost(usageReader, workersCfg, windowMs, now, apiAccountName) {
   return sum
 }
 
-/** Build ONE «сделано за ночь» row from a durable done/failed adapter row + the ledger. */
-function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject, machineId }) {
+/**
+ * Build ONE «сделано за ночь» row from a durable done/failed adapter row + the ledger.
+ *
+ * `gitDir` is WHERE THE TWO GIT READS RUN, and it is not optional bookkeeping: both used to be
+ * called with no cwd at all, so they ran in the directory the daemon PROCESS was launched from.
+ * On an install where the daemon serves one repository and the founder's project is another,
+ * the branch `wt/<taskId>` does not exist there — git exits non-zero, both catches fire, and a
+ * finished task's card showed no commits and no diff at all. The tree the work happened in is
+ * the connected project, and that is what the caller passes.
+ */
+function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activeProject, machineId }) {
   const attempts = readTaskAttempts(r.id)
   const last = attempts.length ? attempts[attempts.length - 1] : null
   const receipt = parseReceiptSummary(last && last.receiptRef, { readReceipt })
 
   const branch = `wt/${r.id}`
+  const gitOpts = gitDir ? { cwd: gitDir } : {}
   let commits = []
   let diffStat = null
   if (typeof execGit === 'function') {
     try {
-      commits = String(execGit(['log', '--oneline', `-${DONE_COMMIT_CAP}`, branch]) || '')
+      commits = String(execGit(['log', '--oneline', `-${DONE_COMMIT_CAP}`, branch], gitOpts) || '')
         .split(/\r?\n/)
         .map((l) => l.trim())
         .filter(Boolean)
@@ -1919,7 +1935,12 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, activeProject
       commits = []
     }
     try {
-      diffStat = String(execGit(['diff', '--shortstat', `main...${branch}`]) || '').trim() || null
+      // WHAT THIS TASK CHANGED, measured from the point its branch left the project's own
+      // history. The name `main` used to be written here in full, and a project whose trunk is
+      // called anything else («master», a release line, a detached checkout) made this an
+      // exception on every single card. `HEAD...<branch>` asks git for the merge-base itself,
+      // so the comparison point is the tree's own position and no branch name is assumed.
+      diffStat = String(execGit(['diff', '--shortstat', `HEAD...${branch}`], gitOpts) || '').trim() || null
     } catch {
       diffStat = null
     }
