@@ -1122,10 +1122,33 @@ export async function tick(deps = {}) {
           )
         }
         workDir = wt.path
+        // THE POINT TO ROLL BACK TO, written down before a single line is spawned.
+        // The isolation itself was always real — a worker only ever writes into its own
+        // worktree on its own branch — but «can be rolled back» and «you can SEE what to
+        // roll back to» are different things, and only the first was true until now: the
+        // attempt row carried hashes and a session id, never the commit the work started
+        // from. Journalled for every attempt, failed ones included, because the attempt a
+        // person wants to undo is precisely the one that went wrong.
+        writeLog(deps, {
+          type: 'task.worktree_base',
+          taskId: task.id,
+          branch,
+          base: wt.actualBase || wt.expectedBase || null,
+          baseFixed: wt.baseFixed === true,
+          path: wt.path,
+        })
       }
 
       // (6) spawn the routed worker; log + touch (throttled) on every stream line.
-      const spec = buildArgs(task, route, SPAWN_OPTIONS)
+      // The envelope decides what this lane may touch; here is where that decision finally
+      // reaches the process that has to obey it. Before this, the grant was hashed into the
+      // attempt row and thrown away — every worker spawned read-only.
+      const spec = buildArgs(task, route, {
+        ...SPAWN_OPTIONS,
+        ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
+          ? { allowedTools: envelope.allowedTools }
+          : {}),
+      })
       // prepend the enabled agent's role/skills preamble (resolveWorkerContext) so
       // «включён» is real in the session. Optional + DI-guarded — skipped when not injected.
       if (typeof deps.resolveWorkerContext === 'function' && route && route.workerId) {
