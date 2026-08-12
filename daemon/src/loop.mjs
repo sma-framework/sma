@@ -397,6 +397,62 @@ export function classifyFailure({ spawnError, exitCode, receipt, workerMarker, j
 }
 
 /**
+ * approachLinesFrom(streamLines) → the lines a note parser can actually read.
+ *
+ * THE STREAM IS NOT TEXT. Every line the CLI emits is a JSON frame, and the worker's words
+ * live INSIDE it (`message.content[].text`, or `result` on the final frame). parseApproachNote
+ * matches on `line.startsWith(MARKER)`, so a marker sitting inside a frame is never at the
+ * start of a line and the note was never found — no matter how faithfully the worker printed
+ * it. Measured 12.08.2026: three attempts in a row printed the markers, all three were failed
+ * as «attempt never explained», and the gate's own log showed a green receipt beside it.
+ *
+ * Raw lines are kept as well: a plain-text stream (tests, other runners) must keep working
+ * exactly as before. This only ADDS the unwrapped text.
+ */
+function approachLinesFrom(streamLines) {
+  const out = []
+  if (!Array.isArray(streamLines)) return out
+  for (const raw of streamLines) {
+    if (typeof raw !== 'string') continue
+    out.push(raw)
+    if (!raw.includes('APPROACH_')) continue // cheap guard: only unwrap frames that can matter
+    try {
+      const frame = JSON.parse(raw)
+      const content = frame && frame.message && frame.message.content
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part && typeof part.text === 'string') out.push(...part.text.split(/\r?\n/))
+        }
+      }
+      if (typeof (frame && frame.result) === 'string') out.push(...frame.result.split(/\r?\n/))
+    } catch {
+      /* not a frame — the raw line above is all there is, and it was already pushed */
+    }
+  }
+  return out
+}
+
+/**
+ * countCommitsOnBranch(deps, base, cwd) → how many commits the attempt put on top of the
+ * base the worktree was cut from. The measurable answer to «did anything actually happen»,
+ * used where a repository can hand back no receipt of its own.
+ *
+ * FAIL-CLOSED, deliberately: no base, no git seam, an unparseable count or a throw all
+ * answer 0. This number is the only thing standing between «finished work with no proof»
+ * and «nothing happened», so an unknown must read as nothing rather than as something.
+ */
+function countCommitsOnBranch(deps, base, cwd) {
+  if (!base || typeof deps.execGit !== 'function' || !cwd) return 0
+  try {
+    const out = String(deps.execGit(['rev-list', '--count', `${base}..HEAD`], { cwd }) || '').trim()
+    const n = Number.parseInt(out, 10)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
  * writeLog(deps, entry) — one line into the daemon's OWN event log (deps.journal), the
  * sink an operator reads. Fail-open like every other narration path.
  */
@@ -1093,6 +1149,8 @@ export async function tick(deps = {}) {
       // started while it is being completed. The front's phaseCycleDir is the same expression,
       // supplied by the same composition root, so the pair cannot drift.
       let workDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+      /** The commit the worktree was cut from — the point any of this can be undone to. */
+      let worktreeBase = null
       if (!isDocument) {
         branch = `wt/${task.id}`
         // `--json` is not decoration. Without it the verb prints prose for a person —
@@ -1129,13 +1187,37 @@ export async function tick(deps = {}) {
         // attempt row carried hashes and a session id, never the commit the work started
         // from. Journalled for every attempt, failed ones included, because the attempt a
         // person wants to undo is precisely the one that went wrong.
+        // EXPECTED FIRST, and that order is the whole point: `expectedBase` is where the
+        // project's own branch stood when this worktree was cut, while `actualBase` on a
+        // REUSED worktree is the tip of the task branch — which already carries the previous
+        // attempt's commit. Counting from the latter made a second attempt see zero new work
+        // and discard a finished, committed fix (12.08.2026: attempt 1 committed without a
+        // note, attempt 2 wrote the note and was told it had produced nothing).
+        worktreeBase = wt.expectedBase || wt.actualBase || null
+        // A REUSED WORKTREE ANSWERS NO BASE AT ALL — measured 12.08.2026, in the journal line
+        // right below: `base=нет reused=true expected=нет actual=нет`. The first attempt of a
+        // task therefore had a base and its work was accepted, while every RETRY lost the one
+        // number the gate needs and threw away a commit that was sitting right there. When the
+        // verb declines to say, ask the project's own tree where it stands — that is exactly
+        // what `expectedBase` means on the first pass, so a retry reads the same point.
+        if (!worktreeBase && typeof deps.execGit === 'function') {
+          try {
+            worktreeBase = String(deps.execGit(['rev-parse', 'HEAD'], { cwd: provisionDir }) || '').trim() || null
+          } catch {
+            /* fail-open: no base means the receiptless path simply cannot certify — never a crash */
+          }
+        }
+        // The line a person reads only ever carries type/task/worker/reason/detail, so the
+        // VALUES go into `detail` — a base recorded under a key the formatter drops is a
+        // record nobody can read, which is how the 12.08 gate stayed unexplainable.
         writeLog(deps, {
           type: 'task.worktree_base',
           taskId: task.id,
           branch,
-          base: wt.actualBase || wt.expectedBase || null,
+          base: worktreeBase,
           baseFixed: wt.baseFixed === true,
           path: wt.path,
+          detail: `base=${worktreeBase || 'нет'} reused=${wt.reused === true} expected=${wt.expectedBase || 'нет'} actual=${wt.actualBase || 'нет'}`,
         })
       }
 
@@ -1274,7 +1356,7 @@ export async function tick(deps = {}) {
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
       // It is required of EVERY class of work: a parked round and a written document explain
       // themselves on the same terms a merged branch does.
-      const note = parseApproachNote(streamLines)
+      const note = parseApproachNote(approachLinesFrom(streamLines))
       const noteWritten = recordApproachNote(deps, task, note)
 
       // An infra failure or a worker marker is the SHARPER signal and wins over either gate
@@ -1323,12 +1405,49 @@ export async function tick(deps = {}) {
 
       // (7) reverify GATE in the worktree — the ONLY door to completed for CODE work
       // (receipts or nothing). Unchanged: this is the original law, now one branch of two.
-      const rv = exit.spawnError ? { code: 1 } : await invokeVerb(verbRunner, 'reverify', ['--branch', branch], workDir)
+      // `--json` IS NOT DECORATION — the same lesson the worktree call above already carries,
+      // learned twice in the same file. Without it the verb prints prose for a person and
+      // parseVerbResult finds no object at all, so a clean reverify and a broken one arrive
+      // identical: `{}`. Asked properly it answers {records, appended}, and «no recipes in
+      // this tree» becomes a fact this code can read instead of a silence it must guess at.
+      const rv = exit.spawnError
+        ? { code: 1 }
+        : await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--json'], workDir)
       let receipt = null
       if (rv.receiptRef) {
         receipt = { verdict: rv.verdict || (rv.code === 0 ? 'green' : 'red'), ref: rv.receiptRef }
       } else if (rv.verdict === 'red' || (Number.isFinite(rv.code) && rv.code !== 0)) {
         receipt = { verdict: 'red', ref: null }
+      } else if (!exit.spawnError && Array.isArray(rv.records) && rv.records.length === 0) {
+        // WORK EXISTS, PROOF DOES NOT — and those are different sentences.
+        //
+        // A repository with no structural recipes (the product itself is one) can never hand
+        // back a green receipt: reverify has nothing to re-run and says so honestly. Until
+        // now that honest emptiness was read as «no receipt» and the attempt FAILED — so a
+        // worker could diagnose correctly, write the fix, commit it to its branch, and still
+        // be told it had done nothing. Three attempts, three times, measured 12.08.2026.
+        //
+        // The resolution keeps the law intact rather than bending it: work that carries
+        // commits but no proof does NOT become «done». It goes to the human column with the
+        // absence stated on the card — `unverified: true` and the reason in words. Nothing
+        // certifies itself; the daemon simply stops discarding finished work for the sin of
+        // living in a tree that has no recipes to re-run.
+        const commits = countCommitsOnBranch(deps, worktreeBase, workDir)
+        // WHY THE GATE DECIDED WHAT IT DECIDED — in words, in the operator's log. Without
+        // this line the only observable was «нет квитанции», identical for «the worker did
+        // nothing» and «the worker committed and we counted from the wrong point». Those
+        // are opposite facts and they cost hours apart.
+        writeLog(deps, {
+          type: 'task.gate_receiptless',
+          taskId: task.id,
+          detail: `base=${worktreeBase || 'нет'} commits=${commits} git=${typeof deps.execGit === 'function' ? 'есть' : 'НЕТ'} dir=${workDir}`,
+        })
+        if (commits > 0) {
+          receipt = {
+            verdict: 'green',
+            ref: { unverified: true, reason: 'no_recipes_in_tree', branch, base: worktreeBase, commits },
+          }
+        }
       }
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
