@@ -24,6 +24,15 @@
  * decides SHAPE, never enum or field legality (that is schema-v2.mjs's job) —
  * and it must never import schema-v2.mjs (no cycles).
  *
+ * LINE ENDINGS: the read path normalizes CRLF to LF before it looks at a single
+ * byte, and the write path emits LF only. A note that arrives with `\r\n` — every
+ * .md file on a Windows checkout with core.autocrlf=true, and anything an editor
+ * or PowerShell redirect saved there — is the SAME note as its LF twin, not a
+ * structural file. Without that normalization the `---\n` fence probe below misses,
+ * parseNote hands back `frontmatter: null`, and the whole record (description,
+ * tags, importance) drops out of the memory layer with no error at all: exactly
+ * the silent corruption this module's loud-throw posture exists to prevent.
+ *
  * Exports (shared by lint, the generator/loader pair and the migrator):
  *   - parseNote(text, {file})   -> {frontmatter|null, body, schemaVersion}
  *   - serializeNote({frontmatter, body, schemaVersion}) -> normalized note text
@@ -122,6 +131,11 @@ const V2_ARRAY_BLOCKS = new Set(['evidence', 'links'])
  */
 export function parseNote(text, opts = {}) {
   const file = opts.file ?? '<unknown>'
+
+  // CRLF -> LF FIRST: every fence probe, line split and `$`-anchored regex below
+  // reads LF, so a Windows-checkout note must be normalized before any of them
+  // sees it — otherwise it is silently misread as a structural file.
+  text = normalizeEndings(text)
 
   // No leading fence -> structural file (MEMORY.md / ARCHIVE.md). Caller skips.
   if (!text.startsWith('---\n') && text !== '---') {
@@ -460,6 +474,15 @@ function parseInlineArray(s, file, fileLine, label = 'tags') {
   return inner.split(',').map((x) => unquote(x.trim()))
 }
 
+/**
+ * CRLF -> LF. The one line-ending law of this module's read path: `\r\n` is a
+ * transport artifact of the checkout, never content, so it is erased before any
+ * grammar decision. LF input passes through untouched (identity).
+ */
+function normalizeEndings(text) {
+  return typeof text === 'string' && text.includes('\r') ? text.replace(/\r\n/g, '\n') : text
+}
+
 /** Strip one layer of surrounding single/double quotes if present. */
 function unquote(v) {
   const t = v.trim()
@@ -640,7 +663,10 @@ export function loadTagsRegistry(tagsPath) {
   const aliases = new Map()
 
   let facet = null
-  for (const line of text.split('\n')) {
+  // Same CRLF law as parseNote: the bullet grammar below is `$`-anchored, and a
+  // trailing `\r` makes EVERY bullet miss — which returns an EMPTY registry with
+  // no error, so lint then calls every tag in the corpus unregistered.
+  for (const line of normalizeEndings(text).split('\n')) {
     const h = /^##\s+(\S+)/.exec(line)
     if (h) {
       facet = h[1] // 'area' | 'kind' | 'phase'
