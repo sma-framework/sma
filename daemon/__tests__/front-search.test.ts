@@ -507,6 +507,7 @@ function mkFront(over: any = {}) {
             total: rows.length,
             truncated: cut.length < rows.length,
             note: over.note === undefined ? { approach: 'сначала прочитал соседний модуль', rejected: [], influences: [] } : over.note,
+            digest: over.digest ?? null,
           }
         },
       },
@@ -648,11 +649,24 @@ describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR'
     expect(JSON.parse((await call(without.front, { url: '/api/attempt/R-9%231' })).body).note).toBe(null)
   })
 
+  it('THE ROLL-UP OF THE WHOLE ATTEMPT TRAVELS BESIDE THE TAIL, and is null when there is none', async () => {
+    // The tail is what fits on screen; the digest is what the attempt actually did. The door
+    // forwards the ledger's count rather than counting the window it is about to send, or the
+    // card would say «инструментов 2» under a two-row window of a forty-tool attempt.
+    const digest = { steps: 40, calls: 40, tools: [{ name: 'Bash', count: 40 }], filesChanged: ['/repo/a.ts'] }
+    const { front } = mkFront({ digest, rows: [{ ts: 'T1', line: 'одна строка', subagent: false }] })
+    const body = JSON.parse((await call(front, { url: '/api/attempt/R-9%231?tail=1' })).body)
+    expect(body.digest).toEqual(digest)
+    expect(body.lines).toHaveLength(1)
+  })
+
   it('an attempt with no log is an EMPTY log — a silent worker is not a 404', async () => {
     const { front } = mkFront({ rows: [], note: null })
     const res = await call(front, { url: '/api/attempt/R-9%231' })
     expect(res.statusCode).toBe(200)
-    expect(JSON.parse(res.body)).toEqual({ lines: [], truncated: false, note: null })
+    // …and nothing to roll up either: null, never a row of zeroes that a card would render
+    // as «инструментов 0» about an attempt that has simply not printed anything yet
+    expect(JSON.parse(res.body)).toEqual({ lines: [], truncated: false, note: null, digest: null })
   })
 
   it('a ledger that THROWS is an empty log, never a 500', async () => {

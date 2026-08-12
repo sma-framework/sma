@@ -84,8 +84,21 @@ export function MachineRow({
   const self = machine.role === 'self'
   const reachable = standing === 'online'
 
-  /** The fullest window on this machine — the one that runs out first. */
-  const worstPct = accounts.length > 0 ? Math.max(...accounts.map((a) => a.windows.pct5h ?? 0)) : null
+  /**
+   * The state of this machine's subscriptions, in one line. It used to be «the fullest window»
+   * as a percentage — a figure nobody measured, worked out from this daemon's own token count.
+   * The provider says whether a window is taking work, not how full it is, so the column
+   * counts: how many are refused, and how many nothing has been heard about yet.
+   */
+  const refused = accounts.filter(
+    (a) =>
+      !!a.windows.closedUntil ||
+      a.windows.fiveHour?.status === 'exhausted' ||
+      a.windows.week?.status === 'exhausted',
+  ).length
+  const heard = accounts.filter(
+    (a) => a.windows.fiveHour?.status === 'open' || a.windows.week?.status === 'open',
+  ).length
 
   return (
     <div
@@ -136,9 +149,11 @@ export function MachineRow({
           <span className="text-tx3">аккаунтов нет</span>
         ) : (
           <div className="flex flex-col gap-1">
-            <span className="font-semibold text-tx">{Math.round(worstPct ?? 0)} %</span>
+            <span className="font-semibold text-tx">
+              {refused > 0 ? `${refused} из ${accounts.length} исчерпано` : `${heard} из ${accounts.length} принимают`}
+            </span>
             <span className="text-[11.5px] text-tx3">
-              {(worstPct ?? 0) >= 90 ? 'окно почти исчерпано' : 'самое полное окно машины'}
+              {heard === 0 && refused === 0 ? 'об окнах пока ничего не приходило' : 'по словам поставщика'}
             </span>
           </div>
         )}

@@ -350,6 +350,177 @@ export function attemptLogTail(rows, tail) {
   return { entries, total: all.length, truncated: entries.length < all.length }
 }
 
+// ══════════════════ WHAT THE WHOLE ATTEMPT ADDED UP TO ══════════════════════════════
+//
+// A transcript answers «what happened next». It does not answer the four questions a person
+// actually arrives with — WHICH TOOLS did it use, WHICH FILES did it touch, did it reach any
+// of my CONNECTIONS or turn on a SKILL, and what did the session COST — because those answers
+// are spread over three hundred rows and nobody reads three hundred rows to count them.
+//
+// So they are counted once, over the WHOLE log rather than over the tail that fits on screen,
+// and shown as one block under it. Every figure is derived from the per-row summaries the
+// runner already built: this adds no second reading of a frame and invents nothing. A row the
+// runner could not read contributes nothing rather than a guess — which is why the block says
+// «шагов: N» (the rows that carried a summary) and never claims to be a census of the stream.
+//
+// IT IS AGGREGATION, NOT INTERPRETATION. Names of tools, files, skills and connections travel
+// out of here exactly as they were stored — bounded text, no markup, rendered as text nodes —
+// and the money figure is passed through as the vendor's own sentence rather than re-derived
+// into a claim about which channel paid for it. What the counter says and what it means are
+// two different facts, and this layer owns only the first.
+
+/** How many names of one kind (files, tools) the block carries before it says «and N more». */
+export const ATTEMPT_DIGEST_LIST_CAP = 12
+
+/** Which tools touch a file, and which of the two lists that file belongs in. */
+const FILE_TOOLS = Object.freeze({
+  Read: 'read',
+  NotebookRead: 'read',
+  Write: 'changed',
+  Edit: 'changed',
+  MultiEdit: 'changed',
+  NotebookEdit: 'changed',
+})
+
+/** Which tools run something on the machine — counted apart, because that is the risky kind. */
+const COMMAND_TOOLS = Object.freeze(['Bash', 'PowerShell'])
+
+/** How a connection's tools are named on the wire: `mcp__<server>__<operation>`. */
+const MCP_TOOL_PREFIX = 'mcp__'
+
+/**
+ * attemptDigest(rows) → the roll-up of one attempt, or null when there is nothing to roll up.
+ * PURE, never throws, reads the stored per-row summaries and nothing else.
+ *
+ * WHY IT ALSO READS THE OLDER SHAPE. Rows written before the runner learned to tell a
+ * connection from an ordinary tool carry `kind:'tool'` with the wire name `mcp__server__op`,
+ * and a skill as `kind:'tool'` named `Skill`. Both are recognised here too, so the block is
+ * right about the transcripts that already exist and not only about the ones written from now
+ * on — a roll-up that was wrong about last week's attempt would be worse than no roll-up.
+ *
+ * @param {object[]} rows stored attempt-log rows (`{ts, line, summary?}`)
+ * @returns {{steps:number, calls:number, tools:Array<{name:string,count:number}>, toolsMore:number,
+ *   filesRead:string[], filesReadMore:number, filesChanged:string[], filesChangedMore:number,
+ *   commands:number, skills:string[], connections:string[], agents:string[], handoffs:number,
+ *   failures:number, denied:number, session:(string|null), apiKey:(string|null),
+ *   subscriptionWindow:boolean}|null}
+ */
+export function attemptDigest(rows) {
+  const all = Array.isArray(rows) ? rows : []
+  const toolCount = new Map()
+  const filesRead = new Set()
+  const filesChanged = new Set()
+  const skills = new Set()
+  const connections = new Set()
+  const agents = new Set()
+  let steps = 0
+  let calls = 0
+  let commands = 0
+  let handoffs = 0
+  let failures = 0
+  let denied = 0
+  let session = null
+  let apiKey = null
+  let subscriptionWindow = false
+
+  for (const row of all) {
+    const parts = row && Array.isArray(row.summary) ? row.summary : []
+    if (parts.length) steps += 1
+    for (const part of parts) {
+      if (!part || typeof part !== 'object') continue
+      const kind = boundedText(part.kind, STRUCT_FIELD_CAP)
+      const tool = boundedText(part.tool, STRUCT_FIELD_CAP)
+      const detail = boundedText(part.detail, STRUCT_FIELD_CAP)
+
+      if (kind === 'tool_result') {
+        if (part.ok === false) failures += 1
+        continue
+      }
+      if (kind === 'denied') {
+        denied += 1
+        continue
+      }
+      if (kind === 'limit') {
+        subscriptionWindow = true
+        continue
+      }
+      if (kind === 'result') {
+        if (detail) session = detail
+        continue
+      }
+      if (kind === 'apikey') {
+        if (detail) apiKey = detail
+        continue
+      }
+      if (kind === 'handoff') {
+        calls += 1
+        handoffs += 1
+        const who = boundedText(part.subagent, STRUCT_FIELD_CAP)
+        if (who) agents.add(who)
+        continue
+      }
+      if (kind === 'mcp') {
+        calls += 1
+        if (tool) connections.add(tool)
+        continue
+      }
+      if (kind === 'skill') {
+        calls += 1
+        if (tool) skills.add(tool)
+        continue
+      }
+      if (kind !== 'tool' || !tool) continue
+
+      calls += 1
+      // The two older shapes, read as what they are — see the note above.
+      if (tool.startsWith(MCP_TOOL_PREFIX)) {
+        const rest = tool.slice(MCP_TOOL_PREFIX.length)
+        const cut = rest.indexOf('__')
+        const server = cut === -1 ? rest : rest.slice(0, cut)
+        if (server) connections.add(server)
+        continue
+      }
+      if (tool === 'Skill') {
+        if (detail) skills.add(detail)
+        continue
+      }
+      toolCount.set(tool, (toolCount.get(tool) || 0) + 1)
+      if (COMMAND_TOOLS.includes(tool)) commands += 1
+      const bucket = Object.prototype.hasOwnProperty.call(FILE_TOOLS, tool) ? FILE_TOOLS[tool] : ''
+      if (bucket && detail) (bucket === 'read' ? filesRead : filesChanged).add(detail)
+    }
+  }
+
+  if (steps === 0) return null
+
+  const tools = [...toolCount.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+  const capped = (set) => [...set].slice(0, ATTEMPT_DIGEST_LIST_CAP)
+  const overflow = (set) => Math.max(0, set.size - ATTEMPT_DIGEST_LIST_CAP)
+
+  return {
+    steps,
+    calls,
+    tools: tools.slice(0, ATTEMPT_DIGEST_LIST_CAP),
+    toolsMore: Math.max(0, tools.length - ATTEMPT_DIGEST_LIST_CAP),
+    filesRead: capped(filesRead),
+    filesReadMore: overflow(filesRead),
+    filesChanged: capped(filesChanged),
+    filesChangedMore: overflow(filesChanged),
+    commands,
+    skills: capped(skills),
+    connections: capped(connections),
+    agents: capped(agents),
+    handoffs,
+    failures,
+    denied,
+    session,
+    apiKey,
+    subscriptionWindow,
+  }
+}
+
 /**
  * parseApproachNote(lines) → {approach, rejected[], influences[]} | null.
  * Reads the worker's note off the session stream lines it already collects — the SAME soft

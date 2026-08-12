@@ -22,9 +22,13 @@
  * slower PREDS_TTL_MS. A warm render touches ONE json file (cache.json) plus the
  * cheap injected summary + own-lease — no plans walk, no spend rebuild.
  *
- * NO NETWORK IMPORT: this module is display-only. The webhook lives in notify.mjs;
- * statusline.mjs never imports it (nor cli.mjs). The vendor-stdin knowledge is
- * quarantined to parseStatusStdin (the spend-adapter quarantine posture).
+ * NO NETWORK IMPORT: the webhook lives in notify.mjs; statusline.mjs never imports it
+ * (nor cli.mjs). The vendor-stdin knowledge is quarantined to parseStatusStdin (the
+ * spend-adapter quarantine posture) — and ONE fact off that stdin is not display-only:
+ * the subscription-window reading the vendor pipes here is the only programmatic source
+ * that includes the sessions a PERSON ran in his own terminal, so recordTerminalWindows
+ * lays it down as a durable snapshot the daemon's window store reads. That write is
+ * throttled, atomic, and fail-open like everything else here.
  *
  * Node built-ins only; zero npm deps; every fs touch behind try/catch. The .sma
  * dir is dependency-injected (dirs.statuslineDir) — no hardcoded '.sma/' path.
@@ -187,11 +191,26 @@ export async function refreshCache(opts = {}) {
  * parseStatusStdin(raw) — the QUARANTINED vendor-stdin adapter. Claude Code pipes a
  * status JSON (session/model/workspace/cost shape) to a statusLine command on stdin;
  * this is the ONLY function in the module that knows that shape. It extracts ONLY the
- * tolerated optional display extras {modelName?, contextPct?}; garbage bytes, an empty
- * string, or an unfamiliar shape return {} — it NEVER throws (the spend-adapter
- * quarantine posture: one function owns the foreign shape, the rest stay pure).
+ * tolerated optional display extras {modelName?, contextPct?} plus the subscription
+ * window reading {rateLimits?}; garbage bytes, an empty string, or an unfamiliar shape
+ * return {} — it NEVER throws (the spend-adapter quarantine posture: one function owns
+ * the foreign shape, the rest stay pure).
+ *
+ * THE WINDOW READING WAS ARRIVING HERE ALL ALONG AND WAS BEING DROPPED ON THE FLOOR.
+ * The vendor pipes, on a subscription and after the first model reply of a session:
+ *
+ *     "rate_limits": { "five_hour": {"used_percentage": 7, "resets_at": 1786552800},
+ *                      "seven_day": {"used_percentage": 58, "resets_at": 1786993200} }
+ *
+ * That is the same figure a person reads off his own status line — the only programmatic
+ * source of «how much of the plan is left» that includes the sessions he ran himself. It
+ * was parsed away with the rest of the payload, so the window in the other screen had
+ * nothing to show but its own guess. Nothing is invented here: a window the payload does
+ * not carry produces no entry, and `resets_at` must be datable or the reading is dropped
+ * (a percentage that can never expire is worse than an empty place).
+ *
  * @param {string} raw
- * @returns {{modelName?:string, contextPct?:number}}
+ * @returns {{modelName?:string, contextPct?:number, rateLimits?:{five_hour?:{usedPercentage?:number, resetsAt?:number}, seven_day?:{usedPercentage?:number, resetsAt?:number}}}}
  */
 export function parseStatusStdin(raw) {
   try {
@@ -210,9 +229,156 @@ export function parseStatusStdin(raw) {
       const pct = ctx.used_pct ?? ctx.usedPct ?? ctx.context_pct ?? ctx.contextPct
       if (Number.isFinite(pct)) out.contextPct = pct
     }
+    // the subscription windows — documented snake_case, camelCase tolerated if it appears.
+    const rl = obj.rate_limits ?? obj.rateLimits
+    if (rl && typeof rl === 'object' && !Array.isArray(rl)) {
+      const limits = {}
+      const five = readRateWindow(rl.five_hour ?? rl.fiveHour)
+      const seven = readRateWindow(rl.seven_day ?? rl.sevenDay)
+      if (five) limits[FIVE_HOUR_KEY] = five
+      if (seven) limits[SEVEN_DAY_KEY] = seven
+      if (Object.keys(limits).length) out.rateLimits = limits
+    }
     return out
   } catch {
     return {} // fail-open — vendor stdin never breaks the statusline
+  }
+}
+
+/** The two window names, spelled the way the daemon's window store spells them. */
+const FIVE_HOUR_KEY = 'five_hour'
+const SEVEN_DAY_KEY = 'seven_day'
+
+/**
+ * The persisted snapshot of the TERMINAL'S OWN subscription, under the daemon's window
+ * store. The leading underscore keeps it from ever colliding with the per-account files
+ * beside it, which are named after configured accounts.
+ *
+ * READ BY daemon/src/policy/windows.mjs (terminalWindowState), which carries the same
+ * literal — the two sides of a file contract, one writing and one reading, and a test
+ * asserts they agree. The daemon must not import a display module to learn a filename.
+ */
+export const TERMINAL_WINDOWS_FILE = '_terminal.json'
+
+/** How long an unchanged reading may sit before it is re-stamped (see recordTerminalWindows). */
+export const TERMINAL_WINDOWS_RESTAMP_MS = 60000
+
+/** One window off the vendor payload: its percentage and its reset, each only if really there. */
+function readRateWindow(w) {
+  if (!w || typeof w !== 'object') return null
+  const out = {}
+  const pct = w.used_percentage ?? w.usedPercentage
+  if (Number.isFinite(pct)) out.usedPercentage = Number(pct)
+  const resetMs = toEpochMs(w.resets_at ?? w.resetsAt)
+  if (Number.isFinite(resetMs)) out.resetsAt = resetMs
+  return Object.keys(out).length ? out : null
+}
+
+/**
+ * Epoch-ms from what the vendor sends. The documented field is Unix SECONDS; a value already
+ * in milliseconds, or an ISO string, is accepted too rather than being silently mangled into
+ * a date in 1970 or in the year 58000. NaN when it is none of those.
+ */
+function toEpochMs(v) {
+  if (Number.isFinite(v)) return Number(v) < 1e12 ? Number(v) * 1000 : Number(v)
+  if (typeof v === 'string' && v.trim()) {
+    const t = Date.parse(v)
+    if (Number.isFinite(t)) return t
+  }
+  return NaN
+}
+
+/**
+ * resolveDaemonDataDir({env, homedirFn, readFn}) — where the local daemon keeps its data,
+ * resolved the way the daemon itself resolves it: SMA_DAEMON_CONFIG wins, else
+ * ~/.sma-daemon/config.json; an explicit `dataDir` in that file wins over the derived
+ * `<config dir>/data`.
+ *
+ * Returns null when there is NO daemon config on this machine. That is not a failure: a
+ * person using SMA without the daemon should not have a directory tree created for a
+ * program he never installed, and a snapshot nobody reads is litter.
+ *
+ * @param {{env?:object, homedirFn?:Function, readFn?:Function}} [opts]
+ * @returns {string|null}
+ */
+export function resolveDaemonDataDir(opts = {}) {
+  try {
+    const env = opts.env || process.env
+    const override = env.SMA_DAEMON_CONFIG
+    const home = typeof opts.homedirFn === 'function' ? opts.homedirFn() : homedir()
+    const configPath =
+      override && String(override).trim() ? String(override).trim() : home ? join(home, '.sma-daemon', 'config.json') : null
+    if (!configPath) return null
+    const cfg = readJsonSafe(configPath, opts.readFn ? { readFn: opts.readFn } : undefined)
+    if (!cfg || typeof cfg !== 'object') return null // no daemon here — write nothing
+    if (typeof cfg.dataDir === 'string' && cfg.dataDir.trim()) return cfg.dataDir.trim()
+    return join(dirname(configPath), 'data')
+  } catch {
+    return null // fail-open — the statusline still renders
+  }
+}
+
+/**
+ * recordTerminalWindows({rateLimits, dataDir, clock, fsImpl}) — persist the terminal's own
+ * window reading into the daemon's window store, atomically, in the record shape the daemon
+ * already reads (`observed[<window>] = {resetsAt, utilization, at}`).
+ *
+ * MERGE, NEVER REPLACE, for the reason the daemon's own writer merges: a payload that names
+ * one window must not delete what is known about the other.
+ *
+ * THROTTLED. A status line re-renders on every turn, and an unchanged reading rewritten
+ * hundreds of times an hour is churn with no information in it. An unchanged reading is
+ * re-stamped only once a minute — but it IS re-stamped, because `at` is what the screen
+ * says when it reports «last seen at», and freezing it would make a live terminal look
+ * abandoned.
+ *
+ * @param {{rateLimits?:object, dataDir?:string|null, clock?:()=>number, fsImpl?:object}} opts
+ * @returns {object|null} the record as written, null when nothing was written
+ */
+export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, fsImpl } = {}) {
+  try {
+    if (!dataDir || !rateLimits || typeof rateLimits !== 'object') return null
+    const path = join(dataDir, 'windows', TERMINAL_WINDOWS_FILE)
+    const previous = readJsonSafe(path, fsImpl?.readFileSync ? { readFn: fsImpl.readFileSync } : undefined) || {}
+    const prevObserved = previous.observed && typeof previous.observed === 'object' ? previous.observed : {}
+    const now = clock()
+    const at = new Date(now).toISOString()
+
+    const observed = { ...prevObserved }
+    let stored = 0
+    let changed = false
+    for (const key of [FIVE_HOUR_KEY, SEVEN_DAY_KEY]) {
+      const w = rateLimits[key]
+      if (!w || typeof w !== 'object') continue
+      // A reading that cannot be dated is DROPPED: the freshness rule that keeps a stale
+      // percentage off the screen can only work on a reading that expires.
+      if (!Number.isFinite(w.resetsAt)) continue
+      const utilization = Number.isFinite(w.usedPercentage) ? Math.max(0, w.usedPercentage) / 100 : undefined
+      const prev = prevObserved[key]
+      if (!prev || prev.resetsAt !== w.resetsAt || prev.utilization !== utilization) changed = true
+      observed[key] = {
+        resetsAt: w.resetsAt,
+        ...(utilization === undefined ? {} : { utilization }),
+        at,
+      }
+      stored += 1
+    }
+    if (!stored) return null
+
+    if (!changed) {
+      const lastAt = Date.parse(previous.at)
+      if (Number.isFinite(lastAt) && now - lastAt < TERMINAL_WINDOWS_RESTAMP_MS) return null
+    }
+
+    const record = { ...previous, source: 'statusline', observed, at }
+    atomicWriteJson(path, record, {
+      mkdirFn: fsImpl?.mkdirSync,
+      writeFn: fsImpl?.writeFileSync,
+      renameFn: fsImpl?.renameSync,
+    })
+    return record
+  } catch {
+    return null // fail-open — a snapshot that could not be written never breaks a render
   }
 }
 

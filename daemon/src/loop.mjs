@@ -106,7 +106,7 @@ import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './f
 import { parseApproachNote, attemptIdFor } from './front/journal.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame } from './runner/frame-summary.mjs'
-import { markWindowObserved, markWindowClosed } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { readPendingRedirects, markConsumed, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
@@ -660,13 +660,12 @@ function recordWindowReading(deps, subscription, event) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   try {
     markWindowObserved({ dataDir, accountName, observation: event, clock, fsImpl: deps.fsImpl })
-    // A WINDOW THE VENDOR SAYS IS FULL IS A CLOSE, AND A CLOSE OUTLIVES THE PERCENTAGE.
-    // `markWindowClosed` has existed, tested, with no caller anywhere since it was written; the
-    // header two modules over describes «the loop calls it» as though it did. This is that
-    // call. It fires on a full window rather than on a refusal wording, because a fraction of
-    // one is unambiguous while the vendor's word for «refused» is not something to guess at —
-    // when a real refusal is observed on a live stream, its status belongs here beside this.
-    if (Number(event.utilization) >= 1 && Number.isFinite(Number(event.resetsAt))) {
+    // A WINDOW THE VENDOR SAYS IS NO LONGER ALLOWING WORK IS A CLOSE, AND A CLOSE OUTLIVES
+    // EVERY OTHER FACT ON THIS LINE. This used to fire on `utilization >= 1` — a fraction the
+    // stream has never once carried, which arrives here as 0 — so the condition was false on
+    // every real machine and the refusal this call exists to persist was never written down.
+    // It now fires on what the stream really says: the reading's own status.
+    if (readingSaysExhausted(event) && Number.isFinite(Number(event.resetsAt))) {
       markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, clock, fsImpl: deps.fsImpl })
     }
   } catch (err) {
@@ -1451,7 +1450,7 @@ export async function tick(deps = {}) {
       }
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
-        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
+        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
         result.completed = task.id
       } else {
         const reason = classifyFailure({
@@ -1461,7 +1460,7 @@ export async function tick(deps = {}) {
           workerMarker: marker,
           journalComplete: noteWritten,
         })
-        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
+        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
         result.failed = { taskId: task.id, reason }
       }
       return result
@@ -1652,7 +1651,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  * `from` names the fine state the task was really in; omitting it (the preflight-«built»
  * door) writes the row with no transition fields rather than an invented pair.
  */
-async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId }) {
+async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt }) {
   const { adapter, ledger, report } = deps
   await adapter.complete(task.id, {
     receiptRef,
@@ -1667,6 +1666,11 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       attempt: task.attempt,
       provider: route && route.provider,
       outcome: 'completed',
+      // WHEN THE WORK BEGAN. The ledger has always had a place for this and nobody ever
+      // filled it, so the card showed «начат —» and «сколько заняло: работа ещё не
+      // начиналась» underneath a FINISHED attempt. Duration is not a decoration: it is the
+      // first thing a person asks of work they did not watch.
+      ...(Number.isFinite(startedAt) ? { startedAt: new Date(startedAt).toISOString() } : {}),
       receiptRef,
       // The session this attempt ran in. `undefined` when the stream never named one (a
       // preflight door completes with no worker at all) — the allowlist loop then omits the
@@ -1686,7 +1690,7 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
  * `from` is CLAIMED for an attempt refused before any worker started and RUNNING for one
  * that died after — both are legal edges into RETRYABLE, and the key names the real one.
  */
-async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId }) {
+async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt }) {
   const { adapter, ledger, report } = deps
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
@@ -1701,6 +1705,9 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
         provider: route && route.provider,
         outcome: 'failed',
         failureReason: reason,
+        // A failed attempt owes the same answer a finished one does: when did it start, and
+        // how long did it burn before it gave up.
+        ...(Number.isFinite(startedAt) ? { startedAt: new Date(startedAt).toISOString() } : {}),
         receiptRef: receiptRef ?? undefined, // the red receipt ref is preserved on the row
         // A FAILED attempt keeps its session id too — that is the attempt a person is most
         // likely to want to open and look inside afterwards.

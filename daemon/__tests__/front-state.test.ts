@@ -8,7 +8,8 @@
  *   - presence is a PURE derive (truth table: closed window → «ждёт окно» even with
  *     queued work; open + active + fresh touch → «работает»; open + no task → «свободен»)
  *     — the fixtures carry NO presence field to read,
- *   - window bars carry estimated: true (honest labels),
+ *   - window bars name each window open / exhausted / unknown — never a percentage nobody
+ *     measured, and never a zero standing in for silence,
  *   - agedForHours appears ONLY past config.agingHours (both sides of the boundary),
  *   - failed done rows carry {reason, reasonLabel} from REASON_LABELS,
  *   - acceptance («обещано») is carried when the task had one, omitted when it did not.
@@ -84,11 +85,21 @@ const config = {
   ],
 }
 
-/** A window-state function keyed by account name (the plan-05 seam). */
+/** One window as the model reports it: a status, and a reset when the provider named one. */
+const win = (status: string, resetsAt: number | null = null) => ({ status, resetsAt, pct: null, observedAt: null })
+
+/** The same window as it goes on the wire — the reset in the format every clock face reads. */
+const wire = (status: string, resetsAt: number | null = null) => ({
+  status,
+  resetsAt: resetsAt === null ? null : new Date(resetsAt).toISOString(),
+  pct: null,
+})
+
+/** A window-state function keyed by account name (the injected seam). */
 function makeWindows(map: Record<string, any>) {
   return (account: any) => {
     const name = typeof account === 'string' ? account : account?.name
-    return map[name] || { pct5h: 10, pctWeek: 20, estimated: true }
+    return map[name] || { fiveHour: win('open'), week: win('open') }
   }
 }
 
@@ -170,9 +181,9 @@ describe('deriveState — the one-poll payload', () => {
       { id: 'BL-3', status: 'awaiting_approval', lane: 'prod', title: 'c' },
     ]
     const windows = makeWindows({
-      'max-1': { pct5h: 40, pctWeek: 55, estimated: true },
-      'max-2': { pct5h: 5, pctWeek: 8, estimated: true },
-      'pro-1': { pct5h: 0, pctWeek: 0, estimated: true },
+      'max-1': { fiveHour: win('open', NOW + HOUR), week: win('open', NOW + 48 * HOUR) },
+      'max-2': { fiveHour: win('open', NOW + HOUR), week: win('unknown') },
+      'pro-1': { fiveHour: win('unknown'), week: win('unknown') },
     })
     const usageReader = ({ accountName }: any) => ({ costUsd: accountName === 'max-1' ? 1.5 : 0.25 })
 
@@ -203,8 +214,17 @@ describe('deriveState — the one-poll payload', () => {
     expect(payload.kpis.queued).toBe(1)
     expect(payload.kpis.awaitingApproval).toBe(1)
     expect(payload.kpis.windowsOpen).toBeGreaterThan(0)
-    // every worker window bar carries estimated:true
-    for (const w of payload.workers) expect(w.window.estimated).toBe(true)
+    // Every worker window bar names BOTH windows with one of the three honest words — and an
+    // unreported window says «unknown», not «0%». A zero here is what taught a person to read
+    // an untouched account as a free one.
+    for (const w of payload.workers) {
+      expect(['open', 'exhausted', 'unknown']).toContain(w.window.fiveHour.status)
+      expect(['open', 'exhausted', 'unknown']).toContain(w.window.week.status)
+      expect(w.window.pct5h).toBeUndefined()
+      expect(w.window.estimated).toBeUndefined()
+    }
+    const untouched = payload.workers.find((w: any) => w.account === 'pro-1')
+    expect(untouched.window.fiveHour).toEqual(wire('unknown'))
     // the active worker resolves its branch + presence «работает»
     const active = payload.workers.find((w: any) => w.id === 'max-1')
     expect(active.taskId).toBe('R-2')
@@ -220,7 +240,9 @@ describe('deriveState — the one-poll payload', () => {
 
   it('a CLOSED window forces «ждёт окно» even with queued work in that lane', async () => {
     const rows = [{ id: 'BL-9', status: 'queued', lane: 'prod', title: 'x', priority: 0, enqueuedAt: NOW }]
-    const windows = makeWindows({ 'max-1': { pct5h: 100, pctWeek: 90, estimated: true, closedUntil: NOW + HOUR } })
+    const windows = makeWindows({
+      'max-1': { fiveHour: win('exhausted', NOW + HOUR), week: win('open'), closedUntil: NOW + HOUR },
+    })
     const payload = await deriveState({
       adapter: mkAdapter(rows),
       windows,
@@ -801,8 +823,8 @@ describe('deriveRules — the «Правила» screen rides the config, never 
 
 describe('deriveAccounts — an account lives on exactly ONE machine, and it is visible', () => {
   const windows = makeWindows({
-    'max-1': { pct5h: 40, pctWeek: 55, estimated: true },
-    'max-2': { pct5h: 100, pctWeek: 90, estimated: false, closedUntil: NOW + HOUR },
+    'max-1': { fiveHour: win('open', NOW + HOUR), week: win('unknown') },
+    'max-2': { fiveHour: win('exhausted', NOW + HOUR), week: win('open'), closedUntil: NOW + HOUR },
   })
 
   it('dedupes by account and attaches every worker riding it, with the machine binding', () => {
@@ -812,10 +834,14 @@ describe('deriveAccounts — an account lives on exactly ONE machine, and it is 
       name: 'max-1',
       machineId: 'workstation',
       dayPriorityOwner: true,
-      windows: { pct5h: 40, pctWeek: 55, estimated: true },
+      windows: { fiveHour: wire('open', NOW + HOUR), week: wire('unknown') },
       workers: ['max-1', 'creator'],
     })
-    expect(accounts[1].windows).toEqual({ pct5h: 100, pctWeek: 90, estimated: false, closedUntil: NOW + HOUR })
+    expect(accounts[1].windows).toEqual({
+      fiveHour: wire('exhausted', NOW + HOUR),
+      week: wire('open'),
+      closedUntil: NOW + HOUR,
+    })
     expect('dayPriorityOwner' in accounts[1]).toBe(false)
   })
 
@@ -827,7 +853,7 @@ describe('deriveAccounts — an account lives on exactly ONE machine, and it is 
 
 describe('deriveState — rules and accounts ride the EXISTING /api/state route', () => {
   it('the payload carries both sections, and the spend strip stays byte-identical', async () => {
-    const windows = makeWindows({ 'max-1': { pct5h: 40, pctWeek: 55, estimated: true } })
+    const windows = makeWindows({ 'max-1': { fiveHour: win('open', NOW + HOUR), week: win('unknown') } })
     const payload = await deriveState({
       adapter: mkAdapter([]),
       windows,
@@ -836,10 +862,12 @@ describe('deriveState — rules and accounts ride the EXISTING /api/state route'
     })
     expect(payload.rules.lanes.map((l: any) => l.lane)).toEqual(['prod', 'forge'])
     expect(payload.accounts.map((a: any) => a.name)).toEqual(['max-1', 'max-2'])
-    // the spend strip is derived from the SAME deduped account list — same names, same order
+    // The spend strip is derived from the SAME deduped account list — same names, same order —
+    // and it carries the WHOLE window bar, so «Расходы» never has to go hunting for the worker
+    // riding an account to find out what its windows are doing.
     expect(payload.spend.accounts).toEqual([
-      { name: 'max-1', pct5h: 40, pctWeek: 55 },
-      { name: 'max-2', pct5h: 10, pctWeek: 20 },
+      { name: 'max-1', fiveHour: wire('open', NOW + HOUR), week: wire('unknown') },
+      { name: 'max-2', fiveHour: wire('open'), week: wire('open') },
     ])
     // the switch mode the rules report is the one the spend strip reports
     expect(payload.rules.subApiSwitch.mode).toBe(payload.spend.apiFallback.switchMode)
@@ -847,8 +875,8 @@ describe('deriveState — rules and accounts ride the EXISTING /api/state route'
 
   it('a CLOSED window flips the reported sub→API mode in BOTH places at once', async () => {
     const windows = makeWindows({
-      'max-1': { pct5h: 100, pctWeek: 90, estimated: true, closedUntil: NOW + HOUR },
-      'max-2': { pct5h: 100, pctWeek: 90, estimated: true, closedUntil: NOW + HOUR },
+      'max-1': { fiveHour: win('exhausted', NOW + HOUR), week: win('open'), closedUntil: NOW + HOUR },
+      'max-2': { fiveHour: win('exhausted', NOW + HOUR), week: win('open'), closedUntil: NOW + HOUR },
     })
     const payload = await deriveState({ adapter: mkAdapter([]), windows, config: rulesConfig, clock: () => NOW })
     expect(payload.spend.apiFallback.switchMode).toBe('api')
@@ -1630,7 +1658,7 @@ describe('deriveState — idleReason on queued rows', () => {
   })
 
   it('conveyor on + all windows closed + no paid budget → windows_closed', async () => {
-    const closed = { pct5h: 100, pctWeek: 100, closedUntil: NOW + HOUR }
+    const closed = { fiveHour: win('exhausted', NOW + HOUR), week: win('exhausted', NOW + HOUR), closedUntil: NOW + HOUR }
     const payload = await deriveState({
       adapter: mkAdapter([queuedRow]),
       windows: makeWindows({ 'max-1': closed, 'max-2': closed, 'pro-1': closed }),
@@ -1641,7 +1669,7 @@ describe('deriveState — idleReason on queued rows', () => {
   })
 
   it('windows closed WITH paid budget left is NOT idle — the fallback engages', async () => {
-    const closed = { pct5h: 100, pctWeek: 100, closedUntil: NOW + HOUR }
+    const closed = { fiveHour: win('exhausted', NOW + HOUR), week: win('exhausted', NOW + HOUR), closedUntil: NOW + HOUR }
     const payload = await deriveState({
       adapter: mkAdapter([queuedRow]),
       windows: makeWindows({ 'max-1': closed, 'max-2': closed, 'pro-1': closed }),

@@ -14,12 +14,29 @@
 
 // ── the one-poll payload: GET /api/state ────────────────────────────────────────────
 
-/** How much of an account's window is spent. `estimated` is honest, never decorative. */
+/**
+ * What is known about ONE subscription window — and it is never a percentage.
+ *
+ * The provider names the window, says whether it is still allowing work, and says when it
+ * resets. It does not say how much of it is spent, so `pct` is null on every reading today and
+ * the field exists only so that the day it sends a fraction the screen shows ITS number. A
+ * window nothing has been heard about is `unknown`, which the screens render as «нет данных» —
+ * never as a zero, because a zero bar is read as «the quota is free».
+ */
+export type WindowStatus = 'open' | 'exhausted' | 'unknown'
+
+export interface WindowFact {
+  status: WindowStatus
+  /** When the provider said this window turns over. Null when nothing has been heard. */
+  resetsAt: string | null
+  /** The provider's own percentage, ONLY when it sent one. Null means it did not. */
+  pct: number | null
+}
+
 export interface WindowBar {
-  pct5h: number
-  pctWeek: number
-  estimated: boolean
-  /** Set only while the window is shut. */
+  fiveHour: WindowFact
+  week: WindowFact
+  /** Set only while a refusal is standing — it outranks both windows above. */
   closedUntil?: string | null
 }
 
@@ -129,10 +146,9 @@ export interface DoneRow {
   failed?: FailureSummary
 }
 
-export interface SpendAccount {
+/** One subscription on the spend strip: its name and the whole of its window bar. */
+export interface SpendAccount extends WindowBar {
   name: string
-  pct5h: number
-  pctWeek: number
 }
 
 export interface ApiFallback {
@@ -142,8 +158,28 @@ export interface ApiFallback {
   switchMode: 'subscription' | 'api'
 }
 
+/**
+ * What this machine's OWN terminal last reported about its subscription windows.
+ *
+ * This is the one reading that carries a real percentage, and the one that counts the sessions
+ * a person ran himself: the provider pipes it to the status line command of his terminal. It
+ * stands apart from the accounts above because nothing in that payload names an account — it is
+ * the terminal's subscription, said as exactly that and no more.
+ *
+ * `observed` false means nothing has ever been reported. `observed` true with a window at
+ * `unknown` means a reading was taken and the window it described has since turned over —
+ * then `observedAt` is what the screen says instead of a number.
+ */
+export interface TerminalWindows {
+  observed: boolean
+  observedAt: string | null
+  fiveHour: WindowFact
+  week: WindowFact
+}
+
 export interface Spend {
   accounts: SpendAccount[]
+  terminal: TerminalWindows
   apiFallback: ApiFallback
 }
 
@@ -1321,11 +1357,57 @@ export interface BacklogPromoteResult extends OkResult {
  * renders it as text, exactly as it renders the raw line.
  */
 export interface AttemptLogSummaryPart {
-  kind: 'tool' | 'handoff' | 'tool_result' | 'text' | 'thinking' | 'result' | 'limit' | string
+  kind:
+    | 'tool'
+    | 'mcp'
+    | 'skill'
+    | 'handoff'
+    | 'tool_result'
+    | 'text'
+    | 'thinking'
+    | 'session'
+    | 'apikey'
+    | 'denied'
+    | 'progress'
+    | 'result'
+    | 'limit'
+    | string
   tool?: string
   detail?: string
   subagent?: string
   ok?: boolean
+}
+
+/**
+ * WHAT THE WHOLE ATTEMPT ADDED UP TO — counted by the daemon over every stored row and not
+ * over the tail on screen, so the figures stay true on a transcript whose beginning was cut.
+ *
+ * `session` is the vendor's own sentence about the finished session (its cost counter and the
+ * number of turns) and is shown as exactly that — never as a claim about which channel paid.
+ * `subscriptionWindow` says the vendor reported a subscription window during this attempt,
+ * which is the one channel fact the stream itself carries.
+ */
+export interface AttemptDigest {
+  /** Rows the daemon could read — the length of the human story, never a census of the stream. */
+  steps: number
+  calls: number
+  tools: { name: string; count: number }[]
+  toolsMore: number
+  filesRead: string[]
+  filesReadMore: number
+  filesChanged: string[]
+  filesChangedMore: number
+  commands: number
+  skills: string[]
+  connections: string[]
+  agents: string[]
+  handoffs: number
+  failures: number
+  denied: number
+  session: string | null
+  /** The billed credential the vendor named for this session, when it named one at all. */
+  apiKey: string | null
+  subscriptionWindow: boolean
 }
 
 /**
@@ -1357,6 +1439,8 @@ export interface AttemptLogLine {
 export interface AttemptLog {
   lines: AttemptLogLine[]
   truncated: boolean
+  /** The roll-up of the whole attempt. Null when nothing in the log could be read. */
+  digest?: AttemptDigest | null
   /** The worker's own note about how it approached the task, when it left one. */
   note: string | null
 }

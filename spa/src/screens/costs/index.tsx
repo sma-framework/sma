@@ -4,7 +4,8 @@ import type { CostPoint, MachineRow } from '../../api/types'
 import { BudgetDialog } from './BudgetDialog'
 import { SpendTable, formatEur, formatTokens } from './SpendTable'
 import type { SpendRow } from './SpendTable'
-import { WindowBars, accountWindows } from './WindowBars'
+import { TerminalWindow } from './TerminalWindow'
+import { WindowBars } from './WindowBars'
 
 /**
  * «Расходы» — the one screen in the window where money is allowed to appear.
@@ -182,7 +183,8 @@ function DayChart({
     <section className="rounded-[14px] border border-bd bg-card px-6 py-[22px] shadow-panel">
       <h2 className="m-0 mb-1 text-[14px] font-semibold text-tx">Последние {DAYS} дней</h2>
       <p className="m-0 mb-4 text-[11.5px] text-tx3">
-        Высота столбца — токены за день. Выберите день, чтобы увидеть, куда он ушёл.
+        Высота столбца — наши токены за день: то, что прошло через запуски этой машины.
+        Выберите день, чтобы увидеть, куда он ушёл.
       </p>
       <div className="flex h-[92px] items-end gap-1.5">
         {days.map((day) => {
@@ -302,7 +304,7 @@ export function Screen() {
     return [...out.values()].sort((a, b) => b.tokens - a.tokens)
   }, [ofDay, machines])
 
-  const windows = useMemo(() => accountWindows(data?.spend.accounts ?? [], data?.workers ?? []), [data])
+  const accounts = data?.spend.accounts ?? []
 
   const todayTokens = totals.get(days[days.length - 1])?.tokens ?? 0
   const capShare = fallback.capEur > 0 ? fallback.monthEur / fallback.capEur : 0
@@ -317,7 +319,10 @@ export function Screen() {
           label={fallback.capEur > 0 ? `из ${formatEur(fallback.capEur)} в месяц` : 'за месяц'}
           tone={capShare >= 0.9 ? 'text-err-tx' : capShare >= 0.7 ? 'text-warn-tx' : 'text-tx'}
         />
-        <Pill value={formatTokens(todayTokens)} label="токенов сегодня" />
+        {/* OUR count, and it says so. It is honestly measured — every token this machine
+            spawned is booked — but it is not the subscription window, and the two used to sit
+            side by side as if they were the same measurement. */}
+        <Pill value={formatTokens(todayTokens)} label="наших токенов сегодня" />
       </header>
 
       {state.isError ? (
@@ -330,7 +335,10 @@ export function Screen() {
       ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-7 pt-6 pb-8">
-        <WindowBars windows={windows} />
+        {/* First, because it is the only reading with a real percentage in it — and the only
+            one that counts the sessions a person ran in his own terminal. */}
+        <TerminalWindow terminal={data?.spend.terminal} />
+        <WindowBars accounts={accounts} />
         <FallbackCard
           todayEur={fallback.todayEur}
           monthEur={fallback.monthEur}
