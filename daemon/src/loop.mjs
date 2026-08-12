@@ -640,6 +640,8 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
   const log = openAttemptLog(deps, task)
   const state = { sessionId: null }
   let lastTouchAt = 0
+  /** One line per attempt, not per renewal: a broken lease says its piece once. */
+  let touchBroken = false
   const onLine = (line) => {
     streamLines.push(line)
     const { event, frame } = parseClaudeFrame(line)
@@ -659,7 +661,19 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
       lastTouchAt = t
-      Promise.resolve(deps.adapter.touch(task.id)).catch(() => {})
+      // A RENEWAL THAT CANNOT RUN IS WHY A LIVE WORKER GETS BURIED. This catch used to be
+      // empty, and that silence is what let the lease renewal fail on every tick unnoticed:
+      // the attempt kept streaming, the lease kept expiring, and nothing anywhere said the
+      // two facts disagreed. Still fail-open — a broken renewal must never fail an attempt
+      // that is doing its work — but it now leaves ONE line in the attempt's own log, where
+      // the transcript and any later post-mortem will both find it.
+      Promise.resolve(deps.adapter.touch(task.id)).catch((err) => {
+        if (touchBroken) return
+        touchBroken = true
+        log.append({
+          line: `[sma] lease renewal failed — this attempt can be declared dead while it still runs: ${String((err && err.message) || err)}`,
+        })
+      })
     }
   }
   return { onLine, sessionOf: () => state.sessionId }
@@ -985,6 +999,21 @@ export async function tick(deps = {}) {
         return result
       }
 
+      // (3) WHO IS RUNNING THIS — written down the moment it is known. The checkout above
+      // claims as the daemon, because WHICH worker runs the task is this line's decision,
+      // not the queue's. Until it is recorded, every screen that answers «who is busy»
+      // matches claimed rows against configured workers and finds nothing: on 12.08.2026
+      // the board showed an empty queue and an idle worker THROUGHOUT a running attempt.
+      // Fail-open and optional by design — an adapter without the seam (or a write that
+      // fails) must never cost an attempt that is otherwise ready to run.
+      if (route.workerId && typeof deps.adapter.assignWorker === 'function') {
+        try {
+          await deps.adapter.assignWorker(task.id, route.workerId)
+        } catch (err) {
+          writeLog(deps, { type: 'task.assign_failed', taskId: task.id, workerId: route.workerId, error: String((err && err.message) || err) })
+        }
+      }
+
       // (3a) CAN THIS ATTEMPT START AT ALL? A routed worker whose account was never set up
       // on this machine (the shipped pool is placeholders) can never reach a spawn. Asking
       // BEFORE the attempt turns three silently burnt retries into one named refusal that
@@ -1071,7 +1100,17 @@ export async function tick(deps = {}) {
         // that is a JSON object, finds nothing at all. Asked properly, the verb answers
         // {ok, path, branch, reused}: `path` is the directory it actually made, and it is not
         // the directory this code used to guess.
-        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], config.repoDir)
+        // WHICH REPOSITORY DOES THE WORK HAPPEN IN? The one the SCREEN says is connected —
+        // not the directory the daemon happened to be launched from. `config.repoDir` is
+        // literally the launch cwd, so provisioning against it meant every task ran in that
+        // one tree no matter which project the founder had selected: on 12.08.2026 tasks
+        // aimed at the product were carried out in the sibling workspace, where the product's
+        // files do not exist and the exit gate is red for unrelated historical reasons. The
+        // worker found nothing to do and the gate failed it — twice, on two different tasks,
+        // for a reason no screen could show. Falls back to the launch dir only when no
+        // project is connected at all.
+        const provisionDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
         // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
         // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
         // whose worktree was sitting on disk under a different name died on a missing cwd and

@@ -167,11 +167,11 @@ function makeFakeBackend({
         retrycount: j.retry_count,
       }))
     },
-    async touch(_name: string, id: string) {
-      const j = jobs.get(id)
-      if (j && j.state === 'active') j.started_on = now()
-      return true
-    },
+    // NO `touch` HERE — ON PURPOSE. pg-boss v11 has no touch/renew/heartbeat of any kind,
+    // and the fake that used to carry one is exactly why the suite stayed green while the
+    // lease renewal threw TypeError on every real tick. A fake may be smaller than the
+    // library it stands for; it may never be BIGGER. If a future change calls boss.touch()
+    // again, it fails here first instead of in front of the founder.
     async complete(_name: string, id: string, out: any) {
       const j = jobs.get(id)
       if (j) {
@@ -218,6 +218,22 @@ function makeFakeBackend({
       const live = new Set([...jobs.values()].map((j) => j.data && j.data.id))
       const n = [...attempts.entries()].filter(([id, a]) => a.status === status && live.has(id)).length
       return { rows: [{ n }] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('workerId')) {
+      // assignWorker(): the executing worker written into the job payload, keyed by JOB id.
+      const [jobId, workerId] = params
+      const j = jobs.get(String(jobId))
+      if (j && j.state === 'active') j.data = { ...(j.data || {}), workerId }
+      return { rows: [] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('started_on')) {
+      // touch(): the lease restamp. Keyed by JOB id (params[0]), not task id, and scoped to
+      // active rows — the same shape the backend sends. Must be matched BEFORE the
+      // active-job SELECT below, whose `state = 'active'` substring this statement shares.
+      const jobId = params[0]
+      const j = jobs.get(String(jobId))
+      if (j && j.state === 'active') j.started_on = now()
+      return { rows: [] }
     }
     if (sql.includes("state = 'active'")) {
       // taskId → active job resolution (touch/complete/fail). `data` and `retry_count` come

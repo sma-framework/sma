@@ -292,6 +292,18 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
       }
       return t
     },
+    async assignWorker(taskId, workerId) {
+      if (typeof adapter.assignWorker !== 'function') return false
+      const ok = await adapter.assignWorker(taskId, workerId)
+      // The claim frame above names the DAEMON, because that is who checked the task out of
+      // the queue. This is the frame that names the worker a person can see, so a live
+      // screen stops showing «свободен» beside a worker that is mid-attempt.
+      if (ok) {
+        emit({ event: 'task.claimed', taskId, workerId, status: 'claimed' })
+        emit({ event: 'worker.presence', workerId })
+      }
+      return ok
+    },
     async touch(taskId) {
       const ok = await adapter.touch(taskId)
       if (ok) {

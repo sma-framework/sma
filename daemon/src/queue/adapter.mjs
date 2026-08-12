@@ -504,6 +504,21 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
+  /**
+   * assignWorker(taskId, workerId) — record WHICH worker executes a claimed task.
+   *
+   * The claim is made by the daemon; routing picks the worker one step later, so the
+   * executing identity is only knowable after the checkout. Every reader of «who is busy»
+   * — the board, the worker strip, the busy counter — matches a claimed row's workerId
+   * against the configured workers, so a row that never gets one reads as nobody working.
+   */
+  async function assignWorker(taskId, workerId) {
+    const rec = records.get(taskId)
+    if (!rec || rec.status !== 'claimed') return false
+    rec.workerId = workerId ?? null
+    return true
+  }
+
   async function complete(taskId, result) {
     const rec = records.get(taskId)
     if (!rec) throw new UnknownTaskError(`complete: unknown task "${taskId}"`)
@@ -557,7 +572,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, complete, fail, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, complete, fail, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -689,6 +704,26 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       c.advance(4000) // 8000 since claim, but only 4000 since touch
       const [r] = await q.list({})
       expect(r.status).toBe('claimed')
+    })
+
+    it('assignWorker records the executing worker, and list() reports it', async () => {
+      // WHY THIS IS A CONTRACT TEST AND NOT A BACKEND DETAIL: the claim is made by the
+      // daemon, and routing picks the actual worker one step later. Every «who is busy»
+      // reader — the board, the worker strip, the busy counter — answers by matching a
+      // claimed row's workerId against the configured workers. A backend that accepts the
+      // assignment and forgets it renders as an empty queue and an idle worker while an
+      // attempt is running, which is exactly what shipped on 12.08.2026.
+      const q = makeAdapter({ clock: clockOf().fn, expireMs: 60000 })
+      await q.enqueue(backlog())
+      await q.claimNext('daemon', {})
+
+      expect(await q.assignWorker('BL-96', 'local-1')).toBe(true)
+      const [r] = await q.list({})
+      expect(r.status).toBe('claimed')
+      expect(r.workerId).toBe('local-1')
+
+      // An unknown task is answered, never thrown at: the caller is a fail-open dispatcher.
+      expect(await q.assignWorker('BL-does-not-exist', 'local-1')).toBe(false)
     })
 
     it('higher priority is claimed first', async () => {
