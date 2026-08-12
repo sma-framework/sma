@@ -1395,7 +1395,14 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     await tick(deps)
 
     expect(seen).toHaveLength(1)
-    expect(seen[0]).toEqual({ forwardSubagentText: true })
+    expect(seen[0].forwardSubagentText).toBe(true)
+    // AND THE TOOL GRANT RIDES THE FORGE SPAWN TOO. The code path was given the envelope on
+    // 12.08 and this lane was left behind: the «Создатель» spawned read-only, could not write
+    // the draft file it was ordered to write, and the exit gate then failed it for not
+    // committing one — «ошибка работника», with nothing on the card to explain it.
+    expect(seen[0].allowedTools, 'the forge spawn carries no tool grant — the «Создатель» would be read-only').toEqual(
+      expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash']),
+    )
     // the forge attempt fails its own draft gate here (nothing committed) — and it STILL left
     // a transcript, because a lane nobody can watch is the lane that goes quiet at 3am
     const log = readAttemptLog({ dir: ledgerDir, attemptId: 'F-1#1' })
@@ -1533,6 +1540,57 @@ describe('a task that needed no code completes on its answer — and nothing els
     const res = await tick(deps)
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+  })
+
+  /**
+   * WHICH TREE THE COUNT IS TAKEN IN. The question the gate asks — «are there commits on
+   * wt/<taskId> that HEAD does not have» — can only be answered in the repository that HOLDS
+   * that branch: the CONNECTED project, the same tree the worktree was cut from. It used to be
+   * asked in the daemon's launch directory, where the branch does not exist at all: git exits
+   * non-zero, the fail-safe catch answers null, and a task that correctly wrote no code fell
+   * through to the code gate and went red — the exact outcome this gate exists to remove.
+   */
+  it('the «no code» count is taken in the CONNECTED project, where the task branch actually lives', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const seen: any[] = []
+    const { deps } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: {
+        projectDir: () => '/connected',
+        execGit: (args: string[], opts?: any) => {
+          seen.push({ verb: args[0], cwd: opts && opts.cwd })
+          // the real failure mode: `wt/BL-1` is not a revision in the launch tree
+          if (args[0] === 'rev-list' && (!opts || opts.cwd !== '/connected')) throw new Error('unknown revision wt/BL-1')
+          if (args[0] === 'rev-list') return '0'
+          return ''
+        },
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    expect(seen.find((s) => s.verb === 'rev-list').cwd).toBe('/connected')
+  })
+
+  it('with no project connected the count falls back to the served tree (regression)', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const seen: any[] = []
+    const { deps } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: {
+        execGit: (args: string[], opts?: any) => {
+          seen.push({ verb: args[0], cwd: opts && opts.cwd })
+          return args[0] === 'rev-list' ? '0' : ''
+        },
+      },
+    })
+
+    await tick(deps)
+
+    expect(seen.find((s) => s.verb === 'rev-list').cwd).toBe('/repo')
   })
 })
 

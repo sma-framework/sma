@@ -344,9 +344,16 @@ function answerOnlyGate(deps, config, task, branch, workDir, noteWritten) {
   if (!noteWritten) return null
   if (typeof deps.execGit !== 'function') return null
 
+  // WHICH TREE HOLDS THE TASK BRANCH. The count has to run where `wt/<taskId>` exists — the
+  // CONNECTED project, the same tree the worktree was cut from. `config.repoDir` is the
+  // daemon's launch directory, and on an install serving one repository while the founder
+  // works in another the branch is simply not there: git exits non-zero, the catch below
+  // answers null, and a task that correctly touched no code fell through to the CODE gate and
+  // went red with «нет квитанции» — the exact outcome this gate exists to remove.
+  const countDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
   let commits
   try {
-    commits = String(deps.execGit(['rev-list', '--count', branch, '^HEAD'], { cwd: config.repoDir }) || '').trim()
+    commits = String(deps.execGit(['rev-list', '--count', branch, '^HEAD'], { cwd: countDir }) || '').trim()
   } catch {
     return null
   }
@@ -847,6 +854,34 @@ function runSpawn(spawnWorker, spec, onLine) {
 }
 
 /**
+ * steeredSpawn(deps, taskId, spawnWorker) → a spawnWorker that leaves a KILL-HANDLE behind.
+ *
+ * ── THE STEERING WHEEL, IN ONE PLACE ──
+ * Every spawn of an attempt registers its handle under the TASK id, so the redirect door can
+ * end the live child («Перебить сейчас») and the correction rides the continuation. It is one
+ * function rather than one expression per lane because it was written inline for code work and
+ * simply never reached the forge lane: a founder watching a «Создатель» burn a subscription had
+ * no way to stop it, and the door answered as though it had. Hint plumbing by construction —
+ * a daemon assembled without `attemptTurns`, or a child that cannot be killed, spawns exactly
+ * as before.
+ */
+function steeredSpawn(deps, taskId, spawnWorker) {
+  return (o) => {
+    const h = spawnWorker(o)
+    if (deps.attemptTurns && h && typeof h.kill === 'function') {
+      deps.attemptTurns.register(taskId, () => {
+        try {
+          h.kill()
+        } catch {
+          /* a child that cannot be killed is still a turn the founder ended */
+        }
+      })
+    }
+    return h
+  }
+}
+
+/**
  * bookAttemptUsage(deps, task, route, streamLines, now) — what this attempt cost, into the book.
  *
  * THE GAP THIS CLOSES, and it is the same shape as the executor's: both halves existed and
@@ -1283,20 +1318,8 @@ export async function tick(deps = {}) {
       // Every spawn of this attempt registers its kill-handle under the TASK id, so the
       // redirect door can end the live child («Перебить сейчас») and the correction then
       // rides the continuation below. Hint plumbing: a restart loses only the ability to
-      // kill children that died with it.
-      const spawnSteered = (o) => {
-        const h = spawnWorker(o)
-        if (deps.attemptTurns && h && typeof h.kill === 'function') {
-          deps.attemptTurns.register(task.id, () => {
-            try {
-              h.kill()
-            } catch {
-              /* a child that cannot be killed is still a turn the founder ended */
-            }
-          })
-        }
-        return h
-      }
+      // kill children that died with it. The forge lane rides the SAME helper.
+      const spawnSteered = steeredSpawn(deps, task.id, spawnWorker)
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
@@ -1554,8 +1577,15 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // no verb has ever created, into which the forge session was then spawned. Every forge task
   // died `runtime_offline` on a missing directory, and the suite could not see it because its
   // fake spawn ignores cwd.
+  //
+  // WHICH REPOSITORY THE DRAFT IS CUT IN — the one the SCREEN says is connected, not the
+  // directory this daemon was launched from. The code path already asks the seam this way and
+  // the forge lane was left reading the launch cwd, so a draft ordered for the connected
+  // project was forged in whatever tree the daemon happened to start in. Falls back to the
+  // launch dir only when no project is connected at all.
   const branch = `wt/${task.id}`
-  const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], config.repoDir)
+  const provisionDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
   if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
     await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState })
     result.failed = {
@@ -1568,29 +1598,58 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const worktreePath = wt.path
 
   // (6) spawn the «Создатель» with the FORGE prompt (not the code task prompt); touch on stream.
+  //
+  // THE ENVELOPE REACHES THE PROCESS THAT HAS TO OBEY IT — the same wire the code path
+  // above was given and this lane was not. Without the grant the CLI refuses Edit/Write
+  // inside the child, so the «Создатель» could not write the very draft file the exit gate
+  // then failed it for not committing: «ошибка работника», with no way to see why.
   const kind = task.forge && task.forge.kind
-  const spec = buildArgs(task, route, SPAWN_OPTIONS)
+  const spec = buildArgs(task, route, {
+    ...SPAWN_OPTIONS,
+    ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
+      ? { allowedTools: envelope.allowedTools }
+      : {}),
+  })
   spec.prompt = buildForgePrompt({
     kind,
     description: task.forge && task.forge.description,
     note: task.note,
-    repoDir: config.repoDir,
+    // The tree the worker actually stands in. `config.repoDir` is the daemon's launch
+    // directory, which on any install serving a project from beside the workshop is not
+    // where this session is — a prompt naming a working copy the child cannot see.
+    repoDir: worktreePath,
   })
   // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
   // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const { onLine } = attemptStream(deps, task, streamLines, now, {
+  const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now, {
     accountName: spec.accountName,
     dataDir: config.dataDir,
   })
+  // The steering wheel, same as the code path: the founder's «Перебить сейчас» must be able
+  // to end a forge turn too, and a spawn nobody registered is a door that answers and does
+  // nothing.
+  const spawnSteered = steeredSpawn(deps, task.id, spawnWorker)
   fleetState = 'RUNNING'
-  const exit = await runSpawn(spawnWorker, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
+  // WHEN THIS ATTEMPT STARTED — captured where the process really begins, so a subscription
+  // attempt books a duration instead of counting from epoch zero.
+  const attemptStartedAt = now()
+  const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
+  if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+
+  // WHAT IT COST — off this attempt's own stream, before any gate decides its fate. A refused
+  // forge attempt still spent the tokens; the forge lane booked nothing at all until now, so
+  // «Расходы» answered zero to a night of real sessions.
+  bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
 
   // The forge lane creates an attempt, so the forge lane owes a note like any other lane.
-  const noteWritten = recordApproachNote(deps, task, parseApproachNote(streamLines))
+  // THE STREAM IS NOT TEXT: the markers live inside JSON frames, so the raw lines are
+  // unwrapped first (`approachLinesFrom`) exactly as the code path does. Reading the frames
+  // raw meant the note was never found and a green draft still failed «нет записки».
+  const noteWritten = recordApproachNote(deps, task, parseApproachNote(approachLinesFrom(streamLines)))
 
   if (exit.spawnError) {
-    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState })
+    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
     result.failed = { taskId: task.id, reason: 'runtime_offline' }
     return result
   }
@@ -1598,7 +1657,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // (7) EXIT GATE = deterministic draft lint + committed-on-branch assertion (NOT reverify).
   const drafts = listCommittedDrafts(deps.execGit, branch, worktreePath, kind)
   if (drafts.length !== 1) {
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: 'draft not committed (expected exactly one)' }
     return result
   }
@@ -1612,7 +1671,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   if (!envelopeAllows(envelope, { action: 'write', path: draftPath })) {
     const detail = `draft path is outside the lane's declared write scope: ${draftPath}`
     writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: 'agent_error', detail })
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
     result.failed = { taskId: task.id, reason: 'agent_error', detail }
     return result
   }
@@ -1620,14 +1679,14 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const lint = lintDraft({ kind, filePath: join(worktreePath, draftPath), fsImpl: deps.fsImpl })
   if (!lint.passed) {
     const failed = lint.checks.filter((c) => !c.ok).map((c) => c.name).join(',')
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: `lint failed: ${failed}` }
     return result
   }
 
   if (!noteWritten) {
     // Certified draft, unexplained attempt — the same gate, the same named failure.
-    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState })
+    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
     result.failed = { taskId: task.id, reason: 'no_journal' }
     return result
   }
@@ -1641,7 +1700,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     sha256: lint.sha256,
     fsImpl: deps.fsImpl,
   })
-  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState })
+  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
   result.completed = task.id
   return result
 }
