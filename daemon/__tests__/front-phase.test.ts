@@ -476,6 +476,135 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
 })
 
 /**
+ * THE PHASE IS WORKED IN WAVES, AND UNTIL NOW THE CARD DID NOT KNOW IT.
+ *
+ * A phase is executed several plans at a time, then the next several. That shape is written in
+ * exactly one place — the `wave` line in each plan's own header — and the card, which listed the
+ * plan FILE NAMES, threw it away. So the screen showed a flat column of thirteen identifiers and
+ * could answer none of «что идёт сейчас», «чего ждёт», «сколько осталось».
+ *
+ * Every case here asserts the field IN THE ANSWER OF THE DOOR the screen reads, not the return
+ * of the grouping function: the fact that was already computed and never handed over is the
+ * whole class of bug this is closing. The door is the one that already existed — the waves ride
+ * `GET /api/phase/:id` and the route table did not grow a line.
+ */
+describe('GET /api/phase/:id — THE PLANS ARRIVE IN THEIR WAVES', () => {
+  /** A plan file with a real header, in the shape the planner writes. */
+  function planFile(header: Record<string, string>, body = 'тело плана'): string {
+    return ['---', ...Object.entries(header).map(([k, v]) => `${k}: ${v}`), '---', '', body].join('\n')
+  }
+
+  const wavedFixture = (over: Tree = {}) =>
+    fixture({
+      [`${PROJECT}/.planning/phases/12-front/12-01-PLAN.md`]: planFile({
+        phase: '12-front',
+        plan: '01',
+        wave: '1',
+        title: 'Очередь учится держать батч',
+        status: 'done',
+      }),
+      [`${PROJECT}/.planning/phases/12-front/12-02-PLAN.md`]: planFile({
+        phase: '12-front',
+        plan: '02',
+        wave: '2',
+        title: 'Экраны читают волны',
+      }),
+      ...over,
+    })
+
+  it('a plan that says «wave 2» lands in the SECOND group, with its status and its title', async () => {
+    const { front } = mkFront({ fsImpl: wavedFixture() })
+    const card = JSON.parse((await call(front, { url: '/api/phase/12-front' })).body)
+
+    expect(card.waves.map((w: any) => w.wave)).toEqual([1, 2])
+    expect(card.waves[1].plans).toEqual([
+      {
+        name: '12-02-PLAN.md',
+        // the same relative path the artefact door accepts — no place on anybody's disk
+        path: '.planning/phases/12-front/12-02-PLAN.md',
+        wave: 2,
+        // nothing said «done» and no summary sits beside it: null, never a guess at finished
+        status: null,
+        title: 'Экраны читают волны',
+      },
+    ])
+    expect(card.waves[0].plans[0]).toMatchObject({ wave: 1, status: 'done', title: 'Очередь учится держать батч' })
+    // the flat list the artefact links are built from is UNCHANGED — a screen that wants the
+    // column must not have to walk the tree to rebuild it
+    expect(card.plans.map((p: any) => p.name)).toEqual(['12-01-PLAN.md', '12-02-PLAN.md'])
+  })
+
+  it('a plan file that cannot be READ costs its own metadata and NOTHING else', async () => {
+    const io = wavedFixture()
+    const readable = io.readFileSync.bind(io)
+    // a file that lists but refuses to open — a torn plan, the case the fail-soft is for
+    io.readFileSync = ((p: string, enc?: any) => {
+      if (norm(p).endsWith('12-02-PLAN.md')) throw new Error('EIO: torn plan')
+      return readable(p, enc)
+    }) as any
+
+    const { front } = mkFront({ fsImpl: io })
+    const res = await call(front, { url: '/api/phase/12-front' })
+    // THE CARD IS WHOLE: the phase a person needs in order to fix that very file is still findable
+    expect(res.statusCode).toBe(200)
+    const card = JSON.parse(res.body)
+    expect(card.id).toBe('12-front')
+    expect(card.uat).toHaveLength(3)
+    // …and the unreadable plan is still LISTED, under a status word that is not «done»
+    const unread = card.waves.find((w: any) => w.wave === null).plans[0]
+    expect(unread).toEqual({
+      name: '12-02-PLAN.md',
+      path: '.planning/phases/12-front/12-02-PLAN.md',
+      wave: null,
+      status: 'не прочитан',
+      title: null,
+    })
+    // the plans that DID read keep their wave — one torn file is one row's metadata
+    expect(card.waves.find((w: any) => w.wave === 1).plans[0].wave).toBe(1)
+  })
+
+  it('a plan with no header at all is finished when its SUMMARY is finished — the roadmap’s own rule', async () => {
+    // The oldest plans state nothing about themselves. The directory still holds the fact: the
+    // summary beside a plan is what «сделан» means everywhere else in this product, and those
+    // documents are already on this very card under `summaries`.
+    const { front } = mkFront() // the base fixture: bare `# план 1`, and 12-01-SUMMARY.md exists
+    const card = JSON.parse((await call(front, { url: '/api/phase/12-front' })).body)
+    const unplaced = card.waves.find((w: any) => w.wave === null).plans
+    expect(unplaced).toEqual([
+      { name: '12-01-PLAN.md', path: '.planning/phases/12-front/12-01-PLAN.md', wave: null, status: 'done', title: null },
+      { name: '12-02-PLAN.md', path: '.planning/phases/12-front/12-02-PLAN.md', wave: null, status: null, title: null },
+    ])
+    // …and a plan that named no wave sits at the END of the tree, never in front of wave one:
+    // «nobody has placed this yet» must not read as «this is first»
+    const waved = wavedFixture({
+      [`${PROJECT}/.planning/phases/12-front/12-03-PLAN.md`]: '# без шапки вовсе',
+    })
+    const withBare = JSON.parse((await call(mkFront({ fsImpl: waved }).front, { url: '/api/phase/12-front' })).body)
+    expect(withBare.waves.map((w: any) => w.wave)).toEqual([1, 2, null])
+  })
+
+  it('a `wave:` INSIDE somebody’s prediction block is not the plan’s wave', async () => {
+    // A top-level key is a fact about the plan; the same word nested under another is part of
+    // whatever it is nested in. Reading the second as the first would file a plan under a wave
+    // its author never gave it — and a wrong tree is worse than a flat list.
+    const io = wavedFixture({
+      [`${PROJECT}/.planning/phases/12-front/12-02-PLAN.md`]: [
+        '---',
+        'phase: 12-front',
+        'predictions:',
+        '  - id: P1',
+        '    wave: 9',
+        '---',
+        'тело',
+      ].join('\n'),
+    })
+    const card = JSON.parse((await call(mkFront({ fsImpl: io }).front, { url: '/api/phase/12-front' })).body)
+    expect(card.waves.map((w: any) => w.wave)).toEqual([1, null])
+    expect(card.waves[1].plans[0]).toMatchObject({ name: '12-02-PLAN.md', wave: null })
+  })
+})
+
+/**
  * WHAT A PERSON READS ON THE SCREEN.
  *
  * A phase directory is a file-system identifier and it reads like one — `11-49-9-sma-v5-3`,
