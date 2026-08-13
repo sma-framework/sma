@@ -1384,6 +1384,121 @@ function artifactsOf(files, dir, suffix) {
     .map((name) => ({ name, path: `${PHASES_PATH}/${dir}/${name}` }))
 }
 
+/** The two documents a plan of a phase is made of — named once, so the pairing below cannot drift. */
+const PLAN_SUFFIX = '-PLAN.md'
+const SUMMARY_SUFFIX = '-SUMMARY.md'
+
+/**
+ * HOW MUCH OF A PLAN FILE IS EVEN LOOKED AT. A header is a dozen short lines at the very top;
+ * everything past this bound is the plan's body, which a card has no business reading. The
+ * limit is here for the same reason the log summariser has one: a file on disk is written by
+ * whatever wrote it, and a header that arrives as forty thousand lines must cost a bounded
+ * amount of work rather than the whole poll. (The READ itself is the file, exactly as the
+ * acceptance document a few lines below is read whole — bounding that too would be a second,
+ * different rule for the same directory.)
+ */
+const PLAN_HEAD_CHARS = 8192
+const PLAN_HEAD_LINES = 80
+/** A title is a line on a screen; a plan that opened with an essay is cut, never wrapped. */
+const PLAN_TITLE_CAP = 200
+/** A status is a word from whoever wrote the file — bounded, because it is not our vocabulary. */
+const PLAN_STATUS_CAP = 40
+/** What a plan whose own header could not be read is called. It is NEVER called «done». */
+const PLAN_UNREAD_STATUS = 'не прочитан'
+
+/** `"03"` → `03`; `Живой прогон…` → itself. A quoted scalar is the quoted thing, not the quotes. */
+function unquoteScalar(value) {
+  const text = String(value ?? '').trim()
+  const m = /^(['"])([\s\S]*)\1$/.exec(text)
+  return (m ? m[2] : text).trim()
+}
+
+/**
+ * The three things a plan's own header says about it: {wave, status, title}. `null` when the
+ * file could not be read at all — which is a DIFFERENT answer from «read, and it says nothing».
+ *
+ * WHY THIS IS FOUR LINES OF STRING WORK AND NOT A YAML LIBRARY. The keys wanted are three
+ * scalars at the top level of a header, and every parser already accepted into this codebase
+ * reads exactly that way. A general parser would bring a dependency, a second failure mode and
+ * a much larger blast radius for the sake of shapes no plan file uses. A key nested under
+ * another is deliberately NOT found: `wave` is a top-level fact about the plan, and a `wave:`
+ * sitting inside somebody's prediction block is not it.
+ */
+function planHeader(io, path) {
+  const text = readTextOrNull(io, path)
+  if (text == null) return null
+  const out = { wave: null, status: null, title: null }
+  const lines = text.slice(0, PLAN_HEAD_CHARS).split(/\r?\n/)
+  // No opening fence is «this plan states nothing about itself», not a torn file: a plan
+  // written before headers existed is still a plan, and it still belongs on the card.
+  if ((lines[0] ?? '').trim() !== '---') return out
+  for (let i = 1; i < lines.length && i <= PLAN_HEAD_LINES; i += 1) {
+    const line = lines[i]
+    if (line.trim() === '---') break
+    const m = /^(wave|status|title)\s*:\s*(.+)$/.exec(line)
+    if (!m) continue
+    const value = unquoteScalar(m[2])
+    if (value === '') continue
+    if (m[1] === 'wave') {
+      const n = Number(value)
+      if (Number.isFinite(n)) out.wave = n
+    } else if (m[1] === 'status') {
+      out.status = value.slice(0, PLAN_STATUS_CAP)
+    } else {
+      out.title = value.slice(0, PLAN_TITLE_CAP)
+    }
+  }
+  return out
+}
+
+/**
+ * wavesOf(io, root, dir, files) → [{wave, plans:[{name, path, wave, status, title}]}], by wave
+ * ascending.
+ *
+ * WHY THE CARD OPENS THE PLANS. A phase is EXECUTED in waves — several plans at once, then the
+ * next several — and that shape exists in exactly one place: the `wave` line each plan writes
+ * in its own header. Listing the plan file names (which is all this card did) shows a flat
+ * column of thirteen identifiers and answers none of the questions a person has in front of a
+ * running phase: what is going on right now, what it is waiting for, what is left.
+ *
+ * WHERE A STATUS COMES FROM, and why it is two sources rather than one. A plan states its own
+ * `status` when somebody wrote one. Most never do — and for those, the phase directory holds
+ * the fact anyway: a plan is finished when its SUMMARY exists beside it, which is the same rule
+ * the roadmap's own progress count is made of, and the same documents this card already lists
+ * under `summaries`. Neither source present → `null`, so a screen says «нет данных» in words
+ * instead of showing a plan as done because nothing said otherwise.
+ *
+ * FAIL-SOFT, in the posture `progressOf` established next door: an unreadable plan file costs
+ * that plan its metadata and NOTHING ELSE. It still appears, under the honest status word
+ * «не прочитан», in the group of plans that named no wave. A phase card is how a person finds
+ * the phase they need — including the phase they need in order to fix that very file.
+ */
+function wavesOf(io, root, dir, files) {
+  const groups = new Map()
+  for (const { name, path } of artifactsOf(files, dir, PLAN_SUFFIX)) {
+    const head = planHeader(io, join(root, dir, name))
+    const summaryDone = files.includes(`${name.slice(0, -PLAN_SUFFIX.length)}${SUMMARY_SUFFIX}`)
+    const plan =
+      head === null
+        ? { name, path, wave: null, status: PLAN_UNREAD_STATUS, title: null }
+        : {
+            name,
+            path,
+            wave: head.wave,
+            status: head.status ?? (summaryDone ? 'done' : null),
+            title: head.title,
+          }
+    const key = plan.wave
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(plan)
+  }
+  // Wave one first, and the plans that named no wave at the END: they are the ones nobody has
+  // placed in the order of work yet, and putting them in front would read as «this is first».
+  return [...groups.entries()]
+    .sort(([a], [b]) => (a === null ? 1 : b === null ? -1 : a - b))
+    .map(([wave, plans]) => ({ wave, plans }))
+}
+
 /** The questions engine over a project's phases, reading BOTH parking files as one queue. */
 function questionsEngine(projectDir, fsImpl) {
   return createQuestions({ projectDir, fsImpl, checkpointSuffix: ALL_CHECKPOINT_SUFFIXES })
@@ -1488,7 +1603,7 @@ function parkedStageTasks(rows, dirs, dir) {
  * derivePhaseCard({projectDir, phaseId, fsImpl, parkedRows}) → one phase in full, or null when
  * the project has no such directory.
  *
- * {id, name, stages, questions, plans, summaries, uat}. The plans and summaries travel as
+ * {id, name, stages, questions, plans, waves, summaries, uat}. The plans and summaries travel as
  * NAMES and door-relative paths — never their contents: a card is a table of contents, and the
  * document itself is one click through the artefact door, which is the one place the reading
  * of a file is bounded.
@@ -1555,8 +1670,12 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows } = {}
     name: phaseTitleOf(dir, roadmapTitles(projectDir, io)),
     stages: stagesOf(files),
     questions,
-    plans: artifactsOf(files, dir, '-PLAN.md'),
-    summaries: artifactsOf(files, dir, '-SUMMARY.md'),
+    plans: artifactsOf(files, dir, PLAN_SUFFIX),
+    summaries: artifactsOf(files, dir, SUMMARY_SUFFIX),
+    // The same plans, in the shape the phase is actually WORKED in — see wavesOf. `plans` stays
+    // exactly as it was: the artefact list is what the document links are built from, and a
+    // screen that wanted the flat column must not have to walk a tree to rebuild it.
+    waves: wavesOf(io, root, dir, files),
     uat: acceptance.items,
     // WHICH FILE IS THE ACCEPTANCE DOCUMENT is answered HERE and nowhere else. The door that
     // writes a verdict into it needs the same answer, and it takes it off this card rather
