@@ -320,8 +320,14 @@ const BATCH_ROLES = Object.freeze([BATCH_PARENT])
  * somebody said is not derivable from any status — it has to be written down or it is lost on
  * the next read. They are declared here, in the same closed vocabulary as everything else that
  * travels, so a typo cannot invent a third kind of decision.
+ *
+ * `wave` is the ECHELON of execution a task belongs to — several plans of one phase are worked
+ * at once, then the next several. It is declared beside `phase` and behaves exactly like it:
+ * OPTIONAL, and absent rather than guessed. A source that does not know which echelon it is
+ * producing work for writes no key at all — an invented «wave 1» would make that work stoppable
+ * by an order nobody gave about it.
  */
-const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'batch', 'skipped', 'cancelled'])
+const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'wave', 'batch', 'skipped', 'cancelled'])
 
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
@@ -542,6 +548,84 @@ export function batchHeldOf(rows) {
 }
 
 /**
+ * waveAddressOf(taskOrRow) → `{phase, wave}` as STRINGS, or null when the row names no echelon.
+ *
+ * BOTH HALVES OR NOTHING. An echelon is «волна 2 ФАЗЫ 14», never «волна 2» — the second plan of
+ * one phase and the second plan of another are different work, and an address that dropped the
+ * phase would stop them together. A row carrying only one of the two names no echelon at all,
+ * and is therefore untouched by every rule below.
+ *
+ * @param {object|null} taskOrRow
+ * @returns {{phase:string, wave:string}|null}
+ */
+export function waveAddressOf(taskOrRow) {
+  const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
+  if (!env || typeof env !== 'object') return null
+  const ok = (v) => typeof v === 'string' || typeof v === 'number'
+  if (!ok(env.phase) || !ok(env.wave)) return null
+  const phase = String(env.phase).trim()
+  const wave = String(env.wave).trim()
+  if (phase === '' || wave === '') return null
+  return { phase, wave }
+}
+
+/**
+ * normalizeWaveHolds(holds) → the stop list as `[{phase, wave}]` of trimmed strings.
+ *
+ * TOLERANT ON PURPOSE. The list is read off a written register that a person's door appends to,
+ * and it is consulted inside the claim path: a torn line or a stray shape must cost the claim
+ * nothing at all. Anything unreadable is simply not an order.
+ *
+ * @param {any} holds
+ * @returns {{phase:string, wave:string}[]}
+ */
+export function normalizeWaveHolds(holds) {
+  if (!Array.isArray(holds)) return []
+  const out = []
+  for (const h of holds) {
+    const addr = h && typeof h === 'object' ? waveAddressOf({ data: { phase: h.phase, wave: h.wave } }) : null
+    if (addr && !out.some((x) => x.phase === addr.phase && x.wave === addr.wave)) out.push(addr)
+  }
+  return out
+}
+
+/**
+ * waveHeldOf(rows, holds) → the ids of the WAITING rows a stopped echelon may not hand out.
+ *
+ * PURE, and the SINGLE place this rule lives — the twin of `batchHeldOf` and deliberately built
+ * the same way. The reference backend keeps the promise by skipping the ids named here; the
+ * durable one by deferring their rows and putting back the ones no longer named. The contract
+ * suite asserts the sentence, not either mechanism.
+ *
+ * THE ADDRESS IS EXACT AND THE SILENCE IS SAFE. Only a row that names BOTH a phase and a wave
+ * matching an order is withheld: another echelon of the same phase, another phase entirely, and
+ * every task that never said which echelon it belongs to keep moving. A stop that widened to
+ * «everything nearby» would be the founder's own machine going quiet for a reason he cannot see.
+ *
+ * Only rows still WAITING are named. Work already under way is not un-handed by a list — it is
+ * asked to finish its current step and stand (the loop does that through the steering channel
+ * the founder already has), because killing a live session is exactly what a stop must not do.
+ *
+ * @param {object[]} rows every queue row
+ * @param {{phase:any, wave:any}[]} holds
+ * @returns {string[]}
+ */
+export function waveHeldOf(rows, holds) {
+  const list = normalizeWaveHolds(holds)
+  if (list.length === 0) return []
+  const all = Array.isArray(rows) ? rows : []
+  const held = []
+  for (const r of all) {
+    if (!r || typeof r !== 'object') continue
+    if (r.status !== undefined && r.status !== 'queued') continue
+    const addr = waveAddressOf(r)
+    if (!addr) continue
+    if (list.some((h) => h.phase === addr.phase && h.wave === addr.wave)) held.push(r.id)
+  }
+  return held
+}
+
+/**
  * batchWorkerOf(rows, batchId, exceptId) → the worker this assembly is pinned to, or null.
  *
  * The pieces of one batch belong to ONE worker («один работник, по одному за раз»), and which
@@ -721,6 +805,16 @@ export function validateTask(task) {
       typeof task.data.phase !== 'number'
     ) {
       throw new InvalidTaskError(`task "${task.id}" data.phase must be a string or a number`)
+    }
+    // The echelon, spelled the same way as the phase it belongs to: a number in most hands, a
+    // string in the ones that read it off a plan's own header. Refused when it is neither,
+    // because an object here would end up inside a `data->>` comparison meaning nothing.
+    if (
+      task.data.wave !== undefined &&
+      typeof task.data.wave !== 'string' &&
+      typeof task.data.wave !== 'number'
+    ) {
+      throw new InvalidTaskError(`task "${task.id}" data.wave must be a string or a number`)
     }
     if (task.data.batch !== undefined && !BATCH_ROLES.includes(task.data.batch)) {
       throw new InvalidTaskError(`task "${task.id}" has invalid data.batch "${task.data.batch}"`)
@@ -902,7 +996,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return { id: norm.id, coalesced: false, coalesceCount: 1 }
   }
 
-  async function claimNext(workerId, { lanes } = {}) {
+  async function claimNext(workerId, { lanes, holds } = {}) {
     sweep()
     // lanes:[] → nothing eligible, return null WITHOUT mutating anything.
     if (Array.isArray(lanes) && lanes.length === 0) return null
@@ -911,12 +1005,18 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     // place for the whole product: a piece of a batch waits while another piece of the SAME
     // batch is under way, while a broken one is waiting for its owner's word, and after he has
     // abandoned the assembly. Work of every other kind is untouched by it.
-    const held = batchHeldOf([...records.values()].map(row))
+    const rows = [...records.values()].map(row)
+    const held = batchHeldOf(rows)
+    // AND WHICH ECHELON HAS BEEN STOPPED. A second rule, the same shape: the orders arrive from
+    // the caller (they live in a register on disk, which this module may not read — it stays
+    // free of the filesystem), and they name phase+wave exactly. Everything else moves.
+    const waveHeld = waveHeldOf(rows, holds)
 
     let best = null
     for (const rec of records.values()) {
       if (rec.status !== 'queued') continue
       if (held.includes(rec.task.id)) continue
+      if (waveHeld.includes(rec.task.id)) continue
       // THE REQUEST OF A BATCH IS NOT WORK. Handing it to a worker would dispatch «разгреби
       // мелочь перед демо» as a task of its own, in parallel with the very items it was
       // broken into. Skipped BEFORE the ordering so no priority and no arrival time can
@@ -1662,6 +1762,86 @@ export function queueAdapterContractSuite(name, makeAdapter) {
 
       expect((await q.claimNext('w1', {})).id).toBe('BL-urgent')
       expect((await q.claimNext('w1', {})).id).toBe('B-14-2')
+    })
+
+    // ── «ОСТАНОВИ ВОЛНУ 2»: AN ECHELON ITS OWNER STOPPED HANDS OUT NOTHING ──
+    //
+    // The same shape as the batch cases above: the promise, not the mechanism. The reference
+    // backend skips the withheld rows in its choice; the durable one defers them at the queue
+    // and puts them back when the order is lifted. What both must agree on is narrow and
+    // testable — the addressed echelon stops, and NOTHING ELSE DOES.
+
+    /** A task of one echelon: ordinary work that says which phase and which wave it belongs to. */
+    const inWave = (id, phase, wave, over = {}) => ({
+      id,
+      source: 'roster',
+      title: `план ${id}`,
+      lane: 'prod',
+      data: { phase, wave },
+      ...over,
+    })
+
+    it('a task may say which echelon it belongs to, and the word travels on its row', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(inWave('W-1', '14', 2))
+      const [row] = await q.list({})
+      expect(String(row.data.phase)).toBe('14')
+      expect(String(row.data.wave)).toBe('2')
+      // ...and the envelope is as closed as it ever was: a neighbour key is still refused
+      await expect(q.enqueue(inWave('W-2', '14', 2, { data: { phase: '14', wave: 2, echelon: 2 } }))).rejects.toThrow(
+        /unknown key/,
+      )
+      await expect(q.enqueue(inWave('W-3', '14', { deep: true }))).rejects.toThrow(/data\.wave/)
+    })
+
+    it('a stopped echelon is not handed out — and the wave beside it, and the phase beside THAT, are', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(inWave('W-14-2', '14', 2))
+      c.advance(10)
+      await q.enqueue(inWave('W-14-1', '14', 1))
+      c.advance(10)
+      await q.enqueue(inWave('W-15-2', '15', 2))
+      c.advance(10)
+      await q.enqueue(backlog({ id: 'BL-nowave' })) // says nothing about any echelon
+
+      const holds = [{ phase: '14', wave: 2 }]
+      const handed = []
+      for (let i = 0; i < 4; i += 1) {
+        const t = await q.claimNext(`w${i}`, { holds })
+        if (t) handed.push(t.id)
+      }
+      expect(handed).not.toContain('W-14-2')
+      expect(handed).toEqual(expect.arrayContaining(['W-14-1', 'W-15-2', 'BL-nowave']))
+
+      // the stopped one is not lost — it waits, visibly, exactly where it was
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'W-14-2').status).toBe('queued')
+    })
+
+    it('lifting the stop hands the very same row out again — nothing was thrown away', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(inWave('W-20-2', '20', 2))
+
+      expect(await q.claimNext('w1', { holds: [{ phase: '20', wave: 2 }] })).toBeNull()
+      // claim after claim, the stop keeps standing: nothing times its own way out of it
+      expect(await q.claimNext('w1', { holds: [{ phase: '20', wave: 2 }] })).toBeNull()
+      c.advance(600000)
+      expect(await q.claimNext('w1', { holds: [{ phase: '20', wave: 2 }] })).toBeNull()
+
+      const back = await q.claimNext('w1', { holds: [] })
+      expect(back.id).toBe('W-20-2')
+      expect(back.attempt).toBe(1) // the same first attempt — a stop is not a failure
+    })
+
+    it('a stop nobody can read is not an order: rubbish in the register costs the claim nothing', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(inWave('W-21-2', '21', 2))
+      const t = await q.claimNext('w1', { holds: [null, { phase: '', wave: 2 }, { wave: 2 }, 'волна 2'] })
+      expect(t.id).toBe('W-21-2')
     })
 
     it('higher priority is claimed first', async () => {

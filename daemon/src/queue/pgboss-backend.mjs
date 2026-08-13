@@ -96,6 +96,8 @@ import {
   validateWords,
   isBatchParent,
   batchHeldOf,
+  waveAddressOf,
+  waveHeldOf,
   batchDecisionsOf,
   DEFAULT_EXPIRE_MS,
   FAIL_REASONS,
@@ -510,14 +512,7 @@ export function createPgBossQueue({
    * FAIL-OPEN. A release that cannot run costs this pass its batch progress — the next claim
    * tries again — and never the claim of ordinary work, which is why it can never throw here.
    */
-  async function releaseBatchTurns() {
-    let rows
-    try {
-      rows = await list({})
-    } catch (err) {
-      log(`batch turn not computed: ${maskError(err)}`)
-      return
-    }
+  async function releaseBatchTurns(rows) {
     const items = rows.filter((r) => r && r.batchId && !isBatchParent(r) && r.status === 'queued')
     if (items.length === 0) return
     const held = batchHeldOf(rows)
@@ -535,13 +530,77 @@ export function createPgBossQueue({
     }
   }
 
-  async function claimNext(workerId, { lanes } = {}) {
+  /**
+   * applyWaveHolds(rows, holds) — put the waiting rows of a STOPPED echelon out of every
+   * worker's reach, and put the rows of a resumed one back.
+   *
+   * SAME MECHANISM AS THE BATCH TURN, for the same reason: the fetch IS the claim, so a row
+   * recognised as stopped after it has already been handed out and there is nothing left to
+   * refuse with. So a stopped row is deferred to the date no clock reaches, exactly like a piece
+   * of a batch waiting its turn — visible to every reader, reachable by no worker.
+   *
+   * THE OTHER HALF IS THE RELEASE, and it is not optional: without it, lifting a stop would
+   * leave the rows deferred forever and the founder would watch his own «продолжай» do nothing.
+   * A row a BATCH is holding is left alone here — two rules must not undo each other, and that
+   * one has its own release directly above.
+   *
+   * FAIL-OPEN, like its twin: a statement that cannot run costs this pass its stop and never the
+   * claim of ordinary work.
+   */
+  async function applyWaveHolds(rows, holds) {
+    const governed = rows.filter((r) => r && r.status === 'queued' && !isBatchParent(r) && waveAddressOf(r))
+    if (governed.length === 0) return
+    const stopped = new Set(waveHeldOf(rows, holds))
+    const batchHeld = new Set(batchHeldOf(rows))
+    for (const r of governed) {
+      try {
+        if (stopped.has(r.id)) {
+          await runSql(
+            `UPDATE pgboss.job SET start_after = $2
+               WHERE data->>'id' = $1 AND state = 'created' AND start_after <= now()`,
+            [r.id, HELD_UNTIL],
+          )
+        } else if (!batchHeld.has(r.id)) {
+          await runSql(
+            `UPDATE pgboss.job SET start_after = now()
+               WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
+            [r.id],
+          )
+        }
+      } catch (err) {
+        log(`wave hold not applied to ${r.id}: ${maskError(err)}`)
+      }
+    }
+  }
+
+  /**
+   * settleTurns(holds) — ONE read of the rows, both withholding rules applied to it.
+   *
+   * The two rules ask the same question of the same rows («may this row be handed out now»), and
+   * reading the queue twice per claim to answer it twice would be a second answer that can drift
+   * from the first between the reads. Fail-open at the read: an unreadable queue costs this pass
+   * its turn-keeping and never the claim itself.
+   */
+  async function settleTurns(holds) {
+    let rows
+    try {
+      rows = await list({})
+    } catch (err) {
+      log(`turn not computed: ${maskError(err)}`)
+      return
+    }
+    await releaseBatchTurns(rows)
+    await applyWaveHolds(rows, holds)
+  }
+
+  async function claimNext(workerId, { lanes, holds } = {}) {
     // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation.
     if (Array.isArray(lanes) && lanes.length === 0) return null
-    // WHOSE TURN IS IT — asked BEFORE the fetch, because after it there is nothing left to
-    // refuse. The pieces of a batch arrive held (see enqueue); this is where the one whose
-    // turn has come stops being held.
-    await releaseBatchTurns()
+    // WHOSE TURN IS IT, AND WHOSE ECHELON HAS BEEN STOPPED — asked BEFORE the fetch, because
+    // after it there is nothing left to refuse. The pieces of a batch arrive held (see enqueue);
+    // this is where the one whose turn has come stops being held, and where the rows of a wave
+    // its owner stopped start being held.
+    await settleTurns(holds)
     // LANE QUEUES AND NOTHING ELSE. That is also what keeps the request of a batch out of a
     // worker's hands: it was never sent to a lane, so no ordering of these fetches can reach
     // it (BATCH_PARENT_QUEUE). No filter here to forget to write.

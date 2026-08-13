@@ -273,6 +273,19 @@ function makeFakeBackend({
       }
       return { rows: [] }
     }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('start_after = $2')) {
+      // applyWaveHolds(): a waiting row of a STOPPED echelon is deferred out of every worker's
+      // reach. Modelled with the statement's own guards — keyed by TASK id, only a waiting row,
+      // and only one that is currently REACHABLE (so a second pass changes nothing, and a row a
+      // batch is already holding is not restamped).
+      const [taskId, until] = params
+      for (const j of jobs.values()) {
+        if (j.data && j.data.id === taskId && j.state === 'created' && (j.start_after ?? 0) <= now()) {
+          j.start_after = Date.parse(String(until))
+        }
+      }
+      return { rows: [] }
+    }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('start_after = now()')) {
       // releaseBatchTurns(): the piece whose turn has come stops being deferred. Modelled with
       // the statement's own guards — keyed by TASK id, only a waiting row, and only one that is
