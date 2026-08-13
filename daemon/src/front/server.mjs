@@ -6,14 +6,15 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FIFTY-FIVE routes
- *     (re-frozen 2026-08-12 — the growth past the V5.4 fifty-three is EXPLICIT, ONE door
- *     declared per release: the chat stop button in v5.4.3 and the running-task steering
- *     wheel in v5.5.0; the previous freezes were FIFTY-THREE, 2026-08-06, THIRTY,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FIFTY-SIX routes
+ *     (re-frozen 2026-08-13 — the growth past the V5.4 fifty-three is EXPLICIT, ONE door
+ *     declared per release: the chat stop button in v5.4.3, the running-task steering
+ *     wheel in v5.5.0, and the batch request in v5.6.0; the previous freezes were
+ *     FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY,
  *     2026-08-01, and FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 55 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 56 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -75,7 +76,7 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { BATCH_PARENT, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
@@ -208,20 +209,20 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-12; the FIFTY-THREE of the V5.4
- * freeze plus the two chat-surface doors, each declared once by its own release —
- * the chat stop button in v5.4.3 and the running-task steering wheel in v5.5.0).
- * Exactly FIFTY-FIVE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
+ * freeze plus three doors, each declared once by its own release — the chat stop button in
+ * v5.4.3, the running-task steering wheel in v5.5.0, and the batch request in v5.6.0).
+ * Exactly FIFTY-SIX entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 55) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 56) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last two joined the chat surface, one per release, additively — nothing was
- * removed or renamed. ALL FIFTY-FIVE ARE LIVE — the table carries no stub, and the shape
+ * a time; the last three joined one per release, additively — nothing was
+ * removed or renamed. ALL FIFTY-SIX ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  */
 export const ROUTES = Object.freeze({
@@ -283,6 +284,8 @@ export const ROUTES = Object.freeze({
   'POST /api/update/run': 'handleUpdateRun',
   'POST /api/budget/set': 'handleBudgetSet',
   'POST /api/agent/model': 'handleAgentModel',
+  // ── the batch: one request of the owner, filled with its handler in the same commit ──
+  'POST /api/batch': 'handleBatchCreate',
 })
 
 /**
@@ -3427,6 +3430,117 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   return sendJson(res, 200, { ok: true, id, taskId: norm.id })
 }
 
+// ── the batch: one request of the owner, fanned out into the work it names ──
+
+/** How many pieces one request may be broken into. A ceiling, not a target. */
+const BATCH_ITEMS_CAP = 20
+
+/** One item is a LINE — a subtask title or a backlog identifier. validateTask bounds it again. */
+const BATCH_ITEM_CAP = 200
+
+/** The request's own sentence («разгреби мелочь перед демо»), bounded like any task title. */
+const BATCH_TITLE_CAP = 200
+
+/**
+ * POST /api/batch — body {title, items[], lane?}. One sentence becomes a request row plus the
+ * N pieces of work it names, all wearing one batch id.
+ *
+ * AN ITEM IS EITHER A BACKLOG LINE OR A SENTENCE, and both are legal in one list: the owner
+ * ticks what already exists and types what does not, and the backlog is not a compulsory
+ * springboard. They are told apart by SHAPE — a string in the backlog's own identifier grammar
+ * is a reference, anything else is a subtask. A referenced line MUST be in the file, resolved
+ * through the same derive the backlog board and the promote door read, so a batch can never
+ * contain an item nobody can trace back to anything; its words come from the file, never from
+ * here. Everything the owner types is DATA: it becomes a task TITLE and reaches a worker only
+ * by the existing dispatch path, never as an instruction of its own.
+ *
+ * THE REQUEST ROW IS WRITTEN LAST, and that is the failure plan rather than a detail. Every
+ * piece is validated before anything at all is written, so a bad body costs nothing; if the
+ * database then gives out halfway, what survives is loose work a person can see and run, and
+ * no request row claiming to be a batch whose items do not exist. The reverse order would
+ * leave exactly that phantom on the screen.
+ */
+async function handleBatchCreate({ req, res, config, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.enqueue !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['title', 'items', 'lane']))) return undefined
+
+  const title = typeof b.title === 'string' ? b.title.trim() : ''
+  if (title === '' || title.length > BATCH_TITLE_CAP) return send400(res, 'invalid title')
+  const lane = b.lane === undefined || b.lane === null ? BACKLOG_DEFAULT_LANE : String(b.lane)
+  if (!TASK_LANES.includes(lane)) return send400(res, `lane must be one of ${TASK_LANES.join('|')}`)
+
+  // A BATCH OF NOTHING IS NOT A BATCH: an empty list is refused rather than accepted into a
+  // request that would then sit there, assembled and closed, having done nothing.
+  if (!Array.isArray(b.items) || b.items.length === 0) return send400(res, 'a batch needs at least one item')
+  if (b.items.length > BATCH_ITEMS_CAP) return send400(res, `a batch carries at most ${BATCH_ITEMS_CAP} items`)
+  const lines = []
+  for (const raw of b.items) {
+    const line = typeof raw === 'string' ? raw.trim() : ''
+    if (line === '' || line.length > BATCH_ITEM_CAP) return send400(res, 'invalid item')
+    lines.push(line)
+  }
+
+  // The referenced lines, resolved ONCE against the file — the same read the board does.
+  const referenced = lines.filter((l) => BACKLOG_WIRE_ID_RE.test(l))
+  let backlogRows = []
+  if (referenced.length > 0) {
+    if (typeof deps.deriveBacklog !== 'function') return send501(res)
+    const answer = deps.deriveBacklog({ config, fsImpl: deps.fsImpl }) || { rows: [] }
+    backlogRows = Array.isArray(answer.rows) ? answer.rows : []
+    for (const id of referenced) {
+      if (!backlogRows.some((r) => r && r.id === id)) return send404(res)
+    }
+  }
+
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  // ONE identifier, not two: the request's own id IS the batch id, so nothing anywhere has to
+  // hold a pair that could disagree. Each item's id reads back to the batch it belongs to.
+  const batchId = `B-${clock()}`
+  const tasks = lines.map((line, i) => {
+    const row = BACKLOG_WIRE_ID_RE.test(line) ? backlogRows.find((r) => r && r.id === line) : null
+    // A referenced line rides identifier-first, the way the promote door already writes it, so a
+    // queue row can be read back to the line it came from. Both halves are the project's words.
+    return {
+      id: `${batchId}-${i + 1}`,
+      source: 'roster', // a person pressed it — DoR-exempt, exactly like the roster button
+      title: row ? `${row.id} · ${row.title}` : line,
+      lane,
+      batchId,
+    }
+  })
+  const request = {
+    id: batchId,
+    source: 'roster',
+    title,
+    lane,
+    batchId,
+    data: { batch: BATCH_PARENT },
+  }
+
+  let normalized
+  try {
+    normalized = [...tasks, request].map((t) => validateTask(t))
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'invalid task'))
+  }
+
+  const ids = []
+  for (const norm of normalized) {
+    const enq = await enqueueOrExplain(res, adapter, norm)
+    if (enq.answered) return undefined // the database refused the text; the reason is already sent
+    ids.push(norm.id)
+  }
+
+  // ONE hint for one action: the screen re-reads the whole state either way, and a hint per
+  // item would say «work appeared» twenty times about a single press.
+  emitSafe(deps, { event: 'task.queued', taskId: batchId, status: 'queued' })
+  return sendJson(res, 200, { ok: true, id: batchId, items: ids.filter((id) => id !== batchId) })
+}
+
 // ── the three switches a person holds: the conveyor, the money, the model ──
 //
 // They share one shape and one law. The shape: explicit-pick the body, hand it to an
@@ -3823,6 +3937,8 @@ export const HANDLERS = Object.freeze({
   handleUpdateRun,
   handleBudgetSet,
   handleAgentModel,
+  // the batch request
+  handleBatchCreate,
 })
 
 // ── the dispatcher ──

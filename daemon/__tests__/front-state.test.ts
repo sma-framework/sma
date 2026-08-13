@@ -1847,9 +1847,9 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly fifty-five entries and carries no migration route', () => {
-    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze).
-    expect(Object.keys(ROUTES)).toHaveLength(55)
+  it('the route table is still exactly fifty-six entries and carries no migration route', () => {
+    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request.
+    expect(Object.keys(ROUTES)).toHaveLength(56)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
@@ -1917,5 +1917,101 @@ describe('POST /api/approve — a per-file migration yes rides the EXISTING door
     const res = await callApprove(front, { taskId: 'task-42' })
     expect(calls.length).toBeGreaterThan(0)
     expect(res.statusCode).toBe(409)
+  })
+})
+
+// ═══════════ POST /api/batch — one request of the owner, fanned out into work ═══════════
+//
+// The door is the ONLY thing that writes both halves of a batch in one action: the request row
+// and the items wearing its id. These cases are wire tests — they press the door and then ask
+// the QUEUE what is in it, because a handler that computed a batch and enqueued nothing would
+// answer 200 all the same.
+
+describe('POST /api/batch — the request fans out into the work it names', () => {
+  const BATCH_NOW = 1_700_000_000_000
+
+  function mkBatchFront(over: any = {}) {
+    return createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: { clock: () => BATCH_NOW, ...over },
+    })
+  }
+
+  async function callBatch(front: any, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url: '/api/batch', body }), res)
+    return res
+  }
+
+  /** A backlog reader over a fixed set of open lines — the same shape the board's derive returns. */
+  const backlogOf = (rows: any[]) => () => ({ rows })
+
+  it('a sentence and two items land as THREE rows in the queue, the items wearing one batch id', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({
+      adapter,
+      deriveBacklog: backlogOf([{ id: 'BL-96', title: 'починить импорт' }]),
+    })
+
+    const res = await callBatch(front, {
+      title: 'разгреби мелочь перед демо',
+      items: ['BL-96', 'подписать хвосты в отчёте'],
+    })
+
+    expect(res.statusCode).toBe(200)
+    const answer = JSON.parse(res.body)
+    expect(answer.ok).toBe(true)
+    expect(answer.id).toBe(`B-${BATCH_NOW}`) // the answer names the REQUEST, which is the batch
+
+    const rows = await adapter.list({})
+    expect(rows).toHaveLength(3)
+
+    const request = rows.find((r: any) => r.id === answer.id)
+    expect(request.title).toBe('разгреби мелочь перед демо')
+    expect(request.data.batch).toBe('parent')
+
+    const items = rows.filter((r: any) => r.id !== answer.id)
+    expect(items.map((r: any) => r.batchId)).toEqual([answer.id, answer.id])
+    // the referenced line carries the FILE's own words, identifier first
+    expect(items.map((r: any) => r.title)).toEqual(['BL-96 · починить импорт', 'подписать хвосты в отчёте'])
+    // ...and the request itself is not work: nobody may be handed it
+    expect((await adapter.claimNext('w1', {})).id).toBe(items[0].id)
+  })
+
+  it('a batch of nothing is refused, and nothing at all is written', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    const res = await callBatch(front, { title: 'пусто', items: [] })
+    expect(res.statusCode).toBe(400)
+    expect(await adapter.list({})).toHaveLength(0)
+  })
+
+  it('the caps hold: too many items, an over-long line and an unknown field are each a 400 that writes nothing', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+
+    const many = await callBatch(front, { title: 'много', items: Array.from({ length: 21 }, (_, i) => `дело ${i}`) })
+    expect(many.statusCode).toBe(400)
+
+    const long = await callBatch(front, { title: 'длинно', items: ['д'.repeat(201)] })
+    expect(long.statusCode).toBe(400)
+
+    const smuggled = await callBatch(front, { title: 'чужое', items: ['дело'], command: 'rm -rf /' })
+    expect(smuggled.statusCode).toBe(400)
+
+    expect(await adapter.list({})).toHaveLength(0)
+  })
+
+  it('a referenced line that is not in the file is a 404 — a batch never carries an item nobody can trace', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter, deriveBacklog: backlogOf([{ id: 'BL-1', title: 'есть' }]) })
+    const res = await callBatch(front, { title: 'разбор', items: ['BL-999'] })
+    expect(res.statusCode).toBe(404)
+    expect(await adapter.list({})).toHaveLength(0)
+  })
+
+  it('an unwired queue answers 501 — never a fabricated ok about work that was never queued', async () => {
+    const res = await callBatch(mkBatchFront({}), { title: 'разбор', items: ['дело'] })
+    expect(res.statusCode).toBe(501)
   })
 })
