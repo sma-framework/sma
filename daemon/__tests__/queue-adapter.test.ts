@@ -20,7 +20,17 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, readFileSync, appendFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
+import {
+  writeWaveHold,
+  readWaveHolds,
+  readWaveParked,
+  markWaveParked,
+  WAVE_HOLDS_FILE,
+} from '../src/queue/wave-holds.mjs'
 import {
   createMemoryQueue,
   queueAdapterContractSuite,
@@ -406,5 +416,81 @@ describe('constants — taxonomy', () => {
   it('TASK_STATUSES is the closed five-status vocabulary, waiting-for-a-person included, and is frozen', () => {
     expect(TASK_STATUSES).toEqual(['queued', 'claimed', 'awaiting_approval', 'completed', 'failed'])
     expect(Object.isFrozen(TASK_STATUSES)).toBe(true)
+  })
+})
+
+/**
+ * THE REGISTER OF STOPPED ECHELONS — «останови волну 2» written down rather than remembered.
+ *
+ * The question worth the most here is the RESTART one, and it is asked the only way it can
+ * honestly be asked: a SECOND reader, given nothing but the directory, is asked what is stopped.
+ * A store that lived in a process would answer «nothing» — which is exactly how a founder's stop
+ * would quietly lift itself in the night and finish the work he had stopped.
+ */
+describe('wave holds — the register a restart still finds', () => {
+  it('an order written by one reader is read back by a fresh one', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wh-'))
+    expect(writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' }).ok).toBe(true)
+
+    // nothing is carried over between these two calls but the path itself
+    const seen = readWaveHolds({ dataDir })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].phase).toBe('14')
+    expect(seen[0].wave).toBe('2')
+    expect(typeof seen[0].since).toBe('number')
+  })
+
+  it('lifting is an appended word, not an edit — and the whole story stays readable', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wh-'))
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' })
+    writeWaveHold({ dataDir, phase: '14', wave: 3, action: 'hold' })
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'release' })
+
+    expect(readWaveHolds({ dataDir }).map((h) => h.wave)).toEqual(['3'])
+    // the file still tells what happened, in order — three lines, none of them overwritten
+    const lines = readFileSync(join(dataDir, WAVE_HOLDS_FILE), 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(3)
+    expect(lines.map((l) => JSON.parse(l).kind)).toEqual(['hold', 'hold', 'release'])
+  })
+
+  it('an order is refused unless it names BOTH halves of an address', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wh-'))
+    expect(writeWaveHold({ dataDir, phase: '14', action: 'hold' }).error).toBe('bad address')
+    expect(writeWaveHold({ dataDir, phase: '  ', wave: 2, action: 'hold' }).error).toBe('bad address')
+    expect(writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'freeze' as any }).error).toBe('bad action')
+    expect(readWaveHolds({ dataDir })).toEqual([])
+  })
+
+  it('a torn line loses only itself: the orders around it still read', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wh-'))
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' })
+    appendFileSync(join(dataDir, WAVE_HOLDS_FILE), '{"kind":"hold","phase":"1\n', 'utf8')
+    writeWaveHold({ dataDir, phase: '14', wave: 5, action: 'hold' })
+    expect(
+      readWaveHolds({ dataDir })
+        .map((h) => h.wave)
+        .sort(),
+    ).toEqual(['2', '5'])
+  })
+
+  it('the parking is remembered per ORDER: a stop given again is told to the work again', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wh-'))
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' })
+    markWaveParked({ dataDir, phase: '14', wave: 2, taskIds: ['T-1', 'T-2'] })
+    expect(readWaveParked({ dataDir, phase: '14', wave: 2 })).toEqual(['T-1', 'T-2'])
+    // another echelon's parking is not this one's
+    expect(readWaveParked({ dataDir, phase: '14', wave: 3 })).toEqual([])
+
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'release' })
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' })
+    expect(readWaveParked({ dataDir, phase: '14', wave: 2 })).toEqual([])
+  })
+
+  it('the register says whether the word changed anything at all', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wh-'))
+    expect(writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' }).already).toBe(false)
+    expect(writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold' }).already).toBe(true)
+    expect(writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'release' }).already).toBe(false)
+    expect(writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'release' }).already).toBe(true)
   })
 })
