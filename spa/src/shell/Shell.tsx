@@ -7,6 +7,7 @@ import { OPEN_SCREEN_EVENT, OpenedWithProvider, readOpenScreen } from './navigat
 import type { OpenScreenDetail } from './navigation'
 import { Palette } from './Palette'
 import { Sidebar } from './Sidebar'
+import { SystemConsole } from './SystemConsole'
 
 /**
  * Shell — the frame every screen lives in: the sidebar on the left, one screen on the
@@ -61,6 +62,13 @@ export function Shell() {
         draws nothing at all until it is asked for.
       */}
       <Palette />
+      {/*
+        Разговор живёт ЗДЕСЬ по той же причине, что и палитра: он нужен над любым экраном и
+        слушает свою клавишу, что бы ни было на стекле. Имя открытого экрана передаётся ему
+        пропсом — это единственное, что оболочка знает наверняка; всё, что глубже (какая
+        фаза раскрыта, какая задача открыта), рассказывает сам экран.
+      */}
+      <SystemConsole screen={active} />
     </div>
   )
 }

@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { usePhaseIndexQuery, useStateQuery } from '../../api/queries'
 import { TaskPanel } from '../../shell/TaskPanel'
-import { clockLabel } from '../../shell/format'
+import { useTellConsoleContext } from '../../shell/console-context'
+import { clockLabel, plural } from '../../shell/format'
 import { PhaseCardView } from '../pipeline/PhaseCardView'
 import { usePhaseBells } from '../pipeline/shared'
 import { Inbox } from './Inbox'
@@ -158,6 +159,22 @@ export function Screen() {
     const busy = rows.filter((w) => !!w.taskId).length
     return `Работников: ${rows.length} · занято ${busy}`
   }, [data])
+
+  // ЧТО ОТКРЫТО — рассказано оболочке. Список и раскрытая фаза — это ОДИН экран, и снаружи
+  // их не различить: без этого рассказа окно разговора говорило бы «Задачи», пока человек
+  // читает стадию фазы, и отвечало бы не про то, на что он смотрит.
+  useTellConsoleContext(
+    openPhase !== null
+      ? {
+          kind: 'phase',
+          line: `фаза ${(phaseIndex.data?.phases ?? []).find((p) => p.id === openPhase)?.name ?? openPhase}`,
+          phase: openPhase,
+        }
+      : {
+          kind: 'list',
+          line: `Задачи · ${units.length} ${plural(units.length, 'единица', 'единицы', 'единиц')} работы`,
+        },
+  )
 
   const openUnit = (unit: WorkUnit) => {
     if (unit.target.screen === 'phase') setOpenPhase(unit.target.id)

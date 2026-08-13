@@ -30,6 +30,7 @@ import {
   statusTone,
   statusWord,
 } from '../../shell/format'
+import { useTellConsoleContext } from '../../shell/console-context'
 import { openScreen, useOpenedWith } from '../../shell/navigation'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
@@ -633,6 +634,19 @@ export function Screen() {
     if (!taskId) return undefined
     return (state.data?.awaiting ?? []).find((r) => r.id === taskId)?.agedForHours
   }, [state.data, taskId])
+
+  // ЧТО ОТКРЫТО — рассказано оболочке, чтобы окно разговора отвечало про ЭТУ задачу. Признак
+  // «держит работник» едет вместе с именем: только у живой сессии есть куда доехать поправке.
+  useTellConsoleContext(
+    taskId
+      ? {
+          kind: 'task',
+          line: detail.data?.task?.title ?? `задача ${taskId}`,
+          taskId,
+          live: detail.data?.task?.status === 'claimed',
+        }
+      : null,
+  )
 
   if (!taskId) return <NoTask />
 
