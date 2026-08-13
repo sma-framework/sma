@@ -135,7 +135,12 @@ export function parseSteps(argv = []) {
  *
  * The rubric, stated once so a reader can argue with it:
  *  - an uncaught page exception BLOCKS — the screen is broken, not merely ugly
- *  - a request that never completed BLOCKS — the screen is decorative
+ *  - a request that FELL OVER BLOCKS — the screen is decorative. A request the browser
+ *    ABORTED is graded apart: it is a decision taken inside the page (a screen unmounted, a
+ *    query was cancelled, a long-lived stream closed with its page), and no server can cause
+ *    one. A recognised stream close is dropped; any other abort is REPORTED as a warning.
+ *    Before this split, one app that streams collected 24 «failures» in a single run and the
+ *    verdict said nothing about the app — a gate that is always red is a gate nobody reads
  *  - HTTP>=500 BLOCKS anywhere; HTTP>=400 BLOCKS on the app's OWN origin (its own API
  *    answering 404 is the panel-without-an-engine signature) and WARNs cross-origin,
  *    where an ad blocker or a third party is the likelier author
@@ -161,6 +166,22 @@ export function classify(observations = {}, { origin = '' } = {}) {
     findings.push({ severity: BLOCKER, kind: 'page-exception', detail: String(msg) })
   }
   for (const f of observations.requestFailures ?? []) {
+    // A stream that ends because the page ended is a CLOSE. Counting it as a failure is how
+    // this tool used to hand a permanent FAIL to every app that streams — see isStreamClose.
+    if (isStreamClose(f)) continue
+    // An ABORT is a decision taken inside the browser — a screen unmounted, a query was
+    // cancelled, a page moved on. No server causes one: a server that fails answers with a
+    // status (caught below) or drops the connection with a different error entirely. So an
+    // unexplained abort is REPORTED and does not block; a connection that actually fell over
+    // still does.
+    if (isAbort(f.error)) {
+      findings.push({
+        severity: WARNING,
+        kind: 'request-cancelled',
+        detail: `${f.method ?? 'GET'} ${f.url} — отменён окном (${f.error}); сервер такого не вызывает`,
+      })
+      continue
+    }
     findings.push({
       severity: BLOCKER,
       kind: 'request-failed',
@@ -200,6 +221,54 @@ export function classify(observations = {}, { origin = '' } = {}) {
     findings.push({ severity: WARNING, kind: 'console-error', detail: String(msg) })
   }
   return dedupe(findings)
+}
+
+/**
+ * How long a request must have been open before its abort reads as «this was a stream»
+ * rather than «this call was cancelled». A page's ordinary fetches answer in well under a
+ * second; a channel held open for the life of the screen is a different animal.
+ */
+export const STREAM_CLOSE_AGE_MS = 2000
+
+/**
+ * An abort is the browser saying «I stopped listening». It is the ONE network error a
+ * server cannot cause, which is why it is graded apart from every other one.
+ *
+ * @param {string|undefined} error
+ */
+export function isAbort(error) {
+  return /ABORTED|aborted/i.test(String(error ?? ''))
+}
+
+/**
+ * isStreamClose(failure) — was this «failed request» simply a long-lived stream ending
+ * with the page that opened it?
+ *
+ * ═══════════════════ WHY THIS EXISTS, IN ONE PARAGRAPH ═══════════════════
+ *
+ * An app that pushes live updates holds a channel open for as long as its screen is on the
+ * glass. Closing the page aborts that channel — which the browser reports exactly like a
+ * request that fell over. Before this, every live run of a streaming app collected one
+ * «request-failed» per viewport per revisit and returned FAIL no matter how well the app
+ * worked; a gate that is always red is a gate nobody reads, so the whole tool quietly stopped
+ * meaning anything. This is the same failure class it was built to catch, turned inward.
+ *
+ * The three ways a close is recognised, all of them facts rather than guesses:
+ *   - the browser itself calls the request an event stream;
+ *   - the driver was closing the page when the abort arrived;
+ *   - the request had been open longer than a page's ordinary call ever is.
+ * ABORT is the only error text that qualifies: it means a client decided to stop listening.
+ * A refused connection, a DNS failure or a timeout is never a close and still BLOCKS.
+ *
+ * @param {{error?:string, resourceType?:string, ageMs?:number, whileClosing?:boolean}} failure
+ * @returns {boolean}
+ */
+export function isStreamClose(failure = {}) {
+  if (!isAbort(failure.error)) return false
+  if (String(failure.resourceType ?? '') === 'eventsource') return true
+  if (failure.whileClosing === true) return true
+  const age = Number(failure.ageMs)
+  return Number.isFinite(age) && age >= STREAM_CLOSE_AGE_MS
 }
 
 /**
@@ -277,7 +346,11 @@ export function missingDriverMessage(reason = '') {
  * that was all of them; "touched 12 of 31 — 19 not pressed (cap)" cannot be misread.
  * A sweep that never ran says so rather than printing a flattering zero.
  *
- * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean, viewportsSkipped?:string[]}} [coverage]
+ * What the run declined to count against the app is stated here too: a forgiving tool that
+ * forgives QUIETLY is worth less than a strict one, because nobody can tell what it let past.
+ *
+ * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean,
+ *          viewportsSkipped?:string[], streamsClosed?:number}} [coverage]
  * @returns {string}
  */
 export function renderCoverage(coverage) {
@@ -290,9 +363,14 @@ export function renderCoverage(coverage) {
       .filter(Boolean)
       .join('\n')
   }
-  const { touched = 0, total = 0, skipped = 0, refused = [] } = coverage
+  const { touched = 0, total = 0, skipped = 0, refused = [], streamsClosed = 0 } = coverage
   const lines = [`- Interactive controls pressed: **${touched} of ${total}**`]
   if (declared(coverage)) lines.push(declared(coverage))
+  if (streamsClosed) {
+    lines.push(
+      `- ${streamsClosed} long-lived stream(s) ended when their page did — counted as a CLOSE, not as a failed request.`
+    )
+  }
   if (skipped) lines.push(`- **${skipped} were NOT pressed** (sweep cap ${SWEEP_CAP}). This review says nothing about them.`)
   if (refused.length) {
     lines.push(
