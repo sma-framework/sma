@@ -654,7 +654,14 @@ export function proposeBreakdown(phrase, backlogRows) {
     scored.push({ id, title, hits })
   }
   scored.sort((a, b) => b.hits.length - a.hits.length)
-  const found = scored.slice(0, BREAKDOWN_BACKLOG_CAP)
+  // ПРЕДЛАГАЮТСЯ ТОЛЬКО ЛУЧШИЕ СОВПАДЕНИЯ, а не всё, что задето хоть одним словом. Найдено
+  // живым прогоном на настоящем бэклоге, а не рассуждением: фраза про импорт агентов задела
+  // пять записей, из которых четыре совпали единственным общим словом «агентов» и к работе
+  // отношения не имели. Список, где сильное совпадение стоит вперемешку со слабыми, учит не
+  // доверять списку целиком — а слабые никуда не исчезают: они в той же форме, в ручной
+  // отметке бэклога, на расстоянии одного нажатия.
+  const best = scored.length > 0 ? scored[0].hits.length : 0
+  const found = scored.filter((r) => r.hits.length === best).slice(0, BREAKDOWN_BACKLOG_CAP)
 
   // ── половина вторая: куски самой фразы, каждый из которых называет действие ──
   const pieces = []

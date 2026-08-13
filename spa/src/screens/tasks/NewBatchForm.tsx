@@ -154,6 +154,7 @@ export function NewBatchForm({ onClose, onCreated }: { onClose: () => void; onCr
   return (
     <div className="absolute top-[42px] right-0 z-30 flex max-h-[74vh] w-[430px] flex-col gap-3 overflow-auto rounded-[13px] border border-bd2 bg-card p-4 shadow-menu">
       <input
+        id="batch-phrase"
         value={phrase}
         autoFocus
         onChange={(e) => setPhrase(e.target.value)}
@@ -204,29 +205,50 @@ export function NewBatchForm({ onClose, onCreated }: { onClose: () => void; onCr
         ) : (
           <ul className="m-0 mb-2 flex list-none flex-col gap-1 p-0">
             {entries.map((e) => (
-              <li
-                key={keyOf(e)}
-                className={`flex items-start gap-2 rounded-[9px] border px-2.5 py-1.5 ${
-                  e.on ? 'border-bd2 bg-surf' : 'border-bd bg-transparent opacity-60'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={e.on}
-                  aria-label={`Элемент: ${e.title}`}
-                  onChange={() =>
-                    setEntries((prev) =>
-                      prev.map((x) => (keyOf(x) === keyOf(e) ? { ...x, on: !x.on } : x)),
-                    )
-                  }
-                  className="mt-[3px] flex-none accent-blue-d"
-                />
-                <span className="min-w-0 flex-1">
-                  <span className={`block text-[12px] leading-[1.4] text-tx ${e.on ? '' : 'line-through'}`}>
-                    {e.kind === 'backlog' && e.id ? `${e.id} · ${e.title}` : e.title}
+              <li key={keyOf(e)}>
+                {/*
+                  Строка состава — ЯРЛЫК, а не галочка с текстом рядом: снять кандидата
+                  нажатием на его имя должно быть можно мышью, с клавиатуры и читалкой. Ровно
+                  так же устроена отметка в списке бэклога ниже — одна механика на обе стороны.
+                */}
+                <label
+                  className={`flex cursor-pointer items-start gap-2 rounded-[9px] border px-2.5 py-1.5 ${
+                    e.on ? 'border-bd2 bg-surf' : 'border-bd bg-transparent opacity-60'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={e.on}
+                    aria-label={`Элемент: ${e.title}`}
+                    onChange={() =>
+                      setEntries((prev) =>
+                        prev.map((x) => (keyOf(x) === keyOf(e) ? { ...x, on: !x.on } : x)),
+                      )
+                    }
+                    className="mt-[3px] flex-none accent-blue-d"
+                  />
+                  {/*
+                    Заголовок записи бэклога — это ЦЕЛАЯ строка файла, а она бывает в четыреста
+                    символов: у нас такие и лежат. Обрезать её в двери значило бы показать здесь
+                    не тот текст, что на доске, поэтому текст едет целиком, а места ему даётся
+                    две строки. Найдено живым прогоном на настоящем бэклоге — на выдуманных
+                    строках в три слова этой беды не видно вовсе.
+                  */}
+                  <span className="min-w-0 flex-1">
+                    {/*
+                      Без `block` рядом: обе утилиты правят display, и обрезка по строкам
+                      проигрывала бы блоку — на живом прогоне заголовок в четыреста символов
+                      разворачивался на восемь строк, хотя обрезка была написана.
+                    */}
+                    <span
+                      title={e.title}
+                      className={`line-clamp-2 text-[12px] leading-[1.4] text-tx ${e.on ? '' : 'line-through'}`}
+                    >
+                      {e.kind === 'backlog' && e.id ? `${e.id} · ${e.title}` : e.title}
+                    </span>
+                    <span className="block text-[10.5px] leading-[1.35] text-tx3">{e.why}</span>
                   </span>
-                  <span className="block text-[10.5px] leading-[1.35] text-tx3">{e.why}</span>
-                </span>
+                </label>
               </li>
             ))}
           </ul>
@@ -234,6 +256,7 @@ export function NewBatchForm({ onClose, onCreated }: { onClose: () => void; onCr
 
         <div className="mb-2 flex gap-1.5">
           <input
+            id="batch-own-line"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             onKeyDown={(e) => {
@@ -279,7 +302,7 @@ export function NewBatchForm({ onClose, onCreated }: { onClose: () => void; onCr
                       className="mt-[3px] flex-none accent-blue-d"
                     />
                     <span className="min-w-0">
-                      <span className="block text-[12px] leading-[1.4] text-tx">
+                      <span title={r.title} className="line-clamp-2 text-[12px] leading-[1.4] text-tx">
                         {r.id} · {r.title}
                       </span>
                       {r.ageLine ? (
