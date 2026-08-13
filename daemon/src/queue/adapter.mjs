@@ -1381,6 +1381,29 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(await q.resolveBatch('B-does-not-exist', { cancel: true })).toBe(false)
     })
 
+    /**
+     * THE WEDGE, at the level the queue owns it. An urgent task is louder than the assembly's
+     * next piece and is handed out first — and then the assembly carries on where it stood. It
+     * belongs in the contract because the two rules that produce it (priority, and one piece at
+     * a time) live in different places, and «they compose» is a claim about the pair.
+     */
+    it('an urgent task goes ahead of the batch\'s next piece — and the assembly then carries on', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-14'))
+      await q.enqueue(piece('B-14', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-14', 2))
+
+      expect((await q.claimNext('w1', {})).id).toBe('B-14-1')
+      c.advance(10)
+      await q.enqueue(backlog({ id: 'BL-urgent', priority: 9 })) // typed while the piece runs
+      await q.complete('B-14-1', { receiptRef: 'reverify:one' })
+
+      expect((await q.claimNext('w1', {})).id).toBe('BL-urgent')
+      expect((await q.claimNext('w1', {})).id).toBe('B-14-2')
+    })
+
     it('higher priority is claimed first', async () => {
       const c = clockOf()
       const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
