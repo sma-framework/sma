@@ -26,10 +26,15 @@ const TONE: Record<UnitState, { dot: string; seg: string; word: string }> = {
   ok: { dot: 'bg-green', seg: 'bg-green', word: 'text-ok-tx' },
   wait: { dot: 'bg-tx3', seg: '', word: 'text-tx3' },
   fail: { dot: 'bg-err', seg: 'bg-err', word: 'text-err-tx' },
+  // Два слова владельца — приглушённые: решение человека закрывает кусок или сборку, но не
+  // объявляет их ни сделанными, ни сломанными. Цвет здесь молчит, а слово говорит.
+  skip: { dot: 'bg-tx3', seg: 'bg-bd2', word: 'text-tx3' },
+  off: { dot: 'bg-tx3', seg: 'bg-bd2', word: 'text-tx3' },
 }
 
 const KIND_TONE: Record<WorkUnit['kind'], string> = {
   inline: 'border-blue/25 bg-blue-s text-blue',
+  batch: 'border-violet/25 bg-violet-s text-violet',
   phase: 'border-bd2 bg-surf text-teal',
 }
 

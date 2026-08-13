@@ -1,4 +1,15 @@
-import type { DoneRow, PhaseIndexRow, PhaseStage, PhaseStageStatus, QueueRow, WorkerRow } from '../../api/types'
+import type {
+  BatchItemState,
+  BatchRow,
+  BatchState,
+  DoneRow,
+  PhaseIndexRow,
+  PhaseStage,
+  PhaseStageStatus,
+  QueueRow,
+  WorkerRow,
+} from '../../api/types'
+import { plural } from '../../shell/format'
 
 /**
  * units — «единица работы» as this screen means it, and the ONE place a reading of the
@@ -11,18 +22,29 @@ import type { DoneRow, PhaseIndexRow, PhaseStage, PhaseStageStatus, QueueRow, Wo
  * its own question is a second version of the truth, and the first day the two disagree is
  * the day the list stops being read.
  *
- * ═══════════════════════════ TWO KINDS, BECAUSE THERE ARE TWO ═════════════════════════
+ * ═══════════════════════════ ТРИ ВИДА, ПОТОМУ ЧТО ИХ ТРИ ═════════════════════════════
  *
  * The design this screen is built from shows three kinds of work: ИНЛАЙН, БАТЧ and ФАЗА.
- * Two of them exist in the engine and are built here:
+ * All three exist in the engine now and all three are built here:
  *   - ИНЛАЙН — one task on the queue, the thing «+ Новая задача» makes;
+ *   - БАТЧ   — one order fanned out into several pieces and gathered back into one delivery;
  *   - ФАЗА   — one phase of the pipeline, whose four stages are read off its own directory.
- * БАТЧ — one order fanned out into several backlog items and gathered back into one delivery —
- * has NO representation in the engine at all: no parent, no children, no gathering. It is
- * therefore NOT built here from something that merely resembles it. A kind painted out of
- * whatever was nearest is the failure this product spends its days undoing: the picture would
- * be a drawing of an engine rather than a reading of one. When batches exist, they arrive here
- * as a third kind and the row shape already carries them.
+ *
+ * БАТЧ WAS ABSENT HERE UNTIL THE ENGINE GREW ONE, and that was the whole point: a kind painted
+ * out of whatever was nearest reads exactly like a measured one, and the picture would have
+ * been a drawing of an engine rather than a reading of one. It arrives now as a PROJECTION of
+ * the row the daemon computes at every read (`batches[]`) — the request, its pieces with their
+ * states, and the piece that is holding the assembly. Nothing about it is assembled here out of
+ * loose tasks that merely look related, and an empty `batches[]` means no batch rows at all,
+ * never an empty placeholder saying a batch might be somewhere.
+ *
+ * ══════════════════ ЭЛЕМЕНТ БАТЧА — НЕ СТРОКА ВЕРХНЕГО УРОВНЯ ═════════════════════════
+ *
+ * A piece of a batch is a real row of the queue, so it arrives in `queue`/`awaiting`/`done` and
+ * on a worker — and it is deliberately NOT drawn as its own line. This list is «Задачи ·
+ * верхний уровень»: one order of the owner is ONE unit of work, and its four pieces standing
+ * next to it would count the same work twice, in the list and in every counter above it. The
+ * pieces are read inside the batch, where they say what they are pieces OF.
  *
  * ════════════════════════════ WHAT A RIBBON IS ALLOWED TO SAY ═════════════════════════
  *
@@ -44,14 +66,26 @@ import type { DoneRow, PhaseIndexRow, PhaseStage, PhaseStageStatus, QueueRow, Wo
  * Ни у одного из трёх нет ответа «0»: отсутствие отметки говорится прочерком или словами.
  */
 
-/** How a unit stands, in the five words this window uses everywhere. */
-export type UnitState = 'run' | 'dec' | 'ok' | 'wait' | 'fail'
+/**
+ * How a unit stands, in the words this window uses everywhere.
+ *
+ * ПОЧЕМУ СЛОВ СЕМЬ, А НЕ ПЯТЬ. Пять первых — про то, где работа стоит сама. Два последних
+ * появились вместе с батчем и принадлежат не работе, а ВЛАДЕЛЬЦУ: «пропущен» — это его слово о
+ * сломавшемся куске, «отменён» — его слово обо всей сборке. Ни то, ни другое не переводится в
+ * пятёрку без вранья: пропущенный кусок, показанный «не начат», обещает работу, которой не
+ * будет, а отменённая сборка, показанная «не получилось», обвиняет работника в решении
+ * человека. Словарь окна растёт ровно настолько, насколько вырос словарь движка.
+ */
+export type UnitState = 'run' | 'dec' | 'ok' | 'wait' | 'fail' | 'skip' | 'off'
 
-/** What a unit IS. The third kind (batch) joins this union when the engine grows one. */
-export type UnitKind = 'inline' | 'phase'
+/** What a unit IS — all three kinds of the accepted design, now that the engine has all three. */
+export type UnitKind = 'inline' | 'batch' | 'phase'
 
 /** Where a click on a unit goes. */
-export type UnitTarget = { screen: 'task'; id: string } | { screen: 'phase'; id: string }
+export type UnitTarget =
+  | { screen: 'task'; id: string }
+  | { screen: 'batch'; id: string }
+  | { screen: 'phase'; id: string }
 
 export interface WorkUnit {
   id: string
@@ -84,11 +118,14 @@ export const STATE_WORD: Record<UnitState, string> = {
   ok: 'Готово',
   wait: 'Не начата',
   fail: 'Не получилось',
+  skip: 'Пропущен',
+  off: 'Отменён',
 }
 
 /** The kind badge, in the design's own words. */
 export const KIND_WORD: Record<UnitKind, string> = {
   inline: 'ИНЛАЙН',
+  batch: 'БАТЧ',
   phase: 'ФАЗА',
 }
 
@@ -97,7 +134,7 @@ export const KIND_WORD: Record<UnitKind, string> = {
  * bottom. A person opens this screen to find what is stuck on them, so what is stuck on them
  * cannot be below the fold.
  */
-const RANK: Record<UnitState, number> = { dec: 0, run: 1, wait: 2, fail: 3, ok: 4 }
+const RANK: Record<UnitState, number> = { dec: 0, run: 1, wait: 2, fail: 3, ok: 4, skip: 5, off: 6 }
 
 /** The four stages in the order a phase goes through them. */
 const STAGES: PhaseStage[] = ['discuss', 'plan', 'execute', 'verify']
@@ -165,6 +202,8 @@ export interface UnitsInput {
   awaiting: QueueRow[]
   workers: WorkerRow[]
   done: DoneRow[]
+  /** Сборки, как их посчитал демон при этом же чтении состояния. Пусто — батчей нет. */
+  batches: BatchRow[]
   phases: PhaseIndexRow[]
   /** The project selector in the shell; null means «every project». */
   activeProject: string | null
@@ -238,6 +277,85 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
     segs,
     live: running,
     target: { screen: 'phase', id: row.id },
+  }
+}
+
+/**
+ * Слова сборки, переведённые в слова строки. Перевод, а не второе мнение: состояние куска
+ * считает движок, здесь оно только называется на языке списка.
+ */
+const BATCH_ITEM_TONE: Record<BatchItemState, UnitState> = {
+  failed: 'fail',
+  awaiting_decision: 'dec',
+  running: 'run',
+  waiting: 'wait',
+  done: 'ok',
+  skipped: 'skip',
+}
+
+const BATCH_TONE: Record<BatchState, UnitState> = { ...BATCH_ITEM_TONE, cancelled: 'off' }
+
+/**
+ * ЧТО ДЕРЖИТ СБОРКУ — состоянием держащего куска, потому что его состояние И ЕСТЬ причина.
+ * Движок называет кусок; предложение здесь только произносит его состояние по-человечески.
+ */
+const HOLD_WORDS: Record<BatchItemState, string> = {
+  failed: 'не получилось — сборка стоит и ждёт вашего слова',
+  awaiting_decision: 'ждёт вашего решения',
+  running: 'идёт',
+  waiting: 'ещё не начат',
+  done: 'закрыт',
+  skipped: 'пропущен вашим решением',
+}
+
+/**
+ * ОДИН ЗАПРОС ВЛАДЕЛЬЦА, РАЗОШЕДШИЙСЯ НА КУСКИ, — как одна строка списка.
+ *
+ * Чистая проекция ряда `batches[]`: ни одного собственного вопроса к демону и ни одного числа,
+ * которого нет в ряду. Лента повторяет состояния кусков ПО ПОРЯДКУ — в том самом, в котором
+ * очередь их выдаёт, — а не рисуется по их количеству: лента, собранная из числа элементов,
+ * читается как замер и им не является.
+ */
+function batchUnit(row: BatchRow): WorkUnit {
+  const items = row.items ?? []
+  const n = items.length
+  const closed = items.filter((i) => i.state === 'done').length
+  const skipped = items.filter((i) => i.state === 'skipped').length
+  const state = BATCH_TONE[row.state] ?? 'wait'
+  const holding = row.holding
+
+  const inner =
+    n === 0
+      ? 'элементов нет'
+      : `${n} ${plural(n, 'элемент', 'элемента', 'элементов')} · закрыто ${closed} из ${n}${
+          skipped > 0 ? ` · пропущено ${skipped}` : ''
+        }`
+
+  const next =
+    row.state === 'cancelled'
+      ? 'Сборка отменена вами — незапущенные элементы вынуты из очереди'
+      : row.question
+        ? `Ждёт вас: «${row.question.itemTitle ?? row.question.itemId}» не получилось — пропустить, повторить или отменить`
+        : holding
+          ? `Держит «${holding.title ?? holding.id}» — ${HOLD_WORDS[holding.state]}`
+          : n === 0
+            ? 'Постановка записана, а элементов у неё нет — держать сборку нечему'
+            : 'Все элементы закрыты — сборка готова'
+
+  return {
+    id: row.id,
+    kind: 'batch',
+    title: row.title ?? 'Без названия',
+    state,
+    inner,
+    next,
+    // У СБОРКИ НЕТ СВОИХ ОТМЕТОК ВРЕМЕНИ: очередь мерит попытки кусков, а не батч, и сложить их
+    // в одну длительность значило бы назвать работой и то время, что сборка просто ждала.
+    // Прочерк — это отсутствие отметки, а не ноль.
+    dur: '—',
+    segs: items.map((i) => BATCH_ITEM_TONE[i.state] ?? 'wait'),
+    live: items.some((i) => i.state === 'running'),
+    target: { screen: 'batch', id: row.id },
   }
 }
 
@@ -339,10 +457,20 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
   const mine = <T extends { project: string; machine: string }>(rows: T[]): T[] =>
     rows.filter((r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine))
 
+  const batches = input.batches ?? []
+  // КУСКИ СБОРКИ ЧИТАЮТСЯ ВНУТРИ НЕЁ, а не рядом с ней. Сито строится по ВСЕМ сборкам, а не
+  // только по видимым: кусок носит проект своей сборки, поэтому вместе с ней он и так уходит
+  // из-под фильтра — а строится сито до фильтра, чтобы кусок никогда не остался в списке
+  // сиротой, чья сборка отсеялась.
+  const inBatch = new Set<string>()
+  for (const b of batches) for (const i of b.items ?? []) inBatch.add(i.id)
+  const loose = <T extends { id: string }>(rows: T[]): T[] => rows.filter((r) => !inBatch.has(r.id))
+
   const running = input.workers
     .filter(
       (w) =>
         !!w.taskId &&
+        !inBatch.has(w.taskId) &&
         (!activeProject || w.project === activeProject) &&
         (!machine || (w.machine ?? selfMachine) === machine),
     )
@@ -351,18 +479,19 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
   const units: WorkUnit[] = [
     // Phases are not filtered by machine: a phase belongs to the project, not to a machine.
     ...input.phases.map(phaseUnit),
-    ...mine(input.awaiting).map((r) => queueUnit(r, true)),
+    ...mine(batches).map(batchUnit),
+    ...loose(mine(input.awaiting)).map((r) => queueUnit(r, true)),
     ...running,
-    ...mine(input.queue).map((r) => queueUnit(r, false)),
-    ...mine(input.done).map((r) => doneUnit(r, input.clock)),
+    ...loose(mine(input.queue)).map((r) => queueUnit(r, false)),
+    ...loose(mine(input.done)).map((r) => doneUnit(r, input.clock)),
   ]
 
   return units.sort((a, b) => RANK[a.state] - RANK[b.state])
 }
 
-/** The four figures over the list, counted off the units themselves so they cannot disagree. */
-export function countUnits(units: WorkUnit[]): { run: number; dec: number; ok: number; wait: number; fail: number } {
-  const out = { run: 0, dec: 0, ok: 0, wait: 0, fail: 0 }
+/** The figures over the list, counted off the units themselves so they cannot disagree. */
+export function countUnits(units: WorkUnit[]): Record<UnitState, number> {
+  const out: Record<UnitState, number> = { run: 0, dec: 0, ok: 0, wait: 0, fail: 0, skip: 0, off: 0 }
   for (const u of units) out[u.state] += 1
   return out
 }

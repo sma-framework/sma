@@ -90,6 +90,9 @@ export function Screen() {
         awaiting: data?.awaiting ?? [],
         workers: data?.workers ?? [],
         done: data?.done ?? [],
+        // Сборки приезжают тем же одним чтением состояния, что и всё остальное: третий вид
+        // списка — проекция ряда движка, а не второй вопрос к нему.
+        batches: data?.batches ?? [],
         phases: phaseIndex.data?.phases ?? [],
         activeProject,
         machine,
@@ -252,6 +255,10 @@ export function Screen() {
             <Counter n={counts.ok} label="готово" tone="text-ok-tx" />
             <Counter n={counts.wait} label="не начаты" tone="text-tx3" />
             {counts.fail > 0 ? <Counter n={counts.fail} label="не получилось" tone="text-err-tx" /> : null}
+            {/* Слова владельца показываются, только когда они сказаны: счётчик «отменено 0»
+                рассказывал бы о решении, которого никто не принимал. */}
+            {counts.skip > 0 ? <Counter n={counts.skip} label="пропущено" tone="text-tx3" /> : null}
+            {counts.off > 0 ? <Counter n={counts.off} label="отменено" tone="text-tx3" /> : null}
           </div>
         </div>
 
