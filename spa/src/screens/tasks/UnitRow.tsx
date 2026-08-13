@@ -13,6 +13,10 @@ import type { UnitState, WorkUnit } from './units'
  *
  * Colour is never the only carrier: every state also has its word (`STATE_WORD`), and the
  * dot before the title is a pulse only while the work actually moves.
+ *
+ * Пульс читается по отдельному признаку строки, а не по её слову: «Идёт» у фазы означает
+ * «начата и не закончена», и пульсирующая точка на фазе, где сейчас не запущена ни одна
+ * стадия, обещала бы движение, которого нет.
  */
 
 /** The tone of each state, once — the row, the dot and the ribbon all read it from here. */
@@ -77,7 +81,7 @@ export function UnitRow({
         <span className="flex items-center gap-2">
           <span
             aria-hidden
-            className={`h-1.5 w-1.5 flex-none rounded-full ${tone.dot} ${unit.state === 'run' ? 'animate-pulse' : ''}`}
+            className={`h-1.5 w-1.5 flex-none rounded-full ${tone.dot} ${unit.live ? 'animate-pulse' : ''}`}
           />
           <span className="truncate text-[13.5px] font-semibold text-tx">{unit.title}</span>
           <span className={`flex-none text-[10.5px] font-semibold ${tone.word}`}>{STATE_WORD[unit.state]}</span>
