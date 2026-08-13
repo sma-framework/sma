@@ -94,6 +94,8 @@
 import {
   validateTask,
   isBatchParent,
+  batchHeldOf,
+  batchDecisionsOf,
   DEFAULT_EXPIRE_MS,
   FAIL_REASONS,
   NoReceiptError,
@@ -134,6 +136,17 @@ export const DEAD_LETTER_QUEUE = 'sma.task.dead'
  * — and deliberately NOT summed in stats(), which counts work waiting for a worker.
  */
 export const BATCH_PARENT_QUEUE = 'sma.batch'
+
+/**
+ * WHERE A PIECE OF A BATCH WAITS FOR ITS TURN — in the job row it already has, deferred to a
+ * date no clock will reach, and moved to «now» by `releaseBatchTurns` when its turn comes.
+ *
+ * A DATE RATHER THAN A DELAY, deliberately: `start_after` is what a person reads in the table
+ * when he asks why a piece is sitting there, and «2999» says «somebody is holding this» in a
+ * way «now + 3153600000s» never would. The value is not a deadline and is never waited for —
+ * a held piece is released by the turn rule or by the owner's word, never by time passing.
+ */
+export const HELD_UNTIL = '2999-01-01T00:00:00.000Z'
 
 /**
  * THE SESSION SPEAKS UTF-8, AND IT HAS TO BE SAID OUT LOUD. node-postgres decodes every byte
@@ -350,14 +363,27 @@ export function createPgBossQueue({
 
   async function enqueue(task) {
     const norm = validateTask(task) // DoR / forge / allowlist gate — same path as the memory backend
+    // A PIECE OF A BATCH ARRIVES HELD, and is released when its turn comes (releaseBatchTurns).
+    // The reason it cannot be filtered at the fetch instead is the same one that put the
+    // request row in a queue of its own: the fetch IS the claim, so a piece recognised as «not
+    // its turn» after the fetch has already been handed out and there is nothing left to
+    // refuse. Held here means `start_after` in the future — pg-boss's own scheduling column,
+    // whose `AND start_after < now()` is part of every fetch — so the row is fully VISIBLE to
+    // every reader (a screen still draws the whole assembly) and reachable by no worker.
+    const heldItem = !isBatchParent(norm) && typeof norm.batchId === 'string'
     let jobId
     try {
       jobId = await bossInstance.send(queueFor(norm), norm, {
         singletonKey: norm.id, // Pattern 5: one pending entry per item (coalescing)
         priority: norm.priority,
-        retryLimit: 2,
+        // NOTHING OF A BATCH IS REPEATED BY ITSELF. The library's own retry is exactly the
+        // silent repetition the owner forbade: a piece that broke must STOP its assembly and
+        // ask him, and a queue quietly running it again two more times is the loop that cost a
+        // day on 12.08.2026. Ordinary work keeps the retries it has always had.
+        retryLimit: heldItem ? 0 : 2,
         retryBackoff: true,
         expireInSeconds, // liveness: silent worker → job expires → requeue
+        ...(heldItem ? { startAfter: HELD_UNTIL } : {}),
       })
     } catch (err) {
       // A title in a language the database's encoding does not have is a PROPERTY OF THE
@@ -470,9 +496,51 @@ export function createPgBossQueue({
     }
   }
 
+  /**
+   * releaseBatchTurns() — before any fetch, put the pieces whose turn it now is back on the
+   * clock, and leave every other piece of a batch held.
+   *
+   * DERIVED AT EVERY CLAIM, NEVER REMEMBERED. Whose turn it is is a function of the rows —
+   * `batchHeldOf`, the one place that rule lives — so a daemon that was killed mid-batch, or a
+   * piece finished by another machine, is simply read correctly on the next pass instead of
+   * being reconciled. The statement itself is idempotent: a piece already on the clock is not
+   * matched by it.
+   *
+   * FAIL-OPEN. A release that cannot run costs this pass its batch progress — the next claim
+   * tries again — and never the claim of ordinary work, which is why it can never throw here.
+   */
+  async function releaseBatchTurns() {
+    let rows
+    try {
+      rows = await list({})
+    } catch (err) {
+      log(`batch turn not computed: ${maskError(err)}`)
+      return
+    }
+    const items = rows.filter((r) => r && r.batchId && !isBatchParent(r) && r.status === 'queued')
+    if (items.length === 0) return
+    const held = batchHeldOf(rows)
+    for (const item of items) {
+      if (held.includes(item.id)) continue
+      try {
+        await runSql(
+          `UPDATE pgboss.job SET start_after = now()
+             WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
+          [item.id],
+        )
+      } catch (err) {
+        log(`batch piece ${item.id} not released: ${maskError(err)}`)
+      }
+    }
+  }
+
   async function claimNext(workerId, { lanes } = {}) {
     // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation.
     if (Array.isArray(lanes) && lanes.length === 0) return null
+    // WHOSE TURN IS IT — asked BEFORE the fetch, because after it there is nothing left to
+    // refuse. The pieces of a batch arrive held (see enqueue); this is where the one whose
+    // turn has come stops being held.
+    await releaseBatchTurns()
     // LANE QUEUES AND NOTHING ELSE. That is also what keeps the request of a batch out of a
     // worker's hands: it was never sent to a lane, so no ordering of these fetches can reach
     // it (BATCH_PARENT_QUEUE). No filter here to forget to write.
@@ -535,6 +603,79 @@ export function createPgBossQueue({
       workerId ?? null,
     ])
     return true
+  }
+
+  /**
+   * resolveBatch(batchId, {skip, cancel}) — the owner's word about a stopped assembly, written
+   * onto the REQUEST row and made to take effect. Returns false when no such request exists.
+   *
+   * WHERE THE WORD IS KEPT: in the request job's own payload, which is the only row of a batch
+   * that outlives every piece of it. The two statements are written as MERGES of the existing
+   * payload rather than as replacements, so two decisions taken seconds apart cannot lose each
+   * other. The request job is never fetched by anything (BATCH_PARENT_QUEUE), so an UPDATE of
+   * it can never race a worker.
+   *
+   * WHAT «CANCEL» ACTUALLY DOES, beyond remembering: it takes the pieces NOBODY STARTED out of
+   * the queue (`boss.cancel`), because an abandoned assembly whose pieces went on sitting in
+   * «в очереди» would be a counter no amount of working could bring down. Work that already
+   * produced is never touched — what is closed stays closed.
+   */
+  async function resolveBatch(batchId, { skip, cancel } = {}) {
+    if (typeof batchId !== 'string' || batchId === '') return false
+    const rows = await list({})
+    const request = rows.find((r) => isBatchParent(r) && (r.batchId || r.id) === batchId)
+    if (!request) return false
+
+    if (typeof skip === 'string' && skip !== '') {
+      const already = batchDecisionsOf(request).skipped.includes(skip)
+      if (!already) {
+        await runSql(
+          `UPDATE pgboss.job
+              SET data = jsonb_set(
+                    data,
+                    '{data,skipped}',
+                    coalesce(data->'data'->'skipped', '[]'::jsonb) || to_jsonb($2::text))
+            WHERE data->>'id' = $1 AND name = $3`,
+          [batchId, skip, BATCH_PARENT_QUEUE],
+        )
+      }
+    }
+
+    if (cancel === true) {
+      await runSql(
+        `UPDATE pgboss.job
+            SET data = jsonb_set(data, '{data,cancelled}', 'true'::jsonb)
+          WHERE data->>'id' = $1 AND name = $2`,
+        [batchId, BATCH_PARENT_QUEUE],
+      )
+      for (const item of rows) {
+        if (!item || item.batchId !== batchId || isBatchParent(item)) continue
+        if (item.status !== 'queued') continue
+        const job = await resolveQueuedJob(item.id)
+        if (!job) continue
+        try {
+          await bossInstance.cancel(job.name, job.id)
+        } catch (err) {
+          log(`batch piece ${item.id} not taken out of the queue: ${maskError(err)}`)
+        }
+      }
+    }
+    return true
+  }
+
+  /** READ-ONLY resolution of a piece that is still WAITING — the mirror of resolveActiveJob. */
+  async function resolveQueuedJob(taskId) {
+    try {
+      const res = await runSql(
+        `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state = 'created' ORDER BY created_on DESC LIMIT 1`,
+        [taskId],
+      )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      return rows[0] || null
+    } catch (err) {
+      log(`queued job for ${taskId} not resolved: ${maskError(err)}`)
+      return null
+    }
   }
 
   /**
@@ -814,6 +955,7 @@ export function createPgBossQueue({
     claimNext,
     touch,
     assignWorker,
+    resolveBatch,
     complete,
     fail,
     list,

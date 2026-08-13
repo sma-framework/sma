@@ -96,7 +96,7 @@ import { existsSync as fsExistsSync, readdirSync as fsReaddirSync } from 'node:f
 import { join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
@@ -784,6 +784,38 @@ function eligibleLanes(deps) {
 }
 
 /**
+ * poolFor(deps, task) → the worker pool as the ROUTER should see it for THIS task.
+ *
+ * For ordinary work that is the configured pool, untouched. For a piece of a batch it is the
+ * same pool with the assembly's OWN worker offered first: the owner's rule is «one worker, one
+ * piece at a time», and the piece that follows belongs to whoever ran the piece before it —
+ * otherwise every piece of one request would be a fresh session in a different account, and
+ * what the previous piece learned would be paid for again.
+ *
+ * A PREFERENCE, NOT A LOCK, and the difference is stated rather than implied: the router still
+ * decides, so a pinned worker whose window is spent, or one that was switched off since, is
+ * simply not among the candidates and the assembly continues with whoever can run it. Holding
+ * the batch for an unavailable account would be a stall nobody asked for — and the tick says so
+ * in its own log rather than letting the change happen silently.
+ *
+ * Fail-open at every step: no adapter list, a throw, or nothing to prefer, and the pool comes
+ * back exactly as configured.
+ */
+async function poolFor(deps, task) {
+  const workers = (deps.config && deps.config.workers) || []
+  if (!task || typeof task.batchId !== 'string' || task.batchId === '') return workers
+  let pinned = null
+  try {
+    pinned = batchWorkerOf(await deps.adapter.list({}), task.batchId, task.id)
+  } catch (err) {
+    writeLog(deps, { type: 'batch.pin_unreadable', taskId: task.id, error: String((err && err.message) || err) })
+    return workers
+  }
+  if (!pinned || !workers.some((w) => w && w.id === pinned)) return workers
+  return [...workers.filter((w) => w && w.id === pinned), ...workers.filter((w) => !w || w.id !== pinned)]
+}
+
+/**
  * runSpawn(spawnWorker, spec, onLine) — await a worker child to exit, collecting a spawn
  * failure as spawnError. Resolves {code, signal, spawnError}. The child is driven entirely
  * through the injected spawnWorker (spawn.mjs in production).
@@ -1037,7 +1069,9 @@ export async function tick(deps = {}) {
       // The router writes its OWN dispatcher layer at the decision — the tick
       // only hands it the sink; it never narrates the routing reason on the router's behalf.
       const route = deps.routing.resolveRoute(task, {
-        workers: config.workers,
+        // The pool, with this assembly's own worker offered first (poolFor) — for a task with
+        // no batch this IS config.workers.
+        workers: await poolFor(deps, task),
         windows: deps.windows,
         clock,
         config,

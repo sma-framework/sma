@@ -60,6 +60,30 @@
  * mechanism. What holds an assembly open is computed by a reader from the items' statuses and
  * is never stored — a stored one would be a second truth about the same five statuses.
  *
+ * ═══════════ ONE PIECE AT A TIME — WHOSE TURN IT IS, AND WHO DECIDES ═══════════════
+ * The owner's rule for a batch is that its pieces go one after another, never side by side:
+ * one worker takes a piece, finishes it, and only then is the next one handed out. So «whose
+ * turn is it» is a question of the QUEUE, not of a screen — `batchTurnOf` answers it from the
+ * rows themselves, and both backends obey the same answer:
+ *
+ *   - a piece is UNDER WAY (claimed)  → the batch has no turn; nothing else of it is handed out
+ *   - a piece FAILED                  → the batch STOPS and its owner is asked what to do
+ *                                       (skip / repeat / cancel). NOTHING is retried by itself
+ *   - otherwise                       → the turn is the first waiting piece, in enqueue order
+ *
+ * A piece that produced and is waiting for a person's acceptance does NOT hold the turn: the
+ * assembly is what the owner accepts, and stalling a worker on each piece's acceptance would
+ * turn one batch into five separate waits for a human.
+ *
+ * THE OWNER'S WORD IS RECORDED ON THE REQUEST ROW — `data.skipped` (the pieces he chose to
+ * skip) and `data.cancelled`. Facts, not derivations: what the owner said is not recomputable
+ * from anything else, and a skipped piece must stay skipped across restarts. Everything else
+ * about a batch (what holds it, whether it is closed) stays computed at every read.
+ *
+ * A BATCH NEVER FREEZES THE QUEUE. The turn rule speaks about the pieces of ONE batch: work of
+ * other batches and ordinary tasks are claimed exactly as before, so a long assembly occupies
+ * one worker and no more.
+ *
  * ═══════════════ V5.1: PROJECT IS ADDITIVE, THE BACKFILL IS ON READ ═════════════
  * `project` is optional on the wire. An adapter is constructed with the
  * config's `activeProject`, which an enqueue stamps onto a task that names none. LANE and
@@ -81,6 +105,8 @@
  *                                   so a claimed task is always runnable. lanes:[] → null,
  *                                   no mutation. lanes omitted → all lanes eligible.
  *   touch(taskId)                 → refresh the liveness clock on a claimed task
+ *   resolveBatch(batchId, word)   → record the owner's word about a stopped assembly
+ *                                   ({skip:<itemId>} | {cancel:true}) and make it take effect
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
  *   list(filter)                  → rows expose enqueuedAt/claimedAt/leaseRenewedAt/completedAt
@@ -260,8 +286,16 @@ export const TASK_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'
 export const BATCH_PARENT = 'parent'
 const BATCH_ROLES = Object.freeze([BATCH_PARENT])
 
-/** The keys the `data` envelope may carry — a field allowlist inside the field allowlist. */
-const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'batch'])
+/**
+ * The keys the `data` envelope may carry — a field allowlist inside the field allowlist.
+ *
+ * `skipped` and `cancelled` belong to the REQUEST row and to nothing else: they are the owner's
+ * own word about a stopped assembly («этот кусок пропускаем», «сборку отменяем»), and a word
+ * somebody said is not derivable from any status — it has to be written down or it is lost on
+ * the next read. They are declared here, in the same closed vocabulary as everything else that
+ * travels, so a typo cannot invent a third kind of decision.
+ */
+const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'batch', 'skipped', 'cancelled'])
 
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
@@ -283,6 +317,160 @@ const ALLOWED_TASK_KEYS = Object.freeze([
 export function isBatchParent(taskOrRow) {
   const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
   return !!env && typeof env === 'object' && env.batch === BATCH_PARENT
+}
+
+/** Epoch ms out of a timestamp that may arrive as a number or as an ISO string; NaN otherwise. */
+function msOf(v) {
+  if (typeof v === 'number') return v
+  const t = Date.parse(v)
+  return Number.isFinite(t) ? t : NaN
+}
+
+/**
+ * compareBatchItems(a, b) → the ONE order the pieces of a batch are read in.
+ *
+ * BY IDENTIFIER, NUMERICALLY, and only then by arrival. A piece's place in an assembly is
+ * where its owner put it — the door mints the pieces of one press as `<batch>-1`, `<batch>-2`
+ * — and that place must not move because the piece was TOUCHED later: a piece he asked to
+ * repeat comes back to its own position, not to the end of the queue behind work that was
+ * meant to follow it. The numeric comparison is what keeps the tenth piece after the second.
+ *
+ * Exported so the queue (whose turn is it) and the read model behind the screen (in which
+ * order are they drawn) can never answer «which piece is next» differently.
+ *
+ * @param {{id:string, enqueuedAt?:number|string}} a
+ * @param {{id:string, enqueuedAt?:number|string}} b
+ * @returns {number}
+ */
+export function compareBatchItems(a, b) {
+  const byId = String(a && a.id).localeCompare(String(b && b.id), undefined, { numeric: true })
+  if (byId !== 0) return byId
+  return (msOf(a && a.enqueuedAt) || 0) - (msOf(b && b.enqueuedAt) || 0)
+}
+
+/**
+ * batchDecisionsOf(requestRow) → `{skipped:string[], cancelled:boolean}` — what the owner has
+ * already said about this assembly. Tolerant by construction: a row written before the fields
+ * existed, or one carrying rubbish in them, reads as «he has said nothing yet» rather than
+ * throwing inside a claim path.
+ *
+ * @param {object|null} requestRow
+ * @returns {{skipped:string[], cancelled:boolean}}
+ */
+export function batchDecisionsOf(requestRow) {
+  const env = requestRow && typeof requestRow === 'object' ? requestRow.data : null
+  const raw = env && typeof env === 'object' ? env : {}
+  return {
+    skipped: Array.isArray(raw.skipped) ? raw.skipped.filter((x) => typeof x === 'string') : [],
+    cancelled: raw.cancelled === true,
+  }
+}
+
+/**
+ * latestRowPerId(rows) → the same rows with at most ONE row per task id, the newest kept.
+ *
+ * A repeated piece is enqueued under its own id again (the same door `/api/return` has always
+ * used), and a durable queue keeps the previous job row beside the new one. Two rows for one
+ * piece would make the turn rule see a failure that the owner has already answered — so the
+ * rule reads the LAST word about each id and nothing older.
+ */
+function latestRowPerId(rows) {
+  const live = (r) => r.status === 'queued' || r.status === 'claimed'
+  const out = []
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue
+    const i = out.findIndex((x) => x.id === r.id)
+    if (i < 0) {
+      out.push(r)
+      continue
+    }
+    const prev = out[i]
+    const dt = (msOf(prev.enqueuedAt) || 0) - (msOf(r.enqueuedAt) || 0)
+    // Two rows stamped in the same millisecond (a repeat asked for the moment the failure was
+    // seen) are separated by which of them is STILL ALIVE: the last word about a piece the
+    // owner asked for again is the row a worker can still take, never the one it broke on.
+    out[i] = dt > 0 || (dt === 0 && (live(prev) || !live(r))) ? prev : r
+  }
+  return out
+}
+
+/**
+ * batchItemsOf(rows, batchId, decisions) → the pieces of ONE batch, deduped and in order.
+ * Exported for the read model, which draws exactly this list.
+ *
+ * @param {object[]} rows every queue row (requests may be among them; they are not pieces)
+ * @param {string} batchId
+ * @returns {object[]}
+ */
+export function batchItemsOf(rows, batchId) {
+  const all = Array.isArray(rows) ? rows : []
+  return latestRowPerId(all.filter((r) => r && r.batchId === batchId && !isBatchParent(r))).sort(compareBatchItems)
+}
+
+/**
+ * batchHeldOf(rows) → the ids of the waiting pieces that MAY NOT be handed out right now,
+ * because it is not their turn. At most one piece of a batch is ever left out of this list.
+ *
+ * WHY IT NAMES THE WITHHELD ONES RATHER THAN THE TURN. A piece whose request row is not (yet)
+ * in the queue is deliberately NOT governed by this rule: the door writes the request LAST, so
+ * a half-written batch reads as loose work a person can simply run — and a rule that listed
+ * «the turns» would have quietly frozen every such piece forever. Silence here means «this is
+ * ordinary work», which is the safe meaning of the two.
+ *
+ * PURE, and the SINGLE place the rule lives. The reference backend keeps the promise by
+ * skipping the pieces named here; the durable one by holding every piece at the queue and
+ * releasing the ones NOT named. Two mechanisms, one sentence — which is why the contract suite
+ * asserts the sentence rather than either mechanism.
+ *
+ * @param {object[]} rows every queue row, requests included
+ * @returns {string[]}
+ */
+export function batchHeldOf(rows) {
+  const all = Array.isArray(rows) ? rows : []
+  const held = []
+  for (const req of all.filter(isBatchParent)) {
+    const batchId = req.batchId || req.id
+    const { skipped, cancelled } = batchDecisionsOf(req)
+    const items = batchItemsOf(all, batchId).filter((r) => !skipped.includes(r.id))
+    const waiting = items.filter((r) => r.status === 'queued')
+    // AN ABANDONED ASSEMBLY HANDS OUT NOTHING, ever again. Its unstarted pieces are taken out
+    // of the queue by the door that recorded the word; this is the belt to that braces.
+    // A PIECE UNDER WAY holds the whole assembly — one worker, one piece at a time.
+    // A BROKEN PIECE STOPS IT and asks its owner: nothing is repeated by itself, so the rest
+    // stays withheld until he says skip, repeat or cancel.
+    const stopped =
+      cancelled || items.some((r) => r.status === 'claimed') || items.some((r) => r.status === 'failed')
+    for (let i = 0; i < waiting.length; i += 1) {
+      if (stopped || i > 0) held.push(waiting[i].id)
+    }
+  }
+  return held
+}
+
+/**
+ * batchWorkerOf(rows, batchId, exceptId) → the worker this assembly is pinned to, or null.
+ *
+ * The pieces of one batch belong to ONE worker («один работник, по одному за раз»), and which
+ * worker that is only becomes known when the first piece is routed. So it is not stored: it is
+ * read back off the pieces themselves — the last one that named an executor.
+ *
+ * `exceptId` is the piece being routed RIGHT NOW, and passing it is not optional politeness: a
+ * task is checked out by the daemon before a worker is chosen for it, so the row of the piece
+ * in flight already names an executor — the daemon itself — and reading that back as «the
+ * assembly's worker» would answer the question with the question.
+ *
+ * @param {object[]} rows
+ * @param {string} batchId
+ * @param {string} [exceptId]
+ * @returns {string|null}
+ */
+export function batchWorkerOf(rows, batchId, exceptId) {
+  if (!batchId) return null
+  const items = batchItemsOf(rows, batchId).filter((r) => r.id !== exceptId)
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (typeof items[i].workerId === 'string' && items[i].workerId !== '') return items[i].workerId
+  }
+  return null
 }
 
 /**
@@ -412,6 +600,20 @@ export function validateTask(task) {
     }
     if (task.data.batch !== undefined && !BATCH_ROLES.includes(task.data.batch)) {
       throw new InvalidTaskError(`task "${task.id}" has invalid data.batch "${task.data.batch}"`)
+    }
+    // THE OWNER'S WORD RIDES ON THE REQUEST ROW AND NOWHERE ELSE. A piece carrying «cancelled»
+    // would be a second place to look for the same decision, and the two would disagree the
+    // first time either moved.
+    if ((task.data.skipped !== undefined || task.data.cancelled !== undefined) && !isBatchParent(task)) {
+      throw new InvalidTaskError(`task "${task.id}" carries a batch decision but is not a batch request`)
+    }
+    if (task.data.skipped !== undefined) {
+      if (!Array.isArray(task.data.skipped) || task.data.skipped.some((x) => typeof x !== 'string' || !TASK_BATCH_ID_RE.test(x))) {
+        throw new InvalidTaskError(`task "${task.id}" data.skipped must be a list of item ids`)
+      }
+    }
+    if (task.data.cancelled !== undefined && typeof task.data.cancelled !== 'boolean') {
+      throw new InvalidTaskError(`task "${task.id}" data.cancelled must be a boolean`)
     }
   }
 
@@ -574,10 +776,16 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     // lanes:[] → nothing eligible, return null WITHOUT mutating anything.
     if (Array.isArray(lanes) && lanes.length === 0) return null
     const laneSet = Array.isArray(lanes) ? new Set(lanes) : null
+    // WHOSE TURN IS IT. Computed from this backend's own rows, by the rule that lives in one
+    // place for the whole product: a piece of a batch waits while another piece of the SAME
+    // batch is under way, while a broken one is waiting for its owner's word, and after he has
+    // abandoned the assembly. Work of every other kind is untouched by it.
+    const held = batchHeldOf([...records.values()].map(row))
 
     let best = null
     for (const rec of records.values()) {
       if (rec.status !== 'queued') continue
+      if (held.includes(rec.task.id)) continue
       // THE REQUEST OF A BATCH IS NOT WORK. Handing it to a worker would dispatch «разгреби
       // мелочь перед демо» as a task of its own, in parallel with the very items it was
       // broken into. Skipped BEFORE the ordering so no priority and no arrival time can
@@ -618,6 +826,39 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     const rec = records.get(taskId)
     if (!rec || rec.status !== 'claimed') return false
     rec.workerId = workerId ?? null
+    return true
+  }
+
+  /**
+   * resolveBatch(batchId, {skip, cancel}) — write down the OWNER'S WORD about a stopped
+   * assembly, and make it take effect. Returns false when no such request row exists.
+   *
+   * `skip` names the piece he chose to leave out: it is remembered on the request row, stops
+   * holding the assembly, and the next piece becomes the turn. `cancel` abandons the assembly:
+   * the word is remembered AND the pieces nobody has started are taken out of the queue — a
+   * cancelled batch whose pieces went on sitting in «в очереди» would be a counter that never
+   * goes down. Work that already produced is never touched: what is closed stays closed.
+   */
+  async function resolveBatch(batchId, { skip, cancel } = {}) {
+    const rec = [...records.values()].find(
+      (r) => isBatchParent(r.task) && (r.task.batchId || r.task.id) === batchId,
+    )
+    if (!rec) return false
+    const current = batchDecisionsOf(rec.task)
+    const data = { ...(rec.task.data || {}) }
+    if (typeof skip === 'string' && skip !== '') {
+      data.skipped = current.skipped.includes(skip) ? current.skipped : [...current.skipped, skip]
+    }
+    if (cancel === true) data.cancelled = true
+    rec.task = { ...rec.task, data }
+    if (cancel === true) {
+      for (const r of records.values()) {
+        if (r.task.batchId !== batchId || isBatchParent(r.task)) continue
+        if (r.status !== 'queued') continue
+        r.status = 'failed'
+        r.failure_reason = 'manual'
+      }
+    }
     return true
   }
 
@@ -678,7 +919,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, complete, fail, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, complete, fail, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -980,6 +1221,164 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       // ...and a request that names no batch is not a request at all
       await expect(q.enqueue({ ...parent('B-6'), batchId: undefined })).rejects.toThrow(/batchId/)
       expect(await q.list({})).toHaveLength(1)
+    })
+
+    // ── ONE PIECE AT A TIME, AND NOTHING HAPPENS BY ITSELF ──
+    //
+    // The cases below assert the PROMISE, not the mechanism. The reference backend keeps the
+    // pieces of a batch in order by skipping the ones whose turn it is not; the durable one by
+    // holding every piece at the queue and releasing exactly one. A backend that finds a third
+    // way is a conforming backend — one that hands out two pieces of an assembly at once is
+    // not, whatever it does inside.
+
+    /** A piece of a batch: ordinary work in every respect but its kinship. */
+    const piece = (batchId, n, over = {}) => ({
+      id: `${batchId}-${n}`,
+      source: 'roster',
+      title: `кусок ${n}`,
+      lane: 'prod',
+      batchId,
+      ...over,
+    })
+
+    it('while a piece is under way, NO other piece of the same batch is handed to anybody', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-7'))
+      await q.enqueue(piece('B-7', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-7', 2))
+
+      const first = await q.claimNext('w1', {})
+      expect(first.id).toBe('B-7-1')
+      // not to this worker, not to another one, not at any priority: the assembly is busy
+      expect(await q.claimNext('w2', {})).toBeNull()
+
+      // and the second piece is not lost — it is waiting, visibly, in the queue
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'B-7-2').status).toBe('queued')
+    })
+
+    it('the next piece is handed out once the previous one produced — in the order they were asked for', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-8'))
+      await q.enqueue(piece('B-8', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-8', 2))
+
+      expect((await q.claimNext('w1', {})).id).toBe('B-8-1')
+      await q.complete('B-8-1', { receiptRef: 'reverify:one' })
+      expect((await q.claimNext('w1', {})).id).toBe('B-8-2')
+    })
+
+    /**
+     * A BATCH OCCUPIES ONE WORKER, NEVER THE QUEUE. The rule is about the pieces of ONE
+     * assembly; anything else waiting is claimed exactly as it always was — otherwise a long
+     * batch would be a way for one request to stop the whole machine.
+     */
+    it('a batch under way does not stop the queue: other work is claimed beside it', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-9'))
+      await q.enqueue(piece('B-9', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-9', 2))
+      c.advance(10)
+      await q.enqueue(backlog({ id: 'BL-beside' }))
+
+      expect((await q.claimNext('w1', {})).id).toBe('B-9-1')
+      // the SECOND worker gets the ordinary task — not the batch's next piece
+      expect((await q.claimNext('w2', {})).id).toBe('BL-beside')
+      expect(await q.claimNext('w3', {})).toBeNull()
+    })
+
+    /**
+     * THE LOOP OF 12.08.2026, FORBIDDEN BY CONTRACT. A broken piece stopped nothing and was
+     * simply run again — three live sessions on one task, a burnt subscription and an empty
+     * board. Here a failure STOPS the assembly and waits for the owner: claim after claim
+     * after claim, the queue hands out nothing of that batch and never repeats the piece.
+     */
+    it('a broken piece stops the assembly, and no amount of claiming repeats it or moves on', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-10'))
+      await q.enqueue(piece('B-10', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-10', 2))
+
+      expect((await q.claimNext('w1', {})).id).toBe('B-10-1')
+      await q.fail('B-10-1', 'tests_red')
+
+      for (let i = 0; i < 3; i += 1) expect(await q.claimNext('w1', {})).toBeNull()
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'B-10-1' && r.status === 'failed')).toBeTruthy()
+      expect(rows.find((r) => r.id === 'B-10-2').status).toBe('queued')
+    })
+
+    it('«пропустить» is the owner\'s word, and it is what lets the assembly go on', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-11'))
+      await q.enqueue(piece('B-11', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-11', 2))
+
+      await q.claimNext('w1', {})
+      await q.fail('B-11-1', 'agent_error')
+      expect(await q.claimNext('w1', {})).toBeNull() // stopped until a person says something
+
+      expect(await q.resolveBatch('B-11', { skip: 'B-11-1' })).toBe(true)
+      expect((await q.claimNext('w1', {})).id).toBe('B-11-2')
+
+      // the word is REMEMBERED on the request row — a skip that had to be repeated after a
+      // restart would be a decision the machine forgot the owner ever made
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'B-11').data.skipped).toEqual(['B-11-1'])
+    })
+
+    it('«повторить» is the owner\'s word too: the SAME piece goes back into its batch', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-12'))
+      await q.enqueue(piece('B-12', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-12', 2))
+
+      await q.claimNext('w1', {})
+      await q.fail('B-12-1', 'tests_red')
+      c.advance(10)
+      await q.enqueue(piece('B-12', 1, { attempt: 2 })) // the repeat: the same id, the same batch
+
+      const again = await q.claimNext('w1', {})
+      expect(again.id).toBe('B-12-1') // the repeated piece, not the next one
+      expect(again.batchId).toBe('B-12')
+    })
+
+    it('«отменить» takes the unstarted pieces OUT of the queue — nobody is handed them, nothing counts them', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-13'))
+      await q.enqueue(piece('B-13', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-13', 2))
+
+      await q.claimNext('w1', {})
+      await q.complete('B-13-1', { receiptRef: 'reverify:one' }) // what produced stays produced
+      expect(await q.resolveBatch('B-13', { cancel: true })).toBe(true)
+
+      expect(await q.claimNext('w1', {})).toBeNull()
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'B-13').data.cancelled).toBe(true)
+      expect(rows.find((r) => r.id === 'B-13-2').status).not.toBe('queued')
+      const s = await q.stats()
+      expect(s.queued).toBe(0) // a counter an abandoned batch could never bring down
+    })
+
+    it('a word about a batch nobody asked for is answered, never thrown at', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      expect(await q.resolveBatch('B-does-not-exist', { cancel: true })).toBe(false)
     })
 
     it('higher priority is claimed first', async () => {
