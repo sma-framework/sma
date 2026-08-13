@@ -35,7 +35,7 @@
  *     reference and never moves.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { Readable } from 'node:stream'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -64,6 +64,7 @@ import {
   UnknownProjectError,
 } from '../src/config.mjs'
 import { createFrontServer, PENDING_ROUTES } from '../src/front/server.mjs'
+import { createDaemon } from '../src/main.mjs'
 
 let home: string
 let repo: string
@@ -1033,5 +1034,196 @@ describe('no path reaches the budget stop except the founder at the door', () =>
       .map((f) => f.slice(src.length + 1).split(/[/\\]/).join('/'))
       .sort()
     expect(callers).toEqual(['config.mjs', 'front/server.mjs', 'main.mjs'])
+  })
+})
+
+/**
+ * WHICH TREE THE DAEMON READS AS «THE PROJECT» — the JOIN, not the calculation.
+ *
+ * The phase cycle resolves ONE expression — the connected project's folder, or the served tree
+ * when no project names one — and that single answer decides both which `.planning` a card
+ * reads and which tree a documentary stage is written into.
+ *
+ * It used to be the served tree alone, and the reasoning was sound in the abstract. On a real
+ * installation the two are not the same directory at all: the daemon serves one checkout while
+ * the phase documents live in a working folder beside it, so the window honestly listed ZERO
+ * phases while more than a dozen sat one directory away. A correct answer to a question nobody
+ * asked.
+ *
+ * NO PART CAN SEE THIS. The registry knows its entries; the derive reads whatever directory it
+ * is handed; the door asks for a directory. Each half is right on its own, so the mistake is
+ * visible only where they are joined — here, through the production root. Two trees are built,
+ * each carrying its OWN phase, and every case asks which of the two phases comes back out of
+ * the door.
+ *
+ * The second case also pins the fact behind the switcher, measured on a live daemon before it
+ * was written down: the registry is re-read on every call, so a project picked in the window
+ * moves the phase cycle on the VERY NEXT request. A config change needs no restart. (Changed
+ * CODE is the opposite and always will be — a running process never re-reads its own files.)
+ */
+describe('which tree the daemon reads as THE PROJECT', () => {
+  const TOKEN = 'c'.repeat(64)
+  const SERVED_PHASE = '01-the-served-tree'
+  const PICKED_PHASE = '02-the-picked-project'
+
+  let root: string
+  let served: string
+  let picked: string
+  let park: any
+  let savedConfigEnv: string | undefined
+
+  const mkReq = (method: string, url: string, body?: any) => {
+    const payload = body === undefined ? '' : JSON.stringify(body)
+    const req: any = Readable.from(payload ? [Buffer.from(payload, 'utf8')] : [])
+    req.method = method
+    req.url = url
+    req.headers = { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }
+    req.socket = { remoteAddress: '127.0.0.1' }
+    return req
+  }
+
+  const mkRes = () => {
+    const res: any = {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      body: '',
+      headersSent: false,
+      writeHead(code: number, headers: Record<string, string> = {}) {
+        res.statusCode = code
+        res.headers = { ...res.headers, ...headers }
+        res.headersSent = true
+        return res
+      },
+      end(chunk?: any) {
+        if (chunk != null) res.body += String(chunk)
+        return res
+      },
+    }
+    return res
+  }
+
+  /** One call against the SAME long-lived front — no restart between the cases, on purpose. */
+  const call = async (method: string, url: string, body?: any) => {
+    const res = mkRes()
+    await park.front.handle(mkReq(method, url, body), res)
+    return res
+  }
+
+  /** The phases the door names — the observable answer to «which tree is the project». */
+  const phaseIdsFromTheDoor = async () => {
+    const res = await call('GET', '/api/phase/index')
+    expect(res.statusCode, res.body).toBe(200)
+    return JSON.parse(res.body).phases.map((p: any) => p.id)
+  }
+
+  const seedPhase = (tree: string, phaseDir: string) => {
+    const dir = join(tree, '.planning', 'phases', phaseDir)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${phaseDir.slice(0, 2)}-01-PLAN.md`), '# a plan, so the phase is a real row\n', 'utf8')
+  }
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'sma-project-tree-'))
+    served = join(root, 'served')
+    picked = join(root, 'picked')
+    // TWO TREES, TWO DIFFERENT PHASES. Asserting a path would prove nothing: the bug answers a
+    // valid directory, just the wrong one, so the fixtures differ in what the door can NAME.
+    seedPhase(served, SERVED_PHASE)
+    seedPhase(picked, PICKED_PHASE)
+    // the folder the project watcher looks for, so a select does not log a degraded watch at a
+    // suite that is not about watching anything
+    mkdirSync(join(picked, '.claude', 'memory'), { recursive: true })
+
+    const configPath = join(root, 'daemon-config.json')
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        // a CLOSED port: the root is wired but never started, and nothing here asks the queue
+        queueUrl: 'postgres://127.0.0.1:1/sma_none',
+        bind: '127.0.0.1',
+        port: 7998,
+        token: TOKEN,
+        // the SERVED tree is pinned by the file, exactly as an operator pins one
+        repoDir: served,
+        dataDir: join(root, 'data'),
+        ledgerDir: join(root, 'ledger'),
+        projects: [
+          { id: 'no-folder', name: 'a project with no folder' },
+          { id: 'with-folder', name: 'a project with a folder', path: picked },
+        ],
+        activeProject: 'no-folder',
+        workers: [
+          {
+            id: 'max-1',
+            lane: 'prod',
+            provider: 'claude',
+            enabled: true,
+            account: { name: 'max-1', configDir: join(root, 'accounts', 'max-1') },
+          },
+        ],
+      }),
+      'utf8',
+    )
+    // THE ENV OVERRIDE IS NOT OPTIONAL. The select door reaches the real config module, whose
+    // write path resolves the operator's own `~/.sma-daemon/config.json` unless this points
+    // somewhere else — a test that forgot it would rewrite the machine's live daemon config.
+    savedConfigEnv = process.env.SMA_DAEMON_CONFIG
+    process.env.SMA_DAEMON_CONFIG = configPath
+
+    park = createDaemon() // the PRODUCTION factory, no overrides: the join is what is under test
+  })
+
+  afterAll(async () => {
+    try {
+      await park.stop() // stops the project watcher a select may have started
+    } catch {
+      /* best-effort: nothing was ever started, so a stop may refuse */
+    }
+    if (savedConfigEnv === undefined) delete process.env.SMA_DAEMON_CONFIG
+    else process.env.SMA_DAEMON_CONFIG = savedConfigEnv
+    try {
+      rmSync(root, { recursive: true, force: true })
+    } catch {
+      /* best-effort */
+    }
+  })
+
+  it('a project that names no folder leaves the SERVED tree answering — the fallback is intact', async () => {
+    const res = await call('POST', '/api/project/select', { id: 'no-folder' })
+    expect(res.statusCode).toBe(200)
+
+    expect(park.front.deps.phaseCycleDir()).toBe(served)
+    const ids = await phaseIdsFromTheDoor()
+    expect(ids).toContain(SERVED_PHASE)
+    expect(ids).not.toContain(PICKED_PHASE)
+  })
+
+  it('a project picked at the door aims the phase cycle INSIDE it, on the very next request', async () => {
+    // …and the request before it still reads the served tree, so the move is the switch's and
+    // not the order of the file
+    expect(await phaseIdsFromTheDoor()).toContain(SERVED_PHASE)
+
+    const res = await call('POST', '/api/project/select', { id: 'with-folder' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).activeProject).toBe('with-folder')
+
+    // SAME process, SAME front object, no restart in between: the registry is re-read per call
+    expect(park.front.deps.phaseCycleDir()).toBe(picked)
+    const ids = await phaseIdsFromTheDoor()
+    expect(ids).toEqual([PICKED_PHASE])
+    expect(ids).not.toContain(SERVED_PHASE)
+  })
+
+  it('the card and the documentary stage move TOGETHER — one decision, two places', async () => {
+    // The pair is already asserted to agree while both fall back. It is the SELECTED project
+    // that can pull them apart: a card reading the picked folder while a stage is written into
+    // the served tree would show work as never started while the daemon completes it.
+    expect((await call('POST', '/api/project/select', { id: 'with-folder' })).statusCode).toBe(200)
+    expect(park.front.deps.phaseCycleDir()).toBe(picked)
+    expect(park.tickDeps.projectDir()).toBe(picked)
+
+    expect((await call('POST', '/api/project/select', { id: 'no-folder' })).statusCode).toBe(200)
+    expect(park.front.deps.phaseCycleDir()).toBe(served)
+    expect(park.tickDeps.projectDir()).toBe(served)
   })
 })
