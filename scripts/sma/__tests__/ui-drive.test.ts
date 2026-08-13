@@ -32,6 +32,7 @@ import {
   WARNING,
   classify,
   dedupe,
+  isStreamClose,
   missingDriverMessage,
   parseSteps,
   renderCoverage,
@@ -223,5 +224,65 @@ describe('renderReceipt', () => {
   it('says so plainly when no steps were scripted', () => {
     const md = renderReceipt({ url: 'http://x', verdict: verdict([]) })
     expect(md).toContain('no steps were scripted')
+  })
+})
+
+/**
+ * A live-updates app holds a channel open for the life of its screen, and closing the page
+ * aborts it. Counting that as a failed request handed a permanent FAIL to exactly the apps
+ * that work — the tool's own failure class, turned inward (found by the live run of 13.08,
+ * where one screen collected 24 of them and the verdict said nothing about the screen).
+ */
+describe('isStreamClose — a stream ending with its page is a close, not a failure', () => {
+  it('forgives an aborted event stream, whatever its age', () => {
+    expect(isStreamClose({ error: 'net::ERR_ABORTED', resourceType: 'eventsource' })).toBe(true)
+  })
+
+  it('forgives an abort that arrived while the driver was closing the page', () => {
+    expect(isStreamClose({ error: 'net::ERR_ABORTED', resourceType: 'fetch', whileClosing: true })).toBe(true)
+  })
+
+  it('forgives an abort of a call that had been open longer than any ordinary one', () => {
+    expect(isStreamClose({ error: 'net::ERR_ABORTED', resourceType: 'fetch', ageMs: 9000 })).toBe(true)
+  })
+
+  it('does NOT forgive a short-lived aborted call — that one is still a defect', () => {
+    expect(isStreamClose({ error: 'net::ERR_ABORTED', resourceType: 'fetch', ageMs: 120 })).toBe(false)
+  })
+
+  it('never forgives an error that is not an abort, however long it lived', () => {
+    expect(isStreamClose({ error: 'net::ERR_CONNECTION_REFUSED', ageMs: 60000 })).toBe(false)
+    expect(isStreamClose({ error: 'net::ERR_NAME_NOT_RESOLVED', resourceType: 'eventsource' })).toBe(false)
+  })
+
+  it('keeps the closed stream out of the findings, and the real failure in', () => {
+    const findings = classify({
+      requestFailures: [
+        { method: 'GET', url: 'http://app/api/events', error: 'net::ERR_ABORTED', resourceType: 'eventsource' },
+        { method: 'GET', url: 'http://app/api/state', error: 'net::ERR_CONNECTION_REFUSED', resourceType: 'fetch' },
+      ],
+    })
+    const kinds = findings.map((f) => f.detail)
+    expect(kinds.some((d) => d.includes('/api/events'))).toBe(false)
+    expect(kinds.some((d) => d.includes('/api/state'))).toBe(true)
+    expect(findings.find((f) => f.detail.includes('/api/state'))?.severity).toBe(BLOCKER)
+  })
+
+  it('reports an unexplained abort as a warning — a cancel is not a broken product', () => {
+    const findings = classify({
+      requestFailures: [
+        { method: 'GET', url: 'http://app/api/memory/lint', error: 'net::ERR_ABORTED', resourceType: 'fetch', ageMs: 120 },
+      ],
+    })
+    expect(findings).toHaveLength(1)
+    expect(findings[0].severity).toBe(WARNING)
+    expect(findings[0].kind).toBe('request-cancelled')
+    expect(findings[0].detail).toContain('/api/memory/lint')
+  })
+
+  it('names what it forgave in the coverage, so the receipt hides nothing', () => {
+    const md = renderCoverage({ ran: true, touched: 3, total: 3, streamsClosed: 24 })
+    expect(md).toContain('24')
+    expect(md).toContain('CLOSE')
   })
 })

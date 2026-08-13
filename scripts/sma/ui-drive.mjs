@@ -34,6 +34,7 @@ import {
   SWEEP_CAP,
   VIEWPORTS,
   classify,
+  isStreamClose,
   missingDriverMessage,
   parseSteps,
   renderReceipt,
@@ -96,10 +97,28 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
     } catch (err) {
       deadControls.push({ name: name || '(unnamed control)', error: err.message.split('\n')[0] })
     }
-    if (page.url() !== url) await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {})
+    if (page.url() !== url) await open(page, url, 15000).catch(() => {})
   }
 
   return { touched, total: visible.length, skipped: Math.max(0, visible.length - touched - refused.length), refused }
+}
+
+/**
+ * open(page, target) — navigate, WITHOUT waiting for the network to fall silent.
+ *
+ * «networkidle» means «no connection for half a second», which an app that pushes live
+ * updates never achieves: its channel is open for as long as the screen is. Every open of
+ * such an app therefore timed out and was written down as a failed step — the tool declared
+ * broken exactly the apps that work hardest. So the wait is for the page to EXIST and to have
+ * painted something, and the stream is left alone to do its job.
+ */
+async function open(page, target, timeout = 20000) {
+  await page.goto(target, { waitUntil: 'domcontentloaded', timeout })
+  // A single-page app paints after its first answer arrives; wait for ink, not for silence.
+  await page
+    .waitForFunction(() => Boolean(document.body) && document.body.innerText.trim().length > 0, { timeout: 8000 })
+    .catch(() => {})
+  await page.waitForTimeout(400)
 }
 
 /** Screenshots are binaries: the run directory disowns them before the first capture. */
@@ -213,16 +232,40 @@ async function main() {
     }
   })()
 
+  // Pages the driver is deliberately shutting down. An abort that arrives while a page is
+  // closing is the CLOSE, and the receipt must be able to tell the two apart.
+  const closing = new WeakSet()
+
   /** Wire one page to the collectors, so no viewport observes less than another. */
   const watch = (page) => {
+    // When each request STARTED — a channel held open for the life of the screen is told
+    // apart from an ordinary call by how long it lived, not by its name.
+    const startedAt = new WeakMap()
+    page.on('request', (r) => startedAt.set(r, Date.now()))
     page.on('console', (m) => {
       if (m.type() === 'error') consoleErrors.push(m.text())
     })
     page.on('pageerror', (e) => pageErrors.push(e.message))
-    page.on('requestfailed', (r) => requestFailures.push({ method: r.method(), url: r.url(), error: r.failure()?.errorText }))
+    page.on('requestfailed', (r) => {
+      const began = startedAt.get(r)
+      requestFailures.push({
+        method: r.method(),
+        url: r.url(),
+        error: r.failure()?.errorText,
+        resourceType: typeof r.resourceType === 'function' ? r.resourceType() : undefined,
+        ageMs: typeof began === 'number' ? Date.now() - began : undefined,
+        whileClosing: closing.has(page),
+      })
+    })
     page.on('response', (r) => {
       if (r.status() >= 400) httpErrors.push({ status: r.status(), method: r.request().method(), url: r.url() })
     })
+  }
+
+  /** Close a page as an ANNOUNCED close, so the streams it was holding are not mourned. */
+  const closePage = async (page) => {
+    closing.add(page)
+    await page.close()
   }
 
   const capture = async (page, name) => {
@@ -241,7 +284,7 @@ async function main() {
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } })
       watch(page)
       try {
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 })
+        await open(page, url)
       } catch (err) {
         stepFailures.push({ step: `open ${url} at ${vp.name}`, error: err.message.split('\n')[0] })
       }
@@ -251,19 +294,19 @@ async function main() {
         .catch(() => null)
       if (box && box.scrollWidth > box.clientWidth + 1) overflows.push({ ...box, viewport: vp.name })
       await capture(page, `01-open-${vp.name}`)
-      await page.close()
+      await closePage(page)
     }
 
     // The scripted path is walked once, at desktop, where the operator's claim was made.
     if (parsed.steps.length) {
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
       watch(page)
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
+      await open(page, url).catch(() => {})
       let n = 1
       for (const step of parsed.steps) {
         const label = String(++n).padStart(2, '0')
         try {
-          if (step.verb === 'goto') await page.goto(new URL(step.arg, url).toString(), { waitUntil: 'networkidle', timeout: 20000 })
+          if (step.verb === 'goto') await open(page, new URL(step.arg, url).toString())
           else if (step.verb === 'click') await page.getByText(step.arg, { exact: false }).first().click({ timeout: 8000 })
           else if (step.verb === 'type') await page.fill(step.selector, step.text, { timeout: 8000 })
           else if (step.verb === 'wait') await page.waitForTimeout(step.ms)
@@ -278,7 +321,7 @@ async function main() {
           await capture(page, `${label}-FAILED`)
         }
       }
-      await page.close()
+      await closePage(page)
     }
 
     // The sweep runs LAST, on its own page: it presses things and navigates, and the
@@ -286,16 +329,20 @@ async function main() {
     if (!noSweep) {
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
       watch(page)
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
+      await open(page, url).catch(() => {})
       coverage = { ran: true, ...(await sweep(page, url, { deadControls, unnamedControls })) }
       await capture(page, '99-after-sweep')
-      await page.close()
+      await closePage(page)
     }
   } finally {
     await browser.close()
   }
 
   stampViewportSkips() // both paths — a declared skip is receipt material with or without a sweep
+  // What was NOT counted as a failure is named out loud: a tool that quietly forgives things
+  // is how a receipt starts meaning less than it says.
+  const streamsClosed = requestFailures.filter((f) => isStreamClose(f)).length
+  if (streamsClosed) coverage = { ...coverage, streamsClosed }
   const findings = classify(
     { consoleErrors, pageErrors, requestFailures, httpErrors, stepFailures, deadControls, unnamedControls, overflows },
     { origin }
