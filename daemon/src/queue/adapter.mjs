@@ -61,7 +61,7 @@
  *   touch(taskId)                 → refresh the liveness clock on a claimed task
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
- *   list(filter)                  → rows expose enqueuedAt/claimedAt/completedAt
+ *   list(filter)                  → rows expose enqueuedAt/claimedAt/leaseRenewedAt/completedAt
  *   stats()                       → per-status counts, one key per TASK_STATUSES entry
  *
  * FINISHED IS NOT ACCEPTED. `complete()` carries a receipt, and a receipt is the worker's
@@ -74,6 +74,15 @@
  * complete stamps completedAt — the raw material for post-pilot flow metrics (cycle
  * time, aging WIP). No dashboard in V5; recording them now is three fields, migrating
  * pilot data later would be a chore.
+ *
+ * A FOURTH ONE, BECAUSE «TAKEN» AND «STILL ALIVE» ARE TWO FACTS. `touch` renews the lease, and
+ * a durable backend renews it by restamping the very clock it recorded the claim on — so for as
+ * long as one field answered both questions, every running task reported a duration of about
+ * zero, refreshed every couple of minutes, while the work actually ran for an hour. `claimedAt`
+ * is now the moment the attempt in flight was taken and is never moved by a renewal;
+ * `leaseRenewedAt` is the renewal clock, and it is what a liveness sweep must read. Both are
+ * null while nothing holds the task. The contract suite asserts the difference on every backend
+ * — a backend that keeps answering both from one clock is not a conforming adapter.
  *
  * Node built-ins only (in fact none needed). `clock` is dependency-injected so the
  * liveness/expiry path is deterministic in tests. The contract suite reads the vitest
@@ -440,7 +449,15 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       storyPoints: rec.task.storyPoints,
       acceptance: rec.task.acceptance,
       enqueuedAt: rec.enqueuedAt,
+      // WHEN THE WORK WAS TAKEN, and — a DIFFERENT fact — when its lease was last renewed.
+      // A screen asking «how long has this been running» measures from the first, and a sweep
+      // asking «is this worker still alive» measures from the second. One field cannot answer
+      // both: a durable backend renews the lease by restamping its clock, so a shared field
+      // made every live task report a duration of about zero no matter how long it had run.
+      // Both are null while nothing holds the task — a waiting row has nothing to measure, and
+      // a zero there reads as «just started» rather than as «not started».
       claimedAt: rec.claimedAt,
+      leaseRenewedAt: rec.lastTouch ?? null,
       completedAt: rec.completedAt,
       failure_reason: rec.failure_reason,
     }, activeProject)
@@ -704,6 +721,75 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       c.advance(4000) // 8000 since claim, but only 4000 since touch
       const [r] = await q.list({})
       expect(r.status).toBe('claimed')
+    })
+
+    /**
+     * RENEWING THE LEASE MAY NEVER MOVE THE MOMENT THE WORK WAS TAKEN.
+     *
+     * The durable backend has no renewal call in its library, so it renews by restamping the
+     * job's own start clock — and that clock was ALSO the answer to «when was this taken». So
+     * a task that had been running for an hour reported a couple of minutes, then a couple of
+     * minutes again, forever: the number on the screen was not a measurement of anything. The
+     * two facts now live in two fields, and this case is the one that keeps them apart on
+     * every backend — a backend answering both from one clock fails here rather than on a
+     * screen.
+     */
+    it('a lease renewal moves leaseRenewedAt and NEVER claimedAt — «how long» is measured from the claim', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog())
+      await q.claimNext('w1', {})
+
+      const [claimed] = await q.list({})
+      expect(claimed.claimedAt).toBe(1000)
+      expect(claimed.leaseRenewedAt).toBe(1000)
+
+      c.advance(4000)
+      await q.touch('BL-96')
+
+      const [renewed] = await q.list({})
+      expect(renewed.status).toBe('claimed')
+      expect(renewed.claimedAt).toBe(1000) // the claim did not happen again
+      expect(renewed.leaseRenewedAt).toBe(5000) // only the lease clock moved
+    })
+
+    /**
+     * A row waiting for a worker has nothing to measure, and says so with a null rather than
+     * with a zero: a zero renders as «just started», which is a statement about work that is
+     * not happening.
+     */
+    it('a task that lost its lease and went back to the queue reports NO claim time and no renewal', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog())
+      await q.claimNext('w1', {})
+      c.advance(6000) // past the lease, no renewal
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('queued')
+      expect(r.claimedAt).toBeNull()
+      expect(r.leaseRenewedAt).toBeNull()
+    })
+
+    /**
+     * The claim stamp belongs to the ATTEMPT IN FLIGHT, not to the task's first ever claim: a
+     * second attempt that reported the first attempt's clock would say the work has been
+     * running since before it started.
+     */
+    it('an attempt claimed again after a requeue is measured from the NEW claim', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog())
+      await q.claimNext('w1', {})
+      c.advance(6000) // the lease expires, the task returns to the queue
+      c.advance(1000)
+      const again = await q.claimNext('w2', {})
+      expect(again.id).toBe('BL-96')
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('claimed')
+      expect(r.claimedAt).toBe(8000)
+      expect(r.leaseRenewedAt).toBe(8000)
     })
 
     it('assignWorker records the executing worker, and list() reports it', async () => {

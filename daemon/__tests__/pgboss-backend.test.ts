@@ -226,6 +226,22 @@ function makeFakeBackend({
       if (j && j.state === 'active') j.data = { ...(j.data || {}), workerId }
       return { rows: [] }
     }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('claimedAt')) {
+      // The claim-time stamp: written into the job payload, ONCE PER ATTEMPT. Modelled exactly
+      // as the statement is written — keyed by JOB id, scoped to active rows, and refusing to
+      // move a value that already belongs to the attempt in flight (the queue's own retry_count
+      // is what tells the two apart). A fake looser than its statement would let a renewal move
+      // the clock here and stay green.
+      const [jobId, claimedAt] = params
+      const j = jobs.get(String(jobId))
+      if (j && j.state === 'active') {
+        const d = j.data || {}
+        const retry = j.retry_count ?? 0
+        const sameAttempt = d.claimedAt != null && String(d.claimedAtRetry) === String(retry)
+        if (!sameAttempt) j.data = { ...d, claimedAt, claimedAtRetry: retry }
+      }
+      return { rows: [] }
+    }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('started_on')) {
       // touch(): the lease restamp. Keyed by JOB id (params[0]), not task id, and scoped to
       // active rows — the same shape the backend sends. Must be matched BEFORE the
@@ -358,6 +374,68 @@ describe('pg-boss backend — job-option contract', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].outcome).toBe('failed')
     expect(rows[0].failureReason).toBe('missing_access')
+  })
+})
+
+// ═══ the two clocks of a running task: when it was taken, and when it last said it lives ═════
+//
+// This backend has no renewal call in its library, so it renews a lease by restamping the job's
+// own start clock — and that clock used to be the ONLY answer to «when was this work taken».
+// Every live task therefore reported a duration of about zero, refreshed every couple of
+// minutes, while the work ran for an hour. The contract suite asserts the split on both
+// backends; these cases pin the mechanism THIS one uses, which is the payload write.
+
+describe('the claim time and the lease clock are two different writes', () => {
+  it('a renewal writes the LEASE only — the claim time in the payload is never touched', async () => {
+    const c = mkClock(1000)
+    const statements: string[] = []
+    const { boss, execSql, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000 })
+    const adapter = createPgBossQueue({
+      boss,
+      execSql: async (sql: string, params: any[]) => {
+        statements.push(sql)
+        return execSql(sql, params)
+      },
+      clock: c.clock,
+      expireMs: 60000,
+    })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('daemon', {})
+
+    const job = [...jobs.values()][0]
+    expect(job.data.claimedAt).toBe(1000) // the claim recorded in the payload, at the claim
+
+    c.advance(30000)
+    statements.length = 0
+    await adapter.touch('BL-196')
+
+    // The renewal's statements, named: the lease is restamped and the payload is not written.
+    expect(statements.some((s) => s.includes('started_on = now()'))).toBe(true)
+    expect(statements.some((s) => s.includes('claimedAt'))).toBe(false)
+    expect(job.data.claimedAt).toBe(1000) // unmoved by the renewal
+    expect(job.started_on).toBe(31000) // the lease clock did move
+
+    const [row] = await adapter.list({})
+    expect(row.claimedAt).toBe(1000) // «how long has this been running» is measured from here
+    expect(row.leaseRenewedAt).toBe(31000)
+  })
+
+  it('a row claimed BEFORE the claim time was recorded falls back to the lease clock, never to nothing', async () => {
+    const c = mkClock(1000)
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000 })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('daemon', {})
+    // The pre-existing row: an active job whose payload never carried a claim time, because it
+    // was fetched by the version that had only one clock. It states a real time — the one that
+    // version recorded — rather than an absence a screen would have to explain.
+    const job = [...jobs.values()][0]
+    delete job.data.claimedAt
+    delete job.data.claimedAtRetry
+
+    const [row] = await adapter.list({})
+    expect(row.claimedAt).toBe(job.started_on)
+    expect(row.claimedAt).not.toBeNull()
+    expect(row.leaseRenewedAt).toBe(job.started_on)
   })
 })
 

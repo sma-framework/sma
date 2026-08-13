@@ -405,6 +405,42 @@ export function createPgBossQueue({
     }
   }
 
+  /**
+   * stampClaimedAt(jobId) — record WHEN THIS ATTEMPT WAS TAKEN, beside the lease clock instead
+   * of on top of it.
+   *
+   * `started_on` is this backend's lease: the renewal has to restamp it, because the library
+   * offers no renewal call (see touch()). It was also the only answer to «when was this work
+   * taken» — so a task that had been running for an hour reported a couple of minutes, then a
+   * couple of minutes again, and the screen's duration was not a measurement of anything. The
+   * moment of the claim therefore rides in the job's own payload, written the way assignWorker
+   * already writes the executing worker: no new column, no schema migration over a queue the
+   * library owns.
+   *
+   * WRITTEN ONCE PER ATTEMPT, never twice. The condition refuses to touch a value that already
+   * belongs to the attempt in flight — a re-claim of a live attempt cannot move the clock a
+   * screen is measuring from — while a task that lost its lease and was fetched again gets the
+   * clock of the NEW attempt, which is what «идёт столько-то» means. `retry_count` is the
+   * queue's own attempt marker, so the two agree by construction.
+   *
+   * FAIL-OPEN: a database that refuses this write costs the row its exact claim time, never the
+   * claim — mapRow then falls back to the lease clock, which is what every row recorded before
+   * this existed carries.
+   */
+  async function stampClaimedAt(jobId) {
+    try {
+      await runSql(
+        `UPDATE pgboss.job
+            SET data = data || jsonb_build_object('claimedAt', $2::bigint, 'claimedAtRetry', retry_count)
+          WHERE id = $1 AND state = 'active'
+            AND (NOT (data ? 'claimedAt') OR (data->>'claimedAtRetry') IS DISTINCT FROM retry_count::text)`,
+        [jobId, now()],
+      )
+    } catch (err) {
+      log(`claim time not recorded for job ${jobId}: ${maskError(err)}`)
+    }
+  }
+
   async function claimNext(workerId, { lanes } = {}) {
     // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation.
     if (Array.isArray(lanes) && lanes.length === 0) return null
@@ -428,6 +464,9 @@ export function createPgBossQueue({
         const data = job.data || {}
         const retries = job.retrycount ?? job.retryCount ?? job.retry_count ?? 0
         const attempt = (data.attempt ?? 1) + retries
+        // The fetch above set the lease clock; this records the moment the work was taken, which
+        // the renewal must never be allowed to move (see stampClaimedAt).
+        await stampClaimedAt(job.id)
         // READY -> CLAIMED. The fetch above IS the claim (atomic in the queue), so this
         // cannot gate it — it is minted AFTER the fact, and a refusal is logged rather
         // than acted on: nothing here can un-fetch a job, and dropping a task the queue
@@ -484,6 +523,11 @@ export function createPgBossQueue({
    * The UPDATE rides `runSql`, the same seam list() and resolveActiveJob already use, so the
    * suite's injected execSql observes it and no second connection is ever opened. Scoped by
    * `state = 'active'` so a completed or failed job can never be resurrected by a late touch.
+   *
+   * IT WRITES THE LEASE AND NOTHING ELSE. `started_on` is the renewal clock alone now; the
+   * moment the work was taken lives in the payload (stampClaimedAt) precisely so this statement
+   * cannot move it. A renewal that also reset «how long has this been running» is what made
+   * every live task report about zero.
    */
   async function touch(taskId) {
     const job = await resolveActiveJob(taskId)
@@ -584,7 +628,15 @@ export function createPgBossQueue({
       storyPoints: data.storyPoints,
       acceptance: data.acceptance,
       enqueuedAt: r.created_on ?? null,
-      claimedAt: r.started_on ?? null,
+      // THE TWO CLOCKS, KEPT APART (see stampClaimedAt). `claimedAt` is the moment the attempt
+      // in flight was taken — read from the payload, and from the lease clock for every row
+      // claimed before that was recorded, so a pre-existing task states a real time rather than
+      // nothing. `leaseRenewedAt` is the renewal clock, which is what a liveness sweep reads.
+      // NOTHING HOLDS A ROW WITH NO LEASE CLOCK: a queued row keeps the payload's claim time
+      // from the attempt it lost, and reporting that would tell a screen that work nobody is
+      // doing has been running for forty minutes.
+      claimedAt: r.started_on == null ? null : (data.claimedAt ?? r.started_on),
+      leaseRenewedAt: r.started_on ?? null,
       completedAt: r.completed_on ?? null,
       failure_reason: output.reason ?? null,
     }

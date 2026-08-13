@@ -51,7 +51,10 @@ function makeFakeAdapter({ clock, ledger }: { clock: () => number; ledger?: any 
       if (r.attempt < (r.maxAttempts ?? 3)) {
         r.status = 'queued' // pg-boss auto-retry: same row back to the queue
         r.attempt += 1
+        // A row waiting for a worker holds neither clock: nothing has taken it and nothing is
+        // renewing anything.
         r.claimedAt = null
+        r.leaseRenewedAt = null
       } else {
         r.status = 'failed'
         r.failure_reason = reason
@@ -61,7 +64,9 @@ function makeFakeAdapter({ clock, ledger }: { clock: () => number; ledger?: any 
     async touch(id: string) {
       const r = recs.get(id)
       if (r && r.status === 'claimed') {
-        r.claimedAt = now()
+        // A renewal moves the LEASE clock and nothing else — the moment the work was taken is a
+        // different fact, and a fake that moved it too would let the sweep read either one.
+        r.leaseRenewedAt = now()
         return true
       }
       return false
@@ -115,6 +120,31 @@ describe('livenessSweep — durable live-path audit', () => {
     const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000 })
     expect(res.audited).toBe(1)
     expect(res.requeued).toBe(0)
+    const [row] = await adapter.list()
+    expect(row.status).toBe('claimed')
+  })
+
+  /**
+   * THE SWEEP READS THE RENEWAL CLOCK, NOT THE CLAIM CLOCK. A row now states both facts: when the
+   * attempt was taken and when its lease was last renewed. A long attempt is claimed once and
+   * renewed every couple of minutes, so measuring its life from the claim would declare it dead
+   * WHILE IT RUNS — the sweep kills no process, so the same task would be handed to a second
+   * worker and a third, each burning the subscription window, exactly the fault this file exists
+   * to prevent. It is asserted here because the two clocks only became separable now: before, the
+   * claim clock WAS the renewal clock and either read the same.
+   */
+  it('an attempt claimed hours ago but renewed a minute ago is alive — measured from the renewal', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ claimedAt: 1000, leaseRenewedAt: 1000 }))
+    c.advance(3 * 3600000) // three hours of real work
+    await adapter.touch('BL-1') // the tick renews the lease, as it does every couple of minutes
+    c.advance(60000) // a minute since the renewal — well inside the lease
+
+    const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000 })
+    expect(res.audited).toBe(1)
+    expect(res.requeued).toBe(0) // NOT declared dead while it is running
     const [row] = await adapter.list()
     expect(row.status).toBe('claimed')
   })

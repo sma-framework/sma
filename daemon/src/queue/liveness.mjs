@@ -63,7 +63,7 @@ function countNoProgress(attempts) {
  * A task is:
  *   - terminal (completed/failed) → not audited (no live-path obligation);
  *   - queued → OK (queued IS a durable live path);
- *   - active with fresh touch (now - claimedAt <= expireMs) → OK;
+ *   - active with a fresh renewal (now - leaseRenewedAt <= expireMs) → OK;
  *   - active with a STALE touch → no live path → adapter.fail(id, 'runtime_offline')
  *     (→ attempt row via the adapter + pg-boss auto-retry), counted as requeued, and
  *     counted as throttled when its cooldown (>= 2 no-progress runs) is non-zero.
@@ -86,8 +86,16 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
     audited += 1
     if (r.status !== 'claimed') continue // queued / retry = durable live path (OK)
 
-    const lastTouch = r.claimedAt ?? 0
-    if (now() - lastTouch <= expireMs) continue // active + fresh touch (OK)
+    // THE RENEWAL CLOCK, NOT THE CLAIM CLOCK. A row states both: when the attempt was taken and
+    // when its lease was last renewed. This sweep asks «has this worker gone silent», which only
+    // the renewal answers — measuring from the claim would declare every attempt that outlives
+    // one lease period dead WHILE IT RUNS, kill nothing, and hand the same task to a second
+    // worker and a third. That is the exact fault this file exists to catch, so it may not be
+    // the one this file causes. `claimedAt` remains the fallback for a backend that renews by
+    // restamping the same clock it claimed on — there the two are one value and either reads
+    // correctly.
+    const lastTouch = r.leaseRenewedAt ?? r.claimedAt ?? 0
+    if (now() - lastTouch <= expireMs) continue // active + fresh renewal (OK)
 
     // Stale active: the worker went silent — no durable live path. Requeue it.
     const prior = ledger && typeof ledger.readAttempts === 'function' ? ledger.readAttempts(r.id) : []
