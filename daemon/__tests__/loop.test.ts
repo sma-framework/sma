@@ -1815,3 +1815,132 @@ describe('a batch is dispatched one piece at a time, by one worker', () => {
     expect(third.idle).toBe(true) // the assembly is out of pieces; nothing invents another
   })
 })
+
+/**
+ * ═══════════ СРОЧНОЕ ВКЛИНИВАЕТСЯ МЕЖДУ КУСКАМИ, А НЕ ПОСРЕДИ КУСКА ═════════════════
+ *
+ * The owner's rule, in his words: an urgent inline task waits for the CURRENT piece to close,
+ * runs, and the worker goes back to the assembly. Two halves, and the second one is the one
+ * that is easy to lose: sessions are not torn open. A live attempt is never killed to make
+ * room for something louder — the only thing that ends a running session in this product is
+ * the founder's own «Перебить сейчас», and an arriving task is not that.
+ *
+ * The wedging itself is not new machinery: the queue already hands out the loudest waiting
+ * task, and a piece of a batch is ordinary work in every respect but its kinship. What these
+ * cases pin is that the two rules COMPOSE the way he asked for — which is precisely the kind
+ * of claim that is believed until someone runs it.
+ */
+describe('an urgent inline task wedges BETWEEN the pieces of a batch', () => {
+  const CODE_RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
+    reverify: GREEN_REVERIFY,
+  }
+
+  const request = (batchId: string) => ({
+    id: batchId,
+    source: 'roster',
+    title: 'разгреби мелочь перед демо',
+    lane: 'prod',
+    batchId,
+    data: { batch: 'parent' },
+  })
+  const piece = (batchId: string, n: number) => ({
+    id: `${batchId}-${n}`,
+    source: 'roster',
+    title: `кусок ${n}`,
+    lane: 'prod',
+    batchId,
+  })
+
+  /**
+   * A worker that does its work and, WHILE IT IS STILL RUNNING, lets something arrive in the
+   * queue behind it — the exit only happens once that has landed. That ordering is the whole
+   * point: «пришло во время куска», not «лежало заранее».
+   */
+  function spawnWithArrival(order: string[], arrive?: () => Promise<any>) {
+    const killed: string[] = []
+    let arrived = false // the founder types it ONCE, while the first piece is under way
+    const spawn = (spec: any) => {
+      order.push('spawn')
+      spec.onLine?.('stream line')
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      const finish = () => spec.onExit?.({ code: 0, signal: null })
+      if (arrive && !arrived) {
+        arrived = true
+        void arrive().then(finish)
+      } else finish()
+      return { pid: 7, kill: () => killed.push('kill') }
+    }
+    return { spawn, killed }
+  }
+
+  async function batchQueue(batchId: string, c: any) {
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(request(batchId))
+    await adapter.enqueue(piece(batchId, 1))
+    c.advance(10)
+    await adapter.enqueue(piece(batchId, 2))
+    return adapter
+  }
+
+  it('urgent → the order of hand-out is «кусок 1 → срочное → кусок 2», and the live piece is never killed', async () => {
+    const c = mkClock()
+    const adapter = await batchQueue('B-C', c)
+    const order: string[] = []
+    const { spawn, killed } = spawnWithArrival(order, async () => {
+      c.advance(5)
+      // the founder types something urgent while the first piece is under way
+      return adapter.enqueue(backlogTask({ id: 'BL-urgent', priority: 9 }))
+    })
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: CODE_RESPONSES, spawnWorker: spawn })
+
+    const one = await tick(deps)
+    expect(one.completed).toBe('B-C-1') // the piece was NOT abandoned for the louder task
+    expect(killed).toEqual([]) // and nothing interrupted it — no session was torn open
+
+    const two = await tick(deps)
+    expect(two.completed).toBe('BL-urgent') // the urgent task went first, between the pieces
+
+    const three = await tick(deps)
+    expect(three.completed).toBe('B-C-2') // and the worker came back to the assembly
+  })
+
+  it('an inline task that is NOT urgent does not push the pieces aside', async () => {
+    const c = mkClock()
+    const adapter = await batchQueue('B-D', c)
+    const order: string[] = []
+    const { spawn } = spawnWithArrival(order, async () => {
+      c.advance(5)
+      return adapter.enqueue(backlogTask({ id: 'BL-ordinary' })) // priority 0, arrived last
+    })
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: CODE_RESPONSES, spawnWorker: spawn })
+
+    expect((await tick(deps)).completed).toBe('B-D-1')
+    expect((await tick(deps)).completed).toBe('B-D-2') // the assembly keeps its place in line
+    expect((await tick(deps)).completed).toBe('BL-ordinary')
+  })
+
+  it('after the wedge the assembly is carried to its end — every piece produced, nothing left to hand out', async () => {
+    const c = mkClock()
+    const adapter = await batchQueue('B-E', c)
+    const order: string[] = []
+    const { spawn } = spawnWithArrival(order, async () => {
+      c.advance(5)
+      return adapter.enqueue(backlogTask({ id: 'BL-urgent-2', priority: 9 }))
+    })
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: CODE_RESPONSES, spawnWorker: spawn })
+
+    await tick(deps)
+    await tick(deps)
+    await tick(deps)
+    expect((await tick(deps)).idle).toBe(true)
+
+    const rows = await adapter.list({})
+    const pieces = rows.filter((r: any) => r.batchId === 'B-E' && r.id !== 'B-E')
+    expect(pieces).toHaveLength(2)
+    // both produced and now owe a person a word — the assembly is what he accepts, not each
+    // piece separately (which is also why a piece waiting for him never stalls the next one)
+    expect(pieces.every((r: any) => r.status === 'awaiting_approval')).toBe(true)
+  })
+})
