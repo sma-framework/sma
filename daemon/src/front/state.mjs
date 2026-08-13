@@ -1670,6 +1670,14 @@ export async function deriveState(deps = {}) {
       priority: Number(r.priority) || 0,
       status: r.status,
       position: i + 1,
+      // WHEN THE WORK WAS TAKEN, and — a different fact — when its lease was last renewed. The
+      // queue keeps the two apart now (a renewal used to move both, so every running task
+      // reported a duration of about zero), and a screen that measures «идёт столько-то» has to
+      // read the first. Carried as NULL rather than as a zero wherever the queue does not know:
+      // a row waiting for a worker has nothing to measure, and a zero there renders as «just
+      // started», which is a statement about work that is not happening.
+      claimedAt: r.claimedAt ?? null,
+      leaseRenewedAt: r.leaseRenewedAt ?? null,
     }
     if (ageMs > agingMs) out.agedForHours = Math.floor(ageMs / HOUR_MS) // «застряла» signal
     return out
@@ -1707,7 +1715,10 @@ export async function deriveState(deps = {}) {
     const open = isOpen(bar, () => now)
 
     const active = claimedRows.find((r) => r.workerId === w.id) || null
-    const touchMs = active ? toMs(active.lastTouch ?? active.claimedAt) : NaN
+    // The sign of life is the RENEWAL clock: «событие N секунд назад» is a statement about the
+    // last time the worker said it lives, not about when it started. The two older names stay as
+    // the fallback for a reading that carries only one of them.
+    const touchMs = active ? toMs(active.leaseRenewedAt ?? active.lastTouch ?? active.claimedAt) : NaN
     const pulseAgeSec = Number.isFinite(touchMs) ? Math.max(0, Math.round((now - touchMs) / 1000)) : undefined
     const presence = derivePresence({ windowOpen: open, hasActiveTask: !!active, pulseAgeSec })
 
@@ -1721,6 +1732,13 @@ export async function deriveState(deps = {}) {
             taskTitle: active.title ?? null,
             project: projectOf(active, activeProject),
             branch: `wt/${active.id}`,
+            // WHEN THIS WORK WAS TAKEN — and it rides HERE because the roster is the only list
+            // that names a claimed task: queue[] carries rows waiting for a worker and awaiting[]
+            // rows waiting for a person, so a screen building a running row builds it from the
+            // worker holding it. A claim time that reached only the task lists would be computed
+            // and delivered to nobody. Null while the queue cannot say; the renewal clock is
+            // already stated beside it as pulseAgeSec.
+            taskClaimedAt: active.claimedAt ?? null,
           }
         : {}),
       window: bar,
