@@ -56,6 +56,7 @@ import {
   SEARCH_QUERY_CAP,
   SEARCH_SCREENS,
 } from '../src/front/search.mjs'
+import { readAttemptLog } from '../src/queue/attempt-ledger.mjs'
 
 /**
  * THE SECRET. It is planted in every source, in the field a careless projector would reach
@@ -666,7 +667,15 @@ describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR'
     expect(res.statusCode).toBe(200)
     // …and nothing to roll up either: null, never a row of zeroes that a card would render
     // as «инструментов 0» about an attempt that has simply not printed anything yet
-    expect(JSON.parse(res.body)).toEqual({ lines: [], truncated: false, note: null, digest: null })
+    expect(JSON.parse(res.body)).toEqual({
+      lines: [],
+      truncated: false,
+      note: null,
+      digest: null,
+      // nobody in the session: an empty list of voices, not a lone executor row
+      roles: [],
+      rolesMore: 0,
+    })
   })
 
   it('a ledger that THROWS is an empty log, never a 500', async () => {
@@ -682,6 +691,79 @@ describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR'
     expect(JSON.parse(res.body).lines).toEqual([])
   })
 })
+
+/**
+ * WHO WAS IN THE SESSION REACHES THE CARD — and the case is driven through the REAL reader.
+ *
+ * The fake ledger above answers whatever a case hands it, which is right for testing a door and
+ * wrong for testing a WIRE: a fake that returned `roles` would prove only that the door forwards
+ * a field the fake invented. So these cases store real NDJSON rows and let the production
+ * `readAttemptLog` roll them up, over a fake filesystem. Everything between the stored line and
+ * the bytes of the answer is the shipped code.
+ */
+describe('GET /api/attempt/:id — WHO WAS IN THE SESSION REACHES THE CARD', () => {
+  const at = (sec: number) => `2026-08-13T10:00:${String(sec).padStart(2, '0')}.000Z`
+
+  /** The log of one attempt as it really sits on disk: one JSON row per line. */
+  const LOG = [
+    { ts: at(0), line: '{}', summary: [{ kind: 'session', detail: 'инструментов: 40 · модель: opus-5' }] },
+    { ts: at(4), line: '{}', summary: [{ kind: 'handoff', tool: 'Task', subagent: 'explorer', detail: 'разобрать модуль' }] },
+    { ts: at(5), line: '{}', subagent: true, parentId: 'toolu_01OPAQUEPARENT', summary: [{ kind: 'tool', tool: 'Grep', detail: 'derive' }] },
+    { ts: at(18), line: '{}', subagent: true, parentId: 'toolu_01OPAQUEPARENT', summary: [{ kind: 'text', detail: 'нашёл три места' }] },
+    { ts: at(40), line: '{}', summary: [{ kind: 'tool', tool: 'Edit', detail: '/repo/state.mjs' }] },
+  ]
+
+  /** A front whose ledger is the PRODUCTION reader over an in-memory log file. */
+  function withRealLedger(rows: object[] = LOG) {
+    const text = rows.map((r) => JSON.stringify(r)).join('\n')
+    const fsImpl = { readFileSync: () => text }
+    return mkFront({
+      ledger: {
+        readAttemptLog: ({ attemptId, tail }: any) => readAttemptLog({ dir: '/ledger', attemptId, tail, fsImpl }),
+      },
+    }).front
+  }
+
+  it('the executor is first and the delegation is its own row — through the real roll-up', async () => {
+    const body = JSON.parse((await call(withRealLedger(), { url: '/api/attempt/R-9%231' })).body)
+
+    expect(body.roles.map((r: any) => r.role)).toEqual(['executor', 'subagent'])
+    expect(body.roles[0]).toMatchObject({ model: 'opus-5', steps: 3, durationMs: 40_000, detail: 'Edit · /repo/state.mjs' })
+    expect(body.roles[1]).toMatchObject({ name: 'explorer', steps: 2, durationMs: 13_000, detail: 'нашёл три места' })
+    expect(body.rolesMore).toBe(0)
+    // the opaque identifier the delegation was recognised by does not leave the process
+    expect(res_body_has_no_parent_id(body)).toBe(true)
+  })
+
+  it('THE VOICES ARE COUNTED OVER THE WHOLE ATTEMPT, not over the window that fits on screen', async () => {
+    // The one-line tail contains NEITHER the delegation nor the executor's first mark. Counted
+    // over the window, the tree would lose a subagent entirely and the executor would report a
+    // length measured from wherever the window happened to start.
+    const body = JSON.parse((await call(withRealLedger(), { url: '/api/attempt/R-9%231?tail=1' })).body)
+    expect(body.lines).toHaveLength(1)
+    expect(body.truncated).toBe(true)
+    expect(body.roles.map((r: any) => r.role)).toEqual(['executor', 'subagent'])
+    expect(body.roles[0].durationMs).toBe(40_000)
+    expect(body.roles[1]).toMatchObject({ name: 'explorer', steps: 2 })
+  })
+
+  it('a length nothing measured is null in the answer, and the answer does not fall over', async () => {
+    const front = withRealLedger([
+      { ts: at(0), line: '{}', summary: [{ kind: 'handoff', tool: 'Task', subagent: 'checker' }] },
+      { ts: at(1), line: '{}', subagent: true, parentId: 'toolu_ONE', summary: [{ kind: 'text', detail: 'готово' }] },
+    ])
+    const res = await call(front, { url: '/api/attempt/R-9%231' })
+    expect(res.statusCode).toBe(200)
+    const sub = JSON.parse(res.body).roles[1]
+    // one mark is not two: null in the field, never a zero the card would print as «0 с»
+    expect(sub).toMatchObject({ role: 'subagent', name: 'checker', durationMs: null })
+  })
+})
+
+/** The parent id is opaque and must not appear anywhere in the answer — checked on the bytes. */
+function res_body_has_no_parent_id(body: unknown): boolean {
+  return !JSON.stringify(body).includes('toolu_')
+}
 
 // ═══════════════ NO SESSION IDENTIFIER TRAVELS ═══════════════
 

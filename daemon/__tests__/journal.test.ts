@@ -49,10 +49,12 @@ import {
   parseApproachNote,
   attemptLogTail,
   attemptDigest,
+  attemptRoles,
   ATTEMPT_LOG_LINE_CAP,
   ATTEMPT_LOG_TAIL_DEFAULT,
   ATTEMPT_LOG_TAIL_MAX,
   ATTEMPT_DIGEST_LIST_CAP,
+  ATTEMPT_ROLES_CAP,
 } from '../src/front/journal.mjs'
 import {
   appendJournalEntry,
@@ -928,6 +930,10 @@ describe('the live attempt log — every line, appended as it arrives', () => {
       // …and nothing to roll up. A digest of no rows is null and never a row of zeroes,
       // which would read as «инструментов 0» about an attempt whose log is simply not there
       digest: null,
+      // nobody in the session either: an EMPTY list of voices, never a lone executor row a card
+      // would draw as «работал один» about a session that has not printed a line yet
+      roles: [],
+      rolesMore: 0,
     })
 
     const attemptId = 'BL-9#6'
@@ -1137,6 +1143,121 @@ describe('attemptDigest — what the whole attempt added up to', () => {
   it('never throws, whatever the rows are', () => {
     for (const bad of [null, undefined, 'nonsense', 42, [null], [{ summary: 'no' }], [{ summary: [null, 7] }]] as any[]) {
       expect(() => attemptDigest(bad)).not.toThrow()
+    }
+  })
+})
+
+/**
+ * КТО БЫЛ В СЕССИИ — the tree the design draws and the engine had nothing to draw it from.
+ *
+ * The law under test: an attempt is not one voice. The executor works and hands pieces of the
+ * work to subagents, and the transcript already carries both facts — the delegation mark on each
+ * line and the name spoken at the moment the executor starts one. They were computed and thrown
+ * away. So this counts them, and every case here is about the same discipline as the digest
+ * beside it: what the rows do not say is `null` here, never a zero and never a guess.
+ */
+describe('attemptRoles — who was in the session, and what each one did', () => {
+  const at = (sec: number) => `2026-08-13T10:0${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}.000Z`
+
+  it('the EXECUTOR is first, the subagent is its own row, and each is measured on its own lines', () => {
+    const { list, more } = attemptRoles([
+      { ts: at(0), line: '{}', summary: [{ kind: 'session', detail: 'инструментов: 40 · модель: opus-5' }] },
+      { ts: at(5), line: '{}', summary: [{ kind: 'handoff', tool: 'Task', subagent: 'explorer', detail: 'разобрать модуль' }] },
+      { ts: at(6), line: '{}', subagent: true, parentId: 'toolu_AAA', summary: [{ kind: 'tool', tool: 'Grep', detail: 'derive' }] },
+      { ts: at(20), line: '{}', subagent: true, parentId: 'toolu_AAA', summary: [{ kind: 'text', detail: 'нашёл три места' }] },
+      { ts: at(30), line: '{}', summary: [{ kind: 'tool', tool: 'Edit', detail: '/repo/state.mjs' }] },
+    ])
+
+    expect(more).toBe(0)
+    expect(list[0]).toEqual({
+      role: 'executor',
+      // this reader knows the attempt's lines, not which worker holds the task — the roster and
+      // the task door are where a worker has a name
+      name: null,
+      model: 'opus-5',
+      steps: 3,
+      durationMs: 30_000, // its OWN lines: from the first to the last one it spoke
+      detail: 'Edit · /repo/state.mjs',
+    })
+    expect(list[1]).toEqual({
+      role: 'subagent',
+      name: 'explorer', // the name the executor handed out, matched to the delegation that spoke
+      model: null,
+      steps: 2,
+      durationMs: 14_000, // measured on ITS lines, not on the attempt's
+      detail: 'нашёл три места',
+    })
+  })
+
+  it('a delegation with ONE line has NO length — one mark is not two', () => {
+    const [, sub] = attemptRoles([
+      { ts: at(0), line: '{}', summary: [{ kind: 'handoff', tool: 'Task', subagent: 'checker' }] },
+      { ts: at(1), line: '{}', subagent: true, parentId: 'toolu_X', summary: [{ kind: 'text', detail: 'готово' }] },
+    ]).list
+    // null, never 0: «нечего мерить» and «заняло нисколько» are different sentences, and only
+    // one of them is true
+    expect(sub).toMatchObject({ role: 'subagent', name: 'checker', durationMs: null, steps: 1 })
+  })
+
+  it('an unreadable timestamp is no length either, and nothing throws over it', () => {
+    const [exec] = attemptRoles([
+      { ts: 'не время', line: '{}', summary: [{ kind: 'tool', tool: 'Read', detail: '/a' }] },
+      { ts: 'тоже не время', line: '{}', summary: [{ kind: 'tool', tool: 'Read', detail: '/b' }] },
+    ]).list
+    expect(exec).toMatchObject({ role: 'executor', durationMs: null, steps: 2 })
+  })
+
+  it('WHEN THE COUNTS DISAGREE the surplus is stated, never paired up', () => {
+    // Two briefs handed out, one delegation heard from. The one that spoke takes the FIRST name
+    // (order is all that ties them — the tool-call id is not kept by the frame parse), and the
+    // other is reported as started with nothing else known about it.
+    const { list } = attemptRoles([
+      { ts: at(0), line: '{}', summary: [{ kind: 'handoff', tool: 'Task', subagent: 'первый', detail: 'бриф один' }] },
+      { ts: at(1), line: '{}', summary: [{ kind: 'handoff', tool: 'Task', subagent: 'второй', detail: 'бриф два' }] },
+      { ts: at(2), line: '{}', subagent: true, parentId: 'toolu_A', summary: [{ kind: 'text', detail: 'работаю' }] },
+      { ts: at(9), line: '{}', subagent: true, parentId: 'toolu_A', summary: [{ kind: 'text', detail: 'сделал' }] },
+    ])
+    expect(list.map((r: any) => [r.role, r.name, r.steps])).toEqual([
+      ['executor', null, 2],
+      ['subagent', 'первый', 2],
+      ['subagent', 'второй', 0], // started; its lines never arrived
+    ])
+    expect(list[2]).toMatchObject({ durationMs: null, detail: 'бриф два' })
+
+    // …and a delegation nobody named keeps NO name rather than being called «подагент 2»
+    const unnamed = attemptRoles([
+      { ts: at(0), line: '{}', subagent: true, parentId: 'toolu_Z', summary: [{ kind: 'text', detail: 'кто я' }] },
+    ]).list
+    expect(unnamed.map((r: any) => [r.role, r.name])).toEqual([
+      ['executor', null],
+      ['subagent', null],
+    ])
+  })
+
+  it('THE OPAQUE PARENT ID NEVER TRAVELS — the group is a length and a name, not an identifier', () => {
+    const { list } = attemptRoles([
+      { ts: at(0), line: '{}', subagent: true, parentId: 'toolu_01OPAQUEPARENT', summary: [{ kind: 'text', detail: 'x' }] },
+    ])
+    expect(JSON.stringify(list)).not.toContain('toolu_')
+  })
+
+  it('the list is capped and the overflow is stated', () => {
+    const rows = Array.from({ length: ATTEMPT_ROLES_CAP + 4 }, (_, i) => ({
+      ts: at(i),
+      line: '{}',
+      subagent: true,
+      parentId: `toolu_${i}`,
+      summary: [{ kind: 'text', detail: `голос ${i}` }],
+    }))
+    const { list, more } = attemptRoles(rows)
+    expect(list).toHaveLength(ATTEMPT_ROLES_CAP)
+    expect(more).toBe(5) // executor + 16 delegations = 17 voices; twelve travel
+  })
+
+  it('an empty log has nobody in it, and nothing throws on any input', () => {
+    expect(attemptRoles([])).toEqual({ list: [], more: 0 })
+    for (const bad of [null, undefined, 'nonsense', 42, [null], [{ summary: 'no' }], [{ summary: [null, 7] }]] as any[]) {
+      expect(() => attemptRoles(bad)).not.toThrow()
     }
   })
 })
