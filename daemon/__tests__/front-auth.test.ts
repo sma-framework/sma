@@ -138,7 +138,13 @@ const V54_SECTION_KEYS: Set<string> = (() => {
   const marker = '// ── the V5.4 growth (declared here, filled one at a time) ──'
   const start = src.indexOf(marker)
   if (start < 0) throw new Error('the V5.4 section marker is missing from server.mjs')
-  const section = src.slice(start, src.indexOf('\n})', start))
+  // The section ends where the NEXT section begins, or where the literal does. A later door
+  // declared under its own marker is not part of this one — without this the section would
+  // silently swallow every route ever added after it, and its size would stop meaning anything.
+  const literalEnd = src.indexOf('\n})', start)
+  const nextSection = src.indexOf('\n  // ──', start + marker.length)
+  const end = nextSection > 0 && nextSection < literalEnd ? nextSection : literalEnd
+  const section = src.slice(start, end)
   return new Set([...section.matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1]))
 })()
 
@@ -208,15 +214,17 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed FIFTY-FIVE-route table', () => {
+describe('server.mjs — the closed FIFTY-SIX-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
   // change again, that change is a declared re-freeze revision, not a routine edit. FILLING
   // a declared slot does not change it — that is the entire point of declaring them all at
   // once, and it is why no fill plan of the release has to come back and edit this line.
   // RE-FREEZE REVISION (phase «Двигатель», 11.08.2026): 53 of the V5.4 freeze
   // + POST /api/chat/stop (Стоп) + POST /api/redirect (руль бегущей задачи). Declared, not drifted.
-  it('the frozen table has EXACTLY fifty-five routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(55)
+  // RE-FREEZE REVISION (13.08.2026): + POST /api/batch — one request of the owner fans out
+  // into the work it names. A batch is a fact of the QUEUE, and something has to write it.
+  it('the frozen table has EXACTLY fifty-six routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(56)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
