@@ -32,11 +32,33 @@
  *   note?: string,              // return-with-comment text, <= 2000
  *   project?: string,           // V5.1: the project slug this task belongs to.
  *                               // Optional on the wire, ALWAYS present on a read row.
+ *   batchId?: string,           // the batch this row belongs to — see BATCH below
  *   forge?: {                   // REQUIRED iff lane==='forge', forbidden otherwise
  *     kind: 'agent'|'skill'|'mcp',
  *     description: string       // founder free text, <= 2000 — DATA, never instructions
  *   }
  * }
+ *
+ * ═══════════ A BATCH IS A FACT OF THE QUEUE, NEVER A GROUPING ON A SCREEN ═══════════
+ * One request of the owner («разгреби мелочь перед демо») fans out into N pieces of work and
+ * converges back into one assembly. Both halves of that sentence have to be true somewhere
+ * durable, or a screen drawing a batch would be drawing a word over ordinary tasks: kinship
+ * that lives only in a payload the front assembles is kinship two readers can disagree about.
+ *
+ * So the queue carries both halves and nothing else does:
+ *   - AN ITEM names its batch in `batchId`. It is ordinary work in every other respect —
+ *     claimed, run, completed and failed exactly like a task with no batch at all.
+ *   - THE REQUEST ITSELF is a row too, marked `data.batch === 'parent'` and carrying the same
+ *     `batchId` (its own id, so nothing has to hold two identifiers that could disagree).
+ *
+ * AND THE PARENT IS NEVER HANDED TO A WORKER. It is a record of what was asked, not a piece
+ * of work: `claimNext` may not return it on any ordering, and `stats()` does not count it as
+ * queued work — a row no worker will ever take, counted in the number beside «в очереди»,
+ * is a number that never goes down. Each backend keeps that promise its own way (the
+ * reference backend by refusing the record, the durable one by keeping parents out of the
+ * lane queues entirely), and the contract suite asserts the PROMISE rather than either
+ * mechanism. What holds an assembly open is computed by a reader from the items' statuses and
+ * is never stored — a stored one would be a second truth about the same five statuses.
  *
  * ═══════════════ V5.1: PROJECT IS ADDITIVE, THE BACKFILL IS ON READ ═════════════
  * `project` is optional on the wire. An adapter is constructed with the
@@ -225,14 +247,43 @@ export const TASK_KINDS = Object.freeze(['code', 'document'])
  */
 export const TASK_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'])
 
+/**
+ * The role a row plays in its batch — a CLOSED vocabulary of exactly one value, and the one
+ * value names the exception rather than the rule.
+ *
+ * There is deliberately no 'item' here. An item is already recognised by carrying a
+ * `batchId`, and a second way of saying the same thing is a second thing that can be wrong:
+ * a row marked 'item' with no batch id, or a row with a batch id and no mark, would each
+ * have to mean something, and no reader could say what. Only the ROLE THAT CHANGES
+ * BEHAVIOUR — the request itself, which no worker may ever be handed — is declared.
+ */
+export const BATCH_PARENT = 'parent'
+const BATCH_ROLES = Object.freeze([BATCH_PARENT])
+
 /** The keys the `data` envelope may carry — a field allowlist inside the field allowlist. */
-const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase'])
+const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'batch'])
 
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
   'id', 'source', 'title', 'lane', 'provider', 'model', 'effort',
-  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'project', 'forge', 'data',
+  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'project', 'batchId', 'forge', 'data',
 ])
+
+/**
+ * isBatchParent(taskOrRow) → is this the REQUEST of a batch rather than a piece of its work?
+ *
+ * ONE predicate for a task on its way in and for a row on its way out, because both carry the
+ * envelope under the same name — and because a backend, a door and a screen answering this
+ * question three times in three files is three chances to answer it differently. PURE; a
+ * nullish argument is simply not a parent.
+ *
+ * @param {object|null} taskOrRow
+ * @returns {boolean}
+ */
+export function isBatchParent(taskOrRow) {
+  const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
+  return !!env && typeof env === 'object' && env.batch === BATCH_PARENT
+}
 
 /**
  * The project slug grammar. A LOCAL constant, not an import: this module must
@@ -240,6 +291,14 @@ const ALLOWED_TASK_KEYS = Object.freeze([
  * agreement with config.mjs's PROJECT_ID_RE by the tests on both sides.
  */
 const TASK_PROJECT_RE = /^[a-z0-9-]{1,64}$/
+
+/**
+ * The batch identifier grammar. It is minted by a door from a clock, but it ARRIVES on the
+ * wire like everything else, and it ends up inside a `data->>` comparison and beside task ids
+ * in logs — so it is bounded and spelled out here rather than trusted for being ours. Same
+ * shape and same cap as a task id.
+ */
+const TASK_BATCH_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 
 /** The project a read row falls back to when nothing else names one. */
 export const DEFAULT_PROJECT_ID = 'default'
@@ -303,6 +362,11 @@ export function validateTask(task) {
   if (task.project !== undefined && (typeof task.project !== 'string' || !TASK_PROJECT_RE.test(task.project))) {
     throw new InvalidTaskError(`task "${task.id}" has an invalid project "${task.project}"`)
   }
+  // batchId: STRUCTURAL only, exactly like project. Whether a batch with this id has a
+  // request row is the DOOR's question — it is the one that writes both halves in one action.
+  if (task.batchId !== undefined && (typeof task.batchId !== 'string' || !TASK_BATCH_ID_RE.test(task.batchId))) {
+    throw new InvalidTaskError(`task "${task.id}" has an invalid batchId "${task.batchId}"`)
+  }
 
   // forge object: REQUIRED iff lane==='forge', forbidden otherwise
   if (task.lane === 'forge') {
@@ -346,6 +410,17 @@ export function validateTask(task) {
     ) {
       throw new InvalidTaskError(`task "${task.id}" data.phase must be a string or a number`)
     }
+    if (task.data.batch !== undefined && !BATCH_ROLES.includes(task.data.batch)) {
+      throw new InvalidTaskError(`task "${task.id}" has invalid data.batch "${task.data.batch}"`)
+    }
+  }
+
+  // A REQUEST THAT NAMES NO BATCH IS NOT A REQUEST. The parent exists to be the thing items
+  // hang off; without an id nothing can hang off it, and it would sit in the queue forever as
+  // a row no worker may take and no reader can group. Refused at the gate rather than becoming
+  // an orphan the front has to learn to ignore.
+  if (isBatchParent(task) && task.batchId === undefined) {
+    throw new InvalidTaskError(`batch request "${task.id}" requires a batchId`)
   }
 
   // DoR gate: backlog REQUIRES storyPoints ∈ Fibonacci AND non-empty acceptance.
@@ -443,6 +518,10 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       // same object the tick reads to choose a gate; carried only when the task has one, so a
       // row of ordinary code work states nothing about a stage rather than carrying a null.
       ...(rec.task.data ? { data: rec.task.data } : {}),
+      // THE KINSHIP TRAVELS ON THE ROW, and only when there is one: a row of ordinary work
+      // states nothing about a batch rather than carrying a null every grouping would then
+      // have to skip. Without it, a reader could group items by nothing but their titles.
+      ...(rec.task.batchId ? { batchId: rec.task.batchId } : {}),
       attempt: rec.attempt,
       coalesceCount: rec.coalesceCount,
       workerId: rec.workerId,
@@ -499,6 +578,12 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     let best = null
     for (const rec of records.values()) {
       if (rec.status !== 'queued') continue
+      // THE REQUEST OF A BATCH IS NOT WORK. Handing it to a worker would dispatch «разгреби
+      // мелочь перед демо» as a task of its own, in parallel with the very items it was
+      // broken into. Skipped BEFORE the ordering so no priority and no arrival time can
+      // surface it — the durable backend keeps the same promise by never putting a parent in
+      // a lane queue at all.
+      if (isBatchParent(rec.task)) continue
       if (laneSet && !laneSet.has(rec.task.lane)) continue
       if (!best) { best = rec; continue }
       if (rec.task.priority > best.task.priority) best = rec
@@ -583,9 +668,13 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     // Every status of the closed vocabulary is a KEY, present at zero — a counter that
     // appears only once something lands in it reads as «no such thing» on the screen that
     // asks for it, which is a different statement from «none right now».
-    const s = { total: records.size }
+    // STATS COUNT WORK, and a batch request is not work: it is queued, nobody will ever
+    // claim it, and counted here it would add one to «в очереди» that no amount of working
+    // could ever take away. It stays in list() — a reader has to see it to draw the batch.
+    const work = [...records.values()].filter((rec) => !isBatchParent(rec.task))
+    const s = { total: work.length }
     for (const st of TASK_STATUSES) s[st] = 0
-    for (const rec of records.values()) s[rec.status] = (s[rec.status] ?? 0) + 1
+    for (const rec of work) s[rec.status] = (s[rec.status] ?? 0) + 1
     return s
   }
 
@@ -810,6 +899,87 @@ export function queueAdapterContractSuite(name, makeAdapter) {
 
       // An unknown task is answered, never thrown at: the caller is a fail-open dispatcher.
       expect(await q.assignWorker('BL-does-not-exist', 'local-1')).toBe(false)
+    })
+
+    // ── the batch: kinship is a fact of the queue, and the request is not work ──
+
+    /** The request row of a batch: a roster action, marked as the parent, naming its batch. */
+    const parent = (batchId, over = {}) => ({
+      id: batchId,
+      source: 'roster',
+      title: 'разгреби мелочь перед демо',
+      lane: 'prod',
+      batchId,
+      data: { batch: 'parent' },
+      ...over,
+    })
+
+    it('an item states which batch it belongs to, and the row says so', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({ id: 'B-1-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-1' })
+      await q.enqueue({ id: 'R-alone', source: 'roster', title: 'сама по себе', lane: 'prod' })
+
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'B-1-1').batchId).toBe('B-1')
+      // A task belonging to no batch says nothing about one — never a null to be skipped.
+      expect(rows.find((r) => r.id === 'R-alone').batchId).toBeUndefined()
+    })
+
+    /**
+     * The parent is a RECORD OF WHAT WAS ASKED. A worker handed it would run the founder's
+     * sentence as a task of its own, beside the items it was already broken into — so no
+     * priority, no arrival order and no lane filter may surface it.
+     */
+    it('the request of a batch is NEVER claimed — not at the top priority, not when it arrived first', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(parent('B-2', { priority: 9 })) // first in, and the loudest
+      await q.enqueue({ id: 'B-2-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-2', priority: 0 })
+
+      const claimed = await q.claimNext('w1', {})
+      expect(claimed.id).toBe('B-2-1')
+      // and with the item gone there is still nothing to hand out
+      expect(await q.claimNext('w2', {})).toBeNull()
+    })
+
+    it('a batch request is not counted as queued WORK, and is still listed so a reader can draw it', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(parent('B-3'))
+      await q.enqueue({ id: 'B-3-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-3' })
+
+      const s = await q.stats()
+      expect(s.queued).toBe(1) // the item — the request is not work waiting for a worker
+
+      const rows = await q.list({})
+      const row = rows.find((r) => r.id === 'B-3')
+      expect(row.batchId).toBe('B-3')
+      expect(row.data.batch).toBe('parent')
+    })
+
+    /**
+     * THE VOCABULARY IS STILL CLOSED, and it is closed in the two different ways it always
+     * was — worth stating in one case, because the batch added a key to each list.
+     *
+     * A key outside the task allowlist is DROPPED: the normalized copy is explicit-pick, so
+     * an invented field cannot ride into the queue and be read back out by anybody. A key
+     * inside the `data` envelope is REFUSED outright, because that envelope is what chooses a
+     * gate and a role — a typo there falling through to a default is the fault the refusal
+     * was written for. Neither loosened when `batchId` and `data.batch` joined them.
+     */
+    it('the vocabulary stayed CLOSED: an unknown key never travels, an unknown batch role is refused', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({ ...parent('B-4'), whenever: 'tomorrow' })
+      const [row] = await q.list({})
+      expect(row.id).toBe('B-4')
+      expect(JSON.stringify(row)).not.toContain('tomorrow')
+
+      await expect(q.enqueue({ ...parent('B-5'), data: { batch: 'child' } })).rejects.toThrow(/data\.batch/)
+      // ...and a request that names no batch is not a request at all
+      await expect(q.enqueue({ ...parent('B-6'), batchId: undefined })).rejects.toThrow(/batchId/)
+      expect(await q.list({})).toHaveLength(1)
     })
 
     it('higher priority is claimed first', async () => {

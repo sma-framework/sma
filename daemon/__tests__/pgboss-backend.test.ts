@@ -33,6 +33,7 @@ import {
   createPgBossQueue,
   TASK_QUEUE_LANES,
   DEAD_LETTER_QUEUE,
+  BATCH_PARENT_QUEUE,
 } from '../src/queue/pgboss-backend.mjs'
 import { queueAdapterContractSuite, NoReceiptError } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
@@ -264,32 +265,40 @@ function makeFakeBackend({
         rows: match ? [{ id: match.id, name: match.name, data: match.data, retry_count: match.retry_count }] : [],
       }
     }
-    // list(): all jobs, LEFT JOINed onto the approval table on the key the live database
-    // confirmed — the approval row's id IS the task id the job payload carries.
+    // list(): the jobs OF THE NAMED QUEUES, LEFT JOINed onto the approval table on the key the
+    // live database confirmed — the approval row's id IS the task id the job payload carries.
+    //
+    // THE `WHERE j.name = ANY($1)` IS MODELLED, not ignored. A fake that answered with every
+    // job whatever was asked for would be more generous than the statement it stands for — the
+    // exact fault that let a missing method sit green for a release — and it would in
+    // particular certify a list() that never asks for the batch queue.
     const withApproval = sql.includes('sma_task_attempts')
+    const wanted: string[] | null = Array.isArray(params?.[0]) ? (params[0] as string[]) : null
     return {
-      rows: [...jobs.values()].map((j) => {
-        const a = (j.data && attempts.get(j.data.id)) || null
-        return {
-          id: j.id,
-          name: j.name,
-          priority: j.priority,
-          data: j.data,
-          state: j.state,
-          retry_count: j.retry_count,
-          created_on: j.created_on,
-          started_on: j.started_on,
-          completed_on: j.completed_on,
-          output: j.output,
-          ...(withApproval
-            ? {
-                approval_status: a ? a.status : null,
-                returned_note: a ? a.returned_note : null,
-                merge_receipt: a ? a.merge_receipt : null,
-              }
-            : {}),
-        }
-      }),
+      rows: [...jobs.values()]
+        .filter((j) => !wanted || wanted.includes(j.name))
+        .map((j) => {
+          const a = (j.data && attempts.get(j.data.id)) || null
+          return {
+            id: j.id,
+            name: j.name,
+            priority: j.priority,
+            data: j.data,
+            state: j.state,
+            retry_count: j.retry_count,
+            created_on: j.created_on,
+            started_on: j.started_on,
+            completed_on: j.completed_on,
+            output: j.output,
+            ...(withApproval
+              ? {
+                  approval_status: a ? a.status : null,
+                  returned_note: a ? a.returned_note : null,
+                  merge_receipt: a ? a.merge_receipt : null,
+                }
+              : {}),
+          }
+        }),
     }
   }
 
@@ -617,23 +626,82 @@ describe('the approval row reaches the read path', () => {
 })
 
 describe('pg-boss backend — start() lane provisioning', () => {
-  it('start() creates the dead-letter queue FIRST, then the four lane queues with the shared deadLetter', async () => {
+  it('start() creates the dead-letter queue FIRST, then the four lane queues and the batch queue with the shared deadLetter', async () => {
     const c = mkClock()
     const { adapter, createQueueCalls } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
     await adapter.start()
     // pg-boss v11 rejects a lane queue whose deadLetter target does not exist yet
     // (the pilot fresh-boot finding) — the shared dead queue must be provisioned first.
+    // The batch queue is provisioned like the lanes and fetched like none of them: that is
+    // what keeps the request of a batch structurally out of a worker's hands.
     expect(createQueueCalls.map((x) => x.name)).toEqual([
       'sma.task.dead',
       'sma.task.prod',
       'sma.task.research',
       'sma.task.paperwork',
       'sma.task.forge',
+      'sma.batch',
     ])
     expect(createQueueCalls[0].opts?.deadLetter).toBeUndefined()
     for (const call of createQueueCalls.slice(1)) expect(call.opts.deadLetter).toBe(DEAD_LETTER_QUEUE)
     // exported vocabulary matches
     expect([...TASK_QUEUE_LANES]).toEqual(['prod', 'research', 'paperwork', 'forge'])
+    expect(BATCH_PARENT_QUEUE).toBe('sma.batch')
+    expect(TASK_QUEUE_LANES.map((l) => `sma.task.${l}`)).not.toContain(BATCH_PARENT_QUEUE)
+  })
+})
+
+/**
+ * THE DURABLE HALF OF «THE REQUEST IS NEVER HANDED OUT».
+ *
+ * The contract suite asserts the PROMISE against every backend; these two cases assert the
+ * MECHANISM this backend keeps it with, because the mechanism is a layout decision a later
+ * edit could undo without any promise visibly breaking first: the parent is SENT somewhere
+ * `fetch` never looks, and claimNext fetches lane queues only.
+ */
+describe('pg-boss backend — a batch request is not sent where a fetch can reach it', () => {
+  const parent = (batchId: string) => ({
+    id: batchId,
+    source: 'roster',
+    title: 'разгреби мелочь перед демо',
+    lane: 'prod',
+    batchId,
+    data: { batch: 'parent' },
+  })
+
+  it('the request goes to the batch queue and the items to their lanes — and no fetch ever names the batch queue', async () => {
+    const c = mkClock()
+    const { adapter, sendCalls, boss } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    const fetched: string[] = []
+    const realFetch = boss.fetch.bind(boss)
+    boss.fetch = async (name: string, options: any) => {
+      fetched.push(name)
+      return realFetch(name, options)
+    }
+
+    await adapter.enqueue(parent('B-77'))
+    await adapter.enqueue({ id: 'B-77-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-77' })
+
+    expect(sendCalls.map((x) => x.name)).toEqual(['sma.batch', 'sma.task.prod'])
+
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('B-77-1')
+    expect(await adapter.claimNext('w2', {})).toBeNull()
+    expect(fetched).not.toContain('sma.batch')
+  })
+
+  it('the request is READ back with the work — a list that hides it leaves a screen with loose items', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    await adapter.enqueue(parent('B-78'))
+    await adapter.enqueue({ id: 'B-78-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-78' })
+
+    const rows = await adapter.list({})
+    const row = rows.find((r: any) => r.id === 'B-78')
+    expect(row).toBeTruthy()
+    expect(row.batchId).toBe('B-78')
+    expect(row.data.batch).toBe('parent')
+    expect(rows.find((r: any) => r.id === 'B-78-1').batchId).toBe('B-78')
   })
 })
 
