@@ -311,6 +311,7 @@ async function main() {
           else if (step.verb === 'type') await page.fill(step.selector, step.text, { timeout: 8000 })
           else if (step.verb === 'wait') await page.waitForTimeout(step.ms)
           else if (step.verb === 'shot') await capture(page, `${label}-${step.arg.replace(/[^\w-]+/g, '_')}`)
+          else if (step.verb === 'key') await page.keyboard.press(step.arg)
           else if (step.verb === 'expect') await page.getByText(step.arg, { exact: false }).first().waitFor({ timeout: 8000 })
           if (step.verb !== 'shot' && step.verb !== 'wait') {
             await page.waitForTimeout(400)

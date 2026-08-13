@@ -75,8 +75,18 @@ export const INTERACTIVE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ')
 
-/** The verbs a caller may script. Anything else is refused at parse time, never ignored. */
-export const STEP_VERBS = Object.freeze(['goto', 'click', 'type', 'wait', 'shot', 'expect'])
+/**
+ * The verbs a caller may script. Anything else is refused at parse time, never ignored.
+ *
+ * `key` presses a combination on the page — «Control+K», «Escape», «Enter». It exists
+ * because a whole class of a window's surface is reachable ONLY from the keyboard: a
+ * shortcut that opens a panel has no control to click, so without this verb the rule
+ * «touched the interface — drive it yourself» could not be kept for shortcuts at all, and
+ * a keyboard feature would end up signed off by reading its handler. The argument is handed
+ * to the driver as written: naming the combination is the caller's business, and a name the
+ * driver does not know fails the step loudly instead of passing quietly.
+ */
+export const STEP_VERBS = Object.freeze(['goto', 'click', 'type', 'wait', 'shot', 'expect', 'key'])
 
 /**
  * parseSteps(argv) -> {ok:true, steps} | {ok:false, errors}

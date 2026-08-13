@@ -42,9 +42,28 @@ import {
 
 describe('parseSteps', () => {
   it('parses every verb shape', () => {
-    const r = parseSteps(['click:Save', 'type:#email=a@b.c', 'wait:500', 'shot:after', 'expect:Done', 'goto:/inbox'])
+    const r = parseSteps([
+      'click:Save',
+      'type:#email=a@b.c',
+      'wait:500',
+      'shot:after',
+      'expect:Done',
+      'goto:/inbox',
+      'key:Control+K',
+    ])
     expect(r.ok).toBe(true)
-    expect(r.steps.map((s: { verb: string }) => s.verb)).toEqual(['click', 'type', 'wait', 'shot', 'expect', 'goto'])
+    expect(r.steps.map((s: { verb: string }) => s.verb)).toEqual([
+      'click',
+      'type',
+      'wait',
+      'shot',
+      'expect',
+      'goto',
+      'key',
+    ])
+    // Комбинация едет драйверу как написана: разбирать её здесь значило бы завести второй
+    // словарь имён клавиш рядом с тем, который уже есть у драйвера.
+    expect(r.steps[6]).toMatchObject({ arg: 'Control+K' })
     expect(r.steps[1]).toMatchObject({ selector: '#email', text: 'a@b.c' })
     expect(r.steps[2]).toMatchObject({ ms: 500 })
   })
