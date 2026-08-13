@@ -1,7 +1,22 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useApprove, useDiffQuery, useRedirectTask, useReturnTask, useStateQuery, useTaskQuery } from '../../api/queries'
-import type { TaskAttempt, TaskStatus } from '../../api/types'
+import {
+  useApprove,
+  useAttemptQuery,
+  useDiffQuery,
+  useRedirectTask,
+  useReturnTask,
+  useStateQuery,
+  useTaskQuery,
+} from '../../api/queries'
+import type {
+  AttemptDigest,
+  AttemptLog as AttemptLogPayload,
+  AttemptRole,
+  SubApiSwitch,
+  TaskAttempt,
+  TaskStatus,
+} from '../../api/types'
 import {
   accentFor,
   attemptsLabel,
@@ -312,6 +327,246 @@ function closingWords(status: TaskStatus | null): string | null {
   return null
 }
 
+/**
+ * Подход, о котором карточка спрашивает журнал: самый свежий по номеру. Список приезжает в
+ * порядке леджера, и этот выбор не зависит от того, каким его кто-то считает.
+ */
+function newestAttempt(attempts: TaskAttempt[]): TaskAttempt | null {
+  let newest: TaskAttempt | null = null
+  for (const a of attempts) {
+    if (a.attempt === null) continue
+    if (newest === null || (newest.attempt ?? -1) < a.attempt) newest = a
+  }
+  return newest
+}
+
+/** Сколько длился голос: секунды у короткого, часы у длинного, «—» у неизмеренного. */
+function lengthWords(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms <= 0) return '—'
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec} с`
+  return hoursLabel(ms / 3600000)
+}
+
+/**
+ * ═══════════════════ КТО БЫЛ В СЕССИИ ИСПОЛНИТЕЛЯ ═══════════════════
+ *
+ * Исполнитель один и он виден первым; подагенты — деревом под ним, потому что это его сессия,
+ * а не отдельные работники. Каждый голос называет модель, длительность и одну строку о деле.
+ *
+ * Всё это приезжает готовым из двери попытки: там роли считаются по ВСЕМУ журналу, а не по
+ * хвосту, который поместился на экран. Карточка не пересчитывает ничего — и там, где дверь
+ * ролей не отдала (демон старого кода), говорит это словами, а не собирает дерево из
+ * подручного: пустое дерево читалось бы как «исполнитель работал один».
+ */
+function RolesBlock({
+  data,
+  loading,
+  failed,
+  attemptId,
+  open,
+  onToggle,
+}: {
+  data: AttemptLogPayload | undefined
+  loading: boolean
+  failed: boolean
+  attemptId: string | null
+  open: boolean
+  onToggle: () => void
+}) {
+  const roles: AttemptRole[] | null = data && Array.isArray(data.roles) ? data.roles : null
+  const shown = roles ? (open ? roles : roles.slice(0, 1)) : []
+  const more = data?.rolesMore ?? 0
+
+  const words = (): string | null => {
+    if (!attemptId) return 'Подходов ещё не было — в сессии пока некому быть.'
+    if (failed) return 'Журнал попытки не открылся — кто был в сессии, сказать нечем.'
+    if (!data) return loading ? 'Открываю журнал попытки…' : 'Журнал попытки ещё не прочитан.'
+    if (roles === null) {
+      return 'Ролей в ответе нет: их не отдаёт процесс демона, который сейчас работает. Дерево из подручного здесь не собирается — до перезапуска демона со свежим кодом блок честно пуст.'
+    }
+    if (roles.length === 0) return 'Попытка ещё ничего не напечатала — голосов в сессии не видно.'
+    return null
+  }
+  const empty = words()
+
+  const meta =
+    roles && roles.length > 0
+      ? `${roles.length} ${plural(roles.length, 'роль', 'роли', 'ролей')}${more > 0 ? ` · ещё ${more} не поместилось` : ''}`
+      : ''
+
+  return (
+    <section className="min-w-0 flex-1 overflow-hidden rounded-[12px] border border-bd bg-card">
+      <div className="flex items-baseline gap-2.5 border-b border-bd px-3.5 py-2.5">
+        <span className="text-[12px] font-semibold text-tx">Роли в сессии исполнителя</span>
+        <span className="text-[11px] text-tx3">{meta}</span>
+        {roles && roles.length > 1 ? (
+          <button type="button" onClick={onToggle} className="ml-auto flex-none text-[11px] font-semibold text-blue">
+            {open ? 'Свернуть' : 'Показать все'}
+          </button>
+        ) : null}
+      </div>
+      {empty ? (
+        <p className="m-0 px-3.5 py-3 text-[11.5px] leading-[1.5] text-tx3">{empty}</p>
+      ) : (
+        <div className="flex flex-col">
+          {shown.map((r, i) => {
+            const sub = r.role === 'subagent'
+            return (
+              <div
+                key={`${r.role}-${r.name ?? 'без имени'}-${i}`}
+                className={`flex items-start gap-2.5 border-t border-bd py-2.5 pr-3.5 first:border-t-0 ${
+                  sub ? 'pl-[34px]' : 'bg-surf pl-3.5'
+                }`}
+              >
+                {sub ? <span aria-hidden className="mt-2 h-px w-3.5 flex-none bg-bd2" /> : null}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-[12.5px] font-semibold text-tx">
+                      {r.role === 'executor' ? 'Исполнитель' : (r.name ?? 'Делегация без имени')}
+                    </span>
+                    <span className="font-mono text-[10.5px] text-tx3">
+                      {sub ? 'подагент · ' : ''}
+                      {r.model ?? 'модель не названа'}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] leading-[1.45] text-tx2">
+                    {r.detail ?? 'строки о деле нет'}
+                    <span className="text-tx3"> · {r.steps} {plural(r.steps, 'строка', 'строки', 'строк')} прочитано</span>
+                  </div>
+                </div>
+                <span className="flex-none font-mono text-[11.5px] text-tx2 tabular-nums">
+                  {lengthWords(r.durationMs)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
+ * ЗАДАЧА СТОИТ И ЖДЁТ ЧЕЛОВЕКА — третье из трёх мест, где это видно (полоса «ждут вас» и
+ * строка списка — два первых).
+ *
+ * Здесь называется ВОЗРАСТ ожидания: «ждёт» без возраста — это не факт, а настроение, и
+ * именно возраст отличает «остановился минуту назад» от «стоит с утра». Вопрос работника
+ * показывается его словами; там, где дверь слов не принесла, так и сказано — карточка не
+ * сочиняет вопрос за того, кто его задал.
+ */
+function BlockedBanner({
+  ageHours,
+  said,
+  onDiscuss,
+}: {
+  ageHours: number | undefined
+  said: string | null
+  onDiscuss: () => void
+}) {
+  return (
+    <div className="flex items-start gap-3.5 rounded-[10px] border border-warn-s bg-warn-s px-4 py-3">
+      <span className="flex-none pt-px font-mono text-[10.5px] font-semibold tracking-[0.04em] text-warn-tx uppercase">
+        {ageHours !== undefined ? `ждёт ${hoursLabel(ageHours)}` : 'сколько ждёт — нет данных'}
+      </span>
+      <div className="min-w-0 flex-1 text-[12.5px] leading-[1.45] text-tx">
+        <p className="m-0">Исполнитель остановился и ждёт вашего решения. Он не додумывает за вас.</p>
+        <p className="m-0 mt-1 text-[11.5px] text-tx2">
+          {said
+            ? `Его последние слова: ${said}`
+            : 'Вопрос словами дверь задачи не отдаёт — карточка не придумывает его за работника. Что он делал, видно в ролях и в хронологии ниже.'}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onDiscuss}
+        className="flex-none rounded-[7px] border border-warn-tx px-3 py-1.5 text-[11.5px] font-semibold text-warn-tx"
+      >
+        Обсудить с системой
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Потолок платного канала — и ноль, названный тем, что он есть.
+ *
+ * Ноль это НЕ «без ограничения»: при нулевом потолке правило отказывает в переходе на платный
+ * канал навсегда, и работа при закрытых окнах ждёт их открытия. Ноль — поставочное состояние
+ * продукта, поэтому эта строка чаще всего и читается.
+ */
+function capWords(sw: SubApiSwitch | undefined): { label: string; value: string; note: string | null } {
+  if (!sw) return { label: 'Платный API', value: 'нет данных', note: null }
+  if (!sw.budgeted || sw.capEur <= 0) {
+    return {
+      label: 'Платный API · потолок 0',
+      value: 'выключен',
+      note: 'Ноль — это не «без ограничения»: платный канал не используется вовсе.',
+    }
+  }
+  return {
+    label: `Платный API · потолок ${sw.capEur} €/мес`,
+    value: sw.mode === 'api' ? 'работа идёт за деньги' : 'молчит',
+    note: null,
+  }
+}
+
+/**
+ * ПРАВАЯ ПАНЕЛЬ: последнее событие, расход попытки, потолок платного канала и внешние
+ * подключения — ЯВНЫМ блоком.
+ *
+ * Пустой блок подключений здесь не прячется: «ни одного» — это ответ, а отсутствие строки
+ * читается как «подключения где-то есть, просто не показаны». Расход попытки говорится теми
+ * словами, которыми о нём отчитался поставщик; своих чисел карточка не считает.
+ */
+function SessionPanel({
+  attempt,
+  digest,
+  spendSwitch,
+}: {
+  attempt: TaskAttempt | null
+  digest: AttemptDigest | null | undefined
+  spendSwitch: SubApiSwitch | undefined
+}) {
+  const when = attempt?.endedAt ?? attempt?.startedAt ?? null
+  const text = !attempt
+    ? 'Работа ещё не начиналась.'
+    : !attempt.endedAt
+      ? `Подход ${attempt.attempt ?? '—'} идёт с ${clockLabel(attempt.startedAt)}.`
+      : `Подход ${attempt.attempt ?? '—'} · ${attemptWords(attempt)}.`
+  const cap = capWords(spendSwitch)
+  const conns = digest?.connections
+
+  return (
+    <section className="w-[320px] flex-none rounded-[12px] border border-bd bg-card px-[15px] py-3.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[12px] font-semibold text-tx">Последнее событие</span>
+        <span className="flex-none font-mono text-[10.5px] text-tx3">{when ? clockLabel(when) : 'нет данных'}</span>
+      </div>
+      <p className="m-0 mt-1.5 text-[11.5px] leading-[1.5] text-tx2">{text}</p>
+
+      <div className="mt-3 flex flex-col gap-1.5 border-t border-bd pt-3 text-[11.5px]">
+        <div className="flex justify-between gap-3">
+          <span className="text-tx2">Расход попытки</span>
+          <span className="min-w-0 flex-none text-right text-tx3">{digest?.session ?? 'демон не сообщает'}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="min-w-0 text-tx2">{cap.label}</span>
+          <span className="flex-none text-tx3">{cap.value}</span>
+        </div>
+        {cap.note ? <p className="m-0 text-[10.5px] leading-[1.4] text-tx3">{cap.note}</p> : null}
+        <div className="flex justify-between gap-3">
+          <span className="text-tx2">Внешние подключения</span>
+          <span className="min-w-0 flex-none text-right text-tx3">
+            {conns === undefined ? 'нет данных' : conns.length === 0 ? 'ни одного' : conns.join(', ')}
+          </span>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
@@ -355,13 +610,28 @@ export function Screen() {
   const [note, setNote] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
   const [diffOpen, setDiffOpen] = useState(false)
+  const [rolesOpen, setRolesOpen] = useState(true)
+
+  // РОЛИ И РАСХОД — из журнала САМОГО СВЕЖЕГО подхода. Тот же ключ запроса, что у ленты
+  // подхода ниже, поэтому вторым обращением к двери это не становится.
+  const newest = newestAttempt(detail.data?.attempts ?? [])
+  const attemptId = taskId && newest && newest.attempt !== null ? `${taskId}#${newest.attempt}` : null
+  const log = useAttemptQuery(attemptId)
 
   // The machine the task lives on comes from the reading the window already has. It is
   // passed straight back with the decision — the card never decides where a task runs.
+  // Ждущие человека строки лежат в СВОЁМ списке, а не в очереди: без него машина не находилась
+  // ровно у тех задач, ради которых карточку и открывают, — у ждущих одобрения.
   const machine = useMemo(() => {
     if (!taskId) return undefined
-    const rows = [...(state.data?.queue ?? []), ...(state.data?.done ?? [])]
+    const rows = [...(state.data?.queue ?? []), ...(state.data?.awaiting ?? []), ...(state.data?.done ?? [])]
     return rows.find((r) => r.id === taskId)?.machine
+  }, [state.data, taskId])
+
+  // Сколько задача уже ждёт человека — из того же ряда, которым живёт полоса «ждут вас».
+  const waitingHours = useMemo(() => {
+    if (!taskId) return undefined
+    return (state.data?.awaiting ?? []).find((r) => r.id === taskId)?.agedForHours
   }, [state.data, taskId])
 
   if (!taskId) return <NoTask />
@@ -486,6 +756,17 @@ export function Screen() {
             </div>
           </div>
 
+          {status === 'awaiting_approval' ? (
+            <BlockedBanner
+              ageHours={waitingHours}
+              said={log.data?.note ?? newest?.approachNote ?? null}
+              onDiscuss={() => {
+                setProblem(null)
+                setReturning(true)
+              }}
+            />
+          ) : null}
+
           <div className="flex flex-col gap-2.5">
             <div className="flex items-stretch gap-3.5">
               <Column
@@ -514,6 +795,22 @@ export function Screen() {
               />
             </div>
             {closing ? <p className="m-0 px-1 text-[11.5px] text-tx3">{closing}</p> : null}
+          </div>
+
+          <div className="flex items-start gap-3.5">
+            <RolesBlock
+              data={log.data}
+              loading={log.isLoading}
+              failed={log.isError}
+              attemptId={attemptId}
+              open={rolesOpen}
+              onToggle={() => setRolesOpen((v) => !v)}
+            />
+            <SessionPanel
+              attempt={newest}
+              digest={log.data?.digest}
+              spendSwitch={state.data?.rules?.subApiSwitch}
+            />
           </div>
 
           {status === 'claimed' && taskId ? <Steering taskId={taskId} /> : null}
