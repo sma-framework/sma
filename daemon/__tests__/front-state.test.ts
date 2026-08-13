@@ -1853,9 +1853,10 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly fifty-six entries and carries no migration route', () => {
-    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request.
-    expect(Object.keys(ROUTES)).toHaveLength(56)
+  it('the route table is still exactly fifty-seven entries and carries no migration route', () => {
+    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request
+    // + the word its owner answers a stopped batch with.
+    expect(Object.keys(ROUTES)).toHaveLength(57)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
@@ -2166,5 +2167,113 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     await adapter.enqueue({ id: 'R-1', source: 'roster', title: 'обычная', lane: 'prod' })
     const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
     expect(payload.batches).toEqual([])
+  })
+
+  // ── СЛОМАЛОСЬ — СТОП И ВОПРОС ВЛАДЕЛЬЦУ, И ТОЛЬКО ЕГО СЛОВО СДВИГАЕТ ДЕЛО ──
+  //
+  // The queue already refuses to hand out anything of a stopped assembly (adapter.mjs). What
+  // is asserted here is the other half: that the stop is VISIBLE as a question with three
+  // named answers, that a door accepts exactly those three, and that each one changes the
+  // state in a way a person can check afterwards. A stop nobody is asked about is a hang.
+
+  async function decide(front: any, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url: '/api/batch/decide', body }), res)
+    return res
+  }
+
+  /** A batch of two pieces whose FIRST piece has broken — the state every case below starts in. */
+  async function stoppedBatch() {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    const res = await callBatch(front, { title: 'разбор', items: ['первое дело', 'второе дело'] })
+    const id = JSON.parse(res.body).id
+    const broken = await adapter.claimNext('w1', {})
+    await adapter.fail(broken.id, 'tests_red')
+    return { adapter, front, id, brokenId: broken.id }
+  }
+
+  const readBatch = async (adapter: any, id: string) => {
+    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    return payload.batches.find((b: any) => b.id === id)
+  }
+
+  it('a broken piece turns the assembly into a QUESTION with three named answers, and hands nothing out', async () => {
+    const { adapter, id, brokenId } = await stoppedBatch()
+
+    const batch = await readBatch(adapter, id)
+    expect(batch.state).toBe('failed')
+    expect(batch.holding.id).toBe(brokenId)
+    expect(batch.question.itemId).toBe(brokenId)
+    expect(batch.question.options.map((o: any) => o.id)).toEqual(['skip', 'retry', 'cancel'])
+    expect(batch.question.options.every((o: any) => typeof o.label === 'string' && o.label !== '')).toBe(true)
+
+    // and the queue keeps its silence for as long as the question is open — no answer, no work
+    expect(await adapter.claimNext('w2', {})).toBeNull()
+  })
+
+  it('«пропустить»: the piece is named as skipped, stops holding the assembly, and the next one is handed out', async () => {
+    const { adapter, front, id, brokenId } = await stoppedBatch()
+
+    const res = await decide(front, { batchId: id, decision: 'skip', itemId: brokenId })
+    expect(res.statusCode).toBe(200)
+
+    const batch = await readBatch(adapter, id)
+    expect(batch.items.find((i: any) => i.id === brokenId).state).toBe('skipped')
+    expect(batch.question).toBeUndefined() // nothing left to ask
+    expect(batch.holding.id).not.toBe(brokenId)
+    // the assembly moves again
+    expect((await adapter.claimNext('w2', {})).id).not.toBe(brokenId)
+  })
+
+  it('«повторить»: the SAME piece is queued again, one attempt higher, still of its batch', async () => {
+    const { adapter, front, id, brokenId } = await stoppedBatch()
+
+    const res = await decide(front, { batchId: id, decision: 'retry', itemId: brokenId })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).attempt).toBe(2)
+
+    const rows = await adapter.list({})
+    const again = rows.find((r: any) => r.id === brokenId)
+    expect(again.status).toBe('queued')
+    expect(again.batchId).toBe(id)
+    expect(again.attempt).toBe(2)
+    // ...and it is the piece that runs next — a repeat comes back to its own place
+    expect((await adapter.claimNext('w2', {})).id).toBe(brokenId)
+  })
+
+  it('«отменить»: the assembly reads as abandoned, the unstarted pieces leave the queue, what produced stays', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    const created = await callBatch(front, { title: 'разбор', items: ['первое', 'второе', 'третье'] })
+    const id = JSON.parse(created.body).id
+
+    const done = await adapter.claimNext('w1', {})
+    await adapter.complete(done.id, { receiptRef: 'reverify:ok' }) // this one produced
+    const broken = await adapter.claimNext('w1', {})
+    await adapter.fail(broken.id, 'agent_error')
+
+    const res = await decide(front, { batchId: id, decision: 'cancel' })
+    expect(res.statusCode).toBe(200)
+
+    const batch = await readBatch(adapter, id)
+    expect(batch.state).toBe('cancelled')
+    expect(batch.question).toBeUndefined()
+    expect(batch.holding).toBeNull()
+    // what produced is untouched by the abandonment: it still stands where it stood, owing a
+    // person a word about itself. Cancelling a batch is not a way to un-do finished work.
+    expect(batch.items.find((i: any) => i.id === done.id).status).toBe('awaiting_approval')
+    expect(await adapter.claimNext('w2', {})).toBeNull()
+    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.kpis.queued).toBe(0) // a counter an abandoned batch could never bring down
+  })
+
+  it('the door answers only about a BROKEN piece, only with one of the three words, and only about a batch that exists', async () => {
+    const { front, id, brokenId } = await stoppedBatch()
+
+    expect((await decide(front, { batchId: id, decision: 'выполнить', itemId: brokenId })).statusCode).toBe(400)
+    expect((await decide(front, { batchId: id, decision: 'skip', itemId: brokenId, force: true })).statusCode).toBe(400)
+    expect((await decide(front, { batchId: 'B-nope', decision: 'cancel' })).statusCode).toBe(404)
+    expect((await decide(front, { batchId: id, decision: 'skip', itemId: `${id}-2` })).statusCode).toBe(409)
   })
 })

@@ -95,8 +95,21 @@ export interface QueueRow {
  * Порядок громкости (первое из присутствующих и есть состояние батча): провал → ждёт решения
  * → идёт → не начат → готово. Провал стоит первым и НЕ считается закрытым элементом:
  * провалившийся кусок останавливает батч и спрашивает владельца, ничего не повторяется само.
+ *
+ * Шестое слово, `skipped`, статусом очереди не является вовсе: так сказал ВЛАДЕЛЕЦ о
+ * сломавшемся куске («пропускаем»), и это более поздний факт о куске, чем всё, что о нём
+ * знает очередь. Пропущенный кусок сборку не держит и в закрытие ей не мешает.
  */
-export type BatchItemState = 'failed' | 'awaiting_decision' | 'running' | 'waiting' | 'done'
+export type BatchItemState =
+  | 'failed'
+  | 'awaiting_decision'
+  | 'running'
+  | 'waiting'
+  | 'done'
+  | 'skipped'
+
+/** Слова самой сборки: те же плюс `cancelled` — владелец от сборки отказался. */
+export type BatchState = BatchItemState | 'cancelled'
 
 export interface BatchItem {
   id: string
@@ -104,6 +117,19 @@ export interface BatchItem {
   /** Статус в очереди — тот же словарь, что у строки задачи. */
   status: TaskStatus
   state: BatchItemState
+}
+
+/**
+ * ВОПРОС ВЛАДЕЛЬЦУ ПО ВСТАВШЕЙ СБОРКЕ. Есть ровно пока кусок сломан и владелец не ответил:
+ * батч стоит, очередь не выдаёт ни одного его куска, никакого автоповтора не происходит.
+ * Варианты приходят ИМЕНАМИ от движка, а не сочиняются экраном: кнопка, ответ которой не
+ * принимает ни одна дверь, — это кнопка, которая молча ничего не делает.
+ */
+export interface BatchQuestion {
+  itemId: string
+  itemTitle: string | null
+  text: string
+  options: { id: 'skip' | 'retry' | 'cancel'; label: string }[]
 }
 
 /**
@@ -117,11 +143,16 @@ export interface BatchRow {
   title: string | null
   project: string
   machine: string
-  /** Состояние самого громкого элемента; `done` — только когда закрыты ВСЕ элементы. */
-  state: BatchItemState
+  /**
+   * Состояние самого громкого элемента; `done` — только когда каждый элемент произвёл или
+   * пропущен владельцем; `cancelled` — владелец от сборки отказался.
+   */
+  state: BatchState
   items: BatchItem[]
   /** Какой элемент держит сборку и почему (его состояние и есть причина); `null` у закрытой. */
   holding: BatchItem | null
+  /** Вопрос владельцу — только пока сборка стоит на сломавшемся куске. */
+  question?: BatchQuestion
 }
 
 export interface WorkerRow {

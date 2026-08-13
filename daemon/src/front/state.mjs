@@ -80,7 +80,7 @@ import { join } from 'node:path'
 
 import { pipelineEnabled } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
-import { isBatchParent, REASON_LABELS } from '../queue/adapter.mjs'
+import { isBatchParent, batchItemsOf, batchDecisionsOf, REASON_LABELS } from '../queue/adapter.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
@@ -1728,6 +1728,29 @@ const BATCH_ITEM_STATE = Object.freeze({
 })
 
 /**
+ * THE SIXTH WORD, AND IT IS NOT A STATUS AT ALL: «пропущен» is what the OWNER said about a
+ * piece, not where that piece stands in the queue. It overrules the status because it is a
+ * later fact about the same piece — the queue still holds a broken row, and the person who
+ * owns the assembly has decided it does not hold it any more.
+ */
+const BATCH_ITEM_SKIPPED = 'skipped'
+
+/**
+ * THE THREE ANSWERS A STOPPED ASSEMBLY OFFERS, in one place because they are offered in two —
+ * the card a person presses and the door that accepts what he pressed have to be the same
+ * three, or a screen would show a button nothing answers.
+ *
+ * WHY THERE IS NO FOURTH, «повторить автоматически»: the whole rule this question exists to
+ * enforce is that nothing happens by itself. The loop of 12.08.2026 was exactly that fourth
+ * option, taken without asking.
+ */
+export const BATCH_DECISIONS = Object.freeze([
+  Object.freeze({ id: 'skip', label: 'Пропустить элемент' }),
+  Object.freeze({ id: 'retry', label: 'Повторить' }),
+  Object.freeze({ id: 'cancel', label: 'Отменить батч' }),
+])
+
+/**
  * THE ORDER OF LOUDNESS — the first of these present among the items is what the batch reads
  * as, and the item wearing it is what HOLDS the assembly.
  *
@@ -1762,41 +1785,36 @@ const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running
 function deriveBatches(requests, rows, { activeProject, machineId } = {}) {
   if (!Array.isArray(requests) || requests.length === 0) return []
 
-  const byBatch = new Map()
-  for (const r of rows) {
-    if (!r || !r.batchId) continue
-    if (!byBatch.has(r.batchId)) byBatch.set(r.batchId, [])
-    byBatch.get(r.batchId).push(r)
-  }
-
   return [...requests]
     .sort((a, b) => (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0))
     .map((req) => {
       // The request's own id IS the batch id (the door mints one identifier, not two); the
       // field is read first all the same, so a row written by anything else still groups.
       const batchId = req.batchId || req.id
-      const items = (byBatch.get(batchId) || [])
-        .slice()
-        // Oldest first, and ties broken by the identifier NUMERICALLY: the items of one press
-        // share a clock, and a plain string sort would put the tenth piece before the second.
-        .sort(
-          (a, b) =>
-            (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0) ||
-            String(a.id).localeCompare(String(b.id), undefined, { numeric: true }),
-        )
-        .map((r) => ({
-          id: r.id,
-          title: r.title ?? null,
-          status: r.status,
-          state: BATCH_ITEM_STATE[r.status] ?? 'waiting',
-        }))
+      // WHAT THE OWNER HAS ALREADY SAID about this assembly — the one fact here that is not
+      // recomputed from statuses, because nothing else can produce it.
+      const { skipped, cancelled } = batchDecisionsOf(req)
+      // The grouping, the de-duplication of a repeated piece and the order are the QUEUE's own
+      // (adapter.mjs): the screen draws the pieces in the very order the next one is handed out
+      // in, and two answers to «which piece is next» would be two batches on one request.
+      const items = batchItemsOf(rows, batchId).map((r) => ({
+        id: r.id,
+        title: r.title ?? null,
+        status: r.status,
+        state: skipped.includes(r.id) ? BATCH_ITEM_SKIPPED : (BATCH_ITEM_STATE[r.status] ?? 'waiting'),
+      }))
 
       const loudest = BATCH_STATE_ORDER.find((s) => items.some((i) => i.state === s))
-      // CLOSED BY ITS ASSEMBLY, and only when every piece produced. A batch with nothing in it
-      // is not closed either — it is waiting, and saying «готово» about a request whose items
-      // are gone would be a completion nobody performed.
-      const closed = items.length > 0 && items.every((i) => i.state === 'done')
-      const state = closed ? 'done' : (loudest ?? 'waiting')
+      // CLOSED BY ITS ASSEMBLY, and only when every piece produced OR was let go by the owner.
+      // A skipped piece does not hold the assembly — that is what skipping it MEANT — and it
+      // is still shown, by name, saying «пропущен»: a decision that left no trace is a decision
+      // nobody can be held to.
+      const closed =
+        items.length > 0 && items.every((i) => i.state === 'done' || i.state === BATCH_ITEM_SKIPPED)
+      // AN ABANDONED ASSEMBLY READS AS ABANDONED, above every other word: its pieces were taken
+      // out of the queue and what they say about themselves no longer describes the batch.
+      const state = cancelled ? 'cancelled' : closed ? 'done' : (loudest ?? 'waiting')
+      const broken = cancelled ? null : (items.find((i) => i.state === 'failed') ?? null)
       return {
         id: req.id,
         title: req.title ?? null,
@@ -1807,7 +1825,22 @@ function deriveBatches(requests, rows, { activeProject, machineId } = {}) {
         // WHAT IS HOLDING THE ASSEMBLY, named rather than left for a reader to work out: the
         // loudest item, and its state IS the reason (waiting for a person / under way / not
         // started). Null when there is nothing to wait for.
-        holding: closed ? null : (items.find((i) => i.state === state) ?? null),
+        holding: cancelled || closed ? null : (items.find((i) => i.state === state) ?? null),
+        // THE QUESTION THE ASSEMBLY OWES ITS OWNER. Present exactly while a piece is broken and
+        // he has not answered: the batch stops, hands out nothing, and asks — skip, repeat, or
+        // abandon. It carries the piece by NAME and the three answers by name, so the card is
+        // built from the daemon's own words and a button can never offer an answer no door
+        // accepts. Absent when there is nothing to ask, rather than present and empty.
+        ...(broken
+          ? {
+              question: {
+                itemId: broken.id,
+                itemTitle: broken.title,
+                text: `«${broken.title ?? broken.id}» не получилось. Что делаем?`,
+                options: BATCH_DECISIONS.map((o) => ({ ...o })),
+              },
+            }
+          : {}),
       }
     })
 }
