@@ -15,7 +15,7 @@ import { screenById } from '../screens/registry'
 import type { ScreenId } from '../screens/registry'
 import { DecisionCard, EMPTY_DRAFT, isOpen } from './DecisionCard'
 import type { DecisionDraft } from './DecisionCard'
-import { CONSOLE_CONTEXT_EVENT, readConsoleContext } from './console-context'
+import { CONSOLE_CONTEXT_EVENT, CONSOLE_OPEN_EVENT, readConsoleContext } from './console-context'
 import type { ConsoleContext } from './console-context'
 import { refusalWords } from './format'
 import { openScreen } from './navigation'
@@ -80,6 +80,16 @@ interface Line {
   /** Что уехало вместе с вопросом, названное словами. Только у реплик человека. */
   rode?: string
   draft?: ChatDraft
+  /**
+   * Черновик предложен В ЭТОМ разговоре, только что.
+   *
+   * Кнопка «Создать» стоит ТОЛЬКО у такого. Книга разговора помнит и вчерашние предложения,
+   * а окно теперь висит над каждым экраном — старый черновик с живой кнопкой означал бы, что
+   * работа, о которой человек думал позавчера, ставится случайным нажатием, и он даже не
+   * поймёт, откуда она взялась. Прочитанное предложение остаётся видимым текстом: сказать
+   * его заново — секунда, а отменить поставленную задачу — нет.
+   */
+  fresh?: boolean
 }
 
 /**
@@ -187,6 +197,14 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
     return () => window.removeEventListener(CONSOLE_CONTEXT_EVENT, onTold)
   }, [])
 
+  // «Обсудить с системой» с баннера остановленной задачи — это просьба ПОКАЗАТЬСЯ, а не
+  // второй разговор: контекст этой задачи окно уже знает от самого экрана.
+  useEffect(() => {
+    const onAsked = () => setOpen(true)
+    window.addEventListener(CONSOLE_OPEN_EVENT, onAsked)
+    return () => window.removeEventListener(CONSOLE_OPEN_EVENT, onAsked)
+  }, [])
+
   const context: ConsoleContext = useMemo(
     () => told ?? { kind: 'screen', line: screenById(screen).title },
     [told, screen],
@@ -265,7 +283,7 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
             key: `heard-${Date.now()}`,
             who: 'system',
             text: reply.answer.text,
-            ...(reply.answer.draft ? { draft: reply.answer.draft } : {}),
+            ...(reply.answer.draft ? { draft: reply.answer.draft, fresh: true } : {}),
           })
         },
         onError: (err) => setProblem(refusalWords(err)),
@@ -350,7 +368,7 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
     )
   }
 
-  const draftLines = lines.filter((l) => l.draft)
+  const draftLines = lines.filter((l) => l.draft && l.fresh)
 
   return (
     <div
@@ -407,7 +425,7 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
                   <div className="mt-2 text-[11.5px] text-ok-tx">
                     Задача {created[line.key]} стоит в списке «Задачи».
                   </div>
-                ) : (
+                ) : line.fresh ? (
                   <button
                     type="button"
                     disabled={enqueue.isPending}
@@ -416,6 +434,11 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
                   >
                     {enqueue.isPending ? 'Ставлю…' : 'Создать'}
                   </button>
+                ) : (
+                  <div className="mt-2 text-[11px] leading-[1.45] text-tx3">
+                    Предложение из прошлого разговора — кнопки у него нет. Скажите его заново, если
+                    оно ещё нужно.
+                  </div>
                 )}
               </div>
             ) : null}
