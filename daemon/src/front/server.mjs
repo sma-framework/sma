@@ -77,7 +77,7 @@ import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { BATCH_PARENT, isBatchParent, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
-import { proposeWords } from './chat.mjs'
+import { proposeBreakdown, proposeWords } from './chat.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
@@ -211,26 +211,29 @@ const BUILD_INSTRUCTION_HTML =
 
 /**
  * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
- * freeze plus six doors, each declared once by its own release — the chat stop button in
+ * freeze plus seven doors, each declared once by its own release — the chat stop button in
  * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request, the
- * word its owner answers a stopped batch with, and the two doors of a task's WORDS: the one
- * that proposes them and the one that corrects them).
- * Exactly FIFTY-NINE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * word its owner answers a stopped batch with, the composition a phrase could have, and the
+ * two doors of a task's WORDS: the one that proposes them and the one that corrects them).
+ * Exactly SIXTY entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 59) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 60) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last six joined one release at a time, additively — nothing was
- * removed or renamed. ALL FIFTY-NINE ARE LIVE — the table carries no stub, and the shape
+ * a time; the last seven joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
- * The two word doors are a PAIR and are worth reading as one: the first WRITES NOTHING (it
- * returns a draft for a person to correct), and the second writes only onto a task whose work
- * is not over. Between them they are the whole of «система пишет слова, владелец подтверждает».
+ * THREE OF THE SEVEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
+ * two word doors are a PAIR (the first returns a draft for a person to correct, the second
+ * writes only onto a task whose work is not over), and the batch-composition door is the same
+ * promise about a whole batch. Between them they are the whole of «система предлагает,
+ * владелец подтверждает» — and each of the three is proved by an EMPTY QUEUE after the call,
+ * not by its status code.
  */
 export const ROUTES = Object.freeze({
   // ── the original fourteen (live) ──
@@ -295,6 +298,8 @@ export const ROUTES = Object.freeze({
   'POST /api/batch': 'handleBatchCreate',
   // ── and the word he answers a stopped one with: skip / repeat / abandon ──
   'POST /api/batch/decide': 'handleBatchDecide',
+  // ── the composition a phrase COULD have: proposed for confirmation, never put in ──
+  'POST /api/batch/suggest': 'handleBatchSuggest',
   // ── the words of a task: the system PROPOSES them, and the owner CORRECTS them ──
   'POST /api/task/suggest': 'handleTaskSuggest',
   'POST /api/task/words': 'handleTaskWords',
@@ -3571,6 +3576,51 @@ async function handleBatchCreate({ req, res, config, deps }) {
 }
 
 /**
+ * POST /api/batch/suggest — body `{phrase}`. Формулировка владельца входит; ЧЕРНОВИК состава
+ * выходит. НИЧЕГО НЕ ПИШЕТСЯ — ни этим обработчиком, ни тем, что он зовёт.
+ *
+ * ЗАЧЕМ ДВЕРЬ, КОТОРАЯ НИЧЕГО НЕ СТАВИТ — это и есть всё решение основателя по батчу: он
+ * пишет фразу, система предлагает состав, ставит по-прежнему ОН и ставит другой дверью
+ * (`POST /api/batch`). Машина, которая и разобрала бы фразу, и запустила бы работу, ответила
+ * бы на вопрос, которого ей не задавали. Сьют утверждает это единственным стоящим способом:
+ * очередь после вызова ПУСТА.
+ *
+ * ЧТЕНИЕ БЭКЛОГА ОБЯЗАТЕЛЬНО, а не «если получится». Половина предложения (куски фразы без
+ * подбора) выглядит на экране ровно как «в бэклоге ничего похожего нет», и владелец не может
+ * отличить одно от другого. Поэтому неподключённое чтение — 501, а не тихая половина.
+ *
+ * Фраза бьётся о ТОТ ЖЕ потолок, что и заголовок постановки: она им и станет, и предложить
+ * заголовок, который дверь постановки потом откажется принять, значит соврать заранее.
+ *
+ * Разбор — словарь (`chat.mjs proposeBreakdown` говорит это своими словами), и он может
+ * ответить ВОПРОСОМ вместо состава: постановка у нас — дискуссия, и «из чего это состоит?»
+ * законный её ход, в отличие от выдуманного состава.
+ */
+async function handleBatchSuggest({ req, res, config, deps }) {
+  if (typeof deps.deriveBacklog !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['phrase']))) return undefined
+
+  const phrase = typeof b.phrase === 'string' ? b.phrase.trim() : ''
+  if (phrase === '' || phrase.length > BATCH_TITLE_CAP) return send400(res, 'invalid phrase')
+
+  const answer = deps.deriveBacklog({ config, fsImpl: deps.fsImpl }) || { rows: [] }
+  const proposal = proposeBreakdown(phrase, Array.isArray(answer.rows) ? answer.rows : [])
+  if (!proposal) return send400(res, 'invalid phrase')
+
+  // ОДИН потолок числа элементов на весь батч, и он живёт у двери постановки: предложить
+  // больше, чем она примет, значит показать состав, который откажутся принять целиком.
+  return sendJson(res, 200, {
+    ok: true,
+    text: proposal.text,
+    question: proposal.question,
+    draft: { title: phrase, items: proposal.items.slice(0, BATCH_ITEMS_CAP) },
+  })
+}
+
+/**
  * POST /api/batch/decide — the word that gets a STOPPED assembly moving again.
  * Body `{batchId, decision:'skip'|'retry'|'cancel', itemId?}`.
  *
@@ -4146,6 +4196,7 @@ export const HANDLERS = Object.freeze({
   // the batch request, and the word its owner answers a stopped one with
   handleBatchCreate,
   handleBatchDecide,
+  handleBatchSuggest,
   handleTaskSuggest,
   handleTaskWords,
 })
