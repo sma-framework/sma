@@ -230,6 +230,26 @@ export function useSuggestWords() {
   })
 }
 
+/**
+ * Попросить систему разобрать фразу на состав батча.
+ *
+ * Картина не перечитывается по той же причине, что и у вывода слов: дверь ничего не ставит.
+ * Обновление после вызова, который ничего не изменил, сказало бы человеку, что где-то что-то
+ * произошло — а произошло только предложение, и оно у него на глазах.
+ */
+export function useSuggestBatch() {
+  return useMutation<Awaited<ReturnType<typeof api.suggestBatch>>, Error, string>({
+    mutationFn: (phrase: string) => api.suggestBatch(phrase),
+  })
+}
+
+/** Завести батч. Вот ЭТО меняет очередь — поэтому картина перечитывается. */
+export function useCreateBatch() {
+  return useAction<Parameters<typeof api.createBatch>[0], Awaited<ReturnType<typeof api.createBatch>>>((input) =>
+    api.createBatch(input),
+  )
+}
+
 /** Поправить слова живой задачи — карточка перечитывается вместе с общей картиной. */
 export function useTaskWords(taskId: string | null) {
   return useAction<Parameters<typeof api.setTaskWords>[0], Awaited<ReturnType<typeof api.setTaskWords>>>(

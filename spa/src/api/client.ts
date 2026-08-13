@@ -292,6 +292,64 @@ export function batchDecide(input: {
   }))
 }
 
+/**
+ * Одна запись предложенного состава. Природа названа в самой записи и не выводится экраном:
+ * `backlog` — существующая строка бэклога (её слова взяты из файла), `subtask` — кусок фразы
+ * владельца. `why` есть у каждой: подбор по словам ошибается, а молчаливый подбор ошибается
+ * незаметно — промах обязан быть виден ДО подтверждения состава.
+ */
+export interface BreakdownItem {
+  kind: 'backlog' | 'subtask'
+  /** Идентификатор строки бэклога — только у записи бэклога. */
+  id?: string
+  title: string
+  why: string
+}
+
+/**
+ * Уточняющий вопрос системы вместо состава. Постановка у нас — дискуссия, и «из чего это
+ * состоит?» законный её ход; выдуманный состав — нет. Форма вариантов не сочиняет: их список
+ * приходит от двери и сегодня пуст, то есть ответ даётся своими словами.
+ */
+export interface BreakdownQuestion {
+  id: string
+  area?: string
+  question: string
+  context?: string
+  options: { id: string; label: string }[]
+}
+
+/** Что система предложила по фразе: черновик состава батча либо вопрос о нём. */
+export interface SuggestedBatch {
+  ok: boolean
+  /** Что система поняла — одной фразой, чтобы промах был виден до подтверждения. */
+  text: string
+  question: BreakdownQuestion | null
+  draft: { title: string; items: BreakdownItem[] }
+}
+
+/**
+ * Попросить систему разобрать фразу на состав батча.
+ *
+ * ЭТА ДВЕРЬ НИЧЕГО НЕ СТАВИТ — она отвечает черновиком, а батч заводит соседняя дверь по
+ * отдельному нажатию владельца. Предложение и постановка это два действия, а не одно.
+ */
+export function suggestBatch(phrase: string): Promise<SuggestedBatch> {
+  return postJson<SuggestedBatch>('/api/batch/suggest', { phrase })
+}
+
+/**
+ * Завести батч: одна фраза владельца и элементы, которые она называет. Элемент — либо
+ * идентификатор строки бэклога, либо своя подзадача текстом; оба вида законны в одном списке.
+ */
+export function createBatch(input: {
+  title: string
+  items: string[]
+  lane?: string
+}): Promise<{ ok: boolean; id: string; items: string[] }> {
+  return postJson('/api/batch', withOptional({ title: input.title, items: input.items }, { lane: input.lane }))
+}
+
 /** Ask for a new helper or skill to be drafted. A draft is never switched on by itself. */
 export function forge(input: { kind: DraftKind; description: string; slugHint?: string }): Promise<ForgeResult> {
   return postJson<ForgeResult>(

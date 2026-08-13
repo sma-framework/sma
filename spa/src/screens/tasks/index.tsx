@@ -8,6 +8,7 @@ import { usePhaseBells } from '../pipeline/shared'
 import { BatchView } from './BatchView'
 import { Inbox } from './Inbox'
 import type { InboxItem } from './Inbox'
+import { NewBatchForm } from './NewBatchForm'
 import { NewTaskForm } from './NewTaskForm'
 import { UnitRow } from './UnitRow'
 import { buildUnits, countUnits, waitWords } from './units'
@@ -70,6 +71,8 @@ export function Screen() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [newOpen, setNewOpen] = useState(false)
+  /** Открыта ли форма батча. Две формы одновременно — это два ответа на один вопрос. */
+  const [batchOpen, setBatchOpen] = useState(false)
   const [machine, setMachine] = useState<string>('')
   /** Какая фаза раскрыта в этом же окне. `null` — на глазу список. */
   const [openPhase, setOpenPhase] = useState<string | null>(null)
@@ -242,10 +245,43 @@ export function Screen() {
           </select>
         ) : null}
 
+        {/*
+          Второе действие рядом с первым, а не вместо него: инлайн и батч — РАЗНЫЕ виды работы
+          с разными правилами (одна задача против фразы, разложенной на элементы), и общая
+          форма с переключателем спрашивала бы половину полей впустую в каждом из двух случаев.
+        */}
         <div className="relative flex-none">
           <button
             type="button"
-            onClick={() => setNewOpen((v) => !v)}
+            onClick={() => {
+              setBatchOpen((v) => !v)
+              setNewOpen(false)
+            }}
+            aria-expanded={batchOpen}
+            className="rounded-[9px] border border-bd2 px-[13px] py-2 text-[12px] font-semibold text-tx2 hover:text-tx"
+          >
+            + Батч
+          </button>
+          {batchOpen ? (
+            <NewBatchForm
+              onClose={() => setBatchOpen(false)}
+              onCreated={(id) => {
+                // Сразу в развилку заведённой сборки: человек только что описал работу, и
+                // список верхнего уровня ответил бы ему одной строкой о ней вместо состава.
+                setBatchOpen(false)
+                setOpenBatch(id)
+              }}
+            />
+          ) : null}
+        </div>
+
+        <div className="relative flex-none">
+          <button
+            type="button"
+            onClick={() => {
+              setNewOpen((v) => !v)
+              setBatchOpen(false)
+            }}
             aria-expanded={newOpen}
             className="rounded-[9px] bg-blue px-[15px] py-2 text-[12px] font-semibold text-white hover:bg-blue-d"
           >
