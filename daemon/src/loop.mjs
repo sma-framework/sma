@@ -96,7 +96,7 @@ import { existsSync as fsExistsSync, readdirSync as fsReaddirSync } from 'node:f
 import { join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs, batchWorkerOf } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
@@ -108,7 +108,8 @@ import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/st
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
-import { readPendingRedirects, markConsumed, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
+import { readPendingRedirects, markConsumed, appendRedirect, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
+import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -816,6 +817,95 @@ async function poolFor(deps, task) {
 }
 
 /**
+ * ЧТО СКАЗАНО ПРО ЖИВУЮ ЗАДАЧУ ОСТАНОВЛЕННОЙ ВОЛНЫ — one sentence, in one place, so the words
+ * a worker reads do not depend on which tick told him.
+ *
+ * The tone is the founder's own: finish the step you are on and stand. Nothing is killed, the
+ * session is not torn, and the note says so out loud — because a correction that reads like a
+ * cancellation gets acted on like one.
+ */
+export function waveParkNote(phase, wave) {
+  return (
+    `Владелец остановил волну ${wave} фазы ${phase}. Доведите ТЕКУЩИЙ шаг до конца и остановитесь: ` +
+    'не начинайте следующий, ничего не откатывайте, сессию не закрывайте. Незакрытые шаги ' +
+    'останутся за вами — когда останов снимут, продолжите с того же места.'
+  )
+}
+
+/**
+ * parkStoppedWaves(deps, holds) — ask the LIVE tasks of a stopped echelon to finish their step
+ * and stand. Returns the ids told this pass.
+ *
+ * WHY A CORRECTION AND NOT A KILL. The order is «доведут текущий шаг и встанут», and every word
+ * of that is a refusal to touch the process: an interrupted session loses the step it was in the
+ * middle of, and the founder would resume work that has to be redone. So the live half of a stop
+ * travels down the channel he ALREADY has for steering running work — the same one his own «нет,
+ * не так» takes — in its «после хода» mode. No second channel is opened, and `redirects.mjs` is
+ * not edited by this plan at all.
+ *
+ * WHY THE TELLING IS WRITTEN DOWN. This runs every few seconds for as long as the stop stands.
+ * Without a record of who has already been told, one order would arrive as a dozen identical
+ * corrections a minute — noise the worker would learn to ignore, on the one channel that must
+ * never be ignored.
+ *
+ * FAIL-OPEN throughout: a register that cannot be read or written costs this pass its parking,
+ * never the tick.
+ */
+async function parkStoppedWaves(deps, holds) {
+  const dataDir = deps.config && deps.config.dataDir
+  if (!dataDir || !holds.length) return []
+  let rows
+  try {
+    rows = await deps.adapter.list({})
+  } catch (err) {
+    writeLog(deps, { type: 'wave.rows_unreadable', error: String((err && err.message) || err) })
+    return []
+  }
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  const told = []
+  for (const hold of holds) {
+    const live = rows.filter((r) => {
+      if (!r || r.status !== 'claimed') return false
+      const addr = waveAddressOf(r)
+      return !!addr && addr.phase === hold.phase && addr.wave === hold.wave
+    })
+    if (live.length === 0) continue
+    let parked
+    try {
+      parked = readWaveParked({ dataDir, phase: hold.phase, wave: hold.wave, fsImpl: deps.fsImpl })
+    } catch (err) {
+      writeLog(deps, { type: 'wave.register_unreadable', error: String((err && err.message) || err) })
+      continue
+    }
+    const fresh = live.filter((r) => !parked.includes(r.id))
+    if (fresh.length === 0) continue
+    const delivered = []
+    for (const r of fresh) {
+      const wrote = appendRedirect({
+        dataDir,
+        taskId: r.id,
+        text: waveParkNote(hold.phase, hold.wave),
+        mode: 'queue', // «после хода»: the step in flight is finished, never interrupted
+        clock,
+        fsImpl: deps.fsImpl,
+      })
+      if (wrote && wrote.ok) delivered.push(r.id)
+    }
+    if (delivered.length === 0) continue
+    try {
+      markWaveParked({ dataDir, phase: hold.phase, wave: hold.wave, taskIds: delivered, clock, fsImpl: deps.fsImpl })
+    } catch (err) {
+      writeLog(deps, { type: 'wave.park_not_recorded', error: String((err && err.message) || err) })
+    }
+    for (const id of delivered) {
+      writeLog(deps, { type: 'wave.parked', taskId: id, phase: hold.phase, wave: hold.wave })
+      told.push(id)
+    }
+  }
+  return told
+}
+
+/**
  * runSpawn(spawnWorker, spec, onLine) — await a worker child to exit, collecting a spawn
  * failure as spawnError. Resolves {code, signal, spawnError}. The child is driven entirely
  * through the injected spawnWorker (spawn.mjs in production).
@@ -1040,6 +1130,26 @@ export async function tick(deps = {}) {
     // (2b) aging signal — derived fresh, nothing stored (runs whether or not we claim).
     await deriveAging(deps, now())
 
+    // (2c) WHICH ECHELONS THEIR OWNER STOPPED — read from the register, never remembered by
+    // this process: a stop is a word somebody said, and a restart must find it exactly where he
+    // left it. Read once and used for BOTH halves of the order below: the waiting rows are not
+    // handed out, and the live ones are asked to finish their step and stand. Fail-open — an
+    // unreadable register means «nothing is stopped», which is the reading that keeps the
+    // machine moving rather than the one that silently freezes it.
+    let holds = []
+    if (config.dataDir) {
+      try {
+        holds = readWaveHolds({ dataDir: config.dataDir, fsImpl: deps.fsImpl })
+      } catch (err) {
+        if (typeof journal === 'function') journal({ type: 'wave-holds-error', error: String((err && err.message) || err) })
+      }
+    }
+    if (holds.length > 0) {
+      const parked = await parkStoppedWaves(deps, holds)
+      if (parked.length > 0) result.parked = parked
+      result.waveHolds = holds.map((h) => `${h.phase}/${h.wave}`)
+    }
+
     // (3) claim — eligible lanes FIRST, then a lane-restricted claim.
     const lanes = eligibleLanes(deps)
     if (lanes.length === 0) {
@@ -1047,7 +1157,11 @@ export async function tick(deps = {}) {
       return result
     }
     const workerId = 'daemon' // the claim is against durable state; identity is the ledger's job
-    const task = await adapter.claimNext(workerId, { lanes })
+    // THE STOP TRAVELS INTO THE CLAIM ITSELF, not around it. Filtering after the checkout would
+    // be too late in the durable queue — there the fetch IS the claim, and a row recognised as
+    // stopped afterwards has already been handed out (the same reason the batch turn is decided
+    // inside the queue). So the orders go in with the lanes, and both backends keep the promise.
+    const task = await adapter.claimNext(workerId, { lanes, holds })
     if (!task) {
       result.idle = true // skipTimerWhenNoActionableWork
       return result

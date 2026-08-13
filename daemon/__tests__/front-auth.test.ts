@@ -232,8 +232,11 @@ describe('server.mjs — the closed FIFTY-SEVEN-route table', () => {
   // RE-FREEZE REVISION (13.08.2026, the same day, fourth): + POST /api/batch/suggest — the
   // composition a phrase COULD have, proposed for confirmation. It writes nothing either: the
   // batch is still put in through POST /api/batch, by its owner's own press.
-  it('the frozen table has EXACTLY sixty routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(60)
+  // RE-FREEZE REVISION (13.08.2026, the same day, fifth): + POST /api/wave/hold — «останови
+  // волну 2». A stop is a WORD SOMEBODY SAID: nothing in the queue derives it, so it needs a
+  // door to be said through and a register on disk to be remembered in.
+  it('the frozen table has EXACTLY sixty-one routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(61)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
