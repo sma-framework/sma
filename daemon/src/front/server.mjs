@@ -803,6 +803,10 @@ async function handleTask({ res, params, config, deps }) {
       lane: row.lane ?? null,
       status: row.status ?? null,
       attempt: row.attempt ?? null,
+      // «Что обещано» and what the work IS — the two words of a task, carried to the card in
+      // the shape the row holds them. The card normalizes the promise to a list, exactly as
+      // the prompt builder does, so the person and the worker read the same sentences.
+      description: row.description ?? null,
       acceptance: row.acceptance ?? null, // the DoR contract, «обещано»
     },
     attempts,
@@ -913,9 +917,14 @@ async function proxyToMachine(res, body, deps, path) {
 
 /**
  * POST /api/enqueue — a founder roster button. Body {title, lane, provider?, model?,
- * effort?, priority?, machine?}. Explicit-pick: an unknown key → 400 before anything
- * runs. validateTask gates it; the id is minted `R-<epochMs>` with source:'roster'
- * (founder-explicit → DoR-exempt). Founder text becomes a task TITLE, never a command.
+ * effort?, priority?, description?, acceptance?, machine?}. Explicit-pick: an unknown key →
+ * 400 before anything runs. validateTask gates it; the id is minted `R-<epochMs>` with
+ * source:'roster' (founder-explicit → DoR-exempt). Founder text becomes a task TITLE, never a
+ * command.
+ *
+ * THE WORDS ARE OPTIONAL AND THEY STAY OPTIONAL. A task put in by its sentence alone is a
+ * legal task and always was; `description` and `acceptance` are what the owner accepted from
+ * the system's proposal, or typed himself, or left out entirely. The queue bounds both.
  */
 async function handleEnqueue({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -923,7 +932,13 @@ async function handleEnqueue({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['title', 'lane', 'provider', 'model', 'effort', 'priority', 'machine']))) {
+  if (
+    rejectUnknownKeys(
+      res,
+      b,
+      new Set(['title', 'lane', 'provider', 'model', 'effort', 'priority', 'description', 'acceptance', 'machine']),
+    )
+  ) {
     return undefined
   }
   if (await proxyToMachine(res, b, deps, '/api/enqueue')) return undefined
@@ -937,6 +952,8 @@ async function handleEnqueue({ req, res, config, deps }) {
     ...(b.model !== undefined ? { model: b.model } : {}),
     ...(b.effort !== undefined ? { effort: b.effort } : {}),
     ...(b.priority !== undefined ? { priority: b.priority } : {}),
+    ...(b.description !== undefined ? { description: b.description } : {}),
+    ...(b.acceptance !== undefined ? { acceptance: b.acceptance } : {}),
   }
   let norm
   try {

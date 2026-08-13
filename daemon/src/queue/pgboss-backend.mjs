@@ -803,6 +803,10 @@ export function createPgBossQueue({
       // claimed it», which is what every reader already assumed it meant.
       workerId: data.workerId ?? null,
       storyPoints: data.storyPoints,
+      // The words of the task, mirrored from the reference backend: `acceptance` travels in
+      // the shape it was written in (a string or a list of criteria) and is normalized by its
+      // readers, never on the way out — see acceptanceItems in the adapter.
+      description: data.description,
       acceptance: data.acceptance,
       enqueuedAt: r.created_on ?? null,
       // THE TWO CLOCKS, KEPT APART (see stampClaimedAt). `claimedAt` is the moment the attempt
