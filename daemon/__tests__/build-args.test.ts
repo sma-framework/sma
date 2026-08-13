@@ -110,6 +110,38 @@ describe('buildArgs — the spec the tick spawns', () => {
     expect(without.args).not.toContain('--forward-subagent-text')
   })
 
+  /**
+   * THE WIRE ITSELF, asserted where it actually matters: not «the prompt builder can render
+   * criteria» but «the criteria of THIS task are in the spec the tick is about to spawn with,
+   * and they are above the closing condition». The two are different claims, and the product
+   * has already paid once for confusing them — the capability envelope was computed, hashed
+   * and journalled for a whole fleet's life without ever reaching the arguments of a spawn.
+   */
+  it('what the task promises reaches the SPAWN SPEC, ahead of the closing condition', () => {
+    const spec = build()(
+      task({
+        description: 'Импорт падает на втором файле.',
+        acceptance: ['импорт проходит на всех файлах', 'кейс на второй файл зелёный'],
+      }),
+      route(),
+    )
+    const closing = spec.prompt.indexOf('Условие сдачи')
+    expect(closing).toBeGreaterThan(-1)
+    expect(spec.prompt).toContain('Импорт падает на втором файле.')
+    for (const criterion of ['импорт проходит на всех файлах', 'кейс на второй файл зелёный']) {
+      expect(spec.prompt.indexOf(criterion), criterion).toBeGreaterThan(-1)
+      expect(spec.prompt.indexOf(criterion), criterion).toBeLessThan(closing)
+    }
+    // and they travel as DATA on stdin, exactly like the title — never as an argument
+    expect(spec.args.join(' ')).not.toContain('импорт проходит')
+  })
+
+  it('a task with no words spawns the brief it always spawned', () => {
+    const spec = build()(task(), route())
+    expect(spec.prompt).not.toContain('признаки успеха')
+    expect(spec.prompt).toContain('Условие сдачи')
+  })
+
   it('routes a Codex worker to the other CLI, with a per-task CODEX_HOME', () => {
     const spec = build()(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
 
