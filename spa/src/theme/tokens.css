@@ -54,6 +54,10 @@
   --color-teal: #1fa0a6;
   --color-green: #3cc0a0;
   --color-mint: #74dba0;
+  /* Третий вид единицы работы — сборка. Значок и её собственные части носят этот тон, и
+     он не совпадает ни с синим инлайна, ни с бирюзовым фазы: вид читается цветом ДО слова. */
+  --color-violet: oklch(0.42 0.13 300);
+  --color-violet-s: oklch(0.97 0.025 300);
 
   /* ── states ── */
   --color-ok-tx: #25856f;
@@ -106,6 +110,8 @@
   --color-side-menu: #1b2230;
 
   --color-blue-s: rgba(59, 130, 246, 0.17);
+  --color-violet: oklch(0.78 0.12 300);
+  --color-violet-s: oklch(0.42 0.13 300 / 0.24);
 
   --color-ok-tx: #3cc0a0;
   --color-ok-s: rgba(60, 192, 160, 0.14);
