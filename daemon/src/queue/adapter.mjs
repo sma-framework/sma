@@ -28,7 +28,8 @@
  *   priority: number,           // 0 default; higher fetched first
  *   attempt: number,            // 1-based; incremented on requeue
  *   storyPoints?: number,       // CUE estimate, Fibonacci ONLY: 1|2|3|5|8|13; REQUIRED when source==='backlog'
- *   acceptance?: string,        // приёмочные критерии, <= 2000; REQUIRED when source==='backlog' (DoR)
+ *   description?: string,       // что это за работа, свободным текстом, <= 2000 — DATA, never instructions
+ *   acceptance?: string|string[], // признаки успеха: ОДНО поле, ДВА формата — see WHAT IS PROMISED below
  *   note?: string,              // return-with-comment text, <= 2000
  *   project?: string,           // V5.1: the project slug this task belongs to.
  *                               // Optional on the wire, ALWAYS present on a read row.
@@ -38,6 +39,29 @@
  *     description: string       // founder free text, <= 2000 — DATA, never instructions
  *   }
  * }
+ *
+ * ═══════ WHAT IS PROMISED — ONE FIELD, TWO FORMATS, AND NO SECOND FIELD ═══════════
+ * «Что обещано» is asked by three different readers — the worker whose prompt states the
+ * contract, the person reading the task card, and the check that judges the work afterwards.
+ * They must be reading THE SAME SENTENCE, so there is exactly one field for it: `acceptance`.
+ *
+ * A second field of criteria beside it (the shape an earlier draft proposed) would be two
+ * places to write the same promise, and the two would disagree the first time either was
+ * edited — with nothing in the product able to say which one the work was judged by. That is
+ * the whole reason the list lives INSIDE the existing field rather than beside it.
+ *
+ * The field therefore accepts BOTH shapes and means one thing:
+ *   - a STRING  — one criterion. Every row written before this existed is exactly this, and
+ *                 it stays valid, unrewritten and readable, for ever;
+ *   - a LIST of strings — several criteria, bounded by CAP_ACCEPTANCE_ITEMS and by the same
+ *                 per-item ceiling one criterion always had.
+ *
+ * AND EVERY READER NORMALIZES: `acceptanceItems()` turns either shape into a list (a string
+ * becomes a list of one), and that is the only way this field is ever read. Nobody branches
+ * on «is it an array» twice, so nobody can branch on it differently.
+ *
+ * `description` is the neighbouring free text — what the work IS, as opposed to what will
+ * make it done. Both are DATA and reach a worker only inside a fence.
  *
  * ═══════════ A BATCH IS A FACT OF THE QUEUE, NEVER A GROUPING ON A SCREEN ═══════════
  * One request of the owner («разгреби мелочь перед демо») fans out into N pieces of work and
@@ -300,8 +324,38 @@ const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'batch', 'ski
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
   'id', 'source', 'title', 'lane', 'provider', 'model', 'effort',
-  'priority', 'attempt', 'storyPoints', 'acceptance', 'note', 'project', 'batchId', 'forge', 'data',
+  'priority', 'attempt', 'storyPoints', 'description', 'acceptance', 'note', 'project', 'batchId', 'forge', 'data',
 ])
+
+/**
+ * How many criteria one promise may carry. A CEILING, not a target — a task whose success is
+ * described by more than a dozen separate sentences is a task nobody will read to the end,
+ * and an unbounded list is an unbounded prompt paid for on every attempt.
+ */
+export const CAP_ACCEPTANCE_ITEMS = 12
+
+/**
+ * acceptanceItems(acceptance) → the promise as a LIST, whichever shape it was written in.
+ *
+ * THE ONE READING PATH for `acceptance` in the whole product: a string is a list of one, a
+ * list is itself, anything else is nothing. Empty and blank entries are dropped, because a
+ * blank criterion rendered as a bullet is a promise nobody made.
+ *
+ * Exported so the prompt builder, the read model behind the screen and the doors all ask the
+ * same function. Two of them branching on `Array.isArray` for themselves is two chances to
+ * disagree about what an old row promised.
+ *
+ * @param {string|string[]|null|undefined} acceptance
+ * @returns {string[]}
+ */
+export function acceptanceItems(acceptance) {
+  if (Array.isArray(acceptance)) {
+    return acceptance.filter((s) => typeof s === 'string').map((s) => s.trim()).filter((s) => s !== '')
+  }
+  if (typeof acceptance !== 'string') return []
+  const one = acceptance.trim()
+  return one === '' ? [] : [one]
+}
 
 /**
  * isBatchParent(taskOrRow) → is this the REQUEST of a batch rather than a piece of its work?
@@ -539,8 +593,29 @@ export function validateTask(task) {
   if (task.note !== undefined && String(task.note).length > CAP_TEXT) {
     throw new InvalidTaskError(`task "${task.id}" note exceeds ${CAP_TEXT} chars`)
   }
-  if (task.acceptance !== undefined && String(task.acceptance).length > CAP_TEXT) {
-    throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+  if (task.description !== undefined && String(task.description).length > CAP_TEXT) {
+    throw new InvalidTaskError(`task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+  }
+  // ONE FIELD, TWO FORMATS (see the header). A string is what every row written before this
+  // existed carries and it is bounded exactly as it always was; a list is bounded twice —
+  // per criterion by that same ceiling, and in NUMBER, because a promise nobody capped is a
+  // prompt nobody capped, paid for on every attempt of the task.
+  if (task.acceptance !== undefined) {
+    if (Array.isArray(task.acceptance)) {
+      if (task.acceptance.length > CAP_ACCEPTANCE_ITEMS) {
+        throw new InvalidTaskError(`task "${task.id}" acceptance carries more than ${CAP_ACCEPTANCE_ITEMS} criteria`)
+      }
+      for (const item of task.acceptance) {
+        if (typeof item !== 'string') {
+          throw new InvalidTaskError(`task "${task.id}" acceptance must be a string or a list of strings`)
+        }
+        if (item.length > CAP_TEXT) {
+          throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+        }
+      }
+    } else if (String(task.acceptance).length > CAP_TEXT) {
+      throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+    }
   }
   if (task.priority !== undefined && typeof task.priority !== 'number') {
     throw new InvalidTaskError(`task "${task.id}" priority must be a number`)
@@ -628,7 +703,9 @@ export function validateTask(task) {
   // DoR gate: backlog REQUIRES storyPoints ∈ Fibonacci AND non-empty acceptance.
   // roster/return are founder-explicit and exempt (expedite by nature — no friction).
   if (task.source === 'backlog') {
-    const hasAcceptance = task.acceptance !== undefined && String(task.acceptance).trim() !== ''
+    // Read through the ONE normalizer, so an empty LIST is as unready as an empty string —
+    // a promise of nothing, written in the newer shape, is still a promise of nothing.
+    const hasAcceptance = acceptanceItems(task.acceptance).length > 0
     if (task.storyPoints === undefined || !hasAcceptance) {
       throw new NotReadyError(
         `backlog task "${task.id}" is not ready: a backlog task must carry both a storyPoints ` +
@@ -728,6 +805,11 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       coalesceCount: rec.coalesceCount,
       workerId: rec.workerId,
       storyPoints: rec.task.storyPoints,
+      // THE WORDS OF THE TASK, carried out exactly as they were written in: `acceptance`
+      // keeps its shape (string or list) rather than being normalized here, because
+      // normalizing on the way OUT would quietly rewrite what an old row says. Every reader
+      // calls acceptanceItems() instead — one path, and the row stays the row.
+      description: rec.task.description,
       acceptance: rec.task.acceptance,
       enqueuedAt: rec.enqueuedAt,
       // WHEN THE WORK WAS TAKEN, and — a DIFFERENT fact — when its lease was last renewed.
@@ -1153,6 +1235,62 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       batchId,
       data: { batch: 'parent' },
       ...over,
+    })
+
+    // ── THE WORDS OF A TASK: one field of promise, two shapes, and a free-text description ──
+    //
+    // The cases below are the whole compatibility story of that field, and they are in the
+    // CONTRACT suite rather than beside one backend because the shape has to survive the trip
+    // through a real database exactly as it survives the trip through a Map.
+
+    it('a promise written as ONE STRING — the shape every older row carries — reads back as a list of one', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({
+        id: 'R-old',
+        source: 'roster',
+        title: 'запись, написанная до списка',
+        lane: 'prod',
+        acceptance: 'тесты по задаче зелёные',
+      })
+      const [row] = await q.list({})
+      // the row keeps the string it was written with — nothing rewrote anybody's history…
+      expect(row.acceptance).toBe('тесты по задаче зелёные')
+      // …and every reader still gets a list, because that is the only way this field is read
+      expect(acceptanceItems(row.acceptance)).toEqual(['тесты по задаче зелёные'])
+    })
+
+    it('a promise of three criteria travels to the row AS A LIST, and the description travels beside it', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({
+        id: 'R-words',
+        source: 'roster',
+        title: 'починить импорт агентов',
+        lane: 'prod',
+        description: 'Импорт падает на втором файле; починить и закрыть кейсом.',
+        acceptance: ['импорт проходит на всех файлах', 'кейс на второй файл зелёный', 'записка о подходе оставлена'],
+      })
+      const [row] = await q.list({})
+      expect(row.description).toBe('Импорт падает на втором файле; починить и закрыть кейсом.')
+      expect(acceptanceItems(row.acceptance)).toEqual([
+        'импорт проходит на всех файлах',
+        'кейс на второй файл зелёный',
+        'записка о подходе оставлена',
+      ])
+    })
+
+    it('the promise is CAPPED in both directions: too many criteria and an over-long one are each refused', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      const base = { source: 'roster', title: 'работа', lane: 'prod' }
+      await expect(
+        q.enqueue({ ...base, id: 'R-many', acceptance: Array.from({ length: CAP_ACCEPTANCE_ITEMS + 1 }, (_, i) => `критерий ${i}`) }),
+      ).rejects.toThrow(/criteria/)
+      await expect(q.enqueue({ ...base, id: 'R-long', acceptance: ['x'.repeat(2001)] })).rejects.toThrow(/acceptance/)
+      await expect(q.enqueue({ ...base, id: 'R-desc', description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
+      // a refusal writes nothing at all
+      expect(await q.list({})).toHaveLength(0)
     })
 
     it('an item states which batch it belongs to, and the row says so', async () => {

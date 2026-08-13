@@ -25,6 +25,7 @@ import {
   createMemoryQueue,
   queueAdapterContractSuite,
   validateTask,
+  acceptanceItems,
   backfillProject,
   DEFAULT_PROJECT_ID,
   TASK_SOURCES,
@@ -345,6 +346,56 @@ describe('constants — taxonomy', () => {
     expect(() => validateTask({ ...base, data: { kind: 'document', phase: { n: 12 } } })).toThrow(/data\.phase/)
     expect(() => validateTask({ ...base, data: { kind: 'document', smuggled: 'x' } })).toThrow(/unknown key "smuggled"/)
     expect(() => validateTask({ ...base, data: ['document'] })).toThrow(/must be an object/)
+  })
+
+  /**
+   * THE WORDS OF A TASK — one field of promise, and the proof that there is only one.
+   *
+   * The temptation these cases exist against is a second field of «criteria» beside
+   * `acceptance`: two places to write the same promise, disagreeing the first time either is
+   * edited, with nothing able to say which one the work was judged by. The vocabulary grew by
+   * `description` ONLY, and the promise learned a second SHAPE rather than a second home.
+   */
+  it('the vocabulary grew by description alone — there is no second field of criteria', () => {
+    const out = validateTask({
+      id: 'R-words',
+      source: 'roster',
+      title: 'работа со словами',
+      lane: 'prod',
+      description: 'что это за работа',
+      acceptance: ['первый признак', 'второй признак'],
+    })
+    expect(out.description).toBe('что это за работа')
+    expect(out.acceptance).toEqual(['первый признак', 'второй признак'])
+    // no neighbouring field of criteria travelled — the promise has exactly one home
+    expect(Object.keys(out)).not.toContain('criteria')
+    const smuggled: any = validateTask({
+      id: 'R-smuggle',
+      source: 'roster',
+      title: 'работа',
+      lane: 'prod',
+      criteria: ['так писать нельзя'],
+    })
+    expect(Object.hasOwn(smuggled, 'criteria')).toBe(false)
+  })
+
+  it('acceptanceItems is the ONE reading path: a string is a list of one, blanks are nothing', () => {
+    expect(acceptanceItems('тесты зелёные')).toEqual(['тесты зелёные'])
+    expect(acceptanceItems(['  первый  ', '', '   ', 'второй'])).toEqual(['первый', 'второй'])
+    expect(acceptanceItems(undefined)).toEqual([])
+    expect(acceptanceItems('   ')).toEqual([])
+    expect(acceptanceItems(42 as any)).toEqual([])
+  })
+
+  /** The DoR gate reads THROUGH the normalizer — a promise of nothing is unready in either shape. */
+  it('a backlog task promising an EMPTY list is as unready as one promising nothing at all', () => {
+    expect(() => validateTask(backlog({ acceptance: [] }))).toThrow(NotReadyError)
+    expect(() => validateTask(backlog({ acceptance: ['   '] }))).toThrow(NotReadyError)
+    expect(validateTask(backlog({ acceptance: ['зелёные тесты'] })).acceptance).toEqual(['зелёные тесты'])
+  })
+
+  it('a criterion that is not a string is refused by name, never coerced', () => {
+    expect(() => validateTask(backlog({ acceptance: ['ок', 42] }))).toThrow(/string or a list of strings/)
   })
 
   it('TASK_LANES includes forge and TASK_SOURCES the three intake origins', () => {
