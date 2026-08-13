@@ -205,6 +205,18 @@ export function useReturnTask() {
   )
 }
 
+/**
+ * Ответить по вставшей сборке: пропустить элемент, повторить его или отменить батч.
+ *
+ * Ответ меняет саму очередь, поэтому картина перечитывается ровно один раз — тем же способом,
+ * каким её перечитывает всякое другое действие окна.
+ */
+export function useBatchDecide() {
+  return useAction<Parameters<typeof api.batchDecide>[0], Awaited<ReturnType<typeof api.batchDecide>>>((input) =>
+    api.batchDecide(input),
+  )
+}
+
 /** Ask for a new helper or skill to be drafted. */
 export function useForge() {
   return useAction<{ kind: DraftKind; description: string; slugHint?: string }, Awaited<ReturnType<typeof api.forge>>>(

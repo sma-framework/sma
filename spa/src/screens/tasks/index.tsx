@@ -5,6 +5,7 @@ import { useTellConsoleContext } from '../../shell/console-context'
 import { clockLabel, plural } from '../../shell/format'
 import { PhaseCardView } from '../pipeline/PhaseCardView'
 import { usePhaseBells } from '../pipeline/shared'
+import { BatchView } from './BatchView'
 import { Inbox } from './Inbox'
 import type { InboxItem } from './Inbox'
 import { NewTaskForm } from './NewTaskForm'
@@ -72,6 +73,8 @@ export function Screen() {
   const [machine, setMachine] = useState<string>('')
   /** Какая фаза раскрыта в этом же окне. `null` — на глазу список. */
   const [openPhase, setOpenPhase] = useState<string | null>(null)
+  /** Какая сборка раскрыта в этом же окне — тем же способом и по той же причине. */
+  const [openBatch, setOpenBatch] = useState<string | null>(null)
 
   // Карточка фазы живёт теперь и здесь, значит и два звонка фазового цикла нужны здесь: без
   // них раскрытая фаза осталась бы такой, какой её открыли, пока человек не ушёл и не вернулся.
@@ -173,14 +176,20 @@ export function Screen() {
           line: `фаза ${(phaseIndex.data?.phases ?? []).find((p) => p.id === openPhase)?.name ?? openPhase}`,
           phase: openPhase,
         }
-      : {
-          kind: 'list',
-          line: `Задачи · ${units.length} ${plural(units.length, 'единица', 'единицы', 'единиц')} работы`,
-        },
+      : openBatch !== null
+        ? {
+            kind: 'screen',
+            line: `батч «${(data?.batches ?? []).find((b) => b.id === openBatch)?.title ?? openBatch}»`,
+          }
+        : {
+            kind: 'list',
+            line: `Задачи · ${units.length} ${plural(units.length, 'единица', 'единицы', 'единиц')} работы`,
+          },
   )
 
   const openUnit = (unit: WorkUnit) => {
     if (unit.target.screen === 'phase') setOpenPhase(unit.target.id)
+    else if (unit.target.screen === 'batch') setOpenBatch(unit.target.id)
     else setSelectedId(unit.target.id)
   }
 
@@ -193,6 +202,19 @@ export function Screen() {
         onBack={() => setOpenPhase(null)}
         backLabel="← К задачам"
         trail={[{ label: 'Задачи', onClick: () => setOpenPhase(null) }]}
+      />
+    )
+  }
+
+  // Сборка раскрывается здесь же и той же дорогой, что фаза: вход в элемент запомнится, потому
+  // что элемент открывается ПОВЕРХ развилки, а не вместо неё.
+  if (openBatch !== null) {
+    return (
+      <BatchView
+        id={openBatch}
+        onBack={() => setOpenBatch(null)}
+        backLabel="← К задачам"
+        trail={[{ label: 'Задачи', onClick: () => setOpenBatch(null) }]}
       />
     )
   }
