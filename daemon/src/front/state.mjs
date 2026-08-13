@@ -80,7 +80,7 @@ import { join } from 'node:path'
 
 import { pipelineEnabled } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
-import { REASON_LABELS } from '../queue/adapter.mjs'
+import { isBatchParent, REASON_LABELS } from '../queue/adapter.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
@@ -1715,6 +1715,104 @@ function readAcceptance(io, root, dir, files) {
 }
 
 /**
+ * WHAT ONE ITEM OF A BATCH READS AS — the five queue statuses said in the words the assembly
+ * cares about. The queue's vocabulary answers «where is this row»; a batch asks a different
+ * question, «is anybody needed here», and the two are not the same sentence.
+ */
+const BATCH_ITEM_STATE = Object.freeze({
+  completed: 'done',
+  failed: 'failed',
+  awaiting_approval: 'awaiting_decision',
+  claimed: 'running',
+  queued: 'waiting',
+})
+
+/**
+ * THE ORDER OF LOUDNESS — the first of these present among the items is what the batch reads
+ * as, and the item wearing it is what HOLDS the assembly.
+ *
+ * A failure comes before a decision, and both come before anything that is merely under way:
+ * the founder's rule for a batch is that a failed piece STOPS it and asks its owner what to do
+ * (skip / retry / abandon), with nothing ever retried by itself. Which is also why a failed
+ * item does not close: it is terminal for the QUEUE and unfinished for the ASSEMBLY, and a
+ * batch reading «готово» with a failed piece in it would be the plainest lie this screen could
+ * tell. Only work that actually produced counts as closed.
+ */
+const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running', 'waiting', 'done'])
+
+/**
+ * deriveBatches(requests, rows, ctx) → the batches, each with its items, its own reading and
+ * the item that is holding it.
+ *
+ * COMPUTED AT EVERY READ, NEVER STORED. «What holds this assembly» is a function of the items'
+ * statuses and of nothing else; written down anywhere it would be a second truth about the
+ * same five statuses, and the two would disagree the first time either moved — silently,
+ * because nothing compares them. Same for «готово»: a batch is closed when its items are, and
+ * a stored closed-flag is a promise the items can contradict.
+ *
+ * PURE over its arguments. An orphan item (a batch id with no request row) is deliberately NOT
+ * invented into a batch of its own: the door writes the request last precisely so a half-written
+ * batch reads as loose work, which a person can see and run.
+ *
+ * @param {object[]} requests the batch request rows
+ * @param {object[]} rows     every WORK row (the requests are not among them)
+ * @param {{activeProject?:string|null, machineId?:string}} ctx
+ * @returns {object[]}
+ */
+function deriveBatches(requests, rows, { activeProject, machineId } = {}) {
+  if (!Array.isArray(requests) || requests.length === 0) return []
+
+  const byBatch = new Map()
+  for (const r of rows) {
+    if (!r || !r.batchId) continue
+    if (!byBatch.has(r.batchId)) byBatch.set(r.batchId, [])
+    byBatch.get(r.batchId).push(r)
+  }
+
+  return [...requests]
+    .sort((a, b) => (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0))
+    .map((req) => {
+      // The request's own id IS the batch id (the door mints one identifier, not two); the
+      // field is read first all the same, so a row written by anything else still groups.
+      const batchId = req.batchId || req.id
+      const items = (byBatch.get(batchId) || [])
+        .slice()
+        // Oldest first, and ties broken by the identifier NUMERICALLY: the items of one press
+        // share a clock, and a plain string sort would put the tenth piece before the second.
+        .sort(
+          (a, b) =>
+            (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0) ||
+            String(a.id).localeCompare(String(b.id), undefined, { numeric: true }),
+        )
+        .map((r) => ({
+          id: r.id,
+          title: r.title ?? null,
+          status: r.status,
+          state: BATCH_ITEM_STATE[r.status] ?? 'waiting',
+        }))
+
+      const loudest = BATCH_STATE_ORDER.find((s) => items.some((i) => i.state === s))
+      // CLOSED BY ITS ASSEMBLY, and only when every piece produced. A batch with nothing in it
+      // is not closed either — it is waiting, and saying «готово» about a request whose items
+      // are gone would be a completion nobody performed.
+      const closed = items.length > 0 && items.every((i) => i.state === 'done')
+      const state = closed ? 'done' : (loudest ?? 'waiting')
+      return {
+        id: req.id,
+        title: req.title ?? null,
+        project: projectOf(req, activeProject),
+        machine: machineId,
+        state,
+        items,
+        // WHAT IS HOLDING THE ASSEMBLY, named rather than left for a reader to work out: the
+        // loudest item, and its state IS the reason (waiting for a person / under way / not
+        // started). Null when there is nothing to wait for.
+        holding: closed ? null : (items.find((i) => i.state === state) ?? null),
+      }
+    })
+}
+
+/**
  * deriveState(deps) → the one-poll roster payload {kpis, queue, awaiting, workers, done,
  * spend}. (Task 4 augments it with costs.series over GET /api/state.) Pure over its
  * injected collaborators; re-derives fresh every call.
@@ -1722,6 +1820,10 @@ function readAcceptance(io, root, dir, files) {
  * `awaiting` exists because the day screen rides ROWS: it has to name the tasks that are
  * holding for a person's word, and a counter gives it nothing to show. It is derived from
  * the same rows the counter is, so the two can never fall out of step.
+ *
+ * `batches` is the third kind of unit of work: one request of the owner and the pieces it was
+ * broken into, with the piece that is holding the assembly NAMED. Every part of it is computed
+ * from the queue's own rows at this call — see deriveBatches.
  *
  * @param {{
  *   adapter: {list:Function},
@@ -1754,6 +1856,14 @@ export async function deriveState(deps = {}) {
     allRows = []
   }
 
+  // ── THE REQUESTS OF BATCHES ARE SEPARATED FIRST, and everything below this line sees only
+  // WORK. A batch request is a record of what was asked: no worker will ever take it, so
+  // counted among the queued rows it would add a unit to «в очереди» that never comes off,
+  // and shown in the queue list it would be a card nobody can act on. It is read for one
+  // purpose — to be the batch — and it is read here, once. ──
+  const batchRequestRows = allRows.filter(isBatchParent)
+  allRows = allRows.filter((r) => !isBatchParent(r))
+
   // ── projects / machines / federation — derived from the config, never stored ──
   const projectRegistry = Array.isArray(config.projects) ? config.projects : []
   const activeProject = config.activeProject ?? (projectRegistry[0] && projectRegistry[0].id) ?? null
@@ -1767,6 +1877,15 @@ export async function deriveState(deps = {}) {
 
   // The project filter narrows the TASKS only (the lists above are already built).
   const rows = deps.project ? allRows.filter((r) => projectOf(r, activeProject) === deps.project) : allRows
+
+  // The batches ride the SAME project filter as the tasks — a batch is work of one project.
+  const batches = deriveBatches(
+    deps.project
+      ? batchRequestRows.filter((r) => projectOf(r, activeProject) === deps.project)
+      : batchRequestRows,
+    rows,
+    { activeProject, machineId },
+  )
 
   const queuedRows = rows.filter((r) => r.status === 'queued')
   const claimedRows = rows.filter((r) => r.status === 'claimed')
@@ -1969,6 +2088,7 @@ export async function deriveState(deps = {}) {
   const payload = {
     kpis,
     queue,
+    batches,
     awaiting,
     workers,
     done,
