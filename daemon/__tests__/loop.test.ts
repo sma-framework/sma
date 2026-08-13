@@ -70,6 +70,7 @@ import {
   readAttemptLog,
 } from '../src/queue/attempt-ledger.mjs'
 import { appendRedirect, readPendingRedirects } from '../src/runner/redirects.mjs'
+import { writeWaveHold } from '../src/queue/wave-holds.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
   const s = { now: start }
@@ -2043,5 +2044,177 @@ describe('a broken piece stops its batch until the owner says a word — the tic
     expect((await tick(deps)).idle).toBe(true)
     const rows = await adapter.list({})
     expect(rows.find((r: any) => r.id === 'B-F-2').status).not.toBe('queued')
+  })
+})
+
+/**
+ * ═══════════ «ОСТАНОВИ ВОЛНУ 2» — АДРЕСНО, МЯГКО И С ПРОДОЛЖЕНИЕМ ═════════════════════
+ *
+ * The founder's order, in his own words: the tasks of that wave finish the step they are on and
+ * stand, their unfinished steps stay in their sessions, and when the stop is lifted they carry
+ * on from the same place. Three claims, and each is easy to lose in a different way:
+ *
+ *   ADDRESSED — a stop that widened to «everything of that phase» or «everything in that lane»
+ *     would be the machine going quiet for a reason its owner cannot see. So every case below
+ *     keeps a neighbour running: another wave of the SAME phase, another phase, and work that
+ *     never said which echelon it belongs to.
+ *   SOFT — nothing is killed. A live task is ASKED, through the steering channel the founder
+ *     already has, to finish its step and stand. The case reads the ask back with the very
+ *     reader the continuation loop uses, and pins that it is made ONCE however many ticks the
+ *     stop stands for — a channel that repeats itself is a channel a worker learns to ignore.
+ *   RESUMABLE — lifting the order hands the SAME row out again, on its same first attempt: a
+ *     stop is not a failure and must not cost an attempt.
+ */
+describe('останов волны: адресный, мягкий, переживающий рестарт', () => {
+  const tmpDirs: string[] = []
+  const mkDir = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sma-wave-'))
+    tmpDirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmpDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+  })
+
+  const CODE_RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
+    reverify: GREEN_REVERIFY,
+  }
+
+  const planTask = (id: string, phase: string, wave: number) => ({
+    id,
+    source: 'roster',
+    title: `план ${id}`,
+    lane: 'prod',
+    data: { phase, wave },
+  })
+
+  it('останов адресован волне: её задача не выдаётся, соседняя волна и чужая фаза идут', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(planTask('P-14-2', '14', 2))
+    c.advance(10)
+    await adapter.enqueue(planTask('P-14-1', '14', 1))
+    c.advance(10)
+    await adapter.enqueue(planTask('P-15-2', '15', 2))
+    c.advance(10)
+    await adapter.enqueue(backlogTask({ id: 'BL-nowave' })) // об эшелонах не говорит ничего
+
+    writeWaveHold({ dataDir, phase: '14', wave: 2, action: 'hold', clock: c.clock })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { dataDir }, responses: CODE_RESPONSES })
+    const ran: string[] = []
+    for (let i = 0; i < 4; i += 1) {
+      const res = await tick(deps)
+      if (res.claimed) ran.push(res.claimed)
+    }
+
+    expect(ran).not.toContain('P-14-2')
+    expect(ran).toEqual(expect.arrayContaining(['P-14-1', 'P-15-2', 'BL-nowave']))
+    // остановленная не потеряна: она ждёт ровно там, где стояла, и на своей первой попытке
+    const rows = await adapter.list({})
+    expect(rows.find((r: any) => r.id === 'P-14-2').status).toBe('queued')
+    expect(rows.find((r: any) => r.id === 'P-14-2').attempt).toBe(1)
+  })
+
+  it('живой задаче остановленной волны уходит поправка «после хода» — и процесс не убит', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(planTask('P-30-2', '30', 2))
+    await adapter.claimNext('daemon', {}) // задача уже у работника — её нельзя «не выдать»
+    await adapter.assignWorker('P-30-2', 'max-2')
+
+    writeWaveHold({ dataDir, phase: '30', wave: 2, action: 'hold', clock: c.clock })
+
+    const killed: string[] = []
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { dataDir },
+      responses: CODE_RESPONSES,
+      deps: { attemptTurns: { stop: (id: string) => (killed.push(id), true) } },
+    })
+    const res = await tick(deps)
+
+    expect(res.parked).toEqual(['P-30-2'])
+    // ПРОВОД: поправка находится тем же чтением, которым цикл ищет её перед продолжением сессии
+    const pending = readPendingRedirects({ dataDir, taskId: 'P-30-2' })
+    expect(pending).toHaveLength(1)
+    expect(pending[0].mode).toBe('queue') // «после хода», а не «перебить сейчас»
+    expect(pending[0].text).toContain('волну 2')
+    expect(pending[0].text).toContain('сессию не закрывайте')
+    // ручку убийства не дёргали ни разу: останов не рвёт живую сессию
+    expect(killed).toEqual([])
+  })
+
+  it('одна остановка — одна поправка: тик за тиком работнику не повторяют одно и то же', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(planTask('P-31-2', '31', 2))
+    await adapter.claimNext('daemon', {})
+    await adapter.assignWorker('P-31-2', 'max-2')
+    writeWaveHold({ dataDir, phase: '31', wave: 2, action: 'hold', clock: c.clock })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { dataDir }, responses: CODE_RESPONSES })
+    for (let i = 0; i < 12; i += 1) {
+      c.advance(5000) // час пятисекундных тиков в миниатюре
+      await tick(deps)
+    }
+
+    expect(readPendingRedirects({ dataDir, taskId: 'P-31-2' })).toHaveLength(1)
+  })
+
+  it('снятие останова возвращает выдачу — та же строка, та же первая попытка', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(planTask('P-32-2', '32', 2))
+    writeWaveHold({ dataDir, phase: '32', wave: 2, action: 'hold', clock: c.clock })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { dataDir }, responses: CODE_RESPONSES })
+    expect((await tick(deps)).idle).toBe(true)
+
+    writeWaveHold({ dataDir, phase: '32', wave: 2, action: 'release', clock: c.clock })
+    const res = await tick(deps)
+    expect(res.completed).toBe('P-32-2')
+    const [row] = await adapter.list({})
+    expect(row.attempt).toBe(1) // останов — не провал, попытки он не стоит
+  })
+
+  it('останов переживает рестарт: цикл читает реестр с диска, а не свою память', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(planTask('P-33-2', '33', 2))
+    writeWaveHold({ dataDir, phase: '33', wave: 2, action: 'hold', clock: c.clock })
+
+    // СОВЕРШЕННО НОВЫЙ набор зависимостей — ровно то, что даёт перезапущенный демон: между ним
+    // и приказом нет ничего, кроме каталога на диске
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { dataDir }, responses: CODE_RESPONSES })
+    const res = await tick(deps)
+    expect(res.idle).toBe(true)
+    expect(res.waveHolds).toEqual(['33/2'])
+  })
+
+  it('пустой реестр ничего не меняет: без приказа это обычная работа', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(planTask('P-34-2', '34', 2))
+
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { dataDir }, responses: CODE_RESPONSES })
+    const res = await tick(deps)
+    expect(res.completed).toBe('P-34-2')
+    expect(res.waveHolds).toBeUndefined()
   })
 })

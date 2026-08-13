@@ -50,7 +50,7 @@
  *   - a machine with no corpus / no training is {absent:true}, never an error.
  */
 
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -69,6 +69,7 @@ import {
 } from '../src/front/state.mjs'
 import { previewProjectMigration, applyProjectMigration, readProjectMemory } from '../src/front/project-sync.mjs'
 import { createFrontServer, ROUTES, PROJECT_MIGRATION_TARGET_PREFIX } from '../src/front/server.mjs'
+import { readWaveHolds } from '../src/queue/wave-holds.mjs'
 import { REASON_LABELS, createMemoryQueue } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
@@ -1853,11 +1854,12 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly sixty entries and carries no migration route', () => {
+  it('the route table is still exactly sixty-one entries and carries no migration route', () => {
     // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request
     // + the word its owner answers a stopped batch with + the two doors of a task's words
-    // + the composition a phrase could have, proposed for confirmation.
-    expect(Object.keys(ROUTES)).toHaveLength(60)
+    // + the composition a phrase could have, proposed for confirmation
+    // + the order that stops one echelon of one phase and starts it again.
+    expect(Object.keys(ROUTES)).toHaveLength(61)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
@@ -2558,5 +2560,91 @@ describe('POST /api/task/words — the owner corrects what a task says about its
   it('an unwired queue answers 501 — never a fabricated ok', async () => {
     const front = createFrontServer({ config: { token: MIGRATION_TOKEN, workers: [] }, deps: {} })
     expect((await words(front, { taskId: 'R-1', description: 'x' })).statusCode).toBe(501)
+  })
+})
+
+/**
+ * ═══════════ POST /api/wave/hold — «ОСТАНОВИ ВОЛНУ 2» ЧЕРЕЗ ДВЕРЬ ═════════════════════
+ *
+ * The door writes ONE thing: the owner's word, into a register on disk. Everything else — which
+ * rows stop being handed out, which live tasks are asked to stand — happens in the loop, from
+ * that register, on the next tick. So what belongs here is exactly what the door owns: the
+ * address is narrow and checked, the vocabulary is closed, and the word is DURABLE — read back
+ * out of the file rather than out of a status code.
+ */
+describe('POST /api/wave/hold — слово владельца об эшелоне, записанное на диск', () => {
+  const WAVE_NOW = 1_700_000_000_000
+  const dirs: string[] = []
+  const mkDir = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sma-wave-door-'))
+    dirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+  })
+
+  const mkWaveFront = (dataDir: string) =>
+    createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [], dataDir },
+      deps: { clock: () => WAVE_NOW },
+    })
+
+  async function hold(front: any, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url: '/api/wave/hold', body }), res)
+    return res
+  }
+
+  it('останов записан в реестр — и оттуда его читает кто угодно, включая перезапущенный демон', async () => {
+    const dataDir = mkDir()
+    const res = await hold(mkWaveFront(dataDir), { phase: '14', wave: 2, action: 'hold' })
+
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, phase: '14', wave: '2', action: 'hold', already: false })
+    // не по коду ответа, а по самому реестру: слово лежит на диске
+    expect(readWaveHolds({ dataDir })).toEqual([{ phase: '14', wave: '2', since: WAVE_NOW }])
+  })
+
+  it('снятие — тоже слово владельца, и после него реестр пуст', async () => {
+    const dataDir = mkDir()
+    const front = mkWaveFront(dataDir)
+    await hold(front, { phase: '14', wave: 2, action: 'hold' })
+    await hold(front, { phase: '14', wave: 3, action: 'hold' })
+    await hold(front, { phase: '14', wave: 2, action: 'release' })
+
+    expect(readWaveHolds({ dataDir }).map((h: any) => h.wave)).toEqual(['3'])
+  })
+
+  it('второе нажатие говорит честно, что ничего не изменило', async () => {
+    const dataDir = mkDir()
+    const front = mkWaveFront(dataDir)
+    expect(JSON.parse((await hold(front, { phase: '9', wave: 1, action: 'hold' })).body).already).toBe(false)
+    expect(JSON.parse((await hold(front, { phase: '9', wave: 1, action: 'hold' })).body).already).toBe(true)
+  })
+
+  it('адрес узкий и проверенный: без фазы, без волны и с выдуманным словом — отказ, реестр пуст', async () => {
+    const dataDir = mkDir()
+    const front = mkWaveFront(dataDir)
+
+    expect((await hold(front, { wave: 2, action: 'hold' })).statusCode).toBe(400)
+    expect((await hold(front, { phase: '14', action: 'hold' })).statusCode).toBe(400)
+    expect((await hold(front, { phase: '14', wave: 'вторую', action: 'hold' })).statusCode).toBe(400)
+    expect((await hold(front, { phase: '14', wave: 2, action: 'заморозить' })).statusCode).toBe(400)
+    // и лишнее поле в теле — тоже отказ: словарь двери закрыт, как у всех соседних
+    expect((await hold(front, { phase: '14', wave: 2, action: 'hold', lane: 'prod' })).statusCode).toBe(400)
+
+    expect(readWaveHolds({ dataDir })).toEqual([])
+  })
+
+  it('без каталога данных дверь отвечает 501, а не выдуманным согласием', async () => {
+    const front = createFrontServer({ config: { token: MIGRATION_TOKEN, workers: [] }, deps: {} })
+    expect((await hold(front, { phase: '14', wave: 2, action: 'hold' })).statusCode).toBe(501)
   })
 })

@@ -84,6 +84,7 @@ import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mj
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
+import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
@@ -211,24 +212,25 @@ const BUILD_INSTRUCTION_HTML =
 
 /**
  * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
- * freeze plus seven doors, each declared once by its own release — the chat stop button in
+ * freeze plus eight doors, each declared once by its own release — the chat stop button in
  * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request, the
- * word its owner answers a stopped batch with, the composition a phrase could have, and the
- * two doors of a task's WORDS: the one that proposes them and the one that corrects them).
- * Exactly SIXTY entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * word its owner answers a stopped batch with, the composition a phrase could have, the
+ * two doors of a task's WORDS (the one that proposes them and the one that corrects them),
+ * and the order that stops ONE echelon of ONE phase and starts it again).
+ * Exactly SIXTY-ONE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 60) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 61) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last seven joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY ARE LIVE — the table carries no stub, and the shape
+ * a time; the last eight joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-ONE ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
- * THREE OF THE SEVEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
+ * THREE OF THE EIGHT PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
  * two word doors are a PAIR (the first returns a draft for a person to correct, the second
  * writes only onto a task whose work is not over), and the batch-composition door is the same
  * promise about a whole batch. Between them they are the whole of «система предлагает,
@@ -303,6 +305,8 @@ export const ROUTES = Object.freeze({
   // ── the words of a task: the system PROPOSES them, and the owner CORRECTS them ──
   'POST /api/task/suggest': 'handleTaskSuggest',
   'POST /api/task/words': 'handleTaskWords',
+  // ── «останови волну 2»: the one echelon of one phase stands, and starts again ──
+  'POST /api/wave/hold': 'handleWaveHold',
 })
 
 /**
@@ -3725,6 +3729,59 @@ async function handleBatchDecide({ req, res, deps }) {
   return sendJson(res, 200, { ok: true, batchId, decision, itemId, attempt })
 }
 
+/**
+ * POST /api/wave/hold — «Останови волну 2». Body `{phase, wave, action:'hold'|'release'}`.
+ *
+ * THE ORDER IS NARROW BY CONSTRUCTION, and that is the whole design. It names a PHASE and a
+ * WAVE, and only the work that says it belongs to that echelon is affected: another wave of the
+ * same phase, another phase, and every task that never said which echelon it is part of go on
+ * exactly as before. A stop that widened to a lane would be the founder's machine going quiet for
+ * a reason he cannot see — the fault this door exists to make impossible.
+ *
+ * WHAT IT ACTUALLY DOES, and neither half is a screen state:
+ *   hold    — the order is APPENDED to the register on disk. From the next tick the waiting rows
+ *             of that echelon are not handed to anybody, and the ones already under way are asked
+ *             (through the founder's existing steering channel, in its «после хода» mode) to
+ *             finish the step they are on and stand. Nothing is killed and no session is torn.
+ *   release — the lifting is appended too. The waiting rows are handed out again, and the tasks
+ *             that stood carry on from where they stood: their unfinished steps stayed in their
+ *             sessions the whole time.
+ *
+ * IT IS WRITTEN DOWN RATHER THAN REMEMBERED because a stop is a word somebody said — nothing in
+ * the queue derives it — and a stop that a restart forgets is a stop that lifts itself in the
+ * night and finishes the work its owner had stopped.
+ *
+ * `already` in the answer is honest rather than polite: it says the register did not change,
+ * which is what a second press on the same button means.
+ */
+async function handleWaveHold({ req, res, config, deps }) {
+  if (!config.dataDir) return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['phase', 'wave', 'action']))) return undefined
+
+  if (!WAVE_ACTIONS.includes(b.action)) return send400(res, `action must be one of ${WAVE_ACTIONS.join('|')}`)
+  const phase = b.phase === undefined || b.phase === null ? '' : String(b.phase)
+  if (!PHASE_RE.test(phase)) return send400(res, 'invalid phase')
+  // The echelon as a person writes it: a plain number. Bounded here rather than trusted, because
+  // it ends up beside task ids in a log line and inside a `data->>` comparison.
+  const wave = b.wave === undefined || b.wave === null ? '' : String(b.wave)
+  if (!/^\d{1,4}$/.test(wave)) return send400(res, 'invalid wave')
+
+  const wrote = writeWaveHold({
+    dataDir: config.dataDir,
+    phase,
+    wave,
+    action: b.action,
+    clock: deps.clock,
+    fsImpl: deps.fsImpl,
+  })
+  if (!wrote.ok) return send400(res, wrote.error)
+  emitSafe(deps, { event: 'phase.stage', phase, stage: b.action === 'hold' ? 'wave-hold' : 'wave-release' })
+  return sendJson(res, 200, { ok: true, phase, wave, action: b.action, already: wrote.already === true })
+}
+
 // ── the words of a task: proposed by the system, corrected by its owner ──
 
 /**
@@ -4223,6 +4280,8 @@ export const HANDLERS = Object.freeze({
   handleBatchSuggest,
   handleTaskSuggest,
   handleTaskWords,
+  // «останови волну 2» — одна волна одной фазы встаёт, и она же снова идёт
+  handleWaveHold,
 })
 
 // ── the dispatcher ──
