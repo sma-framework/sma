@@ -80,7 +80,15 @@ import { join } from 'node:path'
 
 import { pipelineEnabled } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
-import { isBatchParent, batchItemsOf, batchDecisionsOf, REASON_LABELS } from '../queue/adapter.mjs'
+import {
+  isBatchParent,
+  batchItemsOf,
+  batchDecisionsOf,
+  waveAddressOf,
+  DEFAULT_PROJECT_ID,
+  REASON_LABELS,
+} from '../queue/adapter.mjs'
+import { readWaveHolds } from '../queue/wave-holds.mjs'
 import { readAttempts } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
@@ -1846,6 +1854,68 @@ function deriveBatches(requests, rows, { activeProject, machineId } = {}) {
 }
 
 /**
+ * deriveWaves(rows, holds, ctx) → the ECHELONS, each with the work it actually consists of and
+ * whether its owner has stopped it.
+ *
+ * WHY THIS EXISTS AT ALL, and it is the whole reason: «Останови волну 2» has to be answered with
+ * WHO exactly will finish their step and stand and WHO is already standing. Without this list
+ * the window could only say the sentence from the mockup with the numbers typed into it — the
+ * one thing the founder's own acceptance criterion forbids. The rows are the answer, and the
+ * screen composes his sentence out of them.
+ *
+ * COMPUTED AT EVERY READ, like every other reading here. Only the STOP is remembered (it is a
+ * word somebody said and nothing derives it); who is running and who is waiting is a function of
+ * the queue's own statuses.
+ *
+ * AN ECHELON IS LISTED WHEN THE QUEUE KNOWS OF IT **OR** WHEN IT IS STOPPED. The second half is
+ * not symmetry for its own sake: an order given about an echelon whose tasks have not been put
+ * in yet must stay visible, or the screen would show a stop that quietly is not there — and the
+ * next tick would still be honouring it.
+ *
+ * @param {object[]} rows every queue row
+ * @param {{phase:string, wave:string, since:number|null}[]} holds
+ * @param {{activeProject?:string|null, machineId?:string}} ctx
+ * @returns {object[]}
+ */
+function deriveWaves(rows, holds, { activeProject, machineId } = {}) {
+  const all = Array.isArray(rows) ? rows : []
+  const stops = Array.isArray(holds) ? holds : []
+  const byKey = new Map()
+  const keyOf = (phase, wave) => JSON.stringify([phase, wave])
+  const slot = (phase, wave) => {
+    const key = keyOf(phase, wave)
+    if (!byKey.has(key)) {
+      byKey.set(key, { phase, wave, held: false, heldSince: null, running: [], waiting: [] })
+    }
+    return byKey.get(key)
+  }
+
+  for (const stop of stops) {
+    const row = slot(String(stop.phase), String(stop.wave))
+    row.held = true
+    row.heldSince = Number.isFinite(stop.since) ? stop.since : null
+  }
+  for (const r of all) {
+    const address = waveAddressOf(r)
+    if (!address) continue
+    // Только незакрытая работа: доведённое и провалившееся об эшелоне больше ничего не решает,
+    // и в вопросе «кого остановит приказ» им не место.
+    if (r.status !== 'queued' && r.status !== 'claimed') continue
+    const row = slot(address.phase, address.wave)
+    const named = { id: r.id, title: r.title ?? null }
+    if (r.status === 'claimed') row.running.push(named)
+    else row.waiting.push(named)
+  }
+
+  return [...byKey.values()]
+    .map((w) => ({ ...w, project: activeProject ?? DEFAULT_PROJECT_ID, machine: machineId }))
+    .sort((a, b) => {
+      const byPhase = String(a.phase).localeCompare(String(b.phase), undefined, { numeric: true })
+      return byPhase !== 0 ? byPhase : String(a.wave).localeCompare(String(b.wave), undefined, { numeric: true })
+    })
+}
+
+/**
  * deriveState(deps) → the one-poll roster payload {kpis, queue, awaiting, workers, done,
  * spend}. (Task 4 augments it with costs.series over GET /api/state.) Pure over its
  * injected collaborators; re-derives fresh every call.
@@ -1917,6 +1987,24 @@ export async function deriveState(deps = {}) {
       ? batchRequestRows.filter((r) => projectOf(r, activeProject) === deps.project)
       : batchRequestRows,
     rows,
+    { activeProject, machineId },
+  )
+
+  // ── ЭШЕЛОНЫ: что за волны в работе и какие из них владелец остановил ──
+  //
+  // The stop is READ FROM THE REGISTER the loop obeys — the same file, not a second copy — so
+  // the screen cannot show «идёт» over work the dispatcher is already withholding. Fail-open:
+  // an unreadable register means «nothing is stopped», the reading that keeps the screen honest
+  // about the queue rather than inventing a stop nobody ordered.
+  let waveHolds = []
+  try {
+    if (config && config.dataDir) waveHolds = readWaveHolds({ dataDir: config.dataDir, fsImpl: deps.fsImpl })
+  } catch {
+    /* a register that will not read costs the payload its stops, never the payload */
+  }
+  const waves = deriveWaves(
+    deps.project ? rows.filter((r) => projectOf(r, activeProject) === deps.project) : rows,
+    waveHolds,
     { activeProject, machineId },
   )
 
@@ -2122,6 +2210,7 @@ export async function deriveState(deps = {}) {
     kpis,
     queue,
     batches,
+    waves,
     awaiting,
     workers,
     done,
