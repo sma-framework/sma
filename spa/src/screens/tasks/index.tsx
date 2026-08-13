@@ -7,7 +7,7 @@ import { Inbox } from './Inbox'
 import type { InboxItem } from './Inbox'
 import { NewTaskForm } from './NewTaskForm'
 import { UnitRow } from './UnitRow'
-import { buildUnits, countUnits } from './units'
+import { buildUnits, countUnits, waitWords } from './units'
 import type { WorkUnit } from './units'
 
 /**
@@ -77,6 +77,10 @@ export function Screen() {
         machine,
         selfMachine,
         clock: clockLabel,
+        // Часы читаются ЗДЕСЬ, на каждом пересчёте проекции, а не внутри неё: опрос состояния
+        // приносит новый признак жизни у каждой бегущей строки, поэтому пересчёт случается
+        // ровно тогда, когда есть что пересчитывать. Проекция при этом остаётся сравнимой.
+        now: Date.now(),
       }),
     [data, phaseIndex.data, activeProject, machine, selfMachine],
   )
@@ -85,8 +89,13 @@ export function Screen() {
 
   /** The band: the awaiting tasks and the phases that parked a question, longest wait first. */
   const inbox: InboxItem[] = useMemo(() => {
-    const fromTasks: InboxItem[] = (data?.awaiting ?? [])
-      .filter((r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine))
+    const waitingTasks = (data?.awaiting ?? []).filter(
+      (r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine),
+    )
+    const fromTasks: InboxItem[] = [...waitingTasks]
+      // Дольше всех ждущее — первым. Строка без возраста уходит в конец: очередь кладёт возраст
+      // только тем, кто ждёт дольше терпения, значит её ожидание короче любого названного.
+      .sort((a, b) => (b.agedForHours ?? 0) - (a.agedForHours ?? 0))
       .map((r) => ({
         id: `task:${r.id}`,
         age: ageLabel(r.agedForHours),
@@ -99,6 +108,7 @@ export function Screen() {
       .filter((p) => p.open > 0)
       .map((p) => ({
         id: `phase:${p.id}`,
+        // Возраст вопроса фазы дверь не называет — и здесь он поэтому не пишется вовсе.
         age: '',
         text: `${p.name}: ${p.open} ${p.open === 1 ? 'вопрос ждёт' : 'вопроса ждут'} вашего ответа`,
         cta: 'Ответить →',
@@ -107,6 +117,21 @@ export function Screen() {
 
     return [...fromTasks, ...fromPhases]
   }, [data, phaseIndex.data, activeProject, machine])
+
+  /**
+   * «ЖДУТ ВАС: 3 · ДОЛЬШЕ ВСЕХ — 41 МИН» — счётчик и возраст самого старого ожидания.
+   *
+   * Возраст берётся из ожидающих задач, потому что только у них он измерен. Если ни у одной
+   * строки его нет, полоса так и говорит — счётчик от этого не становится враньём, а число
+   * минут не берётся из воздуха.
+   */
+  const inboxHeadline = useMemo(() => {
+    const oldest = (data?.awaiting ?? [])
+      .filter((r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine))
+      .reduce<number | undefined>((max, r) => (r.agedForHours != null && (max == null || r.agedForHours > max) ? r.agedForHours : max), undefined)
+    const words = waitWords(oldest)
+    return `Ждут вас: ${inbox.length} · ${words ? `дольше всех — ${words}` : 'сколько ждут — нет данных'}`
+  }, [data, activeProject, machine, inbox.length])
 
   /** The roster in one sentence — who is on the work right now. */
   const workerLine = useMemo(() => {
@@ -170,7 +195,7 @@ export function Screen() {
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto px-7 py-5">
-        <Inbox items={inbox} />
+        <Inbox items={inbox} headline={inboxHeadline} />
 
         <div className="mb-2.5 flex items-baseline gap-3">
           <span className="text-[13px] font-semibold text-tx">Задачи · верхний уровень</span>
