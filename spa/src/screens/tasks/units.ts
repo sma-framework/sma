@@ -33,6 +33,15 @@ import type { DoneRow, PhaseIndexRow, PhaseStage, PhaseStageStatus, QueueRow, Wo
  * An inline task in flight has no steps in the engine — so it gets no ribbon, and the row
  * says what it does know instead. An invented ribbon reads exactly like a measured one, which
  * is why there is no path here for a segment that nothing measured.
+ *
+ * ═══════════════════════ ТРИ РАЗНЫХ ВОПРОСА О ВРЕМЕНИ ═══════════════════════
+ *
+ * Строка отвечает на один из них и никогда не подменяет его другим:
+ *   - СКОЛЬКО ИДЁТ (последняя колонка) — от отметки захвата до сейчас у бегущей задачи, и
+ *     от двух отметок закрывшего подхода у завершённой;
+ *   - СКОЛЬКО ЖДЁТ (в предложении) — возраст ожидания у строки, которая никуда не идёт;
+ *   - СКОЛЬКО НАЗАД БЫЛО СОБЫТИЕ (в предложении) — признак жизни, а не длительность.
+ * Ни у одного из трёх нет ответа «0»: отсутствие отметки говорится прочерком или словами.
  */
 
 /** How a unit stands, in the five words this window uses everywhere. */
@@ -102,12 +111,35 @@ const IDLE_WORDS: Record<string, string> = {
   budget_stop: 'Платный канал исчерпан на месяц — ждёт окна подписки',
 }
 
-/** «6 ч 06 м» from a count of hours the daemon already waited out. */
-function hoursLabel(hours: number | undefined): string {
-  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return '—'
+/**
+ * «6 ч 06 м» / «47 м» / «—» — ОДНА запись длительности на весь список.
+ *
+ * `—` там, где мерить нечего. Это не украшение: ноль в этой колонке человек читает как
+ * «только что началась», то есть как утверждение о работе, а «нечего мерить» — это факт об
+ * ОТСУТСТВИИ отметки. Поэтому отрицательная и нечисловая разница тоже дают прочерк, а не
+ * подогнанный ноль.
+ */
+function spanLabel(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—'
+  const totalMinutes = Math.floor(ms / 60000)
+  const whole = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (whole === 0) return `${totalMinutes} м`
+  return minutes > 0 ? `${whole} ч ${String(minutes).padStart(2, '0')} м` : `${whole} ч`
+}
+
+/**
+ * СКОЛЬКО ЖДЁТ — та же длительность, но в предложении, а не в колонке: «41 мин», «6 ч».
+ *
+ * Возвращает `null`, когда очередь возраст не назвала. Очередь кладёт `agedForHours` ТОЛЬКО
+ * на строку, которая ждёт дольше настроенного терпения, — то есть отсутствие поля означает
+ * «ждёт немного», а не «ждёт ноль», и предложение тогда строится без числа вовсе.
+ */
+export function waitWords(hours: number | undefined): string | null {
+  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return null
+  if (hours < 1) return `${Math.round(hours * 60)} мин`
   const whole = Math.floor(hours)
   const minutes = Math.round((hours - whole) * 60)
-  if (whole === 0) return `${minutes} м`
   return minutes > 0 ? `${whole} ч ${String(minutes).padStart(2, '0')} м` : `${whole} ч`
 }
 
@@ -133,6 +165,28 @@ export interface UnitsInput {
   selfMachine: string
   /** How a finished row's clock is spelled — borrowed from the shell so every screen agrees. */
   clock: (iso: string | null) => string
+  /**
+   * СЕЙЧАС, в миллисекундах — второй конец отрезка «идёт столько-то».
+   *
+   * Он приходит СНАРУЖИ, а не берётся здесь, потому что весь этот файл — чистая проекция:
+   * функция, читающая часы внутри себя, даёт разный ответ на одних и тех же данных, и её
+   * нельзя ни сравнить, ни проверить. Экран пересчитывает проекцию на каждом опросе состояния
+   * и подставляет часы там.
+   */
+  now: number
+}
+
+/**
+ * СКОЛЬКО ИДЁТ — от отметки захвата до «сейчас», и `null`, если отметки нет.
+ *
+ * Отметка захвата пережила продление аренды (очередь развела «когда взяли» и «когда
+ * подтвердили жизнь» в два разных поля), поэтому у длинной живой попытки это по-прежнему часы,
+ * а не секунды с последнего продления.
+ */
+function sinceClaim(claimedAt: number | null | undefined, now: number): number | null {
+  if (typeof claimedAt !== 'number' || !Number.isFinite(claimedAt) || claimedAt <= 0) return null
+  const ms = now - claimedAt
+  return ms > 0 ? ms : null
 }
 
 /**
@@ -171,9 +225,17 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
   }
 }
 
-/** A task waiting for a worker, or waiting for a person. Both ride the same row shape. */
+/**
+ * A task waiting for a worker, or waiting for a person. Both ride the same row shape.
+ *
+ * ПОСЛЕДНЯЯ КОЛОНКА ОТВЕЧАЕТ НА ВОПРОС «СКОЛЬКО ИДЁТ», И ТОЛЬКО НА НЕГО. Ждущая строка не
+ * идёт никуда, поэтому там прочерк, а возраст ожидания уезжает в предложение — туда, где он
+ * и отвечает на свой собственный вопрос («ждёт вас 41 мин»). До этого в колонке длительности
+ * стоял возраст ожидания, и строка, которой никто не занимался, читалась как работающая час.
+ */
 function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
   const idle = row.idleReason ? IDLE_WORDS[row.idleReason] : null
+  const waited = waitWords(row.agedForHours)
   return {
     id: row.id,
     kind: 'inline',
@@ -185,9 +247,13 @@ function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
         ? 'возвращена вами'
         : `в очереди · место ${row.position}`,
     next: awaiting
-      ? 'Открыть и принять или вернуть с комментарием'
-      : (idle ?? 'Ждёт свободного работника'),
-    dur: hoursLabel(row.agedForHours),
+      ? waited
+        ? `Ждёт вас ${waited}: открыть и принять или вернуть с комментарием`
+        : 'Ждёт вас: открыть и принять или вернуть с комментарием'
+      : waited
+        ? `${idle ?? 'Ждёт свободного работника'} · ждёт ${waited}`
+        : (idle ?? 'Ждёт свободного работника'),
+    dur: '—',
     segs: [],
     target: { screen: 'task', id: row.id },
   }
@@ -198,16 +264,19 @@ function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
  * unit is built from the worker holding it — never sifted out of the queue, which never
  * carried a claimed row and answers «пусто» to anyone who asks it for one.
  */
-function runningUnit(worker: WorkerRow): WorkUnit {
+function runningUnit(worker: WorkerRow, now: number): WorkUnit {
   const pulse = pulseLabel(worker.pulseAgeSec)
+  const running = sinceClaim(worker.taskClaimedAt, now)
   return {
     id: worker.taskId as string,
     kind: 'inline',
     title: worker.taskTitle ?? 'Без названия',
     state: 'run',
-    inner: `в работе у «${worker.id}»`,
+    // Отметки захвата у ростера может не быть (строка, взятая процессом старее самого поля).
+    // Тогда это говорится словами прямо в строке: «нет данных» — это ответ, а не пустое место.
+    inner: running === null ? `в работе у «${worker.id}» · когда взяли — нет данных` : `в работе у «${worker.id}»`,
     next: pulse ? `Идёт: ${pulse}` : 'Идёт — работник ещё не подал признака жизни',
-    dur: '—',
+    dur: spanLabel(running),
     segs: [],
     target: { screen: 'task', id: worker.taskId as string },
   }
@@ -231,7 +300,10 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
     next: failed
       ? (row.failed?.reasonLabel ?? 'Не получилось — причина не записана')
       : `Закрыта в ${clock(row.finishedAt)}`,
-    dur: '—',
+    // Длительность закрытой задачи меряется по подходу, который её ЗАКРЫЛ: между попытками
+    // задача лежит в очереди, и называть это время работой было бы неправдой. Одной отметки
+    // мало — очередь тогда отвечает «нечего мерить», и это прочерк, а не ноль.
+    dur: spanLabel(row.finishedDuration),
     segs,
     target: { screen: 'task', id: row.id },
   }
@@ -255,7 +327,7 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
         (!activeProject || w.project === activeProject) &&
         (!machine || (w.machine ?? selfMachine) === machine),
     )
-    .map(runningUnit)
+    .map((w) => runningUnit(w, input.now))
 
   const units: WorkUnit[] = [
     // Phases are not filtered by machine: a phase belongs to the project, not to a machine.

@@ -9,6 +9,10 @@
  * When nothing waits, the band is NOT drawn. An empty inbox that still occupies the top of
  * the screen teaches a person to look past that place, and then the day it fills, they
  * look past it too.
+ *
+ * НАД ПОЛОСОЙ — СЧЁТЧИК И ВОЗРАСТ САМОГО СТАРОГО ожидания: человек, у которого ждут четыре
+ * вещи, спрашивает сначала «сколько и как давно», и только потом читает их по одной. Где
+ * возраста нет ни у одной строки, там так и написано словами — счётчик от этого не врёт.
  */
 
 export interface InboxItem {
@@ -20,10 +24,11 @@ export interface InboxItem {
   onOpen: () => void
 }
 
-export function Inbox({ items }: { items: InboxItem[] }) {
+export function Inbox({ items, headline }: { items: InboxItem[]; headline: string }) {
   if (items.length === 0) return null
   return (
     <div className="mb-4 flex flex-col gap-2">
+      <span className="text-[11px] font-semibold tracking-[0.06em] text-warn-tx uppercase">{headline}</span>
       {items.map((item) => (
         <button
           key={item.id}
