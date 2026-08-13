@@ -10,6 +10,9 @@
  *   Test 3 — a torn NDJSON line is skipped; the rest of the story still reads.
  *   Test 4 — the door: 501 without a store, 400s on bad body, 200 {accepted, live} on a
  *            good one; 'interrupt' pulls the registry trigger, 'queue' does not.
+ *   Test 5 — THE WIRE, end to end through the PRODUCTION root: an answer sent from the
+ *            window's conversation lands in the very store the tick reads before it resumes
+ *            the session. Not the calculation — the wire.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -26,6 +29,7 @@ import {
 } from '../src/runner/redirects.mjs'
 import { createTurnRegistry } from '../src/front/chat.mjs'
 import { createFrontServer } from '../src/front/server.mjs'
+import { createDaemon } from '../src/main.mjs'
 
 const TOKEN = 'r'.repeat(64)
 
@@ -146,5 +150,89 @@ describe('POST /api/redirect — the steering door', () => {
     expect(stored).toContain('после хода')
     expect(stored).toContain('перебей')
     expect(readPendingRedirects({ dataDir, taskId: 'T4' })).toHaveLength(2)
+  })
+})
+
+/**
+ * ОТВЕТ ИЗ ОКНА ДОЕЗЖАЕТ ДО ПРОДОЛЖЕНИЯ ТОЙ ЖЕ СЕССИИ — провод, а не вычисление.
+ *
+ * Обе половины дороги уже проверены по отдельности, и обе были зелёными в тот день, когда
+ * дорога не работала: дверь пишет поправку в хранилище (тест 4), цикл читает хранилище и
+ * продолжает сессию с `--resume` (сьют цикла). Между ними стоит третье утверждение, которое
+ * ни один из тех тестов не делает: ЧТО ЭТО ОДНО И ТО ЖЕ ХРАНИЛИЩЕ. Каждый тест приносит свой
+ * каталог и раздаёт его обеим сторонам сам — то есть проверяет дорогу, которую сам же и
+ * построил, а не ту, по которой поедет ответ владельца.
+ *
+ * Здесь спрашивается сборка ПРОДУКТА: даётся один конфиг, дверь получает свой каталог от
+ * корня, цикл — свой, и никто их не сводит руками. Поправка отправляется через настоящую
+ * дверь и ищется тем самым чтением, которым цикл ищет её перед продолжением сессии. Разъедься
+ * эти два каталога — дверь примет ответ, окно скажет «передал», а работник не увидит ни
+ * слова: ровно тот класс, когда всё посчитано и ничто не соединено.
+ *
+ * Механизм коррекций этот тест не трогает: он ничего в нём не меняет и ни на что не влияет —
+ * только смотрит, сходятся ли концы.
+ */
+describe('ответ из окна → канал продолжения той же сессии (провод сборки)', () => {
+  it('дверь поправки пишет ровно в то хранилище, которое цикл читает перед продолжением', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-rd-wire-'))
+    const repoDir = join(root, 'repo')
+    mkdirSync(repoDir, { recursive: true })
+    const configPath = join(root, 'config.json')
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        // Закрытый порт: демон собирается, но не поднимается — очередь здесь не нужна вовсе.
+        queueUrl: 'postgres://127.0.0.1:1/sma_none',
+        bind: '127.0.0.1',
+        port: 7998,
+        token: TOKEN,
+        repoDir,
+        dataDir: join(root, 'data'),
+        ledgerDir: join(root, 'ledger'),
+      }),
+      'utf8',
+    )
+
+    const saved = process.env.SMA_DAEMON_CONFIG
+    const savedMcp = process.env.SMA_DAEMON_MCP
+    process.env.SMA_DAEMON_CONFIG = configPath
+    process.env.SMA_DAEMON_MCP = join(root, 'absent-mcp.json')
+
+    let park: any
+    try {
+      // ПРОИЗВОДСТВЕННАЯ сборка, без единой подмены. Ничего не запускается: корень только вяжет.
+      park = createDaemon()
+
+      const res = mkRes()
+      await park.front.handle(
+        mkReq({
+          method: 'POST',
+          url: '/api/redirect',
+          body: { taskId: 'W-1', text: 'блокировка в БД, продолжай ту же сессию', mode: 'queue' },
+        }),
+        res,
+      )
+      expect(res.statusCode).toBe(200)
+      expect(JSON.parse(res.body)).toMatchObject({ accepted: true, mode: 'queue' })
+
+      // Читаем ТЕМ ЖЕ каталогом, который корень отдал циклу, — не тем, что выбрал этот тест.
+      const seenByTick = readPendingRedirects({
+        dataDir: park.tickDeps.config.dataDir,
+        taskId: 'W-1',
+        fsImpl: park.tickDeps.fsImpl,
+      })
+      expect(seenByTick.map((r: any) => r.text)).toEqual(['блокировка в БД, продолжай ту же сессию'])
+    } finally {
+      try {
+        if (park?.hub?.close) park.hub.close()
+        if (park?.daemon?.stop) park.daemon.stop()
+      } catch {
+        /* best-effort */
+      }
+      if (saved === undefined) delete process.env.SMA_DAEMON_CONFIG
+      else process.env.SMA_DAEMON_CONFIG = saved
+      if (savedMcp === undefined) delete process.env.SMA_DAEMON_MCP
+      else process.env.SMA_DAEMON_MCP = savedMcp
+    }
   })
 })
