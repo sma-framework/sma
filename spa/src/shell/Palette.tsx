@@ -8,7 +8,7 @@ import { PALETTE_ACTIONS } from './palette-actions'
 import { KindBadge, SEARCH_DEBOUNCE_MS, SEARCH_Q_CAP, openHit } from './search-hits'
 
 /**
- * Palette — everything in this window, from the keyboard. Ctrl+K, or ⌘K.
+ * Palette — everything in this window, from the keyboard. Ctrl+P, or ⌘P.
  *
  * ═══════════════════════ WHAT IT IS ALLOWED TO BE ═══════════════════════════════
  *
@@ -33,9 +33,18 @@ import { KindBadge, SEARCH_DEBOUNCE_MS, SEARCH_Q_CAP, openHit } from './search-h
  * ═══════════════════════ THE KEY, AND WHOSE KEY IT IS ═══════════════════════════
  *
  * The shortcut is read off the physical key (`code`), not off the letter the layout produces,
- * so it works on a Cyrillic layout — where Ctrl+K types «л» — without a second rule. It does
- * NOT fire while a person is typing into a field: a text box's own Ctrl+K belongs to the text
+ * so it works on a Cyrillic layout — where Ctrl+P types «з» — without a second rule. It does
+ * NOT fire while a person is typing into a field: a text box's own Ctrl+P belongs to the text
  * box. The one exception is the palette's own field, where the shortcut closes what it opened.
+ *
+ * WHY NOT Ctrl+K, WHICH THIS WAS. The floating conversation window owns Ctrl+K now: the
+ * founder's design draws that key on the conversation, and a key cannot belong to two things
+ * — whichever mounted second would silently win, and which one that is depends on the order
+ * React happened to mount them in. So there is exactly ONE owner per combination, written
+ * down in both files: the palette matches KeyP and nothing else, the conversation matches
+ * KeyK and nothing else. Ctrl+P is the browser's print key on this page; taking it is
+ * deliberate — a window that is not a document has nothing to print, and the founder chose
+ * the pair.
  */
 
 /** What was typed, once the typing has stopped. */
@@ -90,8 +99,8 @@ export function Palette() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const isK = e.code === 'KeyK' || e.key === 'k' || e.key === 'K'
-      if ((e.ctrlKey || e.metaKey) && isK) {
+      const isP = e.code === 'KeyP' || e.key === 'p' || e.key === 'P'
+      if ((e.ctrlKey || e.metaKey) && isP) {
         const insidePalette = panelRef.current?.contains(e.target as Node) ?? false
         if (isTypingTarget(e.target) && !insidePalette) return
         e.preventDefault()
@@ -312,7 +321,7 @@ export function Palette() {
         </div>
 
         <div className="flex flex-none items-center justify-between gap-3 border-t border-bd px-[18px] py-2 text-[11px] text-tx3">
-          <span>↑ ↓ — выбрать · Enter — открыть · Esc — закрыть</span>
+          <span>Ctrl P — поиск и действия · ↑ ↓ — выбрать · Enter — открыть · Esc — закрыть</span>
           <span>Действия открывают ту же кнопку на экране</span>
         </div>
       </div>

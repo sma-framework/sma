@@ -224,13 +224,24 @@ export function Sidebar({ active, onOpen }: { active: ScreenId; onOpen: (id: Scr
 
       <div className="flex flex-col gap-1.5 border-t border-side-bd px-3 py-3">
         {/*
-          A shortcut nobody is told about is a shortcut nobody has. One line, under everything,
+          A shortcut nobody is told about is a shortcut nobody has. Two lines, under everything,
           where the eye lands after it has run out of lines to click.
+
+          TWO KEYS, TWO OWNERS, SAID TOGETHER. The conversation window took Ctrl+K (the
+          founder's design draws it there) and the palette moved to Ctrl+P. Written one under
+          the other on purpose: the hand that learned the old key finds the new one in the same
+          glance, instead of pressing Ctrl+K and deciding the palette broke.
         */}
         <div className="flex items-center gap-[9px] px-2.5 text-[11.5px] text-side-tx3">
           <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">Ctrl</kbd>
-          <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">K</kbd>
+          <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">P</kbd>
           <span>поиск и действия</span>
+        </div>
+
+        <div className="flex items-center gap-[9px] px-2.5 text-[11.5px] text-side-tx3">
+          <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">Ctrl</kbd>
+          <kbd className="rounded border border-side-bd px-1.5 py-[1px] font-sans text-[10.5px]">K</kbd>
+          <span>разговор с системой</span>
         </div>
 
         <NotifyToggle />
