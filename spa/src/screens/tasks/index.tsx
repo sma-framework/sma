@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { usePhaseIndexQuery, useStateQuery } from '../../api/queries'
 import { TaskPanel } from '../../shell/TaskPanel'
 import { clockLabel } from '../../shell/format'
-import { openScreen } from '../../shell/navigation'
+import { PhaseCardView } from '../pipeline/PhaseCardView'
+import { usePhaseBells } from '../pipeline/shared'
 import { Inbox } from './Inbox'
 import type { InboxItem } from './Inbox'
 import { NewTaskForm } from './NewTaskForm'
@@ -33,6 +34,16 @@ import type { WorkUnit } from './units'
  * «БАТЧ» of the accepted design is absent for the plainest reason available: the engine has no
  * batches, and a kind painted out of whatever was nearest would read exactly like a measured
  * one.
+ *
+ * ═════════════════════ ОДНО ОКНО, КРОШКИ ═════════════════════
+ *
+ * Единица работы РАСКРЫВАЕТСЯ ЗДЕСЬ ЖЕ, а не увозит человека на соседний экран: фаза
+ * открывается своей карточкой прямо в этом окне, задача — панелью поверх него. Поэтому путь
+ * входа известен, и крошка «Задачи» ведёт назад ровно туда, откуда пришли.
+ *
+ * Прежде клик по фазе звал экран конвейера фаз — и человек оказывался на СПИСКЕ всех фаз, то
+ * есть не в той фазе, по которой кликнул, и без дороги назад к задачам. Это и есть «крошки
+ * ведут не туда, откуда пришли», только в самой крупной своей форме.
  */
 
 /** «41 МИН» / «6 Ч» — how long something has been on the person, in the band's own voice. */
@@ -58,6 +69,12 @@ export function Screen() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [newOpen, setNewOpen] = useState(false)
   const [machine, setMachine] = useState<string>('')
+  /** Какая фаза раскрыта в этом же окне. `null` — на глазу список. */
+  const [openPhase, setOpenPhase] = useState<string | null>(null)
+
+  // Карточка фазы живёт теперь и здесь, значит и два звонка фазового цикла нужны здесь: без
+  // них раскрытая фаза осталась бы такой, какой её открыли, пока человек не ушёл и не вернулся.
+  usePhaseBells()
 
   const data = state.data
   const activeProject = data?.activeProject ?? null
@@ -112,7 +129,7 @@ export function Screen() {
         age: '',
         text: `${p.name}: ${p.open} ${p.open === 1 ? 'вопрос ждёт' : 'вопроса ждут'} вашего ответа`,
         cta: 'Ответить →',
-        onOpen: () => openScreen({ screen: 'pipeline' }),
+        onOpen: () => setOpenPhase(p.id),
       }))
 
     return [...fromTasks, ...fromPhases]
@@ -143,8 +160,21 @@ export function Screen() {
   }, [data])
 
   const openUnit = (unit: WorkUnit) => {
-    if (unit.target.screen === 'phase') openScreen({ screen: 'pipeline' })
+    if (unit.target.screen === 'phase') setOpenPhase(unit.target.id)
     else setSelectedId(unit.target.id)
+  }
+
+  // Фаза раскрыта — это тот же экран, просто вглубь. Крошка «Задачи» и кнопка возврата ведут
+  // сюда же, в список, а не на конвейер фаз: человек пришёл отсюда.
+  if (openPhase !== null) {
+    return (
+      <PhaseCardView
+        id={openPhase}
+        onBack={() => setOpenPhase(null)}
+        backLabel="← К задачам"
+        trail={[{ label: 'Задачи', onClick: () => setOpenPhase(null) }]}
+      />
+    )
   }
 
   return (

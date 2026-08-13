@@ -22,6 +22,11 @@ import { STAGE_LABEL, STAGE_ORDER, STATUS_TONE, STATUS_WORD, usePhaseBells } fro
  * One screen, one folder: this work touches nothing outside it. The shared vocabulary — the
  * card that renders a question, the words for a refusal — is BORROWED from the shell, because
  * a thing several screens need is not a screen.
+ *
+ * Карточку фазы из этой же папки теперь открывает и список задач — по принятому макету фаза
+ * раскрывается в том же окне, из которого на неё кликнули. Поэтому карточка получает путь
+ * входа пропсом: она одна, а дорог к ней две, и назад она обязана вести по той, по которой
+ * пришли.
  */
 
 /** The four stage chips of one row, in the order a phase goes through them. */
@@ -74,7 +79,16 @@ export function Screen() {
   usePhaseBells()
 
   if (openId !== null) {
-    return <PhaseCardView id={openId} onBack={() => setOpenId(null)} />
+    // Путь входа даёт тот, кто открыл карточку: сюда человек пришёл со списка фаз, а на
+    // экране задач ту же карточку открывают со списка задач — и крошка там своя.
+    return (
+      <PhaseCardView
+        id={openId}
+        onBack={() => setOpenId(null)}
+        backLabel="← Все фазы"
+        trail={[{ label: 'Конвейер фаз', onClick: () => setOpenId(null) }]}
+      />
+    )
   }
 
   const rows = index.data?.phases ?? []
