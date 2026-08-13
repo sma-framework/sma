@@ -517,6 +517,67 @@ describe('deriveState — projects, machines and federation', () => {
     expect('project' in idle).toBe(false)
   })
 
+  /**
+   * ═══════════ THE HONEST DURATION HAS TO ARRIVE AT THE DOOR, NOT MERELY EXIST ═══════════
+   *
+   * The queue now keeps two clocks apart: the moment an attempt was taken, and the moment its
+   * lease was last renewed. Before that, the renewal moved the only clock there was, so a task
+   * that had been running for hours reported about zero — and the number on the screen was not a
+   * measurement of anything. Computing the fact is half the sentence; these two cases assert the
+   * OTHER half — that it reaches the payload the window reads, from a real certified adapter
+   * driven the way the tick drives it.
+   */
+  it('a running task states when it was taken — from a real adapter, through to the payload', async () => {
+    const t = { now: NOW - 3 * HOUR }
+    const q = createMemoryQueue({ clock: () => t.now, expireMs: 120000 })
+    await q.enqueue({ id: 'R-77', source: 'roster', title: 'долгая работа', lane: 'prod' })
+    await q.claimNext('daemon', {})
+    await q.assignWorker('R-77', 'max-1')
+    // three hours of work later the tick renews the lease, as it does every couple of minutes
+    t.now = NOW - 60000
+    await q.touch('R-77')
+    t.now = NOW
+
+    const payload = await deriveState({ adapter: q, windows: makeWindows({}), config, clock: () => NOW })
+
+    const holder = payload.workers.find((w: any) => w.id === 'max-1')
+    expect(holder.taskId).toBe('R-77')
+    // measured from the CLAIM: three hours, not the minute since the last renewal
+    expect(holder.taskClaimedAt).toBe(NOW - 3 * HOUR)
+    // and the sign of life still comes from the renewal — the two answer different questions
+    expect(holder.pulseAgeSec).toBe(60)
+  })
+
+  it('a task row carries both clocks, and states NULL where the queue does not know — never a zero', async () => {
+    const rows = [
+      { id: 'BL-1', status: 'queued', lane: 'prod', title: 'a', priority: 0, enqueuedAt: NOW - 1000, claimedAt: null, leaseRenewedAt: null },
+      {
+        id: 'BL-2',
+        status: 'awaiting_approval',
+        lane: 'prod',
+        title: 'b',
+        enqueuedAt: NOW - 5000,
+        claimedAt: NOW - 4000,
+        leaseRenewedAt: NOW - 2000,
+      },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config,
+      clock: () => NOW,
+    })
+
+    const [queued] = payload.queue
+    expect('claimedAt' in queued).toBe(true) // the key is there to be read, holding a null
+    expect(queued.claimedAt).toBeNull()
+    expect(queued.leaseRenewedAt).toBeNull()
+
+    const [waiting] = payload.awaiting
+    expect(waiting.claimedAt).toBe(NOW - 4000)
+    expect(waiting.leaseRenewedAt).toBe(NOW - 2000)
+  })
+
   it('a held task with no project of its own falls back to the active one; a nameless one reads null', async () => {
     const rows = [{ id: 'R-9', status: 'claimed', lane: 'prod', workerId: 'max-1', claimedAt: NOW, lastTouch: NOW }]
     const payload = await deriveState({
@@ -645,8 +706,13 @@ describe('deriveState — awaiting[]: the rows a person still has to decide on',
     const first = payload.awaiting[0]
     expect(Object.keys(first).sort()).toEqual([
       'agedForHours',
+      // the two clocks of the attempt this row's work was done in: when it was taken and when
+      // its lease was last renewed. Both ride EVERY task row, holding null where the queue does
+      // not know, so one row shape answers «how long» on every list that uses it.
+      'claimedAt',
       'id',
       'lane',
+      'leaseRenewedAt',
       'machine',
       'position',
       'priority',
