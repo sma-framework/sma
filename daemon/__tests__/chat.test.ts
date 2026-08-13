@@ -923,10 +923,11 @@ describe('GET /api/chat/history — the transcript, read back as data', () => {
 })
 
 describe('the chat routes filled a FROZEN slot', () => {
-  it('the table is fifty-nine routes and all three chat routes are real handlers', () => {
+  it('the table is sixty routes and all three chat routes are real handlers', () => {
     // V5.4 freeze (53) + chat/stop + redirect + the batch request + the word answering a stopped
-    // batch + the two doors of a task's words (proposed by the system, corrected by its owner).
-    expect(Object.keys(ROUTES)).toHaveLength(59)
+    // batch + the two doors of a task's words (proposed by the system, corrected by its owner)
+    // + the composition a phrase could have (proposed too — and putting it in is another door).
+    expect(Object.keys(ROUTES)).toHaveLength(60)
     expect(ROUTES['POST /api/chat']).toBe('handleChat')
     expect(ROUTES['POST /api/chat/stop']).toBe('handleChatStop')
     expect(ROUTES['GET /api/chat/history']).toBe('handleChatHistory')

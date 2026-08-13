@@ -1853,10 +1853,11 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly fifty-nine entries and carries no migration route', () => {
+  it('the route table is still exactly sixty entries and carries no migration route', () => {
     // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request
-    // + the word its owner answers a stopped batch with + the two doors of a task's words.
-    expect(Object.keys(ROUTES)).toHaveLength(59)
+    // + the word its owner answers a stopped batch with + the two doors of a task's words
+    // + the composition a phrase could have, proposed for confirmation.
+    expect(Object.keys(ROUTES)).toHaveLength(60)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
@@ -2275,6 +2276,111 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     expect((await decide(front, { batchId: id, decision: 'skip', itemId: brokenId, force: true })).statusCode).toBe(400)
     expect((await decide(front, { batchId: 'B-nope', decision: 'cancel' })).statusCode).toBe(404)
     expect((await decide(front, { batchId: id, decision: 'skip', itemId: `${id}-2` })).statusCode).toBe(409)
+  })
+})
+
+// ═══ POST /api/batch/suggest — состав, который фраза МОГЛА БЫ иметь, на подтверждение ═══
+//
+// Решение основателя: он пишет фразу, система предлагает состав — подбирает записи бэклога И
+// разбивает фразу на новые подзадачи, — а ставит по-прежнему он, другой дверью. Поэтому
+// каждый кейс ниже — проводной: он жмёт дверь и потом спрашивает ОЧЕРЕДЬ, что в ней, потому
+// что обработчик, разобравший фразу и тихо поставивший работу, ответил бы теми же 200.
+
+describe('POST /api/batch/suggest — предложение состава, которое ничего не ставит', () => {
+  const SUGGEST_NOW = 1_700_000_000_000
+
+  function mkSuggestFront(over: any = {}) {
+    return createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: { clock: () => SUGGEST_NOW, ...over },
+    })
+  }
+
+  async function suggestBatch(front: any, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url: '/api/batch/suggest', body }), res)
+    return res
+  }
+
+  /** Чтение бэклога поверх готовых открытых строк — та же форма, что отдаёт derive доски. */
+  const backlogOf = (rows: any[]) => () => ({ rows })
+
+  it('фраза возвращает кандидатов ОБЕИХ природ — запись бэклога и новый кусок, — и очередь остаётся ПУСТОЙ', async () => {
+    const adapter = createMemoryQueue({ clock: () => SUGGEST_NOW })
+    const front = mkSuggestFront({
+      adapter,
+      deriveBacklog: backlogOf([
+        { id: 'BL-96', title: 'импорт агентов падает на втором файле' },
+        { id: 'BL-97', title: 'переписать главу про установку' },
+      ]),
+    })
+
+    const res = await suggestBatch(front, { phrase: 'Почини импорт агентов и почисти хвосты в отчёте' })
+    expect(res.statusCode).toBe(200)
+    const answer = JSON.parse(res.body)
+    expect(answer.ok).toBe(true)
+    // фраза целиком — это заголовок будущей постановки, а не один из её кусков
+    expect(answer.draft.title).toBe('Почини импорт агентов и почисти хвосты в отчёте')
+
+    const kinds = answer.draft.items.map((i: any) => i.kind)
+    expect(kinds).toContain('backlog')
+    expect(kinds).toContain('subtask')
+
+    // запись бэклога приезжает СЛОВАМИ ИЗ ФАЙЛА и называет, по каким словам совпала —
+    // подбор по словам ошибается, и молчаливый подбор ошибается незаметно
+    const picked = answer.draft.items.find((i: any) => i.kind === 'backlog')
+    expect(picked.id).toBe('BL-96')
+    expect(picked.title).toBe('импорт агентов падает на втором файле')
+    expect(picked.why).toContain('импорт')
+    // строка бэклога, которой фраза не касалась, не предложена
+    expect(answer.draft.items.some((i: any) => i.id === 'BL-97')).toBe(false)
+
+    // куски — это куски САМОЙ фразы, а не выдуманная работа
+    const pieces = answer.draft.items.filter((i: any) => i.kind === 'subtask').map((i: any) => i.title)
+    expect(pieces).toEqual(['Почини импорт агентов', 'Почисти хвосты в отчёте'])
+    expect(answer.question).toBeNull()
+
+    // ВОТ РАДИ ЧЕГО ВСЁ: предложить — не поставить. В очереди ноль записей.
+    expect(await adapter.list({})).toHaveLength(0)
+    expect((await adapter.stats()).total).toBe(0)
+  })
+
+  it('обрывок фразы работой не назначается: кусок обязан называть действие, и один кусок разбором не считается', async () => {
+    const adapter = createMemoryQueue({ clock: () => SUGGEST_NOW })
+    const front = mkSuggestFront({ adapter, deriveBacklog: backlogOf([]) })
+
+    const res = await suggestBatch(front, { phrase: 'Почини импорт агентов, он падает на втором файле' })
+    const answer = JSON.parse(res.body)
+    // «он падает на втором файле» — придаток предыдущего куска, а не отдельная работа;
+    // оставшийся один кусок — та же фраза другими словами, и батчем из одного она не станет
+    expect(answer.draft.items).toEqual([])
+    expect(answer.question).not.toBeNull()
+    expect(await adapter.list({})).toHaveLength(0)
+  })
+
+  it('когда назвать нечего — ответ несёт ВОПРОС, а не пустое предложение и не выдуманный состав', async () => {
+    const adapter = createMemoryQueue({ clock: () => SUGGEST_NOW })
+    const front = mkSuggestFront({ adapter, deriveBacklog: backlogOf([{ id: 'BL-1', title: 'совсем про другое' }]) })
+
+    const res = await suggestBatch(front, { phrase: 'Разгреби мелочь перед демо' })
+    expect(res.statusCode).toBe(200)
+    const answer = JSON.parse(res.body)
+    expect(answer.draft.items).toEqual([])
+    expect(answer.question.question).toBe('Из чего состоит эта работа?')
+    expect(answer.question.options).toEqual([]) // вариантов нет — ответ своими словами
+    expect(await adapter.list({})).toHaveLength(0)
+  })
+
+  it('неподключённое чтение бэклога — 501: половина предложения читалась бы как пустой бэклог', async () => {
+    const front = mkSuggestFront({ adapter: createMemoryQueue({ clock: () => SUGGEST_NOW }) })
+    expect((await suggestBatch(front, { phrase: 'почини импорт и почисти хвосты' })).statusCode).toBe(501)
+  })
+
+  it('пустая фраза, фраза длиннее заголовка постановки и чужое поле — каждое 400', async () => {
+    const front = mkSuggestFront({ deriveBacklog: backlogOf([]) })
+    expect((await suggestBatch(front, { phrase: '   ' })).statusCode).toBe(400)
+    expect((await suggestBatch(front, { phrase: 'д'.repeat(201) })).statusCode).toBe(400)
+    expect((await suggestBatch(front, { phrase: 'ок', items: ['протащить'] })).statusCode).toBe(400)
   })
 })
 
