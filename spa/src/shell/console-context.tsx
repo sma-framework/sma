@@ -26,6 +26,20 @@ import { useEffect } from 'react'
 
 export const CONSOLE_CONTEXT_EVENT = 'sma:console-context'
 
+/**
+ * «Откройся» — просьба показать окно разговора, не трогая его состояние снаружи.
+ *
+ * Кнопка на баннере остановленной задачи зовёт ИМЕННО ЭТО, а не заводит второй разговор:
+ * окно уже стоит в оболочке, уже знает контекст открытой задачи (экран ей его рассказал) и
+ * уже умеет всё, что нужно, — от кнопки требуется одно слово «покажись».
+ */
+export const CONSOLE_OPEN_EVENT = 'sma:console-open'
+
+/** Показать окно разговора. Слушает его оболочка. */
+export function openSystemConsole(): void {
+  window.dispatchEvent(new CustomEvent(CONSOLE_OPEN_EVENT))
+}
+
 /** Какого рода место открыто — от этого зависят быстрые реплики окна. */
 export type ConsoleContextKind = 'list' | 'phase' | 'task' | 'screen'
 

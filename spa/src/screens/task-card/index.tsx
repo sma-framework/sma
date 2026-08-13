@@ -30,7 +30,7 @@ import {
   statusTone,
   statusWord,
 } from '../../shell/format'
-import { useTellConsoleContext } from '../../shell/console-context'
+import { openSystemConsole, useTellConsoleContext } from '../../shell/console-context'
 import { openScreen, useOpenedWith } from '../../shell/navigation'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
@@ -776,7 +776,10 @@ export function Screen() {
               said={log.data?.note ?? newest?.approachNote ?? null}
               onDiscuss={() => {
                 setProblem(null)
-                setReturning(true)
+                // Разговор, а не форма возврата: окно уже знает, что открыта ЭТА задача, и
+                // отвечает про неё. Возврат с комментарием остался своей кнопкой ниже — это
+                // другое действие, и путать их значило бы отвечать за человека.
+                openSystemConsole()
               }}
             />
           ) : null}
