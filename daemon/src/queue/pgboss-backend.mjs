@@ -93,6 +93,7 @@
 
 import {
   validateTask,
+  validateWords,
   isBatchParent,
   batchHeldOf,
   batchDecisionsOf,
@@ -663,6 +664,28 @@ export function createPgBossQueue({
     return true
   }
 
+  /**
+   * setWords(taskId, {description, acceptance}) — the words of a task, replaced on the job's
+   * own payload. Returns false when no LIVE job carries this id.
+   *
+   * THE REFUSAL IS THE RESOLUTION, not a check beside it: the only two jobs this can find are
+   * the waiting one and the one under way, so a task that already produced, failed or is
+   * waiting for a person is simply not there to be edited. That is the same «what is closed
+   * stays closed» the batch decisions keep, expressed as a query rather than as an if.
+   *
+   * The patch is MERGED into the payload (`||`), so a door sending one field does not erase
+   * the other, and two edits seconds apart cannot lose each other.
+   */
+  async function setWords(taskId, patch = {}) {
+    if (typeof taskId !== 'string' || taskId === '') return false
+    const words = validateWords(patch)
+    if (Object.keys(words).length === 0) return false
+    const job = (await resolveActiveJob(taskId)) || (await resolveQueuedJob(taskId))
+    if (!job) return false
+    await runSql(`UPDATE pgboss.job SET data = data || $2::jsonb WHERE id = $1`, [job.id, JSON.stringify(words)])
+    return true
+  }
+
   /** READ-ONLY resolution of a piece that is still WAITING — the mirror of resolveActiveJob. */
   async function resolveQueuedJob(taskId) {
     try {
@@ -960,6 +983,7 @@ export function createPgBossQueue({
     touch,
     assignWorker,
     resolveBatch,
+    setWords,
     complete,
     fail,
     list,

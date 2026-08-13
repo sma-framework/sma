@@ -1853,10 +1853,10 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly fifty-seven entries and carries no migration route', () => {
+  it('the route table is still exactly fifty-nine entries and carries no migration route', () => {
     // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request
-    // + the word its owner answers a stopped batch with.
-    expect(Object.keys(ROUTES)).toHaveLength(57)
+    // + the word its owner answers a stopped batch with + the two doors of a task's words.
+    expect(Object.keys(ROUTES)).toHaveLength(59)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 
@@ -2275,5 +2275,160 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     expect((await decide(front, { batchId: id, decision: 'skip', itemId: brokenId, force: true })).statusCode).toBe(400)
     expect((await decide(front, { batchId: 'B-nope', decision: 'cancel' })).statusCode).toBe(404)
     expect((await decide(front, { batchId: id, decision: 'skip', itemId: `${id}-2` })).statusCode).toBe(409)
+  })
+})
+
+// ═════ the words of a task: the system PROPOSES them, the owner CORRECTS them ═════
+//
+// The founder's rule, in his own words: «почему мы должны всё писать, если SMA-фреймворк всё
+// это делает?». So the words are derived — and, because a machine that both decides what work
+// means AND starts it would be answering a question nobody asked it, the deriving door writes
+// NOTHING. These are wire tests: they press the door and then ask the QUEUE what happened,
+// because a handler that computed a proposal and quietly enqueued it would answer 200 too.
+
+describe('POST /api/task/suggest — words come out, nothing goes in', () => {
+  const WORDS_NOW = 1_700_000_000_000
+
+  function mkWordsFront(over: any = {}) {
+    return createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: { clock: () => WORDS_NOW, ...over },
+    })
+  }
+
+  async function suggest(front: any, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url: '/api/task/suggest', body }), res)
+    return res
+  }
+
+  it('a formulation comes back as a description and a list of criteria — and the queue stays EMPTY', async () => {
+    const adapter = createMemoryQueue({ clock: () => WORDS_NOW })
+    const front = mkWordsFront({ adapter })
+
+    const res = await suggest(front, { title: 'Почини импорт агентов — падает на втором файле' })
+    expect(res.statusCode).toBe(200)
+    const answer = JSON.parse(res.body)
+    expect(answer.ok).toBe(true)
+    // the kind of work was recognised from the owner's own verb, and said back to him
+    expect(answer.kind).toBe('fix')
+    expect(answer.text).toContain('починку')
+    // his whole sentence is the description — the title is what gets shortened, not this
+    expect(answer.draft.description).toBe('Почини импорт агентов — падает на втором файле')
+    expect(Array.isArray(answer.draft.acceptance)).toBe(true)
+    expect(answer.draft.acceptance.length).toBeGreaterThan(1)
+    // the two the daemon itself enforces are in there — they are true, and invisible otherwise
+    expect(answer.draft.acceptance.join(' | ')).toContain('закоммичены в ветку задачи')
+    expect(answer.draft.acceptance.join(' | ')).toContain('записка о подходе')
+
+    // THE WHOLE POINT: proposing is not putting. Nothing was written anywhere.
+    expect(await adapter.list({})).toHaveLength(0)
+    expect((await adapter.stats()).total).toBe(0)
+  })
+
+  it('work whose product is prose is not promised a test receipt it will never give', async () => {
+    const front = mkWordsFront({ adapter: createMemoryQueue({ clock: () => WORDS_NOW }) })
+    const res = await suggest(front, { title: 'Разберись, почему окно показывает пустую очередь' })
+    const answer = JSON.parse(res.body)
+    expect(answer.kind).toBe('research')
+    expect(answer.draft.acceptance.join(' | ')).not.toContain('целевых тестов')
+    expect(answer.draft.acceptance.join(' | ')).toContain('записка о подходе')
+  })
+
+  it('a sentence whose kind is not recognised says so, and still proposes what the machine checks', async () => {
+    const front = mkWordsFront({ adapter: createMemoryQueue({ clock: () => WORDS_NOW }) })
+    const res = await suggest(front, { title: 'Хвосты по отчёту' })
+    const answer = JSON.parse(res.body)
+    expect(answer.kind).toBe('unknown')
+    expect(answer.text).toContain('не опознан')
+    expect(answer.draft.acceptance.length).toBeGreaterThan(0)
+  })
+
+  it('an empty formulation and an unknown field are each a 400', async () => {
+    const front = mkWordsFront({ adapter: createMemoryQueue({ clock: () => WORDS_NOW }) })
+    expect((await suggest(front, { title: '   ' })).statusCode).toBe(400)
+    expect((await suggest(front, { title: 'ок', lane: 'prod' })).statusCode).toBe(400)
+  })
+})
+
+describe('POST /api/task/words — the owner corrects what a task says about itself', () => {
+  const WORDS_NOW = 1_700_000_000_000
+
+  function mkWordsFront(over: any = {}) {
+    return createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: { clock: () => WORDS_NOW, ...over },
+    })
+  }
+
+  async function words(front: any, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url: '/api/task/words', body }), res)
+    return res
+  }
+
+  const live = async (adapter: any) =>
+    adapter.enqueue({
+      id: 'R-1',
+      source: 'roster',
+      title: 'починить импорт',
+      lane: 'prod',
+      description: 'выведено системой',
+      acceptance: ['выведенный признак'],
+    })
+
+  it('the words of a LIVE task change, and the field the body did not name is left alone', async () => {
+    const adapter = createMemoryQueue({ clock: () => WORDS_NOW })
+    await live(adapter)
+    const front = mkWordsFront({ adapter })
+
+    const res = await words(front, { taskId: 'R-1', acceptance: ['поправлено рукой', 'и второе'] })
+    expect(res.statusCode).toBe(200)
+
+    const [row] = await adapter.list({})
+    expect(row.acceptance).toEqual(['поправлено рукой', 'и второе'])
+    expect(row.description).toBe('выведено системой') // untouched, because unnamed
+  })
+
+  it('a task whose work is OVER is refused — the standard is not rewritten after the measuring', async () => {
+    const adapter = createMemoryQueue({ clock: () => WORDS_NOW })
+    await live(adapter)
+    await adapter.claimNext('w1', {})
+    await adapter.complete('R-1', { receiptRef: 'reverify:abc' })
+    const front = mkWordsFront({ adapter })
+
+    const res = await words(front, { taskId: 'R-1', acceptance: ['так уже нельзя'] })
+    expect(res.statusCode).toBe(409)
+    const [row] = await adapter.list({})
+    expect(row.acceptance).toEqual(['выведенный признак'])
+  })
+
+  it('a task nobody put in is a 404, and a body that changes nothing is a 400', async () => {
+    const adapter = createMemoryQueue({ clock: () => WORDS_NOW })
+    await live(adapter)
+    const front = mkWordsFront({ adapter })
+    expect((await words(front, { taskId: 'R-nope', description: 'x' })).statusCode).toBe(404)
+    expect((await words(front, { taskId: 'R-1' })).statusCode).toBe(400)
+    expect((await words(front, { taskId: 'R-1', smuggled: 'x' })).statusCode).toBe(400)
+  })
+
+  it('the caps of the queue hold at this door too — a refusal writes nothing', async () => {
+    const adapter = createMemoryQueue({ clock: () => WORDS_NOW })
+    await live(adapter)
+    const front = mkWordsFront({ adapter })
+
+    const many = await words(front, { taskId: 'R-1', acceptance: Array.from({ length: 13 }, (_, i) => `к ${i}`) })
+    expect(many.statusCode).toBe(400)
+    const long = await words(front, { taskId: 'R-1', description: 'д'.repeat(2001) })
+    expect(long.statusCode).toBe(400)
+
+    const [row] = await adapter.list({})
+    expect(row.acceptance).toEqual(['выведенный признак'])
+    expect(row.description).toBe('выведено системой')
+  })
+
+  it('an unwired queue answers 501 — never a fabricated ok', async () => {
+    const front = createFrontServer({ config: { token: MIGRATION_TOKEN, workers: [] }, deps: {} })
+    expect((await words(front, { taskId: 'R-1', description: 'x' })).statusCode).toBe(501)
   })
 })

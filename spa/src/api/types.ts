@@ -694,7 +694,14 @@ export interface TaskDetail {
     lane: string | null
     status: TaskStatus | null
     attempt: number | null
-    acceptance: string | null
+    /** Что это за работа, словами. `null`, когда слов у задачи нет. */
+    description: string | null
+    /**
+     * Что обещано. ОДНО поле, ДВА вида: одна строка (так написана всякая запись, сделанная
+     * до появления списка) или список признаков. Экран читает его ровно одним путём —
+     * `acceptanceList` — и на «массив это или строка» дважды не ветвится.
+     */
+    acceptance: string | string[] | null
   }
   attempts: TaskAttempt[]
   branch: string
@@ -929,8 +936,10 @@ export interface ChatDraft {
   /** The lane the work belongs to. Absent on a draft a session built. */
   lane?: string
   mode: string
-  /** What must become true for the work to count as done. */
-  acceptance?: string
+  /** Что это за работа, словами — выведено системой, поправимо человеком. */
+  description?: string
+  /** What must become true for the work to count as done — the same one field, as a list. */
+  acceptance?: string[]
   data?: ChatDraftData
 }
 

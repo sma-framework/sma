@@ -247,6 +247,16 @@ function makeFakeBackend({
       if (j && j.state === 'active') j.data = { ...(j.data || {}), workerId }
       return { rows: [] }
     }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('$2::jsonb')) {
+      // setWords(): the words of a task MERGED into the job payload, keyed by JOB id — the
+      // same shape assignWorker uses. Modelled as a MERGE and not as a replacement, because
+      // that is what `data || $2::jsonb` does: a patch naming one field leaves the other
+      // exactly as it was, and a fake that replaced would certify an erasure nobody wrote.
+      const [jobId, patch] = params
+      const j = jobs.get(String(jobId))
+      if (j) j.data = { ...(j.data || {}), ...JSON.parse(String(patch)) }
+      return { rows: [] }
+    }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('claimedAt')) {
       // The claim-time stamp: written into the job payload, ONCE PER ATTEMPT. Modelled exactly
       // as the statement is written — keyed by JOB id, scoped to active rows, and refusing to

@@ -226,8 +226,11 @@ describe('server.mjs — the closed FIFTY-SEVEN-route table', () => {
   // RE-FREEZE REVISION (13.08.2026, the same day): + POST /api/batch/decide — a broken piece
   // stops its assembly and asks its owner (пропустить / повторить / отменить). A question with
   // no door to answer it through is a question the machine is asking itself.
-  it('the frozen table has EXACTLY fifty-seven routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(57)
+  // RE-FREEZE REVISION (13.08.2026, the same day, third): + POST /api/task/suggest and
+  // POST /api/task/words — the system proposes the words of a task and its owner corrects
+  // them. The first door WRITES NOTHING; the second writes only while the work is not over.
+  it('the frozen table has EXACTLY fifty-nine routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(59)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

@@ -191,6 +191,10 @@ export interface EnqueueInput {
   model?: string
   effort?: string
   priority?: number
+  /** Что это за работа, словами. Необязательно: задача одним заголовком остаётся законной. */
+  description?: string
+  /** Что обещано. Одно поле, два вида: одна строка или список признаков. */
+  acceptance?: string | string[]
   /** Another machine, by its name here. Absent means this one. */
   machine?: string
 }
@@ -204,9 +208,46 @@ export function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
       model: input.model,
       effort: input.effort,
       priority: input.priority,
+      description: input.description,
+      acceptance: input.acceptance,
       machine: input.machine,
     }),
   )
+}
+
+/** Что система вывела по формулировке: черновик слов задачи. */
+export interface SuggestedWords {
+  ok: boolean
+  /** Какой вид работы опознан по словам владельца («fix», «research», …, «unknown»). */
+  kind: string
+  /** Что система поняла — одной фразой, чтобы промах был виден до нажатия. */
+  text: string
+  draft: { description: string; acceptance: string[] }
+}
+
+/**
+ * Попросить систему вывести слова задачи по формулировке.
+ *
+ * ЭТА ДВЕРЬ НИЧЕГО НЕ СТАВИТ. Она отвечает черновиком, который владелец правит и отправляет
+ * сам — предложение и постановка это два нажатия, а не одно.
+ */
+export function suggestTaskWords(title: string): Promise<SuggestedWords> {
+  return postJson<SuggestedWords>('/api/task/suggest', { title })
+}
+
+/**
+ * Поправить слова живой задачи. Задача, чья работа уже закончилась, отвечает отказом:
+ * переписывать обещание после того, как по нему судили, нельзя.
+ */
+export function setTaskWords(input: {
+  taskId: string
+  description?: string
+  acceptance?: string | string[]
+}): Promise<{ ok: boolean; taskId: string }> {
+  return postJson('/api/task/words', withOptional({ taskId: input.taskId }, {
+    description: input.description,
+    acceptance: input.acceptance,
+  }))
 }
 
 /** Accept finished work. Only a person ever calls this. */
