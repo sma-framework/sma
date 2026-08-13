@@ -232,6 +232,25 @@ export function returnTask(input: {
   )
 }
 
+/**
+ * СЛОВО ВЛАДЕЛЬЦА ПО ВСТАВШЕЙ СБОРКЕ — единственный выход из её молчания.
+ *
+ * Сломавшийся кусок останавливает батч и задаёт вопрос: пропустить его, повторить или отменить
+ * сборку. Пока владелец не ответил, очередь не выдаёт ни одного куска и ничего не повторяется
+ * само. Три слова приезжают в окно ИМЕНАМИ от движка и той же тройкой принимаются здесь —
+ * кнопка, ответ которой не принимает ни одна дверь, это кнопка, которая молча ничего не делает.
+ * `itemId` не нужен только отмене: она про всю сборку, а не про кусок.
+ */
+export function batchDecide(input: {
+  batchId: string
+  decision: 'skip' | 'retry' | 'cancel'
+  itemId?: string
+}): Promise<{ ok: boolean; batchId: string; decision: string; itemId?: string }> {
+  return postJson('/api/batch/decide', withOptional({ batchId: input.batchId, decision: input.decision }, {
+    itemId: input.itemId,
+  }))
+}
+
 /** Ask for a new helper or skill to be drafted. A draft is never switched on by itself. */
 export function forge(input: { kind: DraftKind; description: string; slugHint?: string }): Promise<ForgeResult> {
   return postJson<ForgeResult>(

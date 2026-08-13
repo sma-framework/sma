@@ -284,7 +284,7 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
  * Слова сборки, переведённые в слова строки. Перевод, а не второе мнение: состояние куска
  * считает движок, здесь оно только называется на языке списка.
  */
-const BATCH_ITEM_TONE: Record<BatchItemState, UnitState> = {
+export const BATCH_ITEM_TONE: Record<BatchItemState, UnitState> = {
   failed: 'fail',
   awaiting_decision: 'dec',
   running: 'run',
