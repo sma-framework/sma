@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.5.2-3B82F6" alt="version 5.5.2">
-  <img src="https://img.shields.io/badge/tests-3044%2F3044-3CC0A0" alt="tests 3044/3044">
+  <img src="https://img.shields.io/badge/tests-3203%2F3203-3CC0A0" alt="tests 3203/3203">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -103,6 +103,34 @@ Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-
 - [docs/INSTALL.md](docs/INSTALL.md) — install options, what lands where, updating and removing.
 - [docs/DETAILS.md](docs/DETAILS.md) — the engineering deep dive, once you want to know how it works inside.
 - `node scripts/sma/cli.mjs explain <name>` — run from your project root: a plain-language explanation of any SMA command.
+
+## What's new — the taskboard
+
+The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work reads as one line, opens into its own view, and the conversation about it happens without leaving the screen.**
+
+**Three real kinds of work, not one thing wearing three labels.**
+
+| | One line says |
+|---|---|
+| **A task** | the smallest unit — one order, one worker, one session. It closes when the session closes; nothing else has to be signed. |
+| **A pack of tasks** | one sentence of yours spread over several items, worked one at a time by the same worker, and closed by a single assembly at the end. The line names which item is holding the assembly up. |
+| **A phase** | the full cycle — discuss, plan, execute, verify — with gates between the stages. It does not call itself finished until verification and your acceptance are both behind it. |
+
+A task is the bottom of the hierarchy and the way in is the same from everywhere: from inside a phase you reach it through a plan, from inside a pack through an item, and on its own it is simply a task with no parent. The trail at the top leads back exactly where you came from.
+
+**A unit of work answers three questions, and the card is those three columns.** *What was promised* — the words of the order and the marks of success. *What was done* — what the attempt actually produced. *What proves it* — the receipt, not an adjective. Each column carries ✓ / ? / × only where the state is genuinely known; where the engine cannot answer, the cell says so in words. Under the columns: who was in the session — the worker first, its subagents beneath it, each with its model and how long it ran — the last event, what the attempt spent, and an explicit block for outside connections that is empty when there are none rather than absent.
+
+**The words of a task are derived by the system, not typed by you.** You write the formulation. Press once and SMA proposes the description and the marks of success the way a planner derives criteria from a goal — visible on the card, and yours to correct. Nothing is queued by the proposal itself; a draft is a draft until you confirm it. Setting up a pack works the same way: write the sentence, and the system proposes what it could be made of — matching entries from your backlog and new sub-tasks split out of the sentence — every candidate confirmable, removable, and never queued without your word.
+
+**A worker that stops with a question is impossible to miss.** The stop shows up in three places at once — the band at the top of the list, the row itself, and the card — each carrying how long it has been waiting. You answer from the conversation window, and the worker **continues the same session**: the return does not start over, and the context you already paid for stays in its head.
+
+**Talk to the system without leaving the screen — `Ctrl K`.** The conversation opens over whatever you are looking at and takes its context from it, so «what is the state of this?» means *this*. Three things can come out of it: a decision on a waiting question, which travels to the worker; an order, which becomes a task and appears in the list; or an answer about the current state. Search and actions moved to `Ctrl P`.
+
+**A whole echelon can be told to stand.** «Stop wave 2» — confirmed, then the tasks of that wave finish the move they are in and stop; nothing is torn mid-step. Unfinished steps stay in their sessions, and when you lift the hold they continue from exactly where they stood. The hold is written to disk, so it survives a restart of the daemon.
+
+**No invented numbers.** Where the engine does not know, the screen says «no data» in words — never a zero and never a guess. A zero that is wrong is worse than a blank, because it reads as an answer.
+
+**What this does not claim.** This is the state of the repository, not a published release — the npm listing is deliberately behind while the engine settles, and the version badge above is not moved by this work.
 
 ## What's new in V5.4
 
