@@ -521,6 +521,144 @@ export function attemptDigest(rows) {
   }
 }
 
+// ══════════════════ WHO WAS IN THE SESSION, AND WHAT EACH ONE DID ═══════════════════════
+//
+// An attempt is not one voice. The executor works, and it hands pieces of the work to
+// subagents — and the transcript already knows which lines belong to which of them: the runner
+// marks a delegated line with the vendor's parent id, and the frame parse names the subagent at
+// the moment the executor starts it. Both facts were being computed and thrown away: the log
+// showed a flat stream of lines, and the card had nothing to draw the tree the design asks for.
+//
+// THIS COUNTS, IT DOES NOT PARSE. Every field below is read off the per-row summaries the
+// runner already built — no second reading of a frame, no new parser, and frame-summary.mjs is
+// not touched. What is not in those summaries is `null` here: a subagent whose lines carry no
+// readable timestamp has NO duration rather than a zero, and a delegation nobody named has NO
+// name rather than «подагент 2».
+//
+// WHY THE NAMES ARE MATCHED BY ORDER, said out loud because it is the one soft spot. The
+// executor's handoff names its subagent; the delegated lines carry an opaque parent id; and the
+// tool-call id that would tie the two together is NOT kept by the frame parse. So the k-th
+// delegation to speak is given the k-th name the executor handed out. When the two counts
+// disagree the surplus is reported honestly instead of paired up: a group with no name left
+// over gets `name: null`, and a name whose lines never arrived gets a row of its own with no
+// duration and no steps — it was started, and that is the whole of what is known about it.
+
+/** How many voices one attempt will name before it says «and N more». */
+export const ATTEMPT_ROLES_CAP = 12
+
+/** The key the executor's own lines group under — a delegated line has a parent id instead. */
+const EXECUTOR_KEY = ''
+
+/** Which model the session announced, read back out of the sentence the frame parse composed. */
+const MODEL_IN_SESSION = /модель:\s*([^·]+)/
+
+/** The kinds that say what somebody was DOING. A counter frame is not a deed. */
+const DEED_KINDS = Object.freeze(['tool', 'mcp', 'skill', 'handoff', 'text', 'denied'])
+
+/** Two readable marks make a length; one mark makes none. */
+function spanMs(first, last) {
+  const a = Date.parse(first)
+  const b = Date.parse(last)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || first === last) return null
+  const ms = b - a
+  return ms >= 0 ? ms : null
+}
+
+/**
+ * attemptRoles(rows) → `{list, more}` — who was in this attempt, the executor first, then each
+ * delegation in the order it first spoke. PURE, never throws, reads the stored per-row
+ * summaries and the stored delegation marks and nothing else.
+ *
+ * Each entry: `{role:'executor'|'subagent', name, model, steps, durationMs, detail}`. `name` is
+ * null on the executor — this reader knows the attempt's lines, not which worker holds the task;
+ * the roster and the task door are where a worker has a name.
+ *
+ * NO ORDINAL TRAVELS FROM HERE, deliberately. The log door numbers delegations over the WINDOW
+ * it is sending, while these are counted over the WHOLE log — so a number issued here would
+ * disagree with the number beside the lines on screen exactly when the tail was cut, which is
+ * the case a person is most likely to be looking at.
+ *
+ * @param {object[]} rows stored attempt-log rows (`{ts, line, subagent?, parentId?, summary?}`)
+ * @returns {{list:Array<object>, more:number}}
+ */
+export function attemptRoles(rows) {
+  const all = Array.isArray(rows) ? rows : []
+  const groups = new Map() // key → {firstTs, lastTs, steps, model, detail}
+  const handoffNames = []
+
+  for (const row of all) {
+    if (!row || typeof row !== 'object') continue
+    const delegated = row.subagent === true
+    const parentId = boundedText(row.parentId, STRUCT_FIELD_CAP)
+    const key = delegated && parentId ? parentId : EXECUTOR_KEY
+    const ts = typeof row.ts === 'string' ? row.ts : ''
+    let g = groups.get(key)
+    if (!g) {
+      g = { firstTs: ts, lastTs: ts, steps: 0, model: null, detail: null }
+      groups.set(key, g)
+    }
+    if (ts) {
+      if (!g.firstTs) g.firstTs = ts
+      g.lastTs = ts
+    }
+
+    const parts = Array.isArray(row.summary) ? row.summary : []
+    if (parts.length) g.steps += 1
+    for (const part of parts) {
+      if (!part || typeof part !== 'object') continue
+      const kind = boundedText(part.kind, STRUCT_FIELD_CAP)
+      const tool = boundedText(part.tool, STRUCT_FIELD_CAP)
+      const detail = boundedText(part.detail, STRUCT_FIELD_CAP)
+      if (kind === 'session') {
+        const m = MODEL_IN_SESSION.exec(detail)
+        if (m && m[1].trim()) g.model = m[1].trim()
+        continue
+      }
+      // WHOM the executor started, and with what brief. Collected off the PARENT's row,
+      // because that is where the handoff is spoken.
+      if (kind === 'handoff' && key === EXECUTOR_KEY) {
+        const who = boundedText(part.subagent, STRUCT_FIELD_CAP)
+        handoffNames.push({ name: who || null, detail: detail || null })
+      }
+      if (!DEED_KINDS.includes(kind)) continue
+      const said = [tool, detail].filter(Boolean).join(' · ')
+      if (said) g.detail = boundedText(said, STRUCT_FIELD_CAP)
+    }
+  }
+
+  const entryOf = (role, g, name) => ({
+    role,
+    name: name ?? null,
+    model: g.model,
+    steps: g.steps,
+    durationMs: spanMs(g.firstTs, g.lastTs),
+    detail: g.detail,
+  })
+
+  const list = []
+  const executor = groups.get(EXECUTOR_KEY)
+  // THE EXECUTOR IS FIRST AND IS NAMED EVEN WHEN IT SAID NOTHING ITSELF: an attempt whose only
+  // stored lines came from a delegation still ran inside an executor's session, and a tree whose
+  // root was missing would read as though the subagents had started themselves.
+  if (executor || groups.size) {
+    list.push(entryOf('executor', executor ?? { firstTs: '', lastTs: '', steps: 0, model: null, detail: null }, null))
+  }
+
+  let taken = 0
+  for (const [key, g] of groups) {
+    if (key === EXECUTOR_KEY) continue
+    const named = handoffNames[taken]
+    taken += 1
+    list.push(entryOf('subagent', g, named ? named.name : null))
+  }
+  // A brief that was handed out and whose lines never arrived — started, and nothing more known.
+  for (const left of handoffNames.slice(taken)) {
+    list.push({ role: 'subagent', name: left.name, model: null, steps: 0, durationMs: null, detail: left.detail })
+  }
+
+  return { list: list.slice(0, ATTEMPT_ROLES_CAP), more: Math.max(0, list.length - ATTEMPT_ROLES_CAP) }
+}
+
 /**
  * approachLinesFrom(streamLines) → the lines a note parser can actually read.
  *

@@ -95,6 +95,7 @@ import {
   normalizeAttemptLogEntry,
   attemptLogTail,
   attemptDigest,
+  attemptRoles,
   parseApproachNote,
   approachLinesFrom,
 } from '../front/journal.mjs'
@@ -448,11 +449,13 @@ export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError 
 }
 
 /**
- * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated, note, digest}`
- * — the LAST `tail` lines of one attempt (default 200, hard ceiling 1000), with `truncated`
- * saying that older lines exist, and `digest` — the roll-up of the WHOLE attempt (tools, files,
- * connections, cost; ../front/journal.mjs owns it). A missing log reads as an EMPTY log, never
- * an error, and a corrupt row is skipped — the same fail-open posture as every other reader.
+ * readAttemptLog({dir, attemptId, tail}) → `{attemptId, entries, total, truncated, note, digest,
+ * roles, rolesMore}` — the LAST `tail` lines of one attempt (default 200, hard ceiling 1000),
+ * with `truncated` saying that older lines exist, `digest` — the roll-up of the WHOLE attempt
+ * (tools, files, connections, cost) — and `roles` — who was in the session, the executor and
+ * each delegation, also over the whole attempt (../front/journal.mjs owns both). A missing log
+ * reads as an EMPTY log, never an error, and a corrupt row is skipped — the same fail-open
+ * posture as every other reader.
  *
  * THE ENTRIES ARE DATA AND ARE RETURNED AS THEY WERE STORED. This reader does not interpret
  * a line, does not strip anything out of it and makes no claim that it is safe: it is worker
@@ -473,11 +476,13 @@ export function createAttemptLogWriter({ dir, attemptId, fsImpl, clock, onError 
  *
  * @param {{dir?:string, attemptId?:string, tail?:number, fsImpl?:object}} [o]
  * @returns {{attemptId:string, entries:object[], total:number, truncated:boolean,
- *   note:object|null, digest:object|null}}
+ *   note:object|null, digest:object|null, roles:object[], rolesMore:number}}
  */
 export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
   const id = String(attemptId ?? '')
-  const empty = { attemptId: id, entries: [], total: 0, truncated: false, note: null, digest: null }
+  // An attempt with no log has nobody in it either: an EMPTY list of voices, never a lone
+  // executor row a card would draw as «работал один» about a session that has not printed yet.
+  const empty = { attemptId: id, entries: [], total: 0, truncated: false, note: null, digest: null, roles: [], rolesMore: 0 }
   if (!dir || !id) return empty
   const read = (fsImpl && fsImpl.readFileSync) || readFileSync
   let raw
@@ -507,5 +512,9 @@ export function readAttemptLog({ dir, attemptId, tail, fsImpl } = {}) {
   // note of, through the same parser, over the same stream, unwrapped.
   const note = parseApproachNote(approachLinesFrom(rows.map((r) => String((r && r.line) || ''))))
   const digest = attemptDigest(rows)
-  return { attemptId: id, ...attemptLogTail(rows, tail), note, digest }
+  // WHO WAS IN THE SESSION — counted here for the third time for the same one reason: a
+  // delegation whose lines all fell outside the tail would otherwise vanish from the tree, and
+  // an executor's own length would be measured from wherever the window happens to start.
+  const roles = attemptRoles(rows)
+  return { attemptId: id, ...attemptLogTail(rows, tail), note, digest, roles: roles.list, rolesMore: roles.more }
 }

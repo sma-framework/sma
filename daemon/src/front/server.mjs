@@ -2374,8 +2374,9 @@ async function handleShipPublish({ req, res, deps }) {
 const SEARCH_Q_CAP = 256
 
 /**
- * GET /api/attempt/:id — the tail of one attempt's live log, the worker's own note, and the
- * roll-up of everything the attempt did (counted over the whole log, not over the tail).
+ * GET /api/attempt/:id — the tail of one attempt's live log, the worker's own note, who was in
+ * the session, and the roll-up of everything the attempt did (both counted over the whole log,
+ * not over the tail).
  *
  * `?tail=` asks for a length and the LEDGER owns the ceiling: the reader clamps into
  * [1, 1000] itself, so this door hands the asked-for number over as it is rather than
@@ -2432,6 +2433,13 @@ function handleAttempt({ res, params, query, deps }) {
     }),
     truncated: !!(log && log.truncated),
     note,
+    // WHO WAS IN THE SESSION — the executor first, then each delegation, with the model, the
+    // length and the one line about what it was doing. Counted by the ledger over the WHOLE
+    // attempt (like the roll-up below, and for the same reason), and forwarded here as the data
+    // it is. Every field of it was already being computed off the stored frame summaries and
+    // reached nobody: the card had no tree to draw and the log stayed a flat wall of lines.
+    roles: Array.isArray(log && log.roles) ? log.roles : [],
+    rolesMore: Number.isFinite(log && log.rolesMore) ? log.rolesMore : 0,
     // The roll-up of the WHOLE attempt, not of the window above it: the ledger counts it over
     // every row before the tail is taken, so «инструментов 40 · изменено 6 файлов» stays true
     // on a transcript whose beginning did not fit. Bounded where it is built; passed on here
