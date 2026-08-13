@@ -284,6 +284,38 @@ describe('deriveState — the one-poll payload', () => {
   })
 
   /**
+   * СКОЛЬКО ЗАНЯЛО — the length of a finished task, from the two marks the ledger already had.
+   *
+   * The list printed «—» in the length column of every completed task, and the reading was one
+   * field away the whole time: the attempt that closed the work put down when it started and
+   * when it ended. Both cases assert the field in the ROW the door sends, because a length
+   * computed and not handed over is exactly the state this was in.
+   */
+  it('a finished task states how long it took — from the two marks of the attempt that closed it', async () => {
+    const rows = [{ id: 'BL-done', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
+    const ledger = () => [
+      // an earlier attempt that did not finish the work: the hours the task then spent back in
+      // the queue are NOT part of how long the work took, so the closing attempt is measured
+      { taskId: 'BL-done', attempt: 1, workerId: 'max-1', startedAt: NOW - 5 * HOUR, endedAt: NOW - 4 * HOUR },
+      { taskId: 'BL-done', attempt: 2, workerId: 'max-1', startedAt: NOW - 2 * HOUR, endedAt: NOW - HOUR },
+    ]
+    const payload = await deriveState({ adapter: mkAdapter(rows), ledger, windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.done[0].finishedDuration).toBe(HOUR)
+  })
+
+  it('one mark, or none, is NO length — never a zero and never «measured against now»', async () => {
+    const rows = [{ id: 'BL-half', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
+    const started = () => [{ taskId: 'BL-half', attempt: 1, workerId: 'max-1', startedAt: NOW - HOUR }]
+    const one = await deriveState({ adapter: mkAdapter(rows), ledger: started, windows: makeWindows({}), config, clock: () => NOW })
+    // a zero here renders as «заняло нисколько», which is a claim; «нечего мерить» is the truth
+    expect(one.done[0].finishedDuration).toBe(null)
+
+    // a task with no ledger rows at all (reconstructed after the fact) says the same
+    const none = await deriveState({ adapter: mkAdapter(rows), windows: makeWindows({}), config, clock: () => NOW })
+    expect(none.done[0].finishedDuration).toBe(null)
+  })
+
+  /**
    * WHERE THE «СДЕЛАНО» CARD READS ITS GIT FROM — asserted on the WIRE, because the calculation
    * was never the broken half. Both reads used to be made with no cwd at all, so they ran in
    * whatever directory the daemon PROCESS was started in; on an install serving one repository

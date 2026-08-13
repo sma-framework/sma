@@ -716,7 +716,12 @@ async function handleTask({ res, params, config, deps }) {
     outcome: a.outcome ?? null,
     failureReason: a.failureReason ?? null,
     reasonLabel: a.failureReason ? REASON_LABELS[a.failureReason] ?? null : null,
-    receipt: parseReceipt(a.receiptRef, { execGit: deps.execGit }),
+    // THE SEAM THIS READER ASKS FOR IS `readReceipt`, and it was being handed `execGit` — a
+    // receipt reader given git. It changed nothing either way, which is why it survived: a
+    // `receiptRef` written by the tick is a STRING, and with no resolver the summary is four
+    // nulls whichever collaborator arrives. Named and corrected rather than left standing: a
+    // wrong dependency in a call is a lie the next reader has to disprove.
+    receipt: parseReceipt(a.receiptRef, { readReceipt: deps.readReceipt }),
     // The proof this attempt actually left. `receipt` above waits for four numbers no part
     // of this system produces; this one carries what the tick really wrote when the gate
     // opened, so a card says «перепроверено» instead of showing nothing at all.
