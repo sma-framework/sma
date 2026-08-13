@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useDecisionAnswer, usePhaseQuery, usePhaseStage, usePhaseUat } from '../../api/queries'
+import { useDecisionAnswer, usePhaseQuery, usePhaseStage, usePhaseUat, useStateQuery } from '../../api/queries'
 import type {
   PhaseArtifact,
   PhaseCard,
@@ -8,6 +8,7 @@ import type {
   PhaseStageStatus,
   PhaseUatItem,
   PhaseWave,
+  WaveRow,
 } from '../../api/types'
 import { DecisionCard, EMPTY_DRAFT } from '../../shell/DecisionCard'
 import type { DecisionDraft } from '../../shell/DecisionCard'
@@ -218,7 +219,15 @@ function PlanCard({ plan, onOpen }: { plan: PhasePlan; onOpen: () => void }) {
 }
 
 /** Одна волна исполнения: её планы, сгруппированные дверью, и что о ней посчитано. */
-function WaveColumn({ wave, onOpenPlan }: { wave: PhaseWave; onOpenPlan: (plan: PhasePlan) => void }) {
+function WaveColumn({
+  wave,
+  stop,
+  onOpenPlan,
+}: {
+  wave: PhaseWave
+  stop?: WaveRow
+  onOpenPlan: (plan: PhasePlan) => void
+}) {
   return (
     <div className="min-w-[180px] flex-1">
       <div className="flex items-baseline justify-between gap-2 px-0.5 pb-1.5">
@@ -227,6 +236,22 @@ function WaveColumn({ wave, onOpenPlan }: { wave: PhaseWave; onOpenPlan: (plan: 
         </span>
         <span className="text-[10.5px] text-tx3 tabular-nums">{waveMeta(wave.plans)}</span>
       </div>
+      {/* ОСТАНОВЛЕНА — сказано словами прямо на волне, и сказано ровно то, что происходит: новой
+          работы этой волны никто не получит, а живая доводит текущий шаг. Приказ читается из
+          того же реестра, которому подчиняется диспетчер, поэтому «встала» здесь структурно не
+          может разойтись с тем, что делает движок. */}
+      {stop?.held ? (
+        <div className="mb-1.5 rounded-[7px] border border-warn/40 bg-warn-s px-2 py-1.5">
+          <div className="font-mono text-[10px] font-semibold text-warn-tx uppercase">волна остановлена</div>
+          <p className="m-0 mt-0.5 text-[10.5px] leading-[1.4] text-tx2">
+            {stop.running.length > 0
+              ? `${stop.running.length === 1 ? 'Задача доводит' : 'Задачи доводят'} текущий шаг и ${
+                  stop.running.length === 1 ? 'встаёт' : 'встают'
+                } · ждут: ${stop.waiting.length}`
+              : `Ждут выдачи: ${stop.waiting.length} · ничего не выдаётся`}
+          </p>
+        </div>
+      ) : null}
       <div className="flex flex-col gap-1.5 rounded-[9px] border border-bd bg-surf p-2">
         {wave.plans.length === 0 ? (
           <p className="m-0 px-1 py-1 text-[11.5px] text-tx3">Планов в этой волне нет.</p>
@@ -389,6 +414,9 @@ export function PhaseCardView({
   const startStage = usePhaseStage()
   const answer = useDecisionAnswer()
   const uat = usePhaseUat()
+  // Останов эшелона — факт ДВИЖКА, а не карточки фазы: он живёт в реестре, которому подчиняется
+  // диспетчер, и приезжает сюда тем же рядом состояния, каким его читает окно разговора.
+  const state = useStateQuery()
 
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({})
   const [viewing, setViewing] = useState<PhaseArtifact | null>(null)
@@ -408,6 +436,16 @@ export function PhaseCardView({
   // говорит об этом словами вместо того, чтобы собрать их из чего попало.
   const waves: PhaseWave[] = Array.isArray(phase?.waves) ? phase.waves : []
   const planCount = waves.reduce((n, w) => n + w.plans.length, 0)
+
+  /**
+   * Приказ об этой волне, если он есть. Карточка фазы читает планы С ДИСКА, а останов — факт
+   * ОЧЕРЕДИ, поэтому он приезжает рядом состояния, а не этой же дверью: два ответа на «стоит ли
+   * волна» разошлись бы в первую же секунду после нажатия.
+   */
+  const stopOf = (w: PhaseWave): WaveRow | undefined =>
+    w.wave === null
+      ? undefined
+      : (state.data?.waves ?? []).find((r) => r.phase === String(id) && r.wave === String(w.wave))
 
   /** Стадия на глазу: выбранная человеком, иначе идущая, иначе первая незакрытая. */
   const stage: PhaseStage =
@@ -666,6 +704,7 @@ export function PhaseCardView({
                         <WaveColumn
                           key={w.wave === null ? 'без волны' : w.wave}
                           wave={w}
+                          stop={stopOf(w)}
                           onOpenPlan={(plan) => setViewing(plan)}
                         />
                       ))}

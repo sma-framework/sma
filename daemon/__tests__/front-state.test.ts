@@ -211,6 +211,7 @@ describe('deriveState — the one-poll payload', () => {
       'rules',
       'spend',
       'style',
+      'waves',
       'workers',
     ])
     // kpis
@@ -860,6 +861,7 @@ describe('deriveState — the federation aggregator seam', () => {
       'rules',
       'spend',
       'style',
+      'waves',
       'workers',
     ])
   })
@@ -1585,6 +1587,7 @@ describe('deriveState — projectMemory rides the SAME route, additively', () =>
         'rules',
         'spend',
         'style',
+        'waves',
         'workers',
       ].sort(),
     )
@@ -2646,5 +2649,71 @@ describe('POST /api/wave/hold — слово владельца об эшело�
   it('без каталога данных дверь отвечает 501, а не выдуманным согласием', async () => {
     const front = createFrontServer({ config: { token: MIGRATION_TOKEN, workers: [] }, deps: {} })
     expect((await hold(front, { phase: '14', wave: 2, action: 'hold' })).statusCode).toBe(501)
+  })
+
+  /**
+   * РЯД ЭШЕЛОНОВ — то, из чего окно СОБИРАЕТ фразу подтверждения вместо того, чтобы её выдумать.
+   *
+   * Реплика макета обещает поимённо: «10.8 и 10.9 доведут текущий шаг и встанут, 10.7 уже
+   * стоит». Без этого ряда экран мог бы только напечатать те же слова с числами внутри — ровно
+   * то, что критерий приёмки фазы запрещает. Поэтому проверяется не форма, а СОДЕРЖАНИЕ: кто в
+   * эшелоне бежит, кто ждёт, и стоит ли на нём приказ.
+   */
+  it('ряд эшелона называет поимённо, кто бежит и кто ждёт, и стоит ли на нём приказ', async () => {
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: () => WAVE_NOW })
+    const plan = (id: string, phase: string, wave: number) => ({
+      id,
+      source: 'roster',
+      title: `план ${id}`,
+      lane: 'prod',
+      data: { phase, wave },
+    })
+    await adapter.enqueue(plan('P-a', '14', 2))
+    await adapter.enqueue(plan('P-b', '14', 2))
+    await adapter.enqueue(plan('P-c', '14', 3))
+    await adapter.enqueue({ id: 'R-plain', source: 'roster', title: 'обычная', lane: 'prod' })
+    await adapter.claimNext('w1', {}) // одна задача эшелона уже у работника
+
+    await hold(mkWaveFront(dataDir), { phase: '14', wave: 2, action: 'hold' })
+
+    const payload: any = await deriveState({
+      adapter,
+      windows: makeWindows({}),
+      config: { ...config, dataDir },
+      clock: () => NOW,
+    })
+
+    const two = payload.waves.find((w: any) => w.phase === '14' && w.wave === '2')
+    expect(two.held).toBe(true)
+    expect(two.heldSince).toBe(WAVE_NOW)
+    expect(two.running.map((t: any) => t.id)).toEqual(['P-a']) // доведёт текущий шаг и встанет
+    expect(two.waiting.map((t: any) => t.id)).toEqual(['P-b']) // уже стоит
+
+    // соседний эшелон той же фазы приказом не задет, а работа без эшелона в ряду не значится
+    expect(payload.waves.find((w: any) => w.wave === '3').held).toBe(false)
+    expect(JSON.stringify(payload.waves)).not.toContain('R-plain')
+  })
+
+  it('приказ виден, даже если задач эшелона в очереди ещё нет — иначе экран показал бы «идёт»', async () => {
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: () => WAVE_NOW })
+    await hold(mkWaveFront(dataDir), { phase: '77', wave: 4, action: 'hold' })
+
+    const payload: any = await deriveState({
+      adapter,
+      windows: makeWindows({}),
+      config: { ...config, dataDir },
+      clock: () => NOW,
+    })
+    expect(payload.waves).toHaveLength(1)
+    expect(payload.waves[0]).toMatchObject({ phase: '77', wave: '4', held: true, running: [], waiting: [] })
+  })
+
+  it('без реестра ряд эшелонов пуст — нарисованных остановов не бывает', async () => {
+    const adapter = createMemoryQueue({ clock: () => WAVE_NOW })
+    await adapter.enqueue({ id: 'R-1', source: 'roster', title: 'обычная', lane: 'prod' })
+    const payload: any = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.waves).toEqual([])
   })
 })

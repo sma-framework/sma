@@ -471,6 +471,21 @@ export function redirectTask(input: {
   return postJson('/api/redirect', { taskId: input.taskId, text: input.text, mode: input.mode })
 }
 
+/**
+ * «Останови волну 2» — приказ об ОДНОМ эшелоне ОДНОЙ фазы, и адрес всегда обе половины.
+ *
+ * Ждущие задачи этой волны перестают выдаваться, живые получают поправку «после хода»:
+ * доводят текущий шаг и встают, не теряя сессии. `already` говорит честно, что реестр не
+ * изменился — второе нажатие той же кнопки ничего нового не значит.
+ */
+export function holdWave(input: {
+  phase: string
+  wave: string | number
+  action: 'hold' | 'release'
+}): Promise<{ ok: boolean; phase: string; wave: string; action: string; already: boolean }> {
+  return postJson('/api/wave/hold', { phase: input.phase, wave: String(input.wave), action: input.action })
+}
+
 /** What has been said so far. */
 export function getChatHistory(opts: { limit?: number } = {}): Promise<ChatHistory> {
   const q = opts.limit ? `?limit=${encodeURIComponent(String(opts.limit))}` : ''
