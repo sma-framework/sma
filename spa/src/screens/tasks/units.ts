@@ -66,6 +66,14 @@ export interface WorkUnit {
   dur: string
   /** The step ribbon, empty when nothing measured any steps. */
   segs: UnitState[]
+  /**
+   * ДВИЖЕТСЯ ЛИ ЧТО-ТО ПРЯМО СЕЙЧАС — только для пульса точки, и это не то же самое, что «Идёт».
+   *
+   * Фаза, у которой три стадии из четырёх пройдены, а четвёртая не запущена, идёт (она начата и
+   * не закончена), но в эту секунду не движется НИЧЕГО. Пульсирующая точка — заявление о живом
+   * движении, и ставить её там значило бы обещать работу, которой нет.
+   */
+  live: boolean
   target: UnitTarget
 }
 
@@ -199,7 +207,12 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
   const segs = STAGES.map((s) => STAGE_STATE[row.stages[s]])
   const doneCount = segs.filter((s) => s === 'ok').length
   const running = segs.some((s) => s === 'run')
-  const state: UnitState = row.open > 0 ? 'dec' : doneCount === STAGES.length ? 'ok' : running ? 'run' : 'wait'
+  // «Не начата» принадлежит фазе, у которой не пройдено НИ ОДНОЙ стадии. Пройденная стадия —
+  // это уже начало: живая проверка показала восемь фаз со словом «Не начата» и тремя закрытыми
+  // стадиями в той же строке, и строка спорила сама с собой прямо на экране.
+  const started = running || doneCount > 0
+  const state: UnitState =
+    row.open > 0 ? 'dec' : doneCount === STAGES.length ? 'ok' : started ? 'run' : 'wait'
 
   const answered = row.answered > 0 ? ` · отвечено вопросов: ${row.answered}` : ''
   const inner = `пройдено ${doneCount} из ${STAGES.length} стадий${answered}`
@@ -210,7 +223,9 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
         ? 'Все четыре стадии пройдены'
         : running
           ? 'Стадия идёт — вопросов к вам нет'
-          : 'Не начата'
+          : started
+            ? 'Ни одна стадия сейчас не запущена — фаза ждёт следующей'
+            : 'Не начата'
 
   return {
     id: row.id,
@@ -221,6 +236,7 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
     next,
     dur: '—',
     segs,
+    live: running,
     target: { screen: 'phase', id: row.id },
   }
 }
@@ -255,6 +271,7 @@ function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
         : (idle ?? 'Ждёт свободного работника'),
     dur: '—',
     segs: [],
+    live: false,
     target: { screen: 'task', id: row.id },
   }
 }
@@ -278,6 +295,7 @@ function runningUnit(worker: WorkerRow, now: number): WorkUnit {
     next: pulse ? `Идёт: ${pulse}` : 'Идёт — работник ещё не подал признака жизни',
     dur: spanLabel(running),
     segs: [],
+    live: true,
     target: { screen: 'task', id: worker.taskId as string },
   }
 }
@@ -305,6 +323,7 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
     // мало — очередь тогда отвечает «нечего мерить», и это прочерк, а не ноль.
     dur: spanLabel(row.finishedDuration),
     segs,
+    live: false,
     target: { screen: 'task', id: row.id },
   }
 }
