@@ -217,6 +217,27 @@ export function useBatchDecide() {
   )
 }
 
+/**
+ * Попросить систему вывести слова задачи по формулировке.
+ *
+ * Картина НЕ перечитывается, и это не забывчивость: дверь ничего не ставит, поэтому
+ * перечитывать нечего. Обновление после вызова, который ничего не изменил, сказало бы
+ * человеку, что где-то что-то произошло.
+ */
+export function useSuggestWords() {
+  return useMutation<Awaited<ReturnType<typeof api.suggestTaskWords>>, Error, string>({
+    mutationFn: (title: string) => api.suggestTaskWords(title),
+  })
+}
+
+/** Поправить слова живой задачи — карточка перечитывается вместе с общей картиной. */
+export function useTaskWords(taskId: string | null) {
+  return useAction<Parameters<typeof api.setTaskWords>[0], Awaited<ReturnType<typeof api.setTaskWords>>>(
+    (input) => api.setTaskWords(input),
+    taskId ? [taskKey(taskId)] : [],
+  )
+}
+
 /** Ask for a new helper or skill to be drafted. */
 export function useForge() {
   return useAction<{ kind: DraftKind; description: string; slugHint?: string }, Awaited<ReturnType<typeof api.forge>>>(

@@ -77,6 +77,7 @@ import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { BATCH_PARENT, isBatchParent, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { proposeWords } from './chat.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
@@ -210,21 +211,26 @@ const BUILD_INSTRUCTION_HTML =
 
 /**
  * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
- * freeze plus four doors, each declared once by its own release — the chat stop button in
- * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request together
- * with the word its owner answers a stopped batch with).
- * Exactly FIFTY-SEVEN entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * freeze plus six doors, each declared once by its own release — the chat stop button in
+ * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request, the
+ * word its owner answers a stopped batch with, and the two doors of a task's WORDS: the one
+ * that proposes them and the one that corrects them).
+ * Exactly FIFTY-NINE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 57) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 59) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last four joined one per release, additively — nothing was
- * removed or renamed. ALL FIFTY-SEVEN ARE LIVE — the table carries no stub, and the shape
+ * a time; the last six joined one release at a time, additively — nothing was
+ * removed or renamed. ALL FIFTY-NINE ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
+ *
+ * The two word doors are a PAIR and are worth reading as one: the first WRITES NOTHING (it
+ * returns a draft for a person to correct), and the second writes only onto a task whose work
+ * is not over. Between them they are the whole of «система пишет слова, владелец подтверждает».
  */
 export const ROUTES = Object.freeze({
   // ── the original fourteen (live) ──
@@ -289,6 +295,9 @@ export const ROUTES = Object.freeze({
   'POST /api/batch': 'handleBatchCreate',
   // ── and the word he answers a stopped one with: skip / repeat / abandon ──
   'POST /api/batch/decide': 'handleBatchDecide',
+  // ── the words of a task: the system PROPOSES them, and the owner CORRECTS them ──
+  'POST /api/task/suggest': 'handleTaskSuggest',
+  'POST /api/task/words': 'handleTaskWords',
 })
 
 /**
@@ -3642,6 +3651,102 @@ async function handleBatchDecide({ req, res, deps }) {
   return sendJson(res, 200, { ok: true, batchId, decision, itemId, attempt })
 }
 
+// ── the words of a task: proposed by the system, corrected by its owner ──
+
+/**
+ * POST /api/task/suggest — body `{title}`. The formulation goes in; a DRAFT of the words the
+ * task could carry comes out. NOTHING IS WRITTEN, by this handler or by anything it calls.
+ *
+ * WHY A DOOR THAT WRITES NOTHING IS THE WHOLE POINT. The founder's rule for this is one
+ * sentence: he writes the formulation, the system writes the rest, and he confirms. A system
+ * that derived the words AND put the task in would have answered a question nobody asked it —
+ * so the derivation and the writing are two presses, and this is the one that only reads. The
+ * suite asserts it the only way worth asserting: the queue is EMPTY after the call.
+ *
+ * The derivation is a dictionary (chat.mjs `proposeWords` says so in its own words) — the same
+ * one the conversation offers, so the words of a task do not depend on which of the two places
+ * it was asked from.
+ */
+async function handleTaskSuggest({ req, res }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['title']))) return undefined
+
+  const title = typeof b.title === 'string' ? b.title.trim() : ''
+  if (title === '' || title.length > CHAT_TEXT_CAP) return send400(res, 'invalid title')
+
+  const words = proposeWords(title)
+  if (!words) return send400(res, 'invalid title')
+  return sendJson(res, 200, {
+    ok: true,
+    kind: words.kind,
+    text: words.text,
+    draft: { description: words.description, acceptance: words.acceptance },
+  })
+}
+
+/**
+ * POST /api/task/words — body `{taskId, description?, acceptance?}`. The owner's correction of
+ * what a task says about itself, on a task whose work is NOT over.
+ *
+ * A PROMISE IS EDITED BEFORE IT IS JUDGED. On a task that already produced, failed or is
+ * waiting for a person, this answers 409 and changes nothing: rewriting what «done» meant
+ * after the measuring would leave a row reading as though it had always promised that, and
+ * nothing in the product could say otherwise. The queue itself refuses it — this door only
+ * turns that refusal into an answer a screen can show.
+ *
+ * Only the fields PRESENT in the body move, so a screen editing one does not erase the other.
+ * Both are bounded by the queue's own caps, not by a second set written here.
+ */
+async function handleTaskWords({ req, res, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.setWords !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance']))) return undefined
+
+  const taskId = b.taskId
+  if (typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
+  if (b.description === undefined && b.acceptance === undefined) return send400(res, 'nothing to change')
+
+  const patch = {}
+  if (b.description !== undefined) {
+    if (typeof b.description !== 'string') return send400(res, 'description must be a string')
+    patch.description = b.description
+  }
+  if (b.acceptance !== undefined) {
+    // ONE FIELD, TWO SHAPES — the door takes either, and the queue's gate bounds both.
+    if (typeof b.acceptance !== 'string' && !Array.isArray(b.acceptance)) {
+      return send400(res, 'acceptance must be a string or a list of strings')
+    }
+    patch.acceptance = b.acceptance
+  }
+
+  let changed
+  try {
+    changed = await adapter.setWords(taskId, patch)
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'invalid words'))
+  }
+  // The row is either finished or was never there. The two are told apart by asking, so a
+  // screen can say «уже поздно» rather than «такой задачи нет» about a task in plain sight.
+  if (!changed) {
+    let exists = false
+    try {
+      const rows = await adapter.list({})
+      exists = rows.some((r) => r && r.id === taskId)
+    } catch {
+      /* fail-open: an unreadable queue answers «not found», never a 500 */
+    }
+    return exists ? send409(res, 'the work of this task is over — its words are not rewritten now') : send404(res)
+  }
+
+  emitSafe(deps, { event: 'worker.presence', taskId })
+  return sendJson(res, 200, { ok: true, taskId })
+}
+
 // ── the three switches a person holds: the conveyor, the money, the model ──
 //
 // They share one shape and one law. The shape: explicit-pick the body, hand it to an
@@ -4041,6 +4146,8 @@ export const HANDLERS = Object.freeze({
   // the batch request, and the word its owner answers a stopped one with
   handleBatchCreate,
   handleBatchDecide,
+  handleTaskSuggest,
+  handleTaskWords,
 })
 
 // ── the dispatcher ──

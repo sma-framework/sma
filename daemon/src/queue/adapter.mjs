@@ -131,6 +131,8 @@
  *   touch(taskId)                 → refresh the liveness clock on a claimed task
  *   resolveBatch(batchId, word)   → record the owner's word about a stopped assembly
  *                                   ({skip:<itemId>} | {cancel:true}) and make it take effect
+ *   setWords(taskId, words)       → replace `description` / `acceptance` on a task whose work
+ *                                   is not over yet; false on an unknown or finished task
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
  *   list(filter)                  → rows expose enqueuedAt/claimedAt/leaseRenewedAt/completedAt
@@ -348,6 +350,44 @@ export const CAP_ACCEPTANCE_ITEMS = 12
  * @param {string|string[]|null|undefined} acceptance
  * @returns {string[]}
  */
+/**
+ * The statuses a task's words may still be edited in — the ones where the work is NOT over.
+ *
+ * A promise is edited BEFORE it is judged, never after. Rewriting what «done» meant on a task
+ * that already produced, failed or is waiting for a person would rewrite the standard the work
+ * was measured by, after the measuring — and the row would then read as though it had always
+ * promised that. Both backends refuse it and the contract suite says so.
+ */
+export const WORDS_EDITABLE_STATUSES = Object.freeze(['queued', 'claimed'])
+
+/**
+ * validateWords(patch) → the same patch, gated by exactly the caps an enqueue applies.
+ *
+ * It runs the ENQUEUE GATE ITSELF over a synthetic task rather than restating the ceilings,
+ * so a criterion cannot be longer, or a list bigger, through the editing door than through the
+ * door that put the task there. Two copies of a cap are two caps, and the looser one is the
+ * one that matters. Throws InvalidTaskError; the caller turns that into its own refusal.
+ *
+ * The DoR gate is deliberately NOT re-applied: readiness is a question asked of a task on its
+ * way IN, and a task that is already in the queue was answered once.
+ *
+ * @param {{description?:string, acceptance?:(string|string[])}} [patch]
+ * @returns {{description?:string, acceptance?:(string|string[])}}
+ */
+export function validateWords(patch = {}) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new InvalidTaskError('words must be an object')
+  }
+  const probe = { id: 'words', source: 'roster', title: 'words', lane: 'prod' }
+  if (patch.description !== undefined) probe.description = patch.description
+  if (patch.acceptance !== undefined) probe.acceptance = patch.acceptance
+  validateTask(probe)
+  const out = {}
+  if (patch.description !== undefined) out.description = patch.description
+  if (patch.acceptance !== undefined) out.acceptance = patch.acceptance
+  return out
+}
+
 export function acceptanceItems(acceptance) {
   if (Array.isArray(acceptance)) {
     return acceptance.filter((s) => typeof s === 'string').map((s) => s.trim()).filter((s) => s !== '')
@@ -944,6 +984,22 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
+  /**
+   * setWords(taskId, {description, acceptance}) — replace the words of a task that is still
+   * live. Returns false when there is no such task or its work is already over.
+   *
+   * Only the keys PRESENT in the patch move: a door sending a description alone must not
+   * silently erase a promise it never mentioned.
+   */
+  async function setWords(taskId, patch = {}) {
+    const rec = records.get(taskId)
+    if (!rec) return false
+    if (!WORDS_EDITABLE_STATUSES.includes(rec.status)) return false
+    const words = validateWords(patch)
+    rec.task = { ...rec.task, ...words }
+    return true
+  }
+
   async function complete(taskId, result) {
     const rec = records.get(taskId)
     if (!rec) throw new UnknownTaskError(`complete: unknown task "${taskId}"`)
@@ -1001,7 +1057,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, complete, fail, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -1291,6 +1347,63 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       await expect(q.enqueue({ ...base, id: 'R-desc', description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
       // a refusal writes nothing at all
       expect(await q.list({})).toHaveLength(0)
+    })
+
+    it('the words of a LIVE task can be replaced, one field at a time', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({
+        id: 'R-edit',
+        source: 'roster',
+        title: 'починить импорт',
+        lane: 'prod',
+        description: 'первая редакция',
+        acceptance: ['первый признак'],
+      })
+      expect(await q.setWords('R-edit', { acceptance: ['поправленный признак', 'и второй'] })).toBe(true)
+      let [row] = await q.list({})
+      expect(acceptanceItems(row.acceptance)).toEqual(['поправленный признак', 'и второй'])
+      // the field the patch did not name is exactly where it was
+      expect(row.description).toBe('первая редакция')
+
+      expect(await q.setWords('R-edit', { description: 'вторая редакция' })).toBe(true)
+      ;[row] = await q.list({})
+      expect(row.description).toBe('вторая редакция')
+      expect(acceptanceItems(row.acceptance)).toEqual(['поправленный признак', 'и второй'])
+    })
+
+    /**
+     * A PROMISE IS EDITED BEFORE IT IS JUDGED. Once the work is over — produced and waiting
+     * for a person, accepted or broken — rewriting what «done» meant would change the standard
+     * after the measuring, and the row would then read as though it had always said so.
+     */
+    it('the words of a task whose work is OVER are refused — the standard is not rewritten afterwards', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({ id: 'R-done', source: 'roster', title: 'работа', lane: 'prod', acceptance: ['обещано так'] })
+      await q.claimNext('w1', {})
+      // still live while a worker holds it
+      expect(await q.setWords('R-done', { acceptance: ['ещё можно'] })).toBe(true)
+
+      await q.complete('R-done', { receiptRef: 'reverify:abc' })
+      expect(await q.setWords('R-done', { acceptance: ['так уже нельзя'] })).toBe(false)
+      const [row] = await q.list({})
+      expect(acceptanceItems(row.acceptance)).toEqual(['ещё можно'])
+
+      // and a task nobody ever put in is answered, never thrown at
+      expect(await q.setWords('R-nobody', { description: 'x' })).toBe(false)
+    })
+
+    it('the words door is bounded by the SAME caps the enqueue is', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({ id: 'R-cap', source: 'roster', title: 'работа', lane: 'prod' })
+      await expect(
+        q.setWords('R-cap', { acceptance: Array.from({ length: CAP_ACCEPTANCE_ITEMS + 1 }, (_, i) => `к ${i}`) }),
+      ).rejects.toThrow(/criteria/)
+      await expect(q.setWords('R-cap', { description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
+      const [row] = await q.list({})
+      expect(row.description).toBeUndefined()
     })
 
     it('an item states which batch it belongs to, and the row says so', async () => {

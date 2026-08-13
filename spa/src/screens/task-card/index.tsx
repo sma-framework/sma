@@ -8,6 +8,7 @@ import {
   useReturnTask,
   useStateQuery,
   useTaskQuery,
+  useTaskWords,
 } from '../../api/queries'
 import type {
   AttemptDigest,
@@ -606,12 +607,16 @@ export function Screen() {
   const state = useStateQuery()
   const approve = useApprove()
   const returnTask = useReturnTask()
+  const setWords = useTaskWords(taskId)
 
   const [returning, setReturning] = useState(false)
   const [note, setNote] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
   const [diffOpen, setDiffOpen] = useState(false)
   const [rolesOpen, setRolesOpen] = useState(true)
+  const [editingWords, setEditingWords] = useState(false)
+  const [draftDescription, setDraftDescription] = useState('')
+  const [draftCriteria, setDraftCriteria] = useState('')
 
   // РОЛИ И РАСХОД — из журнала САМОГО СВЕЖЕГО подхода. Тот же ключ запроса, что у ленты
   // подхода ниже, поэтому вторым обращением к двери это не становится.
@@ -669,6 +674,34 @@ export function Screen() {
   const proof = proofItems(lastWithProof)
   const closing = closingWords(status)
   const worked = span(attempts)
+
+  // ПРАВИТЬ СЛОВА МОЖНО, ПОКА РАБОТА НЕ ЗАКОНЧИЛАСЬ. Обещание правят ДО того, как по нему
+  // судили: на задаче, которая уже произвела, провалилась или ждёт человека, дверь отвечает
+  // отказом — и кнопки здесь тоже нет, чтобы человек не бился в заведомо закрытую дверь.
+  const wordsEditable = status === 'queued' || status === 'claimed'
+
+  const openWordsEditor = () => {
+    setProblem(null)
+    setDraftDescription(task?.description ?? '')
+    setDraftCriteria(acceptanceList(task?.acceptance).join('\n'))
+    setEditingWords(true)
+  }
+
+  const saveWords = () => {
+    if (!taskId) return
+    setProblem(null)
+    const criteria = draftCriteria
+      .split('\n')
+      .map((s) => s.replace(/^[-•·]\s*/, '').trim())
+      .filter((s) => s.length > 0)
+    setWords.mutate(
+      { taskId, description: draftDescription.trim(), acceptance: criteria },
+      {
+        onSuccess: () => setEditingWords(false),
+        onError: (err) => setProblem(refusalWords(err)),
+      },
+    )
+  }
 
   const doApprove = () => {
     setProblem(null)
@@ -785,6 +818,60 @@ export function Screen() {
           ) : null}
 
           <div className="flex flex-col gap-2.5">
+            {task?.description && !editingWords ? (
+              <p className="m-0 px-1 text-[12px] leading-[1.45] text-tx2">{task.description}</p>
+            ) : null}
+
+            {editingWords ? (
+              <div className="flex flex-col gap-2 rounded-[11px] border border-bd2 bg-card p-3">
+                <div className="text-[10px] font-semibold tracking-[0.08em] text-tx3 uppercase">Слова задачи</div>
+                <textarea
+                  value={draftDescription}
+                  onChange={(e) => setDraftDescription(e.target.value)}
+                  rows={2}
+                  maxLength={2000}
+                  placeholder="Что это за работа"
+                  aria-label="Описание задачи"
+                  className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
+                />
+                <textarea
+                  value={draftCriteria}
+                  onChange={(e) => setDraftCriteria(e.target.value)}
+                  rows={5}
+                  placeholder="Признаки успеха — по одному в строке"
+                  aria-label="Признаки успеха"
+                  className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingWords(false)}
+                    className="rounded-[8px] border border-bd2 px-[13px] py-1.5 text-[11.5px] text-tx2 hover:text-tx"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveWords}
+                    disabled={setWords.isPending}
+                    className="rounded-[8px] bg-blue px-[15px] py-1.5 text-[11.5px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
+                  >
+                    Сохранить
+                  </button>
+                </div>
+              </div>
+            ) : wordsEditable ? (
+              <div className="flex justify-start px-1">
+                <button
+                  type="button"
+                  onClick={openWordsEditor}
+                  className="rounded-[7px] border border-bd2 px-2 py-1 text-[10.5px] text-tx2 hover:text-tx"
+                >
+                  Поправить слова
+                </button>
+              </div>
+            ) : null}
+
             <div className="flex items-stretch gap-3.5">
               <Column
                 title="Что обещано"

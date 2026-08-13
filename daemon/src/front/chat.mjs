@@ -50,7 +50,7 @@ import {
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { REASON_LABELS } from '../queue/adapter.mjs'
+import { REASON_LABELS, acceptanceItems, CAP_ACCEPTANCE_ITEMS } from '../queue/adapter.mjs'
 import { buildClaudeArgs, buildAccountEnv } from '../runner/args.mjs'
 import { fencedBlock } from '../runner/prompt-fence.mjs'
 import { spawnWorker } from '../runner/spawn.mjs'
@@ -448,6 +448,10 @@ export function draftFromIntent({ text, kind } = {}) {
   if (!lane) return null
   const title = titleFromText(said)
   if (!title) return null
+  // THE SAME PROPOSAL THE FORM'S BUTTON MAKES, offered here too — one derivation, so the
+  // words a task gets do not depend on which of the two places it was asked from. Still only
+  // a proposal: this draft is inert, and the person's press is what turns it into a task.
+  const words = proposeWords(said)
   return {
     kind: 'draft',
     text: INTENT_SENTENCE[kind],
@@ -455,8 +459,116 @@ export function draftFromIntent({ text, kind } = {}) {
       title,
       lane,
       mode: CHAT_DRAFT_MODES[0],
+      ...(words ? { description: words.description, acceptance: words.acceptance } : {}),
       ...(kind === 'task-debug' ? { data: { kind: 'debug' } } : {}),
     },
+  }
+}
+
+// ── fact model 5: the words of a task, PROPOSED — never set ────────────────────
+//
+// ══════ THE OWNER WRITES A SENTENCE; THE SYSTEM WRITES THE REST, AND ASKS ══════
+//
+// The founder's own words for why this exists: «почему мы должны всё писать, если
+// SMA-фреймворк всё это делает?». He should not have to fill in a form to have a task
+// judged properly — putting work in by one sentence stays legal, and the description and
+// the criteria are DERIVED and shown to him.
+//
+// WHAT THIS IS, SAID PLAINLY SO NOBODY OVERSELLS IT: a DICTIONARY, not a session. It reads
+// the verbs a person actually writes, recognises what KIND of work the sentence describes,
+// and proposes the criteria that kind of work is really judged by in this product — plus the
+// two the daemon itself enforces on every attempt (a commit on the task branch; an approach
+// note, without which an attempt is recorded as unexplained). Nothing here is invented about
+// the work: what it cannot recognise it does not guess at, and the owner corrects the rest.
+// It is the same mechanism `draftFromIntent` above uses, and it is chosen for the same
+// reasons — it costs nothing, it answers instantly, and it is the same answer every time,
+// which is what makes it correctable rather than mysterious.
+//
+// AND IT IS ONLY EVER A PROPOSAL. This function returns words; it puts nothing anywhere.
+// The door that calls it writes to no queue, and the form that shows it fills fields a person
+// then edits and submits himself. A machine that filled in what work means AND started it
+// would be answering a question nobody asked it.
+
+/** A description is a paragraph, not a document — the same ceiling the queue puts on it. */
+export const CHAT_WORDS_TEXT_CAP = 2000
+
+/** What kind of work a sentence describes, by the verbs people actually write. */
+const WORK_KINDS = Object.freeze([
+  [/почин|исправ|поправ|фикс|баг|падает|не работает|ошибк|сломал|слома/i, 'fix'],
+  [/разбер|разобрат|исследу|выясн|сравн|посмотр|почему|прикин/i, 'research'],
+  [/докум|readme|опиши|описать|инструкц|напиши текст|статья/i, 'docs'],
+  [/почист|рефактор|упрост|убер|вынес|переимен|причеш/i, 'refactor'],
+  [/добав|сдела|постро|реализ|напиш|создай|введ|подключ/i, 'feature'],
+])
+
+/**
+ * The criteria each kind of work is really judged by here. The FIRST line of each is about
+ * the work itself; the machine-checked ones are added below and are the same for everybody.
+ */
+const KIND_CRITERIA = Object.freeze({
+  fix: [
+    'то, что не работало, работает — проверено прогоном, а не чтением кода',
+    'на поломку есть кейс, который краснеет без правки',
+  ],
+  feature: ['новое поведение работает и закрыто кейсом'],
+  refactor: ['поведение не изменилось: существующие кейсы зелёные до и после'],
+  research: ['ответ дан словами, с опорой на проверенное; лишнего кода не тронуто'],
+  docs: ['текст на месте и понятен человеку, который не знает контекста'],
+})
+
+/** What each recognised kind is, said back in one sentence, so a misread is visible at once. */
+const KIND_SENTENCE = Object.freeze({
+  fix: 'Понял как починку.',
+  feature: 'Понял как новую работу.',
+  refactor: 'Понял как чистку без смены поведения.',
+  research: 'Понял как разбор: ответ словами, а не правка.',
+  docs: 'Понял как работу с текстом.',
+  unknown: 'Вид работы по формулировке не опознан — признаки ниже общие.',
+})
+
+/**
+ * The criteria the DAEMON ITSELF enforces on every attempt. They are here because they are
+ * true, machine-checked and невидимы иначе: an attempt without a commit reaches nobody, and
+ * an attempt without an approach note is recorded as unexplained and dies with its work.
+ * Work whose product is prose is judged by its document instead of by a test receipt.
+ */
+const MACHINE_CRITERIA = Object.freeze({
+  code: ['изменения закоммичены в ветку задачи', 'прогон целевых тестов зелёный', 'оставлена записка о подходе'],
+  prose: ['ответ или документ оставлен на месте', 'оставлена записка о подходе'],
+})
+
+/** Which of the two the kind is judged by — prose work has no test receipt to give. */
+const PROSE_KINDS = new Set(['research', 'docs'])
+
+/**
+ * proposeWords(text) → `{kind, text, description, acceptance[]}` — the words a task could
+ * carry, for a person to correct. NOTHING is written by this function or by its caller.
+ *
+ * `description` is the owner's OWN sentence, whole. The title takes only the tail after a
+ * colon (titleFromText), which is right for a line on a board and wrong for the description
+ * — «Поставь задачу: переписать импорт» describes more than «Переписать импорт» does.
+ *
+ * @param {string} text
+ * @returns {{kind:string, text:string, description:string, acceptance:string[]}|null}
+ */
+export function proposeWords(text) {
+  const said = String(text ?? '').replace(/\s+/g, ' ').trim()
+  if (!said) return null
+
+  const named = WORK_KINDS.find(([re]) => re.test(said))
+  const kind = named ? named[1] : 'unknown'
+  const description = said.length <= CHAT_WORDS_TEXT_CAP ? said : `${said.slice(0, CHAT_WORDS_TEXT_CAP - 1)}…`
+
+  const acceptance = [
+    ...(KIND_CRITERIA[kind] || []),
+    ...MACHINE_CRITERIA[PROSE_KINDS.has(kind) ? 'prose' : 'code'],
+  ]
+
+  return {
+    kind,
+    text: `${KIND_SENTENCE[kind]} Признаки ниже выведены механикой — поправьте их, если поняла не так; ничего не поставлено.`,
+    description,
+    acceptance,
   }
 }
 
@@ -890,8 +1002,13 @@ export function validateDraft(draft, { workers } = {}) {
 
   const mode = CHAT_DRAFT_MODES.includes(draft.mode) ? draft.mode : CHAT_DRAFT_MODES[0]
   const out = { title, worker: match.id, mode }
-  const acceptance = String(draft.acceptance ?? '').trim()
-  if (acceptance) out.acceptance = acceptance
+  // THE PROMISE, READ THE ONE WAY IT IS READ EVERYWHERE — a string is a list of one, and the
+  // list is bounded here rather than at the button, because a draft is where text that was
+  // not written by a person first becomes a proposal of action.
+  const acceptance = acceptanceItems(draft.acceptance).slice(0, CAP_ACCEPTANCE_ITEMS)
+  if (acceptance.length > 0) out.acceptance = acceptance
+  const description = String(draft.description ?? '').trim()
+  if (description) out.description = description.slice(0, CHAT_WORDS_TEXT_CAP)
   return out
 }
 

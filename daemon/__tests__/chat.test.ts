@@ -608,11 +608,13 @@ describe('the free branch (outside the queue)', () => {
     const res = await handleChatTurn({ text: 'Добавь задачу: разобраться с письмами о сбоях', deps: d })
 
     expect(res.answer.kind).toBe('draft')
+    // The promise arrives from the session as ONE STRING and leaves the gate as the list every
+    // reader of this field now reads — one criterion, not a rewrite of what the session said.
     expect(res.answer.draft).toEqual({
       title: 'Разобраться с письмами о сбоях',
       worker: 'pro-1',
       mode: 'обычный',
-      acceptance: 'письма перестали приходить',
+      acceptance: ['письма перестали приходить'],
     })
     expect(q.enqueued).toHaveLength(0) // a draft is a proposal; the human presses «Создать»
 
@@ -921,9 +923,10 @@ describe('GET /api/chat/history — the transcript, read back as data', () => {
 })
 
 describe('the chat routes filled a FROZEN slot', () => {
-  it('the table is fifty-six routes and all three chat routes are real handlers', () => {
-    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request.
-    expect(Object.keys(ROUTES)).toHaveLength(57)
+  it('the table is fifty-nine routes and all three chat routes are real handlers', () => {
+    // V5.4 freeze (53) + chat/stop + redirect + the batch request + the word answering a stopped
+    // batch + the two doors of a task's words (proposed by the system, corrected by its owner).
+    expect(Object.keys(ROUTES)).toHaveLength(59)
     expect(ROUTES['POST /api/chat']).toBe('handleChat')
     expect(ROUTES['POST /api/chat/stop']).toBe('handleChatStop')
     expect(ROUTES['GET /api/chat/history']).toBe('handleChatHistory')

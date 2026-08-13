@@ -670,9 +670,10 @@ async function call(front: any, opts: any) {
 }
 
 describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no route added)', () => {
-  it('the route table is still exactly fifty-six entries and carries no stock-team route', () => {
-    // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request.
-    expect(Object.keys(ROUTES)).toHaveLength(57)
+  it('the route table is still exactly fifty-nine entries and carries no stock-team route', () => {
+    // V5.4 freeze (53) + chat/stop + redirect + the batch request + the word answering a stopped
+    // batch + the two doors of a task's words (proposed by the system, corrected by its owner).
+    expect(Object.keys(ROUTES)).toHaveLength(59)
     expect(Object.keys(ROUTES).filter((k) => /stock/i.test(k))).toEqual([])
   })
 
