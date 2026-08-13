@@ -1,14 +1,16 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useApprove, useDiffQuery, useRedirectTask, useReturnTask, useStateQuery, useTaskQuery } from '../../api/queries'
-import type { TaskAttempt } from '../../api/types'
+import type { TaskAttempt, TaskStatus } from '../../api/types'
 import {
   accentFor,
   attemptsLabel,
   clockLabel,
   hoursLabel,
   initialOf,
+  plural,
   receiptChecks,
+  receiptProofLabel,
   refusalWords,
   statusTone,
   statusWord,
@@ -127,6 +129,189 @@ function span(attempts: TaskAttempt[]): { from: string | null; to: string | null
   return { from, to, ms: Number.isFinite(ms) && ms > 0 ? ms : null }
 }
 
+/**
+ * ═══════════ ТРИ КОЛОНКИ: ЧТО ОБЕЩАНО · ЧТО СДЕЛАНО · ЧЕМ ДОКАЗАНО ═══════════
+ *
+ * По этим трём колонкам работу ПРИНИМАЮТ, не открывая терминал. Поэтому здесь действует
+ * один запрет, который дороже любой красоты: отметка ставится ТОЛЬКО там, где состояние
+ * известно из ответа двери. «✓» — подтверждено измеренным, «?» — ждёт человека, «×» — не
+ * получилось, пусто — состояние никто не называл (в том числе «не начиналось»).
+ *
+ * Отметка, поставленная по прочтению кода, — это подпись, которой потом никто не признаёт:
+ * человек принял работу, потому что увидел галочку, а галочку нарисовал экран. Поэтому там,
+ * где данных нет, стоят слова о том, что их нет, — и никогда ноль и никогда галочка.
+ */
+type Mark = 'ok' | 'ask' | 'fail' | null
+
+interface ColumnItem {
+  text: string
+  mark: Mark
+  /** Пункт, о котором пока нечего сказать, — тише остальных. */
+  muted?: boolean
+}
+
+const MARK_FACE: Record<'ok' | 'ask' | 'fail', { glyph: string; cls: string; title: string }> = {
+  ok: { glyph: '✓', cls: 'border-ok-tx bg-ok-tx text-white', title: 'подтверждено измеренным' },
+  ask: { glyph: '?', cls: 'border-warn-tx bg-card text-warn-tx', title: 'ждёт человека' },
+  fail: { glyph: '×', cls: 'border-err-tx bg-card text-err-tx', title: 'не получилось' },
+}
+
+function MarkBox({ mark }: { mark: Mark }) {
+  if (mark === null) {
+    return (
+      <span
+        aria-hidden
+        title="состояние не названо"
+        className="mt-px flex h-[15px] w-[15px] flex-none rounded-[4px] border border-bd2 bg-card"
+      />
+    )
+  }
+  const face = MARK_FACE[mark]
+  return (
+    <span
+      title={face.title}
+      className={`mt-px flex h-[15px] w-[15px] flex-none items-center justify-center rounded-[4px] border text-[9.5px] font-bold ${face.cls}`}
+    >
+      {face.glyph}
+    </span>
+  )
+}
+
+function Column({
+  title,
+  meta,
+  metaTone,
+  items,
+  empty,
+  footnote,
+}: {
+  title: string
+  meta: string
+  metaTone?: string
+  items: ColumnItem[]
+  /** Что сказать словами, когда пунктов нет. Ноль вместо этой строки — вранье. */
+  empty: string
+  footnote?: string | null
+}) {
+  return (
+    <section className="min-w-0 flex-1 rounded-[12px] border border-bd bg-card px-[15px] py-3.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[12px] font-semibold text-tx">{title}</span>
+        <span className={`flex-none font-mono text-[10.5px] ${metaTone ?? 'text-tx3'}`}>{meta}</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="m-0 mt-2.5 text-[11.5px] leading-[1.45] text-tx3">{empty}</p>
+      ) : (
+        <div className="mt-2.5 flex flex-col gap-2">
+          {items.map((i) => (
+            <div key={i.text} className="flex items-start gap-2">
+              <MarkBox mark={i.mark} />
+              <span className={`min-w-0 flex-1 text-[11.5px] leading-[1.45] ${i.muted ? 'text-tx3' : 'text-tx2'}`}>
+                {i.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {footnote ? <p className="m-0 mt-2.5 text-[10.5px] leading-[1.4] text-tx3">{footnote}</p> : null}
+    </section>
+  )
+}
+
+/**
+ * ПРИЗНАКИ УСПЕХА — СПИСКОМ, а не абзацем.
+ *
+ * Сегодня дверь отдаёт их одной строкой, и эта строка — РОВНО ОДИН пункт: резать её на части
+ * по точкам и запятым значило бы расставить границы, которых автор не ставил, и отчитаться
+ * потом по выдуманному пункту. В тот день, когда дверь начнёт отдавать список, он ляжет сюда
+ * без единой правки карточки — ветка массива написана заранее именно ради этого.
+ */
+function acceptanceList(acceptance: string | string[] | null | undefined): string[] {
+  if (Array.isArray(acceptance)) return acceptance.map((s) => s.trim()).filter((s) => s.length > 0)
+  const one = (acceptance ?? '').trim()
+  return one.length > 0 ? [one] : []
+}
+
+/**
+ * Что известно об обещанном — и известно РОВНО про задачу целиком.
+ *
+ * По каждому признаку отдельно никто сегодня не отчитывается, поэтому отметка либо приходит из
+ * состояния задачи (человек принял, задача не получилась, задача ждёт человека), либо не
+ * ставится вовсе. Строка-сноска под колонкой говорит это вслух — иначе галочка у одного пункта
+ * читается как отчёт по этому пункту.
+ */
+function promiseMark(status: TaskStatus | null): Mark {
+  if (status === 'awaiting_approval') return 'ask'
+  if (status === 'failed') return 'fail'
+  if (status === 'approved' || status === 'completed') return 'ok'
+  return null
+}
+
+/** Чем кончился подход — теми же словами, что и на хронологии ниже. */
+function attemptWords(a: TaskAttempt): string {
+  if (a.outcome === 'returned') return 'возвращён на доработку'
+  if (a.outcome === 'completed' || a.outcome === 'approved') return 'готово'
+  if (a.outcome === 'failed') return a.reasonLabel ?? 'не получилось, причина не записана'
+  if (a.reasonLabel) return a.reasonLabel
+  return a.endedAt ? 'завершён' : 'идёт сейчас'
+}
+
+function attemptMark(a: TaskAttempt): Mark {
+  if (a.outcome === 'completed' || a.outcome === 'approved') return 'ok'
+  if (a.outcome === 'failed') return 'fail'
+  return null
+}
+
+/** Что сделано: шаги попытки и коммиты — из того, что дверь задачи уже приносит. */
+function doneItems(attempts: TaskAttempt[], commits: string[]): ColumnItem[] {
+  const items: ColumnItem[] = attempts.map((a) => ({
+    text: `Подход ${a.attempt ?? '—'} · ${attemptWords(a)}`,
+    mark: attemptMark(a),
+    muted: !a.endedAt && a.outcome === null,
+  }))
+  if (commits.length > 0) {
+    items.push({
+      text: `${commits.length} ${plural(commits.length, 'коммит', 'коммита', 'коммитов')} записано`,
+      mark: 'ok',
+    })
+  }
+  return items
+}
+
+/**
+ * Чем доказано — сводка проверок и та ссылка, которую тик действительно записал.
+ *
+ * Числа здесь ТОЛЬКО из ответа двери. Четырёх чисел сводки сегодня не производит никто (это
+ * замерено и записано отдельно), поэтому на живой задаче колонка чаще всего показывает ссылку
+ * или честную пустоту — но никогда «0 из 0».
+ */
+function proofItems(attempt: TaskAttempt | null): { items: ColumnItem[]; meta: string; metaTone: string } {
+  const checks = receiptChecks(attempt?.receipt)
+  const proof = receiptProofLabel(attempt?.proof)
+  const items: ColumnItem[] = checks.map((c) => ({ text: c.text, mark: c.ok ? 'ok' : 'fail' }))
+  if (proof) items.push({ text: proof, mark: 'ok' })
+  if (checks.length > 0) {
+    const passed = checks.filter((c) => c.ok).length
+    return { items, meta: `${passed} из ${checks.length}`, metaTone: passed === checks.length ? 'text-ok-tx' : 'text-warn-tx' }
+  }
+  return { items, meta: proof ? 'ссылка' : 'нет', metaTone: 'text-tx3' }
+}
+
+/**
+ * ПРАВИЛО ЗАКРЫТИЯ СВОЕГО ВИДА — словами, на карточке.
+ *
+ * Инлайн закрывается закрытием сессии, и приёмка для него НЕ требуется; батч закрывается своей
+ * сборкой, фаза — только пройденной приёмкой. Человеку, который открыл закрытую задачу и не
+ * увидел кнопки «Одобрить», должно быть сказано, почему её нет, — иначе отсутствие кнопки
+ * читается как «что-то сломалось».
+ */
+function closingWords(status: TaskStatus | null): string | null {
+  if (status === 'completed' || status === 'approved') {
+    return 'Сессия закрыта, приёмка для инлайна не требуется.'
+  }
+  return null
+}
+
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
@@ -188,8 +373,17 @@ export function Screen() {
   const canApprove = status === 'awaiting_approval'
   const canReturn = status === 'awaiting_approval' || status === 'failed' || status === 'completed'
 
-  const lastWithReceipt = [...attempts].reverse().find((a) => a.receipt) ?? null
-  const checks = receiptChecks(lastWithReceipt?.receipt)
+  // «Чем доказано» читает ПОСЛЕДНИЙ подход, который хоть что-то оставил: разобранную квитанцию
+  // или ссылку-доказательство. Раньше искалась только квитанция, и подход, закрывшийся на
+  // перепроверенной ветке, читался как «проверять нечего».
+  const lastWithProof = [...attempts].reverse().find((a) => a.receipt || a.proof) ?? null
+  const promised: ColumnItem[] = acceptanceList(task?.acceptance).map((text) => ({
+    text,
+    mark: promiseMark(status),
+  }))
+  const done = doneItems(attempts, detail.data?.commits ?? [])
+  const proof = proofItems(lastWithProof)
+  const closing = closingWords(status)
   const worked = span(attempts)
 
   const doApprove = () => {
@@ -292,28 +486,34 @@ export function Screen() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-8 rounded-[14px] border border-bd bg-card px-6 py-[22px] shadow-panel">
-            <div>
-              <div className="mb-2.5 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">Обещано</div>
-              <p className="m-0 text-[13px] leading-[1.65] text-tx2">
-                {task?.acceptance ?? 'Ничего не обещано — задача поставлена без условий приёмки.'}
-              </p>
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-stretch gap-3.5">
+              <Column
+                title="Что обещано"
+                meta="критерии"
+                items={promised}
+                empty="Ничего не обещано — задача поставлена без условий приёмки."
+                footnote={
+                  promised.length > 0 && promiseMark(status) !== null
+                    ? 'Отметка — по состоянию задачи целиком: по каждому признаку отдельно система не отчитывается.'
+                    : null
+                }
+              />
+              <Column
+                title="Что сделано"
+                meta="по шагам"
+                items={done}
+                empty="Работа ещё не начиналась — задача ждёт своей очереди."
+              />
+              <Column
+                title="Чем доказано"
+                meta={proof.meta}
+                metaTone={proof.metaTone}
+                items={proof.items}
+                empty="Квитанции пока нет — проверять ещё нечего."
+              />
             </div>
-            <div className="border-l border-bd pl-8">
-              <div className="mb-2.5 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">Проверено</div>
-              {checks.length === 0 ? (
-                <p className="m-0 text-[13px] text-tx3">Квитанции пока нет — проверять ещё нечего.</p>
-              ) : (
-                <div className="flex flex-wrap gap-x-2.5 gap-y-1.5 text-[13px] leading-[1.8]">
-                  {checks.map((c) => (
-                    <span key={c.text} className="whitespace-nowrap">
-                      <span className="text-tx">{c.text}</span>{' '}
-                      <span className={c.ok ? 'text-ok-tx' : 'text-err-tx'}>{c.ok ? '✓' : '✗'}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
+            {closing ? <p className="m-0 px-1 text-[11.5px] text-tx3">{closing}</p> : null}
           </div>
 
           {status === 'claimed' && taskId ? <Steering taskId={taskId} /> : null}
