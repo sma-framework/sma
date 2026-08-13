@@ -189,10 +189,14 @@ describe('deriveState — the one-poll payload', () => {
 
     const payload = await deriveState({ adapter: mkAdapter(rows), windows, config, usageReader, clock: () => NOW })
 
+    // `batches` joined the top level with the third kind of unit of work: one request of the
+    // owner and the pieces it was broken into. Always present, empty where there is none — a
+    // key that appears only once something exists reads on a screen as «no such thing».
     expect(Object.keys(payload).sort()).toEqual([
       'accounts',
       'activeProject',
       'awaiting',
+      'batches',
       'costs',
       'done',
       'federation',
@@ -841,6 +845,7 @@ describe('deriveState — the federation aggregator seam', () => {
       'accounts',
       'activeProject',
       'awaiting',
+      'batches',
       'costs',
       'done',
       'federation',
@@ -1566,6 +1571,7 @@ describe('deriveState — projectMemory rides the SAME route, additively', () =>
         'accounts',
         'activeProject',
         'awaiting',
+        'batches',
         'costs',
         'done',
         'federation',
@@ -2013,5 +2019,152 @@ describe('POST /api/batch — the request fans out into the work it names', () =
   it('an unwired queue answers 501 — never a fabricated ok about work that was never queued', async () => {
     const res = await callBatch(mkBatchFront({}), { title: 'разбор', items: ['дело'] })
     expect(res.statusCode).toBe(501)
+  })
+
+  // ── batches[] — the wire from the door, through a REAL queue, into the payload ──
+  //
+  // Every case below puts the batch in through the door and reads it out of deriveState, so
+  // what is asserted is the WIRE and not a computation: a derive that grouped items perfectly
+  // and was never handed the request rows would pass a test written any other way.
+
+  async function batchInTheState(front: any, adapter: any, body: any) {
+    const res = await callBatch(front, body)
+    expect(res.statusCode).toBe(200)
+    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    return { id: JSON.parse(res.body).id, payload }
+  }
+
+  it('a batch put in through the door comes out of /api/state with its items and their states', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    const { id, payload } = await batchInTheState(front, adapter, {
+      title: 'разгреби мелочь перед демо',
+      items: ['первое дело', 'второе дело'],
+    })
+
+    expect(payload.batches).toHaveLength(1)
+    const batch = payload.batches[0]
+    expect(batch.id).toBe(id)
+    expect(batch.title).toBe('разгреби мелочь перед демо')
+    expect(batch.items.map((i: any) => i.title)).toEqual(['первое дело', 'второе дело'])
+    expect(batch.items.map((i: any) => i.state)).toEqual(['waiting', 'waiting'])
+
+    // ...and the request itself is NOT in the queue list, nor in the counter beside it
+    expect(payload.queue.map((q: any) => q.id)).toEqual(batch.items.map((i: any) => i.id))
+    expect(payload.kpis.queued).toBe(2)
+  })
+
+  it('the item waiting for a person is NAMED as what holds the assembly', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    const first = await callBatch(front, { title: 'разбор', items: ['первое дело', 'второе дело'] })
+    const id = JSON.parse(first.body).id
+
+    // the first item runs and finishes with a receipt → it now owes a PERSON a word
+    const claimed = await adapter.claimNext('w1', {})
+    await adapter.complete(claimed.id, { receiptRef: 'reverify:ok' })
+
+    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    const batch = payload.batches.find((b: any) => b.id === id)
+    expect(batch.state).toBe('awaiting_decision')
+    expect(batch.holding.id).toBe(claimed.id)
+    expect(batch.holding.state).toBe('awaiting_decision') // the state IS the reason
+  })
+
+  /**
+   * THE CLOSING RULE, on fixtures rather than through the door — deliberately.
+   *
+   * A batch is closed by its ASSEMBLY: only when every piece has actually produced. Accepted
+   * work reads `completed`, and acceptance is a person's word given at the approve door (the
+   * queue's own `complete()` hands the task to a person and reads back as awaiting one). So
+   * the state this rule turns on is reached by a path outside this door, and the honest way to
+   * assert the rule is to state the rows and read the answer.
+   */
+  const requestRow = (over: any = {}) => ({
+    id: 'B-9',
+    title: 'разгреби мелочь перед демо',
+    lane: 'prod',
+    status: 'queued',
+    batchId: 'B-9',
+    data: { batch: 'parent' },
+    enqueuedAt: NOW - 1000,
+    priority: 0,
+    ...over,
+  })
+  const itemRow = (id: string, status: string) => ({
+    id,
+    title: `дело ${id}`,
+    lane: 'prod',
+    status,
+    batchId: 'B-9',
+    enqueuedAt: NOW - 1000,
+    priority: 0,
+  })
+
+  it('every item accepted → the assembly is done and nothing holds it; one live item → not done', async () => {
+    const closed = await deriveState({
+      adapter: mkAdapter([requestRow(), itemRow('B-9-1', 'completed'), itemRow('B-9-2', 'completed')]),
+      windows: makeWindows({}),
+      config,
+      clock: () => NOW,
+    })
+    expect(closed.batches[0].state).toBe('done')
+    expect(closed.batches[0].holding).toBeNull()
+
+    const open = await deriveState({
+      adapter: mkAdapter([requestRow(), itemRow('B-9-1', 'completed'), itemRow('B-9-2', 'claimed')]),
+      windows: makeWindows({}),
+      config,
+      clock: () => NOW,
+    })
+    expect(open.batches[0].state).toBe('running')
+    expect(open.batches[0].holding.id).toBe('B-9-2')
+  })
+
+  it('a failed item stops the assembly and is what holds it — nothing retries by itself', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    const res = await callBatch(front, { title: 'разбор', items: ['первое дело', 'второе дело'] })
+    const id = JSON.parse(res.body).id
+
+    const a = await adapter.claimNext('w1', {})
+    await adapter.complete(a.id, { receiptRef: 'reverify:ok' })
+    const b = await adapter.claimNext('w2', {})
+    await adapter.fail(b.id, 'agent_error')
+
+    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    const batch = payload.batches.find((bt: any) => bt.id === id)
+    // both rows are terminal for the QUEUE, and the assembly is still open: a failure is a
+    // stop that owes its owner a decision, never a closed piece of work
+    expect(batch.state).toBe('failed')
+    expect(batch.holding.id).toBe(b.id)
+  })
+
+  it('nothing about a batch is stored: what holds it is recomputed, and the queue rows carry no such field', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+    await callBatch(front, { title: 'разбор', items: ['первое дело'] })
+
+    const rows = await adapter.list({})
+    for (const r of rows) {
+      expect(Object.keys(r)).not.toContain('holding')
+      expect(Object.keys(r)).not.toContain('state')
+    }
+
+    // the same rows, read twice with a different world: the reading follows the ITEMS
+    const before = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    expect(before.batches[0].state).toBe('waiting')
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed).toBeTruthy()
+    const after = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    expect(after.batches[0].state).toBe('running')
+    expect(after.batches[0].holding.state).toBe('running')
+  })
+
+  it('no batch, no batches: a queue of ordinary work answers with an empty list, never a missing key', async () => {
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    await adapter.enqueue({ id: 'R-1', source: 'roster', title: 'обычная', lane: 'prod' })
+    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.batches).toEqual([])
   })
 })

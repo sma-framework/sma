@@ -88,6 +88,42 @@ export interface QueueRow {
   leaseRenewedAt: number | null
 }
 
+/**
+ * СОСТОЯНИЕ ЭЛЕМЕНТА БАТЧА — статус очереди, сказанный словами сборки.
+ *
+ * Очередь отвечает на вопрос «где эта строка», сборка — на другой: «нужен ли тут человек».
+ * Порядок громкости (первое из присутствующих и есть состояние батча): провал → ждёт решения
+ * → идёт → не начат → готово. Провал стоит первым и НЕ считается закрытым элементом:
+ * провалившийся кусок останавливает батч и спрашивает владельца, ничего не повторяется само.
+ */
+export type BatchItemState = 'failed' | 'awaiting_decision' | 'running' | 'waiting' | 'done'
+
+export interface BatchItem {
+  id: string
+  title: string | null
+  /** Статус в очереди — тот же словарь, что у строки задачи. */
+  status: TaskStatus
+  state: BatchItemState
+}
+
+/**
+ * БАТЧ — третий вид единицы работы: одна постановка владельца и куски, на которые она
+ * разошлась. Всё поле считается движком при каждом чтении и нигде не хранится: «что держит
+ * сборку» — функция состояний элементов, а записанное значение было бы второй правдой о тех
+ * же статусах.
+ */
+export interface BatchRow {
+  id: string
+  title: string | null
+  project: string
+  machine: string
+  /** Состояние самого громкого элемента; `done` — только когда закрыты ВСЕ элементы. */
+  state: BatchItemState
+  items: BatchItem[]
+  /** Какой элемент держит сборку и почему (его состояние и есть причина); `null` у закрытой. */
+  holding: BatchItem | null
+}
+
 export interface WorkerRow {
   id: string
   lane: string | null
@@ -561,6 +597,12 @@ export interface StatePayload {
    * WORKER, so these rows live in their own list rather than inside it.
    */
   awaiting: QueueRow[]
+  /**
+   * Батчи: постановка, её элементы с состояниями и названный держащий элемент. Всегда
+   * присутствует — пустой список там, где батчей нет (ключ, появляющийся только вместе с
+   * данными, читается экраном как «такого не бывает»).
+   */
+  batches: BatchRow[]
   workers: WorkerRow[]
   done: DoneRow[]
   spend: Spend
