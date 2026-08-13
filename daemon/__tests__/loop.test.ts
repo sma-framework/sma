@@ -1718,3 +1718,100 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     expect(account.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
   })
 })
+
+/**
+ * ═══════════ ОДИН РАБОТНИК, ПО ОДНОМУ ЗА РАЗ — ЧЕРЕЗ ЖИВОЙ ТИК ═══════════════════════
+ *
+ * The queue's own contract already says the pieces of an assembly are handed out one at a
+ * time (adapter.mjs). What is asserted HERE is the half the queue cannot assert about
+ * itself: that a real tick, with routing and a worker pool in it, gives the next piece to
+ * the worker that ran the previous one, wedges an urgent inline task BETWEEN pieces without
+ * ever interrupting a live one, and — when a piece breaks — stops and repeats NOTHING no
+ * matter how many times it runs.
+ *
+ * The last of those is the loop of 12.08.2026 written down as a test: three live sessions on
+ * one task, a burnt subscription, an empty board. Nothing here is allowed to happen by itself.
+ */
+describe('a batch is dispatched one piece at a time, by one worker', () => {
+  const TWO_WORKERS = [
+    { id: 'w-first', lane: 'prod', provider: 'claude', account: { configDir: '/a' }, enabled: true },
+    { id: 'w-second', lane: 'prod', provider: 'claude', account: { configDir: '/b' }, enabled: true },
+  ]
+
+  const CODE_RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
+    reverify: GREEN_REVERIFY,
+  }
+
+  const request = (batchId: string) => ({
+    id: batchId,
+    source: 'roster',
+    title: 'разгреби мелочь перед демо',
+    lane: 'prod',
+    batchId,
+    data: { batch: 'parent' },
+  })
+  const piece = (batchId: string, n: number, over: any = {}) => ({
+    id: `${batchId}-${n}`,
+    source: 'roster',
+    title: `кусок ${n}`,
+    lane: 'prod',
+    batchId,
+    ...over,
+  })
+
+  /** A queue holding one request and two pieces of it, oldest first. */
+  async function batchQueue(batchId: string, c: any) {
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(request(batchId))
+    await adapter.enqueue(piece(batchId, 1))
+    c.advance(10)
+    await adapter.enqueue(piece(batchId, 2))
+    return adapter
+  }
+
+  it('the piece that follows goes to the worker that ran the piece before it', async () => {
+    const c = mkClock()
+    const adapter = await batchQueue('B-A', c)
+    // The first piece was run by the SECOND worker of the pool and produced. The pin is the
+    // only thing that can send the next piece there — pool order alone would pick w-first.
+    await adapter.claimNext('daemon', {})
+    await adapter.assignWorker('B-A-1', 'w-second')
+    await adapter.complete('B-A-1', { receiptRef: 'reverify:one' })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { workers: TWO_WORKERS }, responses: CODE_RESPONSES })
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('B-A-2')
+    const rows = await adapter.list({})
+    expect(rows.find((r: any) => r.id === 'B-A-2').workerId).toBe('w-second')
+  })
+
+  it('...and ordinary work still goes to the head of the pool — so the case above is a pin, not a fixture', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-alone' }))
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { workers: TWO_WORKERS }, responses: CODE_RESPONSES })
+
+    await tick(deps)
+
+    const [row] = await adapter.list({})
+    expect(row.workerId).toBe('w-first')
+  })
+
+  it('two pieces of one assembly are never live at once: tick after tick, one at a time', async () => {
+    const c = mkClock()
+    const adapter = await batchQueue('B-B', c)
+    const { deps } = makeDeps({ adapter, clockObj: c, config: { workers: TWO_WORKERS }, responses: CODE_RESPONSES })
+
+    const first = await tick(deps)
+    expect(first.completed).toBe('B-B-1')
+    // while the first piece was under way nothing else of the batch was claimed — the row is
+    // still waiting, and it is the NEXT tick that takes it
+    const second = await tick(deps)
+    expect(second.completed).toBe('B-B-2')
+    const third = await tick(deps)
+    expect(third.idle).toBe(true) // the assembly is out of pieces; nothing invents another
+  })
+})

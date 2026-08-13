@@ -142,6 +142,15 @@ function makeFakeBackend({
         state: 'created',
         retry_count: 0,
         retryLimit: opts.retryLimit ?? 2,
+        // WHEN THIS JOB BECOMES FETCHABLE. Modelled because the LIBRARY models it: every fetch
+        // plan pg-boss issues carries `AND start_after < now()`, and that column is the whole
+        // mechanism «one piece of a batch at a time» rests on. A fake that ignored the option
+        // would hand out a held piece and certify a rule the real queue keeps — the fake being
+        // richer than its library, once more. (The comparison in `fetch` is `<=` where the
+        // library writes `<`: a real database advances its own now() between the INSERT and
+        // the later fetch, and this fixture's clock is frozen unless a case moves it. The held
+        // value is a date in year 2999, which no comparison of either kind lets through.)
+        start_after: opts.startAfter == null ? now() : Date.parse(String(opts.startAfter)),
         expireInSeconds: opts.expireInSeconds ?? 120,
         created_on: now(),
         started_on: null,
@@ -153,7 +162,9 @@ function makeFakeBackend({
     async fetch(name: string, options: any = {}) {
       maintain()
       const batchSize = options.batchSize ?? 1
-      const avail = [...jobs.values()].filter((j) => j.name === name && j.state === 'created')
+      const avail = [...jobs.values()].filter(
+        (j) => j.name === name && j.state === 'created' && (j.start_after ?? 0) <= now(),
+      )
       avail.sort((a, b) => b.priority - a.priority || a.created_on - b.created_on)
       const picked = avail.slice(0, batchSize)
       for (const j of picked) {
@@ -188,6 +199,15 @@ function makeFakeBackend({
         j.state = 'failed'
         j.output = out
       }
+      return true
+    },
+    // The library really does offer this one (pg-boss v11: cancel(name, id)), and the backend
+    // uses it for exactly one thing — taking the unstarted pieces of an abandoned batch out of
+    // the queue. `cancelled` is a state of pg-boss's own vocabulary, which the backend already
+    // maps onto `failed`.
+    async cancel(_name: string, id: string) {
+      const j = jobs.get(id)
+      if (j && j.state === 'created') j.state = 'cancelled'
       return true
     },
     async getQueueStats(name: string) {
@@ -242,6 +262,46 @@ function makeFakeBackend({
         if (!sameAttempt) j.data = { ...d, claimedAt, claimedAtRetry: retry }
       }
       return { rows: [] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('start_after = now()')) {
+      // releaseBatchTurns(): the piece whose turn has come stops being deferred. Modelled with
+      // the statement's own guards — keyed by TASK id, only a waiting row, and only one that is
+      // actually held (so a second pass over an already-released piece changes nothing).
+      const [taskId] = params
+      for (const j of jobs.values()) {
+        if (j.data && j.data.id === taskId && j.state === 'created' && (j.start_after ?? 0) > now()) {
+          j.start_after = now()
+        }
+      }
+      return { rows: [] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes("'{data,skipped}'")) {
+      // resolveBatch({skip}): the owner's word appended to the request row's own payload.
+      const [batchId, itemId] = params
+      for (const j of jobs.values()) {
+        if (!j.data || j.data.id !== batchId || j.name !== 'sma.batch') continue
+        const env = { ...(j.data.data || {}) }
+        env.skipped = [...(Array.isArray(env.skipped) ? env.skipped : []), itemId]
+        j.data = { ...j.data, data: env }
+      }
+      return { rows: [] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes("'{data,cancelled}'")) {
+      const [batchId] = params
+      for (const j of jobs.values()) {
+        if (!j.data || j.data.id !== batchId || j.name !== 'sma.batch') continue
+        j.data = { ...j.data, data: { ...(j.data.data || {}), cancelled: true } }
+      }
+      return { rows: [] }
+    }
+    if (sql.includes("state = 'created'") && sql.startsWith('SELECT id, name')) {
+      // resolveQueuedJob(): the waiting job carrying this task id (the mirror of the active
+      // resolution below).
+      const taskId = params[0]
+      const match = [...jobs.values()]
+        .filter((j) => j.state === 'created' && j.data && j.data.id === taskId)
+        .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0))[0]
+      return { rows: match ? [{ id: match.id, name: match.name }] : [] }
     }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('started_on')) {
       // touch(): the lease restamp. Keyed by JOB id (params[0]), not task id, and scoped to
