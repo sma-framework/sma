@@ -1986,6 +1986,24 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     expect((await adapter.claimNext('w1', {})).id).toBe(items[0].id)
   })
 
+  it('ДЛИННАЯ строка бэклога всё равно едет в очередь: заголовок укорочен, идентификатор цел', async () => {
+    // Доска держит строку файла целиком (у неё есть место), заголовок строки очереди вдвое
+    // короче. До этой правки одна длинная запись роняла постановку ЦЕЛОГО батча — найдено
+    // живым прогоном на настоящем бэклоге мастерской, где записи бывают в четыреста символов.
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const long = 'о работе подробно, '.repeat(30) // много длиннее заголовка строки очереди
+    const front = mkBatchFront({ adapter, deriveBacklog: backlogOf([{ id: 'BL-42', title: long }]) })
+
+    const res = await callBatch(front, { title: 'разгрести хвосты', items: ['BL-42', 'своя строка'] })
+    expect(res.statusCode).toBe(200)
+
+    const rows = await adapter.list({})
+    const item = rows.find((r: any) => r.id === `${JSON.parse(res.body).id}-1`)
+    expect(item.title.startsWith('BL-42 · ')).toBe(true) // назад к строке файла читается
+    expect(item.title.endsWith('…')).toBe(true) // и вслух сказано, что слова укорочены
+    expect(item.title.length).toBeLessThanOrEqual(200)
+  })
+
   it('a batch of nothing is refused, and nothing at all is written', async () => {
     const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
     const front = mkBatchFront({ adapter })
@@ -2312,6 +2330,7 @@ describe('POST /api/batch/suggest — предложение состава, к�
       deriveBacklog: backlogOf([
         { id: 'BL-96', title: 'импорт агентов падает на втором файле' },
         { id: 'BL-97', title: 'переписать главу про установку' },
+        { id: 'BL-98', title: 'агентов в списке стало больше' },
       ]),
     })
 
@@ -2334,6 +2353,9 @@ describe('POST /api/batch/suggest — предложение состава, к�
     expect(picked.why).toContain('импорт')
     // строка бэклога, которой фраза не касалась, не предложена
     expect(answer.draft.items.some((i: any) => i.id === 'BL-97')).toBe(false)
+    // ...и строка, задетая ОДНИМ общим словом, тоже: рядом с совпадением по двум словам она
+    // учила бы не доверять всему списку. Отметить её руками в той же форме никто не мешает
+    expect(answer.draft.items.some((i: any) => i.id === 'BL-98')).toBe(false)
 
     // куски — это куски САМОЙ фразы, а не выдуманная работа
     const pieces = answer.draft.items.filter((i: any) => i.kind === 'subtask').map((i: any) => i.title)

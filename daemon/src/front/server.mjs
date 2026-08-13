@@ -76,7 +76,7 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { BATCH_PARENT, isBatchParent, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { BATCH_PARENT, CAP_TITLE, isBatchParent, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { proposeBreakdown, proposeWords } from './chat.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
@@ -3398,6 +3398,30 @@ const BACKLOG_DEFAULT_LANE = 'prod'
 /** A backlog identifier as it may arrive on the wire — the SAME shape the board parses by. */
 const BACKLOG_WIRE_ID_RE = /^[A-Z][A-Z0-9]{1,7}-\d{1,6}$/
 
+/**
+ * queueTitleFor(id, words) → «идентификатор · слова файла», укороченные до того, что заголовок
+ * строки очереди вмещает.
+ *
+ * ЗАЧЕМ ЭТО ВООБЩЕ ЕСТЬ, и это находка живого прогона, а не осторожность. Доска бэклога держит
+ * строку файла целиком (у неё есть место), а заголовок строки очереди — это СТРОКА, не документ,
+ * и он вдвое короче. На настоящем бэклоге, где записи бывают в четыреста символов, обе двери,
+ * собиравшие заголовок склейкой, отдавали в ворота очереди заведомо длинный текст: ворота
+ * отказывали, и владелец видел отказ вместо работы. Батч при этом не заводился ЦЕЛИКОМ — из-за
+ * одной длинной строки в составе.
+ *
+ * Обрезается ХВОСТ СЛОВ, а идентификатор остаётся всегда: по нему строка очереди читается назад
+ * к строке файла, и это единственная её часть, терять которую нельзя. Многоточие говорит вслух,
+ * что слова укорочены, — иначе обрезанная фраза читалась бы как полная.
+ *
+ * Кап берётся у самих ворот (`CAP_TITLE`), а не пишется здесь своим числом: две копии капа —
+ * это два капа, и работает более слабый.
+ */
+function queueTitleFor(id, words) {
+  const whole = `${id} · ${String(words ?? '').trim()}`
+  if (whole.length <= CAP_TITLE) return whole
+  return `${whole.slice(0, CAP_TITLE - 1).replace(/\s+\S*$/, '')}…`
+}
+
 /** A title a person retyped is a line, not a document — validateTask bounds it again. */
 const BACKLOG_TITLE_CAP = 400
 
@@ -3450,7 +3474,7 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   // The identifier rides in front of the text so a queue row can be read back to the line it
   // came from. Both halves are the project's own words — nothing is composed by this file.
-  const task = { id: `R-${clock()}`, source: 'roster', title: `${id} · ${typed}`, lane }
+  const task = { id: `R-${clock()}`, source: 'roster', title: queueTitleFor(id, typed), lane }
   let norm
   try {
     norm = validateTask(task)
@@ -3541,7 +3565,7 @@ async function handleBatchCreate({ req, res, config, deps }) {
     return {
       id: `${batchId}-${i + 1}`,
       source: 'roster', // a person pressed it — DoR-exempt, exactly like the roster button
-      title: row ? `${row.id} · ${row.title}` : line,
+      title: row ? queueTitleFor(row.id, row.title) : line,
       lane,
       batchId,
     }
