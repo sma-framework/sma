@@ -33,8 +33,14 @@ import { useEnqueue, useStateQuery, useSuggestWords } from '../../api/queries'
  * которого ей не задавали.
  */
 
-/** The lanes a person can send work to, in the daemon's own words. */
-const LANES: readonly { value: string; label: string }[] = [
+/**
+ * The lanes a person can send work to, in the daemon's own words.
+ *
+ * Экспортировано, потому что форма батча спрашивает то же самое и теми же словами. Второй
+ * список полос был бы вторым словарём: разойдясь однажды, они показали бы разные направления
+ * в двух формах одного окна, и никто бы не сказал, какой из них правильный.
+ */
+export const LANES: readonly { value: string; label: string }[] = [
   { value: 'prod', label: 'прод-код' },
   { value: 'research', label: 'ресёрч' },
   { value: 'paperwork', label: 'бумага' },
@@ -53,7 +59,8 @@ const ORDERS: readonly { value: number; label: string }[] = [
   { value: 10, label: 'вперёд очереди' },
 ] as const
 
-function Segmented<T>({
+/** Переключатель из закрытого словаря — одолжен формой батча, а не переписан в ней. */
+export function Segmented<T>({
   label,
   options,
   current,
