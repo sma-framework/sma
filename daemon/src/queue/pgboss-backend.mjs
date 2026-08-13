@@ -18,7 +18,9 @@
  * eligibility. So each lane is its OWN queue `sma.task.<lane>` (prod / research /
  * paperwork / forge), sharing one deadLetter `sma.task.dead`. claimNext fetches the
  * eligible lanes in a documented stable order (prod → research → paperwork → forge), so
- * a claimed task is BY CONSTRUCTION one an open worker can run.
+ * a claimed task is BY CONSTRUCTION one an open worker can run. The same property is what
+ * carries the batch: the REQUEST of a batch is sent to a queue of its own (BATCH_PARENT_QUEUE)
+ * which claimNext never fetches, so «a worker is never handed the request» needs no filter.
  *
  * READ-ONLY-BY-CONTRACT list(): the roster feed + the flow
  * timestamps need to enumerate jobs with their payloads across states — which no
@@ -91,6 +93,7 @@
 
 import {
   validateTask,
+  isBatchParent,
   DEFAULT_EXPIRE_MS,
   FAIL_REASONS,
   NoReceiptError,
@@ -117,6 +120,22 @@ export const TASK_QUEUE_LANES = Object.freeze(['prod', 'research', 'paperwork', 
 export const DEAD_LETTER_QUEUE = 'sma.task.dead'
 
 /**
+ * THE QUEUE THE REQUEST OF A BATCH LIVES IN — and the reason it is a queue of its own rather
+ * than a flag on a lane row.
+ *
+ * A batch parent may never be handed to a worker (adapter.mjs states why). This backend cannot
+ * enforce that with a filter: `fetch` IS the claim, it cannot select on the payload, and a job
+ * recognised as a parent AFTER the fetch is already checked out — un-fetching it is exactly the
+ * dance the per-lane design exists to avoid. So the parent is not put where a fetch can reach
+ * it. `claimNext` walks the LANE queues and nothing else, which makes «the parent is never
+ * claimed» a property of the layout instead of a check somebody could later delete.
+ *
+ * It is read back with the lanes in list() — a reader has to see the request to draw the batch
+ * — and deliberately NOT summed in stats(), which counts work waiting for a worker.
+ */
+export const BATCH_PARENT_QUEUE = 'sma.batch'
+
+/**
  * THE SESSION SPEAKS UTF-8, AND IT HAS TO BE SAID OUT LOUD. node-postgres decodes every byte
  * it receives as UTF-8 unconditionally, but it never ASKS the server for an encoding: with
  * no `client_encoding` in the connection the session runs on whatever the CLUSTER'S
@@ -134,6 +153,12 @@ const CLIENT_ENCODING = Object.freeze({ client_encoding: UTF8 })
 
 /** `sma.task.<lane>` — one durable queue per lane. */
 const laneQueue = (lane) => `sma.task.${lane}`
+
+/** Where a task is SENT: its own lane, unless it is the request of a batch (see above). */
+const queueFor = (task) => (isBatchParent(task) ? BATCH_PARENT_QUEUE : laneQueue(task.lane))
+
+/** Every queue a READ has to look in: the four lanes plus the batch requests. */
+const readQueues = () => [...TASK_QUEUE_LANES.map(laneQueue), BATCH_PARENT_QUEUE]
 
 /** pg-boss job.state → our QueueAdapter status vocabulary. */
 const STATE_TO_STATUS = Object.freeze({
@@ -271,6 +296,10 @@ export function createPgBossQueue({
     for (const lane of TASK_QUEUE_LANES) {
       await bossInstance.createQueue(laneQueue(lane), { deadLetter: DEAD_LETTER_QUEUE })
     }
+    // The batch requests: provisioned like a lane queue, fetched like none of them. Nothing
+    // is ever expected to fail here (no worker reaches it), and it still shares the one dead
+    // letter — one rule for every queue this backend owns beats an exception nobody can date.
+    await bossInstance.createQueue(BATCH_PARENT_QUEUE, { deadLetter: DEAD_LETTER_QUEUE })
     // The daemon's OWN approval row (approval-store.mjs) — provisioned in the same breath
     // as the queues, because the front's approve/return CAS against it from the first
     // request. Fail-open by construction: a database that refuses the CREATE logs and
@@ -323,7 +352,7 @@ export function createPgBossQueue({
     const norm = validateTask(task) // DoR / forge / allowlist gate — same path as the memory backend
     let jobId
     try {
-      jobId = await bossInstance.send(laneQueue(norm.lane), norm, {
+      jobId = await bossInstance.send(queueFor(norm), norm, {
         singletonKey: norm.id, // Pattern 5: one pending entry per item (coalescing)
         priority: norm.priority,
         retryLimit: 2,
@@ -444,6 +473,9 @@ export function createPgBossQueue({
   async function claimNext(workerId, { lanes } = {}) {
     // lanes:[] → nothing eligible; return null WITHOUT any fetch/mutation.
     if (Array.isArray(lanes) && lanes.length === 0) return null
+    // LANE QUEUES AND NOTHING ELSE. That is also what keeps the request of a batch out of a
+    // worker's hands: it was never sent to a lane, so no ordering of these fetches can reach
+    // it (BATCH_PARENT_QUEUE). No filter here to forget to write.
     const eligible = Array.isArray(lanes)
       ? TASK_QUEUE_LANES.filter((l) => lanes.includes(l)) // restricted, but keep the stable order
       : TASK_QUEUE_LANES // omitted → all lanes eligible
@@ -615,6 +647,10 @@ export function createPgBossQueue({
       // the stage envelope, carried exactly as the reference backend carries it — see the
       // note there: a phase stage is recognised by this object and never by its title
       ...(data.data ? { data: data.data } : {}),
+      // WHICH BATCH THIS ROW BELONGS TO, mirrored from the reference backend exactly: carried
+      // only when there is one, so ordinary work states nothing about a batch. It is the ONLY
+      // thing that lets a reader group the items of one request back together.
+      ...(data.batchId ? { batchId: data.batchId } : {}),
       // The two facts a decision leaves behind, carried only when they exist: a row that
       // was never returned states nothing about a note rather than carrying a null one.
       ...(r.returned_note ? { returnedNote: r.returned_note } : {}),
@@ -680,7 +716,10 @@ export function createPgBossQueue({
   }
 
   async function list(filter = {}) {
-    const names = TASK_QUEUE_LANES.map(laneQueue)
+    // The batch requests are read WITH the work: a screen that cannot see the request has no
+    // batch to draw, only loose items. They are excluded from stats() for the opposite
+    // reason — see there.
+    const names = readQueues()
     // FAIL-OPEN, the approval-store law: a database that will not answer about approvals
     // must still answer about WORK. A restricted or absent side table costs the rows their
     // «waiting for a person» reading — never the rows themselves.
@@ -732,6 +771,9 @@ export function createPgBossQueue({
 
   async function stats() {
     const agg = { queued: 0, claimed: 0, awaiting_approval: 0, completed: 0, failed: 0, total: 0 }
+    // THE LANES ONLY, and that is the whole reason the batch requests live elsewhere: they are
+    // records of what was asked, not work waiting for a worker, and one counted here would add
+    // a permanent unit to «в очереди» that no amount of working could remove.
     for (const lane of TASK_QUEUE_LANES) {
       const s = (await bossInstance.getQueueStats(laneQueue(lane))) || {}
       const queued = s.queued ?? s.created ?? 0
