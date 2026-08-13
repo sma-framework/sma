@@ -214,7 +214,7 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed FIFTY-SIX-route table', () => {
+describe('server.mjs — the closed FIFTY-SEVEN-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
   // change again, that change is a declared re-freeze revision, not a routine edit. FILLING
   // a declared slot does not change it — that is the entire point of declaring them all at
@@ -223,8 +223,11 @@ describe('server.mjs — the closed FIFTY-SIX-route table', () => {
   // + POST /api/chat/stop (Стоп) + POST /api/redirect (руль бегущей задачи). Declared, not drifted.
   // RE-FREEZE REVISION (13.08.2026): + POST /api/batch — one request of the owner fans out
   // into the work it names. A batch is a fact of the QUEUE, and something has to write it.
-  it('the frozen table has EXACTLY fifty-six routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(56)
+  // RE-FREEZE REVISION (13.08.2026, the same day): + POST /api/batch/decide — a broken piece
+  // stops its assembly and asks its owner (пропустить / повторить / отменить). A question with
+  // no door to answer it through is a question the machine is asking itself.
+  it('the frozen table has EXACTLY fifty-seven routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(57)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

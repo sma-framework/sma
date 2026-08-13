@@ -76,14 +76,14 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { BATCH_PARENT, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { BATCH_PARENT, isBatchParent, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
-import { parseReceiptProof } from './state.mjs'
+import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
 import { scanEstate, enrollSelections } from './import-scanner.mjs'
@@ -210,19 +210,20 @@ const BUILD_INSTRUCTION_HTML =
 
 /**
  * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
- * freeze plus three doors, each declared once by its own release — the chat stop button in
- * v5.4.3, the running-task steering wheel in v5.5.0, and the batch request in v5.6.0).
- * Exactly FIFTY-SIX entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * freeze plus four doors, each declared once by its own release — the chat stop button in
+ * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request together
+ * with the word its owner answers a stopped batch with).
+ * Exactly FIFTY-SEVEN entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 56) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 57) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last three joined one per release, additively — nothing was
- * removed or renamed. ALL FIFTY-SIX ARE LIVE — the table carries no stub, and the shape
+ * a time; the last four joined one per release, additively — nothing was
+ * removed or renamed. ALL FIFTY-SEVEN ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  */
 export const ROUTES = Object.freeze({
@@ -286,6 +287,8 @@ export const ROUTES = Object.freeze({
   'POST /api/agent/model': 'handleAgentModel',
   // ── the batch: one request of the owner, filled with its handler in the same commit ──
   'POST /api/batch': 'handleBatchCreate',
+  // ── and the word he answers a stopped one with: skip / repeat / abandon ──
+  'POST /api/batch/decide': 'handleBatchDecide',
 })
 
 /**
@@ -3541,6 +3544,87 @@ async function handleBatchCreate({ req, res, config, deps }) {
   return sendJson(res, 200, { ok: true, id: batchId, items: ids.filter((id) => id !== batchId) })
 }
 
+/**
+ * POST /api/batch/decide — the word that gets a STOPPED assembly moving again.
+ * Body `{batchId, decision:'skip'|'retry'|'cancel', itemId?}`.
+ *
+ * WHY THIS DOOR EXISTS AT ALL, in the owner's own rule: a broken piece stops the batch and
+ * asks him what to do — skip it, run it again, or abandon the whole thing — and NOTHING
+ * happens until he answers. The queue enforces the silence (a batch with a broken piece hands
+ * out nothing); this is the only way out of it, and there is deliberately no fourth way.
+ *
+ * WHAT EACH ANSWER REALLY DOES, and each is a durable fact rather than a screen state:
+ *   skip   — the piece is remembered as let go on the REQUEST row; it stops holding the
+ *            assembly and is still shown, by name, as «пропущен»
+ *   retry  — the SAME piece goes back into the queue under its own id, one attempt higher,
+ *            keeping its kinship. The same shape the return-with-comment door has always used
+ *   cancel — the assembly is remembered as abandoned and the pieces nobody started are taken
+ *            out of the queue. What already produced is never touched
+ *
+ * A DECISION IS ONLY OFFERED ABOUT A BROKEN PIECE, and this door refuses anything else by
+ * name: skipping a piece that is merely waiting would be a way to silently drop work through
+ * a door that exists to answer a question nobody asked about it.
+ */
+async function handleBatchDecide({ req, res, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.list !== 'function' || typeof adapter.resolveBatch !== 'function') {
+    return send501(res)
+  }
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['batchId', 'decision', 'itemId']))) return undefined
+
+  const batchId = b.batchId
+  if (typeof batchId !== 'string' || !ID_RE.test(batchId)) return send400(res, 'invalid batchId')
+  const decision = typeof b.decision === 'string' ? b.decision : ''
+  if (!BATCH_DECISIONS.some((o) => o.id === decision)) {
+    return send400(res, `decision must be one of ${BATCH_DECISIONS.map((o) => o.id).join('|')}`)
+  }
+  const itemId = b.itemId
+  if (decision !== 'cancel' && (typeof itemId !== 'string' || !ID_RE.test(itemId))) {
+    return send400(res, 'invalid itemId')
+  }
+
+  const rows = await adapter.list({})
+  const request = rows.find((r) => isBatchParent(r) && (r.batchId || r.id) === batchId)
+  if (!request) return send404(res)
+
+  if (decision === 'cancel') {
+    await adapter.resolveBatch(batchId, { cancel: true })
+    emitSafe(deps, { event: 'task.failed', taskId: batchId, status: 'failed' })
+    return sendJson(res, 200, { ok: true, batchId, decision })
+  }
+
+  const item = rows.find((r) => r && r.id === itemId && r.batchId === batchId && !isBatchParent(r))
+  if (!item) return send404(res)
+  // The question is asked ABOUT A BROKEN PIECE. A row that is running, waiting or already
+  // produced is not what stopped the assembly, and answering about it would be an answer to a
+  // question the daemon never asked.
+  if (item.status !== 'failed') return send409(res, 'this piece is not what stopped the batch')
+
+  if (decision === 'skip') {
+    await adapter.resolveBatch(batchId, { skip: itemId })
+    emitSafe(deps, { event: 'worker.presence', taskId: itemId })
+    return sendJson(res, 200, { ok: true, batchId, decision, itemId })
+  }
+
+  // retry: the same piece, its own id, one attempt higher, still of its batch. Nothing here
+  // decides WHEN it runs — the queue does, when the assembly's turn comes round to it.
+  const attempt = Number.isFinite(item.attempt) ? item.attempt + 1 : 2
+  const requeue = await enqueueOrExplain(res, adapter, {
+    id: itemId,
+    source: 'return',
+    title: item.title || itemId,
+    lane: item.lane || BACKLOG_DEFAULT_LANE,
+    batchId,
+    attempt,
+  })
+  if (requeue.answered) return undefined // the database refused the text; the reason is sent
+  emitSafe(deps, { event: 'task.queued', taskId: itemId, status: 'queued' })
+  return sendJson(res, 200, { ok: true, batchId, decision, itemId, attempt })
+}
+
 // ── the three switches a person holds: the conveyor, the money, the model ──
 //
 // They share one shape and one law. The shape: explicit-pick the body, hand it to an
@@ -3937,8 +4021,9 @@ export const HANDLERS = Object.freeze({
   handleUpdateRun,
   handleBudgetSet,
   handleAgentModel,
-  // the batch request
+  // the batch request, and the word its owner answers a stopped one with
   handleBatchCreate,
+  handleBatchDecide,
 })
 
 // ── the dispatcher ──

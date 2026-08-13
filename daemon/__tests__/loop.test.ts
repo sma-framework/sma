@@ -1944,3 +1944,104 @@ describe('an urgent inline task wedges BETWEEN the pieces of a batch', () => {
     expect(pieces.every((r: any) => r.status === 'awaiting_approval')).toBe(true)
   })
 })
+
+/**
+ * ═══════════ СЛОМАЛОСЬ — СТОП. НИЧЕГО НЕ ПРОИСХОДИТ САМО ═══════════════════════════
+ *
+ * This is the loop of 12.08.2026 written down as a test, at the level it actually happened:
+ * the TICK. A piece broke, and the machine ran it again — and again — because nothing anywhere
+ * said «stop and ask». Three live sessions on one task, a subscription burnt overnight, and a
+ * board showing an empty queue and an idle worker.
+ *
+ * So: after a piece of a batch fails, tick after tick after tick must do NOTHING with that
+ * assembly — not repeat the broken piece, not move on to the next one — until its owner says
+ * a word. And when he does, the very next tick carries on exactly as he asked.
+ */
+describe('a broken piece stops its batch until the owner says a word — the tick repeats NOTHING', () => {
+  const RED_RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
+    reverify: { code: 0, stdout: JSON.stringify({ verdict: 'red', receiptRef: 'reverify:red' }) },
+  }
+  const GREEN_RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
+    reverify: GREEN_REVERIFY,
+  }
+
+  async function brokenBatch(c: any) {
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue({
+      id: 'B-F',
+      source: 'roster',
+      title: 'разгреби мелочь перед демо',
+      lane: 'prod',
+      batchId: 'B-F',
+      data: { batch: 'parent' },
+    })
+    await adapter.enqueue({ id: 'B-F-1', source: 'roster', title: 'кусок 1', lane: 'prod', batchId: 'B-F' })
+    c.advance(10)
+    await adapter.enqueue({ id: 'B-F-2', source: 'roster', title: 'кусок 2', lane: 'prod', batchId: 'B-F' })
+
+    // the first piece runs and its tests come back red
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: RED_RESPONSES })
+    const res = await tick(deps)
+    expect(res.failed).toEqual({ taskId: 'B-F-1', reason: 'tests_red' })
+    return adapter
+  }
+
+  it('tick after tick, the stopped assembly does nothing at all — no repeat, no next piece', async () => {
+    const c = mkClock()
+    const adapter = await brokenBatch(c)
+
+    const { deps, order } = makeDeps({ adapter, clockObj: c, responses: GREEN_RESPONSES })
+    for (let i = 0; i < 5; i += 1) {
+      c.advance(60000) // an hour of five-second ticks, compressed
+      expect((await tick(deps)).idle).toBe(true)
+    }
+    expect(order).toEqual([]) // not one verb, not one session — nothing was spawned at all
+
+    const rows = await adapter.list({})
+    expect(rows.find((r: any) => r.id === 'B-F-1').status).toBe('failed')
+    expect(rows.find((r: any) => r.id === 'B-F-1').attempt).toBe(1) // it was never run again
+    expect(rows.find((r: any) => r.id === 'B-F-2').status).toBe('queued') // and never moved on
+  })
+
+  it('«пропустить» → the very next tick carries the assembly on with the piece after it', async () => {
+    const c = mkClock()
+    const adapter = await brokenBatch(c)
+    await adapter.resolveBatch('B-F', { skip: 'B-F-1' })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: GREEN_RESPONSES })
+    expect((await tick(deps)).completed).toBe('B-F-2')
+  })
+
+  it('«повторить» → the very next tick runs THAT piece again, and only because he asked', async () => {
+    const c = mkClock()
+    const adapter = await brokenBatch(c)
+    c.advance(10)
+    await adapter.enqueue({
+      id: 'B-F-1',
+      source: 'return',
+      title: 'кусок 1',
+      lane: 'prod',
+      batchId: 'B-F',
+      attempt: 2,
+    })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: GREEN_RESPONSES })
+    const res = await tick(deps)
+    expect(res.completed).toBe('B-F-1')
+  })
+
+  it('«отменить» → the next tick has nothing of that assembly to run, now or ever', async () => {
+    const c = mkClock()
+    const adapter = await brokenBatch(c)
+    await adapter.resolveBatch('B-F', { cancel: true })
+
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: GREEN_RESPONSES })
+    expect((await tick(deps)).idle).toBe(true)
+    const rows = await adapter.list({})
+    expect(rows.find((r: any) => r.id === 'B-F-2').status).not.toBe('queued')
+  })
+})
