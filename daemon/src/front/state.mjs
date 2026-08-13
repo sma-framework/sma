@@ -2052,6 +2052,22 @@ function totalCost(usageReader, workersCfg, windowMs, now, apiAccountName) {
  * finished task's card showed no commits and no diff at all. The tree the work happened in is
  * the connected project, and that is what the caller passes.
  */
+/**
+ * How long ONE attempt ran, in milliseconds, from its own two ledger marks — or `null`.
+ *
+ * Both marks or nothing: a length derived from one of them would be a length measured against
+ * «now», and «now» is when somebody happened to open the screen rather than when the work
+ * stopped. A negative span (clocks moved, a row was rewritten) is refused for the same reason —
+ * it is evidence the two marks are not comparable, not a number to show.
+ */
+function attemptDuration(attempt) {
+  const from = toMs(attempt && attempt.startedAt)
+  const to = toMs(attempt && attempt.endedAt)
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+  const ms = to - from
+  return ms >= 0 ? ms : null
+}
+
 function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activeProject, machineId }) {
   const attempts = readTaskAttempts(r.id)
   const last = attempts.length ? attempts[attempts.length - 1] : null
@@ -2089,6 +2105,17 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activ
     project: projectOf(r, activeProject),
     machine: machineId ?? 'self',
     finishedAt: r.completedAt ?? null,
+    // HOW LONG IT ACTUALLY TOOK, from the two marks the ledger put down on the attempt that
+    // CLOSED it — not from the first attempt to the last, which would silently include the hours
+    // the task spent back in the queue between two tries and call that «работа».
+    //
+    // The two marks are what makes it honest. A finished row already carried `finishedAt`, and
+    // the list beside it therefore printed «—» in the length column of every completed task —
+    // the reading existed one field away and nobody handed it over. Where either mark is missing
+    // (a row reconstructed after the fact, an attempt whose end was never written) this is NULL:
+    // a zero would render as «заняло нисколько», which is a claim, and «нечего мерить» is the
+    // truth.
+    finishedDuration: attemptDuration(last),
     workerId: (last && last.workerId) ?? r.workerId ?? null,
     receipt,
     // The proof that really exists, beside the summary that waits for numbers nobody writes.
