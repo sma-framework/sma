@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.5.1-3B82F6" alt="version 5.5.1">
-  <img src="https://img.shields.io/badge/tests-2971%2F2971-3CC0A0" alt="tests 2971/2971">
+  <img src="https://img.shields.io/badge/version-5.5.2-3B82F6" alt="version 5.5.2">
+  <img src="https://img.shields.io/badge/tests-3044%2F3044-3CC0A0" alt="tests 3044/3044">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -24,7 +24,7 @@
 > The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3) → V5.5 the engine: steering a live session — shipped (v5.5.0, patched v5.5.1, current).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3) → V5.5 the engine: steering a live session — shipped (v5.5.0, patched v5.5.1–v5.5.2, current).**
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -172,6 +172,26 @@ The new reviewer's first live pass over the product's own window found five defe
 - the memory screen reads the selected project's own table of contents, not the daemon's
 
 The narrow-width overflow it also flagged is recorded as what it is — a standing design decision (the window is built for 1440 px and wider), now visible in the run receipt via `--min-viewport` instead of reddening every pass.
+
+## What's new in 5.5.2 — the engine, connected
+
+5.5.0 built the engine. This release is the day it was discovered that its parts had never been bolted to one another. Nine breaks, all one class: each piece was written, covered by a test, green — and attached to nothing. Each became visible only after the one before it was fixed. They ship fixed here.
+
+- **A worker could not change a file — not once in this product's history.** The permission envelope was computed per lane, hashed into every attempt and written to the journal, and never handed to the process being launched. A non-interactive session has nobody to confirm an action, so Edit, Write, Bash, Grep and Glob were refused inside the child process: a worker could read the repository, find the cause of a defect, write the exact patch into its final message — and not apply it. Every task failed further downstream («no receipt», «tests red»), and no screen could name the reason, because the refusal happened inside a child process. The grant is the envelope's own list and nothing beyond it: policy is not widened, it is *delivered*.
+- **A live worker was declared dead every two minutes.** Renewing a task's lease called a method the queue library does not have, and the error was swallowed by an empty catch. The worker counted as silent, its process was never killed, and a duplicate was launched — three parallel agents on one task, burning one subscription.
+- **The board showed an empty room while work was running.** The router picked an executor and stored it nowhere; every busy-counter is built from that field. Hence a free worker and an empty queue next to a task that was, in fact, being worked.
+- **Work happened in the wrong repository.** The working copy was cut in the directory the daemon was launched from rather than the tree of the connected project — and the done card, the diff door, the task timeline and the «answer without code» gate read git there too, naming the main branch by a hard-coded word.
+- **Finished work could not be accepted.** The acceptance gate asked for verification without requesting a structured answer and got prose that parsed to nothing; and in a repository with no structural receipts the honest answer «nothing to verify» read as «no receipt», failing work that carried a real commit. Now work with a commit but without proof is not declared done — it goes to the human column marked *unverified*. No self-certification: «done» is still only a human's word.
+- **A worker's stated approach was never heard.** The parser wanted its marker at the start of a line; the stream arrives in JSON frames where the worker's words sit inside a field. Three attempts in a row printed their reasoning and all three were counted as unexplained.
+- **The forge lane — creating agents and skills — had received none of the above.** The same four misses again on its own code path.
+- **Live updates had never reached the window.** The daemon names every frame (`event: <name>`); the window listened only for the unnamed default type, to which a named frame is never delivered. Not one call arrived from the day the hub began naming frames: every screen quietly lived on a three-second poll, and the live feed always said it was quiet. Nothing crashed, so nothing was noticed. The window is now subscribed by name to every declared name, proven end to end by a test that runs a real hub → a real server on a live port → a socket → the stream parsed to the letter of the spec → the window's own listener, and demands that every declared name arrives.
+- **The corpus lost notes on Windows checkouts, silently.** Every grammar decision in the frontmatter reader assumed LF, so a note delivered with CRLF came back as a «structural file» — description, kind, tags, importance gone without a word — and the tag registry came back empty, after which the lint declared every tag in the corpus unregistered. An owner cannot see this by construction: their clone is an old checkout with LF, while every fresh worktree the daemon cuts for a worker arrives with CRLF.
+
+**New, and visible.** The subscription-window figure on the spend screen is now the one Claude Code hands its own status line — the only programmatic source that also counts the sessions you ran in your own terminal. It lands as an observation snapshot, is attributed to no account (that stdin carries no account name, and guessing it is exactly the class of guess this module exists to avoid), and expires with its window: after the reset the block says there is no fresh observation and when the last one was taken. Zero is never displayed — a zero reads as «quota free».
+
+Alongside them, the parts that were built and never seen: the newest attempt on a task card opens without a click, and the attempt's own summary — steps, tools and how many times each, files changed, connections and skills used, whether it went through the paid channel and what it cost — is read there in words.
+
+**What this release does not claim.** The terminal figures appear after your next session in a terminal; until then the block says so in words rather than drawing a zero. Three known breaks are tracked and NOT fixed here: the paid channel cannot yet execute a task, a phase stage cannot be accepted from the window, and a merge receipt still reports a test run that was never wired to it. They are named here for the same reason the nine above are: a release that hides what it knows is broken is the failure this one was spent proving.
 
 ## What's new in 5.5.0 — the engine
 
