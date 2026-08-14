@@ -1277,6 +1277,10 @@ describe('the ledger keeps its stated disciplines', () => {
         // the live attempt log: a writer that only appends and a reader that only reads
         'createAttemptLogWriter',
         'readAttemptLog',
+        // the reader-side fold: it merges the two rows one try writes INTO ITS ANSWER, and
+        // touches no file — the discipline this list guards is «the log is never rewritten»,
+        // and a pure transform of rows already read cannot break it
+        'foldAttemptRows',
       ].sort(),
     )
     for (const forbidden of ['unlinkSync', 'rmSync', 'writeFileSync', 'truncateSync']) {

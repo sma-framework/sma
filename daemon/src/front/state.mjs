@@ -92,7 +92,7 @@ import {
   REASON_LABELS,
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
-import { readAttempts } from '../queue/attempt-ledger.mjs'
+import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
 import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
@@ -257,13 +257,19 @@ export function parseReceiptProof(receiptRef) {
  * tests derive from fixtures with no fs: `ledger` may be a function `(taskId)=>rows`, an
  * object `{readAttempts}`, otherwise `ledgerDir` binds the real readAttempts. Always
  * fail-open ([] on any error).
+ *
+ * ONE RECORD PER TRY, whichever seam the rows came through. The ledger holds TWO rows for one
+ * attempt (the state machine's transition and the tick's richer row), so counting rows here
+ * reported twice the tries that happened — «6 подходов» over three. The fold is applied at this
+ * one reading seam rather than at each counter, so a consumer added later cannot re-acquire the
+ * defect; `foldAttemptRows` owns the merge rule and the ledger file keeps every row it wrote.
  */
 function attemptsReader(deps) {
   const { ledger, ledgerDir } = deps
   if (typeof ledger === 'function') {
     return (id) => {
       try {
-        return ledger(id) || []
+        return foldAttemptRows(ledger(id) || [])
       } catch {
         return []
       }
@@ -272,7 +278,7 @@ function attemptsReader(deps) {
   if (ledger && typeof ledger.readAttempts === 'function') {
     return (id) => {
       try {
-        return ledger.readAttempts(id) || []
+        return foldAttemptRows(ledger.readAttempts(id) || [])
       } catch {
         return []
       }
@@ -281,7 +287,7 @@ function attemptsReader(deps) {
   if (ledgerDir) {
     return (id) => {
       try {
-        return readAttempts(ledgerDir, id)
+        return foldAttemptRows(readAttempts(ledgerDir, id))
       } catch {
         return []
       }
