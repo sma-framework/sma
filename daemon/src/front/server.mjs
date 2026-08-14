@@ -76,7 +76,7 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { BATCH_PARENT, CAP_TITLE, isBatchParent, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { BATCH_PARENT, CAP_TITLE, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { proposeBreakdown, proposeWords } from './chat.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
@@ -691,7 +691,18 @@ async function handleTask({ res, params, config, deps }) {
   } catch {
     rows = []
   }
-  const row = rows.find((r) => r && r.id === id)
+  // THE LAST WORD ABOUT THE TASK, not the first row that happens to carry its id. A durable
+  // queue keeps the row a task broke on beside the row of the attempt its owner asked for, and
+  // hands them back in no promised order — so «the first row with this id» is, for a repeated
+  // piece, the failure. Measured live: a piece of a batch failed its gate, the owner pressed
+  // «Повторить», the repeat came back green and stood for approval — `/api/state` said
+  // `awaiting_approval` and this door said `failed, attempt 1` in the same second. The window
+  // derives the «Одобрить» button from THIS answer, so finished work could not be accepted from
+  // the window at all. The fold is the queue's own exported rule — the very one the waiting list
+  // and the turn rule read by — applied to this task's rows before the row is picked, so the
+  // three doors can never say different things about one task. Nothing below changes: the
+  // survivor walks the same path (the claimed branch, the ledger, the journal) it always did.
+  const row = latestRowPerId(rows.filter((r) => r && r.id === id))[0]
   if (!row) return send404(res)
 
   // The per-attempt ledger is a DI seam (fn / {readAttempts} / ledgerDir) — same posture
@@ -1100,7 +1111,13 @@ async function handleReturn({ req, res, deps }) {
   try {
     const rows = await deps.adapter.list({})
     const mine = rows.filter((r) => r && r.id === taskId)
-    const row = mine[0]
+    // THE NUMBER COMES FROM THE LAST WORD ABOUT THE TASK. The rows of a returned task pile up in
+    // a durable queue, and the first one handed back can be the attempt BEFORE the one standing
+    // for approval — a second return in a row then mints a number the task has already used, and
+    // two rows claim to be the same attempt. Same exported queue rule as the card door above.
+    // The name chain below stays as it is: it looks across ALL rows on purpose, because the row
+    // holding the real name may well be an older one.
+    const row = latestRowPerId(mine)[0]
     if (row && Number.isFinite(row.attempt)) prevAttempt = row.attempt
     const named = mine.find((r) => realTitleOf(r, taskId))
     if (named) nameFromRow = realTitleOf(named, taskId)
