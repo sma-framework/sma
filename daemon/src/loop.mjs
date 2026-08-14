@@ -425,6 +425,69 @@ function countCommitsOnBranch(deps, base, cwd) {
 }
 
 /**
+ * redRecordKeys(rv) → the identities of the reverify records that are NOT green, as a sorted
+ * array of unique strings — or null when the verb's answer carried no record list at all
+ * (nothing to compare with, which is a different sentence from «nothing is red»).
+ *
+ * WHY AN IDENTITY AND NOT A COUNT. Two pictures with the same NUMBER of divergences can be
+ * two different sets: one recipe healed while another broke is «the worker broke something»,
+ * and a count would read it as «nothing changed». The identity is the pair (summary, id) —
+ * the two fields the verb itself uses to name a receipt, so a recipe that moves between
+ * summaries is a different record here exactly as it is a different record there.
+ *
+ * WHAT COUNTS AS RED is the verb's own definition and not a second one: it exits non-zero on
+ * `divergent` and `error`, and a receipt it declined to run (`skipped-unsafe`) is neither
+ * green nor a failure — it is a receipt nobody measured, and it must not travel into a
+ * verdict about someone's work.
+ *
+ * A PLAIN ARRAY, on purpose: this file may hold no keyed collection (the tick is stateless and
+ * a grep gate keeps it that way). The lists are one entry per receipt in the tree — tens, not
+ * millions — so the linear membership test below costs nothing worth a discipline.
+ */
+export function redRecordKeys(rv) {
+  if (!rv || !Array.isArray(rv.records)) return null
+  const out = []
+  for (const r of rv.records) {
+    if (!r || typeof r !== 'object') continue
+    const verdict = String(r.verdict ?? '')
+    if (verdict !== 'divergent' && verdict !== 'error') continue
+    const key = `${r.summary ?? ''}::${r.id ?? ''}`
+    if (!out.includes(key)) out.push(key)
+  }
+  return out.sort()
+}
+
+/**
+ * changedFilesOnBranch(deps, base, branch, cwd) → {files, reason}: the `name-status` lines of
+ * everything the attempt's branch changed against the commit it was cut from.
+ *
+ * «Откатить можно» и «видно, ЧТО откатывается» — разные вещи, and only the first was true:
+ * the attempt row carried the base commit, so a person knew the point to return to and
+ * nothing about what would come back. The list is derived here and journalled for EVERY
+ * outcome, because the attempt someone wants to undo is precisely the one that went wrong.
+ *
+ * FAIL-OPEN, exactly like the commit count beside it: no git seam, no base, or a git that
+ * refuses all answer «no data» with the reason in words. An honest blank is a record; a
+ * thrown error in a narration path would cost the attempt its outcome.
+ */
+function changedFilesOnBranch(deps, base, branch, cwd) {
+  if (typeof deps.execGit !== 'function') return { files: [], reason: 'нет доступа к git' }
+  if (!cwd) return { files: [], reason: 'рабочей копии нет' }
+  if (!base) return { files: [], reason: 'базовый коммит неизвестен' }
+  let out = ''
+  try {
+    out = String(deps.execGit(['diff', '--name-status', `${base}..${branch || 'HEAD'}`], { cwd }) || '')
+  } catch (err) {
+    return { files: [], reason: `git не ответил: ${String((err && err.message) || err)}` }
+  }
+  const files = out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  return { files, reason: files.length ? null : 'изменённых файлов нет' }
+}
+
+/**
  * writeLog(deps, entry) — one line into the daemon's OWN event log (deps.journal), the
  * sink an operator reads. Fail-open like every other narration path.
  */
@@ -1297,6 +1360,12 @@ export async function tick(deps = {}) {
       let workDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
       /** The commit the worktree was cut from — the point any of this can be undone to. */
       let worktreeBase = null
+      /**
+       * The tree's own divergences BEFORE this attempt — a Set of record identities, or null
+       * when no such picture could be taken. Null is not «none»: it is «unknown», and the gate
+       * says so out loud instead of quietly treating an unknown as a clean slate.
+       */
+      let preexistingRed = null
       if (!isDocument) {
         branch = `wt/${task.id}`
         // `--json` is not decoration. Without it the verb prints prose for a person —
@@ -1365,6 +1434,20 @@ export async function tick(deps = {}) {
           path: wt.path,
           detail: `base=${worktreeBase || 'нет'} reused=${wt.reused === true} expected=${wt.expectedBase || 'нет'} actual=${wt.actualBase || 'нет'}`,
         })
+        // ── WHAT WAS ALREADY BROKEN BEFORE ANYONE TOUCHED ANYTHING ──
+        // The exit gate below used to read the ABSOLUTE answer of the re-verification: any
+        // divergence in the tree failed the attempt. In a repository with a history that is
+        // the permanent state — recipes written for work finished long ago have drifted from
+        // the tree, and that is nobody's fault today. So every attempt that produced COMMITS
+        // was failed for those old divergences, while an attempt that only wrote an answer
+        // passed the gate one door earlier: the machine buried code and let talk through.
+        // Measured 13.08.2026 — three attempts, three reds, on work that was correct.
+        //
+        // This is the BEFORE picture, taken in the very worktree the worker is about to be
+        // spawned into and before the spawn, so the gate can charge the attempt with the
+        // DIFFERENCE instead of the total. It costs a second run of the verb per code
+        // attempt; the alternative was a gate whose verdict said nothing about the work.
+        preexistingRed = redRecordKeys(await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--json'], workDir))
       }
 
       // (6) spawn the routed worker; log + touch (throttled) on every stream line.
@@ -1547,9 +1630,58 @@ export async function tick(deps = {}) {
       const rv = exit.spawnError
         ? { code: 1 }
         : await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--json'], workDir)
+      // ── THE AFTER PICTURE, AND THE ONLY QUESTION THAT MATTERS: WHAT IS NEW? ──
+      // A differential verdict needs both pictures readable AND something to compare: a tree
+      // with no recipes at all is the receiptless branch's territory below, untouched.
+      const afterRed = exit.spawnError ? null : redRecordKeys(rv)
+      const canDiff =
+        preexistingRed !== null && afterRed !== null && !(Array.isArray(rv.records) && rv.records.length === 0)
+      const newRed = canDiff ? afterRed.filter((k) => !preexistingRed.includes(k)) : []
+      // NEVER SILENT — the same law the receiptless branch already obeys. Without this line
+      // the only observable is «tests_red», identical for «the worker broke a recipe» and
+      // «the tree was already red when he got there», and those are opposite facts.
+      if (!exit.spawnError) {
+        writeLog(deps, {
+          type: 'task.gate_differential',
+          taskId: task.id,
+          detail: canDiff
+            ? `красных до=${preexistingRed.length} красных после=${afterRed.length} новых=${newRed.length} → ${newRed.length > 0 ? 'красный (новое расхождение)' : 'зелёный (только исторические)'}`
+            : `снимка ДО нет (${
+                preexistingRed === null
+                  ? 'перепроверка до попытки не назвала записей'
+                  : afterRed === null
+                    ? 'перепроверка после попытки не назвала записей'
+                    : 'в дереве нет рецептов'
+              }) — вердикт по абсолютному правилу`,
+        })
+      }
+
       let receipt = null
       if (rv.receiptRef) {
         receipt = { verdict: rv.verdict || (rv.code === 0 ? 'green' : 'red'), ref: rv.receiptRef }
+      } else if (canDiff && rv.verdict !== 'red') {
+        // THE DIFFERENTIAL VERDICT. Red is what appeared during the attempt — and only that.
+        // The gate is not loosened by an inch: a divergence that was not there before is
+        // still tests_red, and an attempt that produced no commits still certifies nothing.
+        const commits = countCommitsOnBranch(deps, worktreeBase, workDir)
+        if (newRed.length > 0) {
+          receipt = { verdict: 'red', ref: null }
+        } else if (commits > 0) {
+          receipt = {
+            verdict: 'green',
+            ref: {
+              // The same honesty the receiptless branch carries: nothing certified itself.
+              // The recipes that were red stayed red, and the card says so in numbers.
+              unverified: preexistingRed.length > 0,
+              reason: preexistingRed.length > 0 ? 'preexisting_red_only' : 'no_new_red',
+              branch,
+              base: worktreeBase,
+              commits,
+              preexistingRed: preexistingRed.length,
+              newRed: 0,
+            },
+          }
+        }
       } else if (rv.verdict === 'red' || (Number.isFinite(rv.code) && rv.code !== 0)) {
         receipt = { verdict: 'red', ref: null }
       } else if (!exit.spawnError && Array.isArray(rv.records) && rv.records.length === 0) {
