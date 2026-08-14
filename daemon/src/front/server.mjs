@@ -1086,18 +1086,31 @@ async function handleReturn({ req, res, deps }) {
   if (!cas.won) return send409(res, 'return race lost (already handled)')
 
   // Re-queue the returned task for another attempt with the founder's comment.
+  //
+  // A RETURN IS A STATE OF THE SAME TASK, so the row it puts back is called by the task's own
+  // NAME. This door used to mint a heading out of the routing identifier whenever the body
+  // carried none, and the screen then drew that identifier where a person expects a name —
+  // beside the previous row, which a durable queue keeps. The name is already in the door's
+  // hands: the very rows it reads for the attempt number carry it. The marker that this is a
+  // return is `source`, and it is already set; a heading is a SHOWCASE field and owes the
+  // person a name. The floor is the bare id (the queue refuses an empty title), never a
+  // minted phrase claiming to be one.
   let prevAttempt = 1
+  let nameFromRow = ''
   try {
     const rows = await deps.adapter.list({})
-    const row = rows.find((r) => r && r.id === taskId)
+    const mine = rows.filter((r) => r && r.id === taskId)
+    const row = mine[0]
     if (row && Number.isFinite(row.attempt)) prevAttempt = row.attempt
+    const named = mine.find((r) => realTitleOf(r, taskId))
+    if (named) nameFromRow = realTitleOf(named, taskId)
   } catch {
-    /* fail-open — default to attempt 1 → requeue as attempt 2 */
+    /* fail-open — default to attempt 1 → requeue as attempt 2, the name falls back to the id */
   }
   const requeue = await enqueueOrExplain(res, deps.adapter, {
     id: taskId,
     source: 'return',
-    title: v.title || `return:${taskId}`,
+    title: (typeof v.title === 'string' && v.title.trim()) || nameFromRow || taskId,
     lane: v.lane || 'prod',
     note,
     attempt: prevAttempt + 1,
@@ -1107,6 +1120,19 @@ async function handleReturn({ req, res, deps }) {
   emitSafe(deps, { event: 'task.returned', taskId, status: 'queued' })
   emitSafe(deps, { event: 'task.queued', taskId, status: 'queued' })
   sendJson(res, 200, { ok: true, taskId, attempt: prevAttempt + 1 })
+}
+
+/**
+ * realTitleOf(row, taskId) → the row's heading if it is a NAME, else ''.
+ *
+ * A heading this door minted out of the routing identifier in an earlier return is not a name,
+ * and inheriting one would put the identifier back where a person expects to read what the task
+ * is about. Rows written in that shape still sit in a durable queue, so the shape is recognised
+ * rather than assumed gone.
+ */
+function realTitleOf(row, taskId) {
+  const t = row && typeof row.title === 'string' ? row.title.trim() : ''
+  return t && t !== `return:${taskId}` ? t : ''
 }
 
 /** emitSafe — fire a hint event through the injected hub if present (never throws). */
