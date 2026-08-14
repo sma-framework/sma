@@ -577,6 +577,54 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
     expect(second.statusCode).toBe(409) // lost the CAS race — surfaced honestly
   })
 
+  /**
+   * «ТЕСТЫ НЕ ЗАПУСКАЛИСЬ» IS NOT «ТЕСТЫ КРАСНЫЕ», and the approval must keep telling the two
+   * apart. The merge ritual now says NULL where no run happened; the door decides by the merge
+   * itself, and only a real red run blocks the green outcome. The receipt travels back as it
+   * is — a null the screens already read as «нет данных», never rewritten into a boolean here.
+   */
+  it('a merge with no test run at all still approves, and hands the null receipt back untouched', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => ({ merged: true, testsPassed: null, branch: o.branch, receipt: { branch: o.branch, testsPassed: null } }),
+        repoDir: '/repo',
+      },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body: { taskId: 'R-78' },
+    })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.merged).toBe(true)
+    expect(out.receipt.testsPassed).toBe(null)
+  })
+
+  it('a merge whose tests actually went RED is not approved', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => ({ merged: true, testsPassed: false, branch: o.branch, receipt: { branch: o.branch, testsPassed: false } }),
+        repoDir: '/repo',
+      },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body: { taskId: 'R-79' },
+    })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.merged).toBe(false)
+    expect(out.ok).toBe(false)
+  })
+
   it('a bad taskId → 400', async () => {
     const front = createFrontServer({
       config: { token: TOKEN },

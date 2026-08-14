@@ -163,6 +163,45 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     expect(acquireMergeClaim({ by: 'T-b', claimsDir, journalDir }).acquired).toBe(true)
   })
 
+  /**
+   * A RECEIPT STATES WHAT HAPPENED, AND NOTHING ELSE.
+   *
+   * With no test runner injected the ritual reported `testsPassed: true` — a claim that a run
+   * nobody made had passed. It was measured on a live door: an approval with zero commits came
+   * back saying the tests were green. There are three answers here, not two — passed, failed,
+   * and «не запускались» — and only the third is honest when nothing ran.
+   */
+  it('no test runner -> testsPassed is NULL, in the return and in the receipt — never a green', () => {
+    const execGit = makeExecGit()
+    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, claimsDir, journalDir, cwd: '/repo' }) as any
+    expect(res.merged).toBe(true)
+    expect(res.testsPassed).toBe(null)
+    const j = readJournal({ journalDir })
+    const receipt = j.events.find((e: any) => e.type === 'merge')
+    expect((receipt as any).detail.testsPassed).toBe(null)
+  })
+
+  it('a run that DID happen is reported as it went — true stays true, false stays false', () => {
+    const green = runMerge({
+      branch: 'sma-wt/x',
+      by: 'T-a',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: true }),
+      claimsDir,
+      journalDir,
+    }) as any
+    expect(green.testsPassed).toBe(true)
+    const red = runMerge({
+      branch: 'sma-wt/y',
+      by: 'T-a',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: false }),
+      claimsDir,
+      journalDir,
+    }) as any
+    expect(red.testsPassed).toBe(false)
+  })
+
   it('Test 6: fail-open — an execGit throw -> {ok:false} + the slot is released (never wedged)', () => {
     const throwGit = makeExecGit({ throwOn: 'merge' })
     const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit: throwGit, runTests: () => ({ passed: true }), claimsDir, journalDir }) as any
