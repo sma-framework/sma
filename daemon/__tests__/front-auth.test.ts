@@ -674,6 +674,74 @@ describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
     })
     expect(res.statusCode).toBe(400)
   })
+
+  /**
+   * A RETURN IS A STATE OF THE SAME TASK — so the row it puts back has to be called by the
+   * task's own NAME. This door used to mint a heading out of the routing identifier whenever the
+   * body carried no title, and the screen then drew that identifier where a person expects a
+   * name, beside the original row a durable queue keeps: one task, read as two, one of them
+   * nameless. The name was in the door's hands the whole time — the very rows it reads for the
+   * attempt number carry it.
+   *
+   * The fake adapter is not richer than the library: `list` answers rows in the shapes the real
+   * one returns (id/title/attempt/status/source), and `enqueue` records exactly what it was given.
+   */
+  const returnFront = (rows: any[], enqueued: any[]) =>
+    createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter: {
+          list: async () => rows.slice(),
+          enqueue: async (t: any) => {
+            enqueued.push(t)
+            return { id: t.id }
+          },
+        },
+        casExec: makeCasExec('awaiting_approval'),
+      },
+    })
+
+  const postReturn = (front: any, body: any) =>
+    call(front, {
+      method: 'POST',
+      url: '/api/return',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body,
+    })
+
+  it('the row put back carries the task’s real name, not a heading minted from its identifier', async () => {
+    const enqueued: any[] = []
+    const front = returnFront(
+      [{ id: 'R-5', attempt: 2, status: 'awaiting_approval', title: 'собери отчёт по расходам', source: 'roster' }],
+      enqueued,
+    )
+    const res = await postReturn(front, { taskId: 'R-5', note: 'переделай вывод' })
+    expect(res.statusCode).toBe(200)
+    expect(enqueued[0].title).toBe('собери отчёт по расходам')
+  })
+
+  it('an older row minted by this very door is not inherited as a name', async () => {
+    const enqueued: any[] = []
+    const front = returnFront(
+      [
+        // the artefact of a previous return, written before the door knew the name
+        { id: 'R-5', attempt: 3, status: 'queued', title: 'return:R-5', source: 'return' },
+        { id: 'R-5', attempt: 2, status: 'awaiting_approval', title: 'собери отчёт по расходам', source: 'roster' },
+      ],
+      enqueued,
+    )
+    expect((await postReturn(front, { taskId: 'R-5', note: 'ещё раз' })).statusCode).toBe(200)
+    expect(enqueued[0].title).toBe('собери отчёт по расходам')
+  })
+
+  it('with no name to be found anywhere the row is called by the bare id — never by a minted phrase', async () => {
+    const enqueued: any[] = []
+    const front = returnFront([], enqueued)
+    expect((await postReturn(front, { taskId: 'R-5', note: 'переделай' })).statusCode).toBe(200)
+    // the queue refuses an empty title, so the id itself is the floor — the screen already shows
+    // it as an id, which is honest; a minted phrase would have claimed to be a name
+    expect(enqueued[0].title).toBe('R-5')
+  })
 })
 
 // ── the five harness handlers (filled a slot, added no route) ──
