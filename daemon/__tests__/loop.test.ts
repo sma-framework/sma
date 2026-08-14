@@ -212,12 +212,12 @@ describe('the conveyor is off until a person switches it on', () => {
     const res = await tick(deps)
 
     expect(res.completed).toBe('BL-1')
-    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
   })
 })
 
 describe('tick — the stateless composed tick', () => {
-  it('runs the full trace in order: preflight → worktree → spawn → reverify → complete', async () => {
+  it('runs the full trace in order: preflight → worktree → reverify(до) → spawn → reverify → complete', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(backlogTask())
@@ -233,7 +233,9 @@ describe('tick — the stateless composed tick', () => {
 
     const res = await tick(deps)
 
-    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+    // TWO re-verifications, and the first one is not a duplicate: it is the BEFORE picture
+    // the exit gate subtracts, taken in the fresh worktree before a worker exists.
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
     expect(res.completed).toBe('BL-1')
     const [row] = await adapter.list({})
     // completed work is reported as awaiting approval — the tick certified it, a person accepts it
@@ -733,8 +735,9 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
 
     expect(res.completed).toBe('ST-1')
     expect(adapter.calls[0].result.receiptRef).toBe('artifact:.planning/phases/12-front/12-EXEC-CHECKPOINT.json@ba5eba11')
-    // the checkpoint is asked BEFORE the code gate — reverify never ran
-    expect(order).toEqual(['preflight', 'worktree', 'spawn'])
+    // the checkpoint is asked BEFORE the code gate — the CERTIFYING re-verification never
+    // ran (the one in the list is the before-picture, taken ahead of the spawn)
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn'])
     // …and the position is not thrown away: the row parks instead of failing, so the answer
     // wakes a CONTINUATION of the stage rather than a fresh attempt from zero
     expect(adapter.calls.some((x: any) => x.op === 'fail')).toBe(false)
@@ -792,7 +795,7 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
     const res = await tick(deps)
 
     expect(res.completed).toBe('ST-1')
-    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
     expect(adapter.calls[0].result.receiptRef).toBe('reverify:abc') // the ORIGINAL receipt, unchanged
   })
 
@@ -813,7 +816,7 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
     const res = await tick(deps)
 
     expect(res.completed).toBe('BL-REG')
-    expect(order).toEqual(['preflight', 'worktree', 'spawn', 'reverify'])
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
     const [row] = await adapter.list({})
     expect(row.status).toBe('awaiting_approval')
   })
@@ -1472,8 +1475,9 @@ describe('a task that needed no code completes on its answer — and nothing els
     const [call] = adapter.calls
     expect(call.op).toBe('complete')
     expect(call.result.receiptRef).toBe('answer:BL-1#1')
-    // there was nothing to certify, so the verb that certifies was not spent on it
-    expect(order).toEqual(['preflight', 'worktree', 'spawn'])
+    // there was nothing to certify, so the CERTIFYING run of the verb was not spent on it —
+    // the one before the spawn is the gate's before-picture, taken when no outcome is known yet
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn'])
     // and the outcome is on the operator's record, never silent
     expect(journalled.some((e: any) => e.type === 'task.answered' && e.taskId === 'BL-1')).toBe(true)
   })
@@ -2216,5 +2220,154 @@ describe('останов волны: адресный, мягкий, переж�
     const res = await tick(deps)
     expect(res.completed).toBe('P-34-2')
     expect(res.waveHolds).toBeUndefined()
+  })
+})
+
+/**
+ * ═══════ КРАСНЫМ СЧИТАЕТСЯ ТОЛЬКО НОВОЕ: выходной гейт стал РАЗНОСТНЫМ ════════
+ *
+ * Гейт читал АБСОЛЮТНЫЙ ответ перепроверки: «в дереве есть расхождения» → работа красная.
+ * В живом дереве со сколькими-то годами истории расхождения есть ВСЕГДА — рецепты старых
+ * работ давно разошлись с деревом, и это ничья не вина сегодня. Поэтому любая работа С
+ * КОММИТАМИ получала tests_red, а работа без коммитов (ответ словами) проходила: система
+ * хоронила код и пропускала разговор. Замер 13.08.2026: три попытки подряд, каждая красная,
+ * при образцовой работе исполнителя.
+ *
+ * Лечение — не ослабление, а вопрос по существу: гейт снимает состояние дерева ДО попытки и
+ * ПОСЛЕ и вменяет работе только РАЗНИЦУ. Ниже кейс на каждую половину этого предложения:
+ * одинаковые снимки пропускают работу, новое расхождение по-прежнему красное, снимков
+ * ровно два за попытку, и без снимка ДО гейт возвращается к старому правилу ВСЛУХ.
+ */
+describe('выходной гейт различает «работник сломал» и «было сломано до него»', () => {
+  // Форма записи списана с ответа самого верба (его проверяющая функция возвращает ровно эти
+  // поля), а не выдумана: подделка, которая богаче библиотеки, доказывает несуществующее.
+  const rec = (id: string, verdict: string, summary = '.planning/phases/01-old/01-01-SUMMARY.md') => ({
+    id,
+    coverage_id: null,
+    assertion: 'целевые тесты зелёные',
+    check_command: 'pnpm vitest run daemon/__tests__/loop.test.ts',
+    expected_sha256: 'a'.repeat(64),
+    observed_sha256: verdict === 'divergent' ? 'b'.repeat(64) : 'a'.repeat(64),
+    exitCode: 0,
+    scoredAt: '2026-08-14T00:00:00.000Z',
+    summary,
+    domain: 'sma.receipts',
+    verdict,
+  })
+
+  /** Ответ верба в его собственной форме: {records, appended} на stdout + код выхода. */
+  const answer = (records: any[]) => ({
+    code: records.some((r) => r.verdict === 'divergent' || r.verdict === 'error') ? 1 : 0,
+    stdout: JSON.stringify({ records, appended: records.length }),
+  })
+
+  /** Верб отвечает по очереди: первый вызов — снимок ДО, второй — снимок ПОСЛЕ. */
+  const inTurn = (answers: any[]) => {
+    let i = 0
+    return () => answers[Math.min(i++, answers.length - 1)]
+  }
+
+  const RESPONSES = (reverify: any) => ({
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+    reverify,
+  })
+
+  /** Git, отвечающий на все четыре вопроса гейта; любой из них можно заставить упасть. */
+  const makeGit =
+    ({ commits = '1', diff = 'M\tdaemon/src/loop.mjs', throwOn = '' } = {}) =>
+    (args: string[]) => {
+      const verb = args[0]
+      if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
+      if (verb === 'rev-parse') return 'base0000'
+      if (verb === 'rev-list') return commits
+      if (verb === 'diff') return diff
+      return ''
+    }
+
+  it('снимки одинаковы → работа ПРИНЯТА, хотя верб и вышел не нулём', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const snapshot = answer([rec('R-A', 'divergent'), rec('R-B', 'divergent')])
+    const { deps } = makeDeps({
+      adapter,
+      responses: RESPONSES(inTurn([snapshot, snapshot])),
+      deps: { execGit: makeGit() },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const [call] = adapter.calls
+    expect(call.op).toBe('complete')
+    // Квитанция называет словами, что расхождения были и работе не вменены.
+    expect(call.result.receiptRef).toMatchObject({ preexistingRed: 2, newRed: 0, branch: 'wt/BL-1' })
+  })
+
+  it('появилось НОВОЕ расхождение → tests_red: гейт не ослаблен', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({
+      adapter,
+      responses: RESPONSES(
+        inTurn([answer([rec('R-A', 'divergent')]), answer([rec('R-A', 'divergent'), rec('R-C', 'divergent')])]),
+      ),
+      deps: { execGit: makeGit() },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'tests_red' })
+  })
+
+  it('ПРОВОД: перепроверка спрашивается ДВАЖДЫ за попытку — до работника и после него', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const { deps, order } = makeDeps({
+      adapter,
+      responses: RESPONSES(inTurn([snapshot, snapshot])),
+      deps: { execGit: makeGit() },
+    })
+
+    await tick(deps)
+
+    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
+  })
+
+  it('вердикт объясним из журнала: строка несёт числа «красных до» и «красных новых»', async () => {
+    for (const [after, expectedNew] of [
+      [answer([rec('R-A', 'divergent')]), 0],
+      [answer([rec('R-A', 'divergent'), rec('R-C', 'divergent')]), 1],
+    ] as [any, number][]) {
+      const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+      const { deps, journalled } = makeDeps({
+        adapter,
+        responses: RESPONSES(inTurn([answer([rec('R-A', 'divergent')]), after])),
+        deps: { execGit: makeGit() },
+      })
+
+      await tick(deps)
+
+      const line = journalled.find((e: any) => e.type === 'task.gate_differential')
+      expect(line, 'гейт решил молча — вердикт необъясним').toBeTruthy()
+      // числа живут в detail: форматтер оператора печатает только его
+      expect(line.detail).toContain('до=1')
+      expect(line.detail).toContain(`новых=${expectedNew}`)
+    }
+  })
+
+  it('снимка ДО нет (верб не назвал записей) → старое абсолютное правило, и об этом сказано вслух', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, journalled } = makeDeps({
+      adapter,
+      // первый ответ — без списка записей: сравнивать не с чем
+      responses: RESPONSES(inTurn([{ code: 0, stdout: '{}' }, answer([rec('R-A', 'divergent')])])),
+      deps: { execGit: makeGit() },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'tests_red' })
+    const line = journalled.find((e: any) => e.type === 'task.gate_differential')
+    expect(line, 'ослабление/возврат к старому правилу произошли молча').toBeTruthy()
+    expect(line.detail).toContain('снимка ДО нет')
   })
 })
