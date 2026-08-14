@@ -2335,6 +2335,41 @@ describe('выходной гейт различает «работник сло
     expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
   })
 
+  /**
+   * ПРОВОД, А НЕ ФАКТ ВЫЗОВА. Двух вызовов мало: снимки могут описывать ЧУЖОЕ дерево, и
+   * тогда разница пуста по построению, а гейт зелен всегда. Так и было: вербу отдавался
+   * cwd внутри копии, а корень записей он выводит через общий .git — то есть из копии
+   * уезжает в главный чекаут. Утверждается поэтому сам аргумент запуска: путь рабочей
+   * копии обязан стоять в args ОБОИХ вызовов, рядом с флагом, который его читает.
+   */
+  it('ПРОВОД: оба снимка названы ПУТЁМ рабочей копии — аргумент, а не «оно наверное доехало»', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const responses = RESPONSES(inTurn([snapshot, snapshot]))
+    const { deps } = makeDeps({
+      adapter,
+      verbRunner: async (_bin: string, argsArray: string[], opts: any) => {
+        const verb = argsArray[1]
+        seen.push({ verb, args: argsArray, cwd: opts && opts.cwd })
+        const r = (responses as any)[verb] ?? { code: 0, stdout: '{}' }
+        return typeof r === 'function' ? r() : r
+      },
+      deps: { execGit: makeGit() },
+    })
+
+    await tick(deps)
+
+    const calls = seen.filter((c) => c.verb === 'reverify')
+    expect(calls).toHaveLength(2)
+    for (const [i, call] of calls.entries()) {
+      const at = call.args.indexOf('--tree')
+      expect(at, `вызов ${i + 1}: дерево не названо — снимок описывает чужой чекаут`).toBeGreaterThan(-1)
+      expect(call.args[at + 1]).toBe('/wt/BL-1') // ровно та копия, что уехала в cwd
+      expect(call.cwd).toBe('/wt/BL-1')
+    }
+  })
+
   it('вердикт объясним из журнала: строка несёт числа «красных до» и «красных новых»', async () => {
     for (const [after, expectedNew] of [
       [answer([rec('R-A', 'divergent')]), 0],
