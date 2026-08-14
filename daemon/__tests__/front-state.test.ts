@@ -989,6 +989,71 @@ describe('deriveState — awaiting[]: the rows a person still has to decide on',
   })
 })
 
+// ── ОДНА ЗАДАЧА — ОДНА СТРОКА, ЖДУЩАЯ СЛОВА ───────────────────────────────────────────────
+//
+// A returned task is put back under its OWN id, and a durable queue keeps the previous row
+// beside the new one. Filtering the rows by status therefore counted one task as two for the
+// whole span of the return: «ЖДУТ ВАС: 2» over a single piece of work, one of the two lines
+// nameless. The fix is not a second definition of «which row wins» — it is the queue's OWN
+// rule, applied here, so the queue and the screen cannot answer about a re-enqueued task
+// differently.
+
+describe('deriveState — a returned task is ONE task, in every point of the cycle', () => {
+  it('while it is being redone it is not waiting for a word at all', async () => {
+    const rows = [
+      // the row it stopped on, and the row the return put back — the same task, twice
+      { id: 'BL-ret', status: 'awaiting_approval', lane: 'prod', title: 'собери отчёт', priority: 0, enqueuedAt: NOW - 9 * HOUR, completedAt: NOW - 3 * HOUR },
+      { id: 'BL-ret', status: 'queued', lane: 'prod', title: 'собери отчёт', priority: 0, source: 'return', enqueuedAt: NOW - HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    // the LAST word about it is «в работе», so it owes nobody a decision right now
+    expect(payload.awaiting.map((a: any) => a.id)).toEqual([])
+    expect(payload.kpis.awaitingApproval).toBe(0)
+  })
+
+  it('once it is redone and standing for approval it is ONE line, under its own name', async () => {
+    const rows = [
+      { id: 'BL-ret', status: 'awaiting_approval', lane: 'prod', title: 'собери отчёт', priority: 0, enqueuedAt: NOW - 9 * HOUR, completedAt: NOW - 5 * HOUR },
+      { id: 'BL-ret', status: 'awaiting_approval', lane: 'prod', title: 'собери отчёт', priority: 0, source: 'return', enqueuedAt: NOW - HOUR, completedAt: NOW - 2 * HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.awaiting).toHaveLength(1)
+    expect(payload.awaiting[0]).toMatchObject({ id: 'BL-ret', title: 'собери отчёт', status: 'awaiting_approval' })
+    // the counter reads the very same list, so it is right for the same reason
+    expect(payload.kpis.awaitingApproval).toBe(1)
+  })
+
+  it('a task that was never returned is read exactly as before — one row, its own age and place', async () => {
+    const rows = [
+      { id: 'BL-plain', status: 'awaiting_approval', lane: 'prod', title: 'обычная', priority: 0, enqueuedAt: NOW - 9 * HOUR, completedAt: NOW - 4 * HOUR },
+      { id: 'BL-other', status: 'awaiting_approval', lane: 'prod', title: 'вторая', priority: 0, enqueuedAt: NOW - 3 * HOUR, completedAt: NOW - 7 * HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    // the one waiting longest still comes first, and the age still counts from the STOP mark
+    expect(payload.awaiting.map((a: any) => [a.id, a.position])).toEqual([
+      ['BL-other', 1],
+      ['BL-plain', 2],
+    ])
+    expect(payload.awaiting[1].agedForHours).toBeCloseTo(4, 5)
+    expect(payload.kpis.awaitingApproval).toBe(2)
+  })
+})
+
 // ── the aggregator seam — deriveState FILLS the same shape, never redefines it ──
 
 describe('deriveState — the federation aggregator seam', () => {
