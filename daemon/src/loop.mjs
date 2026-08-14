@@ -1447,7 +1447,19 @@ export async function tick(deps = {}) {
         // spawned into and before the spawn, so the gate can charge the attempt with the
         // DIFFERENCE instead of the total. It costs a second run of the verb per code
         // attempt; the alternative was a gate whose verdict said nothing about the work.
-        preexistingRed = redRecordKeys(await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--json'], workDir))
+        //
+        // AND THE PICTURE HAS TO BE OF THIS TREE. `cwd` alone was not enough and quietly
+        // was not: the verb derives the root of its recipe walk from the shared `.git`,
+        // which from inside a linked working copy leads back to the MAIN checkout. Both
+        // snapshots therefore described a tree nobody was working in, their difference was
+        // empty by construction, and «новых=0» meant «there was nothing to compare», not
+        // «the worker broke nothing». Measured 14.08.2026: a copy carrying a knowingly
+        // divergent receipt still walked through the gate green. So the tree is NAMED in
+        // the arguments — the same lesson as the permission grant that was computed, hashed
+        // into the row, and never handed to the process it was written for.
+        preexistingRed = redRecordKeys(
+          await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--tree', workDir, '--json'], workDir),
+        )
       }
 
       // (6) spawn the routed worker; log + touch (throttled) on every stream line.
@@ -1629,7 +1641,9 @@ export async function tick(deps = {}) {
       // this tree» becomes a fact this code can read instead of a silence it must guess at.
       const rv = exit.spawnError
         ? { code: 1 }
-        : await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--json'], workDir)
+        // `--tree` is the twin of the BEFORE picture's: a differential verdict is only worth
+        // anything when both halves describe the SAME tree, and that tree is the copy.
+        : await invokeVerb(verbRunner, 'reverify', ['--branch', branch, '--tree', workDir, '--json'], workDir)
       // ── THE AFTER PICTURE, AND THE ONLY QUESTION THAT MATTERS: WHAT IS NEW? ──
       // A differential verdict needs both pictures readable AND something to compare: a tree
       // with no recipes at all is the receiptless branch's territory below, untouched.
