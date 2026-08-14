@@ -715,6 +715,9 @@ const decisionRows = [
     priority: 2,
     project: 'acme-clinic',
     enqueuedAt: NOW - 40 * HOUR,
+    // the two marks deliberately disagree: it sat in the queue for 40 hours, and it has been
+    // waiting for a PERSON for six of them — the second number is the one a decision is aged by
+    completedAt: NOW - 6 * HOUR,
   },
   {
     id: 'BL-w2',
@@ -767,10 +770,11 @@ describe('deriveState — awaiting[]: the rows a person still has to decide on',
       priority: 2,
       status: 'awaiting_approval',
       position: 1,
-      agedForHours: 40, // the same patience rule the queue rows are aged by
+      agedForHours: 6, // hours spent waiting for a PERSON, from the mark the work stopped at
     })
     expect(payload.awaiting[1].provider).toBe('codex')
-    expect(payload.awaiting[1].agedForHours).toBeUndefined() // 2h is not «застряла»
+    // the second row was never marked as stopped, so its age is not stated at all
+    expect(payload.awaiting[1].agedForHours).toBeUndefined()
   })
 
   it('the counter and the list are ONE source: kpis.awaitingApproval === awaiting.length', async () => {
@@ -798,6 +802,95 @@ describe('deriveState — awaiting[]: the rows a person still has to decide on',
     expect(payload.awaiting.map((a: any) => [a.id, a.position])).toEqual([
       ['BL-old', 1],
       ['BL-new', 2],
+    ])
+  })
+
+  /**
+   * СКОЛЬКО ОНА УЖЕ ЖДЁТ ЧЕЛОВЕКА — the one reading three screens ask for and nobody computed.
+   *
+   * The age of a decision starts WHEN THE WORK STOPPED, and the queue already writes that
+   * mark: `completedAt` is put down at the transition into «ждёт решения» by both backends.
+   * It is asserted on the DOOR'S ANSWER rather than on a helper, because the whole defect was
+   * a number that existed nowhere in the payload the screens read.
+   */
+  it('a waiting row states its age from the moment the work stopped — in fractional hours', async () => {
+    const rows = [
+      {
+        id: 'BL-just-stopped',
+        status: 'awaiting_approval',
+        lane: 'prod',
+        title: 'встала 40 минут назад',
+        priority: 0,
+        enqueuedAt: NOW - 9 * HOUR,
+        completedAt: NOW - 40 * 60000,
+      },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    // fractional, NOT floored: the screens turn anything under an hour into minutes themselves,
+    // and a floor here would hand every fresh decision the word «ноль часов».
+    expect(payload.awaiting[0].agedForHours).toBeCloseTo(40 / 60, 5)
+    // …and no patience threshold stands in front of it: waiting for a PERSON is the whole cost,
+    // so there is no span of it that is «не считается» the way a fresh queue row is.
+    expect(payload.awaiting[0].agedForHours).toBeGreaterThan(0)
+  })
+
+  it('a row whose stop was never marked says NOTHING about its age', async () => {
+    const rows = [
+      // reconstructed after the fact: nobody wrote down when it stopped
+      { id: 'BL-nomark', status: 'awaiting_approval', lane: 'prod', title: 'без отметки', priority: 0, enqueuedAt: NOW - 40 * HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    // a zero would read as «остановилась только что», which is a claim about work nobody watched
+    expect(payload.awaiting[0].agedForHours).toBeUndefined()
+  })
+
+  it('the age of a decision is not the claim clock, not the lease clock and not the queue clock', async () => {
+    const rows = [
+      {
+        id: 'BL-far-apart',
+        status: 'awaiting_approval',
+        lane: 'prod',
+        title: 'все часы врозь',
+        priority: 0,
+        enqueuedAt: NOW - 50 * HOUR, // when it was put in the queue
+        claimedAt: NOW - 30 * HOUR, // when a worker took it
+        leaseRenewedAt: NOW - 29 * HOUR, // when the worker last said it lived
+        completedAt: NOW - 3 * HOUR, // when it STOPPED and started waiting for a person
+      },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.awaiting[0].agedForHours).toBeCloseTo(3, 5)
+  })
+
+  it('the longest wait comes first by the STOP mark, and falls back to the queue mark without one', async () => {
+    const rows = [
+      { id: 'BL-a', status: 'awaiting_approval', lane: 'prod', title: 'a', priority: 9, enqueuedAt: NOW - 40 * HOUR, completedAt: NOW - HOUR },
+      { id: 'BL-b', status: 'awaiting_approval', lane: 'prod', title: 'b', priority: 0, enqueuedAt: NOW - 2 * HOUR, completedAt: NOW - 6 * HOUR },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+    expect(payload.awaiting.map((a: any) => [a.id, a.position])).toEqual([
+      ['BL-b', 1],
+      ['BL-a', 2],
     ])
   })
 
