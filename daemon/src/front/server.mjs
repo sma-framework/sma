@@ -81,7 +81,7 @@ import { proposeBreakdown, proposeWords } from './chat.mjs'
 import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
-import { readAttempts, readJournalEntries } from '../queue/attempt-ledger.mjs'
+import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS } from './journal.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
@@ -712,23 +712,10 @@ async function handleTask({ res, params, config, deps }) {
   // ONE ATTEMPT, ONE ROW. Two writers append for the same attempt — the state machine puts
   // down the transition, the tick puts down provider/session/usage — so the ledger holds two
   // rows per attempt and the card printed «Подход 1 · готово» twice in a row, as if the work
-  // had been done twice. They are merged by attempt number here, later fields winning over
-  // empty ones, so every surface counts attempts the way a person does.
-  const mergedByAttempt = new Map()
-  for (const a of rawAttempts) {
-    const key = Number.isFinite(a && a.attempt) ? a.attempt : `raw-${mergedByAttempt.size}`
-    const prev = mergedByAttempt.get(key)
-    if (!prev) {
-      mergedByAttempt.set(key, { ...a })
-      continue
-    }
-    const merged = { ...prev }
-    for (const [k, v] of Object.entries(a)) {
-      if (v !== null && v !== undefined && v !== '') merged[k] = v
-    }
-    mergedByAttempt.set(key, merged)
-  }
-  rawAttempts = [...mergedByAttempt.values()]
+  // had been done twice. The merge rule lives with the ledger (`foldAttemptRows`) and is the
+  // SAME one the state payload counts by: two places that fold rows their own way is how two
+  // screens come to disagree about how many tries there were.
+  rawAttempts = foldAttemptRows(rawAttempts)
 
   const parseReceipt = typeof deps.parseReceiptSummary === 'function' ? deps.parseReceiptSummary : () => null
   const attempts = rawAttempts.map((a) => ({

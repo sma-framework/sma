@@ -225,6 +225,70 @@ export function readAttempts(ledgerDir, taskId) {
   return rows
 }
 
+/** A stored mark as milliseconds — a number stays, an ISO string parses, anything else is NaN. */
+function stampMs(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN
+  if (typeof v === 'string') return Date.parse(v)
+  return NaN
+}
+
+/** Of two marks of the same kind, the earlier / later one — an unparseable mark never wins. */
+function pickStamp(a, b, wantEarlier) {
+  const ma = stampMs(a)
+  const mb = stampMs(b)
+  if (!Number.isFinite(ma)) return b
+  if (!Number.isFinite(mb)) return a
+  return (wantEarlier ? ma <= mb : ma >= mb) ? a : b
+}
+
+/**
+ * foldAttemptRows(rows) → ONE RECORD PER TRY, for everything that COUNTS or SHOWS attempts.
+ *
+ * WHY THIS EXISTS. Two writers append for the same attempt — the state machine puts down the
+ * transition, the tick puts down who ran it, on what and how it ended — so the ledger holds two
+ * rows per try. That is correct for an append-only audit log (two hands wrote, two rows stand,
+ * and `readAttempts` still returns every one of them), and it was wrong everywhere the ROWS were
+ * counted as tries: a card said «6 подходов» over three, and a timeline printed «Подход 3»
+ * twice. The count is fixed at the READING seam, once, so no consumer has to know the ledger
+ * writes twice — and the file itself is never rewritten to make a number come out right.
+ *
+ * MERGE RULE. Rows sharing an attempt number become one record: the EARLIEST start mark and the
+ * LATEST end mark (the try began when its first row says and ended when its last one does — a
+ * length assembled from one row's start and the other's end is the honest length of the try),
+ * and for every other field the last non-empty value wins, so the tick's richer row fills what
+ * the transition row left blank without erasing what only the transition row knows.
+ *
+ * A ROW WITH NO ATTEMPT NUMBER IS NEVER FOLDED INTO ANOTHER. Silently gathering unnumbered rows
+ * would merge tries nobody said were the same; they stay separate records, in the order they
+ * arrived.
+ *
+ * @param {object[]} rows — ledger rows as `readAttempts` returns them
+ * @returns {object[]} one record per attempt number, first-appearance order
+ */
+export function foldAttemptRows(rows) {
+  if (!Array.isArray(rows)) return []
+  const merged = new Map()
+  let unnumbered = 0
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const key = Number.isFinite(row.attempt) ? `attempt:${row.attempt}` : `unnumbered:${unnumbered++}`
+    const prev = merged.get(key)
+    if (!prev) {
+      merged.set(key, { ...row })
+      continue
+    }
+    const next = { ...prev }
+    for (const [k, v] of Object.entries(row)) {
+      if (v === null || v === undefined || v === '') continue
+      next[k] = v
+    }
+    if (prev.startedAt != null && row.startedAt != null) next.startedAt = pickStamp(prev.startedAt, row.startedAt, true)
+    if (prev.endedAt != null && row.endedAt != null) next.endedAt = pickStamp(prev.endedAt, row.endedAt, false)
+    merged.set(key, next)
+  }
+  return [...merged.values()]
+}
+
 // ── the memory snapshot digest (fleet invariant six) ───────────────────────────
 
 /**
