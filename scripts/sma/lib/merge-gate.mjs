@@ -178,9 +178,14 @@ export function checkMergeClaim(o = {}) {
  * release the slot. Wrapped fail-open (C9): any error releases the held slot and returns
  * an honest failure — NEVER a throw, NEVER a wedged slot, NEVER a false green.
  *
+ * `testsPassed` is `true`/`false` ONLY when a runner was injected and actually ran; it is
+ * `null` when no run happened, because «тесты не запускались» is a different fact from «тесты
+ * прошли» and a receipt may state only what took place. Readers deciding an outcome must treat
+ * null as «нечего утверждать» — a red run (false) blocks, an absent one does not.
+ *
  * @returns
  *   - concurrent hold: {merged:false, softDenied:true, override, holder}
- *   - success/tests:   {merged:true, testsPassed:boolean, branch, resultSha, receipt}
+ *   - success/tests:   {merged:true, testsPassed:boolean|null, branch, resultSha, receipt}
  *   - error:           {ok:false, message}
  */
 export function runMerge(o = {}) {
@@ -221,7 +226,12 @@ export function runMerge(o = {}) {
     }
 
     // (3) run targeted tests on the MERGE RESULT (not on either branch alone).
-    let testsPassed = true
+    //
+    // NULL UNTIL SOMETHING ACTUALLY RUNS. This started as `true` and stayed `true` whenever no
+    // runner was injected, so a receipt asserted that tests had passed on a merge where not one
+    // test was executed — the one claim a receipt exists to prevent. Three answers, not two:
+    // true and false state an OUTCOME, null states that there was no run to have an outcome.
+    let testsPassed = null
     if (runTests) {
       const tr = runTests({ branch, resultSha, cwd })
       testsPassed = !!(tr && tr.passed)

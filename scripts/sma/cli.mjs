@@ -10264,9 +10264,12 @@ async function cmdMerge({ positionals, flags, dirs }) {
     process.stderr.write(`SMA merge: не удалось (${res.message}). Дерево не тронуто сверх git merge; слот освобождён.\n`)
     return 1
   }
-  process.stdout.write(`SMA merge: ${branch} влит в main ЛОКАЛЬНО${res.resultSha ? ` (${String(res.resultSha).slice(0, 7)})` : ''}; тесты на результате слияния: ${res.testsPassed ? 'зелёные' : 'КРАСНЫЕ'}.\n`)
+  // Три ответа, а не два: прошли, красные и «не запускались». Последний — не провал и не
+  // зелёный: утверждать о прогоне, которого не было, нельзя ни в ту, ни в другую сторону.
+  const testsWord = res.testsPassed === null ? 'не запускались' : res.testsPassed ? 'зелёные' : 'КРАСНЫЕ'
+  process.stdout.write(`SMA merge: ${branch} влит в main ЛОКАЛЬНО${res.resultSha ? ` (${String(res.resultSha).slice(0, 7)})` : ''}; тесты на результате слияния: ${testsWord}.\n`)
   process.stdout.write('  push — по команде владельца в релизном ритуале (/sma-help ship); `sma merge` НЕ пушит и НЕ деплоит.\n')
-  return res.testsPassed ? 0 : 1
+  return res.testsPassed === false ? 1 : 0
 }
 
 /**
