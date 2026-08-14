@@ -1716,6 +1716,35 @@ export async function tick(deps = {}) {
         }
       }
 
+      // ── WHAT THIS ATTEMPT ACTUALLY TOUCHED, written down BEFORE the fork ──
+      // «Откатить можно» и «видно, ЧТО откатывается» — разные вещи, and only the first was
+      // true: the base commit named the point to return to and nothing named what would come
+      // back with it. The list was worked out by hand and died with the branch.
+      //
+      // It is taken here, once, ahead of complete/fail on purpose: BOTH outcomes must carry
+      // the same record, and the attempt a person wants to undo is precisely the one that was
+      // refused. Journal line only — the ledger row's key list is a closed allowlist that
+      // belongs to another change; a line the operator's log already prints is the smaller
+      // honest step, and the SUMMARY carries the recommendation for the durable half.
+      const changed = changedFilesOnBranch(deps, worktreeBase, branch, workDir)
+      writeLog(deps, {
+        type: 'task.attempt_files',
+        taskId: task.id,
+        attempt: task.attempt,
+        branch,
+        base: worktreeBase,
+        files: changed.files,
+        // The values go into `detail`: the operator's formatter prints type/task/worker/
+        // reason/detail and drops everything else, so a list filed under any other key is a
+        // record nobody can read. Capped — a giant attempt must not push the log out of the
+        // window; the full list stays on the entry above it.
+        detail:
+          `база=${worktreeBase || 'нет'} ветка=${branch || 'нет'} файлов=${changed.files.length}` +
+          (changed.files.length
+            ? `: ${changed.files.slice(0, 40).join(' · ')}${changed.files.length > 40 ? ` … ещё ${changed.files.length - 40}` : ''}`
+            : ` (${changed.reason})`),
+      })
+
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
         result.completed = task.id
