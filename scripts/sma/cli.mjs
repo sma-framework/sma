@@ -5437,7 +5437,7 @@ function walkSummaries(dir) {
 }
 
 /**
- * reverify [--summary <path>] [--all] [--fresh-clone] [--count <verdict>] [--json]
+ * reverify [--summary <path>] [--all] [--tree <path>] [--fresh-clone] [--count <verdict>] [--json]
  *
  * Re-runs every SUMMARY receipt across the SAFE_COMMAND boundary and diffs
  * observed-vs-expected hashes. --all (default) walks .planning/phases and keeps
@@ -5446,6 +5446,24 @@ function walkSummaries(dir) {
  * is appended to the calibration ledger under domain 'sma.receipts', mapping the
  * receipt verdict into the V2 ledger vocabulary (verified->hit, divergent->miss;
  * skipped-unsafe/error pass through) while preserving receipt_verdict verbatim.
+ *
+ * --tree <path>: MEASURE THE TREE YOU WERE POINTED AT. Without it the walk starts
+ * at the root the whole CLI shares — which is resolved through `git rev-parse
+ * --git-common-dir`, so from inside a linked worktree it travels back to the MAIN
+ * checkout. That is deliberate for sessions, claims and the ledger (one shared
+ * bookkeeping across worktrees), and WRONG for the one job that has to look at
+ * somebody else's working copy: re-verifying a worker's copy while standing in it
+ * silently described the main checkout instead, so a before/after pair of pictures
+ * was a pair of pictures of the same unrelated tree and their difference was empty
+ * by construction. The flag moves ONLY what belongs to the tree under measurement:
+ * the .planning/phases walk, the cwd every recipe command runs with, the base of
+ * the --fresh-clone remap, and the git probes of the footprint modes (those read
+ * the named tree's history — the correct consequence of naming it). It moves
+ * NOTHING of the bookkeeping: sessions/claims/calibration keep coming from the
+ * shared root, so a re-verification of a copy is still recorded in one place.
+ * A relative path resolves against the caller's cwd. No new authority: recipe
+ * commands stay behind the same SAFE_COMMAND allowlist, and whoever can pass the
+ * flag can already run this CLI from inside that tree.
  *
  * --count <verdict>: print ONLY the integer count of that receipt verdict as the
  * last line and ALWAYS exit 0 (the scorer measurement surface). Without --count,
@@ -5457,9 +5475,17 @@ async function cmdReverify({ flags, dirs }) {
   const { execSync, execFileSync } = await import('node:child_process')
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
-  const { relative, isAbsolute } = await import('node:path')
+  const { relative, isAbsolute, resolve } = await import('node:path')
 
-  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  // The ONE point where «which tree do I measure» is decided. An explicit --tree wins;
+  // otherwise the shared root answers, exactly as before. `dirs.*` are NOT derived from
+  // here — the bookkeeping stays where resolveRoot put it.
+  const namedTree = typeof flags.tree === 'string' && flags.tree.trim() ? flags.tree.trim() : null
+  const repoRoot = namedTree
+    ? resolve(process.cwd(), namedTree)
+    : dirs.smaRoot
+      ? dirname(dirs.smaRoot)
+      : process.cwd()
 
   // ── footprint receipt modes — the economy ladder's deterministic
   // «claim vs git diff --numstat» receipt. Separate concern from the structural
