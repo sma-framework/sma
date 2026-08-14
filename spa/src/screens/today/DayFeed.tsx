@@ -36,10 +36,18 @@ function LaneBadge({ lane, title }: { lane: string | null; title: string | null 
   )
 }
 
-function AgedPill({ hours }: { hours: number }) {
+/**
+ * СКОЛЬКО СТРОКА УЖЕ ЖДЁТ — и ЖДУТ ЗДЕСЬ ДВА РАЗНЫХ ОЖИДАНИЯ, поэтому слово у них разное.
+ *
+ * Строка очереди ждёт РАБОТНИКА, и возраст ей ставится только за порогом терпения — там
+ * «застряла» и есть весь смысл сообщения. Строка, которая ждёт ЧЕЛОВЕКА, называет свой
+ * возраст всегда, с первой минуты: «застряла» про сорок минут ожидания — упрёк работе,
+ * которая как раз сделана и честно остановилась.
+ */
+function AgedPill({ hours, stuck = true }: { hours: number; stuck?: boolean }) {
   return (
     <span className="flex-none rounded-full bg-warn-s px-2.5 py-0.5 text-[10.5px] whitespace-nowrap text-warn-tx">
-      застряла · ждёт {hoursLabel(hours)}
+      {stuck ? 'застряла · ' : ''}ждёт {hoursLabel(hours)}
     </span>
   )
 }
@@ -93,7 +101,7 @@ function DecisionCard({
         <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-tx">
           {row.title ?? 'Без названия'}
         </span>
-        {row.agedForHours ? <AgedPill hours={row.agedForHours} /> : null}
+        {row.agedForHours ? <AgedPill hours={row.agedForHours} stuck={false} /> : null}
       </div>
       <div className="mt-2 text-[11.5px] text-tx3">
         {row.lane ?? 'без направления'} · проверено, ждёт вашего решения
