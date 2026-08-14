@@ -87,6 +87,7 @@ import {
   isBatchParent,
   batchItemsOf,
   batchDecisionsOf,
+  latestRowPerId,
   waveAddressOf,
   DEFAULT_PROJECT_ID,
   REASON_LABELS,
@@ -2019,7 +2020,21 @@ export async function deriveState(deps = {}) {
 
   const queuedRows = rows.filter((r) => r.status === 'queued')
   const claimedRows = rows.filter((r) => r.status === 'claimed')
-  const awaitingRows = rows.filter((r) => r.status === 'awaiting_approval')
+  // ── ONE TASK, ONE LINE WAITING FOR A WORD ──
+  //
+  // A returned task is enqueued again under its OWN id, and a durable queue keeps the row it
+  // stopped on beside the new one. Filtering by status alone therefore counted a single piece
+  // of work as two for the whole span of the return: «ЖДУТ ВАС: 2» over one task, one of the
+  // two lines nameless. So the rows are folded to the LAST WORD about each task first — the
+  // QUEUE'S OWN rule, imported rather than restated, because a second definition of «which row
+  // wins» is a second answer waiting to disagree. While the task is being redone its last word
+  // is «в работе» and it owes nobody a decision; once it stands for approval again it is one
+  // line. The counter below reads the length of this very list, so it is fixed by the same move.
+  //
+  // The queued/claimed/done filters are deliberately NOT folded: their lists are the showcase
+  // of other states, the defect measured is in the waiting count, and widening the edit would
+  // change screens nobody asked about.
+  const awaitingRows = latestRowPerId(rows).filter((r) => r.status === 'awaiting_approval')
   const doneRows = rows.filter((r) => r.status === 'completed' || r.status === 'failed')
 
   // ── ONE task row, named field by field. An adapter row may carry anything at all; a

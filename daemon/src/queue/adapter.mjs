@@ -473,8 +473,17 @@ export function batchDecisionsOf(requestRow) {
  * used), and a durable queue keeps the previous job row beside the new one. Two rows for one
  * piece would make the turn rule see a failure that the owner has already answered — so the
  * rule reads the LAST word about each id and nothing older.
+ *
+ * EXPORTED so the queue (whose turn is it, has this piece been answered) and the read model
+ * behind the screen (how many tasks are waiting for a word) can never answer «what is the last
+ * word about this task» differently. The screen learned the same lesson the hard way: while a
+ * returned task was being redone it was counted twice, because the rows were filtered by status
+ * and nothing folded them by task. One sentence, written once.
+ *
+ * @param {object[]} rows
+ * @returns {object[]}
  */
-function latestRowPerId(rows) {
+export function latestRowPerId(rows) {
   const live = (r) => r.status === 'queued' || r.status === 'claimed'
   const out = []
   for (const r of rows) {
