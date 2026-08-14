@@ -322,6 +322,87 @@ describe('deriveState — the one-poll payload', () => {
   })
 
   /**
+   * ПОДХОДОВ СТОЛЬКО, СКОЛЬКО ИХ БЫЛО — and the fixture is the whole point of these three.
+   *
+   * The live ledger writes TWO rows for one attempt: the state machine puts down the
+   * transition, the tick puts down who ran it and how it ended. Every suite that counted
+   * attempts was green because its fake wrote ONE row per attempt — a shape production never
+   * produces — so a card showed «6 подходов» over three tries. The fixture below is the live
+   * shape, row for row.
+   */
+  const liveLedgerRows = (taskId: string) => {
+    const rows: any[] = []
+    for (const n of [1, 2, 3]) {
+      // (a) the transition row: no worker on it, and it is the one carrying the start mark
+      rows.push({
+        taskId,
+        attempt: n,
+        startedAt: NOW - (4 - n) * HOUR,
+        outcome: n < 3 ? 'failed' : 'completed',
+        ...(n < 3 ? { failureReason: 'tests_red' } : {}),
+      })
+      // (b) the tick's row for the SAME attempt: who ran it, on what, and when it ended
+      rows.push({
+        taskId,
+        attempt: n,
+        workerId: 'max-1',
+        provider: 'claude',
+        endedAt: NOW - (4 - n) * HOUR + HOUR,
+        receiptRef: 'reverify:green',
+      })
+    }
+    return rows
+  }
+
+  it('three tries written as six rows are counted as THREE — on the done row and the failed one', async () => {
+    const rows = [
+      { id: 'BL-six', status: 'completed', lane: 'prod', title: 'три подхода', completedAt: NOW },
+      { id: 'BL-red', status: 'failed', lane: 'prod', title: 'три подхода и красный', failure_reason: 'tests_red', completedAt: NOW },
+    ]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      ledger: (id: string) => liveLedgerRows(id),
+      windows: makeWindows({}),
+      config,
+      clock: () => NOW,
+    })
+    const byId: any = Object.fromEntries(payload.done.map((d: any) => [d.id, d]))
+    expect(byId['BL-six'].attempts).toBe(3)
+    expect(byId['BL-red'].failed.attemptsCount).toBe(3)
+  })
+
+  it('the door of one task lists one entry per try, never the same try twice', async () => {
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-six', title: 'три подхода', lane: 'prod', status: 'completed', attempt: 3 }] },
+        ledger: (id: string) => liveLedgerRows(id),
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-six' }), res)
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts.map((a: any) => a.attempt)).toEqual([1, 2, 3])
+    // the two rows of one try are ONE entry, and it carries what each of them wrote
+    expect(out.attempts[2]).toMatchObject({ workerId: 'max-1', provider: 'claude', outcome: 'completed' })
+  })
+
+  it('the length of a try survives the merge — the two marks live on its two rows', async () => {
+    const rows = [{ id: 'BL-six', status: 'completed', lane: 'prod', title: 'три подхода', completedAt: NOW }]
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      ledger: (id: string) => liveLedgerRows(id),
+      windows: makeWindows({}),
+      config,
+      clock: () => NOW,
+    })
+    // the closing try started on one row and ended on the other; merged, it is an hour long
+    expect(payload.done[0].finishedDuration).toBe(HOUR)
+  })
+
+  /**
    * WHERE THE «СДЕЛАНО» CARD READS ITS GIT FROM — asserted on the WIRE, because the calculation
    * was never the broken half. Both reads used to be made with no cwd at all, so they ran in
    * whatever directory the daemon PROCESS was started in; on an install serving one repository
