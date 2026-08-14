@@ -17,7 +17,10 @@
  *
  * ═══════════════════════ WHAT THE ROSTER RENDERS ════════════════════════════════
  *   - agedForHours on a queue row ONLY when it has been queued past config.agingHours
- *     (pure derive from the enqueuedAt timestamp, never a stored flag);
+ *     (pure derive from the enqueuedAt timestamp, never a stored flag); on a row waiting
+ *     for a PERSON the same field is the wait itself — fractional hours since the work
+ *     stopped (completedAt), with no threshold and no field at all where the stop was
+ *     never marked;
  *   - `acceptance` («обещано») carried onto done rows when the task had one, omitted
  *     when it did not (roster/return tasks are DoR-exempt);
  *   - failed rows carry {reason, reasonLabel} — reasonLabel from REASON_LABELS
@@ -2038,7 +2041,30 @@ export async function deriveState(deps = {}) {
       claimedAt: r.claimedAt ?? null,
       leaseRenewedAt: r.leaseRenewedAt ?? null,
     }
-    if (ageMs > agingMs) out.agedForHours = Math.floor(ageMs / HOUR_MS) // «застряла» signal
+    // ── HOW LONG IT HAS BEEN WAITING, and the two lists are aged by DIFFERENT clocks ──
+    //
+    // A row waiting for a WORKER is aged from `enqueuedAt` past the configured patience: that
+    // reading is a «застряла» signal, and below the threshold there is nothing to report.
+    //
+    // A row waiting for a PERSON is aged from `completedAt` — the mark put down at the moment
+    // the work stopped and started owing somebody a word (both backends write it: the memory
+    // queue in complete(), the durable one out of completed_on). It is NOT the claim time and
+    // NOT the lease renewal: those say when a worker took the task and when it last said it
+    // lived, which are facts about the work, not about the wait. Three screens — the «ждут вас»
+    // strip, the list line, the card and the console pill — already read `agedForHours` off this
+    // row and printed «сколько ждёт — нет данных» because nothing ever computed it.
+    //
+    // FRACTIONAL HOURS, and no patience threshold. The screens turn anything under an hour into
+    // minutes themselves, so a floor here would hand every fresh decision the word «ноль часов»;
+    // and waiting for a person is the whole cost of the row, so no span of it is «не считается».
+    // Where the stop was never marked (a row reconstructed after the fact) the field is ABSENT —
+    // a zero would read as «остановилась только что», which is a claim about work nobody watched.
+    if (r.status === 'awaiting_approval') {
+      const stoppedAt = toMs(r.completedAt)
+      if (Number.isFinite(stoppedAt) && now - stoppedAt >= 0) out.agedForHours = (now - stoppedAt) / HOUR_MS
+    } else if (ageMs > agingMs) {
+      out.agedForHours = Math.floor(ageMs / HOUR_MS) // «застряла» signal
+    }
     return out
   }
 
@@ -2054,11 +2080,15 @@ export async function deriveState(deps = {}) {
   // ── awaiting[] — the work that is finished but still owes a person a word. The day
   // screen shows those tasks, not a number beside them, so the payload has to carry the
   // rows: a counter alone leaves the screen with nothing to draw. The one that has waited
-  // longest comes first — waiting is the whole cost here, so priority has no say. The
+  // longest comes first — waiting is the whole cost here, so priority has no say — and the
+  // wait is measured from the moment the work STOPPED, the same mark the row's age is stated
+  // from, falling back to the queue mark only where the stop was never written. The
   // queue keeps meaning what it says: rows waiting for a WORKER, never for a person. ──
-  const awaiting = [...awaitingRows]
-    .sort((a, b) => (toMs(a.enqueuedAt) || 0) - (toMs(b.enqueuedAt) || 0))
-    .map(toTaskRow)
+  const waitingSince = (r) => {
+    const stopped = toMs(r.completedAt)
+    return Number.isFinite(stopped) ? stopped : toMs(r.enqueuedAt) || 0
+  }
+  const awaiting = [...awaitingRows].sort((a, b) => waitingSince(a) - waitingSince(b)).map(toTaskRow)
 
   // ── workers[] — presence is a PURE derive. The roster is ALSO the only list
   // that names a claimed task, so the three facts a screen needs to place that task travel
