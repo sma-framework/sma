@@ -2238,52 +2238,55 @@ describe('останов волны: адресный, мягкий, переж�
  * одинаковые снимки пропускают работу, новое расхождение по-прежнему красное, снимков
  * ровно два за попытку, и без снимка ДО гейт возвращается к старому правилу ВСЛУХ.
  */
-describe('выходной гейт различает «работник сломал» и «было сломано до него»', () => {
-  // Форма записи списана с ответа самого верба (его проверяющая функция возвращает ровно эти
-  // поля), а не выдумана: подделка, которая богаче библиотеки, доказывает несуществующее.
-  const rec = (id: string, verdict: string, summary = '.planning/phases/01-old/01-01-SUMMARY.md') => ({
-    id,
-    coverage_id: null,
-    assertion: 'целевые тесты зелёные',
-    check_command: 'pnpm vitest run daemon/__tests__/loop.test.ts',
-    expected_sha256: 'a'.repeat(64),
-    observed_sha256: verdict === 'divergent' ? 'b'.repeat(64) : 'a'.repeat(64),
-    exitCode: 0,
-    scoredAt: '2026-08-14T00:00:00.000Z',
-    summary,
-    domain: 'sma.receipts',
-    verdict,
-  })
+// Форма записи списана с ответа самого верба (его проверяющая функция возвращает ровно эти
+// поля), а не выдумана: подделка, которая богаче библиотеки, доказывает несуществующее.
+const rec = (id: string, verdict: string, summary = '.planning/phases/01-old/01-01-SUMMARY.md') => ({
+  id,
+  coverage_id: null,
+  assertion: 'целевые тесты зелёные',
+  check_command: 'pnpm vitest run daemon/__tests__/loop.test.ts',
+  expected_sha256: 'a'.repeat(64),
+  observed_sha256: verdict === 'divergent' ? 'b'.repeat(64) : 'a'.repeat(64),
+  exitCode: 0,
+  scoredAt: '2026-08-14T00:00:00.000Z',
+  summary,
+  domain: 'sma.receipts',
+  verdict,
+})
 
-  /** Ответ верба в его собственной форме: {records, appended} на stdout + код выхода. */
-  const answer = (records: any[]) => ({
-    code: records.some((r) => r.verdict === 'divergent' || r.verdict === 'error') ? 1 : 0,
-    stdout: JSON.stringify({ records, appended: records.length }),
-  })
+/** Ответ верба в его собственной форме: {records, appended} на stdout + код выхода. */
+const answer = (records: any[]) => ({
+  code: records.some((r) => r.verdict === 'divergent' || r.verdict === 'error') ? 1 : 0,
+  stdout: JSON.stringify({ records, appended: records.length }),
+})
 
-  /** Верб отвечает по очереди: первый вызов — снимок ДО, второй — снимок ПОСЛЕ. */
-  const inTurn = (answers: any[]) => {
-    let i = 0
-    return () => answers[Math.min(i++, answers.length - 1)]
+/** Верб отвечает по очереди: первый вызов — снимок ДО, второй — снимок ПОСЛЕ. */
+const inTurn = (answers: any[]) => {
+  let i = 0
+  return () => answers[Math.min(i++, answers.length - 1)]
+}
+
+const DIFF_RESPONSES = (reverify: any) => ({
+  preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+  worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+  reverify,
+})
+
+/** Git, отвечающий на все четыре вопроса попытки; любой из них можно заставить упасть. */
+const makeGateGit =
+  ({ commits = '1', diff = 'M\tdaemon/src/loop.mjs', throwOn = '' } = {}) =>
+  (args: string[]) => {
+    const verb = args[0]
+    if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
+    if (verb === 'rev-parse') return 'base0000'
+    if (verb === 'rev-list') return commits
+    if (verb === 'diff') return diff
+    return ''
   }
 
-  const RESPONSES = (reverify: any) => ({
-    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
-    reverify,
-  })
-
-  /** Git, отвечающий на все четыре вопроса гейта; любой из них можно заставить упасть. */
-  const makeGit =
-    ({ commits = '1', diff = 'M\tdaemon/src/loop.mjs', throwOn = '' } = {}) =>
-    (args: string[]) => {
-      const verb = args[0]
-      if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
-      if (verb === 'rev-parse') return 'base0000'
-      if (verb === 'rev-list') return commits
-      if (verb === 'diff') return diff
-      return ''
-    }
+describe('выходной гейт различает «работник сломал» и «было сломано до него»', () => {
+  const RESPONSES = DIFF_RESPONSES
+  const makeGit = makeGateGit
 
   it('снимки одинаковы → работа ПРИНЯТА, хотя верб и вышел не нулём', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
@@ -2369,5 +2372,97 @@ describe('выходной гейт различает «работник сло
     const line = journalled.find((e: any) => e.type === 'task.gate_differential')
     expect(line, 'ослабление/возврат к старому правилу произошли молча').toBeTruthy()
     expect(line.detail).toContain('снимка ДО нет')
+  })
+})
+
+/**
+ * ═════ «ОТКАТИТЬ МОЖНО» И «ВИДНО, ЧТО ОТКАТЫВАЕТСЯ» — РАЗНЫЕ ВЕЩИ ══════════════
+ *
+ * Изоляция работника была настоящей с самого начала: он пишет только в свою рабочую копию на
+ * своей ветке. Базовый коммит — точку, к которой можно вернуться, — журнал уже называл. Чего
+ * в нём не было: СПИСКА того, что вернётся. Он выводился руками и исчезал вместе с веткой.
+ *
+ * Ниже три кейса на одну строку журнала: она есть у принятой попытки, есть у ПРОВАЛЕННОЙ
+ * (именно её и хотят откатить) и честно называет причину, когда git ответить не смог.
+ */
+describe('журнал попытки отвечает и «к чему откатывать», и «что откатывается»', () => {
+  const filesLine = (journalled: any[]) => journalled.find((e: any) => e.type === 'task.attempt_files')
+
+  it('попытка ПРИНЯТА → в журнале база и список изменённых файлов', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(inTurn([snapshot, snapshot])),
+      deps: { execGit: makeGateGit({ diff: 'M\tdaemon/src/loop.mjs\nA\tdaemon/__tests__/loop.test.ts' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const line = filesLine(journalled)
+    expect(line, 'попытка закрылась, а что она тронула — неизвестно').toBeTruthy()
+    expect(line.base).toBe('base0000')
+    expect(line.branch).toBe('wt/BL-1')
+    expect(line.files).toEqual(['M\tdaemon/src/loop.mjs', 'A\tdaemon/__tests__/loop.test.ts'])
+    // числа и имена живут в detail: форматтер оператора печатает только его
+    expect(line.detail).toContain('base0000')
+    expect(line.detail).toContain('daemon/src/loop.mjs')
+  })
+
+  it('попытка ПРОВАЛЕНА гейтом → список файлов ВСЁ РАВНО записан', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(
+        inTurn([answer([rec('R-A', 'divergent')]), answer([rec('R-A', 'divergent'), rec('R-C', 'divergent')])]),
+      ),
+      deps: { execGit: makeGateGit({ diff: 'M\tdaemon/src/loop.mjs' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'tests_red' })
+    const line = filesLine(journalled)
+    expect(line, 'провалившаяся попытка — именно та, которую хотят откатить').toBeTruthy()
+    expect(line.base).toBe('base0000')
+    expect(line.files).toEqual(['M\tdaemon/src/loop.mjs'])
+  })
+
+  it('git не ответил → запись честно называет причину и ничего не роняет', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(inTurn([snapshot, snapshot])),
+      deps: { execGit: makeGateGit({ throwOn: 'diff' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1') // судьбу попытки решает её гейт, а не строка журнала
+    const line = filesLine(journalled)
+    expect(line).toBeTruthy()
+    expect(line.files).toEqual([])
+    expect(line.detail).toContain('git не ответил')
+  })
+
+  it('ветка пуста → запись говорит «изменённых файлов нет», а не молчит', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const { deps, journalled } = makeDeps({
+      adapter,
+      // коммит на ветке есть (иначе попытку закроет дверь «ответа словами»), а diff пуст —
+      // ровно тот случай, когда молчание журнала читалось бы как «данных нет вообще»
+      responses: DIFF_RESPONSES(inTurn([snapshot, snapshot])),
+      deps: { execGit: makeGateGit({ diff: '' }) },
+    })
+
+    await tick(deps)
+
+    const line = filesLine(journalled)
+    expect(line).toBeTruthy()
+    expect(line.files).toEqual([])
+    expect(line.detail).toContain('изменённых файлов нет')
   })
 })
