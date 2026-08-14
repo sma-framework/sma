@@ -232,7 +232,12 @@ export function TaskPanel({
         </div>
 
         {canApprove || canReturn ? (
-          <div className="flex flex-none flex-col gap-2.5 border-t border-bd px-[22px] py-4">
+          // Нижний запас: подвал карточки заканчивается ВЫШЕ зоны плавающей плашки
+          // разговора с системой (она висит в правом нижнем углу поверх всего окна:
+          // 22px отступ + ~44px высота свёрнутой плашки + зазор). Без запаса плашка
+          // накрывала кнопку «Одобрить» — кнопка была видима, но клик доставался плашке.
+          // Прятать или опускать плашку нельзя: разговор обязан открываться поверх карточки.
+          <div className="flex flex-none flex-col gap-2.5 border-t border-bd px-[22px] pt-4 pb-[88px]">
             {problem ? <p className="m-0 text-[11.5px] text-err-tx">{problem}</p> : null}
             {returning ? (
               <>
