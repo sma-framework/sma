@@ -32,6 +32,7 @@ import {
   PENDING_ROUTES,
   matchRoute,
 } from '../src/front/server.mjs'
+import { deriveState } from '../src/front/state.mjs'
 import { QueueEncodingError } from '../src/queue/encoding.mjs'
 import {
   authed,
@@ -741,6 +742,32 @@ describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
     // the queue refuses an empty title, so the id itself is the floor — the screen already shows
     // it as an id, which is honest; a minted phrase would have claimed to be a name
     expect(enqueued[0].title).toBe('R-5')
+  })
+})
+
+/**
+ * THE WIRE, ASSERTED ON THE DOOR'S OWN ANSWER. The rule that folds a task's rows to its last
+ * word lives in the queue and is applied inside the read model — but a computation nobody hands
+ * to the caller is not a fix. So this case drives the REAL derive through GET /api/state and
+ * reads the body the screen would read: one waiting line for one returned task, and a counter
+ * that agrees with it.
+ */
+describe('server.mjs — GET /api/state counts a returned task ONCE', () => {
+  it('two rows of one task, both standing for approval → one line in the body, kpi 1', async () => {
+    const rows = [
+      { id: 'R-9', status: 'awaiting_approval', lane: 'prod', title: 'собери отчёт', enqueuedAt: 5000, completedAt: 6000 },
+      { id: 'R-9', status: 'awaiting_approval', lane: 'prod', title: 'собери отчёт', source: 'return', enqueuedAt: 9000, completedAt: 9500 },
+    ]
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { deriveState, adapter: { list: async () => rows.slice() }, clock: () => 20000 },
+    })
+    const res = await call(front, { url: '/api/state', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const payload = JSON.parse(res.body)
+    expect(payload.awaiting).toHaveLength(1)
+    expect(payload.awaiting[0]).toMatchObject({ id: 'R-9', title: 'собери отчёт' })
+    expect(payload.kpis.awaitingApproval).toBe(1)
   })
 })
 
