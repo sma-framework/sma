@@ -743,6 +743,28 @@ describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
     // it as an id, which is honest; a minted phrase would have claimed to be a name
     expect(enqueued[0].title).toBe('R-5')
   })
+
+  /**
+   * THE NUMBER OF THE NEXT ATTEMPT IS READ FROM THE LAST WORD ABOUT THE TASK. A durable queue
+   * keeps the older row beside the newer one and hands them back in no promised order, so
+   * «the first row with this id» can be the attempt BEFORE the one standing for approval. On a
+   * second return in a row that mints a number the task has already used — two rows claiming to
+   * be the same attempt, and the card then has to guess which of them the worker is running.
+   */
+  it('a second return in a row numbers the new attempt from the newest row, not the first in the list', async () => {
+    const enqueued: any[] = []
+    const front = returnFront(
+      [
+        { id: 'R-5', attempt: 2, status: 'returned', title: 'собери отчёт', source: 'return', enqueuedAt: 1000 },
+        { id: 'R-5', attempt: 3, status: 'awaiting_approval', title: 'собери отчёт', source: 'return', enqueuedAt: 5000 },
+      ],
+      enqueued,
+    )
+    const res = await postReturn(front, { taskId: 'R-5', note: 'ещё раз' })
+    expect(res.statusCode).toBe(200)
+    expect(enqueued[0].attempt, 'attempt 3 is taken — the new row must be 4').toBe(4)
+    expect(JSON.parse(res.body).attempt).toBe(4)
+  })
 })
 
 /**
@@ -1621,6 +1643,76 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
     expect(res.statusCode).toBe(200)
     const out = JSON.parse(res.body)
     expect(out.journal).toEqual({ dispatcher: [], memoryTrace: { notes: [], reflexes: [] } })
+  })
+})
+
+/**
+ * THE CARD ANSWERS WITH THE LAST WORD ABOUT THE TASK — the same rule the queue and the waiting
+ * list already answer by.
+ *
+ * Measured on a live run: a piece of a batch failed its gate, its owner pressed «Повторить», the
+ * repeat came back green and the piece stood for approval — and its card said «не получилось»
+ * and offered no «Одобрить» at all, because the window derives that button from the status this
+ * door sends. `/api/state` said `awaiting_approval` in the very same second. The door was
+ * picking «the first row with this id», and with a durable queue the first row of a repeated
+ * piece is the one it broke on. The owner could not accept finished work from his own window.
+ *
+ * The fake adapter answers rows in the shapes the real queue returns (id/title/lane/status/
+ * attempt/source/enqueuedAt) and is no richer than it.
+ */
+describe('server.mjs — GET /api/task/:id answers with the LAST word about the task', () => {
+  const cardFront = (rows: any[]) =>
+    createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: { list: async () => rows.slice() }, ledger: { readAttempts: () => [] } },
+    })
+
+  it('a failed first attempt beside a repeat that stands for approval → the card reads awaiting_approval', async () => {
+    const front = cardFront([
+      { id: 'B-7-1', title: 'почини сборку', lane: 'prod', status: 'failed', attempt: 1, enqueuedAt: 1000 },
+      { id: 'B-7-1', title: 'почини сборку', lane: 'prod', status: 'awaiting_approval', attempt: 2, source: 'return', enqueuedAt: 5000 },
+    ])
+    const res = await call(front, { url: '/api/task/B-7-1', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    // this pair of fields is what the window turns into the «Одобрить» button
+    expect(out.task.status).toBe('awaiting_approval')
+    expect(out.task.attempt).toBe(2)
+  })
+
+  it('a returned row beside the newer attempt → the card reads the newer one, never `returned`', async () => {
+    const front = cardFront([
+      { id: 'R-5', title: 'собери отчёт', lane: 'prod', status: 'returned', attempt: 2, enqueuedAt: 1000 },
+      { id: 'R-5', title: 'собери отчёт', lane: 'prod', status: 'queued', attempt: 3, source: 'return', enqueuedAt: 5000 },
+    ])
+    const res = await call(front, { url: '/api/task/R-5', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.task.status).toBe('queued')
+    expect(out.task.attempt).toBe(3)
+  })
+
+  it('a task of ONE row answers exactly as before, and an unknown id is still 404', async () => {
+    const front = cardFront([
+      { id: 'R-9', title: 'ночная задача', lane: 'prod', status: 'completed', attempt: 2, enqueuedAt: 1000 },
+    ])
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).task).toMatchObject({ id: 'R-9', title: 'ночная задача', lane: 'prod', status: 'completed', attempt: 2 })
+    expect((await call(front, { url: '/api/task/R-404', headers: bearer() })).statusCode).toBe(404)
+  })
+
+  it('the running attempt is synthesised from the LAST row too — a claimed repeat shows as running', async () => {
+    const front = cardFront([
+      { id: 'B-7-1', title: 'почини сборку', lane: 'prod', status: 'failed', attempt: 1, enqueuedAt: 1000 },
+      { id: 'B-7-1', title: 'почини сборку', lane: 'prod', status: 'claimed', attempt: 2, workerId: 'max-1', claimedAt: '2026-08-15T10:00:00.000Z', enqueuedAt: 5000 },
+    ])
+    const res = await call(front, { url: '/api/task/B-7-1', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.task.status).toBe('claimed')
+    expect(out.attempts).toHaveLength(1)
+    expect(out.attempts[0]).toMatchObject({ attempt: 2, workerId: 'max-1', outcome: 'running' })
   })
 })
 
