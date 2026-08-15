@@ -626,6 +626,61 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
     expect(out.ok).toBe(false)
   })
 
+  /**
+   * WHERE THE MERGE HAPPENS. The worker's branch lives in the tree of the CONNECTED project;
+   * the daemon may be launched from anywhere at all. Handing the merge the launch directory
+   * made the button answer «ok:false, merged:false» on a real machine — the branch simply did
+   * not resolve there — while the same press worked on a checkout where the two directories
+   * happened to coincide. The neighbouring doors of the very same card (the commit log, the
+   * diff) already resolve the tree this way; this one had been left behind.
+   *
+   * The assertion stands on the ARGUMENT the merge verb RECEIVED, not on the fact that it ran:
+   * a wire is proven by what travels along it.
+   */
+  it('the merge runs in the tree that holds the branch — the connected project, not the launch directory', async () => {
+    const mergeCalls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => (mergeCalls.push(o), { merged: true, testsPassed: true, branch: o.branch, receipt: { branch: o.branch, testsPassed: true } }),
+        repoDir: '/launch/dir',
+        phaseCycleDir: () => '/connected/project',
+      },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body: { taskId: 'R-81' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).merged).toBe(true)
+    expect(mergeCalls[0].branch).toBe('wt/R-81')
+    expect(mergeCalls[0].cwd).toBe('/connected/project')
+    expect(mergeCalls[0].cwd).not.toBe('/launch/dir')
+  })
+
+  it('with nothing connected the merge falls back to the served tree', async () => {
+    const mergeCalls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => (mergeCalls.push(o), { merged: true, testsPassed: true, branch: o.branch }),
+        repoDir: '/repo',
+      },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body: { taskId: 'R-82' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(mergeCalls[0].cwd).toBe('/repo')
+  })
+
   it('a bad taskId → 400', async () => {
     const front = createFrontServer({
       config: { token: TOKEN },
