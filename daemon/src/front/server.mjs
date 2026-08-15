@@ -1039,7 +1039,16 @@ async function handleApprove({ req, res, deps }) {
   const branch = `wt/${taskId}`
   let merge
   try {
-    merge = await deps.verbRunner({ branch, by: 'roster', cwd: deps.repoDir })
+    // IN THE TREE THAT HOLDS THE BRANCH — the connected project, and the served tree only when
+    // nothing is connected. The same resolution the neighbouring doors of this very card (the
+    // commit log, the diff) already use, so the card cannot read one tree and write another.
+    //
+    // This line used to hand over the directory the daemon was LAUNCHED in. A live press found
+    // it: on a machine where the launch directory was not the served tree, «Одобрить» answered
+    // ok:false with no merge at all — the worker's branch simply did not resolve there — while
+    // the identical press on a checkout where the two happened to coincide merged fine. A person
+    // saw a button that «нажалась и ничего не сделала».
+    merge = await deps.verbRunner({ branch, by: 'roster', cwd: phaseCycleDir(deps) ?? deps.repoDir })
   } catch (err) {
     merge = { merged: false, message: String((err && err.message) || 'merge failed') }
   }
