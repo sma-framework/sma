@@ -2018,9 +2018,7 @@ export async function deriveState(deps = {}) {
     { activeProject, machineId },
   )
 
-  const queuedRows = rows.filter((r) => r.status === 'queued')
-  const claimedRows = rows.filter((r) => r.status === 'claimed')
-  // ── ONE TASK, ONE LINE WAITING FOR A WORD ──
+  // ── ONE TASK, ONE LINE — IN EVERY SECTION OF THE LIST ──
   //
   // A returned task is enqueued again under its OWN id, and a durable queue keeps the row it
   // stopped on beside the new one. Filtering by status alone therefore counted a single piece
@@ -2029,13 +2027,23 @@ export async function deriveState(deps = {}) {
   // QUEUE'S OWN rule, imported rather than restated, because a second definition of «which row
   // wins» is a second answer waiting to disagree. While the task is being redone its last word
   // is «в работе» and it owes nobody a decision; once it stands for approval again it is one
-  // line. The counter below reads the length of this very list, so it is fixed by the same move.
+  // line. The counters below read the lengths of these very lists, so they are fixed by the
+  // same move.
   //
-  // The queued/claimed/done filters are deliberately NOT folded: their lists are the showcase
-  // of other states, the defect measured is in the waiting count, and widening the edit would
-  // change screens nobody asked about.
-  const awaitingRows = latestRowPerId(rows).filter((r) => r.status === 'awaiting_approval')
-  const doneRows = rows.filter((r) => r.status === 'completed' || r.status === 'failed')
+  // THE FOLD USED TO STOP AT THE WAITING LIST, with the reason that the defect had been
+  // measured only in the waiting count and that widening the edit would change screens nobody
+  // asked about. A live press measured the same defect one screen up and retired that reason:
+  // a task sent back three times drew FOUR lines on the top-level list — three closed
+  // approaches plus the live one — while its own card honestly showed one task on its fourth
+  // approach. The length of that list is how a person measures the size of his night, so it has
+  // to count TASKS. Every section now reads the same folded rows, and a task stands in the
+  // section of its LAST word: queued while it waits for a worker, «в работе» while one holds it,
+  // «сделано» only once nothing newer exists.
+  const foldedRows = latestRowPerId(rows)
+  const queuedRows = foldedRows.filter((r) => r.status === 'queued')
+  const claimedRows = foldedRows.filter((r) => r.status === 'claimed')
+  const awaitingRows = foldedRows.filter((r) => r.status === 'awaiting_approval')
+  const doneRows = foldedRows.filter((r) => r.status === 'completed' || r.status === 'failed')
 
   // ── ONE task row, named field by field. An adapter row may carry anything at all; a
   // payload carries only what a screen was promised, so the pick is explicit and both
