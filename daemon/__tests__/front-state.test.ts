@@ -1104,7 +1104,9 @@ describe('deriveState — every section of the list speaks about tasks, not abou
     ]
     const payload = await deriveState({ adapter: mkAdapter(rows), windows: makeWindows({}), config, clock: () => NOW })
     expect(payload.done.map((d: any) => d.id)).toEqual(['BL-shut'])
-    expect(payload.done[0].status).toBe('completed') // the LAST word, not the first
+    // the LAST word, not the first: the row that stands is the completed one, so the line
+    // carries no red card at all (a done row states failure by carrying `failed`)
+    expect(payload.done[0].failed).toBeUndefined()
   })
 
   it('two different tasks are still two lines — folding is per id, never a dedup of the list', async () => {
