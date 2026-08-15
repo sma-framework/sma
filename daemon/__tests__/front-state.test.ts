@@ -1054,6 +1054,70 @@ describe('deriveState — a returned task is ONE task, in every point of the cyc
   })
 })
 
+// ── ОДНА ЗАДАЧА — ОДНА СТРОКА ВО ВСЕХ СПИСКАХ ─────────────────────────────────────────────
+//
+// The waiting list was folded first because that is where the defect was measured. A live
+// press then measured the SAME defect one screen up: a task the owner had sent back three
+// times drew FOUR lines on the top-level list — three closed approaches plus the live one —
+// while the card honestly showed a single task on its fourth approach. A list whose length is
+// how a person measures the size of his night must count TASKS, not approaches. So all four
+// sections read the rows already folded to the last word about each id, by the queue's own
+// rule and nothing restated.
+
+describe('deriveState — every section of the list speaks about tasks, not about approaches', () => {
+  it('three closed approaches beside a live one → ONE line, and it is the live one', async () => {
+    const rows = [
+      { id: 'BL-again', status: 'completed', lane: 'prod', title: 'собери отчёт', priority: 0, enqueuedAt: NOW - 9 * HOUR, completedAt: NOW - 8 * HOUR },
+      { id: 'BL-again', status: 'completed', lane: 'prod', title: 'собери отчёт', priority: 0, enqueuedAt: NOW - 7 * HOUR, completedAt: NOW - 6 * HOUR },
+      { id: 'BL-again', status: 'completed', lane: 'prod', title: 'собери отчёт', priority: 0, enqueuedAt: NOW - 5 * HOUR, completedAt: NOW - 4 * HOUR },
+      { id: 'BL-again', status: 'queued', lane: 'prod', title: 'собери отчёт', priority: 0, source: 'return', enqueuedAt: NOW - HOUR },
+    ]
+    const payload = await deriveState({ adapter: mkAdapter(rows), windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.queue.map((q: any) => q.id)).toEqual(['BL-again'])
+    expect(payload.done.map((d: any) => d.id)).toEqual([])
+    // the whole point, stated as the person sees it: the task stands on the screen ONCE
+    const everywhere = [...payload.queue, ...payload.awaiting, ...payload.done].filter((r: any) => r.id === 'BL-again')
+    expect(everywhere).toHaveLength(1)
+    expect(payload.kpis.queued).toBe(1)
+  })
+
+  it('closed approaches beside a running one → one line, «в работе», and nothing in «сделано»', async () => {
+    const rows = [
+      { id: 'BL-run', status: 'completed', lane: 'prod', title: 'ночная', priority: 0, enqueuedAt: NOW - 9 * HOUR, completedAt: NOW - 8 * HOUR },
+      { id: 'BL-run', status: 'failed', lane: 'prod', title: 'ночная', priority: 0, enqueuedAt: NOW - 7 * HOUR, completedAt: NOW - 6 * HOUR },
+      { id: 'BL-run', status: 'claimed', lane: 'prod', title: 'ночная', priority: 0, workerId: 'max-1', enqueuedAt: NOW - HOUR, claimedAt: NOW - HOUR, leaseRenewedAt: NOW - 5000 },
+    ]
+    const payload = await deriveState({ adapter: mkAdapter(rows), windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.done.map((d: any) => d.id)).toEqual([])
+    expect(payload.queue).toEqual([])
+    // the roster is the only list that names a running task — and it names it once
+    const holders = payload.workers.filter((w: any) => w.taskId === 'BL-run')
+    expect(holders).toHaveLength(1)
+    expect(payload.kpis.workersBusy).toBe(1)
+  })
+
+  it('a task closed for good, however many approaches it took, is exactly one line in «сделано»', async () => {
+    const rows = [
+      { id: 'BL-shut', status: 'failed', lane: 'prod', title: 'трудная', priority: 0, enqueuedAt: NOW - 9 * HOUR, completedAt: NOW - 8 * HOUR },
+      { id: 'BL-shut', status: 'failed', lane: 'prod', title: 'трудная', priority: 0, enqueuedAt: NOW - 7 * HOUR, completedAt: NOW - 6 * HOUR },
+      { id: 'BL-shut', status: 'completed', lane: 'prod', title: 'трудная', priority: 0, enqueuedAt: NOW - 3 * HOUR, completedAt: NOW - 2 * HOUR },
+    ]
+    const payload = await deriveState({ adapter: mkAdapter(rows), windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.done.map((d: any) => d.id)).toEqual(['BL-shut'])
+    expect(payload.done[0].status).toBe('completed') // the LAST word, not the first
+  })
+
+  it('two different tasks are still two lines — folding is per id, never a dedup of the list', async () => {
+    const rows = [
+      { id: 'BL-one', status: 'queued', lane: 'prod', title: 'первая', priority: 0, enqueuedAt: NOW - 2 * HOUR },
+      { id: 'BL-two', status: 'queued', lane: 'prod', title: 'вторая', priority: 0, enqueuedAt: NOW - HOUR },
+    ]
+    const payload = await deriveState({ adapter: mkAdapter(rows), windows: makeWindows({}), config, clock: () => NOW })
+    expect(payload.queue.map((q: any) => q.id)).toEqual(['BL-one', 'BL-two'])
+    expect(payload.kpis.queued).toBe(2)
+  })
+})
+
 // ── the aggregator seam — deriveState FILLS the same shape, never redefines it ──
 
 describe('deriveState — the federation aggregator seam', () => {
