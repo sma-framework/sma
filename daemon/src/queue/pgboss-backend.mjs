@@ -710,11 +710,26 @@ export function createPgBossQueue({
       )
       for (const item of rows) {
         if (!item || item.batchId !== batchId || isBatchParent(item)) continue
-        if (item.status !== 'queued') continue
-        const job = await resolveQueuedJob(item.id)
+        // EVERY PIECE STILL IN FLIGHT, waiting or under way. The piece already taken used to be
+        // skipped here, and it then stayed «в работе» for good: an abandoned assembly is never
+        // served again, so nothing ever finished it, no column of the board offered a person a
+        // way to close it, and the lease could only ever hand it back to a queue nobody is
+        // served from. pg-boss cancels anything short of completed (`state < 'completed'` in
+        // its own plan), which is exactly the two states meant here.
+        if (item.status !== 'queued' && item.status !== 'claimed') continue
+        const job = item.status === 'claimed' ? await resolveActiveJob(item.id) : await resolveQueuedJob(item.id)
         if (!job) continue
         try {
           await bossInstance.cancel(job.name, job.id)
+          // AND THE REASON WITH IT. `cancelled` is a state, not a word: every reader of a
+          // finished row takes its cause from the job's output, so a cancellation that wrote
+          // nothing there produced a red row with «причина не записана» on the card. A human
+          // stopped this, and that is what the row now says — in both backends alike.
+          await runSql(
+            `UPDATE pgboss.job SET output = coalesce(output, '{}'::jsonb) || jsonb_build_object('reason', $2::text)
+              WHERE id = $1`,
+            [job.id, 'manual'],
+          )
         } catch (err) {
           log(`batch piece ${item.id} not taken out of the queue: ${maskError(err)}`)
         }

@@ -1075,9 +1075,16 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
    *
    * `skip` names the piece he chose to leave out: it is remembered on the request row, stops
    * holding the assembly, and the next piece becomes the turn. `cancel` abandons the assembly:
-   * the word is remembered AND the pieces nobody has started are taken out of the queue — a
-   * cancelled batch whose pieces went on sitting in «в очереди» would be a counter that never
-   * goes down. Work that already produced is never touched: what is closed stays closed.
+   * the word is remembered AND every piece still IN FLIGHT is closed — the ones nobody has
+   * started, because a cancelled batch whose pieces went on sitting in «в очереди» would be a
+   * counter that never goes down, and THE ONE ALREADY TAKEN, because a piece left «в работе»
+   * on an abandoned assembly is worse than a counter: nothing on the board can ever close it.
+   * It is not waiting for a person (that column is for work that asks a question), the owner
+   * has no button for it, and the lease only ever hands it back to a queue nobody is served
+   * from. The reason both get is the true one — a human stopped this.
+   *
+   * Work that already produced is never touched, and neither is work already waiting for a
+   * person: the first is closed, and the second has a door of its own to close by.
    */
   async function resolveBatch(batchId, { skip, cancel } = {}) {
     const rec = [...records.values()].find(
@@ -1094,9 +1101,12 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     if (cancel === true) {
       for (const r of records.values()) {
         if (r.task.batchId !== batchId || isBatchParent(r.task)) continue
-        if (r.status !== 'queued') continue
+        if (r.status !== 'queued' && r.status !== 'claimed') continue
         r.status = 'failed'
         r.failure_reason = 'manual'
+        // Nothing else is cleared, and nothing needs to be: the liveness sweep asks for
+        // `claimed` rows only, so a closed piece is out of its reach — while the clock of the
+        // attempt that was under way stays on the row, where a person can still read it.
       }
     }
     return true
