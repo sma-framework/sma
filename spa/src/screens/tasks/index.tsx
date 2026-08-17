@@ -114,6 +114,28 @@ export function Screen() {
 
   const counts = countUnits(units)
 
+  /**
+   * ОТВЕТИЛО ЛИ ЧТЕНИЕ СОСТОЯНИЯ ХОТЬ РАЗ — и до этого мгновения экран не утверждает о работе
+   * НИЧЕГО.
+   *
+   * Пустой список у окна, которое ещё не спросило, и пустой список у окна, которому ответили
+   * «пусто», выглядели одинаково: «Задач нет. Поставьте задачу.» — приговор, вынесенный до
+   * первого ответа двери. Живая очередь при этом стояла рядом, и человек читал про свою работу
+   * заявление, которого никто не измерял. Это тот же класс, что «нарисованное число», только в
+   * словах: оценка выдана за факт.
+   *
+   * `data === undefined` — это ровно «ответа ещё не было» у этого чтения (первый ответ данные
+   * уже не отпускает, поэтому мигания между опросами здесь быть не может). Пока его нет, экран
+   * говорит, что он читает; счётчики тоже молчат — ноль в них был бы измерением, которого не
+   * делали.
+   *
+   * СПРОШЕНО ДВОЕ, И ЖДУТ ОБОИХ: список — проекция ДВУХ чтений, состояния и указателя фаз, и
+   * «задач нет», сказанное до ответа второго, — та же преждевременная оценка. Отказ двери фаз
+   * ожиданием не считается: у него свой ответ внизу экрана, и держать из-за него весь список в
+   * «читаю» значило бы не показать задачи, которые уже прочитаны.
+   */
+  const answered = data !== undefined && (phaseIndex.data !== undefined || phaseIndex.isError)
+
   /** The band: the awaiting tasks and the phases that parked a question, longest wait first. */
   const inbox: InboxItem[] = useMemo(() => {
     const waitingTasks = (data?.awaiting ?? []).filter(
@@ -307,20 +329,33 @@ export function Screen() {
 
         <div className="mb-2.5 flex items-baseline gap-3">
           <span className="text-[13px] font-semibold text-tx">Задачи · верхний уровень</span>
-          <div className="flex gap-3">
-            <Counter n={counts.run} label="в работе" tone="text-blue" />
-            <Counter n={counts.dec} label="ждут решения" tone="text-warn-tx" />
-            <Counter n={counts.ok} label="готово" tone="text-ok-tx" />
-            <Counter n={counts.wait} label="не начаты" tone="text-tx3" />
-            {counts.fail > 0 ? <Counter n={counts.fail} label="не получилось" tone="text-err-tx" /> : null}
-            {/* Слова владельца показываются, только когда они сказаны: счётчик «отменено 0»
-                рассказывал бы о решении, которого никто не принимал. */}
-            {counts.skip > 0 ? <Counter n={counts.skip} label="пропущено" tone="text-tx3" /> : null}
-            {counts.off > 0 ? <Counter n={counts.off} label="отменено" tone="text-tx3" /> : null}
-          </div>
+          {answered ? (
+            <div className="flex gap-3">
+              <Counter n={counts.run} label="в работе" tone="text-blue" />
+              <Counter n={counts.dec} label="ждут решения" tone="text-warn-tx" />
+              <Counter n={counts.ok} label="готово" tone="text-ok-tx" />
+              <Counter n={counts.wait} label="не начаты" tone="text-tx3" />
+              {counts.fail > 0 ? <Counter n={counts.fail} label="не получилось" tone="text-err-tx" /> : null}
+              {/* Слова владельца показываются, только когда они сказаны: счётчик «отменено 0»
+                  рассказывал бы о решении, которого никто не принимал. */}
+              {counts.skip > 0 ? <Counter n={counts.skip} label="пропущено" tone="text-tx3" /> : null}
+              {counts.off > 0 ? <Counter n={counts.off} label="отменено" tone="text-tx3" /> : null}
+            </div>
+          ) : (
+            <span className="text-[11.5px] text-tx3">считаю…</span>
+          )}
         </div>
 
-        {units.length === 0 ? (
+        {units.length === 0 && !answered ? (
+          <div className="flex flex-col items-center justify-center gap-2 rounded-[10px] border border-bd bg-card py-16">
+            <p className="m-0 text-[13px] text-tx2">
+              {state.isError ? 'Список не прочитан — дверь состояния не ответила.' : 'Читаю список задач…'}
+            </p>
+            <p className="m-0 text-[11.5px] text-tx3">
+              Пусто здесь или нет — пока неизвестно: об этом скажет первый ответ.
+            </p>
+          </div>
+        ) : units.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-4 rounded-[10px] border border-bd bg-card py-16">
             <p className="m-0 text-[13px] text-tx2">Задач нет. Поставьте задачу.</p>
             <button
