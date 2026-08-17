@@ -36,7 +36,7 @@ flowchart LR
 | V5.3 | Memory governance, hardened fleet | ✅ **shipped** (v5.3.0, patched v5.3.1) — the external-validation pilots carry forward |
 | V5.4 | The whole working day without the terminal | ✅ **shipped** (v5.4.0, patched v5.4.1–v5.4.3) — the proving run is live operation after the release |
 | V5.5 | The engine: steering a live session | ✅ **shipped** (v5.5.0, patched v5.5.1–v5.5.2) — the patch line is where the engine's parts were finally connected to one another |
-| **V5.6** | **The taskboard, and numbers that do not lie** | 🔄 **in the repository, current** — not published to npm while the engine settles |
+| **V5.6** | **The taskboard, and numbers that do not lie** | ✅ **shipped** (v5.6.0, in the repository) — not published to npm while the engine settles |
 
 ## V5 — Orchestration: a 24/7 worker fleet ✅
 
@@ -169,7 +169,7 @@ Every computed artifact must be proven to reach the thing that consumes it, by a
 asserts the wire — not the calculation — and by an end-to-end run over the whole route rather
 than piece by piece.
 
-## V5.6 — The taskboard, and numbers that do not lie 🔄
+## V5.6 — The taskboard, and numbers that do not lie ✅ (v5.6.0)
 
 In the repository, deliberately not published while the engine settles.
 
