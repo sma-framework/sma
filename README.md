@@ -146,7 +146,7 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 
 The V5 line shipped as a release every few days. In one breath: V5 built the fleet and its engine; V5.1 put the window in front of it; V5.2 made the memory layer measurable; V5.3 made it governable and gave the fleet a state machine its running code consults; V5.4 turned the window into a place you can work from all day, and taught the system that **an answer is also work**; V5.5 built the wheel — steering a live session, with a correction written to disk before anything is killed. Each of those releases, with its fix list and what it deliberately did not claim, is in [docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release).
 
-**What this does not claim.** This is the state of the repository, not a published release — the npm listing is deliberately behind while the engine settles, and the version badge above is not moved by this work.
+**What this does not claim.** This release lives in the repository (tag v5.6.0); the npm listing is deliberately behind while the engine settles — installing from npm today gives you the last published version, not this page.
 
 ## The window — the app the daemon serves
 
