@@ -375,9 +375,45 @@ function answerOnlyGate(deps, config, task, branch, workDir, noteWritten) {
 const MARKER_RE = /^\s*(NEEDS_DECISION|MISSING_ACCESS)\s*:/
 
 /**
- * classifyFailure({spawnError, exitCode, receipt, workerMarker}) → a FAIL_REASONS code.
- * Pure. Maps a non-completing outcome onto the failure taxonomy, sharpest signal first:
+ * providerAbortOf(lines) → `{status, reason, said}` when the PROVIDER ended this run, else null.
+ *
+ * WHY IT IS READ AT ALL. A live attempt was killed by a 529 «Overloaded» on the vendor's side
+ * and reached the window as «нет записки о подходе — попытка не объяснена». The note could not
+ * exist: the worker was cut off in the middle of writing it. The window named a symptom and
+ * blamed the worker for an outage he had no part in — and the two facts ask a person for
+ * opposite things, «подождите и нажмите ещё раз» against «идите и чините».
+ *
+ * WHAT COUNTS AS THE PROVIDER'S WORD, and this boundary is the whole design: ONLY the CLI's
+ * own TERMINAL frame — a `result` naming `terminal_reason: 'api_error'` or carrying an
+ * `api_error_status`. NOT the worker's speech. A worker debugging somebody else's outage says
+ * «API Error: 529 Overloaded» out loud, and an attempt declared broken for pronouncing those
+ * words would be a diagnosis by eavesdropping — worse than the fault it replaces. Text
+ * matching over the stream is deliberately absent for that reason.
+ *
+ * @param {string[]} lines — the attempt's stdout, as collected
+ * @returns {{status:number|null, reason:string|null, said:string|null}|null}
+ */
+export function providerAbortOf(lines) {
+  if (!Array.isArray(lines)) return null
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (typeof line !== 'string' || !line.includes('result')) continue
+    const { event, frame } = parseClaudeFrame(line)
+    if (!event || event.type !== 'result') continue
+    const status = Number.isFinite(event.apiErrorStatus) ? event.apiErrorStatus : null
+    if (event.terminalReason !== 'api_error' && status === null) continue
+    const said = frame && typeof frame.result === 'string' ? frame.result.slice(0, 200) : null
+    return { status, reason: event.terminalReason ?? 'api_error', said }
+  }
+  return null
+}
+
+/**
+ * classifyFailure({spawnError, providerAbort, exitCode, receipt, workerMarker}) → a
+ * FAIL_REASONS code. Pure. Maps a non-completing outcome onto the failure taxonomy, sharpest
+ * signal first:
  *   spawnError                     → 'runtime_offline'  (the process never ran)
+ *   provider abort                 → 'provider_error'   (the run the worker did not end)
  *   worker marker NEEDS_DECISION   → 'needs_decision'   (a call only a human can make)
  *   worker marker MISSING_ACCESS   → 'missing_access'   (credentials/permissions absent)
  *   red reverify receipt           → 'tests_red'        (targeted tests failed)
@@ -389,11 +425,17 @@ const MARKER_RE = /^\s*(NEEDS_DECISION|MISSING_ACCESS)\s*:/
  * missing-RECEIPT law is never weakened by the missing-NOTE law: an attempt with neither
  * still reads 'no_receipt' (the older, sharper omission wins).
  *
- * @param {{spawnError?:any, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
+ * A PROVIDER ABORT SITS SECOND, above every judgement of what the run left behind, and that
+ * position is the point: when the vendor ended the run mid-word, a missing note, a missing
+ * receipt and a red re-run are all CONSEQUENCES of the cut. There is nothing to judge, so
+ * nothing is judged. Only a run that never started outranks it — there was nothing to cut.
+ *
+ * @param {{spawnError?:any, providerAbort?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, exitCode, receipt, workerMarker, journalComplete } = {}) {
+export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, workerMarker, journalComplete } = {}) {
   if (spawnError) return 'runtime_offline'
+  if (providerAbort) return 'provider_error'
   if (workerMarker === 'NEEDS_DECISION') return 'needs_decision'
   if (workerMarker === 'MISSING_ACCESS') return 'missing_access'
   if (receipt && receipt.verdict === 'red') return 'tests_red'
@@ -1575,6 +1617,10 @@ export async function tick(deps = {}) {
       if (deps.attemptTurns) deps.attemptTurns.done(task.id)
 
       const marker = detectMarker(streamLines)
+      // WHO ENDED THIS RUN — read off the CLI's own terminal frame, before anything judges
+      // what the run left behind. A cut by the provider makes every such judgement a
+      // statement about the outage rather than about the work.
+      const providerAbort = providerAbortOf(streamLines)
 
       // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
       // fate. A refused attempt still spent the tokens, so the book is written for every
@@ -1588,11 +1634,25 @@ export async function tick(deps = {}) {
       const note = parseApproachNote(approachLinesFrom(streamLines))
       const noteWritten = recordApproachNote(deps, task, note)
 
-      // An infra failure or a worker marker is the SHARPER signal and wins over either gate
-      // below: a crashed attempt must not complete on a document that was already there.
-      const infraReason = exit.spawnError || marker
-        ? classifyFailure({ spawnError: exit.spawnError, exitCode: exit.code, workerMarker: marker })
+      // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
+      // over either gate below: a crashed attempt must not complete on a document that was
+      // already there — and neither may an attempt the vendor cut off mid-word.
+      const infraReason = exit.spawnError || providerAbort || marker
+        ? classifyFailure({ spawnError: exit.spawnError, providerAbort, exitCode: exit.code, workerMarker: marker })
         : null
+      // NEVER SILENT: an outage of the vendor's is a fact about the DAY, not about this task,
+      // and the operator's log is where a person looks when three attempts died in a row.
+      if (providerAbort) {
+        writeLog(deps, {
+          type: 'task.provider_abort',
+          taskId: task.id,
+          reason: 'provider_error',
+          detail:
+            `провайдер оборвал прогон (${providerAbort.reason}` +
+            `${providerAbort.status ? ` ${providerAbort.status}` : ''})` +
+            `${providerAbort.said ? `: ${providerAbort.said}` : ''}`,
+        })
+      }
 
       // (7a) A PARKED QUESTION IS A SUCCESSFUL ROUND — and it is asked BEFORE either gate.
       // A discussion round that stopped on a question, and an execute stage that reached a
@@ -1763,8 +1823,13 @@ export async function tick(deps = {}) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
         result.completed = task.id
       } else {
+        // WHO ENDED THE RUN rides with the rest. The door to «done» above is untouched: an
+        // attempt whose branch really did re-verify green AND left its note is finished work
+        // whoever ended the session, and refusing it would throw away work that certified
+        // itself. What changes is the NAME of a refusal — the outage is called an outage.
         const reason = classifyFailure({
           spawnError: exit.spawnError,
+          providerAbort,
           exitCode: exit.code,
           receipt,
           workerMarker: marker,
@@ -1938,6 +2003,25 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   if (exit.spawnError) {
     await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
     result.failed = { taskId: task.id, reason: 'runtime_offline' }
+    return result
+  }
+
+  // WHO ENDED THE RUN — asked here for the same reason the code path asks it, and BEFORE the
+  // draft gate below: a session the vendor cut off leaves no committed draft, and failing it
+  // «ошибка работника» would blame this lane's worker for an outage exactly as the other lane
+  // used to. A forge attempt is an attempt; it gets the same honest word.
+  const forgeAbort = providerAbortOf(streamLines)
+  if (forgeAbort) {
+    writeLog(deps, {
+      type: 'task.provider_abort',
+      taskId: task.id,
+      reason: 'provider_error',
+      detail:
+        `провайдер оборвал прогон (${forgeAbort.reason}${forgeAbort.status ? ` ${forgeAbort.status}` : ''})` +
+        `${forgeAbort.said ? `: ${forgeAbort.said}` : ''}`,
+    })
+    await failTask(deps, task, { reason: 'provider_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    result.failed = { taskId: task.id, reason: 'provider_error' }
     return result
   }
 

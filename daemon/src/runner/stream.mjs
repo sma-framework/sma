@@ -146,6 +146,14 @@ function eventFromFrame(obj) {
       modelUsage: obj.modelUsage ?? obj.model_usage ?? null,
       sessionId: strOrNull(obj.session_id ?? obj.sessionId),
       isError: obj.is_error === true,
+      // HOW THE RUN ENDED, IN THE CLI'S OWN WORD. These two fields are what a run the WORKER
+      // did not end looks like: the vendor refused (an overload, a server error) and the CLI
+      // stopped. Until they were read, the only observable was `is_error`, identical for «the
+      // provider fell over mid-word» and «the work itself ended badly» — and a screen fed the
+      // first one blamed the worker for the vendor's outage. Null on every ordinary result,
+      // which is the honest reading: an untroubled run states nothing about a terminal cause.
+      terminalReason: strOrNull(obj.terminal_reason ?? obj.terminalReason),
+      apiErrorStatus: numOrNull(obj.api_error_status ?? obj.apiErrorStatus),
     }
   }
 
