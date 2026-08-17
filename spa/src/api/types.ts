@@ -270,8 +270,17 @@ export interface DoneRow {
   branch: string
   commits: string[]
   attempts: number
-  /** What was promised when the task was accepted. Absent when nothing was promised. */
-  acceptance?: string
+  /**
+   * What was promised when the task was accepted. Absent when nothing was promised.
+   *
+   * ОДНО ПОЛЕ, ДВА ВИДА — ровно как у карточки задачи, потому что это ОНО ЖЕ: дверь отдаёт
+   * `acceptance` строки очереди как есть, а очередь хранит и одну строку, и список признаков.
+   * Здесь стояло `string`, и это была неправда, которой проверяющий типов не мог возразить:
+   * тип обещал строку, экран подставлял значение в текст, а приезжал массив — и три условия
+   * приёмки склеивались в одно нечитаемое предложение. Читается поле ровно одним путём —
+   * `acceptanceList` из shell/format.
+   */
+  acceptance?: string | string[]
   /** Present only on a task that did not make it. */
   failed?: FailureSummary
 }

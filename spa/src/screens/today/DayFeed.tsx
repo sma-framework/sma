@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { openScreen } from '../../shell/navigation'
 import type { DoneRow, QueueRow, ReceiptSummary } from '../../api/types'
 import {
+  acceptanceList,
   accentFor,
   attemptsLabel,
   clockLabel,
@@ -134,6 +135,47 @@ function FailedCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean
   )
 }
 
+/**
+ * ЧТО БЫЛО ОБЕЩАНО — по одному пункту на строку, потому что пунктов может быть несколько.
+ *
+ * Обещанное подставлялось в текст как есть, а приходит оно списком, — и список, подставленный
+ * в текст, склеивается вплотную: «…файл существуетВ нём названа дата…». Три отдельных условия
+ * приёмки читались одним предложением без единого пробела на границах, то есть не читались
+ * вовсе. Один пункт — одна строка с точкой перед ней; когда пункт ровно один, точка не
+ * ставится: маркер списка из одного элемента обещает список, которого нет.
+ */
+function Promised({ acceptance }: { acceptance: string | string[] | null | undefined }) {
+  const items = acceptanceList(acceptance)
+  if (items.length === 0) return null
+  if (items.length === 1) {
+    return (
+      <div className="mt-2.5 text-[12.5px] leading-[1.55] text-tx2">
+        <span className="font-semibold text-tx">Обещано: </span>
+        {items[0]}
+      </div>
+    )
+  }
+  return (
+    <div className="mt-2.5 text-[12.5px] leading-[1.55] text-tx2">
+      <div className="font-semibold text-tx">Обещано:</div>
+      {/*
+        Строками, а не тегом списка: карточка целиком — это КНОПКА, и список внутри кнопки не
+        разрешён разметкой. Границу пункта здесь держит перенос строки и точка перед ним.
+      */}
+      <div className="mt-1 flex flex-col gap-1">
+        {items.map((text, i) => (
+          <div key={`${i}-${text.slice(0, 16)}`} className="flex gap-2">
+            <span aria-hidden className="flex-none text-tx3">
+              ·
+            </span>
+            <span className="min-w-0">{text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function DoneCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; onOpen: (id: string) => void }) {
   return (
     <button type="button" onClick={() => onOpen(row.id)} className={cardClass(selected)}>
@@ -147,12 +189,7 @@ function DoneCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; 
         </span>
         <span className="flex-none text-[11.5px] text-tx3 tabular-nums">{clockLabel(row.finishedAt)}</span>
       </div>
-      {row.acceptance ? (
-        <div className="mt-2.5 text-[12.5px] leading-[1.55] text-tx2">
-          <span className="font-semibold text-tx">Обещано: </span>
-          {row.acceptance}
-        </div>
-      ) : null}
+      <Promised acceptance={row.acceptance} />
       <div className="mt-2.5">
         <CheckPills receipt={row.receipt} />
       </div>

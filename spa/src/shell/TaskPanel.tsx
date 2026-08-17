@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react'
 import { useApprove, useReturnTask, useTaskQuery } from '../api/queries'
 import type { TaskAttempt } from '../api/types'
 import { AttemptLog } from './AttemptLog'
-import { approvalRefusal, attemptsLabel, clockLabel, refusalWords, statusTone, statusWord } from './format'
+import {
+  acceptanceList,
+  approvalRefusal,
+  attemptsLabel,
+  clockLabel,
+  refusalWords,
+  statusTone,
+  statusWord,
+} from './format'
 import { openScreen } from './navigation'
 
 /**
@@ -196,9 +204,25 @@ export function TaskPanel({
 
           <div>
             <div className="mb-2 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">Обещано</div>
-            <p className="m-0 text-[12.5px] leading-[1.6] text-tx2">
-              {task?.acceptance ?? 'Ничего не обещано — задача поставлена без условий приёмки.'}
-            </p>
+            {/*
+              ПО ОДНОМУ ПУНКТУ НА АБЗАЦ — обещанное приходит списком, а подставленное в текст как
+              есть склеивалось вплотную и читалось одним предложением. Ровно так же панель уже
+              показывает «что просили поправить», абзацем на замечание: одна привычка чтения на
+              обе колонки.
+            */}
+            {acceptanceList(task?.acceptance).length === 0 ? (
+              <p className="m-0 text-[12.5px] leading-[1.6] text-tx2">
+                Ничего не обещано — задача поставлена без условий приёмки.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {acceptanceList(task?.acceptance).map((text, i) => (
+                  <p key={`${i}-${text.slice(0, 16)}`} className="m-0 text-[12.5px] leading-[1.6] text-tx2">
+                    {text}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
 
           {returnedNotes.length > 0 ? (

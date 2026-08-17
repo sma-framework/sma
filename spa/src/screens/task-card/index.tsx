@@ -19,6 +19,7 @@ import type {
   TaskStatus,
 } from '../../api/types'
 import {
+  acceptanceList,
   accentFor,
   approvalRefusal,
   attemptsLabel,
@@ -234,20 +235,6 @@ function Column({
       {footnote ? <p className="m-0 mt-2.5 text-[10.5px] leading-[1.4] text-tx3">{footnote}</p> : null}
     </section>
   )
-}
-
-/**
- * ПРИЗНАКИ УСПЕХА — СПИСКОМ, а не абзацем.
- *
- * Сегодня дверь отдаёт их одной строкой, и эта строка — РОВНО ОДИН пункт: резать её на части
- * по точкам и запятым значило бы расставить границы, которых автор не ставил, и отчитаться
- * потом по выдуманному пункту. В тот день, когда дверь начнёт отдавать список, он ляжет сюда
- * без единой правки карточки — ветка массива написана заранее именно ради этого.
- */
-function acceptanceList(acceptance: string | string[] | null | undefined): string[] {
-  if (Array.isArray(acceptance)) return acceptance.map((s) => s.trim()).filter((s) => s.length > 0)
-  const one = (acceptance ?? '').trim()
-  return one.length > 0 ? [one] : []
 }
 
 /**
