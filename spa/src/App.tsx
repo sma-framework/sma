@@ -33,8 +33,10 @@ function Window() {
   if (onboarding.isLoading) return null
   if (needsFirstRun) {
     const { Screen } = screenById('first-run')
+    // `min-h-full`, а не `min-h-screen`: страница вбок не едет, содержимое возит `#root`
+    // (tokens.css), и рама в целый экран высотой вылезала бы из него на толщину полосы.
     return (
-      <div className="flex min-h-screen flex-col">
+      <div className="flex min-h-full flex-col">
         <Screen />
       </div>
     )
