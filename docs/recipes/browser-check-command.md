@@ -167,8 +167,18 @@ Run through this before hashing a UI check:
 - **No shipped script, no config, no default.** The check belongs to your repository,
   next to your selectors and your fixtures.
 - **No scoring of front-end quality.** Turning DOM, accessibility, and console signals
-  into a graded arena for front-end tasks is a later, separate thing (V5.2). This recipe
-  covers one question only: can a UI claim become a re-runnable receipt.
+  into a graded arena for front-end tasks is a separate thing. This recipe covers one
+  question only: can a UI claim become a re-runnable receipt.
+
+> **Since this recipe was written, SMA ships one implementation of it** —
+> `scripts/sma/ui-drive.mjs`, the engine behind the `sma-ui-qa` reviewer. It obeys the same
+> contract: a command that writes a receipt and exits non-zero on a blocking finding, with
+> the browser driver **resolved at run time and never installed on your behalf**
+> (`SMA_UI_DRIVER` points at one you already have). It does not replace the recipe: your
+> selectors, your fixtures and your product's own claims still belong in your repository.
+> And it holds the rule that matters here — **a run that did not happen is never a pass**:
+> with no driver it exits 3 and says `NOT RUN`, rather than returning an empty finding list
+> that reads as clean.
 - **A self-removal condition.** If a platform ships genuinely replayable browser checks —
   a recorded session that re-derives its own verdict byte for byte — this recipe shrinks
   to one line pointing at it. A bridge is supposed to become unnecessary.

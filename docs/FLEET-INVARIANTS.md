@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every invariant below names the module function that enforces it and the test case that proves it. An invariant with no named test is not in §3 — it is in §5, as an intention. |
-| Document version | 1.0 |
-| Date | 2026-08-04 |
+| Document version | 1.3 (see §6 for what each revision changed) |
+| Date | 2026-08-04, last revised 2026-08-17 |
 | Applies to | the durable task queue of one installation: the fleet state machine, the capability envelope, the attempt ledger and the queue backend beneath them |
 | Companion documents | [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — the same treatment for the memory corpus · [`SPEC.md`](SPEC.md) — what the product is |
 
@@ -316,10 +316,23 @@ as well:
   statement, not an omission: a worker's provider traffic and credentials belong
   to the account the harness spawns it under, not to the task.
 
-**What would close the remaining half:** a bound the worker cannot step outside
-once it is running — the envelope projected onto the session's own permission
-surface at spawn time, rather than checked once at the door. That is a change to
-how a worker is launched, not to this module.
+**Updated: half of that remaining half has since closed.** The envelope's
+`allowedTools` is now **handed to the launched process** as its permission grant,
+rather than only being checked at the door and then forgotten — the tool list the
+lane declared is the tool list the session is given, and nothing beyond it. This
+was found the hard way: the list had been computed, hashed into every attempt and
+written to the journal since the layer was built, and never passed to the child
+process at all — so a non-interactive session, with nobody to confirm an action,
+refused every edit it tried to make. The fix widens no policy; it delivers the one
+that was already declared.
+
+**What is still open, stated exactly.** Delivery covers the tool dimension and
+only that. The rest of the worker's reach inside its session is still the
+checkout's own `.claude/settings.json` in the worktree it was given, and a shell
+in the granted list is still a shell — the composition of five things named above,
+not the envelope alone, is what holds invariant two. `writePaths`,
+`networkDestinations` and `secretScopes` remain declarations the daemon consults,
+not bounds the running session is projected onto.
 
 ### 5.2 The drills prove logic, not durability
 
@@ -470,4 +483,5 @@ transition it already performs.
 |---|---|---|
 | 1.0 | 2026-08-04 | First edition. The seven invariants, the eleven states and the transition contract shape, the at-least-once promise, and seven non-goals — written when the property suite and the drills that prove them landed. |
 | 1.1 | 2026-08-05 | §5.8 added after review: the state machine and the attempt stamp are tested formal references with no production consumer yet — §3.1/§3.7's «Enforced by `applyTransition`» now reads through that lens, stated instead of implied. |
+| 1.3 | 2026-08-17 | §5.1 updated: the envelope's `allowedTools` is now delivered to the launched process as its permission grant, not merely consulted before the spawn — the gap that had made every worker unable to edit a file. The non-goal shrinks to the dimensions still not projected onto a running session (`writePaths`, `networkDestinations`, `secretScopes`), and a shell in the granted list is still a shell. No invariant text changed. |
 | 1.2 | 2026-08-05 | The wiring landed and three non-goals shrank to their true size. §5.8 rewritten: the queue adapter and the tick now route status changes through `applyTransition` and live rows carry the key, the machine version and the envelope digest — with three transitions exempt by name and three stamp fields absent because nothing in the product can compute them. §5.1: the envelope is consulted before a spawn and before a forge draft is accepted, fail-closed; the worker's own session surface remains unbounded and that is now the whole of the non-goal. §5.4: the reconciliation pass closed the missing-row gap, and a reconstructed row is documented as weaker than a live one. §3.1/§3.4/§3.7 re-pointed accordingly. |

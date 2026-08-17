@@ -1,14 +1,20 @@
-# sma-framework — Living SPEC (delta-spec)
+# sma-framework — the frozen V1 baseline, and the V2 delta
 
-> **Rule (load-bearing):** every future behavior change to sma-framework lands with a
-> **delta entry in this file, in the same commit** as the code. The baseline is frozen;
-> the deltas are the changelog of requirements. A change without a delta entry is a spec
-> regression — the SPEC is the anchor V2+ work is measured against, not the git log.
+> **Status, stated plainly rather than implied: this document stopped being a living
+> spec after V2.** It was written as a delta-spec — every behavior change was to land
+> with a delta entry here in the same commit as the code — and that discipline held for
+> exactly one delta. From V3 onward the record of what the product is required to do
+> moved to instruments that are re-runnable rather than narrated: the plan and its
+> pre-registered predictions, the receipt that settles each one, the blind verifier that
+> re-derives it, and the release history in
+> [DETAILS.md](DETAILS.md#the-v5-series-release-by-release).
 >
-> Shape (OpenSpec fold-back): `## Baseline` is the generalized V1 requirement set;
-> `## Delta VN.M` sections append one entry per shipped mechanism, each with its
-> requirement sentence and the verifying test file. When a delta matures it is folded
-> back into the baseline at the next major line.
+> The two sections below are kept because they are still true and still useful: the
+> generalized V1 requirement set is the floor everything since has been built on, and the
+> V2 delta is the shape a requirement entry takes. Read this as the foundation's
+> specification, not as an index of the current product. **Do not add new deltas here** —
+> a document that pretends to be current while missing four versions is worse than one
+> that says where it stops.
 
 sma-framework is a deterministic, in-repo memory + multi-terminal-coordination layer that
 installs alongside the derived engine. Design constants (never re-litigated): no daemons ·

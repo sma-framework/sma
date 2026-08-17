@@ -289,6 +289,12 @@ nothing ships by accident. The composition below is `npm pack --dry-run` for
 npm pack --dry-run
 ```
 
+**This table is an audit of one named version, not a figure re-measured every
+release** — the shape of the payload (what may ship, and what may not) is what it
+is here to fix, and that has not changed. For the exact counts of the version you
+are installing, run the command above in a clone of it; the allowlist is in
+`package.json` and is the thing to read if you want to know what *can* ship.
+
 | Path | Files | What it is |
 |---|---|---|
 | `sma-core/` | 459 | the engine: workflows, agents, references, templates, bin shim, transitional aliases |
