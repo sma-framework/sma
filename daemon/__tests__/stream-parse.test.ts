@@ -119,6 +119,33 @@ describe('parseClaudeEvent (pure, never throws)', () => {
     expect(result?.modelUsage).toBeTruthy()
     expect(result?.modelUsage['claude-opus-4-8'].inputTokens).toBe(2200)
   })
+
+  /**
+   * КАК ЗАКОНЧИЛСЯ ПРОГОН — по слову самого CLI. Завершающий кадр несёт эти два поля, когда
+   * прогон закончил не работник, а провайдер (перегрузка, серверная ошибка), и до сих пор они
+   * пролетали мимо: читателю оставалось `is_error`, одинаковое и для отказа провайдера, и для
+   * работы, закончившейся ошибкой по существу. Обычный кадр не говорит о них НИЧЕГО — ключей
+   * нет вовсе, а не null, придуманный за библиотеку.
+   */
+  it('завершающий кадр отдаёт слово CLI о конце прогона: причина и код провайдера', () => {
+    const cut = parseClaudeEvent(
+      JSON.stringify({
+        type: 'result',
+        is_error: true,
+        terminal_reason: 'api_error',
+        api_error_status: 529,
+        result: 'API Error: 529 Overloaded',
+        session_id: 's-529',
+      }),
+    )
+    expect(cut.isError).toBe(true)
+    expect(cut.terminalReason).toBe('api_error')
+    expect(cut.apiErrorStatus).toBe(529)
+
+    const ordinary = parseClaudeEvent(JSON.stringify({ type: 'result', is_error: false, session_id: 's-ok' }))
+    expect(ordinary.terminalReason).toBe(null)
+    expect(ordinary.apiErrorStatus).toBe(null)
+  })
 })
 
 /**
