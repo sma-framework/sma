@@ -51,7 +51,7 @@ import { join } from 'node:path'
 import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
 import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
-import { createMemoryQueue } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
 // screen's payload. Every joint of that path had a green test of its own while the path
 // itself was cut, so the case has to cross the module boundary the defect hid behind.
@@ -1046,6 +1046,101 @@ describe('classifyFailure — the taxonomy (pure)', () => {
     expect(classifyFailure({ exitCode: 1, receipt: { verdict: 'red', ref: 'r' }, workerMarker: 'MISSING_ACCESS' })).toBe(
       'missing_access',
     )
+  })
+
+  /**
+   * ОБРЫВ У ПРОВАЙДЕРА — ЭТО НЕ ВИНА РАБОТНИКА, и таксономия обязана их различать.
+   *
+   * Живой прогон: попытку убил 529 Overloaded на стороне провайдера, а окно сказало «нет
+   * записки о подходе — попытка не объяснена». Записка и не могла появиться: работника
+   * оборвали на полуслове. Названо было следствие, а виноватым выглядел работник.
+   *
+   * Обрыв стоит сразу за несостоявшимся запуском и ВЫШЕ всего остального: когда прогон
+   * закончил не работник, ни отсутствие записки, ни красный прогон, ни маркер не годятся в
+   * причину — судить не о чем.
+   */
+  it('провайдер оборвал прогон → provider_error, а не «нет записки»', () => {
+    expect(classifyFailure({ exitCode: 1, providerAbort: { status: 529 }, receipt: { verdict: 'green', ref: 'r' }, journalComplete: false })).toBe('provider_error')
+  })
+
+  it('обрыв провайдера сильнее красного прогона и маркера — судить нечего', () => {
+    expect(
+      classifyFailure({ exitCode: 1, providerAbort: { status: 529 }, receipt: { verdict: 'red', ref: 'r' }, workerMarker: 'MISSING_ACCESS' }),
+    ).toBe('provider_error')
+  })
+
+  it('но несостоявшийся запуск остаётся сильнее: обрывать было нечего', () => {
+    expect(classifyFailure({ spawnError: new Error('offline'), providerAbort: { status: 529 } })).toBe('runtime_offline')
+  })
+})
+
+/**
+ * ═══════ ПРОВОД: СЛОВО ПРОВАЙДЕРА ДОЕЗЖАЕТ ДО СТРОКИ ЗАДАЧИ И ДО КАРТОЧКИ ═══════
+ *
+ * Классификатор, знающий про обрыв, и строка, показывающая обрыв, — разные вещи, и вторая
+ * не следует из первой. Поэтому случай идёт от начала маршрута: поток работника несёт
+ * ЗАВЕРШАЮЩИЙ кадр CLI ровно такой, какой пришёл в живом прогоне, — и проверяется то, что
+ * записано в очереди и что прочтёт с неё окно.
+ */
+describe('обрыв на стороне провайдера назван обрывом — от кадра до карточки', () => {
+  // Кадр из живой попытки: провайдер ответил 529, CLI закончил прогон своей ошибкой.
+  const PROVIDER_529 = JSON.stringify({
+    type: 'result',
+    subtype: 'error_during_execution',
+    is_error: true,
+    terminal_reason: 'api_error',
+    api_error_status: 529,
+    result: 'API Error: 529 Overloaded',
+    session_id: 's-529',
+  })
+
+  async function runWithLines(lines: string[]) {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-529' }))
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: makeSpawnWorker(undefined, { lines, code: 1 }),
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-529', branch: 'wt/BL-529' }) },
+        reverify: GREEN_REVERIFY,
+      },
+    })
+    const res = await tick(deps)
+    const [row] = await adapter.list({})
+    return { res, row }
+  }
+
+  it('попытка, убитая провайдером, несёт причиной ПРОВАЙДЕРА, а не отсутствие записки', async () => {
+    // ровно живая картина: записки нет — работника оборвали раньше, чем он её написал
+    const { res, row } = await runWithLines(['начал разбираться', PROVIDER_529])
+
+    expect(res.failed).toEqual({ taskId: 'BL-529', reason: 'provider_error' })
+    expect(row.status).toBe('failed')
+    expect(row.failure_reason).toBe('provider_error')
+    // и у окна есть что показать: подпись строки берётся отсюда и ниоткуда больше
+    expect(REASON_LABELS[row.failure_reason]).toMatch(/провайдер/i)
+  })
+
+  it('без обрыва тот же поток без записки остаётся «нет записки» — случай не съел соседний', async () => {
+    const { res } = await runWithLines(['начал разбираться', JSON.stringify({ type: 'result', is_error: false, session_id: 's-ok' })])
+    expect(res.failed).toEqual({ taskId: 'BL-529', reason: 'no_journal' })
+  })
+
+  /**
+   * СЛОВО «529» В РЕЧИ РАБОТНИКА — НЕ ОБРЫВ. Работник, разбирающий чужую ошибку, произносит
+   * её текст вслух, и попытка, объявленная оборванной за упоминание, была бы диагнозом по
+   * подслушанному слову. Обрыв признаётся ТОЛЬКО по завершающему кадру самого CLI.
+   */
+  it('работник, ПЕРЕСКАЗАВШИЙ ошибку провайдера, не объявляется оборванным', async () => {
+    const talk = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'x', content: [{ type: 'text', text: 'в логе видно API Error: 529 Overloaded, чиню' }] },
+    })
+    const { res } = await runWithLines([talk, JSON.stringify({ type: 'result', is_error: false, session_id: 's-ok' })])
+    expect(res.failed).toEqual({ taskId: 'BL-529', reason: 'no_journal' })
   })
 })
 

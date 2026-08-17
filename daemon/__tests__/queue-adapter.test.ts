@@ -300,7 +300,7 @@ describe('project — an additive task field with an injected default', () => {
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 11-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 12-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -308,6 +308,10 @@ describe('constants — taxonomy', () => {
       // and left no document — the file is absent from the phase directory, or uncommitted
       'no_artifact',
       'agent_error',
+      // the run the WORKER did not end: the provider cut it (an overload, a server error).
+      // Named apart from agent_error because the window used to blame the worker for the
+      // vendor's outage, and the two ask a person for opposite things — wait, or fix
+      'provider_error',
       'tests_red',
       'needs_decision',
       'missing_access',
