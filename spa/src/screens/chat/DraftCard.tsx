@@ -1,5 +1,5 @@
 import type { ChatDraft } from '../../api/types'
-import { STAGE_LABEL } from '../../shell/format'
+import { acceptanceList, STAGE_LABEL } from '../../shell/format'
 
 /** What a lane is called on the glass. An unknown lane is shown as the daemon spelled it. */
 const LANE_WORD: Record<string, string> = {
@@ -98,10 +98,22 @@ export function DraftCard({
               <span className="text-[11.5px] font-semibold text-tx">{draft.mode}</span>
             </>
           )}
-          {draft.acceptance ? (
+          {/*
+            Признаков может быть несколько, и приезжают они списком. Список, подставленный в
+            текст, склеивается вплотную — «…файл существуетВ нём названа дата…», — поэтому
+            каждый признак стоит своей строкой. И слово над ними согласовано с их числом:
+            «Признак готовности» над тремя строками обещает один и обманывает счётом.
+          */}
+          {acceptanceList(draft.acceptance).length > 0 ? (
             <>
-              <span className="text-[11.5px] text-tx3">Признак готовности</span>
-              <span className="text-[11.5px] leading-[1.5] text-tx">{draft.acceptance}</span>
+              <span className="text-[11.5px] text-tx3">
+                {acceptanceList(draft.acceptance).length === 1 ? 'Признак готовности' : 'Признаки готовности'}
+              </span>
+              <span className="flex flex-col gap-1 text-[11.5px] leading-[1.5] text-tx">
+                {acceptanceList(draft.acceptance).map((text, i) => (
+                  <span key={`${i}-${text.slice(0, 16)}`}>{text}</span>
+                ))}
+              </span>
             </>
           ) : null}
         </div>
