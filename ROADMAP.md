@@ -13,11 +13,13 @@ flowchart LR
     V3 --> V35["V3.5<br>adoption & trust telemetry"]
     V35 --> V36["V3.6<br>the one-command door:<br>npm install · off-ramp · memory preview"]
     V36 --> V4["V4<br>grade the grader:<br>graded verdicts · economy meters"]
-    V4 --> V5["V5 — current<br>orchestration:<br>a 24/7 worker fleet"]
+    V4 --> V5["V5<br>orchestration:<br>a 24/7 worker fleet"]
     V5 -.-> V51["V5.1<br>works with what you have<br>+ memory model 1.0 + the front"]
     V51 -.-> V52["V5.2<br>measured memory:<br>benchmark · explain · hybrid retrieval"]
     V52 -.-> V53["V5.3<br>governance · hardened fleet ·<br>external validation"]
     V53 -.-> V54["V5.4<br>the whole working day<br>without the terminal"]
+    V54 -.-> V55["V5.5<br>the engine:<br>steering a live session"]
+    V55 -.-> V56["V5.6 — current<br>the taskboard ·<br>numbers that do not lie"]
 ```
 
 | Version | Theme | Status |
@@ -28,11 +30,13 @@ flowchart LR
 | V3.5 | Adoption & trust telemetry | ✅ shipped |
 | V3.6 | The one-command door: npm install, off-ramp, memory preview | ✅ shipped |
 | V4 | Grade the grader: graded verdicts, economy meters, vendor triage | ✅ shipped |
-| **V5** | **Orchestration: a 24/7 worker fleet** | ✅ **current** (v5.0.0 → v5.4.0, July–August 2026) |
+| V5 | Orchestration: a 24/7 worker fleet | ✅ **shipped** (v5.0.0, July 2026) |
 | V5.1 | Works with what you have + the working front | ✅ **shipped** (v5.1.0, August 2026) |
 | V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | ✅ **shipped** (v5.2.0, 3 August 2026) |
-| V5.3 | Memory governance, hardened fleet | ✅ **shipped** (v5.3.0, 6 August 2026) — the external-validation pilots carry forward |
-| V5.4 | The whole working day without the terminal | ✅ **shipped** (v5.4.0, 7 August 2026) — the five-day proving run is live operation after the release |
+| V5.3 | Memory governance, hardened fleet | ✅ **shipped** (v5.3.0, patched v5.3.1) — the external-validation pilots carry forward |
+| V5.4 | The whole working day without the terminal | ✅ **shipped** (v5.4.0, patched v5.4.1–v5.4.3) — the proving run is live operation after the release |
+| V5.5 | The engine: steering a live session | ✅ **shipped** (v5.5.0, patched v5.5.1–v5.5.2) — the patch line is where the engine's parts were finally connected to one another |
+| **V5.6** | **The taskboard, and numbers that do not lie** | 🔄 **in the repository, current** — not published to npm while the engine settles |
 
 ## V5 — Orchestration: a 24/7 worker fleet ✅
 
@@ -53,7 +57,7 @@ Two honesty notes. The **rich daily-driver app** on top of this engine was the f
 
 ## V5.1 — Works with what you have
 
-> **Status: shipped as v5.1.0 (August 2026), as one whole.** Everything described in this section is in the release and covered by the suite: the app and its seventeen screens, multi-project and hub↔peer federation, the conversation, the import door, first-run onboarding through the app, the decision journal — and Memory Model 1.0, which shipped with its three canonical documents (the model, the lifecycle, the threat model).
+> **Status: shipped as v5.1.0 (August 2026), as one whole.** Everything described in this section is in the release and covered by the suite: the app and its screens, multi-project and hub↔peer federation, the conversation, the import door, first-run onboarding through the app, the decision journal — and Memory Model 1.0, which shipped with its three canonical documents (the model, the lifecycle, the threat model).
 
 Orchestration is only useful when it runs YOUR setup, not a naked model. V5.1 makes that true in three steps: the fleet's workers operate with the estate the repository already carries (its agents, skills, rules, and the layered memory); a fresh install ships the SMA preset out of the box — the standard agents, skills, and the memory system itself (the architecture and its rituals, with your own empty corpus; nobody's memories are ever bundled); and an import door reads the agents and skills you built elsewhere (`.claude/agents`, `.claude/skills`, rules files; other tools' formats as demand appears) and enrolls them into the fleet through the same door the Creator uses — draft, lint receipt, approval queue. Imported definitions are third-party text: nothing activates without the owner's explicit yes. The bar the fleet has to clear is **terminal parity**: a worker session must be able to do what your own terminal session does — same hooks, same memory, same skills — proven by receipts on a real run, not asserted.
 
@@ -110,9 +114,9 @@ its federated form.
 ## V5.4 — The whole working day, without the terminal ✅ (v5.4.0, 7 August 2026)
 
 V5.1 put the window there and V5.3 filled it with the shipped team. V5.4 turns it into the
-place the day's work actually happens. The route table went from thirty doors to
-**fifty-three**, declared once and frozen, and every one of them is live — the shape test that
-guards the table is unconditional again, so there is no «coming soon» handler left in it.
+place the day's work actually happens. The route table that carries it is declared once and
+frozen — its size is a test — and every door in it is live: the shape test that guards the table
+is unconditional again, so there is no «coming soon» handler left in it.
 
 - **The phase cycle, run from the app** — an index of phases, a card per phase with its four
   stages and a button on each, plans and summaries read in place, the acceptance list answered
@@ -140,6 +144,66 @@ guards the table is unconditional again, so there is no «coming soon» handler 
 One honest carry, stated rather than hidden: **the five-day proving run** — a full phase cycle
 driven from the window, start to finish, with the journal reading zero outside the list — is
 live operation *after* this release, not a receipt inside it.
+
+## V5.5 — The engine: steering a live session ✅ (v5.5.0, patched v5.5.1–v5.5.2)
+
+The competitor survey exposed one gap nobody had filled: **you cannot steer a live agent
+session.** V5.5 built the wheel into the window — the task card became a thread, text typed
+against running work gained a declared fate (interrupt now, or ride the continuation), and a
+returned task resumes the session it already paid for instead of starting from zero. The
+correction is written to disk before anything is killed, so a daemon restart cannot lose it.
+
+The honest half of this version is its patch line. **v5.5.2 was the day it was found that the
+engine's parts had never been bolted to one another** — nine breaks, all one class: each piece
+written, covered by a test, green, and attached to nothing. A worker had never been able to
+change a file, because the permission envelope was computed and journaled but never handed to
+the process being launched. Live updates had never reached the window, because the daemon named
+its frames and the window listened for the unnamed default. Work happened in the directory the
+daemon was launched from rather than the connected project. Each break became visible only after
+the one before it was fixed. They are listed one by one in
+[docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release), because a release note that
+hides what was broken is worth nothing to the person who hit it.
+
+The standing law that came out of it, and now governs planning: **computed is not connected.**
+Every computed artifact must be proven to reach the thing that consumes it, by a test that
+asserts the wire — not the calculation — and by an end-to-end run over the whole route rather
+than piece by piece.
+
+## V5.6 — The taskboard, and numbers that do not lie 🔄
+
+In the repository, deliberately not published while the engine settles.
+
+- **One line per unit of work, three real kinds.** A task, a pack of tasks worked one at a time
+  and closed by a single assembly, and a phase with its four stages and gates. Each opens into
+  its own view; the trail at the top leads back where you came from. Every section of the list
+  stands for the **last word** about a task, so a returned task appears once, under its own name.
+- **A card that answers three questions** — what was promised, what was done, what proves it —
+  with ✓ / ? / × only where the state is genuinely known, and words where the engine cannot
+  answer.
+- **The words of a task are derived by the system**, from your formulation, the way a planner
+  derives criteria from a goal — visible, correctable, and queued only on your confirmation. A
+  pack is proposed the same way: matching backlog entries plus sub-tasks split out of your
+  sentence.
+- **A conversation with the system that does not leave the screen** — one keystroke opens it over
+  whatever you are looking at, and it takes its context from there. Three outcomes: a decision on
+  a waiting question that travels to the worker, an order that becomes a task, or an answer about
+  the current state.
+- **A whole wave can be told to stand.** Tasks finish the move they are in and stop; nothing is
+  torn mid-step; the hold is written to disk and survives a restart.
+- **The exit gate is differential, and measures the worker's own copy.** Both snapshots name the
+  worker's working tree, `reverify --tree` measures the tree it was told to measure, and only a
+  **new** divergence is red — a pre-existing failure is reported as pre-existing rather than
+  charged to whoever ran last.
+- **Numbers are measured or absent, never invented** — the waiting age counted from when work
+  actually stopped, attempts counted as attempts rather than journal lines, and a merge receipt
+  that answers «not run» instead of a green it never observed.
+- **Acceptance happens in the tree that holds the branch**, and a refusal names its reason on the
+  card. Every attempt's journal carries the list of files it changed beside the commit it started
+  from, so a rollback reads from the record instead of being reconstructed.
+
+Two carries are named rather than hidden: the **phone** still has no design pass of its own, and
+the end-to-end proving run — a full cycle placed, worked and accepted from the window, several
+times without a break — is live operation, not a receipt inside this version.
 
 ## Not building yet — on purpose
 
