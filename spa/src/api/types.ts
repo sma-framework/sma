@@ -1204,6 +1204,13 @@ export interface ApproveResult {
   merged: boolean
   receipt?: unknown
   softDenied?: boolean
+  /**
+   * ПОЧЕМУ НЕ ПРИНЯЛОСЬ — код для ветвления экрана и фраза для человека. Есть ровно у отказа:
+   * успех себя не объясняет. Необязательные оба, потому что демон постарше слов ещё не
+   * говорит, и окно не имеет права упасть, разговаривая с ним.
+   */
+  reasonCode?: string
+  reason?: string
 }
 
 export interface ReturnResult {

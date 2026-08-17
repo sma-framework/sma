@@ -985,6 +985,80 @@ async function handleEnqueue({ req, res, config, deps }) {
 }
 
 /**
+ * mergeRefusal(merge) → `{reasonCode, reason}` — WHY the acceptance did not go through, in
+ * the words the person who pressed the button reads.
+ *
+ * IT EXISTS BECAUSE `ok:false` IS NOT AN ANSWER. This door used to hand back a bare false:
+ * a merge conflict, a branch that is no longer in the tree, a red run on the merge result and
+ * two terminals merging at the same second all arrived at the window identical — and they call
+ * for four different actions from the person. A live acceptance session wrote it down in the
+ * founder's own words: «нажалась и ничего не сделала».
+ *
+ * NOTHING IS INVENTED HERE. The merge ritual already distinguishes these cases — it returns a
+ * soft-deny with the holder of the slot, a `testsPassed:false`, or git's own message — and this
+ * function only carries what it said into the vocabulary a screen can show. When the class is
+ * not recognised the unknown is NOT smoothed over into a polite phrase: the door says that the
+ * merge did not go through AND repeats what git said, capped to one line, so an unclassified
+ * failure is a lead rather than a dead end.
+ *
+ * The soft-deny branch hands back the ritual's OWN sentence rather than a retelling: that
+ * sentence names the terminal holding the slot and the command that frees a hung one, and a
+ * paraphrase would drop both.
+ *
+ * @param {object|null|undefined} merge — whatever the merge verb returned
+ * @returns {{reasonCode: string, reason: string}}
+ */
+export function mergeRefusal(merge) {
+  const m = merge && typeof merge === 'object' ? merge : {}
+
+  if (m.softDenied) {
+    const said = typeof m.override === 'string' && m.override.trim() ? m.override : null
+    const holder = m.holder && m.holder.by ? m.holder.by : 'другой терминал'
+    return {
+      reasonCode: 'merge_busy',
+      reason: said ?? `слияние уже идёт (${holder}) — дождитесь его конца и нажмите снова`,
+    }
+  }
+
+  // A merge that HAPPENED and then went red: the branch is in the tree, the run is not green.
+  // Said apart from every failure above on purpose — the person's next step is the tests, not
+  // the branch.
+  if (m.merged === true && m.testsPassed === false) {
+    return {
+      reasonCode: 'tests_red',
+      reason: 'ветка слита, но тесты на слитом результате не прошли — работа осталась ждать вас',
+    }
+  }
+
+  const said = typeof m.message === 'string' ? m.message.trim() : ''
+  const firstLine = said.split('\n')[0].slice(0, 200)
+
+  if (/CONFLICT|merge conflict|fix conflicts|Automatic merge failed/i.test(said)) {
+    return {
+      reasonCode: 'conflict',
+      reason: 'ветка работника не сливается: конфликт с основным деревом — правки разводит человек',
+    }
+  }
+  if (/not something we can merge|did not match any|unknown revision|no-branch|not a valid object|pathspec/i.test(said)) {
+    return {
+      reasonCode: 'branch_missing',
+      reason: 'ветки задачи нет в этом дереве — её уже убрали, либо работа шла в другой рабочей копии',
+    }
+  }
+  if (/local changes|would be overwritten|unstaged|uncommitted|cannot merge.*index|Please commit/i.test(said)) {
+    return {
+      reasonCode: 'tree_dirty',
+      reason: 'в рабочем дереве есть несохранённые правки — слияние их бы затёрло, уберите их и нажмите снова',
+    }
+  }
+
+  return {
+    reasonCode: 'merge_failed',
+    reason: firstLine ? `слияние не прошло: ${firstLine}` : 'слияние не прошло, и ритуал не сказал ни слова о причине',
+  }
+}
+
+/**
  * POST /api/approve — the HUMAN-only approve path (it exists ONLY behind the token the
  * founder holds; the daemon never calls it). Body {taskId, machine?}. CAS the row
  * awaiting_approval→approving (claim generation), run the EXISTING serialized merge verb
@@ -1067,12 +1141,17 @@ async function handleApprove({ req, res, deps }) {
   // row is completed or it is failed, and that is what travels.
   emitSafe(deps, { event: green ? 'task.approved' : 'task.failed', taskId, status: green ? 'completed' : 'failed' })
   emitSafe(deps, { event: 'worker.presence', taskId })
+  // A REFUSAL CARRIES ITS CAUSE OR IT IS NOT A REFUSAL — the code for a screen to branch on
+  // and the sentence for a person to read, both derived from what the ritual actually said.
+  // A green outcome carries neither: success does not explain itself.
+  const refusal = green ? null : mergeRefusal(merge)
   sendJson(res, 200, {
     ok: green,
     taskId,
     merged: green,
     ...(merge && merge.receipt ? { receipt: merge.receipt } : {}),
     ...(merge && merge.softDenied ? { softDenied: true } : {}),
+    ...(refusal ? { reasonCode: refusal.reasonCode, reason: refusal.reason } : {}),
   })
 }
 

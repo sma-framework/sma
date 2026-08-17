@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useApprove, useReturnTask, useTaskQuery } from '../api/queries'
 import type { TaskAttempt } from '../api/types'
 import { AttemptLog } from './AttemptLog'
-import { attemptsLabel, clockLabel, refusalWords, statusTone, statusWord } from './format'
+import { approvalRefusal, attemptsLabel, clockLabel, refusalWords, statusTone, statusWord } from './format'
 import { openScreen } from './navigation'
 
 /**
@@ -128,7 +128,18 @@ export function TaskPanel({
     approve.mutate(
       { taskId },
       {
-        onSuccess: () => onClose(),
+        // ЗАКРЫТЬСЯ МОЖНО ТОЛЬКО НА ПРИНЯТОЙ РАБОТЕ. Дверь отвечает 200 и на отказе, поэтому
+        // панель раньше исчезала ровно в тот момент, когда работа НЕ принята, — человек видел
+        // самый убедительный вид успеха и уходил с несделанной приёмкой. Отказ теперь держит
+        // панель открытой и говорит словами, что помешало.
+        onSuccess: (out) => {
+          const refused = approvalRefusal(out)
+          if (refused) {
+            setProblem(refused)
+            return
+          }
+          onClose()
+        },
         onError: (err) => setProblem(refusalWords(err)),
       },
     )
