@@ -20,11 +20,11 @@
 > ### 🗺️ [Open the live system map →](https://sma-framework.github.io/sma/master-graph.html)
 > Every subsystem of SMA on one interactive page — the fastest way to see how everything connects.
 
-> ### 🆕 [What's new in V5.4 →](#whats-new-in-v54)
-> The whole working day without the terminal: fifty-three live doors, the phase cycle run from the app, a parked question answered on a card — and a task that needed no code ending with its answer instead of a red row.
+> ### 🆕 [What's new — the taskboard, and numbers that do not lie →](#whats-new--the-taskboard-and-numbers-that-do-not-lie)
+> Every unit of work reads as one line and opens into its own view; the conversation about it is one keystroke away — and the gate that lets work out measures the worker's own copy, reddening only on what the worker actually broke.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
-> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0, patched v5.3.1) → V5.4 the whole working day without the terminal — shipped (v5.4.0, patched v5.4.1–v5.4.3) → V5.5 the engine: steering a live session — shipped (v5.5.0, patched v5.5.1–v5.5.2, current).**
+> Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0) → V5.4 the whole working day without the terminal — shipped (v5.4.0) → V5.5 the engine: steering a live session — shipped (v5.5.0) → V5.6 the taskboard and honest numbers — in the repository, current.** The whole release history, note by note, is in [docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release).
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
@@ -104,9 +104,9 @@ Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-
 - [docs/DETAILS.md](docs/DETAILS.md) — the engineering deep dive, once you want to know how it works inside.
 - `node scripts/sma/cli.mjs explain <name>` — run from your project root: a plain-language explanation of any SMA command.
 
-## What's new — the taskboard
+## What's new — the taskboard, and numbers that do not lie
 
-The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work reads as one line, opens into its own view, and the conversation about it happens without leaving the screen.**
+The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work reads as one line, opens into its own view, and the conversation about it happens without leaving the screen** — and every figure beside it is either measured or admitted to be missing.
 
 **Three real kinds of work, not one thing wearing three labels.**
 
@@ -128,243 +128,38 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 
 **A whole echelon can be told to stand.** «Stop wave 2» — confirmed, then the tasks of that wave finish the move they are in and stop; nothing is torn mid-step. Unfinished steps stay in their sessions, and when you lift the hold they continue from exactly where they stood. The hold is written to disk, so it survives a restart of the daemon.
 
-**No invented numbers.** Where the engine does not know, the screen says «no data» in words — never a zero and never a guess. A zero that is wrong is worse than a blank, because it reads as an answer.
+**The gate that lets work out is differential, and it measures the worker's own copy.** A worker's changes used to be judged against a whole-repository run, so anything already red before the task started came back as the worker's fault — and the same run measured the tree the *daemon* stood in rather than the tree the work actually happened in. Both are fixed. The gate takes its two snapshots — before and after — **naming the worker's working copy in each**, and `reverify --tree` runs the checks against the tree it was told to measure while the accounting stays in one shared ledger. Only a divergence that is **new** is red. A pre-existing failure is reported as pre-existing, by name, so it can be dealt with as its own piece of work rather than blocking someone who did not cause it.
+
+**Numbers that are measured, or absent — never invented.**
+
+| | What it says now |
+|---|---|
+| **How long it has been waiting** | counted from the moment the work actually stopped, not from when the row was created — and a decision that has been waiting a minute is not called «stuck» |
+| **How many attempts** | attempts, counted as attempts: three approaches written down as six journal lines are three, not six |
+| **One task, one line** | every section of the list stands for the **last word** about a task, so a returned task appears once — under its own name, never as an identifier |
+| **A merge receipt** | answers «not run» when the tests were never wired to it, instead of reporting a green it did not observe |
+| **Anything the engine cannot answer** | says «no data» in words. A zero that is wrong is worse than a blank, because it reads as an answer |
+
+**Accepting the work happens in the right tree, and a refusal says why.** The approve door merges in the tree that actually holds the branch — the connected project's, not the daemon's — and when it refuses, it names the reason in words and the card shows that reason instead of a dead button. Every attempt's journal now carries the **list of files it changed** beside the commit it started from, so «what would I be rolling back?» is answered by the record rather than by reconstruction.
+
+### Everything before it
+
+The V5 line shipped as a release every few days. In one breath: V5 built the fleet and its engine; V5.1 put the window in front of it; V5.2 made the memory layer measurable; V5.3 made it governable and gave the fleet a state machine its running code consults; V5.4 turned the window into a place you can work from all day, and taught the system that **an answer is also work**; V5.5 built the wheel — steering a live session, with a correction written to disk before anything is killed. Each of those releases, with its fix list and what it deliberately did not claim, is in [docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release).
 
 **What this does not claim.** This is the state of the repository, not a published release — the npm listing is deliberately behind while the engine settles, and the version badge above is not moved by this work.
 
-## What's new in V5.4
+## The window — the app the daemon serves
 
-V5.1 put the window there. V5.3 filled it with the shipped team. **V5.4 makes it a place you can work from all day** — the route table went from thirty doors to **fifty-three**, declared once and frozen, and there is no «coming soon» handler left in it. The full walk-through is [further down this page](#the-whole-working-day-without-the-terminal); this is the map.
-
-```mermaid
-flowchart LR
-    V54(["V5.4"])
-
-    V54 --> D["The day's work, in the window"]
-    V54 --> A["An answer is also work"]
-    V54 --> P["Proof that the move happened"]
-
-    D --> D1["The phase cycle run from a card —<br>four stages, plans and summaries read in place"]
-    D --> D2["A parked question arrives in the shape<br>the engine parked it, answered on a card"]
-    D --> D3["A worker's output streams in while it is<br>still talking, subagents included"]
-    D --> D4["Memory, coordination, backlog and search —<br>one place, per-file consent kept"]
-    D --> D5["The ship card runs the gate and never pushes"]
-
-    A --> A1["A task that needed no code completes<br>on its answer instead of failing 'no receipt'"]
-    A --> A2["The code law is untouched: git is asked twice,<br>and an uncommitted edit is not an answer"]
-
-    P --> P1["Every terminal session leaves one line;<br>the report's last line is the number outside the list"]
-    P --> P2["An attempt books what it cost, so the<br>spend screen answers a real question"]
-```
-
-### An answer is also work
-
-«Look into it and tell me» is real work, and until this release it ended in a red row: the only door to done demanded a receipt over code that was never supposed to exist. Now such a task completes on an **answer receipt** and lands in approval, where the worker's own note is the card a person acknowledges.
-
-The law it must not touch is the one about work that touched the repository, and that law is intact. The new gate opens only when the repository cannot tell the attempt ever happened — git is asked twice, never the worker: **zero commits** on the task branch, and a **clean worktree**. An edit left uncommitted is unfinished work, not an answer, and still fails exactly as before. Every question fails safe: no git surface, a throw, or a count that is not a plain zero, and the old outcome stands.
-
-### Proof that the move actually happened
-
-A claim of «I worked only from the app» is worth what it can be checked with, so this release ships the check. A session-start hook writes one line per terminal run, and `terminal-journal.mjs report --since <date>` sorts each line into one of the **four kinds of work that were agreed to stay at a terminal** — measuring runs, git history surgery, removing the framework, and repairing the daemon itself — then prints, as its **last line**, the count of runs outside that list. A missing journal is not reported as a zero: the command says so and exits 3, because the absence of a record is not a record of absence. Sessions the daemon spawns are skipped entirely — counting them would drown the proof in the thing it measures.
-
-An attempt now also books what it cost, so the spend screen answers with real numbers instead of zero.
-
-**What this release does not claim.** The five-day run that proves the move — a full phase cycle driven from the window, start to finish — is live operation *after* this version, not a receipt inside it.
-
-## What's new in 5.4.2
-
-### QA that uses the product instead of reading it
-
-Every UI review in the fleet read the code. The one path that was supposed to look at a running app shelled out to `npx playwright screenshot … 2>/dev/null` — a command that refuses non-interactively on any machine without that package cached, and fails on a build mismatch when the browser cache is stale. Both errors went to `/dev/null`, so the audit continued as a code-only read **and still produced a score**. A panel wired to nothing photographs as a clean pass, and the operator, told the machine had looked, stops looking.
-
-`sma-ui-qa` is the QA department: it runs after the verifier and before the phase reaches you. The verifier asks whether the **repository** shows the goal was met; this asks whether the **product does it when someone uses it** — and a file can be present, imported, covered by a test, and the feature still not work.
-
-**It compares against the phase's own promises, and invents nothing.** It loads the same contract the verifier loads — the roadmap's success criteria, the plan's must-haves, the requirement ids — and turns each into a test case it *runs*: type in the search box and check the results, press Export and open the file. A criterion it could not test is BLOCKED, never passed. Then it sweeps the surface, pressing every visible control once and reporting which broke, how many it reached **out of how many exist**, and which it refused to press because they destroy data — «Delete», «Publish», «Pay» are left for a human, named in the receipt rather than silently skipped.
-
-Underneath, `scripts/sma/ui-drive.mjs` writes the receipt and exits non-zero on a blocking finding, so it can gate rather than advise. Alongside the contract it reports what is measured rather than judged: content wider than the viewport at phone width, a control that cannot be operated, a control with no accessible name, uncaught exceptions, dead requests, the app's own API at 4xx or 5xx.
-
-**Only measured defects send work back to the builder.** A failing criterion or a dead request reproduces, so a machine may return it. Whether a hierarchy reads well does not reproduce — that lands on the card as advice for a person, because a beauty score with a decimal point is a random number, and one that dispatches rework is an expensive one. And the loop can end: a defect that survives one rework is not dispatched a third time, it is parked for you with both attempts described.
-
-The rule it exists to enforce: **a run that did not happen is never a pass.** No browser driver means exit 3, the word `NOT RUN`, and the one command that fixes it — never an empty finding list that reads as clean. SMA still declares **no runtime dependency**: the driver is resolved at run time, never installed on your behalf, and `SMA_UI_DRIVER` points at one you already have elsewhere so a live check never forces 120 MB into a project that did not ask for it.
-
-**What this release does not claim.** This drives a browser: native and mobile shells are outside it. And the part that judges whether a screen is *good* — legible, honest in failure, findable in two seconds — is a model reading screenshots, which is judgment, not measurement. The runtime defects are the measured half; the receipt keeps the two apart so a reader can tell which is which.
-
-### What its first run caught — fixed in this same release
-
-The new reviewer's first live pass over the product's own window found five defects no code read had seen, and they ship fixed here:
-
-- a closed tab now frees its live-events slot — the window no longer goes permanently blind after sixteen opens
-- the corpus check answers in seconds with a budgeted report that names what it skipped, instead of spinning forever
-- the coordination screen shows the live sessions and reservations of the connected checkout; an unreadable journal reports itself instead of posing as an empty room
-- money stops contradicting itself: every spend row now names its channel, and the paid-channel figure counts only paid-channel work
-- the memory screen reads the selected project's own table of contents, not the daemon's
-
-The narrow-width overflow it also flagged is recorded as what it is — a standing design decision (the window is built for 1440 px and wider), now visible in the run receipt via `--min-viewport` instead of reddening every pass.
-
-## What's new in 5.5.2 — the engine, connected
-
-5.5.0 built the engine. This release is the day it was discovered that its parts had never been bolted to one another. Nine breaks, all one class: each piece was written, covered by a test, green — and attached to nothing. Each became visible only after the one before it was fixed. They ship fixed here.
-
-- **A worker could not change a file — not once in this product's history.** The permission envelope was computed per lane, hashed into every attempt and written to the journal, and never handed to the process being launched. A non-interactive session has nobody to confirm an action, so Edit, Write, Bash, Grep and Glob were refused inside the child process: a worker could read the repository, find the cause of a defect, write the exact patch into its final message — and not apply it. Every task failed further downstream («no receipt», «tests red»), and no screen could name the reason, because the refusal happened inside a child process. The grant is the envelope's own list and nothing beyond it: policy is not widened, it is *delivered*.
-- **A live worker was declared dead every two minutes.** Renewing a task's lease called a method the queue library does not have, and the error was swallowed by an empty catch. The worker counted as silent, its process was never killed, and a duplicate was launched — three parallel agents on one task, burning one subscription.
-- **The board showed an empty room while work was running.** The router picked an executor and stored it nowhere; every busy-counter is built from that field. Hence a free worker and an empty queue next to a task that was, in fact, being worked.
-- **Work happened in the wrong repository.** The working copy was cut in the directory the daemon was launched from rather than the tree of the connected project — and the done card, the diff door, the task timeline and the «answer without code» gate read git there too, naming the main branch by a hard-coded word.
-- **Finished work could not be accepted.** The acceptance gate asked for verification without requesting a structured answer and got prose that parsed to nothing; and in a repository with no structural receipts the honest answer «nothing to verify» read as «no receipt», failing work that carried a real commit. Now work with a commit but without proof is not declared done — it goes to the human column marked *unverified*. No self-certification: «done» is still only a human's word.
-- **A worker's stated approach was never heard.** The parser wanted its marker at the start of a line; the stream arrives in JSON frames where the worker's words sit inside a field. Three attempts in a row printed their reasoning and all three were counted as unexplained.
-- **The forge lane — creating agents and skills — had received none of the above.** The same four misses again on its own code path.
-- **Live updates had never reached the window.** The daemon names every frame (`event: <name>`); the window listened only for the unnamed default type, to which a named frame is never delivered. Not one call arrived from the day the hub began naming frames: every screen quietly lived on a three-second poll, and the live feed always said it was quiet. Nothing crashed, so nothing was noticed. The window is now subscribed by name to every declared name, proven end to end by a test that runs a real hub → a real server on a live port → a socket → the stream parsed to the letter of the spec → the window's own listener, and demands that every declared name arrives.
-- **The corpus lost notes on Windows checkouts, silently.** Every grammar decision in the frontmatter reader assumed LF, so a note delivered with CRLF came back as a «structural file» — description, kind, tags, importance gone without a word — and the tag registry came back empty, after which the lint declared every tag in the corpus unregistered. An owner cannot see this by construction: their clone is an old checkout with LF, while every fresh worktree the daemon cuts for a worker arrives with CRLF.
-
-**New, and visible.** The subscription-window figure on the spend screen is now the one Claude Code hands its own status line — the only programmatic source that also counts the sessions you ran in your own terminal. It lands as an observation snapshot, is attributed to no account (that stdin carries no account name, and guessing it is exactly the class of guess this module exists to avoid), and expires with its window: after the reset the block says there is no fresh observation and when the last one was taken. Zero is never displayed — a zero reads as «quota free».
-
-Alongside them, the parts that were built and never seen: the newest attempt on a task card opens without a click, and the attempt's own summary — steps, tools and how many times each, files changed, connections and skills used, whether it went through the paid channel and what it cost — is read there in words.
-
-**What this release does not claim.** The terminal figures appear after your next session in a terminal; until then the block says so in words rather than drawing a zero. Three known breaks are tracked and NOT fixed here: the paid channel cannot yet execute a task, a phase stage cannot be accepted from the window, and a merge receipt still reports a test run that was never wired to it. They are named here for the same reason the nine above are: a release that hides what it knows is broken is the failure this one was spent proving.
-
-## What's new in 5.5.0 — the engine
-
-The market gap the competitor recon exposed (11.08): **nobody lets you steer a live agent session** — Hermes has the vocabulary but no window, Paperclip has the visibility but no wheel, Multica has the entrance but its stream never started. This release builds the wheel into the window:
-
-- **The task card is a thread.** The order, every numbered attempt as a fold («Подход 2 · готово · 1 мин 20 с»), and the fold opens into the transcript — in three readings: **Лента** (the human feed: tool crumbs, handoffs), **Сырьё** (every stored line verbatim), **Вживую** (pinned to the tail of a running attempt). One transcript, one reader — the same one «Живой поток» uses.
-- **Text typed against running work has a declared fate.** The card of a running task carries a steering composer: **«Перебить сейчас»** kills the run and the SAME session resumes with your correction — everything already done stays in its head; **«После хода»** lets the run finish and the correction rides the continuation. The correction is written to disk BEFORE anything is killed — a daemon restart cannot lose your «нет, не так».
-- **A return continues the same session.** A task sent back with a comment used to start over from zero; now attempt N+1 resumes attempt N's session — the context you already paid for survives the return.
-- **The corpus check speaks Russian** in the Russian window (the budgeted partial-run warning included).
-
-**What this release does not claim.** True mid-turn injection — a correction landing between two tool calls of the CURRENT turn, Hermes-style — is blocked by the CLI's stdin protocol and is NOT built; «Перебить сейчас» is an honest kill-and-resume, named as such. Codex sessions have a different resume protocol: a correction to a Codex task is skipped on the record, never silently. Worker 30-day statistics need a per-worker attempt index the ledger does not have yet — deferred, tracked.
-
-One declared new door (`POST /api/redirect`) — route table re-freeze 54 → 55.
-
-## What's new in 5.4.3
-
-The first wave of «the engine» — five moves that make the window feel alive, each taken from the competitor recon and rebuilt our way:
-
-- the conversation's status **ticks by the second** («Думает · 12 с») — a live system is visible by a moving digit
-- while a turn runs, **Send becomes Стоп** — and a stopped turn answers «остановлено», never an apology for a "failure" you ordered
-- after Стоп **your text returns to the composer** — a stop is a redirect, not a loss
-- a queued task that nothing will pick up **names its blocker on the card** (conveyor off / windows closed / budget spent), and the new-task form warns **before** you submit — «Queued without a reason» no longer exists here
-- a failed attempt reads in **two layers**: the human sentence plus how long the attempt ran, and the raw reason code one click away
-
-One new door (`POST /api/chat/stop`) — a declared re-freeze of the route table, 53 → 54.
-
-## What's new in 5.4.1
-
-The fixes that had accumulated on the main branch after the 5.4.0 stamp, cut into a release of their own rather than left to ride along with the next feature:
-
-- the spend ceiling starts to exist, and an estimate stops booking centuries
-- live updates arrive, and sub-agent lines group under the worker that spawned them
-- a card shows the receipt it has, instead of «no receipt»
-- signing in leads to work, and memory shows the notes of the **selected** project
-- the park can be stopped from the window, and a machine can be detached
-- a context clear inside the window no longer counts as a new terminal
-- the live log says which tool ran and what was handed to the agent, in words
-
-## What's new in V5.3
-
-V5.2 made the memory layer **measurable**. V5.3 makes it **governable** — and does the same to the optional fleet: rules that had been written down as prose are now the rules the running code actually asks. Four directions, one release. Everything below is described in full further down this page; this is the map.
-
-```mermaid
-flowchart LR
-    V53(["V5.3"])
-
-    V53 --> M["Memory you can govern"]
-    V53 --> W["The window, and the team that arrived in it"]
-    V53 --> L["A task named in any language"]
-    V53 --> F["A fleet whose written rules are consulted"]
-
-    M --> M1["Three storage classes on the who-sees-it axis —<br>placement enforced before the first byte, fail-closed"]
-    M --> M2["A note that talks to the agent is refused at read time,<br>in English and in Russian"]
-    M --> M3["forget, and erase — every surface named,<br>removed, then read back to confirm"]
-    M --> M4["A contradiction is scoped to one clause,<br>so a red result is worth acting on"]
-    M --> M5["A confirmed draft finally has a door into the corpus"]
-
-    W --> W1["The whole shipped team on one screen —<br>one control turns the pipeline on, and reports what moved"]
-    W --> W2["A project is connected from the window,<br>then watched live and read-only"]
-    W --> W3["The first run has a way out —<br>postponing it writes nothing into your project"]
-
-    L --> L1["The queue accepts a title in any script"]
-    L --> L2["A non-UTF-8 queue database is named at boot,<br>together with the command that repairs it"]
-
-    F --> F1["Eleven named states, a contract per legal transition"]
-    F --> F2["A capability envelope gates the spawn"]
-    F --> F3["An attempt stamp, and a per-tick reconciliation<br>for what ended while the daemon was down"]
-```
-
-### Memory you can govern
-
-The three storage classes are the headline: a note marked as restricted is refused entry to any git-backed path **before a single byte is written**, in both write doors, and lands in `.sma/local-memory` instead. Retrieved text is now data rather than instruction — a note carrying "ignore your previous instructions", or the same trick in Russian, is withheld with the reason named. `memory forget` retires a note; `--erase` removes it physically from every surface a copy can live on, naming each one and reading it back — and it **declines** when an archived episode shares the record's id, because history is a different asset class from truth.
-
-The write pipeline gained the door it was missing. Step 7 stages anything that is not a low-risk working observation as a draft — and until this release a confirmed draft had no path into the corpus at all:
-
-```mermaid
-flowchart TD
-    E["something happened"] --> S1["1 observe · 2 classify<br>the machine never classifies —<br>the two fields that decide meaning come from the caller"]
-    S1 --> S3["3 redact<br>before any write path exists in the sequence"]
-    S3 --> S4["4 extract · 5 compare · 6 evidence"]
-    S4 --> S7{"7 risk<br>which of the seven doors is this record entitled to?"}
-
-    S7 -->|"auto-ttl"| S8["8 persist — the corpus"]
-    S7 -->|"the other six paths"| DR["drafts/ — explicitly not memory<br>no reader, no index, no check descends into it"]
-    S7 -->|"class missing or out of vocabulary"| DR
-
-    DR --> DOOR["a person confirms ONE draft, by file name,<br>with an explicit yes"]
-    DOOR --> RECHECK["classify, redact, extract and compare are asked AGAIN<br>against the corpus as it is now — a confirmation is not provenance"]
-    RECHECK --> S8
-    S8 --> S9["9 index · 10 measure · 11 consolidate · 12 lifecycle"]
-```
-
-The one automatic path — `auto-ttl` — is the only one that writes without a human, and it additionally demands a retention window. Anything whose class cannot be determined falls closed to the strictest door. The command behind that confirmation is `sma memory write --apply <draft> --confirm <id>.md --yes`; the schema migration keeps the same shape — preview by default, one proposal applied at a time, by hand.
-
-The contradiction detector became worth listening to. It reads every kind of note that *states a rule*, and it reads a Russian corpus as well as an English one — so a clean result now means «nothing was found» instead of «nothing was examined». It calls two notes contradictory only where one denies the other **about the same subject, inside the same clause**, and it no longer reads a date as a quantity. Measured on a live corpus, that turned two critical findings — both false — into zero, with every true positive still firing.
-
-### A task named in any language
-
-PostgreSQL fixes a database's encoding at CREATE time, and the Windows `initdb` default is the ANSI code page. A queue created there used to answer a Cyrillic, Greek, Japanese or emoji title with a driver stack trace. Now the daemon asks the database its encoding at boot, says what will happen and which command repairs it, and refuses such a title with that same sentence. `node supervisor/queue-utf8-migrate.mjs --apply` builds a UTF-8 database, carries the waiting tasks and the attempt rows over, and **keeps** the old one — there is no `DROP` in it.
-
-That title then walks the fleet's eleven named states. Every arrow below is a contract in the shipped state machine — who may perform it, what must be true first, and what it writes:
-
-```mermaid
-flowchart LR
-    T(["a task, named in any language"]) --> R
-
-    R["READY"] -->|"dispatcher"| C["CLAIMED"]
-    C -->|"worker"| RUN["RUNNING"]
-    RUN -->|"worker"| P["PRODUCED<br>artifact manifest + execution receipt"]
-    P -->|"verifier"| V["VERIFYING"]
-
-    V -->|"receipt + authorized disposition"| A["ACCEPTED"]
-    V -->|"receipt"| RJ["REJECTED"]
-    V -->|"a human must decide"| H["WAITING_HUMAN"]
-    H -->|"human"| A
-    H -->|"human"| RJ
-
-    C -.->|"lease expired"| RT["RETRYABLE"]
-    RUN -.->|"lease expired"| RT
-    V -.->|"lease expired"| RT
-    RT -.->|"budget left — a NEW attempt, never a rerun"| R
-    RT -.->|"budget exhausted"| DL["DEAD_LETTER"]
-```
-
-`ACCEPTED`, `REJECTED`, `DEAD_LETTER` and `CANCELLED` are terminal — and terminality is the *absence* of any outgoing contract rather than a flag, so a state cannot be terminal in one place and leaky in another. `ACCEPTED` is reachable only with a verification receipt **and** an authorised disposition. The full table, the seven invariants and — in §5 — what is deliberately not a goal: [docs/FLEET-INVARIANTS.md](docs/FLEET-INVARIANTS.md).
-
-### The rest of the release, in one breath
-
-- **The whole team ships, and the window shows it.** Every agent that comes with the product appears on the team screen beside the ones you wrote, marked as stock, yours, or a stock definition you have edited. The switch is a panel now, at the top of the section it acts on: the state in words, the count in figures, what one press will do — and a result either way, because an action that ends in silence is a defect on its own.
-- **A project is connected from the window** — a form, not a hand-made HTTP request — and its files are then followed as they change. What the window shows of that project's memory is read-only, and the migration preview is bounded: a corpus over 200 notes reports its size instead of building a preview of that scale.
-- **The first run can wait.** «Позже» — the "later" button — closes the onboarding interview having written nothing into your project; the answer is kept daemon-side, so the window stops asking and the door stays open.
-- **The release gate is runnable again.** `lint` over a real planning tree of 151 plans took ~193 s, and 92 % of it was two checks spawning 604 git processes to answer one question twice. It now asks git once per run: **193 s → 3.5 s, 604 spawns → 27**, with a byte-identical report. A check that costs more than the whole test suite is a check that stops being run. It also gained progress on stderr and a wall-clock budget that says `PARTIAL` and exits non-zero rather than truncating silently.
-- **The suite grew with it** — 2050 cases at the v5.2.0 stamp to the figure in the badge at the top of this page, which is written from a measured run by `badge.mjs` and never typed by hand: the publish gate refuses a tarball whose badge disagrees with the receipt.
-
-## The window — V5.1's app, served by the daemon
-
-V5 shipped the engine and a deliberately thin operations panel. V5.1 builds the app on top of it: **seventeen screens**, compiled once and served by the daemon itself, behind the same token and the same frozen route table. No second web server appears, no extra port is opened, nothing new listens.
+V5 shipped the engine and a deliberately thin operations panel. The releases after it built the app on top: **two dozen screens**, compiled once and served by the daemon itself, behind the same token and the same frozen route table. No second web server appears, no extra port is opened, nothing new listens.
 
 The app arrives already compiled: the npm package carries the built front in `daemon/static/app`, so there is nothing to build before you can open it. The daemon's own dependencies ride inside the package the same way — nineteen packages, about 6 MB, vendored in `daemon/node_modules` — so there is no second `npm install` for it either; the full list, with the licence each one carries, is in [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). From a git clone, `cd spa && npm run build` rebuilds it into that same folder. The daemon needs no further wiring, and the panel it already served stays exactly where it was, as the emergency view. A clean boot says so out loud — one line, *«Buckle up, soldier — the park is live»*, naming the exact address to open; failure was always loud, and success no longer whispers.
 
 ### The whole working day, without the terminal
 
-V5.1 put seventeen screens behind the daemon. What came after turned them into a place you can
-actually work from: the route table went from thirty doors to **fifty-three**, declared once and
-frozen, and every one of them is live — there is no «coming soon» handler left in it.
+The screens behind the daemon became a place you can actually work from. The route table that
+carries them is **declared once and frozen** — its size is a test, and it grows only by an
+explicit, recorded revision, so the surface cannot quietly turn into remote command execution.
+Every door in it is live: there is no «coming soon» handler left in the table.
 
 - **The phase cycle, run from the app.** An index of every phase with «N open / M answered», a
   card per phase with its four stages and a button on each, plans and summaries opened in place
@@ -423,7 +218,7 @@ That single visit exchanges the token for an HttpOnly session cookie and every l
 
 **Always-on wiring** — a launchd job on macOS, a Scheduled Task on Windows — is written up in the [supervisor/](supervisor/) checklists, together with the smoke run that proves the loop end to end before you leave it running overnight.
 
-**Your day, not a dashboard.** *Today* opens on what the fleet did overnight and what is waiting on you; the board holds every task; the team screen shows each worker with its lane and its window; the live stream is the work as it happens; costs read straight from the spend book, per day, per lane and per account. The app is built for a desktop screen (1440 px and up) — the phone still waits for its own design pass, and V5.3 shipped without it rather than pretending otherwise.
+**Your day, not a dashboard.** *Today* opens on what the fleet did overnight and what is waiting on you; the board holds every task; the team screen shows each worker with its lane and its window; the live stream is the work as it happens; costs read straight from the spend book, per day, per lane and per account. The app is built for a desktop screen (1440 px and up) — the phone still waits for its own design pass, and every release so far has shipped without it rather than pretending otherwise.
 
 **Every task card answers WHY.** The decision journal rides the same attempt ledger the receipts do, in three layers: the dispatcher's own reasons (why this lane, this worker, this window — structured codes from a closed vocabulary, never free text), the worker's mandatory approach note (what it chose, what it rejected, which rules and memories shaped it), and the memory trace (which notes loaded, which reflexes fired). An attempt without its note is as incomplete as one without its receipt.
 
@@ -569,7 +364,8 @@ How loudly a note speaks is what it says about itself: a note states what *missi
 ## The pillars
 
 - **Predictions** — every plan states, up front, what will measurably change and how to check it; a deterministic scorer compares promise to fact at plan close.
-- **Receipts + blind verification** — every "done" carries a re-runnable check; a blind verifier re-derives it from the tree alone, refusing the agent's self-report as input.
+- **Receipts + blind verification** — every "done" carries a re-runnable check; a blind verifier re-derives it from the tree alone, refusing the agent's self-report as input. The re-run measures the tree it was pointed at, and only a divergence that is **new** is red — a failure that was already there is named as pre-existing rather than charged to whoever ran last.
+- **QA that uses the product instead of reading it** — `sma-ui-qa` runs after the verifier and before a phase reaches you. The verifier asks whether the *repository* shows the goal was met; this asks whether the *product does it when someone uses it*. It turns the phase's own success criteria into cases it runs in a real browser, sweeps the surface pressing every visible control once, and leaves the data-destroying ones for a human, named in the receipt. A criterion it could not test is BLOCKED, never passed — and **a run that did not happen is never a pass**: with no browser driver it exits 3 and says `NOT RUN`, instead of an empty finding list that reads as clean. The driver is resolved at run time and never installed on your behalf: SMA's own runtime dependency count stays zero. Only measured defects send work back to a builder; whether a screen *reads* well is advice for a person, because a beauty score with a decimal point is a random number.
 - **Consequences** — a class-A miss does not just get logged, it *acts*: it blocks the next ship until a human dispositions it, from an append-only ledger the agent cannot edit.
 - **Reflexes** — a scored miss becomes a permanent rule that fires *before* the next matching tool call. Touch boiling water once, never again.
 - **Corpus health** — lint, contradiction detection, and consolidation keep the memory sharp at hundreds of notes instead of decaying into noise. The contradiction detector reads every kind of note that *states a rule* — a decision, a status, a norm, a procedure — and reads a Russian corpus as well as an English one, so a clean result means «nothing was found» rather than «nothing was examined». It calls two notes contradictory only where one denies the other *about the same subject, in the same clause* — a marker sitting in some unrelated aside of a long rule is not a disagreement — so a red result is worth acting on. Diagnostics are loud: a failing memory command prints what broke and why, and a corpus without its tag registry still builds a usable index instead of erroring.
@@ -668,8 +464,8 @@ The full reference lives in [scripts/sma/README.md](scripts/sma/README.md). A fe
 
 Everything above is the core. The detail lives one link away:
 
-- **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history V1 → V5.1 with the trust spine process by process.
-- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next: V5 orchestration (shipped), V5.1 shipped as v5.1.0, V5.2 shipped as v5.2.0, V5.3 shipped as v5.3.0, V5.4 shipped as v5.4.0 and patched as v5.4.1/v5.4.2 — and the memory-foundation program behind them. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
+- **[docs/DETAILS.md](docs/DETAILS.md)** — the full engineering deep-dive: the four-setup side-by-side, the accountable loop diagrams, the complete CLI reference by version layer, the animated demo gallery, how the hooks integrate, and the whole version history — V1 through [the V5 series, release by release](docs/DETAILS.md#the-v5-series-release-by-release) — with the trust spine process by process.
+- **[ROADMAP.md](ROADMAP.md)** — where SMA goes next, and what each version of the V5 line actually shipped, with its honest carries named. Русская копия: [ROADMAP.ru.md](ROADMAP.ru.md).
 - **[docs/MEMORY-MODEL.md](docs/MEMORY-MODEL.md)** — the schema law of the memory layer: what one record may claim and must carry, the closed vocabularies, provenance and its fingerprint, the temporal model, the storage classes, the one-claim law, and the corpus checks that hold all of it up.
 - **[docs/MEMORY-LIFECYCLE.md](docs/MEMORY-LIFECYCLE.md)** — how a memory is written, approved and retired: the twelve-step write pipeline with every refusal it can make, the risk-approval ladder, drafts, the four lifecycle transitions, and the preview-only migration ritual.
 - **[docs/MEMORY-THREAT-MODEL.md](docs/MEMORY-THREAT-MODEL.md)** — the security posture: which storage class may hold what, what fails open and what fails closed, how retrieved text stays data instead of becoming an instruction, and the encryption policy — decided on 2026-08-04: no cipher in this version, the restricted class is enforced as placement and its bytes are plain text on disk.
