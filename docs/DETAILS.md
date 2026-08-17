@@ -397,6 +397,15 @@ words each release was announced in — fix lists included, because a release no
 was broken is worth nothing to the person who hit it. Where a release's mechanism has its own
 canonical document, this history links to it instead of reprinting it.
 
+### 5.6.0 — the taskboard, and numbers that do not lie
+
+The task screen became the owner's workplace: every unit of work — a task, a batch, a phase —
+reads as one line and opens into its own view; a task card shows what was promised, what was
+done, and what proves it; the conversation with the system answers a waiting worker by button
+and continues the same session. The exit gate now certifies the work itself: it measures the
+worker's copy, and only a NEW divergence counts as red. Numbers stopped lying — waiting age,
+attempt counts, merge receipts that say "tests were not run" instead of an invented green.
+
 ### 5.5.2 — the engine, connected
 
 5.5.0 built the engine. This release is the day it was discovered that its parts had never been
