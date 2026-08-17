@@ -1744,6 +1744,63 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(s.queued).toBe(0) // a counter an abandoned batch could never bring down
     })
 
+    /**
+     * ОТМЕНА ЗАКРЫВАЕТ И ТОТ КУСОК, КОТОРЫЙ УЖЕ НАЧАЛИ — иначе он висит вечно.
+     *
+     * Отмена снимала из очереди только НЕНАЧАТОЕ, а взятый в работу кусок оставался
+     * `claimed` навсегда: в «ждут вас» такой не попадает (там ждут решения человека), закрыть
+     * его из окна нечем, и на доске отменённой сборки остаётся хвост, которого никакая работа
+     * уже не уберёт. Аренда его тоже не спасает: подметание вернёт молчащего работника в
+     * очередь, а очередь отменённой сборки никому не выдаётся — тот же вечный хвост, только
+     * под другим словом.
+     *
+     * Терминальный исход у него теперь есть, и он ЧЕЛОВЕЧЕСКИЙ: сборку остановил человек.
+     * Произведённое по-прежнему неприкосновенно, и ждущее человека — тоже: у первого работа
+     * закончена, у второго есть чем закрыться.
+     */
+    it('«отменить» закрывает и НАЧАТЫЙ кусок — с причиной, а не вечным «в работе»', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-14'))
+      await q.enqueue(piece('B-14', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-14', 2))
+
+      const taken = await q.claimNext('w1', {}) // первый кусок ушёл в работу и там остался
+      expect(taken.id).toBe('B-14-1')
+      expect((await q.list({})).find((r) => r.id === 'B-14-1').status).toBe('claimed')
+
+      expect(await q.resolveBatch('B-14', { cancel: true })).toBe(true)
+
+      const rows = await q.list({})
+      const started = rows.find((r) => r.id === 'B-14-1')
+      expect(started.status).toBe('failed') // терминально: доска больше его не держит
+      expect(started.failure_reason).toBe('manual') // и это слова, а не пустота
+      expect(REASON_LABELS[started.failure_reason].length).toBeGreaterThan(0)
+
+      const s = await q.stats()
+      expect(s.claimed).toBe(0) // счётчик «в работе» отменённая сборка больше не завышает
+    })
+
+    it('отмена не трогает ни произведённое, ни ждущее человека — им есть чем закрыться', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(parent('B-15'))
+      await q.enqueue(piece('B-15', 1))
+      c.advance(10)
+      await q.enqueue(piece('B-15', 2))
+
+      await q.claimNext('w1', {})
+      await q.complete('B-15-1', { receiptRef: 'reverify:one' }) // ждёт человека
+      await q.claimNext('w1', {})
+      await q.complete('B-15-2', { receiptRef: 'reverify:two' })
+
+      expect(await q.resolveBatch('B-15', { cancel: true })).toBe(true)
+      const rows = await q.list({})
+      expect(rows.find((r) => r.id === 'B-15-1').status).toBe('awaiting_approval')
+      expect(rows.find((r) => r.id === 'B-15-2').status).toBe('awaiting_approval')
+    })
+
     it('a word about a batch nobody asked for is answered, never thrown at', async () => {
       const c = clockOf()
       const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
