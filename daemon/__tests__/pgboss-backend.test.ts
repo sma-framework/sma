@@ -202,12 +202,19 @@ function makeFakeBackend({
       return true
     },
     // The library really does offer this one (pg-boss v11: cancel(name, id)), and the backend
-    // uses it for exactly one thing — taking the unstarted pieces of an abandoned batch out of
-    // the queue. `cancelled` is a state of pg-boss's own vocabulary, which the backend already
-    // maps onto `failed`.
+    // uses it for exactly one thing — taking the pieces of an abandoned batch out of the queue.
+    // `cancelled` is a state of pg-boss's own vocabulary, which the backend already maps onto
+    // `failed`.
+    //
+    // WHICH STATES IT REACHES IS READ OFF THE LIBRARY, never guessed: `cancelJobs` in pg-boss's
+    // own plans.js updates `WHERE ... AND state < 'completed'` — waiting, retrying AND ACTIVE.
+    // This fake modelled `created` alone, which is SMALLER than the library and therefore
+    // allowed; it stayed that way only while nothing needed the rest. A piece already under way
+    // is cancelled now too, so the fake is corrected to the plan rather than to the need: it may
+    // be smaller than pg-boss, never bigger.
     async cancel(_name: string, id: string) {
       const j = jobs.get(id)
-      if (j && j.state === 'created') j.state = 'cancelled'
+      if (j && (j.state === 'created' || j.state === 'retry' || j.state === 'active')) j.state = 'cancelled'
       return true
     },
     async getQueueStats(name: string) {
@@ -315,6 +322,16 @@ function makeFakeBackend({
         if (!j.data || j.data.id !== batchId || j.name !== 'sma.batch') continue
         j.data = { ...j.data, data: { ...(j.data.data || {}), cancelled: true } }
       }
+      return { rows: [] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('SET output =')) {
+      // resolveBatch({cancel}): WHY a cancelled piece is closed, merged into the job's own
+      // output — the field every reader already takes a finished row's cause from. Modelled as
+      // a MERGE, exactly as `coalesce(output,'{}') || jsonb_build_object(...)` behaves, and
+      // keyed by JOB id like every other statement of this backend.
+      const [jobId, reason] = params
+      const j = jobs.get(String(jobId))
+      if (j) j.output = { ...(j.output || {}), reason }
       return { rows: [] }
     }
     if (sql.includes("state = 'created'") && sql.startsWith('SELECT id, name')) {
