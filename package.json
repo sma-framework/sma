@@ -57,6 +57,7 @@
     "sma": "node scripts/sma/cli.mjs"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "vitest": "^4.1.4"
   }
 }
