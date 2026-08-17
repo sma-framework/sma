@@ -20,6 +20,7 @@ import type {
 } from '../../api/types'
 import {
   accentFor,
+  approvalRefusal,
   attemptsLabel,
   clockLabel,
   hoursLabel,
@@ -705,7 +706,15 @@ export function Screen() {
 
   const doApprove = () => {
     setProblem(null)
-    approve.mutate({ taskId, machine }, { onError: (err) => setProblem(refusalWords(err)) })
+    approve.mutate(
+      { taskId, machine },
+      {
+        // ОТВЕТИЛА — НЕ ЗНАЧИТ ПРИНЯЛА. Дверь отвечает 200 с `ok:false`, поэтому обработчик
+        // ошибки ниже на отказе не срабатывает вовсе: молчание после нажатия шло отсюда.
+        onSuccess: (out) => setProblem(approvalRefusal(out)),
+        onError: (err) => setProblem(refusalWords(err)),
+      },
+    )
   }
 
   const doReturn = () => {
