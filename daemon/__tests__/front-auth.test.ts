@@ -627,6 +627,132 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
   })
 
   /**
+   * ═══════ A REFUSAL OF THIS DOOR SAYS WHY, IN WORDS, OR IT IS NOT A REFUSAL ═══════
+   *
+   * Пресс на «Одобрить» отвечал `ok:false` и НИ ОДНОГО слова. Человек у окна не мог отличить
+   * конфликт от исчезнувшей ветки, красных тестов и гонки двух терминалов — а это четыре
+   * разных действия в ответ. Живая приёмка так и записала: «нажалась и ничего не сделала».
+   *
+   * Ритуал слияния УЖЕ различает эти случаи (мягкий отказ с держателем слота, красный прогон,
+   * сообщение git) — их просто никто не доводил до тела ответа. Поэтому тест стоит на ТЕЛЕ
+   * ДВЕРИ: провод доказывается тем, что по нему доехало.
+   */
+  describe('a refusal names its cause in words the person at the window reads', () => {
+    async function refuse(taskId: string, merge: any) {
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => (typeof merge === 'function' ? merge(o) : merge),
+          repoDir: '/repo',
+        },
+      })
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId },
+      })
+      expect(res.statusCode).toBe(200)
+      return JSON.parse(res.body)
+    }
+
+    it('красный прогон на слитом результате назван тестами, а не пустым отказом', async () => {
+      const out = await refuse('R-90', (o: any) => ({ merged: true, testsPassed: false, branch: o.branch }))
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toMatch(/тест/i)
+    })
+
+    it('конфликт слияния назван конфликтом', async () => {
+      const out = await refuse('R-91', {
+        ok: false,
+        message: 'CONFLICT (content): Merge conflict in src/a.ts\nAutomatic merge failed; fix conflicts',
+      })
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('conflict')
+      expect(out.reason).toMatch(/конфликт/i)
+    })
+
+    it('исчезнувшая ветка названа веткой, а не «слияние не прошло»', async () => {
+      const out = await refuse('R-92', {
+        ok: false,
+        message: "merge: wt/R-92 - not something we can merge",
+      })
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('branch_missing')
+      expect(out.reason).toMatch(/ветк/i)
+    })
+
+    it('несохранённые правки в дереве названы деревом — их убирает человек, а не кнопка', async () => {
+      const out = await refuse('R-93', {
+        ok: false,
+        message: 'error: Your local changes to the following files would be overwritten by merge:',
+      })
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('tree_dirty')
+      expect(out.reason).toMatch(/правк|дерев/i)
+    })
+
+    it('гонка двух терминалов доносит до окна СВОЮ фразу, ту самую, что назвала держателя', async () => {
+      const override = 'слияние уже идёт (T-2) — дождитесь завершения'
+      const out = await refuse('R-94', { merged: false, softDenied: true, override, holder: { by: 'T-2' } })
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('merge_busy')
+      expect(out.reason).toBe(override) // не пересказ — та самая фраза, с держателем внутри
+      expect(out.softDenied).toBe(true)
+    })
+
+    it('незнакомый отказ git всё равно несёт слова: класс не угадан — сказано, что сказал git', async () => {
+      const out = await refuse('R-95', { ok: false, message: 'fatal: something nobody classified' })
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('merge_failed')
+      expect(out.reason).toContain('something nobody classified')
+    })
+
+    it('ЗАКОН: ни один ok:false этой двери не уходит без слова', async () => {
+      const shapes = [
+        { merged: true, testsPassed: false },
+        { ok: false, message: 'CONFLICT (content): Merge conflict in x' },
+        { ok: false, message: 'fatal: ветка не найдена' },
+        { merged: false, softDenied: true, override: 'слияние уже идёт' },
+        {}, // ритуал вернул нечто вовсе неопознанное — и это тоже отказ, а не молчание
+        null,
+      ]
+      let n = 0
+      for (const shape of shapes) {
+        n += 1
+        const out = await refuse(`R-96${n}`, shape)
+        expect(out.ok).toBe(false)
+        expect(typeof out.reason).toBe('string')
+        expect(out.reason.length).toBeGreaterThan(0)
+        expect(out.reasonCode.length).toBeGreaterThan(0)
+      }
+    })
+
+    it('успех НИЧЕГО не объясняет: у зелёного слияния причины отказа нет вовсе', async () => {
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+        },
+      })
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-97' },
+      })
+      const out = JSON.parse(res.body)
+      expect(out.ok).toBe(true)
+      expect(out.reason).toBeUndefined()
+      expect(out.reasonCode).toBeUndefined()
+    })
+  })
+
+  /**
    * WHERE THE MERGE HAPPENS. The worker's branch lives in the tree of the CONNECTED project;
    * the daemon may be launched from anywhere at all. Handing the merge the launch directory
    * made the button answer «ok:false, merged:false» on a real machine — the branch simply did
