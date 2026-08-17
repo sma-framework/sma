@@ -22,6 +22,13 @@ import { SystemConsole } from './SystemConsole'
  * The window is made for a working screen — a wide desktop, one thing at a time, no
  * folding and no shrinking. A smaller screen is its own piece of work, taken up on its
  * own terms rather than smuggled in as a breakpoint.
+ *
+ * И ЭТА ШИРИНА ОБЪЯВЛЕНА ЗДЕСЬ, НА РАМЕ, а не на странице. Минимум в 1360px стоял на `body`,
+ * и на узком экране вбок уезжала вся страница целиком; теперь его несёт рама, а возит её
+ * `#root` (см. tokens.css). Заявление то же самое — «окну нужно 1360», — но сказано про то,
+ * что действительно столько занимает: `min-h-full` вместо `min-h-screen` по той же причине,
+ * полоса прокрутки контейнера съедает часть высоты, и рама в целый экран высотой вылезала бы
+ * из него ровно на её толщину.
  */
 export function Shell() {
   const [active, setActive] = useState<ScreenId>(HOME_SCREEN)
@@ -46,7 +53,7 @@ export function Shell() {
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-full min-w-[1360px]">
       <Sidebar active={active} onOpen={openFromSidebar} />
       <main className="flex min-w-0 flex-1 flex-col">
         <div className="h-0.5 bg-gradient-to-r from-[#243B66] via-[#1B7E9C] to-[#74DBA0]" />
