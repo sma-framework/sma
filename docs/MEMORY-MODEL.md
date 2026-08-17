@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every rule below is enforced by shipped code and covered by the test suite. |
-| Document version | 1.0 |
-| Date | 2026-08-02 |
+| Document version | 1.3 (see §13 for what each revision changed) |
+| Date | 2026-08-02, last revised 2026-08-17 |
 | Applies to | `schema_version: 2`; the entire v1 corpus stays readable with zero edits |
 | Companion documents | [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) — how a record is written, reviewed and retired · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
 
@@ -539,6 +539,20 @@ validator the same question twice — once as the record is, once as if it had b
 authored natively — and treats the difference as the graced set. A new discipline
 rule is therefore graced correctly without anyone remembering to update the lint.
 
+### 11.3 A note is a note on every checkout — line endings are not a schema question
+
+The frontmatter reader accepts **both LF and CRLF**, and it is written down here
+because for a while it did not, and the failure was invisible by construction. Every
+grammar decision in the reader assumed a bare newline, so a note delivered with
+Windows line endings came back as a *structural file* — its claim, kind, tags and
+importance silently gone — and the tag registry came back empty, after which the lint
+declared every tag in the corpus unregistered. An owner could not see it from their
+own clone, which had been checked out with LF long ago; only a freshly created
+worktree reproduced it. Two rules follow, and both apply to any reader added later:
+**a parser states which line endings it accepts**, and **a record that fails to parse
+is reported as unparsed, never returned as an empty-but-valid record.** A blank where
+a claim should be is a defect that reads as a fact.
+
 ## 12. Backward compatibility: v1 → v2
 
 A v1 note carries `description`, `kind`, `tags`, `use-when`, `importance`. Every v1
@@ -688,6 +702,7 @@ validator reports it: kept as-is, with nothing validating it.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.3 | 2026-08-17 | §11.3 added: the frontmatter reader accepts both LF and CRLF, written down after a period in which it did not — a note delivered with Windows line endings came back as a structural file with its claim, kind, tags and importance silently absent, and the empty tag registry then made the lint declare every tag unregistered. Two rules stated for any reader added later: a parser names the line endings it accepts, and a record that fails to parse is reported as unparsed rather than returned as an empty-but-valid record. No schema change. |
 | 1.2 | 2026-08-03 | §8 states what `criticality` is worth on the shared weight axis: a record with no `importance` number of its own now weighs its grade (`low` 2 · `medium` 5 · `high` 8 · `critical` 8), with `context_priority: always` keeping the always-load floor above it. Behavior changed with it: migrated records stop weighing zero, so a knowledge item whose grade clears the reflex silence threshold fires pre-act where it used to stay quiet, and a graded record sorts ahead of an ungraded one inside its area index. A stated `importance` still wins, and no grade moves a record into or out of always-load membership. No schema change. |
 | 1.1 | 2026-08-03 | §9.1 now describes an implementation instead of a target: the read-time hard filters are code (`isVisibleNow` — status, valid time, sensitivity by audience, repo/environment scope), executed as a filter chain before ranking on both output points of a pack. One behavior changed with it: a `superseded`/`revoked` record no longer reaches the delivered periphery, only its area index. Still unenforced and named as such: permission — `audience` is a parameter the caller states, not an identity this layer verifies. No schema change. |
 | 1.0 (correction) | 2026-08-02 | §9.1 corrected, not extended: the hard retrieval filters were written as if they ran, and only the `status` filter on CORE membership does. The paragraph now separates the contract from the implementation and names placement as the defense until read-time class filtering lands, which is what `MEMORY-THREAT-MODEL.md` §2.4 and non-goal 5 have said all along. No schema or behavior changed. |
