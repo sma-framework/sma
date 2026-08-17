@@ -204,6 +204,12 @@ export const TASK_STATUSES = Object.freeze([
  *                     certified, but it never explained itself, and an unexplained attempt
  *                     is incomplete by the same law that makes an uncertified one incomplete
  *   agent_error     — the worker process errored
+ *   provider_error  — the run the WORKER DID NOT END: the vendor refused mid-word (an
+ *                     overload, a server error) and the CLI stopped. Kept apart from
+ *                     agent_error because a live attempt killed by a 529 used to reach the
+ *                     window as «нет записки о подходе» — the note could not exist, the
+ *                     worker was cut off writing it — and the two ask a person for opposite
+ *                     things: wait and press again, or go and fix something
  *   tests_red       — a red reverify receipt (targeted tests failed)
  *   needs_decision  — the worker surfaced a call only a human can make
  *   missing_access  — credentials / permissions absent
@@ -220,6 +226,7 @@ export const FAIL_REASONS = Object.freeze([
   'no_journal',
   'no_artifact',
   'agent_error',
+  'provider_error',
   'tests_red',
   'needs_decision',
   'missing_access',
@@ -235,6 +242,7 @@ export const REASON_LABELS = Object.freeze({
   no_journal: 'нет записки о подходе — попытка не объяснена',
   no_artifact: 'нет документа — стадия не оставила своего файла',
   agent_error: 'ошибка работника',
+  provider_error: 'оборвал провайдер — работник тут ни при чём, попробуйте ещё раз',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
   missing_access: 'нужен человек: не хватает доступа',
