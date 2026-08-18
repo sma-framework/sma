@@ -11,14 +11,33 @@
  *   - the positioning regions contain ZERO multiplier claims (the 10x claim lives with
  *     9.2 only) and the RU manual + RU positioning regions contain ZERO em-dashes.
  *
+ * THE NUMBERS TARGET (`--target numbers`) extends the same idea to every NUMBER the docs
+ * use to describe the product itself. Nothing else in this repo cross-checks prose against
+ * code, so a header that promises fifty-six doors while the table holds sixty-one stays
+ * green forever. Four sources of truth, and only four:
+ *   - doors       → the ROUTES literal of the daemon front, PARSED from the text and never
+ *                   imported: this audit is synchronous and must not drag in a daemon.
+ *   - verbs       → the HANDLERS literal of this CLI, parsed for the same reason plus a
+ *                   stronger one — importing the CLI runs it.
+ *   - tests/files → the MEASURED receipt. An absent receipt means NOT MEASURED: the
+ *                   dependent checks are skipped and said out loud in `notes`. Inventing a
+ *                   number instead of reading a measured one is the very lie the badge law
+ *                   exists to prevent.
+ *   - version     → package.json, the single source; every other place is a projection.
+ * A missing anchor is always its OWN violation (parse-failed / pattern-missing /
+ * region-missing), so a check can never quietly become an empty check that passes.
+ * History is NOT policed: past release figures and the historical growth points of the
+ * map are measured facts of their own day, not claims about the product today.
+ *
  * SUBSTRATE LAW: Node built-ins only; every file read flows through an injected `readFile`
- * so tests never touch the real tree. Tolerant of missing files — a missing audited file,
- * or a missing/unpaired region marker, is itself ONE named violation, never a throw.
+ * and every write through an injected `writeFile`, so tests never touch the real tree.
+ * Tolerant of missing files — a missing audited file, or a missing/unpaired region marker,
+ * is itself ONE named violation, never a throw.
  *
  * Violation record shape mirrors lint.mjs: {file, rule, detail}.
  */
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Em-dash (U+2014) — banned inside RU regions this plan owns. */
@@ -188,13 +207,575 @@ export function auditReadme({ readFile, rootDir }) {
   return violations
 }
 
+// ══════════════════════════ the numbers target ══════════════════════════════
+//
+// Everything below serves ONE rule: a number a doc uses to describe the product is
+// derived from the code, or it is a named violation. Nothing below ever invents a
+// number, and nothing below polices history.
+
+/** The audited paths, written once so a rule and its writer cannot drift apart. */
+const SERVER_FILE = 'daemon/src/front/server.mjs'
+const CLI_FILE = 'scripts/sma/cli.mjs'
+const CLI_README = 'scripts/sma/README.md'
+const GRAPH_FILE = 'docs/master-graph.html'
+const PKG_FILE = 'package.json'
+const RECEIPT = 'test-receipt.json'
+const CAPABILITY_FILE = 'sma-core/capabilities/sma/capability.json'
+const VERSION_MARKER = 'sma-core/VERSION'
+const INSTALLER_FILE = 'bin/init.mjs'
+
+/** The three marked spans of the map that carry TODAY's numbers (the graph is not one). */
+export const NUMBER_REGIONS = ['sma:num-meta', 'sma:num-hero', 'sma:num-footer']
+
+/** The four source roots a template's promised writer must actually exist in. */
+const SOURCE_ROOTS = ['scripts/sma', 'sma-core/bin', 'daemon/src', 'bin']
+
+const NUMBER_UNITS = {
+  ZERO: 0, ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5, SIX: 6, SEVEN: 7, EIGHT: 8, NINE: 9,
+  TEN: 10, ELEVEN: 11, TWELVE: 12, THIRTEEN: 13, FOURTEEN: 14, FIFTEEN: 15, SIXTEEN: 16,
+  SEVENTEEN: 17, EIGHTEEN: 18, NINETEEN: 19,
+}
+const NUMBER_TENS = {
+  TWENTY: 20, THIRTY: 30, FORTY: 40, FIFTY: 50, SIXTY: 60, SEVENTY: 70, EIGHTY: 80, NINETY: 90,
+}
+
 /**
- * audit({target, readFile, rootDir}) — {violations, count}. target ∈ manual|readme|all
- * (default all). `readFile` defaults to a real UTF-8 reader but is injectable for tests.
+ * wordToNumber(word) — 0..99 spelled out, hyphenated compounds included ('SIXTY-ONE' → 61).
+ * Case-insensitive. Returns null for anything it does not KNOW: a guessed number would be
+ * worse than a refusal, so an unknown word in a guarded sentence scores its own violation
+ * instead of silently passing.
  */
-export function audit({ target = 'all', readFile = (p) => readFileSync(p, 'utf8'), rootDir }) {
+export function wordToNumber(word) {
+  if (typeof word !== 'string') return null
+  const w = word.trim().toUpperCase()
+  if (!w) return null
+  if (Object.prototype.hasOwnProperty.call(NUMBER_UNITS, w)) return NUMBER_UNITS[w]
+  if (Object.prototype.hasOwnProperty.call(NUMBER_TENS, w)) return NUMBER_TENS[w]
+  const parts = w.split('-')
+  if (parts.length === 2) {
+    const tens = NUMBER_TENS[parts[0]]
+    const unit = NUMBER_UNITS[parts[1]]
+    if (tens !== undefined && unit !== undefined && unit > 0 && unit < 10) return tens + unit
+  }
+  return null
+}
+
+/**
+ * sliceBalancedBraces(text, openIndex) — the body between `{` at openIndex and its match,
+ * skipping string literals and comments so a brace inside a comment cannot end an object.
+ * null when the text is unbalanced (the caller turns that into parse-failed).
+ */
+function sliceBalancedBraces(text, openIndex) {
+  const src = String(text)
+  if (src[openIndex] !== '{') return null
+  let depth = 0
+  let i = openIndex
+  let quote = null
+  while (i < src.length) {
+    const ch = src[i]
+    if (quote) {
+      if (ch === '\\') { i += 2; continue }
+      if (ch === quote) quote = null
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; i++; continue }
+    if (ch === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i)
+      if (nl === -1) return null
+      i = nl
+      continue
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      const close = src.indexOf('*/', i + 2)
+      if (close === -1) return null
+      i = close + 2
+      continue
+    }
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return src.slice(openIndex + 1, i)
+    }
+    i++
+  }
+  return null
+}
+
+/** The body of the object literal an anchor regex ENDING IN `{` points at, or null. */
+function literalBody(text, anchorRe) {
+  const src = String(text ?? '')
+  const m = anchorRe.exec(src)
+  if (!m) return null
+  return sliceBalancedBraces(src, m.index + m[0].length - 1)
+}
+
+const ROUTES_ANCHOR = /export const ROUTES\s*=\s*Object\.freeze\(\s*\{/
+const HANDLERS_ANCHOR = /const HANDLERS\s*=\s*\{/
+/** One route entry: 'METHOD /path': 'handlerName' — the shape the table is written in. */
+const ROUTE_ENTRY_RE = /^[ \t]*'([A-Z]+) ([^']*)'[ \t]*:[ \t]*'([A-Za-z_$][\w$]*)'[ \t]*,?[ \t]*$/gm
+/** One HANDLERS key: quoted or bare, always first on its line. */
+const HANDLER_KEY_RE = /^[ \t]*(?:'([^']+)'|([A-Za-z_$][\w$-]*))[ \t]*:/gm
+
+/** parseRouteCount(text) — how many doors the frozen table actually declares; null if unparsable. */
+export function parseRouteCount(text) {
+  const body = literalBody(text, ROUTES_ANCHOR)
+  if (body == null) return null
+  const n = [...body.matchAll(ROUTE_ENTRY_RE)].length
+  return n > 0 ? n : null
+}
+
+/** parseHandlerKeys(text) — the verb names the CLI dispatch table declares; null if unparsable. */
+export function parseHandlerKeys(text) {
+  const body = literalBody(text, HANDLERS_ANCHOR)
+  if (body == null) return null
+  const keys = [...body.matchAll(HANDLER_KEY_RE)].map((m) => m[1] ?? m[2])
+  return keys.length > 0 ? keys : null
+}
+
+/** The verb list the CLI PRINTS: everything between the angle brackets of its usage line. */
+const VERB_LIST_RE = /cli\.mjs\s+<([^>]+)>/
+/** The allow-list of verbs that print their own help, as a literal. */
+const OWN_HELP_RE = /const OWN_HELP\s*=\s*new Set\(\s*\[([^\]]*)\]/
+/** The count the comment above that allow-list claims. */
+const OTHER_VERBS_RE = /(\d+)\s+other verbs/
+/** The verb total the CLI's own README claims. */
+const CLI_README_COUNT_RE = /All (\d+),/
+/** «N tests · M files» — the measured pair, wherever the map shows it. */
+const STAT_RE = /(\d+) tests · (\d+) files/g
+/** A version token of the map: v-major-minor-patch. */
+const VERSION_TOKEN_RE = /v\d+\.\d+\.\d+/g
+/** The shields.io version badge and its per-language alt text. */
+const VERSION_BADGE_RE = /badge\/version-(\d+\.\d+\.\d+)-/g
+const VERSION_ALT_RE = /alt="(?:version|версия)\s+(\d+\.\d+\.\d+)"/g
+/** A writer name a template promises: a writing verb glued to a CamelCase tail. */
+const WRITER_TOKEN_RE = /\b(?:sync|write|update|save|persist|overwrite)[A-Z][A-Za-z0-9_]*/g
+/** The two guarded door sentences. The WORD itself must be upper-case to be guarded. */
+const EXACT_COUNT_RE = /\bexactly\s+([A-Za-z][A-Za-z-]*)\s+(?:routes|entries)\b/gi
+const ALL_LIVE_RE = /\bALL\s+([A-Z][A-Z-]*)\s+ARE LIVE\b/g
+/** The assertion the suite itself makes about the size of the table. */
+const ROUTE_ASSERT_RE = /Object\.keys\(ROUTES\)\.length\s*===\s*(\d+)/g
+/** The installer's version wiring: read once from the package, handed to the block writer. */
+const PKG_VERSION_CALL_RE = /const\s+([A-Za-z_$][\w$]*)\s*=\s*pkgVersion\(\)/
+const EMBED_RULES_RE = /embedRules\(\s*\{([^}]*)\}/
+/** A version literal anywhere in the installer — that copy IS a second source of truth. */
+const VERSION_LITERAL_RE = /(?<![\w.])v?\d+\.\d+\.\d+(?![\w.])/
+
+/** Path of `p` relative to `rootDir`, forward-slashed, for the `file` field of a violation. */
+function relPath(rootDir, p) {
+  const s = String(p)
+  const r = String(rootDir ?? '')
+  const cut = r && s.startsWith(r) ? s.slice(r.length) : s
+  return cut.replace(/^[\\/]+/, '').replace(/\\/g, '/')
+}
+
+/** Read + JSON.parse through the injected reader; null on a missing or unparsable file. */
+function safeReadJson(readFile, path) {
+  const raw = safeRead(readFile, path)
+  if (raw == null) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * defaultListSourceFiles(rootDir) — every source file a template's promised writer could
+ * live in. Skips node_modules and test folders: a function that exists only in a test is
+ * not a function the product ships.
+ */
+export function defaultListSourceFiles(rootDir) {
+  const out = []
+  const walk = (dir) => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      if (e.name === 'node_modules' || e.name === '__tests__') continue
+      const full = join(dir, e.name)
+      if (e.isDirectory()) walk(full)
+      else if (/\.(mjs|cjs|js|ts)$/.test(e.name)) out.push(full)
+    }
+  }
+  for (const r of SOURCE_ROOTS) walk(join(rootDir, ...r.split('/')))
+  return out
+}
+
+/** defaultListTemplates(rootDir) — the markdown templates the installer ships. */
+export function defaultListTemplates(rootDir) {
+  const dir = join(rootDir, 'sma-core', 'templates')
+  try {
+    return readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => join(dir, n))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * auditNumbers({readFile, listSourceFiles, listTemplates, rootDir, notes}) — the violations
+ * of the numbers target. `notes` is an OUT parameter for the things that were not measured
+ * rather than found wrong; it is also attached to the returned array for convenience, and
+ * it is never counted as a violation — «not measured» and «wrong» are different words.
+ */
+export function auditNumbers({
+  readFile,
+  listSourceFiles = defaultListSourceFiles,
+  listTemplates = defaultListTemplates,
+  rootDir,
+  notes = [],
+} = {}) {
+  const violations = []
+  const p = (...parts) => join(rootDir, ...parts)
+
+  // ── the four sources of truth ────────────────────────────────────────────
+  const pkg = safeReadJson(readFile, p(PKG_FILE))
+  const version = pkg && typeof pkg.version === 'string' ? pkg.version : null
+  if (version == null) {
+    violations.push({ file: PKG_FILE, rule: 'parse-failed', detail: 'no version string in the package manifest' })
+  }
+
+  const serverText = safeRead(readFile, p(...SERVER_FILE.split('/')))
+  const doorCount = serverText == null ? null : parseRouteCount(serverText)
+  if (serverText == null) {
+    violations.push({ file: SERVER_FILE, rule: 'file-missing', detail: SERVER_FILE })
+  } else if (doorCount == null) {
+    violations.push({ file: SERVER_FILE, rule: 'parse-failed', detail: 'the frozen route table could not be read from the text' })
+  }
+
+  const cliText = safeRead(readFile, p(...CLI_FILE.split('/')))
+  const handlerKeys = cliText == null ? null : parseHandlerKeys(cliText)
+  if (cliText == null) {
+    violations.push({ file: CLI_FILE, rule: 'file-missing', detail: CLI_FILE })
+  } else if (handlerKeys == null) {
+    violations.push({ file: CLI_FILE, rule: 'parse-failed', detail: 'the verb dispatch table could not be read from the text' })
+  }
+
+  const receipt = safeReadJson(readFile, p(RECEIPT))
+  const haveReceipt = receipt != null && Number.isFinite(Number(receipt.tests)) && Number.isFinite(Number(receipt.files))
+  if (!haveReceipt) {
+    notes.push('tests/files not measured — receipt absent, the checks that depend on it are skipped')
+  } else if (receipt.dirty === true) {
+    notes.push(`the receipt was measured on a dirty tree at commit ${String(receipt.commit ?? 'unknown').slice(0, 7)} — the numbers are as measured, freshness is the release gate's job`)
+  }
+
+  // ── rule: every assertion about the size of the table names the real size ──
+  if (serverText != null && doorCount != null) {
+    const asserts = [...serverText.matchAll(ROUTE_ASSERT_RE)]
+    if (asserts.length === 0) {
+      violations.push({ file: SERVER_FILE, rule: 'pattern-missing', detail: 'no assertion of the route table size to check' })
+    }
+    for (const m of asserts) {
+      if (Number(m[1]) !== doorCount) {
+        violations.push({ file: SERVER_FILE, rule: 'route-count-assertion', detail: `asserts ${m[1]} routes, the table declares ${doorCount}` })
+      }
+    }
+
+    // ── rule: the prose over the table counts the same doors, spelled out ──
+    const prose = []
+    for (const m of serverText.matchAll(EXACT_COUNT_RE)) {
+      if (/^[A-Z][A-Z-]*$/.test(m[1])) prose.push({ word: m[1], phrase: m[0] })
+    }
+    for (const m of serverText.matchAll(ALL_LIVE_RE)) prose.push({ word: m[1], phrase: m[0] })
+    if (prose.length === 0) {
+      violations.push({ file: SERVER_FILE, rule: 'pattern-missing', detail: 'no spelled-out door count in the header to check' })
+    }
+    for (const item of prose) {
+      const n = wordToNumber(item.word)
+      if (n == null) {
+        violations.push({ file: SERVER_FILE, rule: 'unknown-number-word', detail: `«${item.word}» in «${item.phrase}» is not a number this audit knows` })
+      } else if (n !== doorCount) {
+        violations.push({ file: SERVER_FILE, rule: 'route-count-prose', detail: `«${item.phrase}» says ${n}, the table declares ${doorCount}` })
+      }
+    }
+  }
+
+  // ── rules over the CLI: the printed list, the allow-list comment ──
+  let ownHelpSize = null
+  if (cliText != null && handlerKeys != null) {
+    const listMatch = cliText.match(VERB_LIST_RE)
+    if (!listMatch) {
+      violations.push({ file: CLI_FILE, rule: 'pattern-missing', detail: 'the printed verb list could not be found' })
+    } else {
+      const printed = listMatch[1].split('|').map((s) => s.trim()).filter(Boolean)
+      const printedSet = new Set(printed)
+      const declared = new Set(handlerKeys)
+      for (const verb of declared) {
+        if (!printedSet.has(verb)) {
+          violations.push({ file: CLI_FILE, rule: 'verb-list-parity', detail: `«${verb}» is dispatched but the printed list omits it` })
+        }
+      }
+      for (const verb of printedSet) {
+        if (!declared.has(verb)) {
+          violations.push({ file: CLI_FILE, rule: 'verb-list-parity', detail: `«${verb}» is printed but no handler answers it` })
+        }
+      }
+    }
+
+    const ownHelpMatch = cliText.match(OWN_HELP_RE)
+    if (!ownHelpMatch) {
+      violations.push({ file: CLI_FILE, rule: 'pattern-missing', detail: 'the own-help allow-list could not be read' })
+    } else {
+      ownHelpSize = [...ownHelpMatch[1].matchAll(/'[^']*'|"[^"]*"/g)].length
+    }
+
+    const otherMatch = cliText.match(OTHER_VERBS_RE)
+    if (!otherMatch) {
+      violations.push({ file: CLI_FILE, rule: 'pattern-missing', detail: 'the comment over the own-help allow-list names no count' })
+    } else if (ownHelpSize != null) {
+      const expected = handlerKeys.length - ownHelpSize
+      if (Number(otherMatch[1]) !== expected) {
+        violations.push({ file: CLI_FILE, rule: 'own-help-count', detail: `claims ${otherMatch[1]} other verbs, the tables give ${expected}` })
+      }
+    }
+  }
+
+  // ── rule: the CLI's own README counts the verbs the CLI dispatches ──
+  if (handlerKeys != null) {
+    const cliReadme = safeRead(readFile, p(...CLI_README.split('/')))
+    if (cliReadme == null) {
+      violations.push({ file: CLI_README, rule: 'file-missing', detail: CLI_README })
+    } else {
+      const m = cliReadme.match(CLI_README_COUNT_RE)
+      if (!m) {
+        violations.push({ file: CLI_README, rule: 'pattern-missing', detail: 'no verb total to check' })
+      } else if (Number(m[1]) !== handlerKeys.length) {
+        violations.push({ file: CLI_README, rule: 'scripts-readme-verb-count', detail: `says ${m[1]} verbs, the dispatch table holds ${handlerKeys.length}` })
+      }
+    }
+  }
+
+  // ── rules over the map: only the marked spans, never the growth history ──
+  const graph = safeRead(readFile, p(...GRAPH_FILE.split('/')))
+  if (graph == null) {
+    violations.push({ file: GRAPH_FILE, rule: 'file-missing', detail: GRAPH_FILE })
+  } else {
+    for (const name of NUMBER_REGIONS) {
+      const region = extractRegion(graph, name)
+      if (!region.found) {
+        violations.push({ file: GRAPH_FILE, rule: 'region-missing', detail: name })
+        continue
+      }
+      if (version != null) {
+        for (const m of region.content.matchAll(VERSION_TOKEN_RE)) {
+          if (m[0] !== `v${version}`) {
+            violations.push({ file: GRAPH_FILE, rule: 'graph-region-version', detail: `${name}: ${m[0]} is not v${version}` })
+          }
+        }
+      }
+      if (haveReceipt) {
+        for (const m of region.content.matchAll(STAT_RE)) {
+          if (Number(m[1]) !== Number(receipt.tests) || Number(m[2]) !== Number(receipt.files)) {
+            violations.push({ file: GRAPH_FILE, rule: 'graph-region-stats', detail: `${name}: «${m[0]}» is not the measured ${receipt.tests} tests · ${receipt.files} files` })
+          }
+        }
+      }
+    }
+  }
+
+  // ── rule: the version badge of both READMEs. The TEST badge is not audited here:
+  //    it already has an owner (the badge module's own check), and a second checker of
+  //    the same number is a second thing to keep in step.
+  if (version != null) {
+    for (const file of ['README.md', 'README.ru.md']) {
+      const md = safeRead(readFile, p(file))
+      if (md == null) {
+        violations.push({ file, rule: 'file-missing', detail: file })
+        continue
+      }
+      const badges = [...md.matchAll(VERSION_BADGE_RE)]
+      const alts = [...md.matchAll(VERSION_ALT_RE)]
+      if (badges.length === 0) {
+        violations.push({ file, rule: 'pattern-missing', detail: 'no version badge to check' })
+      }
+      for (const m of [...badges, ...alts]) {
+        if (m[1] !== version) {
+          violations.push({ file, rule: 'readme-version-badge', detail: `shows ${m[1]}, the package says ${version}` })
+        }
+      }
+    }
+
+    // ── rule: the capability record carries the package version ──
+    const cap = safeReadJson(readFile, p(...CAPABILITY_FILE.split('/')))
+    if (cap == null) {
+      violations.push({ file: CAPABILITY_FILE, rule: 'file-missing', detail: CAPABILITY_FILE })
+    } else if (cap.version !== version) {
+      violations.push({ file: CAPABILITY_FILE, rule: 'capability-version', detail: `says ${String(cap.version)}, the package says ${version}` })
+    }
+
+    // ── rule: the install marker exists AND equals the package version. It must exist:
+    //    the updater tells an installed tree from a bare one by this very file and reads
+    //    its contents as the installed version. So it is not deleted — it is DERIVED.
+    const marker = safeRead(readFile, p(...VERSION_MARKER.split('/')))
+    if (marker == null) {
+      violations.push({ file: VERSION_MARKER, rule: 'version-marker', detail: 'the install marker is missing — the updater reads it to tell an installed tree from a bare one' })
+    } else if (marker.trim() !== version) {
+      violations.push({ file: VERSION_MARKER, rule: 'version-marker', detail: `holds ${marker.trim()}, the package says ${version}` })
+    }
+  }
+
+  // ── rule: the badge check is wired into the ordinary test run ──
+  if (pkg != null) {
+    const testScript = pkg.scripts && typeof pkg.scripts.test === 'string' ? pkg.scripts.test : ''
+    if (!/badge\.mjs\s+--check/.test(testScript)) {
+      violations.push({ file: PKG_FILE, rule: 'badge-gate-wired', detail: 'the ordinary test run does not call the badge check — computed is not connected' })
+    }
+  }
+
+  // ── rule: a template never promises a writer the product does not have ──
+  const templates = listTemplates(rootDir) || []
+  const wanted = new Map()
+  for (const tpl of templates) {
+    const text = safeRead(readFile, tpl)
+    if (text == null) continue
+    for (const m of text.matchAll(WRITER_TOKEN_RE)) {
+      if (!wanted.has(m[0])) wanted.set(m[0], relPath(rootDir, tpl))
+    }
+  }
+  if (wanted.size > 0) {
+    const pending = new Set(wanted.keys())
+    for (const src of listSourceFiles(rootDir) || []) {
+      if (pending.size === 0) break
+      const text = safeRead(readFile, src)
+      if (text == null) continue
+      for (const token of [...pending]) {
+        if (text.includes(token)) pending.delete(token)
+      }
+    }
+    for (const token of pending) {
+      violations.push({ file: wanted.get(token), rule: 'phantom-writer', detail: `promises «${token}», which no shipped source defines` })
+    }
+  }
+
+  // ── rule: the installer takes the block version from the package and keeps no copy.
+  //    This check only READS the installer. Today its wiring is right — which is exactly
+  //    why it is pinned: a truth with no guard is only true until the next edit.
+  const installer = safeRead(readFile, p(...INSTALLER_FILE.split('/')))
+  if (installer == null) {
+    violations.push({ file: INSTALLER_FILE, rule: 'file-missing', detail: INSTALLER_FILE })
+  } else {
+    const call = installer.match(PKG_VERSION_CALL_RE)
+    const embed = installer.match(EMBED_RULES_RE)
+    if (!call || !embed) {
+      violations.push({ file: INSTALLER_FILE, rule: 'version-source-unwired', detail: 'the block version is not visibly read from the package manifest and handed to the block writer' })
+    } else {
+      const name = call[1]
+      if (!new RegExp(`\\b${name}\\b`).test(embed[1])) {
+        violations.push({ file: INSTALLER_FILE, rule: 'version-source-unwired', detail: `the block writer is not given «${name}», the value read from the package manifest` })
+      }
+    }
+    const literal = installer.match(VERSION_LITERAL_RE)
+    if (literal) {
+      violations.push({ file: INSTALLER_FILE, rule: 'version-literal-in-installer', detail: `«${literal[0]}» is a second copy of the version` })
+    }
+  }
+
+  violations.notes = notes
+  return violations
+}
+
+/**
+ * writeNumbers({readFile, writeFile, rootDir}) — {written, notes}. Rewrites EXACTLY the
+ * marked spans of the map and the install marker, from the same sources the audit reads.
+ * Nothing outside a marked span is touched, the growth history is never touched, and a
+ * second run writes the same bytes. Without a measured receipt the statistics span is
+ * left alone and said out loud — a hand-typed count is the failure this whole file exists
+ * to prevent.
+ */
+export function writeNumbers({
+  readFile = (p) => readFileSync(p, 'utf8'),
+  writeFile = (p, data) => writeFileSync(p, data, 'utf8'),
+  rootDir,
+} = {}) {
+  const written = []
+  const notes = []
+  const p = (...parts) => join(rootDir, ...parts)
+
+  const pkg = safeReadJson(readFile, p(PKG_FILE))
+  const version = pkg && typeof pkg.version === 'string' ? pkg.version : null
+  if (version == null) {
+    notes.push('nothing written — the package manifest carries no version to write from')
+    return { written, notes }
+  }
+
+  const receipt = safeReadJson(readFile, p(RECEIPT))
+  const haveReceipt = receipt != null && Number.isFinite(Number(receipt.tests)) && Number.isFinite(Number(receipt.files))
+  if (!haveReceipt) notes.push('the statistics spans were left as they are — no measured receipt to write from')
+
+  const graphPath = p(...GRAPH_FILE.split('/'))
+  const graph = safeRead(readFile, graphPath)
+  if (graph == null) {
+    notes.push(`${GRAPH_FILE} is missing — no span rewritten`)
+  } else {
+    let next = graph
+    let touched = false
+    for (const name of NUMBER_REGIONS) {
+      const start = `<!-- ${name}:start -->`
+      const end = `<!-- ${name}:end -->`
+      const si = next.indexOf(start)
+      const ei = next.indexOf(end)
+      if (si === -1 || ei === -1 || ei < si) {
+        notes.push(`${name} is not marked in the map — nothing written there`)
+        continue
+      }
+      const from = si + start.length
+      const inner = next.slice(from, ei)
+      let rewritten = inner.replace(VERSION_TOKEN_RE, `v${version}`)
+      if (haveReceipt) {
+        rewritten = rewritten.replace(STAT_RE, `${receipt.tests} tests · ${receipt.files} files`)
+      }
+      if (rewritten !== inner) {
+        next = next.slice(0, from) + rewritten + next.slice(ei)
+        touched = true
+      }
+    }
+    if (touched) {
+      writeFile(graphPath, next)
+      written.push(GRAPH_FILE)
+    }
+  }
+
+  const markerPath = p(...VERSION_MARKER.split('/'))
+  const marker = safeRead(readFile, markerPath)
+  const wantMarker = `${version}\n`
+  if (marker !== wantMarker) {
+    writeFile(markerPath, wantMarker)
+    written.push(VERSION_MARKER)
+  }
+
+  return { written, notes }
+}
+
+/** The targets audit() answers to. An unknown one is an error, never a quiet zero. */
+const TARGETS = new Set(['manual', 'readme', 'numbers', 'all'])
+
+/**
+ * audit({target, readFile, listSourceFiles, listTemplates, rootDir}) —
+ * {violations, count, notes}. target ∈ manual|readme|numbers|all (default all). An
+ * unknown target scores `unknown-target` rather than passing: a typo that always
+ * «passes» is worse than no check at all. `notes` carries what was NOT measured; it is
+ * deliberately outside the count.
+ */
+export function audit({
+  target = 'all',
+  readFile = (p) => readFileSync(p, 'utf8'),
+  listSourceFiles,
+  listTemplates,
+  rootDir,
+}) {
   let violations = []
+  const notes = []
+  if (!TARGETS.has(target)) {
+    violations.push({ file: PKG_FILE, rule: 'unknown-target', detail: `«${String(target)}» is not one of ${[...TARGETS].join(', ')}` })
+    return { violations, count: violations.length, notes }
+  }
   if (target === 'manual' || target === 'all') violations = violations.concat(auditManual({ readFile, rootDir }))
   if (target === 'readme' || target === 'all') violations = violations.concat(auditReadme({ readFile, rootDir }))
-  return { violations, count: violations.length }
+  if (target === 'numbers' || target === 'all') {
+    violations = violations.concat(auditNumbers({ readFile, listSourceFiles, listTemplates, rootDir, notes }))
+  }
+  return { violations, count: violations.length, notes }
 }
