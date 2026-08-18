@@ -38,6 +38,10 @@ const SERIAL_SUITES = [
   // only ever visible at the operator's terminal (exit code + printed envelope), so
   // the child process is the coverage and cannot be mocked away.
   'scripts/sma/__tests__/tracking-verbs.test.ts',
+  // Five throwaway repositories, five real `git worktree add`, and seven CLI spawns —
+  // plus real junctions whose teardown order is itself the subject. None of it survives
+  // being stacked beside eleven other workers on one machine.
+  'scripts/sma/__tests__/worktree-materialize.test.ts',
 ]
 
 /**
