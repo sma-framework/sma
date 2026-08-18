@@ -60,7 +60,14 @@ export interface QueueRow {
   id: string
   title: string | null
   lane: string | null
-  project: string
+  /**
+   * Чей это проект — или `null`, когда строка своего проекта не называет.
+   *
+   * `null` значит РОВНО «неизвестен» и ничего больше. Прежде дверь подставляла сюда проект, на
+   * который человек смотрел в эту секунду, и окно уверенно называло принадлежность, которой
+   * никто не измерял. Теперь неизвестное приезжает неизвестным, а экран говорит это словами.
+   */
+  project: string | null
   machine: string
   provider?: string
   priority: number
@@ -141,7 +148,8 @@ export interface BatchQuestion {
 export interface BatchRow {
   id: string
   title: string | null
-  project: string
+  /** Чей это проект — или `null`, когда сборка своего проекта не называет (см. `QueueRow`). */
+  project: string | null
   machine: string
   /**
    * Состояние самого громкого элемента; `done` — только когда каждый элемент произвёл или
@@ -195,7 +203,8 @@ export interface WorkerRow {
    */
   taskId?: string
   taskTitle?: string | null
-  project?: string
+  /** Проект взятой задачи — или `null`, когда она своего проекта не называет (см. `QueueRow`). */
+  project?: string | null
   branch?: string
   /**
    * КОГДА ЭТУ ЗАДАЧУ ВЗЯЛИ, в миллисекундах эпохи. Ростер — единственный список, называющий
@@ -249,7 +258,8 @@ export interface FailureSummary {
 export interface DoneRow {
   id: string
   title: string | null
-  project: string
+  /** Чей это проект — или `null`, когда строка своего проекта не называет (см. `QueueRow`). */
+  project: string | null
   machine: string
   finishedAt: string | null
   /**

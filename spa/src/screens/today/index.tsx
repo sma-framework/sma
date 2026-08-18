@@ -63,7 +63,10 @@ export function Screen() {
 
   // Every row already carries its project, so one project is a filter over the reading the
   // window already has — never a narrower question asked of the daemon.
-  const mine = <T extends { project: string }>(rows: T[]): T[] =>
+  //
+  // Строка без проекта (`null` — «неизвестен») этим ситом не проходит: этот экран о сегодняшнем
+  // дне ОДНОГО проекта. Такая работа не пропадает — её показывает группой экран «Задачи».
+  const mine = <T extends { project?: string | null }>(rows: T[]): T[] =>
     activeProject ? rows.filter((r) => r.project === activeProject) : rows
 
   const queue: QueueRow[] = useMemo(() => mine(data?.queue ?? []), [data, activeProject])

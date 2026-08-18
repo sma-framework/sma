@@ -447,14 +447,47 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
 }
 
 /**
+ * РАЗДЕЛИТЬ СТРОКИ НА «ЭТОГО ПРОЕКТА» И «ПРОЕКТ НЕИЗВЕСТЕН» — и не потерять вторые.
+ *
+ * Дверь больше не домысливает принадлежность: строка, которая своего проекта не называет,
+ * приходит с `project: null`. Прежний фильтр `r.project === activeProject` такую строку молча
+ * выбрасывал — и работа, которую видел человек до этой правки, исчезала бы с экрана.
+ *
+ * Здесь два исхода, и оба честные. `mine` — строки, которые проект назвали, и это он. `unknown` —
+ * строки, которые не назвали никакого: их поставили раньше, чем задача вообще научилась знать
+ * свой проект. Приписать их текущему — выдуманная принадлежность; спрятать — невидимая работа.
+ * Поэтому они едут отдельной группой и называются словами.
+ *
+ * Когда проект не выбран, отличать нечего: сужения нет, всё идёт одним списком.
+ */
+export function splitByProject<T extends { project?: string | null }>(
+  rows: T[],
+  activeProject: string | null,
+): { mine: T[]; unknown: T[] } {
+  if (!activeProject) return { mine: [...rows], unknown: [] }
+  const mine: T[] = []
+  const unknown: T[] = []
+  for (const r of rows) {
+    if (r.project == null || r.project === '') unknown.push(r)
+    else if (r.project === activeProject) mine.push(r)
+  }
+  return { mine, unknown }
+}
+
+/**
  * Every unit of work the window can see right now, in the order a person reads them.
  *
  * Both filters — project and machine — are a sieve over rows already in hand, never a
  * narrower question asked of the daemon.
+ *
+ * Сито проекта остаётся здесь и после того, как дверь научилась сужать сама: две проверки одной
+ * правды дешевле, чем одна, а строку чужого проекта, доехавшую сюда по любой причине, экран
+ * показывать не должен. Строки без проекта это сито отбрасывает — их собирает `splitByProject`
+ * и показывает отдельной группой.
  */
 export function buildUnits(input: UnitsInput): WorkUnit[] {
   const { activeProject, machine, selfMachine } = input
-  const mine = <T extends { project: string; machine: string }>(rows: T[]): T[] =>
+  const mine = <T extends { project?: string | null; machine: string }>(rows: T[]): T[] =>
     rows.filter((r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine))
 
   const batches = input.batches ?? []
