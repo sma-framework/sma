@@ -34,7 +34,7 @@
  * cannot parse — so it is loaded through a NATIVE dynamic import (@vite-ignore).
  */
 
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -44,6 +44,7 @@ import { applyDeleteme } from '../lib/deleteme.mjs'
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
+const cliPath = join(repoRoot, 'scripts', 'sma', 'cli.mjs')
 const { SMA_HOOKS } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
 
 type HookDef = { event: string; matcher: string | null; command: string; timeout: number }
@@ -178,4 +179,155 @@ describe('hook wiring — install then uninstall on a real settings.json', () =>
     // and every other key of the file is still the user's
     expect(settings.model).toBe('opus')
   })
+})
+
+// ── the hook verbs, driven the way the harness drives them ────────────────────
+
+/** The window token both the claim and the SessionEnd frame carry. */
+const WINDOW_TOKEN = 'probe-window-hook-contract'
+
+/**
+ * The environment a hook child runs in. Two things it must NOT inherit:
+ *
+ *  - the kill-switches. Each of these verbs has one, and every one of them is a
+ *    SILENT exit 0: with a switch set from the outside the case would spawn a
+ *    process, read exit 0, and pass while the verb did nothing at all. They are
+ *    deleted, not overridden with '0', so a truthiness change cannot revive them.
+ *  - a window NAME. Identity is the name when one is set and a token-derived
+ *    fallback when it is not, so an inherited name would make the case depend on
+ *    the operator's shell rather than on the frame it feeds in.
+ *
+ * The state root is pinned to the temp tree: without that pin the verbs resolve
+ * the root through git and could write into the checkout running the tests. And
+ * the detached reporter child is disabled — it has nothing to report to here,
+ * and on this platform a stray detached child is a stray console window.
+ */
+function hookEnv(proj: string, extra: Record<string, string> = {}) {
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) }
+  for (const key of [
+    'SMA_FLIGHT_DISABLE',
+    'SMA_FLIGHT_NATIVE',
+    'SMA_PACK_DISABLE',
+    'SMA_RECEIPTS_DISABLE',
+    'SMA_TERMINAL_NAME',
+  ]) {
+    delete env[key]
+  }
+  env.SMA_ROOT_OVERRIDE = join(proj, '.sma')
+  env.SMA_WINDOW_TOKEN = WINDOW_TOKEN
+  env.SMA_DISABLE_SNAPSHOT_SPAWN = '1'
+  return { ...env, ...extra }
+}
+
+/**
+ * Run one verb the way a hook is run: a JSON event frame on stdin, nothing else.
+ * No child `timeout:` — the case's own deadline is the single clock. A spawn
+ * failure or a kill is reported as itself, never as a product verdict.
+ */
+function runHook(verb: string, frame: unknown, proj: string, extra: Record<string, string> = {}) {
+  const res = spawnSync(process.execPath, [cliPath, verb], {
+    cwd: proj,
+    encoding: 'utf8',
+    input: frame === undefined ? '' : JSON.stringify(frame),
+    env: hookEnv(proj, extra),
+  })
+  if (res.error || res.signal) {
+    throw new Error(
+      `${verb} did not complete — signal=${res.signal} ` +
+        `spawnError=${res.error ? res.error.message : 'none'}\nstderr: ${(res.stderr ?? '').slice(0, 600)}`,
+    )
+  }
+  return res
+}
+
+/** Every journal line of the temp tree, parsed. */
+function journalEvents(proj: string) {
+  const dir = join(proj, '.sma', 'journal')
+  if (!existsSync(dir)) return []
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.jsonl'))
+    .flatMap((f) =>
+      readFileSync(join(dir, f), 'utf8')
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l)),
+    )
+}
+
+const listDir = (p: string) => (existsSync(p) ? readdirSync(p) : [])
+
+/**
+ * The claim SLOTS in a claims directory. A released slot leaves a dot-prefixed
+ * cooldown marker behind (so the scope reads «recently freed» rather than «busy»
+ * for a short while), and that marker is evidence of a release, not a surviving
+ * claim — so slots are counted without it, and the marker is asserted separately.
+ */
+const claimSlots = (p: string) => listDir(p).filter((f) => !f.startsWith('.'))
+
+describe('hook contract: session lifecycle', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-hooks-session-'))
+  const proj = join(tmp, 'proj')
+  mkdirSync(proj, { recursive: true })
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  it('the SessionEnd frame releases the claims that window took, and says so in the journal', () => {
+    // the claim is taken by a child carrying the SAME window token the frame will
+    // carry as its session id — the identity these two runs share is the whole
+    // point: a mismatch releases nothing and still exits 0.
+    const claim = spawnSync(
+      process.execPath,
+      [cliPath, 'claim', 'wire-probe', '--globs', 'src/**', '--desc', 'hook wire check'],
+      { cwd: proj, encoding: 'utf8', env: hookEnv(proj) },
+    )
+    expect({ status: claim.status, stderr: (claim.stderr ?? '').slice(0, 300) }).toMatchObject({ status: 0 })
+    const claimsDir = join(proj, '.sma', 'claims')
+    const before = claimSlots(claimsDir)
+    expect(before, 'the claim this window took should be on disk before the hook runs').toHaveLength(1)
+    const slot = before[0]
+
+    const res = runHook('session-end', { session_id: WINDOW_TOKEN, hook_event_name: 'SessionEnd', reason: 'other' }, proj)
+    expect(res.status).toBe(0)
+
+    // the exit code proves nothing here (this verb exits 0 whatever happens) —
+    // the trace does: the claim slot is gone and the release is journalled with
+    // the reason that names the trigger.
+    expect(claimSlots(claimsDir), 'the claim should be released by the hook').toEqual([])
+    expect(listDir(claimsDir), 'a release drops a cooldown marker — the trace of a REAL release').toContain(
+      `.cooldown-${slot}`,
+    )
+    const release = journalEvents(proj).filter((e) => e.type === 'release' && e.detail?.reason === 'session-ended')
+    expect(release).toHaveLength(1)
+    expect(release[0].scope).toBe(slot)
+  }, 60000)
+
+  it('the PreCompact frame writes a capsule, and the post-compaction SessionStart hands it back', () => {
+    const res = runHook('precompact-capsule', { session_id: WINDOW_TOKEN, hook_event_name: 'PreCompact', trigger: 'auto' }, proj)
+    expect(res.status).toBe(0)
+
+    // exit 0 over an EMPTY capsule directory is the failure this asserts against:
+    // every kill-switch on this verb is a silent success, so the file is the check.
+    const capsuleDir = join(proj, '.sma', 'flight', 'capsules')
+    const capsules = listDir(capsuleDir)
+    expect(capsules, 'PreCompact must leave a capsule on disk, not just exit 0').toHaveLength(1)
+    const capsule = readFileSync(join(capsuleDir, capsules[0]), 'utf8')
+
+    // the restore arm: a SessionStart frame that says the session resumed from a
+    // compaction gets the capsule body back. Identified by lines taken FROM the
+    // written file rather than by a literal — the capsule's wording is not the
+    // contract, its round trip is.
+    const lines = capsule.split('\n').filter((l) => l.trim())
+    const stamp = lines.find((l) => l.trim().startsWith('- ts:'))
+    expect(stamp, 'the capsule should carry a timestamp line to identify it by').toBeTruthy()
+
+    const start = runHook('session-start', { session_id: WINDOW_TOKEN, source: 'compact' }, proj)
+    expect(start.status).toBe(0)
+    const out = JSON.parse(start.stdout)
+    expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart')
+    const context = out.hookSpecificOutput.additionalContext
+    expect(context).toContain(lines[0])
+    expect(context).toContain(stamp)
+  }, 60000)
 })
