@@ -1312,6 +1312,58 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#2' }).total).toBe(0)
   })
 
+  it('кадр init доезжает до файла ЦЕЛЫМ, а длинная обычная строка обрезана И помечена — провод, не расчёт', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    // Кадр init настоящей сессии — это список инструментов и подключений; он спокойно
+    // перерастает 4096 и до этой правки резался молча ровно там, где его и читают.
+    const bigInit = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab',
+      model: 'claude-opus-4-8',
+      tools: Array.from({ length: 400 }, (_, i) => `Tool_${i}_${'x'.repeat(20)}`),
+    })
+    expect(bigInit.length).toBeGreaterThan(4096)
+    const longPlain = 'p'.repeat(9000) // обычный вывод работника: потолок прежний, но молчать он перестал
+
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [
+          bigInit,
+          longPlain,
+          'APPROACH_NOTE: прямой путь',
+          JSON.stringify({ type: 'result', is_error: false, session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab' }),
+        ],
+      }),
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { ledger: realLedger(ledgerDir) },
+    })
+
+    await tick(deps)
+
+    const log = readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#1' })
+    const init = log.entries.find((e: any) => e.line.includes('"subtype":"init"'))
+    expect(init.line).toHaveLength(bigInit.length) // цел, а не 4096
+    expect(init.truncated).toBeUndefined()
+
+    const plain = log.entries.find((e: any) => e.line.startsWith('ppp'))
+    expect(plain.line).toHaveLength(4096) // потолок обычной строки НЕ поднят
+    expect(plain.truncated).toBe(true) // но обрезка больше не молчит
+    expect(plain.originalLength).toBe(9000)
+
+    const result = log.entries.find((e: any) => e.line.includes('"type":"result"'))
+    expect(result.truncated).toBeUndefined()
+  })
+
   it('a stored row says WHICH TOOL ran and WHAT was handed to a subagent — not a machine frame', async () => {
     const ledgerDir = mkDir('sma-loop-log-')
     const run = greenRun(ledgerDir)

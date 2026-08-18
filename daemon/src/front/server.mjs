@@ -2645,6 +2645,13 @@ function handleAttempt({ res, params, query, deps }) {
         line: String((r && r.line) || ''),
         subagent: r && r.subagent === true,
         ...(group ? { group } : {}),
+        // THE CUT TRAVELS WITH THE ROW. An explicit pick is a filter, and a fact computed at
+        // the storage door that this pick does not name reaches nobody: the row would arrive
+        // looking exactly like a line that simply ended there. Two fields, both numbers or
+        // booleans, and only on a row that really was cut.
+
+        ...(r && r.truncated === true ? { truncated: true } : {}),
+        ...(r && Number.isFinite(r.originalLength) ? { originalLength: r.originalLength } : {}),
         ...(Array.isArray(r && r.summary) && r.summary.length ? { summary: r.summary } : {}),
       }
     }),

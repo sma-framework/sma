@@ -51,6 +51,9 @@ import {
   attemptDigest,
   attemptRoles,
   ATTEMPT_LOG_LINE_CAP,
+  ATTEMPT_LOG_FRAME_CAP,
+  ATTEMPT_LOG_WHOLE_FRAMES,
+  normalizeAttemptLogEntry,
   ATTEMPT_LOG_TAIL_DEFAULT,
   ATTEMPT_LOG_TAIL_MAX,
   ATTEMPT_DIGEST_LIST_CAP,
@@ -1291,5 +1294,112 @@ describe('the ledger keeps its stated disciplines', () => {
   it('builds the row through the allowlist loop only — no spread, no passthrough', () => {
     expect(ledgerSrc).toContain('for (const k of ALLOWED_ATTEMPT_KEYS) if (attempt[k] !== undefined) row[k] = attempt[k]')
     expect(ledgerSrc).not.toMatch(/row\s*=\s*\{\s*\.\.\.attempt/)
+  })
+})
+
+// ══════════ ДВА КАДРА ЧИТАЮТ ЦЕЛИКОМ, А ОБРЕЗКА БОЛЬШЕ НЕ МОЛЧИТ ══════════════════════════
+
+/**
+ * ПОЧЕМУ ЗДЕСЬ ДВА ПОТОЛКА, А НЕ ОДИН БОЛЬШОЙ.
+ *
+ * Потолок 4096 на ряд написан осознанно: ряд журнала — не транскрипт, и строка вывода
+ * работника, которую никто не дочитает, не стоит того, чтобы журнал рос без границы. Но под
+ * тот же потолок попали два кадра, ради которых стенограмму и открывают: `init` — в какой
+ * среде стоял работник (сколько инструментов, какие ПОДКЛЮЧЕНИЯ, какая модель) и `result` —
+ * чем всё кончилось. В замере из трёхсот строк обрезанными оказались четырнадцать, и оба этих
+ * кадра были среди них. Лечится не потолок, а класс: у двух кадров закрытого словаря — свой
+ * КОНЕЧНЫЙ потолок, у всего прочего прежний.
+ *
+ * И вторая, более важная половина: обрезка была МОЛЧАЛИВОЙ. Читатель видел строку, у которой
+ * не было никакого признака, что она не вся, — то есть читал часть, думая, что читает целое.
+ * Теперь любая обрезка на любом потолке несёт признак и исходную длину, и то же самое доезжает
+ * до глаза в читалке.
+ */
+describe('потолки кадров и честная пометка обрезки', () => {
+  const dir = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sma-frame-cap-'))
+    return d
+  }
+
+  it('словарь целых кадров закрыт: init и result, и ничего сверх', () => {
+    expect([...ATTEMPT_LOG_WHOLE_FRAMES].sort()).toEqual(['init', 'result'])
+    expect(ATTEMPT_LOG_FRAME_CAP).toBe(65536)
+    expect(ATTEMPT_LOG_LINE_CAP).toBe(4096) // потолок обычной строки НЕ поднят
+  })
+
+  it('кадр init длиной 20000 знаков доезжает целым и без пометки', () => {
+    const line = 'i'.repeat(20000)
+    const out: any = normalizeAttemptLogEntry({ line, frame: 'init' })
+    expect(out.line).toHaveLength(20000)
+    expect('truncated' in out).toBe(false)
+    expect('originalLength' in out).toBe(false)
+  })
+
+  it('кадр result длиной 20000 знаков доезжает целым', () => {
+    const out: any = normalizeAttemptLogEntry({ line: 'r'.repeat(20000), frame: 'result' })
+    expect(out.line).toHaveLength(20000)
+    expect(out.truncated).toBeUndefined()
+  })
+
+  it('кадр длиннее СВОЕГО потолка обрезан по нему и помечен исходной длиной', () => {
+    const len = ATTEMPT_LOG_FRAME_CAP + 500
+    const out: any = normalizeAttemptLogEntry({ line: 'i'.repeat(len), frame: 'init' })
+    expect(out.line).toHaveLength(ATTEMPT_LOG_FRAME_CAP)
+    expect(out.truncated).toBe(true)
+    expect(out.originalLength).toBe(len)
+  })
+
+  it('обычная строка 5000 знаков: прежний потолок 4096, но обрезка больше не молчит', () => {
+    const out: any = normalizeAttemptLogEntry({ line: 'x'.repeat(5000) })
+    expect(out.line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+    expect(out.truncated).toBe(true)
+    expect(out.originalLength).toBe(5000)
+  })
+
+  it('строка неизвестного кадра — по обычному потолку: словарь закрыт', () => {
+    const out: any = normalizeAttemptLogEntry({ line: 'x'.repeat(5000), frame: 'assistant' })
+    expect(out.line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+    expect(out.originalLength).toBe(5000)
+  })
+
+  it('короткая строка не толстеет: ключей обрезки в ряду нет вовсе', () => {
+    const out: any = normalizeAttemptLogEntry({ line: 'y'.repeat(100) })
+    expect(out.line).toHaveLength(100)
+    expect(Object.keys(out).sort()).toEqual(['line', 'ts'])
+  })
+
+  it('перевод строки сплющивается на ОБОИХ потолках — ряд NDJSON остаётся одной строкой', () => {
+    const plain: any = normalizeAttemptLogEntry({ line: 'a\nb\nc' })
+    expect(plain.line).toBe('a b c')
+    const frame: any = normalizeAttemptLogEntry({ line: `x\ny${'z'.repeat(20000)}`, frame: 'result' })
+    expect(frame.line).not.toContain('\n')
+    expect(frame.line).toHaveLength(20003) // x + пробел вместо перевода + y + 20000
+  })
+
+  it('исходная длина меряется ПОСЛЕ сплющивания — по тому же тексту, который резали', () => {
+    const raw = ('a\n').repeat(3000) // 6000 знаков, после сплющивания те же 6000
+    const out: any = normalizeAttemptLogEntry({ line: raw })
+    expect(out.originalLength).toBe(5999) // хвостовой пробел снят trim-ом, как и раньше
+    expect(out.line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+  })
+
+  it('провод до файла и обратно: признак обрезки лежит в ряду NDJSON и читается', () => {
+    const d = dir()
+    try {
+      const attemptId = 'BL-cap#1'
+      const w = createAttemptLogWriter({ dir: d, attemptId })
+      w.append({ line: 'x'.repeat(5000) })
+      w.append({ line: 'i'.repeat(20000), frame: 'init' })
+      const { entries } = readAttemptLog({ dir: d, attemptId }) as any
+      expect(entries[0].line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+      expect(entries[0].truncated).toBe(true)
+      expect(entries[0].originalLength).toBe(5000)
+      expect(entries[1].line).toHaveLength(20000) // кадр цел
+      expect(entries[1].truncated).toBeUndefined()
+      const rows = readFileSync(join(d, 'BL-cap_1.log.ndjson'), 'utf8').split('\n').filter((l) => l.trim())
+      expect(rows).toHaveLength(2) // два ряда, ни один не разорван
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
   })
 })
