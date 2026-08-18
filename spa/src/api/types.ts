@@ -188,7 +188,8 @@ export interface WaveRow {
   heldSince: number | null
   running: WaveTask[]
   waiting: WaveTask[]
-  project: string
+  /** Проект эшелона — тот, который называет его СОБСТВЕННАЯ работа; `null`, когда её никто не назвал или она из разных проектов. */
+  project: string | null
   machine: string
 }
 

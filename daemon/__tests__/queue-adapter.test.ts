@@ -36,8 +36,7 @@ import {
   queueAdapterContractSuite,
   validateTask,
   acceptanceItems,
-  backfillProject,
-  DEFAULT_PROJECT_ID,
+  withStatedProject,
   TASK_SOURCES,
   TASK_LANES,
   TASK_STATUSES,
@@ -253,22 +252,26 @@ describe('project — an additive task field with an injected default', () => {
     expect(row.project).toBe('other-shop')
   })
 
-  it('BACKFILL ON READ — a row stored before the field existed reads with a default, never throws', async () => {
-    // The pure helper is what every read path runs a row through.
-    expect(backfillProject({ id: 'BL-old', lane: 'prod' }, 'acme-clinic')).toMatchObject({
+  it('NOTHING IS FILLED IN ON READ — a row stored before the field existed reads with project: null', async () => {
+    // The pure helper is what every read path runs a row through. It used to hand the
+    // currently selected project to a row that named none, so the same row belonged to
+    // whichever project was being looked at. Now it says what the row says.
+    expect(withStatedProject({ id: 'BL-old', lane: 'prod' })).toMatchObject({
       id: 'BL-old',
-      project: 'acme-clinic',
+      project: null,
     })
-    expect(backfillProject({ id: 'BL-old' }, undefined).project).toBe(DEFAULT_PROJECT_ID)
-    expect(backfillProject(null, 'acme')).toBeNull()
+    expect(withStatedProject({ id: 'BL-old', project: 'acme-clinic' }).project).toBe('acme-clinic')
+    expect(withStatedProject(null)).toBeNull()
 
-    // End-to-end: an adapter with NO active project configured (the pre-V5.1 composition
-    // root) stores no project, and every read still hands one back.
+    // End-to-end: an adapter with NO active project configured stores no project, and every
+    // read hands back the absence of the fact rather than a guess at it.
     const c = mkClock()
     const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
     await q.enqueue(backlog())
     const [row] = await q.list({})
-    expect(row.project).toBe(DEFAULT_PROJECT_ID)
+    expect(row.project).toBeNull()
+    const claimed: any = await q.claimNext('w1', {})
+    expect(claimed.project).toBeNull()
   })
 
   it('list accepts an optional project filter; no filter means every project', async () => {

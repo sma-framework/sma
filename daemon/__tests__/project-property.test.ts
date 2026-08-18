@@ -31,7 +31,7 @@ import { Readable } from 'node:stream'
 import { createFrontServer } from '../src/front/server.mjs'
 import { deriveState } from '../src/front/state.mjs'
 import { createPgBossQueue } from '../src/queue/pgboss-backend.mjs'
-import { BATCH_PARENT, createMemoryQueue, validateTask } from '../src/queue/adapter.mjs'
+import { BATCH_PARENT, createMemoryQueue, validateTask, withStatedProject } from '../src/queue/adapter.mjs'
 
 const TOKEN = 'a'.repeat(64)
 const NOW = 1_000_000_000_000
@@ -447,5 +447,86 @@ describe('окно не домысливает принадлежность', ()
     // работа, которую прячет каждый фильтр, — невидимая работа; честное «неизвестен» лучше
     expect(ids).toEqual(['U-1'])
     expect(payload.queue[0].project).toBeNull()
+  })
+})
+
+// ══════════════ и та же подстановка там, где её оставили: эталонный бэкенд и эшелон ═══════
+
+/**
+ * ДВА МЕСТА, НАЙДЕННЫЕ ПОСЛЕ ТОГО, КАК СТРОКИ УЖЕ ПОЧИНИЛИ.
+ *
+ * Первое — эталонный (в памяти) бэкенд. Он не служебная заглушка: по нему написан контракт
+ * очереди, и долговечный бэкенд проверяется на соответствие ЕМУ. Пока он дополняет строку без
+ * проекта текущим выбранным, спецификация описывает поведение, которого у настоящей очереди
+ * больше нет, и следующий тест, написанный «по спецификации», закодирует ровно ту ложь,
+ * которую эта работа убирает.
+ *
+ * Второе — эшелон. Проект у волны подставлялся тем же способом («выбранный, а нет — так
+ * „default“»), только этажом выше: не строке, а группе строк. Волна принадлежит проекту
+ * тогда, когда её собственная работа его называет, и никак иначе.
+ */
+describe('эталонный бэкенд не дополняет прочитанное', () => {
+  it('чистая функция чтения: нет проекта — null, есть проект — свой, пусто — пусто', () => {
+    expect(withStatedProject({ id: 'R-old', lane: 'prod' }).project).toBeNull()
+    expect(withStatedProject({ id: 'R-old', lane: 'prod', project: 'sma' }).project).toBe('sma')
+    expect(withStatedProject(null)).toBeNull()
+    // ключ есть всегда — читателю нужно отличать «поля нет» от «факта нет»
+    expect('project' in (withStatedProject({ id: 'R-old' }) as any)).toBe(true)
+  })
+
+  it('строка без проекта читается из очереди с project: null — и списком, и при выдаче работнику', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000 })
+    await q.enqueue({ id: 'R-nul', source: 'roster', title: 'ничья работа', lane: 'prod' })
+    const [row] = await q.list({})
+    expect(row.project).toBeNull()
+    const claimed: any = await q.claimNext('max-1', {})
+    expect(claimed.project).toBeNull()
+  })
+
+  it('регрессия запрещена: штамп постановки жив, свой проект доезжает до обоих чтений', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000, activeProject: 'sma' })
+    await q.enqueue({ id: 'R-own', source: 'roster', title: 'работа продукта', lane: 'prod' })
+    await q.enqueue({ id: 'R-oth', source: 'roster', title: 'чужая работа', lane: 'prod', project: 'sma-dev' })
+    const byId = Object.fromEntries((await q.list({})).map((r: any) => [r.id, r]))
+    expect(byId['R-own'].project).toBe('sma')
+    expect(byId['R-oth'].project).toBe('sma-dev')
+  })
+})
+
+describe('эшелон не домысливает принадлежность', () => {
+  const wave = (id: string, phase: string, w: string, project?: string) => ({
+    id,
+    status: 'queued',
+    lane: 'prod',
+    title: id,
+    priority: 0,
+    enqueuedAt: NOW - 1000,
+    data: { phase, wave: w },
+    ...(project ? { project } : {}),
+  })
+  const wavesOf = async (rows: any[]) => {
+    const payload: any = await deriveState({
+      adapter: mkAdapter(rows),
+      windows: windows(),
+      config: twoProjects, // выбран «sma-dev» — именно его подставляли раньше
+      clock: () => NOW,
+    })
+    return Object.fromEntries(payload.waves.map((w: any) => [`${w.phase}/${w.wave}`, w]))
+  }
+
+  it('вся работа эшелона называет один проект — эшелон отдаётся с ним', async () => {
+    const byKey = await wavesOf([wave('W-1', '17', '1', 'sma'), wave('W-2', '17', '1', 'sma')])
+    expect(byKey['17/1'].project).toBe('sma')
+  })
+
+  it('работа эшелона проекта не называет — эшелон отдаётся с project: null, а не с выбранным', async () => {
+    const byKey = await wavesOf([wave('W-3', '18', '2'), wave('W-4', '18', '2')])
+    expect(byKey['18/2'].project).toBeNull()
+    expect(byKey['18/2'].project).not.toBe(twoProjects.activeProject)
+  })
+
+  it('эшелон из разных проектов ничей: назвать один было бы выдумкой', async () => {
+    const byKey = await wavesOf([wave('W-5', '19', '3', 'sma'), wave('W-6', '19', '3', 'sma-dev')])
+    expect(byKey['19/3'].project).toBeNull()
   })
 })
