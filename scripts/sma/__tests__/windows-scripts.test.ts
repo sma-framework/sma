@@ -91,3 +91,59 @@ describe('shipped PowerShell scripts survive Windows PowerShell 5.1', () => {
     expect(hasBom(bytes)).toBe(true)
   })
 })
+
+/**
+ * THE DEFECT THIS EXISTS FOR, measured after a machine reboot on 18.08.2026: `Test-Port` saw
+ * :5433 the instant the postmaster bound the socket, so the wrapper ran ensure-db and launched
+ * the daemon immediately. Postgres was still finishing recovery and answered both with FATAL
+ * 57P03 «the database system is starting up». The daemon died — correctly, an unreachable queue
+ * is fatal — but nothing retried, so the window never came up after the reboot.
+ *
+ * A socket is not a service. The gate below asserts what the fix has to keep true: a REAL query
+ * decides readiness, 57P03 is a wait rather than a verdict, the wait is bounded, and neither
+ * ensure-db nor the daemon is reached before it.
+ */
+describe('the Windows start wrapper waits for a queue that actually answers', () => {
+  // Strip the BOM the rule above insists on, so offsets below are offsets into the script text.
+  const raw = readFileSync(join(REPO_ROOT, 'supervisor', 'start-daemon-windows.ps1'), 'utf8')
+  const script = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+
+  /** Index of a marker, with a failure message that names what is missing. */
+  function at(marker: string): number {
+    const i = script.indexOf(marker)
+    expect(i, `start-daemon-windows.ps1 no longer contains ${JSON.stringify(marker)}`).toBeGreaterThan(-1)
+    return i
+  }
+
+  it('decides readiness with a query, not with an open socket', () => {
+    at('SELECT 1')
+  })
+
+  it('treats 57P03 as a reason to ask again', () => {
+    const probe = script.slice(at('$waitReady = @"'), at('$waitFile ='))
+    expect(probe).toContain('57P03')
+    // A retry set that 57P03 is merely listed in is not enough — something has to sleep and loop.
+    expect(probe).toMatch(/setTimeout/)
+  })
+
+  it('bounds the wait at 60-90 seconds rather than hanging the boot', () => {
+    const cap = script.match(/\$queueReadySeconds\s*=\s*(\d+)/)
+    expect(cap, 'no $queueReadySeconds cap in start-daemon-windows.ps1').not.toBeNull()
+    const seconds = Number(cap![1])
+    expect(seconds).toBeGreaterThanOrEqual(60)
+    expect(seconds).toBeLessThanOrEqual(90)
+  })
+
+  it('reaches ensure-db and the daemon only after the wait', () => {
+    const waitStarts = at('$waitReady = @"')
+    const waitEnds = at('waited {1:N1}s')
+    expect(waitStarts).toBeLessThan(at('ensuring database'))
+    expect(waitEnds).toBeLessThan(at('ensuring database'))
+    expect(waitEnds).toBeLessThan(at('launching daemon'))
+  })
+
+  it('says how long it waited, on the good path and the bad one', () => {
+    expect(script).toMatch(/queue Postgres ready on[^\r\n]*waited \{1:N1\}s/)
+    expect(script).toMatch(/FATAL[^\r\n]*waited \{1:N1\}s/)
+  })
+})
