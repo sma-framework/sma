@@ -93,6 +93,7 @@ import {
   watchProject,
 } from './front/project-sync.mjs'
 import { tick, runDaemon, parseVerbResult } from './loop.mjs'
+import { createAgingMemory } from './policy/aging-memory.mjs'
 import { createFrontServer } from './front/server.mjs'
 import {
   deriveState,
@@ -1117,7 +1118,11 @@ export function createDaemon(o = {}) {
     report: o.report ?? ((event) => reportTaskEvent({ config, event, clock, journal: o.journal })),
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
     // refused task became a silence — every reason the tick names has to reach a log.
-    journal: o.journal ?? ((entry) => console.log(`[SmaDaemon] ${describeTickEvent(entry)}`)),
+    journal: o.journal ?? ((entry) => console.log(tickJournalLine(entry, clock))),
+    // ПАМЯТЬ ДЕДУПА СТАРЕНИЯ — построена ЗДЕСЬ, один раз, рядом с deps, и живёт столько же,
+    // сколько демон. Без этой строки дедуп был бы «вычислен, но не подключён»: функция есть,
+    // тесты зелёные, а в жизни сигнал по-прежнему кричит каждые пять секунд.
+    agingMemory: o.agingMemory ?? createAgingMemory(),
     // «Can this worker start at all?» — asked BEFORE the attempt, so a placeholder account
     // produces a named, recorded refusal instead of three silent burnt attempts.
     workerReady: o.workerReady ?? ((worker) => workerReadiness(worker, { fsImpl: o.fsImpl })),
@@ -1190,6 +1195,20 @@ export function createDaemon(o = {}) {
 /** Mask any connection string before it reaches a log line (the queue url carries creds). */
 function maskSecrets(text) {
   return String(text ?? '').replace(/postgres(?:ql)?:\/\/[^\s'"]*/gi, 'postgres://[masked]')
+}
+
+/**
+ * tickJournalLine(entry, clock) → the daemon's own journal line, WITH THE TIME ON IT.
+ *
+ * ONE FILE HELD TWO FORMATS: the supervisor's lines carried a timestamp and ours did not, so
+ * in a journal 43 000 lines long there was no way to say WHEN any of our lines happened —
+ * neither how long a task had been shouting nor whether a line was from this hour or the
+ * previous day. The format now lives in one exported function so a test can assert the line
+ * itself rather than a formatter that nobody may be calling.
+ */
+export function tickJournalLine(entry, clock) {
+  const now = typeof clock === 'function' ? clock() : Date.now()
+  return `[SmaDaemon] ${new Date(now).toISOString()} ${describeTickEvent(entry)}`
 }
 
 /** One tick-journal entry as ONE operator line: ids + reasons, never a task payload. */

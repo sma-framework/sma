@@ -1142,9 +1142,9 @@ function toEpochMs(v) {
   return Number.isFinite(t) ? t : NaN
 }
 
-/** Fresh-derive the aging signal every tick — nothing stored. */
+/** Fresh-derive the aging signal every tick — nothing stored except «уже сказали». */
 async function deriveAging(deps, now) {
-  const { adapter, config, report, journal } = deps
+  const { adapter, config, report, journal, agingMemory } = deps
   const agingMs = (config.agingHours ?? 24) * HOUR_MS
   let queued = []
   try {
@@ -1152,15 +1152,26 @@ async function deriveAging(deps, now) {
   } catch {
     return // a list failure never wedges the tick (fail-open)
   }
+  // Trim FIRST, over every waiting task — including the ones not old enough to speak about:
+  // the memory must describe the queue as it is now, not as it was when something was said.
+  const memory = agingMemory && typeof agingMemory.shouldSay === 'function' ? agingMemory : null
+  if (memory && typeof memory.keepOnly === 'function') memory.keepOnly(queued.map((r) => r.id))
   for (const row of queued) {
     const enq = toEpochMs(row.enqueuedAt)
     if (!Number.isFinite(enq)) continue
     const ageMs = now - enq
     if (ageMs < agingMs) continue
+    // NO MEMORY IN deps → THE OLD BEHAVIOUR, exactly. A daemon assembled without this
+    // collaborator keeps saying it every tick rather than falling silent: a missing seam must
+    // never be able to turn a signal off.
+    if (memory && !memory.shouldSay(row.id, now)) continue
     const queuedForHours = Math.floor(ageMs / HOUR_MS)
     if (typeof journal === 'function') journal({ type: 'task.aging', taskId: row.id, queuedForHours })
     if (typeof report === 'function') {
-      // fire-and-forget; consumers dedup by taskId (the same signal reaches the read model)
+      // BOTH exits are throttled by the same decision. Throttling only the journal would leave
+      // the webhook screaming; and the screen does not depend on either — `agedForHours` is
+      // computed from `enqueuedAt` at every read, so «застряла» stays true while the signal
+      // stays quiet.
       await report({ event: 'task.aging', taskId: row.id, title: row.title, lane: row.lane, queuedForHours })
     }
   }
