@@ -1229,6 +1229,23 @@ export async function tick(deps = {}) {
       if (typeof journal === 'function') journal({ type: 'reconcile-error', error: String((err && err.message) || err) })
     }
 
+    // (1c) THE COPIES OF CLOSED TASKS. Beside the two sweeps above and for the same reason:
+    // durable leftovers nobody else audits. The approval door removes the copy of work that
+    // was ACCEPTED; everything else — failed, returned, abandoned — is left standing because
+    // the queue, not this tick, decides whether a retry is coming, and a copy removed under a
+    // retry costs the retry its ready environment. So this pass takes only what has been
+    // closed for a day. Fail-open exactly like the two above: an unreadable list of worktrees
+    // costs a directory, while a tick that dies on it costs every task it was about to hand
+    // out. The sweeper keeps its own once-a-day clock — the tick may call it every five
+    // seconds and it will answer «skipped» until the day is up.
+    if (typeof deps.sweepWorktrees === 'function') {
+      try {
+        result.worktreeSweep = await deps.sweepWorktrees({ now: now() })
+      } catch (err) {
+        if (typeof journal === 'function') journal({ type: 'worktree-sweep-error', error: String((err && err.message) || err) })
+      }
+    }
+
     // (2) intake per cadence (secondary path; roster button is primary — Q2).
     await runIntake(deps, now(), result)
 
@@ -1282,6 +1299,15 @@ export async function tick(deps = {}) {
     // transition minted below names the state the task was really in rather than the one
     // the happy path would have had it in.
     let fleetState = 'CLAIMED'
+    /**
+     * THE COPY THIS ATTEMPT RAN IN, as one object: `{base, branch, worktreePath,
+     * materialized, provisionMs}` — the point of return, and what was put into the copy to
+     * make it usable. Declared OUT HERE, above the per-task try, for one reason: the row it
+     * feeds must reach a failure recorded by the catch below just as surely as one recorded
+     * on the happy path. Stays null for a documentary stage and for any refusal that came
+     * before a copy existed, and a null one simply writes none of the keys.
+     */
+    let worktreeRow = null
 
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
@@ -1425,7 +1451,13 @@ export async function tick(deps = {}) {
         // for a reason no screen could show. Falls back to the launch dir only when no
         // project is connected at all.
         const provisionDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+        // HOW LONG THE COPY TOOK TO PREPARE, measured HERE rather than read off the answer:
+        // the verb reports its own inside time, and what a person asks about is the wait the
+        // task actually paid — process start, argument parsing and all. It is also the only
+        // number available when an older install answers without one at all.
+        const provisionStartedAt = Date.now()
         const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
+        const provisionMs = Date.now() - provisionStartedAt
         // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
         // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
         // whose worktree was sitting on disk under a different name died on a missing cwd and
@@ -1474,8 +1506,29 @@ export async function tick(deps = {}) {
           base: worktreeBase,
           baseFixed: wt.baseFixed === true,
           path: wt.path,
-          detail: `base=${worktreeBase || 'нет'} reused=${wt.reused === true} expected=${wt.expectedBase || 'нет'} actual=${wt.actualBase || 'нет'}`,
+          detail: `base=${worktreeBase || 'нет'} reused=${wt.reused === true} expected=${wt.expectedBase || 'нет'} actual=${wt.actualBase || 'нет'} провизия=${provisionMs}мс`,
         })
+        // ── WHAT WAS PUT INTO THE COPY, straight from the verb that put it there ──
+        // One entry per manifest item: copied, linked, already tracked, or skipped as a
+        // secret. `Array.isArray` and nothing else — the answer comes from the PROJECT's own
+        // CLI, so it is data to be checked, never a shape to be trusted; anything that is not
+        // a list becomes an absence rather than a row nobody can read.
+        const materialized = Array.isArray(wt.materialized) ? wt.materialized : undefined
+        if (materialized === undefined) {
+          // An install whose CLI predates the materializing verb answers no list at all. That
+          // is not a failure — the copy still exists and the attempt still runs — but it must
+          // be SAID, because an empty spot on a card otherwise reads as «nothing was put in».
+          writeLog(deps, {
+            type: 'task.worktree_materialized_missing',
+            taskId: task.id,
+            branch,
+            detail: 'верб провизии не сообщил список материализованного — старая установка CLI проекта или ошибка манифеста',
+          })
+        }
+        // The copy, as ONE object handed to whichever door closes this attempt. Assembled
+        // once, here, so the finished and the failed paths can never come to disagree about
+        // where the work was and what it can be rolled back to.
+        worktreeRow = { base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs }
         // ── WHAT WAS ALREADY BROKEN BEFORE ANYONE TOUCHED ANYTHING ──
         // The exit gate below used to read the ABSOLUTE answer of the re-verification: any
         // divergence in the tree failed the attempt. In a repository with a history that is
@@ -1667,10 +1720,10 @@ export async function tick(deps = {}) {
         const reason = infraReason ?? (gate.receiptRef ? (noteWritten ? null : 'no_journal') : gate.reason)
         if (reason) {
           if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
-          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
+          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
           result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
         } else {
-          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
+          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
           result.completed = task.id
         }
         return result
@@ -1687,7 +1740,7 @@ export async function tick(deps = {}) {
         // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
         // so «the worker answered» can never be mistaken for «the worker's code passed».
         writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef: answered.receiptRef })
-        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf() })
+        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
         result.completed = task.id
         return result
       }
@@ -1820,7 +1873,7 @@ export async function tick(deps = {}) {
       })
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
-        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
         result.completed = task.id
       } else {
         // WHO ENDED THE RUN rides with the rest. The door to «done» above is untouched: an
@@ -1835,7 +1888,7 @@ export async function tick(deps = {}) {
           workerMarker: marker,
           journalComplete: noteWritten,
         })
-        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
         result.failed = { taskId: task.id, reason }
       }
       return result
@@ -1843,7 +1896,7 @@ export async function tick(deps = {}) {
       // Per-task fail-open: a thrown error becomes an honest runtime_offline, never a wedge.
       if (typeof journal === 'function') journal({ type: 'task-error', taskId: task.id, error: String((err && err.message) || err) })
       try {
-        await failTask(deps, task, { reason: 'runtime_offline', now: now(), envelope, from: fleetState })
+        await failTask(deps, task, { reason: 'runtime_offline', now: now(), envelope, from: fleetState, worktree: worktreeRow })
       } catch {
         /* even the fail is fail-open — the next tick's liveness sweep will recover it */
       }
@@ -1937,8 +1990,15 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // launch dir only when no project is connected at all.
   const branch = `wt/${task.id}`
   const provisionDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  // The wait actually paid for the copy — measured around the call, not read off the answer,
+  // for the same reason the code path measures it: the verb only knows its own inside time,
+  // and an install whose CLI is older answers with no number at all.
+  const provisionStartedAt = Date.now()
   const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
+  const provisionMs = Date.now() - provisionStartedAt
   if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
+    // This refusal carries NO copy fields on purpose: no copy was made, and naming a path
+    // that does not exist would point a rollback at an invented place.
     await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState })
     result.failed = {
       taskId: task.id,
@@ -1948,6 +2008,26 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     return result
   }
   const worktreePath = wt.path
+  // The same list, checked the same way: it comes from the PROJECT's own CLI, so anything
+  // that is not an array becomes an absence rather than a row nobody can read.
+  const materialized = Array.isArray(wt.materialized) ? wt.materialized : undefined
+  if (materialized === undefined) {
+    writeLog(deps, {
+      type: 'task.worktree_materialized_missing',
+      taskId: task.id,
+      branch,
+      detail: 'верб провизии не сообщил список материализованного — старая установка CLI проекта или ошибка манифеста',
+    })
+  }
+  // The copy, as one object for every door that can close this attempt. The forge lane has
+  // no reverify gate of its own, so this is the ONLY record of where its draft was written.
+  const worktreeRow = {
+    base: wt.expectedBase || wt.actualBase || null,
+    branch,
+    worktreePath,
+    materialized,
+    provisionMs,
+  }
 
   // (6) spawn the «Создатель» with the FORGE prompt (not the code task prompt); touch on stream.
   //
@@ -2001,7 +2081,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const noteWritten = recordApproachNote(deps, task, parseApproachNote(approachLinesFrom(streamLines)))
 
   if (exit.spawnError) {
-    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
     result.failed = { taskId: task.id, reason: 'runtime_offline' }
     return result
   }
@@ -2020,7 +2100,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
         `провайдер оборвал прогон (${forgeAbort.reason}${forgeAbort.status ? ` ${forgeAbort.status}` : ''})` +
         `${forgeAbort.said ? `: ${forgeAbort.said}` : ''}`,
     })
-    await failTask(deps, task, { reason: 'provider_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    await failTask(deps, task, { reason: 'provider_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
     result.failed = { taskId: task.id, reason: 'provider_error' }
     return result
   }
@@ -2028,7 +2108,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // (7) EXIT GATE = deterministic draft lint + committed-on-branch assertion (NOT reverify).
   const drafts = listCommittedDrafts(deps.execGit, branch, worktreePath, kind)
   if (drafts.length !== 1) {
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: 'draft not committed (expected exactly one)' }
     return result
   }
@@ -2042,7 +2122,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   if (!envelopeAllows(envelope, { action: 'write', path: draftPath })) {
     const detail = `draft path is outside the lane's declared write scope: ${draftPath}`
     writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: 'agent_error', detail })
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
     result.failed = { taskId: task.id, reason: 'agent_error', detail }
     return result
   }
@@ -2050,14 +2130,14 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const lint = lintDraft({ kind, filePath: join(worktreePath, draftPath), fsImpl: deps.fsImpl })
   if (!lint.passed) {
     const failed = lint.checks.filter((c) => !c.ok).map((c) => c.name).join(',')
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: `lint failed: ${failed}` }
     return result
   }
 
   if (!noteWritten) {
     // Certified draft, unexplained attempt — the same gate, the same named failure.
-    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
     result.failed = { taskId: task.id, reason: 'no_journal' }
     return result
   }
@@ -2071,7 +2151,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     sha256: lint.sha256,
     fsImpl: deps.fsImpl,
   })
-  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt })
+  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
   result.completed = task.id
   return result
 }
@@ -2081,7 +2161,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  * `from` names the fine state the task was really in; omitting it (the preflight-«built»
  * door) writes the row with no transition fields rather than an invented pair.
  */
-async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt }) {
+async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree }) {
   const { adapter, ledger, report } = deps
   await adapter.complete(task.id, {
     receiptRef,
@@ -2107,6 +2187,9 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       // key entirely, so a row without a session says so by ABSENCE, never by an empty string.
       sessionId: sessionId ?? undefined,
       endedAt: new Date(now).toISOString(),
+      // THE COPY THIS ATTEMPT RAN IN — see the same block on failTask below: it is written
+      // on BOTH outcomes or it is worth nothing.
+      ...worktreeFields(worktree),
       ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
     })
   }
@@ -2120,7 +2203,31 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
  * `from` is CLAIMED for an attempt refused before any worker started and RUNNING for one
  * that died after — both are legal edges into RETRYABLE, and the key names the real one.
  */
-async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt }) {
+/**
+ * The five fields that describe the copy an attempt ran in, ready to be spread into a
+ * ledger row: where it was, what it was cut from, what was put into it and how long that
+ * took. ONE expression, used by both doors, so a finished attempt and a refused one can
+ * never carry different halves of the same fact — and the refused one is precisely the one
+ * somebody will want to roll back. No copy (a documentary stage, or a refusal that came
+ * before provisioning) writes NO keys at all: absence says «there was none», where a null
+ * would say «there was one and we lost it».
+ *
+ * @param {{base?:string, branch?:string, worktreePath?:string,
+ *          materialized?:object[], provisionMs?:number}|null} [worktree]
+ * @returns {object} fields to spread into `recordAttempt`
+ */
+function worktreeFields(worktree) {
+  if (!worktree) return {}
+  return {
+    base: worktree.base ?? undefined,
+    branch: worktree.branch ?? undefined,
+    worktreePath: worktree.worktreePath ?? undefined,
+    materialized: worktree.materialized ?? undefined,
+    provisionMs: worktree.provisionMs ?? undefined,
+  }
+}
+
+async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree }) {
   const { adapter, ledger, report } = deps
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
@@ -2143,6 +2250,11 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
         // likely to want to open and look inside afterwards.
         sessionId: sessionId ?? undefined,
         endedAt: new Date(now).toISOString(),
+        // THE COPY A FAILED ATTEMPT RAN IN. This is the whole point of the field: the base
+        // commit, the branch, the path and the list of what was put into the copy are what
+        // a person needs to undo a try that went wrong — and until now they lived only in
+        // the operator's log, which does not survive a restart or a month.
+        ...worktreeFields(worktree),
         ...attemptStamp(deps, task, { from, to: from ? 'RETRYABLE' : undefined, actor: 'supervisor', envelope }),
       })
     } catch (err) {

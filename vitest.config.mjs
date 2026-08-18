@@ -41,6 +41,19 @@ const SERIAL_SUITES = [
   // only ever visible at the operator's terminal (exit code + printed envelope), so
   // the child process is the coverage and cannot be mocked away.
   'scripts/sma/__tests__/tracking-verbs.test.ts',
+  // Five throwaway repositories, five real `git worktree add`, and seven CLI spawns —
+  // plus real junctions whose teardown order is itself the subject. None of it survives
+  // being stacked beside eleven other workers on one machine.
+  'scripts/sma/__tests__/worktree-materialize.test.ts',
+  // Six more throwaway repositories with real junctions, six more CLI spawns, and one
+  // case that is deliberately destructive to the target it created itself — the platform
+  // control that justifies unhooking links before git ever sees the copy.
+  'scripts/sma/__tests__/worktree-remove-safe.test.ts',
+  // The daemon's side of the same story. It drives ONE throwaway repository through the REAL
+  // CLI twice — provision, then remove — so the verb answers the rest of that file fakes are
+  // proved to be a SUBSET of the live ones. A fake that knows more than the library is how a
+  // green suite once covered a call to a method that did not exist.
+  'daemon/__tests__/worktree-cleanup.test.ts',
 ]
 
 /**

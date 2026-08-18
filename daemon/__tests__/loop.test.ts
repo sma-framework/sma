@@ -2596,3 +2596,162 @@ describe('журнал попытки отвечает и «к чему отка
     expect(line.detail).toContain('изменённых файлов нет')
   })
 })
+
+/**
+ * ══════ ЧТО ЗА КОПИЮ ПОЛУЧИЛ РАБОТНИК — В СТРОКЕ ПОПЫТКИ, А НЕ В ЛОГЕ ═══════════
+ *
+ * База копии до сих пор жила ТОЛЬКО в операторском логе: откатить попытку было можно, а
+ * увидеть, к чему откатывать, — нет, потому что лог не переживает ни ротацию, ни месяц.
+ * Здесь проверяется ПРОВОД, а не вычисление: ответ верба провизии обязан доехать до
+ * `recordAttempt` — и у завершённой попытки, и у ПРОВАЛЕННОЙ (откатывают обычно вторую).
+ *
+ * Подделка верба отвечает РОВНО тем, чем отвечает настоящий: её ответ лежит одним файлом
+ * (`fixtures/worktree-provision-answer.json`), а его ключи — подмножество ключей живого
+ * прогона `worktree provision --json` на временном репозитории. Подделка, умеющая больше
+ * библиотеки, уже однажды показывала зелёный сьют поверх вызова несуществующего метода.
+ */
+const PROVISION_ANSWER = JSON.parse(
+  readFileSync(join(import.meta.dirname, 'fixtures', 'worktree-provision-answer.json'), 'utf8'),
+)
+
+const copyTask = (over: any = {}) => backlogTask({ id: 'R-77', attempt: 1, ...over })
+
+const copyResponses = (answer: any = PROVISION_ANSWER) => ({
+  preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+  worktree: { code: 0, stdout: JSON.stringify(answer) },
+  reverify: GREEN_REVERIFY,
+})
+
+describe('строка попытки несёт копию: базу, ветку, путь, материализованное и время провизии', () => {
+  it('завершённая попытка: пять полей в строке — ровно то, что ответил верб', async () => {
+    const adapter = oneTaskAdapter(copyTask())
+    const { deps, attempts } = makeDeps({ adapter, responses: copyResponses() })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('R-77')
+    const row = attempts.find((a) => a.outcome === 'completed')
+    expect(row).toBeTruthy()
+    expect(row.base).toBe('a'.repeat(40))
+    expect(row.branch).toBe('wt/R-77')
+    expect(row.worktreePath).toBe('/wt/R-77')
+    // ровно тот список, что ответил верб — не пересобранный тиком и не урезанный
+    expect(row.materialized).toEqual(PROVISION_ANSWER.materialized)
+    expect(Number.isFinite(row.provisionMs)).toBe(true)
+    expect(row.provisionMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('ПРОВАЛЕННАЯ попытка несёт те же пять полей — её и откатывают', async () => {
+    const adapter = oneTaskAdapter(copyTask())
+    const { deps, attempts } = makeDeps({
+      adapter,
+      responses: copyResponses(),
+      // работник отработал и НЕ оставил записки — попытка закрывается провалом
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line'] }),
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed && res.failed.taskId).toBe('R-77')
+    const row = attempts.find((a) => a.outcome === 'failed')
+    expect(row).toBeTruthy()
+    expect(row.base).toBe('a'.repeat(40))
+    expect(row.branch).toBe('wt/R-77')
+    expect(row.worktreePath).toBe('/wt/R-77')
+    expect(row.materialized).toEqual(PROVISION_ANSWER.materialized)
+    expect(Number.isFinite(row.provisionMs)).toBe(true)
+  })
+
+  it('верб старой версии не сообщил список — строка без ключа, тик жив, в логе сказано вслух', async () => {
+    const adapter = oneTaskAdapter(copyTask({ id: 'R-78' }))
+    const { deps, attempts, journalled } = makeDeps({
+      adapter,
+      // ответ установки, которая ещё не знает про материализацию: прежние ключи и только они
+      responses: copyResponses({ ok: true, path: '/wt/R-78', branch: 'wt/R-78', expectedBase: 'b'.repeat(40) }),
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('R-78')
+    const row = attempts.find((a) => a.outcome === 'completed')
+    expect(row.base).toBe('b'.repeat(40))
+    expect(row.worktreePath).toBe('/wt/R-78')
+    // отсутствие — это undefined: ни null, ни пустой массив, иначе читатель через месяц
+    // прочтёт «копия была пуста» там, где верб просто промолчал
+    expect(row.materialized).toBeUndefined()
+    // ВРЕМЯ ПРОВИЗИИ МЕРЯЕТ ТИК, А НЕ ВЕРБ: старый верб числа не назвал, а строка его несёт
+    expect(Number.isFinite(row.provisionMs)).toBe(true)
+    expect(journalled.some((e: any) => e.type === 'task.worktree_materialized_missing')).toBe(true)
+  })
+
+  it('документарная стадия шла без копии — ни пути, ни списка в строке', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const { deps, attempts } = stageDeps({
+      adapter,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-01-PLAN.md': 'abc1234' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    const row = attempts.find((a) => a.outcome === 'completed')
+    expect(row.worktreePath).toBeUndefined()
+    expect(row.materialized).toBeUndefined()
+    expect(row.base).toBeUndefined()
+  })
+})
+
+/**
+ * ══════ ОБХОД КОПИЙ ЖИВЁТ В ТИКЕ, РЯДОМ С ОБХОДОМ ЖИВОСТИ ═══════════════════════
+ *
+ * Копии закрытых задач не убирал никто: у приёмки уборки не было, а у демона — обхода.
+ * Обход стоит там же, где обход живости очереди, и по тому же образцу: он не имеет права
+ * уронить тик. Копия — это каталог; неубранный каталог стоит места, а тик, упавший на его
+ * уборке, стоит всей работы, которую он должен был раздать.
+ */
+describe('тик гоняет обход копий и переживает его падение', () => {
+  it('обход вызван РАЗ за тик и получает время тика', async () => {
+    const sweeps: any[] = []
+    const adapter = oneTaskAdapter(backlogTask({ id: 'R-77', attempt: 1 }))
+    const { deps, clock } = makeDeps({
+      adapter,
+      responses: copyResponses(),
+      deps: { sweepWorktrees: async (a: any) => { sweeps.push(a); return { scanned: 1, removed: 1, skipped: 0, errors: 0 } } },
+    })
+
+    const res = await tick(deps)
+
+    expect(sweeps).toHaveLength(1)
+    expect(sweeps[0].now).toBe(clock.clock())
+    expect(res.worktreeSweep).toMatchObject({ removed: 1 })
+  })
+
+  it('обход упал — тик доводит задачу до конца, а причина названа в журнале', async () => {
+    const adapter = oneTaskAdapter(copyTask())
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: copyResponses(),
+      deps: { sweepWorktrees: async () => { throw new Error('список деревьев не читается') } },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('R-77')
+    const line = journalled.find((e: any) => e.type === 'worktree-sweep-error')
+    expect(line, 'падение обхода прошло молча').toBeTruthy()
+    expect(String(line.error)).toContain('список деревьев не читается')
+  })
+
+  it('демон без обхода работает как прежде — поля в итоге тика нет вовсе', async () => {
+    const adapter = oneTaskAdapter(copyTask({ id: 'R-81' }))
+    const { deps } = makeDeps({ adapter, responses: copyResponses({ ...PROVISION_ANSWER, path: '/wt/R-81', branch: 'wt/R-81' }) })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('R-81')
+    expect(Object.hasOwn(res, 'worktreeSweep')).toBe(false)
+  })
+})

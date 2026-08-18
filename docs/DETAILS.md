@@ -242,7 +242,7 @@ The coordination + accountability CLI runs underneath — 90 verbs, grouped here
 | `preflight` | The already-built gate: check a plan's claims against the real tree before any executor spawns |
 | `arena` | The comparative benchmark arena scorer + static graphs page (raw data and negative results published) |
 | `batch` | The `sma batch` middle lane: risk filter, grill-lite, mandatory receipts |
-| `worktree` · `merge` | Per-terminal worktree isolation, and the serialized local-only merge gate (the push itself stays a human-ordered ritual) |
+| `worktree` · `merge` | Per-terminal worktree isolation — `provision` copies the untracked layer named by `.sma/worktree-include` and links dependencies instead of installing them, `remove` unlinks first and only then removes the tree (`--delete-branch` takes the branch too) — and the serialized local-only merge gate (the push itself stays a human-ordered ritual) |
 | `session-end` | SessionEnd hook: release this terminal's own claims so stale leases never haunt teammates |
 | `ask` | *(experimental stub)* — the fingerprint demand surface (`--unmet-count`); the full feature matures in a later release |
 | `explain` · `doc-audit` | 26 plain-language explainer topics with a command-coverage tripwire (every verb resolves to one); the deterministic docs honesty audit |
@@ -774,6 +774,19 @@ flowchart LR
 ```
 
 `sma merge` never pushes and never deploys: it acquires the merge slot (a concurrent merge gets a soft-deny), merges **locally**, runs targeted tests on the *merged* tree — because two individually green branches can be red together — journals a receipt, and releases the slot.
+
+#### Worker copy: what it carries and how it is removed
+
+A copy cut for a run is not a bare checkout. Provisioning reads `.sma/worktree-include` at the root of your main tree and materializes the layer git does not track:
+
+```json
+{ "copy": [".claude/", "CLAUDE.md", ".claude/settings.local.json"],
+  "link": ["node_modules", "spa/node_modules"] }
+```
+
+Those three `copy` entries are the defaults, applied when the file is absent — and also when it is malformed, because a typo in one file must not cost the session its rules. `copy` paths are brought over file by file, and only where the copy is older; anything git already tracks is left alone (the checkout has it). `link` paths become a junction (Windows) or a directory symlink (elsewhere) into the main tree, so no package manager ever runs in the copy. Entries must be relative paths inside the project — no `..`, no `.git`, no `.sma` — and `.env*`, `*.pem`, `*.key`, `.secrets*` are refused whatever the manifest says. Every decision comes back in the verb's answer as `copied / linked / already tracked / skipped, and why`, and is written onto the attempt so the card can show it.
+
+**If you link things by hand, unlink before you remove.** On Windows `git worktree remove` follows a junction into its target and deletes what it finds *there* — that is your main tree's `node_modules`, not the copy's link. The product's own `worktree remove` does it in the safe order: unlink first, then remove the tree; `--delete-branch` takes the branch with it and records the tip it deleted, so the work can still be raised from that commit.
 
 ## V3 — The Trust Spine
 

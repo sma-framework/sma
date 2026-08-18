@@ -266,6 +266,27 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * …AND WHAT HAPPENS TO THE COPY THE WORK WAS DONE IN, WHICH IS A THIRD LIST AGAIN.
+   *
+   * Every task runs in its own copy on its own branch, and until now nothing ever removed
+   * one: the approval door merged the branch and walked away, and the tick had no sweep at
+   * all. Both halves of the cure are ordinary functions with their own tests — and both are
+   * useless unwired, in the exact way this file exists to catch. The two are named together
+   * because they cover different tasks: the door covers the accepted ones, the sweep covers
+   * every other closed one, and either alone leaves copies on disk forever.
+   */
+  it('wires the cleanup of the copy a task ran in — the door for accepted work, the tick for the rest', () => {
+    expect(
+      typeof park.front.deps.worktreeCleanup,
+      'front deps.worktreeCleanup must be wired or accepted work leaves its copy and branch behind',
+    ).toBe('function')
+    expect(
+      typeof park.tickDeps.sweepWorktrees,
+      'tickDeps.sweepWorktrees must be wired or copies of closed tasks are never swept',
+    ).toBe('function')
+  })
+
+  /**
    * THE MONEY RULE MUST REACH THE DISPATCHER.
    *
    * `shouldApiFallback` decides two things nothing else decides: whether a task that names

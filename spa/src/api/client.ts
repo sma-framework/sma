@@ -199,7 +199,11 @@ export interface EnqueueInput {
   machine?: string
 }
 
-/** Put a new task in the queue. The text becomes a task's title — never a command. */
+/**
+ * Put a new task in the queue. The text becomes a task's title — never a command.
+ * Собственное имя машины сюда не передаётся: своя машина — это отсутствие ключа (withOptional
+ * опускает undefined), и тогда дверь выполняет работу здесь, а не ищет федерацию.
+ */
 export function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   return postJson<EnqueueResult>(
     '/api/enqueue',
@@ -250,12 +254,18 @@ export function setTaskWords(input: {
   }))
 }
 
-/** Accept finished work. Only a person ever calls this. */
+/**
+ * Accept finished work. Only a person ever calls this.
+ * Собственное имя машины сюда не передаётся — своя машина — это отсутствие ключа.
+ */
 export function approve(taskId: string, opts: { machine?: string } = {}): Promise<ApproveResult> {
   return postJson<ApproveResult>('/api/approve', withOptional({ taskId }, { machine: opts.machine }))
 }
 
-/** Send work back with a comment. The comment travels as text, never as an instruction. */
+/**
+ * Send work back with a comment. The comment travels as text, never as an instruction.
+ * Собственное имя машины сюда не передаётся — своя машина — это отсутствие ключа.
+ */
 export function returnTask(input: {
   taskId: string
   note: string
