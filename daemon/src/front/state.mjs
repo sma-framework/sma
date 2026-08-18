@@ -96,7 +96,6 @@ import {
   batchDecisionsOf,
   latestRowPerId,
   waveAddressOf,
-  DEFAULT_PROJECT_ID,
   REASON_LABELS,
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
@@ -1922,12 +1921,20 @@ function deriveBatches(requests, rows, { machineId } = {}) {
  * in yet must stay visible, or the screen would show a stop that quietly is not there — and the
  * next tick would still be honouring it.
  *
+ * ЧЕЙ ЭШЕЛОН — СЧИТАЕТСЯ ИЗ ЕГО СОБСТВЕННЫХ СТРОК, А НЕ ИЗ ТОГО, КУДА СМОТРЯТ. Раньше здесь
+ * стояла подстановка «выбранный проект, а если его нет — „default“»: у эшелона появлялся
+ * владелец, которого никто не записывал, и он менялся вместе со взглядом человека. Это та же
+ * ошибка, что была на строках, только этажом выше — принадлежность домысливалась. Теперь эшелон
+ * принадлежит проекту тогда и только тогда, когда его собственная незакрытая работа называет
+ * ОДИН и тот же проект; эшелон из строк без проекта, из строк разных проектов и эшелон, о
+ * котором известен только приказ об остановке, честно отдаются с `project: null`.
+ *
  * @param {object[]} rows every queue row
  * @param {{phase:string, wave:string, since:number|null}[]} holds
- * @param {{activeProject?:string|null, machineId?:string}} ctx
+ * @param {{machineId?:string}} ctx — только машина: проект эшелона считается из его строк
  * @returns {object[]}
  */
-function deriveWaves(rows, holds, { activeProject, machineId } = {}) {
+function deriveWaves(rows, holds, { machineId } = {}) {
   const all = Array.isArray(rows) ? rows : []
   const stops = Array.isArray(holds) ? holds : []
   const byKey = new Map()
@@ -1935,7 +1942,9 @@ function deriveWaves(rows, holds, { activeProject, machineId } = {}) {
   const slot = (phase, wave) => {
     const key = keyOf(phase, wave)
     if (!byKey.has(key)) {
-      byKey.set(key, { phase, wave, held: false, heldSince: null, running: [], waiting: [] })
+      // `projects` — множество проектов, НАЗВАННЫХ собственными строками эшелона. Пусто —
+      // никто не назвал; больше одного — эшелон общий, и назвать один было бы выдумкой.
+      byKey.set(key, { phase, wave, held: false, heldSince: null, running: [], waiting: [], projects: new Set() })
     }
     return byKey.get(key)
   }
@@ -1953,12 +1962,18 @@ function deriveWaves(rows, holds, { activeProject, machineId } = {}) {
     if (r.status !== 'queued' && r.status !== 'claimed') continue
     const row = slot(address.phase, address.wave)
     const named = { id: r.id, title: r.title ?? null }
+    const own = projectOf(r)
+    if (own !== null) row.projects.add(own)
     if (r.status === 'claimed') row.running.push(named)
     else row.waiting.push(named)
   }
 
   return [...byKey.values()]
-    .map((w) => ({ ...w, project: activeProject ?? DEFAULT_PROJECT_ID, machine: machineId }))
+    .map(({ projects, ...w }) => ({
+      ...w,
+      project: projects.size === 1 ? [...projects][0] : null,
+      machine: machineId,
+    }))
     .sort((a, b) => {
       const byPhase = String(a.phase).localeCompare(String(b.phase), undefined, { numeric: true })
       return byPhase !== 0 ? byPhase : String(a.wave).localeCompare(String(b.wave), undefined, { numeric: true })
@@ -2055,7 +2070,7 @@ export async function deriveState(deps = {}) {
   const waves = deriveWaves(
     deps.project ? rows.filter((r) => inProject(r, deps.project)) : rows,
     waveHolds,
-    { activeProject, machineId },
+    { machineId },
   )
 
   // ── ONE TASK, ONE LINE — IN EVERY SECTION OF THE LIST ──
