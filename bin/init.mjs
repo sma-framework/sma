@@ -72,8 +72,10 @@ const COMMANDS = [
 ];
 
 // ── hooks the installer manages (matched by command string for idempotency) ──
+// Exported so the installer's own suite asserts the shipped set from THIS list
+// instead of keeping a second copy of it, which would quietly drift apart.
 
-const SMA_HOOKS = [
+export const SMA_HOOKS = [
   { event: 'SessionStart', matcher: null, command: 'node scripts/sma/cli.mjs session-start', timeout: 10 },
   // the whole PreToolUse pipeline is ONE `pre` multiplexer
   // spawn — collision → reflex → gates run as ordered streams inside a single
@@ -83,13 +85,37 @@ const SMA_HOOKS = [
   // STALE_SMA_HOOK_COMMANDS below and removed by mergeHooks, so an existing
   // install heals to the single spawn on update.
   { event: 'PreToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs pre', timeout: 5 },
-  // the stall detector feeds on PostToolUse — a NEW hook type
-  // for SMA (any pre-existing Stop/SubagentStop entries, e.g. a project's
-  // security guard, live under different events and are untouched by the
-  // additive merge). Advisory additionalContext nudge only, never a block.
-  // NOT absorbed by `pre` (that multiplexer is PreToolUse-only), so it stays
-  // its own entry.
+  // the context pack rides PreToolUse on the Task tool, so every subagent is
+  // spawned already carrying the project's claims, gates and open questions
+  // instead of rediscovering them. It is its OWN matcher group rather than a
+  // wider matcher on the multiplexer above, because `pre` is wired for the
+  // editing tools and knows nothing about Task; the consumer invariant is
+  // "exactly one SMA chain PER MATCHER", which a second group keeps.
+  { event: 'PreToolUse', matcher: 'Task', command: 'node scripts/sma/cli.mjs pretask-pack', timeout: 10 },
+  // the stall detector feeds on PostToolUse. Advisory additionalContext nudge
+  // only, never a block. NOT absorbed by `pre` (that multiplexer is
+  // PreToolUse-only), so it stays its own entry. The merge below is additive in
+  // EVERY event: foreign entries — a project's own security guard, say — are
+  // never dropped or reordered, including in the events this template now
+  // writes to as well.
   { event: 'PostToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs stall-check', timeout: 5 },
+  // The three entries below carry NO matcher on purpose. These events do accept
+  // matchers (end reason, compaction trigger, subagent type); leaving the field
+  // out is how one entry covers every value of them, which is what all three
+  // want.
+  //   session-end releases the claims this window is holding, so a terminal
+  //   that was simply closed never leaves a teammate blocked on a scope nobody
+  //   is editing any more.
+  { event: 'SessionEnd', matcher: null, command: 'node scripts/sma/cli.mjs session-end', timeout: 10 },
+  //   precompact-capsule writes the flight capsule BEFORE the context is
+  //   trimmed. It walks git and the working tree to build one, and a capsule
+  //   cut short by the hook budget is state lost for good — so these two get a
+  //   longer budget than the editing-path hooks, still short enough that a
+  //   person does not feel it.
+  { event: 'PreCompact', matcher: null, command: 'node scripts/sma/cli.mjs precompact-capsule', timeout: 15 },
+  //   subagent-verify matches what a finishing subagent claimed to have written
+  //   against the tree — the same git-and-disk walk, the same reasoning.
+  { event: 'SubagentStop', matcher: null, command: 'node scripts/sma/cli.mjs subagent-verify', timeout: 15 },
 ];
 
 // PreToolUse commands this installer USED to ship before the `pre` multiplexer
