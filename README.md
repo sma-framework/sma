@@ -65,11 +65,30 @@ your-project/
 │  ├─ agents/            ← the helpers those commands call on
 │  ├─ sma-core/          ← the engine: the instructions behind each command
 │  ├─ memory/            ← your project's notes — installed EMPTY, the notes stay yours
-│  └─ settings.json      ← hooks that wire SMA into the agent (your own entries are kept)
+│  └─ settings.json      ← 7 hooks that wire SMA into the agent (your own entries are kept)
 ├─ scripts/sma/          ← the command-line tool the commands use underneath
 ├─ .sma/                 ← working state: who is editing what, and the log of checks
 └─ CLAUDE.md             ← one short marked block is added; your own text is untouched
 ```
+
+Those hooks are **seven entries across six agent events**, and together they are the
+whole of SMA's grip on a session. `SessionStart` — pick up what this window was doing.
+`PreToolUse` twice: once on the editing tools `Edit`/`Write`/`Bash`, where the collision,
+reflex and gate checks run as one process, and once on the tool that spawns a subagent
+(matched under both names that tool has carried across agent versions, so an upgrade
+cannot quietly unhook it), so the subagent starts already holding the project's claims
+and open questions. `PostToolUse` on the same editing tools — the stall check.
+`SessionEnd` — hand back the claims this window is holding. `PreCompact` — write a flight
+capsule before the context is trimmed. `SubagentStop` — check what a finishing subagent
+said it wrote against what is actually in the tree.
+
+Two things stated honestly, because a promise is worth less than a limit named out loud.
+`SessionEnd` fires whenever the session ends — you close the window, you type `/clear`,
+you log out — not only on a closed window. And the `PreCompact` capsule is written **when
+your version of the agent announces that event**; on a version that does not, the command
+simply exits without an error and nothing else changes. Your own entries in any of these
+events are kept exactly as they are. What each hook does and the time budget it runs
+under: [docs/DETAILS.md](docs/DETAILS.md).
 
 A `.planning/` folder appears later, the first time you plan a piece of work.
 
