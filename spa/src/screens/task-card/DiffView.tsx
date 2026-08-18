@@ -42,6 +42,22 @@ export function diffFileStats(text: string): DiffFileStat[] {
   return files
 }
 
+/**
+ * Пометки двери — ведущие строки, начинающиеся с «# ». Дверь отвечает ими вместо ошибки, когда
+ * копия работника уже убрана: коммиты остались, а ветки нет, и это обстоятельство, не поломка.
+ * Раньше на этом месте окно показывало красную ошибку транспорта у правильно принятой работы.
+ * Пометка — это текст: она читается, а не разбирается, и из самого дифа не вырезается.
+ */
+export function noteLines(text: string | null): string[] {
+  if (!text) return []
+  const notes: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('# ')) notes.push(line.slice(2).trim())
+    else if (line.trim() !== '') break
+  }
+  return notes
+}
+
 function FileLine({ file }: { file: DiffFileStat }) {
   return (
     <div className="flex items-baseline justify-between gap-2.5">
@@ -72,6 +88,7 @@ export function DiffSummary({
   const files = text ? diffFileStats(text) : []
   const added = files.reduce((sum, f) => sum + f.added, 0)
   const removed = files.reduce((sum, f) => sum + f.removed, 0)
+  const notes = noteLines(text)
 
   return (
     <section className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
@@ -91,7 +108,13 @@ export function DiffSummary({
       ) : null}
 
       {!loading && !failed && files.length === 0 ? (
-        <p className="m-0 text-[12px] text-tx3">Файлы не изменены — подход остановился раньше.</p>
+        <p className="m-0 text-[12px] text-tx3">
+          {notes[0] ?? 'Файлы не изменены — подход остановился раньше.'}
+        </p>
+      ) : null}
+
+      {files.length > 0 && notes.length > 0 ? (
+        <p className="m-0 mb-2.5 text-[11px] leading-[1.45] text-tx3">{notes[0]}</p>
       ) : null}
 
       {files.length > 0 ? (
