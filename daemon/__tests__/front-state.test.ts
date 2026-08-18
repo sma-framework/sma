@@ -389,6 +389,116 @@ describe('deriveState — the one-poll payload', () => {
     expect(out.attempts[2]).toMatchObject({ workerId: 'max-1', provider: 'claude', outcome: 'completed' })
   })
 
+  /**
+   * ═══ ГДЕ РАБОТАЛИ И ЧТО ОТ ЭТОГО ОСТАЛОСЬ — В ТЕЛЕ ДВЕРИ, А НЕ В ЧУЖОМ ЖУРНАЛЕ ═══
+   *
+   * База копии, её ветка, путь, список материализованного и время провизии уже пишутся в
+   * строку попытки, а уборка — отдельной строкой той же попытки. Вычислено, записано — и
+   * никем не предъявлено: карточка о них не знала, потому что дверь их не отдавала. Ровно
+   * тот класс, что стоил дня разбора: каждый кусок написан и зелён, ни один не присоединён
+   * к соседнему. Тест стоит на ТЕЛЕ двери — провод доказывается тем, что по нему доехало.
+   *
+   * Новой двери здесь нет и быть не может: расширяется payload существующей.
+   */
+  it('дверь задачи отдаёт копию попытки: базу, ветку, путь, список и след уборки', async () => {
+    const copyRows = (taskId: string) => [
+      // (а) строка машины состояний — начало попытки
+      { taskId, attempt: 1, startedAt: NOW - 2 * HOUR, workerId: 'max-1' },
+      // (б) строка тика — что за копию получил работник
+      {
+        taskId,
+        attempt: 1,
+        provider: 'claude',
+        endedAt: NOW - HOUR,
+        outcome: 'completed',
+        base: 'a'.repeat(40),
+        branch: 'wt/BL-copy',
+        worktreePath: '/projects/.sma-worktrees/BL-copy',
+        materialized: [
+          { path: '.claude/', mode: 'copy', files: 3 },
+          { path: 'node_modules', mode: 'link', target: '/projects/app/node_modules' },
+        ],
+        provisionMs: 812,
+      },
+      // (в) строка уборки — отдельная, без исхода: она не должна переписать (б)
+      {
+        taskId,
+        attempt: 1,
+        cleanup: {
+          at: '2026-08-18T10:00:00.000Z',
+          by: 'approve',
+          removedPath: '/projects/.sma-worktrees/BL-copy',
+          removedBranch: 'wt/BL-copy',
+          branchTip: 'abc1234',
+          unlinked: [{ path: 'node_modules' }],
+          dirtyFiles: [],
+          forced: true,
+          ok: true,
+        },
+      },
+      // попытка ДО того, как строка научилась нести копию: у неё полей нет вовсе
+      { taskId, attempt: 2, provider: 'claude', endedAt: NOW, outcome: 'completed' },
+    ]
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-copy', title: 'копия попытки', lane: 'prod', status: 'completed', attempt: 2 }] },
+        ledger: (id: string) => copyRows(id),
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-copy' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    const first = out.attempts[0]
+    expect(first.outcome).toBe('completed') // строка уборки не переписала исход попытки
+    expect(first.base).toBe('a'.repeat(40))
+    expect(first.branch).toBe('wt/BL-copy')
+    expect(first.worktreePath).toBe('/projects/.sma-worktrees/BL-copy')
+    expect(first.materialized).toHaveLength(2)
+    expect(first.provisionMs).toBe(812)
+    expect(first.cleanup.by).toBe('approve')
+    expect(first.cleanup.removedBranch).toBe('wt/BL-copy')
+    expect(first.cleanup.branchTip).toBe('abc1234')
+    // …и попытка, у которой копии в журнале нет, молчит явным null, а не выдумывает
+    expect(out.attempts[1]).toMatchObject({
+      base: null,
+      branch: null,
+      worktreePath: null,
+      materialized: null,
+      provisionMs: null,
+      cleanup: null,
+    })
+  })
+
+  it('идущая прямо сейчас попытка несёт те же шесть полей пустыми — карточке нечего показывать', async () => {
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-live', title: 'в работе', lane: 'prod', status: 'claimed', attempt: 1, claimedAt: NOW }] },
+        ledger: () => [],
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-live' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts).toHaveLength(1)
+    expect(out.attempts[0]).toMatchObject({
+      outcome: 'running',
+      base: null,
+      branch: null,
+      worktreePath: null,
+      materialized: null,
+      provisionMs: null,
+      cleanup: null,
+    })
+  })
+
   it('the length of a try survives the merge — the two marks live on its two rows', async () => {
     const rows = [{ id: 'BL-six', status: 'completed', lane: 'prod', title: 'три подхода', completedAt: NOW }]
     const payload = await deriveState({
