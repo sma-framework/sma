@@ -91,7 +91,7 @@ export const SMA_HOOKS = [
   // wider matcher on the multiplexer above, because `pre` is wired for the
   // editing tools and knows nothing about Task; the consumer invariant is
   // "exactly one SMA chain PER MATCHER", which a second group keeps.
-  { event: 'PreToolUse', matcher: 'Task', command: 'node scripts/sma/cli.mjs pretask-pack', timeout: 10 },
+  { event: 'PreToolUse', matcher: 'Task|Agent', command: 'node scripts/sma/cli.mjs pretask-pack', timeout: 10 },
   // the stall detector feeds on PostToolUse. Advisory additionalContext nudge
   // only, never a block. NOT absorbed by `pre` (that multiplexer is
   // PreToolUse-only), so it stays its own entry. The merge below is additive in

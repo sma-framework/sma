@@ -67,6 +67,12 @@ function defFor(event: string, matcher: string | null): HookDef {
 }
 
 /** The settings.json entry the installer emits for a definition. */
+// The matcher the shipped list uses for a subagent spawn. Read from the list rather
+// than spelled here: the spawn tool was renamed between releases and the entry now
+// carries both names, so a literal in this file would be a second truth that starts
+// lying to the first the next time the name moves.
+const SPAWN_MATCHER = (SMA_HOOKS as any[]).find((h) => String(h.command).endsWith('pretask-pack')).matcher
+
 function entryOf(def: HookDef) {
   return { type: 'command', command: def.command, timeout: def.timeout }
 }
@@ -121,7 +127,7 @@ function multiplexerGroup() {
 }
 
 function taskPackGroup() {
-  return { matcher: 'Task', hooks: [entryOf(defFor('PreToolUse', 'Task'))] }
+  return { matcher: SPAWN_MATCHER, hooks: [entryOf(defFor('PreToolUse', SPAWN_MATCHER))] }
 }
 
 describe('init hooks — a fresh merge ships one chain per matcher (Test 1)', () => {
@@ -138,7 +144,7 @@ describe('init hooks — a fresh merge ships one chain per matcher (Test 1)', ()
     // PreToolUse group rather than a wider matcher on the multiplexer
     expect(settings.hooks.PreToolUse).toHaveLength(2)
     expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
-    expect(groupFor(settings, 'PreToolUse', 'Task')).toEqual(taskPackGroup())
+    expect(groupFor(settings, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
     // the matcher-less events get exactly one group each
     for (const event of ['SessionStart', 'PostToolUse', 'SessionEnd', 'PreCompact', 'SubagentStop']) {
       expect(settings.hooks[event]).toHaveLength(1)
@@ -168,7 +174,7 @@ describe('init hooks — update heals the legacy 3-spawn chains (Test 2)', () =>
     // the emptied legacy groups are gone; what is left is one chain per matcher
     expect(settings.hooks.PreToolUse).toHaveLength(2)
     expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
-    expect(groupFor(settings, 'PreToolUse', 'Task')).toEqual(taskPackGroup())
+    expect(groupFor(settings, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
   })
 })
 
@@ -179,7 +185,7 @@ describe('init hooks — chains AND multiplexer dedup to one (Test 3)', () => {
     expect(removedStale).toBe(6)
     expect(settings.hooks.PreToolUse).toHaveLength(2)
     expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
-    expect(groupFor(settings, 'PreToolUse', 'Task')).toEqual(taskPackGroup())
+    expect(groupFor(settings, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
     const preEntries = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks).filter((h: any) => h.command === PRE_CMD)
     expect(preEntries).toHaveLength(1)
   })
@@ -250,22 +256,22 @@ describe('init hooks — the Task matcher carries exactly one engine entry', () 
     const settings: any = {}
     mergeHooks(settings)
     mergeHooks(settings)
-    const task = groupFor(settings, 'PreToolUse', 'Task')
-    expect(task.hooks).toEqual([entryOf(defFor('PreToolUse', 'Task'))])
+    const task = groupFor(settings, 'PreToolUse', SPAWN_MATCHER)
+    expect(task.hooks).toEqual([entryOf(defFor('PreToolUse', SPAWN_MATCHER))])
     expect(smaEntriesIn(task)).toHaveLength(1)
     // one Task group, and the editing multiplexer is untouched by its arrival
-    expect(settings.hooks.PreToolUse.filter((g: any) => g.matcher === 'Task')).toHaveLength(1)
+    expect(settings.hooks.PreToolUse.filter((g: any) => g.matcher === SPAWN_MATCHER)).toHaveLength(1)
     expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
   })
 
   it('joins a project that already runs its own hook on the Task matcher', () => {
     const foreign = { type: 'command', command: 'node my-task-audit.mjs', timeout: 20 }
-    const settings: any = { hooks: { PreToolUse: [{ matcher: 'Task', hooks: [foreign] }] } }
+    const settings: any = { hooks: { PreToolUse: [{ matcher: SPAWN_MATCHER, hooks: [foreign] }] } }
     const foreignBytes = JSON.stringify(foreign)
     mergeHooks(settings)
-    const task = groupFor(settings, 'PreToolUse', 'Task')
+    const task = groupFor(settings, 'PreToolUse', SPAWN_MATCHER)
     expect(JSON.stringify(task.hooks[0])).toBe(foreignBytes)
-    expect(smaEntriesIn(task)).toEqual([entryOf(defFor('PreToolUse', 'Task'))])
+    expect(smaEntriesIn(task)).toEqual([entryOf(defFor('PreToolUse', SPAWN_MATCHER))])
   })
 })
 
@@ -327,7 +333,7 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
       expect(smaEntries(s1)).toHaveLength(SMA_HOOKS.length)
       expect(s1.hooks.PreToolUse).toHaveLength(2)
       expect(groupFor(s1, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
-      expect(groupFor(s1, 'PreToolUse', 'Task')).toEqual(taskPackGroup())
+      expect(groupFor(s1, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
 
       // simulate a pre-multiplexer-era install that ALSO already carries the
       // multiplexer and one foreign hook — the double-run field shape
@@ -346,7 +352,7 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
       // restored as its own group
       expect(groupFor(s2, 'PreToolUse', 'Edit|Write').hooks).toEqual([guard])
       expect(groupFor(s2, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
-      expect(groupFor(s2, 'PreToolUse', 'Task')).toEqual(taskPackGroup())
+      expect(groupFor(s2, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
       expect(s2.hooks.PreToolUse).toHaveLength(3)
       expect(smaEntries(s2)).toHaveLength(SMA_HOOKS.length)
     } finally {
