@@ -54,6 +54,13 @@
  * NOT narrow `projects[]` or `machines[]` — the project switcher has to see all of them,
  * and per-project counts are what make it useful.
  *
+ * A ROW'S PROJECT IS THE ROW'S OWN, AND `null` WHEN IT HAS NONE. This file used to fill the
+ * gap in with the project currently selected, which made every row that never named one
+ * belong to whatever was being looked at — the same tasks under both projects, counters
+ * agreeing with both, and no way to see it from the screen. The narrowing keeps rows of
+ * unknown ownership rather than dropping them: work no filter shows is work nobody can act
+ * on. They ride with `project: null`, and the window says «неизвестен» in words.
+ *
  * Nothing here carries a peer url, a peer token or free text: the federation
  * field is a role and a boolean, and that is the whole of it.
  *
@@ -317,16 +324,50 @@ function windowFor(windows, account) {
   }
 }
 
-/** The project a row belongs to: its own, else the active project, else the default id. */
-function projectOf(row, activeProject) {
+/**
+ * projectOf(row) → the project the ROW ITSELF names, or null when it names none.
+ *
+ * IT NO LONGER FILLS THE GAP IN, and that is the whole point of it. This function used to
+ * answer «its own, else whatever project is on the screen right now», which sounds like a
+ * courtesy and was measured to be a lie: of the forty rows in the live queue not one carried
+ * the fact, so every task belonged to whichever project was being looked at. Switch the
+ * switcher and the same work re-registered itself under the other project, counters and all —
+ * the window looked like it was working and was wrong in complete silence.
+ *
+ * A row that never said which project it is stays saying nothing. Ownership nobody measured is
+ * an invented number like any other, only about whose work it is, and a confident wrong answer
+ * is worse than none: nobody can tell it apart from a right one. The window says «неизвестен»
+ * in words instead.
+ */
+function projectOf(row) {
   const own = row && row.project
-  return (typeof own === 'string' && own !== '' ? own : activeProject) || 'default'
+  return typeof own === 'string' && own !== '' ? own : null
+}
+
+/**
+ * inProject(row, project) → does this row belong in a selection narrowed to `project`?
+ *
+ * ITS OWN PROJECT MATCHES, OR IT NAMES NONE AT ALL. A row of unknown ownership dropped by
+ * every filter is INVISIBLE WORK — the one outcome worse than an honest «неизвестен», because
+ * a person cannot act on what no screen draws, and cannot even discover that it exists. So it
+ * rides along in every selection carrying its own truth (null), and the window labels it.
+ */
+function inProject(row, project) {
+  const own = projectOf(row)
+  return own === null || own === project
 }
 
 /**
  * deriveProjects(rows, config) → [{id, name, connected, taskCounts}] over the WHOLE selection.
  * Counts are per project by construction, so they are computed from every row regardless
  * of an active filter — that is exactly what makes the switcher readable.
+ *
+ * A ROW COUNTS TOWARDS THE PROJECT IT ITSELF NAMES, and towards no other. While the missing
+ * fact was filled in with the project on screen, these counters said the whole queue belonged
+ * to whatever was being looked at and the other project stood at a permanent zero — two
+ * numbers that moved together with the switcher and measured nothing. Work whose owner is
+ * unknown is counted by NEITHER project: a count is a measurement, and this one has not been
+ * made.
  *
  * `connected` is whether the registry entry names a folder on disk. The
  * default entry every install mints carries a NAME and no path, so the screens showed a
@@ -338,9 +379,8 @@ function projectOf(row, activeProject) {
  */
 function deriveProjects(rows, config) {
   const registry = Array.isArray(config.projects) ? config.projects : []
-  const active = config.activeProject ?? (registry[0] && registry[0].id) ?? null
   return registry.map((p) => {
-    const mine = rows.filter((r) => projectOf(r, active) === p.id)
+    const mine = rows.filter((r) => projectOf(r) === p.id)
     const taskCounts = { queued: 0, claimed: 0, awaiting_approval: 0, completed: 0, failed: 0, total: mine.length }
     for (const r of mine) {
       if (Object.prototype.hasOwnProperty.call(taskCounts, r.status)) taskCounts[r.status] += 1
@@ -1797,10 +1837,10 @@ const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running
  *
  * @param {object[]} requests the batch request rows
  * @param {object[]} rows     every WORK row (the requests are not among them)
- * @param {{activeProject?:string|null, machineId?:string}} ctx
+ * @param {{machineId?:string}} ctx
  * @returns {object[]}
  */
-function deriveBatches(requests, rows, { activeProject, machineId } = {}) {
+function deriveBatches(requests, rows, { machineId } = {}) {
   if (!Array.isArray(requests) || requests.length === 0) return []
 
   return [...requests]
@@ -1836,7 +1876,7 @@ function deriveBatches(requests, rows, { activeProject, machineId } = {}) {
       return {
         id: req.id,
         title: req.title ?? null,
-        project: projectOf(req, activeProject),
+        project: projectOf(req),
         machine: machineId,
         state,
         items,
@@ -1988,16 +2028,16 @@ export async function deriveState(deps = {}) {
     hubReachable: typeof deps.hubReachable === 'boolean' ? deps.hubReachable : true,
   }
 
-  // The project filter narrows the TASKS only (the lists above are already built).
-  const rows = deps.project ? allRows.filter((r) => projectOf(r, activeProject) === deps.project) : allRows
+  // The project filter narrows the TASKS only (the lists above are already built), and it
+  // keeps the rows of UNKNOWN ownership — see inProject: work no filter shows is work nobody
+  // can act on, and it is carried with its own truth rather than repainted as ours.
+  const rows = deps.project ? allRows.filter((r) => inProject(r, deps.project)) : allRows
 
   // The batches ride the SAME project filter as the tasks — a batch is work of one project.
   const batches = deriveBatches(
-    deps.project
-      ? batchRequestRows.filter((r) => projectOf(r, activeProject) === deps.project)
-      : batchRequestRows,
+    deps.project ? batchRequestRows.filter((r) => inProject(r, deps.project)) : batchRequestRows,
     rows,
-    { activeProject, machineId },
+    { machineId },
   )
 
   // ── ЭШЕЛОНЫ: что за волны в работе и какие из них владелец остановил ──
@@ -2013,7 +2053,7 @@ export async function deriveState(deps = {}) {
     /* a register that will not read costs the payload its stops, never the payload */
   }
   const waves = deriveWaves(
-    deps.project ? rows.filter((r) => projectOf(r, activeProject) === deps.project) : rows,
+    deps.project ? rows.filter((r) => inProject(r, deps.project)) : rows,
     waveHolds,
     { activeProject, machineId },
   )
@@ -2055,7 +2095,7 @@ export async function deriveState(deps = {}) {
       id: r.id,
       title: r.title ?? null,
       lane: r.lane ?? null,
-      project: projectOf(r, activeProject),
+      project: projectOf(r),
       machine: machineId,
       ...(r.provider ? { provider: r.provider } : {}),
       priority: Number(r.priority) || 0,
@@ -2148,7 +2188,7 @@ export async function deriveState(deps = {}) {
         ? {
             taskId: active.id,
             taskTitle: active.title ?? null,
-            project: projectOf(active, activeProject),
+            project: projectOf(active),
             branch: `wt/${active.id}`,
             // WHEN THIS WORK WAS TAKEN — and it rides HERE because the roster is the only list
             // that names a claimed task: queue[] carries rows waiting for a worker and awaiting[]
@@ -2173,7 +2213,7 @@ export async function deriveState(deps = {}) {
     (connectedProject(config) || {}).dir ||
     (typeof deps.repoDir === 'string' && deps.repoDir.trim() !== '' ? deps.repoDir : null)
   const done = doneRows.map((r) =>
-    buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activeProject, machineId }),
+    buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machineId }),
   )
 
   // ── accounts — the deduped subscription list the spend strip ALSO rides (one dedup,
@@ -2369,7 +2409,7 @@ function attemptDuration(attempt) {
   return ms >= 0 ? ms : null
 }
 
-function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activeProject, machineId }) {
+function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machineId }) {
   const attempts = readTaskAttempts(r.id)
   const last = attempts.length ? attempts[attempts.length - 1] : null
   const receipt = parseReceiptSummary(last && last.receiptRef, { readReceipt })
@@ -2403,7 +2443,7 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, activ
   const out = {
     id: r.id,
     title: r.title ?? null,
-    project: projectOf(r, activeProject),
+    project: projectOf(r),
     machine: machineId ?? 'self',
     finishedAt: r.completedAt ?? null,
     // HOW LONG IT ACTUALLY TOOK, from the two marks the ledger put down on the attempt that

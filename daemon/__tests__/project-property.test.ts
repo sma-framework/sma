@@ -29,6 +29,7 @@ import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
 
 import { createFrontServer } from '../src/front/server.mjs'
+import { deriveState } from '../src/front/state.mjs'
 import { createPgBossQueue } from '../src/queue/pgboss-backend.mjs'
 import { BATCH_PARENT, createMemoryQueue, validateTask } from '../src/queue/adapter.mjs'
 
@@ -347,3 +348,104 @@ function pgWith(jobRows: any[]) {
     clock: () => NOW,
   })
 }
+
+// ══════════════ чтение состояния: неизвестное остаётся неизвестным ════════════════════════
+
+const twoProjects = {
+  agingHours: 24,
+  workers: [{ id: 'max-1', lane: 'prod', account: { name: 'max-1' } }],
+  projects: [
+    { id: 'sma', name: 'Продукт' },
+    { id: 'sma-dev', name: 'Мастерская' },
+  ],
+  activeProject: 'sma-dev',
+}
+
+const mkAdapter = (rows: any[]) => ({ list: async () => rows })
+const win = (status: string) => ({ status, resetsAt: null, pct: null, observedAt: null })
+const windows = () => () => ({ 'max-1': win('open') })
+
+const mixedRows = [
+  { id: 'A-1', status: 'queued', lane: 'prod', title: 'своя у продукта', priority: 0, project: 'sma', enqueuedAt: NOW - 1000 },
+  { id: 'A-2', status: 'queued', lane: 'prod', title: 'вторая у продукта', priority: 0, project: 'sma', enqueuedAt: NOW - 900 },
+  { id: 'U-1', status: 'queued', lane: 'prod', title: 'проект неизвестен', priority: 0, enqueuedAt: NOW - 800 },
+]
+
+describe('окно не домысливает принадлежность', () => {
+  it('строка со своим проектом отдаётся со своим', async () => {
+    const payload: any = await deriveState({
+      adapter: mkAdapter(mixedRows),
+      windows: windows(),
+      config: twoProjects,
+      clock: () => NOW,
+    })
+    expect(payload.queue.find((r: any) => r.id === 'A-1').project).toBe('sma')
+  })
+
+  it('строка без проекта отдаётся как null — при любом выбранном проекте', async () => {
+    for (const active of ['sma', 'sma-dev']) {
+      const payload: any = await deriveState({
+        adapter: mkAdapter(mixedRows),
+        windows: windows(),
+        config: { ...twoProjects, activeProject: active },
+        clock: () => NOW,
+      })
+      const unknown = payload.queue.find((r: any) => r.id === 'U-1')
+      expect('project' in unknown).toBe(true) // ключ есть — его читают
+      expect(unknown.project).toBeNull() // а факта нет, и об этом говорится
+    }
+  })
+
+  it('работник в составе смены: у задачи без проекта — null, а не тот, куда смотрят', async () => {
+    const held = [{ id: 'U-2', status: 'claimed', lane: 'prod', title: 'кто-то её взял', workerId: 'max-1', claimedAt: NOW, lastTouch: NOW }]
+    const payload: any = await deriveState({
+      adapter: mkAdapter(held),
+      windows: windows(),
+      config: twoProjects,
+      clock: () => NOW,
+    })
+    expect(payload.workers.find((w: any) => w.id === 'max-1').project).toBeNull()
+  })
+
+  it('счётчики проектов считаются по СОБСТВЕННОМУ проекту строк', async () => {
+    const payload: any = await deriveState({
+      adapter: mkAdapter(mixedRows),
+      windows: windows(),
+      config: twoProjects,
+      clock: () => NOW,
+    })
+    const byId = Object.fromEntries(payload.projects.map((p: any) => [p.id, p]))
+    expect(byId['sma'].taskCounts.total).toBe(2)
+    // выбран sma-dev, и у него честный ноль: ни одна строка не сказала, что она его
+    expect(byId['sma-dev'].taskCounts.total).toBe(0)
+  })
+
+  it('сужение по проекту: свои строки И неизвестные; чужие выпадают', async () => {
+    const withOther = [
+      ...mixedRows,
+      { id: 'D-1', status: 'queued', lane: 'prod', title: 'у мастерской', priority: 0, project: 'sma-dev', enqueuedAt: NOW - 700 },
+    ]
+    const payload: any = await deriveState({
+      adapter: mkAdapter(withOther),
+      windows: windows(),
+      config: twoProjects,
+      project: 'sma',
+      clock: () => NOW,
+    })
+    expect(payload.queue.map((r: any) => r.id).sort()).toEqual(['A-1', 'A-2', 'U-1'])
+  })
+
+  it('сужение по другому проекту: неизвестная строка ВИДНА и не перекрашена', async () => {
+    const payload: any = await deriveState({
+      adapter: mkAdapter(mixedRows),
+      windows: windows(),
+      config: twoProjects,
+      project: 'sma-dev',
+      clock: () => NOW,
+    })
+    const ids = payload.queue.map((r: any) => r.id)
+    // работа, которую прячет каждый фильтр, — невидимая работа; честное «неизвестен» лучше
+    expect(ids).toEqual(['U-1'])
+    expect(payload.queue[0].project).toBeNull()
+  })
+})
