@@ -756,6 +756,21 @@ async function handleTask({ res, params, config, deps }) {
     ...(a.reconstructed === true ? { reconstructed: true } : {}),
     // (b) of the three layers: the worker's own note rides ITS attempt, not the task
     ...(journal.approachByAttempt.has(a.attempt) ? { approachNote: journal.approachByAttempt.get(a.attempt) } : {}),
+    // ═══ WHERE THE WORK HAPPENED, AND WHAT IS LEFT OF IT ═══════════════════════════
+    //
+    // The copy this attempt ran in — the commit it was cut from, its branch, its directory,
+    // what was put into it before the worker's first move, how long that took, and the trace
+    // of its removal. The tick has been writing all six into the attempt row and the removal
+    // writes its own row of the same attempt; nothing handed them to anybody. Computed and
+    // recorded is not the same as delivered: an attempt row that holds what no person can
+    // see is a point of return nobody can reach. Explicitly picked, like every field above,
+    // so a ledger row can never leak a key this door did not name.
+    base: a.base ?? null,
+    branch: a.branch ?? null,
+    worktreePath: a.worktreePath ?? null,
+    materialized: Array.isArray(a.materialized) ? a.materialized : null,
+    provisionMs: Number.isFinite(a.provisionMs) ? a.provisionMs : null,
+    cleanup: a.cleanup && typeof a.cleanup === 'object' ? a.cleanup : null,
   }))
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
@@ -778,6 +793,15 @@ async function handleTask({ res, params, config, deps }) {
       reasonLabel: null,
       receipt: null,
       proof: null,
+      // The copy fields are written when an attempt ENDS, so a running one has none of them
+      // yet. Named as nulls rather than omitted: the card reads one shape for every entry,
+      // and «this key does not exist here» is how a surface starts guessing.
+      base: null,
+      branch: null,
+      worktreePath: null,
+      materialized: null,
+      provisionMs: null,
+      cleanup: null,
     })
   }
 
