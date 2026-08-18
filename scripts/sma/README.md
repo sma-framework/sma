@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 89, grouped by what they are for. The sections after this table go deeper
+All 90, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -176,7 +176,7 @@ them in plain language, in English or Russian.
 | Verb | One line |
 |---|---|
 | `explain` | The in-product explainer for any concept or verb, in English or Russian |
-| `doc-audit` | The deterministic honesty audit over the manual and the README positioning region |
+| `doc-audit` | The deterministic honesty audit over the manual, the README positioning region, and every number the docs claim about the product itself |
 | `vendor` | The vendor capability ledger linter: no row ships untriaged |
 | `profile` | Read, validate, recap or quick-update `.sma/profile.json` |
 | `snapshot` | Push a bounded, allowlisted view of local state to an external cockpit |
@@ -213,7 +213,7 @@ The V3.5 docs / teaching surfaces:
 | Subcommand | Purpose | Key flags |
 |---|---|---|
 | `explain` | In-product explainer for any concept or command; an unknown topic lists the catalog and exits 0. `--coverage` prints the count of HANDLERS keys with no explainer as a bare last line (scorer contract). Reads `cli.mjs` as text, never imports it. NOT hook-facing. | `[topic]` \| `--list` \| `--coverage [--count]` \| `--lang en\|ru` \| `--json` |
-| `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. `--count` prints the bare total as a last line (scorer contract). Read-only, injected `readFile`. NOT hook-facing. | `--target manual\|readme\|all` \| `--count` \| `--json` |
+| `doc-audit` | Deterministic honesty audit over the manual (`sma:v35` region) + README positioning (`sma:positioning` region): surface coverage, footer freshness, analog honesty, multiplier ban, RU em-dash ban. The `numbers` target adds the numbers the docs claim about the product itself — the doors of the daemon web front, the verbs this CLI dispatches, the tests and files of the measured run receipt, and the version of the package — each taken from the code that owns it, so a number somebody typed by hand cannot outlive the thing it describes. A missing anchor is its own violation rather than a quiet pass, and «not measured» is said in words instead of being counted as a fault. `--count` prints the bare total as a last line (scorer contract). Read-only, injected `readFile` — the one exception is `--write`, which rewrites the marked spans of the product map from code and touches nothing else. NOT hook-facing. | `--target manual|readme|numbers|all` | `--count` | `--json` | `--write` (with `--target numbers` only) |
 | `profile` | Deterministic reader/validator/recap for `.sma/profile.json` (9.3-01) plus the quick-update path (9.4-04): `--quick` prints the interview plan of ONLY the unset schema fields, in askStage order, with zero teaching (`--count` prints the bare number as a last line, the scorer contract); `--selftest` proves the planner against a fixture pair (prints 1/0); `--profile <path>` targets a specific profile.json for any mode. Also `--lint` / `--coverage` / `--recap`. Read-only planning; the write still flows through /sma-start + validateProfile. NOT hook-facing. | `--quick [--count]` \| `--selftest` \| `--profile <path>` \| `--lint` \| `--coverage` \| `--recap` \| `--json` |
 
 Every subcommand accepts `--json` for a single-line JSON object (the statusline / hook
