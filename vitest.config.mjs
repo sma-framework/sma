@@ -46,6 +46,11 @@ const SERIAL_SUITES = [
   // case that is deliberately destructive to the target it created itself — the platform
   // control that justifies unhooking links before git ever sees the copy.
   'scripts/sma/__tests__/worktree-remove-safe.test.ts',
+  // The daemon's side of the same story. It drives ONE throwaway repository through the REAL
+  // CLI twice — provision, then remove — so the verb answers the rest of that file fakes are
+  // proved to be a SUBSET of the live ones. A fake that knows more than the library is how a
+  // green suite once covered a call to a method that did not exist.
+  'daemon/__tests__/worktree-cleanup.test.ts',
 ]
 
 /**
