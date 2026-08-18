@@ -104,14 +104,88 @@ if (-not (Test-Port $QueuePort)) {
   while (-not (Test-Port $QueuePort) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
   if (-not (Test-Port $QueuePort)) { Write-Log "FATAL: queue Postgres never came up on :$QueuePort"; exit 1 }
 }
-Write-Log "queue Postgres reachable on :$QueuePort"
+Write-Log "queue Postgres answers the socket on :$QueuePort"
+
+$daemonDir = Join-Path $SmaHome 'daemon'
+
+# (a2) AN OPEN SOCKET IS NOT A READY DATABASE. Measured after a machine reboot on 18.08.2026:
+#      Test-Port saw :5433 the instant the postmaster bound it, this script went straight on, and
+#      BOTH the ensure-db step and the daemon were answered with FATAL 57P03 «the database system
+#      is starting up» — Postgres was still finishing recovery. The daemon did exactly what it
+#      should (an unreachable queue is fatal) and died; nothing retried, so the window never came
+#      up after the reboot and the 10:34:57 line in ~/.sma-daemon/logs was the last word.
+#
+#      The only honest readiness check is a REAL QUERY. `SELECT 1` against the sandbox's
+#      `postgres` database succeeds only once recovery has finished; until then the server
+#      answers 57P03 (cannot_connect_now), which is a WAIT, not a verdict. Any OTHER error is
+#      reported at once instead of being sat on for a minute and a half — a rejected handshake
+#      will not fix itself by being asked again. Nothing but the SQLSTATE and the driver's own
+#      message is logged; the connection string never reaches the log.
+$queueReadySeconds = 90
+$waitReady = @"
+import pg from 'pg'
+
+const deadlineMs = $queueReadySeconds * 1000
+// The server is present but not yet serving: worth asking again a second from now.
+const retryable = new Set(['57P03', '57P01', '57P02', '08006', '08001', '08004', '08P01',
+  'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE'])
+const started = Date.now()
+let attempts = 0
+let last = 'no attempt made'
+for (;;) {
+  attempts += 1
+  const c = new pg.Client({
+    connectionString: 'postgres://postgres:postgres@localhost:$QueuePort/postgres',
+    connectionTimeoutMillis: 5000,
+    query_timeout: 5000,
+  })
+  try {
+    await c.connect()
+    await c.query('SELECT 1')
+    console.log('answered SELECT 1 after ' + ((Date.now() - started) / 1000).toFixed(1) + 's, attempt ' + attempts)
+    await c.end()
+    process.exit(0)
+  } catch (e) {
+    const code = e && e.code ? String(e.code) : ''
+    last = (code ? code + ' ' : '') + String((e && e.message) || e)
+    try { c.end().catch(() => {}) } catch (ignored) { }
+    if (!retryable.has(code)) { console.error('not a start-up condition, giving up now: ' + last); process.exit(1) }
+  }
+  if (Date.now() - started >= deadlineMs) {
+    console.error('still refusing queries after ' + ((Date.now() - started) / 1000).toFixed(1) + 's over ' + attempts + ' attempts, last: ' + last)
+    process.exit(1)
+  }
+  await new Promise((r) => setTimeout(r, 1000))
+}
+"@
+$waitFile = Join-Path $daemonDir '.sma-wait-queue-ready.mjs'
+Set-Content -Path $waitFile -Value $waitReady -Encoding UTF8
+Write-Log "waiting for queue Postgres to actually accept queries (cap ${queueReadySeconds}s)"
+$waitStart = Get-Date
+$waitCode = 1
+Push-Location $daemonDir
+try {
+  # Same rule as the ensure step below: a native command's stderr line becomes a terminating
+  # error under 'Stop', and this probe writes to stderr on every path that is not success.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $waitOut = & node $waitFile 2>&1
+  $waitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+} finally { Pop-Location; Remove-Item -Force $waitFile -ErrorAction SilentlyContinue }
+$waited = ((Get-Date) - $waitStart).TotalSeconds
+foreach ($l in $waitOut) { Write-Log "queue-ready: $l" }
+if ($waitCode -ne 0) {
+  Write-Log ("FATAL: :{0} was open but the queue database never accepted a query — waited {1:N1}s" -f $QueuePort, $waited)
+  exit 1
+}
+Write-Log ("queue Postgres ready on :{0} — waited {1:N1}s" -f $QueuePort, $waited)
 
 # (b) Ensure the dedicated queue database exists. Connect to the sandbox's `postgres`
 #     DB and CREATE DATABASE sma_queue, tolerating 42P04 (duplicate_database). The
 #     ONLY statement ever run against `postgres` is this CREATE DATABASE — pg-boss owns
 #     its schema INSIDE sma_queue only; no queue table is ever created in `postgres`,
 #     and the queue never touches the production database.
-$daemonDir = Join-Path $SmaHome 'daemon'
 $ensureDb = @"
 import pg from 'pg'
 const c = new pg.Client({ connectionString: 'postgres://postgres:postgres@localhost:$QueuePort/postgres' })
