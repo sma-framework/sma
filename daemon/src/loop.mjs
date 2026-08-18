@@ -1229,6 +1229,23 @@ export async function tick(deps = {}) {
       if (typeof journal === 'function') journal({ type: 'reconcile-error', error: String((err && err.message) || err) })
     }
 
+    // (1c) THE COPIES OF CLOSED TASKS. Beside the two sweeps above and for the same reason:
+    // durable leftovers nobody else audits. The approval door removes the copy of work that
+    // was ACCEPTED; everything else — failed, returned, abandoned — is left standing because
+    // the queue, not this tick, decides whether a retry is coming, and a copy removed under a
+    // retry costs the retry its ready environment. So this pass takes only what has been
+    // closed for a day. Fail-open exactly like the two above: an unreadable list of worktrees
+    // costs a directory, while a tick that dies on it costs every task it was about to hand
+    // out. The sweeper keeps its own once-a-day clock — the tick may call it every five
+    // seconds and it will answer «skipped» until the day is up.
+    if (typeof deps.sweepWorktrees === 'function') {
+      try {
+        result.worktreeSweep = await deps.sweepWorktrees({ now: now() })
+      } catch (err) {
+        if (typeof journal === 'function') journal({ type: 'worktree-sweep-error', error: String((err && err.message) || err) })
+      }
+    }
+
     // (2) intake per cadence (secondary path; roster button is primary — Q2).
     await runIntake(deps, now(), result)
 

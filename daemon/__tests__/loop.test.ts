@@ -2703,3 +2703,55 @@ describe('строка попытки несёт копию: базу, ветк�
     expect(row.base).toBeUndefined()
   })
 })
+
+/**
+ * ══════ ОБХОД КОПИЙ ЖИВЁТ В ТИКЕ, РЯДОМ С ОБХОДОМ ЖИВОСТИ ═══════════════════════
+ *
+ * Копии закрытых задач не убирал никто: у приёмки уборки не было, а у демона — обхода.
+ * Обход стоит там же, где обход живости очереди, и по тому же образцу: он не имеет права
+ * уронить тик. Копия — это каталог; неубранный каталог стоит места, а тик, упавший на его
+ * уборке, стоит всей работы, которую он должен был раздать.
+ */
+describe('тик гоняет обход копий и переживает его падение', () => {
+  it('обход вызван РАЗ за тик и получает время тика', async () => {
+    const sweeps: any[] = []
+    const adapter = oneTaskAdapter(backlogTask({ id: 'R-77', attempt: 1 }))
+    const { deps, clock } = makeDeps({
+      adapter,
+      responses: copyResponses(),
+      deps: { sweepWorktrees: async (a: any) => { sweeps.push(a); return { scanned: 1, removed: 1, skipped: 0, errors: 0 } } },
+    })
+
+    const res = await tick(deps)
+
+    expect(sweeps).toHaveLength(1)
+    expect(sweeps[0].now).toBe(clock.clock())
+    expect(res.worktreeSweep).toMatchObject({ removed: 1 })
+  })
+
+  it('обход упал — тик доводит задачу до конца, а причина названа в журнале', async () => {
+    const adapter = oneTaskAdapter(copyTask())
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: copyResponses(),
+      deps: { sweepWorktrees: async () => { throw new Error('список деревьев не читается') } },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('R-77')
+    const line = journalled.find((e: any) => e.type === 'worktree-sweep-error')
+    expect(line, 'падение обхода прошло молча').toBeTruthy()
+    expect(String(line.error)).toContain('список деревьев не читается')
+  })
+
+  it('демон без обхода работает как прежде — поля в итоге тика нет вовсе', async () => {
+    const adapter = oneTaskAdapter(copyTask({ id: 'R-81' }))
+    const { deps } = makeDeps({ adapter, responses: copyResponses({ ...PROVISION_ANSWER, path: '/wt/R-81', branch: 'wt/R-81' }) })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('R-81')
+    expect(Object.hasOwn(res, 'worktreeSweep')).toBe(false)
+  })
+})

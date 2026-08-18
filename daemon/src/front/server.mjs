@@ -1136,6 +1136,36 @@ async function handleApprove({ req, res, deps }) {
     ...(merge && merge.receipt ? { extra: { merge_receipt: JSON.stringify(merge.receipt) } } : {}),
   })
 
+  // ═══ THE COPY THE WORK WAS DONE IN GOES AWAY WITH THE APPROVAL, AND ONLY WITH IT ═══
+  //
+  // Merged work needs no copy: the branch is in the main tree, and every task that was ever
+  // accepted used to leave its directory and its branch on disk forever. A RED merge leaves
+  // both alone on purpose — the work may still be finished in that copy, and the row goes
+  // back to awaiting_approval.
+  //
+  // A SEPARATE COLLABORATOR, not `deps.verbRunner` above: that one is the merge ritual and
+  // this one removes a directory. A single generic runner here would be a request path that
+  // can name a command; `worktreeCleanup({taskId, by})` has nothing to name. Same posture as
+  // `updateRunner`, and for the same reason.
+  //
+  // THE APPROVAL IS THE TRUTH, THE CLEANUP IS ITS CONSEQUENCE. A failed removal never turns
+  // `merged:true` into a lie — it travels in `cleanup.reason`, because a person has to LEARN
+  // that something is still on disk rather than deduce it from a missing line.
+  let cleanup = null
+  if (green && typeof deps.worktreeCleanup === 'function') {
+    try {
+      const r = (await deps.worktreeCleanup({ taskId, by: 'approve' })) || {}
+      cleanup = {
+        removed: r.removed === true,
+        removedPath: r.removedPath ?? null,
+        removedBranch: r.removedBranch ?? null,
+        ...(r.reason ? { reason: r.reason } : {}),
+      }
+    } catch (err) {
+      cleanup = { removed: false, reason: String((err && err.message) || err) }
+    }
+  }
+
   // The status is the QUEUE status the row now holds — the vocabulary the screen patches
   // with. «approved» and «returned» are names of DOORS, not of states: after this door the
   // row is completed or it is failed, and that is what travels.
@@ -1152,6 +1182,7 @@ async function handleApprove({ req, res, deps }) {
     ...(merge && merge.receipt ? { receipt: merge.receipt } : {}),
     ...(merge && merge.softDenied ? { softDenied: true } : {}),
     ...(refusal ? { reasonCode: refusal.reasonCode, reason: refusal.reason } : {}),
+    ...(cleanup ? { cleanup } : {}),
   })
 }
 
