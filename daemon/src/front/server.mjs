@@ -965,6 +965,8 @@ async function handleEnqueue({ req, res, config, deps }) {
   const task = {
     id: `R-${clock()}`,
     source: 'roster',
+    // WHOSE WORK THIS IS, written down at the one moment it is known — see doorProject.
+    ...doorProject(config),
     title: b.title,
     lane: b.lane,
     ...(b.provider !== undefined ? { provider: b.provider } : {}),
@@ -1199,6 +1201,7 @@ async function handleReturn({ req, res, deps }) {
   // minted phrase claiming to be one.
   let prevAttempt = 1
   let nameFromRow = ''
+  let ownProject = {}
   try {
     const rows = await deps.adapter.list({})
     const mine = rows.filter((r) => r && r.id === taskId)
@@ -1212,12 +1215,15 @@ async function handleReturn({ req, res, deps }) {
     if (row && Number.isFinite(row.attempt)) prevAttempt = row.attempt
     const named = mine.find((r) => realTitleOf(r, taskId))
     if (named) nameFromRow = realTitleOf(named, taskId)
+    // WHOSE WORK IT IS DOES NOT CHANGE BECAUSE IT CAME BACK — see inheritedProject.
+    ownProject = inheritedProject(mine)
   } catch {
     /* fail-open — default to attempt 1 → requeue as attempt 2, the name falls back to the id */
   }
   const requeue = await enqueueOrExplain(res, deps.adapter, {
     id: taskId,
     source: 'return',
+    ...ownProject,
     title: (typeof v.title === 'string' && v.title.trim()) || nameFromRow || taskId,
     lane: v.lane || 'prod',
     note,
@@ -1292,6 +1298,48 @@ function refreshWorkers(config, next) {
 }
 
 /**
+ * doorProject(config) → `{project}` for work being put in RIGHT NOW, or `{}` when this daemon
+ * has no project selected at all.
+ *
+ * THE PROJECT IS A PROPERTY OF THE TASK, AND THIS IS THE ONLY MOMENT IT CAN HONESTLY BE
+ * WRITTEN DOWN: a person is standing at the door, looking at one project, and putting work in.
+ * Nothing later can recover that. A measurement of the live queue is what put this here — not
+ * one waiting row carried the fact, and the reading side filled the gap in with whatever
+ * project happened to be on the screen, so the very same work claimed to belong to each
+ * project in turn and the counters agreed with both. Ownership nobody measured is an invented
+ * number like any other, only about whose work it is.
+ *
+ * THE STAMP LIVES AT THE DOOR AND NOT IN THE QUEUE, because the door is the half that owns the
+ * config: the queue gate checks only that a project slug is SHAPED like one and never learns
+ * which projects exist. And no request body names it — the project of a task is the one the
+ * person was looking at, never a field a caller may set from outside.
+ *
+ * An empty answer is deliberate: a daemon with nothing selected writes NO project rather than
+ * a word standing in for one, because an invented name is exactly what a reader would trust.
+ */
+function doorProject(config) {
+  const chosen = config && config.activeProject
+  return typeof chosen === 'string' && chosen !== '' ? { project: chosen } : {}
+}
+
+/**
+ * inheritedProject(rows) → `{project}` taken from the task's OWN earlier rows, or `{}`.
+ *
+ * A RETURN, A WAKE AND A RETRY ARE THE SAME TASK COMING BACK, not new work, so they carry the
+ * project the task already had. Re-stamping them with whatever is selected right now would
+ * move a task to another project every time somebody sent it back from a different screen —
+ * the same «ownership follows the gaze» the stamp above exists to end. The rows are read
+ * ACROSS ALL of the task's history on purpose: the row that names the project may well be an
+ * older one, exactly as the row that names the task may be.
+ */
+function inheritedProject(rows) {
+  const named = (Array.isArray(rows) ? rows : []).find(
+    (r) => r && typeof r.project === 'string' && r.project !== '',
+  )
+  return named ? { project: named.project } : {}
+}
+
+/**
  * enqueueOrExplain(res, adapter, task) → the enqueue result, or NULL when the queue's own
  * database refused the text and the caller has already been answered.
  *
@@ -1348,7 +1396,7 @@ async function handleHarness({ res, config, deps }) {
  * indistinguishable at validateTask + claim; /api/enqueue with lane 'forge' but no forge
  * object → 400 via validateTask (this dedicated route is the front entry).
  */
-async function handleForge({ req, res, deps }) {
+async function handleForge({ req, res, config, deps }) {
   const adapter = deps.adapter
   if (!adapter || typeof adapter.enqueue !== 'function') return send501(res)
   const body = await readJsonBody(req)
@@ -1363,6 +1411,8 @@ async function handleForge({ req, res, deps }) {
   const task = {
     id: `F-${clock()}`,
     source: 'roster',
+    // New work of the project the person was looking at — see doorProject.
+    ...doorProject(config),
     title: `forge:${b.kind}: ${b.description}`.slice(0, 200),
     lane: 'forge',
     forge: { kind: b.kind, description: b.description },
@@ -2722,7 +2772,7 @@ function phaseCycleDir(deps) {
  * 409 rather than queueing a second one — two workers running the same stage of the same phase
  * would write the same documents from two directories.
  */
-async function handlePhaseStage({ req, res, deps }) {
+async function handlePhaseStage({ req, res, config, deps }) {
   const adapter = deps.adapter
   if (!adapter || typeof adapter.enqueue !== 'function') return send501(res)
   const body = await readJsonBody(req)
@@ -2757,6 +2807,8 @@ async function handlePhaseStage({ req, res, deps }) {
   const task = {
     id: `S-${clock()}`,
     source: 'roster',
+    // A stage is work OF a project, and which one is known only here — see doorProject.
+    ...doorProject(config),
     // THE COMMAND RIDES AS THE TASK'S OWN TEXT. It is a constant of this file with one bounded
     // substitution — never anything a person composed — and it is the whole instruction: what
     // the stage should do about the phase is written down in the workflow, not in this door.
@@ -2960,6 +3012,9 @@ async function wakeParkedRound(res, deps, { taskId, phase }) {
   const requeue = await enqueueOrExplain(res, adapter, {
     id: taskId,
     source: 'roster',
+    // The round that was parked is the SAME work; it comes back owned by whoever owned it —
+    // see inheritedProject. The row this door already read is where that is written.
+    ...inheritedProject(row ? [row] : []),
     title: stageCommand(stage, rowPhase),
     lane: STAGE_LANE,
     data: { kind: stageKind(stage), stage, phase: rowPhase },
@@ -3599,7 +3654,9 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   // The identifier rides in front of the text so a queue row can be read back to the line it
   // came from. Both halves are the project's own words — nothing is composed by this file.
-  const task = { id: `R-${clock()}`, source: 'roster', title: queueTitleFor(id, typed), lane }
+  // The stamp rides here for the same reason it rides on the roster button: a line becoming
+  // work belongs to the project whose backlog it was read out of — see doorProject.
+  const task = { id: `R-${clock()}`, source: 'roster', ...doorProject(config), title: queueTitleFor(id, typed), lane }
   let norm
   try {
     norm = validateTask(task)
@@ -3690,6 +3747,9 @@ async function handleBatchCreate({ req, res, config, deps }) {
     return {
       id: `${batchId}-${i + 1}`,
       source: 'roster', // a person pressed it — DoR-exempt, exactly like the roster button
+      // ONE request, ONE project: the assembly and every piece of it are work of the project
+      // the person was looking at when he wrote the sentence — see doorProject.
+      ...doorProject(config),
       title: row ? queueTitleFor(row.id, row.title) : line,
       lane,
       batchId,
@@ -3698,6 +3758,7 @@ async function handleBatchCreate({ req, res, config, deps }) {
   const request = {
     id: batchId,
     source: 'roster',
+    ...doorProject(config),
     title,
     lane,
     batchId,
@@ -3840,6 +3901,9 @@ async function handleBatchDecide({ req, res, deps }) {
   const requeue = await enqueueOrExplain(res, adapter, {
     id: itemId,
     source: 'return',
+    // The same piece of the same assembly — it keeps the project it was put in with, exactly
+    // as it keeps its id and its kinship. See inheritedProject.
+    ...inheritedProject([item]),
     title: item.title || itemId,
     lane: item.lane || BACKLOG_DEFAULT_LANE,
     batchId,
