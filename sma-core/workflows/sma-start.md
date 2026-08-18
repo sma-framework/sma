@@ -263,7 +263,7 @@ questions (Stage C of the profile):
 
 > TEACH(hook-points)
 
-Deliver Module 3 (the four hook points) here — it explains WHERE these answers fire: the
+Deliver Module 3 (the hook points) here — it explains WHERE these answers fire: the
 danger commands become before-each-edit warnings, the risk tolerance tunes how loud the
 gates and reflexes are. Then ask six questions (Stage D of the profile):
 
