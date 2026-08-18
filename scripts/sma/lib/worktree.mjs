@@ -487,7 +487,12 @@ function materializeCopyEntry(entry, ctx) {
     } catch {
       /* not in the copy yet */
     }
-    if (dstStat && !(st.mtimeMs > dstStat.mtimeMs)) {
+    // "Newer" needs a one-millisecond floor. Copying carries the source timestamp
+    // across, but the round trip through the timestamp API loses the sub-millisecond
+    // part (measured: ~0.1 ms), so a strict `>` reports EVERY file as newer forever —
+    // the copy would be rewritten wholesale on every visit and the reported mode would
+    // claim work that never happened. A real edit is orders of magnitude further away.
+    if (dstStat && st.mtimeMs - dstStat.mtimeMs <= 1) {
       current++ // the copy is not older — leave it, it may be the session's own edit
       continue
     }
