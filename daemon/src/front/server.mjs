@@ -6,15 +6,18 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY FIFTY-SIX routes
- *     (re-frozen 2026-08-13 — the growth past the V5.4 fifty-three is EXPLICIT, ONE door
- *     declared per release: the chat stop button in v5.4.3, the running-task steering
- *     wheel in v5.5.0, and the batch request in v5.6.0; the previous freezes were
- *     FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-ONE routes
+ *     (re-frozen 2026-08-13 — the growth past the V5.4 fifty-three is EXPLICIT, EIGHT doors,
+ *     each declared by the release that opened it: the chat stop button in v5.4.3, the
+ *     running-task steering wheel in v5.5.0, and SIX doors in v5.6.0 — the batch request,
+ *     the word its owner answers a stopped batch with, the composition a phrase could have,
+ *     the two doors of a task's WORDS (the one that proposes them and the one that corrects
+ *     them), and the order that stops ONE echelon of ONE phase and starts it again; the
+ *     previous freezes were FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY,
  *     2026-08-01, and FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 56 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 61 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
