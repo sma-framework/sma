@@ -50,7 +50,7 @@ export const COMMAND_TOPICS = {
   worktree: 'coordination',
   merge: 'merge', // the serialized merge ritual has its own topic
 
-  // hooks — the four hook points
+  // hooks — the session lifecycle hook points (seven entries across six events)
   'session-start': 'hooks',
   'session-end': 'hooks',
   pre: 'hooks',

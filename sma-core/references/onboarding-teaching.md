@@ -76,17 +76,22 @@ Recap: memory is three layers — a tiny always-loaded CORE, tag-pulled peripher
 
 ---
 
-### Module 3 — The four hook points (id: hook-points)
+### Module 3 — The hook points (id: hook-points)
 
-SMA attaches to a coding session at four moments (a "hook" is a place where a small
+SMA attaches to a coding session at six moments (a "hook" is a place where a small
 script runs automatically at a fixed moment, without anyone invoking it). **At session
 start** it loads the project memory and the coordination state, so the session begins
 informed. **Before each edit** it runs quick warnings: is another terminal already
 touching this file (collision), is there a past lesson about this kind of change
-(reflex), does a safety gate apply. **After each tool call** it watches for a stall — the
-same action repeating with no progress — and nudges. **Before the context is compressed**
-(a long session eventually has to summarize its own history to make room) it writes a
-small "flight capsule": the few facts the continuation must not lose.
+(reflex), does a safety gate apply. **Before a subagent is spawned** it hands that helper
+the project's claims, gates and open questions, so it does not start blind. **After each
+tool call** it watches for a stall — the same action repeating with no progress — and
+nudges. **Before the context is compressed** (a long session eventually has to summarize
+its own history to make room) it writes a small "flight capsule": the few facts the
+continuation must not lose — on agent versions that announce that moment; where a version
+does not, this one hook stays quiet and the others are unaffected. **When the session
+ends** — a closed window, `/clear` and a logout alike — it hands back the file claims this
+window was holding, so nobody is left blocked on a scope nobody is editing any more.
 
 Why hooks and not discipline: a rule you must remember to follow is a rule you will
 eventually forget under load. A hook fires whether or not anyone remembers it.

@@ -9,13 +9,23 @@
  * reinstall, so every pre-hook double-ran (caught in the field by a consumer's
  * "exactly one PreToolUse spawn chain" guard invariant).
  *
- *   Test 1 — fresh merge: exactly ONE PreToolUse entry (the multiplexer,
- *            matcher Edit|Write|Bash, command `node scripts/sma/cli.mjs pre`)
+ * The invariant these cases hold is "exactly one SMA chain PER MATCHER", not
+ * "one PreToolUse group in total": the template also wires the subagent context
+ * pack on the Task tool, which is its own PreToolUse matcher group. Groups are
+ * therefore always looked up BY MATCHER, never by array index, so a foreign
+ * group living in the same event cannot shift what a case reads. Expectations
+ * are derived from the installer's exported SMA_HOOKS — a second copy of that
+ * list here would drift away from the template and then lie about it.
+ *
+ *   Test 1 — fresh merge: every shipped hook lands once, in the group its
+ *            matcher names; the editing multiplexer and the subagent pack are
+ *            two separate PreToolUse groups
  *   Test 2 — update over the old 3-spawn chains: they are removed, exactly one
  *            multiplexer entry remains
  *   Test 3 — update over BOTH the old chains and the multiplexer: dedups to
  *            exactly one multiplexer entry
- *   Test 4 — a foreign (non-SMA) hook entry survives byte-identically
+ *   Test 4 — a foreign (non-SMA) hook entry survives byte-identically, both
+ *            beside the multiplexer and inside a matcher-less group we join
  *   Test 5 — end-to-end: the REAL installer (fresh + update run) writes the
  *            healed settings.json in an install-shaped temp project
  *
@@ -32,9 +42,63 @@ import { describe, it, expect } from 'vitest'
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
-const { mergeHooks, removeStaleSmaHooks } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
+const { mergeHooks, removeStaleSmaHooks, SMA_HOOKS } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
 
-const PRE_CMD = 'node scripts/sma/cli.mjs pre'
+type HookDef = { event: string; matcher: string | null; command: string; timeout: number }
+
+/** Any hook entry that runs this engine's CLI, whichever verb it carries. */
+const SMA_HOOK_COMMAND = /scripts[\\/]+sma[\\/]+cli\.mjs/
+
+/**
+ * The one definition the installer ships for an event + matcher. Throws rather
+ * than silently returning the first of several, so a duplicated template entry
+ * surfaces here instead of quietly weakening every expectation below.
+ */
+function defFor(event: string, matcher: string | null): HookDef {
+  const found = (SMA_HOOKS as HookDef[]).filter(
+    (d) => d.event === event && (matcher === null ? !d.matcher : d.matcher === matcher),
+  )
+  if (found.length !== 1) {
+    throw new Error(
+      `the installer ships ${found.length} entries for ${event}/${matcher ?? '(no matcher)'} — expected exactly one`,
+    )
+  }
+  return found[0]
+}
+
+/** The settings.json entry the installer emits for a definition. */
+// The matcher the shipped list uses for a subagent spawn. Read from the list rather
+// than spelled here: the spawn tool was renamed between releases and the entry now
+// carries both names, so a literal in this file would be a second truth that starts
+// lying to the first the next time the name moves.
+const SPAWN_MATCHER = (SMA_HOOKS as any[]).find((h) => String(h.command).endsWith('pretask-pack')).matcher
+
+function entryOf(def: HookDef) {
+  return { type: 'command', command: def.command, timeout: def.timeout }
+}
+
+/** A hook group looked up BY MATCHER — never by index. */
+function groupFor(settings: any, event: string, matcher: string | null) {
+  const groups = settings?.hooks?.[event]
+  expect(Array.isArray(groups), `no ${event} groups at all`).toBe(true)
+  const group = groups.find((g: any) => (matcher === null ? !g.matcher : g.matcher === matcher))
+  expect(group, `no ${event} group for matcher ${matcher ?? '(none)'}`).toBeDefined()
+  return group
+}
+
+/** Our own entries inside one group — the foreign ones stay out of the count. */
+function smaEntriesIn(group: any) {
+  return (Array.isArray(group?.hooks) ? group.hooks : []).filter((h: any) => SMA_HOOK_COMMAND.test(h?.command ?? ''))
+}
+
+/** Our own entries across every event of a settings object. */
+function smaEntries(settings: any) {
+  return Object.values(settings?.hooks ?? {})
+    .flatMap((groups: any) => (Array.isArray(groups) ? groups : []))
+    .flatMap((g: any) => smaEntriesIn(g))
+}
+
+const PRE_CMD = defFor('PreToolUse', 'Edit|Write|Bash').command
 
 /** The six entries the installer used to ship before the `pre` multiplexer. */
 function legacyChainGroups() {
@@ -59,28 +123,46 @@ function legacyChainGroups() {
 }
 
 function multiplexerGroup() {
-  return { matcher: 'Edit|Write|Bash', hooks: [{ type: 'command', command: PRE_CMD, timeout: 5 }] }
+  return { matcher: 'Edit|Write|Bash', hooks: [entryOf(defFor('PreToolUse', 'Edit|Write|Bash'))] }
 }
 
-describe('init hooks — fresh merge ships the pre multiplexer (Test 1)', () => {
-  it('emits exactly ONE PreToolUse entry: matcher Edit|Write|Bash, command `sma pre`', () => {
+function taskPackGroup() {
+  return { matcher: SPAWN_MATCHER, hooks: [entryOf(defFor('PreToolUse', SPAWN_MATCHER))] }
+}
+
+describe('init hooks — a fresh merge ships one chain per matcher (Test 1)', () => {
+  it('lands every shipped hook once, in the group its matcher names', () => {
     const settings: any = {}
     const { added, removedStale } = mergeHooks(settings)
     expect(removedStale).toBe(0)
-    expect(added).toBeGreaterThan(0)
-    expect(settings.hooks.PreToolUse).toHaveLength(1)
-    expect(settings.hooks.PreToolUse[0]).toEqual(multiplexerGroup())
-    // no stale per-stream command anywhere in the emitted settings
+    expect(added).toBe(SMA_HOOKS.length)
+
+    for (const def of SMA_HOOKS as HookDef[]) {
+      expect(groupFor(settings, def.event, def.matcher).hooks).toEqual([entryOf(def)])
+    }
+    // the editing pipeline stays ONE chain and the subagent pack is a SEPARATE
+    // PreToolUse group rather than a wider matcher on the multiplexer
+    expect(settings.hooks.PreToolUse).toHaveLength(2)
+    expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
+    expect(groupFor(settings, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
+    // the matcher-less events get exactly one group each
+    for (const event of ['SessionStart', 'PostToolUse', 'SessionEnd', 'PreCompact', 'SubagentStop']) {
+      expect(settings.hooks[event]).toHaveLength(1)
+    }
+    // nothing of ours beyond the shipped list, and no stale per-stream command
+    expect(smaEntries(settings)).toHaveLength(SMA_HOOKS.length)
     expect(JSON.stringify(settings)).not.toMatch(/collision-check|reflex-check|gates-check/)
   })
 
-  it('is idempotent: a second merge adds nothing', () => {
+  it('is idempotent: a second merge adds nothing and changes nothing', () => {
     const settings: any = {}
     mergeHooks(settings)
+    const afterFirst = JSON.stringify(settings)
     const again = mergeHooks(settings)
     expect(again.added).toBe(0)
     expect(again.removedStale).toBe(0)
-    expect(settings.hooks.PreToolUse).toHaveLength(1)
+    expect(JSON.stringify(settings)).toBe(afterFirst)
+    expect(smaEntries(settings)).toHaveLength(SMA_HOOKS.length)
   })
 })
 
@@ -89,8 +171,10 @@ describe('init hooks — update heals the legacy 3-spawn chains (Test 2)', () =>
     const settings: any = { hooks: { PreToolUse: legacyChainGroups() } }
     const { removedStale } = mergeHooks(settings)
     expect(removedStale).toBe(6)
-    expect(settings.hooks.PreToolUse).toHaveLength(1)
-    expect(settings.hooks.PreToolUse[0]).toEqual(multiplexerGroup())
+    // the emptied legacy groups are gone; what is left is one chain per matcher
+    expect(settings.hooks.PreToolUse).toHaveLength(2)
+    expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
+    expect(groupFor(settings, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
   })
 })
 
@@ -99,8 +183,9 @@ describe('init hooks — chains AND multiplexer dedup to one (Test 3)', () => {
     const settings: any = { hooks: { PreToolUse: [...legacyChainGroups(), multiplexerGroup()] } }
     const { removedStale } = mergeHooks(settings)
     expect(removedStale).toBe(6)
-    expect(settings.hooks.PreToolUse).toHaveLength(1)
-    expect(settings.hooks.PreToolUse[0]).toEqual(multiplexerGroup())
+    expect(settings.hooks.PreToolUse).toHaveLength(2)
+    expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
+    expect(groupFor(settings, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
     const preEntries = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks).filter((h: any) => h.command === PRE_CMD)
     expect(preEntries).toHaveLength(1)
   })
@@ -166,6 +251,96 @@ describe('init hooks — foreign hooks survive byte-identically (Test 4)', () =>
   })
 })
 
+describe('init hooks — the Task matcher carries exactly one engine entry', () => {
+  it('a re-merge grows neither the subagent pack group nor the editing chain', () => {
+    const settings: any = {}
+    mergeHooks(settings)
+    mergeHooks(settings)
+    const task = groupFor(settings, 'PreToolUse', SPAWN_MATCHER)
+    expect(task.hooks).toEqual([entryOf(defFor('PreToolUse', SPAWN_MATCHER))])
+    expect(smaEntriesIn(task)).toHaveLength(1)
+    // one Task group, and the editing multiplexer is untouched by its arrival
+    expect(settings.hooks.PreToolUse.filter((g: any) => g.matcher === SPAWN_MATCHER)).toHaveLength(1)
+    expect(groupFor(settings, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
+  })
+
+  it('joins a project that already runs its own hook on the Task matcher', () => {
+    const foreign = { type: 'command', command: 'node my-task-audit.mjs', timeout: 20 }
+    const settings: any = { hooks: { PreToolUse: [{ matcher: SPAWN_MATCHER, hooks: [foreign] }] } }
+    const foreignBytes = JSON.stringify(foreign)
+    mergeHooks(settings)
+    const task = groupFor(settings, 'PreToolUse', SPAWN_MATCHER)
+    expect(JSON.stringify(task.hooks[0])).toBe(foreignBytes)
+    expect(smaEntriesIn(task)).toEqual([entryOf(defFor('PreToolUse', SPAWN_MATCHER))])
+  })
+})
+
+describe('init hooks — a foreign matcher-less group survives the merge that joins it', () => {
+  it('the engine entry moves INTO the foreign group; the foreign ENTRY stays byte-identical', () => {
+    // the shape a consumer with its own subagent guard has in the field
+    const foreign = { type: 'command', command: 'node .claude/guards/regression-scan.mjs', timeout: 30 }
+    const settings: any = { hooks: { SubagentStop: [{ hooks: [foreign] }] } }
+    const foreignBytes = JSON.stringify(foreign)
+
+    mergeHooks(settings)
+    // one matcher-less group still: ours is added TO it, not stood beside it
+    expect(settings.hooks.SubagentStop).toHaveLength(1)
+    const group = groupFor(settings, 'SubagentStop', null)
+    expect(group.hooks).toHaveLength(2)
+    // the GROUP legitimately changed — the foreign ENTRY did not
+    expect(JSON.stringify(group.hooks[0])).toBe(foreignBytes)
+    expect(smaEntriesIn(group)).toEqual([entryOf(defFor('SubagentStop', null))])
+
+    // a second install adds no second engine entry next to it
+    mergeHooks(settings)
+    const after = groupFor(settings, 'SubagentStop', null)
+    expect(after.hooks).toHaveLength(2)
+    expect(JSON.stringify(after.hooks[0])).toBe(foreignBytes)
+    expect(smaEntriesIn(after)).toHaveLength(1)
+  })
+})
+
+describe('init hooks — a matcher that moved leaves no second live copy', () => {
+  // The stale-COMMAND list cannot cover this: there the command changed and the matcher
+  // stayed. Here the command is one we still ship and the matcher moved under it, so the
+  // leftover entry is byte-identical to a legitimate one and every existing install would
+  // keep firing it forever — two processes on one event, from a door we abandoned.
+  it('drops our own entry from the abandoned matcher and keeps exactly one', () => {
+    const def = (SMA_HOOKS as any[]).find((h) => String(h.command).endsWith('pretask-pack'))
+    const abandoned = 'Task' // the spelling shipped before the spawn tool was renamed
+    expect(abandoned).not.toBe(def.matcher) // the case is only meaningful while they differ
+    const settings: any = {
+      hooks: {
+        PreToolUse: [{ matcher: abandoned, hooks: [{ type: 'command', command: def.command, timeout: def.timeout }] }],
+      },
+    }
+
+    mergeHooks(settings)
+
+    const ours = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks).filter((h: any) => h.command === def.command)
+    expect(ours, 'one command, one door').toHaveLength(1)
+    expect(settings.hooks.PreToolUse.filter((g: any) => g.matcher === abandoned)).toHaveLength(0)
+    expect(groupFor(settings, 'PreToolUse', def.matcher).hooks).toEqual([entryOf(def)])
+  })
+
+  it('a foreign entry sharing the abandoned matcher survives byte-identically', () => {
+    const def = (SMA_HOOKS as any[]).find((h) => String(h.command).endsWith('pretask-pack'))
+    const foreign = { type: 'command', command: 'node other/guard.mjs watch', timeout: 3 }
+    const settings: any = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Task', hooks: [{ type: 'command', command: def.command, timeout: def.timeout }, foreign] },
+        ],
+      },
+    }
+
+    mergeHooks(settings)
+
+    const kept = settings.hooks.PreToolUse.find((g: any) => g.matcher === 'Task')
+    expect(kept, 'the group stays alive for its foreign occupant').toBeTruthy()
+    expect(kept.hooks).toEqual([foreign])
+  })
+})
 describe('init hooks — the REAL installer heals settings.json (Test 5)', () => {
   it('fresh install writes ONE PreToolUse chain; a re-run over stale chains + a foreign hook heals it', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-init-hooks-'))
@@ -188,11 +363,18 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
       }
       const settingsPath = join(proj, '.claude', 'settings.json')
 
-      // fresh install: exactly one PreToolUse spawn chain (the consumer guard invariant)
+      // fresh install: every shipped hook reaches the file exactly once, one
+      // spawn chain per matcher (the consumer guard invariant)
       const fresh = run()
       expect({ status: fresh.status, stderr: (fresh.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
       const s1 = JSON.parse(readFileSync(settingsPath, 'utf8'))
-      expect(s1.hooks.PreToolUse).toEqual([multiplexerGroup()])
+      for (const def of SMA_HOOKS as HookDef[]) {
+        expect(groupFor(s1, def.event, def.matcher).hooks).toEqual([entryOf(def)])
+      }
+      expect(smaEntries(s1)).toHaveLength(SMA_HOOKS.length)
+      expect(s1.hooks.PreToolUse).toHaveLength(2)
+      expect(groupFor(s1, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
+      expect(groupFor(s1, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
 
       // simulate a pre-multiplexer-era install that ALSO already carries the
       // multiplexer and one foreign hook — the double-run field shape
@@ -206,11 +388,14 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
       expect(update.stdout).toMatch(/legacy per-stream entries/)
       const s2 = JSON.parse(readFileSync(settingsPath, 'utf8'))
       expect(JSON.stringify(s2)).not.toMatch(/collision-check|reflex-check|gates-check/)
-      // the foreign hook survives byte-identically in its group; ONE multiplexer chain remains
-      expect(s2.hooks.PreToolUse).toEqual([
-        { matcher: 'Edit|Write', hooks: [guard] },
-        multiplexerGroup(),
-      ])
+      // groups read BY MATCHER: the foreign hook survives byte-identically in
+      // its own group, ONE multiplexer chain remains, and the subagent pack is
+      // restored as its own group
+      expect(groupFor(s2, 'PreToolUse', 'Edit|Write').hooks).toEqual([guard])
+      expect(groupFor(s2, 'PreToolUse', 'Edit|Write|Bash')).toEqual(multiplexerGroup())
+      expect(groupFor(s2, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
+      expect(s2.hooks.PreToolUse).toHaveLength(3)
+      expect(smaEntries(s2)).toHaveLength(SMA_HOOKS.length)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }

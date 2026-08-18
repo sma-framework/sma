@@ -72,8 +72,10 @@ const COMMANDS = [
 ];
 
 // ── hooks the installer manages (matched by command string for idempotency) ──
+// Exported so the installer's own suite asserts the shipped set from THIS list
+// instead of keeping a second copy of it, which would quietly drift apart.
 
-const SMA_HOOKS = [
+export const SMA_HOOKS = [
   { event: 'SessionStart', matcher: null, command: 'node scripts/sma/cli.mjs session-start', timeout: 10 },
   // the whole PreToolUse pipeline is ONE `pre` multiplexer
   // spawn — collision → reflex → gates run as ordered streams inside a single
@@ -83,13 +85,37 @@ const SMA_HOOKS = [
   // STALE_SMA_HOOK_COMMANDS below and removed by mergeHooks, so an existing
   // install heals to the single spawn on update.
   { event: 'PreToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs pre', timeout: 5 },
-  // the stall detector feeds on PostToolUse — a NEW hook type
-  // for SMA (any pre-existing Stop/SubagentStop entries, e.g. a project's
-  // security guard, live under different events and are untouched by the
-  // additive merge). Advisory additionalContext nudge only, never a block.
-  // NOT absorbed by `pre` (that multiplexer is PreToolUse-only), so it stays
-  // its own entry.
+  // the context pack rides PreToolUse on the Task tool, so every subagent is
+  // spawned already carrying the project's claims, gates and open questions
+  // instead of rediscovering them. It is its OWN matcher group rather than a
+  // wider matcher on the multiplexer above, because `pre` is wired for the
+  // editing tools and knows nothing about Task; the consumer invariant is
+  // "exactly one SMA chain PER MATCHER", which a second group keeps.
+  { event: 'PreToolUse', matcher: 'Task|Agent', command: 'node scripts/sma/cli.mjs pretask-pack', timeout: 10 },
+  // the stall detector feeds on PostToolUse. Advisory additionalContext nudge
+  // only, never a block. NOT absorbed by `pre` (that multiplexer is
+  // PreToolUse-only), so it stays its own entry. The merge below is additive in
+  // EVERY event: foreign entries — a project's own security guard, say — are
+  // never dropped or reordered, including in the events this template now
+  // writes to as well.
   { event: 'PostToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs stall-check', timeout: 5 },
+  // The three entries below carry NO matcher on purpose. These events do accept
+  // matchers (end reason, compaction trigger, subagent type); leaving the field
+  // out is how one entry covers every value of them, which is what all three
+  // want.
+  //   session-end releases the claims this window is holding, so a terminal
+  //   that was simply closed never leaves a teammate blocked on a scope nobody
+  //   is editing any more.
+  { event: 'SessionEnd', matcher: null, command: 'node scripts/sma/cli.mjs session-end', timeout: 10 },
+  //   precompact-capsule writes the flight capsule BEFORE the context is
+  //   trimmed. It walks git and the working tree to build one, and a capsule
+  //   cut short by the hook budget is state lost for good — so these two get a
+  //   longer budget than the editing-path hooks, still short enough that a
+  //   person does not feel it.
+  { event: 'PreCompact', matcher: null, command: 'node scripts/sma/cli.mjs precompact-capsule', timeout: 15 },
+  //   subagent-verify matches what a finishing subagent claimed to have written
+  //   against the tree — the same git-and-disk walk, the same reasoning.
+  { event: 'SubagentStop', matcher: null, command: 'node scripts/sma/cli.mjs subagent-verify', timeout: 15 },
 ];
 
 // PreToolUse commands this installer USED to ship before the `pre` multiplexer
@@ -222,8 +248,41 @@ export function removeStaleSmaHooks(settings) {
  *   event (and matcher, for matcher events) is skipped
  * Returns { added, removedStale }.
  */
+/**
+ * Drop OUR OWN entries that carry a command we still ship but sit under a matcher we no
+ * longer use, so a matcher that moves cannot leave a second live copy behind. The stale-
+ * command list above cannot cover this case: there the command changed and the matcher
+ * stayed, here it is the other way round, and the entry left over is byte-identical to a
+ * legitimate one — it just fires from the wrong door. Left alone it means two processes on
+ * one event, forever, on every machine that installed the earlier spelling.
+ *
+ * Strictly OURS: an entry is only dropped when its command is one this installer ships AND
+ * that command has a home under this event in the current list. A foreign hook that happens
+ * to sit in the same group is never read, let alone removed.
+ */
+function removeMovedMatcherEntries(settings, hookDefs) {
+  if (!settings || typeof settings.hooks !== 'object' || settings.hooks === null) return 0;
+  let removed = 0;
+  for (const def of hookDefs) {
+    const groups = settings.hooks[def.event];
+    if (!Array.isArray(groups)) continue;
+    for (const g of groups) {
+      if (!g || !Array.isArray(g.hooks)) continue;
+      const sameMatcher = def.matcher === null ? !g.matcher : g.matcher === def.matcher;
+      if (sameMatcher) continue;
+      const kept = g.hooks.filter((h) => !(h && h.command === def.command));
+      removed += g.hooks.length - kept.length;
+      g.hooks = kept;
+    }
+    settings.hooks[def.event] = groups.filter((g) => g && Array.isArray(g.hooks) && g.hooks.length > 0);
+    if (settings.hooks[def.event].length === 0) delete settings.hooks[def.event];
+  }
+  return removed;
+}
+
 export function mergeHooks(settings, hookDefs = SMA_HOOKS) {
   const removedStale = removeStaleSmaHooks(settings);
+  const removedMoved = removeMovedMatcherEntries(settings, hookDefs);
   if (typeof settings.hooks !== 'object' || settings.hooks === null) settings.hooks = {};
   let added = 0;
   for (const def of hookDefs) {
@@ -243,7 +302,7 @@ export function mergeHooks(settings, hookDefs = SMA_HOOKS) {
     else groups.push(def.matcher === null ? { hooks: [hookEntry] } : { matcher: def.matcher, hooks: [hookEntry] });
     added += 1;
   }
-  return { added, removedStale };
+  return { added, removedStale, removedMoved };
 }
 
 // ── skill derivation ─────────────────────────────────────────────────────────
@@ -366,10 +425,14 @@ async function main() {
       process.exit(1);
     }
   }
-  const { added, removedStale } = mergeHooks(settings);
+  const { added, removedStale, removedMoved } = mergeHooks(settings);
   writeText(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  // Two different repairs, named apart: one replaced a command we stopped shipping, the
+  // other removed a copy of a command we still ship that sat under a matcher we moved.
+  // One sentence for both would tell the operator the wrong story about their own file.
   const staleNote = removedStale ? `, ${removedStale} legacy per-stream entries replaced by the \`pre\` multiplexer` : '';
-  console.log(`  + hooks         ${added} added${staleNote}, foreign entries preserved (${settingsPath})`);
+  const movedNote = removedMoved ? `, ${removedMoved} entries dropped from a matcher this installer no longer uses` : '';
+  console.log(`  + hooks         ${added} added${staleNote}${movedNote}, foreign entries preserved (${settingsPath})`);
 
   // 7. .sma/ runtime scaffold + .gitignore line
   for (const d of ['sessions', 'claims', 'journal', 'reflex']) mkdirSync(path.join(project, '.sma', d), { recursive: true });
