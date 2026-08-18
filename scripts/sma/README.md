@@ -393,21 +393,29 @@ sma predict-score .planning/phases/12-x/12-01-PLAN.md --current-version 3.1 # ex
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `pretask-pack` | **`PreToolUse(Task)` hook** — injects the assembled context pack (rules digest, task-scoped lessons, active claims, the parent task slice) into a subagent: inheritance by construction. Fail-open, exits 0. | — (hook-facing) |
+| `pretask-pack` | **`PreToolUse` hook on the subagent-spawn tool** — injects the assembled context pack (rules digest, task-scoped lessons, active claims, the parent task slice) into a subagent: inheritance by construction. Fail-open, exits 0. | — (hook-facing) |
 | `subagent-verify` | **`SubagentStop` hook** — verifies EVERY claimed file write against the real tree; a receipt lands in the shared journal, a phantom write (claimed, not on disk) is flagged deterministically. | `[--since <ts>]` \| `--json` |
 | `subagent-receipts` | Report: receipt coverage, phantom-write count, PreTask pack p95. | `[--stat <name>]` \| `--json` |
 
-**Wire the two new subagent hook events** in `.claude/settings.json`:
+**The two subagent hook events** as the installer writes them into
+`.claude/settings.json` (`bin/init.mjs` does this for you; this is what to expect there,
+and what to write by hand if you wire SMA into a harness it does not install into):
 
 ```json
 "PreToolUse": [
-  { "matcher": "Task",
-    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pretask-pack", "timeout": 5 } ] }
+  { "matcher": "Task|Agent",
+    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pretask-pack", "timeout": 10 } ] }
 ],
 "SubagentStop": [
-  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs subagent-verify", "timeout": 5 } ] }
+  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs subagent-verify", "timeout": 15 } ] }
 ]
 ```
+
+Two details worth copying exactly. The matcher names the spawn tool under **both** names it
+has carried across agent versions: one that knows a single name installs cleanly, fires, and
+does nothing at all. And the budgets are 10 and 15 seconds rather than the 5 the editing-path
+hooks get, because both of these walk git and the working tree; a run cut short by the budget
+is a lost pack or a lost receipt.
 
 ### Measurement — `bench`
 

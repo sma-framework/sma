@@ -7862,9 +7862,19 @@ async function buildPackSources({ dirs, repoRoot }) {
 }
 
 /**
- * pretask-pack — the PreToolUse(matcher "Task") hook. Injects
+ * The tool names a coding agent uses to START A SUBAGENT. There are two because the
+ * name changed under us: older releases spawn through `Task`, current ones through
+ * `Agent`. Both are accepted deliberately — a hook that knows only the old name is
+ * installed, fires, and silently does nothing on a current release, which is the most
+ * expensive kind of dead wiring: it looks connected everywhere except in the result.
+ * The installer's matcher carries the same alternation; the two must move together.
+ */
+const SUBAGENT_SPAWN_TOOLS = new Set(['Task', 'Agent'])
+
+/**
+ * pretask-pack — the PreToolUse hook on a subagent spawn. Injects
  * the assembled context pack into every subagent spawn via `updatedInput` —
- * inheritance by construction. Acts ONLY on Task; anything else is a silent
+ * inheritance by construction. Acts ONLY on a subagent spawn; anything else is a silent
  * pass-through. Kill-switch SMA_PACK_DISABLE=1 → no pack injection (compensating
  * control: subagent-verify still receipts every stop). Measures durationMs, writes a
  * spawn record, and journals a `subagent-pack` event so the p95 SLO stays measurable.
@@ -7878,7 +7888,7 @@ async function buildPackSources({ dirs, repoRoot }) {
  */
 async function cmdPretaskPack({ dirs }) {
   const evt = readStdinJson()
-  if (!evt || evt.tool_name !== 'Task') return 0 // non-Task → silent pass-through
+  if (!evt || !SUBAGENT_SPAWN_TOOLS.has(evt.tool_name)) return 0 // not a subagent spawn → silent pass-through
 
   // ONE SPAWN: the Task-cap spend soft-deny stream rides
   // INSIDE this single Task PreToolUse spawn — never a second scripts/sma process. Same
