@@ -22,6 +22,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as api from '../../spa/src/api/client'
 import { selectedProject, setSelectedProject } from '../../spa/src/api/selected-project'
 import { STATE_KEY, stateQueryFn, selectProjectAndRefresh } from '../../spa/src/api/queries'
+import { splitByProject } from '../../spa/src/screens/tasks/units'
 
 type Call = { url: string; method: string }
 
@@ -155,5 +156,42 @@ describe('четвёртый провод: после выбора картин�
     await expect(selectProjectAndRefresh(queryClient, 'sma-dev')).rejects.toBeTruthy()
 
     expect(ordered).toBe(0)
+  })
+})
+
+describe('строки с неизвестным проектом видны, а не спрятаны и не перекрашены', () => {
+  const rows = [
+    { id: 'a', project: 'sma' },
+    { id: 'b', project: null },
+    { id: 'c', project: 'sma-dev' },
+    { id: 'd', project: null },
+  ]
+
+  it('при выбранном проекте свои — в списке, безымянные — отдельно, чужие — отброшены', () => {
+    const { mine, unknown } = splitByProject(rows, 'sma')
+
+    expect(mine.map((r) => r.id)).toEqual(['a'])
+    expect(unknown.map((r) => r.id)).toEqual(['b', 'd'])
+  })
+
+  it('без выбранного проекта отличать нечего: всё в списке, безымянных нет', () => {
+    const { mine, unknown } = splitByProject(rows, null)
+
+    expect(mine.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(unknown).toEqual([])
+  })
+
+  it('неизвестное не приписано проекту: счёт своих его не раздувает', () => {
+    const { mine, unknown } = splitByProject(rows, 'sma')
+
+    expect(mine).toHaveLength(1)
+    expect(unknown).toHaveLength(2)
+    expect(mine.some((r) => r.project == null)).toBe(false)
+  })
+
+  it('строка не перекрашивается: у безымянной так и остаётся пустой проект', () => {
+    const { unknown } = splitByProject(rows, 'sma')
+
+    expect(unknown.every((r) => r.project == null)).toBe(true)
   })
 })
