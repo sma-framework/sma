@@ -562,7 +562,12 @@ const NEW_STAMP_KEYS = [
   'capabilityEnvelopeHash',
 ]
 
-describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, every old one kept', () => {
+// The six fields that describe THE COPY the attempt ran in — the point it can be rolled
+// back to and what was put into it. They ride the same allowlist, at the end, after the
+// provenance flag, so nothing older moves.
+const COPY_KEYS = ['base', 'branch', 'worktreePath', 'materialized', 'provisionMs', 'cleanup']
+
+describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, six about the copy, every old one kept', () => {
   it('keeps every pre-existing member, in place', () => {
     const before = [
       'taskId',
@@ -580,9 +585,16 @@ describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, ever
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(18)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(24)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(18) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(24) // no duplicate name
+  })
+
+  // Order is part of the contract: everything that was here before keeps its index, and the
+  // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
+  it('carries the six copy fields as the tail, in order, with the older eighteen unmoved', () => {
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-6)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a
@@ -604,9 +616,11 @@ describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, ever
 
   // The seventeenth key, added 2026-08-05 with the reconciliation pass. It
   // is NOT a stamp field: a stamp says what the world was, this says who wrote the row.
-  it('carries the reconstructed flag LAST, after the stamp, so a reader can tell the two apart', () => {
+  it('carries the reconstructed flag after the stamp, so a reader can tell the two apart', () => {
     expect(ALLOWED_ATTEMPT_KEYS).toContain('reconstructed')
-    expect(ALLOWED_ATTEMPT_KEYS[ALLOWED_ATTEMPT_KEYS.length - 1]).toBe('reconstructed')
+    // It used to be the last member; the copy fields were appended behind it, so what the
+    // contract now pins is that it closes the pre-copy part of the row, not the whole row.
+    expect(ALLOWED_ATTEMPT_KEYS.indexOf('reconstructed')).toBe(ALLOWED_ATTEMPT_KEYS.indexOf(COPY_KEYS[0]) - 1)
     expect(NEW_STAMP_KEYS).not.toContain('reconstructed')
   })
 
@@ -633,6 +647,40 @@ describe('recordAttempt — the stamp is additive, and it rides the existing all
     recordAttempt(dir, { taskId, attempt: 1, outcome: 'completed', receiptRef: 'reverify:abc', ...stamp })
     const [row] = readAttempts(dir, taskId)
     for (const k of NEW_STAMP_KEYS) expect(row[k], k).toBe((stamp as any)[k])
+  })
+
+  // Why these live ON THE ATTEMPT ROW and not in the operator log: being able to roll back
+  // and being able to SEE what to roll back to are different things. The row is the durable
+  // one, so the base commit, the branch, the copy's path, what was put into the copy and how
+  // long that took belong here — for a failed attempt exactly as much as for a finished one.
+  it('a call passing the six copy fields writes all six into the row', () => {
+    const taskId = 'BL-S1C'
+    const copy = {
+      base: 'a'.repeat(40),
+      branch: 'wt/BL-S1C',
+      worktreePath: '/tmp/copies/BL-S1C',
+      materialized: [
+        { path: '.claude/', mode: 'copy', files: 3 },
+        { path: 'node_modules', mode: 'link', target: '/repo/node_modules' },
+      ],
+      provisionMs: 812,
+      cleanup: { at: '2026-08-18T10:00:00.000Z', by: 'approve' },
+    }
+    recordAttempt(dir, { taskId, attempt: 1, outcome: 'completed', ...copy })
+    const [row] = readAttempts(dir, taskId)
+    expect(row.base).toBe(copy.base)
+    expect(row.branch).toBe('wt/BL-S1C')
+    expect(row.worktreePath).toBe('/tmp/copies/BL-S1C')
+    expect(row.materialized).toEqual(copy.materialized)
+    expect(row.provisionMs).toBe(812)
+    expect(row.cleanup).toEqual(copy.cleanup)
+  })
+
+  it('a row from a stage that had no copy carries none of the six keys — absence, not null', () => {
+    const taskId = 'BL-S1D'
+    recordAttempt(dir, { taskId, attempt: 1, outcome: 'completed' })
+    const [row] = readAttempts(dir, taskId)
+    for (const k of COPY_KEYS) expect(Object.hasOwn(row, k), k).toBe(false)
   })
 
   it('a call passing NONE of them writes the row today’s readers already see (byte-identical)', () => {
