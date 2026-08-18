@@ -3,6 +3,7 @@ import type { UseMutationResult } from '@tanstack/react-query'
 import * as api from './client'
 import { ApiError, isNotReady } from './client'
 import type { EnqueueInput } from './client'
+import { selectedProject, setSelectedProject } from './selected-project'
 import type {
   AttemptLog,
   Backlog,
@@ -101,11 +102,29 @@ export function createAppQueryClient(): QueryClient {
 
 // ── reading ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Чтение картины — с сужением по выбранному проекту.
+ *
+ * Вынесено из хука отдельной функцией по одной причине: это ПРОВОД, и провод должен быть
+ * прогоняем без React. Сужение умели обе стороны с рождения — дверь читает `?project=`, клиент
+ * умеет его построить, — и не звал никто; такой разрыв не должен уметь вернуться молча.
+ *
+ * Первое чтение вдобавок сеет зеркало: пока человек ничего не переключал, чем сузить, знает
+ * только демон, и он это говорит в `activeProject`. Записываем ТОЛЬКО когда зеркало пусто —
+ * иначе ответ, задержавшийся в полёте дольше, чем человек думал, переставил бы выбор назад.
+ */
+export async function stateQueryFn(): Promise<StatePayload> {
+  const project = selectedProject()
+  const payload = await api.getState(project ? { project } : {})
+  if (!selectedProject() && payload.activeProject) setSelectedProject(payload.activeProject)
+  return payload
+}
+
 /** The whole picture, kept fresh. This is the truth every screen renders from. */
 export function useStateQuery() {
   return useQuery<StatePayload>({
     queryKey: STATE_KEY,
-    queryFn: () => api.getState(),
+    queryFn: stateQueryFn,
     refetchInterval: STATE_POLL_MS,
     staleTime: STATE_STALE_MS,
   })
@@ -168,6 +187,15 @@ export function useOnboardingQuery() {
 
 // ── acting ──────────────────────────────────────────────────────────────────────────
 
+/** Ровно то, что делает всякое удавшееся действие: заказывает одно перечитывание картины. */
+export function refreshAfterAction(
+  queryClient: Pick<QueryClient, 'invalidateQueries'>,
+  alsoRefresh: readonly (readonly unknown[])[] = [],
+): void {
+  void queryClient.invalidateQueries({ queryKey: STATE_KEY })
+  for (const key of alsoRefresh) void queryClient.invalidateQueries({ queryKey: key })
+}
+
 /**
  * Every action ends the same way: ask for the picture again. One re-read, ordered once,
  * at the only moment we know for certain that something changed.
@@ -179,10 +207,7 @@ function useAction<TInput, TResult>(
   const queryClient = useQueryClient()
   return useMutation<TResult, Error, TInput>({
     mutationFn: run,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: STATE_KEY })
-      for (const key of alsoRefresh) void queryClient.invalidateQueries({ queryKey: key })
-    },
+    onSuccess: () => refreshAfterAction(queryClient, alsoRefresh),
   })
 }
 
@@ -303,11 +328,33 @@ export function useToggleMcp() {
   )
 }
 
+/**
+ * Смена проекта целиком, одной функцией и без React: сказать двери, записать выбор в зеркало
+ * (это делает сам вызов двери, и только при её согласии) и заказать перечитывание картины.
+ *
+ * Порядок здесь и есть смысл. Перечитывание заказывается ПОСЛЕ того, как зеркало переставлено:
+ * запрос стартует заново и берёт из зеркала уже новый проект. Если бы перечитывание заказали
+ * раньше, окно перечитало бы старое сужение и врало бы до следующего опроса — ровно тот
+ * симптом, из-за которого затевалась эта работа.
+ *
+ * Вынесено из хука, чтобы провод «выбор → перечитывание» проверялся прогоном, а не чтением
+ * обработчика успеха: обработчик можно переписать, и разрыв вернётся молча.
+ */
+export async function selectProjectAndRefresh(
+  queryClient: Pick<QueryClient, 'invalidateQueries'>,
+  id: string,
+): Promise<Awaited<ReturnType<typeof api.selectProject>>> {
+  const result = await api.selectProject(id)
+  refreshAfterAction(queryClient)
+  return result
+}
+
 /** Look at another project. */
 export function useSelectProject() {
-  return useAction<{ id: string }, Awaited<ReturnType<typeof api.selectProject>>>((input) =>
-    api.selectProject(input.id),
-  )
+  const queryClient = useQueryClient()
+  return useMutation<Awaited<ReturnType<typeof api.selectProject>>, Error, { id: string }>({
+    mutationFn: (input) => selectProjectAndRefresh(queryClient, input.id),
+  })
 }
 
 /** Take a folder into the register of projects. */
