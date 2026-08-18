@@ -710,7 +710,7 @@ describe('recordAttempt — the stamp is additive, and it rides the existing all
       taskId,
       attempt: 1,
       outcome: 'completed',
-      // @ts-expect-error — deliberately outside the allowlist
+      // deliberately outside the allowlist — the writer, not the type, is what drops it
       promptText: 'СЕКРЕТНЫЙ текст задачи, которому нечего делать в леджере',
       apiKey: 'sk-not-a-real-key',
     })
