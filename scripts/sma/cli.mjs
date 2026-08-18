@@ -9980,7 +9980,8 @@ async function cmdShipLane({ positionals, flags, dirs }) {
 }
 
 /**
- * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force] [--json]
+ * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force]
+ *          [--delete-branch] [--json]
  *   worktree --selftest           base + teleport guards over a mock-git recorder
  *   worktree --selftest-sibling   sibling-repo resolution order over injected readers
  *
@@ -10007,9 +10008,15 @@ async function cmdShipLane({ positionals, flags, dirs }) {
  * `manifest{source,warnings}` and `provisionMs`, so the caller can put the provenance
  * of the copy into its own record. A failure here never fails the provision.
  *
- * REMOVING A COPY THAT HAS LINKS: unhook the links first (deleting the link itself
- * leaves the target alone), THEN `worktree remove` — on Windows git follows a junction
- * and empties the main tree's target directory instead of removing the link.
+ * REMOVING A COPY THAT HAS LINKS: `remove` unhooks every link inside the copy BEFORE
+ * git ever sees it (deleting the link itself leaves the target alone), because on
+ * Windows git follows a junction and empties the main tree's target directory instead
+ * of removing the link. The refusal comes even earlier: a path that is the main
+ * checkout, or that this repository does not list as a working copy, is rejected
+ * without a single deletion. `--delete-branch` also drops the branch the copy stood on,
+ * recording its tip first so the work stays reachable through the reflog. If git refuses
+ * the removal and `--force` was given, the copy is deleted directly and the tree list
+ * pruned — reported as `fallback:'rm+prune'`, never passed off as a clean git removal.
  */
 async function cmdWorktree({ positionals, flags, dirs }) {
   const wt = await import('./lib/worktree.mjs')
@@ -10111,16 +10118,43 @@ async function cmdWorktree({ positionals, flags, dirs }) {
   if (sub === 'remove') {
     const path = positionals[1]
     if (!path) {
-      process.stderr.write('usage: node scripts/sma/cli.mjs worktree remove <path> [--force]\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs worktree remove <path> [--force] [--delete-branch]\n')
       return 1
     }
-    const res = wt.removeWorktree({ path, execGit, cwd: mainRoot, force: flags.force === true })
+    // Links come off before git touches the copy — see the header: git walks INTO a
+    // junction and empties the main tree's dependency directory instead of the link.
+    const res = wt.removeWorktreeSafely({
+      path,
+      execGit,
+      cwd: mainRoot,
+      force: flags.force === true,
+      deleteBranch: flags['delete-branch'] === true,
+    })
     if (wantsJson(flags)) {
       printJson(res)
       return res.ok ? 0 : 1
     }
-    if (res.ok) process.stdout.write(`SMA worktree: удалено -> ${res.removed}\n`)
-    else process.stderr.write(`SMA worktree: не удалено (${res.message}). Грязное дерево? добавьте --force.\n`)
+    const links = Array.isArray(res.unlinked) ? res.unlinked : []
+    if (links.length > 0) {
+      const names = links.map((l) => l.path).join(', ')
+      process.stdout.write(`SMA worktree: снято ссылок: ${links.length} (${names}) — цели в основном дереве не тронуты\n`)
+    }
+    if (res.ok) {
+      process.stdout.write(`SMA worktree: удалено -> ${res.removed}\n`)
+      if (res.fallback === 'rm+prune') {
+        process.stdout.write('  git убрать копию отказался — удалено напрямую, список деревьев подчищен\n')
+      }
+      if (Array.isArray(res.dirtyFiles) && res.dirtyFiles.length > 0) {
+        process.stdout.write(`  вместе с копией потеряно несохранённого: ${res.dirtyFiles.join(', ')}\n`)
+      }
+      if (res.branchDeleted) {
+        process.stdout.write(`  удалена ветка ${res.branch} (вершина ${String(res.branchTip || '').slice(0, 7)})\n`)
+      } else if (res.branchError) {
+        process.stdout.write(`  ${res.branchError}\n`)
+      }
+    } else {
+      process.stderr.write(`SMA worktree: отказ: ${res.message}\n`)
+    }
     return res.ok ? 0 : 1
   }
 

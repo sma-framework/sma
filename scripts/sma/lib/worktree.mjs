@@ -239,6 +239,12 @@ export function reuseOrProvision(opts = {}) {
  * EXPLICIT cwd. `--force` is added ONLY when `force:true` (git itself refuses a dirty
  * tree without it — that guard is preserved by not adding the flag by default).
  * Fail-open -> {ok:false, message}.
+ *
+ * RAW, AND THEREFORE ONLY FOR A COPY WITH NOTHING LINKED INSIDE IT. Provisioning now
+ * attaches the dependency tree by reference, so most copies DO carry links — and git,
+ * meeting one, walks INTO it and empties the TARGET directory in the main checkout
+ * (measured on Windows, with and without `--force`). For anything a provision produced,
+ * use removeWorktreeSafely: it unhooks the links first, so git never meets one.
  * @param {{path:string, execGit?:Function, cwd:string, force?:boolean}} opts
  * @returns {{ok:boolean, removed?:string, message?:string}}
  */
@@ -253,6 +259,229 @@ export function removeWorktree(opts = {}) {
   } catch (err) {
     return { ok: false, message: `worktree remove failed (${err && err.message})` }
   }
+}
+
+// ─── removing a copy: unhook the links FIRST, then let git have it ───────────
+
+/**
+ * samePathOs(a, b) — path equality that survives what this platform actually hands out.
+ * On Windows the temp root arrives as an 8.3 short name (`C:\Users\JUNIS~1\…`) while git
+ * records the long form, separators disagree, and the file system is case-insensitive.
+ * Comparing raw strings would let a legitimate copy look like a stranger — and this
+ * comparison is the only thing standing between a command-line argument and a recursive
+ * delete, so it resolves both sides through the file system when it can.
+ * @param {string} a
+ * @param {string} b
+ * @param {object} [fs]
+ * @param {string} [platform]
+ * @returns {boolean}
+ */
+function samePathOs(a, b, fs = nodeFs, platform = process.platform) {
+  const real = (p) => {
+    try {
+      const native = fs && fs.realpathSync && fs.realpathSync.native
+      if (typeof native === 'function') return native(String(p))
+      if (fs && typeof fs.realpathSync === 'function') return fs.realpathSync(String(p))
+    } catch {
+      /* the path may not exist (an unregistered argument) — fall back to resolution */
+    }
+    return resolvePath(String(p))
+  }
+  const norm = (p) => {
+    const s = real(p).replace(/\\/g, '/').replace(/\/+$/, '')
+    return platform === 'win32' ? s.toLowerCase() : s
+  }
+  return norm(a) === norm(b)
+}
+
+/**
+ * unlinkLinksIn({copyPath, fsImpl}) -> [{path, target, error?}] — remove every link
+ * INSIDE a copy without following a single one of them.
+ *
+ * `rmdirSync`/`unlinkSync` on a link delete the LINK; the target is untouched. The walk
+ * tests `isSymbolicLink()` BEFORE `isDirectory()`, so it never descends through a link
+ * into the main checkout, and it never enters `.git`. A link that refuses to come off is
+ * recorded with its error and the walk continues — one stubborn link must not leave the
+ * remaining ones in place, because the next step hands the copy to git.
+ * @param {{copyPath:string, fsImpl?:object}} opts
+ * @returns {Array<{path:string, target:string|null, error?:string}>}
+ */
+export function unlinkLinksIn(opts = {}) {
+  const fs = opts.fsImpl ?? nodeFs
+  const unlinked = []
+  const walk = (dir, rel) => {
+    let items
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return // an unreadable directory is not a reason to abandon the rest
+    }
+    for (const it of items) {
+      if (it.name === '.git') continue
+      const abs = joinPath(dir, it.name)
+      const relPath = rel ? `${rel}/${it.name}` : it.name
+      if (it.isSymbolicLink()) {
+        let target = null
+        try {
+          target = String(fs.readlinkSync(abs))
+        } catch {
+          /* an unreadable target still has to come off */
+        }
+        try {
+          try {
+            fs.rmdirSync(abs) // a directory link (junction on Windows)
+          } catch {
+            fs.unlinkSync(abs) // a file link
+          }
+          unlinked.push({ path: relPath, target })
+        } catch (err) {
+          unlinked.push({ path: relPath, target, error: String((err && err.message) || err) })
+        }
+      } else if (it.isDirectory()) {
+        walk(abs, relPath)
+      }
+    }
+  }
+  walk(opts.copyPath, '')
+  return unlinked
+}
+
+/**
+ * dirtyFilesOf({path, execGit}) -> the paths `git status --porcelain` reports in a copy.
+ * This is the list of what a forced removal is about to destroy, so the caller can put it
+ * into the record instead of discovering it afterwards. Fail-open -> [].
+ * @param {{path:string, execGit?:Function}} opts
+ * @returns {string[]}
+ */
+export function dirtyFilesOf(opts = {}) {
+  const execGit = opts.execGit ?? defaultExecGit
+  try {
+    const out = String(execGit(['status', '--porcelain'], { cwd: opts.path }))
+    return out
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .filter((l) => l.length > 3)
+      .map((l) => l.slice(3).trim().replace(/^"|"$/g, ''))
+      .filter(Boolean)
+  } catch {
+    return [] // no git, no copy, no answer — an empty list, never a throw
+  }
+}
+
+/**
+ * removeWorktreeSafely({path, cwd, execGit, fsImpl, force, deleteBranch}) — the only
+ * cleanup a provisioned copy may go through.
+ *
+ * THE ORDER IS THE WHOLE FUNCTION:
+ *   0. REFUSE first. Nothing is deleted until the path is proven to be a linked copy of
+ *      THIS repository and not the main checkout. A typo in an argument otherwise costs
+ *      the developer's working tree, and the previous step (unhooking links) is itself
+ *      destructive — so it may not run before the refusal.
+ *   1. Unhook every link inside the copy. git walks into them; Node does not.
+ *   2. Read what is about to be lost (`git status --porcelain`) into the answer.
+ *   3. `git worktree remove <path> [--force]`.
+ *   4. If git refused and the caller asked for force, finish by hand: `rmSync` the copy
+ *      and `git worktree prune` so the list of trees stays honest — reported as
+ *      `fallback:'rm+prune'` rather than passed off as a clean git removal.
+ *   5. Optionally delete the branch the copy stood on, recording its tip FIRST, so the
+ *      work remains reachable through the reflog and the record says where it was.
+ * A failed branch deletion does not turn a successful removal into a failure; it is
+ * reported as `branchDeleted:false` with the reason.
+ * @param {{path:string, cwd:string, execGit?:Function, fsImpl?:object, platform?:string,
+ *          force?:boolean, deleteBranch?:boolean}} opts
+ * @returns {{ok:boolean, removed?:string, unlinked?:Array, dirtyFiles?:string[],
+ *            forced?:boolean, fallback?:string|null, branch?:string|null,
+ *            branchDeleted?:boolean, branchTip?:string|null, branchError?:string,
+ *            message?:string}}
+ */
+export function removeWorktreeSafely(opts = {}) {
+  const execGit = opts.execGit ?? defaultExecGit
+  const fs = opts.fsImpl ?? nodeFs
+  const platform = opts.platform ?? process.platform
+  const { path, cwd, force, deleteBranch } = opts
+
+  if (!path) return { ok: false, message: 'уборка отменена: путь копии не назван' }
+
+  // ── (0) refuse before touching anything ────────────────────────────────────
+  const trees = listWorktrees({ execGit, cwd })
+  const mainTree = trees.length > 0 ? trees[0].path : null
+  if (samePathOs(path, cwd, fs, platform) || (mainTree && samePathOs(path, mainTree, fs, platform))) {
+    return { ok: false, message: `уборка отменена: ${path} — основное дерево репозитория, а не копия` }
+  }
+  const entry = trees.find((t) => samePathOs(t.path, path, fs, platform))
+  if (!entry) {
+    return { ok: false, message: `уборка отменена: ${path} не зарегистрирован как рабочая копия этого репозитория` }
+  }
+  const branch = String(entry.branch || '').replace(/^refs\/heads\//, '') || null
+
+  // ── (1) links off, (2) losses written down ─────────────────────────────────
+  const unlinked = unlinkLinksIn({ copyPath: path, fsImpl: fs })
+  const dirtyFiles = dirtyFilesOf({ path, execGit })
+
+  // ── (3) git removes the copy; (4) or we finish by hand ─────────────────────
+  let fallback = null
+  try {
+    const args = ['worktree', 'remove', path]
+    if (force) args.push('--force')
+    execGit(args, { cwd })
+  } catch (err) {
+    if (!force) {
+      return {
+        ok: false,
+        message: `git отказался убрать копию (${err && err.message}); повторите с принудительной уборкой, если потери допустимы`,
+        unlinked,
+        dirtyFiles,
+      }
+    }
+    try {
+      fs.rmSync(path, { recursive: true, force: true, maxRetries: 3 })
+      try {
+        execGit(['worktree', 'prune'], { cwd })
+      } catch {
+        /* the copy is gone; a stale registration is a smaller problem than a throw */
+      }
+      fallback = 'rm+prune'
+    } catch (err2) {
+      return {
+        ok: false,
+        message: `копию не убрал ни git, ни прямое удаление (${err2 && err2.message})`,
+        unlinked,
+        dirtyFiles,
+      }
+    }
+  }
+
+  // ── (5) the branch, with its tip written down before it goes ───────────────
+  let branchDeleted = false
+  let branchTip = null
+  let branchError = null
+  if (deleteBranch && branch) {
+    try {
+      branchTip = String(execGit(['rev-parse', branch], { cwd })).trim()
+    } catch {
+      /* an unreadable tip is not a reason to keep the branch — the reflog still has it */
+    }
+    try {
+      execGit(['branch', '-D', branch], { cwd })
+      branchDeleted = true
+    } catch (err) {
+      branchError = `ветку ${branch} снять не удалось (${err && err.message})`
+    }
+  }
+
+  const res = {
+    ok: true,
+    removed: path,
+    unlinked,
+    dirtyFiles,
+    forced: !!force,
+    fallback,
+    branch,
+    branchDeleted,
+    branchTip,
+  }
+  if (branchError) res.branchError = branchError
+  return res
 }
 
 // ─── the untracked layer: manifest, copy, link ───────────────────────────────
