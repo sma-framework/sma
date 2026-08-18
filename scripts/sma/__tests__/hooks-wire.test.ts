@@ -374,6 +374,49 @@ describe('hook contract: subagent pack and receipts', () => {
     expect(journalEvents(proj).filter((e) => e.type === 'subagent-pack')).toHaveLength(1)
   }, 60000)
 
+  // The spawn tool was RENAMED between releases: older ones call it `Task`, current
+  // ones call it `Agent`. A hook that knows only the old name still installs and still
+  // fires — and then returns nothing, so the pack silently stops reaching subagents on
+  // every current release. That failure is invisible to every check that asks whether the
+  // hook is wired, which is why the CURRENT name gets its own case rather than a shared one.
+  it('the current spawn-tool name is packed too, not only the older one', () => {
+    const projNow = join(tmp, 'proj-current-name')
+    mkdirSync(projNow, { recursive: true })
+    const res = runHook(
+      'pretask-pack',
+      {
+        session_id: WINDOW_TOKEN,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'probe', prompt: ORIGINAL_PROMPT },
+      },
+      projNow,
+    )
+    expect(res.status).toBe(0)
+    expect(res.stdout, 'a spawn under the current tool name must not be a silent pass-through').not.toBe('')
+
+    const decision = JSON.parse(res.stdout).hookSpecificOutput
+    expect(decision.hookEventName).toBe('PreToolUse')
+    expect(decision.permissionDecision).toBe('allow')
+    expect(decision.updatedInput.prompt.endsWith(ORIGINAL_PROMPT)).toBe(true)
+    expect(decision.updatedInput.prompt.length).toBeGreaterThan(ORIGINAL_PROMPT.length)
+    expect(journalEvents(projNow).filter((e) => e.type === 'subagent-pack')).toHaveLength(1)
+  }, 60000)
+
+  // The gate is a narrow one on purpose: everything that is NOT a subagent spawn has to
+  // pass through untouched, or the hook would rewrite the input of unrelated tools.
+  it('a tool that does not start a subagent passes through untouched', () => {
+    const projOther = join(tmp, 'proj-other-tool')
+    mkdirSync(projOther, { recursive: true })
+    const res = runHook(
+      'pretask-pack',
+      { session_id: WINDOW_TOKEN, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
+      projOther,
+    )
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe('')
+    expect(journalEvents(projOther).filter((e) => e.type === 'subagent-pack')).toHaveLength(0)
+  }, 60000)
   it('the SubagentStop frame receipts the transcript: a real write verified, a claimed-but-absent one flagged', () => {
     // a repository is the instrument here: the verdicts are read off the real
     // tree (existence, dirty state, commits since the spawn), not off the words.
