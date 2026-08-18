@@ -42,6 +42,10 @@ const SERIAL_SUITES = [
   // plus real junctions whose teardown order is itself the subject. None of it survives
   // being stacked beside eleven other workers on one machine.
   'scripts/sma/__tests__/worktree-materialize.test.ts',
+  // Six more throwaway repositories with real junctions, six more CLI spawns, and one
+  // case that is deliberately destructive to the target it created itself — the platform
+  // control that justifies unhooking links before git ever sees the copy.
+  'scripts/sma/__tests__/worktree-remove-safe.test.ts',
 ]
 
 /**
