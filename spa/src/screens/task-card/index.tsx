@@ -622,6 +622,14 @@ export function Screen() {
     return rows.find((r) => r.id === taskId)?.machine
   }, [state.data, taskId])
 
+  // СВОЯ МАШИНА НЕ ПОСЫЛАЕТСЯ. Чтение помечает КАЖДУЮ здешнюю задачу собственным именем машины
+  // — «self», если имя не задано, — и карточка честно возвращала его с решением. Дверь читала
+  // любое непустое имя как «другая машина», федерации не находила и отвечала 501: живой прогон
+  // показал, что кнопка приёмки не срабатывала ни на одной задаче. Ключ опускается — и старый
+  // демон, который правила про собственное имя ещё не знает, такое нажатие принимает.
+  const selfMachineId = state.data?.machines?.find((m) => m.role === 'self')?.id ?? 'self'
+  const machineToSend = machine && machine !== 'self' && machine !== selfMachineId ? machine : undefined
+
   // Сколько задача уже ждёт человека — из того же ряда, которым живёт полоса «ждут вас».
   const waitingHours = useMemo(() => {
     if (!taskId) return undefined
@@ -694,7 +702,7 @@ export function Screen() {
   const doApprove = () => {
     setProblem(null)
     approve.mutate(
-      { taskId, machine },
+      { taskId, machine: machineToSend },
       {
         // ОТВЕТИЛА — НЕ ЗНАЧИТ ПРИНЯЛА. Дверь отвечает 200 с `ok:false`, поэтому обработчик
         // ошибки ниже на отказе не срабатывает вовсе: молчание после нажатия шло отсюда.
@@ -712,7 +720,7 @@ export function Screen() {
     }
     setProblem(null)
     returnTask.mutate(
-      { taskId, note: text, machine },
+      { taskId, note: text, machine: machineToSend },
       {
         onSuccess: () => {
           setReturning(false)
