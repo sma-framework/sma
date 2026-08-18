@@ -34,9 +34,12 @@
  * verified by reading the code, not assumed:
  *
  *   1. cwd = the per-task WORKTREE (loop.mjs spawns with `cwd: worktreePath`, provisioned by
- *      the `worktree` verb from the project checkout). A git worktree materializes every
- *      TRACKED file — so `.claude/**` and `CLAUDE.md` are physically there, not symlinked,
- *      not inherited from the daemon's own directory. spawn.mjs now REFUSES an absent cwd:
+ *      the `worktree` verb from the project checkout). `.claude/**` and `CLAUDE.md` are
+ *      physically in that copy — but NOT, as this header used to claim, merely because git
+ *      materializes tracked files. A project is free to keep its rules out of git (this one
+ *      does), and then a bare worktree carries none of them; what puts them there is the
+ *      provisioning verb, which copies the untracked layer named by the project's manifest
+ *      and links its dependencies instead of installing them. spawn.mjs REFUSES an absent cwd:
  *      a child that falls back to the daemon's process cwd would silently run against a
  *      different checkout — parity lost with no error (the hole this revision closed).
  *   2. HOOKS are executed BY THE CLI ITSELF from `<cwd>/.claude/settings*` — the daemon does
@@ -573,6 +576,13 @@ export function buildTaskPrompt({ task } = {}) {
     `Перед первым действием прочитайте индекс памяти \`${MEMORY_INDEX_PATH}\` — это та же дисциплина,`,
     'которую CLAUDE.md предписывает терминалу; сессия работника не начинается с чистого листа.',
     'Заметки по теме подтягивайте адресно: `node scripts/sma/cli.mjs load --tags <a,b>`.',
+    '',
+    '## Среда',
+    'Копия уже готова к работе: зависимости (`node_modules`) подключены ссылкой на основное',
+    'дерево проекта — ставить их заново не нужно и нельзя. Не запускайте `npm install`,',
+    '`npm ci` и `rm -rf node_modules` (как и любое другое удаление или переустановку',
+    '`node_modules`): по ссылке это достаёт до дерева, в котором работает человек. Если задаче',
+    'нужна НОВАЯ зависимость — назовите её в записке о подходе, а не ставьте сами.',
     '',
     '## Если код менять не нужно',
     'Задача может требовать разбора, а не правки. Тогда НЕ придумывайте изменений ради того,',

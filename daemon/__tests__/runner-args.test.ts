@@ -439,6 +439,19 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
     expect(prompt).toContain('Память проекта')
   })
 
+  // Зависимости в копии — ССЫЛКА на каталог основного дерева, а не своя установка. Значит
+  // `npm install` из копии пишет в дерево, где работает человек, а `npm ci` начинается с
+  // удаления каталога — по ссылке это удаление ЧУЖОГО. Молчание об этом стоило по 2–3 минуты
+  // на каждой попытке и оставляло в копии следы, которых никто не заказывал.
+  it('the task prompt says the dependencies are already linked and forbids installing them', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
+    expect(prompt).toContain('## Среда')
+    expect(prompt).toContain('подключены ссылкой')
+    expect(prompt).toContain('npm install')
+    expect(prompt).toContain('npm ci')
+    expect(prompt).toContain('rm -rf node_modules')
+  })
+
   it('nothing can bypass the checkout settings — neither an option key nor a produced arg', () => {
     // vector A: keys that read as a hooks/settings/permission bypass are named errors
     for (const opts of [{ hooks: false }, { settings: '/tmp/other.json' }, { permissionMode: 'bypassPermissions' }]) {

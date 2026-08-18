@@ -67,6 +67,7 @@ import {
   createAttemptLogWriter,
   readAttemptLog,
 } from './queue/attempt-ledger.mjs'
+import { cleanupTaskWorktree, createWorktreeSweeper } from './queue/worktree-cleanup.mjs'
 import { attemptIdFor } from './front/journal.mjs'
 import { collectDiagnostics } from './front/diagnostics.mjs'
 import { createSearch } from './front/search.mjs'
@@ -756,6 +757,50 @@ export function createDaemon(o = {}) {
   const projectLiveness = () =>
     projectWatch && !projectWatch.degraded && projectWatch.projectDir === connectedProjectDir() ? 'live' : 'polling'
 
+  // ═══ WHAT HAPPENS TO THE COPY A TASK RAN IN — two callers, one module ═══════════════
+  //
+  // Every code task works in its own copy on its own branch and nothing ever removed one:
+  // the approval merged the branch and walked away. Both halves are wired here because both
+  // need the same three collaborators (the project's CLI, the attempt ledger, the clock) and
+  // neither may be handed a runner it could aim anywhere else.
+  //
+  // The copies live in the CONNECTED project, so that is the tree the verb is run in; the
+  // served tree is the fallback for a daemon with nothing connected.
+  const worktreeLog = (entry) => {
+    const e = entry && typeof entry === 'object' ? entry : { type: String(entry ?? 'event') }
+    const parts = [String(e.type ?? 'event')]
+    if (e.taskId) parts.push(`task=${e.taskId}`)
+    if (e.by) parts.push(`by=${e.by}`)
+    if (e.reason) parts.push(`reason=${e.reason}`)
+    if (e.path) parts.push(`path=${e.path}`)
+    if (e.error) parts.push(`error=${maskSecrets(e.error)}`)
+    console.log(`[SmaDaemon] ${parts.join(' ')}`)
+  }
+  // A SEPARATE NAME FOR THE DOOR'S COLLABORATOR, exactly like `updateRunner` further down:
+  // the approve handler receives a function that can only remove the copy of the task it was
+  // given, never a runner it could ask to run something else.
+  const worktreeCleanup = ({ taskId, by }) =>
+    cleanupTaskWorktree({
+      taskId,
+      by,
+      projectDir: connectedProjectDir() ?? repoDir,
+      ledger,
+      verbRunner: cliVerbRunner,
+      clock,
+      log: worktreeLog,
+    })
+  // …and the tick's half: every OTHER closed task, swept once a day. Both the connected
+  // project and every project the roster knows — a copy left in a project the founder
+  // switched away from is exactly the one nobody would ever come back for.
+  const worktreeSweeper = createWorktreeSweeper({
+    projectsOf: () => [...new Set([connectedProjectDir(), ...(Array.isArray(config.projects) ? config.projects.map((p) => p && p.path) : [])].filter(Boolean))],
+    adapter,
+    ledger,
+    verbRunner: cliVerbRunner,
+    clock,
+    log: worktreeLog,
+  })
+
   /**
    * Start a watcher on whatever project is connected RIGHT NOW, replacing the one that was
    * running. Called at boot and again on every project select.
@@ -1060,6 +1105,9 @@ export function createDaemon(o = {}) {
         // `verbRunner` above on purpose — one door's collaborator is not the other's, and a
         // shared generic runner would be a request path that can name a command.
         updateRunner: o.updateRunner ?? (({ apply } = {}) => runUpdateVerb({ apply, projectDir: repoDir })),
+        // Accepted work takes its copy and its branch with it. A THIRD separate name for the
+        // same reason as the two above — the door names a task, never a command.
+        worktreeCleanup: o.worktreeCleanup ?? worktreeCleanup,
       },
     })
 
@@ -1096,6 +1144,9 @@ export function createDaemon(o = {}) {
     // built, tested, and never joined to the thing that needed it.
     bookUsage: o.bookUsage ?? ((event) => bookUsage({ dataDir, event, clock })),
     verbRunner: o.verbRunner ?? cliVerbRunner,
+    // THE COPIES OF EVERY CLOSED TASK THE APPROVAL DOOR DOES NOT COVER. It keeps its own
+    // once-a-day clock, so the tick may ask on every pass and pay one comparison for it.
+    sweepWorktrees: o.sweepWorktrees ?? ((a) => worktreeSweeper.run(a)),
     // GIT, FOR THE THREE EXIT GATES THAT ASK IT WHETHER THE WORK IS REALLY ON THE BRANCH.
     // Same family as buildArgs and bookUsage above, and the most expensive member of it: the
     // runner was built here and handed to the front and to the merge verb, and simply never to
@@ -1162,6 +1213,15 @@ export function createDaemon(o = {}) {
       // Staged previews are complete v2 renderings of a FOREIGN project's notes. Nothing used
       // to delete one; the sweep runs at boot and on every project switch.
       pruneMigrationStaging({ stagingDir: migrationStagingDir })
+      // The same kind of residue, one size up: the working copies of tasks closed long ago.
+      // FORCED here on purpose — the sweeper's once-a-day mark lives in process memory, so a
+      // daemon that is restarted daily would otherwise never reach its own interval and the
+      // copies would accumulate exactly as they did before the sweep existed.
+      try {
+        await worktreeSweeper.run({ force: true })
+      } catch (err) {
+        console.error(`[SmaDaemon] worktree sweep at boot failed: ${maskSecrets(String((err && err.message) || err))}`)
+      }
       retargetProjectWatch()
       front.listen()
       daemon.start()

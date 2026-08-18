@@ -756,6 +756,21 @@ async function handleTask({ res, params, config, deps }) {
     ...(a.reconstructed === true ? { reconstructed: true } : {}),
     // (b) of the three layers: the worker's own note rides ITS attempt, not the task
     ...(journal.approachByAttempt.has(a.attempt) ? { approachNote: journal.approachByAttempt.get(a.attempt) } : {}),
+    // ═══ WHERE THE WORK HAPPENED, AND WHAT IS LEFT OF IT ═══════════════════════════
+    //
+    // The copy this attempt ran in — the commit it was cut from, its branch, its directory,
+    // what was put into it before the worker's first move, how long that took, and the trace
+    // of its removal. The tick has been writing all six into the attempt row and the removal
+    // writes its own row of the same attempt; nothing handed them to anybody. Computed and
+    // recorded is not the same as delivered: an attempt row that holds what no person can
+    // see is a point of return nobody can reach. Explicitly picked, like every field above,
+    // so a ledger row can never leak a key this door did not name.
+    base: a.base ?? null,
+    branch: a.branch ?? null,
+    worktreePath: a.worktreePath ?? null,
+    materialized: Array.isArray(a.materialized) ? a.materialized : null,
+    provisionMs: Number.isFinite(a.provisionMs) ? a.provisionMs : null,
+    cleanup: a.cleanup && typeof a.cleanup === 'object' ? a.cleanup : null,
   }))
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
@@ -778,6 +793,15 @@ async function handleTask({ res, params, config, deps }) {
       reasonLabel: null,
       receipt: null,
       proof: null,
+      // The copy fields are written when an attempt ENDS, so a running one has none of them
+      // yet. Named as nulls rather than omitted: the card reads one shape for every entry,
+      // and «this key does not exist here» is how a surface starts guessing.
+      base: null,
+      branch: null,
+      worktreePath: null,
+      materialized: null,
+      provisionMs: null,
+      cleanup: null,
     })
   }
 
@@ -834,24 +858,89 @@ async function handleTask({ res, params, config, deps }) {
 }
 
 /**
+ * A commit NAME, and nothing that could be an option or a second argument. Both values the
+ * removal record leaves behind travel into an argv, so both are checked here first: a ledger
+ * row is data written by another process, and data that becomes a command is checked at the
+ * moment it stops being data.
+ */
+const OBJECT_NAME_RE = /^[0-9a-f]{7,40}$/i
+
+/**
+ * The last non-empty value of a field across an attempt's rows — the rows are folded the same
+ * way the card folds them, so this reads what the card would show.
+ */
+function lastValue(rows, pick) {
+  let found = null
+  for (const row of rows) {
+    const v = pick(row)
+    if (typeof v === 'string' && v.trim() !== '') found = v.trim()
+  }
+  return found
+}
+
+/**
  * GET /api/diff/:id — the plain-text worktree-branch diff, auth'd and capped
  * at DIFF_CAP. The id already passed ID_RE, so it is safe to hand to the injected git.
+ *
+ * AND AFTER THE COPY IS GONE, THE WORK IS STILL THERE. Accepting the work removes the copy
+ * and its branch on purpose; the commits stay in the project's tree. `git show wt/<id>` then
+ * fails, and this door used to answer 404 — which the card asks for on every open, so a
+ * correctly merged task greeted its owner with a red transport error. The removal record kept
+ * the branch tip and the attempt row kept the base it was cut from: two commit names are
+ * enough to show exactly what the worker changed, long after the branch is gone.
+ *
+ * A missing diff is not an error, it is a sentence. Whatever happens below, the answer is 200
+ * and the first line is a note a person can read.
  */
 async function handleDiff({ res, params, config, deps }) {
   const id = params.id
   if (typeof deps.execGit !== 'function') return send501(res)
   const branch = `wt/${id}`
+  const cwd = phaseCycleDir(deps) ?? config.repoDir
   let text = ''
   try {
     // IN THE TREE THAT HOLDS THE BRANCH — the connected project, not the daemon's launch
     // directory. Reading the wrong tree made `git show wt/<id>` fail on an unknown revision,
     // and this door answered 404 for work that was sitting on a branch one directory away.
-    text = String(deps.execGit(['show', '--stat', '-p', branch], { cwd: phaseCycleDir(deps) ?? config.repoDir }) || '')
+    text = String(deps.execGit(['show', '--stat', '-p', branch], { cwd }) || '')
   } catch {
-    return send404(res)
+    text = diffOfKeptCommits(id, cwd, deps)
   }
   if (text.length > DIFF_CAP) text = text.slice(0, DIFF_CAP) + '\n… (обрезано)'
   sendText(res, 200, text)
+}
+
+/**
+ * What is left to show once the branch is gone: the diff between the commit the copy was cut
+ * from and the tip the removal wrote down, under a note saying where it came from. The ledger
+ * is read through the SAME seam and folded by the SAME rule as the task door, so the card and
+ * this door can never tell different stories about one attempt.
+ *
+ * @returns {string} always text — the note alone when there is nothing else to say
+ */
+function diffOfKeptCommits(id, cwd, deps) {
+  const gone = '# диф недоступен: копия убрана'
+  let rows = []
+  try {
+    if (typeof deps.ledger === 'function') rows = deps.ledger(id) || []
+    else if (deps.ledger && typeof deps.ledger.readAttempts === 'function') rows = deps.ledger.readAttempts(id) || []
+    else if (deps.ledgerDir) rows = readAttempts(deps.ledgerDir, id)
+  } catch {
+    rows = []
+  }
+  const attempts = foldAttemptRows(Array.isArray(rows) ? rows : [])
+  const base = lastValue(attempts, (a) => a && a.base)
+  const tip = lastValue(attempts, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.branchTip)
+  const at = lastValue(attempts, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.at)
+  if (!base || !tip || !OBJECT_NAME_RE.test(base) || !OBJECT_NAME_RE.test(tip)) return gone
+  let body = ''
+  try {
+    body = String(deps.execGit(['diff', '--stat', '-p', `${base}..${tip}`], { cwd }) || '')
+  } catch {
+    return `${gone}, коммиты не найдены (${base.slice(0, 7)}..${tip.slice(0, 7)})`
+  }
+  const note = `# копия убрана ${at ?? '—'}; показаны сохранённые коммиты ${base.slice(0, 7)}..${tip.slice(0, 7)}`
+  return body.trim() === '' ? note : `${note}\n\n${body}`
 }
 
 /**
@@ -904,9 +993,19 @@ function relayPeerAnswer(res, { status, body } = {}) {
  *
  * @returns {Promise<boolean>} true when a response was already sent (proxied or refused)
  */
-async function proxyToMachine(res, body, deps, path) {
+async function proxyToMachine(res, body, deps, path, config) {
   const m = body.machine
   if (m === undefined || m === null || m === '') return false // local machine — untouched
+  // THIS MACHINE'S OWN NAME IS NOT ANOTHER MACHINE. The reading the window works from stamps
+  // every local task with this daemon's own id — «self» when none is configured — and the card
+  // hands that value back with the decision, honestly, exactly as it was told. Read as «somebody
+  // else's machine» it took the branch below, found no federation on this daemon and answered
+  // 501: measured live, the accept button could not work on ANY task of ANY daemon without
+  // federation, and a founder's finished work waited on it for four days. The id compared
+  // against is the SAME one /api/machines publishes as its own, so the two can never drift.
+  const selfId = (config && config.machineId) ?? 'self'
+  if (m === selfId || m === 'self') return false // addressed to us — run it here, as before
+
   if (typeof m !== 'string' || !ID_RE.test(m)) {
     send400(res, 'invalid machine')
     return true
@@ -957,7 +1056,7 @@ async function handleEnqueue({ req, res, config, deps }) {
   ) {
     return undefined
   }
-  if (await proxyToMachine(res, b, deps, '/api/enqueue')) return undefined
+  if (await proxyToMachine(res, b, deps, '/api/enqueue', config)) return undefined
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const task = {
     id: `R-${clock()}`,
@@ -1070,12 +1169,12 @@ export function mergeRefusal(merge) {
  * exactly this one thing» meaning — and the route table did not move. Nothing about the task
  * path is reached on that branch: no CAS, no merge verb, no branch name.
  */
-async function handleApprove({ req, res, deps }) {
+async function handleApprove({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const b = body.value || {}
   if (rejectUnknownKeys(res, b, new Set(['taskId', 'machine']))) return undefined
-  if (await proxyToMachine(res, b, deps, '/api/approve')) return undefined
+  if (await proxyToMachine(res, b, deps, '/api/approve', config)) return undefined
   const taskId = b.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
 
@@ -1136,6 +1235,36 @@ async function handleApprove({ req, res, deps }) {
     ...(merge && merge.receipt ? { extra: { merge_receipt: JSON.stringify(merge.receipt) } } : {}),
   })
 
+  // ═══ THE COPY THE WORK WAS DONE IN GOES AWAY WITH THE APPROVAL, AND ONLY WITH IT ═══
+  //
+  // Merged work needs no copy: the branch is in the main tree, and every task that was ever
+  // accepted used to leave its directory and its branch on disk forever. A RED merge leaves
+  // both alone on purpose — the work may still be finished in that copy, and the row goes
+  // back to awaiting_approval.
+  //
+  // A SEPARATE COLLABORATOR, not `deps.verbRunner` above: that one is the merge ritual and
+  // this one removes a directory. A single generic runner here would be a request path that
+  // can name a command; `worktreeCleanup({taskId, by})` has nothing to name. Same posture as
+  // `updateRunner`, and for the same reason.
+  //
+  // THE APPROVAL IS THE TRUTH, THE CLEANUP IS ITS CONSEQUENCE. A failed removal never turns
+  // `merged:true` into a lie — it travels in `cleanup.reason`, because a person has to LEARN
+  // that something is still on disk rather than deduce it from a missing line.
+  let cleanup = null
+  if (green && typeof deps.worktreeCleanup === 'function') {
+    try {
+      const r = (await deps.worktreeCleanup({ taskId, by: 'approve' })) || {}
+      cleanup = {
+        removed: r.removed === true,
+        removedPath: r.removedPath ?? null,
+        removedBranch: r.removedBranch ?? null,
+        ...(r.reason ? { reason: r.reason } : {}),
+      }
+    } catch (err) {
+      cleanup = { removed: false, reason: String((err && err.message) || err) }
+    }
+  }
+
   // The status is the QUEUE status the row now holds — the vocabulary the screen patches
   // with. «approved» and «returned» are names of DOORS, not of states: after this door the
   // row is completed or it is failed, and that is what travels.
@@ -1152,6 +1281,7 @@ async function handleApprove({ req, res, deps }) {
     ...(merge && merge.receipt ? { receipt: merge.receipt } : {}),
     ...(merge && merge.softDenied ? { softDenied: true } : {}),
     ...(refusal ? { reasonCode: refusal.reasonCode, reason: refusal.reason } : {}),
+    ...(cleanup ? { cleanup } : {}),
   })
 }
 
@@ -1160,12 +1290,12 @@ async function handleApprove({ req, res, deps }) {
  * (note <= 2000). CAS awaiting_approval→returned, then re-enqueue with source:'return' +
  * the note + attempt+1. The note is DATA. A lost race → 409.
  */
-async function handleReturn({ req, res, deps }) {
+async function handleReturn({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const v = body.value || {}
   if (rejectUnknownKeys(res, v, new Set(['taskId', 'note', 'title', 'lane', 'machine']))) return undefined
-  if (await proxyToMachine(res, v, deps, '/api/return')) return undefined
+  if (await proxyToMachine(res, v, deps, '/api/return', config)) return undefined
   const taskId = v.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
   const note = v.note == null ? '' : String(v.note)

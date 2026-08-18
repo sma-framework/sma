@@ -15,9 +15,12 @@
  *   - No http/https/net import; no LLM call. Deterministic plumbing only.
  *
  * TERMINAL PARITY STARTS HERE (chain step 1, args.mjs header): the cwd this function is
- * given IS the worker's environment. A worktree cwd carries `.claude/**` and CLAUDE.md
- * physically, so the CLI itself picks up the checkout's hooks, memory and skills — no wiring,
- * no forwarding, no emulation. An ABSENT cwd is therefore not a harmless default: node's
+ * given IS the worker's environment. The copy carries `.claude/**` and CLAUDE.md because the
+ * provisioning verb PUT THEM THERE — it copies the untracked layer named by the project's
+ * manifest, and links dependencies rather than installing them; a bare worktree only brings
+ * what git tracks, which in a project that keeps its rules out of git is nothing at all. With
+ * the copy so provisioned the CLI itself picks up the checkout's hooks, memory and skills —
+ * no wiring, no forwarding, no emulation. An ABSENT cwd is therefore not a harmless default: node's
  * spawn would fall back to the DAEMON's own process directory, and the session would run
  * against a different checkout (or none) with every guard silently disarmed, while the run
  * still looked green. So cwd is REQUIRED and a missing one throws a named error — the parity

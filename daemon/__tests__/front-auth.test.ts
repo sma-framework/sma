@@ -820,6 +820,143 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
     })
     expect(res.statusCode).toBe(400)
   })
+
+  /**
+   * ═══════ ПРИНЯТАЯ РАБОТА УБИРАЕТ ЗА СОБОЙ КОПИЮ — И ГОВОРИТ, ЧТО УБРАЛА ═══════
+   *
+   * Слияние проходило, ветка входила в main — и копия задачи со своей веткой оставалась на
+   * диске навсегда: так у основателя накопились копии закрытых задач недельного возраста.
+   * Уборка приходит в дверь ОТДЕЛЬНОЙ зависимостью, а не через общий раннер вербов: дверь,
+   * которой дали раннер, умеющий назвать любую команду, — это дверь, через которую можно
+   * назвать любую команду. У `worktreeCleanup({taskId, by})` называть нечего.
+   *
+   * И порядок обязанностей: приёмка — правда, уборка — следствие. Неудача уборки не
+   * отменяет `merged:true`, но обязана доехать до ответа: человек должен УЗНАТЬ, что на
+   * диске осталось, а не догадаться по отсутствию строки.
+   */
+  describe('после слияния дверь убирает копию задачи — отдельной зависимостью', () => {
+    const cleanupSpy = (answer: any) => {
+      const calls: any[] = []
+      const worktreeCleanup = async (a: any) => {
+        calls.push(a)
+        if (typeof answer === 'function') return answer(a)
+        return answer
+      }
+      return { worktreeCleanup, calls }
+    }
+
+    it('merged:true → уборка вызвана РОВНО раз, с задачей и поводом; ответ несёт cleanup', async () => {
+      const { worktreeCleanup, calls } = cleanupSpy({
+        ok: true,
+        removed: true,
+        removedPath: '/projects/.sma-worktrees/R-77',
+        removedBranch: 'wt/R-77',
+        branchTip: 'abc1234',
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-77' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(calls).toEqual([{ taskId: 'R-77', by: 'approve' }])
+      const out = JSON.parse(res.body)
+      expect(out.merged).toBe(true)
+      expect(out.cleanup).toEqual({
+        removed: true,
+        removedPath: '/projects/.sma-worktrees/R-77',
+        removedBranch: 'wt/R-77',
+      })
+    })
+
+    it('слияние не прошло — копия НЕ убирается: работу ещё могут доделать в ней', async () => {
+      const { worktreeCleanup, calls } = cleanupSpy({ ok: true, removed: true })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async () => ({ merged: false, message: 'конфликт' }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-78' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      const out = JSON.parse(res.body)
+      expect(out.merged).toBe(false)
+      expect(calls).toEqual([]) // ни одного вызова уборки
+      expect(Object.hasOwn(out, 'cleanup')).toBe(false)
+    })
+
+    it('уборка сорвалась — приёмка ВСЁ РАВНО правда, а причина видна в ответе', async () => {
+      const { worktreeCleanup } = cleanupSpy(() => {
+        throw new Error('верб недоступен')
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-79' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      const out = JSON.parse(res.body)
+      expect(out.merged).toBe(true)
+      expect(out.ok).toBe(true)
+      expect(out.cleanup.removed).toBe(false)
+      expect(out.cleanup.reason).toContain('верб недоступен')
+    })
+
+    it('демон без уборки отвечает ровно как прежде — без поля cleanup', async () => {
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-80' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(Object.hasOwn(JSON.parse(res.body), 'cleanup')).toBe(false)
+    })
+  })
 })
 
 describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
@@ -1931,5 +2068,208 @@ describe('server.mjs — the real built tree (skipped when `cd spa && npm run bu
     const res = await call(front, { url: `/assets/${asset}`, headers: bearer() })
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toMatch(/javascript/)
+  })
+})
+
+/**
+ * THE MACHINE'S OWN NAME IS NOT ANOTHER MACHINE.
+ *
+ * The reading the window works from stamps every local task with this daemon's own machine id
+ * — «self» when none is configured — and the card hands that value straight back with the
+ * decision, exactly as it was told to. The door then read any non-empty `machine` as «somebody
+ * else's machine», found no federation wired into this daemon, and answered 501. The result,
+ * measured on a live run: «Одобрить» could not work on ANY task of ANY daemon without
+ * federation, and a founder's task had been waiting on that button for four days.
+ *
+ * The fix is one comparison against the SAME source `/api/machines` publishes as its own id.
+ * Two locks on one defect: the card stops sending its own id (so an older daemon accepts the
+ * press too), and the door treats its own id as local (so a newer card is not required).
+ * A genuinely foreign id without federation still answers 501 — that refusal is untouched.
+ */
+describe('server.mjs — the daemon own machine id means LOCAL, not «proxy it away»', () => {
+  const approveFront = (config: any, mergeCalls: any[]) =>
+    createFrontServer({
+      config,
+      deps: {
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => (mergeCalls.push(o), { merged: true, testsPassed: true, branch: o.branch }),
+        repoDir: '/repo',
+      },
+    })
+
+  it('approve addressed to «self» runs LOCALLY — no federation needed, no 501', async () => {
+    const mergeCalls: any[] = []
+    const front = approveFront({ token: TOKEN }, mergeCalls)
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: jsonHeaders(),
+      body: { taskId: 'R-77', machine: 'self' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).merged).toBe(true)
+    expect(mergeCalls[0].branch).toBe('wt/R-77') // the merge really ran here
+  })
+
+  it('approve with a FOREIGN machine and no federation still answers 501 and merges nothing', async () => {
+    const mergeCalls: any[] = []
+    const front = approveFront({ token: TOKEN }, mergeCalls)
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: jsonHeaders(),
+      body: { taskId: 'R-77', machine: 'other' },
+    })
+    expect(res.statusCode).toBe(501)
+    expect(mergeCalls).toHaveLength(0)
+  })
+
+  it('a CONFIGURED machine id addressing itself is local too — the same source /api/machines publishes', async () => {
+    const mergeCalls: any[] = []
+    const front = approveFront({ token: TOKEN, machineId: 'alpha' }, mergeCalls)
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: jsonHeaders(),
+      body: { taskId: 'R-79', machine: 'alpha' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(mergeCalls[0].branch).toBe('wt/R-79')
+
+    // and the machines door agrees about who «alpha» is
+    const machines = await call(front, { url: '/api/machines', headers: bearer() })
+    expect(machines.statusCode).toBe(200)
+    expect(JSON.parse(machines.body).machines?.[0]?.id).toBe('alpha')
+  })
+
+  it('enqueue addressed to «self» is put in the local queue instead of refused', async () => {
+    const enqueued: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: { enqueue: async (t: any) => (enqueued.push(t), { id: t.id, coalesced: false }) }, clock: () => 1234 },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/enqueue',
+      headers: jsonHeaders(),
+      body: { title: 'сделай отчёт', lane: 'prod', machine: 'self' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0]).toMatchObject({ id: 'R-1234', source: 'roster', title: 'сделай отчёт' })
+  })
+
+  it('return addressed to «self» returns the work locally — CAS plus the re-queue', async () => {
+    const enqueued: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter: {
+          list: async () => [{ id: 'R-5', attempt: 2, status: 'awaiting_approval' }],
+          enqueue: async (t: any) => (enqueued.push(t), { id: t.id }),
+        },
+        casExec: makeCasExec('awaiting_approval'),
+      },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/return',
+      headers: jsonHeaders(),
+      body: { taskId: 'R-5', note: 'переделай вывод', machine: 'self' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(enqueued[0]).toMatchObject({ id: 'R-5', source: 'return', attempt: 3 })
+  })
+})
+
+/**
+ * A DIFF THAT IS GONE IS NOT AN ERROR — IT IS A SENTENCE.
+ *
+ * After the work is accepted, the copy and its branch are removed on purpose; the commits
+ * themselves stay in the project's tree. `git show wt/<id>` then fails, and this door used to
+ * answer 404 — which the card asks for on EVERY open, so a finished task showed a red
+ * transport error for work that had been merged correctly. The removal record already keeps
+ * the branch tip, and the attempt row keeps the base it was cut from: two commits are enough
+ * to show exactly what the worker changed, long after the branch is gone.
+ *
+ * Both values become arguments of git, so both are checked as hex object names before they
+ * are used; anything else degrades to words, never to a command. And when there is nothing
+ * left to show at all, the answer is still 200 — with a sentence a person can read.
+ */
+describe('server.mjs — GET /api/diff/:id after the copy is removed: kept commits or words, never 404', () => {
+  const fakeGit = (behaviour: (argv: string[]) => string) => {
+    const calls: string[][] = []
+    const execGit = (argv: string[]) => {
+      calls.push(argv)
+      return behaviour(argv)
+    }
+    return { execGit, calls }
+  }
+
+  it('with the branch still there the diff is the branch diff, exactly as before', async () => {
+    const git = fakeGit(() => 'diff --git a/x.ts b/x.ts\n+one\n')
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { execGit: git.execGit, repoDir: '/repo' } })
+    const res = await call(front, { url: '/api/diff/R-1', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('diff --git a/x.ts')
+    expect(git.calls[0]).toEqual(['show', '--stat', '-p', 'wt/R-1'])
+  })
+
+  it('the branch is gone but the removal kept its tip: the diff of base..tip, under a note', async () => {
+    const base = 'a'.repeat(40)
+    const tip = 'b'.repeat(40)
+    const git = fakeGit((argv) => {
+      if (argv[0] === 'show') throw new Error('unknown revision')
+      return 'diff --git a/y.ts b/y.ts\n+two\n'
+    })
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        execGit: git.execGit,
+        repoDir: '/repo',
+        ledger: () => [
+          { taskId: 'R-2', attempt: 1, base, branch: 'wt/R-2' },
+          { taskId: 'R-2', attempt: 1, cleanup: { at: '2026-08-18T22:37:54.276Z', by: 'approve', branchTip: tip, ok: true } },
+        ],
+      },
+    })
+    const res = await call(front, { url: '/api/diff/R-2', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.body.startsWith('# копия убрана')).toBe(true)
+    expect(res.body).toContain('diff --git a/y.ts')
+    // the wire is proven by what travelled along it
+    expect(git.calls[1]).toEqual(['diff', '--stat', '-p', base + '..' + tip])
+  })
+
+  it('a branch tip that is not a commit name never reaches git — it answers in words', async () => {
+    const git = fakeGit((argv) => {
+      if (argv[0] === 'show') throw new Error('unknown revision')
+      return 'should never be reached'
+    })
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        execGit: git.execGit,
+        repoDir: '/repo',
+        ledger: () => [{ taskId: 'R-3', attempt: 1, base: 'c'.repeat(40), cleanup: { branchTip: '; rm -rf /' } }],
+      },
+    })
+    const res = await call(front, { url: '/api/diff/R-3', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('# диф недоступен: копия убрана')
+    expect(git.calls).toHaveLength(1) // only the `show` that failed
+  })
+
+  it('nothing left in the ledger either: still 200, still a sentence, never a 404', async () => {
+    const git = fakeGit(() => {
+      throw new Error('unknown revision')
+    })
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { execGit: git.execGit, repoDir: '/repo', ledger: () => [] },
+    })
+    const res = await call(front, { url: '/api/diff/R-4', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('# диф недоступен: копия убрана')
   })
 })

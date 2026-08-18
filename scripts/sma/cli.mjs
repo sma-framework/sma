@@ -9990,7 +9990,8 @@ async function cmdShipLane({ positionals, flags, dirs }) {
 }
 
 /**
- * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force] [--json]
+ * worktree <provision|list|remove|sibling> [--branch <name>] [--path <dir>] [--force]
+ *          [--delete-branch] [--json]
  *   worktree --selftest           base + teleport guards over a mock-git recorder
  *   worktree --selftest-sibling   sibling-repo resolution order over injected readers
  *
@@ -10000,6 +10001,32 @@ async function cmdShipLane({ positionals, flags, dirs }) {
  * coordination stays shared for free (registry.smaRoot — NOT re-plumbed
  * here). A worktree branch enters `main` ONLY via `sma merge`; push stays
  * founder-ordered via /sma-ship. Direct-CLI (may exit 1), NEVER hook-facing.
+ *
+ * PROVISION ALSO CARRIES WHAT GIT DOES NOT. `git worktree add` materializes tracked
+ * files only, so a project that keeps its agent layer out of git hands the new copy no
+ * rules, no hooks, no memory — and a dependency tree it would have to install again.
+ * So provision reads a per-project manifest, `.sma/worktree-include`
+ * (JSON `{copy:[…], link:[…]}`; absent -> copy `.claude/`, `CLAUDE.md`,
+ * `.claude/settings.local.json`, link `node_modules`), COPIES the named untracked
+ * paths in and LINKS the named directories by reference (junction on Windows,
+ * directory symlink elsewhere) instead of running any package manager. Files git
+ * already tracks are left to git; a file that is newer in the main tree is refreshed;
+ * a file that exists only in the copy is never touched. Manifest paths must be
+ * relative and free of `..`, and a hard blacklist the manifest CANNOT override keeps
+ * credentials (`.env*`, `*.pem`, `*.key`, `.secrets*`) and the `.git`/`.sma`
+ * directories out. Every decision comes back in `materialized[]` alongside
+ * `manifest{source,warnings}` and `provisionMs`, so the caller can put the provenance
+ * of the copy into its own record. A failure here never fails the provision.
+ *
+ * REMOVING A COPY THAT HAS LINKS: `remove` unhooks every link inside the copy BEFORE
+ * git ever sees it (deleting the link itself leaves the target alone), because on
+ * Windows git follows a junction and empties the main tree's target directory instead
+ * of removing the link. The refusal comes even earlier: a path that is the main
+ * checkout, or that this repository does not list as a working copy, is rejected
+ * without a single deletion. `--delete-branch` also drops the branch the copy stood on,
+ * recording its tip first so the work stays reachable through the reflog. If git refuses
+ * the removal and `--force` was given, the copy is deleted directly and the tree list
+ * pruned — reported as `fallback:'rm+prune'`, never passed off as a clean git removal.
  */
 async function cmdWorktree({ positionals, flags, dirs }) {
   const wt = await import('./lib/worktree.mjs')
@@ -10101,16 +10128,43 @@ async function cmdWorktree({ positionals, flags, dirs }) {
   if (sub === 'remove') {
     const path = positionals[1]
     if (!path) {
-      process.stderr.write('usage: node scripts/sma/cli.mjs worktree remove <path> [--force]\n')
+      process.stderr.write('usage: node scripts/sma/cli.mjs worktree remove <path> [--force] [--delete-branch]\n')
       return 1
     }
-    const res = wt.removeWorktree({ path, execGit, cwd: mainRoot, force: flags.force === true })
+    // Links come off before git touches the copy — see the header: git walks INTO a
+    // junction and empties the main tree's dependency directory instead of the link.
+    const res = wt.removeWorktreeSafely({
+      path,
+      execGit,
+      cwd: mainRoot,
+      force: flags.force === true,
+      deleteBranch: flags['delete-branch'] === true,
+    })
     if (wantsJson(flags)) {
       printJson(res)
       return res.ok ? 0 : 1
     }
-    if (res.ok) process.stdout.write(`SMA worktree: удалено -> ${res.removed}\n`)
-    else process.stderr.write(`SMA worktree: не удалено (${res.message}). Грязное дерево? добавьте --force.\n`)
+    const links = Array.isArray(res.unlinked) ? res.unlinked : []
+    if (links.length > 0) {
+      const names = links.map((l) => l.path).join(', ')
+      process.stdout.write(`SMA worktree: снято ссылок: ${links.length} (${names}) — цели в основном дереве не тронуты\n`)
+    }
+    if (res.ok) {
+      process.stdout.write(`SMA worktree: удалено -> ${res.removed}\n`)
+      if (res.fallback === 'rm+prune') {
+        process.stdout.write('  git убрать копию отказался — удалено напрямую, список деревьев подчищен\n')
+      }
+      if (Array.isArray(res.dirtyFiles) && res.dirtyFiles.length > 0) {
+        process.stdout.write(`  вместе с копией потеряно несохранённого: ${res.dirtyFiles.join(', ')}\n`)
+      }
+      if (res.branchDeleted) {
+        process.stdout.write(`  удалена ветка ${res.branch} (вершина ${String(res.branchTip || '').slice(0, 7)})\n`)
+      } else if (res.branchError) {
+        process.stdout.write(`  ${res.branchError}\n`)
+      }
+    } else {
+      process.stderr.write(`SMA worktree: отказ: ${res.message}\n`)
+    }
     return res.ok ? 0 : 1
   }
 
@@ -10160,21 +10214,70 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       ? flags.path.trim()
       : join(dirname(mainRoot), '.sma-worktrees', terminalId) // sibling dir (avoids the nested-removal bug)
 
+  const t0 = Date.now()
   const res = wt.reuseOrProvision({ branch, path, execGit, cwd: mainRoot })
-  if (wantsJson(flags)) {
-    printJson(res)
-    return res.ok === false ? 1 : 0
+
+  // The checkout is only half the copy: carry the untracked layer and attach the
+  // dependencies. This runs for a REUSED copy too — a session returning a day later
+  // must get the rules the project has TODAY — and it is idempotent by mtime, so a
+  // second visit moves only what genuinely moved.
+  let materialized = []
+  let manifestOut = { source: 'default', warnings: [] }
+  if (res.ok !== false) {
+    try {
+      const manifest = wt.readWorktreeInclude({ mainRoot })
+      manifestOut = { source: manifest.source, warnings: Array.isArray(manifest.warnings) ? manifest.warnings : [] }
+      const mat = wt.materializeInclude({
+        mainRoot,
+        copyPath: res.path,
+        manifest,
+        execGit,
+        platform: process.platform,
+      })
+      materialized = Array.isArray(mat.materialized) ? mat.materialized : []
+    } catch (err) {
+      // Fail-open: a copy without its extra layer is still a usable copy, and the
+      // reason travels in the answer instead of turning into an exit code.
+      manifestOut.warnings = [...manifestOut.warnings, `слой копии не материализован (${err && err.message})`]
+    }
   }
-  if (res.ok === false) {
-    process.stderr.write(`SMA worktree: не удалось создать (${res.message}). Остаёмся на основном дереве.\n`)
+  const out = { ...res, materialized, manifest: manifestOut, provisionMs: Date.now() - t0 }
+
+  if (wantsJson(flags)) {
+    printJson(out)
+    return out.ok === false ? 1 : 0
+  }
+  if (out.ok === false) {
+    process.stderr.write(`SMA worktree: не удалось создать (${out.message}). Остаёмся на основном дереве.\n`)
     return 1
   }
-  if (res.reused) {
-    process.stdout.write(`SMA worktree: переиспользуем существующее дерево -> ${res.path}  (ветка ${res.branch})\n`)
+  if (out.reused) {
+    process.stdout.write(`SMA worktree: переиспользуем существующее дерево -> ${out.path}  (ветка ${out.branch})\n`)
   } else {
-    process.stdout.write(`SMA worktree: создано -> ${res.path}  (ветка ${branch})\n`)
-    if (res.baseFixed) process.stdout.write(`  ⚠ база разошлась с HEAD — выполнен git reset --hard ${String(res.expectedBase).slice(0, 12)} (Windows worktree-base guard)\n`)
+    process.stdout.write(`SMA worktree: создано -> ${out.path}  (ветка ${branch})\n`)
+    if (out.baseFixed) process.stdout.write(`  ⚠ база разошлась с HEAD — выполнен git reset --hard ${String(out.expectedBase).slice(0, 12)} (Windows worktree-base guard)\n`)
   }
+  // What the copy actually received — only the non-empty lines, so a plain project
+  // prints nothing extra.
+  const named = (pred) => materialized.filter(pred).map((r) => r.path)
+  // 'copy' with a file count of zero means the copy was ALREADY current — saying
+  // «скопировано» there would claim work that did not happen (it is the normal state
+  // of a reused copy), so the two get separate lines.
+  const copied = named((r) => r.mode === 'copy' && (r.files || 0) > 0)
+  const already = named((r) => r.mode === 'copy' && (r.files || 0) === 0)
+  const linked = named((r) => r.mode === 'link')
+  const tracked = named((r) => r.mode === 'tracked')
+  const secrets = []
+  for (const r of materialized) {
+    if (r.mode === 'skipped' && r.reason === 'secret') secrets.push(r.path)
+    for (const s of Array.isArray(r.skipped) ? r.skipped : []) if (s.reason === 'secret') secrets.push(s.path)
+  }
+  if (copied.length) process.stdout.write(`  скопировано: ${copied.join(', ')}\n`)
+  if (already.length) process.stdout.write(`  уже в копии и не устарело: ${already.join(', ')}\n`)
+  if (linked.length) process.stdout.write(`  подключено ссылкой: ${linked.join(', ')} (устанавливать зависимости заново не нужно)\n`)
+  if (tracked.length) process.stdout.write(`  уже в git: ${tracked.join(', ')}\n`)
+  if (secrets.length) process.stdout.write(`  пропущено (секрет): ${secrets.join(', ')}\n`)
+  for (const w of manifestOut.warnings) process.stdout.write(`  ⚠ ${w}\n`)
   process.stdout.write('  Координация (.sma/) остаётся общей для всех деревьев; в main только через `sma merge`, push — по команде основателя.\n')
   return 0
 }

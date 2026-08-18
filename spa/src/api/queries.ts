@@ -191,14 +191,14 @@ export function useEnqueue() {
   return useAction<EnqueueInput, Awaited<ReturnType<typeof api.enqueue>>>((input) => api.enqueue(input))
 }
 
-/** Accept finished work. */
+/** Accept finished work. Собственное имя машины не посылается — своя машина = отсутствие ключа. */
 export function useApprove() {
   return useAction<{ taskId: string; machine?: string }, Awaited<ReturnType<typeof api.approve>>>((input) =>
     api.approve(input.taskId, { machine: input.machine }),
   )
 }
 
-/** Send work back with a comment. */
+/** Send work back with a comment. Собственное имя машины не посылается — своя машина = отсутствие ключа. */
 export function useReturnTask() {
   return useAction<Parameters<typeof api.returnTask>[0], Awaited<ReturnType<typeof api.returnTask>>>((input) =>
     api.returnTask(input),

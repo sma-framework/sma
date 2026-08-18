@@ -136,6 +136,30 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // the moment of reconciliation rather than the moment of the attempt. Absent on every
   // live-recorded row, so a reader never has to guess which kind it is holding.
   'reconstructed',
+  // ── the copy the attempt ran in — its point of return ──
+  // `base` is the commit the copy was branched from, `branch` the branch it was made on,
+  // `worktreePath` where that copy lived on disk, `materialized` the list the provisioning
+  // verb reported (one entry per manifest item: copied, linked, already tracked, skipped as
+  // a secret), and `provisionMs` how long preparing the copy took.
+  //
+  // WHY THEY LIVE ON THE ATTEMPT ROW rather than in the operator log, where the base commit
+  // used to be alone: "the work can be rolled back" and "it is visible WHAT to roll back to"
+  // are two different guarantees, and only the second one survives a restart, a log rotation
+  // or a month. The row is the durable record of the try, so it must carry the point of
+  // return itself — for a FAILED attempt exactly as much as for a finished one, because a
+  // failure is the case where somebody actually needs to roll something back. A stage that
+  // ran with no copy at all (a documentary one) simply carries none of these keys.
+  //
+  // `cleanup` is written by a SEPARATE row of the same attempt — `{at, by, removedPath,
+  // removedBranch, …}` and deliberately NO `endedAt`/`outcome`, so that folding the rows of
+  // one attempt together neither stretches its duration to the moment of the sweep nor
+  // overwrites how the try actually ended.
+  'base',
+  'branch',
+  'worktreePath',
+  'materialized',
+  'provisionMs',
+  'cleanup',
 ])
 
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
@@ -168,7 +192,12 @@ function ledgerFile(ledgerDir, taskId) {
  *          failureReason?:string, receiptRef?:string, recordedAt?:string,
  *          policyVersion?:string, memorySnapshotHash?:string, planHash?:string,
  *          harnessVersion?:string, stateMachineVersion?:string, idempotencyKey?:string,
- *          capabilityEnvelopeHash?:string, capabilityEnvelope?:object}} attempt
+ *          capabilityEnvelopeHash?:string, capabilityEnvelope?:object,
+ *          base?:string, branch?:string, worktreePath?:string,
+ *          materialized?:object[], provisionMs?:number,
+ *          cleanup?:{at:string, by:string, removedPath?:string, removedBranch?:string,
+ *                    branchTip?:string, unlinked?:string[], dirtyFiles?:string[],
+ *                    forced?:boolean, ok?:boolean, error?:string}} attempt
  * @returns {object} the appended row
  */
 export function recordAttempt(ledgerDir, attempt) {
