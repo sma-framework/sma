@@ -297,6 +297,9 @@ describe('грязная копия: отказ без --force, перечисл
   let copyTree: string
   let soft: any
   let hard: any
+  // Снято сразу после отказа: оба прогона идут в подготовке, и к моменту проверок
+  // копии уже нет — вопрос «уцелела ли она при ОТКАЗЕ» отвечается только на месте.
+  let survivedRefusal: boolean | null = null
 
   beforeAll(() => {
     sandbox = makeSandbox('sma-wt-dirty-')
@@ -311,6 +314,7 @@ describe('грязная копия: отказ без --force, перечисл
     write(join(copyTree, 'package-lock.json'), '{"lockfileVersion":3}\n')
 
     soft = lastJson(runCli(['worktree', 'remove', copyTree, '--json'], mainTree).stdout)
+    survivedRefusal = existsSync(copyTree)
     hard = lastJson(runCli(['worktree', 'remove', copyTree, '--force', '--json'], mainTree).stdout)
   }, 60_000)
 
@@ -320,7 +324,7 @@ describe('грязная копия: отказ без --force, перечисл
     expect(soft.ok).toBe(false)
     expect(String(soft.message).length).toBeGreaterThan(0)
     expect(unlinkedFor(soft, 'node_modules'), 'отказ умолчал о снятых ссылках').toBeTruthy()
-    expect(existsSync(copyTree), 'копия исчезла при отказе').toBe(true)
+    expect(survivedRefusal, 'отказ всё-таки удалил копию').toBe(true)
   })
 
   it('со --force уборка проходит и называет, что было стёрто', () => {
