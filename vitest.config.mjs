@@ -6,7 +6,7 @@ import { defaultExclude, defineConfig } from 'vitest/config'
  * Everything else in this suite is in-process. These seven are not: between them
  * they run the REAL installer five times (each copy is ~459 files), copy the whole
  * sma-core payload into a temp tree, spawn the real `sma-tools` binary twenty-two
- * times, spawn the 9.7k-line `cli.mjs` eight times, and drive ~60 REAL `git`
+ * times, spawn the 9.7k-line `cli.mjs` fourteen times, and drive ~60 REAL `git`
  * processes through mkdtemp repositories. That work is the POINT of these tests —
  * the defects they cover were only ever visible through a real child process — so
  * it cannot be mocked away without deleting the coverage.
