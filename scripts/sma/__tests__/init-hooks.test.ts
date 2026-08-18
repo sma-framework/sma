@@ -300,6 +300,47 @@ describe('init hooks — a foreign matcher-less group survives the merge that jo
   })
 })
 
+describe('init hooks — a matcher that moved leaves no second live copy', () => {
+  // The stale-COMMAND list cannot cover this: there the command changed and the matcher
+  // stayed. Here the command is one we still ship and the matcher moved under it, so the
+  // leftover entry is byte-identical to a legitimate one and every existing install would
+  // keep firing it forever — two processes on one event, from a door we abandoned.
+  it('drops our own entry from the abandoned matcher and keeps exactly one', () => {
+    const def = (SMA_HOOKS as any[]).find((h) => String(h.command).endsWith('pretask-pack'))
+    const abandoned = 'Task' // the spelling shipped before the spawn tool was renamed
+    expect(abandoned).not.toBe(def.matcher) // the case is only meaningful while they differ
+    const settings: any = {
+      hooks: {
+        PreToolUse: [{ matcher: abandoned, hooks: [{ type: 'command', command: def.command, timeout: def.timeout }] }],
+      },
+    }
+
+    mergeHooks(settings)
+
+    const ours = settings.hooks.PreToolUse.flatMap((g: any) => g.hooks).filter((h: any) => h.command === def.command)
+    expect(ours, 'one command, one door').toHaveLength(1)
+    expect(settings.hooks.PreToolUse.filter((g: any) => g.matcher === abandoned)).toHaveLength(0)
+    expect(groupFor(settings, 'PreToolUse', def.matcher).hooks).toEqual([entryOf(def)])
+  })
+
+  it('a foreign entry sharing the abandoned matcher survives byte-identically', () => {
+    const def = (SMA_HOOKS as any[]).find((h) => String(h.command).endsWith('pretask-pack'))
+    const foreign = { type: 'command', command: 'node other/guard.mjs watch', timeout: 3 }
+    const settings: any = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Task', hooks: [{ type: 'command', command: def.command, timeout: def.timeout }, foreign] },
+        ],
+      },
+    }
+
+    mergeHooks(settings)
+
+    const kept = settings.hooks.PreToolUse.find((g: any) => g.matcher === 'Task')
+    expect(kept, 'the group stays alive for its foreign occupant').toBeTruthy()
+    expect(kept.hooks).toEqual([foreign])
+  })
+})
 describe('init hooks — the REAL installer heals settings.json (Test 5)', () => {
   it('fresh install writes ONE PreToolUse chain; a re-run over stale chains + a foreign hook heals it', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-init-hooks-'))

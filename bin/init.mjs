@@ -248,8 +248,41 @@ export function removeStaleSmaHooks(settings) {
  *   event (and matcher, for matcher events) is skipped
  * Returns { added, removedStale }.
  */
+/**
+ * Drop OUR OWN entries that carry a command we still ship but sit under a matcher we no
+ * longer use, so a matcher that moves cannot leave a second live copy behind. The stale-
+ * command list above cannot cover this case: there the command changed and the matcher
+ * stayed, here it is the other way round, and the entry left over is byte-identical to a
+ * legitimate one — it just fires from the wrong door. Left alone it means two processes on
+ * one event, forever, on every machine that installed the earlier spelling.
+ *
+ * Strictly OURS: an entry is only dropped when its command is one this installer ships AND
+ * that command has a home under this event in the current list. A foreign hook that happens
+ * to sit in the same group is never read, let alone removed.
+ */
+function removeMovedMatcherEntries(settings, hookDefs) {
+  if (!settings || typeof settings.hooks !== 'object' || settings.hooks === null) return 0;
+  let removed = 0;
+  for (const def of hookDefs) {
+    const groups = settings.hooks[def.event];
+    if (!Array.isArray(groups)) continue;
+    for (const g of groups) {
+      if (!g || !Array.isArray(g.hooks)) continue;
+      const sameMatcher = def.matcher === null ? !g.matcher : g.matcher === def.matcher;
+      if (sameMatcher) continue;
+      const kept = g.hooks.filter((h) => !(h && h.command === def.command));
+      removed += g.hooks.length - kept.length;
+      g.hooks = kept;
+    }
+    settings.hooks[def.event] = groups.filter((g) => g && Array.isArray(g.hooks) && g.hooks.length > 0);
+    if (settings.hooks[def.event].length === 0) delete settings.hooks[def.event];
+  }
+  return removed;
+}
+
 export function mergeHooks(settings, hookDefs = SMA_HOOKS) {
   const removedStale = removeStaleSmaHooks(settings);
+  const removedMoved = removeMovedMatcherEntries(settings, hookDefs);
   if (typeof settings.hooks !== 'object' || settings.hooks === null) settings.hooks = {};
   let added = 0;
   for (const def of hookDefs) {
@@ -269,7 +302,7 @@ export function mergeHooks(settings, hookDefs = SMA_HOOKS) {
     else groups.push(def.matcher === null ? { hooks: [hookEntry] } : { matcher: def.matcher, hooks: [hookEntry] });
     added += 1;
   }
-  return { added, removedStale };
+  return { added, removedStale, removedMoved };
 }
 
 // ── skill derivation ─────────────────────────────────────────────────────────
@@ -392,10 +425,14 @@ async function main() {
       process.exit(1);
     }
   }
-  const { added, removedStale } = mergeHooks(settings);
+  const { added, removedStale, removedMoved } = mergeHooks(settings);
   writeText(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  // Two different repairs, named apart: one replaced a command we stopped shipping, the
+  // other removed a copy of a command we still ship that sat under a matcher we moved.
+  // One sentence for both would tell the operator the wrong story about their own file.
   const staleNote = removedStale ? `, ${removedStale} legacy per-stream entries replaced by the \`pre\` multiplexer` : '';
-  console.log(`  + hooks         ${added} added${staleNote}, foreign entries preserved (${settingsPath})`);
+  const movedNote = removedMoved ? `, ${removedMoved} entries dropped from a matcher this installer no longer uses` : '';
+  console.log(`  + hooks         ${added} added${staleNote}${movedNote}, foreign entries preserved (${settingsPath})`);
 
   // 7. .sma/ runtime scaffold + .gitignore line
   for (const d of ['sessions', 'claims', 'journal', 'reflex']) mkdirSync(path.join(project, '.sma', d), { recursive: true });
