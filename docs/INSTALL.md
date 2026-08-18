@@ -78,8 +78,47 @@ zero dependencies).
 | Subagent definitions (`sma-*.md`) | `<project>/.claude/agents/` | `~/.claude/agents/` |
 | Command skills (`/sma-*`, 14 commands) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Transitional `/gsd-*` aliases (flag-gated) | `<project>/.claude/skills/` | `~/.claude/skills/` |
-| Hooks (SessionStart + the one-spawn PreToolUse `pre` multiplexer + the PostToolUse stall check) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
+| Hooks — seven entries across six agent events (spelled out under the table) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
 | Runtime scaffold | `<project>/.sma/{sessions,claims,journal,reflex}` | same (project-level) |
+
+### The seven hook entries
+
+The installer writes these and nothing else into `settings.json`. Entries you put
+there yourself are never dropped or reordered — an SMA entry is added beside them.
+The timeout is a per-hook budget in seconds; the two that walk git and the working
+tree get a longer one, still short enough that a person does not feel the pause.
+
+| Agent event | Matched on | Command | Timeout |
+|---|---|---|---|
+| `SessionStart` | every start | `node scripts/sma/cli.mjs session-start` | 10 |
+| `PreToolUse` | `Edit\|Write\|Bash` | `node scripts/sma/cli.mjs pre` | 5 |
+| `PreToolUse` | `Task\|Agent` | `node scripts/sma/cli.mjs pretask-pack` | 10 |
+| `PostToolUse` | `Edit\|Write\|Bash` | `node scripts/sma/cli.mjs stall-check` | 5 |
+| `SessionEnd` | every end reason | `node scripts/sma/cli.mjs session-end` | 10 |
+| `PreCompact` | every compaction trigger | `node scripts/sma/cli.mjs precompact-capsule` | 15 |
+| `SubagentStop` | every subagent type | `node scripts/sma/cli.mjs subagent-verify` | 15 |
+
+Four of the rows want a word of explanation:
+
+- **`Task|Agent` is one tool under two names.** The tool that spawns a subagent was
+  renamed between agent versions. A matcher that knows only one of the names still
+  installs and still fires — and does nothing at all, silently. Matching both names
+  is how an agent upgrade in either direction cannot unhook the context pack.
+- **The three matcher-less entries cover every value, on purpose.** These events
+  *do* accept matchers (end reason, compaction trigger, subagent type). Leaving the
+  field out is how a single entry catches all of them, which is what all three want.
+- **`SessionEnd` means the session ended, however it ended** — the window closed,
+  `/clear`, a logout. It is not a close-the-window hook, and the claims this window
+  held are handed back in every one of those cases.
+- **`PreCompact` runs when your agent version announces that event.** Older versions
+  do not announce it; the command then exits without an error and without a capsule.
+  The entry is installed either way, so it starts working the moment you upgrade.
+
+Updating an existing install heals it rather than doubling it: an entry this
+installer used to ship under a different matcher is removed when — and only when —
+the command is ours *and* that command has a home under this event in the list
+above. A foreign entry sitting in the same group survives byte for byte.
+`/sma-deleteme` removes all seven symmetrically, again leaving foreign entries alone.
 
 If the project already has a `.gitignore`, the installer appends a `.sma/`
 line to it (unless one is already there). It does not create the file — if
