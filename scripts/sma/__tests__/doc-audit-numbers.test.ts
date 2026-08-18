@@ -478,3 +478,20 @@ describe('wire: the help door the docs name actually opens', () => {
     }
   })
 })
+
+describe('guard: the numbers target is at zero on the REAL tree', () => {
+  /**
+   * This is the test that turns `npm test` red the day any number in the docs stops
+   * matching the code that owns it. Everything above proves the gate CAN go red on a
+   * planted fixture; this one asserts the tree we actually ship is clean right now, with
+   * the same default readers the verb uses, so a drift cannot hide behind an injected
+   * reader. It reads and never writes.
+   *
+   * The assertion is on the whole list rather than on its length: when it fails, the
+   * report has to name the divergences themselves, not just how many there were.
+   */
+  it('audit({target: numbers}) over the real tree reports no violations', () => {
+    const { violations } = audit({ target: 'numbers', rootDir: ROOT })
+    expect(violations).toEqual([])
+  })
+})
