@@ -1608,6 +1608,14 @@ export interface AttemptDigest {
 export interface AttemptLogLine {
   ts: string
   line: string
+  /**
+   * Строку пришлось обрезать по потолку ряда. Ключа нет вовсе, когда строка целая: раньше
+   * обрезка была молчаливой, и читатель принимал часть за целое, не имея ни одного признака,
+   * по которому это можно заметить.
+   */
+  truncated?: boolean
+  /** Сколько знаков было ДО обрезки (после сплющивания переводов строк). Только у обрезанного ряда. */
+  originalLength?: number
   subagent: boolean
   /**
    * WHICH delegation this line belongs to — 1, 2, 3… in the order the groups first appear.

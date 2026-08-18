@@ -105,7 +105,7 @@ import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import { parseApproachNote, approachLinesFrom, attemptIdFor } from './front/journal.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
-import { summarizeFrame } from './runner/frame-summary.mjs'
+import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { readPendingRedirects, markConsumed, appendRedirect, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
@@ -784,8 +784,14 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
     // read — are exactly the ones the cap would make unreadable. An unrecognisable frame
     // summarises to nothing, and nothing means the screen falls back to the raw line.
     const summary = frame ? summarizeFrame(frame) : []
+    // WHICH FRAME THIS LINE IS — said HERE, where it was just parsed, and nowhere else. The
+    // journal caps a row by this word: `init` (what the session was armed with) and `result`
+    // (how it ended) are read whole, everything else keeps the ordinary line cap. Recognition
+    // is asked of the module that knows frames; the journal is told, never guesses.
+    const frameKind = frame ? wholeFrameKind(frame) : null
     log.append({
       line,
+      ...(frameKind ? { frame: frameKind } : {}),
       subagent: event.subagent === true,
       parentId: event.parentId,
       ...(summary.length ? { summary } : {}),

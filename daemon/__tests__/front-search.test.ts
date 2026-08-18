@@ -622,6 +622,24 @@ describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR'
     expect(body.lines[0].subagent).toBe(false)
   })
 
+  it('признак обрезки доезжает до ответа двери — иначе он вычислен и никому не показан', async () => {
+    const rows = [
+      { ts: 'T1', line: 'x'.repeat(4096), subagent: false, truncated: true, originalLength: 9000 },
+      { ts: 'T2', line: 'короткая', subagent: false },
+    ]
+    const { front } = mkFront({ rows })
+    const res = await call(front, { url: '/api/attempt/BL-201%231' })
+    const body = JSON.parse(res.body)
+
+    // Явная выборка полей — это фильтр: факт, посчитанный у двери хранения и не названный
+    // здесь, не доезжает ни до кого, и обрезанный ряд снова выглядит как просто короткий.
+    expect(body.lines[0].truncated).toBe(true)
+    expect(body.lines[0].originalLength).toBe(9000)
+    // а целый ряд не толстеет ключами, которых у него нет
+    expect('truncated' in body.lines[1]).toBe(false)
+    expect('originalLength' in body.lines[1]).toBe(false)
+  })
+
   it('two subagents are two groups, counted in the order they first speak — and the id never leaves', async () => {
     const rows = [
       { ts: 'T1', line: 'родитель', subagent: false },
