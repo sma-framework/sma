@@ -331,3 +331,98 @@ describe('hook contract: session lifecycle', () => {
     expect(context).toContain(stamp)
   }, 60000)
 })
+
+describe('hook contract: subagent pack and receipts', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-hooks-subagent-'))
+  const proj = join(tmp, 'proj')
+  const ORIGINAL_PROMPT = 'ORIGINAL-PROMPT-MARKER'
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  it('the Task frame comes back as an allow decision whose updatedInput carries the pack ahead of the original prompt', () => {
+    mkdirSync(join(proj, 'src'), { recursive: true })
+    const res = runHook(
+      'pretask-pack',
+      {
+        session_id: WINDOW_TOKEN,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: { description: 'probe', prompt: ORIGINAL_PROMPT },
+      },
+      proj,
+    )
+    expect(res.status).toBe(0)
+
+    const out = JSON.parse(res.stdout)
+    const decision = out.hookSpecificOutput
+    expect(decision.hookEventName).toBe('PreToolUse')
+    expect(decision.permissionDecision).toBe('allow')
+    // the pack is PREPENDED, never a replacement: the subagent still gets every
+    // byte its caller wrote. Asserted structurally — the pack's own wording is
+    // not a contract, and in a sterile tree it is nearly empty anyway.
+    expect(decision.updatedInput.prompt.endsWith(ORIGINAL_PROMPT)).toBe(true)
+    expect(decision.updatedInput.prompt.length).toBeGreaterThan(ORIGINAL_PROMPT.length)
+    // updatedInput REPLACES the tool input wholesale, so every other field the
+    // caller sent has to survive the trip or the spawn loses it
+    expect(decision.updatedInput.description).toBe('probe')
+
+    // the traces the receipt side and the latency budget are both read from
+    const spawnRecords = listDir(join(proj, '.sma', 'subagents'))
+    expect(spawnRecords, 'the pack should leave a spawn record for the stop hook to correlate').toHaveLength(1)
+    expect(journalEvents(proj).filter((e) => e.type === 'subagent-pack')).toHaveLength(1)
+  }, 60000)
+
+  it('the SubagentStop frame receipts the transcript: a real write verified, a claimed-but-absent one flagged', () => {
+    // a repository is the instrument here: the verdicts are read off the real
+    // tree (existence, dirty state, commits since the spawn), not off the words.
+    const git = spawnSync('git', ['init', '-q', '.'], { cwd: proj, encoding: 'utf8' })
+    expect({ status: git.status, stderr: (git.stderr ?? '').slice(0, 300) }).toMatchObject({ status: 0 })
+    writeFileSync(join(proj, 'src', 'real.txt'), 'data\n') // exists + untracked -> dirty -> verified
+
+    // The minimal transcript shape the extractor reads: a write-tool call with
+    // its file path, its successful result, and a FINAL assistant message that
+    // claims both files. The absent one is claimed WITH a directory separator on
+    // purpose — a bare file name is demoted to "cannot tell" by design, so a
+    // fixture using one would make the case pass while proving nothing.
+    const transcript = join(proj, 'transcript.jsonl')
+    writeFileSync(
+      transcript,
+      [
+        { message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'Write', input: { file_path: 'src/real.txt' } }] } },
+        { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', is_error: false }] } },
+        { message: { role: 'assistant', content: [{ type: 'text', text: 'Wrote src/real.txt and created src/ghost.txt' }] } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join('\n') + '\n',
+    )
+
+    const res = runHook(
+      'subagent-verify',
+      { session_id: WINDOW_TOKEN, hook_event_name: 'SubagentStop', transcript_path: transcript },
+      proj,
+    )
+    expect(res.status).toBe(0)
+
+    // the receipt lands in the shared journal — that, not the printed warning,
+    // is the artifact: whether a stop hook's stdout ever reaches a human is the
+    // harness's business, while the journal line is ours.
+    const receipts = journalEvents(proj).filter((e) => e.type === 'subagent-receipt')
+    expect(receipts).toHaveLength(1)
+    const claims = receipts[0].detail.claims
+    // the two verdicts that matter, asserted apart: a receipt that called both
+    // of them the same thing would be worthless in either direction
+    expect(claims.filter((c: any) => c.path === 'src/real.txt').map((c: any) => c.verdict)).toContain('verified')
+    expect(claims.filter((c: any) => c.path === 'src/real.txt').every((c: any) => c.verdict === 'verified')).toBe(true)
+    expect(claims.filter((c: any) => c.path === 'src/ghost.txt').map((c: any) => c.verdict)).toEqual(['phantom-missing'])
+    expect(receipts[0].detail.counts.phantomAsserted).toBe(1)
+
+    // the wire between the two hooks: the stop correlated the spawn record the
+    // pack wrote in the case above, and marked it consumed so coverage stays honest
+    expect(receipts[0].detail.spawn, 'the stop should correlate the pack spawn record').toBeTruthy()
+    const records = listDir(join(proj, '.sma', 'subagents'))
+    const record = JSON.parse(readFileSync(join(proj, '.sma', 'subagents', records[0]), 'utf8'))
+    expect(record.consumed).toBe(true)
+  }, 60000)
+})
