@@ -45,6 +45,7 @@ import type {
   ToggleResult,
   UpdateReport,
 } from './types'
+import { setSelectedProject } from './selected-project'
 
 /**
  * client.ts — ONE function per door the daemon opens, and not a single door more.
@@ -397,9 +398,19 @@ export function renameProject(id: string, name: string): Promise<ProjectWriteRes
   return postJson<ProjectWriteResult>('/api/project/rename', { id, name })
 }
 
-/** Look at another project. */
+/**
+ * Look at another project.
+ *
+ * The choice is mirrored into `selected-project` only AFTER the daemon has accepted it: the
+ * owner of this fact is the daemon's config, and a mirror running ahead of its subject would
+ * narrow the next reading by a project the daemon never switched to. A refused call leaves the
+ * mirror exactly as it was.
+ */
 export function selectProject(id: string): Promise<OkResult> {
-  return postJson<OkResult>('/api/project/select', { id })
+  return postJson<OkResult>('/api/project/select', { id }).then((res) => {
+    setSelectedProject(id)
+    return res
+  })
 }
 
 // ── machines ────────────────────────────────────────────────────────────────────────
