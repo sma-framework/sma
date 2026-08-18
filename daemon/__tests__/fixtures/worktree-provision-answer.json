@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "path": "/wt/R-77",
+  "branch": "wt/R-77",
+  "expectedBase": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "baseFixed": false,
+  "actualBase": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "reused": false,
+  "materialized": [
+    { "path": ".claude/", "mode": "copy", "files": 3, "tracked": 0, "current": 0, "bytes": 2048 },
+    { "path": "node_modules", "mode": "link", "target": "/repo/node_modules" }
+  ],
+  "manifest": { "source": "default", "warnings": [] },
+  "provisionMs": 120
+}
