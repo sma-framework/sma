@@ -51,11 +51,13 @@ import { join } from 'node:path'
 import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
 import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
+import { createAgingMemory } from '../src/policy/aging-memory.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
 // screen's payload. Every joint of that path had a green test of its own while the path
 // itself was cut, so the case has to cross the module boundary the defect hid behind.
 import { deriveState } from '../src/front/state.mjs'
+import { tickJournalLine } from '../src/main.mjs'
 import { windowState, isOpen } from '../src/policy/windows.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { workerReadiness, poolReadiness } from '../src/runner/readiness.mjs'
@@ -1024,6 +1026,178 @@ describe('the aging signal — derived fresh every tick, nothing stored', () => 
     const aging = reports.filter((r) => r.event === 'task.aging')
     expect(aging.map((r) => r.taskId)).toEqual(['BL-OLD'])
     expect(aging[0].queuedForHours).toBe(30)
+  })
+})
+
+/**
+ * СТАРЕНИЕ ГОВОРИТСЯ ОДИН РАЗ НА ПЕРЕХОД, А СТРОКА ЖУРНАЛА НЕСЁТ МЕТКУ ВРЕМЕНИ.
+ *
+ * Замер живого журнала: за 12,34 часа демон написал 43 076 строк, из них 43 020 (99,87 %) —
+ * одна и та же `task.aging`, повторённая каждые пять секунд на каждую залежавшуюся задачу.
+ * Это не журнал, а шум, в котором тонет всё остальное; и ни одна из этих строк не несла
+ * метки времени, хотя строки запускающей оболочки в том же файле её несут — два формата в
+ * одном файле.
+ *
+ * Память дедупа — КОЛЛАБОРАТОР в deps, а не поле результата тика. Продевание состояния через
+ * результат в production никем не замыкается (так уже вышло с intake: провод есть в тесте и
+ * мёртв в жизни), а deps в main.mjs собираются ОДИН раз и живут столько же, сколько демон, —
+ * поэтому память переживает тик, не делая тик состоянием.
+ */
+describe('старение: сказано один раз на переход, и строка несёт метку времени', () => {
+  const stuckAdapter = (rows: any[]) => ({
+    async list(filter: any = {}) {
+      return filter.status ? rows.filter((r) => r.status === filter.status) : rows
+    },
+    async claimNext() {
+      return null
+    },
+    async fail() {
+      return true
+    },
+  })
+
+  const aged = (id: string, hours: number, now: number) => ({
+    id,
+    title: id,
+    lane: 'prod',
+    status: 'queued',
+    enqueuedAt: now - hours * 3600000,
+  })
+
+  it('два тика подряд с ОДНИМ объектом deps → ровно одна строка task.aging и один отчёт', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const { deps, reports, journalled } = makeDeps({
+      adapter: stuckAdapter([aged('BL-OLD', 30, now)]),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(1)
+    expect(reports.filter((r: any) => r.event === 'task.aging')).toHaveLength(1)
+  })
+
+  it('прошли сутки — сказано снова: молчать вечно о застрявшей задаче тоже нельзя', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const { deps, journalled } = makeDeps({
+      adapter: stuckAdapter([aged('BL-OLD', 30, now)]),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    c.advance(23 * 3600000)
+    await tick(deps)
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(1) // сутки ещё не прошли
+    c.advance(2 * 3600000)
+    await tick(deps)
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(2)
+  })
+
+  it('вторая залежавшаяся задача говорит о себе сама — дедуп по задаче, а не глобальный', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-A', 30, now)]
+    const { deps, journalled } = makeDeps({
+      adapter: stuckAdapter(rows),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    rows.push(aged('BL-B', 40, now))
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging').map((e: any) => e.taskId)).toEqual(['BL-A', 'BL-B'])
+  })
+
+  it('задача ушла из очереди и вернулась старой — это НОВЫЙ переход порога, и он сказан', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-A', 30, now)]
+    const { deps, journalled } = makeDeps({
+      adapter: stuckAdapter(rows),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    rows.length = 0 // взята в работу: из «создано» ушла
+    c.advance(5000)
+    await tick(deps)
+    rows.push(aged('BL-A', 31, now)) // вернулась — и всё ещё старая
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(2)
+  })
+
+  it('память дедупа не растёт вечно: ушедшее из очереди забывается', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-A', 30, now), aged('BL-B', 30, now)]
+    const memory: any = createAgingMemory()
+    const { deps } = makeDeps({ adapter: stuckAdapter(rows), clockObj: c, deps: { agingMemory: memory } })
+
+    await tick(deps)
+    expect(memory.size).toBe(2)
+    rows.length = 0
+    c.advance(5000)
+    await tick(deps)
+    expect(memory.size).toBe(0)
+  })
+
+  it('без памяти в deps — прежнее поведение: строка на каждый тик (fail-open, старый контракт цел)', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const { deps, journalled } = makeDeps({ adapter: stuckAdapter([aged('BL-OLD', 30, now)]), clockObj: c })
+
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(2)
+  })
+
+  it('экран «застряла» от троттлинга не зависит: agedForHours считается из enqueuedAt', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-OLD', 30, now)]
+    const { deps, reports } = makeDeps({
+      adapter: stuckAdapter(rows),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps) // об этом тике сигнал промолчал
+
+    expect(reports.filter((r: any) => r.event === 'task.aging')).toHaveLength(1)
+    const payload: any = await deriveState({
+      adapter: { list: async () => rows },
+      windows: () => ({}),
+      config: { agingHours: 24, workers: [] },
+      clock: c.clock,
+    })
+    const row = payload.queue.find((r: any) => r.id === 'BL-OLD')
+    expect(row.agedForHours).toBeGreaterThanOrEqual(30) // показание живо и без сигнала
+  })
+
+  it('строка стока несёт ISO-метку, а за ней — прежние части описания события', () => {
+    const line = tickJournalLine({ type: 'task.aging', taskId: 'BL-OLD', queuedForHours: 30 }, () => 1_700_000_000_000)
+    expect(line).toMatch(/^\[SmaDaemon\] 20\d{2}-\d{2}-\d{2}T/)
+    expect(line).toContain('task.aging')
+    expect(line).toContain('task=BL-OLD')
+    expect(line).toBe('[SmaDaemon] 2023-11-14T22:13:20.000Z task.aging · task=BL-OLD')
   })
 })
 
