@@ -372,10 +372,11 @@ flowchart TD
     S1 --> W["You work with the agent"]
     W -->|"PreToolUse (Edit / Write / Bash)"| P1["sma pre — ONE spawn:<br>collision → reflex → gates → airbag → spend"]
     P1 --> ACT["the tool call runs"]
-    W -->|"PreToolUse (Task)"| PT["pretask-pack — inject the context pack into a subagent"]
+    W -->|"PreToolUse (subagent spawn)"| PT["pretask-pack — inject the context pack into a subagent"]
     ACT -->|PostToolUse| PO["stall-check → notice a stuck / looping run + drop a flight mark"]
     W -->|SubagentStop| SV["subagent-verify → check every claimed write against the tree"]
     W -->|PreCompact| PC["precompact-capsule → write the flight capsule BEFORE context is cut"]
+    W -->|SessionEnd| SE["session-end → hand back the claims this window is holding"]
     PO --> W
 ```
 
@@ -383,12 +384,15 @@ flowchart TD
 |---|---|---|
 | **SessionStart** | `session-start` | Registers this terminal, loads the tiny memory core, briefs on what other terminals changed — and, if the session just auto-compacted, re-injects the flight capsule as the first context. |
 | **PreToolUse** (Edit/Write/Bash) | `pre` | **One spawn** runs the ordered stream pipeline — collision → reflex → gates → airbag → spend — replacing V2's 3–4 spawns. |
-| **PreToolUse** (Task) | `pretask-pack` | Injects the assembled context pack into a subagent — inheritance by construction. |
+| **PreToolUse** (subagent spawn, `Task\|Agent`) | `pretask-pack` | Injects the assembled context pack into a subagent — inheritance by construction. |
 | **PostToolUse** | `stall-check` | Notices a stuck/looping run so an executor death becomes a five-minute resume; also appends one flight mark. |
+| **SessionEnd** | `session-end` | Hands back the claims this window is holding, so a terminal that simply went away never leaves a teammate blocked on a scope nobody is editing. |
 | **SubagentStop** | `subagent-verify` | Verifies every claimed file write against the real tree; phantom writes are flagged. |
 | **PreCompact** | `precompact-capsule` | Deterministically writes the flight capsule *before* compaction deletes the working state. |
 
-That is the entire integration surface. The hooks call the same CLI you can run by hand (`node scripts/sma/cli.mjs …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is now a **single** `pre` entry; the old per-stream commands remain as deprecated aliases for back-compat.
+Seven entries across those six events, and that is the entire integration surface. The hooks call the same CLI you can run by hand (`node scripts/sma/cli.mjs …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is a **single entry per matcher** — one `pre` multiplexer for the editing tools, one `pretask-pack` for the spawn tool; the old per-stream commands remain as deprecated aliases for back-compat.
+
+Three limits, named rather than glossed over. The **spawn tool is matched under both names it has carried** (`Task|Agent`): it was renamed between agent versions, and a matcher that knows only one name installs cleanly, fires, and does nothing — matching both is what survives the rename in either direction. **`SessionEnd` fires on every way a session can end** — the window closed, `/clear`, a logout — because the claims want handing back in all three; a `/clear` simply gets a new session id and takes its claims again. And the **`PreCompact` capsule depends on your agent version announcing that event**: where it does not, the command exits without an error and without a capsule, and the entry sits installed until an upgrade makes it live. One more thing not promised: if another tool in your project also rewrites the spawn call's input, the agent keeps whichever hook finished last — SMA does not claim compatibility with a second such modifier.
 
 ## The V5 series, release by release
 
