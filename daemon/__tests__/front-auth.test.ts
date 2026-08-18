@@ -820,6 +820,143 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
     })
     expect(res.statusCode).toBe(400)
   })
+
+  /**
+   * ═══════ ПРИНЯТАЯ РАБОТА УБИРАЕТ ЗА СОБОЙ КОПИЮ — И ГОВОРИТ, ЧТО УБРАЛА ═══════
+   *
+   * Слияние проходило, ветка входила в main — и копия задачи со своей веткой оставалась на
+   * диске навсегда: так у основателя накопились копии закрытых задач недельного возраста.
+   * Уборка приходит в дверь ОТДЕЛЬНОЙ зависимостью, а не через общий раннер вербов: дверь,
+   * которой дали раннер, умеющий назвать любую команду, — это дверь, через которую можно
+   * назвать любую команду. У `worktreeCleanup({taskId, by})` называть нечего.
+   *
+   * И порядок обязанностей: приёмка — правда, уборка — следствие. Неудача уборки не
+   * отменяет `merged:true`, но обязана доехать до ответа: человек должен УЗНАТЬ, что на
+   * диске осталось, а не догадаться по отсутствию строки.
+   */
+  describe('после слияния дверь убирает копию задачи — отдельной зависимостью', () => {
+    const cleanupSpy = (answer: any) => {
+      const calls: any[] = []
+      const worktreeCleanup = async (a: any) => {
+        calls.push(a)
+        if (typeof answer === 'function') return answer(a)
+        return answer
+      }
+      return { worktreeCleanup, calls }
+    }
+
+    it('merged:true → уборка вызвана РОВНО раз, с задачей и поводом; ответ несёт cleanup', async () => {
+      const { worktreeCleanup, calls } = cleanupSpy({
+        ok: true,
+        removed: true,
+        removedPath: '/projects/.sma-worktrees/R-77',
+        removedBranch: 'wt/R-77',
+        branchTip: 'abc1234',
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-77' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(calls).toEqual([{ taskId: 'R-77', by: 'approve' }])
+      const out = JSON.parse(res.body)
+      expect(out.merged).toBe(true)
+      expect(out.cleanup).toEqual({
+        removed: true,
+        removedPath: '/projects/.sma-worktrees/R-77',
+        removedBranch: 'wt/R-77',
+      })
+    })
+
+    it('слияние не прошло — копия НЕ убирается: работу ещё могут доделать в ней', async () => {
+      const { worktreeCleanup, calls } = cleanupSpy({ ok: true, removed: true })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async () => ({ merged: false, message: 'конфликт' }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-78' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      const out = JSON.parse(res.body)
+      expect(out.merged).toBe(false)
+      expect(calls).toEqual([]) // ни одного вызова уборки
+      expect(Object.hasOwn(out, 'cleanup')).toBe(false)
+    })
+
+    it('уборка сорвалась — приёмка ВСЁ РАВНО правда, а причина видна в ответе', async () => {
+      const { worktreeCleanup } = cleanupSpy(() => {
+        throw new Error('верб недоступен')
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-79' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      const out = JSON.parse(res.body)
+      expect(out.merged).toBe(true)
+      expect(out.ok).toBe(true)
+      expect(out.cleanup.removed).toBe(false)
+      expect(out.cleanup.reason).toContain('верб недоступен')
+    })
+
+    it('демон без уборки отвечает ровно как прежде — без поля cleanup', async () => {
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-80' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(Object.hasOwn(JSON.parse(res.body), 'cleanup')).toBe(false)
+    })
+  })
 })
 
 describe('server.mjs — POST /api/return (re-queue with the comment)', () => {
