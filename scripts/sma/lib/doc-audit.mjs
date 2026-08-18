@@ -361,12 +361,18 @@ const EMBED_RULES_RE = /embedRules\(\s*\{([^}]*)\}/
 /** A version literal anywhere in the installer — that copy IS a second source of truth. */
 const VERSION_LITERAL_RE = /(?<![\w.])v?\d+\.\d+\.\d+(?![\w.])/
 
-/** Path of `p` relative to `rootDir`, forward-slashed, for the `file` field of a violation. */
+/**
+ * Path of `p` relative to `rootDir`, forward-slashed, for the `file` field of a violation.
+ * Both sides are normalised before the comparison — on Windows a joined path comes back
+ * back-slashed while the root it was joined from may not be, and an unstripped root would
+ * leak an absolute machine path into a violation record.
+ */
 function relPath(rootDir, p) {
-  const s = String(p)
-  const r = String(rootDir ?? '')
+  const norm = (s) => String(s ?? '').replace(/\\/g, '/')
+  const s = norm(p)
+  const r = norm(rootDir).replace(/\/+$/, '')
   const cut = r && s.startsWith(r) ? s.slice(r.length) : s
-  return cut.replace(/^[\\/]+/, '').replace(/\\/g, '/')
+  return cut.replace(/^\/+/, '')
 }
 
 /** Read + JSON.parse through the injected reader; null on a missing or unparsable file. */
