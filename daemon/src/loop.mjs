@@ -1049,6 +1049,84 @@ function resultTextOf(block) {
   return ''
 }
 
+/**
+ * A REFUSED CALL IS NAMED BY ITS COMMAND, NOT COUNTED.
+ *
+ * The vendor hands us, on the result frame, the FULL list of calls its permission boundary
+ * turned down: the tool, the id of the call, and the arguments it was called with. This
+ * daemon used to keep one number out of that — the length — and throw the rest away. So the
+ * person at the window read «refusals: 1» and could not learn WHAT the worker was stopped
+ * from doing, which is precisely the evidence the whole boundary exists to produce. A count
+ * proves that something was refused; only the command proves WHICH something.
+ *
+ * THE COUNT STAYS BESIDE THE LIST, NOT UNDER IT. Our own tally (a guard refusing inside the
+ * stream) and the vendor's tally are two different measurements of the same run, and the day
+ * they disagree is a finding about the guards — so neither is allowed to overwrite the other.
+ *
+ * AND A FLOOD IS CAPPED OUT LOUD. A session that hammers a refused command would otherwise
+ * bury the attempt's journal; the lines stop at a declared cap and ONE last line says how
+ * many were not written. Silent loss is the one outcome forbidden here.
+ */
+
+/** How many refusal lines one attempt may write before the tail becomes a single summary line. */
+export const DENIAL_LINES_CAP = 50
+/** How much of a refused command is kept: enough to recognise it, short enough not to flood. */
+export const DENIAL_COMMAND_MAX = 300
+/** Says a command was cut — a truncation nobody can see is a quotation nobody can trust. */
+export const DENIAL_TRUNCATION_MARK = '…[truncated]'
+
+/**
+ * refusedCommandOf(denial) → the command the refused call carried, on one line and bounded,
+ * or null when the call carried none. `tool_input` comes from OUTSIDE this process, so every
+ * shape but the expected one reads as an absence rather than a throw.
+ * @param {object} denial
+ * @returns {string|null}
+ */
+function refusedCommandOf(denial) {
+  const input = denial && typeof denial.tool_input === 'object' && denial.tool_input ? denial.tool_input : {}
+  const raw =
+    typeof input.command === 'string'
+      ? input.command
+      : typeof input.file_path === 'string'
+        ? input.file_path
+        : typeof input.url === 'string'
+          ? input.url
+          : ''
+  const one = String(raw).replace(/\s+/g, ' ').trim()
+  if (one === '') return null
+  return one.length > DENIAL_COMMAND_MAX ? `${one.slice(0, DENIAL_COMMAND_MAX)}${DENIAL_TRUNCATION_MARK}` : one
+}
+
+/**
+ * copyRow({wt, base, branch, worktreePath, materialized, provisionMs}) — THE COPY AS ONE
+ * OBJECT, ASSEMBLED IN ONE PLACE.
+ *
+ * There are two doors that provision a copy — the code/document path and the Creator's — and
+ * they used to build this row as two separate lists of fields that happened to say the same
+ * thing. Two such lists diverge on the day somebody edits one of them, and these two already
+ * have that history. So the row is built here, by one expression, and a test calls BOTH doors
+ * with the same verb answer and compares what came out: «it reached one of the two» is not
+ * «it reached».
+ *
+ * `pushLock` is a FACT THE RECORD CARRIES, never an assumption. An install whose CLI predates
+ * the lock answers nothing about it, and that reads as `null` — never as «locked», which
+ * would be the record telling a person their worker cannot push when it can.
+ * @param {{wt?:object, base?:string|null, branch:string, worktreePath:string,
+ *          materialized?:Array|undefined, provisionMs?:number}} opts
+ * @returns {object}
+ */
+export function copyRow({ wt, base, branch, worktreePath, materialized, provisionMs } = {}) {
+  const answered = wt && typeof wt === 'object' ? wt : {}
+  return {
+    base: base || answered.expectedBase || answered.actualBase || null,
+    branch,
+    worktreePath,
+    materialized,
+    provisionMs,
+    pushLock: answered.pushLock && typeof answered.pushLock === 'object' ? answered.pushLock : null,
+  }
+}
+
 /** What a guard's refusal reads like when it arrives as a failed tool result rather than a frame. */
 const TOOL_REFUSAL_RE = /permission|denied|not allowed|blocked|запрещ|не разреш|отказ/i
 
@@ -1341,6 +1419,10 @@ function writeAttemptRunDir(deps, task, {
             base: worktree.base ?? null,
             branch: worktree.branch ?? null,
             materialized: worktree.materialized ?? null,
+            // WHETHER THE COPY WAS HANDED OVER WITHOUT AN ADDRESS TO PUSH TO — and, when it
+            // was not, why in words. `null` means the install answered nothing about it, which
+            // is a different fact from «not locked» and is written as a different value.
+            pushLock: worktree.pushLock ?? null,
           }
         : null,
       personalLayer: (worktree && worktree.personalLayer) || null,
@@ -1567,6 +1649,17 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
    */
   const guards = []
   /**
+   * WHICH REFUSALS THE VENDOR ALREADY NAMED — ids only, kept as a flat list because this file
+   * holds no keyed collection of its own (see the disciplines at the top). A result frame that
+   * arrives twice describes ONE refusal, and the record must not double it.
+   */
+  const denialIdsWritten = []
+  /** How many refusal lines this attempt has written, and how many the cap left out. */
+  let denialLinesWritten = 0
+  let denialsNotRecorded = 0
+  /** The ONE tail line that says what the cap left out — created once, kept current. */
+  let denialOverflowLine = null
+  /**
    * Tool calls the session ASKED for, waiting for the result that decides what they proved —
    * and the ones a guard already refused. The bookkeeping lives in a helper module because
    * this file holds no keyed collection of its own (see the disciplines at the top).
@@ -1693,6 +1786,46 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
     // of it: the two disagreeing is a finding about the guards, not a bug in this reader.
     if (frame && frame.type === 'result' && Array.isArray(frame.permission_denials)) {
       state.permissionDenials = frame.permission_denials.length
+      // AND WHAT IT REFUSED, BY NAME. The number above answers «was anything stopped»; the
+      // lines below answer «what», which is the only half a person can act on. Everything here
+      // is fail-open by construction: a malformed entry becomes a line with nulls in it, never
+      // a reason to fail an attempt over its own evidence.
+      for (const item of frame.permission_denials) {
+        const denialItem = item && typeof item === 'object' ? item : {}
+        const toolUseId = typeof denialItem.tool_use_id === 'string' ? denialItem.tool_use_id : ''
+        if (toolUseId && denialIdsWritten.includes(toolUseId)) continue
+        if (toolUseId) denialIdsWritten.push(toolUseId)
+        if (denialLinesWritten >= DENIAL_LINES_CAP) {
+          denialsNotRecorded += 1
+          continue
+        }
+        denialLinesWritten += 1
+        guards.push({
+          ts: new Date(now()).toISOString(),
+          kind: 'denied',
+          // WHOSE COUNT THIS IS. Our own refusals are written from the stream a few lines up
+          // and carry no source; naming the vendor here is what lets a reader tell the two
+          // measurements apart instead of silently adding them together.
+          source: 'vendor',
+          tool: typeof denialItem.tool_name === 'string' ? denialItem.tool_name : null,
+          command: refusedCommandOf(denialItem),
+          toolUseId: toolUseId || null,
+          reason: 'refused by the permission boundary this run was started under',
+        })
+      }
+      if (denialsNotRecorded > 0) {
+        // ONE line, kept current rather than repeated: the cap is about the journal's size, and
+        // a tail that grew a line per overflow would defeat its own purpose. What must never
+        // happen is the loss going unsaid.
+        if (!denialOverflowLine) {
+          denialOverflowLine = { ts: new Date(now()).toISOString(), kind: 'denied_overflow', source: 'vendor' }
+          guards.push(denialOverflowLine)
+        }
+        denialOverflowLine.notRecorded = denialsNotRecorded
+        denialOverflowLine.reason =
+          `${denialsNotRecorded} more refused calls were not written — this attempt reached the cap of ` +
+          `${DENIAL_LINES_CAP} refusal lines`
+      }
     }
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
     // The sentence a person reads is built HERE, off the frame that was just parsed and
@@ -2497,7 +2630,7 @@ export async function tick(deps = {}) {
         // The copy, as ONE object handed to whichever door closes this attempt. Assembled
         // once, here, so the finished and the failed paths can never come to disagree about
         // where the work was and what it can be rolled back to.
-        worktreeRow = { base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs }
+        worktreeRow = copyRow({ wt, base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs })
         // ── WHAT WAS ALREADY BROKEN BEFORE ANYONE TOUCHED ANYTHING ──
         // The exit gate below used to read the ABSOLUTE answer of the re-verification: any
         // divergence in the tree failed the attempt. In a repository with a history that is
@@ -3168,13 +3301,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   }
   // The copy, as one object for every door that can close this attempt. The forge lane has
   // no reverify gate of its own, so this is the ONLY record of where its draft was written.
-  const worktreeRow = {
-    base: wt.expectedBase || wt.actualBase || null,
-    branch,
-    worktreePath,
-    materialized,
-    provisionMs,
-  }
+  const worktreeRow = copyRow({ wt, branch, worktreePath, materialized, provisionMs })
 
   // (5b) THE PERSONAL LAYER, PUT IN PLACE BEFORE THE PROCESS EXISTS.
   //

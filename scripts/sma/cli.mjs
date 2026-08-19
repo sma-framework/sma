@@ -9997,6 +9997,15 @@ async function cmdShipLane({ positionals, flags, dirs }) {
  * `manifest{source,warnings}` and `provisionMs`, so the caller can put the provenance
  * of the copy into its own record. A failure here never fails the provision.
  *
+ * PROVISION ALSO TAKES THE PUSH ADDRESS AWAY FROM THE COPY — where, and only where, the
+ * person has already switched the per-worktree config extension on in their repository. The
+ * naive write lands in the SHARED config and takes push away from the MAIN tree too (measured),
+ * so this product never flips that extension itself: it changes the meaning of settings the
+ * repository already has, and a second line of defence has no right to gamble with the first
+ * tree. Where the extension is off, the answer's `pushLock` says `applied:false` with the
+ * reason in words and the repository is left exactly as it was. `pushLock` is part of the
+ * answer either way, so the record of a run can state what the copy actually stood under.
+ *
  * REMOVING A COPY THAT HAS LINKS: `remove` unhooks every link inside the copy BEFORE
  * git ever sees it (deleting the link itself leaves the target alone), because on
  * Windows git follows a junction and empties the main tree's target directory instead
@@ -10243,7 +10252,18 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       manifestOut.warnings = [...manifestOut.warnings, `слой копии не материализован (${err && err.message})`]
     }
   }
-  const out = { ...res, projectRoot, materialized, manifest: manifestOut, provisionMs: Date.now() - t0 }
+  // WHAT THE COPY WAS HANDED WITH — including whether it still has an address to push to.
+  // `pushLock` is named here rather than left to survive a spread, because the daemon copies it
+  // straight into the attempt record: a field that quietly disappears would turn into a record
+  // saying nothing about the lock, which reads exactly like a lock that was never installed.
+  const out = {
+    ...res,
+    pushLock: res.pushLock ?? null,
+    projectRoot,
+    materialized,
+    manifest: manifestOut,
+    provisionMs: Date.now() - t0,
+  }
 
   if (wantsJson(flags)) {
     printJson(out)
