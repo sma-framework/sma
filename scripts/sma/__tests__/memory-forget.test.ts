@@ -290,7 +290,9 @@ describe('memory forget — one command, and it says which state it applied', ()
     expect(start).toBeGreaterThan(0)
     const block = source.slice(start, source.indexOf('\n}', start))
     const keys = [...block.matchAll(/^\s{2}'?[a-zA-Z0-9:_-]+'?:/gm)].length
-    expect(keys).toBe(90)
+    // the size of the dispatch table itself: it moves whenever a verb is genuinely added,
+    // and it is pinned here so that a NEW top-level key can never slip in unnoticed
+    expect(keys).toBe(91)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })
