@@ -104,6 +104,38 @@ describe('resolveTerminalIdentity', () => {
   })
 })
 
+describe('resolveTerminalIdentity — the env name the agent actually exports', () => {
+  // A name that is wrong by one word fails silently and completely: the token is simply
+  // absent, the disambiguator falls back to the process id, and every one-shot call from
+  // one window mints a NEW identity. Measured on a live window before this was fixed:
+  // a claim landed in a lease named after the child process, so the window's own status
+  // line could not find the claim it had just taken, and the session registry filled with
+  // leases no window would ever renew. Both spellings are pinned here so the day one of
+  // them moves, this file says so instead of the registry quietly fragmenting again.
+  it('resolves the window token from the longer spelling the agent exports', () => {
+    const id = resolveTerminalIdentity({ env: { CLAUDE_CODE_SESSION_ID: 'window-token-one' }, pid: 4242 })
+    expect(id.sessionToken).toBe('window-token-one')
+    expect(id.terminalId, 'a resolved token must NOT leave a pid in the identity').not.toContain('4242')
+  })
+
+  it('still resolves the shorter spelling, and our own override outranks both', () => {
+    const short = resolveTerminalIdentity({ env: { CLAUDE_SESSION_ID: 'window-token-two' }, pid: 4242 })
+    expect(short.sessionToken).toBe('window-token-two')
+    const ours = resolveTerminalIdentity({
+      env: { SMA_WINDOW_TOKEN: 'ours', CLAUDE_CODE_SESSION_ID: 'theirs', CLAUDE_SESSION_ID: 'older' },
+      pid: 4242,
+    })
+    expect(ours.sessionToken).toBe('ours')
+  })
+
+  it('two calls from ONE window resolve the SAME identity, two windows stay distinct', () => {
+    const a1 = resolveTerminalIdentity({ env: { CLAUDE_CODE_SESSION_ID: 'window-a' }, pid: 111 })
+    const a2 = resolveTerminalIdentity({ env: { CLAUDE_CODE_SESSION_ID: 'window-a' }, pid: 222 })
+    const b1 = resolveTerminalIdentity({ env: { CLAUDE_CODE_SESSION_ID: 'window-b' }, pid: 333 })
+    expect(a1.terminalId, 'the pid must not fragment one window across its own calls').toBe(a2.terminalId)
+    expect(a1.terminalId).not.toBe(b1.terminalId)
+  })
+})
 describe('resolveTerminalIdentity — window-stable across sequential hook invocations (R7)', () => {
   it('SAME window token + DIFFERENT pids -> SAME terminalId (kills per-invocation fragmentation)', () => {
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'exec' }, pid: 100, sessionToken: 'sess-1' })
