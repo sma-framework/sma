@@ -56,8 +56,14 @@ export const FP_STATUS_VALUES = ['working', 'waiting-for-human', 'idle']
  * tokenHash(token) — a short, stable, deterministic 8-hex suffix derived from a
  * window token. Same token in -> same suffix out on every hook invocation of one
  * window, so it is the renewal-safe disambiguator (unlike the volatile pid).
+ *
+ * EXPORTED because a second reader of this identity now exists: the daemon has to find the
+ * files a worker's own session wrote — its citations and its fired reflexes — and those sit
+ * under the terminal id minted here. Re-typing the formula over there would be two spellings
+ * of one identity, and the day either one changed the daemon would read an empty trace and
+ * report «this attempt used no memory» about a session that used plenty.
  */
-function tokenHash(token) {
+export function tokenHash(token) {
   return createHash('sha1').update(String(token)).digest('hex').slice(0, 8)
 }
 
