@@ -36,17 +36,6 @@ import { clockLabel, plural } from '../format'
  */
 
 /**
- * ЦЕЛИ ПАЛЬЦА И РАЗМЕР ТЕКСТА — не украшение, а условие работы.
- *
- * Каждая нажимаемая строка здесь — настоящая `button` (не `div` с обработчиком, до которого не
- * добраться с клавиатуры), не ниже 44 px, с видимой рамкой фокуса; порядок обхода клавиатурой
- * совпадает с порядком чтения, потому что порядок в разметке и есть порядок на глазу. Числа
- * названы в `narrow.ts`, а тест проводов сверяет их с этими литералами.
- */
-const ROW_CLASS =
-  'flex min-h-[44px] w-full flex-col gap-1 px-4 py-3 text-left focus-visible:outline-2 focus-visible:outline-blue'
-
-/**
  * «идёт 2 ч 10 м» / «ждёт 41 мин» — возраст строки словами.
  *
  * Три разных вопроса о времени не подменяются один другим: у бегущей строки меряется, сколько
@@ -186,14 +175,20 @@ export function NarrowTasks({ onOpenTask }: { onOpenTask: (id: string) => void }
             </p>
           ) : (
             <div className="overflow-hidden rounded-[10px] border border-bd bg-card">
+              {/*
+                ПОЛ ДОСТУПНОСТИ ПИШЕТСЯ ПРЯМО НА КНОПКЕ, а не прячется в общую строку классов:
+                тест проводов читает разметку и требует пол у КАЖДОЙ цели, а класс, уехавший в
+                константу, он на кнопке не увидит — и проверка станет зелёной, ничего не
+                проверив. Немного повтора здесь дешевле, чем гейт, который не умеет краснеть.
+              */}
               {taskUnits.map((unit, i) => (
                 <button
                   key={`${unit.kind}:${unit.id}`}
                   type="button"
                   onClick={() => onOpenTask(unit.id)}
-                  className={`${ROW_CLASS} ${i === 0 ? '' : 'border-t border-bd'} ${
-                    unit.state === 'dec' ? 'bg-warn-s' : ''
-                  }`}
+                  className={`flex min-h-[44px] w-full flex-col gap-1 px-4 py-3 text-left focus-visible:outline-2 focus-visible:outline-blue ${
+                    i === 0 ? '' : 'border-t border-bd'
+                  } ${unit.state === 'dec' ? 'bg-warn-s' : ''}`}
                 >
                   <span className="text-[14px] leading-[1.35] font-semibold text-tx">{unit.title}</span>
                   <span className="text-[13px] leading-[1.4] text-tx2">
