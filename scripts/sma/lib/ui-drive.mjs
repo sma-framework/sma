@@ -100,9 +100,16 @@ export const SWEEP_CAP = 40
  *
  * A channel held open for the life of the screen is NOT a call to wait for — waiting on it
  * would be «networkidle» again, which is how this tool once declared broken exactly the apps
- * that stream. Streams are told apart two ways, both crude on purpose: by the kind the browser
- * gives them, and by age — anything still open after READY_STREAM_AGE_MS is a channel, not an
- * answer somebody is waiting for.
+ * that stream. A channel is told apart by the KIND the browser gives it, and by nothing else.
+ * An «it has been open a long time, so it must be a channel» rule was tried and thrown out
+ * the same hour it was written: on the window this was made for, the state call grew from
+ * sixteen seconds to forty-six as tasks accumulated, walked straight past the threshold, and
+ * the sweep went back to reporting «1 of 1» — a fixed number of seconds cannot tell a slow
+ * answer from a channel, it can only be overtaken by one.
+ *
+ * The price is stated rather than hidden: an endless channel the browser does NOT label as one
+ * costs a run its ceiling and then says «still waiting on N calls». That is loud and wrong in
+ * the safe direction; the other way round is a receipt that describes a page nobody saw.
  *
  * A hard wait long enough for the slowest door would tax every fast page for nothing and still
  * guarantee nothing. A page that never settles inside READY_CEILING_MS does not quietly pass:
@@ -111,8 +118,7 @@ export const SWEEP_CAP = 40
  */
 export const READY_POLL_MS = 250
 export const READY_SETTLE_MS = 1000
-export const READY_CEILING_MS = 75000
-export const READY_STREAM_AGE_MS = 45000
+export const READY_CEILING_MS = 150000
 
 /**
  * Kinds of request that are channels rather than answers: they are open for as long as the
@@ -598,7 +604,7 @@ export function missingDriverMessage(reason = '') {
  * forgives QUIETLY is worth less than a strict one, because nobody can tell what it let past.
  *
  * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean,
- *          viewportsSkipped?:string[], streamsClosed?:number, sparse?:string,
+ *          vanished?:string[], viewportsSkipped?:string[], streamsClosed?:number, sparse?:string,
  *          pathViewport?:{name:string, width:number, height:number}}} [coverage]
  * @returns {string}
  */
@@ -623,7 +629,7 @@ export function renderCoverage(coverage) {
       .filter(Boolean)
       .join('\n')
   }
-  const { touched = 0, total = 0, skipped = 0, refused = [], streamsClosed = 0, sparse = '' } = coverage
+  const { touched = 0, total = 0, skipped = 0, refused = [], streamsClosed = 0, sparse = '', vanished = [] } = coverage
   const lines = [`- Interactive controls pressed: **${touched} of ${total}**`]
   if (sparse) lines.push(`- **${sparse}**`)
   if (walkedAt(coverage)) lines.push(walkedAt(coverage))
@@ -639,9 +645,19 @@ export function renderCoverage(coverage) {
       `- **${refused.length} refused as destructive** and left for a human: ${refused.map((r) => `"${r}"`).join(', ')}`
     )
   }
+  // The list of controls is made once. On a screen where pressing one REPLACES the screen —
+  // a list that opens a card, a step that opens the next step — the ones further down the list
+  // are gone by the time their turn comes. They were never pressed, so nothing is claimed about
+  // them; calling them dead would be a blocker invented by the order the sweep walks in.
+  if (vanished.length) {
+    lines.push(
+      `- **${vanished.length} were gone before their turn** — an earlier press replaced the screen they were on. ` +
+        'They were not pressed and this review says nothing about them.'
+    )
+  }
   // «Nothing was left untouched» is only true when there was something to leave: a sweep
   // that found one control has not covered the page, whatever its own arithmetic says.
-  if (!skipped && !refused.length && !sparse) lines.push('- Nothing was left untouched.')
+  if (!skipped && !refused.length && !sparse && !vanished.length) lines.push('- Nothing was left untouched.')
   return lines.join('\n')
 }
 

@@ -30,7 +30,6 @@ import {
   DESTRUCTIVE_RE,
   READY_CEILING_MS,
   READY_SETTLE_MS,
-  READY_STREAM_AGE_MS,
   STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   WARNING,
@@ -385,13 +384,14 @@ describe('readiness — a page is measured when it has stopped changing, not whe
     expect(r.ready).toBe(true)
   })
 
-  it('a channel is not a call to wait for — by the kind the browser gives it, and by age', () => {
+  it('a channel is told apart by KIND, never by how long it has been open', () => {
     expect(STREAM_RESOURCE_TYPES).toContain('eventsource')
     expect(STREAM_RESOURCE_TYPES).toContain('websocket')
-    // The age backstop covers a stream the browser does not label, and must sit ABOVE the
-    // slowest answer worth waiting for, or a slow door would be mistaken for a channel.
-    expect(READY_STREAM_AGE_MS).toBeGreaterThan(READY_SETTLE_MS)
-    expect(READY_CEILING_MS).toBeGreaterThan(READY_STREAM_AGE_MS)
+    // Measured, not preferred: the door of the window this was written for grew from sixteen
+    // seconds to forty-six in one afternoon. Any fixed «open this long means it is a channel»
+    // number is eventually overtaken by an honest answer, and the sweep goes back to measuring
+    // a skeleton. The ceiling — the one number left — must be able to outlast such a door.
+    expect(READY_CEILING_MS).toBeGreaterThan(60000)
   })
 
   it('a page that never settled is a BLOCKING finding that names where and how long — never a quiet pass', () => {
@@ -431,6 +431,20 @@ describe('the sweep denominator — thin coverage may not wear the shape of full
     const md = renderCoverage({ ran: true, touched: 1, total: 1, skipped: 0, refused: [], sparse: sweepSparseNote(1) })
     expect(md).toContain('pressed: **1 of 1**')
     expect(md).toContain('Only 1 interactive control')
+    expect(md).not.toContain('Nothing was left untouched')
+  })
+
+  it('a control that left the screen before its turn is counted and named, not called dead', () => {
+    const md = renderCoverage({
+      ran: true,
+      touched: 17,
+      total: 20,
+      skipped: 0,
+      refused: [],
+      vanished: ['(a control that was on the screen when the list was made)', '(another)'],
+    })
+    expect(md).toContain('2 were gone before their turn')
+    expect(md).toContain('says nothing about them')
     expect(md).not.toContain('Nothing was left untouched')
   })
 
