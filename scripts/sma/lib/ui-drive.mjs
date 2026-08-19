@@ -33,6 +33,35 @@ export const VIEWPORTS = Object.freeze([
   { name: 'mobile', width: 375, height: 812 },
 ])
 
+/**
+ * resolveDriveViewport(name) -> {ok:true, viewport} | {ok:false, reason}
+ *
+ * The width the scripted path and the sweep are walked at. By default both walk the desktop,
+ * where an operator's claim about a window is usually made — but a claim like «the phone can
+ * take the task through to approval» is about a NARROW screen, and walking it wide would
+ * prove the opposite of what was said out loud.
+ *
+ * The choice is restricted to the frozen list above, and that restriction is the point rather
+ * than a convenience: every width in it is already opened and already measured on every run,
+ * so a path walked at one of them is walked where the evidence already lives. An arbitrary
+ * pixel number would add a width nobody measures — one more run, no more knowledge — and the
+ * receipt would start naming sizes that appear nowhere else in it.
+ *
+ * @param {string} name
+ */
+export function resolveDriveViewport(name) {
+  const asked = String(name ?? '').trim()
+  const viewport = VIEWPORTS.find((v) => v.name === asked)
+  if (viewport) return { ok: true, viewport }
+  const allowed = VIEWPORTS.map((v) => `${v.name} (${v.width}px)`).join(', ')
+  return {
+    ok: false,
+    reason: asked
+      ? `unknown width "${asked}" — the path may be walked at one of the widths this run already opens: ${allowed}`
+      : `--at needs a width name — one of the widths this run already opens: ${allowed}`,
+  }
+}
+
 /** Severity vocabulary, shared with the retroactive audit so one glossary covers both. */
 export const BLOCKER = 'BLOCKER'
 export const WARNING = 'WARNING'
@@ -448,7 +477,8 @@ export function missingDriverMessage(reason = '') {
  * forgives QUIETLY is worth less than a strict one, because nobody can tell what it let past.
  *
  * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean,
- *          viewportsSkipped?:string[], streamsClosed?:number}} [coverage]
+ *          viewportsSkipped?:string[], streamsClosed?:number,
+ *          pathViewport?:{name:string, width:number, height:number}}} [coverage]
  * @returns {string}
  */
 export function renderCoverage(coverage) {
@@ -456,13 +486,25 @@ export function renderCoverage(coverage) {
     Array.isArray(c?.viewportsSkipped) && c.viewportsSkipped.length
       ? `- Viewports NOT opened — the app declares a minimum width: ${c.viewportsSkipped.join(', ')}. This run says nothing about narrower screens.`
       : ''
+  // The width the path was walked at is printed ONLY when the operator declared one. A claim
+  // like «this goes through on a phone» is worth what the receipt can show about the width it
+  // was tried at; without the declaration the line is absent and the receipt reads as before.
+  const walkedAt = (c) => {
+    const p = c?.pathViewport
+    return p?.name ? `- Scripted path & sweep walked at: **${p.name} (${p.width}×${p.height})** — declared with \`--at\`.` : ''
+  }
   if (!coverage || coverage.ran === false) {
-    return ['_The interactive surface was not swept — only the scripted path was walked._', declared(coverage)]
+    return [
+      '_The interactive surface was not swept — only the scripted path was walked._',
+      walkedAt(coverage),
+      declared(coverage),
+    ]
       .filter(Boolean)
       .join('\n')
   }
   const { touched = 0, total = 0, skipped = 0, refused = [], streamsClosed = 0 } = coverage
   const lines = [`- Interactive controls pressed: **${touched} of ${total}**`]
+  if (walkedAt(coverage)) lines.push(walkedAt(coverage))
   if (declared(coverage)) lines.push(declared(coverage))
   if (streamsClosed) {
     lines.push(

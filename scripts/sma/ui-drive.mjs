@@ -3,10 +3,14 @@
  * ui-drive.mjs — open a running app, walk it, and write a receipt of what was seen.
  *
  * Usage:
- *   node scripts/sma/ui-drive.mjs <url> [step ...]
+ *   node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>]
+ *                                       [--at <desktop|tablet|mobile>]
  *
  * Steps: goto:<path> | click:<visible text> | type:<selector>=<text>
  *        wait:<ms> | shot:<name> | expect:<visible text>
+ *
+ * --at names the width the scripted path and the sweep are walked at (every width is opened
+ *      and measured regardless); without it both walk the desktop, as they always have.
  *
  * Exit: 0 clean (or warnings only) · 1 blocking findings · 2 bad arguments
  *       3 NOT RUN — no browser driver, nothing was looked at
@@ -40,6 +44,7 @@ import {
   missingDriverMessage,
   parseSteps,
   renderReceipt,
+  resolveDriveViewport,
   verdict,
   worstOverflow,
 } from './lib/ui-drive.mjs'
@@ -180,10 +185,44 @@ async function main() {
     process.stdout.write('SMA ui-drive: --min-viewport needs a positive pixel number.\n')
     process.exit(2)
   }
-  const positional = argv.filter((a, i) => a !== '--no-sweep' && a !== '--min-viewport' && !(mvIdx >= 0 && i === mvIdx + 1))
+  // --at <desktop|tablet|mobile>: the operator DECLARES the width the scripted path and the
+  // sweep are walked at. Both used to be nailed to the desktop, so a claim about a narrow
+  // screen could not be walked at all — the run opened the phone, measured it, and then went
+  // and walked the path somewhere else. The width is a name from the frozen list, never a
+  // pixel number: see resolveDriveViewport for why that restriction is the point.
+  const atIdx = argv.indexOf('--at')
+  let pathViewport = null
+  if (atIdx >= 0) {
+    const asked = resolveDriveViewport(argv[atIdx + 1])
+    if (!asked.ok) {
+      process.stdout.write(`SMA ui-drive: ${asked.reason}\n`)
+      process.exit(2)
+    }
+    pathViewport = asked.viewport
+  }
+  // A declared minimum that cuts off the declared path is a contradiction, and the run refuses
+  // it out loud. Walking the path somewhere else instead — or quietly not walking it — would
+  // hand back a receipt for a path nobody took, and a run that did not happen is never a pass.
+  if (pathViewport && minViewport > pathViewport.width) {
+    process.stdout.write(
+      `SMA ui-drive: --at ${pathViewport.name} (${pathViewport.width}px) is below --min-viewport ${minViewport} — ` +
+        'the width you asked the path to walk is the one you declared the app does not serve. Nothing was run.\n'
+    )
+    process.exit(2)
+  }
+  const positional = argv.filter(
+    (a, i) =>
+      a !== '--no-sweep' &&
+      a !== '--min-viewport' &&
+      a !== '--at' &&
+      !(mvIdx >= 0 && i === mvIdx + 1) &&
+      !(atIdx >= 0 && i === atIdx + 1)
+  )
   const [url, ...stepArgv] = positional
   if (!url) {
-    process.stdout.write('usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>]\n')
+    process.stdout.write(
+      'usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>] [--at <desktop|tablet|mobile>]\n'
+    )
     process.exit(2)
   }
 
@@ -226,6 +265,9 @@ async function main() {
   let coverage = { ran: false }
   const stampViewportSkips = () => {
     if (skippedViewports.length) coverage = { ...coverage, viewportsSkipped: skippedViewports }
+    // A declared width goes into the receipt, so «the path was walked on a phone» is a fact a
+    // reader can check rather than a word they have to take.
+    if (pathViewport) coverage = { ...coverage, pathViewport }
   }
   const origin = (() => {
     try {
@@ -277,6 +319,8 @@ async function main() {
     shots.push(join(outDir, file))
   }
 
+  // Without --at the path and the sweep walk exactly where they always did: 1440×900.
+  const walkViewport = pathViewport ? { width: pathViewport.width, height: pathViewport.height } : { width: 1440, height: 900 }
   const openedViewports = VIEWPORTS.filter((vp) => vp.width >= minViewport)
   const skippedViewports = VIEWPORTS.filter((vp) => vp.width < minViewport).map((vp) => `${vp.name} (${vp.width}px)`)
 
@@ -330,9 +374,10 @@ async function main() {
       await closePage(page)
     }
 
-    // The scripted path is walked once, at desktop, where the operator's claim was made.
+    // The scripted path is walked once — at desktop, where an operator's claim is usually
+    // made, or at the width the operator declared with --at when the claim is about that one.
     if (parsed.steps.length) {
-      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+      const page = await browser.newPage({ viewport: walkViewport })
       watch(page)
       await open(page, url).catch(() => {})
       let n = 1
@@ -361,7 +406,7 @@ async function main() {
     // The sweep runs LAST, on its own page: it presses things and navigates, and the
     // scripted path's verdict must not depend on wreckage the sweep left behind.
     if (!noSweep) {
-      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+      const page = await browser.newPage({ viewport: walkViewport })
       watch(page)
       await open(page, url).catch(() => {})
       coverage = { ran: true, ...(await sweep(page, url, { deadControls, unnamedControls })) }
