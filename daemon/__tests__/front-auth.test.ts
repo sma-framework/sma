@@ -936,6 +936,233 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.cleanup.reason).toContain('верб недоступен')
     })
 
+    /**
+     * ═══ СНАЧАЛА ПАМЯТЬ, ПОТОМ УБОРКА — И ЭТО УТВЕРЖДАЕТСЯ ПОРЯДКОМ, А НЕ НАМЕРЕНИЕМ ═══
+     *
+     * Урок работника лежит черновиком В КОПИИ. На проекте, где каталог правил вне git (так
+     * живёт этот продукт), слияние ветки его не приносит, а принудительное удаление копии
+     * сносит каталог вместе с ним. Значит между слиянием и уборкой обязан стоять сбор памяти,
+     * и «обязан стоять» здесь — не комментарий: две зависимости, вызванные в неверном порядке,
+     * стирают урок молча и ровно один раз на задачу. Поэтому кейс смотрит на
+     * ПОСЛЕДОВАТЕЛЬНОСТЬ вызовов, а не на то, что обе позваны.
+     */
+    const orderSpies = (harvestAnswer: any, cleanupAnswer: any = { ok: true, removed: true }) => {
+      const order: string[] = []
+      const memoryHarvest = async (a: any) => {
+        order.push('memoryHarvest')
+        if (typeof harvestAnswer === 'function') return harvestAnswer(a)
+        return harvestAnswer
+      }
+      const worktreeCleanup = async () => {
+        order.push('worktreeCleanup')
+        return cleanupAnswer
+      }
+      return { memoryHarvest, worktreeCleanup, order }
+    }
+
+    it('merged:true → память собирается ПЕРЕД уборкой, и ответ несёт что доехало в корпус', async () => {
+      const { memoryHarvest, worktreeCleanup, order } = orderSpies({
+        ok: true,
+        mode: 'untracked',
+        copied: ['drafts/lesson-r-81-alpha.md'],
+        applied: ['lesson-r-81-alpha'],
+        drafted: ['approach-r-81-1'],
+        refused: [],
+        skipCleanup: false,
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          memoryHarvest,
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-81' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(order).toEqual(['memoryHarvest', 'worktreeCleanup'])
+      const out = JSON.parse(res.body)
+      expect(out.memoryHarvest).toEqual({
+        ok: true,
+        mode: 'untracked',
+        copied: ['drafts/lesson-r-81-alpha.md'],
+        applied: ['lesson-r-81-alpha'],
+        drafted: ['approach-r-81-1'],
+        refused: [],
+      })
+      expect(out.cleanup.removed).toBe(true)
+    })
+
+    it('сбор провалился на игнорируемом корпусе — копия НЕ убирается, и причина названа', async () => {
+      const { memoryHarvest, worktreeCleanup, order } = orderSpies({
+        ok: false,
+        mode: 'untracked',
+        copied: [],
+        applied: [],
+        drafted: [],
+        refused: [{ id: 'lesson-r-82-alpha', reason: 'конвейер отказал' }],
+        skipCleanup: true,
+        reason: 'конвейер отказал',
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          memoryHarvest,
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-82' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(order).toEqual(['memoryHarvest']) // уборки не было вовсе
+      const out = JSON.parse(res.body)
+      expect(out.ok).toBe(true) // приёмка — правда; сбор её не отменяет
+      expect(out.cleanup.removed).toBe(false)
+      expect(out.cleanup.reason).toContain('конвейер отказал')
+      expect(out.memoryHarvest.ok).toBe(false)
+      expect(out.memoryHarvest.refused[0].id).toBe('lesson-r-82-alpha')
+    })
+
+    it('конвейер отказал, но черновик уже в дереве — уборка ИДЁТ, отказ виден в ответе', async () => {
+      // Отказ приёмки — сообщение человеку, а не причина держать копию: урок к этому моменту
+      // лежит вторым экземпляром в основном дереве. Сбор говорит это одним полем, и дверь
+      // обязана читать именно его, а не выводить решение из `ok`.
+      const { memoryHarvest, worktreeCleanup, order } = orderSpies({
+        ok: false,
+        mode: 'untracked',
+        copied: ['drafts/lesson-r-83-alpha.md'],
+        applied: [],
+        drafted: [],
+        refused: [{ id: 'lesson-r-83-alpha', reason: 'запись не проходит проверку схемы' }],
+        skipCleanup: false,
+        reason: 'запись не проходит проверку схемы',
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          memoryHarvest,
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-83' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(order).toEqual(['memoryHarvest', 'worktreeCleanup'])
+      const out = JSON.parse(res.body)
+      expect(out.cleanup.removed).toBe(true)
+      expect(out.memoryHarvest.ok).toBe(false)
+      expect(out.memoryHarvest.refused[0].id).toBe('lesson-r-83-alpha')
+    })
+
+    it('сбор бросил — приёмка стоит, копия сохранена, исключение доехало причиной', async () => {
+      const { memoryHarvest, worktreeCleanup, order } = orderSpies(() => {
+        throw new Error('корпус недоступен')
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          memoryHarvest,
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-83' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(order).toEqual(['memoryHarvest'])
+      const out = JSON.parse(res.body)
+      expect(out.ok).toBe(true)
+      expect(out.memoryHarvest.ok).toBe(false)
+      expect(out.memoryHarvest.reason).toContain('корпус недоступен')
+      expect(out.cleanup.reason).toContain('корпус недоступен')
+    })
+
+    it('слияние не прошло — не собирают и не убирают: работу ещё могут доделать в копии', async () => {
+      const { memoryHarvest, worktreeCleanup, order } = orderSpies({ ok: true, skipCleanup: false })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async () => ({ merged: false, message: 'конфликт' }),
+          repoDir: '/repo',
+          memoryHarvest,
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-84' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(order).toEqual([])
+      const out = JSON.parse(res.body)
+      expect(Object.hasOwn(out, 'memoryHarvest')).toBe(false)
+      expect(Object.hasOwn(out, 'cleanup')).toBe(false)
+    })
+
+    it('демон без сбора памяти убирает как прежде — поля memoryHarvest в ответе нет', async () => {
+      const { worktreeCleanup, calls } = cleanupSpy({ ok: true, removed: true })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-85' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(calls).toHaveLength(1)
+      expect(Object.hasOwn(JSON.parse(res.body), 'memoryHarvest')).toBe(false)
+    })
+
     it('демон без уборки отвечает ровно как прежде — без поля cleanup', async () => {
       const front = createFrontServer({
         config: { token: TOKEN },
@@ -1936,7 +2163,62 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
     expect(out.attempts[1].approachNote).toBe('взял существующий писатель конфига')
     expect(out.attempts[0].approachNote).toBeUndefined()
     // (c) the memory layer is IDS ONLY
-    expect(out.journal.memoryTrace).toEqual({ notes: ['reference_sma_dev_workspace'], reflexes: ['no-new-store'] })
+    expect(out.journal.memoryTrace).toMatchObject({ notes: ['reference_sma_dev_workspace'], reflexes: ['no-new-store'] })
+  })
+
+  /**
+   * ═══ СЛОЙ ПАМЯТИ ПОПЫТКИ ДОЕЗЖАЕТ ДО КАРТОЧКИ ЦЕЛИКОМ ═══
+   *
+   * Слой перестал быть заявлением конфига и стал наблюдением: что сессия открыла в корпусе,
+   * сколько раз позвала конвейер, что сработало под её личностью, чему она научила и оставила
+   * ли записку. Всё это уже писалось в журнал — и не отдавалось никому: читалка брала из слоя
+   * ровно два списка. Вычислено и записано — не то же самое, что предъявлено.
+   *
+   * Берётся ПОСЛЕДНЯЯ строка слоя: списки заметок складываются по всем попыткам (их читали
+   * все), а «чему научила» и «оставила ли записку» принадлежат последней — иначе провал
+   * первой попытки навсегда закрыл бы урок второй.
+   */
+  it('карточка видит весь слой памяти: что прочитано, откуда рефлексы, чему научила попытка', async () => {
+    const ledger = {
+      readAttempts: () => [{ attempt: 1, workerId: 'max-1', outcome: 'failed' }, { attempt: 2, workerId: 'max-2', outcome: 'completed' }],
+      readJournalEntries: () => [
+        {
+          taskId: 'R-9',
+          attempt: 1,
+          layer: 'memory',
+          payload: { notes: ['alpha'], reflexes: [], loaded: { index: true, reads: ['alpha'], loadCalls: 1 }, lesson: { missing: true }, approach: 'absent' },
+          recordedAt: '2026-08-01T02:00:00.000Z',
+        },
+        {
+          taskId: 'R-9',
+          attempt: 2,
+          layer: 'memory',
+          payload: {
+            notes: ['beta'],
+            reflexes: ['no-new-store'],
+            reflexSource: 'sma-journal',
+            loaded: { index: true, reads: ['beta'], loadCalls: 2 },
+            autoMemoryReads: ['memory-check-grey-morning'],
+            lesson: { written: 'drafts/lesson-r-9-alpha.md' },
+            approach: 'journaled',
+          },
+          recordedAt: '2026-08-01T03:00:00.000Z',
+        },
+      ],
+    }
+    const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger } })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const trace = JSON.parse(res.body).journal.memoryTrace
+    // списки — по всем попыткам, без повторов
+    expect(trace.notes).toEqual(['alpha', 'beta'])
+    expect(trace.reflexes).toEqual(['no-new-store'])
+    // …а «чем кончилась память задачи» — по ПОСЛЕДНЕЙ строке слоя
+    expect(trace.loaded).toEqual({ index: true, reads: ['beta'], loadCalls: 2 })
+    expect(trace.autoMemoryReads).toEqual(['memory-check-grey-morning'])
+    expect(trace.reflexSource).toBe('sma-journal')
+    expect(trace.lesson).toEqual({ written: 'drafts/lesson-r-9-alpha.md' })
+    expect(trace.approach).toBe('journaled')
   })
 
   it('the sessionId on a ledger row does NOT travel to the card — the read model is an explicit pick', async () => {
@@ -1960,7 +2242,12 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
     const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
     expect(res.statusCode).toBe(200)
     const out = JSON.parse(res.body)
-    expect(out.journal).toEqual({ dispatcher: [], memoryTrace: { notes: [], reflexes: [] } })
+    expect(out.journal).toEqual({
+      dispatcher: [],
+      // Каждое поле НАЗВАНО нулём, а не опущено: карточка читает одну форму для любой задачи,
+      // и «этого ключа здесь нет» — то, с чего поверхность начинает гадать.
+      memoryTrace: { notes: [], reflexes: [], loaded: null, autoMemoryReads: null, reflexSource: null, lesson: null, approach: null },
+    })
   })
 })
 

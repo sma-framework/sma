@@ -926,7 +926,12 @@ export function Screen() {
           <div className="flex items-start gap-7">
             <div className="min-w-0 flex-1 rounded-[14px] border border-bd bg-card px-6 pt-[22px] pb-2 shadow-panel">
               <div className="mb-4 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">Хронология</div>
-              <AttemptTimeline attempts={attempts} returnedNotes={detail.data?.returnedNotes ?? []} taskId={taskId} />
+              <AttemptTimeline
+                attempts={attempts}
+                returnedNotes={detail.data?.returnedNotes ?? []}
+                taskId={taskId}
+                memoryTrace={detail.data?.journal?.memoryTrace ?? null}
+              />
 
               {returning ? (
                 <div className="mb-5 flex flex-col gap-2.5 rounded-[11px] border border-bd2 bg-surf p-3.5">
