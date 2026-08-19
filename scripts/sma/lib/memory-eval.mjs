@@ -223,6 +223,28 @@ export function floorFailures(summary = {}, floors = DEFAULT_FLOORS) {
 }
 
 /**
+ * floorVerdict(summary, floors) → 'no-data' | 'met' | 'violated'.
+ *
+ * WHY A NAMED VERDICT AND NOT JUST THE EMPTY LIST. `floor_failures` is a list of what
+ * went wrong, and it is empty in TWO completely different worlds: a set that asked its
+ * questions and got clean answers, and a set that asked nothing at all. Reading the
+ * empty list as «everything is fine» turns an absence of data into a pass — the same
+ * fabrication the honest-empties law already forbids for the ranking numbers, except
+ * this one reads to a human as a green check mark. A measurement with no cases has no
+ * verdict to give, and it says so here in one word rather than leaving the reader to
+ * infer it from a shape that cannot distinguish the two.
+ *
+ * @param {object} summary  a captureMemoryEval summary
+ * @param {object} [floors] default DEFAULT_FLOORS
+ * @returns {'no-data'|'met'|'violated'}
+ */
+export function floorVerdict(summary = {}, floors = DEFAULT_FLOORS) {
+  const cases = Number(summary?.cases_total)
+  if (!Number.isFinite(cases) || cases <= 0) return 'no-data'
+  return floorFailures(summary, floors).length ? 'violated' : 'met'
+}
+
+/**
  * captureMemoryEval(opts) → the canon §8 measurement of the CURRENT loader.
  *
  * Report:
@@ -436,6 +458,9 @@ export function captureMemoryEval(opts = {}) {
     summary,
     floors,
     floor_failures: floorFailures(summary, floors),
+    // The verdict a reader is allowed to quote. With no cases it is 'no-data', and the
+    // empty failure list beside it means «nothing was asked», not «nothing was wrong».
+    floor_verdict: floorVerdict(summary, floors),
     check_command: checkCommand,
   }
 }
@@ -543,6 +568,9 @@ export function captureMemoryExperiment(opts = {}) {
     // number while a must-be-zero floor goes red has not passed, and saying so needs the
     // floors of the arm being judged, not a delta between two verdicts.
     floor_failures: treatment.floor_failures,
+    // …and an A/B run over an empty set is not a comparison at all: two arms that were
+    // never asked anything cannot differ, so there is nothing here to record.
+    floor_verdict: treatment.floor_verdict,
     check_command: checkCommand,
   }
 }
