@@ -2012,6 +2012,12 @@ function deriveWaves(rows, holds, { machineId } = {}) {
 export async function deriveState(deps = {}) {
   const { adapter, windows, config = {}, usageReader, readReceipt, execGit } = deps
   const readTaskAttempts = attemptsReader(deps)
+  // «Сделано / не получилось» ЗА ПЕРИОД — an injected read model over the attempt ledger
+  // (front/worker-stats.mjs), wired at the composition root like every other collaborator, so
+  // this file grows no static edge onto it and a daemon that wires none simply carries nothing.
+  // The alternative it replaces was the screen counting the done[] slice of this very payload:
+  // a figure that moved with the length of a list rather than with the work.
+  const workerStats = deps.workerStats && typeof deps.workerStats.statsFor === 'function' ? deps.workerStats : null
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const now = clock()
   const workersCfg = Array.isArray(config.workers) ? config.workers : []
@@ -2195,6 +2201,12 @@ export async function deriveState(deps = {}) {
     const pulseAgeSec = Number.isFinite(touchMs) ? Math.max(0, Math.round((now - touchMs) / 1000)) : undefined
     const presence = derivePresence({ windowOpen: open, hasActiveTask: !!active, pulseAgeSec })
 
+    // The period figures. ABSENT rather than zeroed when the ledger could not be read (or none
+    // is wired): on the card a zero reads as «этот ничего не сделал», which is a measurement,
+    // and «нет данных» is the truth. A readable but empty ledger DOES yield zeros — the
+    // catalogue was opened and nothing concluded in the period, and that is a measurement.
+    const stats30d = workerStats ? workerStats.statsFor(w.id) : null
+
     return {
       id: w.id,
       lane: w.lane,
@@ -2217,6 +2229,7 @@ export async function deriveState(deps = {}) {
       window: bar,
       ...(pulseAgeSec !== undefined ? { pulseAgeSec } : {}),
       presence,
+      ...(stats30d ? { stats30d } : {}),
     }
   })
 

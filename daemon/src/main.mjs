@@ -94,6 +94,7 @@ import {
 } from './front/project-sync.mjs'
 import { tick, runDaemon, parseVerbResult } from './loop.mjs'
 import { createAgingMemory } from './policy/aging-memory.mjs'
+import { createWorkerStats } from './front/worker-stats.mjs'
 import { createFrontServer } from './front/server.mjs'
 import {
   deriveState,
@@ -637,6 +638,12 @@ export function createDaemon(o = {}) {
         }),
     }
 
+  // …and the roster's period figures over that same ledger dir: «сделано / не получилось»
+  // за 30 дней, counted from the concluded attempts instead of from whatever finished rows a
+  // poll still carried. Built once because it holds the TTL cache that keeps a frequent state
+  // read from scanning the whole ledger directory every time.
+  const workerStats = o.workerStats ?? createWorkerStats({ ledgerDir, clock })
+
   // (2) the SSE hint hub + the event-wrapped adapter handed to BOTH sides.
   const hub = o.hub ?? createEventHub({ clock })
   const adapter = wrapAdapterWithEvents(durable, hub, { clock })
@@ -806,6 +813,10 @@ export function createDaemon(o = {}) {
         hub,
         ledger, // the attempt ledger AND the decision journal ride the same seam
         ledgerDir,
+        // …and the read model that counts a worker's concluded attempts over the last 30 days
+        // out of that same ledger. It is built ONCE here (it holds a TTL cache) and injected,
+        // so the derive keeps no static edge onto it and the numbers ride the existing read.
+        workerStats,
         repoDir, // the tree being SERVED — reads only
         launchDir, // the process's own start directory — the write-time derive baseline
         deriveState,
