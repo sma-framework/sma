@@ -547,3 +547,116 @@ describe('horizon gate — a claim that is not due yet is not scored', () => {
     expect(scored.records).toHaveLength(1)
   })
 })
+
+// ── The exit code as a first-class unit of measurement ──────────────────────
+//
+// A prediction that says «the suite is green» used to be unable to be WRONG:
+// the scorer's runner threw on a nonzero exit, so a failing suite produced
+// 'error' and a passing one produced 'error' too (no numeric last line).
+// The mechanism built to catch our mistakes could not catch them. These cases
+// pin the fix AND pin that the safety boundary did not move a single character.
+
+/** A runner in the contract the scorer now asks for: both halves of the run. */
+function ranWith(stdout: string, exitCode: number) {
+  return { stdout, exitCode }
+}
+
+describe('exit code as a unit of measurement', () => {
+  it('a command exiting 1 under measure exit-code with «== 0» is a MISS, not an error', () => {
+    const runner = () => ranWith('some log line\n', 1)
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].hit).toBe(false)
+    expect(records[0].actual).toBe(1)
+  })
+
+  it('the same entry exiting 0 is a HIT', () => {
+    const runner = () => ranWith('all tests passed\n', 0)
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('hit')
+    expect(records[0].actual).toBe(0)
+  })
+
+  it('a runner reporting output ONLY cannot answer an exit-code claim — error, never a silent hit', () => {
+    const runner = () => 'plenty of words, no exit code\n'
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('error')
+  })
+
+  it('an unknown measure fails validation instead of quietly falling back', () => {
+    const p = writePlan(entryYaml({ measure: '"stderr"' }))
+    const { records, invalid } = scorePlan({ planPath: p, runCommand: () => ranWith('', 0) })
+    expect(records).toEqual([])
+    expect(invalid[0].errors.join(' ')).toContain('measure')
+  })
+})
+
+describe('the safety boundary did NOT move (reverse checks)', () => {
+  it('a connector with a substitution is still skipped-unsafe and the runner is NEVER invoked', () => {
+    let called = 0
+    const runner = () => {
+      called += 1
+      return ranWith('', 0)
+    }
+    const p = writePlan(entryYaml({ measure: '"exit-code"', check_command: '"npm test && echo $(whoami)"' }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('skipped-unsafe')
+    expect(called).toBe(0)
+  })
+
+  it('«change directory, then run» written as a STRING is still skipped-unsafe', () => {
+    let called = 0
+    const runner = () => {
+      called += 1
+      return ranWith('', 0)
+    }
+    const p = writePlan(entryYaml({ measure: '"exit-code"', check_command: '"cd ../elsewhere && npm test"' }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('skipped-unsafe')
+    expect(called).toBe(0)
+  })
+})
+
+describe('the working directory is a FIELD, never joined into the command string', () => {
+  it('the cwd field reaches the runner as a parameter and leaves the command untouched', () => {
+    const seen: Array<{ cmd: string; opts: { cwd?: string } }> = []
+    const runner = (cmd: string, opts: { cwd?: string } = {}) => {
+      seen.push({ cmd, opts })
+      return ranWith('', 3)
+    }
+    const p = writePlan(entryYaml({ measure: '"exit-code"', cwd: `'${dir}'`, comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].cmd).toBe('node scripts/sma/check.mjs') // no connector, no path glued on
+    expect(seen[0].opts.cwd).toBe(dir)
+    // A directory where the command fails is a MISS or an error — never «skipped as unsafe».
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].verdict).not.toBe('skipped-unsafe')
+  })
+})
+
+describe('backward compatibility: the default measure is unchanged', () => {
+  it('an entry with NO measure keeps the numeric-last-line behaviour, byte for byte', () => {
+    const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }))
+    const hit = scorePlan({ planPath: p, runCommand: () => 'noise\n42\n' })
+    expect(hit.records[0].verdict).toBe('hit')
+    expect(hit.records[0].actual).toBe(42)
+
+    const p2 = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }), 'PLAN2.md')
+    const miss = scorePlan({ planPath: p2, runCommand: () => 'noise\n7\n' })
+    expect(miss.records[0].verdict).toBe('miss')
+
+    const p3 = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }), 'PLAN3.md')
+    const err = scorePlan({ planPath: p3, runCommand: () => 'no numbers here\n' })
+    expect(err.records[0].verdict).toBe('error')
+  })
+
+  it('an entry with NO measure ignores the exit code a new-contract runner reports', () => {
+    const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }))
+    const { records } = scorePlan({ planPath: p, runCommand: () => ranWith('noise\n42\n', 1) })
+    expect(records[0].verdict).toBe('hit') // the last line is the fact; the exit code is not
+  })
+})
