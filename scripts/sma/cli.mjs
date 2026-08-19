@@ -10274,8 +10274,31 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       ? flags.path.trim()
       : join(dirname(mainRoot), '.sma-worktrees', terminalId) // sibling dir (avoids the nested-removal bug)
 
+  // ОТКУДА ОТВОДИТСЯ КОПИЯ — ИЗ ТОГО ДЕРЕВА, КУДА ПОТОМ СЛИВАЕТ ПРИЁМКА.
+  //
+  // Корень по git-common-dir отвечает ОСНОВНЫМ деревом из любой связанной копии, и это
+  // правильный ответ на два вопроса: где лежат чужие рабочие копии и где вести их список.
+  // Но на вопрос «от какого коммита отвести ветку работника и чей неотслеживаемый слой ему
+  // положить» ответ другой: у подключённого проекта. Когда проектом подключена связанная
+  // копия (своя ветка, свой `.claude/`, своя приёмка), ответ по общему корню отводит работника
+  // от ЧУЖОГО HEAD и кладёт ему ЧУЖИЕ правила — а урок, который он напишет, приёмка будет
+  // искать в каталоге проекта, где его не будет. Поэтому база и слой берутся у текущего
+  // каталога, а место копий и учёт деревьев — по-прежнему у корня.
+  let projectRoot = mainRoot
+  try {
+    const top = String(execGit(['rev-parse', '--show-toplevel'], { cwd: process.cwd() })).trim()
+    // ТОТ ЖЕ ВОПРОС, ЗАДАННЫЙ КОРНЮ. Сравниваются не строки путей, а ответы git об одном и том
+    // же дереве: на Windows один каталог приходит то коротким именем, то длинным, и текстовое
+    // сравнение объявило бы обычную установку «связанной копией». Совпало — оставляем корень
+    // ровно в той форме, в какой он был: дальше эта строка идёт в цель ссылки.
+    const mainTop = String(execGit(['rev-parse', '--show-toplevel'], { cwd: mainRoot })).trim()
+    if (top && top !== mainTop) projectRoot = resolve(top)
+  } catch {
+    /* вне репозитория или без git — прежний ответ остаётся в силе */
+  }
+
   const t0 = Date.now()
-  const res = wt.reuseOrProvision({ branch, path, execGit, cwd: mainRoot })
+  const res = wt.reuseOrProvision({ branch, path, execGit, cwd: projectRoot })
 
   // The checkout is only half the copy: carry the untracked layer and attach the
   // dependencies. This runs for a REUSED copy too — a session returning a day later
@@ -10285,10 +10308,10 @@ async function cmdWorktree({ positionals, flags, dirs }) {
   let manifestOut = { source: 'default', warnings: [] }
   if (res.ok !== false) {
     try {
-      const manifest = wt.readWorktreeInclude({ mainRoot })
+      const manifest = wt.readWorktreeInclude({ mainRoot: projectRoot })
       manifestOut = { source: manifest.source, warnings: Array.isArray(manifest.warnings) ? manifest.warnings : [] }
       const mat = wt.materializeInclude({
-        mainRoot,
+        mainRoot: projectRoot,
         copyPath: res.path,
         manifest,
         execGit,
@@ -10301,7 +10324,7 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       manifestOut.warnings = [...manifestOut.warnings, `слой копии не материализован (${err && err.message})`]
     }
   }
-  const out = { ...res, materialized, manifest: manifestOut, provisionMs: Date.now() - t0 }
+  const out = { ...res, projectRoot, materialized, manifest: manifestOut, provisionMs: Date.now() - t0 }
 
   if (wantsJson(flags)) {
     printJson(out)
