@@ -5873,10 +5873,31 @@ async function cmdEval({ positionals, flags, dirs }) {
 }
 
 /**
+ * The one line printed where a verdict would go when the gold set asked nothing at all.
+ * It is a sentence, not a symbol: a check mark is read as «fine» in a quarter of a
+ * second, and there is nothing here to be fine about.
+ */
+const NO_DATA_VERDICT_LINE =
+  '  ○ нет данных: кейсов 0 — вердикт о полах не выносится (пустой набор не измеряет ничего)\n'
+
+/**
+ * The exit code of a floors verdict, for both arms of the verb.
+ *
+ * ZERO EXITS ONLY ON A VERDICT THAT WAS ACTUALLY REACHED. A gold set with no cases has
+ * not passed the floors — it has not been asked about them, and the two are the same
+ * only to a reader who stops at the exit code. Since this verb's exit code is what a
+ * receipt and an automated re-verification read, an empty run that exited 0 would let an
+ * absent measurement be recorded as a green gate. The `--stat` path is untouched: it
+ * prints ONE value and is a value printer, not a verdict.
+ */
+const floorExit = (report) => (report?.floor_verdict === 'met' ? 0 : 1)
+
+/**
  * eval memory — the memory benchmark (canon §8).
  *
- * EXIT CODE IS THE VERDICT: non-zero when any floor is violated. That is the point of the
- * floors — a benchmark that always exits 0 is a report nobody reads.
+ * EXIT CODE IS THE VERDICT: non-zero when any floor is violated, and non-zero as well
+ * when there was no set to render a verdict over. That is the point of the floors — a
+ * benchmark that always exits 0 is a report nobody reads.
  */
 async function evalMemory({ flags, dirs }) {
   const memoryEval = await import('./lib/memory-eval.mjs')
@@ -5921,7 +5942,7 @@ async function evalMemory({ flags, dirs }) {
 
   if (wantsJson(flags)) {
     printJson(report)
-    return report.floor_failures.length ? 1 : 0
+    return floorExit(report)
   }
 
   const s = report.summary
@@ -5940,7 +5961,9 @@ async function evalMemory({ flags, dirs }) {
   for (const c of report.by_class) {
     process.stdout.write(`  класс ${c.class}: кейсов ${c.cases}, попаданий ${c.hits}/${c.expected}, запрещённых ${c.forbidden_hits}\n`)
   }
-  if (report.floor_failures.length) {
+  if (report.floor_verdict === 'no-data') {
+    process.stdout.write(NO_DATA_VERDICT_LINE)
+  } else if (report.floor_failures.length) {
     process.stdout.write(`  ✗ полы нарушены (${report.floor_failures.length}):\n`)
     for (const f of report.floor_failures) {
       process.stdout.write(`    ${f.metric}: ${f.value} — требуется ${f.comparator} ${f.threshold}\n`)
@@ -5949,7 +5972,7 @@ async function evalMemory({ flags, dirs }) {
     process.stdout.write('  ✓ все полы соблюдены\n')
   }
   process.stdout.write(`  проверка: ${report.check_command}\n`)
-  return report.floor_failures.length ? 1 : 0
+  return floorExit(report)
 }
 
 /**
@@ -5987,7 +6010,7 @@ async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusD
 
   if (wantsJson(flags)) {
     printJson(report)
-    return report.floor_failures.length ? 1 : 0
+    return floorExit(report)
   }
 
   const s = report.summary
@@ -6018,7 +6041,10 @@ async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusD
       `запрещённых ${signed(s.forbidden_delta)} · воздержаний провалено ${signed(s.abstain_fail_delta)}\n`,
   )
   process.stdout.write(`    цена: заметок ${signed(s.notes_delivered_delta)} · токенов ${signed(s.pack_tokens_delta_pct)} %\n`)
-  if (report.floor_failures.length) {
+  if (report.floor_verdict === 'no-data') {
+    process.stdout.write(NO_DATA_VERDICT_LINE)
+    process.stdout.write('  сравнение на пустом наборе записанным сравнением НЕ является: обе руки отвечали на ноль вопросов.\n')
+  } else if (report.floor_failures.length) {
     process.stdout.write(`  ✗ полы экспериментальной руки нарушены (${report.floor_failures.length}):\n`)
     for (const f of report.floor_failures) {
       process.stdout.write(`    ${f.metric}: ${f.value} — требуется ${f.comparator} ${f.threshold}\n`)
@@ -6028,7 +6054,7 @@ async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusD
   }
   process.stdout.write('  ВЕРДИКТ НЕ ЗДЕСЬ: правило остановки канона применяет человек и записывает решение.\n')
   process.stdout.write(`  проверка: ${report.check_command}\n`)
-  return report.floor_failures.length ? 1 : 0
+  return floorExit(report)
 }
 
 /**
