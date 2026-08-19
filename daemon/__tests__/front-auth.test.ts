@@ -1041,6 +1041,46 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.memoryHarvest.refused[0].id).toBe('lesson-r-82-alpha')
     })
 
+    it('конвейер отказал, но черновик уже в дереве — уборка ИДЁТ, отказ виден в ответе', async () => {
+      // Отказ приёмки — сообщение человеку, а не причина держать копию: урок к этому моменту
+      // лежит вторым экземпляром в основном дереве. Сбор говорит это одним полем, и дверь
+      // обязана читать именно его, а не выводить решение из `ok`.
+      const { memoryHarvest, worktreeCleanup, order } = orderSpies({
+        ok: false,
+        mode: 'untracked',
+        copied: ['drafts/lesson-r-83-alpha.md'],
+        applied: [],
+        drafted: [],
+        refused: [{ id: 'lesson-r-83-alpha', reason: 'запись не проходит проверку схемы' }],
+        skipCleanup: false,
+        reason: 'запись не проходит проверку схемы',
+      })
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          memoryHarvest,
+          worktreeCleanup,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-83' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(order).toEqual(['memoryHarvest', 'worktreeCleanup'])
+      const out = JSON.parse(res.body)
+      expect(out.cleanup.removed).toBe(true)
+      expect(out.memoryHarvest.ok).toBe(false)
+      expect(out.memoryHarvest.refused[0].id).toBe('lesson-r-83-alpha')
+    })
+
     it('сбор бросил — приёмка стоит, копия сохранена, исключение доехало причиной', async () => {
       const { memoryHarvest, worktreeCleanup, order } = orderSpies(() => {
         throw new Error('корпус недоступен')

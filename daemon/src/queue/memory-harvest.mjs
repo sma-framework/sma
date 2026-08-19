@@ -15,9 +15,16 @@
  *
  * ПОЧЕМУ ЭТО СТОИТ ДО УБОРКИ, А НЕ РЯДОМ С НЕЙ. Порядок здесь — не вкус, а само содержание
  * гарантии: копия перестаёт быть ценностью только после того, как урок спасён. Поэтому сбор
- * идёт первым, а при провале на игнорируемом корпусе он ПРЯМО ПРОСИТ уборку не начинаться и
- * называет причину. Копия, оставленная на диске, — неудобство; копия, убранная вместе с
- * единственным экземпляром урока, — потеря без следа.
+ * идёт первым, а при провале ПЕРЕНОСА на игнорируемом корпусе он ПРЯМО ПРОСИТ уборку не
+ * начинаться и называет причину. Копия, оставленная на диске, — неудобство; копия, убранная
+ * вместе с единственным экземпляром урока, — потеря без следа.
+ *
+ * ЧТО ИМЕННО ДЕРЖИТ УБОРКУ. Только потеря копии, и ничто другое. Отказ конвейера ПОСЛЕ того,
+ * как черновик перенесён в основное дерево, копию не спасает и спасать нечего: урок уже лежит
+ * вторым экземпляром, отказ виден человеку строкой попытки и карточкой, а копия на диске —
+ * просто копия. Правило «любой отказ останавливает уборку» оставляло рабочую копию после
+ * КАЖДОЙ принятой задачи с уроком — цена, которую платил диск за сообщение, и без того
+ * сказанное словами.
  *
  * ПОЧЕМУ КОНВЕЙЕР, А НЕ КОПИРОВАНИЕ ФАЙЛА В КОРПУС. Черновик приходит из чужого дерева, где
  * его писала модель. Класть такой файл в корпус копированием значило бы обойти всё, ради
@@ -228,6 +235,7 @@ export async function harvestTaskMemory({ taskId, projectDir, ledger, verbRunner
     // чужого дерева, значит между ними стоит проверка, которую нельзя обойти содержимым
     // журнала. Существующий черновик НИКОГДА не перезаписывается — человек мог его править.
     let copyUnreachable = mode === 'untracked' ? 'копия задачи не найдена по строке попытки — переносить неоткуда' : null
+    let copyFailed = false
     if (mode === 'untracked' && worktreePath) {
       if (!insideCopiesDir(worktreePath)) {
         copyUnreachable = `refused-path: путь копии вне каталога копий (${worktreePath})`
@@ -265,6 +273,7 @@ export async function harvestTaskMemory({ taskId, projectDir, ledger, verbRunner
               copyFileSync(join(from, name), target)
               copied.push(join('drafts', name))
             } catch (err) {
+              copyFailed = true
               refused.push({ id: idFromDraftPath(name), reason: `перенос черновика не удался: ${String((err && err.message) || err)}` })
             }
           }
@@ -326,7 +335,10 @@ export async function harvestTaskMemory({ taskId, projectDir, ledger, verbRunner
     const hardRefusals = refused.filter((r) => r.idempotent !== true)
     const unreachable = mode === 'untracked' && copyUnreachable !== null && lessonIds.length > 0
     const ok = hardRefusals.length === 0 && !unreachable
-    const skipCleanup = mode === 'untracked' && !ok
+    // Уборку держит ТОЛЬКО невынесенный урок: перенос не удался физически, либо копии с ним
+    // не найти вовсе. Отказ приёмки сюда не входит — черновик к этому моменту уже в основном
+    // дереве, и хранить ради него вторую рабочую копию не за чем.
+    const skipCleanup = mode === 'untracked' && (copyFailed || (copyUnreachable !== null && lessonIds.length > 0))
     const reason = ok ? undefined : capped(unreachable ? copyUnreachable : hardRefusals[0].reason, 300)
 
     const memoryHarvest = {

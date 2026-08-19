@@ -403,3 +403,62 @@ describe('урок по инструкции доезжает до корпус�
     expect(note).toMatch(/truth_mode: inferred/)
   }, 60_000)
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// F. УБОРКУ ДЕРЖИТ ТОЛЬКО ПОТЕРЯ КОПИИ, А НЕ ЛЮБОЙ ОТКАЗ
+//
+// Копия — не мусор, пока урок жив ТОЛЬКО в ней. Но как только черновик перенесён в основное
+// дерево, он больше не единственный: отказ приёмки после этого — повод ПОКАЗАТЬ человеку, что
+// запись не прошла, а не повод вечно держать рабочую копию на диске. Прежнее правило
+// («любой отказ останавливает уборку») оставляло копию после КАЖДОЙ задачи с уроком.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('уборка после отказа: копия хранится только пока урок нигде больше не живёт', () => {
+  const sandboxes: string[] = []
+  afterAll(() => sandboxes.forEach(drop))
+
+  it('черновик перенесён, а конвейер его отверг — отказ виден, уборка НЕ блокируется', async () => {
+    const project = makeProject('sma-harvest-refused-', { ignoreAgentDir: true })
+    sandboxes.push(project.sandbox)
+    const draftPath = writeLessonDraftInCopy(project.copyTree)
+    // Рука человека, испортившая черновик: значение вне закрытого словаря схемы. Отказ
+    // приходит от НАСТОЯЩЕГО валидатора, а не от подделки конвейера.
+    writeFileSync(draftPath, readFileSync(draftPath, 'utf8').replace('memory_type: procedural', 'memory_type: muscle'))
+    const ledger = makeLedger([{ taskId: TASK, attempt: 1, worktreePath: project.copyTree }], journalRows(draftPath))
+
+    const res = await harvestTaskMemory({ taskId: TASK, projectDir: project.mainTree, ledger, verbRunner, execGit })
+
+    expect(res.copied).toContain(join('drafts', `${LESSON_ID}.md`))
+    expect(res.applied).toEqual([])
+    expect(res.refused.map((r: any) => r.id)).toEqual([LESSON_ID])
+    expect(res.ok).toBe(false)
+    // черновик уже в основном дереве — человек его увидит и без копии
+    expect(existsSync(join(project.mainTree, '.claude', 'memory', 'drafts', `${LESSON_ID}.md`))).toBe(true)
+    expect(res.skipCleanup).toBe(false)
+  }, 60_000)
+
+  it('перенос физически не удался — копия остаётся: урок жив только в ней', async () => {
+    const project = makeProject('sma-harvest-copyfail-', { ignoreAgentDir: true })
+    sandboxes.push(project.sandbox)
+    const draftPath = writeLessonDraftInCopy(project.copyTree)
+    const ledger = makeLedger([{ taskId: TASK, attempt: 1, worktreePath: project.copyTree }], journalRows(draftPath))
+
+    const res = await harvestTaskMemory({
+      taskId: TASK,
+      projectDir: project.mainTree,
+      ledger,
+      verbRunner,
+      execGit,
+      fsImpl: {
+        copyFileSync: () => {
+          throw new Error('EACCES: диск ответил отказом')
+        },
+      },
+    })
+
+    expect(res.copied).toEqual([])
+    expect(res.applied).toEqual([])
+    expect(String(res.refused[0]?.reason ?? '')).toMatch(/перенос черновика не удался/)
+    expect(res.skipCleanup).toBe(true)
+  }, 60_000)
+})
