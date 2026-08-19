@@ -56,7 +56,14 @@ import {
   toolGateHookEntry,
   withToolGateHook,
   withoutToolGateHook,
+  PERSONAL_LAYER_DECLARATION,
 } from '../src/runner/personal-layer.mjs'
+import {
+  compareRules,
+  notMirroredDeclaration,
+  NOT_MIRRORED,
+  WIDENING_KEYS,
+} from '../../scripts/sma/lib/rules-parity.mjs'
 
 import { TICKET_HOOK_TIMEOUT_S } from '../../scripts/sma/lib/tool-gate.mjs'
 
@@ -455,5 +462,70 @@ describe('Case I — провод: парковочный хук едет с А�
 
     const bare = withoutToolGateHook(withToolGateHook({}, { platform: 'win32' }))
     expect(bare[TOOL_GATE_EVENT]).toBeUndefined()
+  })
+})
+
+// ── Case J ────────────────────────────────────────────────────────────────────
+/**
+ * THE LOCK. Case A already reads the worker's file and finds no `allow` there; this case
+ * exists because that reading is an ASSERTION ABOUT A FILE, and the rule it protects is a
+ * rule about RIGHTS. Measured on this machine: with the author's own settings a worker's
+ * `git push` GOES THROUGH, and without them the same call is refused. So mirroring the
+ * widening half is not untidy — it is the act of handing a headless session the rights of
+ * the person at the keyboard. The case below fails the moment anyone starts doing it, and
+ * it fails in the vocabulary the parity checker reads, so the refusal and the report can
+ * never drift into disagreeing about which keys are the widening ones.
+ */
+describe('Case J — расширяющие правила человека не зеркалируются, и это замок', () => {
+  it('allow и defaultMode человека НЕ попадают к работнику, а отказ объявлен теми же словами, что читает проверка', () => {
+    mkFounder(sourceDir)
+    mkAccount(accountDir)
+
+    const res = mirrorPersonalLayer({ sourceDir, accountDir, plugins: [], overrides: {} })
+    const s = readJson(join(accountDir, 'settings.json'))
+
+    // (1) НА ДИСКЕ: ни одного расширяющего ключа у работника — по списку, а не по памяти.
+    for (const key of WIDENING_KEYS) expect(s.permissions[key]).toBeUndefined()
+    expect(JSON.stringify(s)).not.toContain('Bash(ls:*)')
+
+    // (2) В ОБЪЯВЛЕНИИ: отказ назван словами, и слова — общая константа обеих сторон.
+    for (const key of WIDENING_KEYS) expect(res.permissions[key]).toBe(NOT_MIRRORED)
+    expect(PERSONAL_LAYER_DECLARATION).toEqual(notMirroredDeclaration())
+
+    // (3) Сужающее при этом доехало полностью — замок не превращён в «ничего не везём».
+    expect(s.permissions.deny).toEqual(FOUNDER_DENY)
+    expect(s.permissions.ask).toEqual(FOUNDER_ASK)
+  })
+
+  it('провод: то, что зеркало написало работнику, проходит проверку паритета целиком', () => {
+    mkFounder(sourceDir)
+    mkAccount(accountDir)
+    const res = mirrorPersonalLayer({ sourceDir, accountDir, plugins: [], overrides: {} })
+
+    const verdict = compareRules({
+      terminal: readJson(join(sourceDir, 'settings.json')),
+      worker: readJson(join(accountDir, 'settings.json')),
+      declaration: res.permissions,
+    })
+    expect(verdict.denyEqual).toBe(true)
+    expect(verdict.askEqual).toBe(true)
+    expect(verdict.widened).toEqual([])
+    expect(verdict.verdict).toBe('ok')
+  })
+
+  it('замок держит: зеркало, начавшее переносить расширяющий список, краснеет на проверке', () => {
+    mkFounder(sourceDir)
+    mkAccount(accountDir)
+    const res = mirrorPersonalLayer({ sourceDir, accountDir, plugins: [], overrides: {} })
+    const terminal = readJson(join(sourceDir, 'settings.json'))
+    const worker = readJson(join(accountDir, 'settings.json'))
+
+    // Ровно та правка, которую этот замок обязан не пропустить: расширяющая половина
+    // человека появляется у работника, а объявление «не зеркалируем» перестаёт быть правдой.
+    const widened = { ...worker, permissions: { ...worker.permissions, allow: terminal.permissions.allow } }
+    const out = compareRules({ terminal, worker: widened, declaration: { ...res.permissions, allow: terminal.permissions.allow } })
+    expect(out.verdict).toBe('fail')
+    expect(out.widened).toEqual(['allow'])
+    expect(out.allowDeclared).toBe(false)
   })
 })

@@ -54,6 +54,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { notMirroredDeclaration } from '../../../scripts/sma/lib/rules-parity.mjs'
 import { TICKET_HOOK_TIMEOUT_S } from '../../../scripts/sma/lib/tool-gate.mjs'
 import shellProjection from '../../../sma-core/bin/lib/shell-command-projection.cjs'
 
@@ -95,6 +96,18 @@ export const NEVER_MIRROR_KEYS = new Set([
  * config loads — a silently dropped override is a rule the operator believes is in force.
  */
 export const OVERRIDE_ALLOWLIST = ['hooks', 'permissions', 'autoMemoryDirectory', 'autoMemoryEnabled']
+
+/**
+ * PERSONAL_LAYER_DECLARATION — the refusal this module states OUT LOUD about the widening
+ * half of a permission file, in the vocabulary the parity check reads.
+ *
+ * Written as a shared constant rather than two string literals on purpose: the words in the
+ * attempt record and the words the checker demands are then the same words by construction.
+ * A future edit that started carrying `allow` across would have to delete this declaration
+ * to keep its own tests green, and deleting it turns the check red — which is the only way a
+ * rule about RIGHTS can be a rule rather than a habit.
+ */
+export const PERSONAL_LAYER_DECLARATION = Object.freeze(notMirroredDeclaration())
 
 /** How many dated copies of the previous settings file are kept. */
 export const BACKUP_KEEP = 5
@@ -467,8 +480,7 @@ export function mirrorPersonalLayer({
     permissions: {
       deny: founder.permissions.deny.length,
       ask: founder.permissions.ask.length,
-      allow: 'not mirrored',
-      defaultMode: 'not mirrored',
+      ...PERSONAL_LAYER_DECLARATION,
     },
     plugins: Array.isArray(plugins) ? [...plugins] : [],
     connectors: 'disabled',
