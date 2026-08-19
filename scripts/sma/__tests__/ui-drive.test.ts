@@ -28,6 +28,7 @@ import { describe, it, expect } from 'vitest'
 import {
   BLOCKER,
   DESTRUCTIVE_RE,
+  READY_SETTLE_MS,
   SWEEP_CAP,
   WARNING,
   classify,
@@ -35,9 +36,11 @@ import {
   isStreamClose,
   missingDriverMessage,
   parseSteps,
+  readiness,
   renderCoverage,
   renderReceipt,
   resolveDriveViewport,
+  sweepSparseNote,
   verdict,
   worstOverflow,
 } from '../lib/ui-drive.mjs'
@@ -311,6 +314,94 @@ describe('renderCoverage — the denominator is never hidden', () => {
  * used to be nailed to the desktop, so a run could open the phone, measure it, and then walk
  * the path somewhere else entirely — and the receipt said nothing about the difference.
  */
+/**
+ * READINESS. A run used to open a page, wait for the first ink plus 400 ms, and measure. On
+ * a window whose first answer takes sixteen seconds that is an empty page: «no overflow»
+ * was then true because there was nothing to overflow, and the sweep collected its whole
+ * list of controls before the screen existed — one real run reported «1 of 1 · nothing was
+ * left untouched» on a screen holding about two dozen of them. Both numbers read like
+ * results. Neither was about the app.
+ */
+describe('readiness — a page is measured when it has stopped changing, not when it first blinks', () => {
+  const sample = (at: number, signature: string, ink = true) => ({ at, signature, ink })
+
+  it('calls a page ready once what it shows has held still long enough', () => {
+    const r = readiness([sample(0, 'a'), sample(250, 'a'), sample(500, 'a'), sample(1000, 'a')])
+    expect(r.ready).toBe(true)
+    expect(r.heldMs).toBeGreaterThanOrEqual(READY_SETTLE_MS)
+    expect(r.reason).toBe('')
+  })
+
+  it('refuses a page that is still growing, and says how briefly it held still', () => {
+    const r = readiness([sample(0, '10:20'), sample(250, '40:300'), sample(500, '210:1800')])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('held still for only')
+  })
+
+  it('refuses a painted-nothing page even when it has been unchanged for ages — an empty page changes least of all', () => {
+    const r = readiness([sample(0, '3:0', false), sample(2000, '3:0', false), sample(4000, '3:0', false)])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('nothing was painted')
+  })
+
+  it('is not ready when nothing was sampled at all, instead of assuming the best', () => {
+    const r = readiness([])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('never sampled')
+  })
+
+  it('a page that came alive late is ready — it is the stillness that counts, not the wait', () => {
+    const r = readiness([sample(0, '3:0', false), sample(8000, '900:4200'), sample(9000, '900:4200'), sample(9600, '900:4200')])
+    expect(r.ready).toBe(true)
+    expect(r.waitedMs).toBe(9600)
+  })
+
+  it('a page that never settled is a BLOCKING finding that names where and how long — never a quiet pass', () => {
+    const findings = classify({
+      notSettled: [{ where: 'mobile (375px)', waitedMs: 25000, reason: 'after 25000 ms what the page shows had held still for only 250 ms' }],
+    })
+    const f = findings.find((x: { kind: string }) => x.kind === 'page-not-settled')
+    expect(f?.severity).toBe(BLOCKER)
+    expect(f?.detail).toContain('mobile (375px)')
+    expect(f?.detail).toContain('25s')
+    expect(f?.detail).toContain('still loading')
+    expect(verdict(findings, { ran: true })).toMatchObject({ status: 'FAIL', exitCode: 1 })
+  })
+
+  it('a settled page adds nothing — the receipt of a healthy run is unchanged', () => {
+    expect(classify({ notSettled: [] })).toEqual([])
+  })
+})
+
+describe('the sweep denominator — thin coverage may not wear the shape of full coverage', () => {
+  it('names a page where a single control was found, instead of reporting 1 of 1', () => {
+    const note = sweepSparseNote(1)
+    expect(note).toContain('Only 1 interactive control')
+    expect(note).toContain('nearly none')
+  })
+
+  it('says plainly when nothing at all was found — an empty denominator is not a complete one', () => {
+    expect(sweepSparseNote(0)).toContain('says nothing about the surface')
+  })
+
+  it('stays silent on an ordinary page — this is a warning, not a running commentary', () => {
+    expect(sweepSparseNote(2)).toBe('')
+    expect(sweepSparseNote(26)).toBe('')
+  })
+
+  it('the coverage carrying a thin denominator prints it and drops the claim of completeness', () => {
+    const md = renderCoverage({ ran: true, touched: 1, total: 1, skipped: 0, refused: [], sparse: sweepSparseNote(1) })
+    expect(md).toContain('pressed: **1 of 1**')
+    expect(md).toContain('Only 1 interactive control')
+    expect(md).not.toContain('Nothing was left untouched')
+  })
+
+  it('a full sweep still says nothing was left untouched — the old receipt is not disturbed', () => {
+    const md = renderCoverage({ ran: true, touched: 26, total: 26, skipped: 0, refused: [] })
+    expect(md).toContain('Nothing was left untouched.')
+  })
+})
+
 describe('resolveDriveViewport — the path may be walked only where the run already measures', () => {
   it('gives the phone its frozen size', () => {
     expect(resolveDriveViewport('mobile')).toMatchObject({ ok: true, viewport: { name: 'mobile', width: 375, height: 812 } })

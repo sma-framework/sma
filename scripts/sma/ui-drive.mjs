@@ -37,14 +37,19 @@ import {
   INTERACTIVE_SELECTOR,
   OVERFLOW_SCAN_DEPTH,
   OVERFLOW_SCAN_NODES,
+  READY_CEILING_MS,
+  READY_POLL_MS,
+  READY_SETTLE_MS,
   SWEEP_CAP,
   VIEWPORTS,
   classify,
   isStreamClose,
   missingDriverMessage,
   parseSteps,
+  readiness,
   renderReceipt,
   resolveDriveViewport,
+  sweepSparseNote,
   verdict,
   worstOverflow,
 } from './lib/ui-drive.mjs'
@@ -60,7 +65,7 @@ import {
  *  - it will not leave the page somewhere else: after a click that navigated, it returns
  *    to the start URL, so control N+1 is pressed on the page it was found on
  *
- * @returns {Promise<{touched:number, total:number, skipped:number, refused:string[]}>}
+ * @returns {Promise<{touched:number, total:number, skipped:number, refused:string[], sparse:string}>}
  */
 async function sweep(page, url, { deadControls, unnamedControls }) {
   const handles = await page.locator(INTERACTIVE_SELECTOR).all()
@@ -68,6 +73,9 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
   for (const h of handles) {
     if (await h.isVisible().catch(() => false)) visible.push(h)
   }
+  // The list is collected ONCE, so how much of the page it holds is the whole worth of the
+  // sweep. A denominator this thin is stated in the receipt rather than left to look complete.
+  const sparse = sweepSparseNote(visible.length)
 
   const refused = []
   let touched = 0
@@ -108,7 +116,43 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
     if (page.url() !== url) await open(page, url, 15000).catch(() => {})
   }
 
-  return { touched, total: visible.length, skipped: Math.max(0, visible.length - touched - refused.length), refused }
+  return { touched, total: visible.length, skipped: Math.max(0, visible.length - touched - refused.length), refused, sparse }
+}
+
+/**
+ * awaitReady(page) — sample the page until what it shows stops changing.
+ *
+ * The signature is deliberately crude and general: how many elements the page holds and how
+ * long its text is. It needs no knowledge of the app under test, which is the point — a
+ * readiness check that knows one window's markup measures that window and nothing else.
+ * Sampling stops the moment the signature has held for READY_SETTLE_MS, so a fast page pays
+ * about a second and no more; a slow door is waited out up to READY_CEILING_MS, and a page
+ * that never settles returns `ready:false` for the caller to record as a finding.
+ *
+ * @returns {Promise<{ready:boolean, waitedMs:number, heldMs:number, ink:boolean, reason:string}>}
+ */
+async function awaitReady(page, { ceilingMs = READY_CEILING_MS, settleMs = READY_SETTLE_MS, pollMs = READY_POLL_MS } = {}) {
+  const began = Date.now()
+  const samples = []
+  let state = readiness(samples, { settleMs })
+  for (;;) {
+    const snap = await page
+      .evaluate(() => {
+        const body = document.body
+        const text = body ? (body.innerText || '').trim() : ''
+        return { nodes: document.querySelectorAll('*').length, ink: text.length }
+      })
+      .catch(() => null)
+    samples.push({
+      at: Date.now(),
+      signature: snap ? `${snap.nodes}:${snap.ink}` : 'unreadable',
+      ink: Boolean(snap && snap.ink > 0),
+    })
+    state = readiness(samples, { settleMs })
+    if (state.ready || Date.now() - began >= ceilingMs) break
+    await page.waitForTimeout(pollMs).catch(() => {})
+  }
+  return { ...state, waitedMs: Date.now() - began }
 }
 
 /**
@@ -117,16 +161,18 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
  * «networkidle» means «no connection for half a second», which an app that pushes live
  * updates never achieves: its channel is open for as long as the screen is. Every open of
  * such an app therefore timed out and was written down as a failed step — the tool declared
- * broken exactly the apps that work hardest. So the wait is for the page to EXIST and to have
- * painted something, and the stream is left alone to do its job.
+ * broken exactly the apps that work hardest. So the stream is left alone to do its job.
+ *
+ * What is waited for instead is the page HOLDING STILL (see awaitReady). It used to be the
+ * first ink plus 400 ms, and on a window whose first answer takes sixteen seconds that meant
+ * the overflow was measured, and the sweep's list of controls collected, on a page that had
+ * barely started. Both then described nothing while reading like a clean result.
+ *
+ * @returns {Promise<{ready:boolean, waitedMs:number, heldMs:number, ink:boolean, reason:string}>}
  */
 async function open(page, target, timeout = 20000) {
   await page.goto(target, { waitUntil: 'domcontentloaded', timeout })
-  // A single-page app paints after its first answer arrives; wait for ink, not for silence.
-  await page
-    .waitForFunction(() => Boolean(document.body) && document.body.innerText.trim().length > 0, { timeout: 8000 })
-    .catch(() => {})
-  await page.waitForTimeout(400)
+  return awaitReady(page)
 }
 
 /** Screenshots are binaries: the run directory disowns them before the first capture. */
@@ -261,7 +307,12 @@ async function main() {
   const deadControls = []
   const unnamedControls = []
   const overflows = []
+  const notSettled = []
   const shots = []
+  /** Record a page that never stopped changing, naming WHERE it happened. */
+  const noteReadiness = (where, state) => {
+    if (state && state.ready === false) notSettled.push({ where, waitedMs: state.waitedMs, reason: state.reason })
+  }
   let coverage = { ran: false }
   const stampViewportSkips = () => {
     if (skippedViewports.length) coverage = { ...coverage, viewportsSkipped: skippedViewports }
@@ -331,7 +382,7 @@ async function main() {
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } })
       watch(page)
       try {
-        await open(page, url)
+        noteReadiness(`${vp.name} (${vp.width}px)`, await open(page, url))
       } catch (err) {
         stepFailures.push({ step: `open ${url} at ${vp.name}`, error: err.message.split('\n')[0] })
       }
@@ -379,7 +430,7 @@ async function main() {
     if (parsed.steps.length) {
       const page = await browser.newPage({ viewport: walkViewport })
       watch(page)
-      await open(page, url).catch(() => {})
+      noteReadiness('the scripted path', await open(page, url).catch(() => null))
       let n = 1
       for (const step of parsed.steps) {
         const label = String(++n).padStart(2, '0')
@@ -408,7 +459,9 @@ async function main() {
     if (!noSweep) {
       const page = await browser.newPage({ viewport: walkViewport })
       watch(page)
-      await open(page, url).catch(() => {})
+      // The sweep collects its list of controls ONCE, immediately after this open — so if the
+      // page is not ready here, the denominator is whatever the shell painted first.
+      noteReadiness('the sweep', await open(page, url).catch(() => null))
       coverage = { ran: true, ...(await sweep(page, url, { deadControls, unnamedControls })) }
       await capture(page, '99-after-sweep')
       await closePage(page)
@@ -423,7 +476,17 @@ async function main() {
   const streamsClosed = requestFailures.filter((f) => isStreamClose(f)).length
   if (streamsClosed) coverage = { ...coverage, streamsClosed }
   const findings = classify(
-    { consoleErrors, pageErrors, requestFailures, httpErrors, stepFailures, deadControls, unnamedControls, overflows },
+    {
+      consoleErrors,
+      pageErrors,
+      requestFailures,
+      httpErrors,
+      stepFailures,
+      deadControls,
+      unnamedControls,
+      overflows,
+      notSettled,
+    },
     { origin }
   )
   const v = verdict(findings, { ran: true })
