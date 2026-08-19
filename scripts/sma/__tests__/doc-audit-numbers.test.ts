@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import {
   audit,
   auditNumbers,
+  receiptDriftFiles,
   wordToNumber,
   writeNumbers,
   parseRouteCount,
@@ -35,6 +36,15 @@ const FAKE_ROOT = '/fake-root'
 const VERSION = '9.9.9'
 const TESTS = 12
 const FILES = 3
+/** The commit the fixture tree stands on, and the one its receipt was measured at. */
+const FIXTURE_HEAD = 'abc1234'
+/**
+ * The default injected git: the receipt was measured on the very tip, so the freshness rule
+ * has nothing to say. Every drift case below hands its OWN answers in — a fixture that
+ * quietly asked the real repository would prove nothing about the rule and everything about
+ * the day it ran.
+ */
+const gitAtTip = (argv: string[]) => (argv[0] === 'rev-parse' ? `${FIXTURE_HEAD}\n` : '')
 /** The verb total of the fixture CLI: its dispatch table declares exactly these three. */
 const VERBS = 3
 
@@ -179,6 +189,14 @@ type FixtureOpts = {
   verbCounts?: Partial<Record<VerbCountFile, number | null>>
   testScript?: string
   noReceipt?: boolean
+  /** What the receipt says it was measured on. `null` means it names no commit at all. */
+  receiptCommit?: string | null
+  /**
+   * The injected git. Fixtures answer it themselves so no test in this group ever asks the
+   * real repository anything — the whole point of the fixture group is that its proof does
+   * not depend on the state of the tree on the day the suite runs.
+   */
+  git?: (argv: string[]) => string
   templateWriter?: string
   sourceDefines?: string
 }
@@ -210,7 +228,10 @@ function fixtureFiles(o: FixtureOpts = {}): Record<string, string> {
     'scripts/sma/lib/state.mjs': `export function ${o.sourceDefines ?? 'writeStateHeader'}() {}`,
   }
   if (!o.noReceipt) {
-    files['test-receipt.json'] = JSON.stringify({ tests: TESTS, files: FILES, dirty: false, commit: 'abc1234' })
+    const receipt: Record<string, unknown> = { tests: TESTS, files: FILES, dirty: false }
+    const commit = o.receiptCommit === undefined ? FIXTURE_HEAD : o.receiptCommit
+    if (commit !== null) receipt.commit = commit
+    files['test-receipt.json'] = JSON.stringify(receipt)
   }
   return files
 }
@@ -240,6 +261,7 @@ function runFixture(o: FixtureOpts = {}) {
     listTemplates: t.listTemplates,
     listSourceFiles: t.listSourceFiles,
     rootDir: t.rootDir,
+    runGit: o.git ?? gitAtTip,
     notes,
   })
   return { violations, notes, tree: t }
@@ -479,6 +501,95 @@ describe('the numbers audit — a missing anchor is loud, never a silent pass', 
     })
     expect(violations).toHaveLength(0)
     expect(notes.join(' ')).toContain('dirty')
+  })
+})
+
+/**
+ * THE ORDER OF THE MEASUREMENT. Twice in two phases a summary announced a green suite while
+ * the tip actually handed over was red: the suite had been measured before the last commit,
+ * and that last commit was the one that broke it. The rule «measure after the last commit»
+ * was written in the plans and in every brief, and it held zero times out of two. So it
+ * stopped being a matter of attentiveness and became this gate. Each case below plants one
+ * answer from git — the real repository is never asked.
+ */
+describe('the numbers audit — the measurement must describe the tip it is handed over on', () => {
+  /** git says HEAD moved past the receipt, and these files moved with it. */
+  const gitMoved = (changed: string[]) => (argv: string[]) =>
+    argv[0] === 'rev-parse' ? 'f00dfeed9999999999999999999999999999999\n' : `${changed.join('\n')}\n`
+
+  it('a receipt measured before code landed is named, with the count and a file to look at', () => {
+    const { violations } = runFixture({ git: gitMoved(['scripts/sma/lib/state.mjs', 'daemon/src/front/server.mjs']) })
+    const v = violations.find((x) => x.rule === 'receipt-measured-before-head')
+    expect(v?.file).toBe('test-receipt.json')
+    expect(v?.detail).toContain('2 code/test change(s)')
+    expect(v?.detail).toContain('scripts/sma/lib/state.mjs')
+    expect(v?.detail).toContain(FIXTURE_HEAD)
+  })
+
+  it('a receipt measured before TESTS landed is drift too — a suite total is what they move', () => {
+    const { violations } = runFixture({ git: gitMoved(['scripts/sma/__tests__/doc-audit-numbers.test.ts']) })
+    expect(hasRule(violations, 'receipt-measured-before-head')).toBe(true)
+  })
+
+  it('a receipt that only the derived places moved past is NOT drift — writing it down makes a commit', () => {
+    const { violations, notes } = runFixture({
+      git: gitMoved(['test-receipt.json', 'README.md', 'README.ru.md', 'docs/master-graph.html', 'sma-core/VERSION']),
+    })
+    expect(hasRule(violations, 'receipt-measured-before-head')).toBe(false)
+    expect(notes).toEqual([])
+  })
+
+  it('prose changed after the measurement is not drift — a rewritten paragraph moves no test', () => {
+    const { violations } = runFixture({ git: gitMoved(['docs/DETAILS.md', 'docs/INSTALL.md']) })
+    expect(hasRule(violations, 'receipt-measured-before-head')).toBe(false)
+  })
+
+  it('no git at all is a note and never a violation — the audit must work in an unpacked package', () => {
+    const { violations, notes } = runFixture({
+      git: () => {
+        throw new Error('git: command not found')
+      },
+    })
+    expect(hasRule(violations, 'receipt-measured-before-head')).toBe(false)
+    expect(notes.join(' ')).toContain('no readable git history')
+  })
+
+  it('a commit git does not know is a note too, and says which commit it could not place', () => {
+    const { violations, notes } = runFixture({
+      git: (argv: string[]) => {
+        if (argv[0] === 'rev-parse') return 'f00dfeed9999999999999999999999999999999\n'
+        throw new Error("fatal: bad object abc1234")
+      },
+    })
+    expect(hasRule(violations, 'receipt-measured-before-head')).toBe(false)
+    expect(notes.join(' ')).toContain(FIXTURE_HEAD)
+  })
+
+  it('a receipt naming no commit says so in words instead of passing quietly', () => {
+    const { violations, notes } = runFixture({ receiptCommit: null })
+    expect(hasRule(violations, 'receipt-measured-before-head')).toBe(false)
+    expect(notes.join(' ')).toContain('names no commit')
+  })
+
+  it('receiptDriftFiles keeps code and tests, drops prose and the places the remint writes', () => {
+    expect(
+      receiptDriftFiles([
+        'test-receipt.json',
+        'README.md',
+        'README.ru.md',
+        'docs/master-graph.html',
+        'sma-core/VERSION',
+        'docs/DETAILS.ru.md',
+        '',
+        'scripts/sma/cli.mjs',
+        'spa/src/shell/Shell.tsx',
+        'package.json',
+      ]),
+    ).toEqual(['scripts/sma/cli.mjs', 'spa/src/shell/Shell.tsx', 'package.json'])
+  })
+
+  it('reads the separator git prints on Windows the same as anywhere else', () => {
+    expect(receiptDriftFiles(['scripts\\sma\\cli.mjs'])).toEqual(['scripts/sma/cli.mjs'])
   })
 })
 

@@ -34,9 +34,25 @@
  * Tolerant of missing files — a missing audited file, or a missing/unpaired region marker,
  * is itself ONE named violation, never a throw.
  *
+ * THE ORDER OF THE MEASUREMENT IS ITSELF A RULE (`receipt-measured-before-head`). Twice in
+ * two phases a summary announced a green suite while the tip actually handed over was red,
+ * and both times the cause was the same: the suite was measured BEFORE the last commit, so
+ * the receipt described a tree nobody was going to receive. The rule «measure after the last
+ * commit» stood written in the plans and in every brief handed to whoever did the work, and
+ * it held zero times out of two. A rule that can be broken without anyone noticing is a
+ * wish, not a rule; its place is in a gate. So the audit takes the commit the receipt names
+ * and asks git what changed after it: code or tests among the answer means the numbers
+ * describe the past. The remint's own landing places (the receipt, the two READMEs that
+ * project it, the map, the version marker) are excluded, because writing the measurement
+ * down is what creates the next commit, and counting that as drift would make the rule
+ * impossible to satisfy. git is reached through an INJECTED runner and its absence is a
+ * note, never a failure: this audit has to work inside an unpacked package, which carries
+ * no history at all.
+ *
  * Violation record shape mirrors lint.mjs: {file, rule, detail}.
  */
 
+import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -221,6 +237,106 @@ const CLI_FILE = 'scripts/sma/cli.mjs'
 const GRAPH_FILE = 'docs/master-graph.html'
 const PKG_FILE = 'package.json'
 const RECEIPT = 'test-receipt.json'
+/**
+ * DERIVED_PATHS — the places whose whole content IS the remint: the receipt itself, the two
+ * READMEs that carry its badge, the map that repeats its numbers, and the version marker.
+ * A commit touching only these is the measurement landing, not code moving underneath it,
+ * so the freshness rule looks past them. Without the exclusion the rule could never be
+ * satisfied: recording a measurement always makes one more commit.
+ */
+export const DERIVED_PATHS = Object.freeze([
+  'test-receipt.json',
+  'README.md',
+  'README.ru.md',
+  'docs/master-graph.html',
+  'sma-core/VERSION',
+])
+
+/**
+ * What counts as code or tests for the freshness rule — the file kinds a change to which can
+ * move the number of tests or what they assert. Prose (.md), pictures and templates are not
+ * on the list: a paragraph rewritten after the run does not make the run describe something
+ * else. .json is on it because configuration and fixtures decide what the suite collects.
+ */
+const CODE_FILE_RE = /\.(mjs|cjs|js|jsx|ts|tsx|mts|cts|vue|svelte|json)$/i
+
+/**
+ * receiptDriftFiles(changed) -> the paths among `changed` that are code or tests, with the
+ * derived places removed. Pure and exported, so the rule can be proved on a list of names
+ * without a repository anywhere near the test.
+ *
+ * @param {string[]} changed paths as git prints them, repo-relative
+ * @returns {string[]}
+ */
+export function receiptDriftFiles(changed = []) {
+  const seen = new Set()
+  const out = []
+  for (const raw of changed) {
+    const rel = String(raw ?? '').trim().replace(/\\/g, '/')
+    if (!rel || DERIVED_PATHS.includes(rel) || !CODE_FILE_RE.test(rel)) continue
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    out.push(rel)
+  }
+  return out
+}
+
+/**
+ * defaultRunGit(rootDir) — an execFileSync-shaped runner over `git` pinned to one tree, the
+ * same shape the snapshot module injects. Every call site passes a FIXED argv array, so
+ * nothing read from a file ever becomes a shell word.
+ *
+ * @param {string} rootDir
+ */
+export function defaultRunGit(rootDir) {
+  return (argv) => execFileSync('git', ['-C', rootDir, ...argv], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+}
+
+/**
+ * checkReceiptFreshness — the measured numbers must describe the tip they are delivered on.
+ * A missing commit, a missing git, or a commit git does not know are NOTES: «not checkable»
+ * and «wrong» are different words, and the audit must survive a tree with no history.
+ */
+function checkReceiptFreshness({ receipt, runGit, violations, notes }) {
+  if (!receipt) return // an absent receipt already spoke for itself above
+  const commit = typeof receipt.commit === 'string' ? receipt.commit.trim() : ''
+  if (!commit) {
+    notes.push('the receipt names no commit — there is nothing to ask git about, so the order of the measurement is unchecked')
+    return
+  }
+  const short = commit.slice(0, 7)
+  let head = ''
+  try {
+    head = String(runGit(['rev-parse', 'HEAD']) ?? '').trim()
+  } catch {
+    head = ''
+  }
+  if (!head) {
+    notes.push(`no readable git history here — whether the receipt (${short}) was measured before the delivered tip is unchecked`)
+    return
+  }
+  if (head === commit || head.startsWith(commit) || commit.startsWith(head)) return // measured on the tip itself
+  let changed = null
+  try {
+    changed = String(runGit(['diff', '--name-only', commit, head]) ?? '')
+  } catch {
+    changed = null
+  }
+  if (changed == null) {
+    notes.push(`git does not know the commit the receipt names (${short}) — the order of the measurement is unchecked`)
+    return
+  }
+  const drift = receiptDriftFiles(changed.split('\n'))
+  if (drift.length === 0) return
+  const rest = drift.length > 1 ? ` and ${drift.length - 1} more` : ''
+  violations.push({
+    file: RECEIPT,
+    rule: 'receipt-measured-before-head',
+    detail:
+      `measured at ${short}, before ${drift.length} code/test change(s) landed on ${head.slice(0, 7)} ` +
+      `(${drift[0]}${rest}) — the numbers describe a tree that is not the one being handed over; re-measure on the tip`,
+  })
+}
 const CAPABILITY_FILE = 'sma-core/capabilities/sma/capability.json'
 const VERSION_MARKER = 'sma-core/VERSION'
 const INSTALLER_FILE = 'bin/init.mjs'
@@ -462,6 +578,7 @@ export function auditNumbers({
   listSourceFiles = defaultListSourceFiles,
   listTemplates = defaultListTemplates,
   rootDir,
+  runGit,
   notes = [],
 } = {}) {
   const violations = []
@@ -497,6 +614,14 @@ export function auditNumbers({
   } else if (receipt.dirty === true) {
     notes.push(`the receipt was measured on a dirty tree at commit ${String(receipt.commit ?? 'unknown').slice(0, 7)} — the numbers are as measured, freshness is the release gate's job`)
   }
+
+  // ── rule: the receipt describes the tip it is delivered on, not an earlier one ──
+  checkReceiptFreshness({
+    receipt: haveReceipt ? receipt : null,
+    runGit: typeof runGit === 'function' ? runGit : defaultRunGit(rootDir),
+    violations,
+    notes,
+  })
 
   // ── rule: every assertion about the size of the table names the real size ──
   if (serverText != null && doorCount != null) {
@@ -815,6 +940,7 @@ export function audit({
   listSourceFiles,
   listTemplates,
   rootDir,
+  runGit,
 }) {
   let violations = []
   const notes = []
@@ -825,7 +951,7 @@ export function audit({
   if (target === 'manual' || target === 'all') violations = violations.concat(auditManual({ readFile, rootDir }))
   if (target === 'readme' || target === 'all') violations = violations.concat(auditReadme({ readFile, rootDir }))
   if (target === 'numbers' || target === 'all') {
-    violations = violations.concat(auditNumbers({ readFile, listSourceFiles, listTemplates, rootDir, notes }))
+    violations = violations.concat(auditNumbers({ readFile, listSourceFiles, listTemplates, rootDir, runGit, notes }))
   }
   return { violations, count: violations.length, notes }
 }
