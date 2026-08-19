@@ -779,3 +779,63 @@ describe('profile parity also guards what the argument array cannot show', () =>
     expect(() => buildClaudeArgs({ strictMcpConfig: true } as never)).toThrow()
   })
 })
+
+// ═══ the envelope's refusal becomes an argument, and the guard keeps every member ═══
+//
+// Two facts live here and they are easy to confuse. The camelCase tool lists are PRODUCED by
+// this module out of the capability envelope and narrow the session. The hyphenated spellings
+// arrive from outside it and would substitute the session's permissions with no record that
+// anything happened. The first must travel; the second must keep throwing. Nothing below
+// removes or excepts a single member of the forbidden family.
+
+describe('the envelope refusal travels as --disallowedTools, and the boundary is a denial not a shorter grant', () => {
+  const DENIALS = ['Bash(git config:*)', 'Bash(git push:*)', 'Bash(git remote:*)']
+
+  it('the refusal is one argument, and its value is the patterns joined by spaces', () => {
+    const args = buildClaudeArgs({ disallowedTools: DENIALS })
+    const i = args.indexOf('--disallowedTools')
+    expect(i, 'the refusal never reached the command line').toBeGreaterThan(-1)
+    expect(args[i + 1]).toBe(DENIALS.join(' '))
+  })
+
+  it('the refusal lands DIRECTLY AFTER the grant — the two halves of one envelope are read side by side', () => {
+    const args = buildClaudeArgs({ allowedTools: ['Read', 'Bash'], disallowedTools: DENIALS, model: 'opus' })
+    expect(args.indexOf('--disallowedTools')).toBe(args.indexOf('--allowedTools') + 2)
+    expect(args.indexOf('--model')).toBeGreaterThan(args.indexOf('--disallowedTools'))
+  })
+
+  it('an envelope that forbids nothing produces exactly the command line it produced before this existed', () => {
+    const base = buildClaudeArgs({ allowedTools: ['Read', 'Bash'] })
+    expect(buildClaudeArgs({ allowedTools: ['Read', 'Bash'], disallowedTools: [] })).toEqual(base)
+    expect(base).not.toContain('--disallowedTools')
+  })
+
+  it('THE GRANT IS NOT NARROWED — a denial is added, the allow list stays exactly the envelope’s', () => {
+    // narrowing the allow list under a clean config is deny-by-default: a command nobody
+    // remembered becomes a silent refusal inside the child process, which is the failure
+    // class that once cost this product every task in its history
+    const tools = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']
+    const args = buildClaudeArgs({ allowedTools: tools, disallowedTools: DENIALS })
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe(tools.join(' '))
+    expect(args).not.toContain('--tools')
+  })
+
+  it('the guard still refuses every hyphenated spelling — the smuggled forms keep the named error', () => {
+    for (const flag of [
+      '--allowed-tools',
+      '--disallowed-tools',
+      '--strict-mcp-config',
+      '--setting-sources',
+      '--permission-mode',
+      '--dangerously-skip-permissions',
+    ]) {
+      expect(() => buildClaudeArgs({ model: flag }), flag).toThrow(ForbiddenFlagError)
+      expect(() => buildClaudeArgs({ addDir: flag }), flag).toThrow(ForbiddenFlagError)
+    }
+  })
+
+  it('the produced refusal itself passes the guard — delivering what the envelope forbade is not smuggling a flag', () => {
+    expect(() => buildClaudeArgs({ disallowedTools: DENIALS })).not.toThrow()
+    expect(() => buildClaudeArgs({ allowedTools: ['Bash'] })).not.toThrow()
+  })
+})
