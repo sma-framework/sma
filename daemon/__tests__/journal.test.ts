@@ -767,19 +767,40 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(26)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(27)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(26) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(27) // no duplicate name
+  })
+
+  /**
+   * THE TWENTY-SEVENTH KEY — what the approval carried out of the copy before it was removed.
+   *
+   * It is deliberately NOT a field inside `cleanup`. The two answer different questions («what
+   * reached the corpus» and «what was deleted from disk»), happen at different moments and fail
+   * independently; folded into one object they would one day explain a missing lesson by a
+   * successful removal. Like `cleanup`, it rides a SEPARATE row of the same attempt, so the
+   * fold neither stretches the attempt's duration nor overwrites how it ended.
+   */
+  it('carries memoryHarvest last — the trace of the lesson, kept apart from the trace of the removal', () => {
+    expect(ALLOWED_ATTEMPT_KEYS).toContain('memoryHarvest')
+    expect(ALLOWED_ATTEMPT_KEYS[ALLOWED_ATTEMPT_KEYS.length - 1]).toBe('memoryHarvest')
+    const harvest = { at: '2026-08-19T10:00:00.000Z', by: 'approve', mode: 'untracked', copied: ['drafts/lesson-r-9-a.md'], applied: ['lesson-r-9-a'], drafted: ['approach-r-9-1'], refused: [], ok: true }
+    recordAttempt(dir, { taskId: 'BL-HARVEST', attempt: 1, memoryHarvest: harvest })
+    const [row] = readAttempts(dir, 'BL-HARVEST')
+    expect(row.memoryHarvest).toEqual(harvest)
+    // …and a row that never harvested anything carries no key at all — absence, not an empty shape.
+    recordAttempt(dir, { taskId: 'BL-NOHARVEST', attempt: 1, outcome: 'completed' })
+    expect(Object.hasOwn(readAttempts(dir, 'BL-NOHARVEST')[0], 'memoryHarvest')).toBe(false)
   })
 
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
   it('carries the six copy fields, then the two about the session the worker was given', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-8, -2)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-9, -3)).toEqual(COPY_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-2)).toEqual(['personalLayer', 'mcpConfig'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-3, -1)).toEqual(['personalLayer', 'mcpConfig'])
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a
