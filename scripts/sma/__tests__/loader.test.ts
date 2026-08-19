@@ -23,13 +23,14 @@
  * vocabulary), and the v1 block above stays byte-identical.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolvePeriphery, orderNotes } from '../lib/loader.mjs'
 import { buildAreaIndexes } from '../lib/generator.mjs'
+import { FUSION_DEGRADED_REASON } from '../lib/lexical-fusion.mjs'
 
 const TAGS_MD = `# TAGS
 
@@ -484,5 +485,153 @@ describe('loader.mjs — hard filters run before ranking (§9.1)', () => {
     const src = readFileSync(join(process.cwd(), 'scripts/sma/lib/loader.mjs'), 'utf8')
     expect(src).not.toContain('resolveApprovalPath')
     expect(src).toContain('isVisibleNow')
+  })
+})
+
+// ── the lexical layer joins the periphery through ONE fusion point ───────────
+
+/**
+ * The lexical layer, as a double. The real layer needs `node:sqlite` WITH the
+ * full-text extension and an index on disk; a test that required either would only
+ * ever run on the machine that wrote it. The shape is the layer's own:
+ * indexStatus → {engine, summary:{stale}}, queryExact / queryLexical → {results:[{id}]}.
+ */
+function lexicalLayerDouble(opts: { exact?: string[]; lexical?: string[]; stale?: number; engine?: string } = {}) {
+  return {
+    indexStatus: vi.fn(() => ({
+      engine: opts.engine ?? 'fts5',
+      reason: opts.engine === 'unavailable' ? 'the build of Node here ships no full-text extension' : '',
+      summary: { stale: opts.stale ?? 0, exists: 1, indexed: 4, corpus_notes: 4, visible_notes: 4, engine_available: 1 },
+    })),
+    queryExact: vi.fn(() => ({ results: (opts.exact ?? []).map((id) => ({ id, basis: 'symbol' })) })),
+    queryLexical: vi.fn(() => ({ results: (opts.lexical ?? []).map((id, i) => ({ id, score: 10 - i, rank: i + 1 })) })),
+  }
+}
+
+const LEX_TAGS_MD = `# TAGS
+
+## area
+- tech — infra, build, migrations. · aliases: infra
+- memory — memory system: notes, index. · aliases: sma, notes
+- messaging — channels. · aliases: sms, push
+
+## kind
+- procedural-rule — a how-to rule. · aliases: rule
+- reference — a lookup fact.
+
+## phase
+- Open facet: phase:NN.
+`
+
+describe('loader.mjs — the lexical layer, by explicit opt-in only', () => {
+  const NOW = '2026-08-19T00:00:00Z'
+  let dir: string
+  let tagsFile: string
+  let base: { tags: string[]; corpusDir: string; tagsPath: string; dateMap: Record<string, string>; now: string }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sma-loader-lexical-'))
+    tagsFile = join(dir, 'TAGS.md')
+    writeFileSync(tagsFile, LEX_TAGS_MD, 'utf8')
+
+    note(dir, 'core-rule.md', { description: 'The always-loaded rule', kind: 'reference', tags: ['tech'], importance: 10 })
+    note(dir, 'tech-rule.md', { description: 'A tech procedural rule', kind: 'procedural-rule', tags: ['tech'], importance: 6 })
+    // The whole point of the layer: a record no registered facet of this query reaches.
+    note(dir, 'off-facet.md', { description: 'A note no registered facet of this query reaches', kind: 'reference', tags: ['messaging'], importance: 4 })
+    // A record the hard filters withhold — the layer may not smuggle it past them.
+    note(dir, 'expired.md', { description: 'A note whose validity window closed', kind: 'reference', tags: ['messaging'], importance: 8, valid_until: '2026-07-01' })
+
+    base = { tags: ['tech'], corpusDir: dir, tagsPath: tagsFile, dateMap: {}, now: NOW }
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  it('Test 1 (the wire): a known answer from the layer is VISIBLE in the periphery — and absent without the option', () => {
+    const layer = lexicalLayerDouble({ lexical: ['off-facet.md'] })
+    const hybrid = resolvePeriphery({ ...base, lexical: { taskText: 'tech', indexPath: join(dir, 'idx.sqlite'), layer } })
+
+    // the wire, asserted: the double's own answer arrives in the result
+    expect(hybrid.periphery).toContain('off-facet.md')
+    expect(layer.queryLexical).toHaveBeenCalled()
+
+    // …and the facet path alone never reaches it
+    expect(resolvePeriphery(base).periphery).not.toContain('off-facet.md')
+  })
+
+  it('Test 2 (the pin): without the option the result is the result it always was, to the field', () => {
+    // Captured from the code as it stood BEFORE the layer was wired in. This test is a
+    // regression pin, not a red gate: it is expected to hold on both sides of the change,
+    // and it goes red the moment the default path drifts by one field.
+    expect(resolvePeriphery(base)).toEqual({
+      core: ['core-rule.md'],
+      periphery: ['tech-rule.md'],
+      matched: 1,
+      indexFiles: [],
+      warnings: [],
+      meta: {},
+    })
+  })
+
+  it('Test 3 (the filters stand): a withheld record does not arrive through the layer', () => {
+    const layer = lexicalLayerDouble({ exact: ['expired.md'], lexical: ['expired.md', 'off-facet.md'] })
+    const hybrid = resolvePeriphery({ ...base, lexical: { taskText: 'tech', indexPath: join(dir, 'idx.sqlite'), layer } })
+
+    expect(hybrid.periphery).not.toContain('expired.md')
+    expect(hybrid.core).not.toContain('expired.md')
+    // the additions the filters DO clear still arrive — the guard is narrow
+    expect(hybrid.periphery).toContain('off-facet.md')
+  })
+
+  it('Test 4 (degradation): a layer that cannot honestly run leaves a NON-EMPTY periphery, character for character the facet one', () => {
+    const facetOnly = resolvePeriphery(base)
+    // the equality below is only worth something on a non-empty list: «the periphery is
+    // the facet one» is true of an empty result too, and a test true of a broken run is
+    // not a test.
+    expect(facetOnly.periphery.length).toBeGreaterThan(0)
+
+    for (const broken of [
+      { label: 'stale index', layer: lexicalLayerDouble({ stale: 1, lexical: ['off-facet.md'] }) },
+      { label: 'no full-text engine', layer: lexicalLayerDouble({ engine: 'unavailable', lexical: ['off-facet.md'] }) },
+    ]) {
+      const res = resolvePeriphery({ ...base, lexical: { taskText: 'tech', indexPath: join(dir, 'idx.sqlite'), layer: broken.layer } })
+
+      expect(res.periphery.join('\n')).toBe(facetOnly.periphery.join('\n'))
+      expect(res.core.join('\n')).toBe(facetOnly.core.join('\n'))
+      // it is not asked to rank what it cannot rank…
+      expect(broken.layer.queryLexical).not.toHaveBeenCalled()
+      // …and the caller is TOLD why, rather than served a silent default
+      expect(res.meta.lexical).toMatchObject({ degraded: true, reason: FUSION_DEGRADED_REASON })
+      expect(res.warnings.join(' ')).toContain(FUSION_DEGRADED_REASON)
+    }
+  })
+
+  it('a layer that throws does not break the load — the periphery is still the facet one', () => {
+    const layer = {
+      indexStatus: vi.fn(() => {
+        throw new Error('index unreadable')
+      }),
+      queryExact: vi.fn(),
+      queryLexical: vi.fn(),
+    }
+    const res = resolvePeriphery({ ...base, lexical: { taskText: 'tech', indexPath: join(dir, 'idx.sqlite'), layer } })
+    expect(res.periphery).toEqual(resolvePeriphery(base).periphery)
+    expect(res.meta.lexical).toMatchObject({ degraded: true })
+  })
+
+  it('CORE is never re-ranked by the layer, and an addition is never repeated in it', () => {
+    const layer = lexicalLayerDouble({ lexical: ['off-facet.md', 'core-rule.md'] })
+    const hybrid = resolvePeriphery({ ...base, lexical: { taskText: 'tech', indexPath: join(dir, 'idx.sqlite'), layer } })
+
+    expect(hybrid.core).toEqual(resolvePeriphery(base).core)
+    expect(hybrid.periphery).not.toContain('core-rule.md')
+    expect(hybrid.matched).toBe(hybrid.periphery.length)
+  })
+
+  it('the fusion lives in ONE module — the loader calls it, it does not own a second copy', () => {
+    const src = readFileSync(join(process.cwd(), 'scripts/sma/lib/loader.mjs'), 'utf8')
+    expect(src).toContain('lexical-fusion.mjs')
+    expect(src).not.toContain('function reciprocalRankFusion')
   })
 })
