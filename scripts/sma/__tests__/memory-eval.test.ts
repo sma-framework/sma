@@ -374,7 +374,34 @@ describe('the verb — sma eval memory (Test 6)', () => {
     expect(report.check_command.includes(root)).toBe(false)
     // this seeded corpus violates nothing, so the exit code is the green verdict
     expect(report.floor_failures).toEqual([])
+    expect(report.floor_verdict).toBe('met')
     expect(res.status).toBe(0)
+  })
+
+  it('a set with no cases prints «no data» instead of a floors verdict, and exits non-zero', () => {
+    writeFileSync(join(root, '.claude', 'memory', 'gold-cases.jsonl'), '', 'utf8')
+
+    const res = runCli(root, ['eval', 'memory'])
+    // the printed claim that everything is fine must be GONE — zero cases is
+    // ignorance, and a gate that goes green on ignorance is not a gate
+    expect(res.stdout).not.toContain('все полы соблюдены')
+    expect(res.stdout).toContain('нет данных')
+    expect(res.status).not.toBe(0)
+
+    const asJson = runCli(root, ['eval', 'memory', '--json'])
+    const report = JSON.parse(asJson.stdout.trim().split('\n').pop() as string)
+    // the machine reader tells an unasked question from a clean run by ONE field
+    expect(report.floor_verdict).toBe('no-data')
+    expect(report.floor_failures).toEqual([])
+  })
+
+  it('an empty A/B is not a recorded comparison: it says so and exits non-zero', () => {
+    writeFileSync(join(root, '.claude', 'memory', 'gold-cases.jsonl'), '', 'utf8')
+
+    const res = runCli(root, ['eval', 'memory', '--experiment', 'lexical'])
+    expect(res.stdout).not.toContain('полы экспериментальной руки соблюдены')
+    expect(res.stdout).toContain('нет данных')
+    expect(res.status).not.toBe(0)
   })
 })
 
@@ -446,5 +473,53 @@ describe('captureMemoryExperiment — two arms, one set (Test 7)', () => {
     expect(r.summary.recall_delta_pct).toBe(0)
     expect(r.summary.forbidden_delta).toBe(0)
     expect(r.summary.pack_tokens_delta_pct).toBe(0)
+  })
+})
+
+// ── a verdict needs data ─────────────────────────────────────────────────────
+
+/**
+ * ZERO CASES IS NOT A PASS. The floors answer a question the gold set asks; a set that
+ * asks nothing gets no answer, and reporting one is the same fabrication the honest
+ * empties law already forbids for the ranking metrics. The distinction is carried by ONE
+ * named field, so a reader — human or machine — never has to infer it from an empty list.
+ */
+describe('the floors verdict exists only when the set asked something', () => {
+  it('zero cases: the report says «no data», and the failure list stays empty', () => {
+    writeFileSync(casesPath, '', 'utf8')
+
+    const r = captureMemoryEval(opts())
+    expect(r.summary.cases_total).toBe(0)
+    expect(r.floor_verdict).toBe('no-data')
+    // an empty list of failures is TRUE here and yet means nothing — which is exactly
+    // why it cannot be the whole verdict on its own
+    expect(r.floor_failures).toEqual([])
+  })
+
+  it('a non-empty set with clean floors keeps the green verdict it always had', () => {
+    writeCases([{ task: 'read the crm rule', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }])
+
+    const r = captureMemoryEval(opts())
+    expect(r.summary.cases_total).toBe(1)
+    expect(r.floor_failures).toEqual([])
+    expect(r.floor_verdict).toBe('met')
+  })
+
+  it('a non-empty set with a red floor still reports the violation', () => {
+    writeCases([{ task: 'read the crm rule', expected_notes: ['core-rule.md'], critical_notes: ['auth-detail.md'], forbidden_notes: [] }])
+
+    const r = captureMemoryEval(opts())
+    expect(r.floor_verdict).toBe('violated')
+    expect(r.floor_failures.map((f: any) => f.metric)).toContain('critical_miss_rate')
+  })
+
+  it('the A/B carries the same distinction — an empty comparison renders no verdict', () => {
+    writeFileSync(casesPath, '', 'utf8')
+    const empty = captureMemoryExperiment({ ...opts(), indexPath: join(dir, 'idx.sqlite'), lexical: lexicalDouble([]) })
+    expect(empty.floor_verdict).toBe('no-data')
+
+    writeCases([{ task: 'read the crm rule', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }])
+    const measured = captureMemoryExperiment({ ...opts(), indexPath: join(dir, 'idx.sqlite'), lexical: lexicalDouble(['auth-detail.md']) })
+    expect(measured.floor_verdict).toBe('met')
   })
 })
