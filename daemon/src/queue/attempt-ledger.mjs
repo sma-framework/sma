@@ -194,8 +194,12 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
  *  ('BL-…'/'R-…'/'F-…', or '<taskId>#<attempt>'); it is still sanitized (defense in depth —
  *  never a path traversal). Every file in this module goes through here, so the three
- *  siblings of one task can never come to disagree about what its name is. */
-function safeName(id) {
+ *  siblings of one task can never come to disagree about what its name is.
+ *
+ *  EXPORTED because the attempt's run directory is named by the SAME rule: a directory called
+ *  after an attempt and a transcript called after the same attempt that disagreed by one
+ *  character would be two records nobody could join. One rule, one name, three callers. */
+export function safeName(id) {
   return String(id).replace(/[^A-Za-z0-9._-]/g, '_')
 }
 
