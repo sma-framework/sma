@@ -10,3 +10,10 @@ CLAUDE.md
 # Raw vitest JSON, consumed by `pnpm badge` to stamp test-receipt.json. The
 # RECEIPT is committed; the transient report it was derived from is not.
 .vitest-report.json
+
+# Run reports the live-UI driver writes beside the tree it drove — screenshots and
+# a verdict per run. They belong to whoever drove the run, never to the published
+# history: a single `git add -A` would otherwise carry a working session's internal
+# material into a repository the world reads. Ignored rather than trusted to
+# discipline, because the cost of the mistake is a rewritten history.
+.planning/
