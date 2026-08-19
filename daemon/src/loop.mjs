@@ -111,6 +111,7 @@ import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
 import { readPendingRedirects, markConsumed, appendRedirect, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
+import { buildMcpConfigFile } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
@@ -1557,12 +1558,75 @@ export async function tick(deps = {}) {
         )
       }
 
+      // (5b) THE PERSONAL LAYER, PUT IN PLACE BEFORE THE PROCESS EXISTS.
+      //
+      // The account a worker runs under is not the founder’s: it has its own settings file, and
+      // until that file is written the session starts without his instructions, without his hooks
+      // and — the half nobody can see from outside — with whatever hosted connectors the vendor
+      // decides to attach that minute. So the mirror runs HERE, BEFORE the arguments are
+      // assembled: the builder reads that very file to check the profile, and a spec prepared
+      // ahead of the mirror is refused by the parity guard. The order is the wire.
+      //
+      // AND A MIRROR THAT CANNOT BE WRITTEN IS A REFUSAL BY NAME. Spawning anyway is the one
+      // option that must not exist: it spends the subscription on a session running under rules
+      // nobody approved, and no card would ever be able to say so.
+      let personalLayer = null
+      if (typeof deps.mirrorPersonalLayer === 'function') {
+        const routedWorker = (config.workers || []).find((w) => w && w.id === (route && route.workerId))
+        try {
+          personalLayer = await deps.mirrorPersonalLayer({
+            accountDir: routedWorker && routedWorker.account && routedWorker.account.configDir,
+            plugins: (routedWorker && routedWorker.plugins) || [],
+            overrides: (routedWorker && routedWorker.settingsOverrides) || {},
+          })
+        } catch (err) {
+          const layerDetail = String((err && err.message) || err)
+          writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'personal_layer_error', detail: layerDetail })
+          await failTask(deps, task, { reason: 'personal_layer_error', branch, route, now: now(), envelope, from: fleetState, worktree: worktreeRow })
+          result.failed = { taskId: task.id, reason: 'personal_layer_error', detail: layerDetail }
+          return result
+        }
+      }
+      // (5c) OUR SERVERS, AND ONLY OURS. The file is written per attempt and its PATH is all
+      // that travels: it names the servers a person enabled in the registry on this host and
+      // nothing else. Written even when the registry is empty — a deterministic argument array
+      // is what turns «the worker had exactly these servers» into a claim somebody can check a
+      // week later, and an empty file says that plainly where a missing flag says nothing.
+      const spawnDataDir = deps.dataDir || config.dataDir
+      let mcpConfig = null
+      if (spawnDataDir) {
+        try {
+          const registry = typeof deps.loadMcpRegistry === 'function' ? deps.loadMcpRegistry() : { servers: [] }
+          const registered = Array.isArray(registry && registry.servers) ? registry.servers : []
+          const mcpConfigPath = buildMcpConfigFile({
+            servers: registered,
+            taskDir: join(spawnDataDir, 'mcp', `${task.id}-${task.attempt}`),
+            fsImpl: deps.fsImpl,
+          })
+          mcpConfig = { path: mcpConfigPath, servers: registered.filter((x) => x && x.enabled === true).map((x) => x.id) }
+        } catch (err) {
+          // FAIL-OPEN, AND OUT LOUD. A registry that cannot be read must not cost the attempt:
+          // the session simply starts with none of our servers, and the miss is on the record
+          // instead of being a silence somebody discovers inside a transcript.
+          writeLog(deps, { type: 'task.mcp_config_error', taskId: task.id, error: String((err && err.message) || err) })
+        }
+      }
+      if (personalLayer || mcpConfig) {
+        // A DOCUMENTARY stage runs in no copy at all, so the row object may not exist yet.
+        // These two facts are about the SESSION rather than about a worktree, and they are
+        // owed by every lane that starts a process.
+        worktreeRow = worktreeRow || {}
+        if (personalLayer) worktreeRow.personalLayer = personalLayer
+        if (mcpConfig) worktreeRow.mcpConfig = mcpConfig
+      }
+
       // (6) spawn the routed worker; log + touch (throttled) on every stream line.
       // The envelope decides what this lane may touch; here is where that decision finally
       // reaches the process that has to obey it. Before this, the grant was hashed into the
       // attempt row and thrown away — every worker spawned read-only.
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
+        ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
           ? { allowedTools: envelope.allowedTools }
           : {}),
@@ -2029,6 +2093,62 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     provisionMs,
   }
 
+  // (5b) THE PERSONAL LAYER, PUT IN PLACE BEFORE THE PROCESS EXISTS.
+  //
+  // The account a worker runs under is not the founder’s: it has its own settings file, and
+  // until that file is written the session starts without his instructions, without his hooks
+  // and — the half nobody can see from outside — with whatever hosted connectors the vendor
+  // decides to attach that minute. So the mirror runs HERE, BEFORE the arguments are
+  // assembled: the builder reads that very file to check the profile, and a spec prepared
+  // ahead of the mirror is refused by the parity guard. The order is the wire.
+  //
+  // AND A MIRROR THAT CANNOT BE WRITTEN IS A REFUSAL BY NAME. Spawning anyway is the one
+  // option that must not exist: it spends the subscription on a session running under rules
+  // nobody approved, and no card would ever be able to say so.
+  let personalLayer = null
+  if (typeof deps.mirrorPersonalLayer === 'function') {
+    const routedWorker = (config.workers || []).find((w) => w && w.id === (route && route.workerId))
+    try {
+      personalLayer = await deps.mirrorPersonalLayer({
+        accountDir: routedWorker && routedWorker.account && routedWorker.account.configDir,
+        plugins: (routedWorker && routedWorker.plugins) || [],
+        overrides: (routedWorker && routedWorker.settingsOverrides) || {},
+      })
+    } catch (err) {
+      const layerDetail = String((err && err.message) || err)
+      writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'personal_layer_error', detail: layerDetail })
+      await failTask(deps, task, { reason: 'personal_layer_error', branch, route, now: now(), envelope, from: fleetState, worktree: worktreeRow })
+      result.failed = { taskId: task.id, reason: 'personal_layer_error', detail: layerDetail }
+      return result
+    }
+  }
+  // (5c) OUR SERVERS, AND ONLY OURS. The file is written per attempt and its PATH is all
+  // that travels: it names the servers a person enabled in the registry on this host and
+  // nothing else. Written even when the registry is empty — a deterministic argument array
+  // is what turns «the worker had exactly these servers» into a claim somebody can check a
+  // week later, and an empty file says that plainly where a missing flag says nothing.
+  const spawnDataDir = deps.dataDir || config.dataDir
+  let mcpConfig = null
+  if (spawnDataDir) {
+    try {
+      const registry = typeof deps.loadMcpRegistry === 'function' ? deps.loadMcpRegistry() : { servers: [] }
+      const registered = Array.isArray(registry && registry.servers) ? registry.servers : []
+      const mcpConfigPath = buildMcpConfigFile({
+        servers: registered,
+        taskDir: join(spawnDataDir, 'mcp', `${task.id}-${task.attempt}`),
+        fsImpl: deps.fsImpl,
+      })
+      mcpConfig = { path: mcpConfigPath, servers: registered.filter((x) => x && x.enabled === true).map((x) => x.id) }
+    } catch (err) {
+      // FAIL-OPEN, AND OUT LOUD. A registry that cannot be read must not cost the attempt:
+      // the session simply starts with none of our servers, and the miss is on the record
+      // instead of being a silence somebody discovers inside a transcript.
+      writeLog(deps, { type: 'task.mcp_config_error', taskId: task.id, error: String((err && err.message) || err) })
+    }
+  }
+  if (personalLayer) worktreeRow.personalLayer = personalLayer
+  if (mcpConfig) worktreeRow.mcpConfig = mcpConfig
+
   // (6) spawn the «Создатель» with the FORGE prompt (not the code task prompt); touch on stream.
   //
   // THE ENVELOPE REACHES THE PROCESS THAT HAS TO OBEY IT — the same wire the code path
@@ -2038,6 +2158,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const kind = task.forge && task.forge.kind
   const spec = buildArgs(task, route, {
     ...SPAWN_OPTIONS,
+    ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
     ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
       ? { allowedTools: envelope.allowedTools }
       : {}),
@@ -2212,8 +2333,12 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
  * before provisioning) writes NO keys at all: absence says «there was none», where a null
  * would say «there was one and we lost it».
  *
- * @param {{base?:string, branch?:string, worktreePath?:string,
- *          materialized?:object[], provisionMs?:number}|null} [worktree]
+ * The same object also carries the two facts about the SESSION the attempt ran in — the
+ * personal layer as the mirror reported it and the per-spawn mcp config — for the same
+ * reason: both are overwritten by the next attempt and cannot be re-derived afterwards.
+ *
+ * @param {{base?:string, branch?:string, worktreePath?:string, materialized?:object[],
+ *          provisionMs?:number, personalLayer?:object, mcpConfig?:object}|null} [worktree]
  * @returns {object} fields to spread into `recordAttempt`
  */
 function worktreeFields(worktree) {
@@ -2224,6 +2349,8 @@ function worktreeFields(worktree) {
     worktreePath: worktree.worktreePath ?? undefined,
     materialized: worktree.materialized ?? undefined,
     provisionMs: worktree.provisionMs ?? undefined,
+    personalLayer: worktree.personalLayer ?? undefined,
+    mcpConfig: worktree.mcpConfig ?? undefined,
   }
 }
 
