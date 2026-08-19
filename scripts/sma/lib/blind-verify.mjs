@@ -35,7 +35,14 @@
 
 import { isAbsolute, join, dirname, basename } from 'node:path'
 
-import { isSafeCommand, parsePredictions, parseFrontmatterEntries, horizonReached } from './predict.mjs'
+import {
+  isSafeCommand,
+  parsePredictions,
+  parseFrontmatterEntries,
+  horizonReached,
+  factFromRun,
+  runOptions,
+} from './predict.mjs'
 import { appendVerdict, readLedger } from './calibration.mjs'
 import { resolveModelId, JUDGE_MODEL_FIELD } from './model-version.mjs'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
@@ -170,6 +177,11 @@ export function deriveChecks({ planPath, readFn, rootDir } = {}) {
       comparator: p.comparator,
       threshold: Number(p.threshold),
       horizon: p.horizon ?? null,
+      // The measure and the working directory ride along, or this side would
+      // read the SAME claim a different way and the two sides would fall silent
+      // in different places — which is how a false divergence is manufactured.
+      measure: p.measure ?? null,
+      cwd: p.cwd ?? null,
       domain: p.domain ?? DEFAULT_DOMAIN,
     })
   }
@@ -188,17 +200,6 @@ export function deriveChecks({ planPath, readFn, rootDir } = {}) {
   }
 
   return { checks }
-}
-
-/** Parse the numeric LAST non-empty line of a command's output -> number|null. */
-function numericLastLine(output) {
-  const lines = String(output ?? '')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-  if (!lines.length) return null
-  const last = lines[lines.length - 1]
-  return /^-?\d+(\.\d+)?$/.test(last) ? Number(last) : null
 }
 
 /** Deterministic numeric compare (mirrors predict.mjs — the ONLY verdict signal). */
@@ -239,7 +240,9 @@ function verifyArtifact(check, readFn) {
 /**
  * verifyCommand(check, runCommand) -> verdict. The allowlist gate FIRST:
  * a non-matching command scores 'skipped-unsafe' with runCommand NEVER invoked. A safe
- * command runs; non-numeric output or a throwing runner → 'error'; else numeric compare.
+ * command runs; a throwing runner → 'error'; else the fact is read the way the
+ * check declares (numeric last line by default, the exit code when the check
+ * says so — factFromRun is the ONE reader both sides share) and compared.
  */
 function verifyCommand(check, runCommand, { now, currentVersion } = {}) {
   // The horizon gate runs FIRST and on the same rule as the scorer: a claim due
@@ -249,15 +252,15 @@ function verifyCommand(check, runCommand, { now, currentVersion } = {}) {
   // an un-arrived horizon is what once produced a false divergence.
   if (horizonReached(check.horizon, { now, currentVersion }) === false) return 'not-due'
   if (!isSafeCommand(check.check_command)) return 'skipped-unsafe'
-  let output
+  let ran
   try {
-    output = runCommand(check.check_command)
+    ran = runCommand(check.check_command, runOptions(check))
   } catch {
     return 'error'
   }
-  const actual = numericLastLine(output)
-  if (actual == null) return 'error'
-  return compare(actual, check.comparator, Number(check.threshold)) ? 'pass' : 'fail'
+  const fact = factFromRun(check, ran)
+  if (fact.error) return 'error'
+  return compare(fact.actual, check.comparator, Number(check.threshold)) ? 'pass' : 'fail'
 }
 
 /**

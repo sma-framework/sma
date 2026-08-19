@@ -301,8 +301,8 @@ predictions:
 
 describe('the mirror measures the same way the scorer does', () => {
   const EXIT_PLAN = `---
-phase: 9.3-test
-plan: 02
+phase: mirror-fixture
+plan: alpha
 predictions:
   - id: P-EXIT
     claim: "the suite is green"

@@ -5492,7 +5492,25 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   // The allowlist (SAFE_COMMAND_PATTERNS) has already gated BEFORE this
   // runner is ever invoked — scorePlan never calls it for a
   // non-matching command.
-  const runCommand = (cmd) => execSync(cmd, { encoding: 'utf8', timeout: 120_000 })
+  //
+  // A nonzero exit is an OBSERVATION, not a crash — the posture the receipts
+  // runner below has always had, adopted here verbatim. Before this, the runner
+  // threw on a nonzero exit, so «this suite is green» could only ever score
+  // 'error': error when it failed, error when it passed. A prediction that
+  // cannot be wrong is not a prediction, and the whole learning loop was
+  // starved of the one thing that feeds it — a miss.
+  //
+  // The working directory arrives as a run PARAMETER (o.cwd, from the entry's
+  // own field). It is never spliced into the command string: the allowlist
+  // refuses connectors, and rightly so.
+  const runCommand = (cmd, o = {}) => {
+    try {
+      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? process.cwd() })
+      return { stdout, exitCode: 0 }
+    } catch (err) {
+      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
+    }
+  }
 
   const currentVersion = resolveCurrentVersion(flags, dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
   const scored = predict.scorePlan({ planPath, runCommand, currentVersion })
@@ -8995,11 +9013,15 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
   }
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const { execSync } = await import('node:child_process')
-  const runCommand = (cmd) => {
+  // Same runner contract as the scorer, so both sides of the ledger read a
+  // nonzero exit the same way instead of one calling it a fact and the other
+  // an error.
+  const runCommand = (cmd, o = {}) => {
     try {
-      return execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: repoRoot })
+      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? repoRoot })
+      return { stdout, exitCode: 0 }
     } catch (err) {
-      return (err && err.stdout) || ''
+      return { stdout: (err && err.stdout) || '', exitCode: (err && err.status) ?? 1 }
     }
   }
   const readFn = (p, enc) => readFileSync(p, enc ?? 'utf8')

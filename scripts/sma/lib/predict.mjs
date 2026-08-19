@@ -190,6 +190,14 @@ export function validatePrediction(entry) {
   if (!missing.includes('threshold') && !Number.isFinite(Number(e.threshold))) {
     errors.push(`threshold "${e.threshold}" is not numeric`)
   }
+  // `measure` is OPTIONAL — absent means the historical last-line reading, so
+  // every entry written before the field existed stays valid. When present it
+  // must name one of the two known ways: a typo falling back silently would
+  // turn an exit-code claim into a guaranteed non-verdict, which is the very
+  // failure this field was added to end.
+  if (e.measure != null && e.measure !== '' && !MEASURES.includes(String(e.measure))) {
+    errors.push(`measure "${e.measure}" not in [${MEASURES.join(', ')}]`)
+  }
   return { valid: missing.length === 0 && errors.length === 0, missing, errors }
 }
 
@@ -216,6 +224,90 @@ function compare(actual, comparator, threshold) {
     case '<': return actual < threshold
     default: return false
   }
+}
+
+/**
+ * The two ways a check_command can state a FACT.
+ *
+ * `last-line` (the default, and the ONLY behaviour before this) reads the
+ * numeric last line of the output. `exit-code` reads the process exit code.
+ * Omitting the field means `last-line`, so every prediction written before the
+ * field existed behaves byte for byte as it did.
+ *
+ * Why the second one exists: the scorer's runner used to throw on a nonzero
+ * exit, so «the suite is green» produced 'error' when the suite failed and
+ * 'error' when it passed (no numeric last line). A claim that cannot be WRONG
+ * is not a claim — the mechanism built to catch our mistakes could not catch
+ * one. The exit code is DATA, and reading it costs the command allowlist
+ * nothing: not one character of SAFE_COMMAND_CHARSET or SAFE_COMMAND_PATTERNS
+ * moves for it.
+ */
+export const MEASURE_LAST_LINE = 'last-line'
+export const MEASURE_EXIT_CODE = 'exit-code'
+export const MEASURES = [MEASURE_LAST_LINE, MEASURE_EXIT_CODE]
+
+/** The declared measure of an entry, defaulting to the historical one. */
+export function measureOf(entry) {
+  const m = String((entry && entry.measure) != null ? entry.measure : '').trim()
+  return m === '' ? MEASURE_LAST_LINE : m
+}
+
+/**
+ * Run options for an entry — the ONLY channel the working directory travels.
+ *
+ * `cwd` is a FIELD of the record and is handed to the runner as a parameter.
+ * It is NEVER concatenated into the command string: a joined `cd X && cmd`
+ * would put a shell metacharacter inside the trust boundary, which is exactly
+ * what the allowlist exists to refuse — and still refuses (the reverse tests
+ * pin it). Precedent: the receipt-hash verb already takes a --cwd of its own,
+ * so this is the existing semantics, not a new concept.
+ */
+export function runOptions(entry) {
+  const cwd = entry && entry.cwd
+  return cwd == null || String(cwd).trim() === '' ? {} : { cwd: String(cwd) }
+}
+
+/**
+ * normalizeRunResult(res) -> {stdout, exitCode}.
+ *
+ * A runner may report both halves of a run ({stdout, exitCode} — the posture
+ * the receipts runner has always had) or output only (a plain string, the
+ * historical shape). Output-only reporting yields exitCode `null`: «not
+ * observed», which is honestly different from zero.
+ */
+export function normalizeRunResult(res) {
+  if (res && typeof res === 'object' && 'stdout' in res) {
+    const code = Number(res.exitCode)
+    return {
+      stdout: String(res.stdout == null ? '' : res.stdout),
+      exitCode: Number.isFinite(code) ? code : null,
+    }
+  }
+  return { stdout: String(res == null ? '' : res), exitCode: null }
+}
+
+/**
+ * factFromRun(entry, res) -> {actual, error}.
+ *
+ * The single place a run becomes a number, shared by the scorer and the blind
+ * mirror so the two sides can never measure the same claim differently. A
+ * runner that reports output only cannot answer an exit-code claim: that is an
+ * ERROR and says so, rather than quietly passing zero off as an observation.
+ */
+export function factFromRun(entry, res) {
+  const { stdout, exitCode } = normalizeRunResult(res)
+  if (measureOf(entry) === MEASURE_EXIT_CODE) {
+    if (exitCode == null) {
+      return {
+        actual: null,
+        error: 'measure exit-code needs a runner reporting {stdout, exitCode}; got output only',
+      }
+    }
+    return { actual: exitCode, error: null }
+  }
+  const n = parseNumericLastLine(stdout)
+  if (n == null) return { actual: null, error: 'check_command output has no numeric last line' }
+  return { actual: n, error: null }
 }
 
 /**
@@ -316,8 +408,10 @@ export function horizonReached(horizon, { now, currentVersion } = {}) {
  * `predictions:` (see isReceiptEntry) lands in `excluded` with NO verdict and
  * the runner never invoked.
  *
- * For each VALID predictions entry: allowlist check -> run (injected runner)
- * -> numeric last-line parse -> comparator compare. Deterministic; zero LLM;
+ * For each VALID predictions entry: allowlist check -> run (injected runner,
+ * given the entry's optional `cwd` as a run PARAMETER) -> fact (the numeric
+ * last line by default, the process exit code when `measure: exit-code`) ->
+ * comparator compare. Deterministic; zero LLM;
  * confidence copied into the record verbatim, never read for the verdict.
  * scorePlan itself NEVER throws — a throwing runner or non-numeric output
  * becomes verdict 'error' on that record (fail-open C9).
@@ -368,6 +462,8 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       expected: Number(entry.threshold),
       comparator: entry.comparator,
       confidence: entry.confidence ?? null, // recorded verbatim — NEVER gates
+      measure: measureOf(entry),
+      cwd: entry.cwd ?? null,
       scoredAt: now ?? new Date().toISOString(),
       plan: planPath,
     }
@@ -392,9 +488,11 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       continue
     }
 
-    let output
+    let ran
     try {
-      output = runCommand(entry.check_command)
+      // The working directory travels as a PARAMETER (runOptions) — never as
+      // a connector glued into the command string.
+      ran = runCommand(entry.check_command, runOptions(entry))
     } catch (err) {
       records.push({
         ...base,
@@ -406,18 +504,22 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       continue
     }
 
-    const actual = parseNumericLastLine(output)
-    if (actual == null) {
+    // A nonzero exit is an OBSERVATION, not a crash: the runner hands back both
+    // halves of the run, so a failing check can finally be a MISS with a number
+    // instead of an error that says nothing.
+    const fact = factFromRun(entry, ran)
+    if (fact.error) {
       records.push({
         ...base,
         actual: null,
         hit: false,
         verdict: 'error',
-        error: 'check_command output has no numeric last line',
+        error: fact.error,
       })
       continue
     }
 
+    const actual = fact.actual
     const hit = compare(actual, entry.comparator, base.expected)
     records.push({ ...base, actual, hit, verdict: hit ? 'hit' : 'miss' })
   }
