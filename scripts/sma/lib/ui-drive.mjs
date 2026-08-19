@@ -233,11 +233,20 @@ export function classify(observations = {}, { origin = '' } = {}) {
     findings.push({ severity: BLOCKER, kind: 'control-dead', detail: `"${d.name}" — ${d.error}` })
   }
   // Sideways scroll at phone width is measured, not judged: scrollWidth exceeds clientWidth.
+  // When the offender is NAMED (see worstOverflow) the finding says which box holds the
+  // content and how much of it lies past the edge: «the page scrolls sideways» is not
+  // something the person who has to fix it can act on.
   for (const o of observations.overflows ?? []) {
     findings.push({
       severity: BLOCKER,
       kind: 'overflow',
-      detail: `content is ${o.scrollWidth}px wide in a ${o.clientWidth}px viewport (${o.viewport}) — the page scrolls sideways`,
+      detail: o.element
+        ? `${o.element} holds ${o.scrollWidth}px of content in ${o.clientWidth}px of visible width (${o.viewport}) — ` +
+          `${o.scrollWidth - o.clientWidth}px lie past the edge` +
+          (o.scrollable
+            ? '; that box scrolls sideways inside itself, so the rest is reached only by dragging the window contents'
+            : '; nothing scrolls there, so what is past the edge cannot be reached at all')
+        : `content is ${o.scrollWidth}px wide in a ${o.clientWidth}px viewport (${o.viewport}) — the page scrolls sideways`,
     })
   }
   // A control nobody can name is unusable by screen reader and untestable by anyone.
@@ -249,6 +258,67 @@ export function classify(observations = {}, { origin = '' } = {}) {
     findings.push({ severity: WARNING, kind: 'console-error', detail: String(msg) })
   }
   return dedupe(findings)
+}
+
+/**
+ * Sub-pixel widths round, so a box is only «wider than its own window» when it is wider by
+ * more than a whole pixel. The threshold predates the element scan and is deliberately
+ * unchanged by it: noise from rounding was never the thing this finding was about.
+ */
+export const OVERFLOW_TOLERANCE_PX = 1
+
+/**
+ * How far down the tree the overflow scan walks, and how many boxes it will measure.
+ *
+ * ══════════ WHY A SCAN AT ALL — THE GATE THAT WAS GREEN BEFORE AND AFTER ══════════
+ * This used to measure the DOCUMENT only: `documentElement.scrollWidth > clientWidth`.
+ * A window whose minimum width sits on the page itself does slide sideways, and that was
+ * caught. But a window that moved its minimum onto an inner container — precisely so the
+ * page would stop sliding — became invisible to the measurement while getting no healthier:
+ * at 375px the document measured 375 and «no overflow», while the container inside it held
+ * 1360px of content, nine hundred and eighty five of them past the right edge. A person
+ * looking at that screen sees a menu and two half-words; the instrument saw nothing.
+ *
+ * A check that is green before the fix and green after it is not a gate — it manufactures
+ * confidence and proves nothing. So the measurement follows the content, not the document.
+ *
+ * The walk is bounded and that costs no knowledge: content that overflows the page at all
+ * makes the boxes ABOVE it overflow too, so the frame of the window — the first few levels —
+ * carries every escape. A strip deep inside one screen that scrolls itself is a design
+ * decision, and measuring every node on every width would slow each run without adding a
+ * fact.
+ */
+export const OVERFLOW_SCAN_DEPTH = 4
+export const OVERFLOW_SCAN_NODES = 400
+
+/**
+ * worstOverflow(boxes, {viewport}) -> the single widest offender, or null.
+ *
+ * ONE finding per width, not one per box: a container that overflows drags its ancestors
+ * into overflowing with it, so reporting all of them turns a single defect into a list and
+ * a receipt nobody finishes reading is a receipt nobody acts on. The widest overhang is the
+ * one that names the disease; the rest are its shadow.
+ *
+ * Boxes with no visible width at all (`clientWidth` 0 — `head`, an inline node, a hidden
+ * branch) are not judged: there is no width to be wider than.
+ *
+ * @param {Array<{element?:string, scrollWidth?:number, clientWidth?:number, scrollable?:boolean}>} boxes
+ * @param {{viewport?:string}} [opts]
+ * @returns {{element?:string, scrollWidth:number, clientWidth:number, scrollable?:boolean, viewport:string}|null}
+ */
+export function worstOverflow(boxes = [], { viewport = '' } = {}) {
+  let worst = null
+  for (const b of boxes) {
+    const scrollWidth = Number(b?.scrollWidth)
+    const clientWidth = Number(b?.clientWidth)
+    if (!Number.isFinite(scrollWidth) || !Number.isFinite(clientWidth) || clientWidth <= 0) continue
+    if (scrollWidth <= clientWidth + OVERFLOW_TOLERANCE_PX) continue
+    const over = scrollWidth - clientWidth
+    if (!worst || over > worst.scrollWidth - worst.clientWidth) {
+      worst = { element: b.element, scrollWidth, clientWidth, scrollable: b.scrollable === true, viewport }
+    }
+  }
+  return worst
 }
 
 /**

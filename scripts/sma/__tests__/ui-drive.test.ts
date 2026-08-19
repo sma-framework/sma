@@ -38,6 +38,7 @@ import {
   renderCoverage,
   renderReceipt,
   verdict,
+  worstOverflow,
 } from '../lib/ui-drive.mjs'
 
 describe('parseSteps', () => {
@@ -185,6 +186,77 @@ describe('the sweep — pressing everything, safely', () => {
     expect(f[0].severity).toBe(BLOCKER)
     expect(f[0].detail).toContain('1360px')
     expect(f[0].detail).toContain('375px')
+  })
+})
+
+/**
+ * The measurement used to look at the DOCUMENT only, and a window that carries its minimum
+ * width on a container inside the page therefore measured clean at phone width while most
+ * of the screen lay past the edge. A check that is green before the fix and green after it
+ * is not a gate: it manufactures confidence. These pin the fix.
+ */
+describe('worstOverflow — the offender is found where the content is, not where the document is', () => {
+  it('finds a container wider than its own visible width, even when the document is clean', () => {
+    const worst = worstOverflow(
+      [
+        { element: 'html', scrollWidth: 375, clientWidth: 375, scrollable: false },
+        { element: 'body', scrollWidth: 375, clientWidth: 375, scrollable: false },
+        { element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: true },
+      ],
+      { viewport: 'mobile' }
+    )
+    expect(worst).toMatchObject({ element: 'div#root', scrollWidth: 1360, clientWidth: 375, viewport: 'mobile' })
+  })
+
+  it('reports the widest offender once, not every box it drags along with it', () => {
+    const worst = worstOverflow(
+      [
+        { element: 'html', scrollWidth: 900, clientWidth: 375 },
+        { element: 'div#root', scrollWidth: 1360, clientWidth: 375 },
+        { element: 'div.table', scrollWidth: 500, clientWidth: 375 },
+      ],
+      { viewport: 'mobile' }
+    )
+    expect(worst?.element).toBe('div#root')
+  })
+
+  it('says nothing at all about a page where every box fits — no false alarm', () => {
+    expect(
+      worstOverflow(
+        [
+          { element: 'html', scrollWidth: 1440, clientWidth: 1440 },
+          { element: 'div#root', scrollWidth: 1440, clientWidth: 1440 },
+          // Sub-pixel rounding is not a defect: the threshold is a whole pixel.
+          { element: 'div.card', scrollWidth: 301, clientWidth: 300 },
+        ],
+        { viewport: 'desktop' }
+      )
+    ).toBeNull()
+  })
+
+  it('does not judge a box that has no visible width to be wider than', () => {
+    expect(worstOverflow([{ element: 'head', scrollWidth: 0, clientWidth: 0 }], { viewport: 'mobile' })).toBeNull()
+  })
+
+  it('names the element and how much lies past the edge, so the finding can be acted on', () => {
+    const f = classify({
+      overflows: [{ element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: true, viewport: 'mobile' }],
+    })
+    expect(f[0].severity).toBe(BLOCKER)
+    expect(f[0].detail).toContain('div#root')
+    expect(f[0].detail).toContain('985px')
+    expect(f[0].detail).toContain('mobile')
+  })
+
+  it('tells apart content reached by dragging and content that cannot be reached at all', () => {
+    const scrolls = classify({
+      overflows: [{ element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: true, viewport: 'mobile' }],
+    })
+    const clipped = classify({
+      overflows: [{ element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: false, viewport: 'mobile' }],
+    })
+    expect(scrolls[0].detail).toContain('dragging')
+    expect(clipped[0].detail).toContain('cannot be reached at all')
   })
 })
 
