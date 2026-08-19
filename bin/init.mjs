@@ -434,55 +434,6 @@ async function main() {
   const movedNote = removedMoved ? `, ${removedMoved} entries dropped from a matcher this installer no longer uses` : '';
   console.log(`  + hooks         ${added} added${staleNote}${movedNote}, foreign entries preserved (${settingsPath})`);
 
-  // 6.5. Statusline segment — the engine's own line in the terminal status bar.
-  //
-  // The managed edit is IMPORTED from lib, never spawned as the `statusline install`
-  // verb and never re-implemented here. Spawning it would be worse than a copy: the
-  // verb resolves the state root through the SHARED git directory, so a spawn from a
-  // linked working copy writes the settings of a DIFFERENT checkout. And a second
-  // implementation of the same write is the defect class this installer has already
-  // paid for once — two lists of one thing drift apart, and the drift only surfaces
-  // when a user is standing on it. One implementation, every caller imports it.
-  //
-  // ALWAYS the PROJECT settings file, even for a global install, and that refusal is
-  // deliberate rather than an oversight: the command is project-relative
-  // (`node scripts/sma/cli.mjs statusline`), so a user-scope entry would run in EVERY
-  // project the adopter opens, including all the ones without this runtime — where it
-  // fails, prints nothing, and shadows the adopter's own status line with emptiness
-  // everywhere at once (a project-level statusLine takes precedence over the user one).
-  // Same rule the runtime at scripts/sma already follows: always project-level.
-  const statuslineSettingsPath = path.join(project, '.claude', 'settings.json');
-  try {
-    const { pathToFileURL } = await import('node:url');
-    const statusline = await import(pathToFileURL(path.join(pkgRoot, 'scripts', 'sma', 'lib', 'statusline-install.mjs')).href);
-    const res = await statusline.applyStatuslineInstall('install', {
-      settingsPath: statuslineSettingsPath,
-      dirs: { statuslineDir: path.join(project, '.sma', 'statusline') },
-      by: 'sma init',
-      now: Date.now(),
-    });
-    // Reported BY STATUS, not by one sentence for every outcome. Someone who installed
-    // the segment by hand in an earlier release must be told "unchanged", not
-    // "installed" — a report that calls a no-op an install teaches the operator the
-    // wrong thing about their own file.
-    if (res.status === 'installed') {
-      console.log(`  + statusline    engine segment (${statuslineSettingsPath})`);
-    } else if (res.status === 'installed-wrap') {
-      console.log(`  + statusline    engine segment; your own status line was kept and prints first`);
-    } else if (res.status === 'noop-already') {
-      console.log(`  + statusline    engine segment already installed — unchanged`);
-    } else {
-      // parse-failed: the hooks step above exits on an unparseable file, so this is
-      // nearly unreachable locally — the file would have to change between the two
-      // steps. Kept anyway, and it WARNS rather than failing the install: nothing was
-      // written, so there is nothing to roll back.
-      const snippet = JSON.stringify(statusline.canonicalStatuslineEntry(statusline.SMA_STATUSLINE_CMD));
-      console.warn(`  ! statusline    ${statuslineSettingsPath} is not valid JSON — nothing written; add "statusLine": ${snippet} by hand`);
-    }
-  } catch (e) {
-    console.warn(`  ! statusline    segment skipped (${e && e.message ? e.message : e})`);
-  }
-
   // 7. .sma/ runtime scaffold + .gitignore line
   for (const d of ['sessions', 'claims', 'journal', 'reflex']) mkdirSync(path.join(project, '.sma', d), { recursive: true });
   const gitignorePath = path.join(project, '.gitignore');
@@ -546,7 +497,6 @@ Done. SMA${version ? ` v${version}` : ''} is installed${isGlobal ? ' globally' :
     - the /sma-* command skills (${skillCount} commands)${flags.withGsdAliases ? '\n    - the transitional /gsd-* aliases' : ''}
     - the memory system at .claude/memory (tag registry + index, EMPTY — the notes will be yours)
     - hooks in ${isGlobal ? '~/.claude' : '.claude'}/settings.json (your own hooks were kept as they were)
-    - the engine segment in your terminal status line (.claude/settings.json — your own line, if you had one, still prints first)
 
   Next step: open a Claude Code session in this project and run \`/sma-start\`.
 `);

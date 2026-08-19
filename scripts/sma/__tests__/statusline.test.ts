@@ -185,6 +185,108 @@ describe('statusline.mjs — Task 1 (pure render + cache + adapters)', () => {
   })
 })
 
+// ── The window axis: the subscription reading must REACH the state ────────────
+
+/**
+ * The vendor pipes `rate_limits.five_hour.used_percentage` on stdin at every render.
+ * «Parsed» and «reached the consumer» are different claims: the reading used to be
+ * parsed and then handed to the daemon snapshot ONLY, while the win axis was fed by a
+ * spend-against-a-money-cap figure that nobody sets — so the axis was dead by
+ * construction. These cases assert the WIRE (stdin -> parse -> inject -> state), not
+ * that the renderer can print a number.
+ */
+describe('statusline window axis — the subscription reading reaches the axis', () => {
+  const VENDOR_PCT = 23.5
+
+  it('W1: an injected vendor reading wins over both the cached and the freshly loaded spend figure', async () => {
+    const statuslineDir = join(dir, 'sl-w1')
+    const loaders = { loadSpend: () => 42, loadGates: () => 1, loadUnscored: () => 0 }
+    const dirs = { statuslineDir }
+    const now = () => 5_000_000
+
+    // cold call without a reading -> the spend fallback fills the axis and warms the cache
+    const cold = await readStatuslineState({ dirs, summary: {}, loaders, now })
+    expect(cold.windowPct).toBe(42)
+
+    // same clock (cache warm), now WITH the vendor reading -> the reading wins
+    const withVendor = await readStatuslineState({ dirs, summary: {}, loaders, now, vendorWindowPct: VENDOR_PCT })
+    expect(withVendor.windowPct).toBe(VENDOR_PCT) // fractional survives — the vendor documents 0..100 with decimals
+
+    // a non-finite «reading» is not a reading (garbage never displaces the fallback)
+    const garbage = await readStatuslineState({ dirs, summary: {}, loaders, now, vendorWindowPct: Number.NaN })
+    expect(garbage.windowPct).toBe(42)
+  })
+
+  it('W2: no vendor reading + a real spend-cap fixture -> the spend fallback still fills the axis', async () => {
+    const spendDir = join(dir, 'spend-w2')
+    mkdirSync(spendDir, { recursive: true })
+    writeFileSync(join(spendDir, 'budget.json'), JSON.stringify({ windowHours: 5, capUsd: 10 }))
+    const state = await readStatuslineState({
+      dirs: { statuslineDir: join(dir, 'sl-w2'), spendDir, repoRoot: join(dir, 'w2-repo') },
+      summary: {},
+      now: () => 1,
+    })
+    expect(Number.isFinite(state.windowPct)).toBe(true) // the pre-existing fallback path is untouched
+  })
+
+  it('W3: neither a vendor reading nor a cap -> null, which renders as the honest dash', async () => {
+    const state = await readStatuslineState({
+      dirs: { statuslineDir: join(dir, 'sl-w3'), repoRoot: join(dir, 'w3-repo') },
+      summary: {},
+      now: () => 1,
+    })
+    expect(state.windowPct).toBeNull()
+    expect(renderSegment(state)).toContain('win —')
+  })
+
+  it('W4: the vendor reading is NEVER written to cache.json — a call without stdin tells the truth', async () => {
+    const statuslineDir = join(dir, 'sl-w4')
+    const loaders = { loadSpend: () => 7, loadGates: () => 0, loadUnscored: () => 0 }
+    const now = () => 9_000_000
+    await readStatuslineState({ dirs: { statuslineDir }, summary: {}, loaders, now, vendorWindowPct: VENDOR_PCT })
+
+    const cache = JSON.parse(readFileSync(join(statuslineDir, 'cache.json'), 'utf8'))
+    expect(cache.fast.windowPct).toBe(7) // the cache keeps the spend figure only
+    expect(JSON.stringify(cache)).not.toContain(String(VENDOR_PCT))
+
+    // a later call WITHOUT the reading falls back to that cached figure — no stale vendor value
+    const later = await readStatuslineState({ dirs: { statuslineDir }, summary: {}, loaders, now })
+    expect(later.windowPct).toBe(7)
+  })
+
+  it('W5 (wire): the same stdin bytes travel parse -> inject -> state through the real command', () => {
+    const payload = JSON.stringify({
+      model: { display_name: 'Opus', id: 'claude-opus' },
+      workspace: { current_dir: '/repo' },
+      rate_limits: {
+        five_hour: { used_percentage: VENDOR_PCT, resets_at: 1786552800 },
+        seven_day: { used_percentage: 58, resets_at: 1786993200 },
+      },
+    })
+
+    // half one — the parse the entry point performs
+    const parsed = parseStatusStdin(payload)
+    expect(parsed.rateLimits?.five_hour?.usedPercentage).toBe(VENDOR_PCT)
+
+    // half two — the SAME bytes on the real command's stdin come out inside the axis.
+    // HOME/USERPROFILE are redirected so neither the adopter's own statusline nor a real
+    // daemon store is touched by the spawn (os.homedir reads them).
+    const repoW5 = join(dir, 'w5-repo')
+    const homeW5 = join(dir, 'w5-home')
+    mkdirSync(join(repoW5, '.sma'), { recursive: true })
+    mkdirSync(homeW5, { recursive: true })
+    const run = (input: string): string =>
+      execFileSync(process.execPath, [CLI, 'statusline'], {
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(repoW5, '.sma'), HOME: homeW5, USERPROFILE: homeW5 },
+        input,
+        encoding: 'utf8',
+      })
+
+    expect(run(payload)).toContain(`win ${VENDOR_PCT}%`) // the reading reached the axis
+    expect(run('{}')).toContain('win —') // and without it the axis is honestly empty
+  })
+})
+
 // ── Composition with a pre-existing user statusline (segment-not-takeover) ─────
 
 describe('statusline composition — user line first, SMA segment appended', () => {
