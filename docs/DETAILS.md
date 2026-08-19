@@ -788,6 +788,66 @@ Those three `copy` entries are the defaults, applied when the file is absent —
 
 **If you link things by hand, unlink before you remove.** On Windows `git worktree remove` follows a junction into its target and deletes what it finds *there* — that is your main tree's `node_modules`, not the copy's link. The product's own `worktree remove` does it in the safe order: unlink first, then remove the tree; `--delete-branch` takes the branch with it and records the tip it deleted, so the work can still be raised from that commit.
 
+#### Worker account: the personal layer
+
+The copy above answers «where did it work». This answers «under whose rules». A worker runs in
+its own Claude Code config directory — its own account — and an account carrying none of your
+working profile is not the session you get, whatever a marketing paragraph says. Before
+**every** spawn the daemon mirrors your layer into that directory, idempotently: an unchanged
+layer writes nothing and reports `changed:false`, so calling it before each run costs nothing.
+If the mirror cannot be written the attempt is **refused by name** (`personal_layer_error`)
+rather than started — a session running under rules nobody chose spends your subscription on
+work you cannot account for.
+
+| From your own `~/.claude` | Mirrored into the worker's account | Why |
+|---|---|---|
+| global `CLAUDE.md` | **yes** — content copied, fingerprint recorded | it is the instruction set you work under; without it the worker is a different colleague |
+| `hooks` | **yes** — merged per event, so an override adds a Stop hook without erasing SessionStart | a hook that does not fire is a rule you believe is in force |
+| `permissions.deny`, `permissions.ask` | **yes** | these two can only ever *narrow* what a session may do |
+| `permissions.allow` | **no** — the card says so in words | it widens rights one rule at a time, and widening is a decision, never a side effect |
+| `defaultMode` | **no** | `"auto"` in a user-scope settings file puts a headless session into auto mode — past the envelope the run was given |
+| your plugins (`enabledPlugins`) | **no** | a plugin is installed into an account, and the worker's account is not yours — see below |
+| `model`, `env`, `statusLine` | **no** | the model and environment of a run come from the worker profile the daemon already owns |
+| anything else the account holds (`theme`, …) | **untouched** | the merge is deep: mirroring must not quietly reset a setting nobody asked about |
+
+The previous `settings.json` is copied aside before the first overwrite (a small dated ring of
+copies), and every field above is written onto the attempt — file fingerprint, hook count, rule
+counts, plugin list, connector state — beside what the session **actually loaded** when it
+started, read off its own init frame. The gap between «what we put in» and «what came up» is
+the whole reason both halves are recorded.
+
+**Connections are ours only.** `disableClaudeAiConnectors: true` goes into the worker's
+settings (Claude Code 2.1.182 or later), so hosted claude.ai MCP connectors are neither fetched
+nor attached; servers handed over explicitly on `--mcp-config` are unaffected, and those are
+the only ones a worker gets. They come from the registry a human keeps on the machine
+(`~/.sma-daemon/mcp.json`), switched on row by row on «Подключения» — the window can flip
+`enabled` and nothing else, so no text typed into it ever becomes a command.
+
+**Plugins are named by you, installed by you.**
+
+```json
+{
+  "personalLayer": { "sourceDir": "C:/Users/you/.claude" },
+  "workers": [
+    { "id": "local-1", "provider": "claude",
+      "plugins": ["reviewer@my-marketplace"],
+      "settingsOverrides": { "permissions": { "deny": ["Bash(curl:*)"] } } }
+  ]
+}
+```
+
+`plugins` states what the worker's account should carry; the install into that account stays
+your own action, because installing software on somebody's behalf is not a thing this product
+does. `settingsOverrides` accepts four keys and refuses the rest when the config loads —
+`hooks`, `permissions`, `autoMemoryDirectory`, `autoMemoryEnabled` — because a silently
+dropped override is a rule the operator believes is in force.
+
+**Auto-memory is per repository, not per copy.** Claude Code keys the automatic memory
+directory by the git repository, so every worker copy cut from one project shares one memory
+folder: a lesson written down in one attempt is in the room for the next. Nothing is built to
+make that true — it is verified, and the path the session itself reported is written onto the
+attempt and shown on the card.
+
 ## V3 — The Trust Spine
 
 V1 taught the system to **remember**. V2 taught it to **predict, fire reflexes, and coordinate**. **V3 makes it stop trusting its own word.**

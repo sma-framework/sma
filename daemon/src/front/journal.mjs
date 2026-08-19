@@ -91,6 +91,20 @@ export const STRUCT_FIELD_CAP = 200
 
 /** One line of worker output, capped — the same posture as the approach note. */
 export const ATTEMPT_LOG_LINE_CAP = 4096
+/**
+ * A WHOLE FRAME, and the reason it gets a cap of its own. Two lines of a session are not
+ * chatter: the first frame the CLI emits lists the tools, the servers, the skills and the
+ * memory the session actually received, and the last one says how it ended. Every later claim
+ * about a run — that it had the founder's hooks, that no hosted connector was in it, that the
+ * worker could write at all — is checked against those two and nothing else. A cap sized for
+ * a sentence cut them in the middle, so the transcript held the worker's small talk in full
+ * and lost the only part that was evidence. Sixteen times the line cap is enough for the
+ * frames the CLI actually emits and still a hard ceiling: this is a bound being raised for two
+ * named kinds of line, not removed.
+ */
+export const ATTEMPT_LOG_FRAME_CAP = 65536
+/** The two markers that earn the frame cap. Anything else is an ordinary line. */
+const FRAME_KINDS = new Set(['init', 'result'])
 /** How many parts of ONE frame a row may carry: a glance is a glance, not a transcript. */
 export const ATTEMPT_LOG_SUMMARY_CAP = 8
 /** How many entries a tail read returns when the caller names no number. */
@@ -285,6 +299,11 @@ export function journalComplete({ attemptId, taskId, attempt, ledger, entries } 
  * session (stream.mjs reads that off `parent_tool_use_id`), so an ordinary row stays two
  * fields wide and a reader never has to tell `false` from «this build did not know».
  *
+ * `frameKind` is a ROUTING HINT, not a field of the record: `'init'` or `'result'` selects the
+ * frame cap for this row and is then dropped, so a reader of the transcript never has to know
+ * the marker existed and an older row stays exactly as wide as it was. An unknown marker is no
+ * marker — the cap only widens for the two kinds that are evidence.
+ *
  * `summary` is the SENTENCE A PERSON READS, built by the runner off the parsed frame before
  * the line was capped (runner/frame-summary.mjs). It is bounded here like everything else
  * that arrives from a worker: a closed number of parts, each field capped, every value
@@ -292,7 +311,7 @@ export function journalComplete({ attemptId, taskId, attempt, ledger, entries } 
  * nothing to a reader leaves the row exactly as wide as it was, and the screen falls back to
  * the raw line.
  *
- * @param {{line?:string, ts?:string, subagent?:boolean, parentId?:string, summary?:object[]}} entry
+ * @param {{line?:string, ts?:string, subagent?:boolean, parentId?:string, summary?:object[], frameKind?:string}} entry
  * @param {{now?:()=>number}} [opts]
  * @returns {{ts:string, line:string, subagent?:true, parentId?:string, summary?:object[]}}
  */
@@ -300,7 +319,8 @@ export function normalizeAttemptLogEntry(entry = {}, { now } = {}) {
   const e = entry && typeof entry === 'object' ? entry : {}
   const clock = typeof now === 'function' ? now : Date.now
   const ts = typeof e.ts === 'string' && e.ts ? e.ts : new Date(clock()).toISOString()
-  const out = { ts, line: boundedText(e.line, ATTEMPT_LOG_LINE_CAP) }
+  const cap = FRAME_KINDS.has(e.frameKind) ? ATTEMPT_LOG_FRAME_CAP : ATTEMPT_LOG_LINE_CAP
+  const out = { ts, line: boundedText(e.line, cap) }
   if (e.subagent === true) {
     out.subagent = true
     const parentId = boundedText(e.parentId, STRUCT_FIELD_CAP)

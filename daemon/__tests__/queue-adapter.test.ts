@@ -300,7 +300,7 @@ describe('project — an additive task field with an injected default', () => {
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 12-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 13-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -318,6 +318,11 @@ describe('constants — taxonomy', () => {
       'timeout',
       'runtime_offline',
       'window_exhausted',
+      // the layer the founder works under could not be put into the account before the spawn.
+      // Named apart from every infra cause because it is a REFUSAL and not a breakage: the
+      // machine was fine, and the session was simply not allowed to start under rules nobody
+      // chose — no instructions, no hooks, and connectors from somewhere else entirely
+      'personal_layer_error',
       'manual',
     ])
     expect(Object.isFrozen(FAIL_REASONS)).toBe(true)

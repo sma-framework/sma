@@ -259,6 +259,37 @@ describe('the production composition root is COMPLETE', () => {
    * Each was fully written and fully tested when this test was added. That is the whole point
    * of asking the root: a part cannot see that nobody joined it to the machine.
    */
+  /**
+   * …AND THE SESSION THE WORKER IS ACTUALLY HANDED, WHICH IS A FOURTH LIST.
+   *
+   * The three above decide whether a process starts and how its work is judged. These decide
+   * WHAT KIND OF SESSION it is, and their absence is the quietest failure of all — quiet in
+   * both directions.
+   *
+   *   mirrorPersonalLayer — the founder’s instructions, his hooks and his narrowing permissions
+   *     are put into the worker’s account before the spawn, and the hosted-connectors switch is
+   *     written there with them. Unwired, the module is one nobody calls: the account keeps
+   *     whatever it happened to hold, and because the argument builder refuses a spawn whose
+   *     account was never mirrored, an unwired root refuses EVERY task by name — the same shape
+   *     of failure as the missing builder this file was written for.
+   *     It is also what puts the `personalLayer` key on the attempt row: unwired, that key is
+   *     simply never written, and «the worker ran under my rules» becomes an unfalsifiable claim.
+   *   loadMcpRegistry — which servers a worker may be given. Unwired, the switches in the window
+   *     write a registry no spawn ever reads.
+   *   dataDir — where the per-spawn config file is written. Unwired, no such file exists and the
+   *     session silently takes whatever servers the vendor attaches on its own.
+   */
+  it('wires the session the worker is HANDED — the personal layer and our servers', () => {
+    for (const name of ['mirrorPersonalLayer', 'loadMcpRegistry']) {
+      expect(
+        typeof park.tickDeps[name],
+        `tickDeps.${name} must be wired or every spawn runs under a profile nobody chose`,
+      ).toBe('function')
+    }
+    expect(typeof park.tickDeps.dataDir, 'tickDeps.dataDir must name where the per-spawn mcp config is written').toBe(
+      'string',
+    )
+  })
   it('wires everything a finished task needs to be JUDGED — not just to start', () => {
     for (const name of ['execGit', 'resolveWorkerContext', 'report']) {
       expect(typeof park.tickDeps[name], `tickDeps.${name} must be wired or correct work is refused`).toBe('function')

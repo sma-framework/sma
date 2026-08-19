@@ -746,6 +746,8 @@ describe('buildClaudeArgs mcpConfigPath + buildMcpConfigFile — enabled entries
     expect(path.replace(/\\/g, '/')).toBe('/wt/task-1/mcp-config.json')
     const written = lastWritten()
     expect(Object.keys(written.mcpServers)).toEqual(['twitter']) // the disabled entry never reaches a spawn
-    expect(written.mcpServers.twitter).toEqual({ command: 'npx', args: ['twitter-mcp'], envNames: ['TWITTER_TOKEN'] })
+    // the registry's env NAMES stay with the daemon: the file carries what to run, nothing else
+    expect(written.mcpServers.twitter).toEqual({ type: 'stdio', command: 'npx', args: ['twitter-mcp'] })
+    expect(JSON.stringify(written)).not.toContain('TWITTER_TOKEN')
   })
 })

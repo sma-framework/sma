@@ -53,6 +53,12 @@
  *   - Test 24: forwardSubagentText → '--forward-subagent-text' in the produced array, and
  *              addDir still lands last.
  *   - Test 25: every daemon-assembled env says NOBODY IS AT THE KEYBOARD (HEADLESS_ENV).
+ *   - Test 26: the per-spawn MCP config file is written in the shape the CLI actually reads
+ *              (a stdio server with command/args), carries no environment names and no
+ *              secret values, and never mentions a disabled registry entry.
+ *   - Test 27: profile parity also covers the two halves of the personal layer that are NOT
+ *              in the argument array — the plugins the account has enabled, and the switch
+ *              that keeps hosted connectors out of the session.
  *
  *   THE ONE FENCE (untrusted data never breaks out, and there is only one copy of the rule):
  *   - Test 22: the shared fence module scales the fence past ANY backtick run inside the
@@ -69,6 +75,7 @@ import {
   buildCodexArgs,
   buildAccountEnv,
   buildTaskPrompt,
+  buildMcpConfigFile,
   codexConfigSeed,
   ForbiddenFlagError,
   ProfileParityError,
@@ -568,5 +575,152 @@ describe('prompt-fence (the single copy of the containment rule)', () => {
       fencedBlock('task', `id: t-1\ntitle: ${nasty}`),
     )
     expect(buildForgePrompt({ kind: 'agent', description: nasty })).toContain(fencedBlock('untrusted-data', nasty))
+  })
+})
+
+// ── the MCP config a spawn reads: the shape the CLI accepts, and nothing secret on disk ──
+//
+// The registry a person edits on the host records env NAMES, because that is how this product
+// carries a token: by name, never by value. The file handed to a session is a different
+// document with a different reader — the CLI — and it knows nothing about that convention. A
+// key it does not understand is at best ignored and at worst a parse refusal, and either way a
+// server that never starts is indistinguishable from one that was never configured.
+
+/** A write-capturing fs: the config file never touches a real directory in this suite. */
+function captureFs() {
+  const writes: Array<{ path: string; content: string }> = []
+  return {
+    fs: {
+      mkdirSync: () => {},
+      writeFileSync: (p: string, c: string) => writes.push({ path: String(p).replace(/\\/g, '/'), content: c }),
+      renameSync: () => {},
+    },
+    lastWritten: () => JSON.parse(writes[writes.length - 1].content),
+  }
+}
+
+describe('buildMcpConfigFile — the file a session reads is the shape the CLI accepts', () => {
+  it('writes stdio entries with command/args only — no env names, no values, no disabled entry', () => {
+    const { fs, lastWritten } = captureFs()
+    const servers = [
+      { id: 's1', command: 'node', args: ['x.mjs'], envNames: ['TOK'], enabled: true },
+      { id: 's2', command: 'node', args: ['y.mjs'], envNames: ['OTHER'], enabled: false },
+    ]
+    const path = buildMcpConfigFile({ servers, taskDir: '/wt/task-1', fsImpl: fs })
+    expect(path.replace(/\\/g, '/')).toBe('/wt/task-1/mcp-config.json')
+
+    const written = lastWritten()
+    expect(Object.keys(written.mcpServers)).toEqual(['s1']) // the disabled entry never reaches a spawn
+    expect(written.mcpServers.s1).toEqual({ type: 'stdio', command: 'node', args: ['x.mjs'] })
+
+    // A stdio server inherits the environment of the process that starts it, so the names the
+    // registry records stay the daemon's business. Neither a name nor a value is on this disk.
+    const raw = JSON.stringify(written)
+    expect(raw).not.toContain('envNames')
+    expect(raw).not.toContain('TOK')
+    expect(raw).not.toContain('s2')
+  })
+
+  it('an empty or absent registry still writes a well-formed, empty map', () => {
+    const a = captureFs()
+    buildMcpConfigFile({ servers: [], taskDir: '/wt/task-2', fsImpl: a.fs })
+    expect(a.lastWritten()).toEqual({ mcpServers: {} })
+
+    const b = captureFs()
+    buildMcpConfigFile({ taskDir: '/wt/task-3', fsImpl: b.fs })
+    expect(b.lastWritten()).toEqual({ mcpServers: {} })
+
+    // no task dir is a refusal, not a write into whatever the process cwd happens to be
+    expect(() => buildMcpConfigFile({ servers: [], fsImpl: a.fs } as never)).toThrow()
+  })
+
+  it('a server with no arguments is written without the key rather than with an empty one', () => {
+    const { fs, lastWritten } = captureFs()
+    buildMcpConfigFile({ servers: [{ id: 'plain', command: 'mcp-thing', enabled: true }], taskDir: '/wt/t', fsImpl: fs })
+    expect(lastWritten().mcpServers.plain).toEqual({ type: 'stdio', command: 'mcp-thing' })
+  })
+})
+
+// ── the two halves of a worker session the argument array cannot show ──
+//
+// Model and effort are visible in the produced args, so a substitution is caught by reading
+// them back. The plugins an account has enabled and the switch that keeps hosted connectors
+// out of it are NOT: they live in the account's own settings file, written by the mirror
+// before the spawn. A session that quietly gained a marketplace plugin nobody assigned, or
+// kept a hosted connector the founder switched off, is the same class of failure as a
+// silently substituted model — it looks green and it is not his session.
+
+describe('profile parity also guards what the argument array cannot show', () => {
+  const spawnArgs = () => buildClaudeArgs({ model: 'sonnet', effort: 'high' })
+  const worker = { id: 'max-1', model: 'sonnet', effort: 'high', plugins: ['reviewer@house'] }
+  const mirrored = { enabledPlugins: { 'reviewer@house': true }, disableClaudeAiConnectors: true }
+
+  it('passes when the account holds exactly the profile plugins and connectors are off', () => {
+    expect(assertProfileParity({ args: spawnArgs(), worker, accountSettings: mirrored })).toEqual({
+      model: 'sonnet',
+      effort: 'high',
+    })
+  })
+
+  it('order is not part of the list — two plugins in either order are the same profile', () => {
+    const two = { id: 'w', plugins: ['b@m', 'a@m'] }
+    expect(() =>
+      assertProfileParity({
+        args: buildClaudeArgs({}),
+        worker: two,
+        accountSettings: { enabledPlugins: { 'a@m': true, 'b@m': true }, disableClaudeAiConnectors: true },
+      }),
+    ).not.toThrow()
+  })
+
+  it('a plugin the profile did not assign is a divergence, and the error names the field', () => {
+    const wrong = { enabledPlugins: { 'other@house': true }, disableClaudeAiConnectors: true }
+    expect(() => assertProfileParity({ args: spawnArgs(), worker, accountSettings: wrong })).toThrow(ProfileParityError)
+    expect(() => assertProfileParity({ args: spawnArgs(), worker, accountSettings: wrong })).toThrow(/plugins/)
+    // and the mirror image: the profile names one, the account enabled none
+    expect(() =>
+      assertProfileParity({ args: spawnArgs(), worker, accountSettings: { disableClaudeAiConnectors: true } }),
+    ).toThrow(/plugins/)
+  })
+
+  it('hosted connectors left on are refused by name — the switch is not optional', () => {
+    for (const bad of [{ enabledPlugins: { 'reviewer@house': true } }, { ...mirrored, disableClaudeAiConnectors: false }]) {
+      expect(() => assertProfileParity({ args: spawnArgs(), worker, accountSettings: bad })).toThrow(/connectors/)
+    }
+  })
+
+  it('an empty profile and an account with no plugin map are the same thing, not a divergence', () => {
+    const bare = { id: 'w' }
+    for (const settings of [
+      { disableClaudeAiConnectors: true },
+      { enabledPlugins: {}, disableClaudeAiConnectors: true },
+    ]) {
+      expect(() => assertProfileParity({ args: buildClaudeArgs({}), worker: bare, accountSettings: settings })).not.toThrow()
+    }
+    // a plugin recorded as explicitly OFF is not an enabled one
+    expect(() =>
+      assertProfileParity({
+        args: buildClaudeArgs({}),
+        worker: bare,
+        accountSettings: { enabledPlugins: { 'old@m': false }, disableClaudeAiConnectors: true },
+      }),
+    ).not.toThrow()
+  })
+
+  it('a caller that passes no account settings still gets the model/effort guard it always had', () => {
+    expect(assertProfileParity({ args: spawnArgs(), worker })).toEqual({ model: 'sonnet', effort: 'high' })
+    expect(() => assertProfileParity({ args: buildClaudeArgs({ model: 'opus', effort: 'high' }), worker })).toThrow(
+      ProfileParityError,
+    )
+  })
+
+  it('the flag a per-spawn config needs passes the guard; the one that would strip the checkout does not', () => {
+    const args = buildClaudeArgs({ mcpConfigPath: '/wt/t/mcp-config.json' })
+    expect(args).toContain('--mcp-config')
+    expect(args[args.indexOf('--mcp-config') + 1]).toBe('/wt/t/mcp-config.json')
+    // untouched guard: the neighbour that would REPLACE the checkout's own servers is refused,
+    // as a smuggled value and as an option key
+    expect(() => buildClaudeArgs({ addDir: '--strict-mcp-config' })).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ strictMcpConfig: true } as never)).toThrow()
   })
 })

@@ -38,10 +38,11 @@
  * that reaches a worker unfenced can only ever be one of four constants.
  *
  * WHAT IS DELIBERATELY NOT HERE, so it is a known gap and not a silent one:
- *   - MCP servers. `buildMcpConfigFile` exists in args.mjs and is called by NOTHING in the
- *     daemon — a per-spawn MCP config needs a per-task directory, and this product has no
- *     convention for one yet. Inventing a directory here would be a worse answer than an
- *     absent flag, so a session starts without MCP servers until that convention is chosen.
+ *   - MCP servers. This file now ACCEPTS a written config path as an option and puts it on the
+ *     command line, but it does not write the file: the per-task directory belongs to the tick,
+ *     which is the only caller that knows where this attempt's copy lives. A tick that names
+ *     no path spawns without MCP servers, exactly as before — an absent flag is a better
+ *     answer than a directory invented here.
  *   - Session resume. `resumeId` / `resumeThreadId` are supported by the argument builders;
  *     wiring them needs the session id recovered from the previous attempt's stream, which is
  *     a second concern with its own failure modes.
@@ -55,6 +56,9 @@ import {
   assertProfileParity,
   expectedModelEffort,
 } from './args.mjs'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { stageCommand } from '../policy/phase-cycle.mjs'
 
 /** The route named no worker this spawn could run as. */
@@ -147,12 +151,42 @@ function stagePromptOf(task) {
 }
 
 /**
- * createBuildArgs({config, env}) → the `buildArgs(task, route, options)` the tick wants.
+ * readAccountSettings(configDir, readFile) → the account's own settings file as an object, or
+ * `{}` when there is nothing readable there.
  *
- * @param {{config?:object, env?:object}} [deps]
+ * FAIL-OPEN ON THE READ, FAIL-CLOSED ON THE GUARD, and the pair is deliberate. A missing or
+ * broken file must not throw here, because a filesystem error at this point would be reported
+ * as «could not build the arguments», which says nothing about what is actually wrong. It
+ * becomes an empty object instead — and an empty object states that hosted connectors were
+ * never switched off, so the parity guard downstream refuses the spawn by name. That refusal
+ * is the correct outcome: an account nobody mirrored is not the founder's session, and a
+ * worker that starts in one is the failure this whole layer exists to prevent.
+ *
+ * @param {string} configDir
+ * @param {(p:string, enc:string)=>string} readFile
+ * @returns {object}
+ */
+function readAccountSettings(configDir, readFile) {
+  if (!configDir) return {}
+  try {
+    const parsed = JSON.parse(readFile(join(String(configDir), 'settings.json'), 'utf8'))
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * createBuildArgs({config, env, fsImpl}) → the `buildArgs(task, route, options)` the tick wants.
+ *
+ * `fsImpl` exists so the settings read above can be exercised without a real home directory:
+ * the suite injects a reader, production passes nothing and gets `node:fs`.
+ *
+ * @param {{config?:object, env?:object, fsImpl?:object}} [deps]
  * @returns {(task:object, route:object, options?:object) => {bin:string, args:string[], env:object, prompt:string, workerId:string, provider:string}}
  */
-export function createBuildArgs({ config = {}, env = process.env } = {}) {
+export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {}) {
+  const readFile = (fsImpl && fsImpl.readFileSync) || readFileSync
   return function buildArgs(task, route, options = {}) {
     if (!task || typeof task !== 'object') {
       throw new NoWorkerForRouteError('buildArgs: a task is required')
@@ -216,6 +250,9 @@ export function createBuildArgs({ config = {}, env = process.env } = {}) {
       // «no receipt», and no screen could name the cause (12.08.2026).
       args = buildClaudeArgs({
         ...argOpts,
+        // The per-spawn MCP config, when the tick wrote one. The path is all that travels: the
+        // file itself is built by the arg module from the ENABLED registry entries only.
+        ...(options.mcpConfigPath ? { mcpConfigPath: String(options.mcpConfigPath) } : {}),
         forwardSubagentText: options.forwardSubagentText === true,
         ...(Array.isArray(options.allowedTools) && options.allowedTools.length > 0
           ? { allowedTools: options.allowedTools }
@@ -224,8 +261,13 @@ export function createBuildArgs({ config = {}, env = process.env } = {}) {
     }
 
     // THE GUARD THAT SCREAMS — imported, never re-implemented here. It throws
-    // ProfileParityError naming the field that diverged.
-    assertProfileParity({ args, worker, task })
+    // ProfileParityError naming the field that diverged. It is handed the account's OWN
+    // settings as they stand on disk, so the two halves of the session no flag can show —
+    // the enabled plugins and the hosted-connectors switch — are checked against the profile
+    // in the same breath as model and effort. Read here rather than inside the guard: the
+    // guard stays a pure function over data, and the disk stays with the composer.
+    const accountSettings = readAccountSettings(worker.account.configDir, readFile)
+    assertProfileParity({ args, worker, task, accountSettings })
 
     // ── (5) THE ENVIRONMENT, ASSEMBLED PER SPAWN ────────────────────────────────
     // Never process-global, never shared between two workers: the account's config dir, its

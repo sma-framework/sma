@@ -41,6 +41,7 @@
 
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -111,6 +112,7 @@ import { windowState, terminalWindowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries, bookUsage } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
 import { createBuildArgs } from './runner/build-args.mjs'
+import { mirrorPersonalLayer } from './runner/personal-layer.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
 
@@ -1133,7 +1135,30 @@ export function createDaemon(o = {}) {
     // «задачу некому запустить» — truthfully, on every tick. Both halves are present now, and
     // the closure is what lets the tick keep its three-argument call: a route names a worker
     // by id, and the account behind that id lives in config, which never travels through the tick.
-    buildArgs: o.buildArgs ?? createBuildArgs({ config, env: o.env ?? process.env }),
+    // `fsImpl` is the seam the parity guard reads through: the builder has to look at the
+    // account's own settings file to see the two halves of a session no argument array can
+    // show — the enabled plugins and the hosted-connectors switch.
+    buildArgs: o.buildArgs ?? createBuildArgs({ config, env: o.env ?? process.env, fsImpl: o.fsImpl }),
+    // THE FOUNDER’S OWN LAYER, PUT INTO THE WORKER’S ACCOUNT BEFORE EVERY SPAWN. The source
+    // is the home of the OS user this daemon runs as — that is where his instructions, his
+    // hooks and his narrowing permissions actually live — unless the config names another.
+    // Unwired, the mirror is a module nobody calls: the account keeps whatever it happened
+    // to hold, and since the parity guard refuses a spawn whose account was never mirrored,
+    // an unwired root would refuse every task by name instead of running one.
+    mirrorPersonalLayer:
+      o.mirrorPersonalLayer ??
+      ((args) =>
+        mirrorPersonalLayer({
+          sourceDir: (config.personalLayer && config.personalLayer.sourceDir) || join(homedir(), '.claude'),
+          ...args,
+        })),
+    // WHICH SERVERS A WORKER MAY BE GIVEN. The same registry the window’s switches write,
+    // read once per spawn so a server enabled a minute ago reaches the very next attempt.
+    loadMcpRegistry: o.loadMcpRegistry ?? (() => loadMcpRegistry({})),
+    // WHERE THE PER-SPAWN MCP CONFIG IS WRITTEN. Named for the tick in its own right rather
+    // than reached through the config block: the file is an artefact of a SPAWN, and an
+    // install that keeps its spawn scratch elsewhere may say so without moving the data dir.
+    dataDir,
     // The tree a DOCUMENTARY stage stands in. The same answer the front's phaseCycleDir
     // gives, and deliberately the same expression: a card that reads one directory while the
     // stage writes into another shows work as never started while it is being completed.
