@@ -127,6 +127,57 @@ function copyLines(attempt: TaskAttempt): string[] {
   return lines
 }
 
+/**
+ * ПОД КАКИМ СЛОЕМ РАБОТАЛ РАБОТНИК — строки о личном слое этой попытки.
+ *
+ * Аккаунт работника перед каждым запуском получает слой автора: файл инструкций, хуки и
+ * два сужающих списка правил. Не получает — allow, defaultMode и плагины автора, и об
+ * этом здесь сказано СЛОВАМИ, прямо в строке: обещание «та же сессия» без названных
+ * границ — обещание, которое некому проверить. Ниже — вторая половина: что сессия
+ * действительно загрузила, дочитанное из её init-кадра.
+ *
+ * ЗАКОН ЭТОГО ХЕЛПЕРА тот же, что у copyLines: ничего не выдумывать. Нет поля — нет
+ * строки; попытка, сделанная до того, как строка научилась нести слой, молчит целиком.
+ */
+function layerLines(attempt: TaskAttempt): string[] {
+  const lines: string[] = []
+  const layer = attempt.personalLayer
+
+  if (layer) {
+    const head = [
+      layer.claudeMd === undefined ? null : `CLAUDE.md ${layer.claudeMd && layer.claudeMd !== 'absent' ? '✓' : '—'}`,
+      typeof layer.hooks === 'number' ? `хуков ${layer.hooks}` : null,
+      layer.permissions
+        ? `правил deny ${layer.permissions.deny} / ask ${layer.permissions.ask} (allow не зеркалится)`
+        : null,
+      Array.isArray(layer.plugins) ? `плагины: ${layer.plugins.length > 0 ? layer.plugins.join(', ') : '—'}` : null,
+      layer.connectors === undefined
+        ? null
+        : layer.connectors === 'disabled'
+          ? 'подключения claude.ai выключены'
+          : `подключения claude.ai: ${layer.connectors}`,
+    ].filter(Boolean)
+    if (head.length > 0) lines.push(`личный слой: ${head.join(' · ')}`)
+
+    if (layer.autoMemoryDir) lines.push(`авто-память проекта: ${layer.autoMemoryDir}`)
+
+    // Что сессия ПОДНЯЛА на самом деле — не то же самое, что положило зеркало, и вся
+    // ценность этой строки в разнице между двумя числами.
+    const session = [
+      typeof layer.initHooks === 'number' ? `хуков SessionStart ${layer.initHooks}` : null,
+      typeof layer.initClaudeAiTools === 'number' ? `чужих подключений ${layer.initClaudeAiTools}` : null,
+    ].filter(Boolean)
+    if (session.length > 0) lines.push(`в сессии: ${session.join(' · ')}`)
+  }
+
+  const mcp = attempt.mcpConfig
+  if (mcp && mcp.path) {
+    lines.push(`MCP: наш файл, серверов ${Array.isArray(mcp.servers) ? mcp.servers.length : 0}`)
+  }
+
+  return lines
+}
+
 /** The colour of the mark beside a row — the same three tones the rest of the window uses. */
 function dotTone(attempt: TaskAttempt): string {
   if (attempt.outcome === 'failed') return 'bg-err'
@@ -196,6 +247,7 @@ function Row({
   const open = pinned ?? openByDefault
   const who = [attempt.workerId, attempt.provider].filter(Boolean).join(' · ')
   const copy = copyLines(attempt)
+  const layer = layerLines(attempt)
 
   return (
     <div className="flex gap-3.5">
@@ -239,6 +291,19 @@ function Row({
             {copy.length > 0 ? (
               <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
                 {copy.map((line) => (
+                  <span key={line} className="break-words">
+                    {line}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {/* ЛИЧНЫЙ СЛОЙ: под какими правилами это работало. Те же текстовые узлы —
+                путь авто-памяти и имена плагинов приходят из данных и в разметку не
+                превращаются. Пустой список означает «попытка этого не знает», и тогда
+                блока нет вовсе. */}
+            {layer.length > 0 ? (
+              <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
+                {layer.map((line) => (
                   <span key={line} className="break-words">
                     {line}
                   </span>
