@@ -231,6 +231,12 @@ export const TASK_STATUSES = Object.freeze([
 export const FAIL_REASONS = Object.freeze([
   'no_receipt',
   'no_journal',
+  // THE THIRD CONDITION: the attempt left neither a lesson nor a word about why there is
+  // none. Kept apart from no_journal because the two omissions are different facts — the
+  // note explains THIS work to the person accepting it, the lesson is what the next attempt
+  // gets to start from. A machine cannot judge whether a lesson was worth writing, so it
+  // judges only whether the worker answered the question at all.
+  'no_lesson',
   'no_artifact',
   'agent_error',
   'provider_error',
@@ -248,6 +254,7 @@ export const FAIL_REASONS = Object.freeze([
 export const REASON_LABELS = Object.freeze({
   no_receipt: 'нет квитанции — работа не подтверждена',
   no_journal: 'нет записки о подходе — попытка не объяснена',
+  no_lesson: 'нет урока — попытка не оставила ни заметки, ни причины',
   no_artifact: 'нет документа — стадия не оставила своего файла',
   agent_error: 'ошибка работника',
   provider_error: 'оборвал провайдер — работник тут ни при чём, попробуйте ещё раз',
