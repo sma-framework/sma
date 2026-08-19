@@ -499,6 +499,92 @@ describe('deriveState — the one-poll payload', () => {
     })
   })
 
+  /**
+   * ═══ ЛИЧНЫЙ СЛОЙ И ФАЙЛ MCP — В ТЕЛЕ ТОЙ ЖЕ ДВЕРИ ═══
+   *
+   * Зеркало личного слоя пишет в строку попытки, ЧТО положили в аккаунт работника перед
+   * спавном (CLAUDE.md, хуки, сужающие правила), а init-кадр сессии — что она на самом деле
+   * загрузила (авто-память, хуки старта, чужие подключения). Реестр MCP кладёт рядом путь
+   * своего файла и список серверов. Всё это уже вычислено и записано — и ровно поэтому
+   * опасно: вычислено не значит подключено. Тест стоит на ТЕЛЕ двери, потому что провод
+   * доказывается только тем, что по нему доехало.
+   *
+   * Новой двери здесь нет: расширяется payload существующей.
+   */
+  it('дверь задачи отдаёт личный слой попытки и её файл mcp — и молчит null там, где их нет', async () => {
+    const layerRows = (taskId: string) => [
+      // (а) строка машины состояний — начало попытки
+      { taskId, attempt: 1, startedAt: NOW - 2 * HOUR, workerId: 'max-1' },
+      // (б) строка тика — что зеркало положило в аккаунт и что загрузила сессия
+      {
+        taskId,
+        attempt: 1,
+        provider: 'claude',
+        endedAt: NOW - HOUR,
+        outcome: 'completed',
+        personalLayer: {
+          claudeMd: 'ab12cd34',
+          hooks: 1,
+          permissions: { deny: 2, ask: 0, allow: 'not mirrored', defaultMode: 'not mirrored' },
+          plugins: [],
+          connectors: 'disabled',
+          backup: 'none',
+          autoMemoryDir: '/p/memory',
+          initHooks: 2,
+          initMcpServers: [],
+          initClaudeAiTools: 0,
+        },
+        mcpConfig: { path: '/d/mcp-config.json', servers: [] },
+      },
+      // попытка ДО того, как строка научилась нести слой: у неё полей нет вовсе
+      { taskId, attempt: 2, provider: 'claude', endedAt: NOW, outcome: 'completed' },
+    ]
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-layer', title: 'личный слой', lane: 'prod', status: 'completed', attempt: 2 }] },
+        ledger: (id: string) => layerRows(id),
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-layer' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    const first = out.attempts[0]
+    // объект едет как есть — карточка читает те же имена, что писал тик
+    expect(first.personalLayer).toMatchObject({
+      claudeMd: 'ab12cd34',
+      hooks: 1,
+      connectors: 'disabled',
+      autoMemoryDir: '/p/memory',
+      initHooks: 2,
+      initClaudeAiTools: 0,
+    })
+    expect(first.personalLayer.permissions).toEqual({ deny: 2, ask: 0, allow: 'not mirrored', defaultMode: 'not mirrored' })
+    expect(first.mcpConfig).toEqual({ path: '/d/mcp-config.json', servers: [] })
+    // …а попытка, которая слоя не знает, молчит явным null, а не выдумывает
+    expect(out.attempts[1]).toMatchObject({ personalLayer: null, mcpConfig: null })
+  })
+
+  it('идущая прямо сейчас попытка несёт личный слой и mcp пустыми — карточке нечего показывать', async () => {
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-live-layer', title: 'в работе', lane: 'prod', status: 'claimed', attempt: 1, claimedAt: NOW }] },
+        ledger: () => [],
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-live-layer' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0]).toMatchObject({ outcome: 'running', personalLayer: null, mcpConfig: null })
+  })
+
   it('the length of a try survives the merge — the two marks live on its two rows', async () => {
     const rows = [{ id: 'BL-six', status: 'completed', lane: 'prod', title: 'три подхода', completedAt: NOW }]
     const payload = await deriveState({
