@@ -885,6 +885,22 @@ export interface McpConfig {
   servers: string[]
 }
 
+/**
+ * Вердикт пятёрки квитанций терминального паритета — сводка, а не пересказ.
+ *
+ * `fulfilled` из `total` — сколько квитанций выполнено; `warn` — сколько выполнено С
+ * НАЗВАННОЙ ГРАНИЦЕЙ (у прав это единственный возможный лучший исход: до процесса доезжает
+ * только список инструментов); `failed` — имена тех, что не выполнены, чтобы человеку было
+ * что искать, а не только чего недосчитаться. `ok` — сколько прошло без оговорок.
+ */
+export interface ParitySummary {
+  fulfilled: number
+  total: number
+  warn: number
+  ok: number
+  failed: string[]
+}
+
 export interface TaskAttempt {
   attempt: number | null
   workerId: string | null
@@ -933,6 +949,16 @@ export interface TaskAttempt {
    * читается по этому полю, а не по отсутствию файла где-то на диске.
    */
   memoryHarvest?: MemoryHarvest | null
+  /**
+   * Каталог прогона этой попытки в подключённом проекте — четыре файла, по которым паритет
+   * ДОКАЗЫВАЕТСЯ, а не утверждается. `null` у попытки, которая его не оставила.
+   */
+  runDir?: string | null
+  /**
+   * Вердикт пятёрки, посчитанный тиком тем же модулем, что и команда проверки. `null` —
+   * «никто не проверял», и это не то же самое, что «проверено и в порядке».
+   */
+  parity?: ParitySummary | null
 }
 
 export interface TaskDetail {

@@ -475,6 +475,53 @@ describe('deriveState — the one-poll payload', () => {
   })
 
   /**
+   * ═══ ЧЕМ ПОПЫТКА ДОКАЗЫВАЕТ, ЧТО РАБОТАЛА ПОД ПРАВИЛАМИ ПРОЕКТА ═══
+   *
+   * Тик оставляет на каждой попытке каталог прогона и считает по нему пятёрку квитанций —
+   * тем же модулем, который читает команда проверки. Оба факта лежали в строке попытки и не
+   * доезжали до человека: посчитано и записано — не то же самое, что предъявлено. Здесь они
+   * названы явным выбором, как всё остальное в теле двери, и `null` остаётся «никто не
+   * проверял» — попытка, сделанная до того, как строка научилась нести вердикт, молчит.
+   *
+   * Новой двери здесь нет: расширяется payload существующей.
+   */
+  it('дверь задачи отдаёт каталог прогона и вердикт паритета — и молчит там, где их нет', async () => {
+    const verdict = { fulfilled: 4, total: 5, warn: 1, ok: 3, failed: ['memory'] }
+    const parityRows = (taskId: string) => [
+      { taskId, attempt: 1, startedAt: NOW - 2 * HOUR, workerId: 'max-1' },
+      {
+        taskId,
+        attempt: 1,
+        provider: 'claude',
+        endedAt: NOW - HOUR,
+        outcome: 'completed',
+        runDir: '/projects/app/.sma/runs/BL-parity_1',
+        parity: verdict,
+      },
+      // попытка ДО того, как строка научилась нести вердикт: полей нет вовсе
+      { taskId, attempt: 2, provider: 'claude', endedAt: NOW, outcome: 'completed' },
+    ]
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-parity', title: 'паритет попытки', lane: 'prod', status: 'completed', attempt: 2 }] },
+        ledger: (id: string) => parityRows(id),
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-parity' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].runDir).toBe('/projects/app/.sma/runs/BL-parity_1')
+    // сводка отдаётся ЦЕЛИКОМ: счёт, предупреждения и ИМЕНА непрошедших — человеку нужно
+    // знать, что именно искать, а не только чего недосчитаться
+    expect(out.attempts[0].parity).toEqual(verdict)
+    expect(out.attempts[1]).toMatchObject({ runDir: null, parity: null })
+  })
+
+  /**
    * ═══ ЧТО ПРИЁМКА СПАСЛА ИЗ КОПИИ — ТОЖЕ В ТЕЛЕ ДВЕРИ ═══
    *
    * Сбор памяти пишет отдельную строку той же попытки: что перенесено из копии, что доехало
@@ -623,7 +670,9 @@ describe('deriveState — the one-poll payload', () => {
 
     expect(res.statusCode).toBe(200)
     const out = JSON.parse(res.body)
-    expect(out.attempts[0]).toMatchObject({ outcome: 'running', personalLayer: null, mcpConfig: null })
+    // …и каталог прогона с вердиктом у идущей попытки тоже названы нулями: и то, и другое
+    // дописывается квитанцией, когда попытка ЗАКАНЧИВАЕТСЯ
+    expect(out.attempts[0]).toMatchObject({ outcome: 'running', personalLayer: null, mcpConfig: null, runDir: null, parity: null })
   })
 
   it('the length of a try survives the merge — the two marks live on its two rows', async () => {
