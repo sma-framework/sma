@@ -230,12 +230,14 @@ describe('the conveyor is off until a person switches it on', () => {
     const res = await tick(deps)
 
     expect(res.completed).toBe('BL-1')
-    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
+    // No already-built question for work that carries no phase: such a task has no plan, so
+    // there is nothing deterministic to ask about (the reason is on the daemon's log instead).
+    expect(order).toEqual(['worktree', 'reverify', 'spawn', 'reverify'])
   })
 })
 
 describe('tick — the stateless composed tick', () => {
-  it('runs the full trace in order: preflight → worktree → reverify(до) → spawn → reverify → complete', async () => {
+  it('runs the full trace in order: worktree → reverify(до) → spawn → reverify → complete', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(backlogTask())
@@ -252,8 +254,10 @@ describe('tick — the stateless composed tick', () => {
     const res = await tick(deps)
 
     // TWO re-verifications, and the first one is not a duplicate: it is the BEFORE picture
-    // the exit gate subtracts, taken in the fresh worktree before a worker exists.
-    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
+    // the exit gate subtracts, taken in the fresh worktree before a worker exists. The
+    // already-built door is absent from the trace on purpose: this task carries no phase, so
+    // it has no plan to be asked about — the traced route WITH the door is the case below.
+    expect(order).toEqual(['worktree', 'reverify', 'spawn', 'reverify'])
     expect(res.completed).toBe('BL-1')
     const [row] = await adapter.list({})
     // completed work is reported as awaiting approval — the tick certified it, a person accepts it
@@ -265,11 +269,14 @@ describe('tick — the stateless composed tick', () => {
   it('preflight verdict "built" short-circuits: no spawn, completes on the preflight receipt', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    await adapter.enqueue(backlogTask({ id: 'BL-2' }))
+    // The door is asked about the PLAN of a phase, so the task has to carry one and the plan
+    // has to be in the tree — a task without either is never asked at all.
+    await adapter.enqueue(backlogTask({ id: 'BL-2', data: { kind: 'code', stage: 'execute', phase: 12 } }))
     const { deps, order } = makeDeps({
       adapter,
       clockObj: c,
-      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built', receiptRef: 'preflight:BL-2' }) } },
+      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built' }) } },
+      deps: { fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }) },
     })
 
     const res = await tick(deps)
@@ -384,18 +391,18 @@ describe('an attempt that cannot start is REFUSED, loudly and on the record', ()
     expect(res.failed).toMatchObject({ taskId: 'BL-1', reason: 'runtime_offline' })
     expect(attempts.at(-1)).toMatchObject({ outcome: 'failed', failureReason: 'runtime_offline' })
     expect(journalled.some((e: any) => e.type === 'task.refused')).toBe(true)
-    expect(order).toEqual(['preflight']) // no worktree, no spawn
+    expect(order).toEqual([]) // no worktree, no spawn — and no door for phaseless work
   })
 
   it('the preflight-«built» door still completes without any executor (the pilot smoke path)', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    await adapter.enqueue(backlogTask())
+    await adapter.enqueue(backlogTask({ data: { kind: 'code', stage: 'execute', phase: 12 } }))
     const { deps, order } = makeDeps({
       adapter,
       clockObj: c,
-      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built', receiptRef: 'preflight:BL-1' }) } },
-      deps: { buildArgs: undefined },
+      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built' }) } },
+      deps: { buildArgs: undefined, fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }) },
     })
     const res = await tick(deps)
 
@@ -486,7 +493,7 @@ describe('the capability envelope gates the spawn', () => {
     // is empty, and an unrecognised permission is not a permit.
     expect(res.failed).toMatchObject({ taskId: 'BL-1', reason: 'missing_access' })
     expect(res.failed.detail).toMatch(/capability envelope grants no "Bash"/)
-    expect(order).toEqual(['preflight']) // no worktree was provisioned, no worker started
+    expect(order).toEqual([]) // no worktree was provisioned, no worker started
     expect(adapter.calls).toEqual([{ op: 'fail', id: 'BL-1', reason: 'missing_access' }])
 
     // The refusal is VISIBLE on both surfaces — the daemon's own log and the attempt row.
@@ -754,8 +761,10 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
     expect(res.completed).toBe('ST-1')
     expect(adapter.calls[0].result.receiptRef).toBe('artifact:.planning/phases/12-front/12-EXEC-CHECKPOINT.json@ba5eba11')
     // the checkpoint is asked BEFORE the code gate — the CERTIFYING re-verification never
-    // ran (the one in the list is the before-picture, taken ahead of the spawn)
-    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn'])
+    // ran (the one in the list is the before-picture, taken ahead of the spawn). The
+    // already-built door is not in the list because this phase has no plan file in the tree
+    // the door reads: it says so on the log and lets the work through.
+    expect(order).toEqual(['worktree', 'reverify', 'spawn'])
     // …and the position is not thrown away: the row parks instead of failing, so the answer
     // wakes a CONTINUATION of the stage rather than a fresh attempt from zero
     expect(adapter.calls.some((x: any) => x.op === 'fail')).toBe(false)
@@ -807,7 +816,9 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
         worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/repo', branch: 'wt/exec' }) },
         reverify: GREEN_REVERIFY,
       },
-      deps: { fsImpl: makeFs({}), execGit: makeGit({}) },
+      // the phase's plan IS in the tree, so the already-built door is genuinely asked and
+      // answers «not built» — the whole route of a phase-carrying stage, door included
+      deps: { fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }), execGit: makeGit({}) },
     })
 
     const res = await tick(deps)
@@ -834,7 +845,8 @@ describe('an execute stage parks its blocking checkpoint the same way — BEFORE
     const res = await tick(deps)
 
     expect(res.completed).toBe('BL-REG')
-    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
+    // no data envelope → no phase → no plan → the door is not asked at all
+    expect(order).toEqual(['worktree', 'reverify', 'spawn', 'reverify'])
     const [row] = await adapter.list({})
     expect(row.status).toBe('awaiting_approval')
   })
@@ -931,12 +943,15 @@ describe('the tick stamps its attempt rows', () => {
     const c = mkClock()
     const ledgerDir = mkDir('sma-loop-ledger-')
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    await adapter.enqueue(backlogTask())
+    await adapter.enqueue(backlogTask({ data: { kind: 'code', stage: 'execute', phase: 12 } }))
     const { deps } = makeDeps({
       adapter,
       clockObj: c,
-      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built', receiptRef: 'preflight:BL-1' }) } },
-      deps: { ledger: { recordAttempt: (row: any) => recordAttempt(ledgerDir, row), readAttempts: () => [] } },
+      responses: { preflight: { code: 0, stdout: JSON.stringify({ verdict: 'built' }) } },
+      deps: {
+        ledger: { recordAttempt: (row: any) => recordAttempt(ledgerDir, row), readAttempts: () => [] },
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }),
+      },
     })
 
     const res = await tick(deps)
@@ -1595,7 +1610,8 @@ describe('a task that needed no code completes on its answer — and nothing els
     expect(call.result.receiptRef).toBe('answer:BL-1#1')
     // there was nothing to certify, so the CERTIFYING run of the verb was not spent on it —
     // the one before the spawn is the gate's before-picture, taken when no outcome is known yet
-    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn'])
+    // (phaseless work is never asked the already-built question — it has no plan)
+    expect(order).toEqual(['worktree', 'reverify', 'spawn'])
     // and the outcome is on the operator's record, never silent
     expect(journalled.some((e: any) => e.type === 'task.answered' && e.taskId === 'BL-1')).toBe(true)
   })
@@ -2451,7 +2467,8 @@ describe('выходной гейт различает «работник сло
 
     await tick(deps)
 
-    expect(order).toEqual(['preflight', 'worktree', 'reverify', 'spawn', 'reverify'])
+    // двери «уже построено» в списке нет: у задачи без номера фазы плана не существует
+    expect(order).toEqual(['worktree', 'reverify', 'spawn', 'reverify'])
   })
 
   /**
