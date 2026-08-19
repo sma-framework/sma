@@ -50,7 +50,15 @@ import { join } from 'node:path'
 // asserted to be this exact shape plus a position block, never a second schema
 import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
-import { tick, runDaemon, classifyFailure, unregisteredMcpTools } from '../src/loop.mjs'
+import {
+  tick,
+  runDaemon,
+  classifyFailure,
+  unregisteredMcpTools,
+  DENIAL_LINES_CAP,
+  DENIAL_COMMAND_MAX,
+  DENIAL_TRUNCATION_MARK,
+} from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
@@ -3619,6 +3627,217 @@ describe('личный слой и наши серверы доезжают до
     expect(buildClaudeArgs({ allowedTools: codePath.allowedTools, disallowedTools: codePath.disallowedTools })).toEqual(
       buildClaudeArgs({ allowedTools: forgePath.allowedTools, disallowedTools: forgePath.disallowedTools }),
     )
+  })
+
+
+  // === ОТКАЗ НАЗЫВАЕТСЯ КОМАНДОЙ, А НЕ СЧИТАЕТСЯ ===
+  //
+  // Вендор присылает на кадре результата ПОЛНЫЙ список отказанных вызовов — имя инструмента,
+  // идентификатор вызова и сами аргументы. Демон сохранял из него ровно одно число. Человек у
+  // окна видел «отказов: 1» и не знал, что именно работнику не дали сделать, — то есть ровно
+  // то, чем доказывается вся граница, выбрасывалось на входе. Ниже — про запись, и только
+  // про запись: что попало в `guards.jsonl` попытки.
+
+  /** Кадр результата вендора: форма взята с живого прогона. */
+  const denialFrame = (denials: any[]) => ({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    session_id: 'd82a347f-a54a-4a33-9c87-0b2efb517172',
+    permission_denials: denials,
+  })
+
+  const denial = (id: string, command: string, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_use_id: id,
+    tool_input: { command, description: 'что-то делает' },
+  })
+
+  /** Один тик с подставленными кадрами; отдаёт каталог проекта и разобранные файлы попытки. */
+  const runWithFrames = async (lines: string[], over: any = {}) => {
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        for (const line of lines) spec.onLine?.(line)
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: over.responses ?? codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        execGit: () => '',
+        // НАСТОЯЩИЙ сборщик аргументов, потому что от него зависит `spec.env` — а именно из
+        // него берётся список значений, которые чистильщик обязан вырезать из журнала.
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir: founderHome() }),
+      },
+    })
+    await tick(deps)
+    const runDir = join(projectDir, '.sma', 'runs', 'BL-1_1')
+    const guards = readFileSync(join(runDir, 'guards.jsonl'), 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l))
+    const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
+    return { guards, run, projectDir }
+  }
+
+  it('кадр с двумя отказами → две строки журнала, каждая с инструментом, командой и id вызова', async () => {
+    const { guards, run } = await runWithFrames([
+      JSON.stringify(
+        denialFrame([
+          denial('toolu_01AAA', 'git push origin HEAD'),
+          denial('toolu_01BBB', 'npm publish --access public'),
+        ]),
+      ),
+    ])
+    const vendor = guards.filter((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(vendor, 'вендорский список снова сведён к числу').toHaveLength(2)
+    expect(vendor.map((g) => g.command)).toEqual(['git push origin HEAD', 'npm publish --access public'])
+    expect(vendor.map((g) => g.tool)).toEqual(['Bash', 'Bash'])
+    expect(vendor.map((g) => g.toolUseId)).toEqual(['toolu_01AAA', 'toolu_01BBB'])
+    // КОЛИЧЕСТВО СОХРАНЕНО РЯДОМ, а не вместо: два факта, которые имеют право разойтись
+    expect(run.exit.permissionDenials).toBe(2)
+  })
+
+  it('тот же кадр дважды — отказ остаётся одним: строки не удваиваются', async () => {
+    const frame = JSON.stringify(denialFrame([denial('toolu_01AAA', 'git push origin HEAD')]))
+    const { guards } = await runWithFrames([frame, frame])
+    expect(guards.filter((g) => g.kind === 'denied' && g.source === 'vendor')).toHaveLength(1)
+  })
+
+  it('лавина отказов упирается в объявленный предел и закрывается строкой-остатком', async () => {
+    const many = Array.from({ length: DENIAL_LINES_CAP + 7 }, (_, i) => denial(`toolu_${i}`, `git push origin b${i}`))
+    const { guards, run } = await runWithFrames([JSON.stringify(denialFrame(many))])
+    const vendor = guards.filter((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(vendor).toHaveLength(DENIAL_LINES_CAP)
+    const tail = guards.find((g) => g.kind === 'denied_overflow')
+    expect(tail, 'потеря молча — запрещена').toBeTruthy()
+    expect(tail.notRecorded).toBe(7)
+    expect(String(tail.reason)).toContain('7')
+    // и число вендора по-прежнему полное
+    expect(run.exit.permissionDenials).toBe(DENIAL_LINES_CAP + 7)
+  })
+
+  it('длинная команда обрезана по константе и обрезка помечена явно', async () => {
+    const long = `git push ${'x'.repeat(DENIAL_COMMAND_MAX + 200)}`
+    const { guards } = await runWithFrames([JSON.stringify(denialFrame([denial('toolu_01L', long)]))])
+    const one = guards.find((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(one.command.length).toBeLessThan(long.length)
+    expect(one.command).toContain(DENIAL_TRUNCATION_MARK)
+    expect(one.command.startsWith('git push xxx')).toBe(true)
+  })
+
+  it('значение переменной окружения внутри отказанной команды не доезжает до файла', async () => {
+    const { guards } = await runWithFrames([
+      JSON.stringify(denialFrame([denial('toolu_01S', 'curl -H "Authorization: oauth-value" https://example.com')])),
+    ])
+    const one = guards.find((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(String(one.command)).not.toContain('oauth-value')
+  })
+
+  it('обе точки сборки копии несут pushLock в запись попытки — объекты копии равны', async () => {
+    const lock = {
+      applied: true,
+      isolated: true,
+      worktreeConfigPreset: true,
+      mainPushUrl: '',
+      reason: 'the copy has no address to push to; the main tree keeps its own',
+    }
+    /** Один и тот же ответ верба выдачи копии — обеим точкам. */
+    const answer = (path: string, branch: string) => ({
+      code: 0,
+      stdout: JSON.stringify({ ok: true, path, branch, expectedBase: 'BASE', materialized: [], pushLock: lock }),
+    })
+
+    const copyOf = async (over: any) => {
+      const accountDir = mkDir('sma-account-')
+      const projectDir = mkDir('sma-proj-')
+      const ledgerDir = mkDir('sma-ledger-')
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(over.task)
+      const { deps } = makeDeps({
+        adapter,
+        clockObj: c,
+        config: {
+          workers: [worker(accountDir, over.workerOver ?? {})],
+          repoDir: projectDir,
+          pipeline: { enabled: true },
+        },
+        spawnWorker: makeSpawnWorker(undefined, { lines: ['APPROACH_NOTE: прямой путь'] }),
+        responses: over.responses,
+        deps: {
+          ledger: ledgerSeam(ledgerDir),
+          projectDir: () => projectDir,
+          execGit: () => '',
+          mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir: founderHome() }),
+        },
+      })
+      await tick(deps)
+      const dir = join(projectDir, '.sma', 'runs', over.runId)
+      return JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).copy
+    }
+
+    // путь кода
+    const codeCopy = await copyOf({
+      task: backlogTask(),
+      runId: 'BL-1_1',
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: answer('/wt/BL-1', 'wt/BL-1'),
+        reverify: GREEN_REVERIFY,
+      },
+    })
+    // путь «Создателя»
+    const forgeCopy = await copyOf({
+      task: {
+        id: 'F-1',
+        source: 'roster',
+        title: 'выкуй агента',
+        lane: 'forge',
+        priority: 0,
+        forge: { kind: 'agent', description: 'читает и суммирует' },
+      },
+      workerOver: { lane: 'forge' },
+      runId: 'F-1_1',
+      responses: { worktree: answer('/wt/F-1', 'wt/F-1') },
+    })
+
+    // ОБЕ ТОЧКИ, и это здесь предмет случая: «доехало до одной из двух» — это не доехало.
+    expect(codeCopy.pushLock, 'путь кода потерял замок').toEqual(lock)
+    expect(forgeCopy.pushLock, 'путь Создателя потерял замок').toEqual(lock)
+    // Два списка полей, которые сегодня говорят одно и то же, расходятся в тот день, когда
+    // правят один из них: у этих двух точек такая история уже была.
+    expect(Object.keys(codeCopy).sort()).toEqual(Object.keys(forgeCopy).sort())
+    // и объекты копии РАВНЫ, если убрать то, что законно различается у двух задач
+    const same = (row: any) => ({ ...row, branch: 'X', worktreePath: 'X', provisionMs: 0 })
+    expect(same(codeCopy)).toEqual(same(forgeCopy))
+  })
+
+  it('старая установка не отвечает про замок — в записи `null`, а не выдуманное «замок стоит»', async () => {
+    const { run } = await runWithFrames([], { responses: codeResponses() })
+    expect(run.copy.pushLock).toBe(null)
+  })
+
+  it('замок на расход двух точек сборки копии: строка копии собирается одной функцией', () => {
+    const source = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
+    // ровно два вызова — по одному на точку сборки объекта копии
+    expect(source.match(/=\s*copyRow\(\{/g) ?? []).toHaveLength(2)
+    // и ни одной точки, которая собирает строку копии своим списком полей
+    expect(source).not.toMatch(/worktreeRow\s*=\s*\{\s*base:/)
   })
 
   it('замок на расход двух точек: опции конверта собирает одна функция и никто больше', () => {
