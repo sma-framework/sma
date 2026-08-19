@@ -95,6 +95,7 @@
  * Node built-ins only; every collaborator injected. Zero deps; zero network in this file.
  */
 
+import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -103,8 +104,14 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.m
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
-import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capability-envelope.mjs'
+import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash } from './queue/capability-envelope.mjs'
+import { runsDirOf, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
+// THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
+// opinion about whether the hooks fired or the memory came back: it imports the same evaluation
+// the checking command imports, so «what the card shows» and «what the command prints» cannot
+// come apart. A private copy here would agree on the day it was written and drift every day after.
+import { evaluateParity, summarize, ARTIFACTS as PARITY_ARTIFACTS } from '../../scripts/sma/lib/parity-receipts.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import {
   parseApproachNote,
@@ -981,32 +988,89 @@ function toolUsesOf(frame) {
 }
 
 /**
- * Record ONE file the session opened into the running memory trace.
+ * WHICH memory file a path names — `{kind, id}` or null for anything that is not one.
  *
  * The account's auto-memory is decided FIRST and returns: its path also ends in `/memory/`,
  * and asking the corpus question first would file it as a note of the project.
+ *
+ * IT DECIDES NOTHING ABOUT THE TRACE. Classifying a path and counting a reading are two acts
+ * on purpose: the first happens when the session ASKS for a file, the second only when the
+ * file came back. See `commitMemoryRead` below for why that separation had to exist.
  */
-function traceMemoryRead(memory, rawPath, scope) {
+function classifyMemoryRead(rawPath, scope) {
   const path = slashed(rawPath)
-  if (!path) return
+  if (!path) return null
   const low = path.toLowerCase()
   const accountDir = slashed(scope.accountDir).toLowerCase().replace(/\/+$/, '')
   const inAccount = (accountDir && low.startsWith(`${accountDir}/`)) || low.includes(ACCOUNT_DIR_MARK)
   if (inAccount && low.includes('/projects/') && low.includes('/memory/')) {
-    pushUnique(memory.autoMemoryReads, noteIdOfPath(path))
-    return
+    return { kind: 'auto', id: noteIdOfPath(path) }
   }
   // The copy is NAMED when we know it, so a read of some other tree's corpus is not counted as
   // this attempt's. Without a copy — a documentary stage runs in none — the segment alone is
   // the best honest answer.
   const workDir = slashed(scope.workDir).toLowerCase().replace(/\/+$/, '')
   const inCorpus = workDir ? low.startsWith(`${workDir}${MEMORY_CORPUS_SEGMENT}`) : low.includes(MEMORY_CORPUS_SEGMENT)
-  if (!inCorpus) return
+  if (!inCorpus) return null
   const id = noteIdOfPath(path)
   // The index is the corpus's front door — «прочитал оглавление» and «прочитал заметку» are
   // two different facts about an attempt and are kept as two.
-  if (/^memory$/i.test(id)) memory.index = true
-  else pushUnique(memory.reads, id)
+  return /^memory$/i.test(id) ? { kind: 'index', id } : { kind: 'note', id }
+}
+
+/**
+ * Record ONE file the session REALLY got back into the running memory trace.
+ *
+ * WHY THIS IS SEPARATE FROM THE CLASSIFIER. The trace used to count a reading the moment the
+ * session asked for the file, and the difference is not academic: a copy provisioned without
+ * `.claude/` answers every such request with «File does not exist», and for a year those
+ * attempts were recorded as having read the project's memory. The claim «работник читал
+ * память» is about what CAME BACK, so it is made here — after the result frame said so.
+ */
+function commitMemoryRead(memory, hit) {
+  if (!hit) return
+  if (hit.kind === 'auto') pushUnique(memory.autoMemoryReads, hit.id)
+  else if (hit.kind === 'index') memory.index = true
+  else pushUnique(memory.reads, hit.id)
+}
+
+/** The tool_result blocks of one user frame, or an empty list for anything else. */
+function toolResultsOf(frame) {
+  const message = frame && typeof frame.message === 'object' && frame.message !== null ? frame.message : null
+  const content = message && Array.isArray(message.content) ? message.content : []
+  return content.filter((b) => b && typeof b === 'object' && b.type === 'tool_result')
+}
+
+/** The text a tool result came back with, whichever of its two shapes the CLI used. */
+function resultTextOf(block) {
+  const content = block && block.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map((part) => (part && typeof part.text === 'string' ? part.text : '')).join('')
+  return ''
+}
+
+/** What a guard's refusal reads like when it arrives as a failed tool result rather than a frame. */
+const TOOL_REFUSAL_RE = /permission|denied|not allowed|blocked|запрещ|не разреш|отказ/i
+
+/** Was this failed result a GUARD refusing, rather than the work itself going wrong? */
+function refusedByGuard(block, text) {
+  // The helper's name is a claim, so it checks the claim itself rather than trusting a caller:
+  // a result that is not an error is work that went its own way, never a guard stopping it.
+  if (!block || block.is_error !== true) return false
+  const meta = Array.isArray(block.tool_result_meta) ? block.tool_result_meta : []
+  if (meta.some((m) => m && typeof m.non_execution_kind === 'string' && m.non_execution_kind)) return true
+  return TOOL_REFUSAL_RE.test(text)
+}
+
+/** A reason a person reads, not a wall: one line, bounded. */
+function shortReason(text) {
+  const one = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return one.length > 200 ? one.slice(0, 200) : one
+}
+
+/** A list of names off an init frame — anything else reads as an absence, never as a throw. */
+function namesOf(value) {
+  return Array.isArray(value) ? value.map((v) => (typeof v === 'string' ? v : String((v && v.name) ?? v))) : []
 }
 
 /**
@@ -1104,6 +1168,325 @@ function writeMemoryLayer(deps, task, { memory, sma, lesson, approachJournaled, 
 }
 
 /**
+ * What the copy was given to obey — read WHILE the copy still exists, before any outcome.
+ *
+ * Exported for the suite: the difference between «carried into the copy» and «was already there»
+ * is a word a person reads on a receipt, and a word on a receipt has to be tested directly rather
+ * than inferred from a run that happened to come out right.
+ */
+export function rulesInCopy(io, workDir, worktree) {
+  if (typeof workDir !== 'string' || workDir.trim() === '') return { claudeMd: 'absent' }
+  try {
+    const present = io.existsSync(join(workDir, 'CLAUDE.md')) || io.existsSync(join(workDir, '.claude', 'CLAUDE.md'))
+    if (!present) return { claudeMd: 'absent' }
+    // «Tracked» and «materialized» are different claims: the first says the project keeps its
+    // rules in git, the second that the provisioning verb had to carry them into a copy that
+    // would not have had them. A parity check that could not tell them apart would call a
+    // furnished copy an unfurnished one.
+    const materialized = Array.isArray(worktree && worktree.materialized) ? worktree.materialized : []
+    // An entry counts as a CARRY only when it says something was actually carried. The same list
+    // also holds entries whose mode is «absent» — «there was nothing here to take» — and matching
+    // the stringified entry reads one of those as proof of the opposite: a copy that never got the
+    // rules would be labelled as one that was handed them. So: match the entry's own path, and
+    // only on a mode that means a real copy — a linked path is the project's own tree, not
+    // something carried into a copy that would otherwise lack it.
+    const carried = materialized.some((m) => {
+      if (!m || typeof m !== 'object') return false
+      if (String(m.mode ?? '') !== 'copy') return false
+      const where = String(m.path ?? '')
+      return /(^|[\\/])CLAUDE\.md$/i.test(where) || /(^|[\\/])\.claude[\\/]?$/i.test(where)
+    })
+    return { claudeMd: carried ? 'materialized' : 'tracked' }
+  } catch {
+    return { claudeMd: 'absent' } // an unreadable copy is an absence of evidence, never a throw
+  }
+}
+
+/** How many skills and agents the copy actually held; null when it has no `.claude` at all. */
+function skillsInCopyOf(io, workDir) {
+  if (typeof workDir !== 'string' || workDir.trim() === '') return null
+  try {
+    if (!io.existsSync(join(workDir, '.claude'))) return null
+    const count = (name) => {
+      try {
+        return (io.readdirSync(join(workDir, '.claude', name)) || []).length
+      } catch {
+        return 0
+      }
+    }
+    return { skills: count('skills'), agents: count('agents') }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * writeAttemptRunDir(deps, task, …) → `{dir, gate, memoryLayer, rules, skillsInCopy}` or null.
+ *
+ * WHY IT IS CALLED WHERE IT IS. The one point every outcome of a lane passes through — right
+ * after the memory layer — is the only place from which «каждая попытка оставляет запись» can
+ * be a property of the control flow instead of a rule somebody has to remember at four return
+ * statements. The receipt is written later, by the door that knows how the try ended.
+ *
+ * NOTHING SECRET TRAVELS. The spawn's environment contributes its NAMES; the prompt
+ * contributes a digest and a size. The values the environment holds are handed to the writer
+ * only so it can assert they appear nowhere in what it wrote.
+ */
+function writeAttemptRunDir(deps, task, {
+  route,
+  envelope,
+  spec,
+  worktree,
+  workDir,
+  startedAt,
+  endedAt,
+  sessionId,
+  runInit,
+  memory,
+  sma,
+  guards,
+  permissionDenials,
+  ledgerPath,
+  exit,
+  gate,
+  lesson,
+} = {}) {
+  const config = deps.config || {}
+  // THE SAME TREE THE COPY WAS CUT FROM — one source for both, so a run directory can never
+  // end up beside a project the attempt never touched.
+  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const runsDir = runsDirOf(projectDir)
+  if (!runsDir) return null
+  const io = resolveIo(deps.fsImpl)
+  const env = (spec && spec.env && typeof spec.env === 'object') ? spec.env : {}
+  const prompt = typeof (spec && spec.prompt) === 'string' ? spec.prompt : ''
+  const rules = rulesInCopy(io, workDir, worktree)
+  const skillsInCopy = skillsInCopyOf(io, workDir)
+  const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null)
+  let envelopeRecord = null
+  if (envelope && typeof envelope === 'object') {
+    let hash = null
+    try {
+      hash = envelopeHash(envelope)
+    } catch {
+      /* an unhashable envelope leaves no digest — a wrong one would be worse than none */
+    }
+    envelopeRecord = { ...envelope, hash }
+  }
+
+  const { dir } = writeRunStart({
+    runsDir,
+    attemptId: attemptIdFor(task.id, task.attempt),
+    ledgerPath,
+    guards,
+    secretValues: secretValuesOf(env),
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+    run: {
+      taskId: task.id,
+      attempt: Number.isFinite(Number(task.attempt)) ? Number(task.attempt) : 1,
+      workerId: (route && route.workerId) || null,
+      provider: (route && route.provider) || null,
+      lane: task.lane ?? null,
+      startedAt: iso(startedAt),
+      endedAt: iso(endedAt),
+      sessionId: sessionId ?? null,
+      bin: (spec && spec.bin) || null,
+      args: Array.isArray(spec && spec.args) ? [...spec.args] : [],
+      // NAMES ONLY, SORTED. The list answers «which variables did the spawn get» — the only
+      // question about an environment that can be answered without holding its secrets.
+      envNames: Object.keys(env).sort(),
+      prompt: { sha256: createHash('sha256').update(prompt, 'utf8').digest('hex'), bytes: Buffer.byteLength(prompt, 'utf8') },
+      task: { model: task.model ?? null, effort: task.effort ?? null },
+      envelope: envelopeRecord,
+      copy: worktree
+        ? {
+            worktreePath: worktree.worktreePath ?? null,
+            base: worktree.base ?? null,
+            branch: worktree.branch ?? null,
+            materialized: worktree.materialized ?? null,
+          }
+        : null,
+      personalLayer: (worktree && worktree.personalLayer) || null,
+      mcpConfig: (worktree && worktree.mcpConfig) || null,
+      init: runInit ?? null,
+      memory: memory ?? null,
+      rules,
+      skillsInCopy,
+      exit: {
+        code: exit && Number.isFinite(exit.code) ? exit.code : null,
+        spawnError: !!(exit && exit.spawnError),
+        permissionDenials: permissionDenials ?? null,
+      },
+    },
+  })
+  if (!dir) return null
+  pruneRunDirs({
+    runsDir,
+    keep: Number.isFinite(config.runsKeep) ? config.runsKeep : RUN_DIRS_KEEP,
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+  })
+  return {
+    dir,
+    gate: gate || 'reverify',
+    // The word the attempt left about what it learned — carried to the receipt so the outcome
+    // and the lesson are one record rather than two that have to be joined by an id.
+    lesson: lesson ?? null,
+    // The same observation the journal's layer carries, kept beside the outcome so a reader
+    // of one directory never has to open a ledger to learn whether the memory was read.
+    memoryLayer: {
+      index: !!(memory && memory.index),
+      reads: (memory && memory.reads) || [],
+      loadCalls: (memory && memory.loadCalls) || 0,
+      reflexes: (sma && sma.reflexes) || [],
+      failed: (memory && memory.failed) || [],
+    },
+    rules,
+    skillsInCopy,
+  }
+}
+
+/**
+ * The three facts of a receipt the parity check actually reads: the memory layer as the stream
+ * observed it, the state of the project's rules in the copy, and what skills the copy held.
+ * Named ONCE and used twice — by the verdict computed below and by the receipt written after
+ * it. Two spellings of the same object is precisely how a precomputed verdict starts describing
+ * a receipt that nobody ever wrote.
+ */
+function receiptFactsOf(run) {
+  return {
+    memoryLayer: run.memoryLayer ?? null,
+    rules: run.rules ?? null,
+    skillsInCopy: run.skillsInCopy ?? null,
+  }
+}
+
+/** One JSON artifact of the run directory, or null for one that cannot be read or parsed. */
+function readRunArtifact(io, path) {
+  try {
+    return JSON.parse(String(io.readFileSync(path, 'utf8')))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The rows of a JSONL artifact: a MISSING file is null, a corrupt LINE is skipped. The same
+ * reading rule the checking command applies, so one file can never become two different sets
+ * of rows depending on who opened it.
+ */
+function readRunRows(io, path) {
+  let raw
+  try {
+    raw = String(io.readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+  const rows = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    try {
+      rows.push(JSON.parse(t))
+    } catch {
+      /* an unparsable row is skipped and never thrown — the artifact's own fail-open posture */
+    }
+  }
+  return rows
+}
+
+/**
+ * attachAttemptParity(deps, worktree) → the parity summary of this attempt, or null.
+ *
+ * WHY THE DAEMON COMPUTES A VERDICT THE COMMAND CAN ALSO COMPUTE. A person looking at an
+ * attempt on a card wants to know whether that session really ran under their rules, and they
+ * want to know it BY LOOKING. Making them run a command first is making them audit their own
+ * product before it will answer; the summary therefore rides the attempt row, and the command
+ * stays what it always was — the long form, for the person who wants the five sentences.
+ *
+ * WHY THIS CANNOT DRIFT FROM THE COMMAND. It is not a second calculation. It is the SAME
+ * exported evaluation, handed the SAME four artifacts, read back FROM THE DIRECTORY that was
+ * just written rather than from the objects that produced it. Reading the files back is the
+ * point: what the command will see is bytes on disk, after redaction and after a JSON round
+ * trip, and a verdict computed over the in-memory originals could quietly describe something
+ * else. The suite asserts the two verdicts equal receipt by receipt, so a divergence becomes a
+ * red suite instead of a discovery somebody makes holding a green report over a red run.
+ *
+ * WHY IT IS ASKED FOR BEFORE THE ROW IS WRITTEN. The row is the durable record the card is
+ * built from, and the closing doors append it BEFORE the receipt file is written. A verdict
+ * computed at receipt time would land in the file and never on the row — computed, stored, and
+ * delivered to nobody, which is the exact shape of the failure this wiring exists to end.
+ *
+ * FAIL-OPEN AND HONEST ABOUT SILENCE. A directory that was never made, or a `run.json` that
+ * cannot be read back, yields null — «nobody has checked», which is what a null on the row has
+ * always meant. It does NOT yield five failures: the command answers a person who asked, and
+ * its «no data» is an answer to that question; a daemon that could not read its own file has no
+ * question in front of it and must not hang a red verdict on an attempt on the strength of it.
+ */
+function attachAttemptParity(deps, worktree) {
+  const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
+  if (!run || typeof run.dir !== 'string' || run.dir === '') return null
+  if (run.parity) return run.parity // one attempt, one verdict — either door may ask first
+  try {
+    const io = resolveIo(deps.fsImpl)
+    const record = readRunArtifact(io, join(run.dir, PARITY_ARTIFACTS.run))
+    if (!record) {
+      writeLog(deps, {
+        type: 'run_dir.parity_skipped',
+        dir: run.dir,
+        detail: `${PARITY_ARTIFACTS.run} не читается — вердикт паритета не считался`,
+      })
+      return null
+    }
+    const guards = readRunRows(io, join(run.dir, PARITY_ARTIFACTS.guards))
+    // The worker AS THE CONFIG DESCRIBES IT — the rights receipt names it, so a reader who
+    // finds a mismatch knows which entry to open. The command reaches the same list through its
+    // own `--config` flag; neither side invents one.
+    const workerId = record.workerId
+    const worker = workerId
+      ? ((deps.config && deps.config.workers) || []).find((w) => w && w.id === workerId) ?? null
+      : null
+    const results = evaluateParity({ run: record, guards, receipt: receiptFactsOf(run), worker })
+    run.parityResults = results
+    run.parity = summarize(results)
+    return run.parity
+  } catch (err) {
+    // A verdict is a record, never a reason to lose an attempt.
+    writeLog(deps, { type: 'run_dir.parity_error', dir: run.dir, error: String((err && err.message) || err) })
+    return null
+  }
+}
+
+/**
+ * writeAttemptOutcome(deps, worktree, receipt) — the fourth file, written by the door that
+ * KNOWS how the attempt ended. Fail-open and silent about a directory that was never made:
+ * an attempt refused before it ever spawned has nothing to write a receipt into.
+ */
+function writeAttemptOutcome(deps, worktree, receipt) {
+  const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
+  if (!run || typeof run.dir !== 'string' || run.dir === '') return false
+  // The verdict is already reached — the closing door asked for it before it wrote the ledger
+  // row, which is the only order in which a row can carry one. Here it is written down WHOLE:
+  // the five receipts with their details beside the summary, so one directory can answer «did
+  // this session really run under my rules» without a second command and without a second
+  // opinion. A verdict that could not be computed stays null: «nobody has checked», never
+  // «checked and fine».
+  const parity = attachAttemptParity(deps, worktree)
+  return writeRunReceipt({
+    dir: run.dir,
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+    receipt: {
+      ...receipt,
+      gate: run.gate || 'reverify',
+      ...receiptFactsOf(run),
+      parity: parity ? { results: run.parityResults ?? [], summary: parity } : null,
+    },
+  })
+}
+
+/**
  * attemptStream(deps, task, streamLines) → `{onLine, sessionId}` — the ONE stdout reader both
  * spawn paths use. It does three things per line, in this order and for these reasons:
  *
@@ -1132,9 +1515,21 @@ function writeMemoryLayer(deps, task, { memory, sma, lesson, approachJournaled, 
  */
 function attemptStream(deps, task, streamLines, now, subscription = {}, scope = {}) {
   const log = openAttemptLog(deps, task)
-  const state = { sessionId: null, init: null }
+  const state = { sessionId: null, init: null, runInit: null, permissionDenials: null }
   /** What this session did with memory, accumulated live — see the trace helpers above. */
-  const memory = { index: false, reads: [], autoMemoryReads: [], loadCalls: 0 }
+  const memory = { index: false, reads: [], autoMemoryReads: [], loadCalls: 0, failed: [] }
+  /**
+   * WHAT WAS WATCHING, line by line: every hook the CLI started and answered, and every tool a
+   * guard refused. Collected here rather than derived later because the ledger caps a long line
+   * and a refusal is exactly the kind of frame that arrives long.
+   */
+  const guards = []
+  /**
+   * Tool calls the session ASKED for, waiting for the result that decides what they proved —
+   * and the ones a guard already refused. The bookkeeping lives in a helper module because
+   * this file holds no keyed collection of its own (see the disciplines at the top).
+   */
+  const pairing = createToolPairing()
   /** SessionStart hooks the CLI reported starting — the founder's hook is one of them. */
   let hookStarts = 0
   let lastTouchAt = 0
@@ -1159,8 +1554,46 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
           initPlugins: Array.isArray(frame.plugins) ? frame.plugins : [],
           permissionMode: frame.permissionMode ?? null,
         }
-      } else if (frame.subtype === 'hook_started' && /SessionStart/.test(String(frame.hook_name || ''))) {
-        hookStarts += 1
+        // THE SAME FRAME, KEPT WHOLE for the attempt's run directory. The row above is a
+        // handful of counters a card renders; the record below is what a checking tool has to
+        // compare against the envelope — the tool list the session really got, the skills and
+        // agents it could reach, and the memory directory it was pointed at.
+        state.runInit = {
+          claudeCodeVersion: frame.claude_code_version ?? null,
+          model: frame.model ?? null,
+          permissionMode: frame.permissionMode ?? null,
+          tools: namesOf(frame.tools),
+          skills: namesOf(frame.skills),
+          agents: namesOf(frame.agents),
+          plugins: namesOf(frame.plugins),
+          mcpServers: namesOf(frame.mcp_servers),
+          memoryPathsAuto: (frame.memory_paths && frame.memory_paths.auto) || null,
+        }
+      } else if (frame.subtype === 'hook_started' || frame.subtype === 'hook_response') {
+        if (frame.subtype === 'hook_started' && /SessionStart/.test(String(frame.hook_name || ''))) hookStarts += 1
+        // ONE LINE PER HOOK EVENT. «Хук сработал» was until now a number nobody could open:
+        // the count said two and named neither, and a hook that answered with an error looked
+        // exactly like one that answered with a page of context.
+        guards.push({
+          ts: new Date(now()).toISOString(),
+          kind: frame.subtype,
+          hookName: frame.hook_name ?? null,
+          hookEvent: frame.hook_event ?? null,
+          ...(frame.exit_code === undefined ? {} : { exitCode: frame.exit_code }),
+          ...(frame.outcome === undefined ? {} : { outcome: frame.outcome }),
+          ...(typeof frame.output === 'string' ? { outputBytes: Buffer.byteLength(frame.output, 'utf8') } : {}),
+        })
+      } else if (frame.subtype === 'permission_denied') {
+        // THE GUARD'S OWN WORDS, from the frame it says them in. The failed tool result that
+        // follows carries the same sentence with none of the naming, so this is the source and
+        // the result below is only the fallback.
+        pairing.markRefused(frame.tool_use_id)
+        guards.push({
+          ts: new Date(now()).toISOString(),
+          kind: 'denied',
+          tool: frame.tool_name ?? null,
+          reason: shortReason(frame.message ?? frame.decision_reason_type ?? 'permission denied'),
+        })
       }
     }
     // WHAT IT OPENED AND WHAT IT LOADED — taken from the frame itself and BEFORE the line is
@@ -1172,15 +1605,52 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
         for (const block of toolUsesOf(frame)) {
           const name = typeof block.name === 'string' ? block.name : ''
           const input = block.input && typeof block.input === 'object' ? block.input : {}
+          const entry = { tool: name }
           if (name === 'Read' && typeof input.file_path === 'string') {
-            traceMemoryRead(memory, input.file_path, scope)
+            const hit = classifyMemoryRead(input.file_path, scope)
+            if (hit) entry.memory = hit
           } else if (SHELL_TOOLS.includes(name) && typeof input.command === 'string') {
-            if (MEMORY_LOAD_RE.test(input.command) && /--tags\b/.test(input.command)) memory.loadCalls += 1
+            if (MEMORY_LOAD_RE.test(input.command) && /--tags\b/.test(input.command)) entry.load = true
           }
+          // ASKED, NOT YET PROVED. Nothing is counted here on purpose — the user frame below
+          // is where a request becomes a fact.
+          pairing.remember(block.id, entry)
         }
       } catch {
         /* the trace is an OBSERVATION: a frame it cannot read teaches nothing, breaks nothing */
       }
+    }
+    // WHAT CAME BACK — the half of the conversation the trace never used to read. A tool result
+    // is matched to its request by `tool_use_id`, and only a result that is not an error and
+    // not empty turns a request into something this attempt may claim it did.
+    if (frame && frame.type === 'user') {
+      try {
+        for (const block of toolResultsOf(frame)) {
+          const resultId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
+          const pending = pairing.take(resultId)
+          const text = resultTextOf(block)
+          const errored = block.is_error === true
+          const empty = text.trim() === ''
+          if (pending && pending.memory) {
+            if (!errored && !empty) commitMemoryRead(memory, pending.memory)
+            else memory.failed.push({ kind: pending.memory.kind, id: pending.memory.id, reason: errored ? 'read failed' : 'read empty' })
+          } else if (pending && pending.load) {
+            if (!errored && !empty) memory.loadCalls += 1
+            else memory.failed.push({ kind: 'load', reason: errored ? 'load failed' : 'load empty' })
+          }
+          if (errored && refusedByGuard(block, text) && !pairing.refused(resultId)) {
+            pairing.markRefused(resultId)
+            guards.push({ ts: new Date(now()).toISOString(), kind: 'denied', tool: (pending && pending.tool) || null, reason: shortReason(text) })
+          }
+        }
+      } catch {
+        /* an unreadable result frame teaches nothing and breaks nothing (fail-open) */
+      }
+    }
+    // WHAT THE VENDOR ITSELF COUNTED AS REFUSED. Kept beside our own count rather than instead
+    // of it: the two disagreeing is a finding about the guards, not a bug in this reader.
+    if (frame && frame.type === 'result' && Array.isArray(frame.permission_denials)) {
+      state.permissionDenials = frame.permission_denials.length
     }
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
     // The sentence a person reads is built HERE, off the frame that was just parsed and
@@ -1236,10 +1706,25 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
       reads: [...memory.reads],
       autoMemoryReads: [...memory.autoMemoryReads],
       loadCalls: memory.loadCalls,
+      // WHAT WAS ASKED FOR AND DID NOT COME BACK. An absent list and a list of failures are
+      // different answers to «did the worker read the memory», and the second one is the one
+      // that explains an attempt that behaved as if the corpus were empty.
+      failed: memory.failed.map((f) => ({ ...f })),
     }),
     // Null when the session never opened one: an absent init is «we did not see it», which is
     // not the same statement as «the layer was empty», and the row must not confuse the two.
     initOf: () => (state.init ? { ...state.init, initHooks: hookStarts } : null),
+    // The whole opening frame, for the attempt's run directory (see the init branch above).
+    runInitOf: () => (state.runInit ? { ...state.runInit } : null),
+    // Hooks and refusals, in the order the stream produced them. A snapshot, like the memory
+    // trace: a reader must not be able to change what was observed.
+    guardsOf: () => guards.map((g) => ({ ...g })),
+    // How many tool calls the vendor's own result frame counted as refused; null when it said
+    // nothing, which is not the same claim as zero.
+    permissionDenialsOf: () => state.permissionDenials,
+    // WHERE THIS ATTEMPT'S TRANSCRIPT LIVES. The run directory references it instead of
+    // copying it, and only the writer knows the path it chose.
+    logFileOf: () => (log && typeof log.file === 'string' ? log.file : null),
   }
 }
 
@@ -2116,7 +2601,7 @@ export async function tick(deps = {}) {
       }
 
       const streamLines = []
-      const { onLine, sessionOf, initOf, appendLine, memoryOf } = attemptStream(
+      const { onLine, sessionOf, initOf, appendLine, memoryOf, guardsOf, runInitOf, permissionDenialsOf, logFileOf } = attemptStream(
         deps,
         task,
         streamLines,
@@ -2247,6 +2732,36 @@ export async function tick(deps = {}) {
         notes: roleNotes,
       })
 
+      // (7b-quater) THE ATTEMPT'S RUN DIRECTORY — written at the SAME single point, and for the
+      // same reason. Everything in it existed already and nothing had ever been handed to the
+      // thing that has to read it together: the command line, the envelope, the copy, the
+      // hooks that answered, the memory that came back and the transcript in the ledger. The
+      // receipt is added below by whichever door decides how this try ended.
+      worktreeRow = worktreeRow || {}
+      worktreeRow.run = writeAttemptRunDir(deps, task, {
+        route,
+        envelope,
+        spec,
+        worktree: worktreeRow,
+        workDir,
+        startedAt: attemptStartedAt,
+        endedAt: now(),
+        sessionId: sessionOf(),
+        runInit: runInitOf(),
+        memory: memoryOf(),
+        sma: collectSmaTrace({
+          projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+          sessionId: sessionOf(),
+          fsImpl: deps.fsImpl,
+        }),
+        guards: guardsOf(),
+        permissionDenials: permissionDenialsOf(),
+        ledgerPath: logFileOf(),
+        exit,
+        gate: isDocument ? 'document' : 'reverify',
+        lesson: lessonLayerOf(lessonEval),
+      })
+
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
       // already there — and neither may an attempt the vendor cut off mid-word.
@@ -2276,6 +2791,9 @@ export async function tick(deps = {}) {
       const parked = infraReason ? null : parkedRound(deps, task, workDir)
 
       if (parked || isDocument) {
+        // WHICH DOOR DECIDED — recorded before it does, so the receipt of a parked round and
+        // the receipt of a written document are not the same sentence with a different word.
+        if (worktreeRow && worktreeRow.run) worktreeRow.run.gate = parked ? 'parked' : 'document'
         const gate = parked ?? (infraReason ? {} : documentGate(deps, task, workDir))
         // A WRITTEN DOCUMENT OWES A LESSON THE SAME WAY A MERGED BRANCH DOES — работа словами
         // учит ровно так же. A PARKED ROUND DOES NOT: it stopped mid-way on a question to a
@@ -2286,10 +2804,10 @@ export async function tick(deps = {}) {
           infraReason ?? (gate.receiptRef ? (noteWritten ? lessonReason : 'no_journal') : gate.reason)
         if (reason) {
           if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
-          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
+          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
           result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
         } else {
-          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
+          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
           result.completed = task.id
         }
         return result
@@ -2302,6 +2820,7 @@ export async function tick(deps = {}) {
       // the answer receipt parks the row in `awaiting_approval`, where the screen renders
       // the worker's note as a card to acknowledge — instead of the red row this used to be.
       const answered = infraReason ? null : answerOnlyGate(deps, config, task, branch, workDir, noteWritten)
+      if (answered && worktreeRow && worktreeRow.run) worktreeRow.run.gate = 'answer'
       if (answered && !lessonOk) {
         // AN ANSWER OWES A LESSON TOO — and it is refused BY NAME here rather than left to
         // fall through to the code gate, which would call a finished answer «нет квитанции»
@@ -2315,7 +2834,7 @@ export async function tick(deps = {}) {
         // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
         // so «the worker answered» can never be mistaken for «the worker's code passed».
         writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef: answered.receiptRef })
-        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
+        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
         result.completed = task.id
         return result
       }
@@ -2417,6 +2936,11 @@ export async function tick(deps = {}) {
           }
         }
       }
+
+      // THE GATE'S OWN VERDICT, put where the outcome record can find it. A refusal carries no
+      // receipt reference, and reading «ссылки нет» as «вердикта не было» would turn a red
+      // re-verification into a silence in the one file a person opens to see what happened.
+      if (worktreeRow && worktreeRow.run) worktreeRow.run.verdict = receipt ? receipt.verdict : 'none'
 
       // ── WHAT THIS ATTEMPT ACTUALLY TOUCHED, written down BEFORE the fork ──
       // «Откатить можно» и «видно, ЧТО откатывается» — разные вещи, and only the first was
@@ -2687,7 +3211,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
   // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const { onLine, sessionOf, initOf, memoryOf } = attemptStream(
+  const { onLine, sessionOf, initOf, memoryOf, guardsOf, runInitOf, permissionDenialsOf, logFileOf } = attemptStream(
     deps,
     task,
     streamLines,
@@ -2741,6 +3265,33 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
     approachJournaled: noteWritten,
     notes: [],
+  })
+
+  // THE FORGE LANE IS A LANE — it creates an attempt, so it leaves the same directory the code
+  // lane does. One writer, one format: a checking tool must not need to know which lane a try
+  // came from before it can read what the try was given.
+  worktreeRow.run = writeAttemptRunDir(deps, task, {
+    route,
+    envelope,
+    spec,
+    worktree: worktreeRow,
+    workDir: worktreePath,
+    startedAt: attemptStartedAt,
+    endedAt: now(),
+    sessionId: sessionOf(),
+    runInit: runInitOf(),
+    memory: memoryOf(),
+    sma: collectSmaTrace({
+      projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+      sessionId: sessionOf(),
+      fsImpl: deps.fsImpl,
+    }),
+    guards: guardsOf(),
+    permissionDenials: permissionDenialsOf(),
+    ledgerPath: logFileOf(),
+    exit,
+    gate: 'forge',
+    lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
   })
 
   if (exit.spawnError) {
@@ -2826,6 +3377,11 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  */
 async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree }) {
   const { adapter, ledger, report } = deps
+  // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
+  // where the receipt file is written, because the ledger row below is appended BEFORE that
+  // file exists — and the row is what the card reads. Asked in the other order, the verdict
+  // would be perfectly computed, perfectly stored, and delivered to nobody.
+  attachAttemptParity(deps, worktree)
   await adapter.complete(task.id, {
     receiptRef,
     branch,
@@ -2856,6 +3412,14 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
     })
   }
+  // HOW THE TRY ENDED, into the attempt's own directory. Written here rather than at the point
+  // the rest of the record was written because THIS is where the outcome is first known.
+  writeAttemptOutcome(deps, worktree, {
+    outcome: 'completed',
+    verdict: (worktree && worktree.run && worktree.run.verdict) || 'green',
+    ref: receiptRef ?? null,
+    lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
+  })
   if (typeof report === 'function') {
     await report({ event: 'task.completed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: 'green', branch, attempt: task.attempt })
   }
@@ -2893,11 +3457,22 @@ function worktreeFields(worktree) {
     provisionMs: worktree.provisionMs ?? undefined,
     personalLayer: worktree.personalLayer ?? undefined,
     mcpConfig: worktree.mcpConfig ?? undefined,
+    // WHERE THE EVIDENCE OF THIS TRY LIVES. The row is the durable record, so it names the
+    // directory rather than leaving it to be guessed from an id and a convention. `parity` is
+    // the verdict of the checking tool, written back beside it; until it is computed the key
+    // is present and null, which is «nobody has checked», not «checked and fine».
+    runDir: (worktree.run && worktree.run.dir) || undefined,
+    ...(worktree.run && worktree.run.dir ? { parity: worktree.run.parity ?? null } : {}),
   }
 }
 
 async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree }) {
   const { adapter, ledger, report } = deps
+  // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
+  // where the receipt file is written, because the ledger row below is appended BEFORE that
+  // file exists — and the row is what the card reads. Asked in the other order, the verdict
+  // would be perfectly computed, perfectly stored, and delivered to nobody.
+  attachAttemptParity(deps, worktree)
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
@@ -2930,6 +3505,16 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
       writeLog(deps, { type: 'ledger-error', taskId: task.id, reason, error: String((err && err.message) || err) })
     }
   }
+  // A REFUSED ATTEMPT OWES THE SAME RECORD A FINISHED ONE DOES — it is the try somebody will
+  // actually want to open afterwards, and a directory with three files and no verdict says
+  // «still running» about work that stopped hours ago.
+  writeAttemptOutcome(deps, worktree, {
+    outcome: 'failed',
+    failureReason: reason,
+    verdict: (worktree && worktree.run && worktree.run.verdict) || (receiptRef ? 'red' : 'none'),
+    ref: receiptRef ?? null,
+    lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
+  })
   if (typeof report === 'function') {
     await report({ event: 'task.failed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: receiptRef ? 'red' : undefined, branch, attempt: task.attempt })
   }

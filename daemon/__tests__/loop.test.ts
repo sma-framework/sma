@@ -3489,6 +3489,26 @@ const framesFor = (workDir: string) =>
     return JSON.stringify(frame)
   })
 
+/**
+ * Кадры двух ЖИВЫХ прогонов: в зелёном чтение оглавления вернулось, в красном — копия была
+ * отведена без `.claude/`, и тот же `Read` получил «File does not exist». Год такой прогон
+ * записывался как «работник прочитал память проекта»: трейсер считал НАМЕРЕНИЕ.
+ */
+const PARITY_WORKDIR = 'C:\\work\\.sma-worktrees\\t-1000'
+const parityFrames = (file: string, workDir: string) =>
+  readFileSync(join(import.meta.dirname, 'fixtures', file), 'utf8')
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .map((line) => {
+      const frame = JSON.parse(line)
+      for (const block of frame.message?.content ?? []) {
+        if (block && typeof block.input?.file_path === 'string') {
+          block.input.file_path = block.input.file_path.split(PARITY_WORKDIR).join(workDir)
+        }
+      }
+      return JSON.stringify(frame)
+    })
+
 describe('слой памяти пишется на каждую попытку — из того, что работник правда прочитал', () => {
   const tmpDirs: string[] = []
   const mkDir = (prefix: string) => {
@@ -3548,6 +3568,46 @@ describe('слой памяти пишется на каждую попытку 
     expect(p.reflexSource).toBe('none')
     expect(p.lesson).toEqual({ none: 'задача была чистым чтением' })
     expect(p.approach).toBe('journaled')
+  })
+
+  it('оглавление засчитано, потому что файл ВЕРНУЛСЯ: у чтения есть парный tool_result', async () => {
+    const workDir = mkDir('sma-mem-ok-')
+    const { res, rows } = await runAttempt({
+      workDir,
+      lines: [...parityFrames('claude-stream-parity-green.ndjson', workDir), NOTE, 'LESSON_NONE: задача была чистым чтением'],
+    })
+
+    expect(res.completed).toBe('BL-1')
+    const [row] = memoryRows(rows)
+    expect(row.payload.loaded.index).toBe(true)
+    expect(row.payload.loaded.loadCalls).toBe(1)
+  })
+
+  it('провалившийся Read оглавления БОЛЬШЕ не считается прочтением — копия была без `.claude/`', async () => {
+    const workDir = mkDir('sma-mem-noclaude-')
+    const { rows } = await runAttempt({
+      workDir,
+      lines: [...parityFrames('claude-stream-parity-red-memory.ndjson', workDir), NOTE, 'LESSON_NONE: задача была чистым чтением'],
+    })
+
+    const [row] = memoryRows(rows)
+    // это ровно тот кадр, который год давал зелёную квитанцию «память»
+    expect(row.payload.loaded).toEqual({ index: false, reads: [], loadCalls: 0 })
+  })
+
+  it('Read БЕЗ результата вовсе не засчитывается: намерение — не факт', async () => {
+    const workDir = mkDir('sma-mem-noresult-')
+    const asked = parityFrames('claude-stream-parity-green.ndjson', workDir).filter((line) => {
+      const frame = JSON.parse(line)
+      return frame.type !== 'user' // выбрасываем ответы, оставляем только просьбы
+    })
+    const { rows } = await runAttempt({
+      workDir,
+      lines: [...asked, NOTE, 'LESSON_NONE: задача была чистым чтением'],
+    })
+
+    const [row] = memoryRows(rows)
+    expect(row.payload.loaded).toEqual({ index: false, reads: [], loadCalls: 0 })
   })
 
   it('рефлексы и цитаты берутся из `.sma` проекта по хешу сессии работника', async () => {

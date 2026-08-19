@@ -269,6 +269,45 @@ function lessonLines(attempt: TaskAttempt, trace: MemoryTrace | null): string[] 
   return lines
 }
 
+/**
+ * ЧЕМ ЭТА ПОПЫТКА ДОКАЗЫВАЕТ, ЧТО РАБОТАЛА ПОД ТВОИМИ ПРАВИЛАМИ — строка паритета.
+ *
+ * Обещание «безголовая сессия работника — та же сессия, что ты получаешь в своём терминале»
+ * ничего не стоит, пока оно СКАЗАНО, и держит вес, когда оно ДОКАЗАНО. Тик оставляет на
+ * каждой попытке каталог прогона и считает по нему пятёрку квитанций — хуки, память, правила,
+ * навыки, права — тем же модулем, который читает команда проверки. Здесь этот вердикт
+ * становится текстом на карточке: счёт, имена непрошедших квитанций и путь, по которому
+ * человек откроет каталог и посмотрит сам.
+ *
+ * ПОЧЕМУ ЧИСЛО, А НЕ ГАЛОЧКА. Пять из пяти — это «одна квитанция с названной границей и
+ * четыре чистых», а не «всё хорошо»: права не бывают зелёными вовсе, потому что до процесса
+ * доезжает только список инструментов. Поэтому счёт печатается как счёт, а предупреждения
+ * считаются отдельно — сведённые в одну галочку, они бы обещали то, чего продукт не даёт.
+ *
+ * ЗАКОН ЭТОГО ХЕЛПЕРА тот же, что у copyLines, layerLines и lessonLines: ничего не выдумывать.
+ * Нет вердикта — нет строки о вердикте; нет каталога — нет пути. `null` значит «никто не
+ * проверял», и молчание об этом честнее, чем нарисованный ноль.
+ */
+function parityLine(attempt: TaskAttempt): string[] {
+  const lines: string[] = []
+  const parity = attempt.parity
+  if (parity && Number.isFinite(parity.fulfilled) && Number.isFinite(parity.total)) {
+    const failed = Array.isArray(parity.failed) ? parity.failed : []
+    const parts = [
+      failed.length > 0
+        ? `Паритет: ${parity.fulfilled}/${parity.total} — не прошли: ${failed.join(', ')}`
+        : `Паритет: ${parity.fulfilled}/${parity.total}`,
+    ]
+    if (failed.length === 0 && parity.warn > 0) parts.push(`предупреждений ${parity.warn}`)
+    if (attempt.runDir) parts.push(attempt.runDir)
+    lines.push(parts.join(' · '))
+  } else if (attempt.runDir) {
+    // Вердикта нет, а каталог есть — путь всё равно полезен: по нему запускают проверку.
+    lines.push(`каталог прогона: ${attempt.runDir}`)
+  }
+  return lines
+}
+
 /** The colour of the mark beside a row — the same three tones the rest of the window uses. */
 function dotTone(attempt: TaskAttempt): string {
   if (attempt.outcome === 'failed') return 'bg-err'
@@ -347,6 +386,7 @@ function Row({
   const copy = copyLines(attempt)
   const layer = layerLines(attempt)
   const lesson = lessonLines(attempt, trace)
+  const parity = parityLine(attempt)
 
   return (
     <div className="flex gap-3.5">
@@ -416,6 +456,19 @@ function Row({
             {lesson.length > 0 ? (
               <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
                 {lesson.map((line) => (
+                  <span key={line} className="break-words">
+                    {line}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {/* ПАРИТЕТ: чем эта попытка доказывает, что шла под правилами проекта. Тем же
+                блоком и по тому же закону, что копия, слой и урок: строка приходит из строки
+                попытки, пустой список означает «попытка этого не знает» — и тогда блока нет
+                вовсе. Счёт и путь к каталогу приходят из данных и остаются текстовыми узлами. */}
+            {parity.length > 0 ? (
+              <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
+                {parity.map((line) => (
                   <span key={line} className="break-words">
                     {line}
                   </span>
