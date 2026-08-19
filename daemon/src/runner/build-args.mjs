@@ -257,6 +257,14 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
         ...(Array.isArray(options.allowedTools) && options.allowedTools.length > 0
           ? { allowedTools: options.allowedTools }
           : {}),
+        // AND THE REFUSAL TRAVELS BESIDE THE GRANT. The envelope's human-only actions —
+        // the ones a person keeps for himself — arrive here already translated into tool
+        // patterns, and this line is the last stretch of road between that decision and the
+        // process that has to obey it. An empty list changes the argument array by not one
+        // byte, so every spawn that names no refusal is assembled exactly as before.
+        ...(Array.isArray(options.disallowedTools) && options.disallowedTools.length > 0
+          ? { disallowedTools: options.disallowedTools }
+          : {}),
       })
     }
 

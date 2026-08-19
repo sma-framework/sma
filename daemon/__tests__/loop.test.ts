@@ -60,7 +60,7 @@ import { deriveState } from '../src/front/state.mjs'
 import { windowState, isOpen } from '../src/policy/windows.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { workerReadiness, poolReadiness } from '../src/runner/readiness.mjs'
-import { defaultEnvelope, envelopeAllows, envelopeHash } from '../src/queue/capability-envelope.mjs'
+import { defaultEnvelope, envelopeAllows, envelopeHash, humanOnlyDenials } from '../src/queue/capability-envelope.mjs'
 import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
 import {
   recordAttempt,
@@ -77,6 +77,7 @@ import { writeWaveHold } from '../src/queue/wave-holds.mjs'
 // the parity guard would be exactly the hole those cases exist to close.
 import { mirrorPersonalLayer, PersonalLayerError } from '../src/runner/personal-layer.mjs'
 import { createBuildArgs } from '../src/runner/build-args.mjs'
+import { buildClaudeArgs } from '../src/runner/args.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
   const s = { now: start }
@@ -3452,6 +3453,142 @@ describe('личный слой и наши серверы доезжают до
     await tick(deps2)
     const log = readAttemptLog({ dir: ledgerDir2, attemptId: 'BL-7#1' })
     expect(log.entries[0].line.length).toBe(INIT_FRAME.length)
+  })
+
+  // === THE ENVELOPE'S REFUSAL TRAVELS, AND BOTH SPAWN POINTS CARRY THE SAME ONE ===
+  //
+  // The four human-only actions were computed for every attempt this fleet ever ran, hashed
+  // into its row and written to the journal - and read by nobody downstream. "The worker
+  // cannot push" was a sentence in a prompt. These cases are about the WIRE and only the
+  // wire: what reached the argument array of a started process, and what the attempt's own
+  // record says it stood under. A test of the translation itself would have stayed green
+  // through every day the wire was cut, and one did.
+  //
+  // WHAT IS DELIBERATELY NOT ASSERTED HERE: the refusal in the session's opening frame. That
+  // frame lists the TOOLS a session holds, and we do not shorten that list - narrowing the
+  // grant under a clean config turns every command nobody remembered into a silent refusal
+  // inside the child. So the boundary is a denial rather than a shorter grant, and a denial
+  // is simply not one of the things the opening frame enumerates. It is proved where it
+  // actually passes: in the arguments, in the attempt record, and in a live refusal.
+
+  it('запрет конверта доезжает до аргументов запущенного процесса И до записи попытки', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const spawns: string[][] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push(spec.args.slice())
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        // НАСТОЯЩИЙ сборщик аргументов - подделка здесь закрыла бы ровно тот стык,
+        // ради которого случай написан
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    // (1) значение доехало до АРГУМЕНТОВ ЗАПУСКА
+    expect(spawns).toHaveLength(1)
+    const args = spawns[0]
+    const at = args.indexOf('--disallowedTools')
+    expect(at, 'запрет конверта не доехал до аргументов - граница осталась в журнале').toBeGreaterThan(-1)
+    const expected = humanOnlyDenials(defaultEnvelope('prod')).patterns
+    expect(expected.length).toBeGreaterThan(0)
+    expect(args[at + 1]).toBe(expected.join(' '))
+    expect(args[at + 1], 'сам push не назван в запрете').toContain('git push')
+    // и разрешённое НЕ сузилось ради этого
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe([...defaultEnvelope('prod').allowedTools].join(' '))
+
+    // (2) ровно тот же массив лежит в записи попытки
+    const run = JSON.parse(readFileSync(join(projectDir, '.sma', 'runs', 'BL-1_1', 'run.json'), 'utf8'))
+    expect(run.args).toEqual(args)
+    expect(run.envelope.humanOnlyActions).toEqual([...defaultEnvelope('prod').humanOnlyActions])
+  })
+
+  it('обе точки спавна берут конверт из ОДНОЙ функции - аргументы двух путей совпадают', async () => {
+    const sourceDir = founderHome()
+    const seen: any[] = []
+    const runOne = async (over: any) => {
+      const accountDir = mkDir('sma-account-')
+      const ledgerDir = mkDir('sma-ledger-')
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(over.task)
+      const { deps } = makeDeps({
+        adapter,
+        clockObj: c,
+        config: { workers: [worker(accountDir, over.workerOver ?? {})], pipeline: { enabled: true } },
+        spawnWorker: makeSpawnWorker(undefined, { lines: ['APPROACH_NOTE: прямой путь'] }),
+        responses: over.responses,
+        deps: {
+          ledger: ledgerSeam(ledgerDir),
+          execGit: () => '',
+          mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+          buildArgs: (_t: any, _r: any, opts: any) => {
+            seen.push(opts)
+            return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }
+          },
+        },
+      })
+      await tick(deps)
+    }
+
+    // путь кода/документа
+    await runOne({ task: backlogTask(), responses: codeResponses() })
+    // путь "Создателя"
+    await runOne({
+      task: {
+        id: 'F-1',
+        source: 'roster',
+        title: 'выкуй агента',
+        lane: 'forge',
+        priority: 0,
+        forge: { kind: 'agent', description: 'читает и суммирует' },
+      },
+      workerOver: { lane: 'forge' },
+      responses: { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-1', branch: 'wt/x' }) } },
+    })
+
+    expect(seen, 'одна из двух точек спавна не позвала сборщик аргументов').toHaveLength(2)
+    const [codePath, forgePath] = seen
+
+    // обе точки несут ОБА измерения конверта...
+    for (const [name, opts] of [['путь кода', codePath], ['путь Создателя', forgePath]] as const) {
+      expect(opts.allowedTools, name).toEqual([...defaultEnvelope('prod').allowedTools])
+      expect(opts.disallowedTools, name).toEqual([...humanOnlyDenials(defaultEnvelope('prod')).patterns])
+    }
+    // ...и, что здесь и есть предмет случая, СОБРАННЫЕ АРГУМЕНТЫ двух путей совпадают.
+    // Два списка полей, которые сегодня говорят одно и то же, расходятся в тот день, когда
+    // правят один из них: у этих двух точек такая история уже была.
+    expect(buildClaudeArgs({ allowedTools: codePath.allowedTools, disallowedTools: codePath.disallowedTools })).toEqual(
+      buildClaudeArgs({ allowedTools: forgePath.allowedTools, disallowedTools: forgePath.disallowedTools }),
+    )
+  })
+
+  it('замок на расход двух точек: опции конверта собирает одна функция и никто больше', () => {
+    const source = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
+    // ровно два вызова - по одному на точку спавна
+    expect(source.match(/envelopeSpawnOptions\(envelope\)/g) ?? []).toHaveLength(2)
+    // и ни одной точки, которая собирает поле конверта своим литералом
+    expect(source).not.toMatch(/allowedTools:\s*envelope\.allowedTools/)
   })
 })
 
