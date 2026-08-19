@@ -581,6 +581,9 @@ function stateDeps(config, deps, project) {
     adapter: deps.adapter,
     ledger: deps.ledger,
     ledgerDir: deps.ledgerDir,
+    // the roster's period figures ride the SAME read model seam as everything else here —
+    // no door of its own, so the frozen route table is untouched.
+    workerStats: deps.workerStats,
     windows: deps.windows,
     // The reading the person's own terminal lays down for its subscription — a subject of its
     // own, not any account's bar, and forwarded like every other collaborator.

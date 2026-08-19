@@ -130,7 +130,8 @@ describe('createWorkerStats — the count over a period, out of the attempt ledg
     expect(stats.statsFor('w1')).toEqual({ done: 2, failed: 1 })
     expect(reads).toBe(1)
     now = NOW + 61_000
-    expect(stats.statsFor('w1')).toEqual({ done: 2, failed: 0 }) // T-C is now 29d+ … still inside
+    // the answer itself must NOT move: a minute later T-C is still inside the 30-day window
+    expect(stats.statsFor('w1')).toEqual({ done: 2, failed: 1 })
     expect(reads).toBe(2)
   })
 
