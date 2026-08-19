@@ -239,7 +239,7 @@ The coordination + accountability CLI runs underneath — 90 verbs, grouped here
 | `ladder` · `tune` · `curriculum` | The self-tuning enforcement ladder: tier table, evidence-gated promote/demote proposals, the weekly miss-curriculum |
 | `statusline` · `pulse` | The native statusline segment (composes with a pre-existing user statusline) and the working/waiting attention pulse |
 | `manifest` | The PR evidence passport: predictions, receipts, and verdicts for a commit range, as JSON/Markdown |
-| `preflight` | The already-built gate: check a plan's claims against the real tree before any executor spawns |
+| `preflight` | The already-built gate: check a plan's claims against the real tree before any executor spawns. The daemon's tick asks it with the PATH of a plan, for machine output, in the connected project's tree — once per plan of the phase |
 | `arena` | The comparative benchmark arena scorer + static graphs page (raw data and negative results published) |
 | `batch` | The `sma batch` middle lane: risk filter, grill-lite, mandatory receipts |
 | `worktree` · `merge` | Per-terminal worktree isolation — `provision` copies the untracked layer named by `.sma/worktree-include` and links dependencies instead of installing them, `remove` unlinks first and only then removes the tree (`--delete-branch` takes the branch too) — and the serialized local-only merge gate (the push itself stays a human-ordered ritual) |
@@ -720,7 +720,7 @@ flowchart LR
 | **`sma excavate`** | Mines a stranger's git history read-only (commit↔revert pairs, typo-fix chains, red CI runs) and prints CATCHES lines — *this reflex would have fired before this push*. Concrete evidence in the first five minutes. |
 | **`sma emit`** | Compiles the corpus into `CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `GEMINI.md` via managed blocks. Your text outside the block is never touched; re-emits are byte-identical. Anti-lock-in by construction. |
 | **Fragment catalog + `sma context`** | A deterministic one-line card per repo file (symbols, imports, git stats), then a budgeted, byte-deterministic task context pack — catalog before grep, same input → same pack. |
-| **Already-built preflight** | A millisecond, zero-token check of a plan's claims against the real tree before any executor spawns — nothing is rebuilt for pay. |
+| **Already-built preflight** | A millisecond, zero-token check of a plan's claims against the real tree before any executor spawns — nothing is rebuilt for pay. The daemon's tick asks it with the plan's path and for a machine answer, and grants «built» only when EVERY plan of the task's phase answers built: a false «not built» costs one extra run, a false «built» would close the task with the work never done. The verdict is written to the log every time — built, partial, absent, and the verb's own failure alike. Work with no plan behind it is not asked at all, with the reason logged: an order carrying no phase, and, deliberately, a documentary stage of the phase cycle — «does this already exist in the tree» is not that stage's question. |
 | **`sma explain` + `sma doc-audit`** | 26 plain-language topics covering every concept *and every CLI verb* (a coverage tripwire scores a miss if a command ships undocumented); a deterministic audit proves the manual and this README stay complete, fresh, and honest. |
 
 ### Self-tuning enforcement ladder
