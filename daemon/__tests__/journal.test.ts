@@ -767,9 +767,33 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(27)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(29)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(27) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(29) // no duplicate name
+  })
+
+  /**
+   * THE LAST TWO KEYS — where the evidence of a try lives, and what a check made of it.
+   *
+   * `runDir` names the directory the attempt left in the connected project; `parity` is the
+   * verdict of the check made over it. `parity` is null until somebody checks, and that null
+   * is a THIRD state on purpose: «никто не проверял» must never be renderable as «проверено и
+   * чисто». A row that left no directory carries neither key — absence, not an empty shape.
+   */
+  it('carries runDir and parity last — the evidence of the try and the verdict over it', () => {
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-2)).toEqual(['runDir', 'parity'])
+    const runDir = 'C:/work/project/.sma/runs/BL-RUN_1'
+    recordAttempt(dir, { taskId: 'BL-RUN', attempt: 1, outcome: 'completed', runDir, parity: null })
+    const [row] = readAttempts(dir, 'BL-RUN')
+    expect(row.runDir).toBe(runDir)
+    // null SURVIVES the allowlist: only `undefined` means «no such fact about this row»
+    expect(Object.hasOwn(row, 'parity')).toBe(true)
+    expect(row.parity).toBe(null)
+    // …and an attempt that left no directory carries neither key at all
+    recordAttempt(dir, { taskId: 'BL-NORUN', attempt: 1, outcome: 'completed' })
+    const [bare] = readAttempts(dir, 'BL-NORUN')
+    expect(Object.hasOwn(bare, 'runDir')).toBe(false)
+    expect(Object.hasOwn(bare, 'parity')).toBe(false)
   })
 
   /**
@@ -781,9 +805,11 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
    * successful removal. Like `cleanup`, it rides a SEPARATE row of the same attempt, so the
    * fold neither stretches the attempt's duration nor overwrites how it ended.
    */
-  it('carries memoryHarvest last — the trace of the lesson, kept apart from the trace of the removal', () => {
+  it('carries memoryHarvest — the trace of the lesson, kept apart from the trace of the removal', () => {
     expect(ALLOWED_ATTEMPT_KEYS).toContain('memoryHarvest')
-    expect(ALLOWED_ATTEMPT_KEYS[ALLOWED_ATTEMPT_KEYS.length - 1]).toBe('memoryHarvest')
+    // It closes the part of the row written by the APPROVAL; the two run-directory keys were
+    // appended behind it, so what the contract pins is that order, not «last member».
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-3)[0]).toBe('memoryHarvest')
     const harvest = { at: '2026-08-19T10:00:00.000Z', by: 'approve', mode: 'untracked', copied: ['drafts/lesson-r-9-a.md'], applied: ['lesson-r-9-a'], drafted: ['approach-r-9-1'], refused: [], ok: true }
     recordAttempt(dir, { taskId: 'BL-HARVEST', attempt: 1, memoryHarvest: harvest })
     const [row] = readAttempts(dir, 'BL-HARVEST')
@@ -796,11 +822,11 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
   it('carries the six copy fields, then the two about the session the worker was given', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-9, -3)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-11, -5)).toEqual(COPY_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-3, -1)).toEqual(['personalLayer', 'mcpConfig'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-5, -3)).toEqual(['personalLayer', 'mcpConfig'])
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a
@@ -1557,6 +1583,10 @@ describe('the ledger keeps its stated disciplines', () => {
         'readAttempts',
         'readJournalEntries',
         'recordAttempt',
+        // The naming rule, not a writer: it turns an id into a filename and is exported so the
+        // attempt's run directory is named by the SAME rule its transcript is. A fourth private
+        // copy of it would be a fourth chance for two records of one attempt to disagree.
+        'safeName',
         // the live attempt log: a writer that only appends and a reader that only reads
         'createAttemptLogWriter',
         'readAttemptLog',

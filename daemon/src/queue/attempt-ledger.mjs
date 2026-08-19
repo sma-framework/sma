@@ -189,6 +189,23 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // deliberately carries no `endedAt`/`outcome`, so folding the rows of one attempt neither
   // stretches its duration nor overwrites how the try ended.
   'memoryHarvest',
+  // ── where the evidence of this try lives, and what a check made of it ──────────
+  // `runDir` is the absolute path of `<projectDir>/.sma/runs/<attemptId>/` — the directory
+  // holding what the attempt was given (the command line, the environment variable NAMES, the
+  // envelope, the copy, the personal layer), what was watching it (the hooks that started and
+  // answered, the tools a guard refused), a REFERENCE to its transcript in this ledger, and
+  // how it ended. It is on the row rather than derived from an id and a convention because a
+  // convention is not a record: the day the naming rule changes, every older row would point
+  // at nothing and nobody would be able to tell that from a run that left no directory.
+  //
+  // `parity` is the verdict of the check made over that directory — «работник правда шёл под
+  // теми же правилами, с той же памятью и за теми же стражами, что и человек». It is written
+  // back beside the run rather than recomputed on every read, because the copy it describes
+  // is swept after approval and the answer would stop being obtainable. `null` is a THIRD
+  // state and it is deliberate: nobody has checked yet, which is not the same claim as
+  // «checked and clean» and must never be renderable as one.
+  'runDir',
+  'parity',
 ])
 
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint

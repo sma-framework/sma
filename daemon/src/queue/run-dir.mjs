@@ -102,6 +102,58 @@ function say(log, entry) {
   }
 }
 
+/** How many outstanding tool calls one stream remembers before it forgets the oldest. */
+export const PENDING_TOOLS_CAP = 2000
+
+/**
+ * createToolPairing({cap}) — the little bookkeeping that turns «работник попросил файл» into
+ * «файл вернулся»: a bounded map of tool calls waiting for their result, plus the set of calls
+ * a guard already refused so a frame and its failed result never become two records.
+ *
+ * WHY IT LIVES HERE AND NOT IN THE TICK. `loop.mjs` holds no keyed collection by law — the
+ * daemon is a poll over durable state and every in-process registry it ever grew became a
+ * thing that disagreed with the database after a restart. The law names its own way out: a
+ * keyed lookup belongs in a helper module. This is that module — the pairing exists only to
+ * fill the attempt's own record, and it dies with the stream that made it.
+ *
+ * BOUNDED ON PURPOSE. A session that asks for thousands of tools and is cut off before their
+ * results arrive must not grow this forever; the oldest entry is dropped, which costs one
+ * unpaired observation and never a night of memory.
+ *
+ * @param {{cap?:number}} [opts]
+ */
+export function createToolPairing({ cap = PENDING_TOOLS_CAP } = {}) {
+  const asked = new Map()
+  const refused = new Set()
+  const limit = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : PENDING_TOOLS_CAP
+  return {
+    /** Remember one asked-for call. An id-less block is simply not remembered. */
+    remember(id, entry) {
+      if (typeof id !== 'string' || id === '') return
+      if (asked.size >= limit) {
+        const oldest = asked.keys().next()
+        if (!oldest.done) asked.delete(oldest.value)
+      }
+      asked.set(id, entry)
+    },
+    /** The call this result answers, removed as it is handed over — a result arrives once. */
+    take(id) {
+      if (typeof id !== 'string' || id === '') return null
+      const entry = asked.get(id) ?? null
+      asked.delete(id)
+      return entry
+    },
+    /** Was this call already recorded as refused by a guard? */
+    refused(id) {
+      return typeof id === 'string' && refused.has(id)
+    },
+    /** Record it as refused, so the failed result that follows adds no second line. */
+    markRefused(id) {
+      if (typeof id === 'string' && id !== '') refused.add(id)
+    },
+  }
+}
+
 /** `<projectDir>/.sma/runs` — the ONE place this product keeps the runs of a project. */
 export function runsDirOf(projectDir) {
   if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
