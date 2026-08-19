@@ -581,8 +581,10 @@ describe('the completion gate asks for the note where it asks for the receipt', 
 
     const memory = written.filter((e) => e.layer === 'memory')
     expect(memory).toHaveLength(1)
-    expect(memory[0].payload.notes).toContain('.claude/agents/builder.md')
-    expect(memory[0].payload.reflexes).toEqual(['sma-debug', 'sma-quick'])
+    // Роль и навыки — это ЗАЯВЛЕНИЕ о том, что сессии дали, и живут в notes; ключ reflexes
+    // с этой ревизии означает СРАБОТАВШИЕ рефлексы работника, а их у фейка нет.
+    expect(memory[0].payload.notes).toEqual(['.claude/agents/builder.md', 'sma-debug', 'sma-quick'])
+    expect(memory[0].payload.reflexes).toEqual([])
     expect(JSON.stringify(memory[0])).not.toContain('Секретный')
   })
 

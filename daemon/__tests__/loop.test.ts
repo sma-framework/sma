@@ -51,6 +51,7 @@ import { join } from 'node:path'
 import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
 import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
+import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
 // screen's payload. Every joint of that path had a green test of its own while the path
@@ -3434,5 +3435,193 @@ describe('личный слой и наши серверы доезжают до
     await tick(deps2)
     const log = readAttemptLog({ dir: ledgerDir2, attemptId: 'BL-7#1' })
     expect(log.entries[0].line.length).toBe(INIT_FRAME.length)
+  })
+})
+
+/**
+ * ═══ СЛОЙ ПАМЯТИ ЖУРНАЛА — НА КАЖДУЮ ПОПЫТКУ И ИЗ РЕАЛЬНОГО СЛЕДА ═══════════════
+ *
+ * Слой `memory` писался ТОЛЬКО работнику с файлом роли и нёс ИМЯ ЭТОЙ РОЛИ — заявление,
+ * сделанное до того, как сессия открыла рот. На машине это дало ноль строк слоя за десятки
+ * попыток при обещании «маховик памяти крутится в обе стороны». Ниже проверяется ПРОВОД, а
+ * не вычисление: кадры стенограммы и файлы `.sma` доезжают до строки журнала, и строка есть
+ * у КАЖДОЙ попытки — и у принятой, и у проваленной.
+ *
+ * Подделка стрима — настоящие кадры: фикстура `claude-stream-read-frame.ndjson` снята с
+ * живой стенограммы (`Read` с `file_path` в копии, `Read` авто-памяти аккаунта, `Bash` с
+ * вызовом конвейера памяти), у неё обезличен только каталог. Подделка, умеющая больше
+ * библиотеки, уже однажды показывала зелёный сьют поверх сломанного провода.
+ */
+const READ_FRAMES = readFileSync(join(import.meta.dirname, 'fixtures', 'claude-stream-read-frame.ndjson'), 'utf8')
+  .split(/\r?\n/)
+  .filter((l) => l.trim())
+
+/** Каталог и сессия, записанные в фикстуре: копия подставляется своя, сессия — та же. */
+const FIXTURE_WORKDIR = 'C:\\work\\.sma-worktrees\\t-25212'
+const FIXTURE_SESSION = 'd82a347f-a54a-4a33-9c87-0b2efb517172'
+
+/** Те же кадры, но про КОПИЮ этого кейса: путь переписывается внутри разобранного кадра. */
+const framesFor = (workDir: string) =>
+  READ_FRAMES.map((line) => {
+    const frame = JSON.parse(line)
+    for (const block of frame.message?.content ?? []) {
+      if (block && typeof block.input?.file_path === 'string') {
+        block.input.file_path = block.input.file_path.split(FIXTURE_WORKDIR).join(workDir)
+      }
+    }
+    return JSON.stringify(frame)
+  })
+
+describe('слой памяти пишется на каждую попытку — из того, что работник правда прочитал', () => {
+  const tmpDirs: string[] = []
+  const mkDir = (prefix: string) => {
+    const d = mkdtempSync(join(tmpdir(), prefix))
+    tmpDirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmpDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  })
+
+  const NOTE = 'APPROACH_NOTE: прямой путь'
+  const memoryRows = (rows: any[]) => rows.filter((e) => e && e.layer === 'memory')
+
+  const runAttempt = async (over: any = {}) => {
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const rows: any[] = []
+    const { deps } = makeDeps({
+      adapter: oneTaskAdapter(backlogTask({ attempt: 1 })),
+      responses: {
+        ...DIFF_RESPONSES(inTurn([snapshot, snapshot])),
+        ...(over.workDir
+          ? { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: over.workDir, branch: 'wt/BL-1' }) } }
+          : {}),
+      },
+      spawnWorker: makeSpawnWorker(undefined, { lines: over.lines, noLesson: over.noLesson === true }),
+      config: over.config ?? {},
+      deps: { execGit: makeGateGit(), decisionJournal: (e: any) => rows.push(e), ...over.deps },
+    })
+    const res = await tick(deps)
+    return { res, rows }
+  }
+
+  it('попытка БЕЗ роли всё равно имеет слой: оглавление, заметка, вызов конвейера, авто-память', async () => {
+    const workDir = mkDir('sma-mem-')
+    const { res, rows } = await runAttempt({
+      workDir,
+      lines: [...framesFor(workDir), NOTE, 'LESSON_NONE: задача была чистым чтением'],
+    })
+
+    expect(res.completed).toBe('BL-1')
+    const memory = memoryRows(rows)
+    expect(memory).toHaveLength(1)
+    const p = memory[0].payload
+    // прочитанное в копии: оглавление отдельно от заметки, вызов конвейера — счётчиком
+    expect(p.loaded).toEqual({ index: true, reads: ['alpha'], loadCalls: 1 })
+    // авто-память аккаунта — ОТДЕЛЬНЫМ списком: это не память проекта
+    expect(p.autoMemoryReads).toEqual(['memory-check-grey-morning'])
+    expect(p.notes).toEqual([])
+    expect(p.reflexes).toEqual([])
+    expect(p.reflexSource).toBe('none')
+    expect(p.lesson).toEqual({ none: 'задача была чистым чтением' })
+    expect(p.approach).toBe('journaled')
+  })
+
+  it('рефлексы и цитаты берутся из `.sma` проекта по хешу сессии работника', async () => {
+    const workDir = mkDir('sma-mem-wt-')
+    const projectDir = mkDir('sma-mem-proj-')
+    const terminal = `t-${tokenHash(FIXTURE_SESSION)}`
+    mkdirSync(join(projectDir, '.sma', 'usage'), { recursive: true })
+    mkdirSync(join(projectDir, '.sma', 'journal'), { recursive: true })
+    writeFileSync(
+      join(projectDir, '.sma', 'usage', `${terminal}.jsonl`),
+      `${JSON.stringify({ ts: 1, terminal, seq: 1, noteId: 'u1', kind: 'load' })}\n`,
+      'utf8',
+    )
+    writeFileSync(
+      join(projectDir, '.sma', 'journal', `${terminal}.jsonl`),
+      `${JSON.stringify({ ts: 1, terminal, type: 'reflex', detail: { noteId: 'r1', tier: 'core' } })}\n`,
+      'utf8',
+    )
+
+    const { rows } = await runAttempt({
+      workDir,
+      config: { repoDir: projectDir },
+      lines: [...framesFor(workDir), NOTE, 'LESSON_NONE: задача была чистым чтением'],
+    })
+
+    const [row] = memoryRows(rows)
+    expect(row.payload.reflexes).toEqual(['r1'])
+    expect(row.payload.reflexSource).toBe('sma-journal')
+    // цитаты конвейера и кадры стенограммы — ОДИН список прочитанного по проекту
+    expect([...row.payload.loaded.reads].sort()).toEqual(['alpha', 'u1'])
+  })
+
+  it('ПРОВАЛЕННАЯ попытка тоже имеет слой, и он говорит, что урока нет', async () => {
+    const workDir = mkDir('sma-mem-red-')
+    const { res, rows } = await runAttempt({
+      workDir,
+      noLesson: true,
+      lines: [...framesFor(workDir), NOTE],
+    })
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_lesson' })
+    const memory = memoryRows(rows)
+    expect(memory).toHaveLength(1)
+    expect(memory[0].payload.lesson).toEqual({ missing: true })
+    expect(memory[0].payload.loaded.index).toBe(true)
+    expect(memory[0].payload.approach).toBe('journaled')
+  })
+
+  it('роль и навыки остаются в `notes`, но строка слоя по-прежнему ОДНА', async () => {
+    const workDir = mkDir('sma-mem-role-')
+    const { rows } = await runAttempt({
+      workDir,
+      lines: [...framesFor(workDir), NOTE, 'LESSON_NONE: задача была чистым чтением'],
+      config: {
+        workers: [
+          {
+            id: 'max-2',
+            lane: 'prod',
+            provider: 'claude',
+            account: { configDir: '/x' },
+            enabled: true,
+            roleFile: '.claude/agents/builder.md',
+            skills: ['sma-debug'],
+          },
+        ],
+      },
+      deps: {
+        resolveWorkerContext: () => ({
+          rolePreamble: 'СЕКРЕТНОЕ тело роли, целый абзац',
+          skillsList: ['sma-debug', 'sma-quick'],
+        }),
+      },
+    })
+
+    const memory = memoryRows(rows)
+    expect(memory).toHaveLength(1)
+    expect(memory[0].payload.notes).toEqual(['.claude/agents/builder.md', 'sma-debug', 'sma-quick'])
+    // тело роли в журнал не уезжает — ни ids, ни текстом
+    expect(JSON.stringify(memory[0])).not.toContain('СЕКРЕТНОЕ')
+  })
+
+  it('попытка, не тронувшая память, всё равно оставляет слой — пустой и говорящий об этом', async () => {
+    const workDir = mkDir('sma-mem-empty-')
+    const { rows } = await runAttempt({
+      workDir,
+      lines: ['stream line', NOTE, 'LESSON_NONE: задача была чистым чтением'],
+    })
+
+    const [row] = memoryRows(rows)
+    expect(row.payload.loaded).toEqual({ index: false, reads: [], loadCalls: 0 })
+    expect(row.payload.autoMemoryReads).toEqual([])
+    expect(row.payload.reflexSource).toBe('none')
   })
 })
