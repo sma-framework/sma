@@ -762,6 +762,15 @@ function recordWindowReading(deps, subscription, event) {
  *       jumble of two voices;
  *   (3) touches the lease, throttled, exactly as before.
  *
+ * It also READS THE INIT FRAME, which is the only evidence this daemon ever gets that the
+ * personal layer actually reached the session: the CLI states there which memory directory it
+ * will write to, which hooks it started, which mcp servers it attached and which tools those
+ * servers brought. A layer mirrored into an account and a layer the session actually loaded are
+ * two different claims, and only the second one is worth anything to a person asking «did the
+ * worker run under my rules». The same two frames — init and result — are also MARKED for the
+ * transcript writer, which gives a marked frame a size of its own: the init frame is the
+ * biggest line of the run and the line cap made it useless exactly where it mattered.
+ *
  * It also KEEPS THE SESSION ID off the result frame. That identifier is the one thing about a
  * finished attempt that cannot be recovered later, and holding it is what makes resuming a
  * session — instead of paying for its context again — possible at all.
@@ -771,7 +780,9 @@ function recordWindowReading(deps, subscription, event) {
  */
 function attemptStream(deps, task, streamLines, now, subscription = {}) {
   const log = openAttemptLog(deps, task)
-  const state = { sessionId: null }
+  const state = { sessionId: null, init: null }
+  /** SessionStart hooks the CLI reported starting — the founder's hook is one of them. */
+  let hookStarts = 0
   let lastTouchAt = 0
   /** One line per attempt, not per renewal: a broken lease says its piece once. */
   let touchBroken = false
@@ -779,17 +790,46 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
     streamLines.push(line)
     const { event, frame } = parseClaudeFrame(line)
     if (!state.sessionId && event.sessionId) state.sessionId = event.sessionId
+    // WHAT THE SESSION SAYS IT WAS GIVEN, taken from its own opening frame. Nothing here can
+    // fail the attempt: an absent field is read as an absence, never as a reason to refuse.
+    if (frame && frame.type === 'system') {
+      if (frame.subtype === 'init') {
+        state.init = {
+          // The project memory the CLI will write to on its own — the founder's auto-memory,
+          // reached WITHOUT building any junction: the path is simply reported and recorded.
+          autoMemoryDir: (frame.memory_paths && frame.memory_paths.auto) || null,
+          initMcpServers: (Array.isArray(frame.mcp_servers) ? frame.mcp_servers : []).map((m) => (m && m.name) || String(m)),
+          // Tools whose names begin like a hosted claude.ai connector. The count is the whole
+          // point of the connectors switch: zero is the receipt that nothing foreign attached.
+          initClaudeAiTools: (Array.isArray(frame.tools) ? frame.tools : []).filter((t) => /^mcp__claude_ai/i.test(String(t))).length,
+          initPlugins: Array.isArray(frame.plugins) ? frame.plugins : [],
+          permissionMode: frame.permissionMode ?? null,
+        }
+      } else if (frame.subtype === 'hook_started' && /SessionStart/.test(String(frame.hook_name || ''))) {
+        hookStarts += 1
+      }
+    }
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
     // The sentence a person reads is built HERE, off the frame that was just parsed and
     // BEFORE the line is capped for storage: the biggest frames — a delegation brief, a file
     // read — are exactly the ones the cap would make unreadable. An unrecognisable frame
     // summarises to nothing, and nothing means the screen falls back to the raw line.
     const summary = frame ? summarizeFrame(frame) : []
+    // WHICH FRAMES ARE WORTH THEIR FULL SIZE. Both ends of a run — what it was given and what
+    // it cost — are the two lines a person comes back for, and both are far longer than an
+    // ordinary line. The mark is a hint for the writer, not a field of the record.
+    const frameKind =
+      frame && frame.type === 'system' && frame.subtype === 'init'
+        ? 'init'
+        : frame && frame.type === 'result'
+          ? 'result'
+          : undefined
     log.append({
       line,
       subagent: event.subagent === true,
       parentId: event.parentId,
       ...(summary.length ? { summary } : {}),
+      ...(frameKind ? { frameKind } : {}),
     })
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
@@ -809,7 +849,13 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
       })
     }
   }
-  return { onLine, sessionOf: () => state.sessionId }
+  return {
+    onLine,
+    sessionOf: () => state.sessionId,
+    // Null when the session never opened one: an absent init is «we did not see it», which is
+    // not the same statement as «the layer was empty», and the row must not confuse the two.
+    initOf: () => (state.init ? { ...state.init, initHooks: hookStarts } : null),
+  }
 }
 
 /**
@@ -1676,7 +1722,7 @@ export async function tick(deps = {}) {
       }
 
       const streamLines = []
-      const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now, {
+      const { onLine, sessionOf, initOf } = attemptStream(deps, task, streamLines, now, {
         accountName: spec.accountName,
         dataDir: config.dataDir,
       })
@@ -1732,6 +1778,16 @@ export async function tick(deps = {}) {
         }
       }
       if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+
+      // WHAT THE SESSION ITSELF REPORTED joins what the mirror wrote, on ONE key. The mirror
+      // says what was PUT INTO the account; the init frame says what the session actually
+      // LOADED — and the gap between those two is precisely the class of defect this phase
+      // exists to close. Merged rather than replaced: neither half alone answers the question.
+      const sessionInit = initOf()
+      if (sessionInit) {
+        worktreeRow = worktreeRow || {}
+        worktreeRow.personalLayer = { ...(worktreeRow.personalLayer || {}), ...sessionInit }
+      }
 
       const marker = detectMarker(streamLines)
       // WHO ENDED THIS RUN — read off the CLI's own terminal frame, before anything judges
@@ -2175,7 +2231,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
   // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const { onLine, sessionOf } = attemptStream(deps, task, streamLines, now, {
+  const { onLine, sessionOf, initOf } = attemptStream(deps, task, streamLines, now, {
     accountName: spec.accountName,
     dataDir: config.dataDir,
   })
@@ -2189,6 +2245,15 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const attemptStartedAt = now()
   const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
   if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+
+  // WHAT THE SESSION ITSELF REPORTED joins what the mirror wrote, on ONE key. The mirror
+  // says what was PUT INTO the account; the init frame says what the session actually
+  // LOADED — and the gap between those two is precisely the class of defect this phase
+  // exists to close. Merged rather than replaced: neither half alone answers the question.
+  const sessionInit = initOf()
+  if (sessionInit) {
+    worktreeRow.personalLayer = { ...(worktreeRow.personalLayer || {}), ...sessionInit }
+  }
 
   // WHAT IT COST — off this attempt's own stream, before any gate decides its fate. A refused
   // forge attempt still spent the tokens; the forge lane booked nothing at all until now, so
