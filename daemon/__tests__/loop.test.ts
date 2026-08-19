@@ -71,6 +71,11 @@ import {
 } from '../src/queue/attempt-ledger.mjs'
 import { appendRedirect, readPendingRedirects } from '../src/runner/redirects.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
+// The mirror and the argument builder are used AS THEMSELVES in the wiring cases at the
+// foot of this file: a fake of either could not be poorer than the library, and a fake of
+// the parity guard would be exactly the hole those cases exist to close.
+import { mirrorPersonalLayer, PersonalLayerError } from '../src/runner/personal-layer.mjs'
+import { createBuildArgs } from '../src/runner/build-args.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
   const s = { now: start }
@@ -2753,5 +2758,506 @@ describe('тик гоняет обход копий и переживает ег
 
     expect(res.completed).toBe('R-81')
     expect(Object.hasOwn(res, 'worktreeSweep')).toBe(false)
+  })
+})
+
+/**
+ * ═════ ЛИЧНЫЙ СЛОЙ, НАШИ СЕРВЕРЫ И INIT-КАДР — ДО СПАВНА, В ARGV, В СТРОКЕ ПОПЫТКИ ═════
+ *
+ * Три вещи были посчитаны и никуда не доехали, и каждая по отдельности была зелёной.
+ * Зеркало личного слоя писало settings аккаунта — но его никто не звал, поэтому страж
+ * паритета отказывал КАЖДОМУ живому спавну словом «connectors». Файл mcp-конфига умел
+ * собираться — и не собирался ни разу, так что работник получал подключения, которых
+ * никто не выбирал, и не получал наших. Init-кадр сессии — единственное свидетельство
+ * того, что слой доехал (путь авто-памяти, число хуков основателя, отсутствие чужих
+ * подключений) — резался капом строки и не попадал в строку попытки вовсе.
+ *
+ * Поэтому кейсы ниже проверяют ПРОВОД, а не вычисление:
+ *   - зеркало вызвано ДО спавна (порядок утверждён явно) и с каталогом аккаунта работника;
+ *   - настоящий сборщик аргументов проходит стража и кладёт `--mcp-config` в argv — это же
+ *     и есть доказательство порядка с зубами: спавн до зеркала упал бы на паритете;
+ *   - ошибка зеркала — именованный отказ попытки, а не спавн «как получится»;
+ *   - `personalLayer` и `mcpConfig` доезжают до НАСТОЯЩЕГО леджера (allowlist пропускает);
+ *   - init-кадр читается и хранится целиком.
+ *
+ * Подделок «богаче библиотеки» здесь нет: зеркало в кейсах — настоящая функция продукта
+ * над временными каталогами, реестр отвечает ровно формой loadMcpRegistry.
+ */
+describe('личный слой и наши серверы доезжают до спавна и до строки попытки', () => {
+  const tmpDirs: string[] = []
+  const mkDir = (prefix: string) => {
+    const d = mkdtempSync(join(tmpdir(), prefix))
+    tmpDirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmpDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* a temp dir that will not go is not a test failure */
+      }
+    }
+  })
+
+  const ledgerSeam = (ledgerDir: string, over: any = {}) => ({
+    recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
+    readAttempts: (id: string) => readAttempts(ledgerDir, id),
+    attemptLog: ({ attemptId }: any) => createAttemptLogWriter({ dir: ledgerDir, attemptId }),
+    ...over,
+  })
+
+  /** Дом основателя: то, что зеркало обязано перенести (правила и хук), и то, что обязано отсечь. */
+  const founderHome = () => {
+    const dir = mkDir('sma-founder-')
+    writeFileSync(join(dir, 'CLAUDE.md'), '# правила основателя\nотвечай по делу\n')
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node journal.mjs log' }] }] },
+        permissions: { deny: ['Read(.env)', 'Read(.secrets)'], ask: [], allow: ['Bash(ls:*)'], defaultMode: 'auto' },
+        env: { MCP_TIMEOUT: '30000' },
+        model: 'opus',
+      }),
+    )
+    return dir
+  }
+
+  const codeResponses = (path = '/wt/BL-1', branch = 'wt/BL-1') => ({
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path, branch }) },
+    reverify: GREEN_REVERIFY,
+  })
+
+  const worker = (accountDir: string, over: any = {}) => ({
+    id: 'max-2',
+    lane: 'prod',
+    provider: 'claude',
+    enabled: true,
+    account: {
+      name: 'max-2',
+      configDir: accountDir,
+      oauthTokenEnv: 'SMA_MAX_2_TOKEN',
+      spendLogsDir: join(accountDir, 'spend'),
+    },
+    ...over,
+  })
+
+  it('зеркало вызвано ДО спавна — с каталогом аккаунта работника, его плагинами и правками профиля', async () => {
+    const order: string[] = []
+    const calls: any[] = []
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: {
+        workers: [
+          worker(accountDir, { plugins: ['skill-creator@official'], settingsOverrides: { autoMemoryEnabled: true } }),
+        ],
+      },
+      spawnWorker: makeSpawnWorker(order),
+      responses: codeResponses(),
+      deps: {
+        mirrorPersonalLayer: (opts: any) => {
+          order.push('mirror')
+          calls.push(opts)
+          return mirrorPersonalLayer({ ...opts, sourceDir })
+        },
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    expect(order.indexOf('mirror')).toBeGreaterThan(-1)
+    expect(order.indexOf('mirror'), 'зеркало обязано лечь ДО спавна — иначе работник стартует без слоя').toBeLessThan(
+      order.indexOf('spawn'),
+    )
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toEqual({
+      accountDir,
+      plugins: ['skill-creator@official'],
+      overrides: { autoMemoryEnabled: true },
+    })
+    // и слой ДЕЙСТВИТЕЛЬНО лежит в каталоге аккаунта к моменту спавна
+    expect(JSON.parse(readFileSync(join(accountDir, 'settings.json'), 'utf8')).disableClaudeAiConnectors).toBe(true)
+  })
+
+  it('та же полоса у «Создателя»: зеркало ложится до спавна и в форге', async () => {
+    const order: string[] = []
+    const calls: any[] = []
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue({
+      id: 'F-9',
+      source: 'roster',
+      title: 'выкуй агента',
+      lane: 'forge',
+      priority: 0,
+      forge: { kind: 'agent', description: 'читает и суммирует' },
+    } as any)
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir, { lane: 'forge' })] },
+      spawnWorker: makeSpawnWorker(order),
+      responses: { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-9', branch: 'wt/F-9' }) } },
+      deps: {
+        execGit: () => '',
+        mirrorPersonalLayer: (opts: any) => {
+          order.push('mirror')
+          calls.push(opts)
+          return mirrorPersonalLayer({ ...opts, sourceDir })
+        },
+      },
+    })
+
+    await tick(deps)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].accountDir).toBe(accountDir)
+    expect(order.indexOf('mirror')).toBeGreaterThan(-1)
+    expect(order.indexOf('mirror')).toBeLessThan(order.indexOf('spawn'))
+  })
+
+  it('НАСТОЯЩИЙ сборщик аргументов проходит стража и кладёт --mcp-config в argv (порядок с зубами)', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const dataDir = mkDir('sma-data-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const spawns: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: '/repo', pipeline: { enabled: true }, dataDir }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push(spec.args.slice())
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        // НАСТОЯЩИЙ сборщик: он читает settings аккаунта с диска и отказывает без зеркала.
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+        loadMcpRegistry: () => ({ servers: [], path: join(dataDir, 'mcp.json') }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed, 'спавн до зеркала упал бы на страже паритета словом connectors').toBe('BL-1')
+    expect(spawns).toHaveLength(1)
+    const at = spawns[0].indexOf('--mcp-config')
+    expect(at, 'путь mcp-конфига не доехал до argv').toBeGreaterThan(-1)
+    const mcpPath = spawns[0][at + 1]
+    expect(mcpPath).toBe(join(dataDir, 'mcp', 'BL-1-1', 'mcp-config.json'))
+    expect(JSON.parse(readFileSync(mcpPath, 'utf8'))).toEqual({ mcpServers: {} })
+
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.mcpConfig).toEqual({ path: mcpPath, servers: [] })
+  })
+
+  it('включённый сервер реестра лежит в файле и назван в строке попытки', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const dataDir = mkDir('sma-data-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)], dataDir },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+        loadMcpRegistry: () => ({
+          servers: [
+            { id: 's1', title: 'наш сервер', command: 'node', args: ['x.mjs'], enabled: true },
+            { id: 's2', title: 'выключенный', command: 'node', args: ['y.mjs'], enabled: false },
+          ],
+          path: '/r/mcp.json',
+        }),
+      },
+    })
+
+    await tick(deps)
+
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.mcpConfig.servers).toEqual(['s1'])
+    const written = JSON.parse(readFileSync(row.mcpConfig.path, 'utf8'))
+    expect(written).toEqual({ mcpServers: { s1: { type: 'stdio', command: 'node', args: ['x.mjs'] } } })
+  })
+
+  it('ошибка зеркала — именованный отказ попытки: спавна нет, причина названа, слоя в строке нет', async () => {
+    const accountDir = mkDir('sma-account-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const order: string[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      spawnWorker: makeSpawnWorker(order),
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: () => {
+          throw new PersonalLayerError('источник личного слоя не читается: /f/settings.json')
+        },
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toMatchObject({ taskId: 'BL-1', reason: 'personal_layer_error' })
+    expect(order).not.toContain('spawn')
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.outcome).toBe('failed')
+    expect(row.failureReason).toBe('personal_layer_error')
+    expect(Object.hasOwn(row, 'personalLayer'), 'отказ не может нести слой, которого не было').toBe(false)
+    const line = journalled.find((e: any) => e.reason === 'personal_layer_error')
+    expect(String(line.detail)).toContain('не читается')
+  })
+
+  it('строка попытки несёт РОВНО то, что вернуло зеркало — и у завершённой, и у отказанной попытки', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const answers: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: (opts: any) => {
+          const answer = mirrorPersonalLayer({ ...opts, sourceDir })
+          answers.push(answer)
+          return answer
+        },
+      },
+    })
+
+    await tick(deps)
+    const done = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(done.outcome).toBe('completed')
+    expect(answers).toHaveLength(1)
+    expect(done.personalLayer, 'строка попытки без слоя — это и есть «вычислено и не подключено»').toBeTruthy()
+    expect(done.personalLayer).toMatchObject(answers[0])
+
+    // …и та же строка у красной попытки: слой доехал, а работа — нет
+    await adapter.enqueue(backlogTask({ id: 'BL-2' }))
+    const failing = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-2', branch: 'wt/BL-2' }) },
+        reverify: { code: 0, stdout: '{}' },
+      },
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        execGit: () => '',
+        mirrorPersonalLayer: (opts: any) => {
+          const answer = mirrorPersonalLayer({ ...opts, sourceDir })
+          answers.push(answer)
+          return answer
+        },
+      },
+    })
+    await tick(failing.deps)
+    const red = readAttempts(ledgerDir, 'BL-2')[0]
+    expect(red.outcome).toBe('failed')
+    expect(answers).toHaveLength(2)
+    expect(red.personalLayer).toBeTruthy()
+    expect(red.personalLayer).toMatchObject(answers[1])
+  })
+
+  it('демон без зеркала работает как прежде — ни слоя в строке, ни пути mcp в argv', async () => {
+    const ledgerDir = mkDir('sma-ledger-')
+    const spawns: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: codeResponses(),
+      spawnWorker: (spec: any) => {
+        spawns.push(spec.args.slice())
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      deps: { ledger: ledgerSeam(ledgerDir) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(Object.hasOwn(row, 'personalLayer')).toBe(false)
+    expect(Object.hasOwn(row, 'mcpConfig')).toBe(false)
+    expect(spawns[0]).not.toContain('--mcp-config')
+  })
+
+  // ── INIT-КАДР: единственное свидетельство того, что слой доехал ──
+  const AUTO_MEMORY = 'C:\\Users\\x\\.sma-accounts\\local-1\\projects\\C--projects-sma\\memory\\'
+  const INIT_FRAME = JSON.stringify({
+    type: 'system',
+    subtype: 'init',
+    session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    cwd: '/wt/BL-1',
+    tools: ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'],
+    mcp_servers: [],
+    memory_paths: { auto: AUTO_MEMORY },
+    permissionMode: 'default',
+    plugins: [],
+    // настоящий init-кадр велик: встроенные навыки с описаниями — так он и переваливает
+    // за кап строки, ради которого кадру дан отдельный размер
+    skills: Array.from({ length: 200 }, (_, i) => `встроенный-навык-номер-${i}-с-описанием`),
+  })
+  const HOOK_FRAME = JSON.stringify({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart:startup' })
+  const RESULT_FRAME = JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    total_cost_usd: 0.1,
+  })
+
+  it('init-кадр доезжает до строки попытки: путь авто-памяти, хуки, чужие подключения', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      responses: codeResponses(),
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [INIT_FRAME, HOOK_FRAME, HOOK_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME],
+      }),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.personalLayer.autoMemoryDir).toBe(AUTO_MEMORY)
+    expect(row.personalLayer.initHooks, 'хуки основателя сработали — это и есть доказательство слоя').toBe(2)
+    expect(row.personalLayer.initMcpServers).toEqual([])
+    expect(row.personalLayer.initClaudeAiTools, 'ни одного чужого подключения в сессии').toBe(0)
+    expect(row.personalLayer.initPlugins).toEqual([])
+    expect(row.personalLayer.permissionMode).toBe('default')
+    // и то, что вернуло зеркало, никуда не делось — init ДОПОЛНЯЕТ слой, а не заменяет
+    expect(row.personalLayer.connectors).toBe('disabled')
+    expect(row.personalLayer.claudeMd).not.toBe('absent')
+  })
+
+  it('чужие подключения в init-кадре сосчитаны честно', async () => {
+    const accountDir = mkDir('sma-account-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const sourceDir = founderHome()
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const dirty = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      tools: ['Read', 'mcp__claude_ai_Gmail', 'mcp__claude_ai_Google_Drive'],
+      mcp_servers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }],
+      memory_paths: { auto: AUTO_MEMORY },
+      permissionMode: 'default',
+      plugins: ['skill-creator@official'],
+    })
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      responses: codeResponses(),
+      spawnWorker: makeSpawnWorker(undefined, { lines: [dirty, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.personalLayer.autoMemoryDir).toBe(AUTO_MEMORY)
+    expect(row.personalLayer.initClaudeAiTools).toBe(2)
+    expect(row.personalLayer.initMcpServers).toEqual(['claude.ai Gmail'])
+    expect(row.personalLayer.initPlugins).toEqual(['skill-creator@official'])
+  })
+
+  it('init и result помечены видом кадра и хранятся ЦЕЛИКОМ — обрезанный init ничего не доказывает', async () => {
+    const ledgerDir = mkDir('sma-ledger-')
+    const written: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: codeResponses(),
+      spawnWorker: makeSpawnWorker(undefined, { lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      deps: {
+        ledger: {
+          recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
+          readAttempts: (id: string) => readAttempts(ledgerDir, id),
+          attemptLog: () => ({ append: (e: any) => written.push(e) }),
+        },
+      },
+    })
+
+    await tick(deps)
+
+    expect(INIT_FRAME.length).toBeGreaterThan(5000)
+    expect(written.map((e: any) => e.frameKind)).toEqual(['init', undefined, 'result'])
+
+    // …и через НАСТОЯЩИЙ писатель стенограммы кадр доезжает нерезаным
+    const ledgerDir2 = mkDir('sma-ledger-')
+    const adapter2 = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter2.enqueue(backlogTask({ id: 'BL-7' }))
+    const { deps: deps2 } = makeDeps({
+      adapter: adapter2,
+      clockObj: c,
+      responses: codeResponses('/wt/BL-7', 'wt/BL-7'),
+      spawnWorker: makeSpawnWorker(undefined, { lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      deps: { ledger: ledgerSeam(ledgerDir2) },
+    })
+    await tick(deps2)
+    const log = readAttemptLog({ dir: ledgerDir2, attemptId: 'BL-7#1' })
+    expect(log.entries[0].line.length).toBe(INIT_FRAME.length)
   })
 })

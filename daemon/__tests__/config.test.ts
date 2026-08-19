@@ -33,6 +33,13 @@
  * — the token value appears in NO serialization of the view.
  *   - Test 14: renaming a project changes the name only — the id is the key tasks
  *     reference and never moves.
+ *
+ * Personal-layer additions (what a worker profile may say about its own settings file):
+ *   - Test 15: a well-formed plugin list and an allow-listed override survive the load.
+ *   - Test 16: a plugin reference that is not name@marketplace is refused, by worker name.
+ *   - Test 17: an override key outside the allow-list is REFUSED, not silently dropped.
+ *   - Test 18: personalLayer.sourceDir is a string or nothing.
+ *   - Test 19: REGRESSION — a config carrying none of the three keys still loads.
  */
 
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
@@ -1225,5 +1232,95 @@ describe('which tree the daemon reads as THE PROJECT', () => {
     expect((await call('POST', '/api/project/select', { id: 'no-folder' })).statusCode).toBe(200)
     expect(park.front.deps.phaseCycleDir()).toBe(served)
     expect(park.tickDeps.projectDir()).toBe(served)
+  })
+})
+
+// ── the personal layer: what a worker profile may state about its own settings ──
+// The mirror writes a worker's settings file; these three keys are everything a profile
+// is allowed to say about it. Each one is refused on LOAD rather than dropped at write
+// time — an operator who wrote a key that never took effect would never learn it.
+
+describe('worker profile — plugins, settings overrides and the personal-layer source', () => {
+  /** Seed the default config, push one extra worker carrying `extra`, write it back. */
+  function seedWorker(extra: any) {
+    const path = resolveConfigPath({ env: {}, homedir })
+    loadConfig({ env: {}, homedir })
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    raw.workers.push({
+      id: 'w-layer',
+      lane: 'research',
+      provider: 'claude',
+      account: { name: 'max-1', configDir: '~/.sma-accounts/max-1' },
+      ...extra,
+    })
+    const fs = require('node:fs')
+    fs.writeFileSync(path, JSON.stringify(raw, null, 2))
+    return path
+  }
+
+  /** Seed the default config and put a top-level block on it. */
+  function seedTop(block: any) {
+    const path = resolveConfigPath({ env: {}, homedir })
+    loadConfig({ env: {}, homedir })
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    Object.assign(raw, block)
+    const fs = require('node:fs')
+    fs.writeFileSync(path, JSON.stringify(raw, null, 2))
+  }
+
+  it('accepts a well-formed plugin list and an allow-listed override, and carries them through', () => {
+    seedWorker({
+      plugins: ['code-review@claude-plugins-official', 'context7@claude-plugins-official'],
+      settingsOverrides: { autoMemoryDirectory: '/abs/memory' },
+    })
+    const cfg = loadConfig({ env: {}, homedir })
+    const w = cfg.workers.find((x: any) => x.id === 'w-layer')
+    expect(w.plugins).toEqual(['code-review@claude-plugins-official', 'context7@claude-plugins-official'])
+    expect(w.settingsOverrides).toEqual({ autoMemoryDirectory: '/abs/memory' })
+  })
+
+  it('refuses a plugin reference that is not name@marketplace, naming the worker', () => {
+    seedWorker({ plugins: ['no-marketplace-here'] })
+    expect(() => loadConfig({ env: {}, homedir })).toThrow(InvalidWorkerProfileError)
+    try {
+      loadConfig({ env: {}, homedir })
+    } catch (err: any) {
+      expect(String(err.message)).toContain('w-layer')
+    }
+  })
+
+  it('refuses a plugin list that is not a list at all', () => {
+    seedWorker({ plugins: 'code-review@claude-plugins-official' })
+    expect(() => loadConfig({ env: {}, homedir })).toThrow(InvalidWorkerProfileError)
+  })
+
+  it('refuses an override key outside the allow-list instead of dropping it silently', () => {
+    seedWorker({ settingsOverrides: { env: { ANY: '1' } } })
+    expect(() => loadConfig({ env: {}, homedir })).toThrow(InvalidWorkerProfileError)
+    try {
+      loadConfig({ env: {}, homedir })
+    } catch (err: any) {
+      expect(String(err.message)).toContain('env')
+    }
+  })
+
+  it('refuses settings overrides that are not an object', () => {
+    seedWorker({ settingsOverrides: ['hooks'] })
+    expect(() => loadConfig({ env: {}, homedir })).toThrow(InvalidWorkerProfileError)
+  })
+
+  it('accepts a personal-layer source path and refuses a non-string one', () => {
+    seedTop({ personalLayer: { sourceDir: '/abs/some/config/dir' } })
+    expect(loadConfig({ env: {}, homedir }).personalLayer.sourceDir).toBe('/abs/some/config/dir')
+
+    seedTop({ personalLayer: { sourceDir: 42 } })
+    expect(() => loadConfig({ env: {}, homedir })).toThrow(InvalidWorkerProfileError)
+  })
+
+  it('REGRESSION — a config carrying none of the three keys still loads (the additive-field law)', () => {
+    const cfg = loadConfig({ env: {}, homedir })
+    expect(cfg.personalLayer).toBeUndefined()
+    expect(cfg.workers[0].plugins).toBeUndefined()
+    expect(cfg.workers[0].settingsOverrides).toBeUndefined()
   })
 })

@@ -51,6 +51,8 @@ import {
   attemptDigest,
   attemptRoles,
   ATTEMPT_LOG_LINE_CAP,
+  ATTEMPT_LOG_FRAME_CAP,
+  normalizeAttemptLogEntry,
   ATTEMPT_LOG_TAIL_DEFAULT,
   ATTEMPT_LOG_TAIL_MAX,
   ATTEMPT_DIGEST_LIST_CAP,
@@ -567,7 +569,7 @@ const NEW_STAMP_KEYS = [
 // provenance flag, so nothing older moves.
 const COPY_KEYS = ['base', 'branch', 'worktreePath', 'materialized', 'provisionMs', 'cleanup']
 
-describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, six about the copy, every old one kept', () => {
+describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the personal layer, every old one kept', () => {
   it('keeps every pre-existing member, in place', () => {
     const before = [
       'taskId',
@@ -585,16 +587,19 @@ describe('ALLOWED_ATTEMPT_KEYS — seven stamp fields, one provenance flag, six 
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(24)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(26)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(24) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(26) // no duplicate name
   })
 
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
-  it('carries the six copy fields as the tail, in order, with the older eighteen unmoved', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-6)).toEqual(COPY_KEYS)
+  it('carries the six copy fields, then the two about the session the worker was given', () => {
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-8, -2)).toEqual(COPY_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
+    // What the account actually held when this attempt ran, and which servers it was given.
+    // Both are digests of a decision, not the decision's contents — the row stays a record.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-2)).toEqual(['personalLayer', 'mcpConfig'])
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a
@@ -1066,6 +1071,35 @@ describe('the live attempt log — every line, appended as it arrives', () => {
     expect(entries[0].line).toBe('<script>alert(1)</script> & <b>bold</b>') // NOT escaped, NOT stripped
     expect(entries[1].line).toBe('a b c')
     expect(entries[2].line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+  })
+
+  // THE ONE LINE THAT MUST NOT BE CUT. The first frame a session emits lists the tools, the
+  // servers and the memory it actually got, and the last one says how it ended — those two are
+  // the receipt every other claim about the run is checked against. A cap sized for a sentence
+  // of worker chatter silently truncated exactly them, so the proof of a session was the one
+  // thing the transcript could not hold.
+  it('an init or a result FRAME is kept whole; every ordinary line keeps the old cap', () => {
+    const attemptId = 'BL-9#8'
+    const w = createAttemptLogWriter({ dir, attemptId })
+    w.append({ line: 'i'.repeat(ATTEMPT_LOG_FRAME_CAP + 500), frameKind: 'init' })
+    w.append({ line: 'r'.repeat(ATTEMPT_LOG_LINE_CAP + 500), frameKind: 'result' })
+    w.append({ line: 'o'.repeat(ATTEMPT_LOG_LINE_CAP + 500) })
+
+    const { entries } = readAttemptLog({ dir, attemptId })
+    expect(ATTEMPT_LOG_FRAME_CAP).toBe(65536)
+    expect(ATTEMPT_LOG_LINE_CAP).toBe(4096)
+    expect(entries[0].line).toHaveLength(ATTEMPT_LOG_FRAME_CAP) // cut by the frame cap, not by 4096
+    expect(entries[1].line).toHaveLength(ATTEMPT_LOG_LINE_CAP + 500) // well under it — untouched
+    expect(entries[2].line).toHaveLength(ATTEMPT_LOG_LINE_CAP) // an ordinary line is a line
+
+    // the marker routes the cap; it is not a field of the record a reader has to know about
+    expect(entries[0].frameKind).toBeUndefined()
+  })
+
+  it('only the two named markers widen the cap — anything else is an ordinary line', () => {
+    for (const frameKind of ['chatter', '', 'INIT', undefined]) {
+      expect(normalizeAttemptLogEntry({ line: 'z'.repeat(9000), frameKind }).line).toHaveLength(ATTEMPT_LOG_LINE_CAP)
+    }
   })
 
   it('the transcript is PER ATTEMPT: a retry writes its own file and cannot overwrite the first', () => {

@@ -771,6 +771,22 @@ async function handleTask({ res, params, config, deps }) {
     materialized: Array.isArray(a.materialized) ? a.materialized : null,
     provisionMs: Number.isFinite(a.provisionMs) ? a.provisionMs : null,
     cleanup: a.cleanup && typeof a.cleanup === 'object' ? a.cleanup : null,
+    // ═══ ПОД КАКИМ СЛОЕМ ЭТО РАБОТАЛО ════════════════════════════════════════════
+    //
+    // Что зеркало положило в аккаунт работника перед спавном (CLAUDE.md, хуки, сужающие
+    // правила, плагины, выключенные подключения claude.ai) — и что сессия ДЕЙСТВИТЕЛЬНО
+    // загрузила, дочитанное из её init-кадра: авто-память проекта, хуки старта, чужие
+    // подключения. Рядом — файл MCP, с которым её запускали, и список серверов в нём.
+    // Тик пишет оба объекта в строку попытки с самого начала фазы, и до этой строки их
+    // не видел никто: вычислено и записано — не то же самое, что предъявлено. Человек,
+    // который не может увидеть слой, не может и заметить, что слой не тот.
+    //
+    // Отданы КАК ЕСТЬ и явным выбором, как всё выше: строка леджера не имеет права
+    // протащить в тело двери ключ, который дверь не назвала. Слова к причине провала
+    // `personal_layer_error` живут в одном месте — REASON_LABELS очереди, откуда их
+    // читает `reasonLabel` выше; второго словаря здесь заводить нельзя.
+    personalLayer: a.personalLayer ?? null,
+    mcpConfig: a.mcpConfig ?? null,
   }))
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
@@ -802,6 +818,11 @@ async function handleTask({ res, params, config, deps }) {
       materialized: null,
       provisionMs: null,
       cleanup: null,
+      // Слой и файл MCP пишутся в строку попытки, когда попытка ЗАКАНЧИВАЕТСЯ, поэтому у
+      // идущей их ещё нет. Названы нулями, а не опущены: карточка читает одну форму для
+      // каждой записи, и «этого ключа здесь нет» — то, с чего поверхность начинает гадать.
+      personalLayer: null,
+      mcpConfig: null,
     })
   }
 
