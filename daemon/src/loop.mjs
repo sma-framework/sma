@@ -104,7 +104,7 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.m
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
-import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash } from './queue/capability-envelope.mjs'
+import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
@@ -2550,12 +2550,17 @@ export async function tick(deps = {}) {
       // The envelope decides what this lane may touch; here is where that decision finally
       // reaches the process that has to obey it. Before this, the grant was hashed into the
       // attempt row and thrown away — every worker spawned read-only.
+      //
+      // BOTH HALVES OF THE ENVELOPE COME FROM ONE FUNCTION. What it granted and what it
+      // REFUSED are assembled by `envelopeSpawnOptions` here and at the other spawn point
+      // below, and by nothing else. Two field lists kept equal by discipline is exactly how
+      // this codebase once handed the grant to one lane and withheld it from the other; one
+      // function makes that divergence impossible instead of unlikely, and the suite calls
+      // both points with one envelope and compares the argument arrays they produce.
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
-        ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
-          ? { allowedTools: envelope.allowedTools }
-          : {}),
+        ...envelopeSpawnOptions(envelope),
       })
       // WHAT THE ATTEMPT WAS GIVEN BEFORE IT SPOKE — the role file and the skills of the
       // routed worker. It is REMEMBERED here and written into the memory layer at the end,
@@ -3192,12 +3197,14 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // inside the child, so the «Создатель» could not write the very draft file the exit gate
   // then failed it for not committing: «ошибка работника», with no way to see why.
   const kind = task.forge && task.forge.kind
+  // THE SAME ONE FUNCTION the code path above calls — not a second list of fields that
+  // happens to say the same thing today. The last time these two points each carried their
+  // own copy of this decision, one of them was updated and this one was not, and the lane
+  // spawned read-only for weeks while the screen blamed the worker.
   const spec = buildArgs(task, route, {
     ...SPAWN_OPTIONS,
     ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
-    ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
-      ? { allowedTools: envelope.allowedTools }
-      : {}),
+    ...envelopeSpawnOptions(envelope),
   })
   spec.prompt = buildForgePrompt({
     kind,
