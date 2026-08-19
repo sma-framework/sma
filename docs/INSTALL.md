@@ -160,7 +160,10 @@ else opened — while repaints driven by events only ever reach the window where
 conversation is happening. Without a timer nothing would ask a quiet window to look
 again. Sixty seconds is four times the fast cache TTL, so a tick does not recompute
 values that cannot have changed. The price, stated plainly rather than in small print:
-once a minute each open window spawns this process, and your own wrapped command with it.
+every refresh spawns this process and your own wrapped command with it, so an idle
+window costs about one spawn a minute. Measured in a window that was working; a
+silent window was not observed, so the interval is what the entry asks for rather
+than a repaint anyone watched.
 
 If the project already has a `.gitignore`, the installer appends a `.sma/`
 line to it (unless one is already there). It does not create the file — if

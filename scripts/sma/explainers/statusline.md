@@ -9,7 +9,7 @@ Where each axis comes from: the pulse and the claim come from this window's own 
 
 If you already had a status line command, it is not lost. Yours runs first and its output is printed first, the SMA segment second; uninstall gives your command back byte for byte, or removes the key entirely if the install was the one that added it.
 
-Two costs, named rather than hidden. The entry carries a 60-second refresh, because repaints driven by events only ever reach the window where the conversation is happening — so once a minute each open window spawns this command, and your own wrapped command with it. And the two expensive axes are cached: the window percentage and the open-gate count for 15 seconds, the predictions scan for 2 minutes. A number that lags a few seconds behind is the cache doing its job, not a fault.
+Two costs, named rather than hidden. The entry carries a 60-second refresh, because repaints driven by events only ever reach the window where the conversation is happening — so every refresh spawns this command and your own wrapped command with it — about one spawn a minute per open window. That interval is what the entry asks for; a silent window repainting on it was not observed, only a working one. And the two expensive axes are cached: the window percentage and the open-gate count for 15 seconds, the predictions scan for 2 minutes. A number that lags a few seconds behind is the cache doing its job, not a fault.
 
 Alongside it, the attention pulse marks whether a window is working or waiting for a human, so idle is derived rather than guessed. When a window has been waiting for you, an optional webhook can nudge you.
 
@@ -26,7 +26,7 @@ Example: you glance at the status line and see `sma ▸working · claim api-rout
 
 Если у Вас уже была своя команда статусной строки, она не теряется. Ваша запускается первой, её вывод печатается первым, сегмент SMA вторым; удаление возвращает Вашу команду байт-в-байт или убирает ключ совсем, если это установка его и добавила.
 
-Две цены названы, а не спрятаны. Запись несёт обновление раз в 60 секунд, потому что перерисовка по событию доходит только до того окна, где идёт разговор: значит, раз в минуту каждое открытое окно запускает эту команду, а вместе с ней и Вашу обёрнутую. И две дорогие оси кэшируются: процент окна и счёт открытых гейтов на 15 секунд, обход предсказаний на 2 минуты. Число, отставшее на несколько секунд, это работа кэша, а не поломка.
+Две цены названы, а не спрятаны. Запись несёт обновление раз в 60 секунд, потому что перерисовка по событию доходит только до того окна, где идёт разговор: значит, каждое обновление запускает эту команду, а вместе с ней и Вашу обёрнутую: примерно один запуск в минуту на открытое окно. Этот срок задан записью; молчащее окно, перерисованное по нему, никто не наблюдал, наблюдали только работающее. И две дорогие оси кэшируются: процент окна и счёт открытых гейтов на 15 секунд, обход предсказаний на 2 минуты. Число, отставшее на несколько секунд, это работа кэша, а не поломка.
 
 Рядом с ним пульс внимания отмечает, работает окно или ждёт человека, поэтому простой выводится, а не угадывается. Когда окно ждёт Вас, необязательный вебхук может Вас подтолкнуть.
 
