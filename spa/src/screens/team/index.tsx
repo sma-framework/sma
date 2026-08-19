@@ -15,9 +15,17 @@ import { WorkerCard } from './WorkerCard'
  * task in hand would be a second opinion, and two opinions about a worker is how a person
  * stops believing either.
  *
- * Everything else on the screen comes out of the SAME one reading: the task in hand is a
- * row the window already holds, the counts are the finished rows it already holds. Nothing
- * here asks the daemon a question of its own.
+ * Everything else on the screen comes out of the SAME one reading, and NOTHING here asks the
+ * daemon a question of its own: the task in hand is a row the window already holds, and the two
+ * figures under a worker's name arrive counted — `workers[].stats30d`, «сделано / не получилось»
+ * over the last 30 days, measured by the daemon out of the attempt ledger.
+ *
+ * They used to be tallied HERE, by walking `data.done` — the finished rows the reading happened
+ * to still be carrying. That list is capped and it is about «сделано за ночь», so the numbers
+ * moved when the list moved and a worker whose work had scrolled out of it read as one who had
+ * done nothing. A statistic is a count over a stated period, not over whatever a poll returned;
+ * the period now rides in the payload and the screen only prints it, with «за 30 дней» said in
+ * words beside the figures.
  */
 
 /** The lines of work, in the words the rest of the product uses for them. */
@@ -86,7 +94,6 @@ function PathStrip({ workers }: { workers: WorkerRow[] }) {
 export function Screen() {
   const state = useStateQuery()
   const data = state.data
-  const activeProject = data?.activeProject ?? null
   const workers = data?.workers ?? []
 
   /** The title of a task in hand — looked up in the rows the window already has. */
@@ -95,20 +102,6 @@ export function Screen() {
     for (const row of data?.queue ?? []) byId.set(row.id, row.title ?? 'Без названия')
     return byId
   }, [data])
-
-  /** What each worker has behind them in the rows the reading still carries. */
-  const tally = useMemo(() => {
-    const out = new Map<string, { done: number; failed: number }>()
-    for (const row of data?.done ?? []) {
-      if (activeProject && row.project !== activeProject) continue
-      if (!row.workerId) continue
-      const cur = out.get(row.workerId) ?? { done: 0, failed: 0 }
-      if (row.failed) cur.failed += 1
-      else cur.done += 1
-      out.set(row.workerId, cur)
-    }
-    return out
-  }, [data, activeProject])
 
   const openTask = (taskId: string) => {
     const detail: OpenScreenDetail = { screen: 'task-card', taskId }
@@ -152,15 +145,13 @@ export function Screen() {
         <div className="min-h-0 flex-1 overflow-y-auto px-7 pt-6 pb-7">
           <div className="grid min-w-[1160px] grid-cols-4 gap-[18px]">
             {workers.map((w) => {
-              const counts = tally.get(w.id) ?? { done: 0, failed: 0 }
               return (
                 <WorkerCard
                   key={w.id}
                   worker={w}
                   laneLabel={w.lane ? (LANE_LABEL[w.lane] ?? w.lane) : null}
                   taskTitle={w.taskId ? (titleOf.get(w.taskId) ?? null) : null}
-                  doneCount={counts.done}
-                  failedCount={counts.failed}
+                  stats={w.stats30d ?? null}
                   onOpenTask={openTask}
                 />
               )
