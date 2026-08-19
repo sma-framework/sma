@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
-import { tick } from '../src/loop.mjs'
+import { tick, rulesInCopy } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
@@ -406,5 +406,53 @@ describe('пояса, на которые опирается запись', () =
     expect(ref.kind).toBe('ledger-ref')
     expect(ref.unreadable).toBe(true)
     expect(ref.sha256).toBe(null)
+  })
+})
+
+describe('the rules receipt says which of two different things happened', () => {
+  // A furnishing list carries one entry per thing the provisioning verb was asked about, and an
+  // entry whose mode is 'absent' is the verb reporting that there was NOTHING there to take.
+  // Reading such an entry as evidence of a carry states the opposite of what it says.
+  const io = (present: boolean) => ({ existsSync: () => present })
+
+  it('an entry that says nothing was carried is not evidence that something was', () => {
+    const list = [{ path: 'CLAUDE.md', mode: 'absent', files: 0 }]
+    expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('tracked')
+  })
+
+  it('a copied rules directory is a carry, and says so', () => {
+    const list = [{ path: '.claude/', mode: 'copy', files: 28 }]
+    expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('materialized')
+  })
+
+  it('a copied rules file is a carry too', () => {
+    const list = [{ path: 'CLAUDE.md', mode: 'copy', files: 1 }]
+    expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('materialized')
+  })
+
+  it('a linked path is the project own tree, not something carried into the copy', () => {
+    const list = [{ path: '.claude', mode: 'link', target: '/elsewhere/.claude' }]
+    expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('tracked')
+  })
+
+  it('an unrelated carry does not make the rules look carried', () => {
+    const list = [{ path: 'node_modules', mode: 'copy', files: 900 }]
+    expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('tracked')
+  })
+
+  it('no rules in the copy at all is absent, whatever the list says', () => {
+    const list = [{ path: '.claude/', mode: 'copy', files: 28 }]
+    expect(rulesInCopy(io(false), '/copy', { materialized: list }).claudeMd).toBe('absent')
+  })
+
+  it('the real shape from a live attempt: root file absent, rules directory copied', () => {
+    const list = [
+      { path: '.claude/', mode: 'copy', files: 28, bytes: 43773 },
+      { path: 'CLAUDE.md', mode: 'absent', files: 0 },
+      { path: '.claude/settings.local.json', mode: 'absent', files: 0 },
+      { path: 'node_modules', mode: 'link', target: '/elsewhere' },
+    ]
+    // materialized — but because the directory was copied, not because an 'absent' line matched.
+    expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('materialized')
   })
 })
