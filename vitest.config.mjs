@@ -59,6 +59,10 @@ const SERIAL_SUITES = [
   // proved to be a SUBSET of the live ones. A fake that knows more than the library is how a
   // green suite once covered a call to a method that did not exist.
   'daemon/__tests__/worktree-cleanup.test.ts',
+  // Три одноразовых репозитория с настоящими копиями и восемь запусков CLI: доехал ли урок
+  // из копии в корпус — вопрос, на который отвечает настоящий конвейер записи, а подделка
+  // отвечала бы на него из того самого допущения, которое проверяется.
+  'daemon/__tests__/memory-harvest.test.ts',
 ]
 
 /**
