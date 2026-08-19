@@ -394,6 +394,81 @@ Seven entries across those six events, and that is the entire integration surfac
 
 Three limits, named rather than glossed over. The **spawn tool is matched under both names it has carried** (`Task|Agent`): it was renamed between agent versions, and a matcher that knows only one name installs cleanly, fires, and does nothing — matching both is what survives the rename in either direction. **`SessionEnd` fires on every way a session can end** — the window closed, `/clear`, a logout — because the claims want handing back in all three; a `/clear` simply gets a new session id and takes its claims again. And the **`PreCompact` capsule depends on your agent version announcing that event**: where it does not, the command exits without an error and without a capsule, and the entry sits installed until an upgrade makes it live. One more thing not promised: if another tool in your project also rewrites the spawn call's input, the agent keeps whichever hook finished last — SMA does not claim compatibility with a second such modifier.
 
+## Terminal parity, receipt by receipt
+
+«A worker session is the same session you get in your own terminal» is a claim that is worthless
+when asserted and load-bearing when proven. It is never proven here by prose, by a green suite or
+by the daemon's own word — it is proven by the artifacts one real attempt left behind.
+
+### The run directory
+
+Every attempt writes `<project>/.sma/runs/<attemptId>/` into the connected project — four files:
+
+| File | What it holds |
+| --- | --- |
+| `run.json` | what the attempt was GIVEN: the command line, the NAMES of the environment variables it was handed, the capability envelope with its digest, the copy it ran in, the personal layer, the mcp config, the state of the project's rules in the copy — and what the session's own opening frame said back |
+| `guards.jsonl` | one line per hook the CLI started and answered, and one per tool a guard refused. Always written, even empty: zero lines is the statement «no hook spoke and nothing was refused», which is a finding, where a missing file would only say «nobody wrote one» |
+| `transcript.jsonl` | a REFERENCE to the attempt's transcript in the ledger — its path, its digest, its line count and how many rows the ledger's line cap cut short. Never a second copy of the stream: a copy would double the disk for nothing and drift the moment either half were touched |
+| `receipt.json` | how the try ENDED: the outcome, the gate that decided it, the verdict, the lesson, the memory layer as the stream observed it — and the parity verdict itself, five receipts beside their summary |
+
+Secrets are absent by construction rather than by filtering: `run.json` carries the NAMES of the
+environment variables and never their values, and the prompt is reduced to a digest and a size. The
+redaction pass over the finished record is the second belt, not the first.
+
+The directory is **not for git** — a `.sma/` inside a project is local evidence, not history. The
+project keeps the newest **200** attempts and sweeps the rest, and every removal writes one line to
+the operator's log naming what went: «it can be rolled back» and «it is visible what was removed»
+are two different guarantees, and a silent sweep only ever provides the first.
+
+### One command
+
+```
+node tools/terminal-parity-check.mjs [<attemptId>] [--attempt <id>] [--project <dir>]
+                                     [--dir <runDir>] [--config <path>] [--ledger <path>] [--json]
+```
+
+- with no identifier it reads the **latest** attempt of the project by `run.json.startedAt`, falling
+  back to the directory's own modification time; an empty `.sma/runs` is said out loud, with the path
+  that was looked at, instead of being reported as a quiet zero;
+- `--project` names the project root (the current directory by default); `--dir` points straight at
+  one run directory; the positional id and `--attempt` are the same thing, and giving both is an error;
+- `--config` lets the rights receipt name the worker the attempt was routed to; `--ledger` finds the
+  transcript when the ledger has moved;
+- `--json` prints the same verdict as an object with exactly five receipts, and the bare number stays
+  the last line in either mode.
+
+Exit codes: **0** at five out of five, **1** for an incomplete set or a project with no runs at all,
+**2** for a misused command line. The last line of the output is always the bare count, 0–5, which is
+what makes the command receipt-hashable and scorable.
+
+### The five, and the boundary of each
+
+| Receipt | Fulfilled when | What it does NOT prove |
+| --- | --- | --- |
+| `hooks` | at least one hook ANSWERED inside this run's own time window — the window is what makes it a receipt of THIS attempt rather than of the machine's history | that what the guard watched was refused correctly. A start with no answer is not «probably fine»: it is written down as a failure that says so, because a hook launched and never replied is exactly the shape of a guard that was not guarding |
+| `memory` | the corpus was actually READ: the index came back, or the search was called | that the session used what it read. The fact is counted by the daemon out of the live stream, where a request and its result are still paired — a read that FAILED looks exactly like a read that succeeded to anybody parsing requests alone, and it was scored as success for a year |
+| `rules` | the project's instruction file reached the working copy, materialized into it or tracked by it | that anyone opened it. `absent` is a failure and not a footnote: a worker that never saw the project's rules is not running under them |
+| `skills` | the copy carries skills or agents | anything about a project that has neither — that earns an honest **n/a** with the reason printed, never a pass. «Not applicable» is a fact about the project; «passed» would be a fact about the run that nobody established |
+| `rights` | never `ok`. A match between the envelope and the arguments is **`warn`**, with the limit named in the same breath | that the whole envelope reached the process. Only `allowedTools` rides the command line; the actions reserved for a human are enforced after the fact rather than before it, and a green light here would certify a guarantee this product does not yet give |
+
+**Missing data is a failure that names what was missing** — never a default pass, and never a free
+n/a. That rule is the whole reason the check exists: the cheapest route to five out of five is to
+check nothing, and a checker that reads an empty directory as an unproblematic one is
+indistinguishable from a checker that lies. `n/a` is available for exactly one situation — a project
+that demonstrably has no skills — and it carries its reason in the same line.
+
+### The same verdict, without running anything
+
+The daemon computes the five from the **same module** the command imports, over the same four files
+read back from disk, and writes the result into `receipt.json` and onto the attempt row — so the task
+card shows the score, the names of the receipts that did not pass and the path to the directory,
+without anybody running a command first. This is not a second opinion: a second implementation of
+«did the hooks fire» would agree on the day it was written and drift on every day after, and the
+first person to notice would be the one holding a green report over a red run. The suite compares
+the two verdicts receipt by receipt, so a divergence is a red test instead of a discovery. An
+attempt whose verdict could not be computed carries `null` — «nobody has checked», which is not the
+same statement as «checked and fine».
+
 ## The V5 series, release by release
 
 The README carries only what is newest. The rest of the V5 line lives here, newest first, in the
