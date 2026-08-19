@@ -1394,12 +1394,90 @@ async function cmdDocAudit({ flags, dirs }) {
 }
 
 /**
+ * rebuildLexicalIndex — the ONE place the derived lexical index gets written.
+ *
+ * Three callers want the same work: the index verb a person types by hand, the
+ * regeneration that rewrites the corpus index, and the delivery point that finds the
+ * derived index no longer describes the corpus. Three copies of «import the module,
+ * build, decide what a failure means» drift apart on the first change to any one of
+ * them, so there is one copy — and the CALLER decides what a failure means, because
+ * that is exactly where the three differ: a build that genuinely failed IS an error for
+ * the verb a person typed, and must never take down a rebuild nobody asked for.
+ *
+ * An engine this machine does not have is NOT a failure. The builder reports it and
+ * returns; `available` says so separately from `ok`.
+ */
+async function rebuildLexicalIndex({ corpusDir, dbPath }) {
+  const { buildLexicalIndex, LEXICAL_ENGINES } = await import('./lib/fts-index.mjs')
+  try {
+    const built = buildLexicalIndex({ corpusDir, dbPath })
+    return { ok: true, built, available: built.engine !== LEXICAL_ENGINES.UNAVAILABLE, error: null }
+  } catch (err) {
+    return { ok: false, built: null, available: false, error: err }
+  }
+}
+
+/**
+ * healLexicalIndexIfStale — the delivery point repairs the index it is about to read,
+ * and only when it actually needs repairing.
+ *
+ * WHERE this lives is load-bearing. Not inside the pack compiler and not inside the
+ * periphery resolver: their contract is pure and deterministic, and a write from inside
+ * them would quietly make the whole measurement a writer — including the scoring pass
+ * that must be able to run a thousand times without touching the disk. So the repair
+ * lives here, in the CLI wrapper, one call before the compile.
+ *
+ * WHEN it runs is the other half. An unconditional rebuild before every delivery would
+ * turn a sub-second repair into a tax on every single call, so the index is rebuilt only
+ * when the status report says the corpus moved out from under it. No engine on this
+ * build of Node → nothing is rebuilt and nothing is claimed: the delivery degrades to
+ * the facet answer and names the reason, exactly as it did before this existed.
+ *
+ * A NAMED FIXTURE CORPUS IS NEVER HEALED. The derived index describes the repository's
+ * own corpus; a run over somebody's fixture that overwrote it would leave the next real
+ * delivery reading a stranger's records. Callers pass `enabled: false` for that case.
+ */
+async function healLexicalIndexIfStale({ corpusDir, dbPath, enabled = true }) {
+  if (!enabled) return { rebuilt: false, reason: 'корпус задан флагом — производный индекс репозитория не трогаем' }
+  if (!corpusDir || !dbPath || !existsSync(corpusDir)) return { rebuilt: false, reason: 'корпус не найден' }
+  const { indexStatus, LEXICAL_ENGINES } = await import('./lib/fts-index.mjs')
+  let status = null
+  try {
+    status = indexStatus({ corpusDir, dbPath })
+  } catch {
+    return { rebuilt: false, reason: 'состояние индекса не читается' }
+  }
+  if (!status || !status.summary || status.engine === LEXICAL_ENGINES.UNAVAILABLE) {
+    return { rebuilt: false, reason: 'слой недоступен на этой сборке Node' }
+  }
+  if (Number(status.summary.stale) === 0) return { rebuilt: false, reason: 'индекс свежий' }
+  const res = await rebuildLexicalIndex({ corpusDir, dbPath })
+  if (!res.ok) {
+    return { rebuilt: false, reason: `пересборка не удалась: ${res.error && res.error.message ? res.error.message : String(res.error)}` }
+  }
+  return {
+    rebuilt: res.available,
+    reason: res.available
+      ? `индекс протух — пересобран (${res.built.engine}, записей ${res.built.indexed})`
+      : String(res.built.reason ?? 'слой недоступен'),
+  }
+}
+
+/**
  * build-index [--check] [--write] — regenerate the MEMORY.md index. Default is
  * DRY (print to stdout / report); --check compares against the committed file
  * without writing; --write is the ONLY path that touches .claude/memory/MEMORY.md
  * (kept off until the index flip). Corpus is fixture-safe via --corpus.
+ *
+ * --write ALSO rebuilds the derived lexical index, because this verb is where the
+ * corpus index is regenerated, and a lexical index that only a hand-typed command can
+ * refresh is a lexical index that is stale most of the time — which is exactly how it
+ * sat for weeks, describing a corpus that had moved on. Fail-open: a machine that
+ * cannot hold the index still regenerates the corpus index and still exits 0, and the
+ * outcome — engine and count, or the reason there was none — is always printed, because
+ * a repair nobody can see is a repair nobody can trust.
  */
-async function cmdBuildIndex({ flags }) {
+async function cmdBuildIndex({ flags, dirs }) {
   const generator = await import('./lib/generator.mjs')
   const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
   const tagsPath = join(corpusDir, 'TAGS.md')
@@ -1468,12 +1546,34 @@ async function cmdBuildIndex({ flags }) {
     const { writeFileSync } = await import('node:fs')
     writeFileSync(indexPath, generated)
     for (const a of areaFiles) writeFileSync(join(corpusDir, a.file), a.content)
+
+    // The corpus index has just been rewritten, so the DERIVED lexical index now
+    // describes a corpus that no longer exists. It is rebuilt here, in the same breath.
+    // A corpus named by flag is somebody's fixture and never overwrites the
+    // repository's own derived index.
+    const ownCorpus = typeof flags.corpus !== 'string'
+    const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+    const dbPath = join(dirs?.indexDir ?? join('.sma', 'index'), LEXICAL_INDEX_FILE)
+    const lex = ownCorpus
+      ? await rebuildLexicalIndex({ corpusDir, dbPath })
+      : { ok: true, built: null, available: false, error: null }
+    const lexicalReport = !ownCorpus
+      ? { rebuilt: false, engine: null, indexed: 0, reason: 'корпус задан флагом — производный индекс репозитория не трогаем' }
+      : lex.ok
+        ? { rebuilt: lex.available, engine: lex.built.engine, indexed: lex.built.indexed, reason: lex.built.reason ?? null }
+        : { rebuilt: false, engine: null, indexed: 0, reason: `пересборка не удалась: ${lex.error && lex.error.message ? lex.error.message : String(lex.error)}` }
+
     if (wantsJson(flags)) {
-      printJson({ written: indexPath, bytes: generated.length, areaFiles: areaFiles.map((a) => a.file) })
+      printJson({ written: indexPath, bytes: generated.length, areaFiles: areaFiles.map((a) => a.file), lexical: lexicalReport })
       return 0
     }
     process.stdout.write(
       `SMA: MEMORY.md записан (${generated.length} байт) + ${areaFiles.length} INDEX-файлов → ${corpusDir}\n`,
+    )
+    process.stdout.write(
+      lexicalReport.rebuilt
+        ? `  лексический индекс пересобран — движок ${lexicalReport.engine}, записей ${lexicalReport.indexed}\n`
+        : `  лексический индекс НЕ пересобран — ${lexicalReport.reason ?? 'причина не названа'}\n`,
     )
     return 0
   }
@@ -1616,6 +1716,15 @@ async function cmdLoad({ flags, dirs }) {
   // the delivery degrades to the facet answer and says so in the warnings below.
   const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
   const lexicalIndexPath = join(dirs.indexDir, LEXICAL_INDEX_FILE)
+
+  // Self-healing, and it is here rather than one layer down on purpose (see
+  // healLexicalIndexIfStale): the delivery repairs the index it is about to read, but
+  // only when the corpus has actually moved out from under it.
+  await healLexicalIndexIfStale({
+    corpusDir,
+    dbPath: lexicalIndexPath,
+    enabled: typeof flags.corpus !== 'string',
+  })
 
   const res = loader.resolvePeriphery({
     tags,
@@ -1922,6 +2031,16 @@ async function cmdContext({ positionals, flags, dirs }) {
   // fusions over one query would rank a ranking, and the difference would be
   // attributable to nothing anybody could name.
   const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const packIndexPath = join(dirs.indexDir, LEXICAL_INDEX_FILE)
+
+  // Same self-healing as the delivery verb, and for the same reason it cannot live
+  // inside the compiler below: the compiler's contract is pure and deterministic.
+  await healLexicalIndexIfStale({
+    corpusDir,
+    dbPath: packIndexPath,
+    enabled: typeof flags.corpus !== 'string',
+  })
+
   const compiled = pack.compilePack({
     taskText,
     commit,
@@ -1932,7 +2051,7 @@ async function cmdContext({ positionals, flags, dirs }) {
     profile,
     cite,
     experiment: pack.EXPERIMENT_LEXICAL,
-    indexPath: join(dirs.indexDir, LEXICAL_INDEX_FILE),
+    indexPath: packIndexPath,
     ...(budget ? { budget } : {}),
   })
 
@@ -2771,7 +2890,7 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     return 1
   }
 
-  const { buildLexicalIndex, indexStatus, LEXICAL_ENGINES, LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const { indexStatus, LEXICAL_ENGINES, LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
   const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const corpusDir = join(repoRoot, '.claude', 'memory')
   const dbPath = join(dirs?.indexDir ?? join(repoRoot, '.sma', 'index'), LEXICAL_INDEX_FILE)
@@ -2781,7 +2900,20 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     return 1
   }
 
-  const built = action === 'rebuild' ? buildLexicalIndex({ corpusDir, dbPath }) : null
+  // ONE rebuild in this tree: this verb, the corpus regeneration and the self-healing
+  // delivery all go through the same helper. Here — and only here — a build that
+  // genuinely failed is an error worth a non-zero exit, because a person asked for this
+  // work by name and deserves to be told it did not happen.
+  let built = null
+  if (action === 'rebuild') {
+    const res = await rebuildLexicalIndex({ corpusDir, dbPath })
+    if (!res.ok) {
+      const said = res.error && res.error.message ? res.error.message : String(res.error)
+      process.stderr.write(`SMA memory index: пересборка не удалась — ${said}\n`)
+      return 1
+    }
+    built = res.built
+  }
   // The state of the index is one report, whichever verb asked: after a rebuild the
   // freshly written state IS the status, so there is one place these numbers come from.
   const status = indexStatus({ corpusDir, dbPath })
