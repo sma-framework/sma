@@ -5,8 +5,13 @@
  * turns the gold set into the canon's §8 numbers — recall@k, precision@k, MRR, nDCG,
  * critical-memory miss rate, superseded selection rate, contradiction exposure — plus
  * DETERMINISTIC FLOORS that give a red/green verdict with no model in the loop. It is
- * the instrument every later retrieval layer has to beat before it may enter the
- * default path.
+ * the instrument a retrieval layer has to face before anyone gets it by default — the
+ * lexical layer faced it, and the comparison written on 2026-08-19 is what admitted it.
+ *
+ * WHICH MAKES THE CONTROL ARM AN EXPLICIT PATH, NOT A DEFAULT. Now that the shipped
+ * delivery is hybrid, «the control is what ships» would mean measuring the layer
+ * against itself. The control here is the FACET path BY NAME (`CONTROL_ARM_PATH`,
+ * built by `controlArmOptions`), and a test holds that to account.
  *
  * WHY IT IS NOT IN bench.mjs. bench.mjs is the WORKFLOW scorecard: what SMA's own
  * discipline costs a session. This is the MEMORY benchmark: what the corpus gives back

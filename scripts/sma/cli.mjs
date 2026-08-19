@@ -2722,7 +2722,7 @@ async function cmdMemory({ positionals, flags, dirs }) {
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
     process.stdout.write('  write --apply <draft> --confirm <record-file> --yes — применить отложенный черновик конвейера\n')
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
-    process.stdout.write('  index rebuild|status [--json] [--stat <name>] — ЭКСПЕРИМЕНТ, вне выдачи по умолчанию\n')
+    process.stdout.write('  index rebuild|status [--json] [--stat <name>] — производный индекс лексического слоя выдачи\n')
     process.stdout.write('  forget <id> [--reason "…"|--replaced-by <id>|--expire|--archive] [--erase --yes]\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
@@ -2855,26 +2855,40 @@ async function cmdMemoryExplain({ flags, dirs }) {
 const MEMORY_INDEX_USAGE = [
   'usage: sma memory index rebuild|status [--json] [--stat <name>]',
   '',
-  '  ЭКСПЕРИМЕНТАЛЬНЫЙ лексический слой (точный путь/символ + SQLite BM25). Он НЕ',
-  '  участвует в выдаче по умолчанию: пока сравнение на золотом наборе не записано,',
-  '  слой существует, но ничего не решает.',
+  '  Лексический слой выдачи (точный путь/символ + SQLite BM25). Он УЧАСТВУЕТ в',
+  '  выдаче по умолчанию: load и context смешивают фасетный порядок с точным и',
+  '  лексическим в одно ранжирование. Основанием стало сравнение на золотом',
+  '  наборе, записанное 19.08.2026: отдача@3 +34 процентных пункта, MRR +26,',
+  '  ценой +8 % токенов пакета. Названо и обратное: на одном кейсе набора слой',
+  '  приносит заметку там, где фасетный путь честно молчал, — эта регрессия',
+  '  воздержания записана и не погашена.',
   '',
   '  rebuild  перестроить производный индекс из корпуса ЦЕЛИКОМ (.sma/index/) и',
   '           напечатать движок: fts5 | fallback-bm25 | unavailable',
   '  status   протух ли индекс — сравнение контент-хеша корпуса с записанным',
   '',
+  '  Руками эти две команды нужны редко: build-index --write перестраивает индекс',
+  '  вместе с корпусом, а выдача чинит протухший индекс на месте. Они здесь для',
+  '  того, чтобы посмотреть движок и числа своими глазами.',
+  '',
   '  Требует Node ≥22.5 (модуль node:sqlite). Ниже этой версии слой честно',
   '  отсутствует (unavailable, код выхода 0) — детерминированные фасетный и точный',
-  '  слои работают без него. Официальная сборка Node компилирует SQLite БЕЗ',
-  '  полнотекстового расширения, поэтому движок выбирается зондом, а не версией:',
-  '  без FTS5 работает собственный BM25 на обычных таблицах.',
+  '  слои работают без него, а выдача остаётся фасетной и называет причину.',
+  '  Официальная сборка Node компилирует SQLite БЕЗ полнотекстового расширения,',
+  '  поэтому движок выбирается зондом, а не версией: без FTS5 работает',
+  '  собственный BM25 на обычных таблицах.',
 ].join('\n')
 
 /**
- * memory index — the derived lexical index of the EXPERIMENTAL retrieval layer.
+ * memory index — the derived index of the LEXICAL retrieval layer, which now takes
+ * part in the default delivery of `load` and `context`.
  *
  * A subcommand of `memory`, not a verb of its own: the corpus namespace exists and
  * this is an artifact derived from the corpus.
+ *
+ * Rarely typed by hand: the corpus regeneration rebuilds this index with the corpus,
+ * and delivery repairs a stale one in place. These two commands stay so the engine
+ * and the numbers can be looked at directly.
  *
  * Exit code 0 for `unavailable`: a capability this machine does not have is not a
  * mistake the caller made, and exiting non-zero would teach scripts to treat an older
@@ -2955,7 +2969,7 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     process.stdout.write('  слой отсутствует на этой версии Node — выдача работает на детерминированных слоях\n')
     return 0
   }
-  process.stdout.write('  ЭКСПЕРИМЕНТ: слой не участвует в выдаче по умолчанию\n')
+  process.stdout.write('  слой участвует в выдаче по умолчанию: load и context смешивают фасетный, точный и лексический порядок\n')
   return 0
 }
 

@@ -1,8 +1,10 @@
 /**
- * fts-index.mjs — the LEXICAL layer of retrieval, built in canon order and built
- * EXPERIMENTAL: an exact path/symbol match first, a derived SQLite index second, and
- * neither of them in the default delivery path until a measured comparison says they
- * earn their place.
+ * fts-index.mjs — the LEXICAL layer of retrieval, built in canon order: an exact
+ * path/symbol match first, a derived SQLite index second. Both of them now carry the
+ * default delivery of `load` and `context`, because the measured comparison that was
+ * the condition of entry was run and written down: recall@3 +34 points, MRR +26, at
+ * +8 % of the pack's tokens. The same record names the cost honestly — on one case of
+ * the set the layer speaks where the facet path was right to stay silent.
  *
  * WHY A PROBE AND NOT A DEPENDENCY. The canon names «SQLite FTS/BM25 as a derived
  * index», and the platform seems to hand it over for free: `node:sqlite` is standard
