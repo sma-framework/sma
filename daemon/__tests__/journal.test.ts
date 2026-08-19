@@ -45,6 +45,7 @@ import {
   APPROACH_MARKERS,
   LESSON_MARKERS,
   LESSON_REASON_CAP,
+  MEMORY_REASON_CAP,
   parseLessonMarker,
   markerLinesFrom,
   approachLinesFrom,
@@ -252,6 +253,75 @@ describe('appendJournalEntry — three layers, strictly appended', () => {
     const [row] = readJournalEntries(dir, taskId)
     expect(row.payload.notes).toEqual(['reference_sma_ledger'])
     expect(row.payload.reflexes).toEqual(['reflex_no_push'])
+  })
+
+  it('the memory layer carries the whole trace: what was read, what fired, the lesson, the note', () => {
+    const taskId = 'BL-15a'
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 1,
+      layer: 'memory',
+      payload: {
+        notes: ['.claude/agents/builder.md'],
+        reflexes: ['reflex_no_push'],
+        loaded: { index: true, reads: ['alpha', 'beta', 'ЦЕЛЫЙ АБЗАЦ содержимого заметки'], loadCalls: 2 },
+        reflexSource: 'sma-journal',
+        autoMemoryReads: ['memory-check-grey-morning'],
+        lesson: { written: '.claude/memory/drafts/lesson-bl-15a-slug.md' },
+        approach: 'journaled',
+        junk: 'нечто, чего схема слоя не знает',
+      },
+    })
+    const raw = lines(taskId)[0]
+    expect(raw).not.toContain('ЦЕЛЫЙ АБЗАЦ')
+    expect(raw).not.toContain('junk')
+    const [row] = readJournalEntries(dir, taskId)
+    expect(row.payload.loaded).toEqual({ index: true, reads: ['alpha', 'beta'], loadCalls: 2 })
+    expect(row.payload.reflexSource).toBe('sma-journal')
+    expect(row.payload.autoMemoryReads).toEqual(['memory-check-grey-morning'])
+    expect(row.payload.lesson).toEqual({ written: '.claude/memory/drafts/lesson-bl-15a-slug.md' })
+    expect(row.payload.approach).toBe('journaled')
+  })
+
+  it('a payload of the OLD shape is stored exactly as before — no new keys appear', () => {
+    const taskId = 'BL-15b'
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 1,
+      layer: 'memory',
+      payload: { notes: ['reference_sma_ledger'], reflexes: [] },
+    })
+    const [row] = readJournalEntries(dir, taskId)
+    expect(Object.keys(row.payload).sort()).toEqual(['notes', 'reflexes'])
+  })
+
+  it('the lesson is one of three answers, and its words are capped; вокабуляры закрыты', () => {
+    const taskId = 'BL-15c'
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 1,
+      layer: 'memory',
+      payload: {
+        loaded: { index: 'да', reads: 'не список', loadCalls: -4 },
+        reflexSource: 'придумал',
+        lesson: { none: 'ж'.repeat(MEMORY_REASON_CAP + 300) },
+        approach: 'наверное',
+      },
+    })
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 2,
+      layer: 'memory',
+      payload: { lesson: { missing: true }, approach: 'absent', reflexSource: 'none' },
+    })
+    const [first, second] = readJournalEntries(dir, taskId)
+    expect(first.payload.loaded).toEqual({ index: false, reads: [], loadCalls: 0 })
+    expect(first.payload.reflexSource).toBeUndefined()
+    expect(first.payload.approach).toBeUndefined()
+    expect(first.payload.lesson.none.length).toBe(MEMORY_REASON_CAP)
+    expect(second.payload.lesson).toEqual({ missing: true })
+    expect(second.payload.approach).toBe('absent')
+    expect(second.payload.reflexSource).toBe('none')
   })
 })
 

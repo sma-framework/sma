@@ -153,6 +153,19 @@ export const LESSON_MARKERS = Object.freeze({
  */
 export const LESSON_REASON_CAP = 512
 
+/**
+ * How long ANY sentence the memory layer carries may be — the stated «no lesson» reason and
+ * the path of a written one. The same number as the marker's own cap and for the same reason:
+ * this layer stores what was READ and WHY, never what was read.
+ */
+export const MEMORY_REASON_CAP = 512
+
+/** Where the reflexes of an attempt were read from — a closed set, never free text. */
+export const MEMORY_REFLEX_SOURCES = Object.freeze(['sma-journal', 'none'])
+
+/** Whether the attempt left an approach note in this journal — a closed set. */
+export const MEMORY_APPROACH_MARKS = Object.freeze(['journaled', 'absent'])
+
 /** Named error for any refused journal entry (the caller maps it; nothing is written). */
 export class InvalidJournalEntryError extends Error {
   constructor(message) {
@@ -240,7 +253,46 @@ export function normalizeJournalPayload(layer, payload = {}) {
     }
     return out
   }
-  return { notes: ids(p.notes), reflexes: ids(p.reflexes) }
+  const out = { notes: ids(p.notes), reflexes: ids(p.reflexes) }
+
+  // ── WHAT THE ATTEMPT REALLY TOUCHED, and why the layer grew these fields ──
+  // The layer used to be written only for a worker that had a role file, and it carried the
+  // NAME OF THAT ROLE — a declaration made before the session started, not an observation of
+  // it. Every field below is read off the attempt's own trace instead: which corpus files the
+  // session opened, how many times it asked the memory pipeline for notes, which reflexes
+  // fired under its session identity, what it left behind as a lesson. Still IDS AND MARKS
+  // ONLY: the widened shape carries no note body, only names, counts and closed vocabularies.
+  //
+  // EVERY NEW KEY IS OPTIONAL BY CONSTRUCTION. A payload of the old shape returns the old two
+  // fields and nothing else, so rows written before this revision and rows written after it
+  // read identically to the card that renders them.
+  if (p.loaded && typeof p.loaded === 'object' && !Array.isArray(p.loaded)) {
+    const n = Number(p.loaded.loadCalls)
+    out.loaded = {
+      // The index is the corpus's front door: opening it is a different act from opening one
+      // note, and a card says so in different words.
+      index: p.loaded.index === true,
+      reads: ids(p.loaded.reads),
+      loadCalls: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0,
+    }
+  }
+  if (MEMORY_REFLEX_SOURCES.includes(p.reflexSource)) out.reflexSource = p.reflexSource
+  // The account's OWN memory, kept apart from the project's on purpose: those files belong to
+  // the machine the worker ran on, not to the corpus a person reviews, and merging the two
+  // lists would let «the session read something» pass for «the project's memory was used».
+  if (Array.isArray(p.autoMemoryReads)) out.autoMemoryReads = ids(p.autoMemoryReads)
+  const lesson = p.lesson && typeof p.lesson === 'object' && !Array.isArray(p.lesson) ? p.lesson : null
+  if (lesson) {
+    const written = boundedText(lesson.written, MEMORY_REASON_CAP)
+    const none = boundedText(lesson.none, MEMORY_REASON_CAP)
+    // Exactly one of the three, in the order of what it claims: a draft, a stated «nothing to
+    // teach», or the absence of both — which is the answer that failed the attempt.
+    if (written) out.lesson = { written }
+    else if (none) out.lesson = { none }
+    else if (lesson.missing === true) out.lesson = { missing: true }
+  }
+  if (MEMORY_APPROACH_MARKS.includes(p.approach)) out.approach = p.approach
+  return out
 }
 
 /** Read the raw entries out of whatever ledger seam the caller injected (fail-open). */
