@@ -204,10 +204,53 @@ function isHitOrMiss(r) {
   return r && (r.verdict === 'hit' || r.verdict === 'miss')
 }
 
+/** Separator between the plan part and the id part of an accounting key. */
+const KEY_SEP = '::'
+
+/**
+ * predictionKey({plan, id}) -> the accounting key of ONE prediction.
+ *
+ * A prediction id is unique only INSIDE its own plan: the same short id is reused by dozens
+ * of plans, so the bare id is not an identity — it is a collision. The key is therefore the
+ * plan FILE NAME plus the id.
+ *
+ * The file name, not the whole path, and on purpose: the ledger records the plan relative to
+ * the workspace root while a caller walking the phases tree hands over an OS path. Keyed on
+ * the full path, the two consumers of this boundary would build different keys for the same
+ * prediction and never say so — the failure would be invisible, which is the worst kind.
+ *
+ * A record with NO plan field keys on its bare id: history written before the field existed
+ * stays legal and keeps counting, exactly as an unstamped model record stays a legal prefix
+ * in the freshness rule next door.
+ *
+ * Exported so the verdict side and the unscored-axis side share ONE key — a second copy of
+ * this rule would be a second definition of identity.
+ *
+ * @param {{plan?:string, id?:string}} record
+ * @returns {string}
+ */
+export function predictionKey(record) {
+  const id = record && record.id != null ? String(record.id).trim() : ''
+  const plan = record ? planFileName(record.plan) : ''
+  return plan ? `${plan}${KEY_SEP}${id}` : id
+}
+
+/** The bare file name of a plan path, whichever separator the writer happened to use. */
+function planFileName(plan) {
+  if (typeof plan !== 'string') return ''
+  const parts = plan.trim().split(/[\\/]+/)
+  return parts.length ? parts[parts.length - 1].trim() : ''
+}
+
 /**
  * latestVerdictPerPrediction(records) -> records with the hit/miss verdicts
- * DEDUPED by prediction id — the LATEST (by scoredAt/at ISO compare; a tie
- * falls to ledger append order) hit-or-miss verdict per id wins.
+ * DEDUPED by prediction — the LATEST (by scoredAt/at ISO compare; a tie
+ * falls to ledger append order) hit-or-miss verdict per prediction wins.
+ *
+ * WHAT THE DEDUP PROTECTS, precisely: re-scoring the SAME prediction of the SAME
+ * plan. It no longer glues together the predictions of DIFFERENT plans that happen
+ * to share a short id — that was not anti-inflation protection but silent
+ * under-counting, and it made the fresh-window threshold unreachable by construction.
  *
  * Re-scoring a prediction APPENDS a new ledger record (append-only by
  * construction); counting records therefore inflates n — the 2026-07-10
@@ -230,12 +273,13 @@ export function latestVerdictPerPrediction(records) {
   const latest = new Map()
   for (const r of list) {
     if (!isHitOrMiss(r) || r.id == null || r.id === '') continue
-    const prev = latest.get(r.id)
+    const key = predictionKey(r)
+    const prev = latest.get(key)
     if (!prev || String(r.scoredAt ?? r.at ?? '') >= String(prev.scoredAt ?? prev.at ?? '')) {
-      latest.set(r.id, r)
+      latest.set(key, r)
     }
   }
-  return list.filter((r) => !isHitOrMiss(r) || r.id == null || r.id === '' || latest.get(r.id) === r)
+  return list.filter((r) => !isHitOrMiss(r) || r.id == null || r.id === '' || latest.get(predictionKey(r)) === r)
 }
 
 /**
