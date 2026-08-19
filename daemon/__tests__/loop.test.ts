@@ -50,7 +50,7 @@ import { join } from 'node:path'
 // asserted to be this exact shape plus a position block, never a second schema
 import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
-import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
+import { tick, runDaemon, classifyFailure, unregisteredMcpTools } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
@@ -3471,6 +3471,22 @@ describe('личный слой и наши серверы доезжают до
   // is simply not one of the things the opening frame enumerates. It is proved where it
   // actually passes: in the arguments, in the attempt record, and in a live refusal.
 
+  // Открывающий кадр сессии, в которой ЗАШЁЛ сервер, объявленный в корне подключённого
+  // проекта. Форма кадра — вендорская, поля взяты из живого прогона.
+  const FOREIGN_INIT_FRAME = {
+    type: 'system',
+    subtype: 'init',
+    session_id: '001afe17-d221-4736-adc8-35c3ec74e5c4',
+    claude_code_version: '2.1.235',
+    model: 'haiku',
+    permissionMode: 'default',
+    tools: ['Read', 'Bash', 'mcp__foreignproject__beacon'],
+    mcp_servers: [{ name: 'foreignproject', status: 'connected' }],
+    skills: [],
+    agents: [],
+    plugins: [],
+  }
+
   it('запрет конверта доезжает до аргументов запущенного процесса И до записи попытки', async () => {
     const sourceDir = founderHome()
     const accountDir = mkDir('sma-account-')
@@ -3487,6 +3503,7 @@ describe('личный слой и наши серверы доезжают до
       config,
       spawnWorker: (spec: any) => {
         spawns.push(spec.args.slice())
+        spec.onLine?.(JSON.stringify(FOREIGN_INIT_FRAME))
         spec.onLine?.('APPROACH_NOTE: прямой путь')
         spec.onLine?.('LESSON_NONE: тестовый работник')
         spec.onExit?.({ code: 0, signal: null })
@@ -3521,6 +3538,27 @@ describe('личный слой и наши серверы доезжают до
     const run = JSON.parse(readFileSync(join(projectDir, '.sma', 'runs', 'BL-1_1', 'run.json'), 'utf8'))
     expect(run.args).toEqual(args)
     expect(run.envelope.humanOnlyActions).toEqual([...defaultEnvelope('prod').humanOnlyActions])
+
+    // (3) И ЧЕСТНАЯ СТРОКА О ТОМ, ЧЕГО МЫ НЕ ПОСЫЛАЛИ. Сервер, объявленный в корне
+    // подключённого проекта, заходит в сессию, что бы ни стояло в настройках аккаунта
+    // (измерено прогоном). Раз дверь не закрывается, продукт записывает, что через неё
+    // прошло: инструменты сессии минус наши серверы.
+    expect(run.init.unregisteredMcpTools).toEqual(['mcp__foreignproject__beacon'])
+  })
+
+  it('строка о чужих MCP считается по кадру сессии, а не по нашему намерению', () => {
+    // наш сервер из реестра — не «чужой»
+    expect(
+      unregisteredMcpTools({ tools: ['Read', 'mcp__ours__do', 'mcp__foreign__beacon'] }, { servers: ['ours'] }),
+    ).toEqual(['mcp__foreign__beacon'])
+    // ни одного MCP-инструмента — пустой список, а не отсутствие поля
+    expect(unregisteredMcpTools({ tools: ['Read', 'Bash'] }, { servers: [] })).toEqual([])
+    // кадра нет вовсе — тоже пустой список, а не бросок
+    expect(unregisteredMcpTools(null, null)).toEqual([])
+    // повторов нет, порядок устойчив
+    expect(
+      unregisteredMcpTools({ tools: ['mcp__b__x', 'mcp__a__y', 'mcp__b__x'] }, null),
+    ).toEqual(['mcp__a__y', 'mcp__b__x'])
   })
 
   it('обе точки спавна берут конверт из ОДНОЙ функции - аргументы двух путей совпадают', async () => {

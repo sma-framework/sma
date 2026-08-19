@@ -1074,6 +1074,42 @@ function namesOf(value) {
 }
 
 /**
+ * unregisteredMcpTools(runInit, mcpConfig) → the MCP tools the session ACTUALLY loaded that did
+ * not come from the registry this product handed it: sorted, without repeats.
+ *
+ * WHY THIS FIELD EXISTS, said plainly, because the alternative was to keep a promise that is
+ * not true. A worker session is given our own servers as one argument, and its account is a
+ * fresh directory with the hosted connectors switched off — and that is still not enough. A
+ * server declared in the ROOT OF THE CONNECTED PROJECT is loaded into the session anyway.
+ * Measured: a session started in a project carrying such a declaration came up with that
+ * server connected and its tool listed in the opening frame, with a clean account directory
+ * and our own server list passed explicitly. The account settings that read as though they
+ * would prevent it do not — switching off the blanket enable changed nothing, and naming a
+ * server in the disabled list works only for a name known IN ADVANCE, which a worker facing an
+ * unfamiliar project does not have. The one mechanism that would close the door is a flag the
+ * argument guard refuses, and the guard is not weakened for convenience.
+ *
+ * So the product stops claiming the door is shut and starts SAYING WHAT CAME THROUGH IT: the
+ * tools of the live session, minus the servers we sent, written into the attempt's own record.
+ * A capability nobody noticed is worse than one that is named.
+ *
+ * PURE. Written over arrays rather than a keyed collection because this file holds none by
+ * standing discipline — the list is a handful of names, and a grep gate that a reader can
+ * trust is worth more here than a lookup nobody would measure.
+ */
+export function unregisteredMcpTools(runInit, mcpConfig) {
+  const tools = Array.isArray(runInit && runInit.tools) ? runInit.tools.map(String) : []
+  const ours = (Array.isArray(mcpConfig && mcpConfig.servers) ? mcpConfig.servers : []).map(String)
+  const out = []
+  for (const tool of tools) {
+    if (!tool.startsWith('mcp__')) continue
+    if (ours.includes(tool.split('__')[1] ?? '')) continue
+    if (!out.includes(tool)) out.push(tool)
+  }
+  return out.sort()
+}
+
+/**
  * collectSmaTrace({projectDir, sessionId, fsImpl}) → what the WORKER'S OWN session wrote down
  * about memory while it ran: `{reads, reflexes, source}`.
  *
@@ -1309,7 +1345,13 @@ function writeAttemptRunDir(deps, task, {
         : null,
       personalLayer: (worktree && worktree.personalLayer) || null,
       mcpConfig: (worktree && worktree.mcpConfig) || null,
-      init: runInit ?? null,
+      // WHAT THE SESSION LOADED, and beside it what it loaded that WE never sent. A server
+      // declared in the root of the connected project reaches the session whatever the account
+      // says; since the product cannot honestly promise the door is shut, it writes down what
+      // came through — an unnamed capability is the one nobody checks.
+      init: runInit
+        ? { ...runInit, unregisteredMcpTools: unregisteredMcpTools(runInit, (worktree && worktree.mcpConfig) || null) }
+        : null,
       memory: memory ?? null,
       rules,
       skillsInCopy,

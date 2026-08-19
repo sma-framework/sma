@@ -34,6 +34,7 @@ import {
   LABEL,
   USAGE,
 } from '../../tools/terminal-parity-check.mjs'
+import { humanOnlyDenials } from '../src/queue/capability-envelope.mjs'
 
 const PROJECT = '/proj'
 const RUNS = `${PROJECT}/.sma/runs`
@@ -84,8 +85,20 @@ const RUN = {
   workerId: 'max-1',
   startedAt: STARTED,
   endedAt: ENDED,
-  args: ['-p', '--output-format', 'stream-json', '--allowedTools', 'Read Write Bash'],
-  envelope: { allowedTools: ['Read', 'Write', 'Bash'], hash: 'e3b0c442' },
+  args: [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--allowedTools',
+    'Read Write Bash',
+    '--disallowedTools',
+    humanOnlyDenials({ humanOnlyActions: ['push', 'merge', 'tag', 'deploy'] }).patterns.join(' '),
+  ],
+  envelope: {
+    allowedTools: ['Read', 'Write', 'Bash'],
+    humanOnlyActions: ['push', 'merge', 'tag', 'deploy'],
+    hash: 'e3b0c442',
+  },
   rules: { claudeMd: 'materialized' },
   skillsInCopy: { skills: 3, agents: 2 },
 }
@@ -161,21 +174,28 @@ function run(files: Record<string, string>, argv: string[] = DEFAULT_ARGV, mtime
 }
 
 describe('terminal-parity-check — a complete run', () => {
-  it('prints five receipts and the bare number: four green and one honest warning', () => {
+  it('prints five receipts and the bare number: five green when both halves of the envelope travelled', () => {
     const r = run(fullFiles())
     expect(r.out).toHaveLength(PARITY_RECEIPT_COUNT + 1)
     expect(r.line('hooks')).toMatch(/^OK — /)
     expect(r.line('memory')).toMatch(/^OK — /)
     expect(r.line('rules')).toMatch(/^OK — /)
     expect(r.line('skills')).toMatch(/^OK — /)
-    expect(r.line('rights')).toMatch(/^WARN — /)
+    expect(r.line('rights')).toMatch(/^OK — /)
     expect(r.last).toBe('5')
     expect(Number.isFinite(Number(r.last))).toBe(true) // receipt-hash / scorer contract
     expect(r.code).toBe(0)
   })
 
-  it('the warning says out loud which half of the envelope does not travel', () => {
-    expect(run(fullFiles()).line('rights')).toContain('humanOnlyActions')
+  // ЭТО СОСТОЯНИЕ КВИТАНЦИЯ ДЕРЖАЛА ЖЁЛТЫМ ВСЮ СВОЮ ЖИЗНЬ, и жёлтое было правдой: до
+  // процесса доезжала только половина конверта. Теперь оно КРАСНОЕ, потому что вторая
+  // половина умеет доезжать, и её отсутствие — не оговорка, а провал.
+  it('конверт назвал человеческие действия, а запрета в аргументах нет — FAIL, не WARN', () => {
+    const withoutDenials = { ...RUN, args: ['-p', '--output-format', 'stream-json', '--allowedTools', 'Read Write Bash'] }
+    const r = run(fullFiles({ [`${DIR}/run.json`]: withoutDenials }))
+    expect(r.line('rights')).toMatch(/^FAIL — /)
+    expect(r.line('rights')).toContain('--disallowedTools')
+    expect(r.code).toBe(1)
   })
 })
 
