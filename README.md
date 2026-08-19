@@ -65,7 +65,7 @@ your-project/
 │  ├─ agents/            ← the helpers those commands call on
 │  ├─ sma-core/          ← the engine: the instructions behind each command
 │  ├─ memory/            ← your project's notes — installed EMPTY, the notes stay yours
-│  └─ settings.json      ← 7 hooks that wire SMA into the agent (your own entries are kept)
+│  └─ settings.json      ← 7 hooks + the engine's statusline segment (your own entries are kept)
 ├─ scripts/sma/          ← the command-line tool the commands use underneath
 ├─ .sma/                 ← working state: who is editing what, and the log of checks
 └─ CLAUDE.md             ← one short marked block is added; your own text is untouched
@@ -89,6 +89,18 @@ your version of the agent announces that event**; on a version that does not, th
 simply exits without an error and nothing else changes. Your own entries in any of these
 events are kept exactly as they are. What each hook does and the time budget it runs
 under: [docs/DETAILS.md](docs/DETAILS.md).
+
+The statusline gets one entry too, and it is installed **by default**: the engine's own
+segment, a compact readout of what this window and the neighbouring ones are doing — the
+attention pulse, the claim this window holds, today's collisions, how much of the
+subscription window is used up, open gates, unscored predictions. If you already had a
+statusline command of your own, it is kept verbatim and printed **first**; the segment
+goes after it, and `/sma-deleteme` hands your line back byte-for-byte — or removes the
+key entirely, if we were the ones who added it. The entry asks the agent to re-run it
+once a minute, because repaints driven by events only ever reach the window where you
+are typing; nothing would otherwise ask a quiet window to look again. The price of that
+timer is named rather than hidden: once a minute, each open window spawns one short
+process, and your own wrapped command with it.
 
 A `.planning/` folder appears later, the first time you plan a piece of work.
 
