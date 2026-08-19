@@ -36,9 +36,15 @@ import { mkdtempSync, rmSync, appendFileSync, readdirSync as fsReaddirSync } fro
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { recordAttempt } from '../src/queue/attempt-ledger.mjs'
+import { recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
 import { createWorkerStats } from '../src/front/worker-stats.mjs'
 import { deriveState } from '../src/front/state.mjs'
+// The REAL writer of a failed attempt and the REAL queue under it: the case at the foot of
+// this file has to cross the module boundary the defect hid behind, because every joint of
+// this path was green while the path itself was cut.
+import { tick } from '../src/loop.mjs'
+import { createMemoryQueue } from '../src/queue/adapter.mjs'
+import { resolveRoute } from '../src/policy/routing.mjs'
 
 const DAY = 86_400_000
 const NOW = 1_700_000_000_000
@@ -180,5 +186,91 @@ describe('THE WIRE — the roster row carries the ledger’s count, not the tail
       clock: () => NOW,
     })
     expect(payload.workers[0].stats30d).toBeUndefined()
+  })
+})
+
+// ══════════ «не получилось» stopped being a structural zero ═══════════════════════════════
+//
+// WHAT THIS FIXES, and how it was found. The count above was built and then run against the
+// real ledger of the founder's daemon, which answered «сделано 30, не получилось 0». The zero
+// was not a fact about the work: the finished path wrote the worker's id onto the attempt row
+// and the failing path did not, so of nineteen failed rows on disk not one named anybody, and
+// this column could not have shown anything but zero however much had broken. That is exactly
+// the confident wrong number this whole road exists to end — an empty field a person notices,
+// a zero he does not.
+//
+// It could not be repaired on the READING side. Guessing the worker from a neighbouring row
+// would pin a failure on somebody possibly innocent: the same invented ownership, this time
+// about blame. So the WRITER was changed, and the case below drives the real tick through a
+// real failure into a real ledger and then asks the real read model — the wire, not the parts.
+describe('THE WIRE — a worker’s approach broke, and his «не получилось» went up by one', () => {
+  const failingTick = async (dir: string, at: number) => {
+    const adapter = createMemoryQueue({ clock: () => at, expireMs: 300_000 })
+    await adapter.enqueue({
+      id: 'BL-F1',
+      source: 'backlog',
+      title: 'работа, которая сорвётся',
+      lane: 'prod',
+      priority: 0,
+      storyPoints: 3,
+      acceptance: 'green targeted tests + a reverify receipt',
+    })
+    return tick({
+      adapter,
+      // the real ledger over a temp dir, wired exactly as the composition root wires it
+      ledger: { recordAttempt: (row: any) => recordAttempt(dir, row), readAttempts: (id: string) => readAttempts(dir, id) },
+      config: {
+        workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
+        agingHours: 24,
+        backlogScanMinutes: 60,
+        repoDir: '/repo',
+        pipeline: { enabled: true },
+      },
+      routing: { resolveRoute },
+      windows: () => true,
+      buildArgs: () => ({ bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }),
+      verbRunner: async () => ({ code: 0, stdout: '{}' }),
+      spawnWorker: () => ({ pid: 1, kill: () => {} }),
+      // the worker is routed and only THEN refused — so the route, and the worker on it, exist
+      workerReady: () => ({ ready: false, reason: 'missing_access', detail: 'аккаунт не настроен' }),
+      clock: () => at,
+      journal: () => {},
+    })
+  }
+
+  it('the failed row names the worker, and the read model counts it against him', async () => {
+    const dir = ledgerDir()
+    const res: any = await failingTick(dir, NOW)
+    expect(res.failed).toMatchObject({ taskId: 'BL-F1', reason: 'missing_access' })
+
+    // the row itself: whose approach it was, written the same way the finished path writes it
+    const rows = readAttempts(dir, 'BL-F1')
+    expect(rows.at(-1)).toMatchObject({ outcome: 'failed', workerId: 'max-2' })
+
+    // and the wire: the number the roster reads went up by exactly one, for exactly this worker
+    const stats = createWorkerStats({ ledgerDir: dir, clock: () => NOW })
+    expect(stats.statsFor('max-2')).toEqual({ done: 0, failed: 1 })
+  })
+
+  it('the count before the approach broke is zero — so the one above is a CHANGE, not a coincidence', async () => {
+    const dir = ledgerDir()
+    const before = createWorkerStats({ ledgerDir: dir, clock: () => NOW, ttlMs: 0 })
+    expect(before.statsFor('max-2')).toEqual({ done: 0, failed: 0 })
+    await failingTick(dir, NOW)
+    expect(createWorkerStats({ ledgerDir: dir, clock: () => NOW }).statsFor('max-2')).toEqual({ done: 0, failed: 1 })
+  })
+
+  it('a row that names nobody lands in NOBODY’s count — it is not handed to the likeliest worker', () => {
+    const dir = ledgerDir()
+    // the shape the ledger on disk is full of: concluded, inside the window, and anonymous
+    recordAttempt(dir, { taskId: 'T-N1', attempt: 1, outcome: 'failed', failureReason: 'agent_error', endedAt: iso(NOW - DAY) })
+    recordAttempt(dir, { taskId: 'T-N2', attempt: 1, outcome: 'completed', endedAt: iso(NOW - DAY) })
+    // …beside one worker who really is on the record, so «nobody» cannot quietly mean «him»
+    recordAttempt(dir, { taskId: 'T-W', attempt: 1, workerId: 'w1', outcome: 'completed', endedAt: iso(NOW - DAY) })
+
+    const stats = createWorkerStats({ ledgerDir: dir, clock: () => NOW })
+    expect(stats.statsFor('w1')).toEqual({ done: 1, failed: 0 })
+    // and no owner was invented for the two anonymous rows: the map knows exactly one worker
+    expect(Object.keys(stats.all() as any)).toEqual(['w1'])
   })
 })

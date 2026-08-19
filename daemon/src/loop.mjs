@@ -2149,6 +2149,16 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
       ledger.recordAttempt({
         taskId: task.id,
         attempt: task.attempt,
+        // WHOSE APPROACH THIS WAS. The finished path has always written it and this one never
+        // did, so every failed row in the ledger was nameless — and the roster's «не получилось»
+        // was therefore a STRUCTURAL zero: it could not have shown anything else no matter how
+        // much work had broken. A confident wrong zero is the worst answer of the three, because
+        // by it a person cannot notice that the answer is missing.
+        // Taken from the route, exactly as the provider beside it is, and OMITTED when there is
+        // no route — an API fallback runs under no worker, and an attempt refused before any
+        // routing had happened has nobody to name. Absent means absent; it is never guessed from
+        // a neighbouring row, because that would pin a failure on somebody possibly innocent.
+        workerId: (route && route.workerId) || undefined,
         provider: route && route.provider,
         outcome: 'failed',
         failureReason: reason,
