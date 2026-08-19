@@ -306,6 +306,22 @@ describe('the production composition root is COMPLETE', () => {
    * because they cover different tasks: the door covers the accepted ones, the sweep covers
    * every other closed one, and either alone leaves copies on disk forever.
    */
+  /**
+   * …AND WHAT THE APPROVAL SAVES OUT OF THAT COPY BEFORE IT GOES AWAY.
+   *
+   * The worker's lesson is a draft INSIDE the copy. On a project whose agent directory is
+   * out of git — which is how this product itself lives — merging the branch brings nothing,
+   * and removing the copy takes the only surviving instance of that lesson with it. The
+   * harvest is an ordinary function with its own tests, and unwired it is exactly the class
+   * this file exists to catch: computed, recorded, green, and joined to nothing. A part
+   * cannot see that it was never joined; the root can.
+   */
+  it('wires the harvest of the attempt\'s memory — or the lesson dies with the copy', () => {
+    expect(
+      typeof park.front.deps.memoryHarvest,
+      'front deps.memoryHarvest must be wired or an accepted lesson never reaches the corpus',
+    ).toBe('function')
+  })
   it('wires the cleanup of the copy a task ran in — the door for accepted work, the tick for the rest', () => {
     expect(
       typeof park.front.deps.worktreeCleanup,

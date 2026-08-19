@@ -175,6 +175,20 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // Both are DIGESTS AND NAMES, never contents: no rule text, no token name, no secret.
   'personalLayer',
   'mcpConfig',
+  // ── what the approval carried out of the copy before it was removed ──────────
+  // `memoryHarvest` is `{at, by, mode, copied, applied, drafted, refused, ok}`: which mode the
+  // project's corpus is in (tracked by git, or ignored the way this product's own is), which
+  // pipeline drafts had to be carried out of the copy by hand because a merge could not bring
+  // them, which lessons the write pipeline actually admitted into the corpus, which approach
+  // note was staged, and what it refused and why.
+  //
+  // WHY IT IS NOT A FIELD INSIDE `cleanup`. The two answer different questions — «what reached
+  // the corpus» and «what was deleted from disk» — happen at different moments and fail
+  // independently. Folded into one object they would one day explain a missing lesson by a
+  // successful removal. Like `cleanup` it arrives on a SEPARATE row of the same attempt and
+  // deliberately carries no `endedAt`/`outcome`, so folding the rows of one attempt neither
+  // stretches its duration nor overwrites how the try ended.
+  'memoryHarvest',
 ])
 
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
