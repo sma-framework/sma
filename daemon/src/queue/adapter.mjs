@@ -218,6 +218,13 @@ export const TASK_STATUSES = Object.freeze([
  *                     it is on disk but was never committed. It is the exact counterpart of
  *                     `no_receipt` for work whose product is prose rather than code — the two
  *                     exist so that «done» is never the worker's own word on either side
+ *   personal_layer_error — the layer the founder himself works under could not be put into
+ *                     the worker’s account before the spawn. NOT an infra cause and not the
+ *                     worker’s fault: a session started without those files runs under rules
+ *                     nobody chose — his instructions absent, his hooks silent, and whatever
+ *                     hosted connectors the vendor felt like attaching that minute. Refusing
+ *                     by name costs one attempt; spawning anyway spends the subscription on
+ *                     work done under the wrong profile, and no card could ever say so
  *   timeout / runtime_offline / window_exhausted — infra causes
  *   manual          — a human stopped it
  */
@@ -233,6 +240,7 @@ export const FAIL_REASONS = Object.freeze([
   'timeout',
   'runtime_offline',
   'window_exhausted',
+  'personal_layer_error',
   'manual',
 ])
 
@@ -249,6 +257,7 @@ export const REASON_LABELS = Object.freeze({
   timeout: 'истекло время',
   runtime_offline: 'среда исполнения недоступна',
   window_exhausted: 'окно подписки исчерпано',
+  personal_layer_error: 'личный слой не перенесён в аккаунт работника — запускать было нельзя',
   manual: 'остановлено вручную',
 })
 
