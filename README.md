@@ -220,6 +220,15 @@ Every door in it is live: there is no «coming soon» handler left in the table.
 - **Several accounts, secrets staying local.** Accounts are added from the window; the value of a
   token never travels through it, only the NAME of the variable it lives in. Each worker session
   is assembled with one account's credentials and no other's.
+- **On a phone: a narrow strip with a named composition, not a shrunken desk.** At phone width the
+  window carries exactly four things — what is waiting for you, the list of tasks, the task card,
+  and the approve button. Approving goes through **the same door and the same gate as on the
+  desk**: there is no faster path to a yes because you happen to be holding a phone. The 248-px
+  side column does not squeeze; it gives way to a top bar with a **Menu** curtain that lists the
+  same screens, in the same order, from the same registry. Everything else does NOT fold itself
+  into a mush: each screen made for a wide desk says so plainly on a phone and points at the
+  computer — a decision, stated, rather than a layout that broke. Walked live at 375 px from the
+  task through to the approval, with the sideways-scroll measurement on that width in the receipt.
 
 ### Opening the window — what a first run actually needs
 
