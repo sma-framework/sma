@@ -533,8 +533,9 @@ export function codexConfigSeed() {
  *     as ANTHROPIC_API_KEY — it takes precedence over subscription auth, the whole switch.
  *   EVERY account, both lanes: HEADLESS_ENV=1 — there is nobody at the keyboard of a session
  *     the daemon starts, and a workflow that hits a blocking checkpoint has to know it.
+ *   `gate`: the two PATHS the parking gate needs — see the block below.
  *
- * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string}} opts
+ * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string, gate?:{runDir?:string, redirectsFile?:string}}} opts
  * @returns {object}
  */
 export function buildAccountEnv({
@@ -545,6 +546,7 @@ export function buildAccountEnv({
   useApiFallback = false,
   apiKeyEnv = 'ANTHROPIC_API_KEY',
   taskId,
+  gate,
 } = {}) {
   if (!account || typeof account !== 'object') throw new Error('buildAccountEnv: account is required')
   const prov = provider ?? account.provider
@@ -567,6 +569,27 @@ export function buildAccountEnv({
   }
 
   if (account.spendLogsDir) out.SMA_SPEND_LOGS_DIR = account.spendLogsDir
+
+  // ── WHERE THE PARKING GATE LIVES, HANDED TO THE PROCESS THAT RUNS IT ──
+  //
+  // The gate is a hook inside the CHILD. It holds no daemon, no config and no task id — only
+  // whatever this environment carries. Two names, and neither is a convenience:
+  //
+  //   SMA_RUN_DIR — this attempt's own directory, and also the switch that decides whether the
+  //     gate is OURS at all. The hook is installed in an account settings file shared by the
+  //     whole machine, so it rides along with the workers of other windows and of production.
+  //     Absent — or absent on disk — means «not our attempt», and the gate answers ALLOW.
+  //     Present flips the posture: inside our own attempt anything broken is a refusal.
+  //   SMA_REDIRECTS_FILE — the correction file of THIS task, which is the channel the button
+  //     in the window writes through. Without it a person pressing «Одобрить» would watch
+  //     nothing happen, because the hook would have no place to look.
+  //
+  // Both are PATHS: nothing secret travels, and the attempt row lists their names beside every
+  // other name the spawn received — the same «names only» rule the record has always kept.
+  if (gate && typeof gate === 'object') {
+    if (typeof gate.runDir === 'string' && gate.runDir.trim() !== '') out.SMA_RUN_DIR = gate.runDir
+    if (typeof gate.redirectsFile === 'string' && gate.redirectsFile.trim() !== '') out.SMA_REDIRECTS_FILE = gate.redirectsFile
+  }
 
   if (useApiFallback) {
     const key = env[apiKeyEnv]

@@ -33,13 +33,14 @@
  * out loud that the gate is not configured. Closedness belongs INSIDE our attempt:
  * once the attempt directory is there, anything that breaks is a refusal by name.
  *
- * ═══════════════ WHY THE DECISION HAS ONE FORM, DECLARED HERE ════════════════════
+ * ═══════════════ WHY THE DECISION'S FORM IS NOT DECLARED IN THIS FILE ════════════
  * The button in the window builds the decision string and this hook reads it, from two
- * different processes. An agreement between two sides that lives in two places is an
- * agreement that will drift. So the form is ONE exported constant, its builder and its
- * parser live beside it, and the suite builds with the producer and reads with the
- * consumer. A look-alike is not a decision: a correction that merely mentions a ticket
- * id releases nothing.
+ * different processes — one of them a browser bundle where `node:fs` does not exist. An
+ * agreement between two sides that is written down twice is an agreement that will drift.
+ * So the form, its producer and its parser live in `tool-decision.mjs`, which imports
+ * nothing at all and is imported by BOTH sides; this module re-exports them so a caller
+ * holding the gate needs no second import. A look-alike is not a decision: a correction
+ * that merely mentions a ticket id releases nothing and goes on to the worker.
  *
  * ═══════════════ WHAT THIS DOES NOT PROTECT AGAINST, SAID OUT LOUD ═══════════════
  * A worker holding an open shell can write into its own attempt directory, so it can
@@ -65,7 +66,13 @@ import {
 import { basename, join } from 'node:path'
 
 import { classifyForWorker } from './worker-danger.mjs'
+// THE FORM OF A DECISION comes from the one file both sides import — the window's bundle and
+// this hook. Re-exported here so a caller that already holds the gate needs no second import,
+// and so `TICKET_DECISION_FORM` names the same string in both processes by construction.
+import { parseDecision } from './tool-decision.mjs'
 import { readPendingRedirectsFile, markConsumedFile } from '../../../daemon/src/runner/redirects.mjs'
+
+export { formatDecision, parseDecision, TICKET_DECISION_FORM, TICKET_DECISION_PREFIX } from './tool-decision.mjs'
 
 /**
  * The timeout DECLARED to the harness, in seconds. The hook entry written into the
@@ -108,33 +115,11 @@ export const TICKET_POLL_MS = 500
 /** A command on a card is a line, not a document. */
 export const TICKET_COMMAND_CAP = 400
 
-/** Каталог билетов внутри каталога попытки — вложенный, чтобы не мешать четырём файлам. */
-export const TICKETS_DIRNAME = 'tickets'
-
-/**
- * THE FORM OF A DECISION — the single source both sides read. The button's producer and
- * this hook's parser are the two functions below it, and neither side owns a second idea
- * of what the string looks like. Declared FIRST, on purpose: everything else about the
- * decision string, including the prefix that identifies one, is read out of this line.
- */
-export const TICKET_DECISION_FORM = 'sma-tool-decision/1 <ticketId> approve|deny [причина]'
-
-/**
- * The prefix that makes a line a decision and not a sentence that mentions one — TAKEN
- * FROM the form above rather than spelled a second time. Two constants written by hand
- * are two constants that can disagree, and this pair is the whole agreement between the
- * window and the hook.
- */
-export const TICKET_DECISION_PREFIX = TICKET_DECISION_FORM.split(' ')[0]
-
 /** Что отвечает хук, когда каталога попытки нет вовсе. Одно место, одни слова. */
 export const GATE_NOT_CONFIGURED = 'гейт не сконфигурирован'
 
-/** Идентификатор билета: наша форма, и всё, что на неё не похоже, решением не считается. */
-const TICKET_ID_RE = /^tk-[0-9a-f]{16}$/
-
-/** Два исхода, которые человек может выбрать. Третьего слова нет. */
-const DECISIONS = new Set(['approve', 'deny'])
+/** Каталог билетов внутри каталога попытки — вложенный, чтобы не мешать четырём файлам. */
+export const TICKETS_DIRNAME = 'tickets'
 
 /** Каждый вызов файловой системы — через один объект, и каждый заменяем в тестах. */
 function resolveIo(fsImpl) {
@@ -156,36 +141,6 @@ function stableJson(value) {
 }
 
 /**
- * formatDecision({ticketId, decision, reason}) → the decision string, built by the ONE
- * producer both the button and the suite use.
- */
-export function formatDecision({ ticketId, decision, reason } = {}) {
-  const word = DECISIONS.has(decision) ? decision : 'deny'
-  const tail = String(reason ?? '').replace(/[\r\n]+/g, ' ').trim()
-  return `${TICKET_DECISION_PREFIX} ${String(ticketId ?? '')} ${word}${tail ? ` ${tail}` : ''}`
-}
-
-/**
- * parseDecision(text) → `{ticketId, decision, reason}` or null.
- *
- * The line must BEGIN with the form. A correction that merely mentions a ticket id, or
- * carries the form somewhere in the middle of a sentence, is a correction — it goes to
- * the worker as a correction and releases nothing. Partial resemblance is not consent.
- */
-export function parseDecision(text) {
-  if (typeof text !== 'string') return null
-  const line = text.trim()
-  if (!line.startsWith(`${TICKET_DECISION_PREFIX} `)) return null
-  const rest = line.slice(TICKET_DECISION_PREFIX.length + 1).trim()
-  const parts = rest.split(/\s+/)
-  const ticketId = parts.shift() || ''
-  const decision = parts.shift() || ''
-  if (!TICKET_ID_RE.test(ticketId)) return null
-  if (!DECISIONS.has(decision)) return null
-  return { ticketId, decision, reason: parts.join(' ') }
-}
-
-/**
  * ticketIdFor({attemptId, tool, input}) → `tk-<16 hex>`.
  *
  * THE ARGUMENTS ARE IN THE ID. Approving one command therefore does not open another:
@@ -194,7 +149,7 @@ export function parseDecision(text) {
  * into the next attempt, where the context that justified it no longer exists.
  */
 export function ticketIdFor({ attemptId, tool, input } = {}) {
-  const material = `${String(attemptId ?? '')} ${String(tool ?? '')} ${stableJson(input ?? null)}`
+  const material = `${String(attemptId ?? '')}\u0000${String(tool ?? '')}\u0000${stableJson(input ?? null)}`
   return `tk-${createHash('sha256').update(material, 'utf8').digest('hex').slice(0, 16)}`
 }
 

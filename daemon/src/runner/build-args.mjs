@@ -289,6 +289,10 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
       env,
       useApiFallback: route.useApiFallback === true,
       taskId: task.id,
+      // The two paths the parking gate inside the child needs. Passed straight through: this
+      // composer does not know where an attempt directory lives and must not start guessing —
+      // the tick computes both with the modules that own those layouts and hands them here.
+      gate: options.gate,
     })
 
     // ── (6) THE PROMPT — two shapes, and which one is decided by the envelope ────

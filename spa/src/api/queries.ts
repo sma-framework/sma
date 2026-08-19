@@ -382,6 +382,21 @@ export function useRedirectTask() {
   })
 }
 
+/**
+ * «Одобрить вызов» / «Отказать» — решение по билету, которым стоит живая сессия.
+ * Ходит СУЩЕСТВУЮЩЕЙ дверью переписки и всегда в режиме `queue`: режим прерывания убил бы
+ * ровно ту сессию, которую билет держит. Список маршрутов демона не меняется.
+ */
+export function useDecideToolTicket() {
+  return useMutation<
+    Awaited<ReturnType<typeof api.decideToolTicket>>,
+    Error,
+    { taskId: string; ticketId: string; decision: 'approve' | 'deny'; reason?: string }
+  >({
+    mutationFn: (input) => api.decideToolTicket(input),
+  })
+}
+
 /** Look through the project for helpers that already live there, and take them in. */
 export function useScanImport() {
   return useAction<void, Awaited<ReturnType<typeof api.scanImport>>>(() => api.scanImport())

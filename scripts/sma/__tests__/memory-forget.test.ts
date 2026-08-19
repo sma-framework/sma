@@ -290,7 +290,9 @@ describe('memory forget — one command, and it says which state it applied', ()
     expect(start).toBeGreaterThan(0)
     const block = source.slice(start, source.indexOf('\n}', start))
     const keys = [...block.matchAll(/^\s{2}'?[a-zA-Z0-9:_-]+'?:/gm)].length
-    expect(keys).toBe(90)
+    // 91 since the worker's parking gate became a verb of its own; this number is a LOCK on
+    // «forget did not become one», not a budget, so it moves only when a verb really arrives.
+    expect(keys).toBe(91)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })

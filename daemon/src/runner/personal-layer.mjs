@@ -50,9 +50,12 @@ import {
   unlinkSync as fsUnlinkSync,
 } from 'node:fs'
 import { homedir as osHomedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { TICKET_HOOK_TIMEOUT_S } from '../../../scripts/sma/lib/tool-gate.mjs'
+import shellProjection from '../../../sma-core/bin/lib/shell-command-projection.cjs'
 
 /** Named error: the caller decides what an unreadable or unwritable layer means. */
 export class PersonalLayerError extends Error {
@@ -195,6 +198,88 @@ export function readFounderLayer({ sourceDir, fsImpl, homedir = osHomedir } = {}
   }
 }
 
+/**
+ * TOOL_GATE_MARKER — how our own hook entry recognises itself in a file it does not own.
+ * Written into the entry rather than inferred from the command text: the command carries an
+ * absolute path that differs on every machine, and matching on a path is how a second copy
+ * of the same hook gets appended on every mirror until the file is a list of duplicates.
+ */
+export const TOOL_GATE_MARKER = 'sma-tool-gate'
+
+/** The event the parking gate rides on. Named once, read by the writer and the remover. */
+export const TOOL_GATE_EVENT = 'PreToolUse'
+
+/** This module's own directory — the anchor for the path of the verb the hook runs. */
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * toolGateHookEntry({platform}) → the hook entry that parks a worker's dangerous call.
+ *
+ * THE DECLARED TIMEOUT IS NOT A NUMBER WRITTEN HERE. It is imported from the ticket module,
+ * which declares it beside the SMALLER deadline the gate answers by. Spelled twice, the two
+ * would drift, and the drift has exactly one shape: a hook that outlives the timeout it
+ * declared is cancelled by the harness and the dangerous call goes through.
+ *
+ * The command string is projected by the SAME module every managed hook installation uses —
+ * quoting and path normalisation on Windows are not re-invented here.
+ */
+export function toolGateHookEntry({ platform = process.platform } = {}) {
+  const cliPath = resolve(MODULE_DIR, '..', '..', '..', 'scripts', 'sma', 'cli.mjs')
+  const command = shellProjection.projectShellCommandText({
+    runnerToken: 'node',
+    argTokens: [JSON.stringify(platform === 'win32' ? cliPath.replace(/\\/g, '/') : cliPath), 'tool-gate'],
+    runtime: 'claude',
+    platform,
+  })
+  return {
+    matcher: '*',
+    smaHook: TOOL_GATE_MARKER,
+    hooks: [{ type: 'command', command, timeout: TICKET_HOOK_TIMEOUT_S }],
+  }
+}
+
+/** Всё, что не наше, — чужое и остаётся нетронутым. Один предикат на записывающего и снимающего. */
+function isToolGateEntry(entry) {
+  return !!entry && typeof entry === 'object' && entry.smaHook === TOOL_GATE_MARKER
+}
+
+/**
+ * withToolGateHook(hooks, {platform}) → the same hooks plus ours, APPENDED.
+ *
+ * THE HUMAN'S HOOKS SURVIVE WHOLE. The per-event merge above REPLACES an event's list, which
+ * is right for an override that means «this event is now that» and catastrophically wrong
+ * here: the founder's own hook on the same event would vanish from the worker's file, and
+ * nothing would ever say so. So this one appends, and it removes only its own previous copy
+ * — the mirror runs before every spawn, and a writer that cannot recognise itself turns an
+ * idempotent operation into a growing list.
+ */
+export function withToolGateHook(hooks, { platform = process.platform } = {}) {
+  const out = hooks && typeof hooks === 'object' ? deepCopy(hooks) : {}
+  const existing = Array.isArray(out[TOOL_GATE_EVENT]) ? out[TOOL_GATE_EVENT] : []
+  out[TOOL_GATE_EVENT] = [...existing.filter((e) => !isToolGateEntry(e)), toolGateHookEntry({ platform })]
+  return out
+}
+
+/**
+ * withoutToolGateHook(hooks) → the same hooks minus ours, and nothing else changed.
+ *
+ * The teardown half, exported because a run that installs a hook into a file shared by the
+ * whole machine owes the machine its removal — and a removal done by hand is a removal that
+ * eventually takes a neighbour's line with it. An event left empty by the removal is deleted
+ * rather than left as an empty list: an empty list is a statement, and this one would be a
+ * false one.
+ */
+export function withoutToolGateHook(hooks) {
+  if (!hooks || typeof hooks !== 'object') return hooks
+  const out = deepCopy(hooks)
+  const existing = Array.isArray(out[TOOL_GATE_EVENT]) ? out[TOOL_GATE_EVENT] : null
+  if (!existing) return out
+  const kept = existing.filter((e) => !isToolGateEntry(e))
+  if (kept.length) out[TOOL_GATE_EVENT] = kept
+  else delete out[TOOL_GATE_EVENT]
+  return out
+}
+
 /** Hooks merge per EVENT: an override adds a Stop hook without erasing SessionStart. */
 function mergeHooksByEvent(base, extra) {
   if (!extra || typeof extra !== 'object') return base
@@ -229,7 +314,7 @@ function enabledPluginsFrom(plugins) {
  * @param {{current?:object, founder?:object, plugins?:string[], overrides?:object}} [input]
  * @returns {{settings:object, overridesApplied:string[], overridesDropped:string[]}}
  */
-export function mergeWorkerSettings({ current, founder, plugins = [], overrides = {} } = {}) {
+export function mergeWorkerSettings({ current, founder, plugins = [], overrides = {}, platform = process.platform } = {}) {
   const cur = current && typeof current === 'object' ? current : {}
   const out = { ...cur }
 
@@ -267,6 +352,18 @@ export function mergeWorkerSettings({ current, founder, plugins = [], overrides 
   const enabled = enabledPluginsFrom(plugins)
   if (enabled) out.enabledPlugins = enabled
   out.disableClaudeAiConnectors = true
+
+  // ── THE PARKING GATE, WRITTEN ON EVERY MIRROR, BESIDE THE SWITCHES ABOVE ──
+  //
+  // Independent of any project: the gate arrives with the ACCOUNT, so a worker started on a
+  // project nobody prepared is gated the same as one started on ours. Appended, never
+  // substituted — whatever hooks came from the person keep their place, and our own previous
+  // copy is the only entry this replaces.
+  //
+  // Harmless where it does not belong: with no attempt directory in the environment the gate
+  // answers «allow» and says the gate is not configured, so the same account file can be
+  // shared with sessions this daemon knows nothing about.
+  out.hooks = withToolGateHook(out.hooks, { platform })
 
   return { settings: out, overridesApplied, overridesDropped }
 }

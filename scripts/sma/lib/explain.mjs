@@ -70,6 +70,7 @@ export const COMMAND_TOPICS = {
   'gates-report': 'gates',
   'gates-ack': 'gates',
   'airbag-check': 'gates',
+  'tool-gate': 'gates', // the parking ticket a WORKER's dangerous call waits on
   airbag: 'gates',
   undo: 'gates',
   spend: 'gates',
