@@ -892,32 +892,102 @@ function toolUsesOf(frame) {
 }
 
 /**
- * Record ONE file the session opened into the running memory trace.
+ * WHICH memory file a path names — `{kind, id}` or null for anything that is not one.
  *
  * The account's auto-memory is decided FIRST and returns: its path also ends in `/memory/`,
  * and asking the corpus question first would file it as a note of the project.
+ *
+ * IT DECIDES NOTHING ABOUT THE TRACE. Classifying a path and counting a reading are two acts
+ * on purpose: the first happens when the session ASKS for a file, the second only when the
+ * file came back. See `commitMemoryRead` below for why that separation had to exist.
  */
-function traceMemoryRead(memory, rawPath, scope) {
+function classifyMemoryRead(rawPath, scope) {
   const path = slashed(rawPath)
-  if (!path) return
+  if (!path) return null
   const low = path.toLowerCase()
   const accountDir = slashed(scope.accountDir).toLowerCase().replace(/\/+$/, '')
   const inAccount = (accountDir && low.startsWith(`${accountDir}/`)) || low.includes(ACCOUNT_DIR_MARK)
   if (inAccount && low.includes('/projects/') && low.includes('/memory/')) {
-    pushUnique(memory.autoMemoryReads, noteIdOfPath(path))
-    return
+    return { kind: 'auto', id: noteIdOfPath(path) }
   }
   // The copy is NAMED when we know it, so a read of some other tree's corpus is not counted as
   // this attempt's. Without a copy — a documentary stage runs in none — the segment alone is
   // the best honest answer.
   const workDir = slashed(scope.workDir).toLowerCase().replace(/\/+$/, '')
   const inCorpus = workDir ? low.startsWith(`${workDir}${MEMORY_CORPUS_SEGMENT}`) : low.includes(MEMORY_CORPUS_SEGMENT)
-  if (!inCorpus) return
+  if (!inCorpus) return null
   const id = noteIdOfPath(path)
   // The index is the corpus's front door — «прочитал оглавление» and «прочитал заметку» are
   // two different facts about an attempt and are kept as two.
-  if (/^memory$/i.test(id)) memory.index = true
-  else pushUnique(memory.reads, id)
+  return /^memory$/i.test(id) ? { kind: 'index', id } : { kind: 'note', id }
+}
+
+/**
+ * Record ONE file the session REALLY got back into the running memory trace.
+ *
+ * WHY THIS IS SEPARATE FROM THE CLASSIFIER. The trace used to count a reading the moment the
+ * session asked for the file, and the difference is not academic: a copy provisioned without
+ * `.claude/` answers every such request with «File does not exist», and for a year those
+ * attempts were recorded as having read the project's memory. The claim «работник читал
+ * память» is about what CAME BACK, so it is made here — after the result frame said so.
+ */
+function commitMemoryRead(memory, hit) {
+  if (!hit) return
+  if (hit.kind === 'auto') pushUnique(memory.autoMemoryReads, hit.id)
+  else if (hit.kind === 'index') memory.index = true
+  else pushUnique(memory.reads, hit.id)
+}
+
+/** The tool_result blocks of one user frame, or an empty list for anything else. */
+function toolResultsOf(frame) {
+  const message = frame && typeof frame.message === 'object' && frame.message !== null ? frame.message : null
+  const content = message && Array.isArray(message.content) ? message.content : []
+  return content.filter((b) => b && typeof b === 'object' && b.type === 'tool_result')
+}
+
+/** The text a tool result came back with, whichever of its two shapes the CLI used. */
+function resultTextOf(block) {
+  const content = block && block.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map((part) => (part && typeof part.text === 'string' ? part.text : '')).join('')
+  return ''
+}
+
+/** What a guard's refusal reads like when it arrives as a failed tool result rather than a frame. */
+const TOOL_REFUSAL_RE = /permission|denied|not allowed|blocked|запрещ|не разреш|отказ/i
+
+/** Was this failed result a GUARD refusing, rather than the work itself going wrong? */
+function refusedByGuard(block, text) {
+  // The helper's name is a claim, so it checks the claim itself rather than trusting a caller:
+  // a result that is not an error is work that went its own way, never a guard stopping it.
+  if (!block || block.is_error !== true) return false
+  const meta = Array.isArray(block.tool_result_meta) ? block.tool_result_meta : []
+  if (meta.some((m) => m && typeof m.non_execution_kind === 'string' && m.non_execution_kind)) return true
+  return TOOL_REFUSAL_RE.test(text)
+}
+
+/** A reason a person reads, not a wall: one line, bounded. */
+function shortReason(text) {
+  const one = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return one.length > 200 ? one.slice(0, 200) : one
+}
+
+/** A list of names off an init frame — anything else reads as an absence, never as a throw. */
+function namesOf(value) {
+  return Array.isArray(value) ? value.map((v) => (typeof v === 'string' ? v : String((v && v.name) ?? v))) : []
+}
+
+/** How many outstanding tool calls the stream remembers before it starts forgetting the oldest. */
+const PENDING_TOOLS_CAP = 2000
+
+/** Remember one asked-for tool call; the map is bounded so a long night cannot grow it forever. */
+function rememberPending(map, id, entry) {
+  if (!id) return
+  if (map.size >= PENDING_TOOLS_CAP) {
+    const oldest = map.keys().next()
+    if (!oldest.done) map.delete(oldest.value)
+  }
+  map.set(id, entry)
 }
 
 /**
@@ -1043,9 +1113,19 @@ function writeMemoryLayer(deps, task, { memory, sma, lesson, approachJournaled, 
  */
 function attemptStream(deps, task, streamLines, now, subscription = {}, scope = {}) {
   const log = openAttemptLog(deps, task)
-  const state = { sessionId: null, init: null }
+  const state = { sessionId: null, init: null, runInit: null, permissionDenials: null }
   /** What this session did with memory, accumulated live — see the trace helpers above. */
-  const memory = { index: false, reads: [], autoMemoryReads: [], loadCalls: 0 }
+  const memory = { index: false, reads: [], autoMemoryReads: [], loadCalls: 0, failed: [] }
+  /**
+   * WHAT WAS WATCHING, line by line: every hook the CLI started and answered, and every tool a
+   * guard refused. Collected here rather than derived later because the ledger caps a long line
+   * and a refusal is exactly the kind of frame that arrives long.
+   */
+  const guards = []
+  /** Tool calls the session ASKED for, waiting for the result that decides what they proved. */
+  const pendingTools = new Map()
+  /** Refusals already recorded, so a frame and its failed result do not become two lines. */
+  const deniedIds = new Set()
   /** SessionStart hooks the CLI reported starting — the founder's hook is one of them. */
   let hookStarts = 0
   let lastTouchAt = 0
@@ -1070,8 +1150,47 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
           initPlugins: Array.isArray(frame.plugins) ? frame.plugins : [],
           permissionMode: frame.permissionMode ?? null,
         }
-      } else if (frame.subtype === 'hook_started' && /SessionStart/.test(String(frame.hook_name || ''))) {
-        hookStarts += 1
+        // THE SAME FRAME, KEPT WHOLE for the attempt's run directory. The row above is a
+        // handful of counters a card renders; the record below is what a checking tool has to
+        // compare against the envelope — the tool list the session really got, the skills and
+        // agents it could reach, and the memory directory it was pointed at.
+        state.runInit = {
+          claudeCodeVersion: frame.claude_code_version ?? null,
+          model: frame.model ?? null,
+          permissionMode: frame.permissionMode ?? null,
+          tools: namesOf(frame.tools),
+          skills: namesOf(frame.skills),
+          agents: namesOf(frame.agents),
+          plugins: namesOf(frame.plugins),
+          mcpServers: namesOf(frame.mcp_servers),
+          memoryPathsAuto: (frame.memory_paths && frame.memory_paths.auto) || null,
+        }
+      } else if (frame.subtype === 'hook_started' || frame.subtype === 'hook_response') {
+        if (frame.subtype === 'hook_started' && /SessionStart/.test(String(frame.hook_name || ''))) hookStarts += 1
+        // ONE LINE PER HOOK EVENT. «Хук сработал» was until now a number nobody could open:
+        // the count said two and named neither, and a hook that answered with an error looked
+        // exactly like one that answered with a page of context.
+        guards.push({
+          ts: new Date(now()).toISOString(),
+          kind: frame.subtype,
+          hookName: frame.hook_name ?? null,
+          hookEvent: frame.hook_event ?? null,
+          ...(frame.exit_code === undefined ? {} : { exitCode: frame.exit_code }),
+          ...(frame.outcome === undefined ? {} : { outcome: frame.outcome }),
+          ...(typeof frame.output === 'string' ? { outputBytes: Buffer.byteLength(frame.output, 'utf8') } : {}),
+        })
+      } else if (frame.subtype === 'permission_denied') {
+        // THE GUARD'S OWN WORDS, from the frame it says them in. The failed tool result that
+        // follows carries the same sentence with none of the naming, so this is the source and
+        // the result below is only the fallback.
+        const deniedId = typeof frame.tool_use_id === 'string' ? frame.tool_use_id : null
+        if (deniedId) deniedIds.add(deniedId)
+        guards.push({
+          ts: new Date(now()).toISOString(),
+          kind: 'denied',
+          tool: frame.tool_name ?? null,
+          reason: shortReason(frame.message ?? frame.decision_reason_type ?? 'permission denied'),
+        })
       }
     }
     // WHAT IT OPENED AND WHAT IT LOADED — taken from the frame itself and BEFORE the line is
@@ -1083,15 +1202,53 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
         for (const block of toolUsesOf(frame)) {
           const name = typeof block.name === 'string' ? block.name : ''
           const input = block.input && typeof block.input === 'object' ? block.input : {}
+          const entry = { tool: name }
           if (name === 'Read' && typeof input.file_path === 'string') {
-            traceMemoryRead(memory, input.file_path, scope)
+            const hit = classifyMemoryRead(input.file_path, scope)
+            if (hit) entry.memory = hit
           } else if (SHELL_TOOLS.includes(name) && typeof input.command === 'string') {
-            if (MEMORY_LOAD_RE.test(input.command) && /--tags\b/.test(input.command)) memory.loadCalls += 1
+            if (MEMORY_LOAD_RE.test(input.command) && /--tags\b/.test(input.command)) entry.load = true
           }
+          // ASKED, NOT YET PROVED. Nothing is counted here on purpose — the user frame below
+          // is where a request becomes a fact.
+          rememberPending(pendingTools, typeof block.id === 'string' ? block.id : null, entry)
         }
       } catch {
         /* the trace is an OBSERVATION: a frame it cannot read teaches nothing, breaks nothing */
       }
+    }
+    // WHAT CAME BACK — the half of the conversation the trace never used to read. A tool result
+    // is matched to its request by `tool_use_id`, and only a result that is not an error and
+    // not empty turns a request into something this attempt may claim it did.
+    if (frame && frame.type === 'user') {
+      try {
+        for (const block of toolResultsOf(frame)) {
+          const resultId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
+          const pending = resultId ? pendingTools.get(resultId) : null
+          if (resultId) pendingTools.delete(resultId)
+          const text = resultTextOf(block)
+          const errored = block.is_error === true
+          const empty = text.trim() === ''
+          if (pending && pending.memory) {
+            if (!errored && !empty) commitMemoryRead(memory, pending.memory)
+            else memory.failed.push({ kind: pending.memory.kind, id: pending.memory.id, reason: errored ? 'read failed' : 'read empty' })
+          } else if (pending && pending.load) {
+            if (!errored && !empty) memory.loadCalls += 1
+            else memory.failed.push({ kind: 'load', reason: errored ? 'load failed' : 'load empty' })
+          }
+          if (errored && refusedByGuard(block, text) && !(resultId && deniedIds.has(resultId))) {
+            if (resultId) deniedIds.add(resultId)
+            guards.push({ ts: new Date(now()).toISOString(), kind: 'denied', tool: (pending && pending.tool) || null, reason: shortReason(text) })
+          }
+        }
+      } catch {
+        /* an unreadable result frame teaches nothing and breaks nothing (fail-open) */
+      }
+    }
+    // WHAT THE VENDOR ITSELF COUNTED AS REFUSED. Kept beside our own count rather than instead
+    // of it: the two disagreeing is a finding about the guards, not a bug in this reader.
+    if (frame && frame.type === 'result' && Array.isArray(frame.permission_denials)) {
+      state.permissionDenials = frame.permission_denials.length
     }
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
     // The sentence a person reads is built HERE, off the frame that was just parsed and
@@ -1147,10 +1304,25 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
       reads: [...memory.reads],
       autoMemoryReads: [...memory.autoMemoryReads],
       loadCalls: memory.loadCalls,
+      // WHAT WAS ASKED FOR AND DID NOT COME BACK. An absent list and a list of failures are
+      // different answers to «did the worker read the memory», and the second one is the one
+      // that explains an attempt that behaved as if the corpus were empty.
+      failed: memory.failed.map((f) => ({ ...f })),
     }),
     // Null when the session never opened one: an absent init is «we did not see it», which is
     // not the same statement as «the layer was empty», and the row must not confuse the two.
     initOf: () => (state.init ? { ...state.init, initHooks: hookStarts } : null),
+    // The whole opening frame, for the attempt's run directory (see the init branch above).
+    runInitOf: () => (state.runInit ? { ...state.runInit } : null),
+    // Hooks and refusals, in the order the stream produced them. A snapshot, like the memory
+    // trace: a reader must not be able to change what was observed.
+    guardsOf: () => guards.map((g) => ({ ...g })),
+    // How many tool calls the vendor's own result frame counted as refused; null when it said
+    // nothing, which is not the same claim as zero.
+    permissionDenialsOf: () => state.permissionDenials,
+    // WHERE THIS ATTEMPT'S TRANSCRIPT LIVES. The run directory references it instead of
+    // copying it, and only the writer knows the path it chose.
+    logFileOf: () => (log && typeof log.file === 'string' ? log.file : null),
   }
 }
 
