@@ -44,6 +44,8 @@ import {
   EXPERIMENTS,
   MEMORY_EVAL_CHECK_COMMAND,
   MEMORY_EXPERIMENT_CHECK_COMMAND,
+  CONTROL_ARM_PATH,
+  controlArmOptions,
 } from '../lib/memory-eval.mjs'
 import { isSafeCommand } from '../lib/predict.mjs'
 
@@ -521,5 +523,53 @@ describe('the floors verdict exists only when the set asked something', () => {
     writeCases([{ task: 'read the crm rule', expected_notes: ['core-rule.md'], critical_notes: [], forbidden_notes: [] }])
     const measured = captureMemoryExperiment({ ...opts(), indexPath: join(dir, 'idx.sqlite'), lexical: lexicalDouble(['auth-detail.md']) })
     expect(measured.floor_verdict).toBe('met')
+  })
+})
+
+// ── the control arm is the FACET path, stated as a test rather than a comment ──
+//
+// «The control is the default path» was a true sentence while the default path was
+// facet-only. The delivery point can fuse now, so that sentence has an expiry date on
+// it, and an A/B whose control quietly became hybrid would be comparing the layer with
+// itself and reporting — consistently, run after run — that it changes nothing. That
+// failure is invisible in the numbers, which is exactly why the control arm's options
+// are built by a named function that can be called, and asserted on, on its own.
+
+describe('captureMemoryExperiment — the control arm is the facet path, and it is asserted', () => {
+  it('names the path it is, rather than «whatever the default happens to be»', () => {
+    expect(CONTROL_ARM_PATH).toBe('facet')
+  })
+
+  it('strips every lexical option from the control arm, and keeps everything else', () => {
+    const stripped = controlArmOptions({
+      corpusDir: '/corpus',
+      casesPath: '/cases.jsonl',
+      budget: 1234,
+      experiment: 'lexical',
+      indexPath: '/idx.sqlite',
+      lexical: { queryLexical: () => ({ results: [] }) },
+    })
+
+    expect(stripped.experiment).toBeUndefined()
+    expect(stripped.indexPath).toBeUndefined()
+    expect(stripped.lexical).toBeUndefined()
+    // …and it is a STRIP, not a rebuild: nothing else about the run is dropped with it
+    expect(stripped).toMatchObject({ corpusDir: '/corpus', casesPath: '/cases.jsonl', budget: 1234 })
+  })
+
+  it('delivers what only the layer can reach in the experiment arm, and not in the control', () => {
+    writeCases([
+      { task: 'fix the crm handler', class: 'exact', expected_notes: ['auth-detail.md'], critical_notes: [], forbidden_notes: [] },
+    ])
+
+    // `auth-detail.md` carries no facet this task names: the ONLY way into a pack is the
+    // layer. Seeing it on both sides would mean the control had started fusing too.
+    const r = captureMemoryExperiment({ ...opts(), indexPath: join(dir, 'idx.sqlite'), lexical: lexicalDouble(['auth-detail.md']) })
+
+    // the control never reaches it: recall stays at zero on the facet path…
+    expect(r.arms.control.recall_at[3]).toBe(0)
+    // …while the arm that asked the layer does reach it
+    expect(r.arms.experiment.recall_at[3]).toBeGreaterThan(0)
+    expect(r.summary.recall_delta_pct).toBeGreaterThan(0)
   })
 })
