@@ -4357,7 +4357,19 @@ async function renderStatuslineEntry({ flags, dirs }) {
   const pulse = ownSession ? notify.derivePulse(ownSession, {}) : 'idle'
 
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-  const state = await statusline.readStatuslineState({ dirs: { ...dirs, repoRoot }, summary, ownSession, pulse })
+  // The window axis is named after the SUBSCRIPTION window, so it is fed by the reading
+  // that just arrived on stdin — the same figure the person reads off his own line. The
+  // spend-against-a-cap percentage stays as the fallback inside readStatuslineState for
+  // when no reading came (no subscription / before the first reply / a manual call). The
+  // reading now has two consumers off ONE parse: the daemon snapshot above and this axis.
+  const vendorWindowPct = status.rateLimits && status.rateLimits.five_hour ? status.rateLimits.five_hour.usedPercentage : undefined
+  const state = await statusline.readStatuslineState({
+    dirs: { ...dirs, repoRoot },
+    summary,
+    ownSession,
+    pulse,
+    vendorWindowPct: Number.isFinite(vendorWindowPct) ? vendorWindowPct : undefined,
+  })
   const segment = statusline.renderSegment(state, { ansi: isEnvOn(process.env.SMA_STATUSLINE_ANSI) })
 
   // Composition (segment-not-takeover): the user's own line first, then ' · ' + segment.

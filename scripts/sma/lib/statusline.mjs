@@ -113,12 +113,24 @@ function colorize(seg, pulse) {
  *
  * The cheap axes (claim, collisions, pulse) are recomputed on every call from the
  * injected summary/ownSession — no fs beyond what the caller already read. The
- * expensive axes (windowPct, gates, unscored) come from the two-tier cache. A corrupt
+ * expensive axes (gates, unscored) come from the two-tier cache. A corrupt
  * cache.json is treated as absent -> a silent full rebuild (readJsonSafe -> null).
+ *
+ * The WINDOW axis has two sources, in this order:
+ *   1. `vendorWindowPct` — the subscription reading the vendor pipes on stdin at every
+ *      render (rate_limits.five_hour.used_percentage, see parseStatusStdin). It is a
+ *      CHEAP INJECTED axis like claim/collisions/pulse: stdin is fresh on every render,
+ *      so it needs no TTL and is deliberately NOT written to cache.json. A call without
+ *      stdin therefore shows the fallback or a dash — that is the truth about what the
+ *      caller handed in, not a defect.
+ *   2. the cached spend-against-the-budget-cap figure — the FALLBACK for when no reading
+ *      arrived (no subscription, before the first model reply of a session, manual call).
+ * A non-finite reading is no reading at all and never displaces the fallback.
  *
  * @param {{
  *   dirs?:{statuslineDir?:string, spendDir?:string, breakerDir?:string, calibrationDir?:string, smaRoot?:string, repoRoot?:string},
  *   summary?:object, ownSession?:object|null, pulse?:string,
+ *   vendorWindowPct?:number,
  *   now?:number|Function, force?:boolean,
  *   loaders?:{loadSpend?:Function, loadGates?:Function, loadUnscored?:Function}
  * }} [opts]
@@ -167,7 +179,8 @@ export async function readStatuslineState(opts = {}) {
       pulse: resolvePulse(opts.pulse, ownSession),
       claim: ownClaimLabel(ownSession),
       collisions: Number.isFinite(summary.collisions) ? summary.collisions : 0,
-      windowPct: numOrNull(fast.windowPct),
+      // the injected subscription reading first, the cached spend figure as the fallback
+      windowPct: Number.isFinite(opts.vendorWindowPct) ? Number(opts.vendorWindowPct) : numOrNull(fast.windowPct),
       gates: numOrNull(fast.gates),
       unscored: numOrNull(preds.unscored),
     }
