@@ -6654,6 +6654,217 @@ async function cmdDecisions({ positionals, flags }) {
   return 1
 }
 
+// ══════════════════ approvals suggest — the acceptance-rule suggester ═══════════════════
+//
+// WHY IT EXISTS. A system that only ever ASKS makes a person answer the same question the
+// twentieth time exactly as he answered it the first nineteen. The history of those answers
+// is already on disk — the attempt ledger records every try and the queue records what
+// happened to it afterwards — so the standing rules a person has been living by can be READ
+// OFF that history instead of demanded from him again.
+//
+// THREE THINGS IT DELIBERATELY DOES NOT DO, and each is the whole point:
+//   - it asks no model. The proposal is arithmetic over rows: same ledger, same answer, every
+//     time, on a machine with no network and no key. A suggestion a model invented would be a
+//     confident number wearing the clothes of a measurement.
+//   - it prints no figure without its denominator. «Одобрено 9 раз» is unfalsifiable;
+//     «одобрено без возврата 9 из 9» can be checked and can be wrong.
+//   - below the threshold it refuses to propose anything and says how little it has. A rule
+//     inferred from three cases is an invented number in a different outfit.
+//
+// AND IT ENABLES NOTHING. Turning a standing rule on is a separate, explicit human step —
+// the same shape as importing somebody else's agents. This verb writes no file, touches no
+// config and opens no door: the surface is a CLI verb precisely so the web face's frozen
+// route list stays untouched.
+
+/** The word for a source prefix, so the output speaks about work rather than about ids. */
+const APPROVAL_CLASS_WORDS = Object.freeze({ R: 'ростер', BL: 'бэклог', F: 'кузница', S: 'смежная работа', B: 'пакет' })
+
+/**
+ * The human decisions found in ONE task's folded attempt records, in order.
+ *
+ * THE HONEST SIGN OF A HUMAN DECISION, read off the queue's own rules rather than guessed:
+ * the queue retries a FAILED attempt by itself, and only a person sends FINISHED work back.
+ * So within one task's history:
+ *   - a `completed` attempt with another attempt after it → the person RETURNED it;
+ *   - the LAST attempt, when it is `completed` → the person ACCEPTED it;
+ *   - `failed` followed by another attempt → the queue's own retry, nobody decided anything;
+ *   - a last attempt that failed → nothing has been decided yet.
+ * Rows nobody watched (`reconstructed`) are dropped before any of this: reconcile appends
+ * them from a retry counter after the fact, and a decision inferred from one would be a
+ * decision nobody made.
+ */
+function approvalDecisionsOf(records) {
+  const out = []
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i]
+    if (!rec || rec.outcome !== 'completed') continue
+    out.push({ kind: i === records.length - 1 ? 'accepted' : 'returned', provider: rec.provider })
+  }
+  return out
+}
+
+/**
+ * cmdApprovals — deterministic acceptance-rule suggester over the attempt ledger.
+ *
+ * `sma approvals suggest [--ledger <dir>] [--min <n>] [--json]` folds the ledger into the
+ * decisions a PERSON made, groups them by class of work, and prints a standing rule for every
+ * class with enough history behind it — each with the reason and its denominator. Prints
+ * proposals only: it never enables anything and never writes. Read-only, zero network,
+ * NO MODEL anywhere in the computation.
+ */
+async function cmdApprovals({ positionals, flags }) {
+  const sub = positionals[0]
+  if (sub !== 'suggest') {
+    process.stderr.write('SMA approvals: usage — approvals suggest [--ledger <dir>] [--min <n>] [--json]\n')
+    return 1
+  }
+
+  const { homedir } = await import('node:os')
+  const min = Number.isFinite(Number(flags.min)) && Number(flags.min) > 0 ? Math.floor(Number(flags.min)) : 5
+
+  // WHERE THE HISTORY LIVES, resolved the way the daemon resolves it: an explicit value in
+  // the daemon's own config wins, and otherwise the ledger sits beside that config. Read
+  // fail-open and by hand rather than by importing the daemon — the CLI and the daemon are
+  // separate layers, and a missing or unreadable config must cost a default, not an error.
+  let ledgerDir = typeof flags.ledger === 'string' && flags.ledger ? flags.ledger : ''
+  if (!ledgerDir) {
+    const configPath = process.env.SMA_DAEMON_CONFIG || join(homedir(), '.sma-daemon', 'config.json')
+    let stated = ''
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf8'))
+      if (parsed && typeof parsed.ledgerDir === 'string' && parsed.ledgerDir) stated = parsed.ledgerDir
+    } catch {
+      /* no config, unreadable config, or not JSON — the default below still stands */
+    }
+    ledgerDir = stated || join(dirname(configPath), 'ledger')
+  }
+
+  // ── read the ledger: one file per task, one JSON object per line, fail-open throughout ──
+  let names = []
+  try {
+    names = readdirSync(ledgerDir) || []
+  } catch {
+    names = [] // no directory is «нет данных», never an exception
+  }
+
+  const byClass = new Map()
+  let tasksRead = 0
+  for (const raw of [...names].map(String).sort()) {
+    // the two siblings living in the same directory are other layers, not attempts
+    if (!raw.endsWith('.jsonl')) continue
+    if (raw.endsWith('.journal.jsonl') || raw.endsWith('.log.ndjson')) continue
+    const taskId = raw.slice(0, -'.jsonl'.length)
+    if (!taskId) continue
+    let text = ''
+    try {
+      text = readFileSync(join(ledgerDir, raw), 'utf8')
+    } catch {
+      continue // one unreadable file never costs the whole answer
+    }
+    tasksRead++
+
+    // FOLD: two writers append for the same try (the state transition and the tick), so rows
+    // are merged by attempt number and the last non-empty value of a field wins. Counting rows
+    // instead would double every observed attempt.
+    const merged = new Map()
+    const order = []
+    let unnumbered = 0
+    for (const line of text.split('\n')) {
+      const s = line.trim()
+      if (!s) continue
+      let row
+      try {
+        row = JSON.parse(s)
+      } catch {
+        continue // a torn line costs its own line and nothing else
+      }
+      if (!row || typeof row !== 'object') continue
+      if (row.reconstructed === true) continue
+      const key = Number.isFinite(row.attempt) ? `a:${row.attempt}` : `u:${unnumbered++}`
+      const prev = merged.get(key)
+      if (!prev) {
+        merged.set(key, { ...row })
+        order.push(key)
+        continue
+      }
+      const next = { ...prev }
+      for (const [k, v] of Object.entries(row)) {
+        if (v === null || v === undefined || v === '') continue
+        next[k] = v
+      }
+      merged.set(key, next)
+    }
+    // attempts in the order the ledger states them: numbered ones by number, so «после этой
+    // попытки была ещё одна» is a fact about the try and not about the order of the writes
+    const records = order
+      .map((k) => merged.get(k))
+      .sort((a, b) => (Number.isFinite(a.attempt) && Number.isFinite(b.attempt) ? a.attempt - b.attempt : 0))
+
+    for (const decision of approvalDecisionsOf(records)) {
+      // THE CLASS is what a standing rule could be about: where the work came from (the id
+      // prefix the doors mint) and, when the row names one, which provider ran it.
+      const prefix = taskId.includes('-') ? taskId.slice(0, taskId.indexOf('-')) : taskId
+      const provider = typeof decision.provider === 'string' && decision.provider ? decision.provider : ''
+      const key = provider ? `${prefix} ${provider}` : prefix
+      const bucket = byClass.get(key) || { prefix, provider, accepted: 0, returned: 0 }
+      if (decision.kind === 'accepted') bucket.accepted++
+      else bucket.returned++
+      byClass.set(key, bucket)
+    }
+  }
+
+  // ── the proposal, one per class, from the counts alone ──
+  const classes = [...byClass.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([, b]) => {
+      const total = b.accepted + b.returned
+      const word = APPROVAL_CLASS_WORDS[b.prefix] || b.prefix
+      const label = b.provider ? `${word} (${b.provider})` : word
+      if (total < min) {
+        return { class: label, decisions: total, accepted: b.accepted, returned: b.returned, enough: false, rule: null, basis: null }
+      }
+      let rule = null
+      let basis = null
+      if (b.returned === 0) {
+        rule = 'принимать без вопроса'
+        basis = `одобрено без возврата ${b.accepted} из ${total}`
+      } else if (b.returned * 2 > total) {
+        rule = 'всегда спрашивать'
+        basis = `возвращено ${b.returned} из ${total}`
+      } else {
+        basis = `одобрено ${b.accepted} из ${total}, возвращено ${b.returned} из ${total}`
+      }
+      return { class: label, decisions: total, accepted: b.accepted, returned: b.returned, enough: true, rule, basis }
+    })
+
+  const decisionsTotal = classes.reduce((n, c) => n + c.decisions, 0)
+
+  if (wantsJson(flags)) {
+    // The same truth machine-readable — the ledger's location is deliberately not in it:
+    // what travels out is classes, counts and denominators, never a path or a note's text.
+    printJson({ minDecisions: min, tasks: tasksRead, decisions: decisionsTotal, classes, enabledAnything: false, wrote: false })
+    return 0
+  }
+
+  const out = ['SMA approvals suggest — предложения стоячих правил приёмки из истории решений.\n\n']
+  if (decisionsTotal === 0) {
+    out.push('  данных нет: в истории попыток нет ни одного решения человека.\n')
+  } else {
+    for (const c of classes) {
+      if (!c.enough) {
+        out.push(`  ${c.class} — данных мало, ${c.decisions} решений\n`)
+      } else if (c.rule) {
+        out.push(`  ${c.class} — ${c.rule}\n    основание: ${c.basis}\n`)
+      } else {
+        out.push(`  ${c.class} — стоячего правила нет\n    основание: ${c.basis}\n`)
+      }
+    }
+  }
+  out.push('\nЭто предложения, не правила: включение — отдельный шаг человека. Команда ничего не изменила.\n')
+  process.stdout.write(out.join(''))
+  return 0
+}
+
 /**
  * cmdExam — the replay exam (calibration metric).
  *
@@ -10489,6 +10700,7 @@ const HANDLERS = {
   memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
   'ship-lane': cmdShipLane, // ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
+  approvals: cmdApprovals, // deterministic acceptance-rule suggester over the attempt ledger (suggest); prints proposals only, enabling is a separate human step; read-only, no model
   exam: cmdExam, // replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
   update: cmdUpdate, // v5 — consumer-side updater: version report (installed vs npm vs local source) | --yes re-runs the standard installer | --selftest; memory corpus + .sma state PRESERVED (installer guarantee)
 }
@@ -10512,7 +10724,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|approvals|exam|update>\n',
     )
     return 0
   }
