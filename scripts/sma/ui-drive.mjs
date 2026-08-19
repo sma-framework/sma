@@ -31,6 +31,8 @@ import { pathToFileURL } from 'node:url'
 import {
   DESTRUCTIVE_RE,
   INTERACTIVE_SELECTOR,
+  OVERFLOW_SCAN_DEPTH,
+  OVERFLOW_SCAN_NODES,
   SWEEP_CAP,
   VIEWPORTS,
   classify,
@@ -39,6 +41,7 @@ import {
   parseSteps,
   renderReceipt,
   verdict,
+  worstOverflow,
 } from './lib/ui-drive.mjs'
 
 /**
@@ -288,11 +291,41 @@ async function main() {
       } catch (err) {
         stepFailures.push({ step: `open ${url} at ${vp.name}`, error: err.message.split('\n')[0] })
       }
-      // Measured, not judged: content wider than its viewport means the page scrolls sideways.
-      const box = await page
-        .evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }))
+      // Measured, not judged: a box holding more content than it can show means part of the
+      // screen lies past the edge. The document is only the FIRST box measured — a window may
+      // carry its minimum width on a container INSIDE the page, and then the document measures
+      // perfectly clean while most of the screen is off it (see OVERFLOW_SCAN_DEPTH).
+      const boxes = await page
+        .evaluate(
+          ({ maxDepth, maxNodes }) => {
+            const name = (el) => {
+              const tag = el.tagName.toLowerCase()
+              if (el.id) return `${tag}#${el.id}`
+              const cls = String(el.getAttribute('class') || '')
+                .trim()
+                .split(/\s+/)[0]
+              return cls ? `${tag}.${cls}` : tag
+            }
+            const out = []
+            const visit = (el, depth) => {
+              if (depth > maxDepth || out.length >= maxNodes) return
+              const overflowX = getComputedStyle(el).overflowX
+              out.push({
+                element: name(el),
+                scrollWidth: el.scrollWidth,
+                clientWidth: el.clientWidth,
+                scrollable: overflowX === 'auto' || overflowX === 'scroll',
+              })
+              for (const child of el.children) visit(child, depth + 1)
+            }
+            visit(document.documentElement, 0)
+            return out
+          },
+          { maxDepth: OVERFLOW_SCAN_DEPTH, maxNodes: OVERFLOW_SCAN_NODES }
+        )
         .catch(() => null)
-      if (box && box.scrollWidth > box.clientWidth + 1) overflows.push({ ...box, viewport: vp.name })
+      const worst = worstOverflow(boxes ?? [], { viewport: vp.name })
+      if (worst) overflows.push(worst)
       await capture(page, `01-open-${vp.name}`)
       await closePage(page)
     }
