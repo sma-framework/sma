@@ -3389,6 +3389,41 @@ function memoryWriteUsage(schema) {
 }
 
 /**
+ * The corpus `memory write` writes to when the caller names none: the CURRENT
+ * tree's own `.claude/memory`.
+ *
+ * WHY IT IS NOT THE SHARED ROOT. The coordination directory is resolved through
+ * git's COMMON directory, so from every linked working copy it answers with the
+ * MAIN checkout — and that is deliberate: claims, sessions and the journal have
+ * to be ONE list, or two terminals working the same project cannot see each
+ * other. The corpus is the opposite case. A lesson written inside a worker's copy
+ * belongs to that copy's branch and travels with it to review; taking its
+ * directory from the shared root files the note in the MAIN tree instead — off
+ * the branch, past the acceptance step, and invisible to whoever reads that
+ * branch. The note is not lost, it is filed under someone else's name.
+ *
+ * So the question is asked of the CURRENT directory: which tree am I standing in.
+ * Outside a repository — or with no git at all — the previous answer stands: the
+ * parent of the coordination root, or the working directory.
+ */
+async function resolveCorpusDefault({ cwd = process.cwd(), dirs } = {}) {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: GIT_READ_STDIO,
+    }).trim()
+    // git answers in forward slashes even on Windows; a mixed answer is levelled
+    // here so the corpus path is one shape before `join` ever sees it.
+    if (top) return join(top.replace(/[\\/]+/g, '/'), '.claude', 'memory')
+  } catch {
+    /* not a repository, or no git — fall through to the shared root's parent */
+  }
+  return join(dirs?.smaRoot ? dirname(dirs.smaRoot) : cwd, '.claude', 'memory')
+}
+
+/**
  * memory write — the memory-write surface of the canon pipeline.
  *
  * One event in, one traced verdict out. The verb itself decides NOTHING about
@@ -3407,8 +3442,8 @@ async function cmdMemoryWrite({ flags, dirs }) {
     return 0
   }
 
-  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+  const corpusDir =
+    typeof flags.corpus === 'string' ? flags.corpus : await resolveCorpusDefault({ cwd: process.cwd(), dirs })
 
   // ── apply: one staged draft, one named confirmation, one explicit yes ──────
   // The door OUT of drafts/. It is the same shape `memory migrate --apply`
