@@ -35,6 +35,8 @@ const FAKE_ROOT = '/fake-root'
 const VERSION = '9.9.9'
 const TESTS = 12
 const FILES = 3
+/** The verb total of the fixture CLI: its dispatch table declares exactly these three. */
+const VERBS = 3
 
 // ── fixture builders ──────────────────────────────────────────────────────────
 
@@ -98,10 +100,41 @@ function graphHtml(opts: { version?: string; tests?: number; files?: number; dro
   ].join('\n')
 }
 
-function readmeMd(lang: 'en' | 'ru', opts: { version?: string } = {}) {
+function readmeMd(lang: 'en' | 'ru', opts: { version?: string; verbs?: number | null } = {}) {
   const v = opts.version ?? VERSION
   const alt = lang === 'ru' ? `версия ${v}` : `version ${v}`
-  return `# SMA\n<img src="https://img.shields.io/badge/version-${v}-3B82F6" alt="${alt}">\n`
+  const n = opts.verbs === undefined ? VERBS : opts.verbs
+  const sentence =
+    n === null
+      ? lang === 'ru'
+        ? 'Под капотом работает подотчётный CLI.\n'
+        : 'Underneath runs the accountability CLI.\n'
+      : lang === 'ru'
+        ? `Под капотом работает координационно-подотчётный CLI — ${n} команд.\n`
+        : `Underneath runs the coordination + accountability CLI — ${n} verbs.\n`
+  return `# SMA\n<img src="https://img.shields.io/badge/version-${v}-3B82F6" alt="${alt}">\n${sentence}`
+}
+
+/**
+ * The three documents outside the READMEs that also name the verb total. They are here
+ * because of what the gate missed once: it watched a single file, the rest of the places
+ * were «correct today», and three shipped documents drifted while the audit printed zero.
+ * Each place therefore gets its own fixture and its own red test below — one test standing
+ * in for all of them would rebuild exactly the blind spot this list exists to remove.
+ */
+function detailsMd(lang: 'en' | 'ru', n: number | null) {
+  if (n === null) {
+    return lang === 'ru' ? '## Справочник CLI\n\nПод капотом работает CLI.\n' : '## The CLI reference\n\nThe CLI runs underneath.\n'
+  }
+  return lang === 'ru'
+    ? `## Справочник CLI\n\nПод капотом работает координационно-подотчётный CLI: ${n} команд.\n`
+    : `## The CLI reference\n\nThe coordination + accountability CLI runs underneath — ${n} verbs.\n`
+}
+
+function installMd(n: number | null) {
+  return n === null
+    ? 'node scripts/sma/cli.mjs explain <verb>  # what a verb is for\n'
+    : `node scripts/sma/cli.mjs explain <verb>  # what any of the ${n} verbs is for\n`
 }
 
 /** The installer: one read of the package version, handed to the block writer, no copy. */
@@ -119,6 +152,17 @@ function installerMjs(opts: { literal?: string; unwired?: boolean } = {}) {
   ].join('\n')
 }
 
+/** Every file that names the verb total. The list mirrors VERB_COUNT_PLACES of the audit. */
+const VERB_COUNT_FILES = [
+  'scripts/sma/README.md',
+  'README.md',
+  'README.ru.md',
+  'docs/DETAILS.md',
+  'docs/DETAILS.ru.md',
+  'docs/INSTALL.md',
+] as const
+type VerbCountFile = (typeof VERB_COUNT_FILES)[number]
+
 type FixtureOpts = {
   server?: Parameters<typeof serverMjs>[0]
   cli?: Parameters<typeof cliMjs>[0]
@@ -127,7 +171,12 @@ type FixtureOpts = {
   version?: string
   capabilityVersion?: string
   markerVersion?: string
-  cliReadmeCount?: number
+  /**
+   * One planted verb total per file. `null` means the place stops naming the number at
+   * all — a different violation from naming a wrong one, and it has to stay different:
+   * a rule left with nothing to match is an empty rule that passes forever.
+   */
+  verbCounts?: Partial<Record<VerbCountFile, number | null>>
   testScript?: string
   noReceipt?: boolean
   templateWriter?: string
@@ -137,6 +186,8 @@ type FixtureOpts = {
 /** The whole fixture tree, consistent by default: a clean run must score zero. */
 function fixtureFiles(o: FixtureOpts = {}): Record<string, string> {
   const version = o.version ?? VERSION
+  const vc = (f: VerbCountFile) => (o.verbCounts && f in o.verbCounts ? (o.verbCounts[f] as number | null) : VERBS)
+  const cliReadme = vc('scripts/sma/README.md')
   const files: Record<string, string> = {
     'package.json': JSON.stringify({
       version,
@@ -144,10 +195,14 @@ function fixtureFiles(o: FixtureOpts = {}): Record<string, string> {
     }),
     'daemon/src/front/server.mjs': serverMjs(o.server),
     'scripts/sma/cli.mjs': cliMjs(o.cli),
-    'scripts/sma/README.md': `All ${o.cliReadmeCount ?? 3}, grouped by what they are for.`,
+    'scripts/sma/README.md':
+      cliReadme === null ? 'The verbs, grouped by what they are for.' : `All ${cliReadme}, grouped by what they are for.`,
     'docs/master-graph.html': graphHtml(o.graph),
-    'README.md': readmeMd('en', { version }),
-    'README.ru.md': readmeMd('ru', { version }),
+    'README.md': readmeMd('en', { version, verbs: vc('README.md') }),
+    'README.ru.md': readmeMd('ru', { version, verbs: vc('README.ru.md') }),
+    'docs/DETAILS.md': detailsMd('en', vc('docs/DETAILS.md')),
+    'docs/DETAILS.ru.md': detailsMd('ru', vc('docs/DETAILS.ru.md')),
+    'docs/INSTALL.md': installMd(vc('docs/INSTALL.md')),
     'sma-core/capabilities/sma/capability.json': JSON.stringify({ version: o.capabilityVersion ?? version }),
     'sma-core/VERSION': `${o.markerVersion ?? version}\n`,
     'bin/init.mjs': installerMjs(o.installer),
@@ -245,9 +300,71 @@ describe('the numbers audit — every rule can go red', () => {
     expect(hasRule(violations, 'own-help-count')).toBe(true)
   })
 
-  it("a stale verb total in the CLI's own README is named", () => {
-    const { violations } = runFixture({ cliReadmeCount: 89 })
-    expect(hasRule(violations, 'scripts-readme-verb-count')).toBe(true)
+  /**
+   * The verb total, place by place. Deliberately NOT one test with a loop over the list
+   * and NOT one test standing in for all six: the failure this group exists to prevent
+   * was precisely a place nobody was watching, so each place has to be able to fail on
+   * its own name, and a place deleted from the audit's list has to take a named test
+   * with it rather than quietly shrink a loop.
+   */
+  it("a stale verb total in the CLI's own README is named, with its file", () => {
+    const { violations } = runFixture({ verbCounts: { 'scripts/sma/README.md': 89 } })
+    const v = violations.find((x) => x.rule === 'verb-count')
+    expect(v?.file).toBe('scripts/sma/README.md')
+    expect(v?.detail).toContain('scripts/sma/README.md')
+    expect(v?.detail).toContain('89')
+  })
+
+  it('a stale verb total in the English README is named, with its file', () => {
+    const { violations } = runFixture({ verbCounts: { 'README.md': 89 } })
+    const v = violations.find((x) => x.rule === 'verb-count')
+    expect(v?.file).toBe('README.md')
+    expect(v?.detail).toContain('README.md')
+  })
+
+  it('a stale verb total in the Russian README is named, with its file', () => {
+    const { violations } = runFixture({ verbCounts: { 'README.ru.md': 89 } })
+    const v = violations.find((x) => x.rule === 'verb-count')
+    expect(v?.file).toBe('README.ru.md')
+    expect(v?.detail).toContain('README.ru.md')
+  })
+
+  it('a stale verb total in the English details is named, with its file', () => {
+    const { violations } = runFixture({ verbCounts: { 'docs/DETAILS.md': 89 } })
+    const v = violations.find((x) => x.rule === 'verb-count')
+    expect(v?.file).toBe('docs/DETAILS.md')
+    expect(v?.detail).toContain('docs/DETAILS.md')
+  })
+
+  it('a stale verb total in the Russian details is named, with its file', () => {
+    const { violations } = runFixture({ verbCounts: { 'docs/DETAILS.ru.md': 89 } })
+    const v = violations.find((x) => x.rule === 'verb-count')
+    expect(v?.file).toBe('docs/DETAILS.ru.md')
+    expect(v?.detail).toContain('docs/DETAILS.ru.md')
+  })
+
+  it('a stale verb total in the install guide is named, with its file', () => {
+    const { violations } = runFixture({ verbCounts: { 'docs/INSTALL.md': 89 } })
+    const v = violations.find((x) => x.rule === 'verb-count')
+    expect(v?.file).toBe('docs/INSTALL.md')
+    expect(v?.detail).toContain('docs/INSTALL.md')
+  })
+
+  it('two places drifting at once are two violations, one per file, not one summary', () => {
+    const { violations } = runFixture({ verbCounts: { 'docs/INSTALL.md': 89, 'docs/DETAILS.ru.md': 44 } })
+    const files = violations.filter((v) => v.rule === 'verb-count').map((v) => v.file).sort()
+    expect(files).toEqual(['docs/DETAILS.ru.md', 'docs/INSTALL.md'])
+  })
+
+  it('a place that stops naming the number at all is its own violation, never a quiet pass', () => {
+    for (const file of VERB_COUNT_FILES) {
+      const { violations } = runFixture({ verbCounts: { [file]: null } })
+      const v = violations.find((x) => x.rule === 'verb-count-missing')
+      expect(v?.file, `${file} went silent unnoticed`).toBe(file)
+      expect(v?.detail).toContain(file)
+      // and it is NOT reported as a wrong number: «gone» and «wrong» are different words
+      expect(hasRule(violations, 'verb-count')).toBe(false)
+    }
   })
 
   it('a version inside a marked span of the map that is not the package version is named', () => {
