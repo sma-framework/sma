@@ -42,7 +42,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -78,7 +78,9 @@ import {
   createAttemptLogWriter,
   readAttemptLog,
 } from '../src/queue/attempt-ledger.mjs'
-import { appendRedirect, readPendingRedirects } from '../src/runner/redirects.mjs'
+import { appendRedirect, readPendingRedirects, redirectFileOf } from '../src/runner/redirects.mjs'
+import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
+import { formatDecision, parseDecision, ticketIdFor } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
 // The mirror and the argument builder are used AS THEMSELVES in the wiring cases at the
 // foot of this file: a fake of either could not be poorer than the library, and a fake of
@@ -3554,6 +3556,66 @@ describe('личный слой и наши серверы доезжают до
     expect(run.init.unregisteredMcpTools).toEqual(['mcp__foreignproject__beacon'])
   })
 
+  it('провод: каталог попытки и файл переписки доезжают до ОКРУЖЕНИЯ процесса и до записи попытки', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const dataDir = mkDir('sma-data-')
+    // Что процесс УВИДЕЛ в момент запуска — а не то, что оказалось на диске потом.
+    const seen: Array<{ env: Record<string, string>; runDirExisted: boolean }> = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, dataDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        seen.push({
+          env: { ...(spec.env || {}) },
+          runDirExisted: existsSync(String((spec.env || {}).SMA_RUN_DIR || '')),
+        })
+        spec.onLine?.(JSON.stringify(FOREIGN_INIT_FRAME))
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        dataDir,
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    expect(seen).toHaveLength(1)
+    const expectedRunDir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: 'BL-1_1' })
+    // (1) ЗНАЧЕНИЕ доехало до окружения запущенного процесса — не «вычислено», а вручено.
+    expect(seen[0].env.SMA_RUN_DIR).toBe(expectedRunDir)
+    expect(seen[0].env.SMA_REDIRECTS_FILE).toBe(redirectFileOf({ dataDir, taskId: 'BL-1' }))
+    // (2) и каталог СУЩЕСТВОВАЛ уже в момент запуска: билету некуда лечь в каталог, которого нет
+    expect(seen[0].runDirExisted, 'каталог попытки создан ПОСЛЕ запуска — билету было некуда лечь').toBe(true)
+    // (3) имена видны в записи попытки, значения — нет (правило «только имена»)
+    const run = JSON.parse(readFileSync(join(expectedRunDir!, 'run.json'), 'utf8'))
+    expect(run.envNames).toContain('SMA_RUN_DIR')
+    expect(run.envNames).toContain('SMA_REDIRECTS_FILE')
+  })
+
+  it('провод: путь каталога попытки у спавна и у записи — ОДНО выражение', () => {
+    // Расход этих двух путей означал бы билеты в одном каталоге и запись в другом.
+    const runsDir = runsDirOf('/p')
+    expect(attemptRunDir({ runsDir, attemptId: 'BL-1_1' })).toBe(join('/p', '.sma', 'runs', 'BL-1_1'))
+    expect(attemptRunDir({ runsDir: null as never, attemptId: 'BL-1_1' })).toBe(null)
+    expect(attemptRunDir({ runsDir, attemptId: '' })).toBe(null)
+  })
+
   it('строка о чужих MCP считается по кадру сессии, а не по нашему намерению', () => {
     // наш сервер из реестра — не «чужой»
     expect(
@@ -4337,5 +4399,47 @@ describe('дверь «работа уже сделана» спрашивает
     expect(res.completed).toBe('ST-1')
     expect(seen.filter((s) => s.verb === 'preflight')).toHaveLength(0)
     expect(journalled.some((e: any) => String(e.type).startsWith('preflight.'))).toBe(false)
+  })
+})
+
+// ── Кнопка «Одобрить вызов»: провод от окна к стоящему вызову ──────────────────
+describe('кнопка одобрения — один провод, один режим', () => {
+  it('провод: строка, собранная ПРОИЗВОДИТЕЛЕМ окна, разбирается ПОТРЕБИТЕЛЕМ хука', () => {
+    // Ровно тот вызов, который делает кнопка, и ровно тот разбор, который делает хук.
+    // Собрать строку руками в тесте значило бы доказать, что обе стороны согласны С ТЕСТОМ.
+    const ticketId = ticketIdFor({ attemptId: 'BL-1_1', tool: 'Bash', input: { command: 'npm publish' } })
+    const line = formatDecision({ ticketId, decision: 'approve', reason: 'посмотрел' })
+    const parsed = parseDecision(line)
+    expect(parsed?.ticketId).toBe(ticketId)
+    expect(parsed?.decision).toBe('approve')
+    // И чужая поправка того же человека решением НЕ становится — она едет работнику.
+    expect(parseDecision('нет, не так — правь шапку')).toBe(null)
+  })
+
+  it('провод: режим кнопки — queue, и interrupt на этом пути не существует', () => {
+    const client = readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8')
+    const decide = client.slice(client.indexOf('export function decideToolTicket'))
+    const body = decide.slice(0, decide.indexOf('\n}\n') + 2)
+    // Режим ЗАШИТ в теле, а не принят параметром: второго значения у этого пути быть не должно.
+    expect(body).toContain("mode: 'queue'")
+    expect(body).not.toContain('interrupt')
+    // Прерывание убивает живого ребёнка — то есть уничтожило бы удерживаемую билетом сессию.
+    const card = readFileSync(new URL('../../spa/src/screens/task-card/index.tsx', import.meta.url), 'utf8')
+    const parked = card.slice(card.indexOf('function ParkedCall'), card.indexOf('«Карточка задачи»'))
+    expect(parked).toContain('useDecideToolTicket')
+    expect(parked).not.toContain('interrupt')
+    // И строка кнопки НЕ склеивается в окне: она приходит из производителя продукта.
+    expect(client).toContain("from '../../../scripts/sma/lib/tool-decision.mjs'")
+  })
+
+  it('провод: дверь решения — та, что УЖЕ есть; новых маршрутов не заведено', () => {
+    const server = readFileSync(new URL('../src/front/server.mjs', import.meta.url), 'utf8')
+    const routes = server.slice(server.indexOf('const ROUTES'), server.indexOf('const ROUTES') + 12000)
+    // Решение едет дверью переписки, и никакой двери билета в таблице маршрутов нет.
+    expect(routes).toContain("'POST /api/redirect'")
+    expect(routes).not.toMatch(/ticket|approve-call|tool\/approve/i)
+    const client = readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8')
+    const decide = client.slice(client.indexOf('export function decideToolTicket'))
+    expect(decide.slice(0, 900)).toContain('redirectTask(')
   })
 })

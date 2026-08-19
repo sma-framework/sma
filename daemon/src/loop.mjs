@@ -96,7 +96,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync } from 'node:fs'
+import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
@@ -105,7 +105,7 @@ import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
-import { runsDirOf, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
 // opinion about whether the hooks fired or the memory came back: it imports the same evaluation
@@ -131,7 +131,7 @@ import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/st
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
-import { readPendingRedirects, markConsumed, appendRedirect, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
+import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
 import { buildMcpConfigFile } from './runner/args.mjs'
@@ -211,6 +211,46 @@ function resolveIo(fsImpl) {
     readdirSync: io.readdirSync ?? fsReaddirSync,
     readFileSync: io.readFileSync ?? fsReadFileSync,
   }
+}
+
+/**
+ * gateSpawnOptions(deps, config, task) → `{gate:{runDir, redirectsFile}}` for the spawn,
+ * and the attempt directory CREATED before the process that will write into it exists.
+ *
+ * WHY IT IS CREATED HERE AND NOT AT THE END. The record of an attempt is written when the
+ * attempt is over, and until this line that was the only moment this directory ever came into
+ * being. But the parking gate runs INSIDE the attempt: it has to put a ticket somewhere the
+ * moment a worker asks for something dangerous, which is long before anything is recorded. A
+ * gate handed a path to a directory that does not exist yet writes nothing, refuses nothing,
+ * and looks exactly like a gate that decided the call was harmless.
+ *
+ * AND THE PATH IS THE SAME PATH. Both this line and the record at the end ask
+ * `attemptRunDir` — one expression, so the tickets and the record can never end up in two
+ * directories with almost the same name.
+ *
+ * ONE FUNCTION FOR BOTH SPAWN POINTS, for the reason written beside the envelope's own
+ * options: the last time the code lane and the «Создатель» lane each carried their own copy
+ * of a spawn decision, one was updated and the other spawned crippled for weeks.
+ *
+ * Never fatal. A directory that cannot be made costs the TICKET, not the attempt — and the
+ * gate that then finds no directory answers ALLOW, which is the same posture it takes in
+ * somebody else's session.
+ */
+function gateSpawnOptions(deps, config, task) {
+  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const runsDir = runsDirOf(projectDir)
+  const runDir = attemptRunDir({ runsDir, attemptId: attemptIdFor(task.id, task.attempt) })
+  const redirectsFile = redirectFileOf({ dataDir: deps.dataDir || config.dataDir, taskId: task.id })
+  if (runDir) {
+    try {
+      const mkdir = (deps.fsImpl && deps.fsImpl.mkdirSync) || fsMkdirSync
+      mkdir(runDir, { recursive: true })
+    } catch (err) {
+      writeLog(deps, { type: 'task.run_dir_precreate_failed', taskId: task.id, error: String((err && err.message) || err) })
+      return {}
+    }
+  }
+  return runDir || redirectsFile ? { gate: { runDir: runDir ?? undefined, redirectsFile: redirectsFile ?? undefined } } : {}
 }
 
 /** The `data` envelope a stage task carries, or an empty one for ordinary code work. */
@@ -2736,6 +2776,9 @@ export async function tick(deps = {}) {
         ...SPAWN_OPTIONS,
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...envelopeSpawnOptions(envelope),
+        // The attempt directory and the correction file, created and named BEFORE the process
+        // exists — the parking gate inside the child reads both out of its environment.
+        ...gateSpawnOptions(deps, config, task),
       })
       // WHAT THE ATTEMPT WAS GIVEN BEFORE IT SPOKE — the role file and the skills of the
       // routed worker. It is REMEMBERED here and written into the memory layer at the end,
@@ -3374,6 +3417,9 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     ...SPAWN_OPTIONS,
     ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
     ...envelopeSpawnOptions(envelope),
+    // The SAME one function the code path calls — see its own note about the last time these
+    // two points each carried a private copy of a spawn decision.
+    ...gateSpawnOptions(deps, config, task),
   })
   spec.prompt = buildForgePrompt({
     kind,

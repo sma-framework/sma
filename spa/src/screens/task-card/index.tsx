@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import {
   useApprove,
   useAttemptQuery,
+  useDecideToolTicket,
   useDiffQuery,
   useRedirectTask,
   useReturnTask,
@@ -17,6 +18,7 @@ import type {
   SubApiSwitch,
   TaskAttempt,
   TaskStatus,
+  WaitingTicket,
 } from '../../api/types'
 import {
   acceptanceList,
@@ -40,6 +42,14 @@ import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
 
 /**
+ * Две судьбы, которые может иметь поправка, набранная поверх живой работы. Названы типом, а не
+ * написаны на месте: путь БИЛЕТА обязан ходить только в режиме `queue`, и проверка «нигде на
+ * этом экране нет режима прерывания» должна означать ровно это, а не спотыкаться о подпись
+ * функции, которая ни в какой режим ничего не посылает.
+ */
+type SteeringMode = 'interrupt' | 'queue'
+
+/**
  * Steering — the composer that exists WHILE a worker holds the task (phase «Двигатель»,
  * the Hermes trio brought to the card). Text typed against live work has a DECLARED fate:
  * «Перебить сейчас» kills the run and the SAME session resumes with the correction —
@@ -51,7 +61,7 @@ function Steering({ taskId }: { taskId: string }) {
   const [text, setText] = useState('')
   const [fate, setFate] = useState<string | null>(null)
 
-  const send = (mode: 'interrupt' | 'queue') => {
+  const send = (mode: SteeringMode) => {
     const said = text.trim()
     if (!said || redirect.isPending) return
     redirect.mutate(
@@ -108,6 +118,84 @@ function Steering({ taskId }: { taskId: string }) {
       </div>
       <div className="mt-[7px] text-[11px] text-tx3">
         Сделанное не пропадёт: та же сессия продолжится с учётом поправки, без перезапуска с нуля.
+      </div>
+    </div>
+  )
+}
+
+/**
+ * ParkedCall — «ждут вас»: опасный вызов СТОИТ, и продолжить его может только человек.
+ *
+ * ЧТО ЗДЕСЬ ПРОИСХОДИТ НА САМОМ ДЕЛЕ. Работник попросил что-то, что классификатор назвал
+ * опасным, и сессия физически остановилась НА ЭТОМ ВЫЗОВЕ — не упала, не пошла дальше, не
+ * перезапустилась. После «Одобрить вызов» продолжается ТА ЖЕ сессия тем же вызовом, со всем
+ * контекстом, который уже оплачен.
+ *
+ * ПОЧЕМУ ЭТО НЕ БЕСКОНЕЧНОЕ ОЖИДАНИЕ. Срок объявлен и виден: по его истечении вызов будет
+ * ОТКАЗАН, а не пропущен. Обещать человеку, что «оно подождёт», а потом молча выполнить —
+ * ровно та сделка, ради отказа от которой всё это написано.
+ *
+ * ПОЧЕМУ ОДОБРЕНИЕ НЕ ОТКРЫВАЕТ СЛЕДУЮЩИЙ ВЫЗОВ. Идентификатор билета несёт отпечаток
+ * аргументов: та же команда с другими аргументами придёт новым билетом и снова остановится.
+ */
+function ParkedCall({ taskId, ticket }: { taskId: string; ticket: WaitingTicket }) {
+  const decide = useDecideToolTicket()
+  const [said, setSaid] = useState<string | null>(null)
+
+  const answer = (decision: 'approve' | 'deny') => {
+    if (decide.isPending) return
+    decide.mutate(
+      { taskId, ticketId: ticket.id, decision },
+      {
+        onSuccess: () =>
+          setSaid(
+            decision === 'approve'
+              ? 'Отпускаю вызов — та же сессия продолжит с этого же места.'
+              : 'Отказано — работник получит отказ вашими словами и пойдёт другим путём.',
+          ),
+        onError: (err) => setSaid(refusalWords(err)),
+      },
+    )
+  }
+
+  return (
+    <div className="rounded-[14px] border border-warn bg-warn-s px-6 py-[18px] shadow-panel">
+      <div className="mb-2.5 text-[10px] font-semibold tracking-[0.09em] text-warn-tx uppercase">
+        Ждут вас — вызов стоит на месте
+      </div>
+      <div className="text-[12.5px] leading-[1.5] text-tx">
+        Работник просит выполнить то, что мы считаем опасным. Пока вы не решите, сессия стоит на
+        этом вызове.
+      </div>
+      <pre className="mt-2.5 overflow-x-auto rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12px] text-tx">
+        {ticket.command ?? '(команда не записана)'}
+      </pre>
+      <div className="mt-2 text-[11.5px] leading-[1.45] text-tx2">
+        {ticket.reason ? `${ticket.reason}. ` : ''}
+        Билет <span className="font-semibold text-tx">{ticket.id}</span>
+        {ticket.deadlineAt ? ` · без ответа до ${clockLabel(ticket.deadlineAt)} вызов будет ОТКАЗАН` : null}
+      </div>
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => answer('approve')}
+          disabled={decide.isPending}
+          className="rounded-[9px] bg-green px-3.5 py-2 text-[12px] font-semibold text-white disabled:opacity-50"
+        >
+          ✓ Одобрить вызов
+        </button>
+        <button
+          type="button"
+          onClick={() => answer('deny')}
+          disabled={decide.isPending}
+          className="rounded-[9px] border border-bd2 px-3.5 py-2 text-[12px] text-tx2 hover:text-tx disabled:opacity-50"
+        >
+          Отказать
+        </button>
+        {said ? <span className="min-w-0 text-[11.5px] leading-[1.4] text-tx2">{said}</span> : null}
+      </div>
+      <div className="mt-[7px] text-[11px] text-tx3">
+        Одобрение действует на ЭТОТ вызов: та же команда с другими аргументами придёт новым билетом.
       </div>
     </div>
   )
@@ -920,6 +1008,11 @@ export function Screen() {
               spendSwitch={state.data?.rules?.subApiSwitch}
             />
           </div>
+
+          {/* ЖДУТ ВАС — выше руля, потому что стоящий вызов срочнее любой поправки. */}
+          {status === 'claimed' && taskId && newest?.ticket ? (
+            <ParkedCall taskId={taskId} ticket={newest.ticket} />
+          ) : null}
 
           {status === 'claimed' && taskId ? <Steering taskId={taskId} /> : null}
 

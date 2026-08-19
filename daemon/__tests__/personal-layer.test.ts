@@ -51,7 +51,25 @@ import {
   NEVER_MIRROR_KEYS,
   OVERRIDE_ALLOWLIST,
   BACKUP_KEEP,
+  TOOL_GATE_MARKER,
+  TOOL_GATE_EVENT,
+  toolGateHookEntry,
+  withToolGateHook,
+  withoutToolGateHook,
 } from '../src/runner/personal-layer.mjs'
+
+import { TICKET_HOOK_TIMEOUT_S } from '../../scripts/sma/lib/tool-gate.mjs'
+
+/** Наш парковочный хук в списке события — тот, что помечен маркером модуля. */
+const gateEntries = (hooks: Record<string, unknown[]> | undefined) =>
+  ((hooks && (hooks[TOOL_GATE_EVENT] as Array<Record<string, unknown>>)) || []).filter(
+    (e) => e && e.smaHook === TOOL_GATE_MARKER,
+  )
+/** Всё, что в этом событии НЕ наше — то, что приехало от человека. */
+const foreignEntries = (hooks: Record<string, unknown[]> | undefined) =>
+  ((hooks && (hooks[TOOL_GATE_EVENT] as Array<Record<string, unknown>>)) || []).filter(
+    (e) => !e || e.smaHook !== TOOL_GATE_MARKER,
+  )
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 // Shaped after a real founder home: hooks with absolute commands, a wide allow list,
@@ -148,7 +166,10 @@ describe('Case A — the merge keeps the account whole and the founder narrow', 
     const s = readJson(join(accountDir, 'settings.json'))
 
     expect(s.theme).toBe('dark')
-    expect(s.hooks).toEqual(FOUNDER_HOOKS)
+    // Хуки человека доезжают целиком; наш парковочный хук ДОПИСАН к событию, а не заменяет его.
+    expect(s.hooks.SessionStart).toEqual(FOUNDER_HOOKS.SessionStart)
+    expect(foreignEntries(s.hooks)).toEqual(FOUNDER_HOOKS.PreToolUse)
+    expect(gateEntries(s.hooks)).toHaveLength(1)
     expect(s.permissions).toEqual({ deny: FOUNDER_DENY, ask: FOUNDER_ASK })
     expect(s.permissions.allow).toBeUndefined()
     expect(s.permissions.defaultMode).toBeUndefined()
@@ -390,5 +411,49 @@ describe('Case H — the fake is not richer than the library', () => {
     for (const name of found) {
       expect(typeof (nodeFs as any)[name]).toBe('function')
     }
+  })
+})
+
+// ── Case I ────────────────────────────────────────────────────────────────────
+describe('Case I — провод: парковочный хук едет с АККАУНТОМ, а хуки человека остаются целыми', () => {
+  it('провод: хук того же события у человека → в результате ДВА, а не один', () => {
+    const merged = mergeWorkerSettings({
+      current: {},
+      founder: { hooks: FOUNDER_HOOKS, permissions: { deny: FOUNDER_DENY, ask: FOUNDER_ASK } },
+      platform: 'win32',
+    })
+    const list = merged.settings.hooks[TOOL_GATE_EVENT]
+    expect(list).toHaveLength(2)
+    expect(foreignEntries(merged.settings.hooks)).toEqual(FOUNDER_HOOKS.PreToolUse)
+    expect(gateEntries(merged.settings.hooks)).toHaveLength(1)
+  })
+
+  it('провод: хук доезжает даже в аккаунт, у которого хуков не было вовсе', () => {
+    const merged = mergeWorkerSettings({ current: { theme: 'dark' }, founder: {}, platform: 'win32' })
+    expect(gateEntries(merged.settings.hooks)).toHaveLength(1)
+  })
+
+  it('провод: объявленный срок ожидания взят из КОНСТАНТЫ модуля билета, а не написан числом', () => {
+    const entry = toolGateHookEntry({ platform: 'win32' })
+    expect(entry.hooks[0].timeout).toBe(TICKET_HOOK_TIMEOUT_S)
+    expect(entry.hooks[0].command).toMatch(/cli\.mjs" tool-gate$/)
+    expect(entry.hooks[0].command.startsWith('node ')).toBe(true)
+  })
+
+  it('зеркалирование идемпотентно: второй проход НЕ множит наш хук', () => {
+    const once = mergeWorkerSettings({ current: {}, founder: { hooks: FOUNDER_HOOKS }, platform: 'win32' })
+    const twice = mergeWorkerSettings({ current: once.settings, founder: { hooks: FOUNDER_HOOKS }, platform: 'win32' })
+    expect(gateEntries(twice.settings.hooks)).toHaveLength(1)
+    expect(twice.settings.hooks[TOOL_GATE_EVENT]).toHaveLength(2)
+  })
+
+  it('снятие убирает ТОЛЬКО наш хук; чужой остаётся, а пустое событие исчезает', () => {
+    const withGate = withToolGateHook(FOUNDER_HOOKS as never, { platform: 'win32' })
+    const cleaned = withoutToolGateHook(withGate)
+    expect(cleaned[TOOL_GATE_EVENT]).toEqual(FOUNDER_HOOKS.PreToolUse)
+    expect(cleaned.SessionStart).toEqual(FOUNDER_HOOKS.SessionStart)
+
+    const bare = withoutToolGateHook(withToolGateHook({}, { platform: 'win32' }))
+    expect(bare[TOOL_GATE_EVENT]).toBeUndefined()
   })
 })
