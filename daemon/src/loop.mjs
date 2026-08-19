@@ -92,6 +92,7 @@
  * Node built-ins only; every collaborator injected. Zero deps; zero network in this file.
  */
 
+import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -100,7 +101,8 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.m
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
-import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capability-envelope.mjs'
+import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash } from './queue/capability-envelope.mjs'
+import { runsDirOf, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import {
@@ -977,19 +979,6 @@ function namesOf(value) {
   return Array.isArray(value) ? value.map((v) => (typeof v === 'string' ? v : String((v && v.name) ?? v))) : []
 }
 
-/** How many outstanding tool calls the stream remembers before it starts forgetting the oldest. */
-const PENDING_TOOLS_CAP = 2000
-
-/** Remember one asked-for tool call; the map is bounded so a long night cannot grow it forever. */
-function rememberPending(map, id, entry) {
-  if (!id) return
-  if (map.size >= PENDING_TOOLS_CAP) {
-    const oldest = map.keys().next()
-    if (!oldest.done) map.delete(oldest.value)
-  }
-  map.set(id, entry)
-}
-
 /**
  * collectSmaTrace({projectDir, sessionId, fsImpl}) → what the WORKER'S OWN session wrote down
  * about memory while it ran: `{reads, reflexes, source}`.
@@ -1084,6 +1073,194 @@ function writeMemoryLayer(deps, task, { memory, sma, lesson, approachJournaled, 
   })
 }
 
+/** What the copy was given to obey — read WHILE the copy still exists, before any outcome. */
+function rulesInCopy(io, workDir, worktree) {
+  if (typeof workDir !== 'string' || workDir.trim() === '') return { claudeMd: 'absent' }
+  try {
+    const present = io.existsSync(join(workDir, 'CLAUDE.md')) || io.existsSync(join(workDir, '.claude', 'CLAUDE.md'))
+    if (!present) return { claudeMd: 'absent' }
+    // «Tracked» and «materialized» are different claims: the first says the project keeps its
+    // rules in git, the second that the provisioning verb had to carry them into a copy that
+    // would not have had them. A parity check that could not tell them apart would call a
+    // furnished copy an unfurnished one.
+    const materialized = Array.isArray(worktree && worktree.materialized) ? worktree.materialized : []
+    const carried = materialized.some((m) => /CLAUDE\.md/i.test(JSON.stringify(m ?? '')))
+    return { claudeMd: carried ? 'materialized' : 'tracked' }
+  } catch {
+    return { claudeMd: 'absent' } // an unreadable copy is an absence of evidence, never a throw
+  }
+}
+
+/** How many skills and agents the copy actually held; null when it has no `.claude` at all. */
+function skillsInCopyOf(io, workDir) {
+  if (typeof workDir !== 'string' || workDir.trim() === '') return null
+  try {
+    if (!io.existsSync(join(workDir, '.claude'))) return null
+    const count = (name) => {
+      try {
+        return (io.readdirSync(join(workDir, '.claude', name)) || []).length
+      } catch {
+        return 0
+      }
+    }
+    return { skills: count('skills'), agents: count('agents') }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * writeAttemptRunDir(deps, task, …) → `{dir, gate, memoryLayer, rules, skillsInCopy}` or null.
+ *
+ * WHY IT IS CALLED WHERE IT IS. The one point every outcome of a lane passes through — right
+ * after the memory layer — is the only place from which «каждая попытка оставляет запись» can
+ * be a property of the control flow instead of a rule somebody has to remember at four return
+ * statements. The receipt is written later, by the door that knows how the try ended.
+ *
+ * NOTHING SECRET TRAVELS. The spawn's environment contributes its NAMES; the prompt
+ * contributes a digest and a size. The values the environment holds are handed to the writer
+ * only so it can assert they appear nowhere in what it wrote.
+ */
+function writeAttemptRunDir(deps, task, {
+  route,
+  envelope,
+  spec,
+  worktree,
+  workDir,
+  startedAt,
+  endedAt,
+  sessionId,
+  runInit,
+  memory,
+  sma,
+  guards,
+  permissionDenials,
+  ledgerPath,
+  exit,
+  gate,
+  lesson,
+} = {}) {
+  const config = deps.config || {}
+  // THE SAME TREE THE COPY WAS CUT FROM — one source for both, so a run directory can never
+  // end up beside a project the attempt never touched.
+  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const runsDir = runsDirOf(projectDir)
+  if (!runsDir) return null
+  const io = resolveIo(deps.fsImpl)
+  const env = (spec && spec.env && typeof spec.env === 'object') ? spec.env : {}
+  const prompt = typeof (spec && spec.prompt) === 'string' ? spec.prompt : ''
+  const rules = rulesInCopy(io, workDir, worktree)
+  const skillsInCopy = skillsInCopyOf(io, workDir)
+  const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null)
+  let envelopeRecord = null
+  if (envelope && typeof envelope === 'object') {
+    let hash = null
+    try {
+      hash = envelopeHash(envelope)
+    } catch {
+      /* an unhashable envelope leaves no digest — a wrong one would be worse than none */
+    }
+    envelopeRecord = { ...envelope, hash }
+  }
+
+  const { dir } = writeRunStart({
+    runsDir,
+    attemptId: attemptIdFor(task.id, task.attempt),
+    ledgerPath,
+    guards,
+    secretValues: secretValuesOf(env),
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+    run: {
+      taskId: task.id,
+      attempt: Number.isFinite(Number(task.attempt)) ? Number(task.attempt) : 1,
+      workerId: (route && route.workerId) || null,
+      provider: (route && route.provider) || null,
+      lane: task.lane ?? null,
+      startedAt: iso(startedAt),
+      endedAt: iso(endedAt),
+      sessionId: sessionId ?? null,
+      bin: (spec && spec.bin) || null,
+      args: Array.isArray(spec && spec.args) ? [...spec.args] : [],
+      // NAMES ONLY, SORTED. The list answers «which variables did the spawn get» — the only
+      // question about an environment that can be answered without holding its secrets.
+      envNames: Object.keys(env).sort(),
+      prompt: { sha256: createHash('sha256').update(prompt, 'utf8').digest('hex'), bytes: Buffer.byteLength(prompt, 'utf8') },
+      task: { model: task.model ?? null, effort: task.effort ?? null },
+      envelope: envelopeRecord,
+      copy: worktree
+        ? {
+            worktreePath: worktree.worktreePath ?? null,
+            base: worktree.base ?? null,
+            branch: worktree.branch ?? null,
+            materialized: worktree.materialized ?? null,
+          }
+        : null,
+      personalLayer: (worktree && worktree.personalLayer) || null,
+      mcpConfig: (worktree && worktree.mcpConfig) || null,
+      init: runInit ?? null,
+      memory: memory ?? null,
+      rules,
+      skillsInCopy,
+      exit: {
+        code: exit && Number.isFinite(exit.code) ? exit.code : null,
+        spawnError: !!(exit && exit.spawnError),
+        permissionDenials: permissionDenials ?? null,
+      },
+    },
+  })
+  if (!dir) return null
+  pruneRunDirs({
+    runsDir,
+    keep: Number.isFinite(config.runsKeep) ? config.runsKeep : RUN_DIRS_KEEP,
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+  })
+  return {
+    dir,
+    gate: gate || 'reverify',
+    // The word the attempt left about what it learned — carried to the receipt so the outcome
+    // and the lesson are one record rather than two that have to be joined by an id.
+    lesson: lesson ?? null,
+    // The same observation the journal's layer carries, kept beside the outcome so a reader
+    // of one directory never has to open a ledger to learn whether the memory was read.
+    memoryLayer: {
+      index: !!(memory && memory.index),
+      reads: (memory && memory.reads) || [],
+      loadCalls: (memory && memory.loadCalls) || 0,
+      reflexes: (sma && sma.reflexes) || [],
+      failed: (memory && memory.failed) || [],
+    },
+    rules,
+    skillsInCopy,
+  }
+}
+
+/**
+ * writeAttemptOutcome(deps, worktree, receipt) — the fourth file, written by the door that
+ * KNOWS how the attempt ended. Fail-open and silent about a directory that was never made:
+ * an attempt refused before it ever spawned has nothing to write a receipt into.
+ */
+function writeAttemptOutcome(deps, worktree, receipt) {
+  const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
+  if (!run || typeof run.dir !== 'string' || run.dir === '') return false
+  return writeRunReceipt({
+    dir: run.dir,
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+    receipt: {
+      ...receipt,
+      gate: run.gate || 'reverify',
+      memoryLayer: run.memoryLayer ?? null,
+      rules: run.rules ?? null,
+      skillsInCopy: run.skillsInCopy ?? null,
+      // The parity verdict is computed by the checking tool and written back beside the rest;
+      // until it is, the field says «not computed» rather than pretending to a green.
+      parity: null,
+    },
+  })
+}
+
 /**
  * attemptStream(deps, task, streamLines) → `{onLine, sessionId}` — the ONE stdout reader both
  * spawn paths use. It does three things per line, in this order and for these reasons:
@@ -1122,10 +1299,12 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
    * and a refusal is exactly the kind of frame that arrives long.
    */
   const guards = []
-  /** Tool calls the session ASKED for, waiting for the result that decides what they proved. */
-  const pendingTools = new Map()
-  /** Refusals already recorded, so a frame and its failed result do not become two lines. */
-  const deniedIds = new Set()
+  /**
+   * Tool calls the session ASKED for, waiting for the result that decides what they proved —
+   * and the ones a guard already refused. The bookkeeping lives in a helper module because
+   * this file holds no keyed collection of its own (see the disciplines at the top).
+   */
+  const pairing = createToolPairing()
   /** SessionStart hooks the CLI reported starting — the founder's hook is one of them. */
   let hookStarts = 0
   let lastTouchAt = 0
@@ -1183,8 +1362,7 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
         // THE GUARD'S OWN WORDS, from the frame it says them in. The failed tool result that
         // follows carries the same sentence with none of the naming, so this is the source and
         // the result below is only the fallback.
-        const deniedId = typeof frame.tool_use_id === 'string' ? frame.tool_use_id : null
-        if (deniedId) deniedIds.add(deniedId)
+        pairing.markRefused(frame.tool_use_id)
         guards.push({
           ts: new Date(now()).toISOString(),
           kind: 'denied',
@@ -1211,7 +1389,7 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
           }
           // ASKED, NOT YET PROVED. Nothing is counted here on purpose — the user frame below
           // is where a request becomes a fact.
-          rememberPending(pendingTools, typeof block.id === 'string' ? block.id : null, entry)
+          pairing.remember(block.id, entry)
         }
       } catch {
         /* the trace is an OBSERVATION: a frame it cannot read teaches nothing, breaks nothing */
@@ -1224,8 +1402,7 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
       try {
         for (const block of toolResultsOf(frame)) {
           const resultId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
-          const pending = resultId ? pendingTools.get(resultId) : null
-          if (resultId) pendingTools.delete(resultId)
+          const pending = pairing.take(resultId)
           const text = resultTextOf(block)
           const errored = block.is_error === true
           const empty = text.trim() === ''
@@ -1236,8 +1413,8 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
             if (!errored && !empty) memory.loadCalls += 1
             else memory.failed.push({ kind: 'load', reason: errored ? 'load failed' : 'load empty' })
           }
-          if (errored && refusedByGuard(block, text) && !(resultId && deniedIds.has(resultId))) {
-            if (resultId) deniedIds.add(resultId)
+          if (errored && refusedByGuard(block, text) && !pairing.refused(resultId)) {
+            pairing.markRefused(resultId)
             guards.push({ ts: new Date(now()).toISOString(), kind: 'denied', tool: (pending && pending.tool) || null, reason: shortReason(text) })
           }
         }
@@ -2189,7 +2366,7 @@ export async function tick(deps = {}) {
       }
 
       const streamLines = []
-      const { onLine, sessionOf, initOf, appendLine, memoryOf } = attemptStream(
+      const { onLine, sessionOf, initOf, appendLine, memoryOf, guardsOf, runInitOf, permissionDenialsOf, logFileOf } = attemptStream(
         deps,
         task,
         streamLines,
@@ -2320,6 +2497,36 @@ export async function tick(deps = {}) {
         notes: roleNotes,
       })
 
+      // (7b-quater) THE ATTEMPT'S RUN DIRECTORY — written at the SAME single point, and for the
+      // same reason. Everything in it existed already and nothing had ever been handed to the
+      // thing that has to read it together: the command line, the envelope, the copy, the
+      // hooks that answered, the memory that came back and the transcript in the ledger. The
+      // receipt is added below by whichever door decides how this try ended.
+      worktreeRow = worktreeRow || {}
+      worktreeRow.run = writeAttemptRunDir(deps, task, {
+        route,
+        envelope,
+        spec,
+        worktree: worktreeRow,
+        workDir,
+        startedAt: attemptStartedAt,
+        endedAt: now(),
+        sessionId: sessionOf(),
+        runInit: runInitOf(),
+        memory: memoryOf(),
+        sma: collectSmaTrace({
+          projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+          sessionId: sessionOf(),
+          fsImpl: deps.fsImpl,
+        }),
+        guards: guardsOf(),
+        permissionDenials: permissionDenialsOf(),
+        ledgerPath: logFileOf(),
+        exit,
+        gate: isDocument ? 'document' : 'reverify',
+        lesson: lessonLayerOf(lessonEval),
+      })
+
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
       // already there — and neither may an attempt the vendor cut off mid-word.
@@ -2349,6 +2556,9 @@ export async function tick(deps = {}) {
       const parked = infraReason ? null : parkedRound(deps, task, workDir)
 
       if (parked || isDocument) {
+        // WHICH DOOR DECIDED — recorded before it does, so the receipt of a parked round and
+        // the receipt of a written document are not the same sentence with a different word.
+        if (worktreeRow && worktreeRow.run) worktreeRow.run.gate = parked ? 'parked' : 'document'
         const gate = parked ?? (infraReason ? {} : documentGate(deps, task, workDir))
         // A WRITTEN DOCUMENT OWES A LESSON THE SAME WAY A MERGED BRANCH DOES — работа словами
         // учит ровно так же. A PARKED ROUND DOES NOT: it stopped mid-way on a question to a
@@ -2359,10 +2569,10 @@ export async function tick(deps = {}) {
           infraReason ?? (gate.receiptRef ? (noteWritten ? lessonReason : 'no_journal') : gate.reason)
         if (reason) {
           if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
-          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
+          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
           result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
         } else {
-          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
+          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
           result.completed = task.id
         }
         return result
@@ -2375,6 +2585,7 @@ export async function tick(deps = {}) {
       // the answer receipt parks the row in `awaiting_approval`, where the screen renders
       // the worker's note as a card to acknowledge — instead of the red row this used to be.
       const answered = infraReason ? null : answerOnlyGate(deps, config, task, branch, workDir, noteWritten)
+      if (answered && worktreeRow && worktreeRow.run) worktreeRow.run.gate = 'answer'
       if (answered && !lessonOk) {
         // AN ANSWER OWES A LESSON TOO — and it is refused BY NAME here rather than left to
         // fall through to the code gate, which would call a finished answer «нет квитанции»
@@ -2388,7 +2599,7 @@ export async function tick(deps = {}) {
         // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
         // so «the worker answered» can never be mistaken for «the worker's code passed».
         writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef: answered.receiptRef })
-        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
+        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
         result.completed = task.id
         return result
       }
@@ -2490,6 +2701,11 @@ export async function tick(deps = {}) {
           }
         }
       }
+
+      // THE GATE'S OWN VERDICT, put where the outcome record can find it. A refusal carries no
+      // receipt reference, and reading «ссылки нет» as «вердикта не было» would turn a red
+      // re-verification into a silence in the one file a person opens to see what happened.
+      if (worktreeRow && worktreeRow.run) worktreeRow.run.verdict = receipt ? receipt.verdict : 'none'
 
       // ── WHAT THIS ATTEMPT ACTUALLY TOUCHED, written down BEFORE the fork ──
       // «Откатить можно» и «видно, ЧТО откатывается» — разные вещи, and only the first was
@@ -2760,7 +2976,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
   // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const { onLine, sessionOf, initOf, memoryOf } = attemptStream(
+  const { onLine, sessionOf, initOf, memoryOf, guardsOf, runInitOf, permissionDenialsOf, logFileOf } = attemptStream(
     deps,
     task,
     streamLines,
@@ -2814,6 +3030,33 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
     approachJournaled: noteWritten,
     notes: [],
+  })
+
+  // THE FORGE LANE IS A LANE — it creates an attempt, so it leaves the same directory the code
+  // lane does. One writer, one format: a checking tool must not need to know which lane a try
+  // came from before it can read what the try was given.
+  worktreeRow.run = writeAttemptRunDir(deps, task, {
+    route,
+    envelope,
+    spec,
+    worktree: worktreeRow,
+    workDir: worktreePath,
+    startedAt: attemptStartedAt,
+    endedAt: now(),
+    sessionId: sessionOf(),
+    runInit: runInitOf(),
+    memory: memoryOf(),
+    sma: collectSmaTrace({
+      projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+      sessionId: sessionOf(),
+      fsImpl: deps.fsImpl,
+    }),
+    guards: guardsOf(),
+    permissionDenials: permissionDenialsOf(),
+    ledgerPath: logFileOf(),
+    exit,
+    gate: 'forge',
+    lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
   })
 
   if (exit.spawnError) {
@@ -2929,6 +3172,14 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
     })
   }
+  // HOW THE TRY ENDED, into the attempt's own directory. Written here rather than at the point
+  // the rest of the record was written because THIS is where the outcome is first known.
+  writeAttemptOutcome(deps, worktree, {
+    outcome: 'completed',
+    verdict: (worktree && worktree.run && worktree.run.verdict) || 'green',
+    ref: receiptRef ?? null,
+    lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
+  })
   if (typeof report === 'function') {
     await report({ event: 'task.completed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: 'green', branch, attempt: task.attempt })
   }
@@ -2966,6 +3217,12 @@ function worktreeFields(worktree) {
     provisionMs: worktree.provisionMs ?? undefined,
     personalLayer: worktree.personalLayer ?? undefined,
     mcpConfig: worktree.mcpConfig ?? undefined,
+    // WHERE THE EVIDENCE OF THIS TRY LIVES. The row is the durable record, so it names the
+    // directory rather than leaving it to be guessed from an id and a convention. `parity` is
+    // the verdict of the checking tool, written back beside it; until it is computed the key
+    // is present and null, which is «nobody has checked», not «checked and fine».
+    runDir: (worktree.run && worktree.run.dir) || undefined,
+    ...(worktree.run && worktree.run.dir ? { parity: worktree.run.parity ?? null } : {}),
   }
 }
 
@@ -3003,6 +3260,16 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
       writeLog(deps, { type: 'ledger-error', taskId: task.id, reason, error: String((err && err.message) || err) })
     }
   }
+  // A REFUSED ATTEMPT OWES THE SAME RECORD A FINISHED ONE DOES — it is the try somebody will
+  // actually want to open afterwards, and a directory with three files and no verdict says
+  // «still running» about work that stopped hours ago.
+  writeAttemptOutcome(deps, worktree, {
+    outcome: 'failed',
+    failureReason: reason,
+    verdict: (worktree && worktree.run && worktree.run.verdict) || (receiptRef ? 'red' : 'none'),
+    ref: receiptRef ?? null,
+    lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
+  })
   if (typeof report === 'function') {
     await report({ event: 'task.failed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: receiptRef ? 'red' : undefined, branch, attempt: task.attempt })
   }
