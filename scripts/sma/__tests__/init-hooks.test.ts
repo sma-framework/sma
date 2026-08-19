@@ -28,6 +28,10 @@
  *            beside the multiplexer and inside a matcher-less group we join
  *   Test 5 — end-to-end: the REAL installer (fresh + update run) writes the
  *            healed settings.json in an install-shaped temp project
+ *   Test 6 — the statusline segment: the REAL installer writes the canonical
+ *            entry into a project that had no status line, and the REAL off-ramp
+ *            removes the key again; and a GLOBAL install still writes it into the
+ *            PROJECT settings, never into the user config
  *
  * bin/init.mjs starts with a shebang, which vite-node's inline transform cannot
  * parse — so the module is loaded through a NATIVE dynamic import (@vite-ignore).
@@ -39,6 +43,10 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { describe, it, expect } from 'vitest'
+import { applyDeleteme } from '../lib/deleteme.mjs'
+// The expected entry has ONE definition, imported from the install core rather than
+// retyped here — a second copy of a literal is how two truths start disagreeing.
+import { canonicalStatuslineEntry, SMA_STATUSLINE_CMD } from '../lib/statusline-install.mjs'
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
@@ -396,6 +404,108 @@ describe('init hooks — the REAL installer heals settings.json (Test 5)', () =>
       expect(groupFor(s2, 'PreToolUse', SPAWN_MATCHER)).toEqual(taskPackGroup())
       expect(s2.hooks.PreToolUse).toHaveLength(3)
       expect(smaEntries(s2)).toHaveLength(SMA_HOOKS.length)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  }, 120000)
+})
+
+/**
+ * The statusline segment, asserted where it is actually decided: on the file the
+ * REAL installer wrote. The render, the cache and the managed write have all been
+ * covered for releases — and no adopter ever saw the segment, because nothing
+ * called the install. So "the function exists" is not the check here; "the
+ * installer calls it" is.
+ */
+describe('init — the REAL installer wires the statusline segment, always into the project', () => {
+  /** The installer, run the way an adopter runs it; a kill is reported as a kill. */
+  function runInstaller(proj: string, args: string[], env?: Record<string, string>) {
+    const res = spawnSync(process.execPath, [initPath, ...args], {
+      cwd: proj,
+      encoding: 'utf8',
+      ...(env ? { env } : {}),
+    })
+    if (res.error || res.signal) {
+      throw new Error(
+        `installer did not complete — signal=${res.signal} ` +
+          `spawnError=${res.error ? res.error.message : 'none'}\nstderr: ${(res.stderr ?? '').slice(0, 600)}`,
+      )
+    }
+    return res
+  }
+
+  it('a project with no status line of its own gets the canonical entry, and the off-ramp takes it back out', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-init-statusline-'))
+    try {
+      const proj = join(tmp, 'proj')
+      mkdirSync(proj, { recursive: true })
+
+      const res = runInstaller(proj, ['--local'])
+      expect({ status: res.status, stderr: (res.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
+
+      const settingsPath = join(proj, '.claude', 'settings.json')
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+      expect(
+        settings.statusLine,
+        'a fresh install must leave the segment behind — this is the wire, not the mechanism',
+      ).toEqual(canonicalStatuslineEntry(SMA_STATUSLINE_CMD))
+      // the two fields the entry is worthless without, pinned as numbers: no padding
+      // (the segment already spaces itself) and a timer, without which an idle window
+      // never learns about anything raised outside it
+      expect(settings.statusLine.padding).toBe(0)
+      expect(settings.statusLine.refreshInterval).toBe(60)
+
+      // `hadNone` is the record the off-ramp reads to choose between giving a line
+      // back and removing the key. Written even when there was nothing to save —
+      // without it an uninstall would leave ours sitting in a stranger's file.
+      const wrapped = JSON.parse(readFileSync(join(proj, '.sma', 'statusline', 'wrapped-command.json'), 'utf8'))
+      expect(wrapped.hadNone).toBe(true)
+
+      // the inversion, with the real off-ramp engine of this repository
+      applyDeleteme({ project: proj, configDir: join(proj, '.claude'), dryRun: false })
+      const after = JSON.parse(readFileSync(settingsPath, 'utf8'))
+      expect('statusLine' in after, 'the key we added must be GONE, not merely emptied').toBe(false)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  }, 120000)
+
+  // A refusal that only lives in a code comment is a wish. The statusLine command is
+  // project-relative, so a copy in the user config would run in EVERY project the
+  // adopter opens — including all the ones without this runtime, where it fails,
+  // prints nothing, and (a project line taking precedence over the user one) replaces
+  // their own status line with emptiness everywhere at once. Hooks legitimately go to
+  // the user config in this mode; the segment must not follow them.
+  it('a GLOBAL install still writes the segment into the PROJECT, never into the user config', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-init-statusline-global-'))
+    try {
+      const proj = join(tmp, 'proj')
+      const home = join(tmp, 'home')
+      mkdirSync(proj, { recursive: true })
+      mkdirSync(home, { recursive: true })
+      const userConfigDir = join(home, '.claude')
+
+      const res = runInstaller(proj, ['--global'], {
+        ...(process.env as Record<string, string>),
+        CLAUDE_CONFIG_DIR: userConfigDir,
+        HOME: home,
+        USERPROFILE: home,
+      })
+      expect({ status: res.status, stderr: (res.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
+
+      const userSettings = JSON.parse(readFileSync(join(userConfigDir, 'settings.json'), 'utf8'))
+      // the control: the global install DID reach the user config, so the absence
+      // below is a decision and not an install that went nowhere
+      expect(smaEntries(userSettings), 'the hooks belong in the user config in this mode').toHaveLength(
+        SMA_HOOKS.length,
+      )
+      expect(
+        'statusLine' in userSettings,
+        'a project-relative command in the user config would blank the adopter line in every other project',
+      ).toBe(false)
+
+      const projSettings = JSON.parse(readFileSync(join(proj, '.claude', 'settings.json'), 'utf8'))
+      expect(projSettings.statusLine).toEqual(canonicalStatuslineEntry(SMA_STATUSLINE_CMD))
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }

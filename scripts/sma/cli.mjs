@@ -4361,15 +4361,6 @@ async function cmdStallCheck({ dirs }) {
 
 // ── native statusline segment + pulse CLI ────────────────
 
-/** The canonical statusLine command this repo installs, and its wrap variant. */
-const SMA_STATUSLINE_CMD = 'node scripts/sma/cli.mjs statusline'
-const SMA_STATUSLINE_WRAP_CMD = SMA_STATUSLINE_CMD + ' --wrap'
-
-/** True when a stored statusLine command already points into our own cli.mjs. */
-function isSmaStatuslineCmd(cmd) {
-  return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
-}
-
 /**
  * statusline [--wrap] [--stat <name>] | statusline install|uninstall [--json] |
  * statusline set-webhook <url> [--clear] — the segment render entrypoint + managed
@@ -4421,12 +4412,30 @@ async function renderStatuslineEntry({ flags, dirs }) {
   }
 
   const summary = await gatherSummary(dirs)
-  const identity = registry.resolveTerminalIdentity({})
+  // WHICH window is this line drawn for? The token rides in on the very stdin parsed
+  // above — the same `session_id` every hook threads into the identity. It was not
+  // passed, so the identity fell back to the pid of this one-shot render child and the
+  // lookup below asked for a lease no window has ever written: the claim axis printed
+  // a dash while a claim was held, and the pulse read idle while the lease said working.
+  // A call with no token on stdin (a manual run) keeps the old pid fallback untouched.
+  const identity = registry.resolveTerminalIdentity({ sessionToken: status.sessionId })
   const ownSession = readJsonSafe(join(dirs.sessionsDir, `${identity.terminalId}.json`))
   const pulse = ownSession ? notify.derivePulse(ownSession, {}) : 'idle'
 
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-  const state = await statusline.readStatuslineState({ dirs: { ...dirs, repoRoot }, summary, ownSession, pulse })
+  // The window axis is named after the SUBSCRIPTION window, so it is fed by the reading
+  // that just arrived on stdin — the same figure the person reads off his own line. The
+  // spend-against-a-cap percentage stays as the fallback inside readStatuslineState for
+  // when no reading came (no subscription / before the first reply / a manual call). The
+  // reading now has two consumers off ONE parse: the daemon snapshot above and this axis.
+  const vendorWindowPct = status.rateLimits && status.rateLimits.five_hour ? status.rateLimits.five_hour.usedPercentage : undefined
+  const state = await statusline.readStatuslineState({
+    dirs: { ...dirs, repoRoot },
+    summary,
+    ownSession,
+    pulse,
+    vendorWindowPct: Number.isFinite(vendorWindowPct) ? vendorWindowPct : undefined,
+  })
   const segment = statusline.renderSegment(state, { ansi: isEnvOn(process.env.SMA_STATUSLINE_ANSI) })
 
   // Composition (segment-not-takeover): the user's own line first, then ' · ' + segment.
@@ -4456,12 +4465,15 @@ async function wrapUserStatusline({ dirs, stdin }) {
 }
 
 /**
- * statuslineInstallCmd(sub, {flags, dirs}) — the managed settings.json edit. Strict JSON.parse
- * or print-the-snippet-and-write-nothing; the statusLine key is the ONLY key mutated (every
- * other key deep-equal survives, asserted before the write); a foreign command is preserved
- * verbatim and wrapped; uninstall restores it verbatim (or removes the key when we added it).
+ * statuslineInstallCmd(sub, {flags, dirs}) — the CLI face of the managed settings.json edit.
+ * The edit itself lives in lib/statusline-install.mjs, so this verb, the selftest below and
+ * the installer all run the SAME code: strict JSON.parse or print-the-snippet-and-write-
+ * nothing; the statusLine key is the ONLY key mutated (every other key deep-equal survives,
+ * asserted before the write); a foreign command is preserved verbatim and wrapped; uninstall
+ * restores it verbatim (or removes the key when we added it).
  */
 async function statuslineInstallCmd(sub, { flags, dirs }) {
+  const { applyStatuslineInstall, SMA_STATUSLINE_CMD } = await import('./lib/statusline-install.mjs')
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const settingsPath = join(repoRoot, '.claude', 'settings.json')
   const res = await applyStatuslineInstall(sub, { settingsPath, dirs, by: 'sma statusline', now: Date.now() })
@@ -4479,100 +4491,6 @@ async function statuslineInstallCmd(sub, { flags, dirs }) {
   }[res.status] || `SMA: statusline ${res.status}`
   process.stdout.write(msg + '\n')
   return 0
-}
-
-/**
- * applyStatuslineInstall(sub, {settingsPath, dirs, by, now}) — the install/uninstall CORE,
- * factored out so the CLI and the wrap-preserve selftest share ONE code path. Returns
- * {status, wrote}. NEVER throws; on an unparseable file it writes NOTHING and returns
- * 'parse-failed'.
- */
-async function applyStatuslineInstall(sub, { settingsPath, dirs, by, now }) {
-  const { atomicWriteJson, readJsonSafe } = await import('./lib/fs-atomics.mjs')
-  let raw = ''
-  try {
-    raw = readFileSync(settingsPath, 'utf8')
-  } catch {
-    raw = '' // absent file -> treated as empty settings
-  }
-  let settings
-  let before
-  if (raw.trim()) {
-    try {
-      settings = JSON.parse(raw)
-      before = JSON.parse(raw) // independent copy for the deep-equal assertion
-    } catch {
-      return { status: 'parse-failed', wrote: false } // strict-parse-or-print-snippet: write NOTHING
-    }
-  } else {
-    settings = {}
-    before = {}
-  }
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { status: 'parse-failed', wrote: false }
-
-  const existing = settings.statusLine
-  const existingCmd = existing && typeof existing === 'object' ? existing.command : typeof existing === 'string' ? existing : null
-  const wrappedPath = join(dirs.statuslineDir, 'wrapped-command.json')
-
-  if (sub === 'install') {
-    if (existing && isSmaStatuslineCmd(existingCmd)) return { status: 'noop-already', wrote: false } // idempotent
-    let status
-    if (!existing) {
-      settings.statusLine = { type: 'command', command: SMA_STATUSLINE_CMD, padding: 0 }
-      try {
-        atomicWriteJson(wrappedPath, { hadNone: true, savedAt: new Date(now).toISOString(), by })
-      } catch {
-        /* fail-open — worst case uninstall leaves the key; harmless */
-      }
-      status = 'installed'
-    } else {
-      // preserve the foreign command verbatim, then wrap it
-      try {
-        atomicWriteJson(wrappedPath, { command: existingCmd, original: existing, hadNone: false, savedAt: new Date(now).toISOString(), by })
-      } catch {
-        /* fail-open */
-      }
-      settings.statusLine = { type: 'command', command: SMA_STATUSLINE_WRAP_CMD, padding: 0 }
-      status = 'installed-wrap'
-    }
-    if (!writeSettingsStatusLineOnly(settingsPath, settings, before)) return { status: 'parse-failed', wrote: false }
-    return { status, wrote: true }
-  }
-
-  // uninstall
-  const stored = readJsonSafe(wrappedPath) || {}
-  if (stored.hadNone) {
-    delete settings.statusLine
-  } else if (stored.original !== undefined) {
-    settings.statusLine = stored.original // verbatim restore
-  } else if (existing && isSmaStatuslineCmd(existingCmd)) {
-    delete settings.statusLine // no record but ours is present -> remove
-  } else {
-    return { status: 'noop-absent', wrote: false }
-  }
-  if (!writeSettingsStatusLineOnly(settingsPath, settings, before)) return { status: 'parse-failed', wrote: false }
-  return { status: 'uninstalled', wrote: true }
-}
-
-/**
- * writeSettingsStatusLineOnly(path, settings, before) — assert every NON-statusLine key is
- * deep-equal to the pre-edit snapshot, then write with 2-space indent. If any other key would
- * change, abort WITHOUT writing (return false) — the never-clobber guarantee.
- */
-function writeSettingsStatusLineOnly(path, settings, before) {
-  try {
-    const strip = (o) => {
-      const c = { ...(o && typeof o === 'object' ? o : {}) }
-      delete c.statusLine
-      return c
-    }
-    if (JSON.stringify(strip(settings)) !== JSON.stringify(strip(before))) return false // a foreign key moved -> abort
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
-    return true
-  } catch {
-    return false
-  }
 }
 
 /** statusline set-webhook <url> [--clear] — write the user-configured URL with provenance. */
@@ -4710,6 +4628,7 @@ async function selftestWebhookDedup() {
 async function selftestWrapPreserve() {
   const { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync: rf } = await import('node:fs')
   const { tmpdir } = await import('node:os')
+  const { applyStatuslineInstall } = await import('./lib/statusline-install.mjs')
   const tmp = mkdtempSync(join(tmpdir(), 'sma-sl-wrap-'))
   try {
     const settingsPath = join(tmp, '.claude', 'settings.json')

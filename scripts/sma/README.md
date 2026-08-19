@@ -68,7 +68,7 @@ them in plain language, in English or Russian.
 | `stall-check` | The PostToolUse stall and loop detector; drops a flight mark, never blocks |
 | `spend-check` | The spend stream on its own: warns as a window fills, soft-denies only against a cap you set |
 | `pulse` | Working / waiting-for-human transitions for the statusline and the optional webhook |
-| `statusline` | Render the statusline segment, install or uninstall the managed settings entry, set the webhook |
+| `statusline` | Render the statusline segment, install or uninstall the managed settings entry, set the webhook. `init` writes that entry by default — a foreign statusline command is wrapped, not replaced |
 
 ### Checkable project rules
 

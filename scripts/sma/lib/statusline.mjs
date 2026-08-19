@@ -113,12 +113,24 @@ function colorize(seg, pulse) {
  *
  * The cheap axes (claim, collisions, pulse) are recomputed on every call from the
  * injected summary/ownSession — no fs beyond what the caller already read. The
- * expensive axes (windowPct, gates, unscored) come from the two-tier cache. A corrupt
+ * expensive axes (gates, unscored) come from the two-tier cache. A corrupt
  * cache.json is treated as absent -> a silent full rebuild (readJsonSafe -> null).
+ *
+ * The WINDOW axis has two sources, in this order:
+ *   1. `vendorWindowPct` — the subscription reading the vendor pipes on stdin at every
+ *      render (rate_limits.five_hour.used_percentage, see parseStatusStdin). It is a
+ *      CHEAP INJECTED axis like claim/collisions/pulse: stdin is fresh on every render,
+ *      so it needs no TTL and is deliberately NOT written to cache.json. A call without
+ *      stdin therefore shows the fallback or a dash — that is the truth about what the
+ *      caller handed in, not a defect.
+ *   2. the cached spend-against-the-budget-cap figure — the FALLBACK for when no reading
+ *      arrived (no subscription, before the first model reply of a session, manual call).
+ * A non-finite reading is no reading at all and never displaces the fallback.
  *
  * @param {{
  *   dirs?:{statuslineDir?:string, spendDir?:string, breakerDir?:string, calibrationDir?:string, smaRoot?:string, repoRoot?:string},
  *   summary?:object, ownSession?:object|null, pulse?:string,
+ *   vendorWindowPct?:number,
  *   now?:number|Function, force?:boolean,
  *   loaders?:{loadSpend?:Function, loadGates?:Function, loadUnscored?:Function}
  * }} [opts]
@@ -167,7 +179,8 @@ export async function readStatuslineState(opts = {}) {
       pulse: resolvePulse(opts.pulse, ownSession),
       claim: ownClaimLabel(ownSession),
       collisions: Number.isFinite(summary.collisions) ? summary.collisions : 0,
-      windowPct: numOrNull(fast.windowPct),
+      // the injected subscription reading first, the cached spend figure as the fallback
+      windowPct: Number.isFinite(opts.vendorWindowPct) ? Number(opts.vendorWindowPct) : numOrNull(fast.windowPct),
       gates: numOrNull(fast.gates),
       unscored: numOrNull(preds.unscored),
     }
@@ -191,10 +204,13 @@ export async function refreshCache(opts = {}) {
  * parseStatusStdin(raw) — the QUARANTINED vendor-stdin adapter. Claude Code pipes a
  * status JSON (session/model/workspace/cost shape) to a statusLine command on stdin;
  * this is the ONLY function in the module that knows that shape. It extracts ONLY the
- * tolerated optional display extras {modelName?, contextPct?} plus the subscription
+ * window token {sessionId?} — the only answer to «which window is this» a render ever
+ * gets — plus the tolerated display extras {modelName?, contextPct?} and the subscription
  * window reading {rateLimits?}; garbage bytes, an empty string, or an unfamiliar shape
  * return {} — it NEVER throws (the spend-adapter quarantine posture: one function owns
- * the foreign shape, the rest stay pure).
+ * the foreign shape, the rest stay pure). The context percentage is read where the vendor
+ * documents it, `context_window.used_percentage`; the shapes read before it never matched
+ * a real payload and are kept only as a harmless fallback.
  *
  * THE WINDOW READING WAS ARRIVING HERE ALL ALONG AND WAS BEING DROPPED ON THE FLOOR.
  * The vendor pipes, on a subscription and after the first model reply of a session:
@@ -210,7 +226,7 @@ export async function refreshCache(opts = {}) {
  * (a percentage that can never expire is worse than an empty place).
  *
  * @param {string} raw
- * @returns {{modelName?:string, contextPct?:number, rateLimits?:{five_hour?:{usedPercentage?:number, resetsAt?:number}, seven_day?:{usedPercentage?:number, resetsAt?:number}}}}
+ * @returns {{sessionId?:string, modelName?:string, contextPct?:number, rateLimits?:{five_hour?:{usedPercentage?:number, resetsAt?:number}, seven_day?:{usedPercentage?:number, resetsAt?:number}}}}
  */
 export function parseStatusStdin(raw) {
   try {
@@ -218,14 +234,28 @@ export function parseStatusStdin(raw) {
     const obj = JSON.parse(raw)
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {}
     const out = {}
+    // WHICH window is this render drawing? The vendor answers right here: the same
+    // `session_id` it puts on the hook stdin — constant across one window, distinct
+    // between two. It was never lifted off this payload, so the entry point had nothing
+    // to identify itself with and fell back to its own one-shot child's pid — an id no
+    // lease has ever carried. Both spellings are tolerated, the way rate_limits is.
+    const token = obj.session_id ?? obj.sessionId
+    if (typeof token === 'string' && token.trim()) out.sessionId = token.trim()
     const model = obj.model
     if (model && typeof model === 'object') {
       const name = model.display_name ?? model.displayName ?? model.id
       if (typeof name === 'string' && name.trim()) out.modelName = name.trim()
     }
-    // context percentage — tolerate a couple of shapes; never required.
+    // context percentage — the DOCUMENTED home is context_window.used_percentage; the
+    // older tolerated shapes stay as a harmless fallback (they were the only ones read
+    // before, and they never matched a real payload, so the promise went unkept).
+    const ctxWindow = obj.context_window ?? obj.contextWindow
+    if (ctxWindow && typeof ctxWindow === 'object' && !Array.isArray(ctxWindow)) {
+      const pct = ctxWindow.used_percentage ?? ctxWindow.usedPercentage
+      if (Number.isFinite(pct)) out.contextPct = Number(pct)
+    }
     const ctx = obj.context && typeof obj.context === 'object' ? obj.context : obj.cost && typeof obj.cost === 'object' ? obj.cost : null
-    if (ctx) {
+    if (ctx && !Number.isFinite(out.contextPct)) {
       const pct = ctx.used_pct ?? ctx.usedPct ?? ctx.context_pct ?? ctx.contextPct
       if (Number.isFinite(pct)) out.contextPct = pct
     }
@@ -395,7 +425,9 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
 // instrument (bench-render-p95-ms) measures the SMA segment alone, by design.
 
 /** True when a statusLine command already points into our own cli.mjs statusline —
- * the self-reference guard (kept in sync with cli.mjs's install-idempotence copy). */
+ * the self-reference guard, and the SOURCE of the same test for the install core, which
+ * imports this one instead of carrying its own. (The off-ramp module keeps a standalone
+ * copy on purpose: it must stay importable with nothing but node built-ins behind it.) */
 export function isSmaStatuslineCmd(cmd) {
   return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
 }

@@ -88,7 +88,7 @@ function firstToken(...candidates) {
  * hundreds of write-once lease files and renewal/throttle/transitions never saw the same
  * identity twice. The disambiguator is now the WINDOW TOKEN when present:
  *   - the token (Claude Code's per-session `session_id`, threaded from the hook stdin, or
- *     SMA_WINDOW_TOKEN / CLAUDE_SESSION_ID from the env) is STABLE across SessionStart +
+ *     SMA_WINDOW_TOKEN / the agent's own session-id variable from the env) is STABLE across SessionStart +
  *     every PreToolUse of ONE window -> sequential hooks renew the SAME lease file; and
  *   - it is DISTINCT between two concurrent windows (two Claude sessions have two
  *     session_ids) -> same-name windows stay distinct (the whole point of having a
@@ -105,12 +105,22 @@ export function resolveTerminalIdentity(opts = {}) {
   const env = opts.env ?? process.env
   const pid = opts.pid ?? process.pid
   // Window token: explicit arg (threaded from the hook stdin session_id) first, else the
-  // env overrides SMA_WINDOW_TOKEN / CLAUDE_SESSION_ID. firstToken picks the first
+  // env overrides SMA_WINDOW_TOKEN and the agent's own session-id variable. firstToken picks the first
   // non-blank string so an absent candidate falls through cleanly (a `&&`/`??` chain
   // would yield `false` and short-circuit the fallthrough — the subtle bug this avoids).
   const sessionToken = firstToken(
     opts.sessionToken,
     env ? env.SMA_WINDOW_TOKEN : undefined,
+    // BOTH spellings of the agent's own variable, because the one it actually exports is
+    // the longer one and we were reading only the shorter. A name that is wrong by one word
+    // fails silently and completely: the token is simply absent, the disambiguator falls back
+    // to the process id, and every one-shot call from the same window mints a NEW identity —
+    // which is the exact fragmentation the token was introduced to end. Measured on a live
+    // window: claims landed in a lease named after the child process instead of the window,
+    // so the window's own status line could not find the claim it had just taken, and the
+    // session registry filled with leases no window will ever renew. Keep both names: the
+    // shorter one may be what other tools set, and an extra candidate costs one comparison.
+    env ? env.CLAUDE_CODE_SESSION_ID : undefined,
     env ? env.CLAUDE_SESSION_ID : undefined,
   )
 
