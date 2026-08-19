@@ -28,7 +28,10 @@ import { describe, it, expect } from 'vitest'
 import {
   BLOCKER,
   DESTRUCTIVE_RE,
+  READY_CEILING_MS,
   READY_SETTLE_MS,
+  READY_STREAM_AGE_MS,
+  STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   WARNING,
   classify,
@@ -354,6 +357,41 @@ describe('readiness — a page is measured when it has stopped changing, not whe
     const r = readiness([sample(0, '3:0', false), sample(8000, '900:4200'), sample(9000, '900:4200'), sample(9600, '900:4200')])
     expect(r.ready).toBe(true)
     expect(r.waitedMs).toBe(9600)
+  })
+
+  /**
+   * The case that made stillness alone insufficient, and it was measured rather than argued:
+   * on the window this was written for the shell paints one control and then holds perfectly
+   * still for thirty-one seconds while its first state call runs. Read as ready, that skeleton
+   * hands back «1 of 1, nothing left untouched» for a screen that turned out to carry sixteen
+   * controls. So a page still waiting on a call of its own is not ready, however still it is.
+   */
+  it('refuses a skeleton that holds still while it is still waiting on its own call', () => {
+    const r = readiness([
+      { at: 0, signature: '26:139', ink: true, pending: 1 },
+      { at: 4000, signature: '26:139', ink: true, pending: 1 },
+      { at: 8000, signature: '26:139', ink: true, pending: 1 },
+    ])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('still waiting on 1 call')
+  })
+
+  it('calls the same page ready the moment its answer arrives and the picture settles', () => {
+    const r = readiness([
+      { at: 0, signature: '26:139', ink: true, pending: 1 },
+      { at: 31000, signature: '76:872', ink: true, pending: 0 },
+      { at: 32250, signature: '76:872', ink: true, pending: 0 },
+    ])
+    expect(r.ready).toBe(true)
+  })
+
+  it('a channel is not a call to wait for — by the kind the browser gives it, and by age', () => {
+    expect(STREAM_RESOURCE_TYPES).toContain('eventsource')
+    expect(STREAM_RESOURCE_TYPES).toContain('websocket')
+    // The age backstop covers a stream the browser does not label, and must sit ABOVE the
+    // slowest answer worth waiting for, or a slow door would be mistaken for a channel.
+    expect(READY_STREAM_AGE_MS).toBeGreaterThan(READY_SETTLE_MS)
+    expect(READY_CEILING_MS).toBeGreaterThan(READY_STREAM_AGE_MS)
   })
 
   it('a page that never settled is a BLOCKING finding that names where and how long — never a quiet pass', () => {
