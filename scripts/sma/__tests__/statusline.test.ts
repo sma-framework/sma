@@ -306,16 +306,23 @@ describe('statusline CLI — Task 3 (managed install never clobbers the adopter)
     // the original was preserved verbatim, the live command is the wrap variant
     const wrapped = JSON.parse(readFileSync(join(smaRoot, 'statusline', 'wrapped-command.json'), 'utf8'))
     expect(wrapped.original).toEqual(userStatusLine)
-    expect(after.statusLine.command).toContain('--wrap')
+    // the WHOLE written entry is the canonical one, including the refresh timer: without it
+    // an idle window never repaints for anything raised in a neighbouring window
+    expect(after.statusLine).toEqual({
+      type: 'command',
+      command: 'node scripts/sma/cli.mjs statusline --wrap',
+      padding: 0,
+      refreshInterval: 60,
+    })
     // every non-statusLine key deep-equal survived
     expect(after.hooks).toEqual(fixture.hooks)
     expect(after.model).toBe('opus')
 
-    // a SECOND install is a no-op (idempotent)
+    // a SECOND install is a no-op (idempotent) — the entry already IS the canonical one
     const out2 = runStatusline(smaRoot, ['install'])
     expect(out2).toContain('без изменений')
     const after2 = JSON.parse(readFileSync(settingsPath, 'utf8'))
-    expect(after2.statusLine.command).toContain('--wrap')
+    expect(after2.statusLine).toEqual(after.statusLine)
 
     // uninstall restores the user's original statusLine object verbatim
     runStatusline(smaRoot, ['uninstall'])
@@ -330,7 +337,12 @@ describe('statusline CLI — Task 3 (managed install never clobbers the adopter)
 
     runStatusline(smaRoot, ['install'])
     const after = JSON.parse(readFileSync(settingsPath, 'utf8'))
-    expect(after.statusLine.command).toBe('node scripts/sma/cli.mjs statusline') // direct, no --wrap
+    expect(after.statusLine).toEqual({
+      type: 'command',
+      command: 'node scripts/sma/cli.mjs statusline', // direct, no --wrap
+      padding: 0,
+      refreshInterval: 60,
+    })
     expect(after.hooks).toEqual(fixture.hooks)
 
     // uninstall REMOVES the key we added (hadNone recorded)
