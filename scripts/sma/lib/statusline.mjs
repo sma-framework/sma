@@ -207,7 +207,9 @@ export async function refreshCache(opts = {}) {
  * tolerated optional display extras {modelName?, contextPct?} plus the subscription
  * window reading {rateLimits?}; garbage bytes, an empty string, or an unfamiliar shape
  * return {} — it NEVER throws (the spend-adapter quarantine posture: one function owns
- * the foreign shape, the rest stay pure).
+ * the foreign shape, the rest stay pure). The context percentage is read where the vendor
+ * documents it, `context_window.used_percentage`; the shapes read before it never matched
+ * a real payload and are kept only as a harmless fallback.
  *
  * THE WINDOW READING WAS ARRIVING HERE ALL ALONG AND WAS BEING DROPPED ON THE FLOOR.
  * The vendor pipes, on a subscription and after the first model reply of a session:
@@ -236,9 +238,16 @@ export function parseStatusStdin(raw) {
       const name = model.display_name ?? model.displayName ?? model.id
       if (typeof name === 'string' && name.trim()) out.modelName = name.trim()
     }
-    // context percentage — tolerate a couple of shapes; never required.
+    // context percentage — the DOCUMENTED home is context_window.used_percentage; the
+    // older tolerated shapes stay as a harmless fallback (they were the only ones read
+    // before, and they never matched a real payload, so the promise went unkept).
+    const ctxWindow = obj.context_window ?? obj.contextWindow
+    if (ctxWindow && typeof ctxWindow === 'object' && !Array.isArray(ctxWindow)) {
+      const pct = ctxWindow.used_percentage ?? ctxWindow.usedPercentage
+      if (Number.isFinite(pct)) out.contextPct = Number(pct)
+    }
     const ctx = obj.context && typeof obj.context === 'object' ? obj.context : obj.cost && typeof obj.cost === 'object' ? obj.cost : null
-    if (ctx) {
+    if (ctx && !Number.isFinite(out.contextPct)) {
       const pct = ctx.used_pct ?? ctx.usedPct ?? ctx.context_pct ?? ctx.contextPct
       if (Number.isFinite(pct)) out.contextPct = pct
     }
