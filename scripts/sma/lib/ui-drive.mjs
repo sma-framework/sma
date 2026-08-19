@@ -74,6 +74,90 @@ export const WARNING = 'WARNING'
 export const SWEEP_CAP = 40
 
 /**
+ * ══════════ WHEN A PAGE IS READY TO BE MEASURED AND PRESSED ══════════
+ *
+ * Opening used to mean «the document exists and something has been painted, plus 400 ms».
+ * On a window whose first answer takes sixteen seconds that is an almost empty page, and
+ * both things this engine does at that moment are then done on nothing:
+ *
+ *  - THE OVERFLOW MEASUREMENT. An empty page does not slide sideways by itself, so «no
+ *    overflow» can be true only because there is nothing to show yet. A gate that is green
+ *    before the fix and green after it proves nothing — the same disease the element scan
+ *    was written to cure, arriving through the clock instead of through the tree.
+ *  - THE SWEEP'S DENOMINATOR. The list of controls is collected once, and collected early
+ *    it holds whatever the shell painted first. One run reported «pressed 1 of 1 · nothing
+ *    was left untouched» on a screen carrying about two dozen controls. That reads as total
+ *    coverage while being nearly none, and a silent cap is the one thing this module says
+ *    out loud it will not do.
+ *
+ * So readiness is a MEASURED signal, not a longer sleep: the page is sampled until what it
+ * shows stops changing (element count and the length of its text), and only a page that has
+ * held still for READY_SETTLE_MS counts as ready. A hard wait long enough for the slowest
+ * door would tax every fast page for nothing and still guarantee nothing. A page that never
+ * settles inside READY_CEILING_MS does not quietly pass: it becomes a named finding, because
+ * a number measured on a page that was still loading is a number about nothing.
+ */
+export const READY_POLL_MS = 250
+export const READY_SETTLE_MS = 1000
+export const READY_CEILING_MS = 25000
+
+/**
+ * readiness(samples, {settleMs}) -> {ready, heldMs, waitedMs, ink, reason}
+ *
+ * Pure, so the rule can be proved without a browser. `samples` are taken in order, each
+ * {at: epoch ms, signature: what the page showed, ink: whether it showed anything at all}.
+ * Ready means: something is painted AND the signature has not changed for settleMs.
+ *
+ * @param {Array<{at:number, signature:string, ink?:boolean}>} samples
+ * @param {{settleMs?:number}} [opts]
+ */
+export function readiness(samples = [], { settleMs = READY_SETTLE_MS } = {}) {
+  const list = (Array.isArray(samples) ? samples : []).filter((s) => s && Number.isFinite(Number(s.at)))
+  if (list.length === 0) {
+    return { ready: false, heldMs: 0, waitedMs: 0, ink: false, reason: 'the page was never sampled' }
+  }
+  const last = list[list.length - 1]
+  const waitedMs = Number(last.at) - Number(list[0].at)
+  const ink = Boolean(last.ink)
+  let heldSince = Number(last.at)
+  for (let i = list.length - 2; i >= 0; i -= 1) {
+    if (list[i].signature !== last.signature) break
+    heldSince = Number(list[i].at)
+  }
+  const heldMs = Number(last.at) - heldSince
+  const ready = ink && heldMs >= settleMs
+  const reason = ready
+    ? ''
+    : !ink
+      ? 'nothing was painted at all — the measurement would have been taken on an empty page'
+      : `after ${waitedMs} ms what the page shows had held still for only ${heldMs} ms`
+  return { ready, heldMs, waitedMs, ink, reason }
+}
+
+/**
+ * SWEEP_SPARSE_FLOOR / sweepSparseNote(total) — the denominator has to be able to look thin.
+ *
+ * «1 of 1 · nothing was left untouched» is a true sentence and a false impression: it is the
+ * shape a complete sweep has, worn by a sweep that saw one button. Below the floor the
+ * receipt says so in words, so a reader cannot mistake an empty denominator for a full one.
+ *
+ * @param {number} total controls the sweep found
+ * @returns {string} the sentence, or '' when the denominator needs no warning
+ */
+export const SWEEP_SPARSE_FLOOR = 2
+export function sweepSparseNote(total) {
+  const n = Number(total) || 0
+  if (n >= SWEEP_SPARSE_FLOOR) return ''
+  if (n <= 0) {
+    return 'No interactive control was found at all — this sweep says nothing about the surface. The denominator is empty, not complete.'
+  }
+  return (
+    `Only ${n} interactive control was found on the whole page — «${n} of ${n}» has the shape of full coverage and is ` +
+    'nearly none. Whatever else this screen carries, the sweep never saw it.'
+  )
+}
+
+/**
  * Controls the sweep will NOT press, matched on their visible name.
  *
  * The sweep runs unattended against whatever the operator points it at — often a real
@@ -278,6 +362,19 @@ export function classify(observations = {}, { origin = '' } = {}) {
         : `content is ${o.scrollWidth}px wide in a ${o.clientWidth}px viewport (${o.viewport}) — the page scrolls sideways`,
     })
   }
+  // A page that never stopped loading was measured while it was still arriving, and every
+  // number taken there — the overflow, the sweep's denominator — describes a page nobody
+  // will ever see. Blocking on purpose: the alternative is a clean receipt for a run that
+  // looked at a spinner.
+  for (const n of observations.notSettled ?? []) {
+    findings.push({
+      severity: BLOCKER,
+      kind: 'page-not-settled',
+      detail:
+        `${n.where ?? 'the page'} had not finished rendering after ${Math.round(Number(n.waitedMs) || 0) / 1000}s` +
+        `${n.reason ? ` — ${n.reason}` : ''}; what was measured there was measured on a page that was still loading`,
+    })
+  }
   // A control nobody can name is unusable by screen reader and untestable by anyone.
   for (const u of observations.unnamedControls ?? []) {
     findings.push({ severity: WARNING, kind: 'control-unnamed', detail: `<${u.tag}> has no accessible name — ${u.hint}` })
@@ -477,7 +574,7 @@ export function missingDriverMessage(reason = '') {
  * forgives QUIETLY is worth less than a strict one, because nobody can tell what it let past.
  *
  * @param {{touched?:number, total?:number, skipped?:number, refused?:string[], ran?:boolean,
- *          viewportsSkipped?:string[], streamsClosed?:number,
+ *          viewportsSkipped?:string[], streamsClosed?:number, sparse?:string,
  *          pathViewport?:{name:string, width:number, height:number}}} [coverage]
  * @returns {string}
  */
@@ -502,8 +599,9 @@ export function renderCoverage(coverage) {
       .filter(Boolean)
       .join('\n')
   }
-  const { touched = 0, total = 0, skipped = 0, refused = [], streamsClosed = 0 } = coverage
+  const { touched = 0, total = 0, skipped = 0, refused = [], streamsClosed = 0, sparse = '' } = coverage
   const lines = [`- Interactive controls pressed: **${touched} of ${total}**`]
+  if (sparse) lines.push(`- **${sparse}**`)
   if (walkedAt(coverage)) lines.push(walkedAt(coverage))
   if (declared(coverage)) lines.push(declared(coverage))
   if (streamsClosed) {
@@ -517,7 +615,9 @@ export function renderCoverage(coverage) {
       `- **${refused.length} refused as destructive** and left for a human: ${refused.map((r) => `"${r}"`).join(', ')}`
     )
   }
-  if (!skipped && !refused.length) lines.push('- Nothing was left untouched.')
+  // «Nothing was left untouched» is only true when there was something to leave: a sweep
+  // that found one control has not covered the page, whatever its own arithmetic says.
+  if (!skipped && !refused.length && !sparse) lines.push('- Nothing was left untouched.')
   return lines.join('\n')
 }
 
