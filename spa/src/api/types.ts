@@ -777,7 +777,9 @@ export interface MemoryHarvest {
   drafted: string[]
   /** Что конвейер не принял и почему — словами, без домыслов. */
   refused: Array<{ id: string; reason: string }>
-  /** Собралось ли всё; `false` — копию не убирают, пока урок жив только в ней. */
+  /** Приёмка попросила НЕ убирать копию: урок жив только в ней (черновики не удалось вынести). */
+  skipCleanup?: boolean
+  /** Собралось ли всё; `false` — что-то не принято или не вынесено (см. refused/skipCleanup). */
   ok: boolean
 }
 

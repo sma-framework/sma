@@ -259,7 +259,11 @@ function lessonLines(attempt: TaskAttempt, trace: MemoryTrace | null): string[] 
     for (const r of refused) {
       if (r && r.reason) lines.push(`не принято (${r.id ?? 'без имени'}): ${r.reason}`)
     }
-    if (harvest.ok === false) lines.push('сбор не удался — копия сохранена, урок жив только в ней')
+    // Копию держат ТОЛЬКО когда урок нигде больше не живёт (черновики не вынесены); отказ
+    // конвейера на применении копию не держит — тогда честно: «сбор не удался», без слов о копии.
+    if (harvest.ok === false) {
+      lines.push(harvest.skipCleanup === true ? 'сбор не удался — копия сохранена, урок жив только в ней' : 'сбор не удался — см. причину выше; копия убрана как обычно')
+    }
   }
 
   return lines
