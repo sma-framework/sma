@@ -4352,7 +4352,13 @@ async function renderStatuslineEntry({ flags, dirs }) {
   }
 
   const summary = await gatherSummary(dirs)
-  const identity = registry.resolveTerminalIdentity({})
+  // WHICH window is this line drawn for? The token rides in on the very stdin parsed
+  // above — the same `session_id` every hook threads into the identity. It was not
+  // passed, so the identity fell back to the pid of this one-shot render child and the
+  // lookup below asked for a lease no window has ever written: the claim axis printed
+  // a dash while a claim was held, and the pulse read idle while the lease said working.
+  // A call with no token on stdin (a manual run) keeps the old pid fallback untouched.
+  const identity = registry.resolveTerminalIdentity({ sessionToken: status.sessionId })
   const ownSession = readJsonSafe(join(dirs.sessionsDir, `${identity.terminalId}.json`))
   const pulse = ownSession ? notify.derivePulse(ownSession, {}) : 'idle'
 

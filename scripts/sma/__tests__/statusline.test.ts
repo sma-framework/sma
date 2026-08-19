@@ -17,11 +17,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 
 import {
   renderSegment,
@@ -493,5 +494,115 @@ describe('statusline CLI — Task 3 (managed install never clobbers the adopter)
     expect(out).toContain('sma ')
     expect(out.trim().split('\n').length).toBe(1)
     expect(out).not.toContain(' · sma ') // no leading child line prepended (child failed)
+  })
+})
+
+// ── The window token: a render must draw THIS window's lease, never another's ──
+//
+// These are WIRE tests: each one spawns the real `cli.mjs statusline` and asserts what
+// the token DOES to the printed line, not that a helper could read a lease. The break they
+// pin: the entry point resolved its identity with no token at all, so it looked up a lease
+// keyed by its own one-shot child's pid — an id nothing ever writes. The founder's window
+// therefore read `claim —` while holding a claim and `·idle` while its lease said working.
+
+describe('statusline identity — the vendor session token reaches the lease lookup', () => {
+  const TOKEN = 'a3f9c1e2-0000-4444-8888-1b2c3d4e5f60'
+  const TERMINAL = 'B'
+  const CLAIM_LABEL = 'the lease this window actually holds'
+
+  /** The registry's own rule: slug(window name) + '-' + sha1(token)[0..8]. */
+  const leaseIdFor = (name: string, token: string) =>
+    `${name.toLowerCase()}-${createHash('sha1').update(token).digest('hex').slice(0, 8)}`
+
+  let repo: string
+  let sessionsDir: string
+  let home: string
+
+  beforeEach(() => {
+    repo = join(dir, 'ident-repo')
+    home = join(dir, 'ident-home')
+    sessionsDir = join(repo, '.sma', 'sessions')
+    mkdirSync(sessionsDir, { recursive: true })
+    mkdirSync(home, { recursive: true })
+    // the lease of the window the vendor frame names — a claim held, attention wanted
+    writeFileSync(
+      join(sessionsDir, `${leaseIdFor(TERMINAL, TOKEN)}.json`),
+      JSON.stringify({
+        holderIdentity: TERMINAL,
+        pid: process.pid,
+        scope: { globs: ['probe/**'], description: 'the scope description behind the label' },
+        status: 'working',
+        blockers: [],
+        label: CLAIM_LABEL,
+        fpStatus: 'waiting-for-human',
+        filesRecent: [],
+        acquireTime: new Date(Date.now() - 60_000).toISOString(),
+        renewTime: new Date().toISOString(),
+        leaseDurationSeconds: 1800,
+        transitions: 0,
+      }),
+    )
+  })
+
+  /** The real command. HOME/USERPROFILE are redirected so no adopter statusline or daemon
+   * store is touched; the env token overrides are blanked so ONLY stdin can identify us. */
+  const render = (payload: string): string =>
+    execFileSync(process.execPath, [CLI, 'statusline'], {
+      env: {
+        ...process.env,
+        SMA_ROOT_OVERRIDE: join(repo, '.sma'),
+        HOME: home,
+        USERPROFILE: home,
+        SMA_TERMINAL_NAME: TERMINAL,
+        SMA_WINDOW_TOKEN: '',
+        CLAUDE_SESSION_ID: '',
+      },
+      input: payload,
+      encoding: 'utf8',
+    })
+
+  const frame = (extra: object = {}) =>
+    JSON.stringify({ model: { display_name: 'Opus' }, rate_limits: { five_hour: { used_percentage: 11, resets_at: 1786552800 } }, ...extra })
+
+  it('S1 (wire): a frame carrying session_id draws the claim and the pulse of THAT lease', () => {
+    const out = render(frame({ session_id: TOKEN }))
+    expect(out).toContain(`claim ${CLAIM_LABEL}`) // the held claim, not a dash
+    expect(out).toContain('◆waiting-for-human') // the pulse off the SAME lease
+    expect(out).toContain('win 11%') // the reading still rides the same parse
+  })
+
+  it('S1b (wire): the camelCase spelling of the token is tolerated the same way', () => {
+    expect(render(frame({ sessionId: TOKEN }))).toContain(`claim ${CLAIM_LABEL}`)
+  })
+
+  it('S2 (wire): the token of another window never borrows this lease', () => {
+    const out = render(frame({ session_id: 'a-completely-different-window' }))
+    expect(out).toContain('claim —')
+    expect(out).toContain('·idle')
+  })
+
+  it('S3 (wire): a frame with no token keeps the old behavior — the honest dash, exit 0', () => {
+    const out = render(frame())
+    expect(out).toContain('claim —')
+    expect(out).toContain('·idle')
+    expect(out).toContain('sma ') // still a line; a tokenless manual call never breaks
+    expect(out.trim().split('\n').length).toBe(1)
+  })
+
+  it('S4: a render writes no lease of its own — the sessions directory is unchanged', () => {
+    const before = readdirSync(sessionsDir).sort()
+    render(frame({ session_id: TOKEN }))
+    render(frame()) // the tokenless path is the one that used to be blamed for the litter
+    render(frame({ session_id: 'yet-another-window' }))
+    expect(readdirSync(sessionsDir).sort()).toEqual(before) // a reader, never a registrar
+  })
+
+  it('S5: parseStatusStdin lifts the token where the vendor puts it, and invents none', () => {
+    expect(parseStatusStdin(JSON.stringify({ session_id: TOKEN })).sessionId).toBe(TOKEN)
+    expect(parseStatusStdin(JSON.stringify({ sessionId: TOKEN })).sessionId).toBe(TOKEN)
+    expect(parseStatusStdin(JSON.stringify({ session_id: '   ' })).sessionId).toBeUndefined()
+    expect(parseStatusStdin(JSON.stringify({ session_id: 42 })).sessionId).toBeUndefined()
+    expect(parseStatusStdin('{}').sessionId).toBeUndefined()
+    expect(parseStatusStdin('not json').sessionId).toBeUndefined()
   })
 })

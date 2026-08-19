@@ -204,7 +204,8 @@ export async function refreshCache(opts = {}) {
  * parseStatusStdin(raw) — the QUARANTINED vendor-stdin adapter. Claude Code pipes a
  * status JSON (session/model/workspace/cost shape) to a statusLine command on stdin;
  * this is the ONLY function in the module that knows that shape. It extracts ONLY the
- * tolerated optional display extras {modelName?, contextPct?} plus the subscription
+ * window token {sessionId?} — the only answer to «which window is this» a render ever
+ * gets — plus the tolerated display extras {modelName?, contextPct?} and the subscription
  * window reading {rateLimits?}; garbage bytes, an empty string, or an unfamiliar shape
  * return {} — it NEVER throws (the spend-adapter quarantine posture: one function owns
  * the foreign shape, the rest stay pure). The context percentage is read where the vendor
@@ -225,7 +226,7 @@ export async function refreshCache(opts = {}) {
  * (a percentage that can never expire is worse than an empty place).
  *
  * @param {string} raw
- * @returns {{modelName?:string, contextPct?:number, rateLimits?:{five_hour?:{usedPercentage?:number, resetsAt?:number}, seven_day?:{usedPercentage?:number, resetsAt?:number}}}}
+ * @returns {{sessionId?:string, modelName?:string, contextPct?:number, rateLimits?:{five_hour?:{usedPercentage?:number, resetsAt?:number}, seven_day?:{usedPercentage?:number, resetsAt?:number}}}}
  */
 export function parseStatusStdin(raw) {
   try {
@@ -233,6 +234,13 @@ export function parseStatusStdin(raw) {
     const obj = JSON.parse(raw)
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {}
     const out = {}
+    // WHICH window is this render drawing? The vendor answers right here: the same
+    // `session_id` it puts on the hook stdin — constant across one window, distinct
+    // between two. It was never lifted off this payload, so the entry point had nothing
+    // to identify itself with and fell back to its own one-shot child's pid — an id no
+    // lease has ever carried. Both spellings are tolerated, the way rate_limits is.
+    const token = obj.session_id ?? obj.sessionId
+    if (typeof token === 'string' && token.trim()) out.sessionId = token.trim()
     const model = obj.model
     if (model && typeof model === 'object') {
       const name = model.display_name ?? model.displayName ?? model.id
