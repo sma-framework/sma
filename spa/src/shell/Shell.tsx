@@ -5,6 +5,8 @@ import type { ScreenId } from '../screens/registry'
 import { HubBanner } from './HubBanner'
 import { OPEN_SCREEN_EVENT, OpenedWithProvider, readOpenScreen } from './navigation'
 import type { OpenScreenDetail } from './navigation'
+import { useIsNarrow } from './narrow/narrow'
+import { NarrowShell } from './narrow/NarrowShell'
 import { Palette } from './Palette'
 import { Sidebar } from './Sidebar'
 import { SystemConsole } from './SystemConsole'
@@ -23,6 +25,13 @@ import { SystemConsole } from './SystemConsole'
  * folding and no shrinking. A smaller screen is its own piece of work, taken up on its
  * own terms rather than smuggled in as a breakpoint.
  *
+ * И ЭТА ОТДЕЛЬНАЯ РАБОТА ТЕПЕРЬ СУЩЕСТВУЕТ: она живёт в `shell/narrow` и взята ровно на её
+ * условиях, как здесь и было заявлено, — со своим коротким составом (увидеть, что от тебя
+ * ждут, открыть задачу, принять её), своей верхней полосой и шторкой вместо боковой колонки.
+ * Ни один экран стола ради неё не сжимался и не получал точки перелома: узкая работа не
+ * пересобирает стол, она показывает вместо него СВОЁ. Порог, на котором рама выбирает между
+ * ними, — то же самое число, что стоит минимумом ниже, и живёт оно в одном месте (narrow.ts).
+ *
  * И ЭТА ШИРИНА ОБЪЯВЛЕНА ЗДЕСЬ, НА РАМЕ, а не на странице. Минимум в 1360px стоял на `body`,
  * и на узком экране вбок уезжала вся страница целиком; теперь его несёт рама, а возит её
  * `#root` (см. tokens.css). Заявление то же самое — «окну нужно 1360», — но сказано про то,
@@ -34,6 +43,7 @@ export function Shell() {
   const [active, setActive] = useState<ScreenId>(HOME_SCREEN)
   const [openedWith, setOpenedWith] = useState<OpenScreenDetail | null>(null)
   const state = useStateQuery()
+  const narrow = useIsNarrow()
   const { Screen } = screenById(active)
 
   useEffect(() => {
@@ -51,6 +61,14 @@ export function Shell() {
     setActive(id)
     setOpenedWith(null)
   }
+
+  /*
+    Развилка стоит ПОСЛЕ всех хуков и до всякой разметки: узкая работа — не вариант этой
+    рамы, а другая рама. Минимум ширины остаётся там, где он и был, — у стола, которому он
+    нужен; узкая работа живёт без него, и потому здесь не появилось ни второго числа, ни
+    условного класса. Решение принимается на уровне того, ЧТО показано.
+  */
+  if (narrow) return <NarrowShell />
 
   return (
     <div className="flex min-h-full min-w-[1360px]">
