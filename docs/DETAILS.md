@@ -729,16 +729,18 @@ Rules rise **and fall** only on journal evidence — benefit accounting, not fir
 
 ### Statusline segment + attention pulse
 
-Live coordination state in the native Claude Code status line — and it composes: your existing statusline command runs first and its output is preserved, with the SMA segment appended.
+Live coordination state in the native Claude Code status line — installed **by default** with the rest of the engine, not left as an opt-in — and it composes: your existing statusline command runs first and its output is preserved, with the SMA segment appended.
 
 ```mermaid
 flowchart LR
     CC["Claude Code<br>statusline event"] --> W["sma statusline --wrap"]
     W --> U["your existing statusline command<br>runs FIRST — output preserved"]
     U --> OUT["one line, both worlds"]
-    W --> SEG["SMA segment appended:<br>claims · collisions · budget · pulse"]
+    W --> SEG["SMA segment appended, in this order:<br>pulse · own claim · collisions ·<br>window % · open gates · unscored predictions"]
     SEG --> OUT
 ```
+
+Those six sub-segments render in exactly that fixed order, and a value that cannot be resolved prints as `—` rather than as a zero. The window axis is the one worth spelling out: the subscription-window reading the vendor pipes in on stdin at every render comes first; the percentage of your own spend against a money cap you set is the fallback underneath it; with neither available the axis is an honest dash — which says "no reading", not "nothing used".
 
 The attention pulse marks each window *working* or *waiting-for-human* (idle is derived, never guessed). The optional webhook is **outbound-only** — SMA sends a nudge out; there is no inbound path and nothing listens.
 

@@ -79,6 +79,7 @@ zero dependencies).
 | Command skills (`/sma-*`, 14 commands) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Transitional `/gsd-*` aliases (flag-gated) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Hooks — seven entries across six agent events (spelled out under the table) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
+| Status-line segment (the `statusLine` entry, installed by default) | `<project>/.claude/settings.json` | `<project>/.claude/settings.json` (always project-level — reason under the table) |
 | Runtime scaffold | `<project>/.sma/{sessions,claims,journal,reflex}` | same (project-level) |
 
 ### The seven hook entries
@@ -119,6 +120,50 @@ installer used to ship under a different matcher is removed when — and only wh
 the command is ours *and* that command has a home under this event in the list
 above. A foreign entry sitting in the same group survives byte for byte.
 `/sma-deleteme` removes all seven symmetrically, again leaving foreign entries alone.
+
+### The status-line entry
+
+Alongside the hooks the installer writes one more key — `statusLine`, the engine's own
+segment in the terminal status bar — and it writes it **by default**, not on request:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "node scripts/sma/cli.mjs statusline",
+  "padding": 0,
+  "refreshInterval": 60
+}
+```
+
+Three properties of that entry, each a decision rather than an accident.
+
+**Always the project settings file, even for a global install.** The command is
+project-relative (`node scripts/sma/cli.mjs statusline`), and a project-level
+`statusLine` takes precedence over the user-level one. An entry in
+`~/.claude/settings.json` would therefore run in every project you open — including all
+the ones that do not have this runtime, where it finds nothing to run, prints nothing,
+and shadows your own status line with emptiness everywhere at once. Taking your line
+away in all your other projects is not a trade an installer gets to make on your behalf,
+so this key stays project-scoped. It is the same rule the runtime under `scripts/sma/`
+already follows.
+
+**A status line of your own is not lost.** If `statusLine` already holds a command of
+yours, it is preserved verbatim and wrapped: your command runs first and its output is
+printed first, the SMA segment second. Uninstall gives your command back byte for byte;
+if there was no `statusLine` key before the install, uninstall removes the key rather
+than inventing one. `statusLine` is the only key this edit ever touches — every other
+key is compared against the pre-edit snapshot, and a mismatch aborts the write entirely.
+
+**`refreshInterval: 60` is deliberate, and it costs something.** The segment reports
+state from the whole machine — a claim taken in a neighbouring window, a gate someone
+else opened — while repaints driven by events only ever reach the window where the
+conversation is happening. Without a timer nothing would ask a quiet window to look
+again. Sixty seconds is four times the fast cache TTL, so a tick does not recompute
+values that cannot have changed. The price, stated plainly rather than in small print:
+every refresh spawns this process and your own wrapped command with it, so an idle
+window costs about one spawn a minute. Measured in a window that was working; a
+silent window was not observed, so the interval is what the entry asks for rather
+than a repaint anyone watched.
 
 If the project already has a `.gitignore`, the installer appends a `.sma/`
 line to it (unless one is already there). It does not create the file — if
@@ -308,7 +353,9 @@ rm -f  .claude/agents/sma-*.md
 (For a global install: the same paths under `~/.claude` instead of
 `.claude/`, plus the project-level `scripts/sma` and `.sma/`.) Then open
 `.claude/settings.json` and delete the hook entries whose command starts with
-`node scripts/sma/cli.mjs`, and the statusline entry if you enabled one.
+`node scripts/sma/cli.mjs`, and the `statusLine` entry — installed by default, so it is
+there unless you removed it — putting back your own status line command if the install
+wrapped one (the original is kept under `.sma/statusline/`).
 Everything else in `settings.json` is yours and untouched. Finally, remove
 the `<!-- SMA:RULES:BEGIN … -->` / `<!-- SMA:RULES:END -->` block from
 CLAUDE.md and, optionally, the `.sma/` line from `.gitignore` — the manual
