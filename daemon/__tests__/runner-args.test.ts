@@ -86,6 +86,9 @@ import {
   expectedModelEffort,
   assertProfileParity,
 } from '../src/runner/args.mjs'
+// the markers are asserted from their ONE source, never re-typed here: a test that spelled
+// them itself would keep passing on the day the prompt and the parser parted
+import { LESSON_MARKERS } from '../src/front/journal.mjs'
 import { spawnWorker, MissingWorkerCwdError } from '../src/runner/spawn.mjs'
 import { fencedBlock } from '../src/runner/prompt-fence.mjs'
 import { buildForgePrompt } from '../src/forge/forge.mjs'
@@ -457,6 +460,42 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
     expect(prompt).toContain('npm install')
     expect(prompt).toContain('npm ci')
     expect(prompt).toContain('rm -rf node_modules')
+  })
+
+  /**
+   * ── THE LESSON IS THE THIRD CONDITION OF A FINISHED ATTEMPT ──
+   * The word «урок» appeared nowhere in this prompt while the product promised a flywheel of
+   * memory in both directions, and the corpus held a flat zero of worker lessons over dozens
+   * of attempts. A step nobody is asked for is a step nobody takes.
+   */
+  it('the task prompt asks for a lesson, through the pipeline and nowhere else', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
+    expect(prompt).toContain('## Урок (обязателен)')
+    expect(prompt).toContain('memory write --corpus .claude/memory')
+    expect(prompt).toContain('--id lesson-')
+    expect(prompt).toContain(LESSON_MARKERS.written)
+    expect(prompt).toContain(LESSON_MARKERS.none)
+    // a flat file dropped past the pipeline is NOT a lesson — the gate reads the draft's own
+    // stamp, and a prompt that stayed silent about it would send workers into a red wall
+    expect(prompt).toContain('уроком не считается')
+  })
+
+  it('the lesson block never orders the index rebuilt in the copy', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
+    const block = prompt.slice(prompt.indexOf('## Урок'), prompt.indexOf('## Записка о подходе'))
+    expect(block.length).toBeGreaterThan(0)
+    // Parallel branches rebuilding MEMORY.md each in its own copy is a merge conflict per
+    // attempt. The index is rebuilt ONCE, by the acceptance, in the main tree.
+    expect(block).not.toContain('build-index --write')
+  })
+
+  it('the closing condition counts three, and the third one is the lesson', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
+    expect(prompt).toContain('три пункта')
+    const closing = prompt.indexOf('Условие сдачи')
+    const third = prompt.indexOf('3.', closing)
+    expect(third).toBeGreaterThan(closing)
+    expect(prompt.slice(third, third + 200)).toContain('урок')
   })
 
   it('nothing can bypass the checkout settings — neither an option key nor a produced arg', () => {
