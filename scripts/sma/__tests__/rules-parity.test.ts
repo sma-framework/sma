@@ -1,5 +1,5 @@
 /**
- * Tests for scripts/sma/lib/rules-parity.mjs — the rule
+ * Tests for scripts/sma/lib/rules-parity.mjs and tools/rules-parity-check.mjs — the rule
  * that says what «the same rules as your terminal» is allowed to mean.
  *
  * THE RULE UNDER TEST, in one sentence: the NARROWING half (deny, ask) must match rule for
@@ -17,14 +17,20 @@
  *     silent pass.
  *   Case C — absence: a settings file that is not there is «нет данных», never «совпало».
  *   Case D — the module writes nothing: its source contains no filesystem write at all.
+ *   Case E — the command over two real files on a temporary machine layout: a match, a
+ *     divergence, an account that does not exist, `--json`, `--worker`, a misused flag.
+ *   Case F — the command writes nothing: driven with a filesystem whose every write method
+ *     throws, it still returns 0. A grep proves a shape; this proves the behaviour.
  *
  * Every case runs on freshly minted temporary directories. The real configuration
  * directories of this machine are never read and never written by this file.
  */
 
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import * as nodeFs from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 import {
   compareRules,
@@ -33,6 +39,7 @@ import {
   WIDENING_KEYS,
   NARROWING_KEYS,
 } from '../lib/rules-parity.mjs'
+import { runCheck, parseArgv, RULES_PARITY_CHECKS } from '../../../tools/rules-parity-check.mjs'
 
 const DECLARED = notMirroredDeclaration()
 
@@ -165,5 +172,166 @@ describe('Case D — the module writes nothing at all', () => {
     expect(/writeFile|appendFile|mkdir|rename|rmSync|unlinkSync/.test(src)).toBe(false)
     // …and it never reaches for a filesystem at all: a pure function cannot touch one.
     expect(/from 'node:fs'/.test(src)).toBe(false)
+  })
+})
+
+describe('Case E — одна команда над двумя настоящими файлами', () => {
+  let root: string
+  let terminalDir: string
+  let accountDir: string
+  let configPath: string
+  const lines: string[] = []
+  const errs: string[] = []
+  const log = (s: string) => void lines.push(String(s))
+  const err = (s: string) => void errs.push(String(s))
+
+  function writeSide(dir: string, perms: Record<string, unknown>) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings(perms), null, 2), 'utf8')
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'sma-rules-parity-'))
+    terminalDir = join(root, 'claude')
+    accountDir = join(root, 'accounts', 'local-1')
+    configPath = join(root, 'config.json')
+    lines.length = 0
+    errs.length = 0
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          personalLayer: { sourceDir: terminalDir },
+          workers: [
+            { id: 'local-1', lane: 'prod', account: { configDir: accountDir } },
+            { id: 'local-2', lane: 'prod', account: { configDir: join(root, 'accounts', 'local-2') } },
+          ],
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+  })
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('both sides agree → code 0, and the last line is the bare count', () => {
+    writeSide(terminalDir, { deny: ['Read(.env)'], ask: [], allow: ['Bash(git push:*)'], defaultMode: 'auto' })
+    writeSide(accountDir, { deny: ['Read(.env)'], ask: [] })
+    const code = runCheck(['--config', configPath], { log, err })
+    expect(code).toBe(0)
+    expect(lines[lines.length - 1]).toBe(String(RULES_PARITY_CHECKS))
+    expect(lines.join('\n')).toMatch(/нарочно/i)
+  })
+
+  it('the report says where the two boundaries differ ON PURPOSE and how composite commands are read', () => {
+    writeSide(terminalDir, { deny: ['Read(.env)'] })
+    writeSide(accountDir, { deny: ['Read(.env)'] })
+    runCheck(['--config', configPath], { log, err })
+    const text = lines.join('\n')
+    expect(text).toContain('подушка безопасности')
+    expect(text).toContain('$(')
+  })
+
+  it('a divergence is code 1 and every missing rule is printed by name', () => {
+    writeSide(terminalDir, { deny: ['Read(.env)', 'Read(.secrets)'] })
+    writeSide(accountDir, { deny: ['Read(.env)'] })
+    const code = runCheck(['--config', configPath], { log, err })
+    expect(code).toBe(1)
+    expect(lines.join('\n')).toContain('Read(.secrets)')
+  })
+
+  it('an account that was never created is «данных нет», not a pass', () => {
+    writeSide(terminalDir, { deny: [] })
+    const code = runCheck(['--config', configPath], { log, err })
+    expect(code).toBe(1)
+    expect(`${lines.join('\n')}\n${errs.join('\n')}`).toContain('данных нет')
+  })
+
+  it('a mirrored allow list on the worker turns the command red and names the key', () => {
+    writeSide(terminalDir, { deny: [], allow: ['Bash(git push:*)'], defaultMode: 'auto' })
+    writeSide(accountDir, { deny: [], allow: ['Bash(git push:*)'] })
+    const code = runCheck(['--config', configPath], { log, err })
+    expect(code).toBe(1)
+    expect(lines.join('\n')).toContain('allow')
+  })
+
+  it('--json prints the same verdict as an object and keeps the bare number last', () => {
+    writeSide(terminalDir, { deny: ['Read(.env)'] })
+    writeSide(accountDir, { deny: ['Read(.env)'] })
+    const code = runCheck(['--config', configPath, '--json'], { log, err })
+    expect(code).toBe(0)
+    const parsed = JSON.parse(lines[0])
+    expect(parsed.verdict).toBe('ok')
+    expect(parsed.terminal.path).toContain('settings.json')
+    expect(parsed.worker.id).toBe('local-1')
+    expect(lines[lines.length - 1]).toBe(String(RULES_PARITY_CHECKS))
+  })
+
+  it('--worker picks the named account rather than the first one', () => {
+    writeSide(terminalDir, { deny: ['Read(.env)'] })
+    writeSide(accountDir, { deny: ['Read(.env)'] })
+    writeSide(join(root, 'accounts', 'local-2'), { deny: [] })
+    const code = runCheck(['--config', configPath, '--worker', 'local-2', '--json'], { log, err })
+    expect(code).toBe(1)
+    expect(JSON.parse(lines[0]).worker.id).toBe('local-2')
+  })
+
+  it('an unknown worker id is named, not silently swapped for another', () => {
+    writeSide(terminalDir, { deny: [] })
+    const code = runCheck(['--config', configPath, '--worker', 'nobody'], { log, err })
+    expect(code).toBe(1)
+    expect(errs.join('\n')).toContain('nobody')
+  })
+
+  it('a misused command line is code 2 with the usage, not a verdict', () => {
+    const code = runCheck(['--nonsense'], { log, err })
+    expect(code).toBe(2)
+    expect(errs.join('\n')).toContain('usage')
+    expect(lines).toEqual([])
+  })
+
+  it('parseArgv keeps its own errors instead of guessing', () => {
+    expect(parseArgv(['--worker']).error).toContain('--worker')
+    expect(parseArgv(['--config', 'x', '--json']).json).toBe(true)
+  })
+})
+
+describe('Case F — the command writes nothing, proven by a filesystem that refuses to be written to', () => {
+  it('returns 0 over a read-only filesystem whose every write method throws', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-rules-parity-ro-'))
+    try {
+      const terminalDir = join(root, 'claude')
+      const accountDir = join(root, 'account')
+      for (const dir of [terminalDir, accountDir]) {
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings({ deny: ['Read(.env)'] })), 'utf8')
+      }
+      const configPath = join(root, 'config.json')
+      writeFileSync(
+        configPath,
+        JSON.stringify({ personalLayer: { sourceDir: terminalDir }, workers: [{ id: 'w', account: { configDir: accountDir } }] }),
+        'utf8',
+      )
+      const refuse = (name: string) => () => {
+        throw new Error(`запись запрещена: ${name}`)
+      }
+      const fsImpl = {
+        existsSync: nodeFs.existsSync,
+        readFileSync: nodeFs.readFileSync,
+        writeFileSync: refuse('writeFileSync'),
+        renameSync: refuse('renameSync'),
+        mkdirSync: refuse('mkdirSync'),
+        unlinkSync: refuse('unlinkSync'),
+        readdirSync: nodeFs.readdirSync,
+      }
+      const code = runCheck(['--config', configPath], { fsImpl, log: () => {}, err: () => {} })
+      expect(code).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
