@@ -12,8 +12,11 @@
  *
  * ═══════════════════════ CONSUME-NEVER-REIMPLEMENT ════════════════════════════════
  * The tick COMPOSES existing verbs, it never reimplements them:
- *   - preflight  — verify-before-execute mechanized: 'built' → complete on the preflight
- *                  receipt, skip the spawn entirely (the work already exists).
+ *   - preflight  — verify-before-execute mechanized: asked with the PATH of each plan of the
+ *                  task's phase, for a machine answer, in the connected project's tree; every
+ *                  plan built → complete on the preflight receipt and skip the spawn entirely
+ *                  (the work already exists). Work that carries no phase is not asked at all,
+ *                  and every answer — including «no» and «could not tell» — is logged.
  *   - worktree   — per-task branch `wt/<taskId>`; the worktree.mjs EXPECTED_BASE guard
  *                  (platform-neutral) stays ON inside the provision verb.
  *   - reverify   — the exit gate FOR CODE: done = a GREEN reverify receipt, whoever
@@ -210,35 +213,51 @@ function stageDataOf(task) {
 }
 
 /**
- * findArtifact(deps, cwd, phase, suffix) → the checkout-relative path of the newest file of a
- * phase directory whose name ends with `suffix`, or null. «Newest» is the LAST name in sorted
- * order — for every artifact this map names, the name carries its own sequence
- * (`12-03-PLAN.md`), so sorting is deterministic where a modification time would not be.
+ * findArtifacts(deps, cwd, phase, suffix) → EVERY checkout-relative path of a phase directory
+ * whose name ends with `suffix`, in sorted order; an empty array when the tree, the phase
+ * directory or the files are missing (the three are not distinguished — the caller gets one
+ * honest «nothing found»). Sorted rather than mtime-ordered because every artifact this map
+ * names carries its own sequence in the name (`12-03-PLAN.md`), which a modification time
+ * does not.
+ *
+ * WHY THE PLURAL EXISTS. A phase produces MANY plans, and a reader that takes only the newest
+ * one can answer «this phase is already built» after checking a fifth of it. For the gate that
+ * SKIPS work that answer is unrecoverable and silent, so the door below asks about all of them.
  */
-function findArtifact(deps, cwd, phase, suffix) {
+function findArtifacts(deps, cwd, phase, suffix) {
   const io = resolveIo(deps.fsImpl)
   const root = join(cwd ?? '.', PHASES_PATH)
-  if (!io.existsSync(root)) return null
+  if (!io.existsSync(root)) return []
   let dirs
   try {
     dirs = io.readdirSync(root)
   } catch {
-    return null
+    return []
   }
   const dir = findPhaseDir(dirs, phase)
-  if (!dir) return null
+  if (!dir) return []
   let names
   try {
     names = io.readdirSync(join(root, dir))
   } catch {
-    return null
+    return []
   }
-  const file = names
+  return names
     .map(String)
     .sort()
     .filter((name) => name.endsWith(suffix))
-    .pop()
-  return file ? `${PHASES_PATH}/${dir}/${file}` : null
+    .map((name) => `${PHASES_PATH}/${dir}/${name}`)
+}
+
+/**
+ * findArtifact(deps, cwd, phase, suffix) → the checkout-relative path of the newest file of a
+ * phase directory whose name ends with `suffix`, or null. «Newest» is the LAST name in sorted
+ * order. One traversal, stated once above: the singular is the plural's last entry, so the
+ * documentary gate and the already-built door can never disagree about where phases live.
+ */
+function findArtifact(deps, cwd, phase, suffix) {
+  const found = findArtifacts(deps, cwd, phase, suffix)
+  return found.length ? found[found.length - 1] : null
 }
 
 /**
@@ -619,6 +638,76 @@ function writeLog(deps, entry) {
   } catch {
     /* narration never wedges a tick */
   }
+}
+
+/**
+ * askAlreadyBuilt(deps, verbRunner, task, cwd) → true when EVERY plan of this task's phase
+ * already stands built in the tree, false in every other case. THE DOOR THAT SKIPS WORK, and
+ * the three rules that keep it honest:
+ *
+ *   1. WHAT THE VERB IS ASKED WITH. The preflight verb takes a PATH TO A PLAN as its first
+ *      positional and answers a machine only when asked for machine output. It used to be
+ *      called with a task identifier and no such flag, so it answered a sentence meant for a
+ *      person, the reader of verb answers found no object in it, and the door read that
+ *      emptiness as «not built» — every single time, for a year, with nothing in any log to
+ *      say so. Both halves are asserted by a test that records the invocation itself.
+ *   2. WHERE IT IS ASKED. Plan paths and the artifact paths inside a plan alike resolve
+ *      against the working directory of the child, so the question must be put in the tree of
+ *      the CONNECTED PROJECT — the same expression the worktree provision uses, never the
+ *      directory this process happened to be launched from.
+ *   3. HOW MANY PLANS. A phase produces many; «built» is returned only when EVERY one of them
+ *      answers built. The two possible mistakes cost wildly different things: a false «not
+ *      built» costs one extra run, a false «built» closes the task with no executor at all and
+ *      the work is never done, quietly, with «completed» standing in the ledger. A door that
+ *      exists to save work must err towards doing it.
+ *
+ * EVERY answer is written to the daemon's log — built, partial, absent and the verb's own
+ * failure — and so is the decision NOT to ask. Silence about a door that was consulted is the
+ * very thing that let the broken call live unnoticed: one line naming the plan and the verdict
+ * turns that into a minute's reading.
+ */
+async function askAlreadyBuilt(deps, verbRunner, task, cwd) {
+  const phase = stageDataOf(task).phase
+  if (phase === undefined || phase === null || String(phase).trim() === '') {
+    // Ordinary queue work carries no phase by construction — backlog intake skips the lines
+    // that have one, because those become phase cards instead. Such a task has no plan and
+    // therefore no deterministic thing to check, and its success criteria are PROSE, which a
+    // verdict may never be made to judge. So the verb is not called at all — and the reason
+    // is on the record, because a door that is quietly never opened looks exactly like a
+    // door that is broken.
+    writeLog(deps, {
+      type: 'preflight.skipped',
+      taskId: task.id,
+      reason: 'задача не несёт номера фазы — плана нет, спрашивать нечего',
+    })
+    return false
+  }
+  const planPaths = findArtifacts(deps, cwd, phase, STAGE_ARTIFACTS.plan.produces)
+  if (planPaths.length === 0) {
+    writeLog(deps, {
+      type: 'preflight.skipped',
+      taskId: task.id,
+      phase: String(phase),
+      reason: 'планов фазы не нашлось в дереве проекта — спрашивать нечего',
+    })
+    return false
+  }
+  let allBuilt = true
+  // No early exit on the first non-built answer: asking is cheap and deterministic, and a log
+  // that names every plan of the phase is what makes the verdict explainable afterwards.
+  for (const planPath of planPaths) {
+    const pf = await invokeVerb(verbRunner, 'preflight', [planPath, '--json'], cwd)
+    writeLog(deps, {
+      type: 'preflight.verdict',
+      taskId: task.id,
+      planPath,
+      verdict: pf.verdict ?? null,
+      code: pf.code,
+      ...(pf.error ? { error: String(pf.error) } : {}),
+    })
+    if (pf.verdict !== 'built') allBuilt = false
+  }
+  return allBuilt
 }
 
 /**
@@ -1717,18 +1806,26 @@ export async function tick(deps = {}) {
       const isDocument = stageDataOf(task).kind === DOCUMENT_KIND
 
       // (4) preflight — verify-before-execute. 'built' → complete on the preflight receipt.
-      // SKIPPED for a documentary stage: preflight answers «does this backlog item's work
-      // already exist in the tree», and a stage of the phase cycle is not a backlog item —
+      // SKIPPED for a documentary stage: preflight answers «does the work this task describes
+      // already exist in the tree», and a stage of the phase cycle is not that question —
       // asking would be a verb inventing an answer about something it was never given.
-      const pf = isDocument ? {} : await invokeVerb(verbRunner, 'preflight', [task.id], config.repoDir)
-      if (pf.verdict === 'built') {
-        const receiptRef = pf.receiptRef || `preflight:${task.id}`
+      // The door now asks about EVERY plan of the task's phase, with the plan's path, for a
+      // machine answer, in the connected project's tree — see askAlreadyBuilt for why each of
+      // those four words is load-bearing. Work carrying no phase never reaches the verb, and
+      // the log says so.
+      const doorDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+      const alreadyBuilt = isDocument ? false : await askAlreadyBuilt(deps, verbRunner, task, doorDir)
+      if (alreadyBuilt) {
+        // The receipt this completion stands on. Its shape is CONSTANT — the verb reports no
+        // receipt of its own, and the screen already reads this exact form to show a task that
+        // was finished by the door rather than by a worker.
+        const receiptRef = `preflight:${task.id}`
         // NO transition is minted for this completion, on purpose. The work already existed;
         // no worker process was ever started, so the task never entered RUNNING and there is
         // no CLAIMED -> PRODUCED contract to name. Minting the two-step CLAIMED -> RUNNING ->
         // PRODUCED would assert `worker_process_started`, an external effect that did not
         // happen — the exact fabrication the stamp exists to prevent.
-        await completeTask(deps, task, { receiptRef, branch: null, diffStat: pf.diffStat, route, now: now(), envelope })
+        await completeTask(deps, task, { receiptRef, branch: null, route, now: now(), envelope })
         result.completed = task.id
         return result
       }
@@ -1792,8 +1889,10 @@ export async function tick(deps = {}) {
         // files do not exist and the exit gate is red for unrelated historical reasons. The
         // worker found nothing to do and the gate failed it — twice, on two different tasks,
         // for a reason no screen could show. Falls back to the launch dir only when no
-        // project is connected at all.
-        const provisionDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+        // project is connected at all. The already-built door above resolved this very
+        // directory to put its question in; reusing the value rather than re-deriving it is
+        // what keeps the pair from ever drifting apart.
+        const provisionDir = doorDir
         // HOW LONG THE COPY TOOK TO PREPARE, measured HERE rather than read off the answer:
         // the verb reports its own inside time, and what a person asks about is the wait the
         // task actually paid — process start, argument parsing and all. It is also the only
