@@ -652,6 +652,11 @@ function readTaskJournal(id, deps) {
   const notes = new Set()
   const reflexes = new Set()
   const approachByAttempt = new Map()
+  // ЧЕМ КОНЧИЛАСЬ ПАМЯТЬ ЗАДАЧИ — по ПОСЛЕДНЕЙ строке слоя, а не по объединению всех. Списки
+  // прочитанного складываются по всем попыткам (их читали все), но «что загружено», «откуда
+  // рефлексы», «чему научила» и «оставила ли записку» принадлежат последней попытке: иначе
+  // провал первой навсегда закрыл бы урок второй.
+  let lastMemory = null
 
   for (const row of entries.slice(0, JOURNAL_ROW_CAP)) {
     const payload = (row && row.payload) || {}
@@ -664,13 +669,31 @@ function readTaskJournal(id, deps) {
     } else if (row.layer === 'memory') {
       for (const n of Array.isArray(payload.notes) ? payload.notes : []) notes.add(n)
       for (const r of Array.isArray(payload.reflexes) ? payload.reflexes : []) reflexes.add(r)
+      lastMemory = payload
     } else if (row.layer === 'approach' && payload.approach) {
       const attempt = Number.isFinite(Number(row.attempt)) ? Number(row.attempt) : 1
       approachByAttempt.set(attempt, String(payload.approach))
     }
   }
 
-  return { dispatcher, memoryTrace: { notes: [...notes], reflexes: [...reflexes] }, approachByAttempt }
+  return {
+    dispatcher,
+    memoryTrace: {
+      notes: [...notes],
+      reflexes: [...reflexes],
+      // Слой вырос: что сессия открыла в корпусе, сколько раз позвала конвейер, откуда взяты
+      // рефлексы, что она прочла из авто-памяти аккаунта, чему научила и оставила ли записку.
+      // Всё это писалось в журнал и не отдавалось никому — вычислено и записано не значит
+      // предъявлено. Каждое поле НАЗВАНО нулём при отсутствии: карточка читает одну форму для
+      // любой задачи, и «этого ключа здесь нет» — то, с чего поверхность начинает гадать.
+      loaded: (lastMemory && lastMemory.loaded) ?? null,
+      autoMemoryReads: (lastMemory && lastMemory.autoMemoryReads) ?? null,
+      reflexSource: (lastMemory && lastMemory.reflexSource) ?? null,
+      lesson: (lastMemory && lastMemory.lesson) ?? null,
+      approach: (lastMemory && lastMemory.approach) ?? null,
+    },
+    approachByAttempt,
+  }
 }
 
 /**
@@ -787,6 +810,11 @@ async function handleTask({ res, params, config, deps }) {
     // читает `reasonLabel` выше; второго словаря здесь заводить нельзя.
     personalLayer: a.personalLayer ?? null,
     mcpConfig: a.mcpConfig ?? null,
+    // Что приёмка спасла из копии до того, как копия исчезла: перенесённые черновики,
+    // применённые уроки, отложенная записка и отказы конвейера. Рядом с уборкой и НЕ внутри
+    // неё — удаление копии и спасение урока разные события, и одно не имеет права объяснять
+    // другое. Без этого поля судьба урока читалась бы по отсутствию файла, то есть никак.
+    memoryHarvest: a.memoryHarvest ?? null,
   }))
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
@@ -823,6 +851,7 @@ async function handleTask({ res, params, config, deps }) {
       // каждой записи, и «этого ключа здесь нет» — то, с чего поверхность начинает гадать.
       personalLayer: null,
       mcpConfig: null,
+      memoryHarvest: null,
     })
   }
 
@@ -1271,8 +1300,47 @@ async function handleApprove({ req, res, config, deps }) {
   // THE APPROVAL IS THE TRUTH, THE CLEANUP IS ITS CONSEQUENCE. A failed removal never turns
   // `merged:true` into a lie — it travels in `cleanup.reason`, because a person has to LEARN
   // that something is still on disk rather than deduce it from a missing line.
+  // ═══ ЧТО РАБОТНИК УЗНАЛ, ЕДЕТ В КОРПУС РАНЬШЕ, ЧЕМ КОПИЯ ИСЧЕЗНЕТ ═══════════════
+  //
+  // Урок работника лежит черновиком ВНУТРИ копии, а записка о подходе — только в журнале
+  // попытки. На проекте, чей каталог правил вне git (так живёт и сам этот продукт), слияние
+  // ветки не приносит корпусу НИЧЕГО, а уборка ниже сносит каталог копии вместе с уроком.
+  // Приёмка — единственный момент, когда обе половины памяти ещё существуют и уже приняты.
+  //
+  // ПОРЯДОК ЗДЕСЬ — СОДЕРЖАНИЕ ГАРАНТИИ, А НЕ ВКУС: копия перестаёт быть ценностью только
+  // после того, как урок спасён. Поэтому сбор стоит выше уборки, а при провале на
+  // игнорируемом корпусе он ПРОСИТ уборку не начинаться (`skipCleanup`) и называет причину.
+  //
+  // ОТДЕЛЬНАЯ ЗАВИСИМОСТЬ, как `worktreeCleanup` и `updateRunner`: дверь называет задачу, а
+  // не команду. И, как у них, неудача сбора не превращает `merged:true` в ложь — она едет
+  // в ответ, потому что человек обязан УЗНАТЬ судьбу урока, а не вывести её из молчания.
+  let harvest = null
+  if (green && typeof deps.memoryHarvest === 'function') {
+    try {
+      const h = (await deps.memoryHarvest({ taskId })) || {}
+      harvest = {
+        ok: h.ok === true,
+        mode: h.mode ?? null,
+        copied: Array.isArray(h.copied) ? h.copied : [],
+        applied: Array.isArray(h.applied) ? h.applied : [],
+        drafted: Array.isArray(h.drafted) ? h.drafted : [],
+        refused: Array.isArray(h.refused) ? h.refused : [],
+        ...(h.reason ? { reason: h.reason } : {}),
+        ...(h.skipCleanup === true ? { skipCleanup: true } : {}),
+      }
+    } catch (err) {
+      // Исключение из сбора — тоже ответ, и ответ осторожный: копию в этом случае не трогаем,
+      // потому что состояние урока неизвестно, а неизвестность не повод удалять его
+      // единственный экземпляр.
+      harvest = { ok: false, mode: null, copied: [], applied: [], drafted: [], refused: [], reason: String((err && err.message) || err), skipCleanup: true }
+    }
+  }
+  const harvestBlocksCleanup = harvest !== null && harvest.skipCleanup === true
+
   let cleanup = null
-  if (green && typeof deps.worktreeCleanup === 'function') {
+  if (green && harvestBlocksCleanup) {
+    cleanup = { removed: false, removedPath: null, removedBranch: null, reason: `сбор памяти не удался — копия сохранена: ${harvest.reason ?? 'причина не названа'}` }
+  } else if (green && typeof deps.worktreeCleanup === 'function') {
     try {
       const r = (await deps.worktreeCleanup({ taskId, by: 'approve' })) || {}
       cleanup = {
@@ -1303,6 +1371,7 @@ async function handleApprove({ req, res, config, deps }) {
     ...(merge && merge.softDenied ? { softDenied: true } : {}),
     ...(refusal ? { reasonCode: refusal.reasonCode, reason: refusal.reason } : {}),
     ...(cleanup ? { cleanup } : {}),
+    ...(harvest ? { memoryHarvest: { ok: harvest.ok, mode: harvest.mode, copied: harvest.copied, applied: harvest.applied, drafted: harvest.drafted, refused: harvest.refused, ...(harvest.reason ? { reason: harvest.reason } : {}) } } : {}),
   })
 }
 

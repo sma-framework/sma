@@ -129,6 +129,43 @@ export const APPROACH_MARKERS = Object.freeze({
   influences: 'APPROACH_INFLUENCES:',
 })
 
+/**
+ * The line markers that close an attempt's THIRD condition: what it taught.
+ *
+ * A finished attempt owes three things — a receipt (the work holds), an approach note (why it
+ * was done that way) and a lesson (what the next attempt should know). The first two had words
+ * in the prompt and a parser here; the third had neither, and the memory corpus kept a flat
+ * zero of worker lessons while the product promised a flywheel turning in both directions.
+ *
+ * Either the worker names the draft its `memory write` produced, or it says in one line why
+ * this task taught nothing worth keeping. «Nothing» is a legitimate answer — «nothing, and no
+ * reason» is not, which is why the reason travels with the marker instead of beside it.
+ */
+export const LESSON_MARKERS = Object.freeze({
+  written: 'LESSON_WRITTEN:',
+  none: 'LESSON_NONE:',
+})
+
+/**
+ * How long a stated «no lesson» reason may be. Short on purpose: this is one sentence for a
+ * person to read on a card, not a place to paste a session. The text is DATA — stored capped,
+ * fenced wherever a later prompt shows it.
+ */
+export const LESSON_REASON_CAP = 512
+
+/**
+ * How long ANY sentence the memory layer carries may be — the stated «no lesson» reason and
+ * the path of a written one. The same number as the marker's own cap and for the same reason:
+ * this layer stores what was READ and WHY, never what was read.
+ */
+export const MEMORY_REASON_CAP = 512
+
+/** Where the reflexes of an attempt were read from — a closed set, never free text. */
+export const MEMORY_REFLEX_SOURCES = Object.freeze(['sma-journal', 'none'])
+
+/** Whether the attempt left an approach note in this journal — a closed set. */
+export const MEMORY_APPROACH_MARKS = Object.freeze(['journaled', 'absent'])
+
 /** Named error for any refused journal entry (the caller maps it; nothing is written). */
 export class InvalidJournalEntryError extends Error {
   constructor(message) {
@@ -216,7 +253,46 @@ export function normalizeJournalPayload(layer, payload = {}) {
     }
     return out
   }
-  return { notes: ids(p.notes), reflexes: ids(p.reflexes) }
+  const out = { notes: ids(p.notes), reflexes: ids(p.reflexes) }
+
+  // ── WHAT THE ATTEMPT REALLY TOUCHED, and why the layer grew these fields ──
+  // The layer used to be written only for a worker that had a role file, and it carried the
+  // NAME OF THAT ROLE — a declaration made before the session started, not an observation of
+  // it. Every field below is read off the attempt's own trace instead: which corpus files the
+  // session opened, how many times it asked the memory pipeline for notes, which reflexes
+  // fired under its session identity, what it left behind as a lesson. Still IDS AND MARKS
+  // ONLY: the widened shape carries no note body, only names, counts and closed vocabularies.
+  //
+  // EVERY NEW KEY IS OPTIONAL BY CONSTRUCTION. A payload of the old shape returns the old two
+  // fields and nothing else, so rows written before this revision and rows written after it
+  // read identically to the card that renders them.
+  if (p.loaded && typeof p.loaded === 'object' && !Array.isArray(p.loaded)) {
+    const n = Number(p.loaded.loadCalls)
+    out.loaded = {
+      // The index is the corpus's front door: opening it is a different act from opening one
+      // note, and a card says so in different words.
+      index: p.loaded.index === true,
+      reads: ids(p.loaded.reads),
+      loadCalls: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0,
+    }
+  }
+  if (MEMORY_REFLEX_SOURCES.includes(p.reflexSource)) out.reflexSource = p.reflexSource
+  // The account's OWN memory, kept apart from the project's on purpose: those files belong to
+  // the machine the worker ran on, not to the corpus a person reviews, and merging the two
+  // lists would let «the session read something» pass for «the project's memory was used».
+  if (Array.isArray(p.autoMemoryReads)) out.autoMemoryReads = ids(p.autoMemoryReads)
+  const lesson = p.lesson && typeof p.lesson === 'object' && !Array.isArray(p.lesson) ? p.lesson : null
+  if (lesson) {
+    const written = boundedText(lesson.written, MEMORY_REASON_CAP)
+    const none = boundedText(lesson.none, MEMORY_REASON_CAP)
+    // Exactly one of the three, in the order of what it claims: a draft, a stated «nothing to
+    // teach», or the absence of both — which is the answer that failed the attempt.
+    if (written) out.lesson = { written }
+    else if (none) out.lesson = { none }
+    else if (lesson.missing === true) out.lesson = { missing: true }
+  }
+  if (MEMORY_APPROACH_MARKS.includes(p.approach)) out.approach = p.approach
+  return out
 }
 
 /** Read the raw entries out of whatever ledger seam the caller injected (fail-open). */
@@ -680,7 +756,7 @@ export function attemptRoles(rows) {
 }
 
 /**
- * approachLinesFrom(streamLines) → the lines a note parser can actually read.
+ * markerLinesFrom(streamLines, prefixes) → the lines ANY marker parser can actually read.
  *
  * THE STREAM IS NOT TEXT. Every line a CLI emits is a JSON frame, and the worker's words live
  * INSIDE it (`message.content[].text`, or `result` on the final frame). `parseApproachNote`
@@ -700,16 +776,24 @@ export function attemptRoles(rows) {
  * Raw lines are kept as well: a plain-text stream (tests, other runners) must keep working
  * exactly as before. This only ADDS the unwrapped text.
  *
+ * WHY IT TAKES THE PREFIXES. It used to unwrap frames containing `APPROACH_` and nothing else.
+ * The lesson markers arrive by the very same road — inside a frame, at the end of the run — so
+ * a second family reading raw lines would have found NOTHING, every time, and every attempt
+ * that dutifully wrote its lesson would have been failed for not writing one. One unwrapping
+ * for every marker protocol; the cheap guard stays, it just asks about the caller's prefixes.
+ *
  * @param {string[]} streamLines
+ * @param {string[]} [prefixes] — marker families to unwrap for (default: the approach note's)
  * @returns {string[]}
  */
-export function approachLinesFrom(streamLines) {
+export function markerLinesFrom(streamLines, prefixes = ['APPROACH_']) {
   const out = []
   if (!Array.isArray(streamLines)) return out
+  const wanted = (Array.isArray(prefixes) ? prefixes : [prefixes]).filter((p) => typeof p === 'string' && p)
   for (const raw of streamLines) {
     if (typeof raw !== 'string') continue
     out.push(raw)
-    if (!raw.includes('APPROACH_')) continue // cheap guard: only unwrap frames that can matter
+    if (!wanted.some((p) => raw.includes(p))) continue // cheap guard: only unwrap frames that can matter
     try {
       const frame = JSON.parse(raw)
       const content = frame && frame.message && frame.message.content
@@ -724,6 +808,66 @@ export function approachLinesFrom(streamLines) {
     }
   }
   return out
+}
+
+/**
+ * approachLinesFrom(streamLines) — the note's own unwrapping, kept by name.
+ * Every caller that only cares about the approach note keeps reading exactly what it read
+ * before; the generalization above changed the machinery, never this contract.
+ *
+ * @param {string[]} streamLines
+ * @returns {string[]}
+ */
+export function approachLinesFrom(streamLines) {
+  return markerLinesFrom(streamLines, ['APPROACH_'])
+}
+
+/**
+ * parseLessonMarker(lines) → {written:path} | {none:reason} | null.
+ *
+ * The worker-side half of the third condition. PURE, zero-dep, never throws — it reads the same
+ * soft marker protocol the approach note reads, off the same unwrapped lines.
+ *
+ * THE LAST MARKER WINS. A worker that wrote a draft and then reconsidered (or whose pipeline
+ * refused after it had already announced a path) says so at the end of the run, and the end of
+ * the run is what happened. Nothing here judges the answer: the path is checked against the
+ * disk by the gate, and the reason is checked by a person on the card.
+ *
+ * What it refuses: an empty path, an empty reason. «No lesson» must carry its reason — a bare
+ * marker is not an answer, and treating it as one would turn the whole condition into a word a
+ * worker types to get past the gate.
+ *
+ * @param {string[]} lines
+ * @returns {{written:string}|{none:string}|null}
+ */
+export function parseLessonMarker(lines) {
+  if (!Array.isArray(lines)) return null
+  let last = null
+  for (const raw of lines) {
+    const line = typeof raw === 'string' ? raw.trim() : ''
+    if (!line) continue
+    if (line.startsWith(LESSON_MARKERS.written)) {
+      const v = unwrapMarkerValue(line.slice(LESSON_MARKERS.written.length))
+      if (v) last = { written: v }
+    } else if (line.startsWith(LESSON_MARKERS.none)) {
+      const v = unwrapMarkerValue(line.slice(LESSON_MARKERS.none.length))
+      if (v) last = { none: v.length > LESSON_REASON_CAP ? v.slice(0, LESSON_REASON_CAP) : v }
+    }
+  }
+  return last
+}
+
+/**
+ * Trim a marker's value and drop the quotes or backticks a worker wraps a path in. Models
+ * quote paths by habit, and a leading backtick is the difference between a file the gate finds
+ * and a file it reports missing — a refusal over punctuation nobody meant to type.
+ */
+function unwrapMarkerValue(raw) {
+  let v = String(raw).trim()
+  while (v.length >= 2 && ((v.startsWith('`') && v.endsWith('`')) || (v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    v = v.slice(1, -1).trim()
+  }
+  return v
 }
 
 /**

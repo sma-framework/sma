@@ -69,6 +69,7 @@ import {
   readAttemptLog,
 } from './queue/attempt-ledger.mjs'
 import { cleanupTaskWorktree, createWorktreeSweeper } from './queue/worktree-cleanup.mjs'
+import { harvestTaskMemory } from './queue/memory-harvest.mjs'
 import { attemptIdFor } from './front/journal.mjs'
 import { collectDiagnostics } from './front/diagnostics.mjs'
 import { createSearch } from './front/search.mjs'
@@ -791,6 +792,20 @@ export function createDaemon(o = {}) {
       clock,
       log: worktreeLog,
     })
+  // ЧТО РАБОТНИК УЗНАЛ — В КОРПУС ПРОЕКТА, И РАНЬШЕ УБОРКИ. Четвёртое отдельное имя рядом с
+  // `worktreeCleanup`, `updateRunner` и `verbRunner`, и по той же причине: дверь получает
+  // функцию, которая умеет назвать ТОЛЬКО задачу. Корпус берётся у подключённого проекта, а
+  // не у каталога запуска демона: урок принадлежит дереву, которое человек читает.
+  const memoryHarvest = ({ taskId }) =>
+    harvestTaskMemory({
+      taskId,
+      projectDir: connectedProjectDir() ?? repoDir,
+      ledger,
+      verbRunner: cliVerbRunner,
+      execGit,
+      clock,
+      log: worktreeLog,
+    })
   // …and the tick's half: every OTHER closed task, swept once a day. Both the connected
   // project and every project the roster knows — a copy left in a project the founder
   // switched away from is exactly the one nobody would ever come back for.
@@ -1110,6 +1125,9 @@ export function createDaemon(o = {}) {
         // Accepted work takes its copy and its branch with it. A THIRD separate name for the
         // same reason as the two above — the door names a task, never a command.
         worktreeCleanup: o.worktreeCleanup ?? worktreeCleanup,
+        // Приёмка — момент, когда урок и записка ещё существуют и уже приняты. Стоит ВЫШЕ
+        // уборки в самой двери; здесь важно лишь то, что зависимость вообще есть.
+        memoryHarvest: o.memoryHarvest ?? memoryHarvest,
       },
     })
 

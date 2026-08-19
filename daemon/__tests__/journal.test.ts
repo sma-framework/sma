@@ -43,6 +43,12 @@ import {
   DISPATCH_REASONS,
   APPROACH_NOTE_CAP,
   APPROACH_MARKERS,
+  LESSON_MARKERS,
+  LESSON_REASON_CAP,
+  MEMORY_REASON_CAP,
+  parseLessonMarker,
+  markerLinesFrom,
+  approachLinesFrom,
   attemptIdFor,
   readJournal,
   journalComplete,
@@ -248,6 +254,75 @@ describe('appendJournalEntry — three layers, strictly appended', () => {
     expect(row.payload.notes).toEqual(['reference_sma_ledger'])
     expect(row.payload.reflexes).toEqual(['reflex_no_push'])
   })
+
+  it('the memory layer carries the whole trace: what was read, what fired, the lesson, the note', () => {
+    const taskId = 'BL-15a'
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 1,
+      layer: 'memory',
+      payload: {
+        notes: ['.claude/agents/builder.md'],
+        reflexes: ['reflex_no_push'],
+        loaded: { index: true, reads: ['alpha', 'beta', 'ЦЕЛЫЙ АБЗАЦ содержимого заметки'], loadCalls: 2 },
+        reflexSource: 'sma-journal',
+        autoMemoryReads: ['memory-check-grey-morning'],
+        lesson: { written: '.claude/memory/drafts/lesson-bl-15a-slug.md' },
+        approach: 'journaled',
+        junk: 'нечто, чего схема слоя не знает',
+      },
+    })
+    const raw = lines(taskId)[0]
+    expect(raw).not.toContain('ЦЕЛЫЙ АБЗАЦ')
+    expect(raw).not.toContain('junk')
+    const [row] = readJournalEntries(dir, taskId)
+    expect(row.payload.loaded).toEqual({ index: true, reads: ['alpha', 'beta'], loadCalls: 2 })
+    expect(row.payload.reflexSource).toBe('sma-journal')
+    expect(row.payload.autoMemoryReads).toEqual(['memory-check-grey-morning'])
+    expect(row.payload.lesson).toEqual({ written: '.claude/memory/drafts/lesson-bl-15a-slug.md' })
+    expect(row.payload.approach).toBe('journaled')
+  })
+
+  it('a payload of the OLD shape is stored exactly as before — no new keys appear', () => {
+    const taskId = 'BL-15b'
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 1,
+      layer: 'memory',
+      payload: { notes: ['reference_sma_ledger'], reflexes: [] },
+    })
+    const [row] = readJournalEntries(dir, taskId)
+    expect(Object.keys(row.payload).sort()).toEqual(['notes', 'reflexes'])
+  })
+
+  it('the lesson is one of three answers, and its words are capped; вокабуляры закрыты', () => {
+    const taskId = 'BL-15c'
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 1,
+      layer: 'memory',
+      payload: {
+        loaded: { index: 'да', reads: 'не список', loadCalls: -4 },
+        reflexSource: 'придумал',
+        lesson: { none: 'ж'.repeat(MEMORY_REASON_CAP + 300) },
+        approach: 'наверное',
+      },
+    })
+    appendJournalEntry(dir, {
+      taskId,
+      attempt: 2,
+      layer: 'memory',
+      payload: { lesson: { missing: true }, approach: 'absent', reflexSource: 'none' },
+    })
+    const [first, second] = readJournalEntries(dir, taskId)
+    expect(first.payload.loaded).toEqual({ index: false, reads: [], loadCalls: 0 })
+    expect(first.payload.reflexSource).toBeUndefined()
+    expect(first.payload.approach).toBeUndefined()
+    expect(first.payload.lesson.none.length).toBe(MEMORY_REASON_CAP)
+    expect(second.payload.lesson).toEqual({ missing: true })
+    expect(second.payload.approach).toBe('absent')
+    expect(second.payload.reflexSource).toBe('none')
+  })
 })
 
 describe('journalComplete — the predicate the pipeline gates on', () => {
@@ -416,6 +491,12 @@ describe('the completion gate asks for the note where it asks for the receipt', 
       },
       spawnWorker: (spec: any) => {
         for (const l of streamLines) spec.onLine?.(l)
+        // The attempt's THIRD condition, spoken by the fake unless the case says otherwise:
+        // these cases are about the approach note, and a worker that closes two conditions of
+        // three would fail them all for a reason none of them is testing.
+        if (!streamLines.some((l) => typeof l === 'string' && l.includes('LESSON_'))) {
+          spec.onLine?.('LESSON_NONE: тестовый работник')
+        }
         spec.onExit?.({ code: 0, signal: null })
         return { pid: 1, kill: () => {} }
       },
@@ -500,8 +581,10 @@ describe('the completion gate asks for the note where it asks for the receipt', 
 
     const memory = written.filter((e) => e.layer === 'memory')
     expect(memory).toHaveLength(1)
-    expect(memory[0].payload.notes).toContain('.claude/agents/builder.md')
-    expect(memory[0].payload.reflexes).toEqual(['sma-debug', 'sma-quick'])
+    // Роль и навыки — это ЗАЯВЛЕНИЕ о том, что сессии дали, и живут в notes; ключ reflexes
+    // с этой ревизии означает СРАБОТАВШИЕ рефлексы работника, а их у фейка нет.
+    expect(memory[0].payload.notes).toEqual(['.claude/agents/builder.md', 'sma-debug', 'sma-quick'])
+    expect(memory[0].payload.reflexes).toEqual([])
     expect(JSON.stringify(memory[0])).not.toContain('Секретный')
   })
 
@@ -552,6 +635,103 @@ describe('parseApproachNote — the worker-side protocol the loop reads off the 
   })
 })
 
+/**
+ * ═══════ the lesson marker — the THIRD condition of a finished attempt ═══════
+ *
+ * The receipt says the work holds, the approach note says why it was done that way, and the
+ * lesson says what the attempt taught. The first two were read off the stream for months
+ * while the third had no words at all — and the corpus kept a flat zero of worker lessons.
+ * The parser below is the whole worker-side protocol: one path, or one stated reason.
+ */
+describe('parseLessonMarker — a lesson, or the reason there is none', () => {
+  it('the markers are ONE frozen source — the prompt and the parser cannot part', () => {
+    expect(LESSON_MARKERS).toEqual({ written: 'LESSON_WRITTEN:', none: 'LESSON_NONE:' })
+    expect(Object.isFrozen(LESSON_MARKERS)).toBe(true)
+  })
+
+  it('reads the draft path off a written lesson', () => {
+    expect(
+      parseLessonMarker(['ordinary output', 'LESSON_WRITTEN: .claude/memory/drafts/lesson-r-77-slug.md']),
+    ).toEqual({ written: '.claude/memory/drafts/lesson-r-77-slug.md' })
+  })
+
+  it('reads the stated reason when the attempt taught nothing worth keeping', () => {
+    expect(parseLessonMarker(['LESSON_NONE: задача была чтением'])).toEqual({ none: 'задача была чтением' })
+  })
+
+  it('the LAST marker wins when a worker emitted both', () => {
+    expect(
+      parseLessonMarker([
+        'LESSON_WRITTEN: .claude/memory/drafts/lesson-a.md',
+        'LESSON_NONE: конвейер отказал: redact вырезал тело',
+      ]),
+    ).toEqual({ none: 'конвейер отказал: redact вырезал тело' })
+    expect(
+      parseLessonMarker(['LESSON_NONE: передумал', 'LESSON_WRITTEN: .claude/memory/drafts/lesson-b.md']),
+    ).toEqual({ written: '.claude/memory/drafts/lesson-b.md' })
+  })
+
+  it('returns null when the attempt said nothing about a lesson', () => {
+    expect(parseLessonMarker(['just output', 'APPROACH_NOTE: прямой путь'])).toBeNull()
+    expect(parseLessonMarker(null as any)).toBeNull()
+  })
+
+  // A REASON IS NOT A LOOPHOLE, but neither is it a place to paste a session. The cap is the
+  // same discipline the approach note carries: the text is DATA, and data that grows without
+  // a ceiling is a way to push everything else out of the row.
+  it('caps the stated reason and refuses an empty one', () => {
+    const long = parseLessonMarker([`LESSON_NONE: ${'я'.repeat(900)}`])
+    expect(long.none.length).toBe(LESSON_REASON_CAP)
+    expect(parseLessonMarker(['LESSON_NONE:'])).toBeNull()
+    expect(parseLessonMarker(['LESSON_WRITTEN:   '])).toBeNull()
+  })
+
+  it('strips the quotes and backticks a worker wraps a path in', () => {
+    expect(parseLessonMarker(['LESSON_WRITTEN: `.claude/memory/drafts/lesson-c.md`'])).toEqual({
+      written: '.claude/memory/drafts/lesson-c.md',
+    })
+    expect(parseLessonMarker(['LESSON_WRITTEN: ".claude/memory/drafts/lesson-c.md"'])).toEqual({
+      written: '.claude/memory/drafts/lesson-c.md',
+    })
+  })
+})
+
+/**
+ * markerLinesFrom — ONE unwrapping for every marker protocol. The approach note was unwrapped
+ * from the CLI's frames by a function that only looked at lines containing `APPROACH_`; a
+ * second marker family reading raw lines alone would have seen nothing at all, because the
+ * worker's final words arrive inside a frame and not as plain text.
+ */
+describe('markerLinesFrom — the marker text is dug out of the CLI frames, whatever the family', () => {
+  const ASSISTANT_FRAME = (text: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id: 'msg_01', role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text }] },
+    })
+  const RESULT_FRAME = (result: string) =>
+    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 2, result })
+
+  it('unwraps both families from real frame shapes, and keeps the raw lines', () => {
+    const lines = markerLinesFrom(
+      [
+        '{"type":"system","subtype":"init","session_id":"9f8e7d6c-1234-4abc-8def-0123456789ab"}',
+        ASSISTANT_FRAME('APPROACH_NOTE: прямой путь'),
+        RESULT_FRAME('LESSON_WRITTEN: .claude/memory/drafts/lesson-r-77-slug.md'),
+      ],
+      ['APPROACH_', 'LESSON_'],
+    )
+    expect(parseApproachNote(lines)?.approach).toBe('прямой путь')
+    expect(parseLessonMarker(lines)).toEqual({ written: '.claude/memory/drafts/lesson-r-77-slug.md' })
+    // the raw stream is still there, byte for byte — a plain-text runner keeps working
+    expect(lines.some((l) => l.includes('"type":"system"'))).toBe(true)
+  })
+
+  it('approachLinesFrom stays what it was — a wrapper over the same unwrapping', () => {
+    const lines = approachLinesFrom([ASSISTANT_FRAME('APPROACH_NOTE: прямой путь')])
+    expect(parseApproachNote(lines)?.approach).toBe('прямой путь')
+  })
+})
+
 // ═══════ the attempt stamp — fleet invariant 6 ═════════
 
 const NEW_STAMP_KEYS = [
@@ -587,19 +767,40 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(26)
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(27)
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(26) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(27) // no duplicate name
+  })
+
+  /**
+   * THE TWENTY-SEVENTH KEY — what the approval carried out of the copy before it was removed.
+   *
+   * It is deliberately NOT a field inside `cleanup`. The two answer different questions («what
+   * reached the corpus» and «what was deleted from disk»), happen at different moments and fail
+   * independently; folded into one object they would one day explain a missing lesson by a
+   * successful removal. Like `cleanup`, it rides a SEPARATE row of the same attempt, so the
+   * fold neither stretches the attempt's duration nor overwrites how it ended.
+   */
+  it('carries memoryHarvest last — the trace of the lesson, kept apart from the trace of the removal', () => {
+    expect(ALLOWED_ATTEMPT_KEYS).toContain('memoryHarvest')
+    expect(ALLOWED_ATTEMPT_KEYS[ALLOWED_ATTEMPT_KEYS.length - 1]).toBe('memoryHarvest')
+    const harvest = { at: '2026-08-19T10:00:00.000Z', by: 'approve', mode: 'untracked', copied: ['drafts/lesson-r-9-a.md'], applied: ['lesson-r-9-a'], drafted: ['approach-r-9-1'], refused: [], ok: true }
+    recordAttempt(dir, { taskId: 'BL-HARVEST', attempt: 1, memoryHarvest: harvest })
+    const [row] = readAttempts(dir, 'BL-HARVEST')
+    expect(row.memoryHarvest).toEqual(harvest)
+    // …and a row that never harvested anything carries no key at all — absence, not an empty shape.
+    recordAttempt(dir, { taskId: 'BL-NOHARVEST', attempt: 1, outcome: 'completed' })
+    expect(Object.hasOwn(readAttempts(dir, 'BL-NOHARVEST')[0], 'memoryHarvest')).toBe(false)
   })
 
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
   it('carries the six copy fields, then the two about the session the worker was given', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-8, -2)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-9, -3)).toEqual(COPY_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-2)).toEqual(['personalLayer', 'mcpConfig'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-3, -1)).toEqual(['personalLayer', 'mcpConfig'])
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a

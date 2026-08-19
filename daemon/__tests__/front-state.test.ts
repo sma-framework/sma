@@ -470,9 +470,49 @@ describe('deriveState — the one-poll payload', () => {
       materialized: null,
       provisionMs: null,
       cleanup: null,
+      memoryHarvest: null,
     })
   })
 
+  /**
+   * ═══ ЧТО ПРИЁМКА СПАСЛА ИЗ КОПИИ — ТОЖЕ В ТЕЛЕ ДВЕРИ ═══
+   *
+   * Сбор памяти пишет отдельную строку той же попытки: что перенесено из копии, что доехало
+   * до корпуса, что отложено черновиком и в чём отказал конвейер. Без этого поля человек
+   * узнавал бы судьбу урока по отсутствию файла — то есть не узнавал бы вовсе. Ключ отдан
+   * явным выбором, рядом с уборкой и НЕ внутри неё: удаление копии и спасение урока —
+   * разные события, и одно не имеет права объяснять другое.
+   */
+  it('дверь задачи отдаёт след сбора памяти: что перенесено, применено и отложено', async () => {
+    const harvest = {
+      at: '2026-08-19T10:00:00.000Z',
+      by: 'approve',
+      mode: 'untracked',
+      copied: ['drafts/lesson-bl-harvest-alpha.md'],
+      applied: ['lesson-bl-harvest-alpha'],
+      drafted: ['approach-bl-harvest-1'],
+      refused: [],
+      ok: true,
+    }
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-harvest', title: 'память попытки', lane: 'prod', status: 'completed', attempt: 1 }] },
+        ledger: () => [
+          { taskId: 'BL-harvest', attempt: 1, provider: 'claude', endedAt: NOW, outcome: 'completed' },
+          { taskId: 'BL-harvest', attempt: 1, memoryHarvest: harvest },
+        ],
+        parseReceiptSummary,
+      },
+    })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-harvest' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].outcome).toBe('completed') // строка сбора не переписала исход
+    expect(out.attempts[0].memoryHarvest).toEqual(harvest)
+  })
   it('идущая прямо сейчас попытка несёт те же шесть полей пустыми — карточке нечего показывать', async () => {
     const front = createFrontServer({
       config: { token: MIGRATION_TOKEN, workers: [] },
@@ -496,6 +536,7 @@ describe('deriveState — the one-poll payload', () => {
       materialized: null,
       provisionMs: null,
       cleanup: null,
+      memoryHarvest: null,
     })
   })
 

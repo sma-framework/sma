@@ -93,17 +93,40 @@ function Ids({ label, ids }: { label: string; ids: string[] }) {
   )
 }
 
-/** Layer three: what was remembered. Names only — never the text of a lesson. */
+/**
+ * Layer three: what was remembered. Names only — never the text of a lesson.
+ *
+ * «НИЧЕГО НЕ ПОНАДОБИЛОСЬ» ГОВОРИТСЯ ТОЛЬКО ТОГДА, КОГДА ПРАВДА НИЧЕГО НЕ БЫЛО. Пока слой
+ * знал два списка — объявленную роль и сработавшие рефлексы, — сессия могла прочитать
+ * индекс памяти и десяток заметок, а секция всё равно отвечала «ничего»: она смотрела не
+ * туда. Теперь рядом с объявленным стоит прочитанное, и пустая фраза остаётся ровно для
+ * задачи, которая памяти не касалась.
+ */
 function WhatWasRemembered({ trace }: { trace: NonNullable<TaskDetail['journal']>['memoryTrace'] }) {
   const notes = trace?.notes ?? []
   const reflexes = trace?.reflexes ?? []
-  if (notes.length === 0 && reflexes.length === 0) {
+  const loaded = trace?.loaded ?? null
+  const reads = Array.isArray(loaded?.reads) ? loaded.reads : []
+  const auto = Array.isArray(trace?.autoMemoryReads) ? trace.autoMemoryReads : []
+  const readIndex = loaded?.index === true
+  const touched = readIndex || reads.length > 0
+
+  if (!touched && notes.length === 0 && reflexes.length === 0) {
     return <Empty>Из прошлого опыта ничего не понадобилось.</Empty>
   }
   return (
     <div className="flex flex-col gap-3">
+      {touched ? (
+        <p className="m-0 text-[12px] leading-[1.55] text-tx2">
+          {readIndex ? `Прочитан индекс памяти · заметок ${reads.length}` : `Открыто заметок: ${reads.length}`}
+        </p>
+      ) : null}
+      <Ids label="Заметки, которые открыли в корпусе" ids={reads} />
       <Ids label="Заметки, которые взяли в работу" ids={notes} />
       <Ids label="Рефлексы, которые сработали" ids={reflexes} />
+      {/* Записная книжка аккаунта — отдельно от корпуса проекта: это память машины, на
+          которой шла работа, а не та, которую человек просматривает. */}
+      <Ids label="Авто-память аккаунта" ids={auto} />
     </div>
   )
 }
@@ -118,8 +141,16 @@ export function JournalSection({
   const decisions = journal?.dispatcher ?? []
   const trace = journal?.memoryTrace ?? { notes: [], reflexes: [] }
   const notes = attempts.filter((a) => typeof a.approachNote === 'string' && a.approachNote.length > 0)
+  // «Задача старше журнала» — тоже утверждение, и оно обязано считаться по всему, что
+  // журнал теперь несёт: слой памяти, заполненный одним лишь прочитанным, делает задачу
+  // МОЛОЖЕ журнала, как бы пусты ни были два старых списка.
+  const touchedMemory = trace.loaded?.index === true || (trace.loaded?.reads?.length ?? 0) > 0
   const nothingAtAll =
-    decisions.length === 0 && notes.length === 0 && trace.notes.length === 0 && trace.reflexes.length === 0
+    decisions.length === 0 &&
+    notes.length === 0 &&
+    trace.notes.length === 0 &&
+    trace.reflexes.length === 0 &&
+    !touchedMemory
 
   return (
     <section className="rounded-[14px] border border-bd bg-card px-6 py-[22px] shadow-panel">

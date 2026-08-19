@@ -37,6 +37,7 @@ import {
   isDeadPidLease,
   sessionActivityTier,
   isSessionLive,
+  tokenHash,
 } from '../lib/registry.mjs'
 import { appendEvent, journalTail } from '../lib/journal.mjs'
 import {
@@ -777,5 +778,23 @@ describe('probeScopeMtime — only matching globs, skips heavy dirs', () => {
 
   it('empty globs -> 0 (no work)', () => {
     expect(probeScopeMtime({ scope: { globs: [], description: '' } }, { root })).toBe(0)
+  })
+})
+
+describe('tokenHash — one spelling of the terminal identity for every reader', () => {
+  it('is 8 hex characters and deterministic for the same token', () => {
+    const h = tokenHash('d82a347f-a54a-4a33-9c87-0b2efb517172')
+    expect(h).toMatch(/^[0-9a-f]{8}$/)
+    expect(tokenHash('d82a347f-a54a-4a33-9c87-0b2efb517172')).toBe(h)
+    expect(tokenHash('another-session')).not.toBe(h)
+  })
+
+  it('is the SAME function the terminal id is built from — the daemon may follow it', () => {
+    // Why this is asserted rather than assumed: the daemon looks for a worker session's own
+    // citation and reflex files under `t-<hash>`, and it must arrive at the same name this
+    // module gives that session. Two spellings of one identity would read as an empty trace.
+    const sessionToken = 'd82a347f-a54a-4a33-9c87-0b2efb517172'
+    const { terminalId } = resolveTerminalIdentity({ env: {}, pid: 4242, sessionToken })
+    expect(terminalId).toContain(tokenHash(sessionToken))
   })
 })

@@ -848,6 +848,78 @@ folder: a lesson written down in one attempt is in the room for the next. Nothin
 make that true — it is verified, and the path the session itself reported is written onto the
 attempt and shown on the card.
 
+#### The lesson step: markers, the `no_lesson` gate, and the harvest at approval
+
+The two subsections above answer where a worker worked and under whose rules. This one answers
+what it left behind. A copy carries your lessons **in**; a flywheel that never turns the other
+way is a picture of one, and for a long stretch this product's own corpus held nothing at all
+written into it by a worker — the promise lived in the README and nowhere in the daemon.
+
+**The markers.** A run closes with one of two lines, read off the same final frame the approach
+note is read from:
+
+```
+LESSON_WRITTEN: .claude/memory/drafts/lesson-<slug>.md
+LESSON_NONE: <why there is nothing to teach, in the worker's own words>
+```
+
+**What the gate checks**, in order, against the copy's own tree — a marker is a claim, and a
+claim nobody verifies is a formality:
+
+| Condition | Refusal when it fails |
+|---|---|
+| one of the two markers is present | `ни заметки, ни причины` |
+| `LESSON_NONE` carries a reason | `сказано «урока нет» без причины` |
+| the path lies inside the copy's memory corpus, no `..` | `путь урока вне корпуса памяти копии` |
+| the file exists in the copy | `файла урока нет в копии` |
+| it parses as a corpus note of the current schema | `заметка урока не в схеме корпуса` |
+| it was produced by the write pipeline (`draft_kind`) | `заметка положена мимо конвейера памяти` |
+
+A green attempt that fails any of them fails as **`no_lesson`** — a closed-vocabulary reason
+beside `no_receipt` and `no_journal`, so the card reads it as a sentence rather than a code. The
+order matters: an attempt missing both the note and the lesson is named `no_journal` first,
+because the note explains the work you are about to accept while the lesson is for the attempt
+after this one, and naming the smaller gap first would send you looking for the wrong thing.
+Two classes are exempt: a **parked** round, cut short by a question to you before it ever
+reached the step, and the **Creator's** own lane, which drafts definitions rather than doing
+the work. A written document and an answer-only run are **not** exempt — work in words teaches
+exactly as much.
+
+**Why through the pipeline and not straight to a file.** The last condition is the point of the
+whole step. `sma memory write` is twelve steps of scrubbing, contradiction checks and a verdict,
+and what it produces is a **draft**, not a corpus entry. So a lesson is a proposal until you
+accept it, and «nothing enters memory by accident» stays true for the road a worker takes as
+well as the road you take.
+
+**The harvest at approval.** Pressing «Одобрить» runs the collection **before** the copy is
+swept, and the two are deliberately separate events:
+
+| Corpus mode | What the approval does |
+|---|---|
+| `.claude/` tracked by git | the merge brings the note itself; the harvest applies the drafts and rebuilds the index |
+| `.claude/` outside git (this product's own case) | drafts cannot travel in a merge, so they are carried out of the copy into the project's corpus first, then applied through the pipeline |
+
+The mode is asked of git (`check-ignore`), never taken from a setting — a setting can be stale,
+git cannot. Only pipeline drafts move, only into the drafts directory, and never over a file
+that is already there. If the harvest fails on an untracked corpus the **sweep does not run**:
+a copy holding the only surviving instance of a lesson is not rubbish. The approach note takes
+the same road and is staged as a draft of the project's memory.
+
+What came of it is written onto the attempt as `memoryHarvest` — `{at, by, mode, copied,
+applied, drafted, refused, ok}` — on its **own** ledger row, next to `cleanup` rather than
+inside it: «what reached the corpus» and «what was deleted from disk» fail independently, and
+folded into one object they would one day explain a missing lesson by a successful removal. The
+card prints all of it, refusals with their reasons included.
+
+**The memory layer of the journal** is written for **every** attempt at one point in the tick,
+above all four exits of the lane, so «every attempt has one» is a property of the control flow
+rather than a rule somebody has to remember in four places. It carries `loaded` (whether the
+index was opened, which notes were read, how many loader calls), `reflexes` with the
+`reflexSource` they are known from (`none` is said out loud rather than passed off as an empty
+observation), `autoMemoryReads` kept apart from the project's corpus, the `lesson` itself and
+the mark saying whether an approach note exists. Identifiers and marks only — no note body ever
+leaves the machine it was written on.
+
 ## V3 — The Trust Spine
 
 V1 taught the system to **remember**. V2 taught it to **predict, fire reflexes, and coordinate**. **V3 makes it stop trusting its own word.**

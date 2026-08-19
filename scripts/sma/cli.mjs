@@ -3378,7 +3378,13 @@ function memoryWriteUsage(schema) {
     '  --retention <window>  e.g. P30D — REQUIRED for the one automatic path',
     '  --valid-until <date>  end of the claim\'s validity window',
     '  --supersedes <id,..>  records this one replaces (the pointer is completed on both ends)',
-    '  --product-version <v> the fingerprint a re-derivable claim is checked against',
+    '  --product-version <v> the fingerprint a re-derivable claim is checked against.',
+    '                        On --apply it is a STAMP: the version is written into the',
+    '                        record only when the record itself carries neither a',
+    '                        fingerprint nor a verification.',
+    '  --verification <cmd>  the command that re-checks this claim — the other legal way',
+    '                        a re-derivable claim carries its own check',
+    '  --verification-expected <text>  what that command is expected to answer',
     '  --language <code>     default: en',
     '  --corpus <dir>        default: .claude/memory',
     '',
@@ -3386,6 +3392,41 @@ function memoryWriteUsage(schema) {
     '  drafts/ for review — the normal outcome for anything but a low-risk working',
     '  observation with an expiry) · rejected (nothing written; exit 1).',
   ].join('\n')
+}
+
+/**
+ * The corpus `memory write` writes to when the caller names none: the CURRENT
+ * tree's own `.claude/memory`.
+ *
+ * WHY IT IS NOT THE SHARED ROOT. The coordination directory is resolved through
+ * git's COMMON directory, so from every linked working copy it answers with the
+ * MAIN checkout — and that is deliberate: claims, sessions and the journal have
+ * to be ONE list, or two terminals working the same project cannot see each
+ * other. The corpus is the opposite case. A lesson written inside a worker's copy
+ * belongs to that copy's branch and travels with it to review; taking its
+ * directory from the shared root files the note in the MAIN tree instead — off
+ * the branch, past the acceptance step, and invisible to whoever reads that
+ * branch. The note is not lost, it is filed under someone else's name.
+ *
+ * So the question is asked of the CURRENT directory: which tree am I standing in.
+ * Outside a repository — or with no git at all — the previous answer stands: the
+ * parent of the coordination root, or the working directory.
+ */
+async function resolveCorpusDefault({ cwd = process.cwd(), dirs } = {}) {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: GIT_READ_STDIO,
+    }).trim()
+    // git answers in forward slashes even on Windows; a mixed answer is levelled
+    // here so the corpus path is one shape before `join` ever sees it.
+    if (top) return join(top.replace(/[\\/]+/g, '/'), '.claude', 'memory')
+  } catch {
+    /* not a repository, or no git — fall through to the shared root's parent */
+  }
+  return join(dirs?.smaRoot ? dirname(dirs.smaRoot) : cwd, '.claude', 'memory')
 }
 
 /**
@@ -3407,8 +3448,8 @@ async function cmdMemoryWrite({ flags, dirs }) {
     return 0
   }
 
-  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
-  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+  const corpusDir =
+    typeof flags.corpus === 'string' ? flags.corpus : await resolveCorpusDefault({ cwd: process.cwd(), dirs })
 
   // ── apply: one staged draft, one named confirmation, one explicit yes ──────
   // The door OUT of drafts/. It is the same shape `memory migrate --apply`
@@ -3423,10 +3464,16 @@ async function cmdMemoryWrite({ flags, dirs }) {
       )
       return 1
     }
+    // ОТПЕЧАТОК НА ПРИЁМКЕ. Черновик приходит из чужого дерева, и тот, кто его писал,
+    // версии продукта не знает — её знает тот, кто применяет. Поэтому `--product-version`
+    // читается и здесь, а не только на записи: приёмка ШТАМПУЕТ эпоху, к которой относится
+    // заявление, и только тогда, когда запись не принесла собственной проверки.
+    const stampVersion = typeof flags['product-version'] === 'string' ? flags['product-version'].trim() : ''
     const res = pipeline.applyStagedDraft({
       draftPath,
       corpusDir,
       confirmFile,
+      ...(stampVersion ? { fingerprint: { product_version: stampVersion } } : {}),
       journalDir: dirs?.journalDir,
       ...(await pipelineRuntime()),
     })
@@ -3510,6 +3557,19 @@ async function cmdMemoryWrite({ flags, dirs }) {
     ...(evidence.length ? { evidence } : {}),
     ...(typeof flags['product-version'] === 'string'
       ? { fingerprint: { product_version: flags['product-version'].trim() } }
+      : {}),
+    // Вторая законная форма проверки перепроверяемого заявления: не отпечаток эпохи, а
+    // КОМАНДА, которой заявление перепроверяется. Форма блока — та, которую ждёт схема
+    // (`command` и, необязательно, `expected`); второго словаря здесь не заводится.
+    ...(typeof flags.verification === 'string' && flags.verification.trim() !== ''
+      ? {
+          verification: {
+            command: flags.verification.trim(),
+            ...(typeof flags['verification-expected'] === 'string' && flags['verification-expected'].trim() !== ''
+              ? { expected: flags['verification-expected'].trim() }
+              : {}),
+          },
+        }
       : {}),
     ...(typeof flags.retention === 'string' ? { retention: flags.retention.trim() } : {}),
     ...(typeof flags['valid-until'] === 'string' ? { valid_until: flags['valid-until'].trim() } : {}),
@@ -10214,8 +10274,31 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       ? flags.path.trim()
       : join(dirname(mainRoot), '.sma-worktrees', terminalId) // sibling dir (avoids the nested-removal bug)
 
+  // ОТКУДА ОТВОДИТСЯ КОПИЯ — ИЗ ТОГО ДЕРЕВА, КУДА ПОТОМ СЛИВАЕТ ПРИЁМКА.
+  //
+  // Корень по git-common-dir отвечает ОСНОВНЫМ деревом из любой связанной копии, и это
+  // правильный ответ на два вопроса: где лежат чужие рабочие копии и где вести их список.
+  // Но на вопрос «от какого коммита отвести ветку работника и чей неотслеживаемый слой ему
+  // положить» ответ другой: у подключённого проекта. Когда проектом подключена связанная
+  // копия (своя ветка, свой `.claude/`, своя приёмка), ответ по общему корню отводит работника
+  // от ЧУЖОГО HEAD и кладёт ему ЧУЖИЕ правила — а урок, который он напишет, приёмка будет
+  // искать в каталоге проекта, где его не будет. Поэтому база и слой берутся у текущего
+  // каталога, а место копий и учёт деревьев — по-прежнему у корня.
+  let projectRoot = mainRoot
+  try {
+    const top = String(execGit(['rev-parse', '--show-toplevel'], { cwd: process.cwd() })).trim()
+    // ТОТ ЖЕ ВОПРОС, ЗАДАННЫЙ КОРНЮ. Сравниваются не строки путей, а ответы git об одном и том
+    // же дереве: на Windows один каталог приходит то коротким именем, то длинным, и текстовое
+    // сравнение объявило бы обычную установку «связанной копией». Совпало — оставляем корень
+    // ровно в той форме, в какой он был: дальше эта строка идёт в цель ссылки.
+    const mainTop = String(execGit(['rev-parse', '--show-toplevel'], { cwd: mainRoot })).trim()
+    if (top && top !== mainTop) projectRoot = resolve(top)
+  } catch {
+    /* вне репозитория или без git — прежний ответ остаётся в силе */
+  }
+
   const t0 = Date.now()
-  const res = wt.reuseOrProvision({ branch, path, execGit, cwd: mainRoot })
+  const res = wt.reuseOrProvision({ branch, path, execGit, cwd: projectRoot })
 
   // The checkout is only half the copy: carry the untracked layer and attach the
   // dependencies. This runs for a REUSED copy too — a session returning a day later
@@ -10225,10 +10308,10 @@ async function cmdWorktree({ positionals, flags, dirs }) {
   let manifestOut = { source: 'default', warnings: [] }
   if (res.ok !== false) {
     try {
-      const manifest = wt.readWorktreeInclude({ mainRoot })
+      const manifest = wt.readWorktreeInclude({ mainRoot: projectRoot })
       manifestOut = { source: manifest.source, warnings: Array.isArray(manifest.warnings) ? manifest.warnings : [] }
       const mat = wt.materializeInclude({
-        mainRoot,
+        mainRoot: projectRoot,
         copyPath: res.path,
         manifest,
         execGit,
@@ -10241,7 +10324,7 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       manifestOut.warnings = [...manifestOut.warnings, `слой копии не материализован (${err && err.message})`]
     }
   }
-  const out = { ...res, materialized, manifest: manifestOut, provisionMs: Date.now() - t0 }
+  const out = { ...res, projectRoot, materialized, manifest: manifestOut, provisionMs: Date.now() - t0 }
 
   if (wantsJson(flags)) {
     printJson(out)

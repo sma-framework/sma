@@ -1343,3 +1343,61 @@ describe('applyStagedDraft — one draft, one named confirmation, one door', () 
     expect(filesIn(draftsDir)).toEqual([`${OWNER_RULE.id}.applied.md`])
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE STAMP THE DOOR MAY ADD — and the two records it must never touch
+//
+// A lesson written inside a worker's copy cannot name the epoch it describes: the product
+// version and the commit are known to whoever ACCEPTS the work, not to whoever wrote the note
+// in a copy cut for one task. So the acceptance hands the version in. The danger of a door
+// that completes records is that it starts authoring them — hence the two negative cases: a
+// record that already states how it is checked is left exactly as its author left it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('applyStagedDraft — the fingerprint the acceptance stamps', () => {
+  const STAMP = { product_version: '5.6.0+abc1234' }
+
+  it('a draft carrying neither fingerprint nor verification is stamped, and the trace says so', () => {
+    const draftPath = stageOwnerRule()
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, fingerprint: STAMP, ...opts() })
+
+    expect(res.applied).toBe(true)
+    const written = readNote(join(corpusDir, OWNER_RULE_FILE)).frontmatter as any
+    expect(written.fingerprint).toEqual(STAMP)
+    const stamped = res.trace.find((t: any) => t.detail && t.detail.product_version === STAMP.product_version)
+    expect(stamped, 'the stamp left no trace step — a record completed silently is a record authored silently').toBeTruthy()
+    expect(String(stamped.detail.reason)).toMatch(/stamped by apply/)
+  })
+
+  it('a draft that brought its OWN fingerprint keeps it — the door completes, it does not author', () => {
+    const draftPath = stageOwnerRule({ fingerprint: { product_version: 'v1.0.0' } })
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, fingerprint: STAMP, ...opts() })
+
+    expect(res.applied).toBe(true)
+    const written = readNote(join(corpusDir, OWNER_RULE_FILE)).frontmatter as any
+    expect(written.fingerprint).toEqual({ product_version: 'v1.0.0' })
+  })
+
+  it('a draft that names the command re-checking it is not given an epoch it never claimed', () => {
+    const draftPath = stageOwnerRule({ verification: { command: 'npm test -- release-notes' } })
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, fingerprint: STAMP, ...opts() })
+
+    expect(res.applied).toBe(true)
+    const written = readNote(join(corpusDir, OWNER_RULE_FILE)).frontmatter as any
+    expect(written.verification).toEqual({ command: 'npm test -- release-notes' })
+    expect(written.fingerprint).toBeUndefined()
+  })
+
+  it('no stamp handed in — the record is applied exactly as staged', () => {
+    const draftPath = stageOwnerRule()
+
+    const res = applyStagedDraft({ draftPath, corpusDir, confirmFile: OWNER_RULE_FILE, ...opts() })
+
+    expect(res.applied).toBe(true)
+    const written = readNote(join(corpusDir, OWNER_RULE_FILE)).frontmatter as any
+    expect(written.fingerprint).toBeUndefined()
+  })
+})

@@ -38,12 +38,16 @@ function makeVerbRunner(responses: Record<string, any>) {
   }
 }
 
-// A COMPLETE attempt now leaves an approach note as well as a receipt, so the
-// default fake worker leaves one — the note law is exercised on its own in journal.test.ts.
+// A COMPLETE attempt now leaves an approach note AND a word about the lesson as well as a
+// receipt, so the default fake worker leaves both — each law is exercised on its own
+// (the note in journal.test.ts, the lesson in loop.test.ts).
 function makeSpawnWorker(opts: { lines?: string[]; code?: number } = {}) {
   const { lines = ['working', 'APPROACH_NOTE: прямой путь'], code = 0 } = opts
+  const spoken = lines.some((l) => typeof l === 'string' && l.includes('LESSON_'))
+    ? lines
+    : [...lines, 'LESSON_NONE: тестовый работник']
   return (spec: any) => {
-    for (const l of lines) spec.onLine?.(l)
+    for (const l of spoken) spec.onLine?.(l)
     spec.onExit?.({ code, signal: null })
     return { pid: 1, kill: () => {} }
   }

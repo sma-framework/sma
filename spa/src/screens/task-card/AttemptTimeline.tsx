@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { MaterializedEntry, TaskAttempt } from '../../api/types'
+import type { MaterializedEntry, MemoryTrace, TaskAttempt } from '../../api/types'
 import { AttemptLog } from '../../shell/AttemptLog'
 import { clockLabel, receiptChecks, receiptProofLabel } from '../../shell/format'
 
@@ -178,6 +178,97 @@ function layerLines(attempt: TaskAttempt): string[] {
   return lines
 }
 
+/**
+ * Имя заметки, а не путь до неё. Заметка живёт по длинной дороге внутри рабочей копии, и
+ * человеку на карточке нужно одно слово, по которому её можно найти в корпусе. Разделители
+ * обоих видов — путь приходит с машины, а не из браузера.
+ */
+function noteName(path: string): string {
+  const tail = String(path).split(/[\\/]/).pop() ?? String(path)
+  return tail.endsWith('.md') ? tail.slice(0, -3) : tail
+}
+
+/**
+ * ЧЕМУ ПОПЫТКА НАУЧИЛА, ЧТО ОНА ПРАВДА ПРОЧЛА И КУДА УЕХАЛА ЕЁ ЗАПИСКА.
+ *
+ * Продукт обещает маховик, который крутится в обе стороны: работник не только берёт из
+ * памяти проекта, но и оставляет в ней урок каждой задачей — или говорит, почему урока
+ * нет. Обещание проверяемо ровно настолько, насколько его видно, и до этих строк его не
+ * было видно нигде: урок, след чтения и судьба записки писались в журнал и не доходили ни
+ * до одного экрана.
+ *
+ * ТРИ СТРОКИ ИЗ ДВУХ РАЗНЫХ ИСТОЧНИКОВ, и разница названа честно:
+ *   • урок и след чтения — из слоя памяти журнала, а он принадлежит ПОСЛЕДНЕЙ попытке
+ *     задачи (её пишет каждая, читается верхняя). Поэтому `trace` приходит только в
+ *     свежий ряд: показать урок второй попытки под первой значило бы выдумать.
+ *   • судьба записки и применённые уроки — из строки САМОЙ этой попытки: сбор идёт при
+ *     её приёмке и принадлежит ей одной.
+ *
+ * ЗАКОН ЭТОГО ХЕЛПЕРА тот же, что у copyLines и layerLines: ничего не выдумывать. Нет
+ * поля — нет строки; попытка старше слоя молчит целиком, и прочерк вместо данных врёт не
+ * меньше выдуманного числа.
+ */
+function lessonLines(attempt: TaskAttempt, trace: MemoryTrace | null): string[] {
+  const lines: string[] = []
+
+  const lesson = trace?.lesson ?? null
+  if (lesson) {
+    if (lesson.written) lines.push(`Урок: записан ${noteName(lesson.written)}`)
+    else if (lesson.none) lines.push(`Урок: нет — ${lesson.none}`)
+    else if (lesson.missing === true) lines.push('Урок: не оставлен, причина не названа')
+  }
+
+  const loaded = trace?.loaded ?? null
+  if (loaded) {
+    const reads = Array.isArray(loaded.reads) ? loaded.reads : []
+    const reflexes = Array.isArray(trace?.reflexes) ? trace.reflexes : []
+    const auto = Array.isArray(trace?.autoMemoryReads) ? trace.autoMemoryReads : []
+    const parts = [
+      `индекс ${loaded.index ? '✓' : '—'}`,
+      `заметок ${reads.length}`,
+      // Откуда взяты рефлексы — часть числа, а не примечание к нему: «сработало 0» из
+      // непрочитанного журнала и «сработало 0» из прочитанного — разные факты.
+      trace?.reflexSource ? `рефлексов ${reflexes.length} (${trace.reflexSource})` : `рефлексов ${reflexes.length}`,
+      typeof loaded.loadCalls === 'number' && loaded.loadCalls > 0 ? `вызовов загрузки ${loaded.loadCalls}` : null,
+    ].filter(Boolean)
+    lines.push(`Память: ${parts.join(' · ')}`)
+    // Записная книжка аккаунта — ОТДЕЛЬНОЙ строкой, потому что это не память проекта.
+    if (auto.length > 0) lines.push(`авто-память аккаунта: ${auto.length}`)
+  }
+
+  // СУДЬБА ЗАПИСКИ О ПОДХОДЕ. До приёмки она обещание («уедет черновиком»), после — факт с
+  // именами. Обещание снимается ровно в тот момент, когда появляется запись сбора: два
+  // текста одновременно означали бы, что мы всё ещё обещаем то, что уже сделали.
+  const harvest = attempt.memoryHarvest ?? null
+  if (!harvest && trace?.approach === 'journaled') {
+    lines.push('Записка о подходе → в память проекта после приёмки')
+  }
+  if (harvest) {
+    const applied = Array.isArray(harvest.applied) ? harvest.applied : []
+    const drafted = Array.isArray(harvest.drafted) ? harvest.drafted : []
+    const copied = Array.isArray(harvest.copied) ? harvest.copied : []
+    const refused = Array.isArray(harvest.refused) ? harvest.refused : []
+    const parts = [
+      applied.length > 0 ? `применено: ${applied.map(noteName).join(', ')}` : null,
+      drafted.length > 0 ? `черновик записки: ${drafted.map(noteName).join(', ')}` : null,
+      copied.length > 0 ? `вынесено из копии: ${copied.length}` : null,
+    ].filter(Boolean)
+    lines.push(parts.length > 0 ? `Приёмка собрала — ${parts.join(' · ')}` : 'Приёмка собрала — переносить было нечего')
+    // Отказ конвейера НЕ прячется за удачным итогом: человек обязан узнать судьбу урока, а
+    // не вывести её из молчания.
+    for (const r of refused) {
+      if (r && r.reason) lines.push(`не принято (${r.id ?? 'без имени'}): ${r.reason}`)
+    }
+    // Копию держат ТОЛЬКО когда урок нигде больше не живёт (черновики не вынесены); отказ
+    // конвейера на применении копию не держит — тогда честно: «сбор не удался», без слов о копии.
+    if (harvest.ok === false) {
+      lines.push(harvest.skipCleanup === true ? 'сбор не удался — копия сохранена, урок жив только в ней' : 'сбор не удался — см. причину выше; копия убрана как обычно')
+    }
+  }
+
+  return lines
+}
+
 /** The colour of the mark beside a row — the same three tones the rest of the window uses. */
 function dotTone(attempt: TaskAttempt): string {
   if (attempt.outcome === 'failed') return 'bg-err'
@@ -220,6 +311,7 @@ function Row({
   note,
   last,
   taskId,
+  trace,
 }: {
   attempt: TaskAttempt
   /** The comment that sent this run back, when this run was sent back. */
@@ -227,6 +319,12 @@ function Row({
   last: boolean
   /** Whose story this is — the transcript door needs the task to name the attempt. */
   taskId: string | null
+  /**
+   * След памяти задачи — и он принадлежит ПОСЛЕДНЕЙ попытке, поэтому приходит только в
+   * свежий ряд, а всем прочим `null`. Показать урок сегодняшней попытки под вчерашней —
+   * то же выдумывание, что и прочерк вместо данных.
+   */
+  trace: MemoryTrace | null
 }) {
   /**
    * ЧТО В ИТОГЕ — РАСКРЫТО НА ТОМ ПОДХОДЕ, РАДИ КОТОРОГО КАРТОЧКУ И ОТКРЫЛИ.
@@ -248,6 +346,7 @@ function Row({
   const who = [attempt.workerId, attempt.provider].filter(Boolean).join(' · ')
   const copy = copyLines(attempt)
   const layer = layerLines(attempt)
+  const lesson = lessonLines(attempt, trace)
 
   return (
     <div className="flex gap-3.5">
@@ -310,6 +409,19 @@ function Row({
                 ))}
               </div>
             ) : null}
+            {/* УРОК, СЛЕД ПАМЯТИ И СУДЬБА ЗАПИСКИ. Тем же блоком, что копия и личный слой,
+                и по тому же закону: строки приходят из журнала и строки попытки, пустой
+                список означает «попытка этого не знает» — и тогда блока нет вовсе. Имя
+                заметки и причина отказа приходят из данных и остаются текстовыми узлами. */}
+            {lesson.length > 0 ? (
+              <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
+                {lesson.map((line) => (
+                  <span key={line} className="break-words">
+                    {line}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             {/* Сырой слой двухслойной ошибки: человеческая строка уже в заголовке ряда
                 (reasonLabel), здесь — код причины как он записан, для баг-репорта. */}
             {attempt.outcome === 'failed' && attempt.failureReason ? (
@@ -343,11 +455,18 @@ export function AttemptTimeline({
   attempts,
   returnedNotes,
   taskId = null,
+  memoryTrace = null,
 }: {
   attempts: TaskAttempt[]
   returnedNotes: string[]
   /** Present when the timeline lives on a task card — unlocks the per-attempt transcript. */
   taskId?: string | null
+  /**
+   * След памяти задачи из журнала. Приходит в ПОСЛЕДНИЙ ряд и только в него: слой памяти
+   * пишет каждая попытка, а читается верхний — то есть свежий. Отсутствует у задач старше
+   * слоя, и тогда о памяти не говорится ничего.
+   */
+  memoryTrace?: MemoryTrace | null
 }) {
   if (attempts.length === 0) {
     return <p className="m-0 text-[12.5px] text-tx3">Работа ещё не начиналась — задача ждёт своей очереди.</p>
@@ -361,13 +480,15 @@ export function AttemptTimeline({
     <div className="flex flex-col">
       {attempts.map((a, i) => {
         const note = a.outcome === 'returned' ? (returnedNotes[returned++] ?? null) : null
+        const last = i === attempts.length - 1
         return (
           <Row
             key={`${a.attempt ?? i}-${a.startedAt ?? i}`}
             attempt={a}
             note={note}
-            last={i === attempts.length - 1}
+            last={last}
             taskId={taskId}
+            trace={last ? memoryTrace : null}
           />
         )
       })}
