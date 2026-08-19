@@ -616,8 +616,10 @@ async function defaultLoadGates(dirs = {}) {
   return any ? count : null
 }
 
-/** unscored-predictions count over the repo's .planning/phases tree; null when absent. */
-async function defaultLoadUnscored(dirs = {}) {
+/** unscored-predictions count over the repo's .planning/phases tree; null when absent.
+ * EXPORTED so the `statusline --stat unscored-predictions` tool prints the very number the
+ * axis renders: one count, one directory resolution, and no second implementation to drift. */
+export async function defaultLoadUnscored(dirs = {}) {
   const repoRoot = dirs.repoRoot || (dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
   return countUnscoredPredictions({
     phasesDir: join(repoRoot, '.planning', 'phases'),

@@ -206,6 +206,57 @@ describe('statusline.mjs — Task 1 (pure render + cache + adapters)', () => {
   })
 })
 
+// ── The unscored axis as a NUMBER: `statusline --stat unscored-predictions` ────
+
+/**
+ * The axis figure is the central number of the calibration work, and «I read it off the
+ * segment» is not a measurement anybody downstream can check. The `--stat` tool exists so a
+ * gate can COMPARE the number instead of retelling it — therefore the tool must delegate to
+ * the very loader the segment uses. A tool that counts on its own is a second source of
+ * truth, and two sources of truth drift silently.
+ *
+ * Plan fixtures deliberately carry neutral names: the accounting key is built FROM the plan
+ * file name, so the fixtures are the shape a name would leak through.
+ */
+describe('statusline --stat unscored-predictions — the axis as a machine-readable number', () => {
+  it('prints exactly what the unscored count returns for the same dirs (it never counts on its own)', async () => {
+    const repo = join(dir, 'stat-repo')
+    const phasesDir = join(repo, '.planning', 'phases')
+    const calibrationDir = join(repo, '.sma', 'calibration')
+    mkdirSync(join(phasesDir, 'alpha'), { recursive: true })
+    mkdirSync(join(phasesDir, 'beta'), { recursive: true })
+    mkdirSync(calibrationDir, { recursive: true })
+
+    writeFileSync(
+      join(phasesDir, 'alpha', 'alpha-01-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-1', '    claim: a', '  - id: PX-2', '    claim: b', '---', '', 'body'].join('\n'),
+    )
+    writeFileSync(
+      join(phasesDir, 'beta', 'beta-02-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-3', '    claim: c', '---', '', 'body'].join('\n'),
+    )
+    writeFileSync(
+      join(calibrationDir, 'sma.perf.jsonl'),
+      JSON.stringify({ id: 'PX-2', domain: 'sma.perf', plan: 'alpha-01-PLAN.md', verdict: 'hit' }) + '\n',
+    )
+
+    const expected = await countUnscoredPredictions({ phasesDir, calibrationDir })
+    const out = runStatusline(join(repo, '.sma'), ['--stat', 'unscored-predictions'])
+    const last = out.trim().split('\n').pop()
+    expect(last).toBe(String(expected))
+    expect(Number(last)).toBe(2) // three prediction ids, one of them carries a verdict
+  })
+
+  it('an unreadable phases tree prints the honest zero, and the exit code stays 0', () => {
+    const repo = join(dir, 'stat-bare')
+    mkdirSync(join(repo, '.sma'), { recursive: true }) // no .planning tree at all
+    const out = runStatusline(join(repo, '.sma'), ['--stat', 'unscored-predictions'])
+    expect(out.trim().split('\n').pop()).toBe('0')
+    // and an unknown name keeps the neighbours' contract: an honest zero, never a throw
+    expect(runStatusline(join(repo, '.sma'), ['--stat', 'no-such-stat']).trim().split('\n').pop()).toBe('0')
+  })
+})
+
 // ── The window axis: the subscription reading must REACH the state ────────────
 
 /**

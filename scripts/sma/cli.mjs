@@ -4718,9 +4718,18 @@ async function statuslineSetWebhook({ positionals, flags, dirs }) {
  * finite number as its LAST stdout line (parser). bench-render-p95-ms measures 20
  * warm renders; selftest-webhook-dedup / selftest-wrap-preserve run against throwaway temp
  * dirs (the real .sma/ and settings are NEVER touched — preship selftest posture).
+ * unscored-predictions makes the axis figure MACHINE-READABLE: it delegates to the SAME
+ * loader the axis itself uses, so a gate downstream checks the number instead of retelling
+ * it, and the tool can never disagree with the segment it quotes.
  */
 async function statuslineStat(name, { dirs }) {
   try {
+    if (name === 'unscored-predictions') {
+      const statusline = await import('./lib/statusline.mjs')
+      const n = await statusline.defaultLoadUnscored(dirs)
+      process.stdout.write(`${Number.isFinite(n) ? n : 0}\n`)
+      return 0
+    }
     if (name === 'bench-render-p95-ms') {
       const p95 = await benchRenderP95(dirs)
       process.stdout.write(`${p95}\n`)
