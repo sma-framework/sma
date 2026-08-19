@@ -86,6 +86,35 @@ function capped(text, cap) {
   return t.length > cap ? t.slice(0, cap) : t
 }
 
+/**
+ * ОТПЕЧАТОК ПРОДУКТА — версия проекта плюс короткий sha его HEAD.
+ *
+ * Валидатор корпуса требует от перепроверяемого заявления его проверку: либо команду, либо
+ * отпечаток эпохи. Работник не может назвать ни версии проекта, ни коммита — он сидит в копии,
+ * заведённой ради одной задачи, а о продукте, в который его правка попадёт, знает не он, а
+ * приёмка. Поэтому отпечаток ставится ЗДЕСЬ, в момент переноса, и составляется из того, что
+ * читается прямо у проекта. Ни версии, ни коммита не нашлось — заявление всё равно едет со
+ * словом 'unknown': честно названная неизвестная эпоха полезнее молчаливой потери урока.
+ */
+function productFingerprint(projectDir, { execGit, readFileSync } = {}) {
+  let version = 'unknown'
+  try {
+    const pkg = JSON.parse(readFileSync(join(projectDir, 'package.json'), 'utf8'))
+    if (pkg && typeof pkg.version === 'string' && pkg.version.trim() !== '') version = pkg.version.trim()
+  } catch {
+    /* без package.json эпоха называется словом, а не выдумывается */
+  }
+  let sha = ''
+  if (typeof execGit === 'function') {
+    try {
+      sha = String(execGit(['rev-parse', '--short', 'HEAD'], { cwd: projectDir }) || '').trim().split(/\s+/)[0]
+    } catch {
+      /* нет git или нет коммитов — отпечаток остаётся одной версией */
+    }
+  }
+  return sha ? `${version}+${sha}` : version
+}
+
 /** Идентификатор записи по имени файла черновика: `<id>.md` — закон имени корпуса. */
 function idFromDraftPath(p) {
   const name = basename(String(p ?? '').replace(/[\\/]+/g, '/'))
@@ -269,6 +298,7 @@ export async function harvestTaskMemory({ taskId, projectDir, ledger, verbRunner
     // (5) ДВЕРЬ В КОРПУС. По одному черновику, с названным подтверждением и явным согласием —
     // ровно та форма приёмки, которую конвейер требует от человека. Уже лежащая в корпусе
     // запись — идемпотентный отказ: повтор приёмки не обязан ничего менять.
+    const fingerprint = productFingerprint(projectDir, { execGit, readFileSync })
     for (const id of lessonIds) {
       if (existsSync(join(corpusOf(projectDir), `${id}.md`))) {
         refused.push({ id, reason: 'уже в корпусе — повторная приёмка ничего не меняет', idempotent: true })
@@ -281,7 +311,10 @@ export async function harvestTaskMemory({ taskId, projectDir, ledger, verbRunner
       }
       const res = await runVerb(
         verbRunner,
-        ['memory', 'write', '--apply', draftPath, '--confirm', `${id}.md`, '--yes', '--corpus', corpusOf(projectDir), '--json'],
+        // `--product-version` здесь не украшение: без него урок, написанный ровно по
+        // инструкции промпта, валидатор отказывается принять — и приёмка молча теряет
+        // знание попытки. Штамп получают только записи, не принесшие своей проверки.
+        ['memory', 'write', '--apply', draftPath, '--confirm', `${id}.md`, '--yes', '--corpus', corpusOf(projectDir), '--product-version', fingerprint, '--json'],
         projectDir,
       )
       if (res.applied === true) applied.push(id)

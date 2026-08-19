@@ -1386,7 +1386,17 @@ function lastRefusalReason(state) {
  * draft with the `.applied` marker — the same convention the migration door
  * uses — so a proposal is applied exactly once.
  *
+ * THE STAMP THE DOOR MAY ADD. A re-derivable claim must carry its check, and a draft
+ * written inside a worker's copy cannot carry the check that names the epoch: the product
+ * version and the commit are known to whoever ACCEPTS the work, never to whoever wrote the
+ * note in a copy cut for one task. So the caller may hand in `fingerprint {product_version}`,
+ * and it is written into the record ONLY when the record brought neither a fingerprint nor a
+ * verification of its own — a record that already states how it is checked is never rewritten
+ * by this door. The stamp is a version string, never the author's data, and it leaves a trace
+ * step, so a reader can see the record was completed here rather than authored here.
+ *
  * @param {{draftPath:string, corpusDir:string, confirmFile:string, draftsDir?:string,
+ *          fingerprint?:{product_version:string},
  *          journalDir?:string, terminalId?:string, now?:string, execGit?:Function,
  *          registry?:object, localDir?:string, repoRoot?:string}} input
  * @returns {{applied:boolean, outcome:string, target_path:string|null, reason:string,
@@ -1453,6 +1463,19 @@ export function applyStagedDraft(input = {}) {
 
   const record = stripDraftMarkers(fm)
   if (String(record.status ?? '').trim() === 'draft') record.status = 'active'
+
+  const stampVersion =
+    input.fingerprint && typeof input.fingerprint.product_version === 'string'
+      ? input.fingerprint.product_version.trim()
+      : ''
+  if (stampVersion !== '' && record.fingerprint == null && record.verification == null) {
+    record.fingerprint = { product_version: stampVersion }
+    trace(state, 'apply', 'ok', {
+      reason: 'fingerprint stamped by apply — the epoch is known to the acceptance, not to the draft',
+      product_version: stampVersion,
+      id: recordId,
+    })
+  }
 
   const validation = validateRecord(record)
   if (validation.errors.length) {
