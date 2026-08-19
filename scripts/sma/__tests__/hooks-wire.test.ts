@@ -41,6 +41,10 @@ import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { describe, it, expect, afterAll } from 'vitest'
 import { applyDeleteme } from '../lib/deleteme.mjs'
+// The install core the installer is supposed to call. Imported here so the expected
+// entry has ONE definition: a literal retyped in a test is how two truths start
+// disagreeing, and the test is then the one that lies.
+import { canonicalStatuslineEntry, SMA_STATUSLINE_WRAP_CMD } from '../lib/statusline-install.mjs'
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
@@ -94,6 +98,40 @@ const readSettings = (p: string) => JSON.parse(readFileSync(p, 'utf8'))
 const FOREIGN_EDIT_GUARD = { type: 'command', command: 'node .claude/guards/edit-guard.mjs --strict', timeout: 30 }
 const FOREIGN_SUBAGENT_GUARD = { type: 'command', command: 'node .claude/guards/regression-scan.mjs', timeout: 30 }
 
+/**
+ * The status line the fixture already has. A consumer's own line is the case that
+ * matters most here: a project-level `statusLine` takes precedence over the user's,
+ * so installing ours on top of theirs without preserving it would silently remove a
+ * line they wrote — in a project they did not ask us to redecorate.
+ */
+const FOREIGN_STATUSLINE = { type: 'command', command: 'node .claude/my-line.mjs' }
+
+/**
+ * The whole fixture, as one value. It is a value rather than an inline literal
+ * because both sides of the inversion assert against it: what the installer wrote,
+ * and what the off-ramp gave back. `env` and `permissions` are here as NEIGHBOURS —
+ * "only hooks and statusLine moved" is a free claim in a file that holds nothing
+ * else, and this installer has no business touching either of them.
+ */
+const FOREIGN_SETTINGS = {
+  model: 'opus',
+  env: { FOREIGN_MARKER: 'kept' },
+  permissions: { allow: ['Bash(node:*)'] },
+  hooks: {
+    PreToolUse: [{ matcher: 'Edit|Write', hooks: [FOREIGN_EDIT_GUARD] }],
+    SubagentStop: [{ hooks: [FOREIGN_SUBAGENT_GUARD] }],
+  },
+  statusLine: FOREIGN_STATUSLINE,
+}
+
+/** Everything in a settings object EXCEPT the two keys this install may move. */
+function untouchedKeys(settings: any) {
+  const copy = { ...settings }
+  delete copy.hooks
+  delete copy.statusLine
+  return copy
+}
+
 describe('hook wiring — install then uninstall on a real settings.json', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'sma-hooks-wire-'))
   const proj = join(tmp, 'proj')
@@ -103,26 +141,13 @@ describe('hook wiring — install then uninstall on a real settings.json', () =>
     rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
   })
 
-  it('the REAL installer lands every shipped hook exactly once and joins, never overwrites, foreign groups', () => {
-    mkdirSync(join(proj, '.claude'), { recursive: true })
-    writeFileSync(
-      settingsPath,
-      JSON.stringify(
-        {
-          model: 'opus',
-          hooks: {
-            PreToolUse: [{ matcher: 'Edit|Write', hooks: [FOREIGN_EDIT_GUARD] }],
-            SubagentStop: [{ hooks: [FOREIGN_SUBAGENT_GUARD] }],
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    )
-
-    // No child `timeout:` — the case's own deadline below is the single clock.
-    // A tighter child clock kills the installer on a loaded machine, hands back
-    // `status: null`, and the case then reads as a product defect.
+  /**
+   * The REAL installer, run the way an adopter runs it. No child `timeout:` — the
+   * case's own deadline is the single clock. A tighter child clock kills the
+   * installer on a loaded machine, hands back `status: null`, and the case then
+   * reads as a product defect. A kill or a spawn failure is reported as itself.
+   */
+  const runInstaller = () => {
     const res = spawnSync(process.execPath, [initPath, '--local'], { cwd: proj, encoding: 'utf8' })
     if (res.error || res.signal) {
       throw new Error(
@@ -130,6 +155,14 @@ describe('hook wiring — install then uninstall on a real settings.json', () =>
           `spawnError=${res.error ? res.error.message : 'none'}\nstderr: ${(res.stderr ?? '').slice(0, 600)}`,
       )
     }
+    return res
+  }
+
+  it('the REAL installer lands every shipped hook exactly once and joins, never overwrites, foreign groups', () => {
+    mkdirSync(join(proj, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify(FOREIGN_SETTINGS, null, 2) + '\n')
+
+    const res = runInstaller()
     expect({ status: res.status, stderr: (res.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
 
     const settings = readSettings(settingsPath)
@@ -152,6 +185,58 @@ describe('hook wiring — install then uninstall on a real settings.json', () =>
     expect(JSON.stringify(stopGroup.hooks[0])).toBe(JSON.stringify(FOREIGN_SUBAGENT_GUARD))
     expect(stopGroup.hooks).toHaveLength(2)
     expect(settings.model).toBe('opus')
+
+    // ── the statusline wire ──────────────────────────────────────────────────
+    // The mechanism that writes this entry has existed, and been covered, for
+    // releases; nothing called it, so no adopter ever saw the segment. What is
+    // asserted here is therefore the CALL, on the file the real installer wrote:
+    // "the function exists" would have passed the whole time the feature shipped
+    // dead.
+    expect(
+      settings.statusLine,
+      'the installer must install the segment itself — a mechanism nobody calls ships nothing',
+    ).toEqual(canonicalStatuslineEntry(SMA_STATUSLINE_WRAP_CMD))
+    // Pinned as a number, not only through the constant: an entry without a timer
+    // leaves an idle window blind to everything raised outside it — a claim taken
+    // in the next window would never appear, and the segment would be a snapshot.
+    expect(settings.statusLine.refreshInterval, 'an idle window repaints on the timer or not at all').toBe(60)
+
+    // the foreign line is preserved for its owner — verbatim, and wrapped so it
+    // still prints FIRST
+    expect(settings.statusLine.command).toContain('--wrap')
+    const wrapped = JSON.parse(readFileSync(join(proj, '.sma', 'statusline', 'wrapped-command.json'), 'utf8'))
+    expect(wrapped.command).toBe(FOREIGN_STATUSLINE.command)
+    expect(JSON.stringify(wrapped.original), 'the promise is to give THIS object back, not something equal-ish').toBe(
+      JSON.stringify(FOREIGN_STATUSLINE),
+    )
+    expect(wrapped.hadNone).toBe(false)
+
+    // and nothing else in the file moved: hooks and statusLine are the only two
+    // keys this install is allowed to touch
+    expect(untouchedKeys(settings)).toEqual(untouchedKeys(FOREIGN_SETTINGS))
+  }, 120000)
+
+  it('a second run changes nothing, says so, and still holds the foreign line for its owner', () => {
+    const before = readSettings(settingsPath)
+    const wrappedPath = join(proj, '.sma', 'statusline', 'wrapped-command.json')
+    const wrappedBefore = readFileSync(wrappedPath, 'utf8')
+
+    const res = runInstaller()
+    expect({ status: res.status, stderr: (res.stderr ?? '').slice(0, 400) }).toMatchObject({ status: 0 })
+    // the report is part of the contract: an install that calls a no-op an install
+    // teaches the operator the wrong thing about their own file
+    expect(res.stdout, 'the second run must report the segment as unchanged').toMatch(
+      /statusline\s+.*already installed/,
+    )
+
+    const after = readSettings(settingsPath)
+    expect(after.statusLine).toEqual(before.statusLine)
+    expect(smaEntries(after)).toHaveLength(SMA_HOOKS.length)
+    // the saved foreign line is the ONLY copy of something we promised to return:
+    // a re-install that overwrote it with a "there was none" record would destroy
+    // it silently, and the loss would surface only at uninstall time
+    expect(readFileSync(wrappedPath, 'utf8')).toBe(wrappedBefore)
+    expect(untouchedKeys(after)).toEqual(untouchedKeys(FOREIGN_SETTINGS))
   }, 120000)
 
   it('the REAL off-ramp removes every one of them and leaves the foreign entries untouched', () => {
@@ -176,8 +261,14 @@ describe('hook wiring — install then uninstall on a real settings.json', () =>
     const stopGroup = groupFor(settings, 'SubagentStop', null)
     expect(stopGroup.hooks).toHaveLength(1)
     expect(JSON.stringify(stopGroup.hooks[0])).toBe(JSON.stringify(FOREIGN_SUBAGENT_GUARD))
+    // the statusline half of the inversion: their line is back, alone, byte for byte
+    expect(settingsAction.detail).toContain('statusline:restored')
+    expect(JSON.stringify(settings.statusLine)).toBe(JSON.stringify(FOREIGN_STATUSLINE))
+    expect(JSON.stringify(settings.statusLine)).not.toContain('--wrap')
+
     // and every other key of the file is still the user's
     expect(settings.model).toBe('opus')
+    expect(untouchedKeys(settings)).toEqual(untouchedKeys(FOREIGN_SETTINGS))
   })
 })
 
