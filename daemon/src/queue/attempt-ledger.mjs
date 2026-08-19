@@ -160,6 +160,21 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'materialized',
   'provisionMs',
   'cleanup',
+  // ── the session the worker was actually handed ────────────────────────────────
+  // `personalLayer` is what the account held when this attempt ran, as the mirror reported
+  // it: which directory it was taken from, a digest of the instructions file, how many hook
+  // events and how many narrowing permission rules arrived, which overrides were applied and
+  // which were dropped, and where the backup of the previous settings went. `mcpConfig` is
+  // which servers the spawn was given — the path of the per-spawn file and the ids inside it.
+  //
+  // WHY THEY BELONG ON THE ROW rather than only in a log. Both answer a question that is asked
+  // AFTER the fact and cannot be re-derived: an account's settings are overwritten by the next
+  // attempt, and the per-spawn config file lives in a copy that gets swept. Without these two
+  // keys «the worker ran with my rules» and «it had these servers and no others» are claims
+  // nobody can check a week later — and they are exactly the claims a failed attempt turns on.
+  // Both are DIGESTS AND NAMES, never contents: no rule text, no token name, no secret.
+  'personalLayer',
+  'mcpConfig',
 ])
 
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
