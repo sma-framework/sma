@@ -25,7 +25,11 @@
  *     answer the same fixture with the same shape — the fallback is not a placeholder.
  *   - Test 7 (a query is data): a hostile task string — quotes, MATCH operators, a
  *     semicolon and a DROP — is neither an error nor an injection; the corpus survives.
- *   - Test 8 (staleness): zero right after a rebuild, one after the corpus moves.
+ *   - Test 8 (staleness): zero right after a rebuild, one after the corpus moves — and
+ *     still zero when only the BODY of a note moves, because the body is not what is
+ *     indexed. That last half is a contract, not an oversight: the axis is the second
+ *     way of reading a record, and a staleness that fired on every prose edit would
+ *     teach its callers to ignore it.
  *   - Test 9 (rebuildable): deleting the index file loses nothing a rebuild cannot
  *     restore — the law that keeps a derived artifact from becoming a source of truth.
  */
@@ -340,6 +344,22 @@ describe('the derived index', () => {
     expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(1)
 
     buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(0)
+  })
+
+  it.skipIf(!CAP.module)('does not go stale when only the BODY of a note moves — the body was never indexed', () => {
+    buildLexicalIndex({ corpusDir, dbPath: dbPath(), now: NOW })
+    expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(0)
+
+    // the frontmatter — the axis — is left byte for byte as it was; only the prose moves
+    const path = join(corpusDir, 'pack-rule.md')
+    const before = readFileSync(path, 'utf8')
+    const axisEnd = before.indexOf('\n---\n', 4) + '\n---\n'.length
+    writeFileSync(path, before.slice(0, axisEnd) + 'an entirely different paragraph, and not one word of the axis\n', 'utf8')
+
+    // the file on disk really did change — otherwise this case would pass on nothing
+    expect(readFileSync(path, 'utf8')).not.toBe(before)
+    // …and the index is still honest: what it holds is what it always held
     expect(indexStatus({ corpusDir, dbPath: dbPath(), now: NOW }).summary.stale).toBe(0)
   })
 
