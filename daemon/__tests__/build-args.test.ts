@@ -64,10 +64,25 @@ const route = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
+// THE ACCOUNT MIRROR, AS A FAKE FILE. Before it spawns, the executor reads the settings the
+// personal-layer mirror wrote into the account's own config dir — that file is where the
+// plugin list and the hosted-connectors switch live, and neither is visible in an argument
+// array. The suite injects it: no case here touches a real home directory.
+const MIRRORED_SETTINGS = JSON.stringify({ disableClaudeAiConnectors: true })
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const settingsFs = (content: string = MIRRORED_SETTINGS): any => ({
+  readFileSync: (p: string) => {
+    if (String(p).replace(/\\/g, '/').endsWith('settings.json')) return content
+    throw new Error(`ENOENT ${p}`)
+  },
+})
+
 // The product is plain JS with JSDoc types; the spec it returns is a bag of strings. `any`
 // here keeps the suite about behaviour rather than about the editor's view of an untyped module.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const build = (cfg: any = CONFIG, env: any = ENV): any => createBuildArgs({ config: cfg, env })
+const build = (cfg: any = CONFIG, env: any = ENV, fsImpl: any = settingsFs()): any =>
+  createBuildArgs({ config: cfg, env, fsImpl })
 
 describe('buildArgs — the spec the tick spawns', () => {
   it('assembles a Claude session: binary, base args, account env and the task prompt', () => {
@@ -375,5 +390,69 @@ describe('buildArgs — a stage of the phase cycle is a command, everything else
       const prompt = build()(stageTask({ data: { kind: 'document', stage, phase: '12' } }), route()).prompt
       expect(prompt, stage).not.toMatch(/--(auto|bare|dangerously-skip-permissions|permission-mode)(\s|=|$)/)
     }
+  })
+})
+
+// ════════ the account mirror is read before the spawn, and the guard sees it ════════
+//
+// The personal layer is not an argument: it is a settings file in the account's own config
+// dir. So the executor reads that file and hands it to the parity guard, and the guard is the
+// one that refuses. Reading it here rather than inside the guard keeps the guard pure — it
+// stays a function over data, and the one place that touches a disk is the one that already
+// composes the spawn.
+
+describe('buildArgs — the personal layer the account actually holds', () => {
+  it('a mirrored account spawns: connectors off, and the profile names no plugin', () => {
+    const spec = build()(task(), route())
+    expect(spec.workerId).toBe('max-1')
+    expect(spec.bin).toBe(CLAUDE_BIN)
+  })
+
+  it('reads settings.json from THIS account config dir, and nothing else', () => {
+    const seen: string[] = []
+    const spy = {
+      readFileSync: (p: string) => {
+        seen.push(String(p).replace(/\\/g, '/'))
+        return MIRRORED_SETTINGS
+      },
+    }
+    build(CONFIG, ENV, spy)(task(), route())
+    expect(seen).toEqual(['/accounts/max-1/settings.json'])
+  })
+
+  it('an account with no mirrored switch is REFUSED — no mirror, no parity', () => {
+    // fail-open on the read, fail-closed on the guard: an unreadable or empty settings file
+    // becomes an empty object, and an empty object does not say connectors are off.
+    const cases = [
+      { readFileSync: () => '{}' },
+      { readFileSync: () => '{ not json at all' },
+      {
+        readFileSync: () => {
+          throw new Error('ENOENT')
+        },
+      },
+    ]
+    for (const fsImpl of cases) {
+      expect(() => build(CONFIG, ENV, fsImpl)(task(), route())).toThrow(ProfileParityError)
+      expect(() => build(CONFIG, ENV, fsImpl)(task(), route())).toThrow(/connectors/)
+    }
+  })
+
+  it('the plugins the profile assigns must be the ones the account enabled', () => {
+    const cfg = { workers: [{ ...claudeWorker, plugins: ['reviewer@house'] }, codexWorker] }
+    expect(() => build(cfg, ENV)(task(), route())).toThrow(/plugins/)
+
+    const matched = settingsFs(
+      JSON.stringify({ disableClaudeAiConnectors: true, enabledPlugins: { 'reviewer@house': true } }),
+    )
+    expect(build(cfg, ENV, matched)(task(), route()).workerId).toBe('max-1')
+  })
+
+  it('a per-spawn MCP config travels into the argument array only when the tick names one', () => {
+    const spec = build()(task(), route(), { mcpConfigPath: '/wt/T-0001/mcp-config.json' })
+    expect(spec.args).toContain('--mcp-config')
+    expect(spec.args[spec.args.indexOf('--mcp-config') + 1]).toBe('/wt/T-0001/mcp-config.json')
+    // absence stays absence: no option, no flag
+    expect(build()(task(), route()).args).not.toContain('--mcp-config')
   })
 })
