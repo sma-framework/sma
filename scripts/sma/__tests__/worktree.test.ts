@@ -31,6 +31,9 @@ import {
   captureExpectedBase,
   verifyWorktreeBase,
   WORKTREE_BRANCH_PREFIX,
+  lockPushInCopy,
+  PUSH_LOCK_URL,
+  PUSH_LOCK_NO_EXTENSION_REASON,
 } from '../lib/worktree.mjs'
 
 /**
@@ -203,5 +206,179 @@ describe('worktree.mjs — per-terminal provisioning + Windows guards', () => {
   it('WORKTREE_BRANCH_PREFIX is a stable non-empty per-terminal branch stem', () => {
     expect(typeof WORKTREE_BRANCH_PREFIX).toBe('string')
     expect(WORKTREE_BRANCH_PREFIX.length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * lockPushInCopy — КОПИЯ ВЫДАЁТСЯ БЕЗ АДРЕСА ДЛЯ PUSH, А ДЕРЕВО ЧЕЛОВЕКА НЕ ТРОГАЮТ.
+ *
+ * Прогон на временном репозитории (git 2.53) показал ровно то, ради чего написан
+ * весь этот блок: `git config remote.origin.pushurl no_push`, выполненный ВНУТРИ
+ * связанной копии, пишется в ОБЩИЙ конфиг и отнимает push у главного дерева —
+ * то есть защита от работника обезоруживает человека. Изолирует только пара
+ * «расширение per-worktree включено в главном дереве» + `git config --worktree`.
+ *
+ * И вторая половина, которая здесь и есть предмет: расширение мы НЕ включаем сами
+ * НИКОГДА. Оно меняет смысл уже существующих настроек чужого репозитория
+ * (`core.bare`, `core.worktree` начинают читаться по-копийно), и делать это молча,
+ * ради ВТОРОГО рубежа, недопустимо. Поэтому есть случай, который утверждает
+ * ОТСУТСТВИЕ такой команды в записи подделки git, — а не только результат.
+ */
+function makeConfigGit(
+  opts: {
+    ext?: string
+    sharedPush?: string
+    copyPush?: string
+    /** имитирует утечку: запись `--worktree` всё равно видна в общем конфиге */
+    leakOnWrite?: boolean
+  } = {},
+) {
+  const calls: { args: string[]; cwd?: string }[] = []
+  let shared = opts.sharedPush ?? ''
+  let copy = opts.copyPush ?? ''
+  const run = (args: string[], o: { cwd?: string } = {}) => {
+    calls.push({ args, cwd: o.cwd })
+    if (args[0] !== 'config') return ''
+    const worktreeScoped = args.includes('--worktree')
+    const rest = args.filter((a) => a !== 'config' && a !== '--worktree')
+    if (rest[0] === '--get') {
+      const key = rest[1]
+      let value = ''
+      if (key === 'extensions.worktreeConfig') value = opts.ext ?? ''
+      else if (key === 'remote.origin.pushurl') value = worktreeScoped ? copy : shared
+      // git отвечает кодом 1 на отсутствующий ключ — подделка обязана уметь то же
+      if (value === '') throw Object.assign(new Error('exit 1'), { status: 1 })
+      return value + '\n'
+    }
+    if (rest[0] === '--unset') {
+      if (worktreeScoped) copy = ''
+      else shared = ''
+      return ''
+    }
+    // запись
+    if (rest[0] === 'remote.origin.pushurl') {
+      if (worktreeScoped) {
+        copy = rest[1]
+        if (opts.leakOnWrite) shared = rest[1]
+      } else {
+        shared = rest[1]
+      }
+      return ''
+    }
+    return ''
+  }
+  return {
+    run,
+    calls,
+    seen: () => ({ shared, copy }),
+  }
+}
+
+/** Любая команда, которая ВКЛЮЧАЕТ расширение per-worktree, — запрещённая. */
+function enablingCalls(calls: { args: string[] }[]) {
+  return calls.filter(
+    (c) =>
+      c.args[0] === 'config' &&
+      c.args.some((a) => a === 'extensions.worktreeConfig') &&
+      !c.args.includes('--get'),
+  )
+}
+
+describe('worktree.mjs — копия без адреса для push, дерево человека нетронуто', () => {
+  it('расширение включено ЧЕЛОВЕКОМ → замок стоит в копии, в общем конфиге пусто', () => {
+    const g = makeConfigGit({ ext: 'true' })
+    const res = lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(res.applied).toBe(true)
+    expect(res.isolated).toBe(true)
+    expect(res.worktreeConfigPreset).toBe(true)
+    expect(g.seen().copy).toBe(PUSH_LOCK_URL)
+    expect(g.seen().shared, 'адрес протёк в главное дерево — у человека отняли push').toBe('')
+    // запись сделана ИМЕННО флагом --worktree, иначе она общая по определению
+    const write = g.calls.find((c) => c.args.includes('remote.origin.pushurl') && !c.args.includes('--get'))
+    expect(write?.args).toContain('--worktree')
+    expect(write?.cwd, 'запись адреса ушла не в копию').toBe('/wt')
+  })
+
+  it('расширение не включено человеком → applied:false, причина словами и НИ ОДНОЙ команды включения', () => {
+    const g = makeConfigGit({ ext: '' })
+    const res = lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(res.applied).toBe(false)
+    expect(res.worktreeConfigPreset).toBe(false)
+    expect(res.reason).toBe(PUSH_LOCK_NO_EXTENSION_REASON)
+    expect(res.reason.length, 'причина обязана быть словами, а не кодом').toBeGreaterThan(20)
+    // ГЛАВНОЕ: мы не переконфигурировали чужой репозиторий ради своей защиты
+    expect(enablingCalls(g.calls), 'продукт включил расширение сам — это запрещено').toEqual([])
+    // и ни один адрес не записан ни там, ни там
+    expect(g.seen().shared).toBe('')
+    expect(g.seen().copy).toBe('')
+  })
+
+  it('утечка в общий конфиг → откат с обеих сторон и честное applied:false', () => {
+    const g = makeConfigGit({ ext: 'true', leakOnWrite: true })
+    const res = lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(res.applied).toBe(false)
+    expect(res.isolated).toBe(false)
+    expect(res.reason).toContain('isolation')
+    expect(g.seen().shared, 'у человека остался чужой адрес push').toBe('')
+    expect(g.seen().copy).toBe('')
+  })
+
+  it('адрес push уже настроен человеком → не трогаем вовсе', () => {
+    const g = makeConfigGit({ ext: 'true', sharedPush: 'git@example.com:me/mine.git' })
+    const res = lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(res.applied).toBe(false)
+    expect(res.mainPushUrl).toBe('git@example.com:me/mine.git')
+    expect(g.seen().shared).toBe('git@example.com:me/mine.git')
+    expect(g.calls.filter((c) => c.args.includes('--unset'))).toEqual([])
+  })
+
+  it('повторный вызов на уже запертой копии идемпотентен: applied:true и ни одной записи', () => {
+    const g = makeConfigGit({ ext: 'true', copyPush: PUSH_LOCK_URL })
+    const res = lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(res.applied).toBe(true)
+    expect(res.alreadyLocked).toBe(true)
+    const writes = g.calls.filter((c) => c.args[0] === 'config' && !c.args.includes('--get'))
+    expect(writes, 'второй вызов что-то записал').toEqual([])
+  })
+
+  it('fail-open: git падает — копия выдаётся без замка, с названной причиной, без броска', () => {
+    const g = makeMockGit({ fail: true })
+    const res = lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(res.applied).toBe(false)
+    expect(typeof res.reason).toBe('string')
+    expect(res.reason.length).toBeGreaterThan(0)
+  })
+
+  it('у каждого вызова git явный cwd — телепорта оболочки быть не может', () => {
+    const g = makeConfigGit({ ext: 'true' })
+    lockPushInCopy({ execGit: g.run, mainRoot: '/main', copyPath: '/wt' })
+    expect(g.calls.length).toBeGreaterThan(0)
+    for (const c of g.calls) {
+      expect(typeof c.cwd, 'вызов без cwd: ' + c.args.join(' ')).toBe('string')
+      expect(Array.isArray(c.args)).toBe(true)
+      expect(c.args.join(' ')).not.toContain('cd ')
+    }
+  })
+
+  it('обе точки выдачи копии кладут результат замка полем pushLock', () => {
+    const g = makeConfigGit({ ext: 'true' })
+    const fresh: any = provisionWorktree({ branch: 'sma-wt/p', path: '/wt', execGit: g.run, cwd: '/main' })
+    expect(fresh.ok).toBe(true)
+    expect(fresh.pushLock?.applied).toBe(true)
+
+    const g2 = makeConfigGit({ ext: 'true' })
+    const reused: any = reuseOrProvision({
+      branch: 'sma-wt/p',
+      path: '/wt',
+      execGit: (args: string[], o: any = {}) => {
+        if (args[0] === 'worktree' && args[1] === 'list') {
+          return 'worktree /wt\nHEAD abc\nbranch refs/heads/sma-wt/p\n\n'
+        }
+        return g2.run(args, o)
+      },
+      cwd: '/main',
+    })
+    expect(reused.reused).toBe(true)
+    expect(reused.pushLock?.applied, 'переиспользованная копия осталась с правом push').toBe(true)
   })
 })
