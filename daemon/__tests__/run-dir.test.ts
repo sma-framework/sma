@@ -284,7 +284,14 @@ describe('каждая попытка оставляет каталог прог
     expect(receipt.memoryLayer.index).toBe(true)
     expect(receipt.memoryLayer.loadCalls).toBe(1)
     expect(receipt.lesson).toEqual({ none: 'задача была чистым чтением' })
-    expect(receipt.parity).toBe(null)
+    // ВЕРДИКТ ПАРИТЕТА ЛЕЖИТ РЯДОМ С ИСХОДОМ, а не ждёт, пока кто-то запустит команду.
+    // Копия этого случая — голая: правил проекта в ней нет, а список инструментов спавна
+    // собран здешней заглушкой и конверту не равен. Пятёрка обязана сказать об этом ИМЕНАМИ
+    // и остаться неполной: проверка, которая на голой копии показывает зелёное, не проверка.
+    expect(receipt.parity.results.map((r: any) => r.id)).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights'])
+    expect(receipt.parity.summary.failed).toEqual(['rules', 'rights'])
+    expect(receipt.parity.summary.fulfilled).toBe(3)
+    expect(receipt.parity.summary.total).toBe(5)
   })
 })
 
@@ -335,12 +342,16 @@ describe('каталог есть у КАЖДОГО исхода, а не тол
     expect(receipt.verdict).toBe('red')
   })
 
-  it('путь каталога уезжает на строку попытки — ключом runDir, рядом с parity', async () => {
+  it('путь каталога и вердикт уезжают на строку попытки — runDir и parity', async () => {
     const { ledgerDir, runDir } = await runTick()
     const [row] = readAttempts(ledgerDir, 'BL-1')
 
     expect(row.runDir).toBe(runDir)
-    expect(row.parity).toBe(null)
+    // Строка попытки — та самая запись, из которой строится карточка: вердикт, доехавший
+    // только до файла в каталоге, для человека не существует. И это ТА ЖЕ сводка, что в
+    // квитанции, а не вторая, посчитанная по дороге.
+    expect(row.parity).toEqual(readJson(join(runDir, 'receipt.json')).parity.summary)
+    expect(row.parity.fulfilled).toBe(3)
   })
 })
 

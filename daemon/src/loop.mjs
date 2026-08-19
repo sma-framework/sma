@@ -104,6 +104,11 @@ import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash } from './queue/capability-envelope.mjs'
 import { runsDirOf, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
+// THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
+// opinion about whether the hooks fired or the memory came back: it imports the same evaluation
+// the checking command imports, so «what the card shows» and «what the command prints» cannot
+// come apart. A private copy here would agree on the day it was written and drift every day after.
+import { evaluateParity, summarize, ARTIFACTS as PARITY_ARTIFACTS } from '../../scripts/sma/lib/parity-receipts.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
 import {
   parseApproachNote,
@@ -1237,6 +1242,117 @@ function writeAttemptRunDir(deps, task, {
 }
 
 /**
+ * The three facts of a receipt the parity check actually reads: the memory layer as the stream
+ * observed it, the state of the project's rules in the copy, and what skills the copy held.
+ * Named ONCE and used twice — by the verdict computed below and by the receipt written after
+ * it. Two spellings of the same object is precisely how a precomputed verdict starts describing
+ * a receipt that nobody ever wrote.
+ */
+function receiptFactsOf(run) {
+  return {
+    memoryLayer: run.memoryLayer ?? null,
+    rules: run.rules ?? null,
+    skillsInCopy: run.skillsInCopy ?? null,
+  }
+}
+
+/** One JSON artifact of the run directory, or null for one that cannot be read or parsed. */
+function readRunArtifact(io, path) {
+  try {
+    return JSON.parse(String(io.readFileSync(path, 'utf8')))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The rows of a JSONL artifact: a MISSING file is null, a corrupt LINE is skipped. The same
+ * reading rule the checking command applies, so one file can never become two different sets
+ * of rows depending on who opened it.
+ */
+function readRunRows(io, path) {
+  let raw
+  try {
+    raw = String(io.readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+  const rows = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    try {
+      rows.push(JSON.parse(t))
+    } catch {
+      /* an unparsable row is skipped and never thrown — the artifact's own fail-open posture */
+    }
+  }
+  return rows
+}
+
+/**
+ * attachAttemptParity(deps, worktree) → the parity summary of this attempt, or null.
+ *
+ * WHY THE DAEMON COMPUTES A VERDICT THE COMMAND CAN ALSO COMPUTE. A person looking at an
+ * attempt on a card wants to know whether that session really ran under their rules, and they
+ * want to know it BY LOOKING. Making them run a command first is making them audit their own
+ * product before it will answer; the summary therefore rides the attempt row, and the command
+ * stays what it always was — the long form, for the person who wants the five sentences.
+ *
+ * WHY THIS CANNOT DRIFT FROM THE COMMAND. It is not a second calculation. It is the SAME
+ * exported evaluation, handed the SAME four artifacts, read back FROM THE DIRECTORY that was
+ * just written rather than from the objects that produced it. Reading the files back is the
+ * point: what the command will see is bytes on disk, after redaction and after a JSON round
+ * trip, and a verdict computed over the in-memory originals could quietly describe something
+ * else. The suite asserts the two verdicts equal receipt by receipt, so a divergence becomes a
+ * red suite instead of a discovery somebody makes holding a green report over a red run.
+ *
+ * WHY IT IS ASKED FOR BEFORE THE ROW IS WRITTEN. The row is the durable record the card is
+ * built from, and the closing doors append it BEFORE the receipt file is written. A verdict
+ * computed at receipt time would land in the file and never on the row — computed, stored, and
+ * delivered to nobody, which is the exact shape of the failure this wiring exists to end.
+ *
+ * FAIL-OPEN AND HONEST ABOUT SILENCE. A directory that was never made, or a `run.json` that
+ * cannot be read back, yields null — «nobody has checked», which is what a null on the row has
+ * always meant. It does NOT yield five failures: the command answers a person who asked, and
+ * its «no data» is an answer to that question; a daemon that could not read its own file has no
+ * question in front of it and must not hang a red verdict on an attempt on the strength of it.
+ */
+function attachAttemptParity(deps, worktree) {
+  const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
+  if (!run || typeof run.dir !== 'string' || run.dir === '') return null
+  if (run.parity) return run.parity // one attempt, one verdict — either door may ask first
+  try {
+    const io = resolveIo(deps.fsImpl)
+    const record = readRunArtifact(io, join(run.dir, PARITY_ARTIFACTS.run))
+    if (!record) {
+      writeLog(deps, {
+        type: 'run_dir.parity_skipped',
+        dir: run.dir,
+        detail: `${PARITY_ARTIFACTS.run} не читается — вердикт паритета не считался`,
+      })
+      return null
+    }
+    const guards = readRunRows(io, join(run.dir, PARITY_ARTIFACTS.guards))
+    // The worker AS THE CONFIG DESCRIBES IT — the rights receipt names it, so a reader who
+    // finds a mismatch knows which entry to open. The command reaches the same list through its
+    // own `--config` flag; neither side invents one.
+    const workerId = record.workerId
+    const worker = workerId
+      ? ((deps.config && deps.config.workers) || []).find((w) => w && w.id === workerId) ?? null
+      : null
+    const results = evaluateParity({ run: record, guards, receipt: receiptFactsOf(run), worker })
+    run.parityResults = results
+    run.parity = summarize(results)
+    return run.parity
+  } catch (err) {
+    // A verdict is a record, never a reason to lose an attempt.
+    writeLog(deps, { type: 'run_dir.parity_error', dir: run.dir, error: String((err && err.message) || err) })
+    return null
+  }
+}
+
+/**
  * writeAttemptOutcome(deps, worktree, receipt) — the fourth file, written by the door that
  * KNOWS how the attempt ended. Fail-open and silent about a directory that was never made:
  * an attempt refused before it ever spawned has nothing to write a receipt into.
@@ -1244,6 +1360,13 @@ function writeAttemptRunDir(deps, task, {
 function writeAttemptOutcome(deps, worktree, receipt) {
   const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
   if (!run || typeof run.dir !== 'string' || run.dir === '') return false
+  // The verdict is already reached — the closing door asked for it before it wrote the ledger
+  // row, which is the only order in which a row can carry one. Here it is written down WHOLE:
+  // the five receipts with their details beside the summary, so one directory can answer «did
+  // this session really run under my rules» without a second command and without a second
+  // opinion. A verdict that could not be computed stays null: «nobody has checked», never
+  // «checked and fine».
+  const parity = attachAttemptParity(deps, worktree)
   return writeRunReceipt({
     dir: run.dir,
     fsImpl: deps.fsImpl,
@@ -1251,12 +1374,8 @@ function writeAttemptOutcome(deps, worktree, receipt) {
     receipt: {
       ...receipt,
       gate: run.gate || 'reverify',
-      memoryLayer: run.memoryLayer ?? null,
-      rules: run.rules ?? null,
-      skillsInCopy: run.skillsInCopy ?? null,
-      // The parity verdict is computed by the checking tool and written back beside the rest;
-      // until it is, the field says «not computed» rather than pretending to a green.
-      parity: null,
+      ...receiptFactsOf(run),
+      parity: parity ? { results: run.parityResults ?? [], summary: parity } : null,
     },
   })
 }
@@ -3142,6 +3261,11 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  */
 async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree }) {
   const { adapter, ledger, report } = deps
+  // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
+  // where the receipt file is written, because the ledger row below is appended BEFORE that
+  // file exists — and the row is what the card reads. Asked in the other order, the verdict
+  // would be perfectly computed, perfectly stored, and delivered to nobody.
+  attachAttemptParity(deps, worktree)
   await adapter.complete(task.id, {
     receiptRef,
     branch,
@@ -3228,6 +3352,11 @@ function worktreeFields(worktree) {
 
 async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree }) {
   const { adapter, ledger, report } = deps
+  // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
+  // where the receipt file is written, because the ledger row below is appended BEFORE that
+  // file exists — and the row is what the card reads. Asked in the other order, the verdict
+  // would be perfectly computed, perfectly stored, and delivered to nobody.
+  attachAttemptParity(deps, worktree)
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
