@@ -15,6 +15,21 @@ import { WINDOW_UNKNOWN_HINT, accentFor, initialOf, windowWords } from '../../sh
  * So there is no «if the window is this full and there is a task then…» anywhere on this
  * screen. The card renders a string and paints a dot for it.
  *
+ * THE TWO FIGURES OBEY THE SAME LAW NOW. «Сделано / не получилось» used to be counted on the
+ * screen out of the finished rows the reading still carried — a capped «за ночь» list — so they
+ * answered «how much of what is still on screen belongs to this one», moved when the list moved,
+ * and read as zero for a worker whose work had scrolled out of it. The daemon now counts them
+ * from the attempt ledger over an explicit window (front/worker-stats.mjs) and this card prints
+ * the answer with the period NAMED beside it: a number without its denominator is not a
+ * statistic. Where the ledger could not be read the card says «нет данных» — a zero would be a
+ * measurement, and no measurement was made.
+ *
+ * AND AN EMPTY PERIOD IS SAID IN WORDS TOO. A ledger that was read but holds nothing concluded
+ * for this worker prints «завершённых попыток не было», not «сделано: 0 · не получилось: 0».
+ * The pair of zeros is a confident-looking figure, and a person reads confidence into it — the
+ * two states it would flatten together («ничего не завершилось» and «мы ничего не смогли
+ * посчитать») are different answers, and the screen owes both of them their own words.
+ *
  * THE WINDOW LINES ARE WORDS, NOT BARS. The provider says whether a window is still allowing
  * work and when it resets — it does not say how full it is. The two bars that used to stand
  * here were filled from this daemon's own token count against an invented capacity, so they
@@ -64,8 +79,7 @@ export function WorkerCard({
   worker,
   laneLabel,
   taskTitle,
-  doneCount,
-  failedCount,
+  stats,
   onOpenTask,
 }: {
   worker: WorkerRow
@@ -73,8 +87,12 @@ export function WorkerCard({
   laneLabel: string | null
   /** The title of the task in hand, when the reading still carries that row. */
   taskTitle: string | null
-  doneCount: number
-  failedCount: number
+  /**
+   * Что этот работник сделал ЗА ПЕРИОД — как посчитал демон, из леджера попыток. `null`, когда
+   * леджер прочитать не удалось: тогда карточка говорит «нет данных» вместо нулей, потому что
+   * ноль здесь читается как «этот ничего не сделал», а это утверждение, а не отсутствие ответа.
+   */
+  stats: { done: number; failed: number } | null
   onOpenTask: (taskId: string) => void
 }) {
   const win = worker.window
@@ -124,9 +142,20 @@ export function WorkerCard({
         <WindowLine label="Неделя" fact={win.week} />
       </div>
 
-      <div className="border-t border-bd pt-3 text-[11.5px] text-tx2 tabular-nums">
-        сделано: <span className="font-semibold text-ok-tx">{doneCount}</span> · не получилось:{' '}
-        <span className={failedCount > 0 ? 'font-semibold text-err-tx' : 'font-semibold text-tx2'}>{failedCount}</span>
+      <div className="border-t border-bd pt-3 text-[11.5px] text-tx2">
+        <div className="mb-1 text-[10.5px] text-tx3">за 30 дней</div>
+        {stats === null ? (
+          <div className="text-tx3">нет данных</div>
+        ) : stats.done + stats.failed === 0 ? (
+          <div className="text-tx3">завершённых попыток не было</div>
+        ) : (
+          <div className="tabular-nums">
+            сделано: <span className="font-semibold text-ok-tx">{stats.done}</span> · не получилось:{' '}
+            <span className={stats.failed > 0 ? 'font-semibold text-err-tx' : 'font-semibold text-tx2'}>
+              {stats.failed}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="text-[10.5px] text-tx3">
