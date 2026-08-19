@@ -395,7 +395,9 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
 // instrument (bench-render-p95-ms) measures the SMA segment alone, by design.
 
 /** True when a statusLine command already points into our own cli.mjs statusline —
- * the self-reference guard (kept in sync with cli.mjs's install-idempotence copy). */
+ * the self-reference guard, and the SOURCE of the same test for the install core, which
+ * imports this one instead of carrying its own. (The off-ramp module keeps a standalone
+ * copy on purpose: it must stay importable with nothing but node built-ins behind it.) */
 export function isSmaStatuslineCmd(cmd) {
   return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
 }

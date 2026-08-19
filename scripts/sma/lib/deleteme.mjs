@@ -124,7 +124,9 @@ export function removeSmaHooks(settings) {
   return removed
 }
 
-/** True when a statusLine command string is SMA's segment (mirror of cli.mjs). */
+/** True when a statusLine command string is SMA's segment — a DELIBERATE standalone copy of
+ * the same test in the statusline module: the off-ramp must stay importable with nothing but
+ * node built-ins behind it, so it borrows no render code to decide what to remove. */
 export function isSmaStatuslineCmd(cmd) {
   return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
 }
