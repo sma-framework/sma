@@ -86,6 +86,13 @@ export function NarrowTaskCard({ taskId, onBack }: { taskId: string; onBack: () 
   */
   const canApprove = status === 'awaiting_approval' && !accepted
   const busy = approve.isPending
+  /*
+    ПОКА КАРТИНА НЕ ПЕРЕЧИТАНА, СЛОВО СОСТОЯНИЯ НЕ ВРЁТ, А ГОВОРИТ О СЕБЕ. Ответ двери
+    состояния в пути, и в нём задача всё ещё ждёт человека — но она уже принята. «Ждёт
+    решения» под зелёным «Принято» человек читает как поломку, поэтому на эти секунды
+    карточка называет ровно то, что происходит: она перечитывает.
+  */
+  const stateWord = accepted && status === 'awaiting_approval' ? 'перечитываю' : statusWord(status)
 
   const doApprove = () => {
     setProblem(null)
@@ -127,7 +134,7 @@ export function NarrowTaskCard({ taskId, onBack }: { taskId: string; onBack: () 
       ) : (
         <div className="flex flex-col gap-3 rounded-[10px] border border-bd bg-card px-4 py-4">
           <span className={`self-start rounded-full px-2.5 py-[3px] text-[13px] ${statusTone(status)}`}>
-            {statusWord(status)}
+            {stateWord}
           </span>
           <span className="text-[15px] leading-[1.35] font-semibold text-tx">{title ?? 'Без названия'}</span>
           <span className="text-[13px] leading-[1.5] text-tx2">
