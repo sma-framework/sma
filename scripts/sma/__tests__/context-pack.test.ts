@@ -44,10 +44,11 @@ import {
   appendMiss,
   runExam,
   scoreNoteCases,
-  reciprocalRankFusion,
-  RRF_K,
-  FUSION_DEGRADED_REASON,
 } from '../lib/context-pack.mjs'
+// The fusion is not the compiler's private arithmetic any more: it moved to its own
+// module so the delivery point and the pack compiler can call the SAME one. The tests
+// that pin the arithmetic follow it there — a second copy is what this move prevents.
+import { reciprocalRankFusion, RRF_K, FUSION_DEGRADED_REASON } from '../lib/lexical-fusion.mjs'
 import { buildCatalog, readCatalog } from '../lib/catalog.mjs'
 import { loadTagsRegistry } from '../lib/frontmatter.mjs'
 // The gold-case READER lives in the measurement module; Test 11 exercises the real
@@ -710,5 +711,37 @@ describe('compilePack — the experiment degrades out loud (Test 12d)', () => {
       expect(said).toHaveLength(1)
       expect(said[0].reason).toBe(FUSION_DEGRADED_REASON)
     }
+  })
+})
+
+describe('compilePack — the fusion happens ONCE, never twice (Test 12e)', () => {
+  it('the experiment does NOT hand the delivery point a lexical option of its own', () => {
+    writeNote('core-rule.md', 'the always-loaded rule', ['crm'], 9)
+    writeNote('crm-detail.md', 'a crm periphery note', ['crm'], 5)
+
+    // The delivery point can fuse on its own now. If the compiler ALSO asked it to,
+    // the experiment arm would rank a ranking — «fusion squared» — and the A/B would
+    // report a difference no reader could attribute. The double records what it is
+    // asked, so the absence is asserted rather than left to a comment.
+    const seen: Record<string, unknown>[] = []
+    const resolve = vi.fn((opts: Record<string, unknown>) => {
+      seen.push(opts)
+      return { core: ['core-rule.md'], periphery: ['crm-detail.md'], matched: 1, indexFiles: [], warnings: [], meta: {} }
+    })
+
+    compilePack({
+      taskText: 'crm',
+      commit: 'c',
+      corpusDir,
+      tagsPath: join(corpusDir, 'TAGS.md'),
+      resolve,
+      lexical: lexicalDouble({ lexical: ['crm-detail.md'] }),
+      indexPath: join(dir, 'idx.sqlite'),
+      experiment: 'lexical',
+    })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).not.toHaveProperty('lexical')
+    expect(seen[0]).not.toHaveProperty('experiment')
   })
 })

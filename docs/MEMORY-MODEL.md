@@ -376,6 +376,16 @@ periphery. What it decides:
   of delivery in every other one; a record that names none constrains nothing, and
   a caller that states no world asks no question (§9.2).
 
+**The derived lexical layer is implemented too, and it is now inside the default
+delivery of `load` and `context`** — fused with the facet order by reciprocal rank,
+after these filters and never around them, so a record that may not be shown cannot
+arrive on a lexical rank. It entered by the rule this document states and not by
+preference: the comparison recorded 2026-08-19 on the project's gold set (recall@3
++34 points, MRR +26, at +8 % pack tokens, with one abstention regression named and
+left unpaid). It stays a derived layer in the sense above — rebuildable, removable,
+never a source of truth — and where it cannot run, delivery is the facet one and
+says so.
+
 Three things this deliberately is **not**. It is not the write-time approval
 ladder: that answers «may this record exist», this answers «may it be shown», and
 the two read some of the same fields without being the same question. It is not a

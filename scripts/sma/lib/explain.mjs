@@ -158,6 +158,9 @@ export const COMMAND_TOPICS = {
 
   // v5 — the consumer-side updater
   update: 'update',
+
+  // the read-only search across the journal, the plan records, the transcripts and the lessons
+  history: 'history',
 }
 
 /**

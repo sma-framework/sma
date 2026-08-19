@@ -1394,12 +1394,90 @@ async function cmdDocAudit({ flags, dirs }) {
 }
 
 /**
+ * rebuildLexicalIndex — the ONE place the derived lexical index gets written.
+ *
+ * Three callers want the same work: the index verb a person types by hand, the
+ * regeneration that rewrites the corpus index, and the delivery point that finds the
+ * derived index no longer describes the corpus. Three copies of «import the module,
+ * build, decide what a failure means» drift apart on the first change to any one of
+ * them, so there is one copy — and the CALLER decides what a failure means, because
+ * that is exactly where the three differ: a build that genuinely failed IS an error for
+ * the verb a person typed, and must never take down a rebuild nobody asked for.
+ *
+ * An engine this machine does not have is NOT a failure. The builder reports it and
+ * returns; `available` says so separately from `ok`.
+ */
+async function rebuildLexicalIndex({ corpusDir, dbPath }) {
+  const { buildLexicalIndex, LEXICAL_ENGINES } = await import('./lib/fts-index.mjs')
+  try {
+    const built = buildLexicalIndex({ corpusDir, dbPath })
+    return { ok: true, built, available: built.engine !== LEXICAL_ENGINES.UNAVAILABLE, error: null }
+  } catch (err) {
+    return { ok: false, built: null, available: false, error: err }
+  }
+}
+
+/**
+ * healLexicalIndexIfStale — the delivery point repairs the index it is about to read,
+ * and only when it actually needs repairing.
+ *
+ * WHERE this lives is load-bearing. Not inside the pack compiler and not inside the
+ * periphery resolver: their contract is pure and deterministic, and a write from inside
+ * them would quietly make the whole measurement a writer — including the scoring pass
+ * that must be able to run a thousand times without touching the disk. So the repair
+ * lives here, in the CLI wrapper, one call before the compile.
+ *
+ * WHEN it runs is the other half. An unconditional rebuild before every delivery would
+ * turn a sub-second repair into a tax on every single call, so the index is rebuilt only
+ * when the status report says the corpus moved out from under it. No engine on this
+ * build of Node → nothing is rebuilt and nothing is claimed: the delivery degrades to
+ * the facet answer and names the reason, exactly as it did before this existed.
+ *
+ * A NAMED FIXTURE CORPUS IS NEVER HEALED. The derived index describes the repository's
+ * own corpus; a run over somebody's fixture that overwrote it would leave the next real
+ * delivery reading a stranger's records. Callers pass `enabled: false` for that case.
+ */
+async function healLexicalIndexIfStale({ corpusDir, dbPath, enabled = true }) {
+  if (!enabled) return { rebuilt: false, reason: 'корпус задан флагом — производный индекс репозитория не трогаем' }
+  if (!corpusDir || !dbPath || !existsSync(corpusDir)) return { rebuilt: false, reason: 'корпус не найден' }
+  const { indexStatus, LEXICAL_ENGINES } = await import('./lib/fts-index.mjs')
+  let status = null
+  try {
+    status = indexStatus({ corpusDir, dbPath })
+  } catch {
+    return { rebuilt: false, reason: 'состояние индекса не читается' }
+  }
+  if (!status || !status.summary || status.engine === LEXICAL_ENGINES.UNAVAILABLE) {
+    return { rebuilt: false, reason: 'слой недоступен на этой сборке Node' }
+  }
+  if (Number(status.summary.stale) === 0) return { rebuilt: false, reason: 'индекс свежий' }
+  const res = await rebuildLexicalIndex({ corpusDir, dbPath })
+  if (!res.ok) {
+    return { rebuilt: false, reason: `пересборка не удалась: ${res.error && res.error.message ? res.error.message : String(res.error)}` }
+  }
+  return {
+    rebuilt: res.available,
+    reason: res.available
+      ? `индекс протух — пересобран (${res.built.engine}, записей ${res.built.indexed})`
+      : String(res.built.reason ?? 'слой недоступен'),
+  }
+}
+
+/**
  * build-index [--check] [--write] — regenerate the MEMORY.md index. Default is
  * DRY (print to stdout / report); --check compares against the committed file
  * without writing; --write is the ONLY path that touches .claude/memory/MEMORY.md
  * (kept off until the index flip). Corpus is fixture-safe via --corpus.
+ *
+ * --write ALSO rebuilds the derived lexical index, because this verb is where the
+ * corpus index is regenerated, and a lexical index that only a hand-typed command can
+ * refresh is a lexical index that is stale most of the time — which is exactly how it
+ * sat for weeks, describing a corpus that had moved on. Fail-open: a machine that
+ * cannot hold the index still regenerates the corpus index and still exits 0, and the
+ * outcome — engine and count, or the reason there was none — is always printed, because
+ * a repair nobody can see is a repair nobody can trust.
  */
-async function cmdBuildIndex({ flags }) {
+async function cmdBuildIndex({ flags, dirs }) {
   const generator = await import('./lib/generator.mjs')
   const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
   const tagsPath = join(corpusDir, 'TAGS.md')
@@ -1468,12 +1546,34 @@ async function cmdBuildIndex({ flags }) {
     const { writeFileSync } = await import('node:fs')
     writeFileSync(indexPath, generated)
     for (const a of areaFiles) writeFileSync(join(corpusDir, a.file), a.content)
+
+    // The corpus index has just been rewritten, so the DERIVED lexical index now
+    // describes a corpus that no longer exists. It is rebuilt here, in the same breath.
+    // A corpus named by flag is somebody's fixture and never overwrites the
+    // repository's own derived index.
+    const ownCorpus = typeof flags.corpus !== 'string'
+    const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+    const dbPath = join(dirs?.indexDir ?? join('.sma', 'index'), LEXICAL_INDEX_FILE)
+    const lex = ownCorpus
+      ? await rebuildLexicalIndex({ corpusDir, dbPath })
+      : { ok: true, built: null, available: false, error: null }
+    const lexicalReport = !ownCorpus
+      ? { rebuilt: false, engine: null, indexed: 0, reason: 'корпус задан флагом — производный индекс репозитория не трогаем' }
+      : lex.ok
+        ? { rebuilt: lex.available, engine: lex.built.engine, indexed: lex.built.indexed, reason: lex.built.reason ?? null }
+        : { rebuilt: false, engine: null, indexed: 0, reason: `пересборка не удалась: ${lex.error && lex.error.message ? lex.error.message : String(lex.error)}` }
+
     if (wantsJson(flags)) {
-      printJson({ written: indexPath, bytes: generated.length, areaFiles: areaFiles.map((a) => a.file) })
+      printJson({ written: indexPath, bytes: generated.length, areaFiles: areaFiles.map((a) => a.file), lexical: lexicalReport })
       return 0
     }
     process.stdout.write(
       `SMA: MEMORY.md записан (${generated.length} байт) + ${areaFiles.length} INDEX-файлов → ${corpusDir}\n`,
+    )
+    process.stdout.write(
+      lexicalReport.rebuilt
+        ? `  лексический индекс пересобран — движок ${lexicalReport.engine}, записей ${lexicalReport.indexed}\n`
+        : `  лексический индекс НЕ пересобран — ${lexicalReport.reason ?? 'причина не названа'}\n`,
     )
     return 0
   }
@@ -1569,6 +1669,15 @@ async function cmdEmit({ flags, dirs }) {
 /**
  * load --tags <csv> — resolve a task's tag set into CORE + periphery via the
  * loader. Prints the ordered file list. Zero matches → CORE only, exit 0.
+ *
+ * HYBRID: this is one of the two verbs that hand the delivery point the lexical layer,
+ * so a query BY WORD reaches a record that carries no such tag — which is the whole
+ * point of holding a lexical index at all. The words searched for are the words asked
+ * for: no separate flag, because a query nobody types is a query nobody uses, and the
+ * honest warning about a word that is not a registered facet stays exactly where it was.
+ * The reflex path, the pre-act injection and the pack handed to a subagent do NOT get
+ * this option: they are budgeted, or they fire at somebody mid-edit, and both are
+ * decisions of their own rather than a consequence of this one.
  */
 async function cmdLoad({ flags, dirs }) {
   const loader = await import('./lib/loader.mjs')
@@ -1602,7 +1711,29 @@ async function cmdLoad({ flags, dirs }) {
     /* fail-open — the load still works uninstrumented */
   }
 
-  const res = loader.resolvePeriphery({ tags, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), dateMap, cite })
+  // Where the derived index lives — the same path `memory index` writes and reads. A
+  // machine with no index, or a build of Node that cannot hold one, is a NORMAL state:
+  // the delivery degrades to the facet answer and says so in the warnings below.
+  const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const lexicalIndexPath = join(dirs.indexDir, LEXICAL_INDEX_FILE)
+
+  // Self-healing, and it is here rather than one layer down on purpose (see
+  // healLexicalIndexIfStale): the delivery repairs the index it is about to read, but
+  // only when the corpus has actually moved out from under it.
+  await healLexicalIndexIfStale({
+    corpusDir,
+    dbPath: lexicalIndexPath,
+    enabled: typeof flags.corpus !== 'string',
+  })
+
+  const res = loader.resolvePeriphery({
+    tags,
+    corpusDir,
+    tagsPath: join(corpusDir, 'TAGS.md'),
+    dateMap,
+    cite,
+    lexical: { taskText: tags.join(' '), indexPath: lexicalIndexPath },
+  })
   if (wantsJson(flags)) {
     printJson(res)
     return 0
@@ -1895,7 +2026,34 @@ async function cmdContext({ positionals, flags, dirs }) {
   }
 
   const budget = Number.isFinite(Number(flags.budget)) && Number(flags.budget) > 0 ? Number(flags.budget) : undefined
-  const compiled = pack.compilePack({ taskText, commit, corpusDir, tagsPath, dateMap, catalog, profile, cite, ...(budget ? { budget } : {}) })
+  // The pack compiler rides the SAME hybrid delivery the load verb does — through its
+  // own handle, and NOT by also handing the option to the loader underneath it. Two
+  // fusions over one query would rank a ranking, and the difference would be
+  // attributable to nothing anybody could name.
+  const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const packIndexPath = join(dirs.indexDir, LEXICAL_INDEX_FILE)
+
+  // Same self-healing as the delivery verb, and for the same reason it cannot live
+  // inside the compiler below: the compiler's contract is pure and deterministic.
+  await healLexicalIndexIfStale({
+    corpusDir,
+    dbPath: packIndexPath,
+    enabled: typeof flags.corpus !== 'string',
+  })
+
+  const compiled = pack.compilePack({
+    taskText,
+    commit,
+    corpusDir,
+    tagsPath,
+    dateMap,
+    catalog,
+    profile,
+    cite,
+    experiment: pack.EXPERIMENT_LEXICAL,
+    indexPath: packIndexPath,
+    ...(budget ? { budget } : {}),
+  })
 
   // persist the pack (artifacts) + active.json (STATE — the only wall-clock in the feature).
   const { atomicWriteRaw, atomicWriteJson } = await import('./lib/fs-atomics.mjs')
@@ -2564,7 +2722,7 @@ async function cmdMemory({ positionals, flags, dirs }) {
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
     process.stdout.write('  write --apply <draft> --confirm <record-file> --yes — применить отложенный черновик конвейера\n')
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
-    process.stdout.write('  index rebuild|status [--json] [--stat <name>] — ЭКСПЕРИМЕНТ, вне выдачи по умолчанию\n')
+    process.stdout.write('  index rebuild|status [--json] [--stat <name>] — производный индекс лексического слоя выдачи\n')
     process.stdout.write('  forget <id> [--reason "…"|--replaced-by <id>|--expire|--archive] [--erase --yes]\n')
     process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
     return 1
@@ -2697,26 +2855,40 @@ async function cmdMemoryExplain({ flags, dirs }) {
 const MEMORY_INDEX_USAGE = [
   'usage: sma memory index rebuild|status [--json] [--stat <name>]',
   '',
-  '  ЭКСПЕРИМЕНТАЛЬНЫЙ лексический слой (точный путь/символ + SQLite BM25). Он НЕ',
-  '  участвует в выдаче по умолчанию: пока сравнение на золотом наборе не записано,',
-  '  слой существует, но ничего не решает.',
+  '  Лексический слой выдачи (точный путь/символ + SQLite BM25). Он УЧАСТВУЕТ в',
+  '  выдаче по умолчанию: load и context смешивают фасетный порядок с точным и',
+  '  лексическим в одно ранжирование. Основанием стало сравнение на золотом',
+  '  наборе, записанное 19.08.2026: отдача@3 +34 процентных пункта, MRR +26,',
+  '  ценой +8 % токенов пакета. Названо и обратное: на одном кейсе набора слой',
+  '  приносит заметку там, где фасетный путь честно молчал, — эта регрессия',
+  '  воздержания записана и не погашена.',
   '',
   '  rebuild  перестроить производный индекс из корпуса ЦЕЛИКОМ (.sma/index/) и',
   '           напечатать движок: fts5 | fallback-bm25 | unavailable',
   '  status   протух ли индекс — сравнение контент-хеша корпуса с записанным',
   '',
+  '  Руками эти две команды нужны редко: build-index --write перестраивает индекс',
+  '  вместе с корпусом, а выдача чинит протухший индекс на месте. Они здесь для',
+  '  того, чтобы посмотреть движок и числа своими глазами.',
+  '',
   '  Требует Node ≥22.5 (модуль node:sqlite). Ниже этой версии слой честно',
   '  отсутствует (unavailable, код выхода 0) — детерминированные фасетный и точный',
-  '  слои работают без него. Официальная сборка Node компилирует SQLite БЕЗ',
-  '  полнотекстового расширения, поэтому движок выбирается зондом, а не версией:',
-  '  без FTS5 работает собственный BM25 на обычных таблицах.',
+  '  слои работают без него, а выдача остаётся фасетной и называет причину.',
+  '  Официальная сборка Node компилирует SQLite БЕЗ полнотекстового расширения,',
+  '  поэтому движок выбирается зондом, а не версией: без FTS5 работает',
+  '  собственный BM25 на обычных таблицах.',
 ].join('\n')
 
 /**
- * memory index — the derived lexical index of the EXPERIMENTAL retrieval layer.
+ * memory index — the derived index of the LEXICAL retrieval layer, which now takes
+ * part in the default delivery of `load` and `context`.
  *
  * A subcommand of `memory`, not a verb of its own: the corpus namespace exists and
  * this is an artifact derived from the corpus.
+ *
+ * Rarely typed by hand: the corpus regeneration rebuilds this index with the corpus,
+ * and delivery repairs a stale one in place. These two commands stay so the engine
+ * and the numbers can be looked at directly.
  *
  * Exit code 0 for `unavailable`: a capability this machine does not have is not a
  * mistake the caller made, and exiting non-zero would teach scripts to treat an older
@@ -2732,7 +2904,7 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     return 1
   }
 
-  const { buildLexicalIndex, indexStatus, LEXICAL_ENGINES, LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const { indexStatus, LEXICAL_ENGINES, LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
   const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const corpusDir = join(repoRoot, '.claude', 'memory')
   const dbPath = join(dirs?.indexDir ?? join(repoRoot, '.sma', 'index'), LEXICAL_INDEX_FILE)
@@ -2742,7 +2914,20 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     return 1
   }
 
-  const built = action === 'rebuild' ? buildLexicalIndex({ corpusDir, dbPath }) : null
+  // ONE rebuild in this tree: this verb, the corpus regeneration and the self-healing
+  // delivery all go through the same helper. Here — and only here — a build that
+  // genuinely failed is an error worth a non-zero exit, because a person asked for this
+  // work by name and deserves to be told it did not happen.
+  let built = null
+  if (action === 'rebuild') {
+    const res = await rebuildLexicalIndex({ corpusDir, dbPath })
+    if (!res.ok) {
+      const said = res.error && res.error.message ? res.error.message : String(res.error)
+      process.stderr.write(`SMA memory index: пересборка не удалась — ${said}\n`)
+      return 1
+    }
+    built = res.built
+  }
   // The state of the index is one report, whichever verb asked: after a rebuild the
   // freshly written state IS the status, so there is one place these numbers come from.
   const status = indexStatus({ corpusDir, dbPath })
@@ -2784,7 +2969,7 @@ async function cmdMemoryIndex({ positionals, flags, dirs }) {
     process.stdout.write('  слой отсутствует на этой версии Node — выдача работает на детерминированных слоях\n')
     return 0
   }
-  process.stdout.write('  ЭКСПЕРИМЕНТ: слой не участвует в выдаче по умолчанию\n')
+  process.stdout.write('  слой участвует в выдаче по умолчанию: load и context смешивают фасетный, точный и лексический порядок\n')
   return 0
 }
 
@@ -5839,8 +6024,11 @@ const EVAL_USAGE = [
   '              Deterministic floors give a red/green verdict with no model in the loop — a floor',
   '              violation exits non-zero. --stat prints one bare value (honestly `null` when the set',
   '              asked no such question); --k names the cutoffs; --cases overrides the gold-case file.',
-  '              --experiment <name> scores the SAME set twice — default path vs the named experiment —',
-  '              and prints the deltas in percentage points. It names no winner: the stopping rule of',
+  '              --experiment <name> scores the SAME set twice — the FACET path (tags in, tag-matched',
+  '              records out, no layer asked anything) against the named experiment. The control is',
+  '              that path BY NAME, not «whatever ships today»: a baseline that inherited the shipped',
+  '              path would be comparing the layer with itself. The deltas print in percentage',
+  '              points. It names no winner: the stopping rule of',
   '              the canon is applied by a person and recorded in writing.',
   '  north-star  cost per VERIFIED CORRECT result — tokens, compute, wall-clock and human minutes,',
   '              divided by the results the benchmark judged correct, plus the guardrail panel of',
@@ -5873,10 +6061,31 @@ async function cmdEval({ positionals, flags, dirs }) {
 }
 
 /**
+ * The one line printed where a verdict would go when the gold set asked nothing at all.
+ * It is a sentence, not a symbol: a check mark is read as «fine» in a quarter of a
+ * second, and there is nothing here to be fine about.
+ */
+const NO_DATA_VERDICT_LINE =
+  '  ○ нет данных: кейсов 0 — вердикт о полах не выносится (пустой набор не измеряет ничего)\n'
+
+/**
+ * The exit code of a floors verdict, for both arms of the verb.
+ *
+ * ZERO EXITS ONLY ON A VERDICT THAT WAS ACTUALLY REACHED. A gold set with no cases has
+ * not passed the floors — it has not been asked about them, and the two are the same
+ * only to a reader who stops at the exit code. Since this verb's exit code is what a
+ * receipt and an automated re-verification read, an empty run that exited 0 would let an
+ * absent measurement be recorded as a green gate. The `--stat` path is untouched: it
+ * prints ONE value and is a value printer, not a verdict.
+ */
+const floorExit = (report) => (report?.floor_verdict === 'met' ? 0 : 1)
+
+/**
  * eval memory — the memory benchmark (canon §8).
  *
- * EXIT CODE IS THE VERDICT: non-zero when any floor is violated. That is the point of the
- * floors — a benchmark that always exits 0 is a report nobody reads.
+ * EXIT CODE IS THE VERDICT: non-zero when any floor is violated, and non-zero as well
+ * when there was no set to render a verdict over. That is the point of the floors — a
+ * benchmark that always exits 0 is a report nobody reads.
  */
 async function evalMemory({ flags, dirs }) {
   const memoryEval = await import('./lib/memory-eval.mjs')
@@ -5921,7 +6130,7 @@ async function evalMemory({ flags, dirs }) {
 
   if (wantsJson(flags)) {
     printJson(report)
-    return report.floor_failures.length ? 1 : 0
+    return floorExit(report)
   }
 
   const s = report.summary
@@ -5940,7 +6149,9 @@ async function evalMemory({ flags, dirs }) {
   for (const c of report.by_class) {
     process.stdout.write(`  класс ${c.class}: кейсов ${c.cases}, попаданий ${c.hits}/${c.expected}, запрещённых ${c.forbidden_hits}\n`)
   }
-  if (report.floor_failures.length) {
+  if (report.floor_verdict === 'no-data') {
+    process.stdout.write(NO_DATA_VERDICT_LINE)
+  } else if (report.floor_failures.length) {
     process.stdout.write(`  ✗ полы нарушены (${report.floor_failures.length}):\n`)
     for (const f of report.floor_failures) {
       process.stdout.write(`    ${f.metric}: ${f.value} — требуется ${f.comparator} ${f.threshold}\n`)
@@ -5949,11 +6160,17 @@ async function evalMemory({ flags, dirs }) {
     process.stdout.write('  ✓ все полы соблюдены\n')
   }
   process.stdout.write(`  проверка: ${report.check_command}\n`)
-  return report.floor_failures.length ? 1 : 0
+  return floorExit(report)
 }
 
 /**
  * eval memory --experiment <name> — the A/B arm of the same verb.
+ *
+ * THE CONTROL ARM IS THE FACET PATH, BY NAME. It is not «the default path», and the
+ * difference stopped being cosmetic the day the shipped delivery became hybrid: a
+ * control that inherited whatever ships would have compared the layer with itself and
+ * reported, unfalsifiably, that it changes nothing. The arm is built by the measurement
+ * module's own `controlArmOptions`, which strips every lexical option and keeps the rest.
  *
  * EXIT CODE IS STILL THE FLOOR VERDICT, and it is the EXPERIMENT arm's floors: an arm
  * that lifts a ranking number while a must-be-zero floor goes red has not passed. The
@@ -5987,7 +6204,7 @@ async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusD
 
   if (wantsJson(flags)) {
     printJson(report)
-    return report.floor_failures.length ? 1 : 0
+    return floorExit(report)
   }
 
   const s = report.summary
@@ -6018,7 +6235,10 @@ async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusD
       `запрещённых ${signed(s.forbidden_delta)} · воздержаний провалено ${signed(s.abstain_fail_delta)}\n`,
   )
   process.stdout.write(`    цена: заметок ${signed(s.notes_delivered_delta)} · токенов ${signed(s.pack_tokens_delta_pct)} %\n`)
-  if (report.floor_failures.length) {
+  if (report.floor_verdict === 'no-data') {
+    process.stdout.write(NO_DATA_VERDICT_LINE)
+    process.stdout.write('  сравнение на пустом наборе записанным сравнением НЕ является: обе руки отвечали на ноль вопросов.\n')
+  } else if (report.floor_failures.length) {
     process.stdout.write(`  ✗ полы экспериментальной руки нарушены (${report.floor_failures.length}):\n`)
     for (const f of report.floor_failures) {
       process.stdout.write(`    ${f.metric}: ${f.value} — требуется ${f.comparator} ${f.threshold}\n`)
@@ -6028,7 +6248,7 @@ async function evalMemoryExperiment({ flags, dirs, memoryEval, repoRoot, corpusD
   }
   process.stdout.write('  ВЕРДИКТ НЕ ЗДЕСЬ: правило остановки канона применяет человек и записывает решение.\n')
   process.stdout.write(`  проверка: ${report.check_command}\n`)
-  return report.floor_failures.length ? 1 : 0
+  return floorExit(report)
 }
 
 /**
@@ -8356,6 +8576,143 @@ async function cmdCurriculum({ flags, dirs }) {
   return 0
 }
 
+// ─────────────────────────── history search ──────────────────────────────────
+
+const HISTORY_USAGE = [
+  'usage: sma history search <слово…> [--limit N] [--source a,b] [--corpus <путь>] [--json]',
+  '',
+  '  Поиск по истории этого проекта. Четыре книги, один прогон:',
+  '',
+  '    journal     журнал координации (.sma/journal) — заявки, освобождения, события',
+  '    exec        записи исполнения планов (.sma/exec)',
+  '    lesson      уроки памяти (.claude/memory) — ЦЕЛИКОМ, вместе с телом заметки',
+  '    transcript  стенограммы сессий (каталог вендора; SMA_SPEND_LOGS_DIR)',
+  '',
+  '  Совпадение — по словам, а не по подстроке: «пели» не найдёт «пеликан».',
+  '  Кириллица видна наравне с латиницей. Несколько слов — найдутся строки, где',
+  '  есть ВСЕ они.',
+  '',
+  '  --limit N     не более N находок ИЗ КАЖДОЙ книги (по умолчанию 20). Именно из',
+  '                каждой: один общий потолок достался бы стенограммам — они больше',
+  '                остальных на три порядка — и поиск отвечал бы только ими.',
+  '                Стенограммы читаются потоково, построчно, и перестают',
+  '                открываться, как только N набрано.',
+  '  --source      искать только в названных книгах, через запятую',
+  '  --corpus      другой каталог уроков',
+  '  --json        те же поля структурно: source, file, ts, fragment',
+  '',
+  '  СЕКРЕТЫ. Стенограммы хранят всё, что печаталось в сессии. Каждый фрагмент',
+  '  выдачи — из ЛЮБОЙ книги, не только из стенограмм — проходит ту же проверку на',
+  '  секретоподобные строки, которой продукт проверяет профиль: ран, похожий на',
+  '  ключ (sk-…, ghp_…, gho_…, AKIA…, xox…, блок приватного ключа), и длинный',
+  '  непрозрачный ран со смешанным регистром и цифрами заменяются целиком.',
+  '  Чего проверка НЕ ловит: коротких секретов и паролей-слов — у них нет формы,',
+  '  по которой их можно узнать. Обещание здесь ровно одно: ключеподобное',
+  '  маскируется. «Ничего чувствительного не пройдёт» тут никто не обещает —',
+  '  выдачу перед вкладкой в отчёт всё равно смотрят глазами.',
+  '',
+  '  Каталога стенограмм может не быть — тогда эта книга просто пуста, и это не',
+  '  ошибка. Отсутствие находок — тоже не ошибка: код выхода 0.',
+].join('\n')
+
+/** The human name of each book, for the count line. */
+const HISTORY_SOURCE_RU = {
+  journal: 'журнал',
+  exec: 'исполнение',
+  lesson: 'уроки',
+  transcript: 'стенограммы',
+}
+
+/**
+ * history search — the read-only search across the four corpora a working session
+ * leaves behind.
+ *
+ * The verb calls the module and scans NOTHING itself: the corpora, the streaming,
+ * the early stop and the credential screen all live in one place, so a second caller
+ * cannot grow a second behaviour. Both consumers this exists for — a person at a
+ * terminal and a worker in its own copy — run the CLI, which is why the search added
+ * no door anywhere else.
+ *
+ * Exit 0 for an empty result: not finding something is not a mistake the caller made,
+ * and a non-zero there would teach scripts to read "no hits" as "broken". The only
+ * non-zero here is a syntax error — a missing subcommand, a missing word, a flag that
+ * was handed a value it cannot be.
+ */
+async function cmdHistory({ positionals, flags, dirs }) {
+  const sub = positionals[0] ?? ''
+  const words = positionals.slice(1)
+
+  if (flags.help === true || sub !== 'search' || words.length === 0) {
+    process.stdout.write(`${HISTORY_USAGE}\n`)
+    if (flags.help === true) return 0
+    const said =
+      sub !== 'search'
+        ? `нужен подверб search${sub ? ` (получено «${sub}»)` : ''}`
+        : 'нужно слово, по которому искать'
+    process.stderr.write(`SMA history: ${said}\n`)
+    return 1
+  }
+
+  const { searchHistory, HISTORY_SOURCES, DEFAULT_HISTORY_LIMIT } = await import('./lib/history-search.mjs')
+
+  let limit = DEFAULT_HISTORY_LIMIT
+  if (flags.limit != null && flags.limit !== true) {
+    const n = Number(flags.limit)
+    if (!Number.isFinite(n) || n <= 0) {
+      process.stderr.write(`SMA history search: --limit ждёт положительное число (получено «${flags.limit}»)\n`)
+      return 1
+    }
+    limit = Math.floor(n)
+  }
+
+  let sources = HISTORY_SOURCES
+  if (typeof flags.source === 'string') {
+    const asked = flags.source.split(',').map((s) => s.trim()).filter(Boolean)
+    const unknown = asked.filter((s) => !HISTORY_SOURCES.includes(s))
+    if (unknown.length > 0) {
+      process.stderr.write(
+        `SMA history search: неизвестный --source «${unknown.join(', ')}» — известны: ${HISTORY_SOURCES.join(', ')}\n`,
+      )
+      return 1
+    }
+    sources = asked
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+
+  const res = await searchHistory({
+    query: words.join(' '),
+    limit,
+    sources,
+    journalDir: dirs?.journalDir,
+    execDir: dirs?.execDir,
+    corpusDir,
+    repoRoot,
+  })
+
+  if (wantsJson(flags)) {
+    printJson(res)
+    return 0
+  }
+
+  const counts = res.sources.map((s) => `${s} ${res.perSource[s]}`).join(' · ')
+  process.stdout.write(
+    `SMA history search «${res.query}» — находок ${res.hits.length} (не более ${res.limit} из каждой книги)\n`,
+  )
+  process.stdout.write(`  ${counts}\n`)
+  for (const h of res.hits) {
+    process.stdout.write(
+      `  ${h.source} (${HISTORY_SOURCE_RU[h.source] ?? h.source}) · ${h.file} · ${h.ts ?? 'момент неизвестен'}\n`,
+    )
+    process.stdout.write(`    ${h.fragment}\n`)
+  }
+  if (res.hits.length === 0) {
+    process.stdout.write('  ничего не нашлось — это честный пустой результат, а не ошибка\n')
+  }
+  return 0
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
@@ -10565,6 +10922,7 @@ const HANDLERS = {
   'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|all|--count|--json)
   vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
   memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  history: cmdHistory, // streaming read-only search across the journal, the plan-execution records, the session transcripts and the lesson bodies (search <слово…> [--limit|--source|--corpus|--json]); no derived index, every fragment credential-screened
   'ship-lane': cmdShipLane, // ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
   exam: cmdExam, // replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
@@ -10577,7 +10935,7 @@ const HANDLERS = {
  * document its own flags. Deliberately an opt-in allow-list: 88 other verbs keep
  * the existing behaviour untouched.
  */
-const OWN_HELP = new Set(['memory'])
+const OWN_HELP = new Set(['memory', 'history'])
 
 async function main() {
   const argv = process.argv.slice(2)
@@ -10586,7 +10944,7 @@ async function main() {
 
   if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }

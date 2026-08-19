@@ -5,8 +5,13 @@
  * turns the gold set into the canon's §8 numbers — recall@k, precision@k, MRR, nDCG,
  * critical-memory miss rate, superseded selection rate, contradiction exposure — plus
  * DETERMINISTIC FLOORS that give a red/green verdict with no model in the loop. It is
- * the instrument every later retrieval layer has to beat before it may enter the
- * default path.
+ * the instrument a retrieval layer has to face before anyone gets it by default — the
+ * lexical layer faced it, and the comparison written on 2026-08-19 is what admitted it.
+ *
+ * WHICH MAKES THE CONTROL ARM AN EXPLICIT PATH, NOT A DEFAULT. Now that the shipped
+ * delivery is hybrid, «the control is what ships» would mean measuring the layer
+ * against itself. The control here is the FACET path BY NAME (`CONTROL_ARM_PATH`,
+ * built by `controlArmOptions`), and a test holds that to account.
  *
  * WHY IT IS NOT IN bench.mjs. bench.mjs is the WORKFLOW scorecard: what SMA's own
  * discipline costs a session. This is the MEMORY benchmark: what the corpus gives back
@@ -223,6 +228,28 @@ export function floorFailures(summary = {}, floors = DEFAULT_FLOORS) {
 }
 
 /**
+ * floorVerdict(summary, floors) → 'no-data' | 'met' | 'violated'.
+ *
+ * WHY A NAMED VERDICT AND NOT JUST THE EMPTY LIST. `floor_failures` is a list of what
+ * went wrong, and it is empty in TWO completely different worlds: a set that asked its
+ * questions and got clean answers, and a set that asked nothing at all. Reading the
+ * empty list as «everything is fine» turns an absence of data into a pass — the same
+ * fabrication the honest-empties law already forbids for the ranking numbers, except
+ * this one reads to a human as a green check mark. A measurement with no cases has no
+ * verdict to give, and it says so here in one word rather than leaving the reader to
+ * infer it from a shape that cannot distinguish the two.
+ *
+ * @param {object} summary  a captureMemoryEval summary
+ * @param {object} [floors] default DEFAULT_FLOORS
+ * @returns {'no-data'|'met'|'violated'}
+ */
+export function floorVerdict(summary = {}, floors = DEFAULT_FLOORS) {
+  const cases = Number(summary?.cases_total)
+  if (!Number.isFinite(cases) || cases <= 0) return 'no-data'
+  return floorFailures(summary, floors).length ? 'violated' : 'met'
+}
+
+/**
  * captureMemoryEval(opts) → the canon §8 measurement of the CURRENT loader.
  *
  * Report:
@@ -436,11 +463,38 @@ export function captureMemoryEval(opts = {}) {
     summary,
     floors,
     floor_failures: floorFailures(summary, floors),
+    // The verdict a reader is allowed to quote. With no cases it is 'no-data', and the
+    // empty failure list beside it means «nothing was asked», not «nothing was wrong».
+    floor_verdict: floorVerdict(summary, floors),
     check_command: checkCommand,
   }
 }
 
 // ─────────────────────────── the A/B (canon §16) ────────────────────────────
+
+/**
+ * CONTROL_ARM_PATH — WHICH retrieval the control arm is, by name.
+ *
+ * The baseline of a comparison has to be a path somebody can point at, not «whatever
+ * ships today». Naming it is what lets a test assert it, and a test is the only thing
+ * that can notice the day the shipped path moves underneath the measurement.
+ */
+export const CONTROL_ARM_PATH = 'facet'
+
+/**
+ * controlArmOptions(opts) → the same run with every lexical option REMOVED.
+ *
+ * The three options that can put the layer in a compile — the experiment's name, the
+ * index to read, the layer itself — are stripped here, in one place, so «the control did
+ * not ask the layer anything» is a fact a caller can check rather than a property of how
+ * a signature happens to destructure. Everything else about the run is carried through
+ * untouched: the two arms must differ by the layer and by nothing else, and a control
+ * that quietly lost a budget or a corpus would be a different comparison.
+ */
+export function controlArmOptions(opts = {}) {
+  const { experiment, indexPath, lexical, ...facetOnly } = opts ?? {}
+  return facetOnly
+}
 
 /**
  * A delta in PERCENTAGE POINTS, or `null` when either arm has no number.
@@ -464,10 +518,19 @@ function deltaCount(after, before) {
  * captureMemoryExperiment(opts) → the A/B of a retrieval experiment on the gold set.
  *
  * ONE set, TWO arms, run back to back in the same process against the same corpus: the
- * CONTROL is the default path exactly as it ships, the EXPERIMENT differs by one option
- * threaded down to compilePack and by nothing else. That is the whole design: any
- * difference between the two summaries is attributable to the layer, because there is no
- * second code path for it to be attributable to.
+ * CONTROL is the FACET path — tags in, tag-matched records out, and no layer asked a
+ * question — and the EXPERIMENT differs by one option threaded down to compilePack and
+ * by nothing else. That is the whole design: any difference between the two summaries is
+ * attributable to the layer, because there is no second code path for it to be
+ * attributable to.
+ *
+ * THE CONTROL IS NAMED, NOT INHERITED. It used to be described as «the default path
+ * exactly as it ships», and that description had an expiry date on it: the day the
+ * shipped path became hybrid, the control would have become hybrid with it, and the
+ * comparison would have been the layer against itself — reporting, consistently and
+ * unfalsifiably, that the layer changes nothing. So the arm is built by
+ * `controlArmOptions` and its path has a name (`CONTROL_ARM_PATH`), both of which a test
+ * can hold to account. A comment could not have.
  *
  * The report is DELTAS, not a verdict. Canon §16 states the stopping rule — a retriever
  * that does not improve critical recall or cost per verified result WITHOUT hurting
@@ -499,7 +562,7 @@ function deltaCount(after, before) {
 export function captureMemoryExperiment(opts = {}) {
   const { experiment = EXPERIMENTS[0], indexPath, lexical, checkCommand = MEMORY_EXPERIMENT_CHECK_COMMAND, ...rest } = opts
 
-  const control = captureMemoryEval({ ...rest, checkCommand: MEMORY_EVAL_CHECK_COMMAND })
+  const control = captureMemoryEval({ ...controlArmOptions(rest), checkCommand: MEMORY_EVAL_CHECK_COMMAND })
   const treatment = captureMemoryEval({
     ...rest,
     experiment,
@@ -543,6 +606,9 @@ export function captureMemoryExperiment(opts = {}) {
     // number while a must-be-zero floor goes red has not passed, and saying so needs the
     // floors of the arm being judged, not a delta between two verdicts.
     floor_failures: treatment.floor_failures,
+    // …and an A/B run over an empty set is not a comparison at all: two arms that were
+    // never asked anything cannot differ, so there is nothing here to record.
+    floor_verdict: treatment.floor_verdict,
     check_command: checkCommand,
   }
 }
