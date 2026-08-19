@@ -421,6 +421,12 @@ describe('the completion gate asks for the note where it asks for the receipt', 
       },
       spawnWorker: (spec: any) => {
         for (const l of streamLines) spec.onLine?.(l)
+        // The attempt's THIRD condition, spoken by the fake unless the case says otherwise:
+        // these cases are about the approach note, and a worker that closes two conditions of
+        // three would fail them all for a reason none of them is testing.
+        if (!streamLines.some((l) => typeof l === 'string' && l.includes('LESSON_'))) {
+          spec.onLine?.('LESSON_NONE: тестовый работник')
+        }
         spec.onExit?.({ code: 0, signal: null })
         return { pid: 1, kill: () => {} }
       },
