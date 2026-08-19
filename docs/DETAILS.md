@@ -526,6 +526,19 @@ judged: content wider than the viewport at phone width, a control that cannot be
 control with no accessible name, uncaught exceptions, dead requests, the app's own API at 4xx or
 5xx.
 
+That sideways measurement follows the CONTENT, not the document. A window that carries its minimum
+width on a container inside the page measures perfectly clean at phone width while most of the
+screen lies past the edge — so the finding names the box that holds the content and how many pixels
+are off the screen, rather than reporting that the page scrolls when it does not.
+
+Every declared width is opened and measured on every run; the scripted path and the sweep walk at
+the desktop, because that is where a claim about a window is usually made. When the claim is about
+a narrow screen, `--at mobile` (or `tablet`, or `desktop`) walks them there instead, and the width
+goes into the receipt — so «it goes through on a phone» is something a reader can check rather than
+a word they have to take. The choice is limited to the widths the run already opens: an arbitrary
+pixel number would add a size nobody measures. A declared minimum that cuts off the width you asked
+the path to walk is refused out loud instead of the path being quietly walked somewhere else.
+
 **Only measured defects send work back to the builder.** A failing criterion or a dead request
 reproduces, so a machine may return it. Whether a hierarchy reads well does not reproduce — that
 lands on the card as advice for a person, because a beauty score with a decimal point is a random
