@@ -37,6 +37,7 @@ import {
   parseSteps,
   renderCoverage,
   renderReceipt,
+  resolveDriveViewport,
   verdict,
   worstOverflow,
 } from '../lib/ui-drive.mjs'
@@ -279,11 +280,57 @@ describe('renderCoverage — the denominator is never hidden', () => {
     expect(renderCoverage({ ran: true, touched: 12, total: 12, skipped: 0, refused: [] })).toContain('Nothing was left untouched')
   })
 
+  it('records the width the path was walked at, when the operator declared one', () => {
+    const md = renderCoverage({
+      ran: true,
+      touched: 5,
+      total: 5,
+      skipped: 0,
+      refused: [],
+      pathViewport: { name: 'mobile', width: 375, height: 812 },
+    })
+    expect(md).toContain('walked at')
+    expect(md).toContain('mobile (375×812)')
+  })
+
+  it('says nothing about the path width when none was declared — the default receipt is unchanged', () => {
+    expect(renderCoverage({ ran: true, touched: 5, total: 5, skipped: 0, refused: [] })).not.toContain('walked at')
+    expect(renderCoverage({ ran: false })).not.toContain('walked at')
+  })
+
   it('names viewports skipped by a declared minimum width — a waiver is visible, never silent', () => {
     const md = renderCoverage({ ran: true, touched: 5, total: 5, skipped: 0, refused: [], viewportsSkipped: ['tablet (768px)', 'mobile (375px)'] })
     expect(md).toContain('declares a minimum width')
     expect(md).toContain('tablet (768px)')
     expect(md).toContain('nothing about narrower screens')
+  })
+})
+
+/**
+ * A claim about a narrow screen has to be walked on a narrow screen. The path and the sweep
+ * used to be nailed to the desktop, so a run could open the phone, measure it, and then walk
+ * the path somewhere else entirely — and the receipt said nothing about the difference.
+ */
+describe('resolveDriveViewport — the path may be walked only where the run already measures', () => {
+  it('gives the phone its frozen size', () => {
+    expect(resolveDriveViewport('mobile')).toMatchObject({ ok: true, viewport: { name: 'mobile', width: 375, height: 812 } })
+    expect(resolveDriveViewport('desktop')).toMatchObject({ ok: true, viewport: { width: 1440, height: 900 } })
+  })
+
+  it('refuses an unknown name and NAMES what would have been accepted', () => {
+    const r = resolveDriveViewport('phone')
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('phone')
+    expect(r.reason).toContain('mobile (375px)')
+    expect(r.reason).toContain('desktop (1440px)')
+  })
+
+  it('refuses a missing value rather than quietly walking somewhere else', () => {
+    for (const bad of [undefined, '', '   ', '375']) {
+      const r = resolveDriveViewport(bad as string)
+      expect(r.ok, `${String(bad)} must be refused`).toBe(false)
+      expect(r.reason).toContain('mobile (375px)')
+    }
   })
 })
 
