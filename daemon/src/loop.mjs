@@ -116,6 +116,7 @@ import {
 // gate would be certifying files no corpus would ever accept.
 import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
+import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
@@ -828,6 +829,191 @@ function recordWindowReading(deps, subscription, event) {
   }
 }
 
+// ── WHAT THE ATTEMPT REALLY DID WITH MEMORY, read off its own stream ────────────────────
+// The journal's memory layer used to be a DECLARATION: the name of the role file the worker
+// was configured with, written before the session opened its mouth, and only for a worker that
+// had one at all. On the machine that meant zero memory rows across dozens of attempts, while
+// the product's own promise is a flywheel turning in both directions. What follows reads the
+// OBSERVATION instead — the file the session opened, the pipeline call it made, the corpus it
+// stood in — and nothing here can fail an attempt: an unrecognisable frame simply teaches us
+// nothing about it.
+
+/** The corpus of the copy the worker stands in: `<workDir>/.claude/memory/…`. */
+const MEMORY_CORPUS_SEGMENT = '/.claude/memory/'
+
+/**
+ * The mark of a worker ACCOUNT's own directory. The account holds the vendor's per-project
+ * auto-memory, which is a different thing from the project's corpus and is counted apart: a
+ * session that read its own scratch memory has not read the memory a person curates, and one
+ * list holding both would let the second claim be made on the first's evidence.
+ */
+const ACCOUNT_DIR_MARK = '/.sma-accounts/'
+
+/** Asking the memory pipeline for notes by tag — the one call that means «loaded on purpose». */
+const MEMORY_LOAD_RE = /cli\.mjs\S*\s+load\b/
+
+/** Tools that run something on the machine; a memory load can arrive through either shell. */
+const SHELL_TOOLS = Object.freeze(['Bash', 'PowerShell'])
+
+/** Slashes one way, so a Windows path and a POSIX one are compared as one string. */
+function slashed(value) {
+  return String(value ?? '').replace(/\\/g, '/')
+}
+
+/**
+ * Append an id ONCE. The tick file keeps no keyed collection in process — its own standing
+ * discipline, guarded by a grep in the suite — so uniqueness is done in place on a list. The
+ * lists here hold the notes of a single attempt: a handful of names, where the plain scan is
+ * cheaper than the object that would replace it and does not smuggle in a store.
+ */
+function pushUnique(list, value) {
+  if (value && !list.includes(value)) list.push(value)
+  return list
+}
+
+/** The same rule applied to two lists joined: first occurrence wins, order kept. */
+function uniqueIds(list) {
+  const out = []
+  for (const v of list) pushUnique(out, v)
+  return out
+}
+
+/** The note id a corpus file carries: its own name, without the extension. */
+function noteIdOfPath(path) {
+  const base = path.slice(path.lastIndexOf('/') + 1)
+  return base.replace(/\.md$/i, '')
+}
+
+/** The tool_use blocks of one assistant frame, or an empty list for anything else. */
+function toolUsesOf(frame) {
+  const message = frame && typeof frame.message === 'object' && frame.message !== null ? frame.message : null
+  const content = message && Array.isArray(message.content) ? message.content : []
+  return content.filter((b) => b && typeof b === 'object' && b.type === 'tool_use')
+}
+
+/**
+ * Record ONE file the session opened into the running memory trace.
+ *
+ * The account's auto-memory is decided FIRST and returns: its path also ends in `/memory/`,
+ * and asking the corpus question first would file it as a note of the project.
+ */
+function traceMemoryRead(memory, rawPath, scope) {
+  const path = slashed(rawPath)
+  if (!path) return
+  const low = path.toLowerCase()
+  const accountDir = slashed(scope.accountDir).toLowerCase().replace(/\/+$/, '')
+  const inAccount = (accountDir && low.startsWith(`${accountDir}/`)) || low.includes(ACCOUNT_DIR_MARK)
+  if (inAccount && low.includes('/projects/') && low.includes('/memory/')) {
+    pushUnique(memory.autoMemoryReads, noteIdOfPath(path))
+    return
+  }
+  // The copy is NAMED when we know it, so a read of some other tree's corpus is not counted as
+  // this attempt's. Without a copy — a documentary stage runs in none — the segment alone is
+  // the best honest answer.
+  const workDir = slashed(scope.workDir).toLowerCase().replace(/\/+$/, '')
+  const inCorpus = workDir ? low.startsWith(`${workDir}${MEMORY_CORPUS_SEGMENT}`) : low.includes(MEMORY_CORPUS_SEGMENT)
+  if (!inCorpus) return
+  const id = noteIdOfPath(path)
+  // The index is the corpus's front door — «прочитал оглавление» and «прочитал заметку» are
+  // two different facts about an attempt and are kept as two.
+  if (/^memory$/i.test(id)) memory.index = true
+  else pushUnique(memory.reads, id)
+}
+
+/**
+ * collectSmaTrace({projectDir, sessionId, fsImpl}) → what the WORKER'S OWN session wrote down
+ * about memory while it ran: `{reads, reflexes, source}`.
+ *
+ * Where it looks and why THERE: the citation and reflex files live under the coordination root
+ * — the project's `.sma`, shared by every linked copy — and they are named by the terminal
+ * identity minted from the session id (`t-<tokenHash(sessionId)>`). That is the ONLY thread
+ * that ties a worker's own hook writes back to the attempt that caused them, and it is why the
+ * hash function is imported rather than re-typed here.
+ *
+ * FAIL-OPEN, and precise about its own ignorance: an absent file means «we did not see any»,
+ * which is reported as `source:'none'` rather than as an empty list that pretends to be an
+ * observation. The source names where the REFLEXES came from, so it says «sma-journal» only
+ * when the reflex journal itself was readable.
+ */
+export function collectSmaTrace({ projectDir, sessionId, fsImpl } = {}) {
+  const empty = { reads: [], reflexes: [], source: 'none' }
+  if (!projectDir || !sessionId) return empty
+  const io = resolveIo(fsImpl)
+  const terminal = `t-${tokenHash(sessionId)}`
+  const rowsOf = (file) => {
+    try {
+      if (!io.existsSync(file)) return null
+      return String(io.readFileSync(file, 'utf8'))
+        .split(/\r?\n/)
+        .map((line) => {
+          try {
+            return JSON.parse(line)
+          } catch {
+            return null
+          }
+        })
+        .filter((row) => row && typeof row === 'object')
+    } catch {
+      return null // an unreadable trace is an ABSENT trace, never a failed attempt
+    }
+  }
+  const reads = []
+  const reflexes = []
+  for (const row of rowsOf(join(projectDir, '.sma', 'usage', `${terminal}.jsonl`)) || []) {
+    if (row.kind === 'load' && row.noteId) pushUnique(reads, String(row.noteId))
+  }
+  const journalRows = rowsOf(join(projectDir, '.sma', 'journal', `${terminal}.jsonl`))
+  for (const row of journalRows || []) {
+    const noteId = row.type === 'reflex' && row.detail && row.detail.noteId
+    if (noteId) pushUnique(reflexes, String(noteId))
+  }
+  return { reads, reflexes, source: journalRows ? 'sma-journal' : 'none' }
+}
+
+/** The lesson as the journal stores it: a draft, a stated «nothing», or neither. */
+function lessonLayerOf(lessonEval) {
+  if (lessonEval && lessonEval.written) return { written: lessonEval.written }
+  if (lessonEval && lessonEval.none) return { none: lessonEval.none }
+  return { missing: true }
+}
+
+/**
+ * writeMemoryLayer(deps, task, …) — the journal's memory layer for THIS attempt, written ONCE
+ * and UNCONDITIONALLY.
+ *
+ * «Unconditionally» is the whole point and the difference from what stood here before: a failed
+ * attempt's memory trace is worth exactly as much as a finished one's — more, usually, because
+ * «he never opened the corpus» is the sentence that explains the failure. So there is no `if`
+ * in front of this call: every attempt of every lane leaves the layer, even when it read
+ * nothing, and an empty trace says so in its own fields instead of by being absent.
+ *
+ * The project's corpus and the account's own memory are joined nowhere: `loaded.reads` unites
+ * the two PROJECT sources (what the stream saw opened and what the pipeline's citations
+ * recorded), while `autoMemoryReads` stays a separate list.
+ */
+function writeMemoryLayer(deps, task, { memory, sma, lesson, approachJournaled, notes } = {}) {
+  const m = memory || { index: false, reads: [], autoMemoryReads: [], loadCalls: 0 }
+  const s = sma || { reads: [], reflexes: [], source: 'none' }
+  writeJournal(deps, {
+    taskId: task.id,
+    attempt: task.attempt,
+    layer: 'memory',
+    payload: {
+      notes: Array.isArray(notes) ? notes : [],
+      reflexes: s.reflexes,
+      reflexSource: s.source,
+      loaded: {
+        index: m.index === true,
+        reads: uniqueIds([...(m.reads || []), ...(s.reads || [])]),
+        loadCalls: m.loadCalls || 0,
+      },
+      autoMemoryReads: m.autoMemoryReads || [],
+      lesson: lesson || { missing: true },
+      approach: approachJournaled ? 'journaled' : 'absent',
+    },
+  })
+}
+
 /**
  * attemptStream(deps, task, streamLines) → `{onLine, sessionId}` — the ONE stdout reader both
  * spawn paths use. It does three things per line, in this order and for these reasons:
@@ -855,9 +1041,11 @@ function recordWindowReading(deps, subscription, event) {
  * The log is read through `parseClaudeEvent`, which never throws on any input: a line that is
  * not JSON is still a line, and it is still logged. NOTHING here can fail the attempt.
  */
-function attemptStream(deps, task, streamLines, now, subscription = {}) {
+function attemptStream(deps, task, streamLines, now, subscription = {}, scope = {}) {
   const log = openAttemptLog(deps, task)
   const state = { sessionId: null, init: null }
+  /** What this session did with memory, accumulated live — see the trace helpers above. */
+  const memory = { index: false, reads: [], autoMemoryReads: [], loadCalls: 0 }
   /** SessionStart hooks the CLI reported starting — the founder's hook is one of them. */
   let hookStarts = 0
   let lastTouchAt = 0
@@ -884,6 +1072,25 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
         }
       } else if (frame.subtype === 'hook_started' && /SessionStart/.test(String(frame.hook_name || ''))) {
         hookStarts += 1
+      }
+    }
+    // WHAT IT OPENED AND WHAT IT LOADED — taken from the frame itself and BEFORE the line is
+    // capped for storage. The summary a person reads is capped at two hundred characters,
+    // which is fine for an eye and wrong for evidence: a compound shell line would lose the
+    // `--tags` that makes it a memory load, and a long Windows path would lose its file name.
+    if (frame && frame.type === 'assistant') {
+      try {
+        for (const block of toolUsesOf(frame)) {
+          const name = typeof block.name === 'string' ? block.name : ''
+          const input = block.input && typeof block.input === 'object' ? block.input : {}
+          if (name === 'Read' && typeof input.file_path === 'string') {
+            traceMemoryRead(memory, input.file_path, scope)
+          } else if (SHELL_TOOLS.includes(name) && typeof input.command === 'string') {
+            if (MEMORY_LOAD_RE.test(input.command) && /--tags\b/.test(input.command)) memory.loadCalls += 1
+          }
+        }
+      } catch {
+        /* the trace is an OBSERVATION: a frame it cannot read teaches nothing, breaks nothing */
       }
     }
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
@@ -933,6 +1140,14 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
     // person reading either one look in one place, not in the code that decided.
     appendLine: (line) => log.append({ line }),
     sessionOf: () => state.sessionId,
+    // A SNAPSHOT, not the live sets: the layer is written after the process is gone, and a
+    // reader must not be able to change what the stream observed.
+    memoryOf: () => ({
+      index: memory.index,
+      reads: [...memory.reads],
+      autoMemoryReads: [...memory.autoMemoryReads],
+      loadCalls: memory.loadCalls,
+    }),
     // Null when the session never opened one: an absent init is «we did not see it», which is
     // not the same statement as «the layer was empty», and the row must not confuse the two.
     initOf: () => (state.init ? { ...state.init, initHooks: hookStarts } : null),
@@ -1758,6 +1973,13 @@ export async function tick(deps = {}) {
           ? { allowedTools: envelope.allowedTools }
           : {}),
       })
+      // WHAT THE ATTEMPT WAS GIVEN BEFORE IT SPOKE — the role file and the skills of the
+      // routed worker. It is REMEMBERED here and written into the memory layer at the end,
+      // together with what the session actually did: the declaration and the observation
+      // belong in one row, and until now the declaration was the only thing that layer held.
+      // IDS ONLY — the loaded role BODY never travels into the journal; the normalizer drops
+      // anything that does not read as an identifier.
+      let roleNotes = []
       // prepend the enabled agent's role/skills preamble (resolveWorkerContext) so
       // «включён» is real in the session. Optional + DI-guarded — skipped when not injected.
       if (typeof deps.resolveWorkerContext === 'function' && route && route.workerId) {
@@ -1765,18 +1987,10 @@ export async function tick(deps = {}) {
         if (worker && (worker.roleFile || (Array.isArray(worker.skills) && worker.skills.length))) {
           const ctx = deps.resolveWorkerContext({ worker, repoDir: config.repoDir, fsImpl: deps.fsImpl })
           if (ctx && ctx.rolePreamble) spec.prompt = `${ctx.rolePreamble}\n\n${spec.prompt ?? ''}`
-          // The MEMORY layer of the journal: which notes were loaded, which reflexes fired.
-          // IDS ONLY — the loaded role BODY never travels into the journal; the
-          // normalizer drops anything that does not read as an identifier.
-          writeJournal(deps, {
-            taskId: task.id,
-            attempt: task.attempt,
-            layer: 'memory',
-            payload: {
-              notes: worker.roleFile ? [worker.roleFile] : [],
-              reflexes: (ctx && ctx.skillsList) || worker.skills || [],
-            },
-          })
+          roleNotes = [
+            ...(worker.roleFile ? [worker.roleFile] : []),
+            ...((ctx && ctx.skillsList) || worker.skills || []),
+          ]
         }
       }
       // ── A RETURN CONTINUES THE SAME SESSION (phase «Двигатель», wave 4) ──
@@ -1803,10 +2017,18 @@ export async function tick(deps = {}) {
       }
 
       const streamLines = []
-      const { onLine, sessionOf, initOf, appendLine } = attemptStream(deps, task, streamLines, now, {
-        accountName: spec.accountName,
-        dataDir: config.dataDir,
-      })
+      const { onLine, sessionOf, initOf, appendLine, memoryOf } = attemptStream(
+        deps,
+        task,
+        streamLines,
+        now,
+        { accountName: spec.accountName, dataDir: config.dataDir },
+        // WHICH TREE AND WHICH ACCOUNT this attempt's memory reads are measured against. Both
+        // are named rather than guessed: a corpus path recognised by its shape alone would
+        // count another tree's notes as this attempt's, and the account's own auto-memory
+        // would be filed as the project's.
+        { workDir, accountDir: spec.env && spec.env.CLAUDE_CONFIG_DIR },
+      )
       // ── THE STEERING WHEEL (phase «Двигатель», recon 11.08) ──
       // Every spawn of this attempt registers its kill-handle under the TASK id, so the
       // redirect door can end the live child («Перебить сейчас») and the correction then
@@ -1906,6 +2128,25 @@ export async function tick(deps = {}) {
             ? `[sma] lesson: none ${lessonEval.none}`
             : `[sma] lesson: missing (${lessonEval.reason})`,
       )
+
+      // (7b-ter) THE MEMORY LAYER OF THE JOURNAL — written HERE, for every attempt, before any
+      // door below decides its fate. Placed at this one point on purpose: every exit of this
+      // lane — parked, document, answer, code, green or red — passes through it exactly once,
+      // so «слой памяти есть у каждой попытки» is a property of the control flow rather than a
+      // rule somebody has to remember at four return statements. What it carries is what the
+      // stream saw plus what the worker's own session wrote under its terminal identity in the
+      // project's `.sma` — never what the configuration declared beforehand.
+      writeMemoryLayer(deps, task, {
+        memory: memoryOf(),
+        sma: collectSmaTrace({
+          projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+          sessionId: sessionOf(),
+          fsImpl: deps.fsImpl,
+        }),
+        lesson: lessonLayerOf(lessonEval),
+        approachJournaled: noteWritten,
+        notes: roleNotes,
+      })
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
@@ -2347,10 +2588,14 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // The SAME stream reader the code/document path uses — a forge attempt is an attempt, it
   // gets a card, and a lane watched by nobody is exactly the lane that goes quiet at 3am.
   const streamLines = []
-  const { onLine, sessionOf, initOf } = attemptStream(deps, task, streamLines, now, {
-    accountName: spec.accountName,
-    dataDir: config.dataDir,
-  })
+  const { onLine, sessionOf, initOf, memoryOf } = attemptStream(
+    deps,
+    task,
+    streamLines,
+    now,
+    { accountName: spec.accountName, dataDir: config.dataDir },
+    { workDir: worktreePath, accountDir: spec.env && spec.env.CLAUDE_CONFIG_DIR },
+  )
   // The steering wheel, same as the code path: the founder's «Перебить сейчас» must be able
   // to end a forge turn too, and a spawn nobody registered is a door that answers and does
   // nothing.
@@ -2381,6 +2626,23 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // unwrapped first (`approachLinesFrom`) exactly as the code path does. Reading the frames
   // raw meant the note was never found and a green draft still failed «нет записки».
   const noteWritten = recordApproachNote(deps, task, parseApproachNote(approachLinesFrom(streamLines)))
+
+  // The forge lane creates an attempt, so the forge lane owes a MEMORY layer like any other —
+  // and it owes it here, above every exit below, for the same reason the code lane writes it
+  // above its own four. The lesson is the one field that differs: this lane produces a draft
+  // instead of finished work and its gate never asks for a lesson, so the layer says so in
+  // words rather than reporting a missing one the worker was never asked for.
+  writeMemoryLayer(deps, task, {
+    memory: memoryOf(),
+    sma: collectSmaTrace({
+      projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+      sessionId: sessionOf(),
+      fsImpl: deps.fsImpl,
+    }),
+    lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
+    approachJournaled: noteWritten,
+    notes: [],
+  })
 
   if (exit.spawnError) {
     await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
