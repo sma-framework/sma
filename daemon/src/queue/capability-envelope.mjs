@@ -85,6 +85,111 @@ export const ENVELOPE_LANES = Object.freeze(['prod', 'research', 'paperwork', 'f
 export const HUMAN_ONLY_ACTIONS = Object.freeze(['push', 'merge', 'tag', 'deploy'])
 
 /**
+ * EACH HUMAN-ONLY ACTION, SAID IN THE ONE LANGUAGE A SESSION CAN BE REFUSED IN.
+ *
+ * WHY PATTERNS AND NOT WORDS. `humanOnlyActions` names four ACTIONS; a running session
+ * knows only TOOL CALLS. Until this table existed the four names were computed for every
+ * attempt, hashed into the row, written to the journal — and read by nobody, because
+ * nothing downstream knew how to turn the word «push» into something the process obeys.
+ * A denial expressed as a noun is a note; a denial expressed as a tool pattern is a wall.
+ *
+ * WHY `push` CARRIES THREE PATTERNS AND NOT ONE. Refusing only the push command leaves two
+ * ordinary ways to walk around it, both one line long: re-point the remote at another URL,
+ * or edit the repository configuration that says where the remote is. A boundary that stops
+ * the front door and leaves two windows open is not a boundary, and the two windows are
+ * cheaper to close than to explain afterwards. `deploy` is the same shape from the other
+ * side: publishing a package and cutting a release are two doors onto one street.
+ *
+ * WHAT THIS TABLE IS NOT. It is not proof that the action is impossible. It catches the
+ * OBVIOUS spellings, and a determined session with a shell has other ones. That is why it is
+ * one of three locks and never the only one: the working copy is handed over without the
+ * right to push, and the gate hook parks a dangerous call for a person. This list is the
+ * lock that actually stands in the path; the other two are depth behind it.
+ *
+ * FROZEN, and the suite refuses a member of `HUMAN_ONLY_ACTIONS` with no patterns: an
+ * action silently mapped to nothing reads on every screen exactly like an action that was
+ * denied, and that is the difference between a wall and a rumour of one.
+ */
+export const HUMAN_ONLY_DENIALS = Object.freeze({
+  push: Object.freeze(['Bash(git push:*)', 'Bash(git remote:*)', 'Bash(git config:*)']),
+  merge: Object.freeze(['Bash(git merge:*)']),
+  tag: Object.freeze(['Bash(git tag:*)']),
+  deploy: Object.freeze(['Bash(npm publish:*)', 'Bash(gh release:*)']),
+})
+
+/**
+ * humanOnlyDenials(envelope) → `{patterns, unmapped}`.
+ *
+ * `patterns` — the flat, sorted, duplicate-free list of tool patterns the envelope's
+ * human-only actions add up to; it is what the spawn carries as its refusal list. An
+ * envelope with no `humanOnlyActions` yields an EMPTY list rather than a throw: an absent
+ * denial list is a legitimate state of a partial envelope, and a builder that exploded on
+ * it would turn a missing field into a dead lane.
+ *
+ * `unmapped` — the actions this table has no pattern for, RETURNED rather than dropped. A
+ * new action name added to the envelope and forgotten here would otherwise be a denial that
+ * exists in the journal and nowhere in the process: silently skipping a refusal and never
+ * having one are the same fact on the wire, and the caller must be able to see which it got.
+ *
+ * PURE, and the result is frozen — a caller cannot widen its own refusal list in place.
+ *
+ * @param {{humanOnlyActions?: string[]}|null|undefined} envelope
+ * @returns {{patterns: string[], unmapped: string[]}}
+ */
+export function humanOnlyDenials(envelope) {
+  const declared =
+    envelope && typeof envelope === 'object' && Array.isArray(envelope.humanOnlyActions)
+      ? envelope.humanOnlyActions
+      : []
+  const patterns = new Set()
+  const unmapped = []
+  for (const raw of declared) {
+    const action = typeof raw === 'string' ? raw.trim() : ''
+    const mapped = action !== '' && Object.prototype.hasOwnProperty.call(HUMAN_ONLY_DENIALS, action)
+      ? HUMAN_ONLY_DENIALS[action]
+      : null
+    if (!mapped) {
+      unmapped.push(String(raw))
+      continue
+    }
+    for (const p of mapped) patterns.add(p)
+  }
+  return Object.freeze({
+    patterns: Object.freeze([...patterns].sort()),
+    unmapped: Object.freeze(unmapped),
+  })
+}
+
+/**
+ * envelopeSpawnOptions(envelope) → the spawn options an envelope produces, in ONE place.
+ *
+ * WHY ONE FUNCTION AND NOT TWO LITERALS. Two spawn points start a worker — the code/document
+ * path and the «Создатель» path — and they have already drifted apart once in this codebase:
+ * the tool grant was given to one of them and withheld from the other, so one lane could
+ * write files and the other spawned read-only and was then failed for producing nothing.
+ * Two lists of fields kept equal by discipline diverge on the day somebody edits one of
+ * them; one function cannot. The suite calls both paths with the same envelope and compares
+ * the resulting argument arrays, so the equality is measured rather than promised.
+ *
+ * ABSENCE STAYS ABSENCE. A dimension the envelope does not carry emits no key at all, so an
+ * envelope without tools or without denials produces exactly the argument array it produced
+ * before this function existed.
+ *
+ * @param {object|null|undefined} envelope
+ * @returns {{allowedTools?: string[], disallowedTools?: string[]}}
+ */
+export function envelopeSpawnOptions(envelope) {
+  const out = {}
+  const tools = envelope && typeof envelope === 'object' && Array.isArray(envelope.allowedTools)
+    ? envelope.allowedTools
+    : []
+  if (tools.length > 0) out.allowedTools = [...tools]
+  const { patterns } = humanOnlyDenials(envelope)
+  if (patterns.length > 0) out.disallowedTools = [...patterns]
+  return out
+}
+
+/**
  * The tokens whose mere appearance in a GRANTING dimension refuses the envelope. Kept to
  * the two invariant-two names, matched exactly as `state-machine.mjs` matches them, so
  * the two modules speak one law rather than two dialects of it.
