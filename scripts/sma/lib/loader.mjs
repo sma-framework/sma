@@ -23,6 +23,14 @@
  *   - resolvePeriphery({tags, corpusDir, tagsPath, dateMap}) → {core, periphery, matched, warnings, meta}
  *   - orderNotes(notes, dateMap) — the shared comparator applied to a note list.
  *
+ * HYBRID DELIVERY, BY OPT-IN: a caller may hand `lexical` to resolvePeriphery, and the
+ * periphery is then re-ranked and extended through the SHARED fusion (lexical-fusion.mjs
+ * — the same one the pack compiler calls, so there is exactly one ordering rule in the
+ * product). A caller that does not is byte for byte the caller it was: that is what
+ * keeps a reflex, a pre-act injection and the control arm of a measurement on the strict
+ * facet match they are built on. What the layer may add is intersected with the set the
+ * hard filters cleared, and CORE is never re-ranked by it.
+ *
  * TWO SCHEMA VERSIONS, ONE READ: the corpus may hold v1 notes and
  * schema-v2 records side by side. This module reads NEITHER grammar itself — the
  * corpus walk (generator.readNotes), the field projection (projectNoteAxis:
@@ -45,6 +53,10 @@ import { join } from 'node:path'
 
 import { loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { makeComparator, readNotes, isCoreNote, visibilityVerdict, untrustedVerdict, CORE_THRESHOLD } from './generator.mjs'
+// The ONE place the layers of retrieval become one order (lexical-fusion.mjs). It is
+// imported, never re-implemented: a second ordering rule here would be a second
+// retrieval, and nobody downstream could tell which of the two answered them.
+import { fuseLexical, FUSION_DEGRADED_REASON } from './lexical-fusion.mjs'
 
 /**
  * SELECTION BASES — why a record that survived the hard filters is in the pack.
@@ -166,6 +178,18 @@ export function orderNotes(notes, dateMap = {}) {
  * @param {string|Date} [opts.now]       injected instant for the valid-time filter
  * @param {string} [opts.audience]       consumer class (default: the local owner)
  * @param {{repo?:string, environment?:string}} [opts.scope]  the world asking
+ * @param {object} [opts.lexical]  OPTIONAL, and OPT-IN — the whole isolation of the
+ *        hybrid delivery. ABSENT (every caller that does not name it, which is what a
+ *        reflex, a pre-act injection and the control arm of a measurement all are) and
+ *        this function does not ask the lexical layer a single question: not one branch
+ *        below runs, and the answer is byte for byte the answer it always was. PRESENT
+ *        — `{taskText, indexPath, layer}` — and the periphery is re-ranked and EXTENDED
+ *        through the shared fusion: `taskText` is the words to search for, `indexPath`
+ *        is where the derived index lives, `layer` is a stand-in for the lexical layer
+ *        (tests; production passes none). Two things it may never do, both pinned by
+ *        tests: CORE is not re-ranked by it, and an addition it brings must have
+ *        cleared the SAME hard filters as everything else — a record the filters
+ *        withheld cannot ride in on a lexical rank.
  * @param {Function|Array} [opts.trace]  OPTIONAL reason-trace collector (a callback or
  *        an array to push onto). Absent — the default — nothing is built and no event
  *        is shaped: the untraced load is the load it always was. Present: one event
@@ -185,6 +209,7 @@ export function resolvePeriphery(opts) {
     audience,
     scope,
     trace,
+    lexical,
   } = opts
 
   // The collector, normalized once: a callback, an array to push onto, or nothing.
@@ -291,8 +316,53 @@ export function resolvePeriphery(opts) {
     }
   }
 
+  // ── the lexical layer, when — and ONLY when — a caller asked for it ────────
+  // Everything above is the facet answer, unchanged. What happens here is a
+  // RE-RANK-AND-EXTEND of the periphery: the fusion is handed the facet order it just
+  // produced, and returns one order over that plus whatever the exact and lexical
+  // layers found. Three properties are load-bearing and each has a test:
+  //   - the additions are INTERSECTED with `notes`, the set the hard filters already
+  //     cleared, so a withheld record cannot arrive by a lexical rank. The layer reads
+  //     the corpus through the same visibility predicate, but «it should not happen»
+  //     is not a guard; this is.
+  //   - CORE is not touched. The frame of a pack is unconditional, and a rank is an
+  //     argument about the on-demand half only.
+  //   - a layer that cannot honestly run leaves the periphery EXACTLY as the facet
+  //     path built it, and says why — in `meta` and in the caller-facing warnings.
+  //     A silent fallback is the expensive failure: the delivery would then look
+  //     hybrid and behave facet, and nobody would be able to tell from the outside.
+  let peripheryOut = peripheryFinal
+  let lexicalMeta = null
+  if (lexical && typeof lexical === 'object') {
+    const cleared = new Set(notes.map((n) => n.file))
+    const areas = new Map(notes.map((n) => [n.file, Array.isArray(n.tags) ? n.tags : []]))
+    const fusion = fuseLexical({
+      taskText: String(lexical.taskText ?? tags.join(' ')),
+      corpusDir,
+      ...(now == null ? {} : { now }),
+      ...(audience == null ? {} : { audience }),
+      ...(scope == null ? {} : { scope }),
+      ...(lexical.indexPath == null ? {} : { indexPath: lexical.indexPath }),
+      ...(lexical.layer == null ? {} : { lexical: lexical.layer }),
+      core: [...coreSet],
+      periphery: peripheryFinal,
+      areasOf: (f) => areas.get(f) ?? [],
+      ...(emit == null ? {} : { emit }),
+    })
+    if (fusion && !fusion.degraded && Array.isArray(fusion.order)) {
+      peripheryOut = fusion.order.filter((f) => cleared.has(f) && !coreSet.has(f))
+      lexicalMeta = { degraded: false, added: peripheryOut.filter((f) => !new Set(peripheryFinal).has(f)).length }
+    } else {
+      lexicalMeta = { degraded: true, reason: FUSION_DEGRADED_REASON }
+      warnings.push(
+        `the lexical layer could not run (${FUSION_DEGRADED_REASON}) — the periphery below is the facet one; rebuild the memory index to restore hybrid delivery`,
+      )
+    }
+  }
+
   const meta = {}
-  if (peripheryFinal.length === 0) meta.note = 'CORE only'
+  if (peripheryOut.length === 0) meta.note = 'CORE only'
+  if (lexicalMeta) meta.lexical = lexicalMeta
 
   const core = coreNotes.map((n) => n.file)
 
@@ -316,7 +386,7 @@ export function resolvePeriphery(opts) {
   // identical in behavior) and each call is fail-open: a citation failure can
   // NEVER break the load it instruments (C9).
   if (typeof cite === 'function') {
-    for (const f of [...core, ...peripheryFinal]) {
+    for (const f of [...core, ...peripheryOut]) {
       try {
         cite(f)
       } catch {
@@ -327,8 +397,8 @@ export function resolvePeriphery(opts) {
 
   return {
     core,
-    periphery: peripheryFinal,
-    matched: peripheryFinal.length,
+    periphery: peripheryOut,
+    matched: peripheryOut.length,
     indexFiles,
     warnings,
     meta,
