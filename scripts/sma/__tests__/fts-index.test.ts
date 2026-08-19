@@ -441,8 +441,9 @@ describe('sma memory index', () => {
     const res = runCli(root, ['memory', 'index', 'rebuild'])
     expect(res.status).toBe(0)
     expect(res.stdout).toMatch(/fts5|fallback-bm25|unavailable/)
-    // whichever branch this machine is on, the layer says it is not in the default path
-    expect(res.stdout).toMatch(/ЭКСПЕРИМЕНТ|отсутствует/)
+    // whichever branch this machine is on, the layer states its role in delivery: it
+    // takes part where the engine exists, and says it is absent where it does not.
+    expect(res.stdout).toMatch(/слой участвует в выдаче|слой отсутствует/)
   })
 
   it('--stat prints ONE bare number as the last line, and a rebuilt index is not stale', () => {

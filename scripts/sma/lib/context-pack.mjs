@@ -56,9 +56,15 @@ const LANG_TO_CLASS = {
 export const BUDGET_CUT_REASON = 'budget-cut'
 
 /**
- * The name of the ONE experiment this compiler knows. A string and not a boolean on
- * purpose: the next experiment must be able to be a different value rather than a
- * second flag, and a pack's manifest can then say WHICH experiment produced it.
+ * The name of the ONE arm this compiler knows how to be asked for. A string and not a
+ * boolean on purpose: the next arm must be able to be a different value rather than a
+ * second flag, and a pack's manifest can then say WHICH arm produced it.
+ *
+ * The layer itself is no longer an experiment — it carries the default delivery of
+ * `load` and `context` (through loader.mjs and the shared fusion). What survives here
+ * is the MEASURING handle: the gold-set A/B needs a way to ask THIS compiler for the
+ * fused order while the control arm asks for the facet one, and the two arms have to
+ * differ by one option and nothing else.
  */
 export const EXPERIMENT_LEXICAL = 'lexical'
 
@@ -182,16 +188,20 @@ function noteAxisReader(corpusDir) {
  *                                  default — not one event is shaped and the compile is
  *                                  byte-for-byte the compile it always was. The collector
  *                                  OBSERVES: nothing in this function reads it back.
- * @param {string} [opts.experiment] EXPERIMENTAL, and absent by default. `'lexical'`
- *                                  fuses the facet order with the exact and lexical
- *                                  layers by reciprocal rank (RRF_K) and renders the pack
- *                                  in the fused order. Any other value — and the absence
- *                                  of the option, which is every existing caller — leaves
- *                                  the compile byte for byte what it was, and does not
- *                                  ask the lexical layer a single question. This is the
- *                                  whole isolation of the experiment: one option, checked
- *                                  once, and there is no second path through this
- *                                  function for the default pack to drift into.
+ * @param {string} [opts.experiment] THE MEASURING HANDLE, asked for by name and never
+ *                                  assumed. `'lexical'` fuses the facet order with the
+ *                                  exact and lexical layers by reciprocal rank (RRF_K)
+ *                                  and renders the pack in the fused order. Any other
+ *                                  value — and an unnamed option — leaves the compile
+ *                                  byte for byte what it was, and does not ask the
+ *                                  lexical layer a single question. That isolation is
+ *                                  the point, and it survived the layer's admission to
+ *                                  default delivery: `context` names this option in the
+ *                                  CLI and `load` gets its hybrid order from loader.mjs,
+ *                                  while the compiler itself keeps assuming nothing. So
+ *                                  the gold-set A/B can still ask THIS compiler for one
+ *                                  arm and the facet path for the other. Fusing here on
+ *                                  its own would have made the measurement fuse twice.
  * @param {string} [opts.indexPath]  where the derived lexical index lives (under .sma/).
  * @param {object} [opts.lexical]    {indexStatus, queryExact, queryLexical} doubles for
  *                                  the fts-index layer (tests; production passes none).
@@ -330,8 +340,10 @@ export function compilePack(opts = {}) {
     if (parts.length) workingStyleLine = parts.join('; ')
   }
 
-  // (4b) the EXPERIMENT, when one was asked for by name. Absent — every existing caller
-  // — nothing below changes and the lexical layer is never asked anything at all.
+  // (4b) the fused arm, when one was asked for BY NAME. Unnamed — nothing below changes
+  // and the lexical layer is never asked anything at all. The CLI names it for a pack
+  // and the loader fuses for `load`; this compiler never assumes it, so the gold-set A/B
+  // keeps two arms that differ by one option.
   const fusion =
     experiment === EXPERIMENT_LEXICAL
       ? fuseLexical({ taskText, corpusDir, now, audience, scope: askedScope, indexPath, lexical, core, periphery, areasOf: (f) => axisOf(f).areas, emit })
@@ -455,7 +467,7 @@ function renderHeader({ id, commit, taskText, workingStyleLine }) {
  * they carry included members, in the fixed order core → periphery → cards → fragments.
  * Deterministic (no clock, no randomness). Exported so the CLI + selftest reuse it.
  *
- * `fused` (the experiment only) renders the notes as ONE ranked list instead of two
+ * `fused` (the fused arm only) renders the notes as ONE ranked list instead of two
  * sections, each line marked with the provenance the heading used to carry. The split
  * core/periphery is still explicit — per line rather than per section — and the order on
  * the page is then the order the pack was measured in, which two sections could not be.
