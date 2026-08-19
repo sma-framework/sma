@@ -3124,4 +3124,140 @@ describe('личный слой и наши серверы доезжают до
     expect(spawns[0]).not.toContain('--mcp-config')
   })
 
+  // ── INIT-КАДР: единственное свидетельство того, что слой доехал ──
+  const AUTO_MEMORY = 'C:\\Users\\x\\.sma-accounts\\local-1\\projects\\C--projects-sma\\memory\\'
+  const INIT_FRAME = JSON.stringify({
+    type: 'system',
+    subtype: 'init',
+    session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    cwd: '/wt/BL-1',
+    tools: ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob'],
+    mcp_servers: [],
+    memory_paths: { auto: AUTO_MEMORY },
+    permissionMode: 'default',
+    plugins: [],
+    // настоящий init-кадр велик: встроенные навыки с описаниями — так он и переваливает
+    // за кап строки, ради которого кадру дан отдельный размер
+    skills: Array.from({ length: 200 }, (_, i) => `встроенный-навык-номер-${i}-с-описанием`),
+  })
+  const HOOK_FRAME = JSON.stringify({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart:startup' })
+  const RESULT_FRAME = JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    total_cost_usd: 0.1,
+  })
+
+  it('init-кадр доезжает до строки попытки: путь авто-памяти, хуки, чужие подключения', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      responses: codeResponses(),
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [INIT_FRAME, HOOK_FRAME, HOOK_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME],
+      }),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.personalLayer.autoMemoryDir).toBe(AUTO_MEMORY)
+    expect(row.personalLayer.initHooks, 'хуки основателя сработали — это и есть доказательство слоя').toBe(2)
+    expect(row.personalLayer.initMcpServers).toEqual([])
+    expect(row.personalLayer.initClaudeAiTools, 'ни одного чужого подключения в сессии').toBe(0)
+    expect(row.personalLayer.initPlugins).toEqual([])
+    expect(row.personalLayer.permissionMode).toBe('default')
+    // и то, что вернуло зеркало, никуда не делось — init ДОПОЛНЯЕТ слой, а не заменяет
+    expect(row.personalLayer.connectors).toBe('disabled')
+    expect(row.personalLayer.claudeMd).not.toBe('absent')
+  })
+
+  it('чужие подключения в init-кадре сосчитаны честно', async () => {
+    const accountDir = mkDir('sma-account-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const sourceDir = founderHome()
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const dirty = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      tools: ['Read', 'mcp__claude_ai_Gmail', 'mcp__claude_ai_Google_Drive'],
+      mcp_servers: [{ name: 'claude.ai Gmail', status: 'needs-auth' }],
+      memory_paths: { auto: AUTO_MEMORY },
+      permissionMode: 'default',
+      plugins: ['skill-creator@official'],
+    })
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { workers: [worker(accountDir)] },
+      responses: codeResponses(),
+      spawnWorker: makeSpawnWorker(undefined, { lines: [dirty, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    const row = readAttempts(ledgerDir, 'BL-1')[0]
+    expect(row.personalLayer.autoMemoryDir).toBe(AUTO_MEMORY)
+    expect(row.personalLayer.initClaudeAiTools).toBe(2)
+    expect(row.personalLayer.initMcpServers).toEqual(['claude.ai Gmail'])
+    expect(row.personalLayer.initPlugins).toEqual(['skill-creator@official'])
+  })
+
+  it('init и result помечены видом кадра и хранятся ЦЕЛИКОМ — обрезанный init ничего не доказывает', async () => {
+    const ledgerDir = mkDir('sma-ledger-')
+    const written: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: codeResponses(),
+      spawnWorker: makeSpawnWorker(undefined, { lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      deps: {
+        ledger: {
+          recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
+          readAttempts: (id: string) => readAttempts(ledgerDir, id),
+          attemptLog: () => ({ append: (e: any) => written.push(e) }),
+        },
+      },
+    })
+
+    await tick(deps)
+
+    expect(INIT_FRAME.length).toBeGreaterThan(5000)
+    expect(written.map((e: any) => e.frameKind)).toEqual(['init', undefined, 'result'])
+
+    // …и через НАСТОЯЩИЙ писатель стенограммы кадр доезжает нерезаным
+    const ledgerDir2 = mkDir('sma-ledger-')
+    const adapter2 = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter2.enqueue(backlogTask({ id: 'BL-7' }))
+    const { deps: deps2 } = makeDeps({
+      adapter: adapter2,
+      clockObj: c,
+      responses: codeResponses('/wt/BL-7', 'wt/BL-7'),
+      spawnWorker: makeSpawnWorker(undefined, { lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      deps: { ledger: ledgerSeam(ledgerDir2) },
+    })
+    await tick(deps2)
+    const log = readAttemptLog({ dir: ledgerDir2, attemptId: 'BL-7#1' })
+    expect(log.entries[0].line.length).toBe(INIT_FRAME.length)
+  })
 })
