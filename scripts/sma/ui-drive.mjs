@@ -40,7 +40,6 @@ import {
   READY_CEILING_MS,
   READY_POLL_MS,
   READY_SETTLE_MS,
-  READY_STREAM_AGE_MS,
   STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   VIEWPORTS,
@@ -60,6 +59,14 @@ import {
  * Press every control the page exposes and record what broke — the part of QA that is
  * mechanical, and therefore belongs to a script rather than to a model's attention span.
  *
+ * One thing it refuses to CLAIM: that a control which left the screen before its turn is
+ * broken. The list is made once, and on a screen where a press replaces the screen — a list
+ * of tasks that opens a card — the rest of the list stops existing. Clicking a handle to a
+ * node that is gone times out, and reporting that as a dead button is a blocker manufactured
+ * by the order the sweep happens to walk in. So each control is checked to be STILL THERE
+ * immediately before its press: gone ones are counted and named, present ones that still
+ * cannot be operated are dead exactly as before.
+ *
  * Three things it refuses to do, each for a reason worth stating:
  *  - it will not press a destructive control (DESTRUCTIVE_RE); unattended data loss is
  *    not a price a review may pay on the operator's behalf
@@ -67,7 +74,7 @@ import {
  *  - it will not leave the page somewhere else: after a click that navigated, it returns
  *    to the start URL, so control N+1 is pressed on the page it was found on
  *
- * @returns {Promise<{touched:number, total:number, skipped:number, refused:string[], sparse:string}>}
+ * @returns {Promise<{touched:number, total:number, skipped:number, refused:string[], vanished:string[], sparse:string}>}
  */
 async function sweep(page, url, { deadControls, unnamedControls }) {
   const handles = await page.locator(INTERACTIVE_SELECTOR).all()
@@ -80,9 +87,17 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
   const sparse = sweepSparseNote(visible.length)
 
   const refused = []
+  const vanished = []
   let touched = 0
   for (const el of visible) {
     if (touched >= SWEEP_CAP) break
+    // Still on the screen? A node the page has since thrown away cannot be pressed, and that
+    // is a fact about the walk, not about the control.
+    const present = await el.evaluate((e) => e.isConnected && e.getClientRects().length > 0).catch(() => false)
+    if (!present) {
+      vanished.push('(a control that was on the screen when the list was made)')
+      continue
+    }
     const name = (
       await el
         .evaluate((e) => {
@@ -118,7 +133,14 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
     if (page.url() !== url) await open(page, url, 15000).catch(() => {})
   }
 
-  return { touched, total: visible.length, skipped: Math.max(0, visible.length - touched - refused.length), refused, sparse }
+  return {
+    touched,
+    total: visible.length,
+    skipped: Math.max(0, visible.length - touched - refused.length - vanished.length),
+    refused,
+    vanished,
+    sparse,
+  }
 }
 
 /**
@@ -136,12 +158,13 @@ function callsOf(page) {
   return map
 }
 
-/** How many answers this page is still waiting for; a long-open call counts as a channel. */
+/**
+ * How many answers this page is still waiting for. Age is deliberately NOT consulted: a door
+ * that takes a minute is still a door, and the moment this counted long calls as channels the
+ * sweep started measuring skeletons again. What is not waited for is decided by kind alone.
+ */
 function outstandingCalls(page) {
-  const now = Date.now()
-  let n = 0
-  for (const [, meta] of callsOf(page)) if (now - meta.at < READY_STREAM_AGE_MS) n += 1
-  return n
+  return callsOf(page).size
 }
 
 /**
@@ -209,7 +232,7 @@ async function open(page, target, timeout = OPEN_TIMEOUT_MS) {
  * app broken is the same mistake as calling a streaming app broken for never falling silent.
  * A server that is actually dead still fails, just later and with the same words.
  */
-const OPEN_TIMEOUT_MS = 45000
+const OPEN_TIMEOUT_MS = 90000
 
 /** Screenshots are binaries: the run directory disowns them before the first capture. */
 const SHOT_IGNORE = ['# Screenshots — never commit binary assets', '*.png', '*.webp', '*.jpg', '*.jpeg', '']
