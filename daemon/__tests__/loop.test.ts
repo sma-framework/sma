@@ -3625,3 +3625,246 @@ describe('слой памяти пишется на каждую попытку 
     expect(row.payload.reflexSource).toBe('none')
   })
 })
+
+/**
+ * ═══════ ЧЕМ СПРАШИВАЮТ ДВЕРЬ «РАБОТА УЖЕ СДЕЛАНА» — ПРОВОД, А НЕ ВЫЧИСЛЕНИЕ ═══════
+ *
+ * Вычислитель вердикта живёт в вербе, покрыт своими фикстурами и здесь не проверяется вовсе.
+ * Эти кейсы — про ПРОВОД между тиком и вербом, потому что сломан был именно он, и сломан был
+ * тихо: дверь звали идентификатором задачи там, где верб ждёт ПУТЬ К ФАЙЛУ ПЛАНА, не просили
+ * машинного вывода, поэтому верб печатал строку для человека, читатель ответов не находил в
+ * ней объекта и возвращал пустоту — а пустота читалась как «не построено». Каждый кусок
+ * маршрута был написан и зелен по отдельности; ни один не был присоединён к соседнему.
+ *
+ * Поэтому подставной исполнитель здесь не отвечает по имени верба, а ЗАПИСЫВАЕТ, чем его
+ * позвали: имя, полный список аргументов и рабочий каталог. Утверждается ровно это.
+ */
+
+/** Раннер-регистратор: пишет {verb, args, cwd} каждого вызова, отвечает по вербу или по пути. */
+function recordingRunner(seen: { verb: string; args: string[]; cwd: string }[], responses: Record<string, any>) {
+  return async (_bin: string, argsArray: string[], opts: any) => {
+    const verb = argsArray[1]
+    seen.push({ verb, args: argsArray, cwd: opts && opts.cwd })
+    const r = responses[verb] ?? { code: 0, stdout: '{}' }
+    return typeof r === 'function' ? r(argsArray) : r
+  }
+}
+
+const BUILT_ANSWER = { code: 0, stdout: JSON.stringify({ verdict: 'built', code: 0, confidence: 'high' }) }
+const ABSENT_ANSWER = { code: 2, stdout: JSON.stringify({ verdict: 'absent', code: 2, confidence: 'high' }) }
+const AFTER_THE_DOOR = {
+  worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/ST-1', branch: 'wt/ST-1' }) },
+  reverify: GREEN_REVERIFY,
+}
+
+describe('дверь «работа уже сделана» спрашивается путём плана, машинным выводом и деревом проекта', () => {
+  it('ПРОВОД: первым позиционалом — существующий файл плана, среди флагов машинный вывод, cwd — дерево проекта', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    // план лежит в дереве ПОДКЛЮЧЁННОГО проекта, а не в каталоге, из которого запущен процесс
+    const fs = makeFs({ '/connected/.planning/phases/12-front/12-01-PLAN.md': '# plan' })
+    const { deps } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, { preflight: ABSENT_ANSWER, ...AFTER_THE_DOOR }),
+      deps: { projectDir: () => '/connected', fsImpl: fs, execGit: makeGit({}) },
+    })
+
+    await tick(deps)
+
+    const calls = seen.filter((s) => s.verb === 'preflight')
+    expect(calls).toHaveLength(1)
+    const [call] = calls
+    // (а) первый позиционал после имени верба — ПУТЬ, а не идентификатор задачи…
+    const positional = call.args[2]
+    expect(positional).not.toBe('ST-1')
+    expect(positional.endsWith('-PLAN.md')).toBe(true)
+    // …и путь этот РЕАЛЬНО существует — там, где верб его будет резолвить: от своего cwd
+    expect(fs.existsSync(`${call.cwd}/${positional}`)).toBe(true)
+    // (б) машинный вывод запрошен: без него верб печатает строку для человека, и читатель
+    // ответов возвращает пустоту, которую код принимает за «не построено»
+    expect(call.args).toContain('--json')
+    // (в) вопрос задан в дереве ПРОЕКТА: и путь плана, и пути артефактов внутри плана
+    // резолвятся от рабочего каталога ребёнка
+    expect(call.cwd).toBe('/connected')
+  })
+
+  it('без подключённого проекта вопрос задают в дереве, которое обслуживает процесс — законный запасной путь', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, { preflight: ABSENT_ANSWER, ...AFTER_THE_DOOR }),
+      deps: { fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }), execGit: makeGit({}) },
+    })
+
+    await tick(deps)
+
+    expect(seen.find((s) => s.verb === 'preflight')!.cwd).toBe('/repo')
+  })
+
+  it('фаза из двух планов: построен один — дверь НЕ открывается, спрошены ОБА, оба вердикта в журнале', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps, order, journalled } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, {
+        // отвечаем ПО ПУТИ из аргументов: первый план построен, второй ещё нет
+        preflight: (args: string[]) => (args[2].includes('12-01-PLAN.md') ? BUILT_ANSWER : ABSENT_ANSWER),
+        ...AFTER_THE_DOOR,
+      }),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan', [`${PHASE_DIR}/12-02-PLAN.md`]: '# plan' }),
+        execGit: makeGit({}),
+      },
+    })
+
+    const res = await tick(deps)
+
+    // спрошены ОБА плана — «новейший» здесь ничего не решает
+    const asked = seen.filter((s) => s.verb === 'preflight').map((s) => s.args[2])
+    expect(asked).toEqual([
+      '.planning/phases/12-front/12-01-PLAN.md',
+      '.planning/phases/12-front/12-02-PLAN.md',
+    ])
+    // задача дошла до работника и закрылась ЕГО квитанцией, а не квитанцией двери:
+    // ложное «построено» закрыло бы недоделанную фазу навсегда и молча
+    expect(order).toContain('spawn')
+    expect(res.completed).toBe('ST-1')
+    expect(adapter.calls[0].result.receiptRef).toBe('reverify:abc')
+    // оба ответа — на записи, с путями, по которым их можно перепроверить руками
+    const verdicts = journalled.filter((e: any) => e.type === 'preflight.verdict')
+    expect(verdicts.map((e: any) => [e.planPath, e.verdict])).toEqual([
+      ['.planning/phases/12-front/12-01-PLAN.md', 'built'],
+      ['.planning/phases/12-front/12-02-PLAN.md', 'absent'],
+    ])
+  })
+
+  it('фаза из двух планов: построены ОБА — задача закрыта квитанцией двери, работника не поднимали', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps, order, attempts } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, { preflight: BUILT_ANSWER, ...AFTER_THE_DOOR }),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan', [`${PHASE_DIR}/12-02-PLAN.md`]: '# plan' }),
+        execGit: makeGit({}),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    expect(order).toEqual([]) // ни рабочей копии, ни запуска работника
+    expect(seen.map((s) => s.verb)).toEqual(['preflight', 'preflight'])
+    // квитанция постоянной формы — верб своей не отдаёт, а экран читает именно эту
+    expect(adapter.calls[0].result.receiptRef).toBe('preflight:ST-1')
+    expect(adapter.calls[0].result.branch).toBe(null)
+    // переход состояний НЕ минтится: работник не стартовал, называть нечего
+    expect(Object.hasOwn(attempts[0], 'idempotencyKey')).toBe(false)
+    expect(Object.hasOwn(attempts[0], 'stateMachineVersion')).toBe(false)
+  })
+
+  it('у задачи нет номера фазы — верб НЕ вызывают вовсе, и причина записана', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask({ id: 'BL-NOPHASE' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      verbRunner: recordingRunner(seen, {
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
+        reverify: GREEN_REVERIFY,
+      }),
+    })
+
+    await tick(deps)
+
+    // именно ОТСУТСТВИЕ вызова, а не пустой ответ: у такой задачи плана нет по построению,
+    // а признаки её успеха — проза, которую вердикту судить нельзя
+    expect(seen.filter((s) => s.verb === 'preflight')).toHaveLength(0)
+    const skipped = journalled.filter((e: any) => e.type === 'preflight.skipped')
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].taskId).toBe('BL-NOPHASE')
+    expect(String(skipped[0].reason)).toContain('фазы')
+  })
+
+  it('фаза есть, а планов в дереве нет — верб НЕ вызывают, причина другая и тоже записана', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps, journalled } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, AFTER_THE_DOOR),
+      deps: { fsImpl: makeFs({ [`${PHASE_DIR}/12-CONTEXT.md`]: '# ctx' }), execGit: makeGit({}) },
+    })
+
+    await tick(deps)
+
+    expect(seen.filter((s) => s.verb === 'preflight')).toHaveLength(0)
+    const [skipped] = journalled.filter((e: any) => e.type === 'preflight.skipped')
+    expect(skipped).toBeTruthy()
+    expect(String(skipped.reason)).toContain('планов')
+  })
+
+  it('вердикт пишется ВСЕГДА: «не построено» тоже строка в журнале, а не молчание', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps, order, journalled } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, { preflight: ABSENT_ANSWER, ...AFTER_THE_DOOR }),
+      deps: { fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }), execGit: makeGit({}) },
+    })
+
+    await tick(deps)
+
+    const [verdict] = journalled.filter((e: any) => e.type === 'preflight.verdict')
+    expect(verdict).toMatchObject({
+      taskId: 'ST-1',
+      planPath: '.planning/phases/12-front/12-01-PLAN.md',
+      verdict: 'absent',
+      code: 2,
+    })
+    // ненулевой код верба — это ДАННЫЕ, а не отказ: задача спокойно идёт к работнику
+    expect(order).toContain('spawn')
+  })
+
+  it('верб не запустился вовсе — вердикт всё равно на записи, вместе с текстом ошибки', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'code', stage: 'execute', phase: 12 }, { lane: 'prod' }))
+    const { deps, order, journalled } = stageDeps({
+      adapter,
+      verbRunner: async (_bin: string, argsArray: string[]) => {
+        if (argsArray[1] === 'preflight') throw new Error('cli.mjs не найден в этом дереве')
+        const r = (AFTER_THE_DOOR as any)[argsArray[1]] ?? { code: 0, stdout: '{}' }
+        return r
+      },
+      deps: { fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }), execGit: makeGit({}) },
+    })
+
+    await tick(deps)
+
+    const [verdict] = journalled.filter((e: any) => e.type === 'preflight.verdict')
+    expect(verdict.verdict).toBe(null)
+    expect(String(verdict.error)).toContain('cli.mjs')
+    // сломанная дверь никогда не блокирует стройку — она только переисполняет
+    expect(order).toContain('spawn')
+  })
+
+  it('документарная стадия дверь по-прежнему не спрашивает и в журнал о ней ничего не пишет', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const seen: { verb: string; args: string[]; cwd: string }[] = []
+    const { deps, journalled } = stageDeps({
+      adapter,
+      verbRunner: recordingRunner(seen, {}),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-01-PLAN.md': 'abc1234' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('ST-1')
+    expect(seen.filter((s) => s.verb === 'preflight')).toHaveLength(0)
+    expect(journalled.some((e: any) => String(e.type).startsWith('preflight.'))).toBe(false)
+  })
+})
