@@ -31,6 +31,14 @@
  *   - an attempt that ended before the window began. The border is the whole point of saying
  *     «за 30 дней»: a figure that quietly included everything since installation is a different
  *     statement wearing the same words.
+ *   - AN ATTEMPT WHOSE ROW NAMES NOBODY. It belongs to no worker, so it enters no worker's
+ *     count — not even as a zero somewhere. Such rows exist and always will: for a long while
+ *     the failing path wrote no worker at all (the finished one did), so the whole failed half
+ *     of the history on disk is nameless, and those rows are never rewritten — the daemon is
+ *     not the source of truth for its own past. The writer was fixed instead, so attempts made
+ *     from now on say whose they were; the older ones stay honestly anonymous. Handing them to
+ *     the worker of a neighbouring row would pin a failure on somebody possibly innocent, which
+ *     is the same invented fact as an invented owner, only about blame.
  *
  * AN UNREADABLE LEDGER YIELDS NO ANSWER — `null`, never a zero. On this screen a zero reads as
  * «this worker did nothing», which is a measurement; «нет данных» is the truth when the
@@ -115,6 +123,9 @@ export function createWorkerStats({ ledgerDir, fsImpl, clock, windowDays = 30, t
         if (!rec || typeof rec !== 'object') continue
         if (rec.reconstructed === true) continue
         const workerId = typeof rec.workerId === 'string' ? rec.workerId.trim() : ''
+        // A row that names nobody is nobody's: it is dropped here rather than attached to the
+        // likeliest worker. See the note above — the anonymous half of the history is a fact
+        // about the ledger, not about any one worker's record.
         if (workerId === '') continue
         const ended = stampMs(rec.endedAt)
         if (!Number.isFinite(ended)) continue
