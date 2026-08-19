@@ -105,14 +105,26 @@ function makeVerbRunner(responses: Record<string, any>, order?: string[]) {
 
 // A recording spawnWorker: emits stream lines then exits. Optionally throws synchronously
 // (an infra spawn error) or is left un-exited (to model a mid-tick kill).
-// A COMPLETE attempt carries BOTH a green receipt and an approach note — the
-// default fake worker leaves the note; the note law itself is exercised in journal.test.ts.
-function makeSpawnWorker(order?: string[], opts: { lines?: string[]; code?: number; throwSync?: boolean } = {}) {
-  const { lines = ['stream line', 'APPROACH_NOTE: прямой путь'], code = 0, throwSync = false } = opts
+// A COMPLETE attempt carries a green receipt, an approach note AND a word about the lesson —
+// the default fake worker leaves all three, so every case below is about ITS own subject. The
+// lesson law itself is exercised by the gate cases further down; «тестовый работник» is the
+// stated reason a fake has for teaching nothing, and a stated reason is what the gate asks for.
+function makeSpawnWorker(
+  order?: string[],
+  opts: { lines?: string[]; code?: number; throwSync?: boolean; noLesson?: boolean } = {},
+) {
+  const { lines = ['stream line', 'APPROACH_NOTE: прямой путь'], code = 0, throwSync = false, noLesson = false } = opts
+  // A case that dictates its own lines is almost never a case ABOUT the lesson, so the fake
+  // closes the third condition for it — exactly as a real worker does — unless the case said
+  // its own word about the lesson, or asked for silence to test the gate itself.
+  const spoken =
+    noLesson || lines.some((l) => typeof l === 'string' && l.includes('LESSON_'))
+      ? lines
+      : [...lines, 'LESSON_NONE: тестовый работник']
   return (spec: any) => {
     order?.push('spawn')
     if (throwSync) throw new Error('spawn infra failure')
-    for (const l of lines) spec.onLine?.(l)
+    for (const l of spoken) spec.onLine?.(l)
     spec.onExit?.({ code, signal: null }) // synchronous, deterministic exit
     return { pid: 4242, kill: () => {} }
   }
@@ -1190,6 +1202,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     }),
     JSON.stringify({ type: 'assistant', parent_tool_use_id: 'toolu_01SUB', message: { model: 'claude-opus-4-8' } }),
     'APPROACH_NOTE: прямой путь',
+    'LESSON_NONE: тестовый работник',
     JSON.stringify({ type: 'result', session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab', total_cost_usd: 0.03 }),
   ]
 
@@ -1226,6 +1239,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
       spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
       spec.onLine?.(JSON.stringify({ type: 'system', subtype: 'init', session_id: '11111111-2222-4333-8444-555555555555' }))
       spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
       spec.onExit?.({ code: 0, signal: null })
       return { pid: 1, kill: () => {} }
     }
@@ -1270,6 +1284,7 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     const spawnWorker = (spec: any) => {
       spawns.push({ args: spec.args.slice() })
       spec.onLine?.('APPROACH_NOTE: продолжил')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
       spec.onExit?.({ code: 0, signal: null })
       return { pid: 1, kill: () => {} }
     }
@@ -1306,7 +1321,9 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(res.completed).toBe('BL-1')
 
     const log = readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#1' })
-    expect(log.total).toBe(DELEGATING_STREAM.length) // four lines in, four rows out — nothing dropped
+    // every line in, every line out — plus ONE the tick itself speaks: the lesson verdict
+    // lands in the same file, so «why was this row red» never needs the gate's source
+    expect(log.total).toBe(DELEGATING_STREAM.length + 1)
     expect(log.truncated).toBe(false)
     const subagentRows = log.entries.filter((e: any) => e.subagent === true)
     expect(subagentRows).toHaveLength(1)
@@ -1970,6 +1987,7 @@ describe('an urgent inline task wedges BETWEEN the pieces of a batch', () => {
       order.push('spawn')
       spec.onLine?.('stream line')
       spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
       const finish = () => spec.onExit?.({ code: 0, signal: null })
       if (arrive && !arrived) {
         arrived = true
@@ -2603,6 +2621,156 @@ describe('журнал попытки отвечает и «к чему отка
 })
 
 /**
+ * ═════════════ УРОК — ТРЕТЬЕ УСЛОВИЕ СДАЧИ, И ОНО ПРОВЕРЯЕТСЯ ПО ДИСКУ ═══════════
+ *
+ * Продукт обещал маховик памяти в обе стороны, а корпус за десятки попыток не получил от
+ * работников ни одной заметки: шага не было ни в промпте, ни в гейте. Ниже — гейт, и он
+ * проверяет НЕ слово работника, а файл: черновик обязан лежать в корпусе копии и нести
+ * штамп конвейера. Плоский файл, положенный мимо конвейера, уроком не считается — иначе
+ * обещание «ни один факт не входит в память случайно» держалось бы на честном слове.
+ *
+ * `parseNote` берётся НАСТОЯЩИЙ, файлы — настоящие, во временном каталоге: подделка,
+ * умеющая больше библиотеки, уже однажды показывала зелёный сьют поверх сломанного провода.
+ */
+describe('гейт урока: попытка оставляет заметку конвейера, причину — или не закрывается', () => {
+  const tmpDirs: string[] = []
+  const mkWork = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sma-lesson-'))
+    tmpDirs.push(d)
+    mkdirSync(join(d, '.claude', 'memory', 'drafts'), { recursive: true })
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmpDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  })
+
+  /** Черновик ровно той формы, какую кладёт конвейер: схема 2, статус draft, штамп конвейера. */
+  const writeDraft = (workDir: string, name: string, drop: string[] = []) => {
+    const fm: Record<string, string> = {
+      id: name.replace(/\.md$/, ''),
+      schema_version: '2',
+      status: 'draft',
+      draft_kind: 'pipeline-write',
+      memory_type: 'procedural',
+      truth_mode: 'observed',
+      claim: 'гейт читает файл, а не слово',
+      language: 'ru',
+    }
+    for (const k of drop) delete fm[k]
+    const text = `---\n${Object.entries(fm)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n')}\n---\n\nтело урока\n`
+    writeFileSync(join(workDir, '.claude', 'memory', 'drafts', name), text, 'utf8')
+    return `.claude/memory/drafts/${name}`
+  }
+
+  /** Зелёная попытка: коммит на ветке, снимки совпали — судьбу решает только урок. */
+  const runAttempt = async (lines: string[], workDir?: string) => {
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const responses = {
+      ...DIFF_RESPONSES(inTurn([snapshot, snapshot])),
+      ...(workDir
+        ? { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: workDir, branch: 'wt/BL-1' }) } }
+        : {}),
+    }
+    const { deps, journalled } = makeDeps({
+      adapter: oneTaskAdapter(backlogTask({ attempt: 1 })),
+      responses,
+      // эти кейсы — РОВНО про урок, поэтому подделка не договаривает за работника
+      spawnWorker: makeSpawnWorker(undefined, { lines, noLesson: true }),
+      deps: { execGit: makeGateGit() },
+    })
+    const res = await tick(deps)
+    return { res, journalled }
+  }
+
+  const NOTE = 'APPROACH_NOTE: прямой путь'
+
+  it('зелёная попытка молчит об уроке → no_lesson, а не «принято»', async () => {
+    const { res } = await runAttempt(['stream line', NOTE])
+    expect(res.completed).toBeUndefined()
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_lesson' })
+  })
+
+  it('«урока нет» с причиной → попытка ПОЛНА: честное «нет» не наказывается', async () => {
+    const { res } = await runAttempt(['stream line', NOTE, 'LESSON_NONE: задача была чистым чтением'])
+    expect(res.completed).toBe('BL-1')
+  })
+
+  it('настоящий черновик конвейера в копии → попытка принята', async () => {
+    const workDir = mkWork()
+    const path = writeDraft(workDir, 'lesson-r-77-gate.md')
+    const { res } = await runAttempt(['stream line', NOTE, `LESSON_WRITTEN: ${path}`], workDir)
+    expect(res.completed).toBe('BL-1')
+  })
+
+  it('маркер есть, а файла в копии нет → no_lesson: гейт верит диску, а не строке', async () => {
+    const workDir = mkWork()
+    const { res } = await runAttempt(
+      ['stream line', NOTE, 'LESSON_WRITTEN: .claude/memory/drafts/lesson-r-77-ghost.md'],
+      workDir,
+    )
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_lesson' })
+  })
+
+  it('файл без штампа конвейера → no_lesson: плоская заметка уроком не считается', async () => {
+    const workDir = mkWork()
+    const path = writeDraft(workDir, 'lesson-r-77-flat.md', ['draft_kind'])
+    const { res } = await runAttempt(['stream line', NOTE, `LESSON_WRITTEN: ${path}`], workDir)
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_lesson' })
+  })
+
+  it('путь мимо корпуса памяти → no_lesson, и файла никто не читает', async () => {
+    const workDir = mkWork()
+    writeFileSync(join(workDir, 'lesson.md'), '---\nschema_version: 2\ndraft_kind: pipeline-write\n---\n', 'utf8')
+    for (const path of ['../lesson.md', 'lesson.md', '.claude/memory/../../lesson.md']) {
+      const { res } = await runAttempt(['stream line', NOTE, `LESSON_WRITTEN: ${path}`], workDir)
+      expect(res.failed, `путь «${path}» принят гейтом`).toEqual({ taskId: 'BL-1', reason: 'no_lesson' })
+    }
+  })
+
+  // Вердикт обязан быть ВИДЕН: карточку и разбор читают по стенограмме попытки, и «почему
+  // красная» не должно требовать чтения кода гейта.
+  it('вердикт урока уезжает в стенограмму попытки', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-lesson-log-'))
+    tmpDirs.push(dir)
+    const snapshot = answer([rec('R-A', 'divergent')])
+    const { deps } = makeDeps({
+      adapter: oneTaskAdapter(backlogTask({ attempt: 1 })),
+      responses: DIFF_RESPONSES(inTurn([snapshot, snapshot])),
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: ['stream line', NOTE, 'LESSON_NONE: задача была чистым чтением'],
+      }),
+      deps: {
+        execGit: makeGateGit(),
+        ledger: {
+          recordAttempt: (a: any) => a,
+          readAttempts: () => [],
+          attemptLog: () => ({
+            append: (e: any) => {
+              writeFileSync(join(dir, 'log.txt'), `${e.line}\n`, { flag: 'a' })
+              return true
+            },
+          }),
+        },
+      },
+    })
+
+    await tick(deps)
+
+    const log = readFileSync(join(dir, 'log.txt'), 'utf8')
+    expect(log).toContain('[sma] lesson:')
+    expect(log).toContain('задача была чистым чтением')
+  })
+})
+
+/**
  * ══════ ЧТО ЗА КОПИЮ ПОЛУЧИЛ РАБОТНИК — В СТРОКЕ ПОПЫТКИ, А НЕ В ЛОГЕ ═══════════
  *
  * База копии до сих пор жила ТОЛЬКО в операторском логе: откатить попытку было можно, а
@@ -2943,6 +3111,7 @@ describe('личный слой и наши серверы доезжают до
       spawnWorker: (spec: any) => {
         spawns.push(spec.args.slice())
         spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
         spec.onExit?.({ code: 0, signal: null })
         return { pid: 1, kill: () => {} }
       },
@@ -3109,6 +3278,7 @@ describe('личный слой и наши серверы доезжают до
       spawnWorker: (spec: any) => {
         spawns.push(spec.args.slice())
         spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
         spec.onExit?.({ code: 0, signal: null })
         return { pid: 1, kill: () => {} }
       },
@@ -3230,7 +3400,9 @@ describe('личный слой и наши серверы доезжают до
       adapter,
       clockObj: c,
       responses: codeResponses(),
-      spawnWorker: makeSpawnWorker(undefined, { lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', 'LESSON_NONE: тестовый работник', RESULT_FRAME],
+      }),
       deps: {
         ledger: {
           recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
@@ -3243,7 +3415,8 @@ describe('личный слой и наши серверы доезжают до
     await tick(deps)
 
     expect(INIT_FRAME.length).toBeGreaterThan(5000)
-    expect(written.map((e: any) => e.frameKind)).toEqual(['init', undefined, 'result'])
+    // две безымянные строки между кадрами — записка и урок работника; последняя — вердикт самого тика
+    expect(written.map((e: any) => e.frameKind)).toEqual(['init', undefined, undefined, 'result', undefined])
 
     // …и через НАСТОЯЩИЙ писатель стенограммы кадр доезжает нерезаным
     const ledgerDir2 = mkDir('sma-ledger-')
@@ -3253,7 +3426,9 @@ describe('личный слой и наши серверы доезжают до
       adapter: adapter2,
       clockObj: c,
       responses: codeResponses('/wt/BL-7', 'wt/BL-7'),
-      spawnWorker: makeSpawnWorker(undefined, { lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', RESULT_FRAME] }),
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [INIT_FRAME, 'APPROACH_NOTE: прямой путь', 'LESSON_NONE: тестовый работник', RESULT_FRAME],
+      }),
       deps: { ledger: ledgerSeam(ledgerDir2) },
     })
     await tick(deps2)

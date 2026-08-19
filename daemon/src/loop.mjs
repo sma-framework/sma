@@ -92,7 +92,7 @@
  * Node built-ins only; every collaborator injected. Zero deps; zero network in this file.
  */
 
-import { existsSync as fsExistsSync, readdirSync as fsReaddirSync } from 'node:fs'
+import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
@@ -103,7 +103,19 @@ import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows } from './queue/capability-envelope.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 import { buildForgePrompt, lintDraft, writeForgeReceipt, draftDirFor } from './forge/forge.mjs'
-import { parseApproachNote, approachLinesFrom, attemptIdFor } from './front/journal.mjs'
+import {
+  parseApproachNote,
+  approachLinesFrom,
+  markerLinesFrom,
+  parseLessonMarker,
+  attemptIdFor,
+} from './front/journal.mjs'
+// THE CORPUS READS ITS OWN NOTES. The lesson gate below asks whether a file is a note the
+// memory pipeline produced, and it asks with the parser the corpus itself uses — a second,
+// looser reader here would be a second definition of «a note», and the day they disagreed the
+// gate would be certifying files no corpus would ever accept.
+import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
+import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
@@ -186,6 +198,7 @@ function resolveIo(fsImpl) {
   return {
     existsSync: io.existsSync ?? fsExistsSync,
     readdirSync: io.readdirSync ?? fsReaddirSync,
+    readFileSync: io.readFileSync ?? fsReadFileSync,
   }
 }
 
@@ -372,6 +385,65 @@ function answerOnlyGate(deps, config, task, branch, workDir, noteWritten) {
   return { receiptRef: answerReceipt(attemptIdFor(task.id, task.attempt)) }
 }
 
+/** Where a lesson is allowed to live inside the copy — the project's own memory corpus. */
+const LESSON_CORPUS_PREFIX = '.claude/memory/'
+
+/**
+ * lessonCheck(deps, task, workDir, lesson) → {ok, written?, none?, reason?}
+ *
+ * THE THIRD CONDITION OF A FINISHED ATTEMPT, checked against the DISK and not against the
+ * worker's word. The product promised a flywheel of memory turning in both directions while
+ * the corpus took in nothing from any worker for dozens of attempts — because nobody asked,
+ * and nothing checked.
+ *
+ * Two honest answers, and no third:
+ *   - a LESSON: the path of the draft `memory write` staged in this copy. It must sit under
+ *     the corpus, carry no `..`, exist on disk, parse as a schema-2 note and carry the
+ *     pipeline's own stamp (`draft_kind: pipeline-write`, imported from the pipeline that
+ *     mints it rather than re-typed here). That stamp is the whole point: a flat file dropped
+ *     beside the corpus is exactly what «ни один факт не входит в память случайно» forbids, and a gate
+ *     that accepted one would be certifying a bypass of the pipeline it exists to protect.
+ *   - NO LESSON, with the reason said out loud. A machine cannot judge whether this task had
+ *     anything to teach, and it does not try; it only refuses silence.
+ *
+ * FAIL-CLOSED but never throwing: an unreadable file, an unparseable note or a path outside
+ * the corpus all answer «not ok» with words a person can act on. The reason travels back so
+ * the transcript can say WHY, instead of leaving a red row that only the code explains.
+ */
+function lessonCheck(deps, task, workDir, lesson) {
+  if (!lesson) return { ok: false, reason: 'ни заметки, ни причины' }
+
+  if (lesson.none) {
+    const reason = String(lesson.none).trim()
+    // «Нет» без причины — не ответ: это слово, которым можно пройти гейт, и оно превратило бы
+    // всё условие в формальность. Парсер уже отбрасывает пустое; здесь — вторая дверь.
+    return reason ? { ok: true, none: reason } : { ok: false, reason: 'сказано «урока нет» без причины' }
+  }
+
+  const path = String(lesson.written ?? '').replace(/\\/g, '/').replace(/^\.\//, '')
+  if (!path.startsWith(LESSON_CORPUS_PREFIX) || path.split('/').includes('..')) {
+    return { ok: false, reason: `путь урока вне корпуса памяти копии: ${path || '(пусто)'}` }
+  }
+  if (!workDir) return { ok: false, reason: 'копия попытки неизвестна — урок проверить негде' }
+
+  const io = resolveIo(deps.fsImpl)
+  const file = join(workDir, path)
+  if (!io.existsSync(file)) return { ok: false, reason: `файла урока нет в копии: ${path}` }
+
+  let parsed
+  try {
+    parsed = parseNote(String(io.readFileSync(file, 'utf8')), { file: path })
+  } catch (err) {
+    return { ok: false, reason: `заметка урока не читается: ${String((err && err.message) || err)}` }
+  }
+  const fm = parsed && parsed.frontmatter
+  if (!fm || parsed.schemaVersion !== 2) return { ok: false, reason: `заметка урока не в схеме корпуса: ${path}` }
+  if (fm.draft_kind !== PIPELINE_DRAFT_KIND) {
+    return { ok: false, reason: `заметка положена мимо конвейера памяти: ${path}` }
+  }
+  return { ok: true, written: path }
+}
+
 /** Worker final-output markers — a SOFT protocol the worker MAY emit. */
 const MARKER_RE = /^\s*(NEEDS_DECISION|MISSING_ACCESS)\s*:/
 
@@ -434,7 +506,7 @@ export function providerAbortOf(lines) {
  * @param {{spawnError?:any, providerAbort?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, workerMarker, journalComplete } = {}) {
+export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
   if (workerMarker === 'NEEDS_DECISION') return 'needs_decision'
@@ -444,6 +516,11 @@ export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, 
     return Number.isFinite(exitCode) && exitCode !== 0 ? 'agent_error' : 'no_receipt'
   }
   if (receipt.verdict === 'green' && journalComplete === false) return 'no_journal'
+  // THE OLDER OMISSION IS THE SHARPER ONE. An attempt that left neither note nor lesson reads
+  // 'no_journal': the note explains the work a person is about to accept, and the lesson is
+  // for the attempt after this one. Naming the smaller gap first would send a person looking
+  // for the wrong thing.
+  if (receipt.verdict === 'green' && lessonComplete === false) return 'no_lesson'
   return 'agent_error'
 }
 
@@ -851,6 +928,10 @@ function attemptStream(deps, task, streamLines, now, subscription = {}) {
   }
   return {
     onLine,
+    // THE TICK'S OWN VOICE IN THE TRANSCRIPT. Every verdict the gates reach after the process
+    // is gone belongs in the SAME file the run's lines are in — a card, a post-mortem and the
+    // person reading either one look in one place, not in the code that decided.
+    appendLine: (line) => log.append({ line }),
     sessionOf: () => state.sessionId,
     // Null when the session never opened one: an absent init is «we did not see it», which is
     // not the same statement as «the layer was empty», and the row must not confuse the two.
@@ -1722,7 +1803,7 @@ export async function tick(deps = {}) {
       }
 
       const streamLines = []
-      const { onLine, sessionOf, initOf } = attemptStream(deps, task, streamLines, now, {
+      const { onLine, sessionOf, initOf, appendLine } = attemptStream(deps, task, streamLines, now, {
         accountName: spec.accountName,
         dataDir: config.dataDir,
       })
@@ -1804,8 +1885,27 @@ export async function tick(deps = {}) {
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
       // It is required of EVERY class of work: a parked round and a written document explain
       // themselves on the same terms a merged branch does.
-      const note = parseApproachNote(approachLinesFrom(streamLines))
+      // ONE unwrapping for both marker families: the worker's closing words arrive inside a
+      // frame, and a second pass over raw lines would find neither.
+      const markerLines = markerLinesFrom(streamLines, ['APPROACH_', 'LESSON_'])
+      const note = parseApproachNote(markerLines)
       const noteWritten = recordApproachNote(deps, task, note)
+
+      // (7b-bis) THE LESSON — the third condition, checked against the copy's own corpus. A
+      // parked round is exempt below (the session was cut short by a question to a person, so
+      // there is nothing finished to draw a lesson from) and so is the forge lane, which has
+      // its own markers and produces a draft rather than an attempt at work.
+      const lessonEval = lessonCheck(deps, task, workDir, parseLessonMarker(markerLines))
+      const lessonOk = lessonEval.ok === true
+      // NEVER SILENT: the verdict rides the attempt's own transcript, so a red row can be
+      // explained without opening this file.
+      appendLine(
+        lessonEval.written
+          ? `[sma] lesson: written ${lessonEval.written}`
+          : lessonEval.none
+            ? `[sma] lesson: none ${lessonEval.none}`
+            : `[sma] lesson: missing (${lessonEval.reason})`,
+      )
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
@@ -1837,7 +1937,13 @@ export async function tick(deps = {}) {
 
       if (parked || isDocument) {
         const gate = parked ?? (infraReason ? {} : documentGate(deps, task, workDir))
-        const reason = infraReason ?? (gate.receiptRef ? (noteWritten ? null : 'no_journal') : gate.reason)
+        // A WRITTEN DOCUMENT OWES A LESSON THE SAME WAY A MERGED BRANCH DOES — работа словами
+        // учит ровно так же. A PARKED ROUND DOES NOT: it stopped mid-way on a question to a
+        // person, and demanding a lesson from an unfinished round would throw away the whole
+        // position over a step the worker never got to.
+        const lessonReason = parked || lessonOk ? null : 'no_lesson'
+        const reason =
+          infraReason ?? (gate.receiptRef ? (noteWritten ? lessonReason : 'no_journal') : gate.reason)
         if (reason) {
           if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
           await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), worktree: worktreeRow })
@@ -1856,6 +1962,15 @@ export async function tick(deps = {}) {
       // the answer receipt parks the row in `awaiting_approval`, where the screen renders
       // the worker's note as a card to acknowledge — instead of the red row this used to be.
       const answered = infraReason ? null : answerOnlyGate(deps, config, task, branch, workDir, noteWritten)
+      if (answered && !lessonOk) {
+        // AN ANSWER OWES A LESSON TOO — and it is refused BY NAME here rather than left to
+        // fall through to the code gate, which would call a finished answer «нет квитанции»
+        // and send a person looking for a receipt nobody was ever going to write.
+        writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'no_lesson', detail: lessonEval.reason })
+        await failTask(deps, task, { reason: 'no_lesson', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+        result.failed = { taskId: task.id, reason: 'no_lesson' }
+        return result
+      }
       if (answered) {
         // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
         // so «the worker answered» can never be mistaken for «the worker's code passed».
@@ -1992,7 +2107,7 @@ export async function tick(deps = {}) {
             : ` (${changed.reason})`),
       })
 
-      if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten) {
+      if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
         result.completed = task.id
       } else {
@@ -2007,6 +2122,7 @@ export async function tick(deps = {}) {
           receipt,
           workerMarker: marker,
           journalComplete: noteWritten,
+          lessonComplete: lessonOk,
         })
         await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
         result.failed = { taskId: task.id, reason }
