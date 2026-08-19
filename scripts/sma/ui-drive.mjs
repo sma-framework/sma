@@ -40,6 +40,8 @@ import {
   READY_CEILING_MS,
   READY_POLL_MS,
   READY_SETTLE_MS,
+  READY_STREAM_AGE_MS,
+  STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   VIEWPORTS,
   classify,
@@ -120,6 +122,29 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
 }
 
 /**
+ * What each page is still waiting on. Channels are never entered here: a screen that holds one
+ * open for its whole life is not «still loading», and waiting on it would bring back the
+ * networkidle mistake this file already carries a paragraph about.
+ */
+const waitingOn = new WeakMap()
+function callsOf(page) {
+  let map = waitingOn.get(page)
+  if (!map) {
+    map = new Map()
+    waitingOn.set(page, map)
+  }
+  return map
+}
+
+/** How many answers this page is still waiting for; a long-open call counts as a channel. */
+function outstandingCalls(page) {
+  const now = Date.now()
+  let n = 0
+  for (const [, meta] of callsOf(page)) if (now - meta.at < READY_STREAM_AGE_MS) n += 1
+  return n
+}
+
+/**
  * awaitReady(page) — sample the page until what it shows stops changing.
  *
  * The signature is deliberately crude and general: how many elements the page holds and how
@@ -147,6 +172,7 @@ async function awaitReady(page, { ceilingMs = READY_CEILING_MS, settleMs = READY
       at: Date.now(),
       signature: snap ? `${snap.nodes}:${snap.ink}` : 'unreadable',
       ink: Boolean(snap && snap.ink > 0),
+      pending: outstandingCalls(page),
     })
     state = readiness(samples, { settleMs })
     if (state.ready || Date.now() - began >= ceilingMs) break
@@ -170,10 +196,20 @@ async function awaitReady(page, { ceilingMs = READY_CEILING_MS, settleMs = READY
  *
  * @returns {Promise<{ready:boolean, waitedMs:number, heldMs:number, ink:boolean, reason:string}>}
  */
-async function open(page, target, timeout = 20000) {
+async function open(page, target, timeout = OPEN_TIMEOUT_MS) {
   await page.goto(target, { waitUntil: 'domcontentloaded', timeout })
   return awaitReady(page)
 }
+
+/**
+ * How long the DOCUMENT itself may take. It used to be twenty seconds, from before any of
+ * this was measured. An app that computes a screen on its own single thread does not answer
+ * anything at all while it is doing so — measured on the window this was written for: a page
+ * asked for while the state call ran waited thirty-four seconds for plain HTML. Calling that
+ * app broken is the same mistake as calling a streaming app broken for never falling silent.
+ * A server that is actually dead still fails, just later and with the same words.
+ */
+const OPEN_TIMEOUT_MS = 45000
 
 /** Screenshots are binaries: the run directory disowns them before the first capture. */
 const SHOT_IGNORE = ['# Screenshots — never commit binary assets', '*.png', '*.webp', '*.jpg', '*.jpeg', '']
@@ -332,17 +368,25 @@ async function main() {
   // closing is the CLOSE, and the receipt must be able to tell the two apart.
   const closing = new WeakSet()
 
+
   /** Wire one page to the collectors, so no viewport observes less than another. */
   const watch = (page) => {
     // When each request STARTED — a channel held open for the life of the screen is told
     // apart from an ordinary call by how long it lived, not by its name.
     const startedAt = new WeakMap()
-    page.on('request', (r) => startedAt.set(r, Date.now()))
+    const calls = callsOf(page)
+    page.on('request', (r) => {
+      startedAt.set(r, Date.now())
+      const type = typeof r.resourceType === 'function' ? r.resourceType() : ''
+      if (!STREAM_RESOURCE_TYPES.includes(type)) calls.set(r, { at: Date.now(), type })
+    })
+    page.on('requestfinished', (r) => calls.delete(r))
     page.on('console', (m) => {
       if (m.type() === 'error') consoleErrors.push(m.text())
     })
     page.on('pageerror', (e) => pageErrors.push(e.message))
     page.on('requestfailed', (r) => {
+      calls.delete(r)
       const began = startedAt.get(r)
       requestFailures.push({
         method: r.method(),

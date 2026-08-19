@@ -90,25 +90,46 @@ export const SWEEP_CAP = 40
  *    coverage while being nearly none, and a silent cap is the one thing this module says
  *    out loud it will not do.
  *
- * So readiness is a MEASURED signal, not a longer sleep: the page is sampled until what it
- * shows stops changing (element count and the length of its text), and only a page that has
- * held still for READY_SETTLE_MS counts as ready. A hard wait long enough for the slowest
- * door would tax every fast page for nothing and still guarantee nothing. A page that never
- * settles inside READY_CEILING_MS does not quietly pass: it becomes a named finding, because
- * a number measured on a page that was still loading is a number about nothing.
+ * So readiness is a MEASURED signal, not a longer sleep: the page is sampled until BOTH of
+ * these hold — what it shows has stopped changing (element count and the length of its text),
+ * and it is no longer waiting on a call of its own. Stillness alone is not enough, and this
+ * was measured rather than reasoned: on the window this was written for, the shell paints a
+ * skeleton of one control and then holds perfectly still for thirty-one seconds while its
+ * first state call runs. A stillness test passes that skeleton in a second and hands back
+ * «1 control found, nothing left untouched» for a screen that turned out to carry sixteen.
+ *
+ * A channel held open for the life of the screen is NOT a call to wait for — waiting on it
+ * would be «networkidle» again, which is how this tool once declared broken exactly the apps
+ * that stream. Streams are told apart two ways, both crude on purpose: by the kind the browser
+ * gives them, and by age — anything still open after READY_STREAM_AGE_MS is a channel, not an
+ * answer somebody is waiting for.
+ *
+ * A hard wait long enough for the slowest door would tax every fast page for nothing and still
+ * guarantee nothing. A page that never settles inside READY_CEILING_MS does not quietly pass:
+ * it becomes a named finding, because a number measured on a page that was still loading is a
+ * number about nothing.
  */
 export const READY_POLL_MS = 250
 export const READY_SETTLE_MS = 1000
-export const READY_CEILING_MS = 25000
+export const READY_CEILING_MS = 75000
+export const READY_STREAM_AGE_MS = 45000
+
+/**
+ * Kinds of request that are channels rather than answers: they are open for as long as the
+ * screen is, and nobody is waiting for them to come back.
+ */
+export const STREAM_RESOURCE_TYPES = Object.freeze(['eventsource', 'websocket'])
 
 /**
  * readiness(samples, {settleMs}) -> {ready, heldMs, waitedMs, ink, reason}
  *
  * Pure, so the rule can be proved without a browser. `samples` are taken in order, each
- * {at: epoch ms, signature: what the page showed, ink: whether it showed anything at all}.
- * Ready means: something is painted AND the signature has not changed for settleMs.
+ * {at: epoch ms, signature: what the page showed, ink: whether it showed anything at all,
+ * pending: how many calls of its own it is still waiting on, channels excluded}.
+ * Ready means all three: something is painted, the signature has not changed for settleMs,
+ * and nothing is outstanding.
  *
- * @param {Array<{at:number, signature:string, ink?:boolean}>} samples
+ * @param {Array<{at:number, signature:string, ink?:boolean, pending?:number}>} samples
  * @param {{settleMs?:number}} [opts]
  */
 export function readiness(samples = [], { settleMs = READY_SETTLE_MS } = {}) {
@@ -125,13 +146,16 @@ export function readiness(samples = [], { settleMs = READY_SETTLE_MS } = {}) {
     heldSince = Number(list[i].at)
   }
   const heldMs = Number(last.at) - heldSince
-  const ready = ink && heldMs >= settleMs
+  const pending = Math.max(0, Number(last.pending) || 0)
+  const ready = ink && pending === 0 && heldMs >= settleMs
   const reason = ready
     ? ''
     : !ink
       ? 'nothing was painted at all — the measurement would have been taken on an empty page'
-      : `after ${waitedMs} ms what the page shows had held still for only ${heldMs} ms`
-  return { ready, heldMs, waitedMs, ink, reason }
+      : pending > 0
+        ? `after ${waitedMs} ms the page was still waiting on ${pending} call(s) of its own`
+        : `after ${waitedMs} ms what the page shows had held still for only ${heldMs} ms`
+  return { ready, heldMs, waitedMs, ink, pending, reason }
 }
 
 /**
