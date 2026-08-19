@@ -640,3 +640,87 @@ describe('buildMcpConfigFile — the file a session reads is the shape the CLI a
     expect(lastWritten().mcpServers.plain).toEqual({ type: 'stdio', command: 'mcp-thing' })
   })
 })
+
+// ── the two halves of a worker session the argument array cannot show ──
+//
+// Model and effort are visible in the produced args, so a substitution is caught by reading
+// them back. The plugins an account has enabled and the switch that keeps hosted connectors
+// out of it are NOT: they live in the account's own settings file, written by the mirror
+// before the spawn. A session that quietly gained a marketplace plugin nobody assigned, or
+// kept a hosted connector the founder switched off, is the same class of failure as a
+// silently substituted model — it looks green and it is not his session.
+
+describe('profile parity also guards what the argument array cannot show', () => {
+  const spawnArgs = () => buildClaudeArgs({ model: 'sonnet', effort: 'high' })
+  const worker = { id: 'max-1', model: 'sonnet', effort: 'high', plugins: ['reviewer@house'] }
+  const mirrored = { enabledPlugins: { 'reviewer@house': true }, disableClaudeAiConnectors: true }
+
+  it('passes when the account holds exactly the profile plugins and connectors are off', () => {
+    expect(assertProfileParity({ args: spawnArgs(), worker, accountSettings: mirrored })).toEqual({
+      model: 'sonnet',
+      effort: 'high',
+    })
+  })
+
+  it('order is not part of the list — two plugins in either order are the same profile', () => {
+    const two = { id: 'w', plugins: ['b@m', 'a@m'] }
+    expect(() =>
+      assertProfileParity({
+        args: buildClaudeArgs({}),
+        worker: two,
+        accountSettings: { enabledPlugins: { 'a@m': true, 'b@m': true }, disableClaudeAiConnectors: true },
+      }),
+    ).not.toThrow()
+  })
+
+  it('a plugin the profile did not assign is a divergence, and the error names the field', () => {
+    const wrong = { enabledPlugins: { 'other@house': true }, disableClaudeAiConnectors: true }
+    expect(() => assertProfileParity({ args: spawnArgs(), worker, accountSettings: wrong })).toThrow(ProfileParityError)
+    expect(() => assertProfileParity({ args: spawnArgs(), worker, accountSettings: wrong })).toThrow(/plugins/)
+    // and the mirror image: the profile names one, the account enabled none
+    expect(() =>
+      assertProfileParity({ args: spawnArgs(), worker, accountSettings: { disableClaudeAiConnectors: true } }),
+    ).toThrow(/plugins/)
+  })
+
+  it('hosted connectors left on are refused by name — the switch is not optional', () => {
+    for (const bad of [{ enabledPlugins: { 'reviewer@house': true } }, { ...mirrored, disableClaudeAiConnectors: false }]) {
+      expect(() => assertProfileParity({ args: spawnArgs(), worker, accountSettings: bad })).toThrow(/connectors/)
+    }
+  })
+
+  it('an empty profile and an account with no plugin map are the same thing, not a divergence', () => {
+    const bare = { id: 'w' }
+    for (const settings of [
+      { disableClaudeAiConnectors: true },
+      { enabledPlugins: {}, disableClaudeAiConnectors: true },
+    ]) {
+      expect(() => assertProfileParity({ args: buildClaudeArgs({}), worker: bare, accountSettings: settings })).not.toThrow()
+    }
+    // a plugin recorded as explicitly OFF is not an enabled one
+    expect(() =>
+      assertProfileParity({
+        args: buildClaudeArgs({}),
+        worker: bare,
+        accountSettings: { enabledPlugins: { 'old@m': false }, disableClaudeAiConnectors: true },
+      }),
+    ).not.toThrow()
+  })
+
+  it('a caller that passes no account settings still gets the model/effort guard it always had', () => {
+    expect(assertProfileParity({ args: spawnArgs(), worker })).toEqual({ model: 'sonnet', effort: 'high' })
+    expect(() => assertProfileParity({ args: buildClaudeArgs({ model: 'opus', effort: 'high' }), worker })).toThrow(
+      ProfileParityError,
+    )
+  })
+
+  it('the flag a per-spawn config needs passes the guard; the one that would strip the checkout does not', () => {
+    const args = buildClaudeArgs({ mcpConfigPath: '/wt/t/mcp-config.json' })
+    expect(args).toContain('--mcp-config')
+    expect(args[args.indexOf('--mcp-config') + 1]).toBe('/wt/t/mcp-config.json')
+    // untouched guard: the neighbour that would REPLACE the checkout's own servers is refused,
+    // as a smuggled value and as an option key
+    expect(() => buildClaudeArgs({ addDir: '--strict-mcp-config' })).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ strictMcpConfig: true } as never)).toThrow()
+  })
+})

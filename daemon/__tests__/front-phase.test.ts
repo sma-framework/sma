@@ -1199,6 +1199,8 @@ describe('the command the door writes down is the command the worker is given', 
     const buildArgs: any = createBuildArgs({
       config: { workers: [{ id: 'w', provider: 'claude', account: { name: 'a', configDir: '/a', spendLogsDir: '/a/s' } }] },
       env: {},
+      // the account mirror this case does not care about, injected so no real home is touched
+      fsImpl: { readFileSync: () => JSON.stringify({ disableClaudeAiConnectors: true }) },
     })
     for (const stage of Object.keys(STAGE_COMMANDS)) {
       const { front, enqueued } = mkFront()

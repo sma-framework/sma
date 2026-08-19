@@ -254,17 +254,53 @@ export function expectedModelEffort({ worker, task } = {}) {
 }
 
 /**
- * assertProfileParity({args, worker, task}) → the observed {model, effort}, or throws
- * ProfileParityError naming the field that diverged. THE GUARD THAT SCREAMS: a
+ * enabledPluginList(settings) → the plugins an account's settings file actually turns ON, as a
+ * sorted list. A map entry recorded as `false` is a plugin someone switched OFF and is not one
+ * of them; an absent map and an empty map are the same statement — «none».
+ */
+function enabledPluginList(settings) {
+  const map = settings && typeof settings.enabledPlugins === 'object' && settings.enabledPlugins !== null
+    ? settings.enabledPlugins
+    : {}
+  return Object.entries(map)
+    .filter(([, v]) => v !== false)
+    .map(([name]) => String(name))
+    .sort()
+}
+
+/** The plugin list a worker profile assigns, normalized the same way, so the two compare. */
+function profilePluginList(worker) {
+  const list = worker && Array.isArray(worker.plugins) ? worker.plugins : []
+  return list.map((p) => String(p)).sort()
+}
+
+/**
+ * assertProfileParity({args, worker, task, accountSettings}) → the observed {model, effort}, or
+ * throws ProfileParityError naming the field that diverged. THE GUARD THAT SCREAMS: a
  * profile that says «sonnet» and an arg array that says «opus» is a silent substitution —
  * the run would look green while the founder's assignment was ignored. Model and effort are
  * the ONE part of the session that does not come from the checkout, so they are the one part
  * that needs an explicit assertion.
  *
- * @param {{args:string[], worker?:object, task?:object}} [o]
+ * TWO MORE FIELDS THAT ARE THE SAME PROPERTY IN A PLACE THE ARGUMENTS CANNOT SHOW. A session
+ * also carries the plugins the account has enabled and whether hosted connectors are allowed
+ * into it, and both live in that account's own settings file rather than in any flag. They
+ * belong to the worker's profile exactly as model does: a worker that quietly gained a
+ * marketplace plugin nobody assigned it, or kept a hosted connection the founder switched off,
+ * is not the session he authorized — and nothing downstream would ever say so, because such a
+ * run reports green. So `accountSettings` — the mirror as it was actually written to disk,
+ * read by the caller that already touches a disk — is compared here too:
+ *   - the enabled plugin set must equal the profile's set (order is not part of a set, and an
+ *     empty profile and an absent map are the same «none»);
+ *   - `disableClaudeAiConnectors` must be exactly `true`. Its absence is NOT a pass: an
+ *     account with no mirrored settings has no parity to speak of, and saying so out loud
+ *     beats spawning into an unknown one.
+ * A caller that passes no `accountSettings` keeps the older two-field guard unchanged.
+ *
+ * @param {{args:string[], worker?:object, task?:object, accountSettings?:object}} [o]
  * @returns {{model:(string|null), effort:(string|null)}}
  */
-export function assertProfileParity({ args, worker, task } = {}) {
+export function assertProfileParity({ args, worker, task, accountSettings } = {}) {
   const observed = modelEffortOf(args)
   const expected = expectedModelEffort({ worker, task })
   for (const field of ['model', 'effort']) {
@@ -275,6 +311,24 @@ export function assertProfileParity({ args, worker, task } = {}) {
       )
     }
   }
+
+  if (accountSettings !== undefined && accountSettings !== null) {
+    const wanted = profilePluginList(worker)
+    const held = enabledPluginList(accountSettings)
+    if (wanted.length !== held.length || wanted.some((name, k) => name !== held[k])) {
+      throw new ProfileParityError(
+        `spawn plugins [${held.join(', ') || '(none)'}] do not match the worker profile [${wanted.join(', ') || '(none)'}]` +
+          ' — terminal parity refuses a session that gained or lost a plugin nobody assigned',
+      )
+    }
+    if (accountSettings.disableClaudeAiConnectors !== true) {
+      throw new ProfileParityError(
+        'the account settings do not switch hosted connectors off — terminal parity refuses a session ' +
+          'whose connectors were never mirrored: this worker reaches the world only through what the daemon gave it',
+      )
+    }
+  }
+
   return observed
 }
 
