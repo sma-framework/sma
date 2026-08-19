@@ -138,6 +138,26 @@ describe('statusline.mjs — Task 1 (pure render + cache + adapters)', () => {
     expect(() => parseStatusStdin(undefined as unknown as string)).not.toThrow()
   })
 
+  it('Test 4b: the context percentage is read from the DOCUMENTED context_window shape', () => {
+    // the vendor documents context_window.used_percentage — the older tolerated shapes
+    // were never present on a real payload, so the parser promised what it never did.
+    const documented = JSON.stringify({
+      model: { display_name: 'Opus' },
+      context_window: { used_percentage: 37.5, remaining_percentage: 62.5, total_input_tokens: 12345 },
+    })
+    expect(parseStatusStdin(documented).contextPct).toBe(37.5)
+    // camelCase from a future rename is tolerated too (foreign names are taken as a set)
+    expect(parseStatusStdin(JSON.stringify({ context_window: { usedPercentage: 12 } })).contextPct).toBe(12)
+    expect(parseStatusStdin(JSON.stringify({ contextWindow: { used_percentage: 5 } })).contextPct).toBe(5)
+    // the documented field wins over the older tolerated one when both are present
+    expect(parseStatusStdin(JSON.stringify({ context_window: { used_percentage: 37 }, cost: { used_pct: 71 } })).contextPct).toBe(37)
+
+    // and the pre-existing tolerance survives: no context data -> no key, never a throw
+    expect(parseStatusStdin(JSON.stringify({ context_window: {} })).contextPct).toBeUndefined()
+    expect(parseStatusStdin(JSON.stringify({ context_window: 'nonsense' })).contextPct).toBeUndefined()
+    expect(parseStatusStdin(JSON.stringify({ unrelated: true })).contextPct).toBeUndefined()
+  })
+
   it('Test 5: unscored-predictions math — 3 plan ids, 1 scored -> 2 unscored; malformed plan is skipped', async () => {
     const phasesDir = join(dir, 'phases')
     const calibrationDir = join(dir, 'calibration')
