@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 90, grouped by what they are for. The sections after this table go deeper
+All 91, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -151,6 +151,7 @@ them in plain language, in English or Russian.
 | `passport` | Build and read `PASSPORT.md`: the real hit rate and sample size, reproducible on a fresh clone |
 | `manifest` | The evidence passport for a pull request, rendered `--md` for a human, `--json` for a tool, `--dense` for an agent |
 | `decisions` | Mine the human decisions already recorded in local transcripts into reviewable draft notes |
+| `approvals` | Read the standing acceptance rules out of the decision history — every proposal with its denominator, and not one of them ever switched on |
 | `exam` | The replay exam: hold out recorded decisions, hide the answers, and score the policy against them |
 
 ### Measurement
