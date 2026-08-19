@@ -2047,6 +2047,51 @@ async function cmdAirbagCheck({ dirs }) {
 }
 
 /**
+ * tool-gate — the PARKING TICKET hook, run before a WORKER's tool call.
+ *
+ * DELIBERATELY NOT IN `HOOK_FACING`. That set carries the fail-OPEN contract — swallow
+ * anything and exit 0 with no output, which the harness reads as «no objection». This
+ * verb is the one place where that would be exactly wrong: inside a configured attempt
+ * a failure has to become a refusal. So it catches everything ITSELF and always writes
+ * an answer, and the answer it writes when it cannot even reach its module is a refusal
+ * — unless there is no attempt directory at all, in which case this is somebody else's
+ * session (another window, a production worker) and the only correct answer is «allow».
+ *
+ * The exit code is always 0: the decision travels in the JSON on stdout, and a non-zero
+ * exit would be a second, weaker channel saying something the first one already said.
+ */
+async function cmdToolGate() {
+  const evt = readStdinJson()
+  const runDir = typeof process.env.SMA_RUN_DIR === 'string' ? process.env.SMA_RUN_DIR.trim() : ''
+  try {
+    const gate = await import('./lib/tool-gate.mjs')
+    const verdict = await gate.decideOnEvent({ event: evt, env: process.env })
+    // Собственный след: строка уходит в stderr, который харнесс кладёт в кадр хука.
+    process.stderr.write(
+      `SMA tool-gate: ${verdict.decision} — ${verdict.reason}` +
+        `${verdict.ticketId ? ` [${verdict.ticketId}, ждали ${verdict.waitedMs} мс]` : ''}\n`,
+    )
+    process.stdout.write(JSON.stringify(gate.hookResponseFor(verdict)))
+  } catch (err) {
+    const configured = !!runDir && existsSync(runDir)
+    const reason = configured
+      ? `гейт сконфигурирован и сломался, поэтому вызов отклонён: ${err && err.message ? err.message : String(err)}`
+      : 'гейт не сконфигурирован (модуль билета недоступен, каталога попытки нет)'
+    process.stderr.write(`SMA tool-gate: ${reason}\n`)
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: configured ? 'deny' : 'allow',
+          permissionDecisionReason: reason,
+        },
+      }),
+    )
+  }
+  return 0
+}
+
+/**
  * spend-check — the deterministic spend-ledger hook. A pre-less
  * FALLBACK verb for an install that wires it standalone; the canonical wiring is NOT a
  * separate spawn — the Task-cap spend stream rides inside `pretask-pack` (one Task
@@ -10510,6 +10555,7 @@ const HANDLERS = {
   'reflex-check': cmdReflexCheck,
   'gates-check': cmdGatesCheck,
   'airbag-check': cmdAirbagCheck, // pre-less fallback for the airbag stream
+  'tool-gate': cmdToolGate, // PreToolUse parking ticket for a WORKER's call; fail-CLOSED inside a configured attempt
   undo: cmdUndo, // one-action airbag restore
   airbag: cmdAirbag, // snapshot admin (list|prune|probe|stats)
   spend: cmdSpend, // deterministic spend ledger report + set-cap + --stat scorer
@@ -10606,7 +10652,7 @@ async function main() {
 
   if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }
