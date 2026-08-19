@@ -41,6 +41,8 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLI = join(__dirname, '..', 'cli.mjs')
 
+import { lexicalCapability } from '../lib/fts-index.mjs'
+
 const iso = (ms: number) => new Date(ms).toISOString()
 
 let smaRoot: string
@@ -486,5 +488,136 @@ describe('cli.mjs memory commands in a repository with no commits yet', () => {
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
+  })
+})
+
+// ── `load` asks the lexical layer, and says so even when the layer cannot answer ──
+//
+// The point of the hybrid delivery is a query by WORD reaching a record that carries no
+// such tag. Proving it end to end needs an index on disk, and a build of Node that can
+// hold one — which is exactly the thing a user may not have. So the wire is asserted in
+// two halves: the half that runs everywhere (the option is passed, and a machine with
+// no index is told why it got the facet answer) and the half that needs the engine.
+
+const LEXICAL_CAP = lexicalCapability()
+const EMDASH = String.fromCharCode(0x2014)
+
+function seedCorpus(root: string) {
+  const corpus = join(root, '.claude', 'memory')
+  mkdirSync(corpus, { recursive: true })
+  writeFileSync(
+    join(corpus, 'TAGS.md'),
+    `# TAGS\n\n## area\n- tech ${EMDASH} infra, build.\n- docs ${EMDASH} documentation.\n\n## kind\n- reference ${EMDASH} a lookup fact.\n\n## phase\n- Open facet: phase:NN.\n`,
+    'utf8',
+  )
+  writeFileSync(
+    join(corpus, 'core-rule.md'),
+    '---\ndescription: the always-loaded rule\nkind: reference\ntags: [tech]\nimportance: 9\n---\nbody\n',
+    'utf8',
+  )
+  // The scenario in one file: the word «pangolin» is in the claim and in NO tag.
+  writeFileSync(
+    join(corpus, 'pangolin-fact.md'),
+    '---\ndescription: the pangolin release ships on tuesdays\nkind: reference\ntags: [docs]\nimportance: 4\n---\nbody\n',
+    'utf8',
+  )
+  return corpus
+}
+
+describe('cli.mjs load — the delivery point is asked the words of the query', () => {
+  let repo: string
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'sma-load-lexical-'))
+    spawnSync('git', ['init'], { cwd: repo, encoding: 'utf8' })
+    seedCorpus(repo)
+  })
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  const runLoad = (args: string[]) =>
+    spawnSync('node', [CLI, 'load', ...args], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
+    })
+
+  it('with no index built at all: the answer is the facet one, exit 0, and the reason is NAMED', () => {
+    const run = runLoad(['--tags', 'pangolin', '--json'])
+    expect(run.status).toBe(0)
+    const res = JSON.parse(run.stdout)
+
+    // the option reached the delivery point — a run that never asked carries no such
+    // field at all, so its presence is the wire and not a formatting detail
+    expect(res.meta.lexical).toBeDefined()
+    expect(res.meta.lexical.degraded).toBe(true)
+    // …and a person is TOLD, rather than silently served the narrower answer
+    expect(res.warnings.join(' ')).toContain('fusion-degraded')
+    // the honest warning about a word that is not a registered facet is still there
+    expect(res.warnings.join(' ')).toContain('not a registered')
+  })
+
+  it.skipIf(!LEXICAL_CAP.module)(
+    'with the index built: a WORD that is nobody’s tag reaches the record that carries it',
+    () => {
+      const before = runLoad(['--tags', 'pangolin', '--json'])
+      expect(JSON.parse(before.stdout).periphery).not.toContain('pangolin-fact.md')
+
+      const built = spawnSync('node', [CLI, 'memory', 'index', 'rebuild'], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
+      })
+      expect(built.status).toBe(0)
+
+      const after = runLoad(['--tags', 'pangolin', '--json'])
+      const res = JSON.parse(after.stdout)
+      expect(res.meta.lexical.degraded).toBe(false)
+      expect(res.periphery).toContain('pangolin-fact.md')
+    },
+  )
+})
+
+describe('cli.mjs context — the pack compiler is on the same hybrid path as the delivery point', () => {
+  let repo: string
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'sma-context-lexical-'))
+    spawnSync('git', ['init'], { cwd: repo, encoding: 'utf8' })
+    seedCorpus(repo)
+  })
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  const runContext = () =>
+    spawnSync('node', [CLI, 'context', 'pangolin work on the tech build', '--json'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
+    })
+
+  it('compiles a pack with no index built at all — degrading is not a crash', () => {
+    const run = runContext()
+    expect(run.status).toBe(0)
+    expect(JSON.parse(run.stdout).members.length).toBeGreaterThan(0)
+  })
+
+  it.skipIf(!LEXICAL_CAP.module)('reaches the record only a word can reach, once the index exists', () => {
+    const before = JSON.parse(runContext().stdout)
+    expect(before.members.map((m: { id: string }) => m.id)).not.toContain('pangolin-fact.md')
+
+    const built = spawnSync('node', [CLI, 'memory', 'index', 'rebuild'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
+    })
+    expect(built.status).toBe(0)
+
+    const after = JSON.parse(runContext().stdout)
+    expect(after.members.map((m: { id: string }) => m.id)).toContain('pangolin-fact.md')
   })
 })

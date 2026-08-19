@@ -580,3 +580,49 @@ describe('cli.mjs reflex-check (hook consumer, Task 2)', () => {
     }
   })
 })
+
+// ── the reflexes stay strictly facet, and it is asserted, not assumed ────────
+//
+// A reflex fires a lesson at a person mid-edit. It is allowed to do that because the
+// selection behind it is a STRICT facet match: the record's own areas met the tags the
+// edit derived. A lexical rank is a different kind of claim — «these words look alike» —
+// and a pre-act warning built on it is somebody else's lesson interrupting your work.
+// Hence the inversion below: the delivery point can fuse now, and this path must not.
+
+describe('reflex.mjs — the lexical layer never reaches the reflex path', () => {
+  it('does not hand the delivery point a lexical option, and a note only a word could reach never becomes a candidate', () => {
+    // A lesson in a DIFFERENT area, whose words a lexical layer would match on the
+    // strength of the edit's own vocabulary. No facet of the query reaches it.
+    note(
+      corpusDir,
+      'lesson-elsewhere.md',
+      {
+        description: 'A migrations-flavoured lesson filed under another area entirely',
+        kind: 'bug-lesson',
+        tags: ['crm'],
+        'use-when': 'touching migrations',
+        importance: 9,
+      },
+      '## How to apply\nMind the migration when you touch the crm surface.\n',
+    )
+
+    const seen: Record<string, unknown>[] = []
+    const spy = {
+      resolvePeriphery(opts: Record<string, unknown>) {
+        seen.push(opts)
+        return loader.resolvePeriphery(opts)
+      },
+    }
+
+    const evt = JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    const { tags, target } = deriveTags(evt.tool_input, evt.cwd)
+    const candidates = matchReflexes({ tags, target, corpusDir, tagsPath, loader: spy })
+
+    // the option is not passed — the assertion the comment above cannot make
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).not.toHaveProperty('lexical')
+
+    // …and the consequence is visible in the answer: only the facet-matched lesson fires
+    expect(candidates.map((c) => c.noteId)).toEqual(['lesson-migration'])
+  })
+})

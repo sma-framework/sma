@@ -1569,6 +1569,15 @@ async function cmdEmit({ flags, dirs }) {
 /**
  * load --tags <csv> — resolve a task's tag set into CORE + periphery via the
  * loader. Prints the ordered file list. Zero matches → CORE only, exit 0.
+ *
+ * HYBRID: this is one of the two verbs that hand the delivery point the lexical layer,
+ * so a query BY WORD reaches a record that carries no such tag — which is the whole
+ * point of holding a lexical index at all. The words searched for are the words asked
+ * for: no separate flag, because a query nobody types is a query nobody uses, and the
+ * honest warning about a word that is not a registered facet stays exactly where it was.
+ * The reflex path, the pre-act injection and the pack handed to a subagent do NOT get
+ * this option: they are budgeted, or they fire at somebody mid-edit, and both are
+ * decisions of their own rather than a consequence of this one.
  */
 async function cmdLoad({ flags, dirs }) {
   const loader = await import('./lib/loader.mjs')
@@ -1602,7 +1611,20 @@ async function cmdLoad({ flags, dirs }) {
     /* fail-open — the load still works uninstrumented */
   }
 
-  const res = loader.resolvePeriphery({ tags, corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), dateMap, cite })
+  // Where the derived index lives — the same path `memory index` writes and reads. A
+  // machine with no index, or a build of Node that cannot hold one, is a NORMAL state:
+  // the delivery degrades to the facet answer and says so in the warnings below.
+  const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const lexicalIndexPath = join(dirs.indexDir, LEXICAL_INDEX_FILE)
+
+  const res = loader.resolvePeriphery({
+    tags,
+    corpusDir,
+    tagsPath: join(corpusDir, 'TAGS.md'),
+    dateMap,
+    cite,
+    lexical: { taskText: tags.join(' '), indexPath: lexicalIndexPath },
+  })
   if (wantsJson(flags)) {
     printJson(res)
     return 0
@@ -1895,7 +1917,24 @@ async function cmdContext({ positionals, flags, dirs }) {
   }
 
   const budget = Number.isFinite(Number(flags.budget)) && Number(flags.budget) > 0 ? Number(flags.budget) : undefined
-  const compiled = pack.compilePack({ taskText, commit, corpusDir, tagsPath, dateMap, catalog, profile, cite, ...(budget ? { budget } : {}) })
+  // The pack compiler rides the SAME hybrid delivery the load verb does — through its
+  // own handle, and NOT by also handing the option to the loader underneath it. Two
+  // fusions over one query would rank a ranking, and the difference would be
+  // attributable to nothing anybody could name.
+  const { LEXICAL_INDEX_FILE } = await import('./lib/fts-index.mjs')
+  const compiled = pack.compilePack({
+    taskText,
+    commit,
+    corpusDir,
+    tagsPath,
+    dateMap,
+    catalog,
+    profile,
+    cite,
+    experiment: pack.EXPERIMENT_LEXICAL,
+    indexPath: join(dirs.indexDir, LEXICAL_INDEX_FILE),
+    ...(budget ? { budget } : {}),
+  })
 
   // persist the pack (artifacts) + active.json (STATE — the only wall-clock in the feature).
   const { atomicWriteRaw, atomicWriteJson } = await import('./lib/fs-atomics.mjs')
@@ -5839,8 +5878,11 @@ const EVAL_USAGE = [
   '              Deterministic floors give a red/green verdict with no model in the loop — a floor',
   '              violation exits non-zero. --stat prints one bare value (honestly `null` when the set',
   '              asked no such question); --k names the cutoffs; --cases overrides the gold-case file.',
-  '              --experiment <name> scores the SAME set twice — default path vs the named experiment —',
-  '              and prints the deltas in percentage points. It names no winner: the stopping rule of',
+  '              --experiment <name> scores the SAME set twice — the FACET path (tags in, tag-matched',
+  '              records out, no layer asked anything) against the named experiment. The control is',
+  '              that path BY NAME, not «whatever ships today»: a baseline that inherited the shipped',
+  '              path would be comparing the layer with itself. The deltas print in percentage',
+  '              points. It names no winner: the stopping rule of',
   '              the canon is applied by a person and recorded in writing.',
   '  north-star  cost per VERIFIED CORRECT result — tokens, compute, wall-clock and human minutes,',
   '              divided by the results the benchmark judged correct, plus the guardrail panel of',
@@ -5977,6 +6019,12 @@ async function evalMemory({ flags, dirs }) {
 
 /**
  * eval memory --experiment <name> — the A/B arm of the same verb.
+ *
+ * THE CONTROL ARM IS THE FACET PATH, BY NAME. It is not «the default path», and the
+ * difference stopped being cosmetic the day the shipped delivery became hybrid: a
+ * control that inherited whatever ships would have compared the layer with itself and
+ * reported, unfalsifiably, that it changes nothing. The arm is built by the measurement
+ * module's own `controlArmOptions`, which strips every lexical option and keeps the rest.
  *
  * EXIT CODE IS STILL THE FLOOR VERDICT, and it is the EXPERIMENT arm's floors: an arm
  * that lifts a ranking number while a must-be-zero floor goes red has not passed. The

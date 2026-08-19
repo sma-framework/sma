@@ -468,6 +468,30 @@ export function captureMemoryEval(opts = {}) {
 // ─────────────────────────── the A/B (canon §16) ────────────────────────────
 
 /**
+ * CONTROL_ARM_PATH — WHICH retrieval the control arm is, by name.
+ *
+ * The baseline of a comparison has to be a path somebody can point at, not «whatever
+ * ships today». Naming it is what lets a test assert it, and a test is the only thing
+ * that can notice the day the shipped path moves underneath the measurement.
+ */
+export const CONTROL_ARM_PATH = 'facet'
+
+/**
+ * controlArmOptions(opts) → the same run with every lexical option REMOVED.
+ *
+ * The three options that can put the layer in a compile — the experiment's name, the
+ * index to read, the layer itself — are stripped here, in one place, so «the control did
+ * not ask the layer anything» is a fact a caller can check rather than a property of how
+ * a signature happens to destructure. Everything else about the run is carried through
+ * untouched: the two arms must differ by the layer and by nothing else, and a control
+ * that quietly lost a budget or a corpus would be a different comparison.
+ */
+export function controlArmOptions(opts = {}) {
+  const { experiment, indexPath, lexical, ...facetOnly } = opts ?? {}
+  return facetOnly
+}
+
+/**
  * A delta in PERCENTAGE POINTS, or `null` when either arm has no number.
  *
  * Points, not percent-of-percent: recall going from 0.20 to 0.25 is «+5 points», and
@@ -489,10 +513,19 @@ function deltaCount(after, before) {
  * captureMemoryExperiment(opts) → the A/B of a retrieval experiment on the gold set.
  *
  * ONE set, TWO arms, run back to back in the same process against the same corpus: the
- * CONTROL is the default path exactly as it ships, the EXPERIMENT differs by one option
- * threaded down to compilePack and by nothing else. That is the whole design: any
- * difference between the two summaries is attributable to the layer, because there is no
- * second code path for it to be attributable to.
+ * CONTROL is the FACET path — tags in, tag-matched records out, and no layer asked a
+ * question — and the EXPERIMENT differs by one option threaded down to compilePack and
+ * by nothing else. That is the whole design: any difference between the two summaries is
+ * attributable to the layer, because there is no second code path for it to be
+ * attributable to.
+ *
+ * THE CONTROL IS NAMED, NOT INHERITED. It used to be described as «the default path
+ * exactly as it ships», and that description had an expiry date on it: the day the
+ * shipped path became hybrid, the control would have become hybrid with it, and the
+ * comparison would have been the layer against itself — reporting, consistently and
+ * unfalsifiably, that the layer changes nothing. So the arm is built by
+ * `controlArmOptions` and its path has a name (`CONTROL_ARM_PATH`), both of which a test
+ * can hold to account. A comment could not have.
  *
  * The report is DELTAS, not a verdict. Canon §16 states the stopping rule — a retriever
  * that does not improve critical recall or cost per verified result WITHOUT hurting
@@ -524,7 +557,7 @@ function deltaCount(after, before) {
 export function captureMemoryExperiment(opts = {}) {
   const { experiment = EXPERIMENTS[0], indexPath, lexical, checkCommand = MEMORY_EXPERIMENT_CHECK_COMMAND, ...rest } = opts
 
-  const control = captureMemoryEval({ ...rest, checkCommand: MEMORY_EVAL_CHECK_COMMAND })
+  const control = captureMemoryEval({ ...controlArmOptions(rest), checkCommand: MEMORY_EVAL_CHECK_COMMAND })
   const treatment = captureMemoryEval({
     ...rest,
     experiment,
