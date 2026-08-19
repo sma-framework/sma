@@ -8562,6 +8562,143 @@ async function cmdCurriculum({ flags, dirs }) {
   return 0
 }
 
+// ─────────────────────────── history search ──────────────────────────────────
+
+const HISTORY_USAGE = [
+  'usage: sma history search <слово…> [--limit N] [--source a,b] [--corpus <путь>] [--json]',
+  '',
+  '  Поиск по истории этого проекта. Четыре книги, один прогон:',
+  '',
+  '    journal     журнал координации (.sma/journal) — заявки, освобождения, события',
+  '    exec        записи исполнения планов (.sma/exec)',
+  '    lesson      уроки памяти (.claude/memory) — ЦЕЛИКОМ, вместе с телом заметки',
+  '    transcript  стенограммы сессий (каталог вендора; SMA_SPEND_LOGS_DIR)',
+  '',
+  '  Совпадение — по словам, а не по подстроке: «пели» не найдёт «пеликан».',
+  '  Кириллица видна наравне с латиницей. Несколько слов — найдутся строки, где',
+  '  есть ВСЕ они.',
+  '',
+  '  --limit N     не более N находок ИЗ КАЖДОЙ книги (по умолчанию 20). Именно из',
+  '                каждой: один общий потолок достался бы стенограммам — они больше',
+  '                остальных на три порядка — и поиск отвечал бы только ими.',
+  '                Стенограммы читаются потоково, построчно, и перестают',
+  '                открываться, как только N набрано.',
+  '  --source      искать только в названных книгах, через запятую',
+  '  --corpus      другой каталог уроков',
+  '  --json        те же поля структурно: source, file, ts, fragment',
+  '',
+  '  СЕКРЕТЫ. Стенограммы хранят всё, что печаталось в сессии. Каждый фрагмент',
+  '  выдачи — из ЛЮБОЙ книги, не только из стенограмм — проходит ту же проверку на',
+  '  секретоподобные строки, которой продукт проверяет профиль: ран, похожий на',
+  '  ключ (sk-…, ghp_…, gho_…, AKIA…, xox…, блок приватного ключа), и длинный',
+  '  непрозрачный ран со смешанным регистром и цифрами заменяются целиком.',
+  '  Чего проверка НЕ ловит: коротких секретов и паролей-слов — у них нет формы,',
+  '  по которой их можно узнать. Обещание здесь ровно одно: ключеподобное',
+  '  маскируется. «Ничего чувствительного не пройдёт» тут никто не обещает —',
+  '  выдачу перед вкладкой в отчёт всё равно смотрят глазами.',
+  '',
+  '  Каталога стенограмм может не быть — тогда эта книга просто пуста, и это не',
+  '  ошибка. Отсутствие находок — тоже не ошибка: код выхода 0.',
+].join('\n')
+
+/** The human name of each book, for the count line. */
+const HISTORY_SOURCE_RU = {
+  journal: 'журнал',
+  exec: 'исполнение',
+  lesson: 'уроки',
+  transcript: 'стенограммы',
+}
+
+/**
+ * history search — the read-only search across the four corpora a working session
+ * leaves behind.
+ *
+ * The verb calls the module and scans NOTHING itself: the corpora, the streaming,
+ * the early stop and the credential screen all live in one place, so a second caller
+ * cannot grow a second behaviour. Both consumers this exists for — a person at a
+ * terminal and a worker in its own copy — run the CLI, which is why the search added
+ * no door anywhere else.
+ *
+ * Exit 0 for an empty result: not finding something is not a mistake the caller made,
+ * and a non-zero there would teach scripts to read "no hits" as "broken". The only
+ * non-zero here is a syntax error — a missing subcommand, a missing word, a flag that
+ * was handed a value it cannot be.
+ */
+async function cmdHistory({ positionals, flags, dirs }) {
+  const sub = positionals[0] ?? ''
+  const words = positionals.slice(1)
+
+  if (flags.help === true || sub !== 'search' || words.length === 0) {
+    process.stdout.write(`${HISTORY_USAGE}\n`)
+    if (flags.help === true) return 0
+    const said =
+      sub !== 'search'
+        ? `нужен подверб search${sub ? ` (получено «${sub}»)` : ''}`
+        : 'нужно слово, по которому искать'
+    process.stderr.write(`SMA history: ${said}\n`)
+    return 1
+  }
+
+  const { searchHistory, HISTORY_SOURCES, DEFAULT_HISTORY_LIMIT } = await import('./lib/history-search.mjs')
+
+  let limit = DEFAULT_HISTORY_LIMIT
+  if (flags.limit != null && flags.limit !== true) {
+    const n = Number(flags.limit)
+    if (!Number.isFinite(n) || n <= 0) {
+      process.stderr.write(`SMA history search: --limit ждёт положительное число (получено «${flags.limit}»)\n`)
+      return 1
+    }
+    limit = Math.floor(n)
+  }
+
+  let sources = HISTORY_SOURCES
+  if (typeof flags.source === 'string') {
+    const asked = flags.source.split(',').map((s) => s.trim()).filter(Boolean)
+    const unknown = asked.filter((s) => !HISTORY_SOURCES.includes(s))
+    if (unknown.length > 0) {
+      process.stderr.write(
+        `SMA history search: неизвестный --source «${unknown.join(', ')}» — известны: ${HISTORY_SOURCES.join(', ')}\n`,
+      )
+      return 1
+    }
+    sources = asked
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+
+  const res = await searchHistory({
+    query: words.join(' '),
+    limit,
+    sources,
+    journalDir: dirs?.journalDir,
+    execDir: dirs?.execDir,
+    corpusDir,
+    repoRoot,
+  })
+
+  if (wantsJson(flags)) {
+    printJson(res)
+    return 0
+  }
+
+  const counts = res.sources.map((s) => `${s} ${res.perSource[s]}`).join(' · ')
+  process.stdout.write(
+    `SMA history search «${res.query}» — находок ${res.hits.length} (не более ${res.limit} из каждой книги)\n`,
+  )
+  process.stdout.write(`  ${counts}\n`)
+  for (const h of res.hits) {
+    process.stdout.write(
+      `  ${h.source} (${HISTORY_SOURCE_RU[h.source] ?? h.source}) · ${h.file} · ${h.ts ?? 'момент неизвестен'}\n`,
+    )
+    process.stdout.write(`    ${h.fragment}\n`)
+  }
+  if (res.hits.length === 0) {
+    process.stdout.write('  ничего не нашлось — это честный пустой результат, а не ошибка\n')
+  }
+  return 0
+}
+
 // ─────────────────────────── dispatch ────────────────────────────────────────
 
 /** Subcommands whose failure must NEVER wedge a session (exit 0 unconditionally). */
@@ -10771,6 +10908,7 @@ const HANDLERS = {
   'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|all|--count|--json)
   vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
   memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  history: cmdHistory, // streaming read-only search across the journal, the plan-execution records, the session transcripts and the lesson bodies (search <слово…> [--limit|--source|--corpus|--json]); no derived index, every fragment credential-screened
   'ship-lane': cmdShipLane, // ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
   exam: cmdExam, // replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
@@ -10783,7 +10921,7 @@ const HANDLERS = {
  * document its own flags. Deliberately an opt-in allow-list: 88 other verbs keep
  * the existing behaviour untouched.
  */
-const OWN_HELP = new Set(['memory'])
+const OWN_HELP = new Set(['memory', 'history'])
 
 async function main() {
   const argv = process.argv.slice(2)
@@ -10792,7 +10930,7 @@ async function main() {
 
   if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }
