@@ -53,6 +53,12 @@
  *   - Test 24: forwardSubagentText → '--forward-subagent-text' in the produced array, and
  *              addDir still lands last.
  *   - Test 25: every daemon-assembled env says NOBODY IS AT THE KEYBOARD (HEADLESS_ENV).
+ *   - Test 26: the per-spawn MCP config file is written in the shape the CLI actually reads
+ *              (a stdio server with command/args), carries no environment names and no
+ *              secret values, and never mentions a disabled registry entry.
+ *   - Test 27: profile parity also covers the two halves of the personal layer that are NOT
+ *              in the argument array — the plugins the account has enabled, and the switch
+ *              that keeps hosted connectors out of the session.
  *
  *   THE ONE FENCE (untrusted data never breaks out, and there is only one copy of the rule):
  *   - Test 22: the shared fence module scales the fence past ANY backtick run inside the
@@ -69,6 +75,7 @@ import {
   buildCodexArgs,
   buildAccountEnv,
   buildTaskPrompt,
+  buildMcpConfigFile,
   codexConfigSeed,
   ForbiddenFlagError,
   ProfileParityError,
@@ -568,5 +575,68 @@ describe('prompt-fence (the single copy of the containment rule)', () => {
       fencedBlock('task', `id: t-1\ntitle: ${nasty}`),
     )
     expect(buildForgePrompt({ kind: 'agent', description: nasty })).toContain(fencedBlock('untrusted-data', nasty))
+  })
+})
+
+// ── the MCP config a spawn reads: the shape the CLI accepts, and nothing secret on disk ──
+//
+// The registry a person edits on the host records env NAMES, because that is how this product
+// carries a token: by name, never by value. The file handed to a session is a different
+// document with a different reader — the CLI — and it knows nothing about that convention. A
+// key it does not understand is at best ignored and at worst a parse refusal, and either way a
+// server that never starts is indistinguishable from one that was never configured.
+
+/** A write-capturing fs: the config file never touches a real directory in this suite. */
+function captureFs() {
+  const writes: Array<{ path: string; content: string }> = []
+  return {
+    fs: {
+      mkdirSync: () => {},
+      writeFileSync: (p: string, c: string) => writes.push({ path: String(p).replace(/\\/g, '/'), content: c }),
+      renameSync: () => {},
+    },
+    lastWritten: () => JSON.parse(writes[writes.length - 1].content),
+  }
+}
+
+describe('buildMcpConfigFile — the file a session reads is the shape the CLI accepts', () => {
+  it('writes stdio entries with command/args only — no env names, no values, no disabled entry', () => {
+    const { fs, lastWritten } = captureFs()
+    const servers = [
+      { id: 's1', command: 'node', args: ['x.mjs'], envNames: ['TOK'], enabled: true },
+      { id: 's2', command: 'node', args: ['y.mjs'], envNames: ['OTHER'], enabled: false },
+    ]
+    const path = buildMcpConfigFile({ servers, taskDir: '/wt/task-1', fsImpl: fs })
+    expect(path.replace(/\\/g, '/')).toBe('/wt/task-1/mcp-config.json')
+
+    const written = lastWritten()
+    expect(Object.keys(written.mcpServers)).toEqual(['s1']) // the disabled entry never reaches a spawn
+    expect(written.mcpServers.s1).toEqual({ type: 'stdio', command: 'node', args: ['x.mjs'] })
+
+    // A stdio server inherits the environment of the process that starts it, so the names the
+    // registry records stay the daemon's business. Neither a name nor a value is on this disk.
+    const raw = JSON.stringify(written)
+    expect(raw).not.toContain('envNames')
+    expect(raw).not.toContain('TOK')
+    expect(raw).not.toContain('s2')
+  })
+
+  it('an empty or absent registry still writes a well-formed, empty map', () => {
+    const a = captureFs()
+    buildMcpConfigFile({ servers: [], taskDir: '/wt/task-2', fsImpl: a.fs })
+    expect(a.lastWritten()).toEqual({ mcpServers: {} })
+
+    const b = captureFs()
+    buildMcpConfigFile({ taskDir: '/wt/task-3', fsImpl: b.fs })
+    expect(b.lastWritten()).toEqual({ mcpServers: {} })
+
+    // no task dir is a refusal, not a write into whatever the process cwd happens to be
+    expect(() => buildMcpConfigFile({ servers: [], fsImpl: a.fs } as never)).toThrow()
+  })
+
+  it('a server with no arguments is written without the key rather than with an empty one', () => {
+    const { fs, lastWritten } = captureFs()
+    buildMcpConfigFile({ servers: [{ id: 'plain', command: 'mcp-thing', enabled: true }], taskDir: '/wt/t', fsImpl: fs })
+    expect(lastWritten().mcpServers.plain).toEqual({ type: 'stdio', command: 'mcp-thing' })
   })
 })

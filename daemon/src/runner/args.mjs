@@ -348,12 +348,22 @@ export function buildClaudeArgs(opts = {}) {
 }
 
 /**
- * buildMcpConfigFile({servers, taskDir, fsImpl}) → the path of a per-spawn MCP config file
- * Writes a JSON `{mcpServers: {...}}` containing ONLY the ENABLED registry
- * entries — command/args/envNames verbatim from the registry — into the task's own temp dir
- * and returns its path. DISABLED entries never reach a spawn. The registry is human-edited on
- * the host (harness.mjs law); this function only SELECTS the enabled subset, it never mutates
- * or invents an entry. Atomic write (fs-atomics); fs is injectable for tests.
+ * buildMcpConfigFile({servers, taskDir, fsImpl}) → the path of a per-spawn MCP config file.
+ * Writes a JSON `{mcpServers: {...}}` containing ONLY the ENABLED registry entries, each in
+ * the shape the CLI itself reads — `{type:'stdio', command, args?}` — into the task's own
+ * temp dir, and returns its path. DISABLED entries never reach a spawn. The registry is
+ * human-edited on the host (harness.mjs law); this function only SELECTS the enabled subset,
+ * it never mutates or invents an entry. Atomic write (fs-atomics); fs is injectable for tests.
+ *
+ * WHY NO ENVIRONMENT LANDS IN THIS FILE, neither values nor names. The registry a person
+ * edits records env NAMES, because that is how this product carries a credential everywhere
+ * else: by name, resolved at spawn time, into the child env only — never onto a disk and
+ * never into a row. This file has a different reader. The CLI knows nothing about that
+ * convention, so a name written here is a key it did not ask for: ignored at best, a parse
+ * refusal at worst, and either way a server that silently never starts. It does not need one,
+ * either — a stdio server is started BY the session as a child process and inherits that
+ * process's environment, which the daemon has already assembled per spawn. So the honest
+ * document is the smallest one: what to run, with which arguments, and nothing about secrets.
  *
  * @param {{servers?:Array, taskDir:string, fsImpl?:object}} args
  * @returns {string} the written config path
@@ -364,9 +374,9 @@ export function buildMcpConfigFile({ servers, taskDir, fsImpl } = {}) {
   const mcpServers = {}
   for (const s of enabled) {
     mcpServers[s.id] = {
+      type: 'stdio',
       command: s.command,
       ...(s.args !== undefined ? { args: s.args } : {}),
-      ...(s.envNames !== undefined ? { envNames: s.envNames } : {}),
     }
   }
   const path = join(taskDir, 'mcp-config.json')
