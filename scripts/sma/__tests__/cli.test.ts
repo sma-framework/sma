@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLI = join(__dirname, '..', 'cli.mjs')
 
-import { lexicalCapability } from '../lib/fts-index.mjs'
+import { lexicalCapability, LEXICAL_INDEX_FILE } from '../lib/fts-index.mjs'
 
 const iso = (ms: number) => new Date(ms).toISOString()
 
@@ -491,13 +491,20 @@ describe('cli.mjs memory commands in a repository with no commits yet', () => {
   })
 })
 
-// ── `load` asks the lexical layer, and says so even when the layer cannot answer ──
+// ── `load` asks the lexical layer, and repairs the index it is about to read ──
 //
 // The point of the hybrid delivery is a query by WORD reaching a record that carries no
 // such tag. Proving it end to end needs an index on disk, and a build of Node that can
 // hold one — which is exactly the thing a user may not have. So the wire is asserted in
-// two halves: the half that runs everywhere (the option is passed, and a machine with
-// no index is told why it got the facet answer) and the half that needs the engine.
+// two halves: the half that runs everywhere (the option is passed at all) and the half
+// that needs the engine.
+//
+// THE INDEX NO LONGER HAS TO BE THERE FIRST. The delivery asks whether the derived index
+// still describes the corpus and rebuilds it when it does not, so the case that used to
+// read «no index → the facet answer, and here is why» now reads «no index → one gets
+// built, and the word arrives». The degradation channel did not disappear and is not
+// asserted on a guess: it is exercised where it can be reached on ANY machine, in the
+// suite that owns the rebuild points.
 
 const LEXICAL_CAP = lexicalCapability()
 const EMDASH = String.fromCharCode(0x2014)
@@ -544,7 +551,7 @@ describe('cli.mjs load — the delivery point is asked the words of the query', 
       env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
     })
 
-  it('with no index built at all: the answer is the facet one, exit 0, and the reason is NAMED', () => {
+  it('the words of the query reach the delivery point, on any machine', () => {
     const run = runLoad(['--tags', 'pangolin', '--json'])
     expect(run.status).toBe(0)
     const res = JSON.parse(run.stdout)
@@ -552,28 +559,20 @@ describe('cli.mjs load — the delivery point is asked the words of the query', 
     // the option reached the delivery point — a run that never asked carries no such
     // field at all, so its presence is the wire and not a formatting detail
     expect(res.meta.lexical).toBeDefined()
-    expect(res.meta.lexical.degraded).toBe(true)
-    // …and a person is TOLD, rather than silently served the narrower answer
-    expect(res.warnings.join(' ')).toContain('fusion-degraded')
     // the honest warning about a word that is not a registered facet is still there
     expect(res.warnings.join(' ')).toContain('not a registered')
   })
 
   it.skipIf(!LEXICAL_CAP.module)(
-    'with the index built: a WORD that is nobody’s tag reaches the record that carries it',
+    'a repository that never built an index gets one from the delivery itself, and the WORD arrives',
     () => {
-      const before = runLoad(['--tags', 'pangolin', '--json'])
-      expect(JSON.parse(before.stdout).periphery).not.toContain('pangolin-fact.md')
+      const dbPath = join(repo, '.sma', 'index', LEXICAL_INDEX_FILE)
+      expect(existsSync(dbPath)).toBe(false)
 
-      const built = spawnSync('node', [CLI, 'memory', 'index', 'rebuild'], {
-        cwd: repo,
-        encoding: 'utf8',
-        env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
-      })
-      expect(built.status).toBe(0)
+      // nobody rebuilt anything by hand between these two lines
+      const res = JSON.parse(runLoad(['--tags', 'pangolin', '--json']).stdout)
 
-      const after = runLoad(['--tags', 'pangolin', '--json'])
-      const res = JSON.parse(after.stdout)
+      expect(existsSync(dbPath)).toBe(true)
       expect(res.meta.lexical.degraded).toBe(false)
       expect(res.periphery).toContain('pangolin-fact.md')
     },
@@ -600,24 +599,20 @@ describe('cli.mjs context — the pack compiler is on the same hybrid path as th
       env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
     })
 
-  it('compiles a pack with no index built at all — degrading is not a crash', () => {
+  it('compiles a pack on a repository that has never built an index — exit 0 on any machine', () => {
     const run = runContext()
     expect(run.status).toBe(0)
     expect(JSON.parse(run.stdout).members.length).toBeGreaterThan(0)
   })
 
-  it.skipIf(!LEXICAL_CAP.module)('reaches the record only a word can reach, once the index exists', () => {
-    const before = JSON.parse(runContext().stdout)
-    expect(before.members.map((m: { id: string }) => m.id)).not.toContain('pangolin-fact.md')
+  it.skipIf(!LEXICAL_CAP.module)('repairs the same index the delivery does, and reaches the record only a word can reach', () => {
+    const dbPath = join(repo, '.sma', 'index', LEXICAL_INDEX_FILE)
+    expect(existsSync(dbPath)).toBe(false)
 
-    const built = spawnSync('node', [CLI, 'memory', 'index', 'rebuild'], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, SMA_ROOT_OVERRIDE: join(repo, '.sma'), NODE_OPTIONS: '--no-warnings' },
-    })
-    expect(built.status).toBe(0)
-
+    // no hand-typed rebuild anywhere in this case either
     const after = JSON.parse(runContext().stdout)
+
+    expect(existsSync(dbPath)).toBe(true)
     expect(after.members.map((m: { id: string }) => m.id)).toContain('pangolin-fact.md')
   })
 })
