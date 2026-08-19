@@ -152,8 +152,9 @@ export const COMMAND_TOPICS = {
   deleteme: 'deleteme',
   'memory-preview': 'memory-preview',
 
-  // v5 — the decision corpus and the replay exam
+  // v5 — the decision corpus, the replay exam and the acceptance-rule suggester
   decisions: 'decisions',
+  approvals: 'approvals', // standing acceptance rules read off the attempt ledger; proposes only
   exam: 'exam',
 
   // v5 — the consumer-side updater
