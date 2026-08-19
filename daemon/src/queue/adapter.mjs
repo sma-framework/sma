@@ -689,7 +689,13 @@ const TASK_PROJECT_RE = /^[a-z0-9-]{1,64}$/
  */
 const TASK_BATCH_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 
-/** The project a read row falls back to when nothing else names one. */
+/**
+ * The slug of the project a fresh install starts with.
+ *
+ * NOTHING FALLS BACK TO IT ANY MORE, and the name is kept saying so on purpose: this used to
+ * be the last resort of a read path that completed a row naming no project, which is exactly
+ * the guess this queue no longer makes. A row states its project or states none.
+ */
 export const DEFAULT_PROJECT_ID = 'default'
 
 /**
@@ -1182,9 +1188,25 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     let rows = [...records.values()]
     if (filter.status) rows = rows.filter((r) => r.status === filter.status)
     if (filter.lane) rows = rows.filter((r) => r.task.lane === filter.lane)
-    // an optional project filter; its absence means EVERY project.
+    // AN OPTIONAL PROJECT FILTER; its absence still means EVERY project.
+    //
+    // THIS FILTER USED TO GUESS, and it was the last place that did. It compared the
+    // narrowing against «the row's project, else the one currently selected, else the
+    // default slug», so a row that had never named a project answered as though it
+    // belonged to whatever was on the screen — and answered DIFFERENTLY the moment the
+    // person switched the switcher. The read path stopped doing that; this one had not,
+    // and this backend is the executable spec: while it filters by a rule the real queue
+    // no longer obeys, the next test written «to spec» encodes the very lie that was removed.
+    //
+    // The rule is the one the state reader already applies: a row belongs where IT says it
+    // belongs, and a row that names no project belongs to NOBODY — so no narrowing may hide
+    // it. Work that every filter hides is invisible work, and an honest «owner unknown»
+    // beats a confident wrong owner.
     if (filter.project) {
-      rows = rows.filter((r) => (r.task.project || activeProject || DEFAULT_PROJECT_ID) === filter.project)
+      rows = rows.filter((r) => {
+        const own = typeof r.task.project === 'string' && r.task.project ? r.task.project : null
+        return own === null || own === filter.project
+      })
     }
     return rows.map(row)
   }

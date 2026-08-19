@@ -491,6 +491,43 @@ describe('эталонный бэкенд не дополняет прочита
     expect(byId['R-own'].project).toBe('sma')
     expect(byId['R-oth'].project).toBe('sma-dev')
   })
+
+  // Сужение эталонного бэкенда обязано отвечать ровно то же, что отвечает чтение состояния
+  // после того, как строки починили: своё — своим, безымянное — видно под любым сужением.
+  // Пока здесь действовало прежнее правило («проекта нет — значит текущий, а нет текущего —
+  // значит „default“»), спецификация очереди описывала поведение, которого у настоящей
+  // очереди больше нет.
+  it('сужение: строка без проекта видна под ЛЮБЫМ сужением — она не принадлежит никому', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000 })
+    await q.enqueue({ id: 'R-nobody', source: 'roster', title: 'ничья работа', lane: 'prod' })
+    for (const narrow of ['sma', 'sma-dev', 'default']) {
+      expect((await q.list({ project: narrow })).map((r: any) => r.id)).toEqual(['R-nobody'])
+    }
+  })
+
+  it('сужение: строка со своим проектом попадает только в своё сужение', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000, activeProject: 'sma-dev' })
+    await q.enqueue({ id: 'R-mine', source: 'roster', title: 'работа продукта', lane: 'prod', project: 'sma' })
+    expect((await q.list({ project: 'sma' })).map((r: any) => r.id)).toEqual(['R-mine'])
+    expect(await q.list({ project: 'sma-dev' })).toEqual([])
+    expect(await q.list({ project: 'default' })).toEqual([])
+  })
+
+  it('сужение: своя, чужая и безымянная вместе — остаются своя и безымянная', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000 })
+    await q.enqueue({ id: 'R-a', source: 'roster', title: 'своя', lane: 'prod', project: 'sma' })
+    await q.enqueue({ id: 'R-b', source: 'roster', title: 'чужая', lane: 'prod', project: 'sma-dev' })
+    await q.enqueue({ id: 'R-u', source: 'roster', title: 'ничья', lane: 'prod' })
+    const ids = (await q.list({ project: 'sma' })).map((r: any) => r.id).sort()
+    expect(ids).toEqual(['R-a', 'R-u'])
+  })
+
+  it('сужения нет — отдаются все проекты, как было', async () => {
+    const q = createMemoryQueue({ clock: () => NOW, expireMs: 300000, activeProject: 'sma' })
+    await q.enqueue({ id: 'R-1', source: 'roster', title: 'своя', lane: 'prod' })
+    await q.enqueue({ id: 'R-2', source: 'roster', title: 'чужая', lane: 'prod', project: 'sma-dev' })
+    expect((await q.list({})).map((r: any) => r.id).sort()).toEqual(['R-1', 'R-2'])
+  })
 })
 
 describe('эшелон не домысливает принадлежность', () => {
