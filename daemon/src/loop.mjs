@@ -1078,8 +1078,14 @@ function writeMemoryLayer(deps, task, { memory, sma, lesson, approachJournaled, 
   })
 }
 
-/** What the copy was given to obey — read WHILE the copy still exists, before any outcome. */
-function rulesInCopy(io, workDir, worktree) {
+/**
+ * What the copy was given to obey — read WHILE the copy still exists, before any outcome.
+ *
+ * Exported for the suite: the difference between «carried into the copy» and «was already there»
+ * is a word a person reads on a receipt, and a word on a receipt has to be tested directly rather
+ * than inferred from a run that happened to come out right.
+ */
+export function rulesInCopy(io, workDir, worktree) {
   if (typeof workDir !== 'string' || workDir.trim() === '') return { claudeMd: 'absent' }
   try {
     const present = io.existsSync(join(workDir, 'CLAUDE.md')) || io.existsSync(join(workDir, '.claude', 'CLAUDE.md'))
@@ -1089,7 +1095,18 @@ function rulesInCopy(io, workDir, worktree) {
     // would not have had them. A parity check that could not tell them apart would call a
     // furnished copy an unfurnished one.
     const materialized = Array.isArray(worktree && worktree.materialized) ? worktree.materialized : []
-    const carried = materialized.some((m) => /CLAUDE\.md/i.test(JSON.stringify(m ?? '')))
+    // An entry counts as a CARRY only when it says something was actually carried. The same list
+    // also holds entries whose mode is «absent» — «there was nothing here to take» — and matching
+    // the stringified entry reads one of those as proof of the opposite: a copy that never got the
+    // rules would be labelled as one that was handed them. So: match the entry's own path, and
+    // only on a mode that means a real copy — a linked path is the project's own tree, not
+    // something carried into a copy that would otherwise lack it.
+    const carried = materialized.some((m) => {
+      if (!m || typeof m !== 'object') return false
+      if (String(m.mode ?? '') !== 'copy') return false
+      const where = String(m.path ?? '')
+      return /(^|[\\/])CLAUDE\.md$/i.test(where) || /(^|[\\/])\.claude[\\/]?$/i.test(where)
+    })
     return { claudeMd: carried ? 'materialized' : 'tracked' }
   } catch {
     return { claudeMd: 'absent' } // an unreadable copy is an absence of evidence, never a throw

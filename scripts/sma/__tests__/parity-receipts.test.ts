@@ -310,3 +310,36 @@ describe('parity-receipts — the arithmetic of a verdict', () => {
     expect(sum.failed).toEqual(['memory', 'rules', 'skills', 'rights'])
   })
 })
+
+describe('a receipt never states a fact about something nobody looked at', () => {
+  // The skills receipt has two very different silences to tell apart: a copy that was counted
+  // and held nothing, and a copy that was never counted at all. Only the first one is a project
+  // without skills; calling the second one that would put an unchecked claim into a full set.
+  const runWith = (extra: Record<string, unknown> = {}) => ({
+    startedAt: '2026-01-01T00:00:00.000Z',
+    endedAt: '2026-01-01T00:01:00.000Z',
+    args: ['--allowedTools', 'Read Bash'],
+    envelope: { allowedTools: ['Read', 'Bash'] },
+    ...extra,
+  })
+  const receiptWith = (extra: Record<string, unknown> = {}) => ({
+    memoryLayer: { index: true, loadCalls: 0 },
+    rules: { claudeMd: 'materialized' },
+    ...extra,
+  })
+  const skillsOf = (run: unknown, receipt: unknown) =>
+    evaluateParity({ run, guards: [], receipt }).find((r: { id: string }) => r.id === 'skills')
+
+  it('counted and empty is an honest n/a about the project', () => {
+    const r = skillsOf(runWith(), receiptWith({ skillsInCopy: { skills: 0, agents: 0 } }))
+    expect(r.status).toBe('n-a')
+    expect(r.detail).toContain('в проекте нет')
+  })
+
+  it('never counted goes red and names what is missing', () => {
+    const r = skillsOf(runWith(), receiptWith())
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('данных нет')
+    expect(r.detail).not.toContain('в проекте нет')
+  })
+})

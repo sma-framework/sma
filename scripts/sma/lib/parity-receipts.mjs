@@ -204,7 +204,16 @@ function checkSkills({ run, receipt }) {
     : has(run && run.skillsInCopy)
       ? run.skillsInCopy
       : null
-  if (!counts) return na(id, NO_SKILLS_REASON)
+  // TWO SILENCES, AND ONLY ONE OF THEM IS A FACT ABOUT THE PROJECT. A record that carries the
+  // field and leaves it null is the counter reporting what it saw — this copy holds no `.claude`
+  // at all — and that is an honest n/a. A record that does not carry the field means nobody
+  // counted, and «the project has no skills and no agents» would then be a statement about
+  // something no one looked at, counted towards a full set. Absence of the record is absence of
+  // evidence: it goes red and names what is missing.
+  if (!counts) {
+    const stated = (o) => o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, 'skillsInCopy')
+    return stated(receipt) || stated(run) ? na(id, NO_SKILLS_REASON) : noData(id, 'skillsInCopy (копию никто не считал)')
+  }
 
   const skills = Number(counts.skills) || 0
   const agents = Number(counts.agents) || 0

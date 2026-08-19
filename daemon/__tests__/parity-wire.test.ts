@@ -199,7 +199,12 @@ async function runTick(over: any = {}) {
           ok: true,
           path: workDir,
           branch: 'wt/BL-1',
-          materialized: [{ item: 'CLAUDE.md', how: 'copied' }],
+          // THE SHAPE THE PROVISIONING VERB REALLY REPORTS — `{path, mode, files, …}`, the mode
+          // out of its own vocabulary (absent | copy | tracked | link | skipped). This fixture
+          // used to invent `{item, how}`, a shape nothing in this product produces, and it passed
+          // only because the reader stringified the whole entry and matched a filename anywhere
+          // inside it. A fixture the library could not have produced proves nothing about it.
+          materialized: [{ path: 'CLAUDE.md', mode: 'copy', files: 1, tracked: 0, current: 0, bytes: 812 }],
         }),
       },
       reverify: over.reverify ?? GREEN_REVERIFY,
