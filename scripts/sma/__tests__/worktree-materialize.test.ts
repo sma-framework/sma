@@ -47,6 +47,7 @@ import {
   statSync,
   utimesSync,
   readlinkSync,
+  realpathSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
@@ -470,5 +471,123 @@ describe('битый манифест не валит провизию — де�
     expect(existsSync(join(copyTree, '.claude', 'settings.json'))).toBe(true)
     const claude = pick(json, '.claude/')
     expect(claude && claude.mode).toBe('copy')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Подключённый проект САМ является связанной копией — база и слой берутся у него
+//
+// Ритуал этой фазы (и любая установка, где проектом подключена рабочая копия, а не основное
+// дерево) вскрыл расхождение: корень по git-common-dir из связанной копии отвечает ОСНОВНЫМ
+// деревом, поэтому копия работника отводилась от ЧУЖОГО HEAD и получала ЧУЖОЙ `.claude/`.
+// Побайтово это выглядело так: в строке попытки материализован слой основного дерева, а урок
+// приёмка искала в каталоге подключённого проекта — и не находила.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('проект, подключённый связанной копией: база и слой берутся из его дерева', () => {
+  let sandbox: string
+  let mainTree: string
+  let projTree: string
+  let copyTree: string
+  let json: any
+  let out: { stdout: string; stderr: string; status: number }
+  let baseSha = ''
+
+  beforeAll(() => {
+    // НАСТОЯЩИЙ путь песочницы: на Windows временный каталог приходит коротким именем
+    // (8.3), а git отвечает длинным — сравнение форм сравнивало бы не деревья, а имена.
+    sandbox = realpathSync.native(mkdtempSync(join(tmpdir(), 'sma-wt-linked-')))
+    mainTree = join(sandbox, 'main')
+    projTree = join(sandbox, 'proj')
+    copyTree = join(sandbox, 'copy')
+    initRepo(mainTree)
+    write(join(mainTree, '.gitignore'), ['.claude/', 'node_modules/', ''].join('\n'))
+    write(join(mainTree, 'README.md'), '# tracked\n')
+    write(join(mainTree, '.claude', 'memory', 'x.md'), 'слой ОСНОВНОГО дерева\n')
+    git(['add', '.gitignore', 'README.md'], mainTree)
+    git(['commit', '-m', 'fixture: the main checkout'], mainTree)
+
+    // Подключённый проект — связанная копия на своей ветке, со своим коммитом и своим слоем.
+    git(['worktree', 'add', projTree, '-b', 'green'], mainTree)
+    write(join(projTree, 'README.md'), '# tracked, and moved on\n')
+    git(['add', 'README.md'], projTree)
+    git(['commit', '-m', 'fixture: the connected project moved on'], projTree)
+    baseSha = git(['rev-parse', 'HEAD'], projTree).trim()
+    write(join(projTree, '.claude', 'memory', 'x.md'), 'слой ПОДКЛЮЧЁННОГО проекта\n')
+    write(join(projTree, '.sma', 'worktree-include'), JSON.stringify({ copy: ['.claude/'], link: [] }))
+
+    out = runCli(['worktree', 'provision', '--branch', 'wt/linked', '--path', copyTree, '--json'], projTree)
+    json = lastJson(out.stdout)
+  }, 60_000)
+
+  afterAll(() => {
+    try {
+      dropLinks(copyTree)
+    } catch {
+      /* nothing linked */
+    }
+    try {
+      git(['worktree', 'remove', '--force', copyTree], mainTree)
+    } catch {
+      /* the sandbox goes away wholesale below */
+    }
+    try {
+      git(['worktree', 'remove', '--force', projTree], mainTree)
+    } catch {
+      /* same */
+    }
+    rmSync(sandbox, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  it('копия отведена от HEAD подключённого проекта, а не от основного дерева', () => {
+    expect(out.status, `верб упал: ${out.stderr}`).toBe(0)
+    expect(json, 'верб не напечатал JSON последней строкой').toBeTruthy()
+    expect(json.ok).toBe(true)
+    expect(json.expectedBase).toBe(baseSha)
+    expect(git(['rev-parse', 'HEAD'], copyTree).trim()).toBe(baseSha)
+  })
+
+  it('в копию уехал слой ПОДКЛЮЧЁННОГО проекта, а не основного дерева', () => {
+    const layer = readFileSync(join(copyTree, '.claude', 'memory', 'x.md'), 'utf8')
+    expect(layer).toContain('ПОДКЛЮЧЁННОГО')
+    expect(layer).not.toContain('ОСНОВНОГО')
+  })
+
+  it('манифест прочитан из дерева проекта, и ответ называет это дерево', () => {
+    expect(json.manifest.source).toBe('file')
+    expect(samePath(json.projectRoot, projTree), `projectRoot = ${json.projectRoot}`).toBe(true)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Обычная установка не изменилась: проект = основное дерево
+// ─────────────────────────────────────────────────────────────────────────────
+describe('обычный проект: провизия из основного дерева отвечает как прежде', () => {
+  let sandbox: string
+  let mainTree: string
+  let copyTree: string
+  let json: any
+  let baseSha = ''
+
+  beforeAll(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'sma-wt-plain-'))
+    mainTree = join(sandbox, 'main')
+    copyTree = join(sandbox, 'copy')
+    initRepo(mainTree)
+    write(join(mainTree, '.gitignore'), ['.claude/', ''].join('\n'))
+    write(join(mainTree, 'README.md'), '# tracked\n')
+    write(join(mainTree, '.claude', 'memory', 'x.md'), 'слой ОСНОВНОГО дерева\n')
+    git(['add', '.gitignore', 'README.md'], mainTree)
+    git(['commit', '-m', 'fixture: a plain project'], mainTree)
+    baseSha = git(['rev-parse', 'HEAD'], mainTree).trim()
+
+    json = lastJson(runCli(['worktree', 'provision', '--branch', 'wt/plain', '--path', copyTree, '--json'], mainTree).stdout)
+  }, 60_000)
+
+  afterAll(() => teardown(sandbox, mainTree, copyTree))
+
+  it('база — HEAD основного дерева, слой — его собственный', () => {
+    expect(json.ok).toBe(true)
+    expect(json.expectedBase).toBe(baseSha)
+    expect(readFileSync(join(copyTree, '.claude', 'memory', 'x.md'), 'utf8')).toContain('ОСНОВНОГО')
   })
 })
