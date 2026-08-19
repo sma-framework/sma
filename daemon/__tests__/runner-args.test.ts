@@ -480,6 +480,22 @@ describe('terminal parity (the worker session equals the founder terminal)', () 
     expect(prompt).toContain('уроком не считается')
   })
 
+  /**
+   * Промпт диктовал форму записи, которую валидатор корпуса не принимает: перепроверяемое
+   * заявление обязано нести свою проверку, а о ней в блоке не было ни слова. Живой прогон
+   * получил два отказа из двух — каждый урок, написанный ТОЧНО по инструкции, оказался
+   * непринимаемым. Поэтому здесь проверяется не наличие блока, а то, что продиктованная им
+   * форма — законная.
+   */
+  it('the lesson block dictates a form the corpus accepts: a verification command or an inferred claim', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
+    const block = prompt.slice(prompt.indexOf('## Урок'), prompt.indexOf('## Записка о подходе'))
+    expect(block).toContain('--truth inferred')
+    expect(block).toContain('--verification')
+    // the one form the validator refuses without a check of its own is no longer dictated
+    expect(block).not.toContain('--truth observed')
+  })
+
   it('the lesson block never orders the index rebuilt in the copy', () => {
     const prompt = buildTaskPrompt({ task: { id: 'BL-1', title: 't' } })
     const block = prompt.slice(prompt.indexOf('## Урок'), prompt.indexOf('## Записка о подходе'))

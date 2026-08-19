@@ -104,21 +104,21 @@ function makeLedger(attempts: any[], journal: any[]) {
 }
 
 /** Слой подхода и слой памяти одной попытки — та же форма, что пишет тик. */
-function journalRows(lessonDraftPath: string | null) {
+function journalRows(lessonDraftPath: string | null, task: string = TASK) {
   const rows: any[] = [
-    { taskId: TASK, attempt: 1, layer: 'approach', payload: { approach: APPROACH_TEXT, rejected: ['переписать общий слой'], influences: ['правило минимальной правки'] } },
+    { taskId: task, attempt: 1, layer: 'approach', payload: { approach: APPROACH_TEXT, rejected: ['переписать общий слой'], influences: ['правило минимальной правки'] } },
   ]
   if (lessonDraftPath) {
-    rows.push({ taskId: TASK, attempt: 1, layer: 'memory', payload: { notes: [], reflexes: [], lesson: { written: lessonDraftPath } } })
+    rows.push({ taskId: task, attempt: 1, layer: 'memory', payload: { notes: [], reflexes: [], lesson: { written: lessonDraftPath } } })
   }
   return rows
 }
 
 /** Настоящий репозиторий-проект: main + копия задачи в каталоге копий. */
-function makeProject(prefix: string, { ignoreAgentDir }: { ignoreAgentDir: boolean }) {
+function makeProject(prefix: string, { ignoreAgentDir }: { ignoreAgentDir: boolean }, task: string = TASK) {
   const sandbox = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)))
   const mainTree = join(sandbox, 'main')
-  const copyTree = join(sandbox, '.sma-worktrees', TASK)
+  const copyTree = join(sandbox, '.sma-worktrees', task)
   mkdirSync(mainTree, { recursive: true })
   git(['init', '-b', 'main'], mainTree)
   git(['config', 'user.email', 'fixture@example.invalid'], mainTree)
@@ -127,7 +127,7 @@ function makeProject(prefix: string, { ignoreAgentDir }: { ignoreAgentDir: boole
   write(join(mainTree, 'README.md'), '# fixture\n')
   git(['add', '.gitignore', 'README.md'], mainTree)
   git(['commit', '-m', 'fixture: a project'], mainTree)
-  git(['worktree', 'add', '-b', `wt/${TASK}`, copyTree], mainTree)
+  git(['worktree', 'add', '-b', `wt/${task}`, copyTree], mainTree)
   return { sandbox, mainTree, copyTree }
 }
 
@@ -316,4 +316,90 @@ describe('край: нечего собирать, и копию не найти
     expect(res.skipCleanup).toBe(true)
     expect(String(res.reason)).toMatch(/refused-path|копи/)
   })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E. Урок, написанный РОВНО ПО ИНСТРУКЦИИ промпта — три законные формы
+//
+// Живой прогон показал класс, который прошлые кейсы этого файла не ловили: фикстура
+// писала черновик С отпечатком (`--product-version`), а промпт работника о таком флаге
+// не говорит вовсе. Подделка была богаче инструкции — и зелёный сьют молчал, пока
+// приёмка отказывала каждому настоящему уроку подряд. Поэтому здесь черновик пишется
+// ТЕМИ ЖЕ флагами, которые видит работник, и вопрос ставится ровно один: принимает ли
+// приёмка то, что сама же продиктовала.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const TASK_E = 'R-100'
+
+/** Черновик урока в копии — набором флагов, который называет промпт (плюс заданные сверху). */
+function writeInstructedDraft(copyTree: string, task: string, id: string, extra: string[]): string {
+  const res = runCli(
+    [
+      'memory', 'write',
+      '--corpus', join(copyTree, '.claude', 'memory'),
+      '--type', 'procedural',
+      '--authority', 'self-observed',
+      '--evidence', `attempt:${task}#1`,
+      ...extra,
+      '--id', id,
+      '--claim', 'Демон на Windows поднимается обвязкой планировщика, а не одной командой',
+      '--body', 'Тело урока: что было, что сделано, чего избегать дальше.',
+      '--areas', 'approach',
+      '--language', 'ru',
+      '--json',
+    ],
+    copyTree,
+  )
+  const out = lastJson(res.stdout)
+  expect(out?.outcome, `конвейер не отложил черновик: ${res.stdout.slice(-500)}`).toBe('staged-draft')
+  return join(copyTree, '.claude', 'memory', 'drafts', `${id}.md`)
+}
+
+/** Один прогон сбора на своём одноразовом проекте. */
+async function harvestInstructed(prefix: string, id: string, extra: string[]) {
+  const project = makeProject(prefix, { ignoreAgentDir: true }, TASK_E)
+  const draftPath = writeInstructedDraft(project.copyTree, TASK_E, id, extra)
+  const ledger = makeLedger([{ taskId: TASK_E, attempt: 1, worktreePath: project.copyTree }], journalRows(draftPath, TASK_E))
+  const res = await harvestTaskMemory({ taskId: TASK_E, projectDir: project.mainTree, ledger, verbRunner, execGit })
+  return { ...project, res, ledger }
+}
+
+describe('урок по инструкции доезжает до корпуса: приёмка принимает то, что продиктовала', () => {
+  const sandboxes: string[] = []
+  afterAll(() => sandboxes.forEach(drop))
+
+  it('кейс живого прогона: наблюдение без отпечатка — приёмка ставит отпечаток сама и применяет', async () => {
+    const id = 'lesson-r-100-win-start'
+    const { sandbox, mainTree, res } = await harvestInstructed('sma-harvest-instructed-', id, ['--truth', 'observed'])
+    sandboxes.push(sandbox)
+    expect(res.refused.map((r: any) => `${r.id}: ${r.reason}`)).toEqual([])
+    expect(res.applied).toEqual([id])
+    expect(res.ok).toBe(true)
+    const note = readFileSync(join(mainTree, '.claude', 'memory', `${id}.md`), 'utf8')
+    expect(note).toMatch(/product_version:/)
+  }, 60_000)
+
+  it('урок, проверяемый командой: --verification вместо отпечатка — применён как есть', async () => {
+    const id = 'lesson-r-100-verified'
+    const { sandbox, mainTree, res } = await harvestInstructed('sma-harvest-verified-', id, [
+      '--truth', 'observed',
+      '--verification', 'node -e 1',
+    ])
+    sandboxes.push(sandbox)
+    expect(res.refused.map((r: any) => `${r.id}: ${r.reason}`)).toEqual([])
+    expect(res.applied).toEqual([id])
+    const note = readFileSync(join(mainTree, '.claude', 'memory', `${id}.md`), 'utf8')
+    expect(note).toMatch(/verification:/)
+    expect(note).toMatch(/command: node -e 1/)
+  }, 60_000)
+
+  it('наблюдение без команды: --truth inferred с провенансом — применён, отпечаток не навязан', async () => {
+    const id = 'lesson-r-100-inferred'
+    const { sandbox, mainTree, res } = await harvestInstructed('sma-harvest-inferred-', id, ['--truth', 'inferred'])
+    sandboxes.push(sandbox)
+    expect(res.refused.map((r: any) => `${r.id}: ${r.reason}`)).toEqual([])
+    expect(res.applied).toEqual([id])
+    const note = readFileSync(join(mainTree, '.claude', 'memory', `${id}.md`), 'utf8')
+    expect(note).toMatch(/truth_mode: inferred/)
+  }, 60_000)
 })

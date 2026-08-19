@@ -3378,7 +3378,13 @@ function memoryWriteUsage(schema) {
     '  --retention <window>  e.g. P30D — REQUIRED for the one automatic path',
     '  --valid-until <date>  end of the claim\'s validity window',
     '  --supersedes <id,..>  records this one replaces (the pointer is completed on both ends)',
-    '  --product-version <v> the fingerprint a re-derivable claim is checked against',
+    '  --product-version <v> the fingerprint a re-derivable claim is checked against.',
+    '                        On --apply it is a STAMP: the version is written into the',
+    '                        record only when the record itself carries neither a',
+    '                        fingerprint nor a verification.',
+    '  --verification <cmd>  the command that re-checks this claim — the other legal way',
+    '                        a re-derivable claim carries its own check',
+    '  --verification-expected <text>  what that command is expected to answer',
     '  --language <code>     default: en',
     '  --corpus <dir>        default: .claude/memory',
     '',
@@ -3458,10 +3464,16 @@ async function cmdMemoryWrite({ flags, dirs }) {
       )
       return 1
     }
+    // ОТПЕЧАТОК НА ПРИЁМКЕ. Черновик приходит из чужого дерева, и тот, кто его писал,
+    // версии продукта не знает — её знает тот, кто применяет. Поэтому `--product-version`
+    // читается и здесь, а не только на записи: приёмка ШТАМПУЕТ эпоху, к которой относится
+    // заявление, и только тогда, когда запись не принесла собственной проверки.
+    const stampVersion = typeof flags['product-version'] === 'string' ? flags['product-version'].trim() : ''
     const res = pipeline.applyStagedDraft({
       draftPath,
       corpusDir,
       confirmFile,
+      ...(stampVersion ? { fingerprint: { product_version: stampVersion } } : {}),
       journalDir: dirs?.journalDir,
       ...(await pipelineRuntime()),
     })
@@ -3545,6 +3557,19 @@ async function cmdMemoryWrite({ flags, dirs }) {
     ...(evidence.length ? { evidence } : {}),
     ...(typeof flags['product-version'] === 'string'
       ? { fingerprint: { product_version: flags['product-version'].trim() } }
+      : {}),
+    // Вторая законная форма проверки перепроверяемого заявления: не отпечаток эпохи, а
+    // КОМАНДА, которой заявление перепроверяется. Форма блока — та, которую ждёт схема
+    // (`command` и, необязательно, `expected`); второго словаря здесь не заводится.
+    ...(typeof flags.verification === 'string' && flags.verification.trim() !== ''
+      ? {
+          verification: {
+            command: flags.verification.trim(),
+            ...(typeof flags['verification-expected'] === 'string' && flags['verification-expected'].trim() !== ''
+              ? { expected: flags['verification-expected'].trim() }
+              : {}),
+          },
+        }
       : {}),
     ...(typeof flags.retention === 'string' ? { retention: flags.retention.trim() } : {}),
     ...(typeof flags['valid-until'] === 'string' ? { valid_until: flags['valid-until'].trim() } : {}),
