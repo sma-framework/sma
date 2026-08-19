@@ -76,6 +76,10 @@ import { join, basename, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { atomicWriteJson } from '../../scripts/sma/lib/fs-atomics.mjs'
+// The ONE list of settings keys a worker profile may state for itself, imported rather
+// than re-typed here: a validator keeping its own copy would start accepting keys the
+// mirror silently drops, and nothing would say the two lists had parted.
+import { OVERRIDE_ALLOWLIST } from './runner/personal-layer.mjs'
 
 /** Named error for a structurally-invalid worker profile (missing id/lane/account.configDir). */
 export class InvalidWorkerProfileError extends Error {
@@ -123,6 +127,14 @@ export class UnknownPeerError extends Error {
 
 /** The project id grammar — a slug, because the id is a key tasks and rows carry. */
 export const PROJECT_ID_RE = /^[a-z0-9-]{1,64}$/
+
+/**
+ * The grammar of a plugin reference in a worker profile: `name@marketplace`, the form a
+ * settings file states a plugin in. A worker account has no access to the plugins of the
+ * person who runs the daemon, so its list is stated here and nowhere else — and a typo in
+ * it must fail on load, not silently produce a session missing the tool it was promised.
+ */
+export const PLUGIN_REF_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/
 
 /**
  * The grammar of an ENVIRONMENT VARIABLE NAME — the shape `account.oauthTokenEnv` is
@@ -292,6 +304,29 @@ function validateWorker(w, knownProjects) {
   if (!w.account || !w.account.configDir) {
     throw new InvalidWorkerProfileError(`worker "${w.id}" missing "account.configDir"`)
   }
+  // A plugin list is optional; when stated it must be stated correctly.
+  if (w.plugins !== undefined) {
+    if (!Array.isArray(w.plugins) || w.plugins.some((p) => typeof p !== 'string' || !PLUGIN_REF_RE.test(p))) {
+      throw new InvalidWorkerProfileError(
+        `worker "${w.id}" has an invalid "plugins" list: expected an array of "name@marketplace" strings`,
+      )
+    }
+  }
+  // Settings overrides pass an allow-list, and an unknown key is REFUSED rather than
+  // dropped: a silently ignored override is a rule its author believes is in force.
+  if (w.settingsOverrides !== undefined) {
+    const o = w.settingsOverrides
+    if (!o || typeof o !== 'object' || Array.isArray(o)) {
+      throw new InvalidWorkerProfileError(`worker "${w.id}" settingsOverrides is not an object`)
+    }
+    for (const key of Object.keys(o)) {
+      if (!OVERRIDE_ALLOWLIST.includes(key)) {
+        throw new InvalidWorkerProfileError(
+          `worker "${w.id}" settingsOverrides carries "${key}", which is not one of ${OVERRIDE_ALLOWLIST.join('|')}`,
+        )
+      }
+    }
+  }
   if (w.project !== undefined) {
     if (typeof w.project !== 'string' || !PROJECT_ID_RE.test(w.project)) {
       throw new InvalidWorkerProfileError(`worker "${w.id}" has an invalid project id "${w.project}"`)
@@ -306,6 +341,8 @@ function validateWorker(w, knownProjects) {
     ...(w.roleFile !== undefined ? { roleFile: w.roleFile } : {}),
     ...(w.skills !== undefined ? { skills: w.skills } : {}),
     ...(w.project !== undefined ? { project: w.project } : {}),
+    ...(w.plugins !== undefined ? { plugins: w.plugins } : {}),
+    ...(w.settingsOverrides !== undefined ? { settingsOverrides: w.settingsOverrides } : {}),
   }
 }
 
@@ -323,6 +360,17 @@ function validateConfig(config) {
   if (config.activeProject !== undefined && config.activeProject !== null) {
     if (!knownProjects.has(config.activeProject)) {
       throw new UnknownProjectError(`activeProject "${config.activeProject}" is not in the project registry`)
+    }
+  }
+  // Where the personal layer is READ FROM. Absent means the default home of the user the
+  // daemon runs as; a string lets a test or a second machine point somewhere else.
+  if (config.personalLayer !== undefined && config.personalLayer !== null) {
+    const pl = config.personalLayer
+    if (typeof pl !== 'object' || Array.isArray(pl)) {
+      throw new InvalidWorkerProfileError('personalLayer block is not an object')
+    }
+    if (pl.sourceDir !== undefined && (typeof pl.sourceDir !== 'string' || !pl.sourceDir.trim())) {
+      throw new InvalidWorkerProfileError('personalLayer.sourceDir must be a non-empty string path')
     }
   }
   const workers = Array.isArray(config.workers) ? config.workers.map((w) => validateWorker(w, knownProjects)) : []
