@@ -717,9 +717,32 @@ describe('guard: the numbers target is at zero on the REAL tree', () => {
    *
    * The assertion is on the whole list rather than on its length: when it fails, the
    * report has to name the divergences themselves, not just how many there were.
+   *
+   * ONE RULE IS DELIBERATELY OUTSIDE THIS TEST — receipt-measured-before-head, and the
+   * reason is arithmetic rather than convenience. That rule asks whether the receipt was
+   * measured on the tip being handed over; the run that MAKES the receipt happens, by
+   * construction, while the previous one is still the current one. So inside the very run
+   * that re-measures, the rule is red for as long as it takes that run to finish — and a
+   * test asserting it green here would deadlock the remint it exists to force: the suite
+   * would be red because the receipt is stale, and the receipt could not be refreshed
+   * because a stale-receipt suite is refused by the badge. The rule's gate is the command
+   * the phase runs on the tip after the last commit (`doc-audit --target numbers --count`),
+   * which is exactly where both failures it was written for happened. What IS asserted
+   * here is that the rule stays WIRED — an excluded rule quietly deleted from the module
+   * would be an empty check that passes forever.
    */
   it('audit({target: numbers}) over the real tree reports no violations', () => {
     const { violations } = audit({ target: 'numbers', rootDir: ROOT })
-    expect(violations).toEqual([])
+    expect(violations.filter((v) => v.rule !== 'receipt-measured-before-head')).toEqual([])
+  })
+
+  it('the freshness rule is still wired into the real audit, excluded from the line above but not gone', () => {
+    const stale = audit({
+      target: 'numbers',
+      rootDir: ROOT,
+      runGit: (argv: string[]) =>
+        argv[0] === 'rev-parse' ? 'f00dfeed9999999999999999999999999999999\n' : 'scripts/sma/cli.mjs\n',
+    })
+    expect(stale.violations.some((v) => v.rule === 'receipt-measured-before-head')).toBe(true)
   })
 })
