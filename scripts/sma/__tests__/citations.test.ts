@@ -52,6 +52,29 @@ const TAGS_MD = `# TAGS
 - Open facet: phase:NN.
 `
 
+/**
+ * The pre-act injection is ONE part of session-start's additionalContext, and the
+ * 2048-byte budget belongs to that part alone — the digest and the weekly-brief line
+ * are parts of their own, appended after it. Slicing to the END of the context and
+ * calling the result "the pre-act section" measured whatever happened to follow, so
+ * the budget assertion silently depended on every later part staying small: the day
+ * session-start gained a line naming the state directory it read, this read as the
+ * memory budget being blown when the injection itself was exactly within it. Cut the
+ * section at its own last entry line instead, so the assertion measures the thing it
+ * is named after.
+ */
+function preActSection(ctx: string): string {
+  const idx = ctx.indexOf('Релевантная память (pre-act):')
+  if (idx < 0) return ''
+  const lines = ctx.slice(idx).split('\n')
+  const out = [lines[0]]
+  for (const line of lines.slice(1)) {
+    if (!/^(— | {2}Применение: )/.test(line)) break
+    out.push(line)
+  }
+  return out.join('\n')
+}
+
 function note(dir: string, name: string, fm: Record<string, unknown>, body = 'body\n') {
   const lines = ['---']
   for (const [k, v] of Object.entries(fm)) {
@@ -329,7 +352,7 @@ describe('cli.mjs session-start — budgeted pre-act injection (B1)', () => {
     expect(section).toContain('tech-rule.md')
     expect(section).not.toContain('mem-ref.md')
     expect(section).toContain('Применение:') // How-to-apply extract for importance >= 8
-    expect(Buffer.byteLength(section, 'utf8')).toBeLessThanOrEqual(2048)
+    expect(Buffer.byteLength(preActSection(ctx), 'utf8')).toBeLessThanOrEqual(2048)
 
     // B4: each injected note recorded as a 'load' citation in .sma/usage/.
     const ledger = join(smaRoot, 'usage', `${terminalId}.jsonl`)
@@ -358,7 +381,10 @@ describe('cli.mjs session-start — budgeted pre-act injection (B1)', () => {
     const ctx: string = JSON.parse(stdout.trim()).hookSpecificOutput.additionalContext
     const idx = ctx.indexOf('Релевантная память (pre-act):')
     expect(idx).toBeGreaterThan(-1)
-    expect(Buffer.byteLength(ctx.slice(idx), 'utf8')).toBeLessThanOrEqual(2048)
+    const section = preActSection(ctx)
+    // A flood must be CUT, not merely fit: the section has to stop short of the 40 notes.
+    expect(section.split('\n').length).toBeLessThan(41)
+    expect(Buffer.byteLength(section, 'utf8')).toBeLessThanOrEqual(2048)
   })
 
   // A schema-v2 record states its one-line claim as `claim` and its load
