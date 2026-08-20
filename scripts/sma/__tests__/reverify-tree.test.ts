@@ -35,7 +35,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -143,5 +143,85 @@ describe('перепроверка меряет НАЗВАННОЕ дерево,
   it('флаг двигает обход рецептов, а не бухгалтерию: .sma не переезжает в названное дерево', () => {
     expect(existsSync(join(copyTree, '.sma')), 'служебный каталог завёлся внутри рабочей копии').toBe(false)
     expect(existsSync(join(mainTree, '.sma')), 'записи леджера не доехали до общего корня').toBe(true)
+  })
+})
+
+/**
+ * Сквозной провод: настоящее расхождение структурной перепроверки рождает черновик урока,
+ * а повтор его не удваивает.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНО ОТ КЕЙСОВ НА СЧЁТЧИК ВЫЗОВОВ. Счётчик обращений к подделке сочинителя
+ * доказывает решение — «на новое расхождение зовём, на повторное нет». Он не доказывает,
+ * что настоящий верб настоящего продукта этот шаг зовёт, что каталог черновиков берётся
+ * от измеряемого дерева и что путь появившегося файла виден в выводе. Ровно этот класс —
+ * «вычислено, но не подключено» — стоил этому дереву дня работы, поэтому здесь запускается
+ * НАСТОЯЩИЙ процесс над настоящим репозиторием, без единой подделки.
+ *
+ * Рецепт фикстуры НАРОЧНО на allowlist (`node scripts/sma/…`) и НАРОЧНО с заведомо чужим
+ * ожидаемым хешем: команда печатает одну строку, расхождение получается настоящим, а цена
+ * прогона — один короткий процесс.
+ */
+describe('расхождение перепроверки рождает черновик урока, и ровно один', () => {
+  let tree: string
+  let first: { stdout: string; status: number }
+  let second: { stdout: string; status: number }
+
+  const draftsDir = () => join(tree, '.claude', 'memory', 'drafts')
+  const drafts = () => (existsSync(draftsDir()) ? readdirSync(draftsDir()) : [])
+
+  beforeAll(() => {
+    tree = mkdtempSync(join(tmpdir(), 'sma-draft-from-divergence-'))
+    mkdirSync(join(tree, 'scripts', 'sma'), { recursive: true })
+    writeFileSync(join(tree, 'scripts', 'sma', 'print-one.mjs'), "process.stdout.write('1\\n')\n")
+    mkdirSync(join(tree, '.planning', 'phases', '01-fixture'), { recursive: true })
+    writeFileSync(
+      join(tree, '.planning', 'phases', '01-fixture', '01-01-SUMMARY.md'),
+      [
+        '---',
+        'phase: 1',
+        'receipts:',
+        '  - id: R-DRIFT',
+        '    assertion: the fixture command reproduces its pinned observation',
+        '    check_command: node scripts/sma/print-one.mjs',
+        '    expected_sha256: ' + 'a'.repeat(64),
+        '    hash_stdout: true',
+        '---',
+        '',
+        '# fixture',
+        '',
+      ].join('\n'),
+    )
+    git(['init', '-b', 'main'], tree)
+    git(['config', 'user.email', 'fixture@example.invalid'], tree)
+    git(['config', 'user.name', 'Fixture'], tree)
+    git(['add', '.'], tree)
+    git(['commit', '-m', 'fixture: a receipt whose pinned observation no longer holds'], tree)
+
+    first = runCli(['reverify'], tree)
+    second = runCli(['reverify'], tree)
+  }, 120_000)
+
+  afterAll(() => {
+    rmSync(tree, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  it('первый прогон: расхождение названо, черновик рождён, путь напечатан', () => {
+    expect(first.status, 'расхождение не сделало верб красным').toBe(1)
+    expect(first.stdout).toContain('divergent')
+    expect(drafts(), 'черновик не появился — обход не позвал сочинителя').toHaveLength(1)
+    expect(drafts()[0]).toMatch(/^bug-lesson-.*R-DRIFT\.md$/)
+    expect(first.stdout, 'путь черновика не напечатан — он потеряется для квитанции').toContain('черновик')
+    expect(first.stdout).toContain(drafts()[0])
+  })
+
+  it('повтор того же расхождения не удваивает: ни второго файла, ни второго вызова', () => {
+    expect(second.status).toBe(1)
+    expect(drafts(), 'повторное расхождение размножило черновики').toHaveLength(1)
+    expect(second.stdout, 'сочинитель позван повторно — залп по всему леджеру только вопрос времени').not.toContain('черновик')
+  })
+
+  it('черновик не в корпусе: он лежит в drafts/, откуда индекс его не берёт', () => {
+    expect(existsSync(join(tree, '.claude', 'memory', 'MEMORY.md'))).toBe(false)
+    expect(readdirSync(join(tree, '.claude', 'memory'))).toEqual(['drafts'])
   })
 })

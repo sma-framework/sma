@@ -38,6 +38,10 @@ import {
   draftLessonsForRecords,
   RUN_BUDGET_MS,
   scoringTally,
+  isNewDivergence,
+  receiptPairKey,
+  lastReceiptVerdicts,
+  recordReceiptRun,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
 
@@ -828,5 +832,193 @@ describe('scoringTally — how many verdicts, and what walked away without one',
   it('the scoring verb prints that computed line instead of counting on screen', () => {
     const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
     expect(src).toContain('scoringTally(')
+  })
+})
+
+/**
+ * Расхождение структурной перепроверки рождает черновик урока — но ТОЛЬКО новое.
+ *
+ * Почему эти кейсы существуют. Сочинитель черновика был готов и идемпотентен, его звали
+ * четверо; главная ветка перепроверки — та, что ходит по структурным квитанциям, — не
+ * звала его никогда: цикл клал запись в леджер и на этом останавливался. Самый частый
+ * настоящий промах системы не рождал ничего.
+ *
+ * Врезать вызов «на каждое расхождение» было нельзя: в леджере этого воркспейса три
+ * тысячи записей, из них тысяча семьсот промахов, а различных пар «сводка + id»,
+ * когда-либо расходившихся, — почти две сотни. Один общий прогон высыпал бы до двух
+ * сотен файлов, каталог черновиков стал бы нечитаемым, а человеческий гейт повышения
+ * умер бы от объёма. Поэтому черновик рождается у расхождения, которое ЕЩЁ НЕ БЫЛО
+ * расхождением.
+ *
+ * Кейсы утверждают ПРОВОД, а не вычисление: считается число обращений к подделке
+ * сочинителя. «Черновик вычислен» и «черновик рождён обходом» — разные утверждения.
+ */
+describe('перепроверка квитанций: черновик рождается только у НОВОГО расхождения', () => {
+  const SUMMARY = '.planning/phases/01-fixture/01-01-SUMMARY.md'
+
+  /** Одна запись структурной перепроверки — та форма, что отдаёт verifyReceipt. */
+  function receiptRecord(over: Record<string, unknown> = {}) {
+    return {
+      id: 'R1',
+      summary: SUMMARY,
+      planId: '01-01',
+      assertion: 'квитанция воспроизводится',
+      check_command: 'node scripts/sma/cli.mjs status',
+      expected_sha256: 'a'.repeat(64),
+      observed_sha256: 'b'.repeat(64),
+      exitCode: 0,
+      scoredAt: '2026-08-20T00:00:00.000Z',
+      domain: 'sma.receipts',
+      verdict: 'divergent',
+      ...over,
+    }
+  }
+
+  /** Одна строка леджера — та форма, что кладёт туда верб перепроверки. */
+  function ledgerRow(over: Record<string, unknown> = {}) {
+    return {
+      id: 'R1',
+      summary: SUMMARY,
+      domain: 'sma.receipts',
+      verdict: 'hit',
+      receipt_verdict: 'verified',
+      scoredAt: '2026-08-19T00:00:00.000Z',
+      ...over,
+    }
+  }
+
+  /** Подделка сочинителя, которая ТОЛЬКО считает обращения. */
+  function counter() {
+    const calls: any[] = []
+    const draft = (args: any) => {
+      calls.push(args)
+      return { drafted: true, path: join('drafts', `bug-lesson-${args.planId}-${args.verdict.id}.md`) }
+    }
+    return { calls, draft }
+  }
+
+  it('Тест 1: расхождение у пары, чей предыдущий вердикт успешен, зовёт сочинителя РОВНО ОДИН раз — и именно этой парой', () => {
+    const { calls, draft } = counter()
+    const res = recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => [ledgerRow()],
+      append: () => {},
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls, 'обход не позвал сочинителя — провод оборван').toHaveLength(1)
+    expect(calls[0].verdict.id).toBe('R1')
+    expect(calls[0].verdict.verdict).toBe('miss')
+    expect(calls[0].verdict.check_command).toBe('node scripts/sma/cli.mjs status')
+    expect(calls[0].planId).toBe('01-01')
+    expect(res.drafted).toHaveLength(1)
+  })
+
+  it('Тест 2: та же пара, чей предыдущий вердикт УЖЕ был расхождением, не зовёт сочинителя ни разу', () => {
+    const { calls, draft } = counter()
+    const res = recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => [ledgerRow({ verdict: 'miss', receipt_verdict: 'divergent' })],
+      append: () => {},
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls, 'повторное расхождение позвало сочинителя — общий прогон высыпет сотни файлов').toHaveLength(0)
+    expect(res.drafted).toHaveLength(0)
+  })
+
+  it('Тест 3: пары в леджере нет вовсе — расхождение новое по определению, сочинитель позван', () => {
+    const { calls, draft } = counter()
+    recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => [],
+      append: () => {},
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('Тест 4: предыдущий вердикт прочитан ДО того, как в леджер дописан новый', () => {
+    const order: string[] = []
+    const ledger: any[] = [ledgerRow()] // пара сегодня подтверждается
+    const { calls, draft } = counter()
+    recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => {
+        order.push('read')
+        return ledger.slice()
+      },
+      append: (r: any) => {
+        order.push('append')
+        ledger.push({ ...r, verdict: 'miss', receipt_verdict: r.verdict })
+      },
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(order[0], 'леджер прочитан после дописывания — новизна считается по вердикту этого же прогона').toBe('read')
+    expect(order.filter((o) => o === 'read'), 'леджер перечитывается на каждой записи').toHaveLength(1)
+    // Обратный порядок увидел бы в леджере уже дописанное расхождение и не сочинил бы ничего.
+    expect(calls).toHaveLength(1)
+  })
+
+  it('Тест 5: подтверждённая квитанция сочинителя не зовёт, но в леджер попадает', () => {
+    const { calls, draft } = counter()
+    const appended: any[] = []
+    recordReceiptRun({
+      records: [receiptRecord({ verdict: 'verified', observed_sha256: 'a'.repeat(64) })],
+      readPrevious: () => [],
+      append: (r: any) => appended.push(r),
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls).toHaveLength(0)
+    expect(appended).toHaveLength(1)
+  })
+
+  it('срыв сочинителя не роняет перепроверку — сочинение остаётся best-effort', () => {
+    const appended: any[] = []
+    expect(() =>
+      recordReceiptRun({
+        records: [receiptRecord()],
+        readPrevious: () => [],
+        append: (r: any) => appended.push(r),
+        draft: () => {
+          throw new Error('диск полон')
+        },
+        dirs: { draftsDir: 'drafts' },
+      }),
+    ).not.toThrow()
+    expect(appended).toHaveLength(1)
+  })
+
+  it('предикат новизны — чистая функция, и у неё свои кейсы', () => {
+    expect(isNewDivergence({ previous: 'verified', current: 'divergent' })).toBe(true)
+    expect(isNewDivergence({ previous: 'hit', current: 'divergent' })).toBe(true)
+    expect(isNewDivergence({ previous: null, current: 'divergent' })).toBe(true)
+    expect(isNewDivergence({ previous: 'divergent', current: 'divergent' })).toBe(false)
+    expect(isNewDivergence({ previous: 'verified', current: 'verified' })).toBe(false)
+    // Ни пропуск по границе команд, ни несостоявшийся запуск не были подтверждением,
+    // что квитанция работала: расхождение после них — не свежий слом.
+    expect(isNewDivergence({ previous: 'skipped-unsafe', current: 'divergent' })).toBe(false)
+    expect(isNewDivergence({ previous: 'error', current: 'divergent' })).toBe(false)
+  })
+
+  it('пара «сводка + id» — одна и та же, как бы путь ни был написан', () => {
+    const root = join(tmpdir(), 'sma-pair-key-root')
+    const relKey = receiptPairKey({ summary: SUMMARY, id: 'R1' }, { repoRoot: root })
+    const absKey = receiptPairKey({ summary: join(root, SUMMARY), id: 'R1' }, { repoRoot: root })
+    expect(absKey, 'один рецепт под двумя написаниями пути = две истории, и залп повторится').toBe(relKey)
+    expect(receiptPairKey({ summary: SUMMARY, id: 'R2' }, { repoRoot: root })).not.toBe(relKey)
+  })
+
+  it('карта последних вердиктов держит ПОСЛЕДНИЙ, а не первый', () => {
+    const map = lastReceiptVerdicts([ledgerRow(), ledgerRow({ verdict: 'miss', receipt_verdict: 'divergent' })])
+    expect(map.get(receiptPairKey({ summary: SUMMARY, id: 'R1' }))).toBe('divergent')
+  })
+
+  it('структурный обход перепроверки зовёт именно этот шаг, а не повторяет условие у себя', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('recordReceiptRun(')
   })
 })
