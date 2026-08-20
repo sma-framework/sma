@@ -31,7 +31,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 
 import { serializeNote } from './frontmatter.mjs'
 
@@ -777,4 +777,184 @@ export function draftLessonsForRecords({ records = [], planId, dirs = {}, draft 
     }
   }
   return out
+}
+
+/**
+ * ── the structural re-verification side of the flywheel ───────────────────────
+ *
+ * A receipt that just started diverging is the commonest REAL miss this system
+ * makes, and until now it drafted nothing: the walk wrote its record into the
+ * ledger and stopped there.
+ *
+ * Wiring it up naively — «draft on every divergence» — was never an option. The
+ * ledger of a working tree holds thousands of records, and the number of DISTINCT
+ * (summary, id) pairs that have ever diverged runs into the hundreds. One general
+ * walk would spray that many files at once: idempotence keeps them from
+ * multiplying on re-runs, but the drafts directory becomes unreadable and the
+ * human promotion gate dies of volume. So a draft is born of a divergence that
+ * was NOT a divergence last time.
+ */
+
+/**
+ * receiptPairKey(record, {repoRoot}) -> the ONE identity of a receipt across runs.
+ *
+ * The pair is «which summary + which receipt id». The summary arrives as whatever
+ * path string the caller typed: a general walk builds absolute paths, a targeted
+ * `--summary` run carries whatever the operator wrote. Left unnormalized the same
+ * receipt keeps TWO histories under two spellings, and the second spelling reads
+ * as «never seen before» — which is exactly the salvo the novelty condition
+ * exists to prevent. With a repoRoot the key is the tree-relative path in forward
+ * slashes, so the two spellings collapse into one.
+ *
+ * @param {{summary?:string, id?:string}} record
+ * @param {{repoRoot?:string}} [opts]
+ * @returns {string}
+ */
+export function receiptPairKey(record = {}, { repoRoot } = {}) {
+  const raw = String((record && record.summary) ?? '')
+  let rel = raw
+  if (repoRoot && raw) {
+    try {
+      rel = relative(String(repoRoot), resolve(String(repoRoot), raw))
+    } catch {
+      rel = raw
+    }
+  }
+  return `${rel.split(sep).join('/')}\u0000${String((record && record.id) ?? '')}`
+}
+
+/**
+ * The receipt vocabulary of one ledger row. The walk writes the V2 verdict
+ * ('hit'/'miss') and preserves `receipt_verdict` verbatim; older rows may carry
+ * only the mapped one. Both are read back into the receipt words so the novelty
+ * predicate has a single vocabulary to reason in.
+ */
+function receiptVerdictOf(row) {
+  if (!row) return null
+  if (row.receipt_verdict) return String(row.receipt_verdict)
+  const v = String(row.verdict ?? '')
+  if (v === 'hit') return 'verified'
+  if (v === 'miss') return 'divergent'
+  return v
+}
+
+/**
+ * lastReceiptVerdicts(records, {repoRoot}) -> Map(pairKey -> receipt verdict).
+ *
+ * The ledger IS the single source of truth about the previous verdict — no second
+ * store is introduced. Rows are read in file order, so the last one wins.
+ *
+ * @param {object[]} records ledger rows of domain 'sma.receipts'
+ * @param {{repoRoot?:string}} [opts]
+ * @returns {Map<string,string>}
+ */
+export function lastReceiptVerdicts(records = [], { repoRoot } = {}) {
+  const map = new Map()
+  for (const r of records) {
+    if (!r || !r.id) continue
+    map.set(receiptPairKey(r, { repoRoot }), receiptVerdictOf(r))
+  }
+  return map
+}
+
+/**
+ * isNewDivergence({previous, current}) -> boolean. The whole decision, as a pure
+ * function, so it can be judged on its own instead of being re-read out of a loop.
+ *
+ * NEW = this run diverged AND the previous verdict of the same pair was a success
+ * or is absent. A pair that was already diverging is old news. A previous
+ * 'skipped-unsafe' or 'error' is deliberately NOT news either: neither was ever
+ * evidence that the receipt reproduced, so a divergence after one of them is not
+ * a fresh break — and erring towards silence is what keeps the first salvo bounded.
+ *
+ * @param {{previous?: string|null, current?: string}} args
+ * @returns {boolean}
+ */
+export function isNewDivergence({ previous, current } = {}) {
+  if (current !== 'divergent') return false
+  if (previous == null || previous === '') return true
+  return previous === 'verified' || previous === 'hit'
+}
+
+/** A divergence, shaped EXACTLY as a scorePlan miss, so the existing drafter works unmodified. */
+function receiptMissRow(r) {
+  return {
+    verdict: 'miss',
+    domain: 'sma.receipts',
+    metric: 'receipt_divergence',
+    id: r.id,
+    claim: r.assertion || `квитанция ${r.id} воспроизводится`,
+    check_command: r.check_command,
+    comparator: '==',
+    expected: r.expected_sha256,
+    actual: r.observed_sha256,
+    scoredAt: r.scoredAt,
+  }
+}
+
+/**
+ * recordReceiptRun({records, readPrevious, append, draft, dirs, repoRoot})
+ *   -> {drafted: [{id, summary, path, drafted}]}
+ *
+ * ONE step owns three things that must happen IN THIS ORDER:
+ *   1. read the previous verdict of every pair — ONCE, and before anything is written;
+ *   2. write this run's records into the ledger;
+ *   3. draft a lesson for every divergence that is NEW.
+ *
+ * The order is the load-bearing part and it lives here rather than in the verb, so
+ * a test can assert it instead of a reader having to trust a loop: read AFTER the
+ * append and every pair's «previous» verdict becomes the verdict this very run just
+ * wrote — «new» stops meaning anything at all.
+ *
+ * Drafting is best-effort: a drafter that throws never fails a re-verification.
+ * No second drafter and no second template — the existing idempotent one is called,
+ * and it carries the three-condition human promotion gate in its own header.
+ *
+ * @param {{records?:object[], readPrevious?:Function, append?:Function,
+ *          draft?:Function, dirs?:object, repoRoot?:string}} args
+ * @returns {{drafted:{id:string, summary:string|null, path:string, drafted:boolean}[]}}
+ */
+export function recordReceiptRun({
+  records = [],
+  readPrevious,
+  append,
+  draft = draftLessonFromMiss,
+  dirs = {},
+  repoRoot,
+} = {}) {
+  // (1) FIRST, and exactly once. A ledger that cannot be read is an honest empty
+  // history — every divergence is then new, which is the safe direction: it never
+  // hides a fresh break, it only risks one extra draft.
+  let previousRows = []
+  try {
+    previousRows = typeof readPrevious === 'function' ? readPrevious() : []
+  } catch {
+    previousRows = []
+  }
+  const previous = lastReceiptVerdicts(Array.isArray(previousRows) ? previousRows : [], { repoRoot })
+
+  const drafted = []
+  for (const r of records) {
+    if (!r) continue
+    // The verdict is judged against the PRE-RUN ledger, captured above.
+    const fresh = isNewDivergence({
+      previous: previous.get(receiptPairKey(r, { repoRoot })) ?? null,
+      current: r.verdict,
+    })
+
+    // (2) the ledger write keeps its old posture: a failure here is not swallowed.
+    if (typeof append === 'function') append(r)
+
+    if (!fresh) continue
+
+    // (3) best-effort drafting.
+    try {
+      const d = draft({ verdict: receiptMissRow(r), planId: r.planId ?? 'receipt', dirs })
+      if (d && d.path) drafted.push({ id: r.id, summary: r.summary ?? null, path: d.path, drafted: d.drafted })
+    } catch {
+      /* a failing drafter never blocks a re-verification */
+    }
+  }
+
+  return { drafted }
 }
