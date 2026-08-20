@@ -246,6 +246,78 @@ export const MEASURE_LAST_LINE = 'last-line'
 export const MEASURE_EXIT_CODE = 'exit-code'
 export const MEASURES = [MEASURE_LAST_LINE, MEASURE_EXIT_CODE]
 
+/**
+ * RUN_BUDGET_MS — the wall-clock budget one check_command is given.
+ *
+ * THIRTY MINUTES, and the number is named here rather than buried at every
+ * call site, because the previous budget was TWO minutes and that is smaller
+ * than the thing this runner is most often asked to measure. This product's
+ * own suite (170 files, ~3665 cases) was measured TWICE: 134 seconds on an
+ * idle machine and 715 seconds with other work running beside it. A budget
+ * below the measured thing does not measure — it manufactures a failure and
+ * files it as an observation about the world; a budget that merely clears the
+ * idle case does the same thing on a busy day. Thirty minutes clears the
+ * loaded measurement with room, and a genuinely hung command is still cut off
+ * rather than waited on forever.
+ */
+export const RUN_BUDGET_MS = 1_800_000
+
+/**
+ * runResultFromExecError(err) -> {stdout, exitCode, notMeasured}.
+ *
+ * The one place a failed child process is read, and the whole point of it is
+ * the distinction the old inline `err.status ?? 1` erased:
+ *
+ *   - the command RAN and exited nonzero -> that code is DATA. A claim about
+ *     it can be right or wrong, and a wrong one is a MISS. Nothing here
+ *     softens that.
+ *   - the command NEVER FINISHED (killed by the time budget, killed by a
+ *     signal, never started at all) -> there is no exit code in existence.
+ *     `status` is null and `signal`/`code` say why. Substituting 1 turns «I
+ *     could not measure» into «you were wrong» — a sentence about the world
+ *     that nobody observed.
+ *
+ * The discriminator is taken from the RUN ITSELF (signal / missing status /
+ * the ETIMEDOUT code), never guessed from the text of the output. The command
+ * allowlist is untouched by any of this: a budget and a kill signal are data
+ * about a process, not characters in a string handed to a shell.
+ */
+export function runResultFromExecError(err) {
+  const e = err ?? {}
+  const status = e.status
+  const signal = e.signal
+  const code = e.code
+  let notMeasured = null
+  if (code === 'ETIMEDOUT') notMeasured = 'timeout'
+  else if (signal) notMeasured = `signal:${String(signal)}`
+  else if (status == null) notMeasured = 'did-not-start'
+  return {
+    stdout: String(e.stdout == null ? '' : e.stdout),
+    exitCode: notMeasured ? null : Number(status),
+    notMeasured,
+  }
+}
+
+/**
+ * makeExecRunner({execSync, cwd, timeoutMs}) -> runCommand(cmd, {cwd}).
+ *
+ * The ONE runner every verdict-producing verb builds from, so that the same
+ * kill by the same budget can never be read one way by the scorer and another
+ * way by the mirror or by re-verification. The working directory arrives as a
+ * PARAMETER, exactly as before; it is never spliced into the command string.
+ */
+export function makeExecRunner({ execSync, cwd, timeoutMs } = {}) {
+  const budget = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : RUN_BUDGET_MS
+  return (cmd, o = {}) => {
+    try {
+      const stdout = execSync(cmd, { encoding: 'utf8', timeout: budget, cwd: o.cwd ?? cwd ?? process.cwd() })
+      return { stdout, exitCode: 0, notMeasured: null }
+    } catch (err) {
+      return runResultFromExecError(err)
+    }
+  }
+}
+
 /** The declared measure of an entry, defaulting to the historical one. */
 export function measureOf(entry) {
   const m = String((entry && entry.measure) != null ? entry.measure : '').trim()
@@ -278,12 +350,19 @@ export function runOptions(entry) {
 export function normalizeRunResult(res) {
   if (res && typeof res === 'object' && 'stdout' in res) {
     const code = Number(res.exitCode)
+    // «The run never finished» outranks any exit code the shape may carry:
+    // there is nothing to report, and reporting anything would be an
+    // observation nobody made. Note that WITHOUT this branch a null exitCode
+    // coerces to 0 — a killed process would read as a clean success.
+    const notMeasured =
+      res.notMeasured == null || String(res.notMeasured).trim() === '' ? null : String(res.notMeasured)
     return {
       stdout: String(res.stdout == null ? '' : res.stdout),
-      exitCode: Number.isFinite(code) ? code : null,
+      exitCode: notMeasured ? null : Number.isFinite(code) ? code : null,
+      notMeasured,
     }
   }
-  return { stdout: String(res == null ? '' : res), exitCode: null }
+  return { stdout: String(res == null ? '' : res), exitCode: null, notMeasured: null }
 }
 
 /**
@@ -295,7 +374,17 @@ export function normalizeRunResult(res) {
  * ERROR and says so, rather than quietly passing zero off as an observation.
  */
 export function factFromRun(entry, res) {
-  const { stdout, exitCode } = normalizeRunResult(res)
+  const { stdout, exitCode, notMeasured } = normalizeRunResult(res)
+  // A run that never finished yields no fact under EITHER measure: neither a
+  // wrong exit code nor a wrong number on the last line. It is «could not
+  // measure», and it says so with the reason attached.
+  if (notMeasured) {
+    return {
+      actual: null,
+      error: `the run did not complete (${notMeasured}) — the check was not measured, so this is no observation about the world`,
+      notMeasured,
+    }
+  }
   if (measureOf(entry) === MEASURE_EXIT_CODE) {
     if (exitCode == null) {
       return {
@@ -515,6 +604,9 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
         hit: false,
         verdict: 'error',
         error: fact.error,
+        // Present ONLY when the run itself never finished, so the ledger can
+        // be read apart later: «could not measure» is not «was wrong».
+        ...(fact.notMeasured ? { not_measured: fact.notMeasured } : {}),
       })
       continue
     }
@@ -600,4 +692,34 @@ export function draftLessonFromMiss({ verdict, planId, dirs = {} }) {
   mkdirSync(draftsDir, { recursive: true })
   writeFileSync(path, serializeNote({ frontmatter, body }), 'utf8')
   return { drafted: true, path }
+}
+
+/**
+ * draftLessonsForRecords({records, planId, dirs, draft}) -> [{id, path, drafted}].
+ *
+ * The ONE place that decides which verdicts deserve a lesson draft, so the
+ * decision can be tested by counting calls instead of by reading a loop.
+ * ONLY a `miss` drafts. A hit is not a surprise; a skipped command is not a
+ * verdict; and a run that never finished (verdict 'error' carrying
+ * `not_measured`) is the case this gate exists for — a lesson drafted from a
+ * failure that never happened would be a lesson that should not exist, and
+ * the flywheel would start by teaching a falsehood.
+ *
+ * Drafting stays best-effort: a failing drafter never blocks scoring.
+ *
+ * @param {{records?: object[], planId?: string, dirs?: object, draft?: Function}} args
+ * @returns {{id: string, path: string, drafted: boolean}[]}
+ */
+export function draftLessonsForRecords({ records = [], planId, dirs = {}, draft = draftLessonFromMiss } = {}) {
+  const out = []
+  for (const r of records) {
+    if (!r || r.verdict !== 'miss') continue
+    try {
+      const d = draft({ verdict: r, planId, dirs })
+      if (d && d.path) out.push({ id: r.id, path: d.path, drafted: d.drafted })
+    } catch {
+      /* drafting is best-effort — a failed draft never blocks scoring */
+    }
+  }
+  return out
 }

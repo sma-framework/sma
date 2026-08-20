@@ -261,6 +261,18 @@ export function observationOf({ command, exitCode, stdout, hashStdout = true }) 
 /** Run one command through the injected runner; normalize its shape or throw-shape. */
 function runOne(runCommand, cmd, cwd) {
   const res = runCommand(cmd, { cwd })
+  // A run that NEVER FINISHED (killed by the time budget, killed by a signal,
+  // never started) is not a divergence — it is an absence of measurement, and
+  // saying otherwise would accuse a receipt of drifting on the strength of a
+  // process nobody watched finish. The scorer draws the same line in the same
+  // words, so one kill cannot mean two things in two verbs.
+  if (res && typeof res === 'object' && res.notMeasured) {
+    const err = new Error(
+      `the run did not complete (${String(res.notMeasured)}) — the receipt was not measured, so it is neither verified nor divergent`,
+    )
+    err.notMeasured = String(res.notMeasured)
+    throw err
+  }
   if (res == null || typeof res !== 'object' || !Number.isFinite(Number(res.exitCode))) {
     throw new Error('runner returned a non-conforming shape (need {stdout, exitCode})')
   }
@@ -309,7 +321,12 @@ export function verifyReceipt(entry, { runCommand, cwd, now, summary } = {}) {
   try {
     observed = runOne(runCommand, entry.check_command, cwd)
   } catch (err) {
-    return { ...base, verdict: 'error', error: String((err && err.message) ?? err) }
+    return {
+      ...base,
+      verdict: 'error',
+      error: String((err && err.message) ?? err),
+      ...(err && err.notMeasured ? { not_measured: String(err.notMeasured) } : {}),
+    }
   }
 
   const hashStdout = coerceHashStdout(entry.hash_stdout)
