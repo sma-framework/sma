@@ -151,3 +151,17 @@ export const AIRBAG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 // auto-deploy checkout — «your push carried my half-built work» becomes impossible.
 // A slash-namespaced ref (valid in git) keeps these branches grouped + easy to sweep.
 export const WORKTREE_BRANCH_PREFIX = 'sma-wt/'
+
+// ── the write-pipeline provenance rule ─────────────────────────────────────
+// The DATE from which a note found in the corpus owes machine evidence that it
+// walked the write pipeline. A DATE for the same reason as the closing gate
+// above: the rule is about when it started existing in a tree, and git already
+// knows when a note file was first added.
+//
+// THE TIER IS A DECISION, NOT A DEFAULT. A note filed BEFORE this day is a WARN:
+// an inherited corpus is a debt to be seen, not a pile of accidents to be
+// prosecuted, and a rule born red and then argued down teaches only that rules
+// can be argued with. A note filed AFTER it is CRITICAL: from that day the
+// pipeline was there to be used, and walking around it was a choice.
+// Compared as a plain ISO day string, never parsed into a date.
+export const MEMORY_PIPELINE_REQUIRED_FROM = '2026-08-20'

@@ -1139,6 +1139,12 @@ async function cmdLint({ flags, dirs }) {
     // already resolved that directory, so it is handed over rather than
     // re-derived. Absent, the rule reports a degradation and judges nobody.
     ...(dirs && dirs.calibrationDir ? { calibrationDir: dirs.calibrationDir } : {}),
+    // MEM-OFFPIPELINE needs the write pipeline's own journal — the ONE machine
+    // record of which notes actually walked it. The verb has already resolved
+    // that directory (the same one `memory write` appends to), so it is handed
+    // over rather than re-derived. Absent, the rule reports a degradation and
+    // judges nobody: a corpus whose evidence is missing is not a guilty corpus.
+    ...(dirs && dirs.journalDir ? { journalDir: dirs.journalDir } : {}),
     // The git runner is passed UNCONDITIONALLY: the fingerprint-drift check needs
     // it to recompute a file-bound stamp even in a project that carries no plans
     // tree. Without it every fingerprinted claim would report "unverified" —
