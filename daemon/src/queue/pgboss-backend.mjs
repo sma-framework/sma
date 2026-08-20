@@ -892,6 +892,69 @@ export function createPgBossQueue({
   }
 
   /**
+   * cancelTask(taskId) — A PERSON STOPPED THIS WORK, written into the queue as a state and
+   * not as a word on a screen. Returns false when no LIVE job carries this id.
+   *
+   * THE LIBRARY'S OWN CANCEL, NEVER AN UPDATE OF OUR OWN. The statement that hands work out
+   * belongs to pg-boss, and it selects on a state ordering only pg-boss maintains; a state
+   * written by a statement of ours would have to agree with that selection for ever, across
+   * every version of the library, on a promise nobody checks. Its `cancel` is the one call
+   * that moves a row out of everything short of completed — waiting, retrying and under way
+   * alike — by the same plan the fetch is written against. So the two cannot disagree.
+   *
+   * AND NEVER `fail`. A failure is the RETRYABLE outcome of this queue: its own plan DELETES
+   * the job row and INSERTS it back in the retry state with a later start. A stop written as
+   * a failure would therefore be a stop that hands the work out again after the backoff —
+   * a closed card, a counter that fell, and a worker holding the stopped task minutes later.
+   * That is the single reason this method exists beside `fail` instead of inside it.
+   *
+   * THE REASON RIDES WITH IT. `cancelled` is a state, not an explanation: every reader of a
+   * finished row takes its cause from the job's output, so a stop that wrote nothing there
+   * would draw a red card saying «причина не записана». A human stopped this, and the row now
+   * says exactly that — in the very shape the owner's word about an abandoned assembly
+   * already writes, so both paths leave one kind of evidence rather than two.
+   *
+   * NOTHING IS TOUCHED IN THE READ PATH, and nothing needs to be: the state map already reads
+   * a cancelled row as closed, and the reason already carries its own Russian label.
+   *
+   * THE LEDGER ROW IS WRITTEN ONLY FOR WORK THAT WAS UNDER WAY. The ledger is a record of
+   * ATTEMPTS, and a task stopped while it was still waiting never had one — stamping a row
+   * for it would invent a try nobody ran, which is the one thing an audit trail may never do.
+   * Where there IS an attempt, the stop crosses the state machine's human-abort edge for real
+   * instead of leaving it declared and never travelled.
+   */
+  async function cancelTask(taskId) {
+    if (typeof taskId !== 'string' || taskId === '') return false
+    // THE RESOLUTION IS THE «what is closed stays closed» RULE, expressed as a query rather
+    // than as an if: the only two jobs findable here are the one under way and the one
+    // waiting, so finished work is simply not there to be stopped.
+    const running = await resolveActiveJob(taskId)
+    const job = running || (await resolveQueuedJob(taskId))
+    if (!job) return false
+    await bossInstance.cancel(job.name, job.id)
+    await runSql(
+      `UPDATE pgboss.job SET output = coalesce(output, '{}'::jsonb) || jsonb_build_object('reason', $2::text)
+        WHERE id = $1`,
+      [job.id, 'manual'],
+    )
+    coalesce.delete(taskId)
+    if (ledgerDir && running) {
+      recordAttempt(ledgerDir, {
+        taskId,
+        // The ledger's terminal vocabulary is two words wide and stays that way; WHICH kind of
+        // ending this was is carried by the reason and by the transition stamp beside it, both
+        // of which name the human. A third outcome word here would be a second place saying
+        // the same thing, free to disagree with the first.
+        outcome: 'failed',
+        failureReason: 'manual',
+        endedAt: new Date(now()).toISOString(),
+        ...jobStamp(running, { from: 'RUNNING', to: 'CANCELLED', actor: 'human', taskId }),
+      })
+    }
+    return true
+  }
+
+  /**
    * statusOf(r) → the contract status of a job row, approval row included.
    *
    * THE SIDE TABLE IS ONLY CONSULTED FOR FINISHED WORK. A task that was approved once and
@@ -1106,6 +1169,7 @@ export function createPgBossQueue({
     setWords,
     complete,
     fail,
+    cancelTask,
     list,
     stats,
     execSql: runSql,

@@ -1218,6 +1218,38 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
+  /**
+   * cancelTask(taskId) — A PERSON STOPPED THIS WORK, and stopped means stopped.
+   *
+   * The body says exactly what the owner's word about an abandoned assembly already says
+   * about each of its pieces: the row is closed, and the reason is the true one — a human
+   * stopped this. Nothing else needs clearing, and this is deliberate: the liveness sweep
+   * asks for `claimed` rows only, so a closed row is already out of its reach, while the
+   * clock of the attempt that WAS under way stays on the row where a person can still read
+   * how long it ran before being stopped.
+   *
+   * IT IS NOT `fail`, AND THAT DISTINCTION IS THE WHOLE POINT. A failure is a RETRYABLE
+   * outcome — the durable queue hands the very same row back for another try, after a
+   * backoff. So a stop written as a failure would close the card, drop the counter, look
+   * done — and then give the stopped work to a worker minutes later. A stop that looks
+   * successful and is not is worse than no stop at all, which is why this is a path of its
+   * own rather than a reason inside the other one.
+   *
+   * ONLY LIVE WORK CAN BE STOPPED. Work that already produced, already failed or already
+   * waits for a person is not stopped but finished, and `false` says so rather than
+   * rewriting it — the same «what is closed stays closed» the words door keeps.
+   */
+  async function cancelTask(taskId) {
+    const rec = records.get(taskId)
+    if (!rec) return false
+    if (rec.status !== 'queued' && rec.status !== 'claimed') return false
+    rec.status = 'failed'
+    rec.failure_reason = 'manual'
+    // THE TRY COUNT IS NOT TOUCHED, and its stillness is an assertion: a failure raises it
+    // because a next try stands behind it. Behind a stop stands nothing.
+    return true
+  }
+
   async function list(filter = {}) {
     sweep()
     let rows = [...records.values()]
@@ -1261,7 +1293,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
