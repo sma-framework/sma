@@ -5,11 +5,24 @@
  *
  * Task 1 — merge-claim triplet + the `sma merge` ritual:
  *   - Test 1: the merge-claim triplet mirrors the push-claim (acquire/second-fails/check/release)
- *   - Test 2: runMerge ritual order — acquire -> local merge -> tests-on-the-MERGE-RESULT -> receipt -> release
+ *   - Test 2: runMerge ritual order — acquire -> merge WITHOUT committing -> tests on that tree
+ *             -> commit AFTER the run -> receipt -> release
  *   - Test 3: a concurrent merge -> SOFT-deny with an override (never a hard block / throw)
  *   - Test 4: runMerge issues NO push / deploy subcommand (local integration only)
- *   - Test 5: tests-fail -> {merged:true, testsPassed:false} + an HONEST failure receipt (never a false green)
+ *   - Test 5: tests-fail -> {merged:false, refused:true} + the merge is ABORTED, never committed
  *   - Test 6: fail-open — an execGit/runTests throw -> {ok:false} + the slot is released (never wedged)
+ *
+ * THE FOUR LOCKS THIS FILE ADDS, and the defect behind each:
+ *   - a runner that answers with a PROMISE still merges green. Without the await in the
+ *     ritual, `!!(promise && promise.passed)` is false and EVERY merge would be refused by a
+ *     gate that looked like it worked. This case goes red the moment the await is removed.
+ *   - a throw ANYWHERE after the merge starts leaves no half-merge behind: the undo
+ *     subcommand was issued and the slot is free. Red the moment the undo leaves the catch.
+ *   - «no runner wired» and «the runner itself said there was nothing to run» both answer
+ *     null, and the receipt must still tell them apart in words. Red the moment null goes
+ *     back to being nameless.
+ *   - a branch already in the tree is SAID to be already in the tree; no commit is made and
+ *     no run is claimed.
  *
  * Task 2 — enforcing scopes (verified-live-only soft-deny + the opt-in PRE_CHECKS stream):
  *   - Test 7: enforceScope soft-denies ONLY a verified-LIVE claim; stale -> warn; none -> allow
@@ -35,6 +48,8 @@ import {
   runMerge,
   enforceScope,
   ENFORCE_OVERRIDE_HINT,
+  NO_RUNNER_NOTE,
+  RUNNER_SAID_NOTHING_RAN,
 } from '../lib/merge-gate.mjs'
 import { readJournal } from '../lib/journal.mjs'
 import { verifyClaimEvidence } from '../lib/collision.mjs'
@@ -57,17 +72,48 @@ afterEach(() => {
   }
 })
 
-/** makeExecGit — a DI git runner. Records every {args, cwd}; rev-parse returns a fixed sha. */
-function makeExecGit(opts: { throwOn?: string; resultSha?: string } = {}) {
+/**
+ * makeExecGit — a DI git runner that READS ITS ARGUMENTS AND ANSWERS BY THEM.
+ *
+ * It used to answer one fixed string to any question, which is how a fake ends up knowing
+ * more than the library it stands in for: this very tree once had a green suite covering a
+ * call to a method that did not exist, because the double had it and the live object did not.
+ * Here the difference is load-bearing — bringing the branch in, asking whether anything came
+ * in, recording it and undoing it are FOUR different questions with four different answers,
+ * and a fake that blurs them cannot tell a merge that happened from one that was refused.
+ *
+ *   opts.throwOn      — 'merge' (the bring-in), 'commit', or 'abort' (`merge --abort`)
+ *   opts.noMergeHead  — the MERGE_HEAD check answers empty: the branch was already in the tree
+ *   opts.headReadThrows — reading HEAD after the commit fails; the MERGE_HEAD check still works
+ */
+function makeExecGit(
+  opts: { throwOn?: string; resultSha?: string; noMergeHead?: boolean; headReadThrows?: boolean } = {},
+) {
   const calls: Array<{ args: string[]; cwd: string | undefined }> = []
   const runner = (args: string[], o: { cwd?: string } = {}) => {
     calls.push({ args, cwd: o.cwd })
-    if (opts.throwOn && args[0] === opts.throwOn) throw new Error(`git ${opts.throwOn} failed`)
-    if (args[0] === 'rev-parse') return `${opts.resultSha ?? 'MERGE_RESULT_SHA'}\n`
+    const isAbort = args[0] === 'merge' && args.includes('--abort')
+    const isBringIn = args[0] === 'merge' && !isAbort
+    const isMergeHeadCheck = args[0] === 'rev-parse' && args.includes('MERGE_HEAD')
+
+    if (opts.throwOn === 'abort' && isAbort) throw new Error('git merge --abort failed')
+    if (opts.throwOn === 'merge' && isBringIn) throw new Error('git merge failed')
+    if (opts.throwOn === 'commit' && args[0] === 'commit') throw new Error('git commit failed')
+
+    if (isMergeHeadCheck) return opts.noMergeHead ? '' : 'MERGE_HEAD_SHA\n'
+    if (args[0] === 'rev-parse') {
+      if (opts.headReadThrows) throw new Error('git rev-parse HEAD failed')
+      return `${opts.resultSha ?? 'MERGE_RESULT_SHA'}\n`
+    }
     return ''
   }
   ;(runner as any).calls = calls
   return runner as ((args: string[], o?: { cwd?: string }) => string) & { calls: typeof calls }
+}
+
+/** The subcommand words issued so far, in order — `merge --abort` named apart from a merge. */
+function verbsOf(execGit: { calls: Array<{ args: string[] }> }): string[] {
+  return execGit.calls.map((c) => (c.args[0] === 'merge' && c.args.includes('--abort') ? 'merge --abort' : c.args[0]))
 }
 
 describe('merge-claim triplet + the sma merge ritual', () => {
@@ -94,24 +140,35 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     expect(acquireMergeClaim({ by: 'T-d', claimsDir, journalDir }).acquired).toBe(true)
   })
 
-  it('Test 2: runMerge order — acquire -> local merge -> tests-on-the-MERGE-RESULT -> receipt -> release', () => {
+  it('Test 2: runMerge order — merge WITHOUT committing -> tests on that tree -> commit AFTER the run', async () => {
     const execGit = makeExecGit()
-    let testedSha: string | null = null
-    const runTests = ({ resultSha }: { resultSha: string }) => {
-      testedSha = resultSha
+    let handed: any = null
+    let issuedWhenTheRunnerWasCalled: string[] = []
+    const runTests = (arg: any) => {
+      handed = arg
+      issuedWhenTheRunnerWasCalled = verbsOf(execGit)
       return { passed: true }
     }
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests, claimsDir, journalDir, cwd: '/repo' }) as any
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests, claimsDir, journalDir, cwd: '/repo' })) as any
     expect(res.merged).toBe(true)
     expect(res.testsPassed).toBe(true)
 
-    // ritual order: merge BEFORE the result-sha read.
-    const mergeIdx = execGit.calls.findIndex((c) => c.args[0] === 'merge')
-    const revIdx = execGit.calls.findIndex((c) => c.args[0] === 'rev-parse')
-    expect(mergeIdx).toBeGreaterThanOrEqual(0)
-    expect(revIdx).toBeGreaterThan(mergeIdx)
-    // tests ran on the MERGE RESULT, not on either branch alone.
-    expect(testedSha).toBe('MERGE_RESULT_SHA')
+    // the branch was brought in WITHOUT being committed…
+    const bringInIdx = execGit.calls.findIndex((c) => c.args[0] === 'merge' && c.args.includes('--no-commit'))
+    const commitIdx = execGit.calls.findIndex((c) => c.args[0] === 'commit')
+    expect(bringInIdx).toBeGreaterThanOrEqual(0)
+    // …and the commit came AFTER the run, not before it. This is the whole reorder: at the
+    // moment the runner was asked, no commit had been made, so a red answer still had
+    // something to refuse.
+    expect(issuedWhenTheRunnerWasCalled).not.toContain('commit')
+    expect(commitIdx).toBeGreaterThan(bringInIdx)
+
+    // the runner was handed the TREE and an explicit null sha — the merge commit did not
+    // exist yet, and handing it the PREVIOUS head would name the tree before the branch came.
+    expect(handed.cwd).toBe('/repo')
+    expect(handed.resultSha).toBe(null)
+    // the sha appears only after the commit, and that is what the receipt carries.
+    expect(res.resultSha).toBe('MERGE_RESULT_SHA')
     // every git call carried an explicit cwd (no CWD teleport).
     for (const c of execGit.calls) expect(c.cwd).toBe('/repo')
 
@@ -139,10 +196,10 @@ describe('merge-claim triplet + the sma merge ritual', () => {
    * Рядом — путь репозитория, в котором слияние произошло: без него команда неполна, потому
    * что человек читает карточку не обязательно из того каталога, где лежит проект.
    */
-  it('квитанция слияния несёт ПОЛНЫЙ отпечаток и путь репозитория — из них собирается команда отката', () => {
+  it('квитанция слияния несёт ПОЛНЫЙ отпечаток и путь репозитория — из них собирается команда отката', async () => {
     const full = '0123456789abcdef0123456789abcdef01234567'
     const execGit = makeExecGit({ resultSha: full })
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' }) as any
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' })) as any
     expect(res.merged).toBe(true)
     expect(res.resultSha).toBe(full)
 
@@ -153,20 +210,20 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     expect(receipt.detail.repo, 'без пути репозитория команда отката неполна').toBe('/repo')
   })
 
-  it('нечего записывать — квитанция молчит, а не выдумывает: отпечаток null, путь назван', () => {
-    const execGit = makeExecGit({ throwOn: 'rev-parse' })
-    runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' })
+  it('нечего записывать — квитанция молчит, а не выдумывает: отпечаток null, путь назван', async () => {
+    const execGit = makeExecGit({ headReadThrows: true })
+    await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' })
     const j = readJournal({ journalDir })
     const receipt = j.events.find((e: any) => e.type === 'merge') as any
     expect(receipt.detail.resultSha).toBe(null)
     expect(receipt.detail.repo).toBe('/repo')
   })
 
-  it('Test 3: a concurrent merge -> SOFT-deny with an override (never a hard block / throw)', () => {
+  it('Test 3: a concurrent merge -> SOFT-deny with an override (never a hard block / throw)', async () => {
     // another terminal holds the merge slot.
     acquireMergeClaim({ by: 'T-other', branch: 'sma-wt/held', claimsDir, journalDir })
     const execGit = makeExecGit()
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir }) as any
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir })) as any
     expect(res.merged).toBe(false)
     expect(res.softDenied).toBe(true)
     expect(typeof res.override).toBe('string')
@@ -175,27 +232,157 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     expect(execGit.calls.length).toBe(0)
   })
 
-  it('Test 4: runMerge issues NO push / deploy subcommand (local integration only)', () => {
+  it('Test 4: runMerge issues NO push / deploy subcommand (local integration only)', async () => {
     const execGit = makeExecGit()
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' }) as any
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' })) as any
     expect(res.merged).toBe(true)
     const verbs = execGit.calls.map((c) => c.args[0])
     expect(verbs).not.toContain('push')
     expect(execGit.calls.every((c) => !c.args.includes('push'))).toBe(true)
-    // only local read/merge subcommands.
-    for (const v of verbs) expect(['merge', 'rev-parse']).toContain(v)
+    // only local read/merge/record subcommands.
+    for (const v of verbs) expect(['merge', 'rev-parse', 'commit']).toContain(v)
   })
 
-  it('Test 5: tests-fail -> {merged:true, testsPassed:false} + an HONEST failure receipt', () => {
+  /**
+   * ═══ КРАСНЫЙ ПРОГОН ОЗНАЧАЕТ, ЧТО СЛИЯНИЯ НЕ БЫЛО ══════════════════════════════
+   *
+   * Раньше здесь утверждалось `{merged:true, testsPassed:false}` — то есть ветка ВЛИТА, тесты
+   * красные, и работа «вернулась ждать» поверх уже сдвинутой вершины. Гейт, который сначала
+   * сливает, а потом смотрит, — не гейт, а отчёт задним числом. Теперь красный прогон
+   * означает отказ: подкоманда отмены прозвучала, подкоманда фиксации — нет, вершина не
+   * двинулась, и откатывать нечего, потому что ничего не произошло.
+   */
+  it('Test 5: красный прогон -> {merged:false, refused:true}: отмена прозвучала, фиксация — нет', async () => {
     const execGit = makeExecGit()
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: false }), claimsDir, journalDir }) as any
-    expect(res.merged).toBe(true)
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: false }), claimsDir, journalDir, cwd: '/repo' })) as any
+    expect(res.merged).toBe(false)
     expect(res.testsPassed).toBe(false)
-    // the receipt records the FAILURE — never a false green.
+    expect(res.refused).toBe(true)
+
+    const verbs = verbsOf(execGit)
+    expect(verbs, 'красный прогон обязан ОТМЕНИТЬ незафиксированное слияние').toContain('merge --abort')
+    expect(verbs, 'коммита слияния на красном прогоне быть не может').not.toContain('commit')
+
+    // the journal carries a REFUSAL, not a merge that went badly.
     const j = readJournal({ journalDir })
-    const receipt = j.events.find((e: any) => e.type === 'merge')
-    expect((receipt as any).detail.testsPassed).toBe(false)
-    // slot released even on a red merge.
+    const receipt = j.events.find((e: any) => e.type === 'merge') as any
+    expect(receipt.detail.testsPassed).toBe(false)
+    expect(receipt.detail.refused).toBe(true)
+    expect(String(receipt.detail.reason)).toMatch(/тест/i)
+    expect(receipt.detail.resultSha, 'отпечатка нет — коммита слияния не было').toBe(null)
+    // slot released even on a refusal.
+    expect(acquireMergeClaim({ by: 'T-b', claimsDir, journalDir }).acquired).toBe(true)
+  })
+
+  /**
+   * ═══ ОБЕЩАНИЕ ВМЕСТО ОТВЕТА НЕ КРАСИТ СЛИЯНИЕ ══════════════════════════════════
+   *
+   * Прогонятель звался БЕЗ ожидания. Асинхронная реализация вернула бы обещание, а
+   * `!!(обещание && обещание.passed)` — это `false`: КАЖДОЕ слияние стало бы отказом, а гейт
+   * при этом выглядел бы работающим. Мина срабатывает молча, поэтому замок стоит здесь: убери
+   * ожидание из ритуала — и этот случай краснеет первым.
+   */
+  it('прогонятель, отвечающий обещанием, даёт ЗЕЛЁНОЕ слияние, а не отказ', async () => {
+    const execGit = makeExecGit()
+    const res = (await runMerge({
+      branch: 'sma-wt/x',
+      by: 'T-a',
+      execGit,
+      runTests: async () => ({ passed: true }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(res.merged, 'обещание вместо ответа прочитано как красный прогон — ожидание потеряно').toBe(true)
+    expect(res.testsPassed).toBe(true)
+    expect(verbsOf(execGit)).not.toContain('merge --abort')
+  })
+
+  it('обещание, которое отвечает КРАСНЫМ, тоже дочитывается — отказ, а не ложный зелёный', async () => {
+    const execGit = makeExecGit()
+    const res = (await runMerge({
+      branch: 'sma-wt/x',
+      by: 'T-a',
+      execGit,
+      runTests: async () => ({ passed: false }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(res.merged).toBe(false)
+    expect(res.refused).toBe(true)
+    expect(verbsOf(execGit)).toContain('merge --abort')
+  })
+
+  /**
+   * ═══ ПОСЛЕ СБОЯ ДЕРЕВО НЕ ОСТАЁТСЯ В НЕЗАВЕРШЁННОМ СЛИЯНИИ ═════════════════════
+   *
+   * Закон об откатываемости требует не только возможности отката, но и видимости точки:
+   * дерево, брошенное на полпути слияния, нельзя вернуть одной командой из записи. Поэтому
+   * ЛЮБОЙ сбой после начала сведения — упавший прогонятель, конфликт, отказ журнала — сперва
+   * отменяет незафиксированное слияние и только потом отпускает слот.
+   */
+  it('прогонятель бросил исключение -> {ok:false}, отмена прозвучала, слот отпущен', async () => {
+    const execGit = makeExecGit()
+    const res = (await runMerge({
+      branch: 'sma-wt/x',
+      by: 'T-a',
+      execGit,
+      runTests: () => {
+        throw new Error('runner boom')
+      },
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(res.ok).toBe(false)
+    expect(verbsOf(execGit), 'упавший прогонятель оставил дерево в незавершённом слиянии').toContain('merge --abort')
+    expect(verbsOf(execGit)).not.toContain('commit')
+    expect(acquireMergeClaim({ by: 'T-b', claimsDir, journalDir }).acquired).toBe(true)
+  })
+
+  it('отмена, которая сама не удалась, НАЗЫВАЕТСЯ и несёт команду выхода', async () => {
+    const execGit = makeExecGit({ throwOn: 'abort' })
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: false }), claimsDir, journalDir, cwd: '/repo' })) as any
+    expect(res.merged).toBe(false)
+    expect(res.unfinishedMerge, 'молчание здесь — это «откатить можно, но не видно, к чему»').toBe(true)
+    expect(String(res.howToClear)).toContain('merge --abort')
+    expect(String(res.howToClear)).toContain('/repo')
+    // and the same words are in the journal, not only in the return value.
+    const j = readJournal({ journalDir })
+    const receipt = j.events.find((e: any) => e.type === 'merge') as any
+    expect(receipt.detail.unfinishedMerge).toBe(true)
+    // the slot is free regardless — a gate bug never wedges a session.
+    expect(acquireMergeClaim({ by: 'T-b', claimsDir, journalDir }).acquired).toBe(true)
+  })
+
+  /**
+   * ═══ СОВПАДЕНИЕ ВЕТОК НАЗВАНО, А НЕ ВЫДАНО ЗА ПРОГОН ═══════════════════════════
+   *
+   * Когда ветка уже в дереве, сводить нечего и фиксировать нечего. Это не прогон и не отказ —
+   * и ритуал говорит это словами вместо того, чтобы изобразить состоявшееся слияние.
+   */
+  it('ветка уже в дереве — сказано словами, фиксация не звучала, прогон не заявлен', async () => {
+    const execGit = makeExecGit({ noMergeHead: true })
+    let ranTests = false
+    const res = (await runMerge({
+      branch: 'sma-wt/x',
+      by: 'T-a',
+      execGit,
+      runTests: () => {
+        ranTests = true
+        return { passed: true }
+      },
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(res.alreadyUpToDate).toBe(true)
+    expect(res.testsPassed).toBe(null)
+    expect(String(res.testsNote)).toMatch(/сводить было нечего/i)
+    expect(ranTests, 'сводить было нечего — прогонять тем более').toBe(false)
+    expect(verbsOf(execGit)).not.toContain('commit')
+    expect(res.resultSha).toBe(null)
     expect(acquireMergeClaim({ by: 'T-b', claimsDir, journalDir }).acquired).toBe(true)
   })
 
@@ -207,9 +394,9 @@ describe('merge-claim triplet + the sma merge ritual', () => {
    * back saying the tests were green. There are three answers here, not two — passed, failed,
    * and «не запускались» — and only the third is honest when nothing ran.
    */
-  it('no test runner -> testsPassed is NULL, in the return and in the receipt — never a green', () => {
+  it('no test runner -> testsPassed is NULL, in the return and in the receipt — never a green', async () => {
     const execGit = makeExecGit()
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, claimsDir, journalDir, cwd: '/repo' }) as any
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, claimsDir, journalDir, cwd: '/repo' })) as any
     expect(res.merged).toBe(true)
     expect(res.testsPassed).toBe(null)
     const j = readJournal({ journalDir })
@@ -217,32 +404,82 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     expect((receipt as any).detail.testsPassed).toBe(null)
   })
 
-  it('a run that DID happen is reported as it went — true stays true, false stays false', () => {
-    const green = runMerge({
+  /**
+   * ═══ «ПРОГОНА НЕ БЫЛО» ПЕРЕСТАЛО БЫТЬ БЕЗЫМЯННЫМ ══════════════════════════════
+   *
+   * Два разных мира приезжали к читателю с одним лицом: сборка, где прогонятель вообще не
+   * подключён, и сборка, где он подключён, ответил, и его ответ — «запускать было нечего».
+   * Первое — дыра в проводке, второе — факт о дереве. Различать их и есть смысл этого поля,
+   * и оно обязано ехать И в возврат, И в квитанцию: различие, живущее только в памяти
+   * исполнителя, — не различие.
+   */
+  it('«прогонятель не подключён» и «запускать было нечего» — оба null, но РАЗНЫМИ словами', async () => {
+    const noRunner = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit: makeExecGit(), claimsDir, journalDir, cwd: '/repo' })) as any
+    expect(noRunner.testsPassed).toBe(null)
+    expect(noRunner.testsNote).toBe(NO_RUNNER_NOTE)
+    expect(noRunner.receipt.testsNote).toBe(NO_RUNNER_NOTE)
+
+    const nothingToRun = (await runMerge({
+      branch: 'sma-wt/y',
+      by: 'T-a',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: null }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(nothingToRun.merged).toBe(true)
+    expect(nothingToRun.testsPassed).toBe(null)
+    expect(nothingToRun.testsNote).toBe(RUNNER_SAID_NOTHING_RAN)
+    expect(nothingToRun.receipt.testsNote).toBe(RUNNER_SAID_NOTHING_RAN)
+
+    expect(noRunner.testsNote, 'два разных отсутствия обязаны звучать по-разному').not.toBe(nothingToRun.testsNote)
+
+    // a runner with its OWN word keeps it — the receipt quotes the runner, not a paraphrase.
+    const ownWord = (await runMerge({
+      branch: 'sma-wt/z',
+      by: 'T-a',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: null, note: 'в дереве нет ни одного рецепта' }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(ownWord.testsNote).toBe('в дереве нет ни одного рецепта')
+    expect(ownWord.receipt.testsNote).toBe('в дереве нет ни одного рецепта')
+  })
+
+  it('a run that DID happen is reported as it went — true stays true, false stays false', async () => {
+    const green = (await runMerge({
       branch: 'sma-wt/x',
       by: 'T-a',
       execGit: makeExecGit(),
       runTests: () => ({ passed: true }),
       claimsDir,
       journalDir,
-    }) as any
+    })) as any
     expect(green.testsPassed).toBe(true)
-    const red = runMerge({
+    expect(green.merged).toBe(true)
+    const red = (await runMerge({
       branch: 'sma-wt/y',
       by: 'T-a',
       execGit: makeExecGit(),
       runTests: () => ({ passed: false }),
       claimsDir,
       journalDir,
-    }) as any
+    })) as any
     expect(red.testsPassed).toBe(false)
+    expect(red.merged).toBe(false)
   })
 
-  it('Test 6: fail-open — an execGit throw -> {ok:false} + the slot is released (never wedged)', () => {
+  it('Test 6: fail-open — an execGit throw -> {ok:false} + the slot is released (never wedged)', async () => {
     const throwGit = makeExecGit({ throwOn: 'merge' })
-    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit: throwGit, runTests: () => ({ passed: true }), claimsDir, journalDir }) as any
+    const res = (await runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit: throwGit, runTests: () => ({ passed: true }), claimsDir, journalDir })) as any
     expect(res.ok).toBe(false)
     expect(typeof res.message).toBe('string')
+    // a merge that exits non-zero STILL leaves the tree half-merged, so the undo is issued
+    // even though the bring-in itself is what failed.
+    expect(verbsOf(throwGit)).toContain('merge --abort')
     // the held slot was released by the fail-open wrapper — a subsequent acquire wins.
     const again = acquireMergeClaim({ by: 'T-b', claimsDir, journalDir })
     expect(again.acquired).toBe(true)
