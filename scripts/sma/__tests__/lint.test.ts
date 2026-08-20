@@ -1751,3 +1751,170 @@ describe('lint cost + progress + budget', () => {
     }
   })
 })
+
+// ── PRED-UNSCORED: a closed plan owes a verdict ──────────────────────────────
+// The gate stands on the STATE of the tree, not on an agent discipline: it goes
+// red for a plan that was closed with a summary while a prediction of its own —
+// one whose command is runnable and whose horizon has arrived — never received a
+// verdict. The two locks are tested as hard as the rule itself: a command the
+// safety boundary refuses, and a horizon that has not arrived, are defects of
+// the prediction, not of the work, and must NEVER become findings.
+
+const SUMMARY_FIXTURE = '---\nphase: test\nplan: 01\nstatus: complete\n---\n\nclosed\n'
+
+/** git commit in a fixture repo with an explicit AUTHOR date (the cutover tests). */
+function gitCommitAt(cwd: string, msg: string, isoDate: string) {
+  execGit(['add', '.'], { cwd })
+  execGit(
+    ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--date', isoDate, '-m', msg],
+    { cwd },
+  )
+}
+
+/** A ledger dir carrying the given records as one domain file. */
+function ledgerDir(records: object[]): string {
+  const cal = mkdtempSync(join(tmpdir(), 'sma-pred-cal-'))
+  writeFileSync(
+    join(cal, 'tech.memory.jsonl'),
+    records.map((r) => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''),
+  )
+  return cal
+}
+
+describe('PRED-UNSCORED — the closing gate stands on the tree, not on discipline', () => {
+  it('Test 1: closed plan + due, runnable prediction + no verdict in the ledger → CRITICAL', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-1-'))
+    const cal = ledgerDir([])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommit(tmp, 'the plan and the summary that closes it')
+      const f = findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('critical')
+      expect(f[0].file).toContain('alpha-01-PLAN.md')
+      expect(f[0].message).toContain('P1')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 2 (mutation, the plan was never closed): remove the summary → the finding disappears; put it back → it returns', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-2-'))
+    const cal = ledgerDir([])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommit(tmp, 'the plan and the summary that closes it')
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')).toHaveLength(1)
+
+      rmSync(join(tmp, 'alpha-01-SUMMARY.md'))
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')).toHaveLength(0)
+
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')).toHaveLength(1)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 3 (mutation, the verdict exists): a ledger record keyed «plan + id» silences it, one for ANOTHER plan does not', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-3-'))
+    const wrongPlan = ledgerDir([{ id: 'P1', plan: 'omega-09-PLAN.md', verdict: 'hit', domain: 'tech.memory' }])
+    const rightPlan = ledgerDir([{ id: 'P1', plan: 'phases/x/alpha-01-PLAN.md', verdict: 'miss', domain: 'tech.memory' }])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommit(tmp, 'the plan and the summary that closes it')
+      // A verdict about a DIFFERENT plan that reuses the short id changes nothing.
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: wrongPlan }), 'PRED-UNSCORED')).toHaveLength(1)
+      // A verdict about THIS plan silences it — and a miss counts as a verdict.
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: rightPlan }), 'PRED-UNSCORED')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(wrongPlan, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(rightPlan, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 4 (lock): a command the safety boundary refuses is a defect of the prediction — NO finding', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-4-'))
+    const cal = ledgerDir([])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const unsafe = GOOD_ENTRY.replace('"node scripts/sma/cli.mjs lint --json"', '"npm test; echo done"')
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithPredictions(unsafe))
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommit(tmp, 'closed with an unrunnable check')
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 5 (lock): a horizon that has not arrived is registered, not owed — NO finding', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-5-'))
+    const cal = ledgerDir([])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const future = GOOD_ENTRY.replace('horizon: "plan close"', 'horizon: "2099-01-01"')
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithPredictions(future))
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommit(tmp, 'closed with a claim about a future')
+      expect(findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 6 (cutover): a plan closed BEFORE the rule existed is never retro-failed; one closed after IS', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-6-'))
+    const cal = ledgerDir([])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'closed long before the rule', '2020-01-01T00:00:00')
+
+      writeFileSync(join(tmp, 'gamma-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, 'gamma-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'closed under the rule', '2099-01-01T00:00:00')
+
+      const f = findingsOf(runPredLint(tmp, { execGit, calibrationDir: cal }), 'PRED-UNSCORED')
+      expect(f.some((x) => x.file.includes('gamma-01-PLAN.md'))).toBe(true)
+      expect(f.some((x) => x.file.includes('beta-01-PLAN.md'))).toBe(false)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 7 (degradation): without a git runner, and without a ledger dir, the rule says so at INFO and accuses nobody', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-unscored-7-'))
+    const cal = ledgerDir([])
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommit(tmp, 'the plan and the summary that closes it')
+
+      const noGit = findingsOf(runPredLint(tmp, { calibrationDir: cal }), 'PRED-UNSCORED')
+      expect(noGit.length).toBeGreaterThanOrEqual(1)
+      expect(noGit.every((x) => x.tier === 'info')).toBe(true)
+
+      const noLedger = findingsOf(runPredLint(tmp, { execGit }), 'PRED-UNSCORED')
+      expect(noLedger.length).toBeGreaterThanOrEqual(1)
+      expect(noLedger.every((x) => x.tier === 'info')).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
