@@ -193,6 +193,10 @@ function defaultConfig(token) {
     // THE CONVEYOR'S OWN SWITCH, shipped OFF. Written into the default file rather than
     // left implicit so a person opening the config sees the switch and knows it exists.
     // What actually makes «absent» mean «off» is pipelineEnabled below — see it for why.
+    // The turn ceiling belongs to this same block and is deliberately NOT written here: an
+    // absent key already reads as the named default (pipelineMaxTurns), and putting the number
+    // into every freshly written config would rewrite a file this daemon does not own the
+    // contents of. The knob is documented where it is read.
     pipeline: { enabled: false },
     budget: {
       monthlyApiCapEur: 0, // 0 = no API fallback budget until the operator sets one
@@ -693,6 +697,46 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
  */
 export function pipelineEnabled(config) {
   return !!(config && config.pipeline && config.pipeline.enabled === true)
+}
+
+/**
+ * HOW LONG ONE ATTEMPT MAY WALK — the turn ceiling handed to every task spawn. It lives in the
+ * conveyor's own block because it is the second half of the same decision: the switch says
+ * whether unattended work happens at all, this number says how far one piece of it may go.
+ *
+ * WHY A CEILING EXISTS. A headless worker has nobody to stop it. Handed a task it cannot
+ * finish, it does not give up — it re-reads, re-tries and re-reasons, and every one of those
+ * turns is a subscription minute spent walking in a circle at three in the morning with nobody
+ * watching. The ceiling is what turns «it went wrong» into «it stopped», and a stop that is
+ * NAMED costs one attempt where a circle costs a night.
+ *
+ * WHY CONFIG AND NOT AN ENVIRONMENT VARIABLE. This is a knob a person turns after looking at
+ * his own work — a large piece wants a higher one — so it belongs in the file he already
+ * opens beside the switch, and the daemon reads the same number back after a restart. An
+ * environment variable would live in whichever shell happened to start the process, and a
+ * ceiling that moves because a terminal changed is a ceiling nobody can account for afterwards.
+ *
+ * WHY THE DEFAULT IS THIS SIZE. A task is a working day of a worker, not a remark in a chat:
+ * the conversation lane runs on its own, far smaller ceiling and must never inherit this one.
+ */
+export const DEFAULT_PIPELINE_MAX_TURNS = 80
+
+/**
+ * pipelineMaxTurns(config) — the ceiling this daemon puts on a task spawn's command line.
+ *
+ * ONLY A WHOLE POSITIVE NUMBER SURVIVES, and it is refused HERE rather than downstream: a
+ * string, a fraction, a zero and a negative all fall back to the default, because a malformed
+ * value must never become an argument of a spawned process. `0` is not «no ceiling» — it is a
+ * command line that forbids the worker to take a single turn, which is the opposite of what
+ * anybody writing it would mean.
+ *
+ * @param {object} [config]
+ * @returns {number}
+ */
+export function pipelineMaxTurns(config) {
+  const raw = config && config.pipeline ? config.pipeline.maxTurns : undefined
+  const n = typeof raw === 'number' ? raw : Number.NaN
+  return Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_PIPELINE_MAX_TURNS
 }
 
 /**
