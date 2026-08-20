@@ -17,6 +17,9 @@ import { readFileSync } from 'node:fs'
 import {
   CAPABILITY_KEYS,
   HUMAN_ONLY_ACTIONS,
+  HUMAN_ONLY_DENIALS,
+  humanOnlyDenials,
+  envelopeSpawnOptions,
   ENVELOPE_LANES,
   defaultEnvelope,
   validateEnvelope,
@@ -301,5 +304,89 @@ describe('the module keeps its stated disciplines', () => {
 
   it('never writes the reserved push literal (SMA-3 comment discipline is not the point — the code is)', () => {
     expect(src).not.toMatch(/execSync|spawnSync|child_process/)
+  })
+})
+
+// ═══ the denial half of the envelope: four action names → tool patterns a session obeys ═══
+//
+// `humanOnlyActions` was computed for every attempt the fleet ever ran, hashed into the row
+// and written to the journal — and read by nobody, because nothing downstream knew how to
+// turn the word «push» into something a running process obeys. These cases pin the
+// translation, and the wire that carries it is pinned in the runner and loop suites.
+
+describe('the human-only actions become tool patterns, and none of them is silently dropped', () => {
+  it('EVERY human-only action has at least one pattern — an action mapped to nothing reads exactly like one that was denied', () => {
+    for (const action of HUMAN_ONLY_ACTIONS) {
+      const patterns = (HUMAN_ONLY_DENIALS as Record<string, readonly string[]>)[action]
+      expect(patterns, `the action "${action}" has no denial pattern at all`).toBeInstanceOf(Array)
+      expect(patterns.length, `the action "${action}" maps to an empty list`).toBeGreaterThan(0)
+    }
+    expect(Object.isFrozen(HUMAN_ONLY_DENIALS)).toBe(true)
+  })
+
+  it('push closes the command AND the two one-line ways around it — the remote and the configuration', () => {
+    const patterns = HUMAN_ONLY_DENIALS.push.join(' ')
+    expect(patterns).toContain('git push')
+    expect(patterns, 're-pointing the remote walks around a push denial in one line').toContain('git remote')
+    expect(patterns, 'editing the configuration walks around a push denial in one line').toContain('git config')
+  })
+
+  it('deploy closes both doors onto the same street — publishing a package and cutting a release', () => {
+    const patterns = HUMAN_ONLY_DENIALS.deploy.join(' ')
+    expect(patterns).toContain('publish')
+    expect(patterns).toContain('release')
+  })
+
+  it('a full lane envelope yields a flat, sorted, duplicate-free list and nothing unmapped', () => {
+    const { patterns, unmapped } = humanOnlyDenials(defaultEnvelope('prod'))
+
+    expect(unmapped).toEqual([])
+    expect(patterns.length).toBeGreaterThan(0)
+    expect([...patterns]).toEqual([...patterns].sort())
+    expect(new Set(patterns).size).toBe(patterns.length)
+    expect(patterns).toContain('Bash(git push:*)')
+    expect(Object.isFrozen(patterns)).toBe(true)
+  })
+
+  it('an envelope that declares no human-only actions yields an empty list, not a throw', () => {
+    for (const envelope of [null, undefined, {}, { humanOnlyActions: [] }] as any[]) {
+      const res = humanOnlyDenials(envelope)
+      expect(res.patterns).toEqual([])
+      expect(res.unmapped).toEqual([])
+    }
+  })
+
+  it('an action this table has no pattern for is RETURNED as unmapped — a skipped denial and a missing one are the same fact on the wire', () => {
+    const { patterns, unmapped } = humanOnlyDenials({ humanOnlyActions: ['push', 'sign-the-release'] } as any)
+
+    expect(unmapped).toEqual(['sign-the-release'])
+    expect(patterns).toEqual([...HUMAN_ONLY_DENIALS.push].sort())
+  })
+
+  it('the same pattern named by two actions appears once', () => {
+    const { patterns } = humanOnlyDenials({ humanOnlyActions: ['push', 'push', 'merge'] } as any)
+    expect(new Set(patterns).size).toBe(patterns.length)
+    expect(patterns).toContain('Bash(git merge:*)')
+  })
+})
+
+describe('envelopeSpawnOptions — the ONE place a spawn learns what the envelope said', () => {
+  it('carries both halves of a lane envelope: the grant and the refusal', () => {
+    const opts = envelopeSpawnOptions(defaultEnvelope('prod'))
+
+    expect(opts.allowedTools).toEqual([...defaultEnvelope('prod').allowedTools])
+    expect(opts.disallowedTools).toEqual([...humanOnlyDenials(defaultEnvelope('prod')).patterns])
+  })
+
+  it('absence stays absence — a dimension the envelope does not carry emits no key at all', () => {
+    expect(envelopeSpawnOptions(null)).toEqual({})
+    expect(envelopeSpawnOptions({ allowedTools: [], humanOnlyActions: [] } as any)).toEqual({})
+    expect(envelopeSpawnOptions({ allowedTools: ['Read'] } as any)).toEqual({ allowedTools: ['Read'] })
+  })
+
+  it('the returned lists are copies — a caller cannot widen its own permit in place', () => {
+    const opts = envelopeSpawnOptions(defaultEnvelope('prod')) as any
+    opts.allowedTools.push('WebFetch')
+    expect(defaultEnvelope('prod').allowedTools).not.toContain('WebFetch')
   })
 })

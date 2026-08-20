@@ -290,13 +290,15 @@ describe('memory forget — one command, and it says which state it applied', ()
     expect(start).toBeGreaterThan(0)
     const block = source.slice(start, source.indexOf('\n}', start))
     const keys = [...block.matchAll(/^\s{2}'?[a-zA-Z0-9:_-]+'?:/gm)].length
-    // The pinned number moves ONLY when a genuinely new top-level verb lands, and
-    // whoever lands one re-pins it here deliberately — that is the point of pinning
-    // a count rather than a floor. It was 90 before the history search became a verb
-    // of its own. The claim this case actually makes is the line below it: the
-    // deletion surface stayed a SUBCOMMAND of the corpus namespace and never grew a
-    // top-level key, which is what a count alone could never say.
-    expect(keys).toBe(91)
+    // The pinned number moves ONLY when a genuinely new top-level verb lands, and whoever lands
+    // one re-pins it here deliberately — that is the point of pinning a count rather than a
+    // floor. It was 90; two verbs arrived independently and each side of the merge had raised it
+    // to 91 for its own arrival, which is exactly how a count silently stops counting. It is 92:
+    // the history search became a verb of its own, and so did the worker's parking gate.
+    // The claim this case actually makes is the line below it: the deletion surface stayed a
+    // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
+    // alone could never say.
+    expect(keys).toBe(92)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })

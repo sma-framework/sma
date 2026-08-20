@@ -45,12 +45,24 @@
  *               «passed» are different words on purpose: the first one is a fact about the
  *               project, the second would be a fact about the run that nobody established.
  *
- *  (e) rights — the tool list the spawn was actually given equals the tool list the capability
- *               envelope demanded. Its best status is `warn`, never `ok`, and it stays `warn`
- *               even on a perfect match, because only ONE half of the envelope travels to the
- *               process: the allowed-tool list rides the command line, while the actions
- *               reserved for a human are enforced after the fact rather than before it. A
- *               green light here would certify a guarantee this product does not yet give.
+ *  (e) rights — BOTH halves of the capability envelope reached the spawn: the tools it granted
+ *               equal the allow list on the command line, and the actions it reserved for a
+ *               human equal the refusal list on the same command line.
+ *
+ *               This receipt spent its whole life pinned at `warn` on a perfect match, and the
+ *               warning was true: only the grant travelled, and the four human-only actions
+ *               were computed, hashed and journalled without ever reaching the process — «the
+ *               worker cannot push» was a property of the prompt and of nothing else. It is
+ *               allowed to be `ok` now for one reason only: the refusal became an argument, was
+ *               measured landing in a live session's denial list, and is compared here as a set
+ *               like the grant is. If either half stops travelling, this goes red — an envelope
+ *               that names human-only actions while the spawn carries no refusal list is a
+ *               FAILURE, not a warning, because that is exactly the state it used to certify.
+ *
+ *               PROVES: the boundary a run stood under is the boundary its envelope declared.
+ *               DOES NOT PROVE: that the boundary cannot be walked around from inside the
+ *               session. The refusal list catches the obvious spellings; it is one of three
+ *               locks and never the only one.
  *
  * ══════════════════════════ THE LAW OF ABSENT DATA ═══════════════════════════════
  * Missing data is a FAILURE that names what was missing — never a default OK and never a free
@@ -63,13 +75,19 @@
  * no clock beyond «now» for a run that has not ended yet.
  */
 
+// THE ACTION → PATTERN TABLE IS IMPORTED, NEVER RESTATED. The spawn builds its refusal list
+// from this same function; a private copy here would agree with it on the day it was written
+// and drift on every day after, and the first person to notice would be holding a green
+// receipt over a run whose boundary never travelled.
+import { humanOnlyDenials } from '../../../daemon/src/queue/capability-envelope.mjs'
+
 /** The five receipts, in the fixed order they are always evaluated and printed. */
 export const PARITY_RECEIPTS = Object.freeze([
   Object.freeze({ id: 'hooks', title: 'хуки: страж ответил в окне прогона' }),
   Object.freeze({ id: 'memory', title: 'память: корпус прочитан, а не только запрошен' }),
   Object.freeze({ id: 'rules', title: 'правила проекта доехали до рабочей копии' }),
   Object.freeze({ id: 'skills', title: 'навыки и агенты проекта видны в копии' }),
-  Object.freeze({ id: 'rights', title: 'права: список инструментов спавна равен конверту' }),
+  Object.freeze({ id: 'rights', title: 'права: спавн получил и то, что конверт разрешил, и то, что запретил' }),
 ])
 
 /** A full set is 5 — the number a report's last line must reach for an exit code of 0. */
@@ -83,10 +101,6 @@ export const ARTIFACTS = Object.freeze({
   receipt: 'receipt.json',
 })
 
-/** The words the rights receipt is not allowed to stop saying while only half travels. */
-const RIGHTS_CAVEAT =
-  'доезжает только allowedTools; humanOnlyActions до процесса — отдельная работа'
-
 /** The reason a project without either directory earns n/a rather than a pass. */
 const NO_SKILLS_REASON = 'в проекте нет .claude/skills и .claude/agents'
 
@@ -95,7 +109,6 @@ const NO_SKILLS_REASON = 'в проекте нет .claude/skills и .claude/age
 const ok = (id, detail) => ({ id, status: 'ok', detail })
 const fail = (id, detail) => ({ id, status: 'fail', detail })
 const na = (id, detail) => ({ id, status: 'n-a', detail })
-const warn = (id, detail) => ({ id, status: 'warn', detail })
 
 /** The phrase every «missing data» failure starts with, so one grep finds them all. */
 const noData = (id, what) => fail(id, `данных нет: ${what}`)
@@ -229,11 +242,53 @@ function checkSkills({ run, receipt }) {
  * read from the arguments rather than from anybody's intention — «what the envelope said» and
  * «what the process was given» are two claims, and this receipt exists to compare them.
  */
-export function allowedToolsInArgs(args) {
+/**
+ * One flag's value split back into the entries the builder joined with spaces.
+ *
+ * SPLITTING ON WHITESPACE ALONE WOULD BE WRONG, and quietly so. A plain tool name has no
+ * spaces, but a REFUSAL pattern does — `Bash(git push:*)` — so a naive split turns one
+ * pattern into two fragments that match nothing, and the comparison below would then report a
+ * difference that exists only in the reader. The parenthesis depth is tracked for exactly
+ * that reason: a space inside the brackets belongs to the pattern, a space outside them
+ * separates two of them.
+ */
+function splitToolList(value) {
+  const out = []
+  let depth = 0
+  let cur = ''
+  for (const ch of String(value)) {
+    if (ch === '(') depth += 1
+    else if (ch === ')') depth = Math.max(0, depth - 1)
+    if (depth === 0 && /\s/.test(ch)) {
+      if (cur) out.push(cur)
+      cur = ''
+      continue
+    }
+    cur += ch
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+function toolListInArgs(args, flag) {
   const list = Array.isArray(args) ? args.map(String) : []
-  const at = list.indexOf('--allowedTools')
+  const at = list.indexOf(flag)
   if (at < 0 || at === list.length - 1) return null
-  return list[at + 1].split(/\s+/).filter(Boolean)
+  return splitToolList(list[at + 1])
+}
+
+export function allowedToolsInArgs(args) {
+  return toolListInArgs(args, '--allowedTools')
+}
+
+/**
+ * The REFUSAL list as it actually appears on the command line — one `--disallowedTools`
+ * argument, the patterns joined by spaces. Read the same way and for the same reason as the
+ * grant: this receipt's whole job is to compare what the envelope said against what the
+ * process was given, and an intention read off the envelope twice would compare nothing.
+ */
+export function disallowedToolsInArgs(args) {
+  return toolListInArgs(args, '--disallowedTools')
 }
 
 /** Two tool lists as SETS: the order on a command line carries no meaning. */
@@ -242,6 +297,18 @@ function setDiff(a, b) {
   return a.filter((x) => !right.has(x))
 }
 
+/**
+ * checkRights — the envelope against the command line, in BOTH directions it has.
+ *
+ * The grant («which tools») and the refusal («which actions belong to a person») are two
+ * separate journeys, and for the whole life of this product only the first one was made. So
+ * they are measured separately here, and the receipt is green only when both arrived.
+ *
+ * The mapping from human-only ACTION NAMES to tool patterns is imported, never restated: the
+ * spawn builds its refusal list from that same function, and a second copy of the table in
+ * this file would let the two agree on the day it was written and drift on every day after —
+ * with the first person to notice holding a green receipt over a run that carried nothing.
+ */
 function checkRights({ run, worker }) {
   const id = 'rights'
   if (!run || !Array.isArray(run.args)) return noData(id, `аргументы спавна (run.args)`)
@@ -250,6 +317,8 @@ function checkRights({ run, worker }) {
   if (!expected.length) return noData(id, `конверт разрешений (run.envelope.allowedTools)`)
 
   const who = worker && worker.id ? `работник «${String(worker.id)}»` : 'работник не назван в конфиге'
+
+  // ── (1) что конверт РАЗРЕШИЛ ──
   const observed = allowedToolsInArgs(run.args)
   if (observed === null) {
     return fail(id, `конверт несёт ${expected.length} инструментов, а в аргументах спавна нет --allowedTools (${who})`)
@@ -262,8 +331,38 @@ function checkRights({ run, worker }) {
     if (extra.length) parts.push(`лишние в аргументах: ${extra.join(', ')}`)
     return fail(id, `конверт и аргументы спавна расходятся — ${parts.join('; ')} (${who})`)
   }
-  // The best this receipt is allowed to be: a match, and the caveat in the same breath.
-  return warn(id, `${expected.length} инструментов конверта доехали до спавна (${who}); ${RIGHTS_CAVEAT}`)
+
+  // ── (2) что конверт ЗАПРЕТИЛ ──
+  const { patterns: expectedDenials, unmapped } = humanOnlyDenials(envelope)
+  const observedDenials = disallowedToolsInArgs(run.args) ?? []
+  if (expectedDenials.length && observedDenials.length === 0) {
+    // ИМЕННО ЭТО состояние квитанция удостоверяла раньше зелёным-с-оговоркой. Оно провал.
+    return fail(
+      id,
+      `конверт оставляет человеку ${expectedDenials.length} запретов, а в аргументах спавна нет --disallowedTools — граница осталась в журнале (${who})`,
+    )
+  }
+  const denialsMissing = setDiff(expectedDenials, observedDenials)
+  const denialsExtra = setDiff(observedDenials, expectedDenials)
+  if (denialsMissing.length || denialsExtra.length) {
+    const parts = []
+    if (denialsMissing.length) parts.push(`не доехали запреты: ${denialsMissing.join(', ')}`)
+    if (denialsExtra.length) parts.push(`лишние запреты в аргументах: ${denialsExtra.join(', ')}`)
+    return fail(id, `запреты конверта и аргументы спавна расходятся — ${parts.join('; ')} (${who})`)
+  }
+  // Действие конверта, для которого у карты нет ни одного шаблона, — это запрет, который
+  // существует в журнале и нигде больше; пропустить его молча значит удостоверить его.
+  if (unmapped.length) {
+    return fail(
+      id,
+      `у конверта есть человеческие действия без единого шаблона запрета: ${unmapped.join(', ')} — они не доехали никуда (${who})`,
+    )
+  }
+
+  const denialWords = expectedDenials.length
+    ? `${expectedDenials.length} запретов`
+    : 'конверт не назвал ни одного человеческого действия'
+  return ok(id, `${expected.length} инструментов конверта и ${denialWords} доехали до спавна (${who})`)
 }
 
 // ── evaluation ────────────────────────────────────────────────────────────────

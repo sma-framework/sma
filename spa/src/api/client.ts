@@ -1,3 +1,9 @@
+// ФОРМА РЕШЕНИЯ — из того самого файла, который читает хук в процессе работника. Файл
+// намеренно не имеет ни одного импорта (ни узловых встроенных, ни демона), поэтому он
+// одинаково ложится и в сборку окна, и в хук: договорённость двух процессов о строке
+// живёт в одном месте, а не в двух похожих.
+import { formatDecision } from '../../../scripts/sma/lib/tool-decision.mjs'
+
 import type {
   AccountAddResult,
   AgentModelResult,
@@ -479,6 +485,35 @@ export function redirectTask(input: {
   mode: 'interrupt' | 'queue'
 }): Promise<{ accepted: boolean; id: string; mode: string; live: boolean }> {
   return postJson('/api/redirect', { taskId: input.taskId, text: input.text, mode: input.mode })
+}
+
+/**
+ * «Одобрить вызов» / «Отказать» — решение по билету, которым СТОИТ живая сессия.
+ *
+ * ЧЕРЕЗ ДВЕРЬ, КОТОРАЯ УЖЕ ЕСТЬ. Новой двери у демона для этого не заводится: решение —
+ * это строка, а доставлять строку живой задаче руль уже умеет. Список маршрутов не меняется
+ * ни на одну запись, и сторож соседнего проекта не задевается вовсе.
+ *
+ * СТРОКА СОБИРАЕТСЯ ПРОИЗВОДИТЕЛЕМ ПРОДУКТА, а не склеивается здесь. Хук на той стороне
+ * разбирает её своим разборщиком из ТОГО ЖЕ файла — договорённость двух процессов о форме
+ * не имеет права жить в двух местах.
+ *
+ * И РЕЖИМ ВСЕГДА `queue`, НИКОГДА `interrupt`. Прерывание убивает живого ребёнка, то есть
+ * «Одобрить» уничтожило бы ровно ту сессию, которую билет держит, и смысл билета исчез бы.
+ * Режим здесь ЗАШИТ, а не принят параметром: у этого пути не должно существовать второго
+ * значения, которое кто-нибудь однажды передаст.
+ */
+export function decideToolTicket(input: {
+  taskId: string
+  ticketId: string
+  decision: 'approve' | 'deny'
+  reason?: string
+}): Promise<{ accepted: boolean; id: string; mode: string; live: boolean }> {
+  return redirectTask({
+    taskId: input.taskId,
+    text: formatDecision({ ticketId: input.ticketId, decision: input.decision, reason: input.reason }),
+    mode: 'queue',
+  })
 }
 
 /**

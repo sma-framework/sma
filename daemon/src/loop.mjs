@@ -96,7 +96,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync } from 'node:fs'
+import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
@@ -104,8 +104,8 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.m
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
-import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash } from './queue/capability-envelope.mjs'
-import { runsDirOf, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
+import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
+import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
 // opinion about whether the hooks fired or the memory came back: it imports the same evaluation
@@ -131,7 +131,7 @@ import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/st
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
-import { readPendingRedirects, markConsumed, appendRedirect, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
+import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
 import { buildMcpConfigFile } from './runner/args.mjs'
@@ -211,6 +211,46 @@ function resolveIo(fsImpl) {
     readdirSync: io.readdirSync ?? fsReaddirSync,
     readFileSync: io.readFileSync ?? fsReadFileSync,
   }
+}
+
+/**
+ * gateSpawnOptions(deps, config, task) → `{gate:{runDir, redirectsFile}}` for the spawn,
+ * and the attempt directory CREATED before the process that will write into it exists.
+ *
+ * WHY IT IS CREATED HERE AND NOT AT THE END. The record of an attempt is written when the
+ * attempt is over, and until this line that was the only moment this directory ever came into
+ * being. But the parking gate runs INSIDE the attempt: it has to put a ticket somewhere the
+ * moment a worker asks for something dangerous, which is long before anything is recorded. A
+ * gate handed a path to a directory that does not exist yet writes nothing, refuses nothing,
+ * and looks exactly like a gate that decided the call was harmless.
+ *
+ * AND THE PATH IS THE SAME PATH. Both this line and the record at the end ask
+ * `attemptRunDir` — one expression, so the tickets and the record can never end up in two
+ * directories with almost the same name.
+ *
+ * ONE FUNCTION FOR BOTH SPAWN POINTS, for the reason written beside the envelope's own
+ * options: the last time the code lane and the «Создатель» lane each carried their own copy
+ * of a spawn decision, one was updated and the other spawned crippled for weeks.
+ *
+ * Never fatal. A directory that cannot be made costs the TICKET, not the attempt — and the
+ * gate that then finds no directory answers ALLOW, which is the same posture it takes in
+ * somebody else's session.
+ */
+function gateSpawnOptions(deps, config, task) {
+  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const runsDir = runsDirOf(projectDir)
+  const runDir = attemptRunDir({ runsDir, attemptId: attemptIdFor(task.id, task.attempt) })
+  const redirectsFile = redirectFileOf({ dataDir: deps.dataDir || config.dataDir, taskId: task.id })
+  if (runDir) {
+    try {
+      const mkdir = (deps.fsImpl && deps.fsImpl.mkdirSync) || fsMkdirSync
+      mkdir(runDir, { recursive: true })
+    } catch (err) {
+      writeLog(deps, { type: 'task.run_dir_precreate_failed', taskId: task.id, error: String((err && err.message) || err) })
+      return {}
+    }
+  }
+  return runDir || redirectsFile ? { gate: { runDir: runDir ?? undefined, redirectsFile: redirectsFile ?? undefined } } : {}
 }
 
 /** The `data` envelope a stage task carries, or an empty one for ordinary code work. */
@@ -1049,6 +1089,84 @@ function resultTextOf(block) {
   return ''
 }
 
+/**
+ * A REFUSED CALL IS NAMED BY ITS COMMAND, NOT COUNTED.
+ *
+ * The vendor hands us, on the result frame, the FULL list of calls its permission boundary
+ * turned down: the tool, the id of the call, and the arguments it was called with. This
+ * daemon used to keep one number out of that — the length — and throw the rest away. So the
+ * person at the window read «refusals: 1» and could not learn WHAT the worker was stopped
+ * from doing, which is precisely the evidence the whole boundary exists to produce. A count
+ * proves that something was refused; only the command proves WHICH something.
+ *
+ * THE COUNT STAYS BESIDE THE LIST, NOT UNDER IT. Our own tally (a guard refusing inside the
+ * stream) and the vendor's tally are two different measurements of the same run, and the day
+ * they disagree is a finding about the guards — so neither is allowed to overwrite the other.
+ *
+ * AND A FLOOD IS CAPPED OUT LOUD. A session that hammers a refused command would otherwise
+ * bury the attempt's journal; the lines stop at a declared cap and ONE last line says how
+ * many were not written. Silent loss is the one outcome forbidden here.
+ */
+
+/** How many refusal lines one attempt may write before the tail becomes a single summary line. */
+export const DENIAL_LINES_CAP = 50
+/** How much of a refused command is kept: enough to recognise it, short enough not to flood. */
+export const DENIAL_COMMAND_MAX = 300
+/** Says a command was cut — a truncation nobody can see is a quotation nobody can trust. */
+export const DENIAL_TRUNCATION_MARK = '…[truncated]'
+
+/**
+ * refusedCommandOf(denial) → the command the refused call carried, on one line and bounded,
+ * or null when the call carried none. `tool_input` comes from OUTSIDE this process, so every
+ * shape but the expected one reads as an absence rather than a throw.
+ * @param {object} denial
+ * @returns {string|null}
+ */
+function refusedCommandOf(denial) {
+  const input = denial && typeof denial.tool_input === 'object' && denial.tool_input ? denial.tool_input : {}
+  const raw =
+    typeof input.command === 'string'
+      ? input.command
+      : typeof input.file_path === 'string'
+        ? input.file_path
+        : typeof input.url === 'string'
+          ? input.url
+          : ''
+  const one = String(raw).replace(/\s+/g, ' ').trim()
+  if (one === '') return null
+  return one.length > DENIAL_COMMAND_MAX ? `${one.slice(0, DENIAL_COMMAND_MAX)}${DENIAL_TRUNCATION_MARK}` : one
+}
+
+/**
+ * copyRow({wt, base, branch, worktreePath, materialized, provisionMs}) — THE COPY AS ONE
+ * OBJECT, ASSEMBLED IN ONE PLACE.
+ *
+ * There are two doors that provision a copy — the code/document path and the Creator's — and
+ * they used to build this row as two separate lists of fields that happened to say the same
+ * thing. Two such lists diverge on the day somebody edits one of them, and these two already
+ * have that history. So the row is built here, by one expression, and a test calls BOTH doors
+ * with the same verb answer and compares what came out: «it reached one of the two» is not
+ * «it reached».
+ *
+ * `pushLock` is a FACT THE RECORD CARRIES, never an assumption. An install whose CLI predates
+ * the lock answers nothing about it, and that reads as `null` — never as «locked», which
+ * would be the record telling a person their worker cannot push when it can.
+ * @param {{wt?:object, base?:string|null, branch:string, worktreePath:string,
+ *          materialized?:Array|undefined, provisionMs?:number}} opts
+ * @returns {object}
+ */
+export function copyRow({ wt, base, branch, worktreePath, materialized, provisionMs } = {}) {
+  const answered = wt && typeof wt === 'object' ? wt : {}
+  return {
+    base: base || answered.expectedBase || answered.actualBase || null,
+    branch,
+    worktreePath,
+    materialized,
+    provisionMs,
+    pushLock: answered.pushLock && typeof answered.pushLock === 'object' ? answered.pushLock : null,
+  }
+}
+
 /** What a guard's refusal reads like when it arrives as a failed tool result rather than a frame. */
 const TOOL_REFUSAL_RE = /permission|denied|not allowed|blocked|запрещ|не разреш|отказ/i
 
@@ -1071,6 +1189,42 @@ function shortReason(text) {
 /** A list of names off an init frame — anything else reads as an absence, never as a throw. */
 function namesOf(value) {
   return Array.isArray(value) ? value.map((v) => (typeof v === 'string' ? v : String((v && v.name) ?? v))) : []
+}
+
+/**
+ * unregisteredMcpTools(runInit, mcpConfig) → the MCP tools the session ACTUALLY loaded that did
+ * not come from the registry this product handed it: sorted, without repeats.
+ *
+ * WHY THIS FIELD EXISTS, said plainly, because the alternative was to keep a promise that is
+ * not true. A worker session is given our own servers as one argument, and its account is a
+ * fresh directory with the hosted connectors switched off — and that is still not enough. A
+ * server declared in the ROOT OF THE CONNECTED PROJECT is loaded into the session anyway.
+ * Measured: a session started in a project carrying such a declaration came up with that
+ * server connected and its tool listed in the opening frame, with a clean account directory
+ * and our own server list passed explicitly. The account settings that read as though they
+ * would prevent it do not — switching off the blanket enable changed nothing, and naming a
+ * server in the disabled list works only for a name known IN ADVANCE, which a worker facing an
+ * unfamiliar project does not have. The one mechanism that would close the door is a flag the
+ * argument guard refuses, and the guard is not weakened for convenience.
+ *
+ * So the product stops claiming the door is shut and starts SAYING WHAT CAME THROUGH IT: the
+ * tools of the live session, minus the servers we sent, written into the attempt's own record.
+ * A capability nobody noticed is worse than one that is named.
+ *
+ * PURE. Written over arrays rather than a keyed collection because this file holds none by
+ * standing discipline — the list is a handful of names, and a grep gate that a reader can
+ * trust is worth more here than a lookup nobody would measure.
+ */
+export function unregisteredMcpTools(runInit, mcpConfig) {
+  const tools = Array.isArray(runInit && runInit.tools) ? runInit.tools.map(String) : []
+  const ours = (Array.isArray(mcpConfig && mcpConfig.servers) ? mcpConfig.servers : []).map(String)
+  const out = []
+  for (const tool of tools) {
+    if (!tool.startsWith('mcp__')) continue
+    if (ours.includes(tool.split('__')[1] ?? '')) continue
+    if (!out.includes(tool)) out.push(tool)
+  }
+  return out.sort()
 }
 
 /**
@@ -1305,11 +1459,21 @@ function writeAttemptRunDir(deps, task, {
             base: worktree.base ?? null,
             branch: worktree.branch ?? null,
             materialized: worktree.materialized ?? null,
+            // WHETHER THE COPY WAS HANDED OVER WITHOUT AN ADDRESS TO PUSH TO — and, when it
+            // was not, why in words. `null` means the install answered nothing about it, which
+            // is a different fact from «not locked» and is written as a different value.
+            pushLock: worktree.pushLock ?? null,
           }
         : null,
       personalLayer: (worktree && worktree.personalLayer) || null,
       mcpConfig: (worktree && worktree.mcpConfig) || null,
-      init: runInit ?? null,
+      // WHAT THE SESSION LOADED, and beside it what it loaded that WE never sent. A server
+      // declared in the root of the connected project reaches the session whatever the account
+      // says; since the product cannot honestly promise the door is shut, it writes down what
+      // came through — an unnamed capability is the one nobody checks.
+      init: runInit
+        ? { ...runInit, unregisteredMcpTools: unregisteredMcpTools(runInit, (worktree && worktree.mcpConfig) || null) }
+        : null,
       memory: memory ?? null,
       rules,
       skillsInCopy,
@@ -1525,6 +1689,17 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
    */
   const guards = []
   /**
+   * WHICH REFUSALS THE VENDOR ALREADY NAMED — ids only, kept as a flat list because this file
+   * holds no keyed collection of its own (see the disciplines at the top). A result frame that
+   * arrives twice describes ONE refusal, and the record must not double it.
+   */
+  const denialIdsWritten = []
+  /** How many refusal lines this attempt has written, and how many the cap left out. */
+  let denialLinesWritten = 0
+  let denialsNotRecorded = 0
+  /** The ONE tail line that says what the cap left out — created once, kept current. */
+  let denialOverflowLine = null
+  /**
    * Tool calls the session ASKED for, waiting for the result that decides what they proved —
    * and the ones a guard already refused. The bookkeeping lives in a helper module because
    * this file holds no keyed collection of its own (see the disciplines at the top).
@@ -1651,6 +1826,46 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
     // of it: the two disagreeing is a finding about the guards, not a bug in this reader.
     if (frame && frame.type === 'result' && Array.isArray(frame.permission_denials)) {
       state.permissionDenials = frame.permission_denials.length
+      // AND WHAT IT REFUSED, BY NAME. The number above answers «was anything stopped»; the
+      // lines below answer «what», which is the only half a person can act on. Everything here
+      // is fail-open by construction: a malformed entry becomes a line with nulls in it, never
+      // a reason to fail an attempt over its own evidence.
+      for (const item of frame.permission_denials) {
+        const denialItem = item && typeof item === 'object' ? item : {}
+        const toolUseId = typeof denialItem.tool_use_id === 'string' ? denialItem.tool_use_id : ''
+        if (toolUseId && denialIdsWritten.includes(toolUseId)) continue
+        if (toolUseId) denialIdsWritten.push(toolUseId)
+        if (denialLinesWritten >= DENIAL_LINES_CAP) {
+          denialsNotRecorded += 1
+          continue
+        }
+        denialLinesWritten += 1
+        guards.push({
+          ts: new Date(now()).toISOString(),
+          kind: 'denied',
+          // WHOSE COUNT THIS IS. Our own refusals are written from the stream a few lines up
+          // and carry no source; naming the vendor here is what lets a reader tell the two
+          // measurements apart instead of silently adding them together.
+          source: 'vendor',
+          tool: typeof denialItem.tool_name === 'string' ? denialItem.tool_name : null,
+          command: refusedCommandOf(denialItem),
+          toolUseId: toolUseId || null,
+          reason: 'refused by the permission boundary this run was started under',
+        })
+      }
+      if (denialsNotRecorded > 0) {
+        // ONE line, kept current rather than repeated: the cap is about the journal's size, and
+        // a tail that grew a line per overflow would defeat its own purpose. What must never
+        // happen is the loss going unsaid.
+        if (!denialOverflowLine) {
+          denialOverflowLine = { ts: new Date(now()).toISOString(), kind: 'denied_overflow', source: 'vendor' }
+          guards.push(denialOverflowLine)
+        }
+        denialOverflowLine.notRecorded = denialsNotRecorded
+        denialOverflowLine.reason =
+          `${denialsNotRecorded} more refused calls were not written — this attempt reached the cap of ` +
+          `${DENIAL_LINES_CAP} refusal lines`
+      }
     }
     if (event.type === 'rate_limit') recordWindowReading(deps, subscription, event)
     // The sentence a person reads is built HERE, off the frame that was just parsed and
@@ -2455,7 +2670,7 @@ export async function tick(deps = {}) {
         // The copy, as ONE object handed to whichever door closes this attempt. Assembled
         // once, here, so the finished and the failed paths can never come to disagree about
         // where the work was and what it can be rolled back to.
-        worktreeRow = { base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs }
+        worktreeRow = copyRow({ wt, base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs })
         // ── WHAT WAS ALREADY BROKEN BEFORE ANYONE TOUCHED ANYTHING ──
         // The exit gate below used to read the ABSOLUTE answer of the re-verification: any
         // divergence in the tree failed the attempt. In a repository with a history that is
@@ -2550,12 +2765,20 @@ export async function tick(deps = {}) {
       // The envelope decides what this lane may touch; here is where that decision finally
       // reaches the process that has to obey it. Before this, the grant was hashed into the
       // attempt row and thrown away — every worker spawned read-only.
+      //
+      // BOTH HALVES OF THE ENVELOPE COME FROM ONE FUNCTION. What it granted and what it
+      // REFUSED are assembled by `envelopeSpawnOptions` here and at the other spawn point
+      // below, and by nothing else. Two field lists kept equal by discipline is exactly how
+      // this codebase once handed the grant to one lane and withheld it from the other; one
+      // function makes that divergence impossible instead of unlikely, and the suite calls
+      // both points with one envelope and compares the argument arrays they produce.
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
-        ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
-          ? { allowedTools: envelope.allowedTools }
-          : {}),
+        ...envelopeSpawnOptions(envelope),
+        // The attempt directory and the correction file, created and named BEFORE the process
+        // exists — the parking gate inside the child reads both out of its environment.
+        ...gateSpawnOptions(deps, config, task),
       })
       // WHAT THE ATTEMPT WAS GIVEN BEFORE IT SPOKE — the role file and the skills of the
       // routed worker. It is REMEMBERED here and written into the memory layer at the end,
@@ -3121,13 +3344,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   }
   // The copy, as one object for every door that can close this attempt. The forge lane has
   // no reverify gate of its own, so this is the ONLY record of where its draft was written.
-  const worktreeRow = {
-    base: wt.expectedBase || wt.actualBase || null,
-    branch,
-    worktreePath,
-    materialized,
-    provisionMs,
-  }
+  const worktreeRow = copyRow({ wt, branch, worktreePath, materialized, provisionMs })
 
   // (5b) THE PERSONAL LAYER, PUT IN PLACE BEFORE THE PROCESS EXISTS.
   //
@@ -3192,12 +3409,17 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // inside the child, so the «Создатель» could not write the very draft file the exit gate
   // then failed it for not committing: «ошибка работника», with no way to see why.
   const kind = task.forge && task.forge.kind
+  // THE SAME ONE FUNCTION the code path above calls — not a second list of fields that
+  // happens to say the same thing today. The last time these two points each carried their
+  // own copy of this decision, one of them was updated and this one was not, and the lane
+  // spawned read-only for weeks while the screen blamed the worker.
   const spec = buildArgs(task, route, {
     ...SPAWN_OPTIONS,
     ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
-    ...(envelope && Array.isArray(envelope.allowedTools) && envelope.allowedTools.length > 0
-      ? { allowedTools: envelope.allowedTools }
-      : {}),
+    ...envelopeSpawnOptions(envelope),
+    // The SAME one function the code path calls — see its own note about the last time these
+    // two points each carried a private copy of a spawn decision.
+    ...gateSpawnOptions(deps, config, task),
   })
   spec.prompt = buildForgePrompt({
     kind,

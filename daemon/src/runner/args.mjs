@@ -159,6 +159,26 @@ const FORBIDDEN_KEY_RE = /danger|skip[-_]?permission|bypass[-_]?permission|no[-_
  *     his behalf: a decision nobody made is worse than a stage that waits. The negative
  *     lookahead keeps the legitimate neighbour `--autocompact` reachable — the ban is on
  *     the word, not on everything that starts like it.
+ *
+ * WHY THE HYPHENATED TOOL-LIST SPELLINGS STAY REFUSED WHILE THIS MODULE ITSELF EMITS TWO
+ * TOOL LISTS. The two look like the same flag and are opposite events.
+ *
+ *   - A hyphenated `--allowed-tools` / `--disallowed-tools` arrives from OUTSIDE this
+ *     module: it is a string somebody put in a model name, an extra directory or a config
+ *     field, and it reaches the command line without ever passing through the envelope. It
+ *     is a SUBSTITUTION of the session's permissions by whoever could write that string, and
+ *     nothing downstream records that it happened. That is what this family is refused for,
+ *     and none of its members is removed or excepted.
+ *
+ *   - The camelCase forms are produced HERE, from the capability envelope, and only from it.
+ *     `--allowedTools` delivers the tools the envelope granted; `--disallowedTools` delivers
+ *     the refusal the envelope declared. Delivering what the envelope FORBADE narrows the
+ *     session — it can only ever take rights away — and the exact array is written into the
+ *     attempt's own record, so the boundary a run stood under is readable afterwards instead
+ *     of being a claim. Delivery of a policy is not the smuggling of a flag, and a guard that
+ *     could not tell the two apart would force the choice between an unrecorded bypass and a
+ *     boundary that never reaches the process. The delivery path is the one this module owns;
+ *     everything else keeps the named error.
  */
 const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-mode|allowed-tools|disallowed-tools|strict-mcp-config|bare|auto(?![a-z]))/i
 
@@ -336,7 +356,7 @@ export function assertProfileParity({ args, worker, task, accountSettings } = {}
 
 const CLAUDE_OPTION_KEYS = new Set([
   'prompt', 'resumeId', 'model', 'effort', 'maxTurns', 'mcpConfigPath', 'addDir', 'wakeKind',
-  'forwardSubagentText', 'allowedTools',
+  'forwardSubagentText', 'allowedTools', 'disallowedTools',
 ])
 
 /**
@@ -355,12 +375,12 @@ const CLAUDE_OPTION_KEYS = new Set([
  * the screen has nothing to show but a spinner. It is an OPT-IN option, off by default, so no
  * existing spawn changes shape.
  *
- * @param {{prompt?:string, resumeId?:string, model?:string, effort?:string, maxTurns?:number, mcpConfigPath?:string, addDir?:string, wakeKind?:string, forwardSubagentText?:boolean}} [opts]
+ * @param {{prompt?:string, resumeId?:string, model?:string, effort?:string, maxTurns?:number, mcpConfigPath?:string, addDir?:string, wakeKind?:string, forwardSubagentText?:boolean, allowedTools?:string[], disallowedTools?:string[]}} [opts]
  * @returns {string[]}
  */
 export function buildClaudeArgs(opts = {}) {
   validateOptions(opts, CLAUDE_OPTION_KEYS, 'buildClaudeArgs')
-  const { resumeId, model, effort, maxTurns, mcpConfigPath, addDir, wakeKind, forwardSubagentText, allowedTools } = opts
+  const { resumeId, model, effort, maxTurns, mcpConfigPath, addDir, wakeKind, forwardSubagentText, allowedTools, disallowedTools } = opts
 
   const args = ['--print', '-', '--output-format', 'stream-json', '--verbose']
 
@@ -390,6 +410,28 @@ export function buildClaudeArgs(opts = {}) {
   // scans the produced array), so a lane can only ever hold the tools its envelope named.
   if (Array.isArray(allowedTools) && allowedTools.length > 0) {
     args.push('--allowedTools', allowedTools.map((t) => String(t)).join(' '))
+  }
+  // AND THE OTHER HALF OF THE SAME ENVELOPE — what it REFUSED.
+  //
+  // The grant above answers «what may this session reach»; it is a list of calls that need
+  // no approval, and a headless session has nobody to approve anything, so everything the
+  // list names simply runs. It was never a boundary: a lane granted the shell holds the shell
+  // entire, and the commands that hand work to other people — publishing, merging, tagging,
+  // releasing — live inside it like every other command.
+  //
+  // The envelope has always named those four as human-only. Until this line the name went
+  // into the journal and no further, so «the worker cannot push» was true of the prompt and
+  // of nothing else. Here the refusal becomes an argument the process carries, and it lands
+  // DIRECTLY AFTER the grant on purpose: whoever reads a spawned command line reads the two
+  // halves of one envelope side by side, and a boundary that has quietly stopped travelling
+  // is visible as a gap rather than hidden three flags away.
+  //
+  // It narrows and only narrows: nothing here can add a right, and the same array is written
+  // into the attempt's record, so what a run actually stood under is readable afterwards.
+  // An empty list emits no flag — an envelope that forbids nothing must produce exactly the
+  // command line it produced before this existed.
+  if (Array.isArray(disallowedTools) && disallowedTools.length > 0) {
+    args.push('--disallowedTools', disallowedTools.map((t) => String(t)).join(' '))
   }
   if (model !== undefined) args.push('--model', String(model))
   if (effort !== undefined) args.push('--effort', String(effort))
@@ -491,8 +533,9 @@ export function codexConfigSeed() {
  *     as ANTHROPIC_API_KEY — it takes precedence over subscription auth, the whole switch.
  *   EVERY account, both lanes: HEADLESS_ENV=1 — there is nobody at the keyboard of a session
  *     the daemon starts, and a workflow that hits a blocking checkpoint has to know it.
+ *   `gate`: the two PATHS the parking gate needs — see the block below.
  *
- * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string}} opts
+ * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string, gate?:{runDir?:string, redirectsFile?:string}}} opts
  * @returns {object}
  */
 export function buildAccountEnv({
@@ -503,6 +546,7 @@ export function buildAccountEnv({
   useApiFallback = false,
   apiKeyEnv = 'ANTHROPIC_API_KEY',
   taskId,
+  gate,
 } = {}) {
   if (!account || typeof account !== 'object') throw new Error('buildAccountEnv: account is required')
   const prov = provider ?? account.provider
@@ -525,6 +569,27 @@ export function buildAccountEnv({
   }
 
   if (account.spendLogsDir) out.SMA_SPEND_LOGS_DIR = account.spendLogsDir
+
+  // ── WHERE THE PARKING GATE LIVES, HANDED TO THE PROCESS THAT RUNS IT ──
+  //
+  // The gate is a hook inside the CHILD. It holds no daemon, no config and no task id — only
+  // whatever this environment carries. Two names, and neither is a convenience:
+  //
+  //   SMA_RUN_DIR — this attempt's own directory, and also the switch that decides whether the
+  //     gate is OURS at all. The hook is installed in an account settings file shared by the
+  //     whole machine, so it rides along with the workers of other windows and of production.
+  //     Absent — or absent on disk — means «not our attempt», and the gate answers ALLOW.
+  //     Present flips the posture: inside our own attempt anything broken is a refusal.
+  //   SMA_REDIRECTS_FILE — the correction file of THIS task, which is the channel the button
+  //     in the window writes through. Without it a person pressing «Одобрить» would watch
+  //     nothing happen, because the hook would have no place to look.
+  //
+  // Both are PATHS: nothing secret travels, and the attempt row lists their names beside every
+  // other name the spawn received — the same «names only» rule the record has always kept.
+  if (gate && typeof gate === 'object') {
+    if (typeof gate.runDir === 'string' && gate.runDir.trim() !== '') out.SMA_RUN_DIR = gate.runDir
+    if (typeof gate.redirectsFile === 'string' && gate.redirectsFile.trim() !== '') out.SMA_REDIRECTS_FILE = gate.redirectsFile
+  }
 
   if (useApiFallback) {
     const key = env[apiKeyEnv]

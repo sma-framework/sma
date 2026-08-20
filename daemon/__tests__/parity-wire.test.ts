@@ -14,7 +14,8 @@
  * THE THREE CLAIMS, EACH ASSERTED AS A WIRE RATHER THAN AS A CALCULATION:
  *
  *   (1) the tool reads what the daemon wrote — five receipts over a live attempt, with the
- *       rights receipt at its honest best (`warn`) and the skills receipt at its honest `n/a`;
+ *       rights receipt green because BOTH halves of the envelope travelled, and the skills
+ *       receipt at its honest `n/a`;
  *   (2) the daemon's OWN verdict, computed before the row was written so a card can show it
  *       without running anything, is the SAME verdict the tool reaches — not «similar»,
  *       not «also five»: the same statuses and the same summary, compared object to object.
@@ -44,6 +45,7 @@ import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
 import { summarize, PARITY_RECEIPTS } from '../../scripts/sma/lib/parity-receipts.mjs'
+import { buildClaudeArgs } from '../src/runner/args.mjs'
 import { runCheck } from '../../tools/terminal-parity-check.mjs'
 
 // ── the temporary world ────────────────────────────────────────────────────────────────────
@@ -136,10 +138,12 @@ const GREEN_REVERIFY = { code: 0, stdout: JSON.stringify({ verdict: 'green', rec
  * honest `n/a` rather than a pass, and a suite that never produced one would never notice if
  * `n/a` quietly turned into `ok`.
  *
- * THE COMMAND LINE IS BUILT THE WAY THE PRODUCT BUILDS IT — one `--allowedTools` argument
- * whose value is the envelope's tool names joined by spaces. The rights receipt compares the
- * envelope against the arguments, so an invented shape here would be a test agreeing with
- * itself instead of with the runner.
+ * THE COMMAND LINE IS BUILT BY THE PRODUCT'S OWN BUILDER — `buildClaudeArgs`, called here as
+ * itself. It used to be a hand-written replica of that builder's one interesting line, and a
+ * replica is exactly how a suite comes to agree with itself instead of with the runner: the
+ * day the builder learned to carry the envelope's REFUSAL as well as its grant, the replica
+ * kept emitting half a command line and the rights receipt in this file was measuring a shape
+ * no spawn produces. A fake must never know less than the library it stands in for.
  */
 async function runTick(over: any = {}) {
   const projectDir = over.projectDir ?? mkDir('sma-wire-proj-')
@@ -181,13 +185,12 @@ async function runTick(over: any = {}) {
     projectDir: () => projectDir,
     buildArgs: (_task: any, _route: any, opts: any = {}) => ({
       bin: 'claude',
-      args: [
-        '--print',
-        '-',
-        ...(Array.isArray(opts.allowedTools) && opts.allowedTools.length > 0
-          ? ['--allowedTools', opts.allowedTools.map((t: any) => String(t)).join(' ')]
-          : []),
-      ],
+      args: buildClaudeArgs({
+        ...(Array.isArray(opts.allowedTools) && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
+        ...(Array.isArray(opts.disallowedTools) && opts.disallowedTools.length > 0
+          ? { disallowedTools: opts.disallowedTools }
+          : {}),
+      }),
       env: { ...SPAWN_ENV },
       prompt: PROMPT,
     }),
@@ -244,7 +247,7 @@ function checkJson(argv: string[]) {
 // ═══════════ THE WIRE: A LIVE TICK, THEN THE REAL COMMAND OVER WHAT IT LEFT ═════════════════
 
 describe('поток → каталог прогона → настоящая команда: пять квитанций живой попытки', () => {
-  it('зелёная фикстура: 5/5 — хуки, память, правила, навыки n/a, права warn — и код 0', async () => {
+  it('зелёная фикстура: 5/5 — хуки, память, правила, навыки n/a, права ok — и код 0', async () => {
     const { res, projectDir, configPath } = await runTick()
     expect(res.completed).toBe('BL-1')
 
@@ -256,9 +259,10 @@ describe('поток → каталог прогона → настоящая к
     expect(out[2]).toMatch(/^OK — правила/)
     // «в проекте нет навыков» — честное n/a, а не пропуск и не зелёное
     expect(out[3]).toMatch(/^n\/a — навыки/)
-    // права не бывают зелёными: до процесса доезжает только половина конверта
-    expect(out[4]).toMatch(/^WARN — права/)
-    expect(out[4]).toContain('humanOnlyActions')
+    // права зелёные ТОЛЬКО потому, что до процесса доехали обе половины конверта: и то,
+    // что он разрешил, и то, что он запретил. Пока ехала одна, здесь стояло WARN.
+    expect(out[4]).toMatch(/^OK — права/)
+    expect(out[4]).toContain('запретов')
     expect(out[5]).toBe('5')
     expect(code).toBe(0)
   })
@@ -287,7 +291,7 @@ describe('демон считает ту же пятёрку тем же мод�
     expect(receipt.parity.results).toEqual(body.receipts)
     // И сводка равна сводке инструмента, посчитанной из его же вывода
     expect(receipt.parity.summary).toEqual(summarize(body.receipts))
-    expect(receipt.parity.summary).toEqual({ fulfilled: 5, total: 5, warn: 1, ok: 3, failed: [] })
+    expect(receipt.parity.summary).toEqual({ fulfilled: 5, total: 5, warn: 0, ok: 4, failed: [] })
     expect(code).toBe(0)
   })
 

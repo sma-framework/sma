@@ -82,7 +82,9 @@ import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
-import { readJournal, DISPATCH_REASONS } from './journal.mjs'
+import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
+import { runsDirOf, attemptRunDir } from '../queue/run-dir.mjs'
+import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
@@ -828,6 +830,10 @@ async function handleTask({ res, params, config, deps }) {
     // научилась нести вердикт, обязаны молчать, а не показывать пустую пятёрку.
     runDir: a.runDir ?? null,
     parity: a.parity ?? null,
+    // ЧТО СТОИТ И ЖДЁТ ЧЕЛОВЕКА. Билет бывает только у ИДУЩЕЙ попытки — законченная уже
+    // ничего не ждёт. Назван нулём, а не опущен, по той же причине, что и поля выше:
+    // карточка читает одну форму для каждой записи.
+    ticket: null,
   }))
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
@@ -870,6 +876,23 @@ async function handleTask({ res, params, config, deps }) {
       // опущены, по той же причине, что и шесть полей выше.
       runDir: null,
       parity: null,
+      // ═══ ЧТО СТОИТ ПРЯМО СЕЙЧАС И ЖДЁТ ЧЕЛОВЕКА ═══════════════════════════════
+      //
+      // Опасный вызов внутри живой попытки физически стоит на месте, пока человек не
+      // решит. Билет лежит в каталоге ЭТОЙ попытки, и читается он ТЕМ ЖЕ кодом, каким
+      // его пишет хук, — иначе «ждут вас» на экране и файл, над которым стоит вызов,
+      // были бы двумя разными мнениями об одном событии.
+      //
+      // Каталог собирается ТЕМ ЖЕ выражением, каким его собрал спавн: подключённый
+      // проект плюс идентификатор попытки. Никакой новой двери для этого не заводится —
+      // билет едет в ответе двери карточки, который окно и так запрашивает.
+      ticket: readWaitingTicket({
+        runDir: attemptRunDir({
+          runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+          attemptId: attemptIdFor(row.id, Number.isFinite(row.attempt) ? row.attempt : 1),
+        }),
+        fsImpl: deps.fsImpl,
+      }),
     })
   }
 

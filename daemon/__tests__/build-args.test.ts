@@ -385,6 +385,26 @@ describe('buildArgs — a stage of the phase cycle is a command, everything else
     expect(build()(task(), route(), { allowedTools: [] }).args).not.toContain('--allowedTools')
   })
 
+  // THE OTHER HALF OF THE SAME WIRE. The envelope also names what a worker may NOT do —
+  // the actions a person keeps for himself. Those four names were computed, hashed and
+  // journalled for every attempt this fleet ran, and read by nobody: «the worker cannot
+  // push» was true of the prompt and of nothing else. This asserts the last stretch of road.
+  it('the envelope refusal reaches the spawned process', () => {
+    const denials = ['Bash(git config:*)', 'Bash(git push:*)', 'Bash(git remote:*)']
+    const spec = build()(task(), route(), { allowedTools: ['Read', 'Bash'], disallowedTools: denials })
+    const i = spec.args.indexOf('--disallowedTools')
+    expect(i, 'the spawn carries no refusal — the boundary would exist only in the journal').toBeGreaterThan(-1)
+    expect(spec.args[i + 1]).toBe(denials.join(' '))
+    // and the grant is not narrowed to compensate: a denial was ADDED, nothing was taken away
+    expect(spec.args[spec.args.indexOf('--allowedTools') + 1]).toBe('Read Bash')
+  })
+
+  it('an old caller that names no refusal gets a byte-identical argument array', () => {
+    const before = build()(task(), route(), { allowedTools: ['Read', 'Bash'] }).args
+    expect(build()(task(), route(), { allowedTools: ['Read', 'Bash'], disallowedTools: [] }).args).toEqual(before)
+    expect(before).not.toContain('--disallowedTools')
+  })
+
   it('no stage prompt carries an automation flag — the guard travels with the dictionary', () => {
     for (const stage of ['discuss', 'plan', 'execute', 'verify']) {
       const prompt = build()(stageTask({ data: { kind: 'document', stage, phase: '12' } }), route()).prompt
