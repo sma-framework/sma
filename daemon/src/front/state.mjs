@@ -230,10 +230,51 @@ const RECEIPT_KINDS = Object.freeze([
  * parseReceiptProof(receiptRef) → {kind, ref, path?, sha?} | null — the durable proof a
  * finished attempt left, in a shape a screen can render as a sentence.
  *
+ * TWO FORMS, AND ONLY ONE OF THEM WAS EVER READ.
+ *
+ * The tick writes this reference as a STRING when a receipt exists, and as an OBJECT in
+ * exactly the two cases where one does not: the differential gate («красными остались только
+ * рецепты, что были красны и до работника») and the tree that holds no recipes at all. That
+ * object carries `unverified`, the reason in one word, and the numbers the verdict was made
+ * from. This reader accepted the string alone — so every attempt closed by either of those
+ * two gates produced an EMPTY proof, and «готово» read exactly like «готово, но никто не
+ * перепроверял». Those are opposite sentences, and the second one had never once reached a
+ * screen although the tick has been computing it since the differential gate existed. An
+ * absence rendered as a pass is the lie this whole surface exists to prevent, so the object
+ * form is read here, beside the string, and nothing about the string form changes by a byte.
+ *
+ * NOTHING IS INVENTED, on either path: a key absent from the object is absent from the proof,
+ * and an object that names no gate reason is not a gate proof at all (the four-number receipt
+ * summary is a different reader's job and is never dressed up as a verdict).
+ *
  * @param {*} receiptRef
- * @returns {{kind:string, ref:string, path?:string, sha?:string}|null}
+ * @returns {{kind:string, ref:string, path?:string, sha?:string, unverified?:boolean, reason?:string, branch?:string, base?:string, commits?:number, preexistingRed?:number, newRed?:number}|null}
  */
 export function parseReceiptProof(receiptRef) {
+  // ── THE OBJECT FORM: what the gate concluded when there was no receipt to point at ──
+  if (receiptRef && typeof receiptRef === 'object' && !Array.isArray(receiptRef)) {
+    const reason = typeof receiptRef.reason === 'string' ? receiptRef.reason.trim() : ''
+    if (!reason) return null
+    const num = (v) => (Number.isFinite(v) ? { value: v } : null)
+    const commits = num(receiptRef.commits)
+    const preexistingRed = num(receiptRef.preexistingRed)
+    const newRed = num(receiptRef.newRed)
+    const branch = typeof receiptRef.branch === 'string' && receiptRef.branch.trim() ? receiptRef.branch.trim() : null
+    const base = typeof receiptRef.base === 'string' && receiptRef.base.trim() ? receiptRef.base.trim() : null
+    return {
+      kind: 'gate',
+      // The reference verbatim: for this form the stored reason IS the reference — there is
+      // no second text to quote, and minting a friendlier one would be an invention.
+      ref: reason,
+      unverified: receiptRef.unverified === true,
+      reason,
+      ...(branch ? { branch } : {}),
+      ...(base ? { base } : {}),
+      ...(commits ? { commits: commits.value } : {}),
+      ...(preexistingRed ? { preexistingRed: preexistingRed.value } : {}),
+      ...(newRed ? { newRed: newRed.value } : {}),
+    }
+  }
   const ref = typeof receiptRef === 'string' ? receiptRef.trim() : ''
   if (!ref) return null
   for (const { kind, re } of RECEIPT_KINDS) {

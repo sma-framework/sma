@@ -2252,6 +2252,143 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
 })
 
 /**
+ * ═══ ВСЁ, ЧЕГО ЧЕЛОВЕКУ НЕ ХВАТАЛО ДЛЯ ОТКАТА, ДОЕЗЖАЕТ ДО ОТВЕТА ДВЕРИ ═══════════
+ *
+ * Три вещи существуют и лежат в трёх разных местах, ни одно из которых не смотрит на карточку:
+ * список изменённого и исчезнувшего (в строке попытки), признак противоречия свёрнутой записи
+ * и отпечаток коммита слияния (вычислен, доезжает до колонки, читателя нет ни одного).
+ *
+ * Дверь называет их ЯВНО, тем же перечислением, каким названы шесть полей копии: строка леджера
+ * не имеет права протащить в тело ответа ключ, который дверь не назвала. Отпечаток слияния
+ * проходит проверку формы ПЕРЕД тем, как попасть в команду, которую человек скопирует и
+ * выполнит: не прошёл — поля нет вовсе, и карточка о нём молчит.
+ */
+describe('server.mjs — GET /api/task/:id несёт то, чем откатывают', () => {
+  const rowsOf = (extra: any = {}) => [{ id: 'R-9', title: 'ночная задача', lane: 'prod', status: 'completed', attempt: 1, ...extra }]
+
+  const cardFront = (attempts: any[], extra: any = {}) =>
+    createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: { list: async () => rowsOf(extra) }, ledger: { readAttempts: () => attempts } },
+    })
+
+  it('список изменённого, ОТДЕЛЬНЫЙ список исчезнувшего и оба счётчика перебора едут на карточку', async () => {
+    const front = cardFront([
+      {
+        attempt: 1,
+        outcome: 'completed',
+        base: 'a1b2c3d',
+        branch: 'wt/R-9',
+        files: [
+          { status: 'M', path: 'src/a.ts' },
+          { status: 'D', path: 'src/gone.ts' },
+          { status: 'R100', path: 'новое имя.txt', from: 'старое имя.txt' },
+        ],
+        deletions: ['src/gone.ts', 'старое имя.txt'],
+        filesOverflow: 4,
+        deletionsOverflow: 1,
+      },
+    ])
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const a = JSON.parse(res.body).attempts[0]
+    expect(a.files).toHaveLength(3)
+    expect(a.files[2]).toEqual({ status: 'R100', path: 'новое имя.txt', from: 'старое имя.txt' })
+    // ЦЕНА ОШИБКИ НЕСИММЕТРИЧНА: исчезнувшее — отдельный ключ, а не статус внутри списка.
+    expect(a.deletions).toEqual(['src/gone.ts', 'старое имя.txt'])
+    expect(a.filesOverflow).toBe(4)
+    expect(a.deletionsOverflow).toBe(1)
+  })
+
+  it('попытка старше этих полей МОЛЧИТ: нули, а не выдуманные пустые списки', async () => {
+    const front = cardFront([{ attempt: 1, outcome: 'completed' }])
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    const a = JSON.parse(res.body).attempts[0]
+    expect(a.files).toBe(null)
+    expect(a.deletions).toBe(null)
+    expect(a.filesOverflow).toBe(null)
+    expect(a.deletionsOverflow).toBe(null)
+    expect(a.conflict).toBe(null)
+  })
+
+  it('«не перепроверено» доезжает до карточки: объектная ссылка становится доказательством', async () => {
+    const front = cardFront([
+      {
+        attempt: 1,
+        outcome: 'completed',
+        receiptRef: { unverified: true, reason: 'preexisting_red_only', branch: 'wt/R-9', base: 'a1b2c3d', commits: 2, preexistingRed: 3, newRed: 0 },
+      },
+    ])
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    const a = JSON.parse(res.body).attempts[0]
+    expect(a.proof).toMatchObject({ kind: 'gate', unverified: true, reason: 'preexisting_red_only', preexistingRed: 3, newRed: 0, commits: 2 })
+  })
+
+  it('аномалия предъявляется как аномалия: свёрнутая запись несёт ОБА исхода', async () => {
+    const front = cardFront([
+      { attempt: 1, outcome: 'failed', failureReason: 'tests_red' },
+      { attempt: 1, outcome: 'completed', receiptRef: 'reverify:abc1234' },
+    ])
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    const out = JSON.parse(res.body)
+    expect(out.attempts).toHaveLength(1)
+    expect(out.attempts[0].conflict).toEqual({ outcomes: ['failed', 'completed'], rows: 2 })
+  })
+
+  it('отпечаток коммита слияния и путь репозитория доезжают до задачи — из них человек собирает команду', async () => {
+    const full = '0123456789abcdef0123456789abcdef01234567'
+    const front = cardFront([{ attempt: 1, outcome: 'completed' }], {
+      status: 'approved',
+      mergeReceipt: JSON.stringify({ branch: 'wt/R-9', resultSha: full, repo: '/projects/demo', testsPassed: true }),
+    })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    const task = JSON.parse(res.body).task
+    expect(task.mergeSha).toBe(full)
+    expect(task.mergeRepo).toBe('/projects/demo')
+  })
+
+  it('СТАРАЯ квитанция с семью знаками читается — переписывать её нельзя и не нужно', async () => {
+    const front = cardFront([{ attempt: 1, outcome: 'completed' }], {
+      status: 'approved',
+      mergeReceipt: JSON.stringify({ branch: 'wt/R-9', resultSha: 'abc1234', testsPassed: true }),
+    })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    const task = JSON.parse(res.body).task
+    expect(task.mergeSha).toBe('abc1234')
+    expect(task.mergeRepo).toBe(null)
+  })
+
+  it('отпечаток НЕ прошёл проверку формы → поля нет вовсе, и карточка о нём молчит', async () => {
+    const bads = ['--upload-pack=rm -rf /', 'HEAD; rm -rf /', 'zzzz', '0123456789abcdef0123456789abcdef012345678', '']
+    for (const bad of bads) {
+      const front = cardFront([{ attempt: 1, outcome: 'completed' }], {
+        status: 'approved',
+        mergeReceipt: JSON.stringify({ branch: 'wt/R-9', resultSha: bad, repo: '/projects/demo' }),
+      })
+      const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+      const task = JSON.parse(res.body).task
+      expect(task.mergeSha, 'отпечаток проехал в команду человека: ' + bad).toBe(null)
+    }
+  })
+
+  it('битая квитанция слияния не роняет дверь — карточка просто молчит о слиянии', async () => {
+    const front = cardFront([{ attempt: 1, outcome: 'completed' }], { status: 'approved', mergeReceipt: '{не json' })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).task.mergeSha).toBe(null)
+  })
+
+  it('путь репозитория, который мог бы оказаться вторым аргументом, не отдаётся вовсе', async () => {
+    const front = cardFront([{ attempt: 1, outcome: 'completed' }], {
+      status: 'approved',
+      mergeReceipt: JSON.stringify({ resultSha: 'abc1234', repo: '--exec=rm -rf /' }),
+    })
+    const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
+    expect(JSON.parse(res.body).task.mergeRepo).toBe(null)
+  })
+})
+
+/**
  * THE CARD ANSWERS WITH THE LAST WORD ABOUT THE TASK — the same rule the queue and the waiting
  * list already answer by.
  *
