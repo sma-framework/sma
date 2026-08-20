@@ -1573,86 +1573,79 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([])
   })
 
-  it('a RETURNED task’s next attempt resumes the prior session — the paid-for context survives', async () => {
-    const ledgerDir = mkDir('sma-loop-res-')
+  /**
+   * ═══════ ЧТО ИМЕННО ТИК РЕШАЕТ ПРО ПРОБУЖДЕНИЕ ═══════
+   *
+   * Возврат человека и пробуждение по времени приходят на тик НЕОТЛИЧИМЫМИ на первый взгляд:
+   * вторая попытка той же задачи, и в леджере записана сессия первой. До этой пары дел обе шли
+   * одним и тем же путём продолжения — условие смотрело только на номер попытки. Между тем
+   * разница смысловая: человек вернул работу с замечанием, и работник обязан помнить, что
+   * делал, — контекст уже оплачен, а поправка должна лечь в голову, которая ещё помнит, о чём
+   * речь; таймер же будит задачу спустя время, и старая сессия несёт картину мира, которая к
+   * этому моменту уже неверна.
+   *
+   * ЗДЕСЬ ПРОВЕРЯЕТСЯ РЕШЕНИЕ ТИКА, А НЕ КОМАНДНАЯ СТРОКА, и это сказано прямо, чтобы никто не
+   * принял эти два дела за сквозной прогон. Провод состоит из двух звеньев, и у каждого своё
+   * место: тик → опции спавна (здесь, настоящим тиком) и опции → массив аргументов (сьют
+   * композитора, настоящим композитором и настоящим строителем). Подделки нет ни в одном из
+   * двух звеньев; настоящий запуск с настоящим массивом аргументов читается уже с диска, живым
+   * прогоном, а не сьютом.
+   *
+   * Свежесть таймера обеспечена НЕ вторым условием, а тем, что вид пробуждения доезжает до
+   * строителя, где замок на этот случай написан, брошен явной ошибкой и проверен давно.
+   */
+  const wakeDecisionOf = async (over: any, ledgerRow: any) => {
+    const ledgerDir = mkDir('sma-loop-wake-')
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    const spawns: any[] = []
-    const spawnWorker = (spec: any) => {
-      spawns.push({ args: spec.args.slice() })
-      spec.onLine?.('APPROACH_NOTE: продолжил')
-      spec.onLine?.('LESSON_NONE: тестовый работник')
-      spec.onExit?.({ code: 0, signal: null })
-      return { pid: 1, kill: () => {} }
-    }
+    const seen: any[] = []
     const { deps } = makeDeps({
       adapter,
       clockObj: c,
-      spawnWorker,
+      spawnWorker: (spec: any) => {
+        spec.onLine?.('APPROACH_NOTE: продолжил')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
         worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
-      deps: { ledger: realLedger(ledgerDir) },
+      deps: {
+        ledger: realLedger(ledgerDir),
+        buildArgs: (_task: any, _route: any, opts: any) => {
+          seen.push(opts)
+          return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }
+        },
+      },
     })
-
-    // The prior run's row carries the session — exactly what the return left behind. And the
-    // ROW ITSELF says it was a person who sent it back: that word is what separates this case
-    // from the one below, and until it was read the two were the same «attempt > 1».
-    deps.ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
-    await adapter.enqueue(backlogTask({ attempt: 2, source: 'return' }))
-
+    deps.ledger.recordAttempt(ledgerRow)
+    await adapter.enqueue(backlogTask({ attempt: 2, ...over }))
     const res = await tick(deps)
     expect(res.completed).toBe('BL-1')
-    const at = spawns[0].args.indexOf('--resume')
-    expect(at).toBeGreaterThan(-1)
-    expect(spawns[0].args[at + 1]).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+    return seen[0]
+  }
+
+  it('a RETURNED task’s next attempt resumes the prior session — the paid-for context survives', async () => {
+    const opts = await wakeDecisionOf(
+      { source: 'return' },
+      { taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+    )
+    expect(opts.wakeKind).toBe('return')
+    expect(opts.resumeId).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
   })
 
-  /**
-   * И ЭТО ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ОНИ РАЗЛИЧАЮТСЯ. Возврат человека и пробуждение по времени
-   * приходят на тик одинаково — вторая попытка той же задачи с записанной сессией в леджере, —
-   * и до этого дела оба шли по одному пути продолжения. Между тем разница смысловая: человек
-   * вернул работу с замечанием, и работник обязан помнить, что делал; таймер разбудил задачу
-   * спустя время, и старая сессия несёт картину мира, которая к этому моменту уже неверна.
-   *
-   * Свежесть здесь обеспечена НЕ вторым условием, а тем, что вид пробуждения доезжает до
-   * строителя аргументов, где замок на этот случай написан и проверен давно.
-   */
   it('а задача, разбуженная по времени, продолжения не получает — даже когда сессия в леджере есть', async () => {
-    const ledgerDir = mkDir('sma-loop-timer-')
-    const c = mkClock()
-    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    const spawns: any[] = []
-    const spawnWorker = (spec: any) => {
-      spawns.push({ args: spec.args.slice() })
-      spec.onLine?.('APPROACH_NOTE: начал заново')
-      spec.onLine?.('LESSON_NONE: тестовый работник')
-      spec.onExit?.({ code: 0, signal: null })
-      return { pid: 1, kill: () => {} }
-    }
-    const { deps } = makeDeps({
-      adapter,
-      clockObj: c,
-      spawnWorker,
-      responses: {
-        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
-        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
-        reverify: GREEN_REVERIFY,
-      },
-      deps: { ledger: realLedger(ledgerDir) },
-    })
-
-    // Та же запись прошлой сессии — и та же вторая попытка. Отличается ровно одно слово: строку
+    // Та же запись прошлой сессии, та же вторая попытка. Отличается ровно одно слово: строку
     // вернул в очередь не человек, а истёкшая аренда.
-    deps.ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
-    await adapter.enqueue(backlogTask({ attempt: 2 }))
-
-    const res = await tick(deps)
-    expect(res.completed).toBe('BL-1')
-    expect(spawns[0].args).not.toContain('--resume')
-    expect(spawns[0].args.join(' ')).not.toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+    const opts = await wakeDecisionOf(
+      {},
+      { taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+    )
+    expect(opts.wakeKind).toBe('timer')
+    expect(opts.resumeId).toBeUndefined()
   })
 
   it('every line reaches the attempt’s own file, and the delegated one is marked as delegated', async () => {
@@ -3554,6 +3547,74 @@ describe('личный слой и наши серверы доезжают до
 
     const row = readAttempts(ledgerDir, 'BL-1')[0]
     expect(row.mcpConfig).toEqual({ path: mcpPath, servers: [] })
+  })
+
+  /**
+   * ═══════ СКВОЗНОЙ ПРОВОД ПРОБУЖДЕНИЯ: НАСТОЯЩИЙ ТИК, НАСТОЯЩИЙ КОМПОЗИТОР, НАСТОЯЩИЙ ARGV ═══════
+   *
+   * Дела выше проверяют половины: тик решает вид пробуждения, композитор кладёт решение во флаги.
+   * Здесь обе половины соединены и НИ ОДНА не подделана — тот же настоящий сборщик аргументов,
+   * что и в деле про mcp-конфиг выше, и утверждение снимается с массива, которым запускается
+   * процесс. Это ровно та форма, которой требует закон о связности: каждый кусок по отдельности
+   * был написан, покрыт делом и зелён — и однажды ни один не оказался присоединён к соседнему.
+   *
+   * И ЗДЕСЬ ЖЕ ВИДНО, ЧТО ПОТОЛОК ХОДОВ ДОЕЗЖАЕТ ТЕМ ЖЕ ПУТЁМ — один прогон предъявляет оба
+   * провода этой работы, потому что оба кончаются в одном и том же массиве.
+   */
+  const argvOfWake = async (over: any, ledgerRow: any) => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const dataDir = mkDir('sma-data-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const spawns: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const config = { workers: [worker(accountDir)], repoDir: '/repo', pipeline: { enabled: true, maxTurns: 33 }, dataDir }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push(spec.args.slice())
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+        loadMcpRegistry: () => ({ servers: [], path: join(dataDir, 'mcp.json') }),
+      },
+    })
+    recordAttempt(ledgerDir, ledgerRow)
+    await adapter.enqueue(backlogTask({ attempt: 2, ...over }))
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+    expect(spawns).toHaveLength(1)
+    return spawns[0]
+  }
+
+  it('возврат человека доезжает до argv продолжением сессии, а таймер — без него, и потолок едет в обоих', async () => {
+    const SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+
+    const returned = await argvOfWake({ source: 'return' }, { taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: SID })
+    const at = returned.indexOf('--resume')
+    expect(at, 'продолжение сессии не доехало до argv возврата').toBeGreaterThan(-1)
+    expect(returned[at + 1]).toBe(SID)
+
+    const woken = await argvOfWake({}, { taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: SID })
+    expect(woken).not.toContain('--resume')
+    expect(woken.join(' '), 'старая сессия не смеет ехать в свежее пробуждение').not.toContain(SID)
+
+    // и потолок ходов из настроек — в обоих массивах, подряд со своим флагом
+    for (const argv of [returned, woken]) {
+      const cap = argv.indexOf('--max-turns')
+      expect(cap, 'потолок ходов не доехал до argv').toBeGreaterThan(-1)
+      expect(argv[cap + 1]).toBe('33')
+    }
   })
 
   it('включённый сервер реестра лежит в файле и назван в строке попытки', async () => {
