@@ -238,7 +238,23 @@ export function runMerge(o = {}) {
     }
 
     // (4) journal a receipt — records the outcome HONESTLY (pass OR fail; never a false green).
-    const receipt = { branch, resultSha: resultSha ? resultSha.slice(0, 7) : null, testsPassed }
+    //
+    // THE FULL COMMIT NAME, AND THE TREE IT NAMES SOMETHING IN.
+    //
+    // This receipt is where one sentence comes from: the single command that undoes an
+    // acceptance — `git -C <repo> revert -m 1 <sha>`. The merge above is deliberately made
+    // with no fast-forward, so the merge commit always has exactly two parents and the first
+    // is the trunk; that is why the side number is always 1 and why this one commit name is
+    // enough to undo the whole acceptance.
+    //
+    // The name used to be cut to seven characters HERE, at the moment of writing. Seven is
+    // usually enough, but git requires an UNAMBIGUOUS prefix and a tree large enough will one
+    // day make seven ambiguous — while the full name is right there in the variable being
+    // truncated. A short form, where eyes want one, is made when the value is DISPLAYED; it
+    // is never the thing that gets stored. `repo` travels beside it because a person reading
+    // a card is not necessarily standing in the directory the project lives in, and a command
+    // that assumes they are is a command that runs somewhere else.
+    const receipt = { branch, resultSha: resultSha || null, repo: cwd, testsPassed }
     try {
       appendEvent(
         { type: 'merge', scope: MERGE_SLOT_NAME, detail: receipt },

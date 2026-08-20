@@ -548,6 +548,99 @@ describe('the claim time and the lease clock are two different writes', () => {
   })
 })
 
+// ═══ ONE SOURCE FOR THE ATTEMPT NUMBER ═══════════════════════════════════════════════
+//
+// The number used to be computed by two hands out of two different counts: the tick took it
+// at the CLAIM and carried it unchanged for the whole attempt, the backend recomputed it from
+// the queue's LIVE retry count at the moment of the mutation. Let the queue re-issue the job
+// between those two moments and the two hands are talking about different attempts — one
+// physical piece of work lands in the ledger as two, and one attempt number ends up carrying
+// both `failed` and `completed`. That is not a hypothesis: a real record on the founder's
+// machine holds exactly those three rows.
+//
+// THESE CASES ASSERT THE WIRE, NOT THE ARITHMETIC. What they read is the row ON DISK, written
+// through the real `recordAttempt`, and the number a screen would show — because a function
+// that computes the right number and a row that carries it are two different guarantees, and
+// only the second one is what an audit trail is made of.
+
+describe('an attempt carries ONE number, and the row on disk says so', () => {
+  it('один номер: the queue re-counts between the claim and the finish — both rows on disk still carry the number the claim returned', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000, ledgerDir })
+    await adapter.enqueue(backlog())
+    const claimed: any = await adapter.claimNext('daemon', {})
+    expect(claimed.attempt).toBe(1)
+
+    // THE TICK'S OWN ROW, written the way loop.mjs writes it: with the number the claim handed
+    // it, carried unchanged for the whole attempt — and with the fields only the tick knows.
+    recordAttempt(ledgerDir, {
+      taskId: 'BL-196',
+      attempt: claimed.attempt,
+      startedAt: new Date(c.clock()).toISOString(),
+      sessionId: '70ed8949-2c26-4065-843f-109bd21f9707',
+    })
+
+    // BETWEEN THE CLAIM AND THE FINISH the queue's own retry counter moves: the lease lapsed
+    // and the row was handed out again. Nothing about THIS attempt changed — the work that is
+    // about to report is the work that was claimed above.
+    const job = [...jobs.values()][0]
+    job.retry_count = 1
+
+    await adapter.complete('BL-196', { receiptRef: 'r1', workerId: 'local-1', provider: 'claude' })
+
+    const rows = readAttempts(ledgerDir, 'BL-196')
+    expect(rows).toHaveLength(2)
+    // ONE number across both writers, and it is the one the claim returned.
+    expect(rows.map((r: any) => r.attempt)).toEqual([claimed.attempt, claimed.attempt])
+    // and the tick's row is still whole — nothing about this fix costs the ledger a field
+    expect(rows.some((r: any) => r.sessionId === '70ed8949-2c26-4065-843f-109bd21f9707')).toBe(true)
+    expect(rows.some((r: any) => typeof r.startedAt === 'string')).toBe(true)
+  })
+
+  it('доска и леджер: the number a screen shows is the number the ledger row carries', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000, ledgerDir })
+    await adapter.enqueue(backlog())
+    const claimed: any = await adapter.claimNext('daemon', {})
+    recordAttempt(ledgerDir, { taskId: 'BL-196', attempt: claimed.attempt, startedAt: 'x' })
+
+    const job = [...jobs.values()][0]
+    job.retry_count = 1
+
+    const [boardRow] = await adapter.list({})
+    await adapter.complete('BL-196', { receiptRef: 'r1', workerId: 'local-1', provider: 'claude' })
+
+    const rows = readAttempts(ledgerDir, 'BL-196')
+    // The board and the audit trail say the same thing about the same try. They used to
+    // disagree by one, and a person reading the screen would have been reading a third number.
+    for (const r of rows) expect(r.attempt).toBe(boardRow.attempt)
+    expect(boardRow.attempt).toBe(claimed.attempt)
+  })
+
+  it('a job claimed BEFORE the claim count was recorded keeps the OLD arithmetic — an absent mark is an absence, never an invented number', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000, ledgerDir })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('daemon', {})
+
+    const job = [...jobs.values()][0]
+    delete job.data.claimedAt
+    delete job.data.claimedAtRetry
+    job.retry_count = 1
+
+    const [boardRow] = await adapter.list({})
+    await adapter.complete('BL-196', { receiptRef: 'r1', workerId: 'local-1', provider: 'claude' })
+    const rows = readAttempts(ledgerDir, 'BL-196')
+
+    // exactly what this row recorded before the claim mark existed: 1 + the live retry count
+    expect(boardRow.attempt).toBe(2)
+    expect(rows[0].attempt).toBe(2)
+  })
+})
+
 // ═══ the attempt stamp on the ADAPTER's own rows (2026-08-05) ═══════
 //
 // Until this landed the backend's two `recordAttempt` call sites passed none of the seven

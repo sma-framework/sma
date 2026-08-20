@@ -33,7 +33,7 @@
  * lease не означает, что внешний side effect не произошел»).
  *
  * ═══════════ WHICH INVARIANTS LIVE HERE, AND WHICH DELIBERATELY DO NOT ═════════════
- * Four of the seven fleet invariants are decidable from a SINGLE transition, and
+ * Four of the eight fleet invariants are decidable from a SINGLE transition, and
  * `applyTransition` enforces them as refusals:
  *   1 — ACCEPTED requires a verification receipt AND an authorized disposition, so no
  *       worker can accept its own work.
@@ -41,11 +41,13 @@
  *   5 — a redelivery under an existing idempotency key reports itself as already applied
  *       instead of running the effect a second time.
  *   7 — a dead-letter task does not return to READY without an explicit disposition.
- * The other three are properties of the LEDGER and the RUNNER across many transitions, and
+ * The other four are properties of the LEDGER and the RUNNER across many transitions, and
  * no single-transition function can see them: at most one active lease per task alongside
  * many immutable attempts (3); a lease expiry never implying the external effect did not
  * happen (4); and the policy / memory-snapshot / model / harness stamp being fixed on the
- * attempt (6). They are property-tested by the invariants suite. Do not mistake this
+ * attempt (6); and one attempt carrying one number and one outcome, so a single try cannot be
+ * recorded as two and one number cannot carry both a failure and a completion (8). They are
+ * property-tested by the invariants suite. Do not mistake this
  * module for the
  * whole guarantee — it is the part of it a pure function can hold, and it says so out loud.
  *

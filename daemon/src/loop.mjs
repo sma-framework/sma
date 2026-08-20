@@ -103,7 +103,10 @@ import { pipelineEnabled } from './config.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
-import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
+// ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
+// belongs to the module that owns the row's key list, and a second copy of the number here
+// would be a second ceiling waiting to drift away from the first.
+import { memorySnapshotHash, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
@@ -127,10 +130,11 @@ import {
 import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
-import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
+import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage } from './runner/usage.mjs'
 import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
@@ -644,34 +648,187 @@ export function redRecordKeys(rv) {
   return out.sort()
 }
 
+/** The byte git separates the records of a `-z` answer with. Never written as a literal in
+ *  source: a NUL in a text file is a file half the tooling around it stops being able to read. */
+const NUL = String.fromCharCode(0)
+
+/** An answer with no name where a name must be — the shape of a read that was cut short. */
+const NO_ANSWER = (reason) => ({
+  files: [],
+  deletions: [],
+  filesOverflow: 0,
+  deletionsOverflow: 0,
+  answered: false,
+  reason,
+})
+
 /**
- * changedFilesOnBranch(deps, base, branch, cwd) → {files, reason}: the `name-status` lines of
- * everything the attempt's branch changed against the commit it was cut from.
+ * parseNameStatus(out) → {entries, vanished} — the records of a `--name-status` answer, in
+ * the shape git ACTUALLY produces. The form below was measured byte by byte on a real
+ * repository before a line of this was written, because a parser built to a remembered format
+ * is green against a fake and wrong against git.
+ *
+ * WHAT WAS MEASURED (git 2.53, `-z`): status and name are TWO separate NUL-terminated
+ * records — `A\0added.txt\0` — and a rename is THREE: `R100\0oldname.txt\0newname.txt\0`.
+ * Rename detection is on by DEFAULT, so the three-record form is not a rare case to handle
+ * later; copy detection is off by default but is one line of config in the CONNECTED
+ * project, and its record shape is the same three. So `R` and `C` are read by one branch —
+ * miss that and one extra record shifts everything after it, and a file NAME is read as a
+ * status.
+ *
+ * ANYTHING UNKNOWN IS KEPT AS IT CAME. A status letter this parser has never seen (`T`, `U`,
+ * a future one) is stored verbatim with its name: a record we do not understand is still
+ * evidence, and dropping it would make the row quietly incomplete.
+ *
+ * A TRUNCATED ANSWER STOPS THE PARSE AND THROWS NOTHING — a record with no name is what a
+ * cut-off read looks like, and losing the rest of a list is not a reason to lose the attempt.
+ */
+function parseNameStatus(out) {
+  const entries = []
+  const vanished = []
+  const push = (status, path, from) => {
+    entries.push(from === undefined ? { status, path } : { status, path, from })
+    // WHAT IS GONE, collected as we go. `D` is the plain case; the OLD side of a rename is
+    // the subtle one — from where a person stands that path no longer exists, and a rollback
+    // reader who is not told so goes looking for a file that is not there. A copy takes
+    // nothing away, so `C` adds nothing here.
+    if (status[0] === 'D') vanished.push(path)
+    else if (status[0] === 'R' && from !== undefined) vanished.push(from)
+  }
+
+  // THE PRIMARY PATH: records separated by the NUL byte. Never newlines and never whitespace —
+  // a path may legally contain a space, a quote and (on systems that allow it) a newline, and
+  // every one of those splits a line-based parser into pieces that look like real filenames.
+  if (out.includes(NUL)) {
+    const parts = out.split(NUL)
+    let i = 0
+    while (i < parts.length) {
+      const status = parts[i]
+      if (!status) {
+        i += 1 // the trailing empty record after the final NUL
+        continue
+      }
+      if (status[0] === 'R' || status[0] === 'C') {
+        const from = parts[i + 1]
+        const to = parts[i + 2]
+        if (!from || !to) break // truncated: stop reading, keep what was read
+        push(status, to, from)
+        i += 3
+      } else {
+        const path = parts[i + 1]
+        if (!path) break // truncated
+        push(status, path)
+        i += 2
+      }
+    }
+    return { entries, vanished }
+  }
+
+  // THE FALLBACK: an answer with no NUL in it at all. Some builds and some wrappers hand back
+  // a newline-separated body despite the flag, and this is the ONLY reason `core.quotepath` is
+  // switched off in the call as well — down here the names arrive raw and stay readable, where
+  // git's default would have handed a person `\321\200\321\203…` instead of a filename.
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const cols = line.split('\t')
+    const status = cols[0].trim()
+    if (!status || cols.length < 2) continue
+    if ((status[0] === 'R' || status[0] === 'C') && cols.length >= 3) push(status, cols[2], cols[1])
+    else push(status, cols[1])
+  }
+  return { entries, vanished }
+}
+
+/**
+ * changedFilesOnBranch(deps, base, branch, cwd) → what the attempt's branch changed against
+ * the commit it was cut from: `files` (status + name per entry, plus the previous name of a
+ * rename), `deletions` (the paths that are GONE), the two overflow counters, `answered`, and
+ * a reason in words when there is nothing to show.
  *
  * «Откатить можно» и «видно, ЧТО откатывается» — разные вещи, and only the first was true:
  * the attempt row carried the base commit, so a person knew the point to return to and
- * nothing about what would come back. The list is derived here and journalled for EVERY
- * outcome, because the attempt someone wants to undo is precisely the one that went wrong.
+ * nothing about what would come back. The list is derived here and carried on EVERY outcome,
+ * because the attempt someone wants to undo is precisely the one that went wrong.
  *
- * FAIL-OPEN, exactly like the commit count beside it: no git seam, no base, or a git that
- * refuses all answer «no data» with the reason in words. An honest blank is a record; a
- * thrown error in a narration path would cost the attempt its outcome.
+ * THE SOURCE IS GIT, DELIBERATELY. Not a watch on which tools the worker used: a change made
+ * with `rm`, with a stream editor or with `git rm` went through a shell, and a list built
+ * from the names of editing tools cannot contain it — no editing tool was called. Git
+ * compares two trees, so it answers correctly however the change was made.
+ *
+ * NAMES ONLY. No patch flag is ever passed: the row is durable and a diff body can carry a
+ * secret. A ceiling — ONE constant, owned by the module that owns the row's key list — bounds
+ * both lists, and what it cut is counted out loud rather than dropped in silence.
+ *
+ * FAIL-OPEN, exactly like the commit count beside it: no git seam, no base, no copy, or a git
+ * that refuses all answer `answered:false` with the reason in words. An honest blank is a
+ * record; a thrown error in a narration path would cost the attempt its outcome.
  */
-function changedFilesOnBranch(deps, base, branch, cwd) {
-  if (typeof deps.execGit !== 'function') return { files: [], reason: 'нет доступа к git' }
-  if (!cwd) return { files: [], reason: 'рабочей копии нет' }
-  if (!base) return { files: [], reason: 'базовый коммит неизвестен' }
+export function changedFilesOnBranch(deps, base, branch, cwd) {
+  if (!deps || typeof deps.execGit !== 'function') return NO_ANSWER('нет доступа к git')
+  if (!cwd) return NO_ANSWER('рабочей копии нет')
+  if (!base) return NO_ANSWER('базовый коммит неизвестен')
   let out = ''
   try {
-    out = String(deps.execGit(['diff', '--name-status', `${base}..${branch || 'HEAD'}`], { cwd }) || '')
+    out = String(
+      deps.execGit(
+        // `-c core.quotepath=false` AND `-z`, and both on purpose. `-z` is what makes the
+        // answer parseable at all — records separated by a byte that cannot occur in a path.
+        // `core.quotepath=false` is the belt for the day the records arrive newline-separated
+        // anyway: without it git renders every non-Latin byte as an octal escape inside
+        // quotes, and a person opening the row sees `"\321\200\321\203…"` where a filename
+        // should be. That line is not hypothetical — it is already in this daemon's own log.
+        ['-c', 'core.quotepath=false', 'diff', '--name-status', '-z', `${base}..${branch || 'HEAD'}`],
+        { cwd },
+      ) || '',
+    )
   } catch (err) {
-    return { files: [], reason: `git не ответил: ${String((err && err.message) || err)}` }
+    return NO_ANSWER(`git не ответил: ${String((err && err.message) || err)}`)
   }
-  const files = out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-  return { files, reason: files.length ? null : 'изменённых файлов нет' }
+  const { entries, vanished } = parseNameStatus(out)
+  const files = entries.slice(0, ATTEMPT_FILES_CAP)
+  const deletions = vanished.slice(0, ATTEMPT_FILES_CAP)
+  return {
+    files,
+    deletions,
+    filesOverflow: Math.max(0, entries.length - files.length),
+    deletionsOverflow: Math.max(0, vanished.length - deletions.length),
+    answered: true,
+    reason: entries.length ? null : 'изменённых файлов нет',
+  }
+}
+
+/**
+ * attachChangedFiles(deps, worktree) → the changed-file record of THIS attempt, computed once.
+ *
+ * IT SITS BESIDE THE PARITY VERDICT, AND FOR THE SAME REASON. Both doors that close an
+ * attempt — the one to «готово» and the one to «провал» — ask for it as their first line,
+ * before the ledger row is appended, because the ROW is what a card is built from and the row
+ * is written before anything else about the ending exists. Twenty-three exits reach those two
+ * doors; putting the question here rather than at each exit is why this is ONE edit and not
+ * twenty-three, and why an exit added tomorrow gets the list for free.
+ *
+ * IT IS ASKED WHILE THE BRANCH IS STILL ALIVE. After approval the copy is swept, its branch
+ * goes with it, and an unreachable commit is collected sooner or later; recomputing later from
+ * a remembered tip is a FALLBACK, never the main road.
+ *
+ * THE CACHE LIVES ON THE COPY, NOT ON THE RUN DIRECTORY. Either door may ask first, and git
+ * must be asked exactly once per attempt — but an exit that never made a run directory owes
+ * the same record as one that did, so the answer is kept beside the copy itself. Hang it on
+ * the run directory and every early refusal silently loses its list.
+ *
+ * FAIL-OPEN: no copy at all yields null, and the row then carries no such keys — «попытка
+ * этого не знает», which is not the same claim as «ничего не менялось».
+ */
+function attachChangedFiles(deps, worktree) {
+  if (!worktree || typeof worktree !== 'object') return null
+  if (worktree.changed) return worktree.changed // one attempt, one question to git
+  worktree.changed = changedFilesOnBranch(deps, worktree.base, worktree.branch, worktree.worktreePath)
+  return worktree.changed
+}
+
+/** One entry of the list as a person reads it: `M имя` — and a rename naming both sides. */
+function fileWord(f) {
+  return f && f.from ? `${f.status} ${f.from} → ${f.path}` : `${(f && f.status) || '?'} ${(f && f.path) || ''}`
 }
 
 /**
@@ -1626,10 +1783,31 @@ function attachAttemptParity(deps, worktree) {
  * writeAttemptOutcome(deps, worktree, receipt) — the fourth file, written by the door that
  * KNOWS how the attempt ended. Fail-open and silent about a directory that was never made:
  * an attempt refused before it ever spawned has nothing to write a receipt into.
+ *
+ * AND THE DOOR THAT CLOSES THE ATTEMPT CLOSES ITS TICKETS. A parking ticket is closed by one
+ * of three paths — approved, refused, its own deadline — and all three are written by the
+ * HOOK's process. When that process dies (a killed session, a fallen daemon, a cut provider)
+ * the file stays `waiting` for ever, and the card goes on telling a person he is being waited
+ * on for a call that no longer exists. This is the right place for the other half of the fix:
+ * it is called on BOTH outcomes and it already knows the attempt's directory. The reader's own
+ * deadline filter heals the files already lying on disk; this heals the ones written from now
+ * on, at the moment the truth about them changes.
  */
 function writeAttemptOutcome(deps, worktree, receipt) {
   const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
   if (!run || typeof run.dir !== 'string' || run.dir === '') return false
+  // Уборка за попыткой — не условие попытки: билет, который не пометился, не имеет права
+  // стоить работы, которая уже сделана.
+  try {
+    const closed = closeWaitingTickets({
+      runDir: run.dir,
+      clock: typeof deps.clock === 'function' ? deps.clock : Date.now,
+      fsImpl: deps.fsImpl,
+    })
+    if (closed > 0) writeLog(deps, { type: 'run_dir.tickets_closed', dir: run.dir, closed })
+  } catch (err) {
+    writeLog(deps, { type: 'run_dir.tickets_close_error', dir: run.dir, error: String((err && err.message) || err) })
+  }
   // The verdict is already reached — the closing door asked for it before it wrote the ledger
   // row, which is the only order in which a row can carry one. Here it is written down WHOLE:
   // the five receipts with their details beside the summary, so one directory can answer «did
@@ -2218,6 +2396,23 @@ function steeredSpawn(deps, taskId, spawnWorker) {
  * stream — the same lines the approach note and the failure marker are read from, so no second
  * source of truth about what happened.
  *
+ * AND WHEN THAT LINE NEVER CAME. A killed process does not deliver a final frame; neither does
+ * a provider that cut the connection mid-turn. This function used to walk the stream backwards,
+ * find nothing, and RETURN SILENTLY — no row at all. That silence is not neutral: a person
+ * reading the book finds no line for that attempt and reads it as «this one cost nothing», when
+ * it is precisely the attempt that burned a window and produced nothing to show for it. The
+ * live proof, taken off this machine: 89 usage rows in the whole history and every single one
+ * of them read off a final frame — not one estimate ever written, because there was nothing to
+ * write it with. So a stream with no final frame now books a TIME-BASED ESTIMATE, labelled
+ * `source: 'estimate'` — a coarse figure called an estimate is a record; the same figure called
+ * a measurement would be a lie, which is why the label is not optional.
+ *
+ * The estimate's own guard is untouched: without two believable ends the duration falls to its
+ * floor rather than inventing a length (the fifty-six-years incident lives in usage.mjs).
+ *
+ * WHICH ATTEMPT: the row names it, so «every attempt of mine has a line» is a join and not a
+ * belief. WHICH PROVIDER: taken from the route — the estimate no longer declares one of its own.
+ *
  * Never fatal. The price of an attempt is bookkeeping; an attempt that did its work must not be
  * failed because the book could not be written.
  */
@@ -2239,6 +2434,14 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
         ? apiAccountName
         : (worker && worker.account && worker.account.name) || (route && route.workerId) || null,
       taskId: task.id,
+      // WHICH ATTEMPT OF THAT TASK. Without it the book answers «this task spent something»,
+      // and the question a person actually has — «did the attempt I am looking at leave a
+      // line» — has no answer at all.
+      attempt: task.attempt,
+      // WHICH VENDOR, from the routing verdict rather than declared by the estimate itself: a
+      // killed session of the other provider used to have been booked under a name that was
+      // never its own.
+      provider: (route && route.provider) || undefined,
       model: (route && route.model) || undefined,
       channel: paid ? 'api' : 'subscription',
     }
@@ -2256,6 +2459,9 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
       deps.bookUsage(claudeUsageFromResult(event, ctx))
       return
     }
+    // NO FINAL FRAME IN THE STREAM — see the header. The attempt still ran and still spent; the
+    // book gets a line that says so and says, honestly, that it is an estimate.
+    deps.bookUsage(estimateUsage({ ...ctx, startedAt, endedAt: now }))
   } catch {
     /* the price of an attempt never fails the attempt */
   }
@@ -2346,7 +2552,12 @@ export async function tick(deps = {}) {
     try {
       // The SAME resolved value the durable queue's lease was built with (adapter.mjs):
       // the sweep and the lease are two answers to one question and may not disagree.
-      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config) })
+      // AND THE SAME LOG SEAM the line below already writes its own error into: the sweep
+      // declares attempts dead and reissues their tasks, and did it in total silence — a
+      // whole day of the operator log has nothing about it but the consequences. It is
+      // handed the journal rather than reaching for one: a sweep whose work depended on a
+      // log being available would be a sweep that stops when the log does.
+      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config), journal })
     } catch (err) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }
@@ -2440,6 +2651,18 @@ export async function tick(deps = {}) {
      * before a copy existed, and a null one simply writes none of the keys.
      */
     let worktreeRow = null
+
+    /**
+     * ЧЕМ ЗАПЛАТИЛА ПОПЫТКА, ЕСЛИ ТИК УМРЁТ РАНЬШЕ, ЧЕМ УСПЕЕТ ЭТО ЗАПИСАТЬ.
+     *
+     * The per-task catch below turns any throw into an honest `runtime_offline` — and used to
+     * walk straight past the book on the way there. A process had been spawned, a window had
+     * been spent, and the ledger said nothing about it, because the one call that books the
+     * cost sits AFTER the point most of those throws come from. So the debt is armed here, the
+     * moment a child exists, and disarmed the moment it is paid: the catch pays it if it is
+     * still outstanding, which is exactly once, never twice.
+     */
+    let unbookedSpend = null
 
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
@@ -2850,6 +3073,10 @@ export async function tick(deps = {}) {
       // timestamp as the end and zero as the start, so a session that ran two minutes booked
       // fifty-six years of tokens. One number, captured where the process really begins.
       const attemptStartedAt = now()
+      // FROM HERE THE ATTEMPT OWES THE BOOK A LINE (see `unbookedSpend` above): a child is
+      // about to exist, so everything after this point that throws must not take the cost of
+      // it with them.
+      unbookedSpend = () => bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
       let exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
 
       // ── THE CONTINUATION LOOP: a typed correction has a declared fate ──
@@ -2909,6 +3136,7 @@ export async function tick(deps = {}) {
       // fate. A refused attempt still spent the tokens, so the book is written for every
       // attempt and not only for the ones that end well.
       bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
+      unbookedSpend = null // paid — the catch below must not pay it a second time
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
@@ -3172,10 +3400,13 @@ export async function tick(deps = {}) {
       //
       // It is taken here, once, ahead of complete/fail on purpose: BOTH outcomes must carry
       // the same record, and the attempt a person wants to undo is precisely the one that was
-      // refused. Journal line only — the ledger row's key list is a closed allowlist that
-      // belongs to another change; a line the operator's log already prints is the smaller
-      // honest step, and the SUMMARY carries the recommendation for the durable half.
-      const changed = changedFilesOnBranch(deps, worktreeBase, branch, workDir)
+      // refused.
+      //
+      // THE SAME VALUE, NOT A SECOND QUESTION. The line below and the DURABLE row written by
+      // the two closing doors read one cached answer: git is asked once per attempt, whoever
+      // asks first. The log line used to be the ONLY place this list ever reached — computed,
+      // printed, and gone with the next log rotation — and that is the half this stopped being.
+      const changed = attachChangedFiles(deps, worktreeRow) || changedFilesOnBranch(deps, worktreeBase, branch, workDir)
       writeLog(deps, {
         type: 'task.attempt_files',
         taskId: task.id,
@@ -3183,15 +3414,23 @@ export async function tick(deps = {}) {
         branch,
         base: worktreeBase,
         files: changed.files,
+        deletions: changed.deletions,
         // The values go into `detail`: the operator's formatter prints type/task/worker/
         // reason/detail and drops everything else, so a list filed under any other key is a
-        // record nobody can read. Capped — a giant attempt must not push the log out of the
-        // window; the full list stays on the entry above it.
+        // record nobody can read. Bounded by the SAME constant the row is bounded by — the
+        // line used to carry a second, smaller ceiling of its own, and two ceilings in two
+        // places are two numbers waiting to disagree about what «ещё N» counts from.
         detail:
           `база=${worktreeBase || 'нет'} ветка=${branch || 'нет'} файлов=${changed.files.length}` +
           (changed.files.length
-            ? `: ${changed.files.slice(0, 40).join(' · ')}${changed.files.length > 40 ? ` … ещё ${changed.files.length - 40}` : ''}`
-            : ` (${changed.reason})`),
+            ? `: ${changed.files.slice(0, ATTEMPT_FILES_CAP).map(fileWord).join(' · ')}` +
+              (changed.filesOverflow ? ` … ещё ${changed.filesOverflow}` : '')
+            : ` (${changed.reason})`) +
+          // Исчезнувшее называется ОТДЕЛЬНО и числом: «удалён» и «изменён» — разные новости,
+          // и человек, читающий откат, обязан увидеть разницу, не пересчитывая список.
+          (changed.deletions.length
+            ? ` | исчезло=${changed.deletions.length}${changed.deletionsOverflow ? ` (… ещё ${changed.deletionsOverflow})` : ''}`
+            : ''),
       })
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
@@ -3218,6 +3457,14 @@ export async function tick(deps = {}) {
     } catch (err) {
       // Per-task fail-open: a thrown error becomes an honest runtime_offline, never a wedge.
       if (typeof journal === 'function') journal({ type: 'task-error', taskId: task.id, error: String((err && err.message) || err) })
+      // WHAT IT COST, BEFORE THE FAILURE IS DECLARED. An attempt that died in an exception
+      // spent exactly as much as one that died politely; the book is written first, for the
+      // same reason it is written above any gate — money is not conditional on an outcome.
+      try {
+        if (unbookedSpend) unbookedSpend()
+      } catch {
+        /* the price of an attempt never fails the attempt — not even a failing one */
+      }
       try {
         await failTask(deps, task, { reason: 'runtime_offline', now: now(), envelope, from: fleetState, worktree: worktreeRow })
       } catch {
@@ -3604,6 +3851,11 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
   // file exists — and the row is what the card reads. Asked in the other order, the verdict
   // would be perfectly computed, perfectly stored, and delivered to nobody.
   attachAttemptParity(deps, worktree)
+  // AND WHAT THE ATTEMPT CHANGED, asked in the same breath and for the same reason: the row
+  // below is written before anything else about the ending exists, and the row is what a card
+  // is built from. One question to git per attempt, cached on the copy — whichever door
+  // arrives here first.
+  attachChangedFiles(deps, worktree)
   await adapter.complete(task.id, {
     receiptRef,
     branch,
@@ -3685,6 +3937,29 @@ function worktreeFields(worktree) {
     // is present and null, which is «nobody has checked», not «checked and fine».
     runDir: (worktree.run && worktree.run.dir) || undefined,
     ...(worktree.run && worktree.run.dir ? { parity: worktree.run.parity ?? null } : {}),
+    // WHAT THE ATTEMPT CHANGED, and what it made disappear — handed out by the SAME expression
+    // that hands out the point of return, so the two halves of one answer can never travel
+    // apart: a base commit with no list is «откатить можно, а к чему — неизвестно», which is
+    // the half that was already true and the half that was not.
+    //
+    // WRITTEN ONLY WHEN GIT ACTUALLY ANSWERED. No copy, no base or a git that refused leaves
+    // NO keys at all — «попытка этого не знает». An empty array would say «ничего не
+    // менялось», a different and much more confident claim than the one we can make.
+    // A branch that genuinely changed nothing DOES get empty arrays: that answer was asked for
+    // and received, and it is a record.
+    ...changedFields(worktree.changed),
+  }
+}
+
+/** The changed-file half of a copy's row: present when git answered, absent when it did not,
+ *  and carrying the two overflow counters only when the ceiling actually cut something. */
+function changedFields(changed) {
+  if (!changed || changed.answered !== true) return {}
+  return {
+    files: changed.files,
+    deletions: changed.deletions,
+    ...(changed.filesOverflow ? { filesOverflow: changed.filesOverflow } : {}),
+    ...(changed.deletionsOverflow ? { deletionsOverflow: changed.deletionsOverflow } : {}),
   }
 }
 
@@ -3695,6 +3970,11 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
   // file exists — and the row is what the card reads. Asked in the other order, the verdict
   // would be perfectly computed, perfectly stored, and delivered to nobody.
   attachAttemptParity(deps, worktree)
+  // AND WHAT THE ATTEMPT CHANGED — here above all. This is the try somebody actually wants to
+  // undo, and a list that exists only on the finished path is missing exactly when it is
+  // needed. Asked even when this refusal came before a run directory was ever made: the answer
+  // is cached on the COPY, so an early exit owes and pays the same record as a late one.
+  attachChangedFiles(deps, worktree)
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason

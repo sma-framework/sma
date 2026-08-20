@@ -128,6 +128,133 @@ function copyLines(attempt: TaskAttempt): string[] {
 }
 
 /**
+ * Сколько имён файлов показать, прежде чем сказать «и ещё N». Двенадцать — столько, сколько
+ * человек прочитывает глазами, не прокручивая; остальное честно посчитано, а не отброшено.
+ */
+const ROLLBACK_NAMES_CAP = 12
+
+/** Список имён с честным хвостом. `cut` — сколько путей срезал ещё потолок строки попытки. */
+function namesLine(names: string[], cut: number | null | undefined): string {
+  const shown = names.slice(0, ROLLBACK_NAMES_CAP)
+  const hiddenHere = names.length - shown.length
+  const more = hiddenHere + (typeof cut === 'number' && Number.isFinite(cut) ? cut : 0)
+  return shown.join(', ') + (more > 0 ? ` … и ещё ${more}` : '')
+}
+
+/**
+ * Почему гейт открылся без квитанции — СЛОВАМИ, теми же, что записал демон. Незнакомая
+ * причина показывается как записана: выдуманное объяснение хуже непонятного кода.
+ */
+function unverifiedWhy(reason: string | undefined): string {
+  if (reason === 'preexisting_red_only') return 'в дереве уже были красные рецепты, и они остались красными'
+  if (reason === 'no_recipes_in_tree') return 'в дереве нет рецептов, которые можно перепроверить'
+  return reason ?? 'причина не записана'
+}
+
+/**
+ * ЧТО ИЗМЕНИЛОСЬ, ЧТО ИСЧЕЗЛО И ЧЕГО НИКТО НЕ ПЕРЕПРОВЕРЯЛ — строки блока отката.
+ *
+ * ЗАКОН ЭТОГО ХЕЛПЕРА тот же, что у copyLines: ничего не выдумывать. Нет поля — нет строки.
+ *
+ * Три вещи, которые здесь стоит прочитать глазами:
+ *   1. исчезнувшее идёт ОТДЕЛЬНОЙ строкой. Цена ошибки несимметрична: «изменён» вместо
+ *      «удалён» отправляет человека искать файл, которого больше нет;
+ *   2. «не перепроверено» появляется ровно там, где доказательство это говорит. Тик считает
+ *      этот признак с тех пор, как появился дифференциальный гейт, и до сих пор не показывал
+ *      его никому — «готово» и «готово, но никто не перепроверял» читались одинаково;
+ *   3. запись, чьи строки противоречат друг другу, рисуется КАК противоречие: названы оба
+ *      исхода, победитель не выбирается. Молчаливый выбор победителя и есть та аномалия.
+ */
+function rollbackLines(attempt: TaskAttempt): string[] {
+  const lines: string[] = []
+
+  const files = attempt.files
+  if (Array.isArray(files) && files.length > 0) {
+    lines.push(`изменено: ${files.length} — ${namesLine(files.map((f) => f.path), attempt.filesOverflow)}`)
+  }
+
+  const gone = attempt.deletions
+  if (Array.isArray(gone) && gone.length > 0) {
+    lines.push(`исчезло: ${gone.length} — ${namesLine(gone, attempt.deletionsOverflow)}`)
+  }
+
+  const proof = attempt.proof
+  if (proof && proof.kind === 'gate' && proof.unverified) {
+    lines.push(`не перепроверено: ${unverifiedWhy(proof.reason)}`)
+    const numbers = [
+      typeof proof.preexistingRed === 'number' ? `красных до: ${proof.preexistingRed}` : null,
+      typeof proof.newRed === 'number' ? `новых: ${proof.newRed}` : null,
+      typeof proof.commits === 'number' ? `коммитов: ${proof.commits}` : null,
+    ].filter(Boolean)
+    if (numbers.length > 0) lines.push(numbers.join(' · '))
+  }
+
+  const conflict = attempt.conflict
+  if (conflict && Array.isArray(conflict.outcomes) && conflict.outcomes.length > 1) {
+    lines.push(
+      `запись противоречит себе: исходов ${conflict.outcomes.length} — ${conflict.outcomes.join(' и ')}` +
+        ` (строк: ${conflict.rows}); победитель не выбран`,
+    )
+  }
+
+  return lines
+}
+
+/** Отпечаток коммита слияния и репозиторий, в котором оно произошло. */
+export interface MergePoint {
+  sha: string | null
+  repo: string | null
+}
+
+/**
+ * ЧЕМ ЭТО ОТКАТЫВАЕТСЯ — ОДНА команда, целиком, готовая к копированию.
+ *
+ * Сюжетов ровно два, и путать их нельзя.
+ *
+ * РАБОТА ПРИНЯТА И СЛИТА. Откатывается приёмка: слияние всегда идёт без ускоренной
+ * перемотки, поэтому у коммита слияния ровно два родителя и первый — основная ветка. Номер
+ * стороны поэтому всегда единица, и команда всегда одна и та же.
+ *
+ * РАБОТА НЕ ПРИНЯТА. В основном дереве откатывать НЕЧЕГО: работник пишет только в свою копию
+ * на своей ветке. Убрать нужно копию — и верб уборки принимает ПУТЬ КОПИИ, а не имя ветки
+ * (его собственная строка использования говорит именно так). Поэтому сюда подставляется
+ * `worktreePath` ИЗ ЗАПИСИ, и собирать путь самостоятельно нельзя: нет пути в записи — нет и
+ * команды, вместо неё честная строка о том, что путь не записан.
+ *
+ * НИ ОДНОГО ИМЕНИ ФАЙЛА В КОМАНДЕ. Команда собирается из отпечатка (проверенного по форме на
+ * двери) и пути; имена файлов приходят из чужого репозитория и служат только глазам.
+ */
+function rollbackCommand(attempt: TaskAttempt, merge: MergePoint | null): { command: string | null; notes: string[] } {
+  const notes: string[] = []
+
+  // (1) принято и слито
+  if (merge && merge.sha) {
+    const command = merge.repo
+      ? `git -C ${merge.repo} revert -m 1 ${merge.sha}`
+      : `git revert -m 1 ${merge.sha}`
+    if (!merge.repo) notes.push('выполняется в каталоге проекта — путь репозитория в записи не сохранён')
+    if (merge.sha.length < 40) {
+      notes.push('запись о приёмке старше этой версии: отпечаток короткий, git примет его, пока он однозначен')
+    }
+    return { command, notes }
+  }
+
+  // (2) не принято — копия ещё на диске
+  const removed = attempt.cleanup && attempt.cleanup.ok
+  if (attempt.endedAt && !removed) {
+    if (!attempt.worktreePath) {
+      return { command: null, notes: ['путь копии не записан — команды отката копии здесь нет'] }
+    }
+    return {
+      command: `node scripts/sma/cli.mjs worktree remove ${attempt.worktreePath} --force --delete-branch`,
+      notes: ['выполняется в каталоге проекта; основное дерево команда не трогает'],
+    }
+  }
+
+  return { command: null, notes: [] }
+}
+
+/**
  * ПОД КАКИМ СЛОЕМ РАБОТАЛ РАБОТНИК — строки о личном слое этой попытки.
  *
  * Аккаунт работника перед каждым запуском получает слой автора: файл инструкций, хуки и
@@ -351,6 +478,7 @@ function Row({
   last,
   taskId,
   trace,
+  merge,
 }: {
   attempt: TaskAttempt
   /** The comment that sent this run back, when this run was sent back. */
@@ -358,6 +486,13 @@ function Row({
   last: boolean
   /** Whose story this is — the transcript door needs the task to name the attempt. */
   taskId: string | null
+  /**
+   * Коммит слияния приёмки. Приёмка бывает у ЗАДАЧИ, а не у подхода, и относится к тому
+   * подходу, чью работу приняли, — поэтому приходит только в свежий ряд, а всем прочим
+   * `null`. Показать команду отмены приёмки под вчерашней попыткой значило бы предложить
+   * человеку откатить не то, что он видит.
+   */
+  merge: MergePoint | null
   /**
    * След памяти задачи — и он принадлежит ПОСЛЕДНЕЙ попытке, поэтому приходит только в
    * свежий ряд, а всем прочим `null`. Показать урок сегодняшней попытки под вчерашней —
@@ -387,6 +522,8 @@ function Row({
   const layer = layerLines(attempt)
   const lesson = lessonLines(attempt, trace)
   const parity = parityLine(attempt)
+  const rollback = rollbackLines(attempt)
+  const undo = rollbackCommand(attempt, merge)
 
   return (
     <div className="flex gap-3.5">
@@ -432,6 +569,33 @@ function Row({
                 {copy.map((line) => (
                   <span key={line} className="break-words">
                     {line}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {/* ОТКАТ: что изменилось, что исчезло, чего никто не перепроверял — и ОДНА
+                команда, которой это откатывается. Строки приходят из строки попытки и из
+                записи о приёмке; пустой список означает «попытка этого не знает», и тогда
+                блока нет вовсе. Имена файлов и путь приходят из чужого репозитория и
+                остаются текстовыми узлами — в разметку они не превращаются. */}
+            {rollback.length > 0 || undo.command || undo.notes.length > 0 ? (
+              <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
+                {rollback.map((line) => (
+                  <span key={line} className="break-words">
+                    {line}
+                  </span>
+                ))}
+                {undo.command ? (
+                  <>
+                    <span className="mt-1">откатывается одной командой:</span>
+                    <code className="mt-0.5 block rounded-[6px] border border-bd bg-card px-2 py-1 font-mono text-[10.5px] break-all text-tx2 select-all">
+                      {undo.command}
+                    </code>
+                  </>
+                ) : null}
+                {undo.notes.map((n) => (
+                  <span key={n} className="break-words">
+                    {n}
                   </span>
                 ))}
               </div>
@@ -509,11 +673,18 @@ export function AttemptTimeline({
   returnedNotes,
   taskId = null,
   memoryTrace = null,
+  merge = null,
 }: {
   attempts: TaskAttempt[]
   returnedNotes: string[]
   /** Present when the timeline lives on a task card — unlocks the per-attempt transcript. */
   taskId?: string | null
+  /**
+   * Коммит слияния приёмки — то, чем отменяется ПРИНЯТАЯ работа. Приходит в последний ряд
+   * и только в него, по той же причине, что и след памяти. `null` у задачи, которую не
+   * принимали, и у принятых до того, как запись научилась нести отпечаток целиком.
+   */
+  merge?: MergePoint | null
   /**
    * След памяти задачи из журнала. Приходит в ПОСЛЕДНИЙ ряд и только в него: слой памяти
    * пишет каждая попытка, а читается верхний — то есть свежий. Отсутствует у задач старше
@@ -542,6 +713,7 @@ export function AttemptTimeline({
             last={last}
             taskId={taskId}
             trace={last ? memoryTrace : null}
+            merge={last ? merge : null}
           />
         )
       })}

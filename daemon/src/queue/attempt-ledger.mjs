@@ -102,6 +102,27 @@ import {
 import { envelopeHash } from './capability-envelope.mjs'
 import { listNoteFiles } from '../../../scripts/sma/lib/generator.mjs'
 
+/**
+ * ATTEMPT_FILES_CAP — HOW MANY PATHS ONE ATTEMPT ROW MAY CARRY, declared ONCE.
+ *
+ * A refactor that touches a thousand files is ordinary, and a row carrying a thousand paths
+ * would be a durable record nobody can open and a log line that pushes everything else out of
+ * the window. So the list is bounded — and bounded HERE, in the module that owns the row's key
+ * list, because a ceiling written twice is two ceilings: they agree the day they are typed and
+ * drift the first time one of them is tuned. Every writer on this path imports this constant;
+ * there is no second number anywhere along it.
+ *
+ * WHAT A CEILING MUST NEVER DO IS BE SILENT. Cutting a list without saying so turns «эти
+ * файлы» into a claim that is quietly false, so the row carries `filesOverflow` and
+ * `deletionsOverflow` beside the lists — counted SEPARATELY, because a silently truncated
+ * deletion is exactly the asymmetric mistake the deletions were split out to prevent:
+ * «изменён» read where «удалён» was true costs a person the rollback they came for.
+ *
+ * 200 is the working answer, not a law of nature: large enough that an ordinary attempt is
+ * never cut at all, small enough that the row stays a thing a human opens.
+ */
+export const ATTEMPT_FILES_CAP = 200
+
 /** The ONLY keys an attempt row carries — explicit-pick allowlist. */
 export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'taskId',
@@ -160,6 +181,37 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'materialized',
   'provisionMs',
   'cleanup',
+  // ── WHAT THE ATTEMPT ACTUALLY CHANGED, and what it made disappear ─────────────
+  // `files` is the list git answers for `base..branch`: one entry per path, each carrying the
+  // status letter and the name, and a rename carrying the name it had before. `deletions` is
+  // the paths that are GONE — the deleted ones plus the old side of every rename.
+  //
+  // WHY THE SOURCE IS GIT AND NOT A WATCH ON THE TOOLS. A worker that deletes a file with
+  // `rm`, rewrites one with a stream editor or drops one from the index with `git rm` did all
+  // of that through a shell, and a list assembled from the NAMES of editing tools cannot see
+  // any of it — not «usually misses it», cannot: no editing tool was called. Git compares two
+  // trees and answers what actually differs, which is the only source that survives however
+  // the change was made.
+  //
+  // WHY DELETIONS ARE A SEPARATE KEY rather than a status inside the list. The person reading
+  // this row is reading it to undo something, and the cost of the two mistakes is not
+  // symmetric: «изменён» misread where «удалён» was true sends them looking for a file that
+  // is not there. The old side of a rename counts as vanished for the same reason — from
+  // where that person stands, the path is gone.
+  //
+  // NAMES ONLY, NEVER CONTENT. This is a durable audit row and a diff body can carry a
+  // secret; nothing here is ever produced with a patch flag.
+  //
+  // `filesOverflow` / `deletionsOverflow` — how many paths the ceiling (ATTEMPT_FILES_CAP
+  // above) cut off, counted separately for the two lists and written only when non-zero. A
+  // cut that says nothing is a record that lies quietly.
+  //
+  // ABSENT, NOT EMPTY, when nothing could be asked: no copy, no base commit, or a git that
+  // refused. An empty array reads as «ничего не менялось», which is a different claim.
+  'files',
+  'deletions',
+  'filesOverflow',
+  'deletionsOverflow',
   // ── the session the worker was actually handed ────────────────────────────────
   // `personalLayer` is what the account held when this attempt ran, as the mirror reported
   // it: which directory it was taken from, a digest of the instructions file, how many hook
@@ -206,7 +258,28 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // «checked and clean» and must never be renderable as one.
   'runDir',
   'parity',
+  // ── what this row contradicts, if it contradicts anything ─────────────────────
+  // `conflictsWith` names the terminal outcome ALREADY recorded for this same attempt number
+  // when this row was appended — `'failed'` on a row saying `completed`, or the other way
+  // round. It is written by the door below, never by a caller: the door is the only place
+  // that can see both sides at once.
+  //
+  // ITS EXISTENCE IS THE WHOLE POINT OF NOT REFUSING. One physical try once landed in this
+  // ledger under two numbers, and one of those numbers ended up carrying both `failed` and
+  // `completed`; the cause is fixed at the source of the number now, but a ledger that
+  // answered such a case by REFUSING the second row would have thrown away the only evidence
+  // that the fault happened at all — and the row it refuses is, more often than not, the
+  // tick's rich one: the single place `startedAt`, `sessionId`, the corpus digest, the run
+  // directory and the receipt summary are written. So the row is written, and it is marked.
+  'conflictsWith',
 ])
+
+/**
+ * The outcomes that END a try. `running` is not one of them: a try that reported it is alive
+ * and then reported how it finished is one try speaking twice, which is ordinary and must
+ * never be marked as a contradiction.
+ */
+export const TERMINAL_OUTCOMES = Object.freeze(['completed', 'failed'])
 
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
  *  ('BL-…'/'R-…'/'F-…', or '<taskId>#<attempt>'); it is still sanitized (defense in depth —
@@ -267,6 +340,32 @@ export function recordAttempt(ledgerDir, attempt) {
       row.capabilityEnvelopeHash = envelopeHash(attempt.capabilityEnvelope)
     } catch {
       /* an unhashable envelope leaves no stamp (fail-open on the AUDIT field, never on the gate) */
+    }
+  }
+  // ── THE CONTRADICTION LOCK: it MARKS, it never refuses ──────────────────────────────
+  // Before a terminal row joins the file, the door looks at what this attempt number already
+  // says. A DIFFERENT terminal outcome under the SAME number means two writers are describing
+  // one try in two incompatible ways, and the row is stamped with what it contradicts.
+  //
+  // WHY A MARK AND NOT A REFUSAL. This file is an audit log. A row that was refused vanishes
+  // without a trace, and with it the evidence of the very failure the log exists to remember —
+  // and the refused row is typically the tick's, the only one carrying the start time, the
+  // session id, the corpus digest, the run directory and the receipt summary. So the lock
+  // costs a row nothing: it adds a word.
+  //
+  // FAIL-OPEN ON THE READ. A ledger file that cannot be read leaves the mark off and the write
+  // untouched — reading somebody else's file may never cost an attempt the record of its own.
+  // THE DOOR OWNS THIS KEY. A caller cannot declare what it contradicts — only the place that
+  // sees both sides can, and a caller-supplied value would be a claim nobody checked.
+  delete row.conflictsWith
+  if (Number.isFinite(row.attempt) && TERMINAL_OUTCOMES.includes(row.outcome)) {
+    try {
+      const prior = readAttempts(ledgerDir, attempt.taskId).find(
+        (r) => r && r.attempt === row.attempt && TERMINAL_OUTCOMES.includes(r.outcome) && r.outcome !== row.outcome,
+      )
+      if (prior) row.conflictsWith = prior.outcome
+    } catch {
+      /* unreadable history -> no mark, and the write goes on (fail-open on the AUDIT field) */
     }
   }
   row.recordedAt = attempt.recordedAt ?? new Date().toISOString()
@@ -341,16 +440,35 @@ function pickStamp(a, b, wantEarlier) {
  * would merge tries nobody said were the same; they stay separate records, in the order they
  * arrived.
  *
+ * AND IT NO LONGER PICKS A WINNER IN SILENCE. «Last non-empty wins» was designed for «two
+ * writers, ONE outcome», and on two DIFFERENT terminal outcomes it has neither a rule nor a
+ * right to choose — yet it chose, quietly, and a try that had been recorded as failed read as
+ * a clean success with a stray failure reason attached. A record whose rows disagree now
+ * carries `conflict: {outcomes:[…], rows:N}`, naming BOTH outcomes in the order they were
+ * recorded and how many rows were folded into it. Everything else about the merge is unchanged.
+ *
+ * THE FLAG IS COMPUTED FROM THE ROWS THEMSELVES, not from the writer's mark. The rows that
+ * matter most are the ones already on disk, written before the mark existed — and this ledger
+ * is never rewritten to make an old record look tidier than it was.
+ *
  * @param {object[]} rows — ledger rows as `readAttempts` returns them
  * @returns {object[]} one record per attempt number, first-appearance order
  */
 export function foldAttemptRows(rows) {
   if (!Array.isArray(rows)) return []
   const merged = new Map()
+  /** key -> {outcomes:string[], rows:number} — what each folded record was assembled from. */
+  const seen = new Map()
   let unnumbered = 0
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue
     const key = Number.isFinite(row.attempt) ? `attempt:${row.attempt}` : `unnumbered:${unnumbered++}`
+    const tally = seen.get(key) || { outcomes: [], rows: 0 }
+    tally.rows += 1
+    if (TERMINAL_OUTCOMES.includes(row.outcome) && !tally.outcomes.includes(row.outcome)) {
+      tally.outcomes.push(row.outcome)
+    }
+    seen.set(key, tally)
     const prev = merged.get(key)
     if (!prev) {
       merged.set(key, { ...row })
@@ -364,6 +482,14 @@ export function foldAttemptRows(rows) {
     if (prev.startedAt != null && row.startedAt != null) next.startedAt = pickStamp(prev.startedAt, row.startedAt, true)
     if (prev.endedAt != null && row.endedAt != null) next.endedAt = pickStamp(prev.endedAt, row.endedAt, false)
     merged.set(key, next)
+  }
+  // The anomaly, said out loud on the record it belongs to — after the merge, because it is a
+  // property of the ROWS and not of any one of them.
+  for (const [key, record] of merged) {
+    const tally = seen.get(key)
+    if (tally && tally.outcomes.length > 1) {
+      record.conflict = { outcomes: [...tally.outcomes], rows: tally.rows }
+    }
   }
   return [...merged.values()]
 }

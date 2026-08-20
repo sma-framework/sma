@@ -169,11 +169,27 @@ export function decisionPathOf(runDir, ticketId) {
 }
 
 /**
- * readWaitingTicket({runDir, fsImpl}) → the ticket a person is being waited on for, or
+ * readWaitingTicket({runDir, clock, fsImpl}) → the ticket a person is being waited on for, or
  * null. Read by the card door as well as by the suite, so «ждут вас» on the screen and
  * the file the hook is standing over are the same object and cannot disagree.
+ *
+ * A TICKET WHOSE DEADLINE HAS PASSED IS NOT «ЖДУТ ВАС». Three paths close a ticket — approval,
+ * refusal, and its own deadline — and ALL THREE are written by the hook's process. Kill that
+ * process and the file stays `waiting` for ever: the card then tells a person he is being
+ * waited on for a call that no longer exists, and he presses «Одобрить» into nothing. The card
+ * asks this question only of a row that is still CLAIMED, which is exactly the state a dead
+ * process leaves behind.
+ *
+ * THE READER DOES NOT INVENT A VERDICT — it stops ignoring one. The deadline in the file was
+ * written by the WRITER, at the moment it started waiting, and it is the same number the hook
+ * would have refused on had it lived. So this is a read of a recorded fact, not a rule invented
+ * on the reading side (which is what the «инварианты ставятся на записи» law forbids).
+ *
+ * A ticket with NO deadline, or one whose deadline cannot be read, is left alone: «not
+ * understood» is not «expired», and an old-format file must not disappear from a person's
+ * screen because a field was added after it was written.
  */
-export function readWaitingTicket({ runDir, fsImpl } = {}) {
+export function readWaitingTicket({ runDir, clock = Date.now, fsImpl } = {}) {
   const io = resolveIo(fsImpl)
   const dir = ticketsDirOf(runDir)
   if (!runDir || !io.existsSync(dir)) return null
@@ -193,9 +209,75 @@ export function readWaitingTicket({ runDir, fsImpl } = {}) {
       continue // порванный билет пропускается, остальные всё ещё читаются
     }
     if (!row || row.status !== 'waiting') continue
+    if (isPastDeadline(row, clock)) continue // срок записал писатель — читатель перестаёт его игнорировать
     if (!newest || String(row.seenAt ?? '') > String(newest.seenAt ?? '')) newest = row
   }
   return newest
+}
+
+/** Прошёл ли записанный писателем срок билета. Нечитаемый или отсутствующий срок — «не знаем». */
+function isPastDeadline(row, clock) {
+  const at = Date.parse(String((row && row.deadlineAt) ?? ''))
+  if (!Number.isFinite(at)) return false
+  const now = typeof clock === 'function' ? Number(clock()) : Number(clock)
+  return Number.isFinite(now) && now >= at
+}
+
+/** Что написано в закрытом вместе с попыткой билете — одни слова, в одном месте. */
+export const TICKET_CLOSED_WITH_ATTEMPT =
+  'попытка завершилась, никто больше не ждёт ответа по этому билету'
+
+/**
+ * closeWaitingTickets({runDir, reason, clock, fsImpl}) → сколько билетов помечено.
+ *
+ * ВТОРОЙ КОНЕЦ ЛЕЧЕНИЯ ОСИРОТЕВШЕГО БИЛЕТА. Фильтр у читателя выше лечит файлы, которые УЖЕ
+ * лежат на диске; эта функция лечит будущие — завершение попытки помечает оставшиеся
+ * ожидающие билеты её каталога закрытыми ВМЕСТЕ С ПОПЫТКОЙ, с причиной словами. Один конец без
+ * другого оставляет половину: без читателя лежащие сейчас файлы врут вечно, без писателя
+ * каждый новый билет врёт ровно до своего срока.
+ *
+ * РЕШЁННОЕ ЧЕЛОВЕКОМ НЕ ПЕРЕПИСЫВАЕТСЯ. Трогаются только `waiting`: одобрение и отказ — это
+ * запись о том, что человек сделал, и переписать её значило бы стереть его след.
+ *
+ * FAIL-OPEN ЦЕЛИКОМ: нет каталога, нечитаемый каталог, порванный или незаписываемый билет —
+ * это «нечего помечать», и никогда не ошибка попытки. Попытка не имеет права провалиться
+ * из-за уборки за собой.
+ */
+export function closeWaitingTickets({ runDir, reason = TICKET_CLOSED_WITH_ATTEMPT, clock = Date.now, fsImpl } = {}) {
+  const io = resolveIo(fsImpl)
+  const dir = ticketsDirOf(runDir)
+  if (!runDir || !io.existsSync(dir)) return 0
+  let names = []
+  try {
+    names = io.readdirSync(dir)
+  } catch {
+    return 0
+  }
+  let closed = 0
+  for (const name of names) {
+    if (!String(name).endsWith('.json')) continue
+    const path = join(dir, String(name))
+    let row = null
+    try {
+      row = JSON.parse(String(io.readFileSync(path, 'utf8')))
+    } catch {
+      continue // порванный билет пропускается, остальные всё ещё помечаются
+    }
+    if (!row || row.status !== 'waiting') continue
+    try {
+      writeTicket(io, path, {
+        ...row,
+        status: 'closed',
+        decidedAt: new Date(typeof clock === 'function' ? clock() : Date.now()).toISOString(),
+        decidedBy: 'attempt-end',
+        reason: String(reason),
+      })
+      closed += 1
+    } catch {
+      /* билет, который не записался, — не причина провалить попытку */
+    }
+  }
+  return closed
 }
 
 /**
