@@ -36,31 +36,61 @@ function stripShippedMilestones(content) {
     return content.replace(/<details>[\s\S]*?<\/details>/gi, '');
 }
 /**
- * Extract the current milestone section from ROADMAP.md by positive lookup.
+ * The shape a milestone version has to have before it is worth searching for.
+ * Accepts `v5.6`, `v5.6.0` and suffixed sub-milestones such as `v3.0-A`.
  */
-function extractCurrentMilestone(content, cwd) {
-    if (!cwd)
-        return stripShippedMilestones(content);
-    let version = null;
+const MILESTONE_VERSION_SHAPE = /^v\d+(?:\.\d+)+(?:[-.][A-Za-z0-9]+)*$/i;
+/**
+ * Read the milestone value recorded in the state file, if there is one.
+ */
+function readStateMilestoneVersion(cwd) {
     try {
         const statePath = node_path_1.default.join(planningDir(cwd), 'STATE.md');
         const stateRaw = (0, shell_command_projection_cjs_1.platformReadSync)(statePath);
         if (stateRaw !== null) {
             const milestoneMatch = stateRaw.match(/^milestone:\s*(.+)/m);
             if (milestoneMatch) {
-                version = milestoneMatch[1].trim();
+                return milestoneMatch[1].trim();
             }
         }
     }
     catch { /* ignore */ }
-    if (!version) {
-        const inProgressMatch = content.match(/(?:🚧|🔄)\s*\*\*v(\d+\.\d+)\s/);
-        if (inProgressMatch) {
-            version = 'v' + inProgressMatch[1];
-        }
-    }
-    if (!version)
+    return null;
+}
+/**
+ * Extract the current milestone section from ROADMAP.md by positive lookup.
+ *
+ * The milestone value recorded in the state file is a HINT, not a verdict. When
+ * it resolves to nothing in this roadmap — a version no heading and no summary
+ * carries, or a word that is not a milestone version at all — taking it anyway
+ * used to hand back the WHOLE roadmap: milestone scoping switched itself off and
+ * nobody was told. So the candidates are tried in order and the first one that
+ * actually resolves wins; an unresolvable hint yields to the healthy path that
+ * was always written here — the in-progress marker. The resolution itself is
+ * unchanged: the same headings, the same summary branch, the same section end.
+ */
+function extractCurrentMilestone(content, cwd) {
+    if (!cwd)
         return stripShippedMilestones(content);
+    const candidates = [];
+    const stateVersion = readStateMilestoneVersion(cwd);
+    if (stateVersion && MILESTONE_VERSION_SHAPE.test(stateVersion))
+        candidates.push(stateVersion);
+    const inProgressMatch = content.match(/(?:🚧|🔄)\s*\*\*v(\d+\.\d+)\s/);
+    if (inProgressMatch)
+        candidates.push('v' + inProgressMatch[1]);
+    for (const candidate of candidates) {
+        const scoped = scopeContentToMilestone(content, candidate);
+        if (scoped !== null)
+            return scoped;
+    }
+    return stripShippedMilestones(content);
+}
+/**
+ * Slice the roadmap down to one milestone version, or report with `null` that
+ * this version resolves to nothing here so the caller can try the next candidate.
+ */
+function scopeContentToMilestone(content, version) {
     const escapedVersion = escapeRegex(version);
     const sectionPattern = new RegExp(`(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}\\b[^\\n]*)`, 'gmi');
     const summaryPattern = new RegExp(`<summary[^>]*>([^<]*${escapedVersion}[^<]*)<\\/summary>`, 'i');
@@ -87,7 +117,9 @@ function extractCurrentMilestone(content, cwd) {
                 return preamble + content.slice(detailsOpenIdx, detailsEnd);
             }
         }
-        return stripShippedMilestones(content);
+        // Neither a heading nor a summary carries this version: it resolves to
+        // nothing here, and saying so lets a healthier candidate be tried.
+        return null;
     }
     const allMatches = headingMatches;
     const closedMarkerPattern = /\b(?:CLOSED|ARCHIVED|ABANDONED|SHIPPED|FAILED)\b|✅|🗄/i;
@@ -250,7 +282,14 @@ function getMilestoneInfo(cwd) {
             }
             catch { /* intentionally empty */ }
         }
-        if (stateVersion) {
+        // Same rule as the reader above, and for the same reason — except here the
+        // stakes are higher, because what this function returns is written BACK into
+        // the state file. Keeping an unresolvable version and stamping a placeholder
+        // name beside it is what made a bad value immortal: it was re-recorded on
+        // every call and healed never. An unresolvable value now yields to the
+        // in-progress marker path written below, and the pair "version that resolves
+        // to nothing + placeholder name" is never returned at all.
+        if (stateVersion && MILESTONE_VERSION_SHAPE.test(stateVersion)) {
             const escapedVer = escapeRegex(stateVersion);
             const headingMatch = roadmap.match(new RegExp(`##[^\\n]*${escapedVer}[:\\s]+([^\\n(]+)`, 'i'));
             if (headingMatch) {
@@ -263,7 +302,6 @@ function getMilestoneInfo(cwd) {
                 if (listMatch) {
                     return { version: stateVersion, name: listMatch[1].trim() };
                 }
-                return { version: stateVersion, name: 'milestone' };
             }
         }
         const inProgressMatch = roadmap.match(/🚧\s*\*\*v(\d+(?:\.\d+)+)\s+([^*]+)\*\*/);
