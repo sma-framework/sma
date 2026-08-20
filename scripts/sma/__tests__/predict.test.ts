@@ -37,6 +37,7 @@ import {
   makeExecRunner,
   draftLessonsForRecords,
   RUN_BUDGET_MS,
+  scoringTally,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
 
@@ -775,5 +776,57 @@ describe('the time budget fits the thing the runner is asked to measure', () => 
     const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
     const uses = src.match(/makeExecRunner\(/g) || []
     expect(uses.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+// ── the closing line of a scoring run is COMPUTED, not narrated ──────────────
+
+describe('scoringTally — how many verdicts, and what walked away without one', () => {
+  it('counts verdicts about the world apart from entries that could not produce one', () => {
+    const t = scoringTally({
+      records: [
+        { id: 'PA', verdict: 'hit' },
+        { id: 'PB', verdict: 'miss' },
+        { id: 'PC', verdict: 'skipped-unsafe' },
+        { id: 'PD', verdict: 'error', not_measured: 'timeout' },
+        { id: 'PE', verdict: 'error' },
+      ],
+      invalid: [{ id: 'PF' }],
+      excluded: [{ id: 'PG' }],
+      notDue: [{ id: 'PH' }],
+      receiptsSkipped: 2,
+    })
+    expect(t.verdicts).toBe(2)
+    expect(t.unscored).toBe(8)
+    const byReason = Object.fromEntries(t.reasons.map((r) => [r.reason, r.count]))
+    expect(byReason['не прошла границу безопасных команд']).toBe(1)
+    expect(byReason['срок не наступил']).toBe(1)
+    expect(byReason['поля не заполнены']).toBe(1)
+    expect(byReason['территория перепроверки']).toBe(3)
+    expect(byReason['измерить не удалось — запуск не завершился']).toBe(1)
+    expect(byReason['запуск не дал факта']).toBe(1)
+  })
+
+  it('a refused command and an un-arrived horizon land in the SECOND number, never the first', () => {
+    const t = scoringTally({
+      records: [{ id: 'PA', verdict: 'skipped-unsafe' }],
+      notDue: [{ id: 'PB', horizon: '2099-01-01' }],
+    })
+    expect(t.verdicts).toBe(0)
+    expect(t.unscored).toBe(2)
+    expect(t.reasons.map((r) => r.reason)).toEqual([
+      'не прошла границу безопасных команд',
+      'срок не наступил',
+    ])
+    // A clean run says so with an empty reason list, not with a missing line.
+    const clean = scoringTally({ records: [{ id: 'PA', verdict: 'hit' }] })
+    expect(clean.verdicts).toBe(1)
+    expect(clean.unscored).toBe(0)
+    expect(clean.reasons).toEqual([])
+  })
+
+  it('the scoring verb prints that computed line instead of counting on screen', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('scoringTally(')
   })
 })

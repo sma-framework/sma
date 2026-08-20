@@ -695,6 +695,61 @@ export function draftLessonFromMiss({ verdict, planId, dirs = {} }) {
 }
 
 /**
+ * scoringTally(result) -> {verdicts, unscored, reasons: [{reason, count}]}.
+ *
+ * The closing line of a scoring run, computed rather than narrated: how many
+ * verdicts about the world were actually reached, and how many entries walked
+ * away without one BECAUSE OF A DEFECT IN THE PREDICTION ITSELF — each cause
+ * named in words instead of left as a silence the reader has to reconstruct
+ * from the lines above.
+ *
+ * The split is the honest one and matches the locked decision: an entry the
+ * command boundary refuses and an entry whose horizon has not arrived are NOT
+ * failures of the work. They are things the prediction cannot make good on, and
+ * saying so out loud at close is what keeps the gate from becoming a brake.
+ *
+ * Pure — the verb calls it and prints what it returns, so the arithmetic is
+ * checkable by a test rather than by looking at a screen.
+ *
+ * @param {{records?:object[], invalid?:object[], excluded?:object[], notDue?:object[], receiptsSkipped?:number}} result
+ * @returns {{verdicts:number, unscored:number, reasons:{reason:string,count:number}[]}}
+ */
+export function scoringTally(result = {}) {
+  const records = Array.isArray(result.records) ? result.records : []
+  const invalid = Array.isArray(result.invalid) ? result.invalid : []
+  const excluded = Array.isArray(result.excluded) ? result.excluded : []
+  const notDue = Array.isArray(result.notDue) ? result.notDue : []
+  const receiptsSkipped = Number(result.receiptsSkipped) || 0
+
+  let verdicts = 0
+  let unsafe = 0
+  let notMeasured = 0
+  let noFact = 0
+  for (const r of records) {
+    if (!r) continue
+    if (r.verdict === 'hit' || r.verdict === 'miss') verdicts += 1
+    else if (r.verdict === 'skipped-unsafe') unsafe += 1
+    else if (r.not_measured) notMeasured += 1
+    else noFact += 1
+  }
+
+  const reasons = []
+  const add = (reason, count) => {
+    if (count > 0) reasons.push({ reason, count })
+  }
+  add('не прошла границу безопасных команд', unsafe)
+  add('срок не наступил', notDue.length)
+  add('поля не заполнены', invalid.length)
+  add('территория перепроверки', excluded.length + receiptsSkipped)
+  add('измерить не удалось — запуск не завершился', notMeasured)
+  add('запуск не дал факта', noFact)
+
+  const unscored = reasons.reduce((n, r) => n + r.count, 0)
+  return { verdicts, unscored, reasons }
+}
+
+
+/**
  * draftLessonsForRecords({records, planId, dirs, draft}) -> [{id, path, drafted}].
  *
  * The ONE place that decides which verdicts deserve a lesson draft, so the
