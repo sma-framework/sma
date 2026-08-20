@@ -403,3 +403,38 @@ describe('Test 9 — timelineSchemaOk: the --schema-check contract', () => {
     expect(timelineSchemaOk(null)).toBe(false)
   })
 })
+
+describe('Test 11 — the bar of twenty is reachable by real work, and only by real work', () => {
+  // The guard side of the same wire the passport tests assert end to end. A project that
+  // scores one prediction per plan across twenty plans has twenty observations; a project
+  // that scores the same prediction of the same plan twenty times has one. Under the old
+  // bare-id key both cases gave one, so no amount of honest work could ever reach the bar.
+  const timeline = { sightings: [{ model: 'claude-x-1', source: 'env', at: 't0' }] }
+
+  it('one shared id across twenty plans counts twenty times', () => {
+    const records = Array.from({ length: 20 }, (_, i) =>
+      rec(i < 17 ? 'hit' : 'miss', {
+        id: 'PX-1',
+        plan: `.planning/phases/demo/demo-${String(i + 1).padStart(2, '0')}-PLAN.md`,
+        model: 'claude-x-1',
+        scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    )
+    const g = modelGuard({ records, timeline, minFresh: 20 })
+    expect(g.freshN).toBe(20)
+    expect(g.freshHits).toBe(17)
+    expect(g.status).toBe('ok')
+  })
+
+  it('the same id re-scored twenty times inside ONE plan counts once', () => {
+    const records = Array.from({ length: 20 }, (_, i) =>
+      rec('hit', {
+        id: 'PX-1',
+        plan: '.planning/phases/demo/demo-01-PLAN.md',
+        model: 'claude-x-1',
+        scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    )
+    expect(modelGuard({ records, timeline, minFresh: 20 }).freshN).toBe(1)
+  })
+})
