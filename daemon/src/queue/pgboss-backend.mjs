@@ -892,6 +892,39 @@ export function createPgBossQueue({
   }
 
   /**
+   * READ-ONLY resolution of a job that is WAITING TO BE HANDED OUT — in EITHER of the two
+   * states this queue waits in.
+   *
+   * WHY THIS EXISTS BESIDE resolveQueuedJob, WHICH LOOKS ALMOST THE SAME. A task whose worker
+   * went silent is not failed: the liveness sweep hands the row back, and the queue parks it in
+   * its RETRY state until the backoff runs out. Every reader of ours already calls that state
+   * «в очереди» — the state map says so — so a person looking at the board sees an ordinary
+   * waiting task. But the resolution that only knew the FIRST waiting state could not find it,
+   * answered «no such task», and left the row live: measured on the live queue, the stop
+   * returned false and the very next hand-out gave that task to a worker. A stop that a person
+   * is told did not happen, on work that then runs anyway, is the same mine as a stop written
+   * as a failure — approached from the other side.
+   *
+   * IT IS DELIBERATELY NOT A WIDENING OF resolveQueuedJob. That resolution also answers the
+   * words door and the owner's word about an abandoned assembly, and whether THOSE should
+   * reach a task waiting after a lost attempt is a separate promise, owed a decision and a
+   * case of its own rather than a side effect of this one.
+   */
+  async function resolveStoppableJob(taskId) {
+    try {
+      const res = await runSql(
+        `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state IN ('created','retry') ORDER BY created_on DESC LIMIT 1`,
+        [taskId],
+      )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      return rows[0] || null
+    } catch (err) {
+      log(`waiting job for ${taskId} not resolved: ${maskError(err)}`)
+      return null
+    }
+  }
+
+  /**
    * cancelTask(taskId) — A PERSON STOPPED THIS WORK, written into the queue as a state and
    * not as a word on a screen. Returns false when no LIVE job carries this id.
    *
@@ -926,10 +959,10 @@ export function createPgBossQueue({
   async function cancelTask(taskId) {
     if (typeof taskId !== 'string' || taskId === '') return false
     // THE RESOLUTION IS THE «what is closed stays closed» RULE, expressed as a query rather
-    // than as an if: the only two jobs findable here are the one under way and the one
-    // waiting, so finished work is simply not there to be stopped.
+    // than as an if: the only jobs findable here are LIVE ones, so finished work is simply
+    // not there to be stopped.
     const running = await resolveActiveJob(taskId)
-    const job = running || (await resolveQueuedJob(taskId))
+    const job = running || (await resolveStoppableJob(taskId))
     if (!job) return false
     await bossInstance.cancel(job.name, job.id)
     await runSql(
