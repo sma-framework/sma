@@ -2530,7 +2530,12 @@ export async function tick(deps = {}) {
     try {
       // The SAME resolved value the durable queue's lease was built with (adapter.mjs):
       // the sweep and the lease are two answers to one question and may not disagree.
-      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config) })
+      // AND THE SAME LOG SEAM the line below already writes its own error into: the sweep
+      // declares attempts dead and reissues their tasks, and did it in total silence — a
+      // whole day of the operator log has nothing about it but the consequences. It is
+      // handed the journal rather than reaching for one: a sweep whose work depended on a
+      // log being available would be a sweep that stops when the log does.
+      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config), journal })
     } catch (err) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }
