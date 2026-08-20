@@ -272,6 +272,19 @@ function writeDrillConfig(root, { port, queueUrl, tickMs, sweepExpireMs }) {
     // nobody writes a ledger row for it. Left absent, both mechanisms sit at 120 s and the
     // sweep — which runs every tick, against supervise's once a minute — always wins.
     ...(sweepExpireMs !== undefined ? { expireMs: sweepExpireMs } : {}),
+    // THE CONVEYOR IS ON, AND WITHOUT THIS LINE THIS DRILL CANNOT RUN AT ALL. This drill was
+    // written before the conveyor grew a switch of its own. That switch ships OFF, and a config
+    // carrying no `pipeline` key at all reads as off — so the tick returns idle-and-paused, no job
+    // is ever handed to a worker, nothing reaches the ACTIVE state, and the kill this whole drill
+    // exists to perform has nothing to land on: every retry of the catch loop expires and the run
+    // ends RED without having tested durability once.
+    //
+    // Turning it on HERE is safe to the point of being uninteresting, and the safety is structural
+    // rather than promised: this daemon has its own front port, its own database and its own root
+    // directory, and the token variable of its single worker is not set anywhere. The attempt
+    // therefore still ends in an honest `runtime_offline` — no model is called and nothing is
+    // spent. The switch stays OFF in every other place that writes a config beside a live one.
+    pipeline: { enabled: true },
     backlogScanMinutes: 60,
     agingHours: 24,
     webhookUrl: '',
