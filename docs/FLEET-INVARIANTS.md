@@ -1,4 +1,4 @@
-# SMA Fleet Invariants 1.0 — the eight, the states, and the promise the fleet does not make
+# SMA Fleet Invariants — the eight, the states, and the promise the fleet does not make
 
 | | |
 |---|---|
