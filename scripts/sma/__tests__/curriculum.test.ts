@@ -124,7 +124,7 @@ describe('curriculum — deterministic clustering + prediction templates + weak-
     // check_command copied when allowlist-shaped
     const enfTpl = t1.find((t) => t.domain === 'sma.enforcement')
     expect(enfTpl.check_command).toBe('node scripts/sma/cli.mjs ladder --count-autofix')
-    expect(enfTpl.threshold).toBeNull()
+    expect(enfTpl.threshold).toBe(2) // the measured base of the cluster, not a null nobody can score
 
     predictionTemplates({ clusters, week: WEEK, dirs }) // same ISO week — must add no dup ids
     const lines = readFileSync(join(dirs.curriculumDir, 'templates.jsonl'), 'utf8').split('\n').filter((l) => l.trim())
