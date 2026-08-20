@@ -682,7 +682,10 @@ function tmpScript(body: string, name: string): string {
 describe('a run that never finished is not a verdict about the world', () => {
   it('a command killed by its own time budget reports «not measured», never exit code 1', async () => {
     const { execSync } = await import('node:child_process')
-    const run = makeExecRunner({ execSync, cwd: dir, timeoutMs: 400 })
+    // cwd stays OUT of the temp dir on purpose: a child killed by the budget
+    // may outlive the assertion for a moment, and a live process holding the
+    // temp dir as its cwd would make the cleanup fail on Windows.
+    const run = makeExecRunner({ execSync, cwd: process.cwd(), timeoutMs: 400 })
     const res = run(tmpScript('setTimeout(() => {}, 8000)\n', 'sleeper.mjs'))
     expect(res.notMeasured).toBe('timeout')
     expect(res.exitCode).toBe(null)
@@ -690,7 +693,7 @@ describe('a run that never finished is not a verdict about the world', () => {
 
   it('a command that RAN and exited nonzero reports that code and claims nothing about measurement', async () => {
     const { execSync } = await import('node:child_process')
-    const run = makeExecRunner({ execSync, cwd: dir, timeoutMs: 30_000 })
+    const run = makeExecRunner({ execSync, cwd: process.cwd(), timeoutMs: 30_000 })
     const res = run(tmpScript('process.exit(3)\n', 'exit3.mjs'))
     expect(res.exitCode).toBe(3)
     expect(res.notMeasured).toBe(null)
@@ -764,8 +767,8 @@ describe('an unfinished run drafts NO lesson — the wire, not a reading', () =>
 })
 
 describe('the time budget fits the thing the runner is asked to measure', () => {
-  it('the budget is far above this product own suite (measured at 134 s)', () => {
-    expect(RUN_BUDGET_MS).toBeGreaterThan(300_000)
+  it('the budget clears this product own suite measured under load (715 s), not just idle (134 s)', () => {
+    expect(RUN_BUDGET_MS).toBeGreaterThan(715_000)
   })
 
   it('the verdict-producing verbs all build their runner from that one factory', () => {

@@ -5503,14 +5503,16 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   // The working directory arrives as a run PARAMETER (o.cwd, from the entry's
   // own field). It is never spliced into the command string: the allowlist
   // refuses connectors, and rightly so.
-  const runCommand = (cmd, o = {}) => {
-    try {
-      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? process.cwd() })
-      return { stdout, exitCode: 0 }
-    } catch (err) {
-      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
-    }
-  }
+  //
+  // And the second half of «an observation, not a crash»: a run that NEVER
+  // FINISHED is not an observation either. The first real verdict this
+  // workspace ever recorded was a miss produced by the runner's own two-minute
+  // budget while the checked suite needed 134 seconds — a killed process has
+  // no exit code at all, and the old line substituted 1, so «I could not
+  // measure» was written down as «you were wrong», and a lesson was drafted
+  // from a failure that never happened. makeExecRunner keeps the two apart and
+  // gives the command a budget that fits what it is asked to measure.
+  const runCommand = predict.makeExecRunner({ execSync, cwd: process.cwd() })
 
   const currentVersion = resolveCurrentVersion(flags, dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
   const scored = predict.scorePlan({ planPath, runCommand, currentVersion })
@@ -5543,16 +5545,10 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const draftsDir = join(repoRoot, '.claude', 'memory', 'drafts')
   const planId = baseOf(planPath).replace(/-PLAN\.md$/i, '').replace(/\.md$/i, '')
-  const drafts = []
-  for (const r of records) {
-    if (r.verdict !== 'miss') continue
-    try {
-      const d = predict.draftLessonFromMiss({ verdict: r, planId, dirs: { draftsDir } })
-      if (d.path) drafts.push({ id: r.id, path: d.path, drafted: d.drafted })
-    } catch {
-      /* drafting is best-effort — a failed draft never blocks scoring */
-    }
-  }
+  // One gate decides who deserves a draft (draftLessonsForRecords): ONLY a
+  // miss. A run that never finished lands on verdict 'error' with
+  // `not_measured`, and drafting a lesson from it would teach a falsehood.
+  const drafts = predict.draftLessonsForRecords({ records, planId, dirs: { draftsDir } })
 
   const hasError = records.some((r) => r.verdict === 'error')
   const exitCode = hasError ? 1 : 0
@@ -5663,6 +5659,7 @@ function walkSummaries(dir) {
 async function cmdReverify({ flags, dirs }) {
   const receipts = await import('./lib/receipts.mjs')
   const calibration = await import('./lib/calibration.mjs')
+  const predictLib = await import('./lib/predict.mjs')
   const { execSync, execFileSync } = await import('node:child_process')
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -5762,15 +5759,11 @@ async function cmdReverify({ flags, dirs }) {
     cwd = cloneRoot
   }
 
-  // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract).
-  const runCommand = (cmd, o = {}) => {
-    try {
-      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd })
-      return { stdout, exitCode: 0 }
-    } catch (err) {
-      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
-    }
-  }
+  // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract);
+  // a run that never finished is NOT an observation and says so. Built from
+  // the same factory the scorer uses, so one kill by one budget can never be
+  // read as a fact here and as a non-fact there.
+  const runCommand = predictLib.makeExecRunner({ execSync, cwd })
 
   const remap = (p) => {
     if (!wantClone) return p
@@ -9013,17 +9006,12 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
   }
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const { execSync } = await import('node:child_process')
-  // Same runner contract as the scorer, so both sides of the ledger read a
-  // nonzero exit the same way instead of one calling it a fact and the other
-  // an error.
-  const runCommand = (cmd, o = {}) => {
-    try {
-      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? repoRoot })
-      return { stdout, exitCode: 0 }
-    } catch (err) {
-      return { stdout: (err && err.stdout) || '', exitCode: (err && err.status) ?? 1 }
-    }
-  }
+  const predictLib = await import('./lib/predict.mjs')
+  // The SAME runner as the scorer — literally the same factory — so both sides
+  // of the ledger read a nonzero exit the same way instead of one calling it a
+  // fact and the other an error, AND both call an unfinished run unmeasured
+  // instead of one of them inventing a failure out of a timeout.
+  const runCommand = predictLib.makeExecRunner({ execSync, cwd: repoRoot })
   const readFn = (p, enc) => readFileSync(p, enc ?? 'utf8')
 
   // 1. FREEZE the blind verdicts — before the claimed side is ever parsed.
