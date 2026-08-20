@@ -34,7 +34,7 @@
  * itself never fetches.
  */
 
-import { readFileSync as fsReadFileSync } from 'node:fs'
+import { readFileSync as fsReadFileSync, existsSync as fsExistsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { readLedger, hitRate } from './calibration.mjs'
@@ -54,8 +54,53 @@ const RECEIPTS_DOMAIN = 'sma.receipts'
 const SNAPSHOT_FENCE = 'sma-passport-snapshot'
 const BADGE_BEGIN = '<!-- sma:passport:begin -->'
 const BADGE_END = '<!-- sma:passport:end -->'
+/**
+ * The provenance sentence. It rides as the badge image title (the reader sees it on hover,
+ * the link takes them to the passport itself) rather than as a line of small print: the badge
+ * stands inside a centred row of sibling badges, and a paragraph wedged into that row renders
+ * as loose text next to the images.
+ */
 const PROVENANCE =
-  '<sub>derived from PASSPORT.md, rebuilt each release, reproducible via <code>sma passport --verify</code></sub>'
+  'derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`'
+
+/**
+ * README_BADGE_FILES — EVERY readme of the repository the rebuilt badge belongs in, in ONE
+ * place. The list exists because the rebuild used to reach a single file: the other language
+ * kept a badge typed by hand, so a stale claim could survive in one locale and nobody's
+ * command would say so. One list, one write, both languages.
+ */
+export const README_BADGE_FILES = ['README.md', 'README.ru.md']
+
+/**
+ * resolveWorkingTreeRoot({gitToplevelFn, fallbackRoot}) -> the root of the working tree the
+ * command was invoked in.
+ *
+ * The passport DOCUMENTS (PASSPORT.md and the readme badge blocks) belong to the tree you are
+ * standing in. The shared state root does NOT: it deliberately points at the main checkout so
+ * that every linked working tree coordinates through one set of claims, sessions and ledgers.
+ * Deriving the document root from the state root therefore made a rebuild launched inside a
+ * linked working tree edit the MAIN checkout's files and leave its own untouched — with a
+ * success message naming files the operator never asked to touch.
+ *
+ * git is asked, never guessed at; if git cannot answer, the shared root stands as before, so a
+ * checkout without git behaves exactly as it always did.
+ *
+ * @param {{gitToplevelFn?:Function, fallbackRoot?:string}} [args]
+ * @returns {string}
+ */
+export function resolveWorkingTreeRoot({ gitToplevelFn, fallbackRoot } = {}) {
+  try {
+    const top = typeof gitToplevelFn === 'function' ? String(gitToplevelFn() ?? '').trim() : ''
+    if (top) return top
+  } catch {
+    /* git absent or not a repository -> the shared root stands */
+  }
+  return fallbackRoot
+}
+
+/** Colour of the badge image: the calibrated claim green, every withheld state amber. */
+const BADGE_COLOR_CLAIM = '3CC0A0'
+const BADGE_COLOR_WITHHELD = 'E5B567'
 
 function resolveNow(now) {
   if (typeof now === 'function') return now()
@@ -271,6 +316,16 @@ export function renderPassport(snapshot) {
       `${snapshot.ledger ? snapshot.ledger.lines : 0} lines, ${snapshot.ledger ? snapshot.ledger.corrupt : 0} corrupt) and says so plainly rather than overclaiming.`,
   )
   L.push('')
+
+  // What this count is ABLE to reach. A reader who sees a small n deserves to know whether
+  // it is small because the work is unmeasured or because the measurable part of the work
+  // lives somewhere this file is not allowed to read from.
+  L.push('## What this passport is able to count')
+  L.push('')
+  L.push(
+    'Every number above comes from calibration data committed to THIS repository and from nothing else: the passport counts only what this repository can reproduce. The team that develops SMA runs its own predictions in a separate, private planning workspace, and that ledger is never copied here — each of its records names the internal planning file it was made in, so publishing it would carry private planning material into a public repository. A small sample size on this page therefore means this repository holds few reproducible verdicts of its own. It never means a larger number is being hidden: the badge above is a function of exactly the data you can see.',
+  )
+  L.push('')
   L.push(`Captured at: ${snapshot.capturedAt}`)
   L.push('')
 
@@ -341,6 +396,20 @@ export function snapshotSchemaOk(snap) {
 }
 
 /**
+ * shieldImg({label, message, color, alt}) -> ONE centred-row badge image, linked to the
+ * passport. Shape matters: the badge stands among sibling badges inside a raw <p align
+ * ="center"> block, where markdown is not processed — a markdown image there renders as
+ * literal text. The human phrase lives in the alt attribute, so a reader with images off,
+ * and every plain-text grep, still reads the same words the image shows.
+ */
+function shieldImg({ label, message, color, alt }) {
+  const enc = (v) => encodeURIComponent(String(v).replace(/-/g, '--').replace(/_/g, '__'))
+  const url = `https://img.shields.io/badge/${enc(label)}-${enc(message)}-${color}`
+  const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+  return `  <a href="PASSPORT.md"><img src="${url}" alt="${esc(alt)}" title="${esc(PROVENANCE)}"></a>`
+}
+
+/**
  * renderBadgeBlock(snapshot) -> the INNER content of the README managed block
  * (writeManagedBlock wraps it with the markers). Four states:
  *   - guard ok AND freshN >= BADGE_MIN_N -> a shields.io badge claiming
@@ -352,21 +421,67 @@ export function snapshotSchemaOk(snap) {
  */
 export function renderBadgeBlock(snapshot) {
   const g = (snapshot && snapshot.guard) || {}
-  let body
   if (g.status === 'stale-priors') {
-    body = `**SMA calibration:** recalibrating after model change (n=${g.freshN ?? 0}/${BADGE_MIN_N}) — hit-rate claim hidden until fresh priors accrue.`
-  } else if (g.status === 'no-model-data') {
-    body = '**SMA calibration:** badge hidden — no Claude model recorded yet.'
-  } else if ((g.freshN ?? 0) < BADGE_MIN_N) {
-    body = `**SMA calibration:** collecting calibration data (n=${g.freshN ?? 0}/${BADGE_MIN_N}) — hit-rate claim hidden until the bar is reached.`
-  } else {
-    const pct = Math.round((g.freshRate ?? 0) * 100)
-    const label = `SMA-calibrated: ${pct}% hits, n=${g.freshN}`
-    const message = encodeURIComponent(`${pct}% hits, n=${g.freshN}`).replace(/-/g, '--')
-    const url = `https://img.shields.io/badge/SMA--calibrated-${message}-brightgreen`
-    body = `[![${label}](${url})](PASSPORT.md)`
+    const state = `recalibrating after model change (n=${g.freshN ?? 0}/${BADGE_MIN_N})`
+    return shieldImg({
+      label: 'calibration',
+      message: state,
+      color: BADGE_COLOR_WITHHELD,
+      alt: `calibration: ${state} — hit-rate claim hidden until fresh priors accrue`,
+    })
   }
-  return `${body}\n\n${PROVENANCE}`
+  if (g.status === 'no-model-data') {
+    return shieldImg({
+      label: 'calibration',
+      message: 'badge hidden · no model recorded yet',
+      color: BADGE_COLOR_WITHHELD,
+      alt: 'calibration: badge hidden — no Claude model recorded yet',
+    })
+  }
+  if ((g.freshN ?? 0) < BADGE_MIN_N) {
+    const state = `collecting calibration data (n=${g.freshN ?? 0}/${BADGE_MIN_N})`
+    return shieldImg({
+      label: 'calibration',
+      message: state,
+      color: BADGE_COLOR_WITHHELD,
+      alt: `calibration: ${state} — hit-rate claim hidden until the bar is reached`,
+    })
+  }
+  const pct = Math.round((g.freshRate ?? 0) * 100)
+  return shieldImg({
+    label: 'SMA-calibrated',
+    message: `${pct}% hits, n=${g.freshN}`,
+    color: BADGE_COLOR_CLAIM,
+    alt: `SMA-calibrated: ${pct}% hits, n=${g.freshN}`,
+  })
+}
+
+/**
+ * writeBadgeToReadmes({repoRoot, content, files}) — splice the SAME badge block into every
+ * readme of `files` that exists. Returns {written, skipped} and NAMES what it skipped: a
+ * rebuild that quietly reaches one file out of two is how two languages drift apart while
+ * every command still reports success.
+ *
+ * A file that does not exist is skipped, never created: a project with one readme must not
+ * grow a second one because the rebuild ran there.
+ *
+ * @param {{repoRoot:string, content:string, files?:string[], fs?:object}} args
+ * @returns {{written:Array<{file:string, filePath:string, bytes:number}>, skipped:Array<{file:string, reason:string}>}}
+ */
+export function writeBadgeToReadmes({ repoRoot, content, files = README_BADGE_FILES, fs } = {}) {
+  const existsFn = (fs && fs.existsSync) || fsExistsSync
+  const written = []
+  const skipped = []
+  for (const file of files) {
+    const filePath = join(repoRoot, file)
+    if (!existsFn(filePath)) {
+      skipped.push({ file, reason: 'missing' })
+      continue
+    }
+    const res = writeManagedBlock({ filePath, content, fs })
+    written.push({ file, filePath, bytes: res.bytes })
+  }
+  return { written, skipped }
 }
 
 /**

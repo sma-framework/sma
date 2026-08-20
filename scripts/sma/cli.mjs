@@ -6536,8 +6536,10 @@ function normEol(s) {
  * passport [--build | --verify | --check-badge | --json] —
  * the calibration-passport surface. NOT hook-facing.
  *   --build       : buildSnapshot(live dirs) -> renderPassport -> PASSPORT.md,
- *                   renderBadgeBlock -> README managed block. Exit 0 always
- *                   (an honest hidden badge is a success, not an error).
+ *                   renderBadgeBlock -> the managed block of EVERY readme in
+ *                   passport.README_BADGE_FILES (a readme that is not there is
+ *                   NAMED as skipped, never created). Exit 0 always (an honest
+ *                   hidden badge is a success, not an error).
  *   --verify      : fresh clone (committed evidence only) -> re-render from the
  *                   embedded snapshot -> byte-compare PASSPORT.md + README badge.
  *                   Prints 1/0 as the LAST line, ALWAYS exit 0.
@@ -6550,22 +6552,45 @@ function normEol(s) {
  */
 async function cmdPassport({ flags, dirs }) {
   const passport = await import('./lib/passport.mjs')
-  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  // The DOCUMENTS this verb writes belong to the working tree the command was run in. The
+  // shared state root points at the main checkout on purpose, and using it here made a rebuild
+  // launched inside a linked working tree edit another tree's files while leaving its own alone.
+  const { execFileSync: execFileSyncTop } = await import('node:child_process')
+  const repoRoot = passport.resolveWorkingTreeRoot({
+    gitToplevelFn: () =>
+      execFileSyncTop('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    fallbackRoot: dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd(),
+  })
   const passportPath = join(repoRoot, 'PASSPORT.md')
-  const readmePath = join(repoRoot, 'README.md')
+  // Every readme the badge belongs in, named ONCE by the module that renders it.
+  const readmeFiles = passport.README_BADGE_FILES
 
   // ── --build ────────────────────────────────────────────────────────────────
   if (flags.build === true) {
     const { atomicWriteRaw } = await import('./lib/fs-atomics.mjs')
     const snap = passport.buildSnapshot({ dirs })
     atomicWriteRaw(passportPath, passport.renderPassport(snap))
-    passport.writeManagedBlock({ filePath: readmePath, content: passport.renderBadgeBlock(snap) })
+    const { written, skipped } = passport.writeBadgeToReadmes({
+      repoRoot,
+      content: passport.renderBadgeBlock(snap),
+      files: readmeFiles,
+    })
     if (wantsJson(flags)) {
-      printJson({ built: true, passport: passportPath, readme: readmePath, guard: snap.guard })
+      printJson({
+        built: true,
+        passport: passportPath,
+        readmes: written.map((w) => w.file),
+        skipped,
+        guard: snap.guard,
+      })
       return 0
     }
+    const updated = written.length ? written.map((w) => w.file).join(', ') : 'ни одного README'
+    // A skipped file is SAID OUT LOUD: a rebuild that silently reaches one locale out of two
+    // is exactly how the two drift apart while the command still reports success.
+    const missed = skipped.length ? ` Пропущены (файла нет): ${skipped.map((x) => x.file).join(', ')}.` : ''
     process.stdout.write(
-      `SMA passport: собран — состояние бейджа «${snap.guard.status}» (fresh n=${snap.guard.freshN}/${passport.BADGE_MIN_N}). Обновлены ${passportPath} и README-блок.\n`,
+      `SMA passport: собран — состояние бейджа «${snap.guard.status}» (fresh n=${snap.guard.freshN}/${passport.BADGE_MIN_N}). Обновлены ${passportPath} и блок бейджа в: ${updated}.${missed}\n`,
     )
     return 0
   }
@@ -6587,13 +6612,21 @@ async function cmdPassport({ flags, dirs }) {
       const snap = passport.parseSnapshot(committedPassport)
       if (snap) {
         passportMatch = normEol(passport.renderPassport(snap)) === committedPassport
-        let liveBadge = null
-        try {
-          liveBadge = passport.readManagedBlock(normEol(readFileSync(join(cloneRoot, 'README.md'), 'utf8')))
-        } catch {
-          liveBadge = null
-        }
-        badgeMatch = liveBadge != null && liveBadge === normEol(passport.renderBadgeBlock(snap))
+        // EVERY readme of the clone, not just the English one: a badge that reproduces in one
+        // locale and rots in the other is a reproduction failure, and it must read as one.
+        const expectedBadge = normEol(passport.renderBadgeBlock(snap))
+        const present = readmeFiles
+          .map((file) => join(cloneRoot, file))
+          .filter((filePath) => existsSync(filePath))
+        badgeMatch =
+          present.length > 0 &&
+          present.every((filePath) => {
+            try {
+              return passport.readManagedBlock(normEol(readFileSync(filePath, 'utf8'))) === expectedBadge
+            } catch {
+              return false
+            }
+          })
       }
     } catch {
       /* a clone/read failure is a non-reproduction -> 0, never a throw */
@@ -6609,19 +6642,29 @@ async function cmdPassport({ flags, dirs }) {
   // ── --check-badge (no clone; live README vs committed snapshot) ──────────────
   if (flags['check-badge'] === true) {
     let ok = 0
-    let expected = null
-    let live = null
+    const per = []
     try {
       const snap = passport.parseSnapshot(normEol(readFileSync(passportPath, 'utf8')))
       if (snap) {
-        expected = normEol(passport.renderBadgeBlock(snap))
-        live = passport.readManagedBlock(normEol(readFileSync(readmePath, 'utf8')))
-        ok = live != null && live === expected ? 1 : 0
+        const expected = normEol(passport.renderBadgeBlock(snap))
+        for (const file of readmeFiles) {
+          const filePath = join(repoRoot, file)
+          // A readme this project does not have is NOT a stale badge: a consumer repository
+          // carrying one readme must not be told its badge rotted. It is named and skipped.
+          if (!existsSync(filePath)) {
+            per.push({ file, state: 'missing' })
+            continue
+          }
+          const live = passport.readManagedBlock(normEol(readFileSync(filePath, 'utf8')))
+          per.push({ file, state: live != null && live === expected ? 'match' : 'stale' })
+        }
+        const present = per.filter((x) => x.state !== 'missing')
+        ok = present.length > 0 && present.every((x) => x.state === 'match') ? 1 : 0
       }
     } catch {
       ok = 0
     }
-    if (wantsJson(flags)) printJson({ consistent: ok })
+    if (wantsJson(flags)) printJson({ consistent: ok, readmes: per })
     process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return 0
   }
