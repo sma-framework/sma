@@ -1597,15 +1597,62 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
       deps: { ledger: realLedger(ledgerDir) },
     })
 
-    // The prior run's row carries the session — exactly what the return left behind.
+    // The prior run's row carries the session — exactly what the return left behind. And the
+    // ROW ITSELF says it was a person who sent it back: that word is what separates this case
+    // from the one below, and until it was read the two were the same «attempt > 1».
     deps.ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
-    await adapter.enqueue(backlogTask({ attempt: 2 }))
+    await adapter.enqueue(backlogTask({ attempt: 2, source: 'return' }))
 
     const res = await tick(deps)
     expect(res.completed).toBe('BL-1')
     const at = spawns[0].args.indexOf('--resume')
     expect(at).toBeGreaterThan(-1)
     expect(spawns[0].args[at + 1]).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+  })
+
+  /**
+   * И ЭТО ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ОНИ РАЗЛИЧАЮТСЯ. Возврат человека и пробуждение по времени
+   * приходят на тик одинаково — вторая попытка той же задачи с записанной сессией в леджере, —
+   * и до этого дела оба шли по одному пути продолжения. Между тем разница смысловая: человек
+   * вернул работу с замечанием, и работник обязан помнить, что делал; таймер разбудил задачу
+   * спустя время, и старая сессия несёт картину мира, которая к этому моменту уже неверна.
+   *
+   * Свежесть здесь обеспечена НЕ вторым условием, а тем, что вид пробуждения доезжает до
+   * строителя аргументов, где замок на этот случай написан и проверен давно.
+   */
+  it('а задача, разбуженная по времени, продолжения не получает — даже когда сессия в леджере есть', async () => {
+    const ledgerDir = mkDir('sma-loop-timer-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice() })
+      spec.onLine?.('APPROACH_NOTE: начал заново')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { ledger: realLedger(ledgerDir) },
+    })
+
+    // Та же запись прошлой сессии — и та же вторая попытка. Отличается ровно одно слово: строку
+    // вернул в очередь не человек, а истёкшая аренда.
+    deps.ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
+    await adapter.enqueue(backlogTask({ attempt: 2 }))
+
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+    expect(spawns[0].args).not.toContain('--resume')
+    expect(spawns[0].args.join(' ')).not.toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
   })
 
   it('every line reaches the attempt’s own file, and the delegated one is marked as delegated', async () => {
