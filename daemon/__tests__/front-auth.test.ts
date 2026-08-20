@@ -31,6 +31,8 @@ import {
   HANDLERS,
   PENDING_ROUTES,
   matchRoute,
+  CANCEL_ATTEMPT_CLOSE_WAIT_MS,
+  CANCEL_ATTEMPT_POLL_MS,
 } from '../src/front/server.mjs'
 import { deriveState } from '../src/front/state.mjs'
 import { QueueEncodingError } from '../src/queue/encoding.mjs'
@@ -2806,5 +2808,157 @@ describe('server.mjs — GET /api/task/:id говорит, упрётся ли �
     const a = JSON.parse((await call(front(dir), { url: '/api/task/R-9', headers: bearer() })).body).attempts[0]
     expect(a.ticket).toBe(null)
     expect(a.approvalWall).toBe(null)
+  })
+})
+
+// ── дверь отмены: человек останавливает работу, и остановка не оставляет живого процесса ──
+//
+// ПОЧЕМУ ЭТИ ДЕЛА ЖИВУТ ЗДЕСЬ. Дверь отмены — запись ЗАКРЫТОЙ таблицы, и её защиты (потолок
+// тела, отказ неизвестным ключам, форма идентификатора) — это ровно тот набор, который этот
+// файл сторожит у всей поверхности. Отдельный файл дел развёл бы одно обещание по двум местам.
+//
+// ГЛАВНОЕ ДЕЛО ЗДЕСЬ — О ПОРЯДКЕ, А НЕ О ФАКТЕ ДВУХ ВЫЗОВОВ. Два счётчика докажут только то,
+// что и убийство, и закрытие строки состоялись; мина же — в их последовательности. Строка,
+// помеченная закрытой раньше, чем умер процесс, оставляет живого ребёнка без хозяина: сторож
+// живости видит непонятное, заводит новую попытку, и подписка горит параллельными процессами.
+// Поэтому оба вызова пишут в ОДНУ ЛЕНТУ, и утверждается лента целиком.
+
+/** Реестр ручек живых попыток, который ПИШЕТ В ЛЕНТУ — подделка ровно того размера, что нужна. */
+function tapedTurns(tape: string[], o: { live: boolean; closes: boolean }) {
+  let stopped = false
+  return {
+    stop(taskId: string) {
+      tape.push(`attemptTurns.stop(${taskId})`)
+      if (!o.live) return false
+      stopped = true
+      return true
+    },
+    /** Пока попытка не закрылась, её запись ещё помечена остановленной; закрытие стирает запись. */
+    wasStopped() {
+      return stopped && !o.closes
+    },
+  }
+}
+
+/** Очередь, которая пишет в ту же ленту. `terminal` — что отвечает наш метод остановки. */
+function tapedAdapter(tape: string[], terminal: boolean) {
+  return {
+    async cancelTask(taskId: string) {
+      tape.push(`cancelTask(${taskId})`)
+      return terminal
+    },
+  }
+}
+
+const cancelReq = (body: any) => ({
+  method: 'POST',
+  url: '/api/task/cancel',
+  headers: { ...bearer(), 'content-type': 'application/json' },
+  body,
+})
+
+describe('POST /api/task/cancel — человек останавливает задачу', () => {
+  it('без очереди дверь честно говорит «не собрано», а не притворяется', async () => {
+    const front = createFrontServer({ config: { token: TOKEN }, deps: {} })
+    expect((await call(front, cancelReq({ taskId: 'R-1' }))).statusCode).toBe(501)
+  })
+
+  it('тело разбирается со всеми тремя защитами соседней двери', async () => {
+    const tape: string[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: tapedAdapter(tape, true), sleep: async () => {} },
+    })
+    for (const bad of [{}, { taskId: '../evil' }, { taskId: 'R-1', extra: 1 }, { taskId: 5 }]) {
+      const res = await call(front, cancelReq(bad))
+      expect(res.statusCode, JSON.stringify(bad)).toBe(400)
+    }
+    // Ни одна кривая просьба не доехала до очереди.
+    expect(tape).toEqual([])
+    // И тело сверх потолка — тоже отказ, а не пятисотка.
+    const huge = await call(front, cancelReq({ taskId: 'R-1', note: 'x'.repeat(20_000) }))
+    expect([400, 413]).toContain(huge.statusCode)
+  })
+
+  it('kills the live child BEFORE it closes the row — одна лента вызовов, а не два счётчика', async () => {
+    const tape: string[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter: tapedAdapter(tape, true),
+        attemptTurns: tapedTurns(tape, { live: true, closes: true }),
+        sleep: async () => {},
+      },
+    })
+    const res = await call(front, cancelReq({ taskId: 'R-1' }))
+    expect(res.statusCode).toBe(200)
+    // ЛЕНТА ЦЕЛИКОМ: убийство стоит ПЕРЕД закрытием строки, и между ними нет ничего лишнего.
+    expect(tape).toEqual(['attemptTurns.stop(R-1)', 'cancelTask(R-1)'])
+    expect(JSON.parse(res.body)).toEqual({ cancelled: true, killed: true, attemptClosed: true })
+  })
+
+  it('ручки нет — строку всё равно закрываем, и ответ не утверждает убийства', async () => {
+    const tape: string[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter: tapedAdapter(tape, true),
+        attemptTurns: tapedTurns(tape, { live: false, closes: true }),
+        sleep: async () => {},
+      },
+    })
+    const res = await call(front, cancelReq({ taskId: 'R-2' }))
+    expect(res.statusCode).toBe(200)
+    expect(tape).toEqual(['attemptTurns.stop(R-2)', 'cancelTask(R-2)'])
+    const body = JSON.parse(res.body)
+    expect(body.cancelled).toBe(true)
+    expect(body.killed).toBe(false)
+    // «Дождались закрытия попытки» — не «нет», а «нечего было ждать»: разные вещи.
+    expect(body.attemptClosed).toBe(null)
+  })
+
+  it('демон, собранный вовсе без реестра ручек, дверь всё равно держит', async () => {
+    const tape: string[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: tapedAdapter(tape, true), sleep: async () => {} },
+    })
+    const res = await call(front, cancelReq({ taskId: 'R-3' }))
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ cancelled: true, killed: false, attemptClosed: null })
+  })
+
+  it('попытка не закрылась за отведённый срок — строку закрываем, и об этом сказано отдельным полем', async () => {
+    const tape: string[] = []
+    let naps = 0
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter: tapedAdapter(tape, true),
+        attemptTurns: tapedTurns(tape, { live: true, closes: false }),
+        sleep: async () => {
+          naps += 1
+        },
+      },
+    })
+    const res = await call(front, cancelReq({ taskId: 'R-4' }))
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ cancelled: true, killed: true, attemptClosed: false })
+    // Ожидание ОГРАНИЧЕНО названной константой: дверь не висит на человеке бесконечно.
+    expect(naps).toBeGreaterThan(0)
+    expect(naps).toBeLessThanOrEqual(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS)
+    // И строка всё равно закрыта — терминал не отменяется тем, что ребёнок умирал долго.
+    expect(tape).toEqual(['attemptTurns.stop(R-4)', 'cancelTask(R-4)'])
+  })
+
+  it('останавливать было нечего — честное «нет», а не тишина и не выдуманный успех', async () => {
+    const tape: string[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter: tapedAdapter(tape, false), sleep: async () => {} },
+    })
+    const res = await call(front, cancelReq({ taskId: 'R-5' }))
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body).cancelled).toBe(false)
   })
 })
