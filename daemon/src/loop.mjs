@@ -130,6 +130,7 @@ import {
 import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
@@ -1782,10 +1783,31 @@ function attachAttemptParity(deps, worktree) {
  * writeAttemptOutcome(deps, worktree, receipt) — the fourth file, written by the door that
  * KNOWS how the attempt ended. Fail-open and silent about a directory that was never made:
  * an attempt refused before it ever spawned has nothing to write a receipt into.
+ *
+ * AND THE DOOR THAT CLOSES THE ATTEMPT CLOSES ITS TICKETS. A parking ticket is closed by one
+ * of three paths — approved, refused, its own deadline — and all three are written by the
+ * HOOK's process. When that process dies (a killed session, a fallen daemon, a cut provider)
+ * the file stays `waiting` for ever, and the card goes on telling a person he is being waited
+ * on for a call that no longer exists. This is the right place for the other half of the fix:
+ * it is called on BOTH outcomes and it already knows the attempt's directory. The reader's own
+ * deadline filter heals the files already lying on disk; this heals the ones written from now
+ * on, at the moment the truth about them changes.
  */
 function writeAttemptOutcome(deps, worktree, receipt) {
   const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
   if (!run || typeof run.dir !== 'string' || run.dir === '') return false
+  // Уборка за попыткой — не условие попытки: билет, который не пометился, не имеет права
+  // стоить работы, которая уже сделана.
+  try {
+    const closed = closeWaitingTickets({
+      runDir: run.dir,
+      clock: typeof deps.clock === 'function' ? deps.clock : Date.now,
+      fsImpl: deps.fsImpl,
+    })
+    if (closed > 0) writeLog(deps, { type: 'run_dir.tickets_closed', dir: run.dir, closed })
+  } catch (err) {
+    writeLog(deps, { type: 'run_dir.tickets_close_error', dir: run.dir, error: String((err && err.message) || err) })
+  }
   // The verdict is already reached — the closing door asked for it before it wrote the ledger
   // row, which is the only order in which a row can carry one. Here it is written down WHOLE:
   // the five receipts with their details beside the summary, so one directory can answer «did
