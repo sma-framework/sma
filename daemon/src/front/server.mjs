@@ -6,18 +6,20 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-ONE routes
- *     (re-frozen 2026-08-13 — the growth past the V5.4 fifty-three is EXPLICIT, EIGHT doors,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-TWO routes
+ *     (re-frozen 2026-08-20 — the growth past the V5.4 fifty-three is EXPLICIT, NINE doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
- *     running-task steering wheel in v5.5.0, and SIX doors in v5.6.0 — the batch request,
+ *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
  *     the word its owner answers a stopped batch with, the composition a phrase could have,
  *     the two doors of a task's WORDS (the one that proposes them and the one that corrects
- *     them), and the order that stops ONE echelon of ONE phase and starts it again; the
- *     previous freezes were FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY,
- *     2026-08-01, and FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
+ *     them), and the order that stops ONE echelon of ONE phase and starts it again — and in
+ *     v5.7.0 the door that CANCELS a task, so a person can stop work with a finger and the
+ *     stopping leaves no live process behind it; the previous freezes were SIXTY-ONE,
+ *     2026-08-13, FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY, 2026-08-01, and
+ *     FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 61 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 62 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -217,26 +219,28 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
- * freeze plus eight doors, each declared once by its own release — the chat stop button in
- * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request, the
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-20; the FIFTY-THREE of the V5.4
+ * freeze plus nine doors, each declared once by its own release — the chat stop button in
+ * v5.4.3, the running-task steering wheel in v5.5.0, in v5.6.0 the batch request, the
  * word its owner answers a stopped batch with, the composition a phrase could have, the
  * two doors of a task's WORDS (the one that proposes them and the one that corrects them),
- * and the order that stops ONE echelon of ONE phase and starts it again).
- * Exactly SIXTY-ONE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * and the order that stops ONE echelon of ONE phase and starts it again, and in v5.7.0 the
+ * door that CANCELS a task — a person stops the work, and the row is closed only after the
+ * live child under it is dead).
+ * Exactly SIXTY-TWO entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 61) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 62) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last eight joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-ONE ARE LIVE — the table carries no stub, and the shape
+ * a time; the last nine joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-TWO ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
- * THREE OF THE EIGHT PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
+ * THREE OF THE NINE PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
  * two word doors are a PAIR (the first returns a draft for a person to correct, the second
  * writes only onto a task whose work is not over), and the batch-composition door is the same
  * promise about a whole batch. Between them they are the whole of «система предлагает,
