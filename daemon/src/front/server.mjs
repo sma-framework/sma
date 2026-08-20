@@ -1360,13 +1360,20 @@ export function mergeRefusal(merge) {
     }
   }
 
-  // A merge that HAPPENED and then went red: the branch is in the tree, the run is not green.
-  // Said apart from every failure above on purpose — the person's next step is the tests, not
-  // the branch.
-  if (m.merged === true && m.testsPassed === false) {
+  // A RED RUN, WHATEVER THE MERGE FLAG SAYS. Said apart from every failure below on purpose —
+  // the person's next step here is the tests, not the branch and not the tree.
+  //
+  // The condition used to demand `merged === true` as well, because back then the ritual
+  // committed the merge FIRST and ran the tests on it afterwards; a red run therefore always
+  // arrived with the branch already in the tree. The ritual now decides before it records, so
+  // an honest refusal arrives as {merged:false, testsPassed:false} — and against the old
+  // condition it would have missed this branch entirely and reached the person as a nameless
+  // failure. One condition covers both shapes: a red run IS the cause, and which of the two
+  // shapes carried it does not change what the person has to do next.
+  if (m.testsPassed === false) {
     return {
       reasonCode: 'tests_red',
-      reason: 'ветка слита, но тесты на слитом результате не прошли — работа осталась ждать вас',
+      reason: 'слияние не выполнено: тесты на сведённом результате красные — работа осталась ждать вас',
     }
   }
 

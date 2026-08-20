@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-4043%2F4043-3CC0A0" alt="tests 4043/4043">
+  <img src="https://img.shields.io/badge/tests-4073%2F4073-3CC0A0" alt="tests 4073/4073">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -170,7 +170,7 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 | **How long it has been waiting** | counted from the moment the work actually stopped, not from when the row was created — and a decision that has been waiting a minute is not called «stuck» |
 | **How many attempts** | attempts, counted as attempts: three approaches written down as six journal lines are three, not six |
 | **One task, one line** | every section of the list stands for the **last word** about a task, so a returned task appears once — under its own name, never as an identifier |
-| **A merge receipt** | answers «not run» when the tests were never wired to it, instead of reporting a green it did not observe |
+| **A merge receipt** | the tests run on the merged result BEFORE the merge is recorded: a red run means the merge did not happen, and the refusal names that as its cause. «Not run» stays an honest third answer — a tree with nothing in it to run — and it is not a green |
 | **Which project a task belongs to** | a fact the task itself carries, written when it was queued — never inferred from the project you happen to be looking at. A row queued before tasks knew their project says **«project unknown»** in words and stays visible under every project, instead of being quietly attributed to the one on screen |
 | **A worker's counts** | folded out of the attempt ledger over the last **30 days**, and the window names that period out loud. A ledger that could not be read says «no data»; a period that was read with nothing finished in it says «no finished attempts» — two different facts, and neither is printed as a confident zero |
 | **Anything the engine cannot answer** | says «no data» in words. A zero that is wrong is worse than a blank, because it reads as an answer |
