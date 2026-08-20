@@ -29,7 +29,18 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
 import { parseNote, serializeNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
-import { parsePredictions, validatePrediction, isSafeCommand } from './predict.mjs'
+import {
+  parsePredictions,
+  validatePrediction,
+  isSafeCommand,
+  horizonReached,
+  isReceiptEntry,
+} from './predict.mjs'
+// PRED-UNSCORED reads the calibration ledger and keys it with the ONE accounting
+// key the verdict side dedupes by — the gate and the passport must never hold
+// two opinions about which predictions have been scored.
+import { readLedger } from './calibration.mjs'
+import { predictionKey } from './model-version.mjs'
 // the PROFILE family delegates ALL schema/secret/dead-field
 // judgment to the profile lib — one boundary, never duplicated (same lock as
 // PRED → predict.mjs). lint renders findings, it never re-implements the checks.
@@ -87,6 +98,7 @@ import {
   STATE_BUDGET,
   BUDGET_WARN_FRACTION,
   RECEIPTS_ENFORCED_FROM,
+  PREDICTIONS_SCORED_FROM,
 } from './constants.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -503,6 +515,9 @@ function buildContext(opts) {
     // plansDir travels with them: the POSTEDIT batch maps a plan path
     // back into git's path space from it.
     plansDir: opts.plansDir,
+    // PRED-UNSCORED: where the verdicts live. Undefined means «not told», which
+    // the rule reports as a degradation instead of reading as «nothing scored».
+    calibrationDir: opts.calibrationDir,
     plans: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-PLAN.md')) : [],
     // RECEIPT-PROSE: SUMMARY files are read ONCE here, same posture as
     // plans — no check re-reads the disk.
@@ -1228,6 +1243,185 @@ const PRED_SKEPTIC = {
 /** Normalize a command string for the duplication compare: collapse whitespace. */
 function normalizeCommand(s) {
   return String(s).replace(/\s+/g, ' ').trim()
+}
+
+
+// ── PRED-UNSCORED — a closed plan owes a verdict ──────────────────────────────
+
+/**
+ * summaryCloseDates(ctx) — ONE git walk giving, per summary file, the day it was
+ * ADDED to the tree. That day IS the day the plan was closed: a summary is
+ * written at close and never before.
+ *
+ * Same posture as the POSTEDIT batch next door — one process per lint run, not
+ * one per file — and memoized on ctx. A summary git cannot answer for (untracked,
+ * renamed in from elsewhere) yields NO date, and no date means no finding: the
+ * rule accuses nobody on the strength of a gap in its own evidence.
+ *
+ * Returns null when there is no git runner at all — the caller degrades to one
+ * informational finding, exactly as the immutability rule does.
+ */
+function summaryCloseDates(ctx) {
+  if (ctx._summaryCloseDates !== undefined) return ctx._summaryCloseDates
+  const execGit = ctx.execGit
+  let out = null
+  if (typeof execGit === 'function' && typeof ctx.plansDir === 'string' && ctx.plansDir !== '') {
+    try {
+      const cwd = ctx.plansDir
+      const readOpts = { cwd, stdio: ['ignore', 'pipe', 'ignore'] }
+      const prefix = toPosixPath(String(execGit(['rev-parse', '--show-prefix'], readOpts)).trim())
+      const walk = String(
+        execGit(
+          ['-c', 'core.quotePath=false', 'log', '--diff-filter=A', '--format=%x00%aI', '--name-only', '--', '*-SUMMARY.md'],
+          readOpts,
+        ),
+      )
+      const dates = new Map()
+      for (const group of walk.split('\u0000').slice(1)) {
+        const lines = group.split('\n')
+        const day = lines[0].trim().slice(0, 10)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+        for (let i = 1; i < lines.length; i += 1) {
+          const path = lines[i].trim()
+          if (path === '') continue
+          const prev = dates.get(path)
+          // The OLDEST add wins: a file deleted and re-added was still closed
+          // the first time, and the later add must not move the cutover.
+          if (prev === undefined || day < prev) dates.set(path, day)
+        }
+      }
+      out = { prefix, dates }
+    } catch {
+      out = null // no git answer — the rule degrades instead of guessing
+    }
+  }
+  ctx._summaryCloseDates = out
+  return out
+}
+
+/**
+ * scoredPredictionKeys(ctx) — the set of predictions the ledger already carries a
+ * verdict for, under the SAME accounting key the verdict side dedupes by
+ * (predictionKey: plan file + id). One key, or the gate and the passport would
+ * hold different opinions about what has been scored and neither would say so.
+ *
+ * «Scored» means A VERDICT WAS RECORDED, whatever it said — including a miss and
+ * including a run that could not be measured. It deliberately does NOT mean «the
+ * prediction came true»: a gate that demanded hits would be a gate against
+ * writing down bad news, which is the opposite of the point.
+ *
+ * Returns null when no ledger directory was injected — a missing directory and an
+ * empty ledger are indistinguishable from the inside, and treating «I was not
+ * told where to look» as «nothing has ever been scored» would accuse every plan
+ * in the tree at once.
+ */
+function scoredPredictionKeys(ctx) {
+  if (ctx._scoredPredictionKeys !== undefined) return ctx._scoredPredictionKeys
+  let out = null
+  if (typeof ctx.calibrationDir === 'string' && ctx.calibrationDir !== '') {
+    try {
+      const { records } = readLedger({ calibrationDir: ctx.calibrationDir })
+      const set = new Set()
+      for (const r of records || []) {
+        if (r && typeof r.id === 'string' && r.id.trim() !== '' && r.verdict != null && r.verdict !== '') {
+          set.add(predictionKey(r))
+        }
+      }
+      out = set
+    } catch {
+      out = null
+    }
+  }
+  ctx._scoredPredictionKeys = out
+  return out
+}
+
+const PRED_UNSCORED = {
+  id: 'PRED-UNSCORED',
+  title: 'A closed plan owes a verdict on every prediction that could actually be checked',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    const plans = (ctx.plans ?? []).filter((p) => extractPredictionsBlock(p.text) !== '')
+    if (!plans.length) return out
+
+    const dates = summaryCloseDates(ctx)
+    if (dates === null) {
+      out.push(
+        finding(
+          'PRED-UNSCORED',
+          'info',
+          '',
+          'git runner unavailable — the closing gate cannot tell when a plan was closed, so no plan is judged (inject execGit to enforce)',
+        ),
+      )
+      return out
+    }
+    const scored = scoredPredictionKeys(ctx)
+    if (scored === null) {
+      out.push(
+        finding(
+          'PRED-UNSCORED',
+          'info',
+          '',
+          'no calibration ledger directory injected — the closing gate cannot tell which predictions already carry a verdict, so no plan is judged',
+        ),
+      )
+      return out
+    }
+
+    const summaryByName = new Map()
+    for (const s of ctx.summaries ?? []) summaryByName.set(basename(s.path), s)
+
+    for (const plan of plans) {
+      // Closed means: a SUMMARY of its own exists on disk beside it.
+      const summary = summaryByName.get(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))
+      if (!summary) continue
+      const closedOn = dates.dates.get(dates.prefix + toPosixPath(relative(ctx.plansDir, summary.path)))
+      if (!closedOn) continue // git cannot date it — no evidence, no accusation
+      if (closedOn < PREDICTIONS_SCORED_FROM) continue // history, not debt
+
+      let entries = []
+      try {
+        // The plan text is already in memory (buildContext read it once); the
+        // parser is the SHARED one, never a second reader of the same block.
+        entries = parsePredictions(plan.path, { readFn: () => plan.text }).predictions ?? []
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        if (!entry || typeof entry.id !== 'string' || entry.id.trim() === '') continue
+        // A receipt misfiled under predictions is re-verification territory.
+        if (isReceiptEntry(entry)) continue
+        // An entry missing its machine-checkable fields is already somebody
+        // else's finding; blaming it twice would just teach that the gate
+        // shouts.
+        if (!validatePrediction(entry).valid) continue
+        // LOCK 1: a command the safety boundary refuses can never be run, so
+        // demanding a verdict for it would stop work over a defect in the
+        // wording of the claim. It is named at close, in words, not gated.
+        if (!isSafeCommand(entry.check_command)) continue
+        // LOCK 2: a horizon that has not arrived is registered, not owed. Asked
+        // through the SAME function the scorer asks — a second copy of this
+        // condition would be a second opinion about what «due» means.
+        if (horizonReached(entry.horizon, { now: ctx.today, currentVersion: ctx.productVersion }) === false) continue
+
+        const key = predictionKey({ plan: basename(plan.path), id: entry.id.trim() })
+        if (scored.has(key)) continue
+
+        out.push(
+          finding(
+            'PRED-UNSCORED',
+            'critical',
+            basename(plan.path),
+            `${basename(plan.path)} was closed on ${closedOn} with prediction "${entry.id.trim()}" still unscored — its check runs and its horizon has arrived, so the verdict is owed: node scripts/sma/cli.mjs predict-score <plan>`,
+          ),
+        )
+      }
+    }
+    return out
+  },
 }
 
 const PRED_DUPDOD = {
@@ -2316,6 +2510,7 @@ export const LINT_CHECKS = [
   PRED_POSTEDIT,
   PRED_SKEPTIC,
   PRED_DUPDOD,
+  PRED_UNSCORED,
   CONS_SCHEMA,
   CONS_POSTEDIT,
   CONS_NOBLOCK,

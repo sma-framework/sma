@@ -1063,7 +1063,7 @@ async function cmdConsume({ positionals, flags, dirs }) {
  * (the commit-hook tier). corpusDir/tagsPath/indexPath default to the
  * real memory dir but read-only — no write path here.
  */
-async function cmdLint({ flags }) {
+async function cmdLint({ flags, dirs }) {
   const lint = await import('./lib/lint.mjs')
   const generator = await import('./lib/generator.mjs')
   const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
@@ -1128,6 +1128,10 @@ async function cmdLint({ flags }) {
     ...(statePath ? { statePath } : {}),
     ...(profilePath ? { profilePath } : {}),
     ...(plansDir ? { plansDir } : {}),
+    // PRED-UNSCORED needs to know where the verdicts are written; the verb has
+    // already resolved that directory, so it is handed over rather than
+    // re-derived. Absent, the rule reports a degradation and judges nobody.
+    ...(dirs && dirs.calibrationDir ? { calibrationDir: dirs.calibrationDir } : {}),
     // The git runner is passed UNCONDITIONALLY: the fingerprint-drift check needs
     // it to recompute a file-bound stamp even in a project that carries no plans
     // tree. Without it every fingerprinted claim would report "unverified" —
