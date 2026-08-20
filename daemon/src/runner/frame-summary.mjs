@@ -238,6 +238,24 @@ function blocksOf(obj) {
  * @param {object} obj a PARSED stream frame (not a string)
  * @returns {Array<{kind:string, tool?:string, detail?:string, ok?:boolean, subagent?:string}>}
  */
+/**
+ * wholeFrameKind(frame) → 'init' | 'result' | null — the two frames a transcript is read FOR.
+ *
+ * WHY THE RECOGNITION LIVES HERE and the ceiling lives in the journal: this module is the one
+ * that knows how a frame is shaped (`type`, `subtype`), and a second copy of «type === result»
+ * somewhere else is how two answers to one question start. The journal owns the RECORD — how
+ * long a row may be — and is told which frame this is; it never parses one.
+ *
+ * @param {object} frame a PARSED stream frame (not a string)
+ * @returns {'init'|'result'|null}
+ */
+export function wholeFrameKind(frame) {
+  if (!frame || typeof frame !== 'object') return null
+  if (frame.type === 'result') return 'result'
+  if (frame.type === 'system' && frame.subtype === 'init') return 'init'
+  return null
+}
+
 export function summarizeFrame(obj) {
   try {
     if (!obj || typeof obj !== 'object') return []

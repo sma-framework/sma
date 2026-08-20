@@ -914,6 +914,13 @@ export function createPgBossQueue({
       id: data.id,
       source: data.source,
       lane: data.lane,
+      // WHOSE WORK THIS IS, carried out exactly as it was written in — and ONLY when the task
+      // itself named a project. This pick used to drop the field entirely, so a project stamped
+      // at the door died on the very next read and the window had nothing to show; the reading
+      // side then filled the gap in with whatever project was on the screen, which made the
+      // same rows belong to each project in turn. A row that never said stays saying nothing:
+      // ownership nobody measured is not something a reader may invent.
+      ...(typeof data.project === 'string' && data.project ? { project: data.project } : {}),
       title: data.title,
       priority: data.priority ?? r.priority ?? 0,
       status: statusOf(r),

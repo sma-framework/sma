@@ -216,7 +216,8 @@ export function auditReadme({ readFile, rootDir }) {
 /** The audited paths, written once so a rule and its writer cannot drift apart. */
 const SERVER_FILE = 'daemon/src/front/server.mjs'
 const CLI_FILE = 'scripts/sma/cli.mjs'
-const CLI_README = 'scripts/sma/README.md'
+// The documents that name the verb total live in VERB_COUNT_PLACES below, one entry per
+// place: the list is the rule, so a new place is added in exactly one spot.
 const GRAPH_FILE = 'docs/master-graph.html'
 const PKG_FILE = 'package.json'
 const RECEIPT = 'test-receipt.json'
@@ -339,8 +340,37 @@ const VERB_LIST_RE = /cli\.mjs\s+<([^>]+)>/
 const OWN_HELP_RE = /const OWN_HELP\s*=\s*new Set\(\s*\[([^\]]*)\]/
 /** The count the comment above that allow-list claims. */
 const OTHER_VERBS_RE = /(\d+)\s+other verbs/
-/** The verb total the CLI's own README claims. */
-const CLI_README_COUNT_RE = /All (\d+),/
+/**
+ * VERB_COUNT_PLACES — EVERY shipped document that names the total number of verbs, with
+ * the phrase that names it there.
+ *
+ * This table repairs a design error that only showed itself the first time the count
+ * actually moved. The rule used to watch exactly ONE file — the CLI's own README, which
+ * happened to be the file that was wrong on the day the rule was written. Every other
+ * place naming the number was recorded as «already correct, leave it alone» and got no
+ * lock at all. The next release added a verb, that one file was brought to the truth, and
+ * three shipped documents went on saying the old number while this audit printed zero.
+ *
+ * A check that merely agrees with today, with no lock on the place it agreed with, is not
+ * a gate — it is a snapshot: the place is right when the check is written and stops being
+ * right at the first change, and nobody finds out. So every place is watched; every
+ * violation carries the name of ITS OWN file, so the report says WHERE the divergence is
+ * rather than only that there is one; and a place that stops naming the number at all is
+ * its own named violation instead of a silent pass, because a rule left with nothing to
+ * match is an empty rule that passes forever.
+ *
+ * Each pattern is anchored to the surrounding sentence rather than to a bare «N verbs»:
+ * the RU README also says «14 команд /sma-…» about the skills, which is a different count
+ * with a different owner, and a loose pattern would drag it in here.
+ */
+const VERB_COUNT_PLACES = [
+  { file: 'scripts/sma/README.md', re: /All (\d+), grouped by what they are for/g, what: 'the heading over the verb table' },
+  { file: 'README.md', re: /accountability CLI — (\d+) verbs/g, what: 'the CLI section' },
+  { file: 'README.ru.md', re: /подотчётный CLI — (\d+) команд/g, what: 'раздел о CLI' },
+  { file: 'docs/DETAILS.md', re: /CLI runs underneath — (\d+) verbs/g, what: 'the CLI reference' },
+  { file: 'docs/DETAILS.ru.md', re: /подотчётный CLI: (\d+) команд/g, what: 'справочник CLI' },
+  { file: 'docs/INSTALL.md', re: /any of the (\d+) verbs/g, what: 'the explain line' },
+]
 /** «N tests · M files» — the measured pair, wherever the map shows it. */
 const STAT_RE = /(\d+) tests · (\d+) files/g
 /** A version token of the map: v-major-minor-patch. */
@@ -539,17 +569,31 @@ export function auditNumbers({
     }
   }
 
-  // ── rule: the CLI's own README counts the verbs the CLI dispatches ──
+  // ── rule: EVERY document that names the verb total names the dispatched one ──
   if (handlerKeys != null) {
-    const cliReadme = safeRead(readFile, p(...CLI_README.split('/')))
-    if (cliReadme == null) {
-      violations.push({ file: CLI_README, rule: 'file-missing', detail: CLI_README })
-    } else {
-      const m = cliReadme.match(CLI_README_COUNT_RE)
-      if (!m) {
-        violations.push({ file: CLI_README, rule: 'pattern-missing', detail: 'no verb total to check' })
-      } else if (Number(m[1]) !== handlerKeys.length) {
-        violations.push({ file: CLI_README, rule: 'scripts-readme-verb-count', detail: `says ${m[1]} verbs, the dispatch table holds ${handlerKeys.length}` })
+    for (const place of VERB_COUNT_PLACES) {
+      const text = safeRead(readFile, p(...place.file.split('/')))
+      if (text == null) {
+        violations.push({ file: place.file, rule: 'file-missing', detail: place.file })
+        continue
+      }
+      const found = [...text.matchAll(place.re)]
+      if (found.length === 0) {
+        violations.push({
+          file: place.file,
+          rule: 'verb-count-missing',
+          detail: `${place.what} of ${place.file} names no verb total any more — the sentence this rule watches is gone`,
+        })
+        continue
+      }
+      for (const m of found) {
+        if (Number(m[1]) !== handlerKeys.length) {
+          violations.push({
+            file: place.file,
+            rule: 'verb-count',
+            detail: `«${m[0]}» in ${place.file} says ${m[1]}, the dispatch table holds ${handlerKeys.length}`,
+          })
+        }
       }
     }
   }

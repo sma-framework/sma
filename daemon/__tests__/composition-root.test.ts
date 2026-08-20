@@ -227,6 +227,47 @@ describe('the production composition root is COMPLETE', () => {
    * visible only here, where the question is «what did the root actually build?» — so the root
    * returns what it wired, and this asks it.
    */
+  /**
+   * ПАМЯТЬ ДЕДУПА СТАРЕНИЯ — ПОСТРОЕНА КОРНЕМ И ОДНА НА ВСЕ ТИКИ.
+   *
+   * Дедуп держится ровно на том, что deps собираются один раз: тик состояния не хранит, а
+   * память живёт в коллабораторе. Не вживи её здесь — функция была бы написана, покрыта
+   * тестами и никому не подключена, а журнал продолжал бы писать одну и ту же строку каждые
+   * пять секунд (замер: 99,87 % строк живого журнала). Тесты цикла инжектят свою память, как
+   * и положено тестам цикла, — увидеть разрыв можно только тут.
+   */
+  /**
+   * СТОК ЖУРНАЛА ПИШЕТ СТРОКУ С МЕТКОЙ ВРЕМЕНИ — спрошено у самого корня.
+   *
+   * Формат можно вынести в функцию, покрыть её юнитом и оставить сток печатать по-старому:
+   * тогда «в строке есть метка» будет правдой о функции и ложью о журнале. Здесь спрашивается
+   * ТОТ сток, который собрал корень и который получит тик.
+   */
+  it('сток журнала печатает строку с ISO-меткой, а не просто описание события', () => {
+    const said: string[] = []
+    const realLog = console.log
+    console.log = (...args: unknown[]) => {
+      said.push(args.map(String).join(' '))
+    }
+    try {
+      park.tickDeps.journal({ type: 'task.aging', taskId: 'BL-1', queuedForHours: 30 })
+    } finally {
+      console.log = realLog
+    }
+    expect(said).toHaveLength(1)
+    expect(said[0]).toMatch(/^\[SmaDaemon\] 20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z task\.aging · task=BL-1$/)
+  })
+
+  it('вживляет память дедупа старения: один объект, который переживает тик', () => {
+    const memory: any = park.tickDeps.agingMemory
+    expect(typeof memory, 'tickDeps.agingMemory иначе дедуп вычислен и не подключён').toBe('object')
+    expect(typeof memory.shouldSay).toBe('function')
+    expect(typeof memory.keepOnly).toBe('function')
+    // и это ПАМЯТЬ, а не пустышка: второй раз о той же задаче она молчит
+    expect(memory.shouldSay('BL-1', 1_700_000_000_000)).toBe(true)
+    expect(memory.shouldSay('BL-1', 1_700_000_005_000)).toBe(false)
+  })
+
   it('wires everything a task needs to actually run — all three, not two of three', () => {
     // Each of these was missing at some point, and each failure looked like something else:
     // buildArgs → «задачу некому запустить» on every tick; verbRunner → a code task dying in

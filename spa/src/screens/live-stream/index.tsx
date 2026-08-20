@@ -117,9 +117,11 @@ export function Screen() {
 
   /** Which project a task belongs to — from the rows the window already holds. */
   const projectOfTask = useMemo(() => {
+    // Строка, которая своего проекта не называет, в карту НЕ кладётся: `null` — это «неизвестно»,
+    // а карта отвечает на один вопрос, «чей это». Неизвестное здесь просто не отвечает.
     const out = new Map<string, string>()
-    for (const row of data?.queue ?? []) out.set(row.id, row.project)
-    for (const row of data?.done ?? []) out.set(row.id, row.project)
+    for (const row of data?.queue ?? []) if (row.project) out.set(row.id, row.project)
+    for (const row of data?.done ?? []) if (row.project) out.set(row.id, row.project)
     // A CLAIMED task has left the queue and has not reached `done`, so the roster is the
     // only list that still names it — and it carries the project for exactly this reason.
     // Without this line «мои» dropped every event of a running task: the filter fell

@@ -134,8 +134,39 @@ describe('the sweep — pressing everything, safely', () => {
     }
   })
 
+  it('refuses the control that starts the machine — the sweep may not switch the engine on', () => {
+    for (const name of [
+      'Включить конвейер',
+      'Выключить конвейер',
+      'ВКЛЮЧИТЬ КОНВЕЙЕР',
+      'Enable pipeline',
+      'Disable pipeline',
+      'Start engine',
+    ]) {
+      expect(DESTRUCTIVE_RE.test(name), `${name} must be refused`).toBe(true)
+    }
+  })
+
+  it('refuses approval — a draft accepted by the sweep is a decision nobody made', () => {
+    for (const name of ['Одобрить', 'Одобряем…', 'Одобрить черновик', 'Принять', 'Принимаем…', 'Approve', 'Approve draft', 'Accept']) {
+      expect(DESTRUCTIVE_RE.test(name), `${name} must be refused`).toBe(true)
+    }
+  })
+
   it('presses ordinary controls, including words that merely contain a risky substring', () => {
-    for (const name of ['Save', 'Задачи', 'Open backlog', 'Next', 'Undelete']) {
+    for (const name of [
+      'Save',
+      'Задачи',
+      'Open backlog',
+      'Next',
+      'Undelete',
+      // «Конвейер фаз» is a screen in the navigation, not the switch: refusing it would
+      // hide a whole screen from the sweep to guard a control that is not there.
+      'Конвейер фаз',
+      'Ранее принятый черновик',
+      'Acceptance criteria',
+      'Approved runs',
+    ]) {
       expect(DESTRUCTIVE_RE.test(name), `${name} must be pressed`).toBe(false)
     }
   })

@@ -172,11 +172,31 @@ function LogLine({ line, raw = false }: { line: AttemptLogLine; raw?: boolean })
           ))}
         </div>
       ) : (
-        <pre className="m-0 min-w-0 flex-1 font-mono text-[11px] leading-[1.5] break-words whitespace-pre-wrap text-tx2">
-          {line.line}
-        </pre>
+        <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+          <pre className="m-0 min-w-0 font-mono text-[11px] leading-[1.5] break-words whitespace-pre-wrap text-tx2">
+            {line.line}
+          </pre>
+          <TruncationMark line={line} />
+        </div>
       )}
     </div>
+  )
+}
+
+/**
+ * ОБРЕЗКА, СКАЗАННАЯ ВСЛУХ. Ряд, который не поместился в потолок, до этой правки выглядел как
+ * ряд, который просто там кончился, — и человек читал часть, думая, что читает целое. Пометка
+ * состоит из чисел и постоянных слов: ничего из данных ряда в неё не попадает, поэтому она не
+ * может стать каналом разметки; сама строка рисуется текстом ровно как раньше.
+ */
+function TruncationMark({ line }: { line: AttemptLogLine }) {
+  if (!line.truncated) return null
+  const shown = line.line.length
+  const total = typeof line.originalLength === 'number' ? line.originalLength : null
+  return (
+    <span className="text-[10.5px] text-tx3">
+      {total === null ? 'обрезано' : `обрезано: показано ${shown} из ${total} знаков`}
+    </span>
   )
 }
 

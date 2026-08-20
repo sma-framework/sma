@@ -11,7 +11,7 @@ import type { InboxItem } from './Inbox'
 import { NewBatchForm } from './NewBatchForm'
 import { NewTaskForm } from './NewTaskForm'
 import { UnitRow } from './UnitRow'
-import { buildUnits, countUnits, waitWords } from './units'
+import { buildUnits, countUnits, splitByProject, waitWords } from './units'
 import type { WorkUnit } from './units'
 
 /**
@@ -78,6 +78,8 @@ export function Screen() {
   const [openPhase, setOpenPhase] = useState<string | null>(null)
   /** Какая сборка раскрыта в этом же окне — тем же способом и по той же причине. */
   const [openBatch, setOpenBatch] = useState<string | null>(null)
+  /** Раскрыта ли группа строк с неизвестным проектом. Свёрнута — но её заголовок виден всегда. */
+  const [unknownOpen, setUnknownOpen] = useState(false)
 
   // Карточка фазы живёт теперь и здесь, значит и два звонка фазового цикла нужны здесь: без
   // них раскрытая фаза осталась бы такой, какой её открыли, пока человек не ушёл и не вернулся.
@@ -113,6 +115,37 @@ export function Screen() {
   )
 
   const counts = countUnits(units)
+
+  /**
+   * РАБОТА, ЧЕЙ ПРОЕКТ НЕИЗВЕСТЕН — та же проекция, отдельной группой.
+   *
+   * Эти строки поставлены раньше, чем задача научилась знать свой проект. Список выше их не
+   * показывает — он о выбранном проекте, — а выбросить их совсем нельзя: работа, которую прячет
+   * каждый фильтр, невидима, и человек не может ни решить её, ни даже узнать, что она есть.
+   *
+   * Строится тем же `buildUnits` и рисуется теми же строками — чтобы группа не стала вторым
+   * способом показать задачу, который однажды разойдётся с первым. Сужение по проекту внутри
+   * выключено (`activeProject: null`): строки уже отобраны, а сито отбросило бы их снова.
+   * Фазы сюда не идут: фаза свой проект называет всегда.
+   */
+  const unknownUnits = useMemo(() => {
+    if (!activeProject) return []
+    const unknownOf = <T extends { project?: string | null }>(rows: T[]): T[] =>
+      splitByProject(rows, activeProject).unknown
+    return buildUnits({
+      queue: unknownOf(data?.queue ?? []),
+      awaiting: unknownOf(data?.awaiting ?? []),
+      workers: unknownOf(data?.workers ?? []),
+      done: unknownOf(data?.done ?? []),
+      batches: unknownOf(data?.batches ?? []),
+      phases: [],
+      activeProject: null,
+      machine,
+      selfMachine,
+      clock: clockLabel,
+      now: Date.now(),
+    })
+  }, [data, activeProject, machine, selfMachine])
 
   /**
    * ОТВЕТИЛО ЛИ ЧТЕНИЕ СОСТОЯНИЯ ХОТЬ РАЗ — и до этого мгновения экран не утверждает о работе
@@ -357,7 +390,13 @@ export function Screen() {
           </div>
         ) : units.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-4 rounded-[10px] border border-bd bg-card py-16">
-            <p className="m-0 text-[13px] text-tx2">Задач нет. Поставьте задачу.</p>
+            {/* «Задач нет» говорится, только когда их и правда нет НИГДЕ. Строки с неизвестным
+                проектом стоят ниже своей группой, и приговор «пусто» над ними был бы неправдой. */}
+            <p className="m-0 text-[13px] text-tx2">
+              {unknownUnits.length > 0
+                ? 'В этом проекте задач нет. Ниже — работа, чей проект неизвестен.'
+                : 'Задач нет. Поставьте задачу.'}
+            </p>
             <button
               type="button"
               onClick={() => setNewOpen(true)}
@@ -373,6 +412,45 @@ export function Screen() {
             ))}
           </div>
         )}
+
+        {/*
+          ГРУППА «ПРОЕКТ НЕИЗВЕСТЕН» — словами, не подстановкой.
+          Заголовок с числом виден всегда, когда такие строки есть; сами строки свёрнуты, потому
+          что это работа не того проекта, на который человек смотрит, — но и не чужая.
+        */}
+        {unknownUnits.length > 0 ? (
+          <div className="mt-4 overflow-hidden rounded-[10px] border border-bd bg-card">
+            <button
+              type="button"
+              onClick={() => setUnknownOpen((v) => !v)}
+              aria-expanded={unknownOpen}
+              className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left hover:bg-row-hover"
+            >
+              <span aria-hidden className="flex-none text-[11px] text-tx3">
+                {unknownOpen ? '▾' : '▸'}
+              </span>
+              <span className="text-[13px] font-semibold text-tx">
+                Проект неизвестен — {unknownUnits.length}
+              </span>
+              <span className="flex-1" />
+              <span className="text-[11.5px] text-tx3">
+                {unknownOpen ? 'свернуть' : 'показать'}
+              </span>
+            </button>
+            {unknownOpen ? (
+              <>
+                <p className="m-0 border-t border-bd px-4 py-2.5 text-[11.5px] leading-[1.5] text-tx3">
+                  Эти строки поставлены раньше, чем задача стала знать свой проект. Приписать их
+                  тому, что открыт сейчас, значило бы выдумать принадлежность; спрятать — сделать
+                  работу невидимой. Поэтому они здесь, со своей правдой: проект неизвестен.
+                </p>
+                {unknownUnits.map((unit, i) => (
+                  <UnitRow key={`unknown:${unit.kind}:${unit.id}`} unit={unit} first={i === 0} onOpen={openUnit} />
+                ))}
+              </>
+            ) : null}
+          </div>
+        ) : null}
 
         {phaseIndex.isError ? (
           <p className="mt-3 text-[11.5px] text-tx3">
