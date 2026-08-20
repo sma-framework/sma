@@ -34,6 +34,9 @@ import {
   SAFE_COMMAND_PATTERNS,
   isSafeCommand,
   horizonReached,
+  makeExecRunner,
+  draftLessonsForRecords,
+  RUN_BUDGET_MS,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
 
@@ -658,5 +661,116 @@ describe('backward compatibility: the default measure is unchanged', () => {
     const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }))
     const { records } = scorePlan({ planPath: p, runCommand: () => ranWith('noise\n42\n', 1) })
     expect(records[0].verdict).toBe('hit') // the last line is the fact; the exit code is not
+  })
+})
+
+// ── «Не смог измерить» is NOT «you were wrong» ──────────────────────────────
+// Found by a run, not by reasoning: the first real verdict this workspace's
+// ledgers ever carried was a MISS produced by the runner's own two-minute
+// budget, not by the checked thing failing. A killed process reports no exit
+// code at all (status null, signal SIGTERM, code ETIMEDOUT), and the runner
+// substituted 1 — so «I could not measure» was written down as a claim about
+// the world. These cases pin the difference machine-readably.
+
+/** The real runner, driven against real child processes — no fake in sight. */
+function tmpScript(body: string, name: string): string {
+  const p = join(dir, name)
+  writeFileSync(p, body)
+  return `node "${p}"`
+}
+
+describe('a run that never finished is not a verdict about the world', () => {
+  it('a command killed by its own time budget reports «not measured», never exit code 1', async () => {
+    const { execSync } = await import('node:child_process')
+    const run = makeExecRunner({ execSync, cwd: dir, timeoutMs: 400 })
+    const res = run(tmpScript('setTimeout(() => {}, 8000)\n', 'sleeper.mjs'))
+    expect(res.notMeasured).toBe('timeout')
+    expect(res.exitCode).toBe(null)
+  }, 30_000)
+
+  it('a command that RAN and exited nonzero reports that code and claims nothing about measurement', async () => {
+    const { execSync } = await import('node:child_process')
+    const run = makeExecRunner({ execSync, cwd: dir, timeoutMs: 30_000 })
+    const res = run(tmpScript('process.exit(3)\n', 'exit3.mjs'))
+    expect(res.exitCode).toBe(3)
+    expect(res.notMeasured).toBe(null)
+  }, 30_000)
+
+  it('the working directory still travels as a PARAMETER — the real runner never splices it in', async () => {
+    const { execSync } = await import('node:child_process')
+    const run = makeExecRunner({ execSync, cwd: process.cwd(), timeoutMs: 30_000 })
+    const cmd = tmpScript('process.stdout.write(process.cwd())\n', 'pwd.mjs')
+    const res = run(cmd, { cwd: dir })
+    expect(res.exitCode).toBe(0)
+    expect(String(res.stdout).toLowerCase()).toContain('sma-predict-')
+    expect(cmd).not.toContain('&&')
+  }, 30_000)
+})
+
+describe('the unfinished run travels all the way into the record', () => {
+  // The shape handed to scorePlan below is the shape the REAL runner produces
+  // for a timeout — pinned by the first case of the previous block.
+  const timedOut = () => ({ stdout: '', exitCode: null, notMeasured: 'timeout' })
+
+  it('a timed-out run is NOT a miss, and the record says why', () => {
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: timedOut })
+    expect(records[0].verdict).not.toBe('miss')
+    expect(records[0].verdict).toBe('error')
+    expect(records[0].not_measured).toBe('timeout')
+  })
+
+  it('a command that RAN and exited nonzero is STILL a MISS — the fix does not launder misses away', () => {
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }), 'PLAN-MISS.md')
+    const { records } = scorePlan({ planPath: p, runCommand: () => ({ stdout: '', exitCode: 3, notMeasured: null }) })
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].actual).toBe(3)
+    expect(records[0].not_measured).toBeUndefined()
+  })
+
+  it('the default measure is judged the same way: an unfinished run is not a wrong number', () => {
+    const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }), 'PLAN-LASTLINE.md')
+    const { records } = scorePlan({ planPath: p, runCommand: timedOut })
+    expect(records[0].verdict).toBe('error')
+    expect(records[0].not_measured).toBe('timeout')
+  })
+})
+
+describe('an unfinished run drafts NO lesson — the wire, not a reading', () => {
+  it('the drafter is invoked for the miss and NOT for the unfinished run', () => {
+    let called = 0
+    const seen: string[] = []
+    const draft = ({ verdict }: { verdict: { id: string } }) => {
+      called += 1
+      seen.push(verdict.id)
+      return { drafted: true, path: join(dir, `draft-${verdict.id}.md`) }
+    }
+    const records = [
+      { id: 'PA', verdict: 'error', not_measured: 'timeout' },
+      { id: 'PB', verdict: 'miss', claim: 'c', metric: 'm', comparator: '==', expected: 0, check_command: 'x' },
+      { id: 'PC', verdict: 'hit' },
+      { id: 'PD', verdict: 'skipped-unsafe' },
+    ]
+    const out = draftLessonsForRecords({ records, planId: 'alpha', dirs: { draftsDir: dir }, draft })
+    expect(called).toBe(1)
+    expect(seen).toEqual(['PB'])
+    expect(out.map((d: { id: string }) => d.id)).toEqual(['PB'])
+  })
+
+  it('the scoring verb drafts through that one helper — there is no second drafting loop in the tree', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('draftLessonsForRecords(')
+  })
+})
+
+describe('the time budget fits the thing the runner is asked to measure', () => {
+  it('the budget is far above this product own suite (measured at 134 s)', () => {
+    expect(RUN_BUDGET_MS).toBeGreaterThan(300_000)
+  })
+
+  it('the verdict-producing verbs all build their runner from that one factory', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    const uses = src.match(/makeExecRunner\(/g) || []
+    expect(uses.length).toBeGreaterThanOrEqual(3)
   })
 })
