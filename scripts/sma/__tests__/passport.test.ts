@@ -19,6 +19,12 @@
  *     totals/domains/perModel count UNIQUE prediction ids (latest verdict
  *     wins), in agreement with modelGuard's freshN; receipts counts and the
  *     ledger line count stay per-record (2026-07-10 dogfood lesson).
+ *   - Test 10: THE WIRE — a verdict written into the ledger actually reaches
+ *     the public badge, and the bar is read from BOTH sides: at the bar the
+ *     claim shows, one short of it it does not, a model change hides it
+ *     again, and re-scoring one prediction of one plan never walks up to it.
+ *   - Test 11: the badge is rebuilt into EVERY README of the repository, and
+ *     the passport says out loud what it is able to count and what it is not.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -336,5 +342,98 @@ describe('Test 9 — snapshotSchemaOk: the --schema-check contract', () => {
     expect(snapshotSchemaOk({ ...snap, calibration: { ...snap.calibration, domains: 'x' } })).toBe(false)
     expect(snapshotSchemaOk({ ...snap, ledger: { lines: NaN, corrupt: 0 } })).toBe(false)
     expect(snapshotSchemaOk('not an object')).toBe(false)
+  })
+})
+
+describe('Test 10 — THE WIRE: a verdict written into the ledger reaches the public badge', () => {
+  // This block is an assertion about a WIRE, not about arithmetic. Until the accounting key
+  // became «plan file + id», the very same input below produced ONE observation instead of
+  // twenty: every plan reusing the same short id collapsed into a single data point, so the
+  // bar was unreachable by construction and the badge could never show — no matter how many
+  // real verdicts a project earned. The first case proves the collapse is gone; the last one
+  // proves the anti-inflation guard that the collapse used to impersonate is still there.
+  // They belong side by side: either one alone can be satisfied by a wrong fix.
+  const CURRENT = 'claude-x-1'
+
+  /** n verdicts sharing ONE short id, each belonging to a DIFFERENT plan; `hits` of them hits. */
+  function acrossPlans(n: number, hits: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: 'P1',
+      plan: `.planning/phases/demo/demo-${String(i + 1).padStart(2, '0')}-PLAN.md`,
+      verdict: i < hits ? 'hit' : 'miss',
+      model: CURRENT,
+      scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
+    }))
+  }
+
+  it('twenty verdicts of one id from twenty DIFFERENT plans are twenty observations — and the claim shows', () => {
+    writeSightings([{ model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger('tech.wire', acrossPlans(BADGE_MIN_N, 17))
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    // twenty, not one: the ledger side and the guard side agree on what a prediction IS
+    expect(snap.guard.freshN).toBe(BADGE_MIN_N)
+    expect(snap.guard.status).toBe('ok')
+    expect(snap.calibration.totals).toMatchObject({ n: BADGE_MIN_N, hits: 17, misses: 3 })
+
+    // and the number travels all the way out to the public surface
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`85% hits, n=${BADGE_MIN_N}`)
+    expect(badge).toContain('img.shields.io/badge/')
+    expect(renderPassport(snap)).toContain(`SMA-calibrated: 85% hits, n=${BADGE_MIN_N}`)
+  })
+
+  it('one verdict short of the bar the claim is withheld, and the line says the number out loud', () => {
+    writeSightings([{ model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger('tech.wire', acrossPlans(BADGE_MIN_N - 1, BADGE_MIN_N - 1))
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.guard.freshN).toBe(BADGE_MIN_N - 1)
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`collecting calibration data (n=${BADGE_MIN_N - 1}/${BADGE_MIN_N})`)
+    expect(badge).not.toMatch(/\d+% hits/) // a 100%-hits claim over 19 points is exactly the lie the bar exists to stop
+    expect(renderPassport(snap)).toContain(`collecting calibration data (n=${BADGE_MIN_N - 1}/${BADGE_MIN_N})`)
+  })
+
+  it('the same twenty verdicts stop counting the moment the model underneath them changes', () => {
+    writeSightings([
+      { model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' },
+      { model: 'claude-x-2', source: 'env', at: '2026-08-01T00:00:00Z' },
+    ])
+    writeLedger('tech.wire', acrossPlans(BADGE_MIN_N, 17))
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.guard.status).toBe('stale-priors')
+    expect(snap.guard.freshN).toBe(0)
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`recalibrating after model change (n=0/${BADGE_MIN_N})`)
+    expect(badge).not.toMatch(/\d+% hits/)
+    // the all-time table still remembers them — hidden is not deleted
+    expect(snap.calibration.totals).toMatchObject({ n: BADGE_MIN_N })
+  })
+
+  it('twenty re-scores of ONE prediction of ONE plan stay one observation — the bar cannot be walked up to', () => {
+    writeSightings([{ model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger(
+      'tech.wire',
+      Array.from({ length: BADGE_MIN_N }, (_, i) => ({
+        id: 'P1',
+        plan: '.planning/phases/demo/demo-01-PLAN.md',
+        verdict: 'hit',
+        model: CURRENT,
+        scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
+      })),
+    )
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.guard.freshN).toBe(1)
+    expect(snap.calibration.totals).toMatchObject({ n: 1 })
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`collecting calibration data (n=1/${BADGE_MIN_N})`)
+    expect(badge).not.toMatch(/\d+% hits/)
   })
 })
