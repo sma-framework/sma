@@ -779,6 +779,8 @@ flowchart LR
 
 `sma passport` turns the calibration ledger into `PASSPORT.md` and a public badge — the real hit rate and sample size, reproducible byte-for-byte on a fresh clone. The model-version guard is the honest part: after a model change the old hit rate no longer describes the new model, so the badge **hides itself until n ≥ 20** fresh predictions accumulate. The first production dogfood (the founder's platform, SMA user #1) stands at n=16/20 fresh verdicts on *its own* ledger — that is that deployment's number, not this repo's badge, which stays hidden until this repo's committed ledger reaches the gate.
 
+The passport now states out loud **what it is able to count**, because a small number on a public page invites the wrong reading. Every figure on it comes from calibration data committed to this repository and from nothing else: the team that develops SMA runs its predictions in a separate, private planning workspace whose ledger names internal planning files, so copying it here would carry private material into a public repository — and it is never copied. A small sample size therefore means «this repository holds few reproducible verdicts of its own», never «a larger number is being kept out of sight». One rebuild writes the badge into every README the repository carries, from one snapshot, so the English and Russian pages cannot drift apart; a README that is absent is named in the output rather than created.
+
 ```mermaid
 flowchart LR
     L["calibration ledger<br>settled predictions"] --> S["sma passport --build<br>deterministic snapshot"]
@@ -800,7 +802,7 @@ flowchart LR
 
 ### Self-tuning enforcement ladder
 
-Rules rise **and fall** only on journal evidence — benefit accounting, not fire counting — and always as a reviewable diff. A weekly miss-curriculum turns error clusters into prediction templates and a weak-spots brief. The rule set sharpens instead of only growing.
+Rules rise **and fall** only on journal evidence — benefit accounting, not fire counting — and always as a reviewable diff. A weekly miss-curriculum turns error clusters into prediction templates and a weak-spots brief — and it **rebuilds itself** at session start the moment the standing brief is over a week old, instead of printing a reminder that the brief is stale and leaving it stale. It names the state directory it read, because the same verb run from a working copy used to resolve the root through the shared git directory and report on a *different* checkout's journal — which is how an «empty» week could be reported on a ledger that was not empty. The rule set sharpens instead of only growing.
 
 ### Statusline segment + attention pulse
 
@@ -1211,15 +1213,25 @@ run `pnpm build:api` and confirm the chunk is non-empty before committing.
 ```yaml
 predictions:
   - id: PRED-01
-    claim: "The rate limiter rejects the 101st request in a 60s window"
-    metric: rejected_requests
+    claim: "The rate-limit suite is green: the limiter rejects the 101st request in a 60s window"
+    metric: rate_limit_suite_exit_code
     check_command: "pnpm vitest run test/rate-limit.test.ts"   # allowlisted prefixes only
-    comparator: ">="
-    threshold: 1
+    measure: exit-code # OPTIONAL — the fact is the process exit code, not the last output line
+    cwd: "packages/api" # OPTIONAL — a FIELD handed to the runner, never glued into the command
+    comparator: "=="
+    threshold: 0
     horizon: plan-close
     domain: api
     confidence: 0.8    # recorded for calibration — NEVER gates the result
 ```
+
+The two optional fields are what make this example scoreable at all. By default the fact is the
+**numeric last line** of the output, and a test runner does not print one — so a claim like «the
+suite is green» used to be registered, run, and never settled. `measure: exit-code` takes the
+process exit code as the fact; `cwd` names the directory the command runs in. Both are handed to
+the runner as parameters, so the allowlist is untouched: `cd X && cmd` and `cmd; echo $?` are
+still refused by the charset guard, and a run that never finished is recorded as **could not
+measure** — never as a miss, because «I failed to measure you» is not a statement about the world.
 
 **3 · A structural receipt, settled by a script on a fresh clone (zero LLM)** — the `receipts:` block a "done" now carries
 
@@ -1293,7 +1305,7 @@ flowchart LR
 
 V2 is where SMA learned to keep score. Three mechanisms, all deterministic, all still the substrate everything above runs on:
 
-- **Predictions** — every plan states up front what will measurably change: a metric, a check command, a threshold. Registered predictions are immutable (a lint refuses post-hoc edits), so the goalposts cannot move after the result is known.
+- **Predictions** — every plan states up front what will measurably change: a metric, a check command, a threshold. Registered predictions are immutable (a lint refuses post-hoc edits), so the goalposts cannot move after the result is known. Settling them at close is a gate, not a habit: `PRED-UNSCORED` is a **critical** finding on a closed plan that left a checkable, already-due prediction without a verdict. It is deliberately narrow — a prediction whose horizon has not arrived, and one whose check the command allowlist refuses, are both left alone, the second because that is a defect of the prediction to be named in words, not a debt to be enforced against whoever is closing the plan today.
 - **Reflexes** — a scored miss becomes a rule with a firing condition, delivered as a warning *inside* the matching tool call. One burn, permanent avoidance — with noise controls (repeat muting, a kill-switch per rule).
 - **Calibration** — a per-domain ledger of promise-versus-fact. An area that keeps over-promising earns stricter oversight; a long clean record earns lighter touch.
 
