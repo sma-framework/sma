@@ -5785,23 +5785,46 @@ async function cmdReverify({ flags, dirs }) {
   }
 
   const allRecords = []
+  let draftedLessons = []
   try {
     for (const sp of summaryPaths) {
       const { records } = receipts.verifyReceipts({ summaryPath: remap(sp), runCommand, cwd })
-      for (const r of records) {
+      // planId travels WITH the record: the drafter names its file by it, and the
+      // summary→plan mapping already lives in one place in this file.
+      for (const r of records) allRecords.push({ ...r, summary: sp, planId: planIdFromPath(sp) })
+    }
+
+    // Read the previous verdicts, write the new ones, draft a lesson for a
+    // divergence that is NEW — in that order, which is why it is ONE step and not
+    // three lines here. A receipt that just started diverging is the commonest real
+    // miss this system makes and used to draft nothing; a receipt that was ALREADY
+    // diverging drafts nothing still, or the first general walk would spray a draft
+    // for every pair that ever diverged and bury the human promotion gate.
+    const run = predictLib.recordReceiptRun({
+      records: allRecords,
+      repoRoot,
+      readPrevious: () =>
+        calibration.readLedger({ calibrationDir: dirs.calibrationDir, domain: 'sma.receipts' }).records,
+      append: (r) => {
         const mapped = r.verdict === 'verified' ? 'hit' : r.verdict === 'divergent' ? 'miss' : r.verdict
         calibration.appendVerdict(
-          { ...r, verdict: mapped, receipt_verdict: r.verdict, domain: 'sma.receipts', summary: sp },
+          { ...r, verdict: mapped, receipt_verdict: r.verdict, domain: 'sma.receipts' },
           { calibrationDir: dirs.calibrationDir },
         )
-        allRecords.push({ ...r, summary: sp })
-      }
-    }
+      },
+      // Drafts belong to the tree under measurement, exactly like the footprint branch.
+      dirs: { draftsDir: join(repoRoot, '.claude', 'memory', 'drafts') },
+    })
+    draftedLessons = run.drafted
   } finally {
     if (cloneParent) rmSync(cloneParent, { recursive: true, force: true, maxRetries: 3 })
   }
 
-  // --count <verdict>: numeric last line, ALWAYS exit 0.
+  // --count <verdict>: numeric last line, ALWAYS exit 0. Draft paths are NOT
+  // printed here on purpose: this is the scorer's measurement surface, and a line
+  // that appears only on the run that happened to draft would make its observation
+  // hash unstable — a receipt of this very command would then diverge for no reason
+  // of its own.
   if (typeof flags.count === 'string') {
     const n = allRecords.filter((r) => r.verdict === flags.count).length
     if (wantsJson(flags)) printJson({ verdict: flags.count, count: n })
@@ -5812,7 +5835,7 @@ async function cmdReverify({ flags, dirs }) {
   const bad = allRecords.some((r) => r.verdict === 'divergent' || r.verdict === 'error')
 
   if (wantsJson(flags)) {
-    printJson({ records: allRecords, appended: allRecords.length })
+    printJson({ records: allRecords, appended: allRecords.length, drafts: draftedLessons })
     return bad ? 1 : 0
   }
 
@@ -5830,6 +5853,15 @@ async function cmdReverify({ flags, dirs }) {
     process.stdout.write('\nРасхождения (ожидалось / получено):\n')
     for (const r of diverged) {
       process.stdout.write(`  ${r.id}: expected ${String(r.expected_sha256).slice(0, 12)}… / observed ${String(r.observed_sha256).slice(0, 12)}…\n`)
+    }
+  }
+  // The paths are printed so a draft lands in receipts and summaries instead of
+  // quietly accruing in a directory nobody looks at. A draft is NOT the corpus:
+  // promotion is a human decision against the three conditions in its own header.
+  if (draftedLessons.length) {
+    process.stdout.write('\nЧерновики уроков (новое расхождение; в корпус НЕ переносятся автоматически):\n')
+    for (const d of draftedLessons) {
+      process.stdout.write(`  черновик: ${d.path}${d.drafted ? '' : ' (уже был)'}\n`)
     }
   }
   return bad ? 1 : 0
