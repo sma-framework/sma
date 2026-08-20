@@ -553,11 +553,82 @@ export function providerAbortOf(lines) {
 }
 
 /**
+ * turnCapHitOf(lines, maxTurns) → `{turns}` when THIS attempt walked into the turn ceiling,
+ * else null.
+ *
+ * WHY IT IS READ AT ALL. A worker given a ceiling stops at it in silence: no note, no receipt,
+ * and an exit. That is the same shape a provider abort leaves behind, and for the same reason —
+ * the run was ended from outside the work. Unread, such an attempt reached the window as «нет
+ * квитанции» or «ошибка работника», which sends a person to fix something that was never wrong.
+ * The ceiling is OURS: the honest answer is a bigger one or a smaller task, and neither can be
+ * offered by a screen that does not know the ceiling was reached.
+ *
+ * THE LAST TERMINAL FRAME AND ONLY IT. A stream carries one `result` at its end; a run that
+ * played on to a success after an earlier one is not a run stopped by a ceiling, so the scan
+ * goes backwards, stops at the first terminal frame it meets, and judges that one.
+ *
+ * WHAT COUNTS AS THE SIGNAL, and this boundary is the whole design: the FIELD the CLI names the
+ * outcome with, plus our OWN arithmetic — never the text of anything. A worker debugging
+ * somebody else's ceiling says the sentence about exhausted turns out loud in his own output,
+ * and an attempt declared capped for pronouncing it would be exactly the diagnosis by
+ * eavesdropping the neighbouring recogniser refuses by name. Text matching is deliberately absent.
+ *
+ * THE FALLBACK IS NOT OPTIONAL. The word is the vendor's and can change with his next binary;
+ * the turn count on the same frame and the ceiling we handed the process are both ours. So a
+ * frame that errored after taking at least as many turns as the ceiling reads as a ceiling
+ * reached whatever it calls itself. With no ceiling named there is nothing to compare against,
+ * and the fallback stays silent rather than guessing.
+ *
+ * A FRAME THE VENDOR ENDED IS NOT THIS. It is answered by the recogniser above, and the two must
+ * not both claim one run — a long attempt cut by an outage is an outage, not a ceiling.
+ *
+ * @param {string[]} lines — the attempt's stdout, as collected
+ * @param {number|null} [maxTurns] — the ceiling this daemon itself put on the command line
+ * @returns {{turns:number|null}|null}
+ */
+export function turnCapHitOf(lines, maxTurns = null) {
+  if (!Array.isArray(lines)) return null
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (typeof line !== 'string' || !line.includes('result')) continue
+    const { event } = parseClaudeFrame(line)
+    if (!event || event.type !== 'result') continue
+    // the VENDOR ended this run, not us — the recogniser above owns it, and one run may not be
+    // claimed by both
+    if (event.terminalReason === 'api_error' || Number.isFinite(event.apiErrorStatus)) return null
+    const turns = Number.isFinite(event.numTurns) ? event.numTurns : null
+    if (event.subtype === 'error_max_turns') return { turns }
+    const cap = Number(maxTurns)
+    if (event.isError && Number.isFinite(cap) && cap > 0 && turns !== null && turns >= cap) return { turns }
+    return null // the last terminal frame has spoken; an earlier one describes an earlier run
+  }
+  return null
+}
+
+/**
+ * argMaxTurns(args) → the turn ceiling THIS spawn was actually given, read back off its own
+ * argument array, or null.
+ *
+ * The number is taken from the command line rather than from config on purpose: the fallback
+ * above compares against what the process really received, and a value read from anywhere else
+ * would be a claim about the spawn instead of a reading of it. A spawn with no ceiling on it
+ * answers null, and the fallback then stays quiet.
+ */
+function argMaxTurns(args) {
+  if (!Array.isArray(args)) return null
+  const at = args.indexOf('--max-turns')
+  if (at < 0) return null
+  const n = Number(args[at + 1])
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
  * classifyFailure({spawnError, providerAbort, exitCode, receipt, workerMarker}) → a
  * FAIL_REASONS code. Pure. Maps a non-completing outcome onto the failure taxonomy, sharpest
  * signal first:
  *   spawnError                     → 'runtime_offline'  (the process never ran)
  *   provider abort                 → 'provider_error'   (the run the worker did not end)
+ *   turn ceiling reached           → 'turns_exhausted'  (the run WE ended, at our own ceiling)
  *   worker marker NEEDS_DECISION   → 'needs_decision'   (a call only a human can make)
  *   worker marker MISSING_ACCESS   → 'missing_access'   (credentials/permissions absent)
  *   red reverify receipt           → 'tests_red'        (targeted tests failed)
@@ -574,12 +645,21 @@ export function providerAbortOf(lines) {
  * receipt and a red re-run are all CONSEQUENCES of the cut. There is nothing to judge, so
  * nothing is judged. Only a run that never started outranks it — there was nothing to cut.
  *
- * @param {{spawnError?:any, providerAbort?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
+ * A TURN CEILING SITS DIRECTLY BELOW IT, for the same reason and with one difference. An
+ * attempt cut at the ceiling left no note and no receipt because it was stopped, exactly like
+ * one the vendor cut — so no judgement of what it left behind may stand. What differs is whose
+ * decision ended it: this one was OURS, put on the command line by this daemon, and calling it
+ * anything else would hide a number a person is entitled to change. The exit code the vendor's
+ * binary happens to use for it is NOT part of the signal — it has never been measured, and an
+ * unmeasured number must not quietly become half a diagnosis.
+ *
+ * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
+export function classifyFailure({ spawnError, providerAbort, turnCapHit, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
+  if (turnCapHit) return 'turns_exhausted'
   if (workerMarker === 'NEEDS_DECISION') return 'needs_decision'
   if (workerMarker === 'MISSING_ACCESS') return 'missing_access'
   if (receipt && receipt.verdict === 'red') return 'tests_red'
@@ -3138,6 +3218,10 @@ export async function tick(deps = {}) {
       // what the run left behind. A cut by the provider makes every such judgement a
       // statement about the outage rather than about the work.
       const providerAbort = providerAbortOf(streamLines)
+      // AND WHETHER WE ENDED IT OURSELVES — asked in the same breath and measured against the
+      // ceiling this very spawn was handed, so the reading is of the command line that ran and
+      // not of a setting somebody believes it carried.
+      const turnCapHit = turnCapHitOf(streamLines, argMaxTurns(spec.args))
 
       // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
       // fate. A refused attempt still spent the tokens, so the book is written for every
@@ -3223,8 +3307,8 @@ export async function tick(deps = {}) {
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
       // already there — and neither may an attempt the vendor cut off mid-word.
-      const infraReason = exit.spawnError || providerAbort || marker
-        ? classifyFailure({ spawnError: exit.spawnError, providerAbort, exitCode: exit.code, workerMarker: marker })
+      const infraReason = exit.spawnError || providerAbort || turnCapHit || marker
+        ? classifyFailure({ spawnError: exit.spawnError, providerAbort, turnCapHit, exitCode: exit.code, workerMarker: marker })
         : null
       // NEVER SILENT: an outage of the vendor's is a fact about the DAY, not about this task,
       // and the operator's log is where a person looks when three attempts died in a row.
@@ -3451,6 +3535,7 @@ export async function tick(deps = {}) {
         const reason = classifyFailure({
           spawnError: exit.spawnError,
           providerAbort,
+          turnCapHit,
           exitCode: exit.code,
           receipt,
           workerMarker: marker,

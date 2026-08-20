@@ -216,6 +216,10 @@ export const TASK_STATUSES = Object.freeze([
  *                     window as «нет записки о подходе» — the note could not exist, the
  *                     worker was cut off writing it — and the two ask a person for opposite
  *                     things: wait and press again, or go and fix something
+ *   turns_exhausted — the run WE ended: the attempt reached the turn ceiling this daemon put
+ *                     on its own command line and stopped there, leaving neither note nor
+ *                     receipt because it was stopped. Apart from provider_error because the
+ *                     decision was ours, and the remedy is a bigger ceiling or a smaller task
  *   tests_red       — a red reverify receipt (targeted tests failed)
  *   needs_decision  — the worker surfaced a call only a human can make
  *   missing_access  — credentials / permissions absent
@@ -246,6 +250,14 @@ export const FAIL_REASONS = Object.freeze([
   'no_artifact',
   'agent_error',
   'provider_error',
+  // THE RUN THE WORKER DID NOT END EITHER — but this one WE ended. The attempt walked into the
+  // turn ceiling this daemon itself put on its command line and stopped there in silence: no
+  // note, no receipt, nothing to judge. Kept apart from provider_error because the cause is
+  // ours rather than the vendor's, and the two ask a person for different things — «wait and
+  // press again» against «raise the ceiling or cut the task in half». Kept apart from
+  // agent_error because nothing is wrong with the work: a card saying «ошибка работника» here
+  // sends somebody to fix a number he set himself.
+  'turns_exhausted',
   'tests_red',
   'needs_decision',
   'missing_access',
@@ -264,6 +276,7 @@ export const REASON_LABELS = Object.freeze({
   no_artifact: 'нет документа — стадия не оставила своего файла',
   agent_error: 'ошибка работника',
   provider_error: 'оборвал провайдер — работник тут ни при чём, попробуйте ещё раз',
+  turns_exhausted: 'упёрся в потолок ходов — работа не доделана, поднимите потолок или разбейте задачу',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
   missing_access: 'нужен человек: не хватает доступа',

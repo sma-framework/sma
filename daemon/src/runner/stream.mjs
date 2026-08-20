@@ -154,6 +154,21 @@ function eventFromFrame(obj) {
       // which is the honest reading: an untroubled run states nothing about a terminal cause.
       terminalReason: strOrNull(obj.terminal_reason ?? obj.terminalReason),
       apiErrorStatus: numOrNull(obj.api_error_status ?? obj.apiErrorStatus),
+      // AND HOW THE CLI ITSELF NAMED THE OUTCOME, in one word. The schema of this frame is a
+      // CLOSED enumeration — success, or one of four words of failure — and one of those four
+      // names a run that walked into the turn ceiling. The same field was already read off the
+      // opening frame and never off this one, so a run stopped by a ceiling WE set arrived
+      // indistinguishable from a worker's own crash: same «no receipt», same «worker error»,
+      // and a person sent to fix work that had nothing wrong with it.
+      //
+      // Read for a SUCCESS too, on purpose: this is the name of an outcome, not an error flag.
+      // A frame that said no such word parses to null — inventing one for the library would be
+      // the opposite of reading it.
+      subtype: strOrNull(obj.subtype),
+      // THE NUMBER THAT MAKES THE READING SURVIVE A RENAME. The word above is the vendor's and
+      // can change with his next binary; how many turns were taken is arithmetic, and the
+      // ceiling it is compared against is one we handed the process ourselves.
+      numTurns: numOrNull(obj.num_turns ?? obj.numTurns),
     }
   }
 
