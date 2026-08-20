@@ -190,6 +190,128 @@ export function envelopeSpawnOptions(envelope) {
 }
 
 /**
+ * ═══════ УПРЁТСЯ ЛИ ОДОБРЕНИЕ В СТЕНУ ═══════
+ *
+ * DANGER_CLASS_HUMAN_ACTIONS — «класс опасного вызова → человеческое действие конверта».
+ *
+ * ЗАЧЕМ ЭТА КАРТА ВООБЩЕ СУЩЕСТВУЕТ. Человек видит остановленный вызов, нажимает «Одобрить»
+ * — и получает отказ, потому что вызов упирается в ЖЁСТКИЙ запрет, уехавший в аргументы
+ * запуска. Мягкая граница отпустила, жёсткая не пустила. Поведение правильное; несказанным
+ * оно быть не должно, и сказать его можно только заранее.
+ *
+ * ЭТО НЕ ВТОРОЙ МАТЧЕР РАЗРЕШЕНИЙ. Здесь сопоставляются НАШИ СОБСТВЕННЫЕ имена: слева —
+ * классы, которые выдаёт классификатор опасного, справа — действия, которые объявляет
+ * конверт. Текст команды не читается вовсе; появись здесь его разбор — это была бы вторая
+ * копия чужой логики, живущая своей жизнью и расходящаяся с оригиналом.
+ *
+ * ПОЧЕМУ ТРИ КЛАССА ВЕДУТ В ОДНО ДЕЙСТВИЕ. Отправка, принудительная отправка и
+ * перенастройка удалённого репозитория — три двери на одну улицу, и отказ закрывает их
+ * тремя шаблонами разом (см. HUMAN_ONLY_DENIALS выше). Карта повторяет ту же группировку,
+ * потому что она описывает ТУ ЖЕ стену, а не свою собственную.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ — ЗДЕСЬ НЕТ ОСОЗНАННО. Классы, которых карта не называет, ответа не дают:
+ * это «не знаем», а не «не упрётся». Сьют держит счёт классов классификатора закреплённым,
+ * поэтому новый класс отправки, слияния, метки или публикации не проедет молча — человек
+ * будет обязан решить, отображается он или сознательно остаётся вне карты.
+ */
+export const DANGER_CLASS_HUMAN_ACTIONS = Object.freeze({
+  'force-push': 'push',
+  push: 'push',
+  'remote-config': 'push',
+  merge: 'merge',
+  tag: 'tag',
+  publish: 'deploy',
+})
+
+/** Флаг, которым отказ уезжает в процесс. Одно имя, потому что оно и собирается в одном месте. */
+const DENIAL_FLAG = '--disallowedTools'
+
+/** «Не знаем» — общий, замороженный, без источника: отвечать нечем и притворяться нечем. */
+const WALL_UNKNOWN = Object.freeze({ state: 'unknown', action: null, source: null })
+
+/**
+ * Что БЫЛО ЗАПРЕЩЕНО этой попытке на самом деле — значение флага отказа из её же аргументов
+ * запуска, КАК СТРОКА, слово в слово.
+ *
+ * ПОЧЕМУ СТРОКА, А НЕ РАЗОБРАННЫЙ СПИСОК. Шаблоны отказа сами содержат пробелы, и в
+ * аргументы они уезжают склеенными через пробел же. Разделить эту строку обратно нельзя ничем,
+ * кроме догадки, — а догадка о границах чужого значения и есть тот самый второй матчер,
+ * которого здесь быть не должно. Поэтому строка не разбирается вовсе: ниже в ней ищутся НАШИ
+ * СОБСТВЕННЫЕ шаблоны, по одному, целиком. Вопрос «есть ли моё имя в том, что уехало» ответа
+ * не требует разбора и не зависит от того, чем разделитель окажется завтра.
+ *
+ * `null` — «эти аргументы ничего не говорят»: их нет, они пусты или флаг стоит без значения.
+ * Пустая строка — другое утверждение: аргументы есть, и отказов в них НЕ БЫЛО. Разница
+ * несимметрична по цене, поэтому она и выражена двумя разными значениями.
+ */
+function deniedTextOfSpawn(args) {
+  if (!Array.isArray(args) || args.length === 0) return null
+  for (let i = 0; i < args.length; i += 1) {
+    if (String(args[i]) !== DENIAL_FLAG) continue
+    if (i + 1 >= args.length) return null // флаг без значения — поломанная запись, а не «ничего не запрещено»
+    return String(args[i + 1])
+  }
+  return '' // флага нет вовсе — процессу не запретили ничего
+}
+
+/**
+ * Стоит ли стена перед ОДНИМ действием, если запрещено вот это.
+ *
+ * ЧАСТИЧНОЕ СОВПАДЕНИЕ — «НЕ ЗНАЕМ». Конверт отправляет шаблоны действия неделимым набором,
+ * поэтому половина набора означает, что список отказов собран не конвертом. Достроить за
+ * него вердикт можно было бы только разбором команды — того самого, которого здесь нет.
+ * Ложное предупреждение обесценивает настоящее, ложное успокоение опаснее молчания; третье
+ * состояние существует ровно для этого случая.
+ */
+function wallOfAction(action, deniedText) {
+  const need = HUMAN_ONLY_DENIALS[action]
+  if (!Array.isArray(need) || need.length === 0) return 'unknown'
+  const have = need.filter((p) => deniedText.includes(p)).length
+  if (have === need.length) return 'blocked'
+  if (have === 0) return 'clear'
+  return 'unknown'
+}
+
+/**
+ * approvalWall({ticketClass, spawnArgs, laneEnvelope}) → `{state, action, source}`.
+ *
+ * `state` — одно из трёх слов: `blocked` (одобрение упрётся), `clear` (не упрётся),
+ * `unknown` (не знаем). Два состояния вместо трёх — это и есть ложь: «не знаем»,
+ * записанное как «безопасно», успокаивает человека ровно перед стеной.
+ *
+ * ИСТОЧНИК — ТО, ЧТО ДЕЙСТВИТЕЛЬНО УЕХАЛО В ПРОЦЕСС. Аргументы запуска ЭТОЙ попытки лежат
+ * в её каталоге целиком, и они и есть правда о том, что было запрещено. Конверт полосы —
+ * запасной источник: он говорит о намерении, а намерение и аргументы уже расходились в
+ * этом дереве. Расходятся — выигрывают аргументы; нет ни того, ни другого — ответа нет.
+ *
+ * `source` возвращается НАРУЖУ, а не прячется: человек, читающий предупреждение, вправе
+ * узнать, откуда оно взялось, и расследование сбоя начинается именно с этого вопроса.
+ *
+ * ЧИСТАЯ: ни диска, ни часов, ни процесса. Каталог читает тот, у кого он есть, — дверь
+ * карточки; сюда приезжают уже прочитанные данные.
+ *
+ * @param {{ticketClass?: string, spawnArgs?: string[]|null, laneEnvelope?: {humanOnlyActions?: string[]}|null}} [input]
+ * @returns {{state: 'blocked'|'clear'|'unknown', action: string|null, source: string|null}}
+ */
+export function approvalWall({ ticketClass, spawnArgs, laneEnvelope } = {}) {
+  const cls = typeof ticketClass === 'string' ? ticketClass.trim() : ''
+  const action = Object.prototype.hasOwnProperty.call(DANGER_CLASS_HUMAN_ACTIONS, cls)
+    ? DANGER_CLASS_HUMAN_ACTIONS[cls]
+    : null
+  if (!action) return WALL_UNKNOWN
+
+  const denied = deniedTextOfSpawn(spawnArgs)
+  if (denied !== null) return Object.freeze({ state: wallOfAction(action, denied), action, source: 'spawn-args' })
+
+  const declared =
+    laneEnvelope && typeof laneEnvelope === 'object' && Array.isArray(laneEnvelope.humanOnlyActions)
+      ? laneEnvelope.humanOnlyActions
+      : null
+  if (!declared) return WALL_UNKNOWN
+  return Object.freeze({ state: declared.includes(action) ? 'blocked' : 'clear', action, source: 'lane-envelope' })
+}
+
+/**
  * The tokens whose mere appearance in a GRANTING dimension refuses the envelope. Kept to
  * the two invariant-two names, matched exactly as `state-machine.mjs` matches them, so
  * the two modules speak one law rather than two dialects of it.
