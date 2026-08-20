@@ -301,6 +301,17 @@ plus a charset guard that admits no shell metacharacter (`;`, `&`, `|`, backtick
 | `npm`/`pnpm`/`yarn` + `test` or `pack` | `npm test`, `pnpm pack` |
 | `npm`/`pnpm`/`yarn` + `run <script>` | `npm run build`, `pnpm run test:unit` |
 
+**How the fact is read — and why the boundary never needs to move for it.** A
+prediction entry may carry `measure: last-line | exit-code`. `last-line` is the
+default and the historical reading: the numeric last line of the output.
+`exit-code` makes the process exit code the fact, so a claim like «this suite is
+green» is settled by the code the process returned — and can be WRONG, which is
+the whole point of registering it. An entry may also carry `cwd: <path>`: the
+directory the command runs in, handed to the runner as a run PARAMETER. Both are
+DATA about the run, so neither costs the allowlist a single character — a
+directory change written into the command (`cd X && …`) is still refused, and
+still should be.
+
 The release-gate row exists because a gate that runs the build, the suite and the
 pack had to record them as bare exit codes — no hash, nothing to re-verify later.
 `run` takes a script NAME, which resolves in the LOCAL `package.json`: the same
