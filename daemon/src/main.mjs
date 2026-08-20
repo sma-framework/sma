@@ -118,6 +118,7 @@ import { createBuildArgs } from './runner/build-args.mjs'
 import { mirrorPersonalLayer } from './runner/personal-layer.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
+import { runMergeSmoke } from '../../scripts/sma/lib/merge-smoke.mjs'
 
 /**
  * runUpdateVerb({apply, projectDir}) — the update door's ONE collaborator, wired here and
@@ -864,6 +865,19 @@ export function createDaemon(o = {}) {
     return projectWatch
   }
 
+  // THE TESTS THE MERGE GATE RUNS — resolved HERE, once, exactly like the updater, the copy
+  // sweep and the memory harvest below it. It was the only collaborator of that door with no
+  // production value behind it: the closure passed `o.runTests` straight through, production
+  // calls this factory with no overrides at all, and so the gate that decides whether accepted
+  // work enters the trunk ran nothing and recorded «no runner was wired». Written down as
+  // «вычислено, но не подключено»: the runner existed, was covered, was green, and was
+  // reachable from nowhere.
+  //
+  // A NAME OF ITS OWN, for the same reason the three below have one: a door names the task it
+  // needs done, never a command it wants run. A generic «run whatever» collaborator on a
+  // request path is how a browser gets to name a program.
+  const mergeTestRunner = o.runTests ?? runMergeSmoke
+
   // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
@@ -1128,8 +1142,14 @@ export function createDaemon(o = {}) {
           ...applyProjectMigration({ projectDir: connectedProjectDir(), stagingDir: migrationStagingDir, file }),
           projectId: connectedProjectId(),
         }),
+        // The smoke the ritual runs on the merged-but-uncommitted tree, VISIBLE here rather
+        // than buried inside the closure below: a collaborator nobody outside the closure can
+        // see is a collaborator no test can ask a question of, and «is it a function» is the
+        // only question you may ask a closure. This one can be CALLED by a test — and answers
+        // in the runner's own words.
+        mergeTestRunner,
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
-        verbRunner: (m) => runMerge({ ...m, execGit, runTests: o.runTests }),
+        verbRunner: (m) => runMerge({ ...m, execGit, runTests: mergeTestRunner }),
         // «Дом системы»: the updater behind POST /api/update/run. A SEPARATE name from
         // `verbRunner` above on purpose — one door's collaborator is not the other's, and a
         // shared generic runner would be a request path that can name a command.

@@ -24,10 +24,14 @@
 
 import { describe, it, expect } from 'vitest'
 import { spawnSync, execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// the target the production runner looks for — read from the runner itself, so a tree planted
+// here can never drift from the file the verb will actually go looking for.
+import { MERGE_SMOKE_TARGET } from '../lib/merge-smoke.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'cli.mjs')
@@ -80,6 +84,11 @@ describe('every live call site of the ritual is answered — each by its OWN cla
     // it RETURNS the call — an arrow with a body that hands the value back, not a statement
     // that starts it and drops the answer on the floor.
     expect(line).toMatch(/=>\s*runMerge\(/)
+    // …and it hands the ritual a runner PRODUCTION has. This claim is an ADDITION, not a
+    // replacement: the line used to pass an injection slot through, and on a daemon built the
+    // way production builds it that slot is empty — the gate ran nothing and said so in the
+    // receipt, while every reading test stayed green.
+    expect(line, 'the ritual is handed a test runner the composition root resolves').toContain('mergeTestRunner')
     // …and the caller in the approval door awaits the closure. This is where the answer is
     // read; adding an await to the closure above would be editing the wrong line entirely.
     const callerLine = FRONT_SERVER.split('\n').find((l) => l.includes('deps.verbRunner(')) ?? ''
@@ -127,8 +136,15 @@ describe('every live call site of the ritual is answered — each by its OWN cla
  * Одноразовый репозиторий, своя ветка, свой каталог координации — общий чекаут и общий слот
  * слияния не задеты ни разу. Герметичность здесь не предполагается, а УТВЕРЖДАЕТСЯ: верб сам
  * называет дерево, в котором действовал, и квитанция обязана указывать на временный
- * репозиторий. Прогонятель верба в этом дереве отвечает красным (запускать нечем), и это
- * ровно тот случай, который проверяется: красный прогон означает, что слияния НЕ БЫЛО.
+ * репозиторий.
+ *
+ * КРАСНОТА ЗДЕСЬ НАСТОЯЩАЯ. В одноразовое дерево кладётся мишень прогонятеля — файл сьюта,
+ * который заведомо падает, — и верб запускает НАСТОЯЩИЙ прогон, который НАСТОЯЩИМ образом
+ * возвращается красным. Раньше краснота этого места бралась из дефекта: прогонятель не мог
+ * запустить вообще ничего и отвечал «красные», не выполнив ни одного теста. Отказ выглядел
+ * одинаково, а означал противоположное — и тест, который на такое опирается, зеленеет ровно
+ * до того дня, когда дефект чинят. Теперь проверяется то, что и должно: прогон СОСТОЯЛСЯ,
+ * ответил красным, и красный прогон означает, что слияния НЕ БЫЛО.
  */
 describe('the verb refuses a red run in a throwaway repository, and says so', () => {
   it('a red run leaves the tip where it was, prints a refusal and exits non-zero', () => {
@@ -141,6 +157,19 @@ describe('the verb refuses a red run in a throwaway repository, and says so', ()
       git(['config', 'commit.gpgsign', 'false'])
       writeFileSync(join(repo, 'a.txt'), 'a\n', 'utf8')
       git(['add', 'a.txt'])
+      // THE RUNNER'S TARGET, planted on purpose and written to FAIL. Without it the runner
+      // answers «there is nothing here to run» — an honest answer, and not the one this case
+      // is about. With it the verb runs a real child, a real test really fails, and the
+      // refusal below is a refusal for the reason the gate exists.
+      const target = join(repo, MERGE_SMOKE_TARGET)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(
+        target,
+        "import { describe, it, expect } from 'vitest'\n" +
+          "describe('planted', () => { it('fails on purpose', () => { expect(1).toBe(2) }) })\n",
+        'utf8',
+      )
+      git(['add', '--', MERGE_SMOKE_TARGET])
       git(['commit', '-q', '--no-verify', '-m', 'init'])
       const trunk = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim()
       const tipBefore = git(['rev-parse', 'HEAD']).trim()

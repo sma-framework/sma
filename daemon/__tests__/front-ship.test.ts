@@ -342,8 +342,17 @@ describe('the release doors — A WORKER HAS NO PATH TO THIS DOOR', () => {
     // `verbRunner` is the MERGE runner, and merging is local. A door that a task's runner
     // could reach would make «работник не получает выката» a comment instead of a shape.
     const verbRunnerLine = main.split('\n').find((l) => l.includes('verbRunner: (m) =>')) ?? ''
+    expect(verbRunnerLine, 'the door closure that calls the merge ritual was not found at all').not.toBe('')
     expect(verbRunnerLine).toContain('runMerge')
     expect(verbRunnerLine).not.toContain('publish')
+    // A THIRD CLAIM, and the one whose absence let a hole sit here in plain sight: the line
+    // must hand the ritual a runner that PRODUCTION has. It used to pass an injection slot
+    // straight through, so on a daemon built the way production builds it the gate ran no
+    // tests at all — while this very case stayed green, because a line can name a merge and
+    // still hand it nothing to run.
+    expect(verbRunnerLine, 'the merge ritual is handed a test runner that production wires').toContain(
+      'mergeTestRunner',
+    )
   })
 
   it('the receipt formats are exported as WORDS, so a reader greps the format not an example', () => {
