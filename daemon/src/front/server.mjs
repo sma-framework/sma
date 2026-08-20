@@ -313,6 +313,8 @@ export const ROUTES = Object.freeze({
   'POST /api/task/words': 'handleTaskWords',
   // ── «останови волну 2»: the one echelon of one phase stands, and starts again ──
   'POST /api/wave/hold': 'handleWaveHold',
+  // ── остановка задачи человеком: сначала убить живого ребёнка, потом закрыть строку ──
+  'POST /api/task/cancel': 'handleTaskCancel',
 })
 
 /**
@@ -2465,6 +2467,85 @@ async function handleChatStop({ req, res, deps }) {
   if (rejectUnknownKeys(res, b, new Set(['turnId']))) return undefined
   if (typeof b.turnId !== 'string' || !TURN_ID_RE.test(b.turnId)) return send400(res, 'invalid turnId')
   return sendJson(res, 200, { stopped: registry.stop(b.turnId) })
+}
+
+/**
+ * How long the cancel door waits for the child it has just killed to CLOSE its attempt
+ * before it writes the terminal into the queue. NAMED, because an unnamed wait is a wait
+ * nobody can argue with: three seconds is long enough for a killed process to be reaped and
+ * short enough that a person pressing a button does not think the window has frozen. When it
+ * runs out the row is closed ANYWAY and the answer says the wait ran out — see the handler.
+ */
+export const CANCEL_ATTEMPT_CLOSE_WAIT_MS = 3_000
+
+/** How often the door looks while it waits. Small enough that the usual case costs one look. */
+export const CANCEL_ATTEMPT_POLL_MS = 50
+
+/** The default nap. Injectable, so the suite can exhaust the wait without spending the time. */
+const defaultNap = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * waitForAttemptClose({registry, taskId, deps}) → true when the attempt closed inside the
+ * named cap, false when the cap ran out first.
+ *
+ * HOW «CLOSED» IS OBSERVED, AND WHY THIS WAY. The registry marks a handle stopped BEFORE it
+ * kills, and the dying child's own exit path is what removes the handle. So a handle that is
+ * still marked stopped is an attempt still unwinding, and a handle that is gone is an attempt
+ * that finished. Nothing new is registered to learn this — a second bookkeeping of the same
+ * fact is a second truth, and the two would drift.
+ */
+async function waitForAttemptClose({ registry, taskId, deps }) {
+  if (!registry || typeof registry.wasStopped !== 'function') return false
+  const nap = typeof deps.sleep === 'function' ? deps.sleep : defaultNap
+  const looks = Math.max(1, Math.ceil(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS))
+  for (let i = 0; i < looks; i += 1) {
+    if (registry.wasStopped(taskId) !== true) return true
+    await nap(CANCEL_ATTEMPT_POLL_MS)
+  }
+  return registry.wasStopped(taskId) !== true
+}
+
+/**
+ * POST /api/task/cancel — body {taskId}. «Остановите это», сказанное пальцем.
+ *
+ * KILL FIRST, CLOSE SECOND, AND THE ORDER IS THE WHOLE POINT. Marking the row closed while
+ * the child is still alive is the loop that burns a subscription: the process keeps working
+ * for a task nobody is waiting for, the liveness sweep sees a claim it cannot explain, and a
+ * fresh attempt is started beside the one still running. So this door (a) takes the live
+ * child's handle out of the attempt registry and tells it to die, (b) waits a NAMED, short
+ * while for that attempt to close, and only then (c) asks the queue to close the row
+ * terminally. The reverse order was measured to produce parallel processes against one row.
+ *
+ * THE ANSWER IS HONEST ABOUT ALL THREE THINGS, because the window turns them into different
+ * sentences and a person deserves to know which one happened:
+ *   killed        — there WAS a live child under this task, and it was told to die.
+ *   attemptClosed — true when the attempt finished unwinding inside the cap, false when the
+ *                   cap ran out (the row is still closed — the terminal is not negotiable),
+ *                   and null when there was nothing to kill, because «did not close» and
+ *                   «there was nothing to close» are not the same statement.
+ *   cancelled     — the queue closed the row. False is an honest «there was nothing to stop»:
+ *                   the queue cannot tell an unknown task from one that is already finished,
+ *                   and inventing that distinction here would be a distinction the storage
+ *                   does not have.
+ *
+ * The registry is OPTIONAL exactly as it is at the steering door: a daemon assembled without
+ * it still stops rows, it just never claims a kill.
+ */
+async function handleTaskCancel({ req, res, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.cancelTask !== 'function') return send501(res)
+  const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId']))) return undefined
+  if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
+
+  const registry = deps.attemptTurns
+  const killed =
+    registry && typeof registry.stop === 'function' ? registry.stop(b.taskId) === true : false
+  const attemptClosed = killed ? await waitForAttemptClose({ registry, taskId: b.taskId, deps }) : null
+  const cancelled = (await adapter.cancelTask(b.taskId)) === true
+  return sendJson(res, 200, { cancelled, killed, attemptClosed })
 }
 
 /**
@@ -4880,6 +4961,8 @@ export const HANDLERS = Object.freeze({
   handleTaskWords,
   // «останови волну 2» — одна волна одной фазы встаёт, и она же снова идёт
   handleWaveHold,
+  // остановка задачи человеком: сначала умирает живой ребёнок, потом закрывается строка
+  handleTaskCancel,
 })
 
 // ── the dispatcher ──
