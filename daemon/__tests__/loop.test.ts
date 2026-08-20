@@ -1848,7 +1848,15 @@ describe('a task that needed no code completes on its answer — and nothing els
     fromProjectHead = '0',
     dirty = '',
     throwOn = '',
-  }: { base?: string; fromBase?: string; fromProjectHead?: string; dirty?: string; throwOn?: string } = {}) => {
+    answersIn = '',
+  }: {
+    base?: string
+    fromBase?: string
+    fromProjectHead?: string
+    dirty?: string
+    throwOn?: string
+    answersIn?: string
+  } = {}) => {
     const asked: { verb: string; args: string[]; cwd?: string }[] = []
     const unanswered: string[] = []
     return Object.assign(
@@ -1856,6 +1864,11 @@ describe('a task that needed no code completes on its answer — and nothing els
         const verb = args[0]
         asked.push({ verb, args, cwd: opts && opts.cwd })
         if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
+        // A REVISION IS ONLY A REVISION IN THE TREE THAT HAS IT — the live failure mode behind
+        // the placement cases: ask any other directory and git simply exits non-zero.
+        if (answersIn && (verb === 'rev-list' || verb === 'rev-parse') && (!opts || opts.cwd !== answersIn)) {
+          throw new Error(`unknown revision — asked in ${(opts && opts.cwd) || 'nowhere'}, resolvable only in ${answersIn}`)
+        }
         // where the tree being asked stands right now — how a copy learns its own base when
         // the provisioning verb declined to name one
         if (verb === 'rev-parse') return base
@@ -2019,54 +2032,82 @@ describe('a task that needed no code completes on its answer — and nothing els
   })
 
   /**
-   * WHICH TREE THE COUNT IS TAKEN IN. The question the gate asks — «are there commits on
-   * wt/<taskId> that HEAD does not have» — can only be answered in the repository that HOLDS
-   * that branch: the CONNECTED project, the same tree the worktree was cut from. It used to be
-   * asked in the daemon's launch directory, where the branch does not exist at all: git exits
-   * non-zero, the fail-safe catch answers null, and a task that correctly wrote no code fell
-   * through to the code gate and went red — the exact outcome this gate exists to remove.
+   * WHICH TREE THE COUNT IS TAKEN IN — and the two placement cases below outlived two laws,
+   * which is why they are rewritten rather than deleted.
+   *
+   * The count first ran in the daemon's LAUNCH directory, where `wt/<taskId>` is not a revision
+   * at all on an install serving one repository while the founder works in another: git exited
+   * non-zero, the fail-safe answered null, and a task that correctly wrote no code went red.
+   * It was moved to the connected project, which held the branch — and that is where the anchor
+   * defect above then bit. Now the question carries its own base and is put to the COPY, the one
+   * tree that is guaranteed to hold both points: the branch is checked out there and the work
+   * happened there. So the pair still asserts exactly what it always did — WHERE the question
+   * goes — against the law that replaced the one they were written for.
    */
-  it('the «no code» count is taken in the CONNECTED project, where the task branch actually lives', async () => {
+  const RESPONSES_WITH_BASE = {
+    ...CODE_RESPONSES,
+    worktree: {
+      code: 0,
+      stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1', expectedBase: 'base-of-copy' }),
+    },
+  }
+
+  it('the «no code» count is taken in the COPY — a connected project is not asked at all', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-    const seen: any[] = []
+    // a git that can only resolve revisions inside the copy: ask anywhere else and it exits
+    // non-zero, exactly as the live one does
+    const git = makeAnswerGit({ base: 'base-of-copy', answersIn: '/wt/BL-1' })
     const { deps } = makeDeps({
       adapter,
-      responses: CODE_RESPONSES,
-      deps: {
-        projectDir: () => '/connected',
-        execGit: (args: string[], opts?: any) => {
-          seen.push({ verb: args[0], cwd: opts && opts.cwd })
-          // the real failure mode: `wt/BL-1` is not a revision in the launch tree
-          if (args[0] === 'rev-list' && (!opts || opts.cwd !== '/connected')) throw new Error('unknown revision wt/BL-1')
-          if (args[0] === 'rev-list') return '0'
-          return ''
-        },
-      },
+      responses: RESPONSES_WITH_BASE,
+      deps: { projectDir: () => '/connected', execGit: git },
     })
 
     const res = await tick(deps)
 
+    expect(git.unanswered, 'git was asked a question the fake does not model').toEqual([])
     expect(res.completed).toBe('BL-1')
-    expect(seen.find((s) => s.verb === 'rev-list').cwd).toBe('/connected')
+    const counts = git.asked.filter((a) => a.verb === 'rev-list')
+    expect(counts.map((c) => c.cwd)).toEqual(['/wt/BL-1'])
+    expect(counts[0].args).toEqual(['rev-list', '--count', 'base-of-copy..HEAD'])
   })
 
-  it('with no project connected the count falls back to the served tree (regression)', async () => {
+  it('with no project connected the count still goes to the copy, never to the served tree', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-    const seen: any[] = []
-    const { deps } = makeDeps({
-      adapter,
-      responses: CODE_RESPONSES,
-      deps: {
-        execGit: (args: string[], opts?: any) => {
-          seen.push({ verb: args[0], cwd: opts && opts.cwd })
-          return args[0] === 'rev-list' ? '0' : ''
-        },
-      },
-    })
+    const git = makeAnswerGit({ base: 'base-of-copy', answersIn: '/wt/BL-1' })
+    const { deps } = makeDeps({ adapter, responses: RESPONSES_WITH_BASE, deps: { execGit: git } })
 
-    await tick(deps)
+    const res = await tick(deps)
 
-    expect(seen.find((s) => s.verb === 'rev-list').cwd).toBe('/repo')
+    expect(git.unanswered, 'git was asked a question the fake does not model').toEqual([])
+    expect(res.completed).toBe('BL-1')
+    const counts = git.asked.filter((a) => a.verb === 'rev-list')
+    expect(counts.map((c) => c.cwd)).toEqual(['/wt/BL-1']) // and never '/repo', the launch tree
+  })
+
+  /**
+   * AND WHEN NOBODY CAN NAME THE POINT TO COUNT FROM. The copy's provisioning verb declines to
+   * name a base on a reused worktree, and the tree it was cut from may be unreachable too. The
+   * door stays SHUT — this is the door to completed, and an unknown must never read as «the
+   * attempt is provably empty». But it no longer shuts in silence: that silence is precisely
+   * what made the anchor miss look like a worker who left no receipt, and sent a person hunting
+   * for a file nobody was ever going to write.
+   */
+  it('a copy whose base nobody can name → the door stays shut, and SAYS so in the operator\'s log', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    // the verb names no base (CODE_RESPONSES), and the fallback question cannot be answered either
+    const git = makeAnswerGit({ throwOn: 'rev-parse' })
+    const { deps, journalled } = makeDeps({ adapter, responses: CODE_RESPONSES, deps: { execGit: git } })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+    expect(said, 'the door closed without a word').toBeTruthy()
+    expect(said.reason).toBe('unknown_base')
+    expect(String(said.detail)).toContain('база копии неизвестна')
+    // and no count was even attempted — there was nothing to count from
+    expect(git.asked.filter((a) => a.verb === 'rev-list')).toEqual([])
   })
 })
 
