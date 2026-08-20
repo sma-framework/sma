@@ -59,6 +59,7 @@ import {
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { pipelineMaxTurns } from '../config.mjs'
 import { stageCommand } from '../policy/phase-cycle.mjs'
 
 /** The route named no worker this spawn could run as. */
@@ -250,6 +251,18 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
       // «no receipt», and no screen could name the cause (12.08.2026).
       args = buildClaudeArgs({
         ...argOpts,
+        // HOW FAR THIS ATTEMPT MAY WALK, carried to the process rather than kept as a setting.
+        //
+        // A headless worker has nobody to stop it: handed work it cannot finish, it re-reads,
+        // re-tries and re-reasons until the money runs out, and every one of those turns is a
+        // subscription minute burnt in a circle at three in the morning. The ceiling is the one
+        // number that turns that into a stop — and a stop only exists if the number is HERE, in
+        // the argument array of the spawn, rather than in a field somebody means to read later.
+        //
+        // It comes from config, and this line is the last stretch of road between the person who
+        // set it and the process that has to obey it. The resolver refuses anything that is not
+        // a whole positive number, so a malformed file cannot put junk on a command line.
+        maxTurns: pipelineMaxTurns(config),
         // The per-spawn MCP config, when the tick wrote one. The path is all that travels: the
         // file itself is built by the arg module from the ENABLED registry entries only.
         ...(options.mcpConfigPath ? { mcpConfigPath: String(options.mcpConfigPath) } : {}),
