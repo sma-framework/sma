@@ -26,6 +26,10 @@ import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 // most often one applyLifecycle wrote, so the two must agree on its spelling.
 import { applyLifecycle } from '../lib/write-pipeline.mjs'
 import { GRACE_HORIZON } from '../lib/schema-v2.mjs'
+// MEM-OFFPIPELINE compares the corpus with the pipeline's journal; the fixtures
+// are written through the journal's OWN appender so the shape can never drift
+// from what the pipeline actually writes.
+import { appendEvent } from '../lib/journal.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIX = join(__dirname, 'fixtures', 'lint')
@@ -1915,6 +1919,157 @@ describe('PRED-UNSCORED — the closing gate stands on the tree, not on discipli
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
       rmSync(cal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
+// ── MEM-OFFPIPELINE — a note in the corpus with no pipeline event behind it ───
+
+/**
+ * The promise is that nothing enters memory unscreened. The only machine proof
+ * that a note walked the write pipeline is the pipeline's OWN journal event —
+ * a frontmatter field would be a line an agent types by hand, which proves
+ * nothing. These cases pin the rule that compares the two.
+ */
+function offpipeNote(id: string, extra = '') {
+  return [
+    '---',
+    `id: ${id}`,
+    'schema_version: 2',
+    'status: active',
+    'memory_type: procedural',
+    'truth_mode: factual',
+    `claim: "a durable claim about ${id} that is long enough to stand alone"`,
+    'language: en',
+    'risk: low',
+    'sensitivity: internal',
+    extra,
+    '---',
+    '',
+    'body',
+    '',
+  ].filter((l) => l !== '').join('\n')
+}
+
+function offpipeCorpus(notes: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'sma-offpipe-c-'))
+  writeFileSync(join(dir, 'TAGS.md'), '## area\n\n- decisions — a facet.\n')
+  writeFileSync(join(dir, 'MEMORY.md'), '')
+  for (const [name, text] of Object.entries(notes)) writeFileSync(join(dir, name), text)
+  return dir
+}
+
+/** A journal written by the SAME appender the pipeline uses — never a hand-rolled line. */
+function offpipeJournal(events: Array<{ id: string; outcome?: string }>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'sma-offpipe-j-'))
+  for (const e of events) {
+    appendEvent(
+      {
+        type: 'memory-write',
+        scope: 'memory-corpus',
+        detail: { stage: 'persist', outcome: e.outcome ?? 'persisted-active', id: e.id, path: `${e.id}.md` },
+      },
+      { terminalId: 'write-pipeline', journalDir: dir },
+    )
+  }
+  return dir
+}
+
+function runOffpipe(corpusDir: string, extra: Record<string, unknown> = {}) {
+  return findingsOf(
+    runLint({ corpusDir, tagsPath: join(corpusDir, 'TAGS.md'), indexPath: join(corpusDir, 'MEMORY.md'), ...extra }),
+    'MEM-OFFPIPELINE',
+  )
+}
+
+describe('MEM-OFFPIPELINE — the corpus is compared with the pipeline journal, not with a self-declared field', () => {
+  it('Test 1: two notes, one with a pipeline event → the finding lands on the OTHER one only', () => {
+    const corpus = offpipeCorpus({
+      'walked-the-pipeline.md': offpipeNote('walked-the-pipeline'),
+      'came-in-by-hand.md': offpipeNote('came-in-by-hand'),
+    })
+    const journal = offpipeJournal([{ id: 'walked-the-pipeline' }])
+    try {
+      const f = runOffpipe(corpus, { journalDir: journal })
+      expect(f).toHaveLength(1)
+      expect(f[0].file).toBe('came-in-by-hand.md')
+    } finally {
+      rmSync(corpus, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(journal, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 2 (mutation): drop the event → two findings; put it back → one', () => {
+    const corpus = offpipeCorpus({
+      'walked-the-pipeline.md': offpipeNote('walked-the-pipeline'),
+      'came-in-by-hand.md': offpipeNote('came-in-by-hand'),
+    })
+    const empty = offpipeJournal([])
+    const withEvent = offpipeJournal([{ id: 'walked-the-pipeline' }])
+    try {
+      expect(runOffpipe(corpus, { journalDir: empty })).toHaveLength(2)
+      expect(runOffpipe(corpus, { journalDir: withEvent })).toHaveLength(1)
+    } finally {
+      rmSync(corpus, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(empty, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(withEvent, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 3 (tier): a note older than the cutover WARNS, a newer one is CRITICAL — from the frontmatter date and, without it, from git', () => {
+    const corpus = offpipeCorpus({
+      'inherited.md': offpipeNote('inherited', 'recorded_at: 2026-01-01'),
+      'written-under-the-rule.md': offpipeNote('written-under-the-rule', 'recorded_at: 2099-01-01'),
+    })
+    const empty = offpipeJournal([])
+    try {
+      const f = runOffpipe(corpus, { journalDir: empty })
+      expect(f.find((x) => x.file === 'inherited.md')!.tier).toBe('warn')
+      expect(f.find((x) => x.file === 'written-under-the-rule.md')!.tier).toBe('critical')
+
+      // No date in the note at all: git's first-add day answers instead.
+      const gitCorpus = offpipeCorpus({ 'no-date.md': offpipeNote('no-date') })
+      try {
+        execGit(['init', '-q'], { cwd: gitCorpus })
+        gitCommitAt(gitCorpus, 'filed long before the rule existed', '2020-01-01T00:00:00')
+        const g = runOffpipe(gitCorpus, { journalDir: empty, execGit })
+        expect(g).toHaveLength(1)
+        expect(g[0].tier).toBe('warn')
+      } finally {
+        rmSync(gitCorpus, { recursive: true, force: true, maxRetries: 3 })
+      }
+    } finally {
+      rmSync(corpus, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(empty, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 4 (no journal is no EVIDENCE, not proof of guilt): the rule says so once at INFO and accuses nobody', () => {
+    const corpus = offpipeCorpus({
+      'a.md': offpipeNote('a-note-id'),
+      'b.md': offpipeNote('b-note-id'),
+    })
+    try {
+      const f = runOffpipe(corpus)
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('info')
+      expect(f.some((x) => x.tier === 'critical' || x.tier === 'warn')).toBe(false)
+    } finally {
+      rmSync(corpus, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 5: the match is the note id carried by the event, not the file name guessed at', () => {
+    const corpus = offpipeCorpus({ 'renamed-file.md': offpipeNote('the-real-record-id') })
+    const byId = offpipeJournal([{ id: 'the-real-record-id' }])
+    const byFileName = offpipeJournal([{ id: 'renamed-file' }])
+    try {
+      expect(runOffpipe(corpus, { journalDir: byId })).toHaveLength(0)
+      expect(runOffpipe(corpus, { journalDir: byFileName })).toHaveLength(1)
+    } finally {
+      rmSync(corpus, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(byId, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(byFileName, { recursive: true, force: true, maxRetries: 3 })
     }
   })
 })
