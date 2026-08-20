@@ -2684,7 +2684,11 @@ export async function tick(deps = {}) {
       // whole day of the operator log has nothing about it but the consequences. It is
       // handed the journal rather than reaching for one: a sweep whose work depended on a
       // log being available would be a sweep that stops when the log does.
-      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config), journal })
+      // AND THE KILL-HANDLE REGISTRY, which is what turns the sweep from a narrator into a
+      // sweep: it declares an attempt dead and now stops that attempt's child BEFORE the task
+      // is reissued. The registry is the SAME one the redirect and cancel doors use — handed
+      // in here rather than reached for, so a daemon assembled without it sweeps as before.
+      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config), journal, attemptTurns: deps.attemptTurns })
     } catch (err) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }
