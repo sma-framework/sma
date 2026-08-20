@@ -83,7 +83,11 @@ import { validateRecord, validateId, isPrivateFacet, GRACE_HORIZON, STATUS_VALUE
 import { readEpisodes, episodeRequiredFields, EPISODES_DIRNAME, EPISODE_MEMORY_TYPE } from './episodes.mjs'
 // The personal-shape vocabulary is the write pipeline's: it screens this material
 // on its way IN, this file screens what is already on disk. Same shapes, one list.
-import { PERSONAL_PATTERNS } from './write-pipeline.mjs'
+import { PERSONAL_PATTERNS, JOURNAL_EVENT_TYPE, CORPUS_LANDED_OUTCOMES } from './write-pipeline.mjs'
+// MEM-OFFPIPELINE reads the journal through its OWN legal reader (tolerant,
+// missing-dir-safe) and never opens a .jsonl itself — the same delegation lock
+// every other family here lives under.
+import { readJournal } from './journal.mjs'
 // the FRAG family delegates ALL fragment schema/byte/trigger
 // judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
@@ -99,6 +103,7 @@ import {
   BUDGET_WARN_FRACTION,
   RECEIPTS_ENFORCED_FROM,
   PREDICTIONS_SCORED_FROM,
+  MEMORY_PIPELINE_REQUIRED_FROM,
 } from './constants.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -515,6 +520,10 @@ function buildContext(opts) {
     // plansDir travels with them: the POSTEDIT batch maps a plan path
     // back into git's path space from it.
     plansDir: opts.plansDir,
+    // MEM-OFFPIPELINE: where the write pipeline's own events live. Undefined
+    // means «not told» — reported as a degradation, never read as «nothing ever
+    // walked the pipeline», which would accuse the whole corpus at once.
+    journalDir: opts.journalDir,
     // PRED-UNSCORED: where the verdicts live. Undefined means «not told», which
     // the rule reports as a degradation instead of reading as «nothing scored».
     calibrationDir: opts.calibrationDir,
@@ -823,6 +832,151 @@ const MEM_SUPERSEDE = {
       if (hasAt && !hasBy) {
         out.push(finding('MEM-SUPERSEDE', 'warn', note.file, `superseded_at present without superseded_by in ${note.file}`))
       }
+    }
+    return out
+  },
+}
+
+// ── MEM-OFFPIPELINE — a note the write pipeline never saw ────────────────────
+
+/**
+ * pipelineWrittenIds(ctx) — the ids the write pipeline's own journal says it put
+ * INTO the corpus. Read through the journal's legal reader, filtered to the
+ * pipeline's own event type and to the outcomes that mean the record landed;
+ * both the type and the outcome list come FROM the writer, so the two sides can
+ * never drift into different opinions about what the proof looks like.
+ *
+ * Why the journal and not a frontmatter field: a field is a line an agent types,
+ * and a provenance claim the claimant writes proves nothing. The journal is a
+ * per-file hash chain — an entry cannot be back-dated into it without the chain
+ * verifier saying so.
+ *
+ * Returns null when no journal directory was injected. A missing directory and
+ * an empty journal are indistinguishable from the inside, and reading "I was not
+ * told where to look" as "nothing ever walked the pipeline" would indict every
+ * note in the tree at once.
+ */
+function pipelineWrittenIds(ctx) {
+  if (ctx._pipelineWrittenIds !== undefined) return ctx._pipelineWrittenIds
+  let out = null
+  if (typeof ctx.journalDir === 'string' && ctx.journalDir !== '') {
+    try {
+      const { events } = readJournal({ journalDir: ctx.journalDir })
+      const landed = new Set(CORPUS_LANDED_OUTCOMES)
+      const set = new Set()
+      for (const e of events || []) {
+        if (!e || e.type !== JOURNAL_EVENT_TYPE) continue
+        const d = e.detail
+        if (!d || typeof d.id !== 'string' || d.id.trim() === '') continue
+        if (!landed.has(String(d.outcome ?? ''))) continue
+        set.add(d.id.trim())
+      }
+      out = set
+    } catch {
+      out = null // an unreadable journal is no evidence — never an accusation
+    }
+  }
+  ctx._pipelineWrittenIds = out
+  return out
+}
+
+/**
+ * corpusAddDates(ctx) — ONE git walk giving, per corpus file, the day it was
+ * first ADDED. Same posture as the summary walk next door: one process per lint
+ * run, memoized on ctx, and null when there is no git runner at all. A file git
+ * cannot date yields no date, and no date means the note is treated as
+ * inherited — the rule never guesses a note into the harsher tier.
+ */
+function corpusAddDates(ctx) {
+  if (ctx._corpusAddDates !== undefined) return ctx._corpusAddDates
+  let out = null
+  if (typeof ctx.execGit === 'function' && typeof ctx.corpusDir === 'string' && ctx.corpusDir !== '') {
+    try {
+      const readOpts = { cwd: ctx.corpusDir, stdio: ['ignore', 'pipe', 'ignore'] }
+      const prefix = toPosixPath(String(ctx.execGit(['rev-parse', '--show-prefix'], readOpts)).trim())
+      const walk = String(
+        ctx.execGit(
+          ['-c', 'core.quotePath=false', 'log', '--diff-filter=A', '--format=%x00%aI', '--name-only', '--', '.'],
+          readOpts,
+        ),
+      )
+      const dates = new Map()
+      for (const group of walk.split('\u0000').slice(1)) {
+        const lines = group.split('\n')
+        const day = lines[0].trim().slice(0, 10)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+        for (let i = 1; i < lines.length; i += 1) {
+          const path = lines[i].trim()
+          if (path === '') continue
+          const prev = dates.get(path)
+          // The OLDEST add wins: a note deleted and re-added arrived the first time.
+          if (prev === undefined || day < prev) dates.set(path, day)
+        }
+      }
+      out = { prefix, dates }
+    } catch {
+      out = null
+    }
+  }
+  ctx._corpusAddDates = out
+  return out
+}
+
+/** The day a note arrived: its own recorded_at, else git's first add, else none. */
+function noteArrivalDay(ctx, note) {
+  const raw = note.frontmatter && note.frontmatter.recorded_at != null ? String(note.frontmatter.recorded_at).trim() : ''
+  const declared = raw.slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(declared)) return declared
+  const dates = corpusAddDates(ctx)
+  if (dates) {
+    const day = dates.dates.get(dates.prefix + toPosixPath(note.file))
+    if (day) return day
+  }
+  return null
+}
+
+/** The record id the pipeline would have journalled: the note's own id, else its stem. */
+function recordIdOf(note) {
+  const declared = note.frontmatter && note.frontmatter.id != null ? String(note.frontmatter.id).trim() : ''
+  return declared !== '' ? declared : pointerId(note.file)
+}
+
+const MEM_OFFPIPELINE = {
+  id: 'MEM-OFFPIPELINE',
+  title: 'Every note in the corpus has a write-pipeline event behind it',
+  tier: 'critical',
+  run(ctx) {
+    const out = []
+    const written = pipelineWrittenIds(ctx)
+    if (written === null) {
+      out.push(
+        finding(
+          'MEM-OFFPIPELINE',
+          'info',
+          '',
+          'no journal directory injected — there is no machine record of which notes walked the write pipeline, so no note is judged (pass journalDir to enforce)',
+        ),
+      )
+      return out
+    }
+    for (const note of ctx.parsed) {
+      if (!note.frontmatter && !note.parseError) continue
+      const id = recordIdOf(note)
+      if (id === '' || written.has(id)) continue
+      const day = noteArrivalDay(ctx, note)
+      // Inherited (or undatable) notes are a debt to SEE; notes filed after the
+      // pipeline was there to be used are a choice to walk around it.
+      const inherited = day === null || day < MEMORY_PIPELINE_REQUIRED_FROM
+      out.push(
+        finding(
+          'MEM-OFFPIPELINE',
+          inherited ? 'warn' : 'critical',
+          note.file,
+          inherited
+            ? `${note.file} is in the corpus with no write-pipeline event behind it (${day ? `filed ${day}` : 'no filing date'}) — inherited debt, not an accident: it was never screened, redacted or classified by the pipeline`
+            : `${note.file} was filed on ${day} with no write-pipeline event behind it — the pipeline existed and was walked around: node scripts/sma/cli.mjs memory write`,
+        ),
+      )
     }
     return out
   },
@@ -2496,6 +2650,7 @@ export const LINT_CHECKS = [
   MEM_DUPE,
   MEM_TAGCHAOS,
   MEM_SUPERSEDE,
+  MEM_OFFPIPELINE,
   MEM_BUGLESSON,
   MEM_WIKILINK,
   MEM_REGEN,
