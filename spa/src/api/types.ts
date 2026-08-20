@@ -60,7 +60,14 @@ export interface QueueRow {
   id: string
   title: string | null
   lane: string | null
-  project: string
+  /**
+   * Чей это проект — или `null`, когда строка своего проекта не называет.
+   *
+   * `null` значит РОВНО «неизвестен» и ничего больше. Прежде дверь подставляла сюда проект, на
+   * который человек смотрел в эту секунду, и окно уверенно называло принадлежность, которой
+   * никто не измерял. Теперь неизвестное приезжает неизвестным, а экран говорит это словами.
+   */
+  project: string | null
   machine: string
   provider?: string
   priority: number
@@ -141,7 +148,8 @@ export interface BatchQuestion {
 export interface BatchRow {
   id: string
   title: string | null
-  project: string
+  /** Чей это проект — или `null`, когда сборка своего проекта не называет (см. `QueueRow`). */
+  project: string | null
   machine: string
   /**
    * Состояние самого громкого элемента; `done` — только когда каждый элемент произвёл или
@@ -180,7 +188,8 @@ export interface WaveRow {
   heldSince: number | null
   running: WaveTask[]
   waiting: WaveTask[]
-  project: string
+  /** Проект эшелона — тот, который называет его СОБСТВЕННАЯ работа; `null`, когда её никто не назвал или она из разных проектов. */
+  project: string | null
   machine: string
 }
 
@@ -195,7 +204,8 @@ export interface WorkerRow {
    */
   taskId?: string
   taskTitle?: string | null
-  project?: string
+  /** Проект взятой задачи — или `null`, когда она своего проекта не называет (см. `QueueRow`). */
+  project?: string | null
   branch?: string
   /**
    * КОГДА ЭТУ ЗАДАЧУ ВЗЯЛИ, в миллисекундах эпохи. Ростер — единственный список, называющий
@@ -204,6 +214,14 @@ export interface WorkerRow {
    * `taskId` или не приходит вовсе.
    */
   taskClaimedAt?: number | null
+  /**
+   * «Сделано / не получилось» за последние 30 дней, посчитанные демоном из леджера попыток.
+   * ОТСУТСТВУЕТ, когда леджер прочитать не удалось (или демон старый): ноль на карточке
+   * читается как «этот работник ничего не сделал» — это измерение, а «нет данных» — правда.
+   * Пустой, но читаемый леджер даёт именно нули: каталог открыли, за период ничего не
+   * завершилось, и это измерение.
+   */
+  stats30d?: { done: number; failed: number }
   window: WindowBar
   /** Seconds since the running task last showed a sign of life. */
   pulseAgeSec?: number
@@ -268,7 +286,8 @@ export interface FailureSummary {
 export interface DoneRow {
   id: string
   title: string | null
-  project: string
+  /** Чей это проект — или `null`, когда строка своего проекта не называет (см. `QueueRow`). */
+  project: string | null
   machine: string
   finishedAt: string | null
   /**
@@ -1952,6 +1971,14 @@ export interface AttemptDigest {
 export interface AttemptLogLine {
   ts: string
   line: string
+  /**
+   * Строку пришлось обрезать по потолку ряда. Ключа нет вовсе, когда строка целая: раньше
+   * обрезка была молчаливой, и читатель принимал часть за целое, не имея ни одного признака,
+   * по которому это можно заметить.
+   */
+  truncated?: boolean
+  /** Сколько знаков было ДО обрезки (после сплющивания переводов строк). Только у обрезанного ряда. */
+  originalLength?: number
   subagent: boolean
   /**
    * WHICH delegation this line belongs to — 1, 2, 3… in the order the groups first appear.

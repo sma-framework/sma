@@ -62,11 +62,13 @@ import {
   DENIAL_TRUNCATION_MARK,
 } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { createAgingMemory } from '../src/policy/aging-memory.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
 // screen's payload. Every joint of that path had a green test of its own while the path
 // itself was cut, so the case has to cross the module boundary the defect hid behind.
 import { deriveState } from '../src/front/state.mjs'
+import { tickJournalLine } from '../src/main.mjs'
 import { windowState, isOpen } from '../src/policy/windows.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { workerReadiness, poolReadiness } from '../src/runner/readiness.mjs'
@@ -1074,6 +1076,178 @@ describe('the aging signal — derived fresh every tick, nothing stored', () => 
   })
 })
 
+/**
+ * СТАРЕНИЕ ГОВОРИТСЯ ОДИН РАЗ НА ПЕРЕХОД, А СТРОКА ЖУРНАЛА НЕСЁТ МЕТКУ ВРЕМЕНИ.
+ *
+ * Замер живого журнала: за 12,34 часа демон написал 43 076 строк, из них 43 020 (99,87 %) —
+ * одна и та же `task.aging`, повторённая каждые пять секунд на каждую залежавшуюся задачу.
+ * Это не журнал, а шум, в котором тонет всё остальное; и ни одна из этих строк не несла
+ * метки времени, хотя строки запускающей оболочки в том же файле её несут — два формата в
+ * одном файле.
+ *
+ * Память дедупа — КОЛЛАБОРАТОР в deps, а не поле результата тика. Продевание состояния через
+ * результат в production никем не замыкается (так уже вышло с intake: провод есть в тесте и
+ * мёртв в жизни), а deps в main.mjs собираются ОДИН раз и живут столько же, сколько демон, —
+ * поэтому память переживает тик, не делая тик состоянием.
+ */
+describe('старение: сказано один раз на переход, и строка несёт метку времени', () => {
+  const stuckAdapter = (rows: any[]) => ({
+    async list(filter: any = {}) {
+      return filter.status ? rows.filter((r) => r.status === filter.status) : rows
+    },
+    async claimNext() {
+      return null
+    },
+    async fail() {
+      return true
+    },
+  })
+
+  const aged = (id: string, hours: number, now: number) => ({
+    id,
+    title: id,
+    lane: 'prod',
+    status: 'queued',
+    enqueuedAt: now - hours * 3600000,
+  })
+
+  it('два тика подряд с ОДНИМ объектом deps → ровно одна строка task.aging и один отчёт', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const { deps, reports, journalled } = makeDeps({
+      adapter: stuckAdapter([aged('BL-OLD', 30, now)]),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(1)
+    expect(reports.filter((r: any) => r.event === 'task.aging')).toHaveLength(1)
+  })
+
+  it('прошли сутки — сказано снова: молчать вечно о застрявшей задаче тоже нельзя', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const { deps, journalled } = makeDeps({
+      adapter: stuckAdapter([aged('BL-OLD', 30, now)]),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    c.advance(23 * 3600000)
+    await tick(deps)
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(1) // сутки ещё не прошли
+    c.advance(2 * 3600000)
+    await tick(deps)
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(2)
+  })
+
+  it('вторая залежавшаяся задача говорит о себе сама — дедуп по задаче, а не глобальный', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-A', 30, now)]
+    const { deps, journalled } = makeDeps({
+      adapter: stuckAdapter(rows),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    rows.push(aged('BL-B', 40, now))
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging').map((e: any) => e.taskId)).toEqual(['BL-A', 'BL-B'])
+  })
+
+  it('задача ушла из очереди и вернулась старой — это НОВЫЙ переход порога, и он сказан', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-A', 30, now)]
+    const { deps, journalled } = makeDeps({
+      adapter: stuckAdapter(rows),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    rows.length = 0 // взята в работу: из «создано» ушла
+    c.advance(5000)
+    await tick(deps)
+    rows.push(aged('BL-A', 31, now)) // вернулась — и всё ещё старая
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(2)
+  })
+
+  it('память дедупа не растёт вечно: ушедшее из очереди забывается', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-A', 30, now), aged('BL-B', 30, now)]
+    const memory: any = createAgingMemory()
+    const { deps } = makeDeps({ adapter: stuckAdapter(rows), clockObj: c, deps: { agingMemory: memory } })
+
+    await tick(deps)
+    expect(memory.size).toBe(2)
+    rows.length = 0
+    c.advance(5000)
+    await tick(deps)
+    expect(memory.size).toBe(0)
+  })
+
+  it('без памяти в deps — прежнее поведение: строка на каждый тик (fail-open, старый контракт цел)', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const { deps, journalled } = makeDeps({ adapter: stuckAdapter([aged('BL-OLD', 30, now)]), clockObj: c })
+
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps)
+
+    expect(journalled.filter((e: any) => e.type === 'task.aging')).toHaveLength(2)
+  })
+
+  it('экран «застряла» от троттлинга не зависит: agedForHours считается из enqueuedAt', async () => {
+    const c = mkClock()
+    const now = c.clock()
+    const rows = [aged('BL-OLD', 30, now)]
+    const { deps, reports } = makeDeps({
+      adapter: stuckAdapter(rows),
+      clockObj: c,
+      deps: { agingMemory: createAgingMemory() },
+    })
+
+    await tick(deps)
+    c.advance(5000)
+    await tick(deps) // об этом тике сигнал промолчал
+
+    expect(reports.filter((r: any) => r.event === 'task.aging')).toHaveLength(1)
+    const payload: any = await deriveState({
+      adapter: { list: async () => rows },
+      windows: () => ({}),
+      config: { agingHours: 24, workers: [] },
+      clock: c.clock,
+    })
+    const row = payload.queue.find((r: any) => r.id === 'BL-OLD')
+    expect(row.agedForHours).toBeGreaterThanOrEqual(30) // показание живо и без сигнала
+  })
+
+  it('строка стока несёт ISO-метку, а за ней — прежние части описания события', () => {
+    const line = tickJournalLine({ type: 'task.aging', taskId: 'BL-OLD', queuedForHours: 30 }, () => 1_700_000_000_000)
+    expect(line).toMatch(/^\[SmaDaemon\] 20\d{2}-\d{2}-\d{2}T/)
+    expect(line).toContain('task.aging')
+    expect(line).toContain('task=BL-OLD')
+    expect(line).toBe('[SmaDaemon] 2023-11-14T22:13:20.000Z task.aging · task=BL-OLD')
+  })
+})
+
 describe('classifyFailure — the taxonomy (pure)', () => {
   const cases: Array<[string, any, string]> = [
     ['spawn infra error → runtime_offline', { spawnError: new Error('offline'), exitCode: null }, 'runtime_offline'],
@@ -1362,6 +1536,58 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(log.entries.some((e: any) => e.line === 'APPROACH_NOTE: прямой путь')).toBe(true)
     // and it was written to the ATTEMPT's file, not the task's
     expect(readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#2' }).total).toBe(0)
+  })
+
+  it('кадр init доезжает до файла ЦЕЛЫМ, а длинная обычная строка обрезана И помечена — провод, не расчёт', async () => {
+    const ledgerDir = mkDir('sma-loop-log-')
+    // Кадр init настоящей сессии — это список инструментов и подключений; он спокойно
+    // перерастает 4096 и до этой правки резался молча ровно там, где его и читают.
+    const bigInit = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab',
+      model: 'claude-opus-4-8',
+      tools: Array.from({ length: 400 }, (_, i) => `Tool_${i}_${'x'.repeat(20)}`),
+    })
+    expect(bigInit.length).toBeGreaterThan(4096)
+    const longPlain = 'p'.repeat(9000) // обычный вывод работника: потолок прежний, но молчать он перестал
+
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [
+          bigInit,
+          longPlain,
+          'APPROACH_NOTE: прямой путь',
+          JSON.stringify({ type: 'result', is_error: false, session_id: '9f8e7d6c-1234-4abc-8def-0123456789ab' }),
+        ],
+      }),
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: GREEN_REVERIFY,
+      },
+      deps: { ledger: realLedger(ledgerDir) },
+    })
+
+    await tick(deps)
+
+    const log = readAttemptLog({ dir: ledgerDir, attemptId: 'BL-1#1' })
+    const init = log.entries.find((e: any) => e.line.includes('"subtype":"init"'))
+    expect(init.line).toHaveLength(bigInit.length) // цел, а не 4096
+    expect(init.truncated).toBeUndefined()
+
+    const plain = log.entries.find((e: any) => e.line.startsWith('ppp'))
+    expect(plain.line).toHaveLength(4096) // потолок обычной строки НЕ поднят
+    expect(plain.truncated).toBe(true) // но обрезка больше не молчит
+    expect(plain.originalLength).toBe(9000)
+
+    const result = log.entries.find((e: any) => e.line.includes('"type":"result"'))
+    expect(result.truncated).toBeUndefined()
   })
 
   it('a stored row says WHICH TOOL ran and WHAT was handed to a subagent — not a machine frame', async () => {
@@ -3467,7 +3693,7 @@ describe('личный слой и наши серверы доезжают до
 
     expect(INIT_FRAME.length).toBeGreaterThan(5000)
     // две безымянные строки между кадрами — записка и урок работника; последняя — вердикт самого тика
-    expect(written.map((e: any) => e.frameKind)).toEqual(['init', undefined, undefined, 'result', undefined])
+    expect(written.map((e: any) => e.frame)).toEqual(['init', undefined, undefined, 'result', undefined])
 
     // …и через НАСТОЯЩИЙ писатель стенограммы кадр доезжает нерезаным
     const ledgerDir2 = mkDir('sma-ledger-')

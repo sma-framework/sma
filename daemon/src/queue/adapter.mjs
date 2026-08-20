@@ -108,14 +108,20 @@
  * other batches and ordinary tasks are claimed exactly as before, so a long assembly occupies
  * one worker and no more.
  *
- * ═══════════════ V5.1: PROJECT IS ADDITIVE, THE BACKFILL IS ON READ ═════════════
- * `project` is optional on the wire. An adapter is constructed with the
- * config's `activeProject`, which an enqueue stamps onto a task that names none. LANE and
- * PROJECT are independent dimensions — a forge task in another project is perfectly valid.
+ * ═══════════════ PROJECT IS ADDITIVE, AND IT IS STAMPED ONCE — NEVER GUESSED ═════════════
+ * `project` is optional on the wire. An adapter is constructed with the config's
+ * `activeProject`, and the ONE moment it is used is the enqueue: a task put in while a
+ * project is selected is stamped with it, because that is the only instant when there is
+ * anybody to ask. LANE and PROJECT are independent dimensions — a forge task in another
+ * project is perfectly valid.
  *
- * Rows written BEFORE the field existed are backfilled ON READ (`backfillProject`), never
- * by an UPDATE/ALTER over the live queue: the daemon is not the source of truth
- * for its own history, so an existing task is never rewritten — only read completely.
+ * ON READ NOTHING IS FILLED IN. A row written before the field existed states no project,
+ * and it reads back stating none (`project: null`, via `withStatedProject`). The read path
+ * used to complete such a row with whatever project was selected at that second, so the same
+ * forty rows belonged to whichever project was being looked at, and the counters of both
+ * agreed. A confident wrong answer is worse than a missing one: by it you cannot notice that
+ * the answer is missing. The row is still never rewritten on disk — the daemon is not the
+ * source of truth for its own history — but «read completely» now means «read as written».
  *
  * The adapter stays BACKEND-FREE and IMPORT-FREE: the active project arrives by injection,
  * so this module still learns nothing about the config module or any backend. The slug
@@ -699,7 +705,13 @@ const TASK_PROJECT_RE = /^[a-z0-9-]{1,64}$/
  */
 const TASK_BATCH_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 
-/** The project a read row falls back to when nothing else names one. */
+/**
+ * The slug of the project a fresh install starts with.
+ *
+ * NOTHING FALLS BACK TO IT ANY MORE, and the name is kept saying so on purpose: this used to
+ * be the last resort of a read path that completed a row naming no project, which is exactly
+ * the guess this queue no longer makes. A row states its project or states none.
+ */
 export const DEFAULT_PROJECT_ID = 'default'
 
 /**
@@ -905,19 +917,23 @@ export function validateTask(task) {
 }
 
 /**
- * backfillProject(row, activeProject) → the same row guaranteed to carry a project
- * A row written before the field existed is COMPLETED on read, never
- * rewritten on disk: the queue's history stays exactly as it was recorded, and the
- * migration cost of multi-project is zero rows touched. Pure; a nullish row passes through.
+ * withStatedProject(row) → the same row saying exactly what it says about its project:
+ * its own when it named one, `null` when it never did.
+ *
+ * THIS FUNCTION USED TO GUESS. It took the currently selected project and handed it to
+ * every row that named none, so a row written before the field existed reported ownership
+ * nobody had ever recorded — and reported a DIFFERENT owner the moment the person switched
+ * the switcher. The key is kept and set to null rather than dropped: readers ask for it, and
+ * «нет такого поля» and «поле есть, а факта нет» are different statements to a screen.
+ * Pure; a nullish row passes through.
  *
  * @param {object|null} row
- * @param {string} [activeProject]
  * @returns {object|null}
  */
-export function backfillProject(row, activeProject) {
+export function withStatedProject(row) {
   if (!row || typeof row !== 'object') return row
   if (typeof row.project === 'string' && row.project !== '') return row
-  return { ...row, project: activeProject || DEFAULT_PROJECT_ID }
+  return { ...row, project: null }
 }
 
 // ── in-memory reference backend (the executable spec) ──
@@ -931,9 +947,10 @@ export function backfillProject(row, activeProject) {
  * itself, whose whole job is to hold the durable state a real backend keeps in PG.
  *
  * `activeProject` is the config's currently selected project, injected by the
- * composition root — the adapter never reads the config itself. An enqueue stamps it onto
- * a task that names no project; every read path backfills it onto a row that predates the
- * field.
+ * composition root — the adapter never reads the config itself. An ENQUEUE stamps it onto a
+ * task that names no project, and that is the only use it has: no read path completes a row
+ * with it. A row that predates the field reads back with `project: null`, because that is
+ * what it says.
  *
  * @param {{clock?:Function|number, expireMs?:number, activeProject?:string}} [opts]
  * @returns {object} a QueueAdapter
@@ -959,7 +976,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
   }
 
   function row(rec) {
-    return backfillProject({
+    return withStatedProject({
       id: rec.task.id,
       source: rec.task.source,
       lane: rec.task.lane,
@@ -999,7 +1016,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       leaseRenewedAt: rec.lastTouch ?? null,
       completedAt: rec.completedAt,
       failure_reason: rec.failure_reason,
-    }, activeProject)
+    })
   }
 
   async function enqueue(task) {
@@ -1068,7 +1085,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     best.workerId = workerId
     best.claimedAt = t
     best.lastTouch = t
-    return backfillProject({ ...best.task }, activeProject)
+    return withStatedProject({ ...best.task })
   }
 
   async function touch(taskId) {
@@ -1187,9 +1204,25 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     let rows = [...records.values()]
     if (filter.status) rows = rows.filter((r) => r.status === filter.status)
     if (filter.lane) rows = rows.filter((r) => r.task.lane === filter.lane)
-    // an optional project filter; its absence means EVERY project.
+    // AN OPTIONAL PROJECT FILTER; its absence still means EVERY project.
+    //
+    // THIS FILTER USED TO GUESS, and it was the last place that did. It compared the
+    // narrowing against «the row's project, else the one currently selected, else the
+    // default slug», so a row that had never named a project answered as though it
+    // belonged to whatever was on the screen — and answered DIFFERENTLY the moment the
+    // person switched the switcher. The read path stopped doing that; this one had not,
+    // and this backend is the executable spec: while it filters by a rule the real queue
+    // no longer obeys, the next test written «to spec» encodes the very lie that was removed.
+    //
+    // The rule is the one the state reader already applies: a row belongs where IT says it
+    // belongs, and a row that names no project belongs to NOBODY — so no narrowing may hide
+    // it. Work that every filter hides is invisible work, and an honest «owner unknown»
+    // beats a confident wrong owner.
     if (filter.project) {
-      rows = rows.filter((r) => (r.task.project || activeProject || DEFAULT_PROJECT_ID) === filter.project)
+      rows = rows.filter((r) => {
+        const own = typeof r.task.project === 'string' && r.task.project ? r.task.project : null
+        return own === null || own === filter.project
+      })
     }
     return rows.map(row)
   }

@@ -132,7 +132,7 @@ import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
-import { summarizeFrame } from './runner/frame-summary.mjs'
+import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage } from './runner/usage.mjs'
 import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
@@ -2051,21 +2051,17 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
     // read — are exactly the ones the cap would make unreadable. An unrecognisable frame
     // summarises to nothing, and nothing means the screen falls back to the raw line.
     const summary = frame ? summarizeFrame(frame) : []
-    // WHICH FRAMES ARE WORTH THEIR FULL SIZE. Both ends of a run — what it was given and what
-    // it cost — are the two lines a person comes back for, and both are far longer than an
-    // ordinary line. The mark is a hint for the writer, not a field of the record.
-    const frameKind =
-      frame && frame.type === 'system' && frame.subtype === 'init'
-        ? 'init'
-        : frame && frame.type === 'result'
-          ? 'result'
-          : undefined
+    // WHICH FRAME THIS LINE IS — said HERE, where it was just parsed, and nowhere else. The
+    // journal caps a row by this word: `init` (what the session was armed with) and `result`
+    // (how it ended) are read whole, everything else keeps the ordinary line cap. Recognition
+    // is asked of the module that knows frames; the journal is told, never guesses.
+    const frameKind = frame ? wholeFrameKind(frame) : null
     log.append({
       line,
+      ...(frameKind ? { frame: frameKind } : {}),
       subagent: event.subagent === true,
       parentId: event.parentId,
       ...(summary.length ? { summary } : {}),
-      ...(frameKind ? { frameKind } : {}),
     })
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
@@ -2474,9 +2470,9 @@ function toEpochMs(v) {
   return Number.isFinite(t) ? t : NaN
 }
 
-/** Fresh-derive the aging signal every tick — nothing stored. */
+/** Fresh-derive the aging signal every tick — nothing stored except «уже сказали». */
 async function deriveAging(deps, now) {
-  const { adapter, config, report, journal } = deps
+  const { adapter, config, report, journal, agingMemory } = deps
   const agingMs = (config.agingHours ?? 24) * HOUR_MS
   let queued = []
   try {
@@ -2484,15 +2480,26 @@ async function deriveAging(deps, now) {
   } catch {
     return // a list failure never wedges the tick (fail-open)
   }
+  // Trim FIRST, over every waiting task — including the ones not old enough to speak about:
+  // the memory must describe the queue as it is now, not as it was when something was said.
+  const memory = agingMemory && typeof agingMemory.shouldSay === 'function' ? agingMemory : null
+  if (memory && typeof memory.keepOnly === 'function') memory.keepOnly(queued.map((r) => r.id))
   for (const row of queued) {
     const enq = toEpochMs(row.enqueuedAt)
     if (!Number.isFinite(enq)) continue
     const ageMs = now - enq
     if (ageMs < agingMs) continue
+    // NO MEMORY IN deps → THE OLD BEHAVIOUR, exactly. A daemon assembled without this
+    // collaborator keeps saying it every tick rather than falling silent: a missing seam must
+    // never be able to turn a signal off.
+    if (memory && !memory.shouldSay(row.id, now)) continue
     const queuedForHours = Math.floor(ageMs / HOUR_MS)
     if (typeof journal === 'function') journal({ type: 'task.aging', taskId: row.id, queuedForHours })
     if (typeof report === 'function') {
-      // fire-and-forget; consumers dedup by taskId (the same signal reaches the read model)
+      // BOTH exits are throttled by the same decision. Throttling only the journal would leave
+      // the webhook screaming; and the screen does not depend on either — `agedForHours` is
+      // computed from `enqueuedAt` at every read, so «застряла» stays true while the signal
+      // stays quiet.
       await report({ event: 'task.aging', taskId: row.id, title: row.title, lane: row.lane, queuedForHours })
     }
   }
@@ -3985,6 +3992,16 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
       ledger.recordAttempt({
         taskId: task.id,
         attempt: task.attempt,
+        // WHOSE APPROACH THIS WAS. The finished path has always written it and this one never
+        // did, so every failed row in the ledger was nameless — and the roster's «не получилось»
+        // was therefore a STRUCTURAL zero: it could not have shown anything else no matter how
+        // much work had broken. A confident wrong zero is the worst answer of the three, because
+        // by it a person cannot notice that the answer is missing.
+        // Taken from the route, exactly as the provider beside it is, and OMITTED when there is
+        // no route — an API fallback runs under no worker, and an attempt refused before any
+        // routing had happened has nobody to name. Absent means absent; it is never guessed from
+        // a neighbouring row, because that would pin a failure on somebody possibly innocent.
+        workerId: (route && route.workerId) || undefined,
         provider: route && route.provider,
         outcome: 'failed',
         failureReason: reason,

@@ -878,9 +878,12 @@ describe('deriveState — finished work reaches «ждут решения»', ()
   })
 
   it('the longest wait comes first — waiting is the whole cost, so priority has no say', async () => {
+    // Обе строки НАЗЫВАЮТ свой проект — так их и пишет дверь постановки. Счётчик внизу
+    // считает по собственному проекту строки и ничего не подставляет, поэтому проект здесь
+    // назван, а не подразумевается тем, что выбрано.
     const rows = [
-      { id: 'BL-fresh', status: 'awaiting_approval', lane: 'prod', title: 'f', priority: 9, enqueuedAt: NOW - HOUR },
-      { id: 'BL-stale', status: 'awaiting_approval', lane: 'prod', title: 's', priority: 0, enqueuedAt: NOW - 6 * HOUR },
+      { id: 'BL-fresh', status: 'awaiting_approval', lane: 'prod', title: 'f', priority: 9, project: 'acme-clinic', enqueuedAt: NOW - HOUR },
+      { id: 'BL-stale', status: 'awaiting_approval', lane: 'prod', title: 's', priority: 0, project: 'acme-clinic', enqueuedAt: NOW - 6 * HOUR },
     ]
     const payload = await deriveState({
       adapter: mkAdapter(rows),
@@ -1045,7 +1048,15 @@ describe('deriveState — projects, machines and federation', () => {
     expect(waiting.leaseRenewedAt).toBe(NOW - 2000)
   })
 
-  it('a held task with no project of its own falls back to the active one; a nameless one reads null', async () => {
+  /**
+   * ЭТИ ДВА СЛУЧАЯ РАНЬШЕ УТВЕРЖДАЛИ ОБРАТНОЕ, и переписаны они не ради удобства, а по замеру.
+   * Строка без проекта получала «текущий выбранный», и это называлось тихой миграцией. Замер
+   * живой очереди показал, чем оно было на самом деле: своего проекта не было НИ У ОДНОЙ из
+   * сорока строк, поэтому вся работа принадлежала тому проекту, на который человек смотрит, и
+   * переезжала в другой от одного щелчка переключателя. Подстановка утверждала факт, которого
+   * никто не измерял.
+   */
+  it('a held task with no project of its own says so — the holder reads null, never the active project', async () => {
     const rows = [{ id: 'R-9', status: 'claimed', lane: 'prod', workerId: 'max-1', claimedAt: NOW, lastTouch: NOW }]
     const payload = await deriveState({
       adapter: mkAdapter(rows),
@@ -1054,11 +1065,11 @@ describe('deriveState — projects, machines and federation', () => {
       clock: () => NOW,
     })
     const holder = payload.workers.find((w: any) => w.id === 'max-1')
-    expect(holder.project).toBe('acme-clinic')
+    expect(holder.project).toBeNull()
     expect(holder.taskTitle).toBeNull()
   })
 
-  it('a row with no project falls back to the active project (the quiet migration)', async () => {
+  it('a row with no project keeps having none — an unmeasured owner is not invented on read', async () => {
     const legacy = [{ id: 'BL-old', status: 'queued', lane: 'prod', title: 'old', priority: 0, enqueuedAt: NOW }]
     const payload = await deriveState({
       adapter: mkAdapter(legacy),
@@ -1066,7 +1077,9 @@ describe('deriveState — projects, machines and federation', () => {
       config: multiConfig,
       clock: () => NOW,
     })
-    expect(payload.queue[0].project).toBe('acme-clinic')
+    expect(payload.queue[0].project).toBeNull()
+    // и в счётчиках она не приписана никому: ни одному из двух проектов реестра
+    expect(payload.projects.every((p: any) => p.taskCounts.total === 0)).toBe(true)
   })
 
   it('the project filter narrows tasks and kpis but NOT the project or machine lists', async () => {

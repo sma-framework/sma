@@ -92,19 +92,22 @@ export const STRUCT_FIELD_CAP = 200
 /** One line of worker output, capped — the same posture as the approach note. */
 export const ATTEMPT_LOG_LINE_CAP = 4096
 /**
- * A WHOLE FRAME, and the reason it gets a cap of its own. Two lines of a session are not
- * chatter: the first frame the CLI emits lists the tools, the servers, the skills and the
- * memory the session actually received, and the last one says how it ended. Every later claim
- * about a run — that it had the founder's hooks, that no hosted connector was in it, that the
- * worker could write at all — is checked against those two and nothing else. A cap sized for
- * a sentence cut them in the middle, so the transcript held the worker's small talk in full
- * and lost the only part that was evidence. Sixteen times the line cap is enough for the
- * frames the CLI actually emits and still a hard ceiling: this is a bound being raised for two
- * named kinds of line, not removed.
+ * TWO FRAMES ARE NOT «A LINE OF OUTPUT», AND THEY HAVE THEIR OWN CEILING.
+ *
+ * `init` says what the session was armed with — how many tools, which CONNECTIONS, which
+ * model — and `result` says how it ended. They are the two frames a person opens a transcript
+ * FOR, and they are read whole or not at all. Under the 4096 of an ordinary line both were
+ * being cut: in a measurement of three hundred rows, fourteen were clipped and these two were
+ * among them. The cure is not a bigger cap for everything — an ordinary line nobody will
+ * finish reading is not worth an unbounded journal — but a SECOND, still FINITE ceiling for a
+ * closed vocabulary of two.
  */
 export const ATTEMPT_LOG_FRAME_CAP = 65536
-/** The two markers that earn the frame cap. Anything else is an ordinary line. */
-const FRAME_KINDS = new Set(['init', 'result'])
+/**
+ * The closed vocabulary of frames read whole. Closed on purpose: a row can only claim the
+ * larger ceiling by naming one of these two, so no future frame silently inherits it.
+ */
+export const ATTEMPT_LOG_WHOLE_FRAMES = Object.freeze(['init', 'result'])
 /** How many parts of ONE frame a row may carry: a glance is a glance, not a transcript. */
 export const ATTEMPT_LOG_SUMMARY_CAP = 8
 /** How many entries a tail read returns when the caller names no number. */
@@ -182,8 +185,23 @@ export function attemptIdFor(taskId, attempt) {
 
 /** Coerce to a bounded single-line string (no newline ever splits a JSONL row). */
 function boundedText(value, cap) {
+  return clipText(value, cap).text
+}
+
+/**
+ * clipText(value, cap) → `{text, originalLength, clipped}` — the same flattening and the same
+ * cut as before, plus the one fact the cut used to swallow: HOW LONG THE TEXT WAS.
+ *
+ * A SILENT TRUNCATION IS A LIE OF OMISSION. A reader shown a clipped line has no way to tell
+ * it from a line that simply ended there, so they read a part believing they read the whole.
+ * The length is measured AFTER the newlines are flattened and the ends trimmed — that is the
+ * text the cap is applied to, and reporting the length of anything else would be a second
+ * number that does not describe the first.
+ */
+function clipText(value, cap) {
   const s = String(value ?? '').replace(/\r?\n/g, ' ').trim()
-  return s.length > cap ? s.slice(0, cap) : s
+  if (s.length <= cap) return { text: s, originalLength: s.length, clipped: false }
+  return { text: s.slice(0, cap), originalLength: s.length, clipped: true }
 }
 
 /** Bounded list of bounded items. */
@@ -368,14 +386,20 @@ export function journalComplete({ attemptId, taskId, attempt, ledger, entries } 
 
 /**
  * normalizeAttemptLogEntry(entry, {now}) → the row as it will be stored:
- * `{ts, line, subagent?, parentId?}`. PURE, never throws — a live log that could refuse a
- * line would be a live log that can stop the work it is describing.
+ * `{ts, line, truncated?, originalLength?, subagent?, parentId?}`. PURE, never throws — a live
+ * log that could refuse a line would be a live log that can stop the work it is describing.
+ *
+ * `frame` on the ENTRY (never stored) names the parsed frame this line was: one of
+ * ATTEMPT_LOG_WHOLE_FRAMES gets the frame ceiling, everything else the line ceiling.
+ * `truncated`/`originalLength` are written when — and only when — the text really was cut, on
+ * EITHER ceiling. Truncation used to be silent, which made a clipped line indistinguishable
+ * from a line that ended there.
  *
  * `subagent` and `parentId` are written ONLY when the line really came from a delegated
  * session (stream.mjs reads that off `parent_tool_use_id`), so an ordinary row stays two
  * fields wide and a reader never has to tell `false` from «this build did not know».
  *
- * `frameKind` is a ROUTING HINT, not a field of the record: `'init'` or `'result'` selects the
+ * `frame` is a ROUTING HINT, not a field of the record: `'init'` or `'result'` selects the
  * frame cap for this row and is then dropped, so a reader of the transcript never has to know
  * the marker existed and an older row stays exactly as wide as it was. An unknown marker is no
  * marker — the cap only widens for the two kinds that are evidence.
@@ -387,16 +411,26 @@ export function journalComplete({ attemptId, taskId, attempt, ledger, entries } 
  * nothing to a reader leaves the row exactly as wide as it was, and the screen falls back to
  * the raw line.
  *
- * @param {{line?:string, ts?:string, subagent?:boolean, parentId?:string, summary?:object[], frameKind?:string}} entry
+ * @param {{line?:string, ts?:string, frame?:string, subagent?:boolean, parentId?:string, summary?:object[]}} entry
  * @param {{now?:()=>number}} [opts]
- * @returns {{ts:string, line:string, subagent?:true, parentId?:string, summary?:object[]}}
+ * @returns {{ts:string, line:string, truncated?:true, originalLength?:number, subagent?:true, parentId?:string, summary?:object[]}}
  */
 export function normalizeAttemptLogEntry(entry = {}, { now } = {}) {
   const e = entry && typeof entry === 'object' ? entry : {}
   const clock = typeof now === 'function' ? now : Date.now
   const ts = typeof e.ts === 'string' && e.ts ? e.ts : new Date(clock()).toISOString()
-  const cap = FRAME_KINDS.has(e.frameKind) ? ATTEMPT_LOG_FRAME_CAP : ATTEMPT_LOG_LINE_CAP
-  const out = { ts, line: boundedText(e.line, cap) }
+  // WHICH CEILING THIS ROW GETS is decided by ONE fact — `frame`, put on the entry by the
+  // point that parsed the frame and therefore actually knows. Anything not in the closed
+  // vocabulary is an ordinary line and keeps the ordinary cap.
+  const whole = typeof e.frame === 'string' && ATTEMPT_LOG_WHOLE_FRAMES.includes(e.frame)
+  const clip = clipText(e.line, whole ? ATTEMPT_LOG_FRAME_CAP : ATTEMPT_LOG_LINE_CAP)
+  const out = { ts, line: clip.text }
+  // The mark rides ONLY on a row that was really cut: a row that fits stays exactly as wide as
+  // it was, and a reader never has to tell «not clipped» from «this build did not know».
+  if (clip.clipped) {
+    out.truncated = true
+    out.originalLength = clip.originalLength
+  }
   if (e.subagent === true) {
     out.subagent = true
     const parentId = boundedText(e.parentId, STRUCT_FIELD_CAP)

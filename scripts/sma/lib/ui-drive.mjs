@@ -54,9 +54,27 @@ export const SWEEP_CAP = 40
  * the gap is visible and a human can walk them deliberately.
  *
  * English and Russian, because the operator's UI is not always English.
+ *
+ * Two classes were added after a run — not after a reading — showed the sweep could press
+ * them, and this list is a safety floor, so it is never economised on:
+ *
+ *  - STARTING THE MACHINE. The window carries a switch «Включить конвейер»; pressing it
+ *    sets workers loose on the queue by themselves, at night, spending the owner's
+ *    subscription. A review tool that starts the engine on its own initiative is worse
+ *    than no review. Its opposite («Выключить конвейер») is refused too: stopping a
+ *    running machine unattended is also an intervention nobody asked for.
+ *  - APPROVING. Drafts of skills, agents and memory are merged by «Одобрить» / «Принять».
+ *    A draft approved by a sweep is a decision no human made, and the merge is real.
+ *
+ * The list only GROWS: nothing already refused is ever taken out of it.
+ *
+ * The pipeline entries name the VERB together with the noun on purpose. A bare «конвейер»
+ * would also refuse the navigation item «Конвейер фаз», which is a screen and not a switch —
+ * and hiding a whole screen from the sweep to guard a control that is not on it buys
+ * nothing.
  */
 export const DESTRUCTIVE_RE =
-  /\b(delete|remove|destroy|drop|erase|wipe|purge|reset|revoke|deactivate|uninstall|logout|sign\s*out|publish|deploy|pay|buy|checkout|subscribe|confirm\s+payment)\b|удал|стереть|очист|сброс|отозв|выйти|выход|опубликов|выкат|оплат|купить|подтвердить\s+платёж/i
+  /\b(delete|remove|destroy|drop|erase|wipe|purge|reset|revoke|deactivate|uninstall|logout|sign\s*out|publish|deploy|pay|buy|checkout|subscribe|confirm\s+payment|approv(?:e|ing)|accept(?:ing)?|(?:enable|disable|start|stop)\s+(?:the\s+)?(?:pipeline|engine))\b|удал|стереть|очист|сброс|отозв|выйти|выход|опубликов|выкат|оплат|купить|подтвердить\s+платёж|(?:включить|выключить)\s+конвейер|одобр|принять|принима/i
 
 /**
  * What counts as something a user can press. Kept as one selector so the receipt's
