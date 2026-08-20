@@ -28,7 +28,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -43,6 +43,7 @@ import {
   spliceManagedBlock,
   readManagedBlock,
   snapshotSchemaOk,
+  writeBadgeToReadmes,
 } from '../lib/passport.mjs'
 
 let calibrationDir: string
@@ -435,5 +436,80 @@ describe('Test 10 — THE WIRE: a verdict written into the ledger reaches the pu
     const badge = renderBadgeBlock(snap)
     expect(badge).toContain(`collecting calibration data (n=1/${BADGE_MIN_N})`)
     expect(badge).not.toMatch(/\d+% hits/)
+  })
+})
+
+describe('Test 11 — the rebuilt badge reaches EVERY README, and the passport says what it can count', () => {
+  // Until now the rebuild wrote the recalculated badge into ONE readme. The other language
+  // carried a badge typed by hand, so the two could drift apart and nothing would say so —
+  // and a promise stated in one language and not the other is the oldest way to break the
+  // rule that both languages change in the same edit.
+  function snapWith(guard: object) {
+    return {
+      schema: 1,
+      capturedAt: 't',
+      model: { id: 'claude-x-1', since: null, source: 'env' },
+      guard,
+      calibration: { domains: [], totals: { hits: 0, misses: 0, n: 0, rate: null }, perModel: [] },
+      receipts: { verified: 0, divergent: 0, skippedUnsafe: 0, errors: 0, n: 0 },
+      chainTip: 'tip',
+      ledger: { lines: 0, corrupt: 0 },
+    }
+  }
+
+  it('the rebuild writes the block into BOTH readmes, and the two carry the same content', () => {
+    writeFileSync(join(workDir, 'README.md'), '# Readme\n\nintro\n')
+    writeFileSync(join(workDir, 'README.ru.md'), '# Читайте\n\nвступление\n')
+
+    const content = renderBadgeBlock(snapWith({ status: 'ok', freshN: 42, freshRate: 0.9, requiredN: BADGE_MIN_N }))
+    const res = writeBadgeToReadmes({ repoRoot: workDir, content })
+
+    expect(res.written.map((w) => w.file).sort()).toEqual(['README.md', 'README.ru.md'])
+    expect(res.skipped).toEqual([])
+
+    const en = readManagedBlock(readFileSync(join(workDir, 'README.md'), 'utf8'))
+    const ru = readManagedBlock(readFileSync(join(workDir, 'README.ru.md'), 'utf8'))
+    expect(en).toBe(content)
+    expect(ru).toBe(en) // one source, two files — they cannot drift apart any more
+  })
+
+  it('the block is shaped like the badges it stands among: one line of a centred badge row', () => {
+    const shown = renderBadgeBlock(snapWith({ status: 'ok', freshN: 42, freshRate: 0.9, requiredN: BADGE_MIN_N }))
+    const hidden = renderBadgeBlock(snapWith({ status: 'no-model-data', freshN: 0, freshRate: null, requiredN: 20 }))
+    for (const block of [shown, hidden]) {
+      expect(block.split('\n').filter((l) => l.trim())).toHaveLength(1)
+      expect(block).toContain('<img src="https://img.shields.io/badge/')
+      expect(block).toContain('<a href="PASSPORT.md">')
+      expect(block).not.toContain('![') // markdown image syntax would render as literal text inside the html row
+    }
+  })
+
+  it('a readme that already carries the markers is replaced IN PLACE, never appended to', () => {
+    const file = join(workDir, 'README.md')
+    writeFileSync(file, '# Readme\n\n<!-- sma:passport:begin -->\nOLD BADGE\n<!-- sma:passport:end -->\n\ntail\n')
+    writeBadgeToReadmes({ repoRoot: workDir, content: 'NEW BADGE', files: ['README.md'] })
+    const after = readFileSync(file, 'utf8')
+    expect(after).toContain('NEW BADGE')
+    expect(after).not.toContain('OLD BADGE')
+    expect(after).toContain('tail')
+    expect(after.match(/sma:passport:begin/g)).toHaveLength(1) // no second badge appeared at the end
+  })
+
+  it('a missing second readme never breaks the rebuild — it is NAMED as skipped, not passed over in silence', () => {
+    writeFileSync(join(workDir, 'README.md'), '# Readme\n')
+    const res = writeBadgeToReadmes({ repoRoot: workDir, content: 'BADGE' })
+    expect(res.written.map((w) => w.file)).toEqual(['README.md'])
+    expect(res.skipped).toEqual([{ file: 'README.ru.md', reason: 'missing' }])
+    // and the absent file is not conjured into existence by the rebuild
+    expect(existsSync(join(workDir, 'README.ru.md'))).toBe(false)
+  })
+
+  it('the passport states the boundary of its own count in BOTH badge states', () => {
+    const shown = renderPassport(snapWith({ status: 'ok', freshN: 42, freshRate: 0.9, requiredN: BADGE_MIN_N }))
+    const hidden = renderPassport(snapWith({ status: 'no-model-data', freshN: 0, freshRate: null, requiredN: 20 }))
+    for (const text of [shown, hidden]) {
+      expect(text).toContain('counts only what this repository can reproduce')
+      expect(text).toContain('never copied here')
+    }
   })
 })
