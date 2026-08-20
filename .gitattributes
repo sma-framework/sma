@@ -9,3 +9,10 @@
 # must have it too, deterministically, instead of depending on whose machine
 # checked it out.
 scripts/sma/__tests__/fixtures/shebang-module.mjs eol=crlf
+
+# The ledger record of a real failure, kept as EVIDENCE — so it must arrive on every
+# checkout exactly as it was written, byte for byte. With core.autocrlf=true a checkout
+# would hand it back with CRLF and the copy would stop being equal to the original it was
+# taken from; the digest that certifies «this is the real record and not a lookalike»
+# would then be true on the machine that took it and false everywhere else.
+daemon/__tests__/fixtures/ledger-one-attempt-two-outcomes.jsonl eol=lf
