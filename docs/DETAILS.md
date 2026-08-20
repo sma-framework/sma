@@ -893,10 +893,19 @@ counts, plugin list, connector state — beside what the session **actually load
 started, read off its own init frame. The gap between «what we put in» and «what came up» is
 the whole reason both halves are recorded.
 
-**Connections are ours only.** `disableClaudeAiConnectors: true` goes into the worker's
-settings (Claude Code 2.1.182 or later), so hosted claude.ai MCP connectors are neither fetched
-nor attached; servers handed over explicitly on `--mcp-config` are unaffected, and those are
-the only ones a worker gets. They come from the registry a human keeps on the machine
+**Connections: the hosted ones are off, the project's own still arrive.**
+`disableClaudeAiConnectors: true` goes into the worker's settings (Claude Code 2.1.182 or
+later), so hosted claude.ai MCP connectors are neither fetched nor attached, and the servers
+handed over explicitly on `--mcp-config` are unaffected. What this does NOT do — and the
+sentence here used to claim it did — is keep out a server declared by the project the worker
+was pointed at: an MCP file in that project's own root is loaded by the session regardless of
+how empty the worker's account is. Five measured runs settled it; neither switch that looks
+like it should close that door (turning off project servers wholesale, disabling them by name)
+closes it, and the one flag that would is refused by this product's own argument guard, because
+it belongs to the family of flags that quietly de-parity a session while the run still looks
+green. So the boundary here is visibility rather than prevention: every attempt records, beside
+the servers it was handed, the ones that arrived without being on the register — and a project
+whose connection file you have not read is a project whose servers your worker will load. They come from the registry a human keeps on the machine
 (`~/.sma-daemon/mcp.json`), switched on row by row on «Подключения» — the window can flip
 `enabled` and nothing else, so no text typed into it ever becomes a command.
 
