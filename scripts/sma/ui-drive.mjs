@@ -3,10 +3,14 @@
  * ui-drive.mjs — open a running app, walk it, and write a receipt of what was seen.
  *
  * Usage:
- *   node scripts/sma/ui-drive.mjs <url> [step ...]
+ *   node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>]
+ *                                       [--at <desktop|tablet|mobile>]
  *
  * Steps: goto:<path> | click:<visible text> | type:<selector>=<text>
  *        wait:<ms> | shot:<name> | expect:<visible text>
+ *
+ * --at names the width the scripted path and the sweep are walked at (every width is opened
+ *      and measured regardless); without it both walk the desktop, as they always have.
  *
  * Exit: 0 clean (or warnings only) · 1 blocking findings · 2 bad arguments
  *       3 NOT RUN — no browser driver, nothing was looked at
@@ -31,19 +35,37 @@ import { pathToFileURL } from 'node:url'
 import {
   DESTRUCTIVE_RE,
   INTERACTIVE_SELECTOR,
+  OVERFLOW_SCAN_DEPTH,
+  OVERFLOW_SCAN_NODES,
+  READY_CEILING_MS,
+  READY_POLL_MS,
+  READY_SETTLE_MS,
+  STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   VIEWPORTS,
   classify,
   isStreamClose,
   missingDriverMessage,
   parseSteps,
+  readiness,
   renderReceipt,
+  resolveDriveViewport,
+  sweepSparseNote,
   verdict,
+  worstOverflow,
 } from './lib/ui-drive.mjs'
 
 /**
  * Press every control the page exposes and record what broke — the part of QA that is
  * mechanical, and therefore belongs to a script rather than to a model's attention span.
+ *
+ * One thing it refuses to CLAIM: that a control which left the screen before its turn is
+ * broken. The list is made once, and on a screen where a press replaces the screen — a list
+ * of tasks that opens a card — the rest of the list stops existing. Clicking a handle to a
+ * node that is gone times out, and reporting that as a dead button is a blocker manufactured
+ * by the order the sweep happens to walk in. So each control is checked to be STILL THERE
+ * immediately before its press: gone ones are counted and named, present ones that still
+ * cannot be operated are dead exactly as before.
  *
  * Three things it refuses to do, each for a reason worth stating:
  *  - it will not press a destructive control (DESTRUCTIVE_RE); unattended data loss is
@@ -52,7 +74,7 @@ import {
  *  - it will not leave the page somewhere else: after a click that navigated, it returns
  *    to the start URL, so control N+1 is pressed on the page it was found on
  *
- * @returns {Promise<{touched:number, total:number, skipped:number, refused:string[]}>}
+ * @returns {Promise<{touched:number, total:number, skipped:number, refused:string[], vanished:string[], sparse:string}>}
  */
 async function sweep(page, url, { deadControls, unnamedControls }) {
   const handles = await page.locator(INTERACTIVE_SELECTOR).all()
@@ -60,11 +82,22 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
   for (const h of handles) {
     if (await h.isVisible().catch(() => false)) visible.push(h)
   }
+  // The list is collected ONCE, so how much of the page it holds is the whole worth of the
+  // sweep. A denominator this thin is stated in the receipt rather than left to look complete.
+  const sparse = sweepSparseNote(visible.length)
 
   const refused = []
+  const vanished = []
   let touched = 0
   for (const el of visible) {
     if (touched >= SWEEP_CAP) break
+    // Still on the screen? A node the page has since thrown away cannot be pressed, and that
+    // is a fact about the walk, not about the control.
+    const present = await el.evaluate((e) => e.isConnected && e.getClientRects().length > 0).catch(() => false)
+    if (!present) {
+      vanished.push('(a control that was on the screen when the list was made)')
+      continue
+    }
     const name = (
       await el
         .evaluate((e) => {
@@ -100,7 +133,75 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
     if (page.url() !== url) await open(page, url, 15000).catch(() => {})
   }
 
-  return { touched, total: visible.length, skipped: Math.max(0, visible.length - touched - refused.length), refused }
+  return {
+    touched,
+    total: visible.length,
+    skipped: Math.max(0, visible.length - touched - refused.length - vanished.length),
+    refused,
+    vanished,
+    sparse,
+  }
+}
+
+/**
+ * What each page is still waiting on. Channels are never entered here: a screen that holds one
+ * open for its whole life is not «still loading», and waiting on it would bring back the
+ * networkidle mistake this file already carries a paragraph about.
+ */
+const waitingOn = new WeakMap()
+function callsOf(page) {
+  let map = waitingOn.get(page)
+  if (!map) {
+    map = new Map()
+    waitingOn.set(page, map)
+  }
+  return map
+}
+
+/**
+ * How many answers this page is still waiting for. Age is deliberately NOT consulted: a door
+ * that takes a minute is still a door, and the moment this counted long calls as channels the
+ * sweep started measuring skeletons again. What is not waited for is decided by kind alone.
+ */
+function outstandingCalls(page) {
+  return callsOf(page).size
+}
+
+/**
+ * awaitReady(page) — sample the page until what it shows stops changing.
+ *
+ * The signature is deliberately crude and general: how many elements the page holds and how
+ * long its text is. It needs no knowledge of the app under test, which is the point — a
+ * readiness check that knows one window's markup measures that window and nothing else.
+ * Sampling stops the moment the signature has held for READY_SETTLE_MS, so a fast page pays
+ * about a second and no more; a slow door is waited out up to READY_CEILING_MS, and a page
+ * that never settles returns `ready:false` for the caller to record as a finding.
+ *
+ * @returns {Promise<{ready:boolean, waitedMs:number, heldMs:number, ink:boolean, reason:string}>}
+ */
+async function awaitReady(page, { ceilingMs = READY_CEILING_MS, settleMs = READY_SETTLE_MS, pollMs = READY_POLL_MS } = {}) {
+  const began = Date.now()
+  const samples = []
+  let state = readiness(samples, { settleMs })
+  for (;;) {
+    const snap = await page
+      .evaluate(() => {
+        const body = document.body
+        const text = body ? (body.innerText || '').trim() : ''
+        return { nodes: document.querySelectorAll('*').length, ink: text.length }
+      })
+      .catch(() => null)
+    samples.push({
+      at: Date.now(),
+      signature: snap ? `${snap.nodes}:${snap.ink}` : 'unreadable',
+      ink: Boolean(snap && snap.ink > 0),
+      pending: outstandingCalls(page),
+    })
+    state = readiness(samples, { settleMs })
+    if (state.ready || Date.now() - began >= ceilingMs) break
+    await page.waitForTimeout(pollMs).catch(() => {})
+  }
+  return { ...state, waitedMs: Date.now() - began }
 }
 
 /**
@@ -109,17 +210,29 @@ async function sweep(page, url, { deadControls, unnamedControls }) {
  * «networkidle» means «no connection for half a second», which an app that pushes live
  * updates never achieves: its channel is open for as long as the screen is. Every open of
  * such an app therefore timed out and was written down as a failed step — the tool declared
- * broken exactly the apps that work hardest. So the wait is for the page to EXIST and to have
- * painted something, and the stream is left alone to do its job.
+ * broken exactly the apps that work hardest. So the stream is left alone to do its job.
+ *
+ * What is waited for instead is the page HOLDING STILL (see awaitReady). It used to be the
+ * first ink plus 400 ms, and on a window whose first answer takes sixteen seconds that meant
+ * the overflow was measured, and the sweep's list of controls collected, on a page that had
+ * barely started. Both then described nothing while reading like a clean result.
+ *
+ * @returns {Promise<{ready:boolean, waitedMs:number, heldMs:number, ink:boolean, reason:string}>}
  */
-async function open(page, target, timeout = 20000) {
+async function open(page, target, timeout = OPEN_TIMEOUT_MS) {
   await page.goto(target, { waitUntil: 'domcontentloaded', timeout })
-  // A single-page app paints after its first answer arrives; wait for ink, not for silence.
-  await page
-    .waitForFunction(() => Boolean(document.body) && document.body.innerText.trim().length > 0, { timeout: 8000 })
-    .catch(() => {})
-  await page.waitForTimeout(400)
+  return awaitReady(page)
 }
+
+/**
+ * How long the DOCUMENT itself may take. It used to be twenty seconds, from before any of
+ * this was measured. An app that computes a screen on its own single thread does not answer
+ * anything at all while it is doing so — measured on the window this was written for: a page
+ * asked for while the state call ran waited thirty-four seconds for plain HTML. Calling that
+ * app broken is the same mistake as calling a streaming app broken for never falling silent.
+ * A server that is actually dead still fails, just later and with the same words.
+ */
+const OPEN_TIMEOUT_MS = 90000
 
 /** Screenshots are binaries: the run directory disowns them before the first capture. */
 const SHOT_IGNORE = ['# Screenshots — never commit binary assets', '*.png', '*.webp', '*.jpg', '*.jpeg', '']
@@ -177,10 +290,44 @@ async function main() {
     process.stdout.write('SMA ui-drive: --min-viewport needs a positive pixel number.\n')
     process.exit(2)
   }
-  const positional = argv.filter((a, i) => a !== '--no-sweep' && a !== '--min-viewport' && !(mvIdx >= 0 && i === mvIdx + 1))
+  // --at <desktop|tablet|mobile>: the operator DECLARES the width the scripted path and the
+  // sweep are walked at. Both used to be nailed to the desktop, so a claim about a narrow
+  // screen could not be walked at all — the run opened the phone, measured it, and then went
+  // and walked the path somewhere else. The width is a name from the frozen list, never a
+  // pixel number: see resolveDriveViewport for why that restriction is the point.
+  const atIdx = argv.indexOf('--at')
+  let pathViewport = null
+  if (atIdx >= 0) {
+    const asked = resolveDriveViewport(argv[atIdx + 1])
+    if (!asked.ok) {
+      process.stdout.write(`SMA ui-drive: ${asked.reason}\n`)
+      process.exit(2)
+    }
+    pathViewport = asked.viewport
+  }
+  // A declared minimum that cuts off the declared path is a contradiction, and the run refuses
+  // it out loud. Walking the path somewhere else instead — or quietly not walking it — would
+  // hand back a receipt for a path nobody took, and a run that did not happen is never a pass.
+  if (pathViewport && minViewport > pathViewport.width) {
+    process.stdout.write(
+      `SMA ui-drive: --at ${pathViewport.name} (${pathViewport.width}px) is below --min-viewport ${minViewport} — ` +
+        'the width you asked the path to walk is the one you declared the app does not serve. Nothing was run.\n'
+    )
+    process.exit(2)
+  }
+  const positional = argv.filter(
+    (a, i) =>
+      a !== '--no-sweep' &&
+      a !== '--min-viewport' &&
+      a !== '--at' &&
+      !(mvIdx >= 0 && i === mvIdx + 1) &&
+      !(atIdx >= 0 && i === atIdx + 1)
+  )
   const [url, ...stepArgv] = positional
   if (!url) {
-    process.stdout.write('usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>]\n')
+    process.stdout.write(
+      'usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>] [--at <desktop|tablet|mobile>]\n'
+    )
     process.exit(2)
   }
 
@@ -219,10 +366,18 @@ async function main() {
   const deadControls = []
   const unnamedControls = []
   const overflows = []
+  const notSettled = []
   const shots = []
+  /** Record a page that never stopped changing, naming WHERE it happened. */
+  const noteReadiness = (where, state) => {
+    if (state && state.ready === false) notSettled.push({ where, waitedMs: state.waitedMs, reason: state.reason })
+  }
   let coverage = { ran: false }
   const stampViewportSkips = () => {
     if (skippedViewports.length) coverage = { ...coverage, viewportsSkipped: skippedViewports }
+    // A declared width goes into the receipt, so «the path was walked on a phone» is a fact a
+    // reader can check rather than a word they have to take.
+    if (pathViewport) coverage = { ...coverage, pathViewport }
   }
   const origin = (() => {
     try {
@@ -236,17 +391,25 @@ async function main() {
   // closing is the CLOSE, and the receipt must be able to tell the two apart.
   const closing = new WeakSet()
 
+
   /** Wire one page to the collectors, so no viewport observes less than another. */
   const watch = (page) => {
     // When each request STARTED — a channel held open for the life of the screen is told
     // apart from an ordinary call by how long it lived, not by its name.
     const startedAt = new WeakMap()
-    page.on('request', (r) => startedAt.set(r, Date.now()))
+    const calls = callsOf(page)
+    page.on('request', (r) => {
+      startedAt.set(r, Date.now())
+      const type = typeof r.resourceType === 'function' ? r.resourceType() : ''
+      if (!STREAM_RESOURCE_TYPES.includes(type)) calls.set(r, { at: Date.now(), type })
+    })
+    page.on('requestfinished', (r) => calls.delete(r))
     page.on('console', (m) => {
       if (m.type() === 'error') consoleErrors.push(m.text())
     })
     page.on('pageerror', (e) => pageErrors.push(e.message))
     page.on('requestfailed', (r) => {
+      calls.delete(r)
       const began = startedAt.get(r)
       requestFailures.push({
         method: r.method(),
@@ -274,6 +437,8 @@ async function main() {
     shots.push(join(outDir, file))
   }
 
+  // Without --at the path and the sweep walk exactly where they always did: 1440×900.
+  const walkViewport = pathViewport ? { width: pathViewport.width, height: pathViewport.height } : { width: 1440, height: 900 }
   const openedViewports = VIEWPORTS.filter((vp) => vp.width >= minViewport)
   const skippedViewports = VIEWPORTS.filter((vp) => vp.width < minViewport).map((vp) => `${vp.name} (${vp.width}px)`)
 
@@ -284,24 +449,55 @@ async function main() {
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } })
       watch(page)
       try {
-        await open(page, url)
+        noteReadiness(`${vp.name} (${vp.width}px)`, await open(page, url))
       } catch (err) {
         stepFailures.push({ step: `open ${url} at ${vp.name}`, error: err.message.split('\n')[0] })
       }
-      // Measured, not judged: content wider than its viewport means the page scrolls sideways.
-      const box = await page
-        .evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }))
+      // Measured, not judged: a box holding more content than it can show means part of the
+      // screen lies past the edge. The document is only the FIRST box measured — a window may
+      // carry its minimum width on a container INSIDE the page, and then the document measures
+      // perfectly clean while most of the screen is off it (see OVERFLOW_SCAN_DEPTH).
+      const boxes = await page
+        .evaluate(
+          ({ maxDepth, maxNodes }) => {
+            const name = (el) => {
+              const tag = el.tagName.toLowerCase()
+              if (el.id) return `${tag}#${el.id}`
+              const cls = String(el.getAttribute('class') || '')
+                .trim()
+                .split(/\s+/)[0]
+              return cls ? `${tag}.${cls}` : tag
+            }
+            const out = []
+            const visit = (el, depth) => {
+              if (depth > maxDepth || out.length >= maxNodes) return
+              const overflowX = getComputedStyle(el).overflowX
+              out.push({
+                element: name(el),
+                scrollWidth: el.scrollWidth,
+                clientWidth: el.clientWidth,
+                scrollable: overflowX === 'auto' || overflowX === 'scroll',
+              })
+              for (const child of el.children) visit(child, depth + 1)
+            }
+            visit(document.documentElement, 0)
+            return out
+          },
+          { maxDepth: OVERFLOW_SCAN_DEPTH, maxNodes: OVERFLOW_SCAN_NODES }
+        )
         .catch(() => null)
-      if (box && box.scrollWidth > box.clientWidth + 1) overflows.push({ ...box, viewport: vp.name })
+      const worst = worstOverflow(boxes ?? [], { viewport: vp.name })
+      if (worst) overflows.push(worst)
       await capture(page, `01-open-${vp.name}`)
       await closePage(page)
     }
 
-    // The scripted path is walked once, at desktop, where the operator's claim was made.
+    // The scripted path is walked once — at desktop, where an operator's claim is usually
+    // made, or at the width the operator declared with --at when the claim is about that one.
     if (parsed.steps.length) {
-      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+      const page = await browser.newPage({ viewport: walkViewport })
       watch(page)
-      await open(page, url).catch(() => {})
+      noteReadiness('the scripted path', await open(page, url).catch(() => null))
       let n = 1
       for (const step of parsed.steps) {
         const label = String(++n).padStart(2, '0')
@@ -328,9 +524,11 @@ async function main() {
     // The sweep runs LAST, on its own page: it presses things and navigates, and the
     // scripted path's verdict must not depend on wreckage the sweep left behind.
     if (!noSweep) {
-      const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+      const page = await browser.newPage({ viewport: walkViewport })
       watch(page)
-      await open(page, url).catch(() => {})
+      // The sweep collects its list of controls ONCE, immediately after this open — so if the
+      // page is not ready here, the denominator is whatever the shell painted first.
+      noteReadiness('the sweep', await open(page, url).catch(() => null))
       coverage = { ran: true, ...(await sweep(page, url, { deadControls, unnamedControls })) }
       await capture(page, '99-after-sweep')
       await closePage(page)
@@ -345,7 +543,17 @@ async function main() {
   const streamsClosed = requestFailures.filter((f) => isStreamClose(f)).length
   if (streamsClosed) coverage = { ...coverage, streamsClosed }
   const findings = classify(
-    { consoleErrors, pageErrors, requestFailures, httpErrors, stepFailures, deadControls, unnamedControls, overflows },
+    {
+      consoleErrors,
+      pageErrors,
+      requestFailures,
+      httpErrors,
+      stepFailures,
+      deadControls,
+      unnamedControls,
+      overflows,
+      notSettled,
+    },
     { origin }
   )
   const v = verdict(findings, { ran: true })
