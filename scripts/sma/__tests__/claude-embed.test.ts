@@ -113,3 +113,60 @@ describe('claude-embed — the fixture selftest (Test 5)', () => {
     expect(embedSelftest({ tmpRoot: tmp })).toBe(1)
   })
 })
+
+/**
+ * The memory rule of the block is the one text every agent in every install
+ * reads. Until now it told them to place a lesson file by hand and regenerate
+ * the index — i.e. to walk AROUND the write pipeline, while the product promises
+ * the opposite. These cases pin the corrected wording, and the last one proves
+ * the selftest's new conditions actually check rather than decorate.
+ */
+describe('claude-embed — the memory rule leads THROUGH the write pipeline (Test 6)', () => {
+  it('names the write verb as the only way a new lesson enters the corpus', () => {
+    const block = renderRulesBlock({ version: '3.6.0' })
+    expect(block).toContain('cli.mjs memory write')
+    expect(block).toContain('the ONLY way in')
+  })
+
+  it('no longer teaches the bypass (place a flat file, then regenerate the index)', () => {
+    const block = renderRulesBlock({ version: '3.6.0' })
+    expect(block).not.toContain('build-index')
+    expect(block).not.toMatch(/ONE flat/)
+  })
+
+  it('keeps every line the selftest already pinned', () => {
+    const block = renderRulesBlock({ version: '3.6.0' })
+    expect(block).toContain('.claude/memory/MEMORY.md')
+    expect(block).toContain('Economy ladder')
+    expect(block).toContain('never on the chopping block')
+  })
+})
+
+describe('claude-embed — the selftest CHECKS the two new conditions (Test 7)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-embed-mutate-'))
+  afterAll(() => {
+    try {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    } catch {
+      /* best-effort */
+    }
+  })
+
+  it('scores 1 on the real block', () => {
+    expect(embedSelftest({ tmpRoot: join(tmp, 'real') })).toBe(1)
+  })
+
+  it('scores 0 when the block stops naming the write pipeline', () => {
+    const render = (o: { version?: string }) => renderRulesBlock(o).replace(/memory write/g, 'memory notes')
+    expect(embedSelftest({ tmpRoot: join(tmp, 'nopipeline'), render })).toBe(0)
+  })
+
+  it('scores 0 when the block teaches the hand-placed-file bypass again', () => {
+    const render = (o: { version?: string }) =>
+      renderRulesBlock(o).replace(
+        RULES_MARKERS.end,
+        '- Or just write the file and run `node scripts/sma/cli.mjs build-index --write`.\n' + RULES_MARKERS.end,
+      )
+    expect(embedSelftest({ tmpRoot: join(tmp, 'bypass'), render })).toBe(0)
+  })
+})
