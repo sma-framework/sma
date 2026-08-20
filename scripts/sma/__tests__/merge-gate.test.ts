@@ -126,6 +126,42 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     expect(acquireMergeClaim({ by: 'T-b', claimsDir, journalDir }).acquired).toBe(true)
   })
 
+  /**
+   * ═══ ОТПЕЧАТОК КОММИТА СЛИЯНИЯ ПЕРЕСТАЁТ ОБРЕЗАТЬСЯ ПРИ ЗАПИСИ ══════════════════
+   *
+   * Из квитанции слияния собирается ОДНА команда, которую человек копирует и выполняет,
+   * чтобы отменить приёмку: `git -C <репозиторий> revert -m 1 <отпечаток>`. Отпечаток
+   * записывался обрезанным до семи знаков. Семи обычно хватает, но git требует ОДНОЗНАЧНОГО
+   * префикса, и в достаточно большом дереве однажды перестанет хватать — а полный отпечаток
+   * есть прямо в момент вычисления, и обрезать его там незачем. Короткая форма, если она
+   * нужна глазам, получается при ОТОБРАЖЕНИИ.
+   *
+   * Рядом — путь репозитория, в котором слияние произошло: без него команда неполна, потому
+   * что человек читает карточку не обязательно из того каталога, где лежит проект.
+   */
+  it('квитанция слияния несёт ПОЛНЫЙ отпечаток и путь репозитория — из них собирается команда отката', () => {
+    const full = '0123456789abcdef0123456789abcdef01234567'
+    const execGit = makeExecGit({ resultSha: full })
+    const res = runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' }) as any
+    expect(res.merged).toBe(true)
+    expect(res.resultSha).toBe(full)
+
+    const j = readJournal({ journalDir })
+    const receipt = j.events.find((e: any) => e.type === 'merge') as any
+    expect(receipt.detail.resultSha, 'отпечаток обрезан при ЗАПИСИ — команда отката собирается из огрызка').toBe(full)
+    expect(receipt.detail.resultSha).toHaveLength(40)
+    expect(receipt.detail.repo, 'без пути репозитория команда отката неполна').toBe('/repo')
+  })
+
+  it('нечего записывать — квитанция молчит, а не выдумывает: отпечаток null, путь назван', () => {
+    const execGit = makeExecGit({ throwOn: 'rev-parse' })
+    runMerge({ branch: 'sma-wt/x', by: 'T-a', execGit, runTests: () => ({ passed: true }), claimsDir, journalDir, cwd: '/repo' })
+    const j = readJournal({ journalDir })
+    const receipt = j.events.find((e: any) => e.type === 'merge') as any
+    expect(receipt.detail.resultSha).toBe(null)
+    expect(receipt.detail.repo).toBe('/repo')
+  })
+
   it('Test 3: a concurrent merge -> SOFT-deny with an override (never a hard block / throw)', () => {
     // another terminal holds the merge slot.
     acquireMergeClaim({ by: 'T-other', branch: 'sma-wt/held', claimsDir, journalDir })
