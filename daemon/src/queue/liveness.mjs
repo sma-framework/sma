@@ -57,7 +57,7 @@ function countNoProgress(attempts) {
 }
 
 /**
- * livenessSweep({adapter, ledger, clock, expireMs}) — audit every non-terminal task
+ * livenessSweep({adapter, ledger, clock, expireMs, journal}) — audit every non-terminal task
  * for a durable live path; requeue the ones that lost it. Returns a summary.
  *
  * A task is:
@@ -68,10 +68,26 @@ function countNoProgress(attempts) {
  *     (→ attempt row via the adapter + pg-boss auto-retry), counted as requeued, and
  *     counted as throttled when its cooldown (>= 2 no-progress runs) is non-zero.
  *
- * @param {{adapter:object, ledger?:object, clock?:Function|number, expireMs?:number}} opts
+ * IT SAYS SO OUT LOUD. This sweep declares an attempt dead and hands its task back to the
+ * queue, and until now it did that WITHOUT WRITING A WORD. On the day it fired and reissued a
+ * task, the operator log held nothing about it but the consequences — the whole day's log
+ * answers `grep -c liveness` with zero — and the investigation of that day had to be run on
+ * circumstantial evidence. One line ends a whole class of «why did this restart»: which task,
+ * which attempt, how long it had been silent, the deadline it missed, how many fruitless runs
+ * are on its record and the cooldown that follows.
+ *
+ * THE LINE COMES FIRST, before the failure is declared: written afterwards, a throw from the
+ * declaration would leave the log exactly as empty as it was before — the one case where the
+ * line is worth most.
+ *
+ * AND THE JOURNAL IS NEVER A CONDITION OF THE SWEEP. No seam, a seam that throws — the sweep
+ * does its work unchanged and silently. Narration is an observation of the audit, never a part
+ * of it: a task must not survive or die on whether a log could be written.
+ *
+ * @param {{adapter:object, ledger?:object, clock?:Function|number, expireMs?:number, journal?:Function}} opts
  * @returns {Promise<{audited:number, requeued:number, throttled:number}>}
  */
-export async function livenessSweep({ adapter, ledger, clock = Date.now, expireMs = DEFAULT_EXPIRE_MS } = {}) {
+export async function livenessSweep({ adapter, ledger, clock = Date.now, expireMs = DEFAULT_EXPIRE_MS, journal } = {}) {
   if (!adapter || typeof adapter.list !== 'function' || typeof adapter.fail !== 'function') {
     throw new TypeError('livenessSweep requires an adapter with list() and fail()')
   }
@@ -100,9 +116,34 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
     // Stale active: the worker went silent — no durable live path. Requeue it.
     const prior = ledger && typeof ledger.readAttempts === 'function' ? ledger.readAttempts(r.id) : []
     const noProgress = countNoProgress(prior) + 1 // this failure
+    const silentMs = now() - lastTouch
+    const cooldownMs = computeCooldownMs(noProgress)
+    // THE ONE LINE (see the header) — written BEFORE the declaration, fail-open, and worded so
+    // a reader does not go looking for a killing that never happened: this sweep declares and
+    // reissues; it touches no process.
+    if (typeof journal === 'function') {
+      try {
+        journal({
+          type: 'liveness.attempt_dead',
+          taskId: r.id,
+          attempt: r.attempt ?? null,
+          silentMs,
+          expireMs,
+          noProgressRuns: noProgress,
+          cooldownMs,
+          detail:
+            `попытка ${r.attempt ?? '?'} задачи ${r.id} объявлена мёртвой: молчит ${Math.round(silentMs / 1000)} с ` +
+            `при сроке ${Math.round(expireMs / 1000)} с; задача перевыдана в очередь` +
+            (cooldownMs > 0 ? `, остывание ${Math.round(cooldownMs / 1000)} с` : '') +
+            '. Процесс не трогали — сторож только объявляет и перевыдаёт.',
+        })
+      } catch {
+        /* повествование никогда не стоит задачи */
+      }
+    }
     await adapter.fail(r.id, 'runtime_offline') // → attempt row (adapter) + pg-boss auto-retry
     requeued += 1
-    if (computeCooldownMs(noProgress) > 0) throttled += 1
+    if (cooldownMs > 0) throttled += 1
   }
 
   return { audited, requeued, throttled }

@@ -12,6 +12,7 @@ import {
   useTaskWords,
 } from '../../api/queries'
 import type {
+  ApprovalWall,
   AttemptDigest,
   AttemptLog as AttemptLogPayload,
   AttemptRole,
@@ -138,7 +139,59 @@ function Steering({ taskId }: { taskId: string }) {
  * ПОЧЕМУ ОДОБРЕНИЕ НЕ ОТКРЫВАЕТ СЛЕДУЮЩИЙ ВЫЗОВ. Идентификатор билета несёт отпечаток
  * аргументов: та же команда с другими аргументами придёт новым билетом и снова остановится.
  */
-function ParkedCall({ taskId, ticket }: { taskId: string; ticket: WaitingTicket }) {
+/**
+ * Человеческие действия конверта — СЛОВАМИ ДЛЯ ЭКРАНА, и только для экрана. Это не второй
+ * источник правды о стене: правду говорит дверь, присылая имя действия; здесь оно лишь
+ * переводится на язык человека. Имя, которого тут нет, показывается как есть — молчать о
+ * стене из-за отсутствующего перевода было бы хуже, чем показать её сырым словом.
+ */
+const WALL_ACTION_WORDS: Record<string, string> = {
+  push: 'отправка в удалённый репозиторий',
+  merge: 'слияние',
+  tag: 'метка',
+  deploy: 'публикация пакета или выпуск релиза',
+}
+
+/**
+ * СТЕНА ЗА КНОПКОЙ — сказанная ДО нажатия, а не после.
+ *
+ * Что здесь произошло на живом прогоне: человек видел билет, нажимал «Одобрить» — и получал
+ * отказ, потому что вызов упирался в ЖЁСТКИЙ запрет, уехавший в аргументы запуска работника.
+ * Мягкая граница отпустила, жёсткая не пустила. Поведение правильное; несказанным оно быть
+ * не должно.
+ *
+ * КНОПКА НЕ БЛОКИРУЕТСЯ, И ЭТО РЕШЕНИЕ, А НЕ НЕДОДЕЛКА. Мы предупреждаем, а не решаем за
+ * человека: он вправе нажать и увидеть отказ своими глазами. Экран, который сам отнимает
+ * кнопку на основании своей догадки, — это уже граница, а граница здесь не он.
+ *
+ * РИСУЕТСЯ ТОЛЬКО «УПРЁТСЯ». «Не упрётся» и «не знаем» не рисуются вовсе: сообщение «всё в
+ * порядке» на основании неполного знания — это ложное успокоение, а оно опаснее молчания.
+ */
+function ApprovalWallNote({ wall }: { wall: ApprovalWall }) {
+  if (wall.state !== 'blocked') return null
+  const words = WALL_ACTION_WORDS[wall.action] ?? wall.action
+  return (
+    <div
+      data-testid="approval-wall"
+      className="mt-2.5 rounded-[9px] border border-bd2 bg-input px-[11px] py-2.5 text-[11.5px] leading-[1.5] text-tx"
+    >
+      <span className="font-semibold">Одобрение НЕ откроет этот вызов.</span> Работнику
+      запрещено само это действие — {words} — аргументами его запуска: до запрета он не
+      дотягивается, и одобрение запрет не снимает. Нажать «Одобрить» можно, но вызов всё
+      равно получит отказ. Сделать это может только человек своими руками.
+    </div>
+  )
+}
+
+function ParkedCall({
+  taskId,
+  ticket,
+  wall,
+}: {
+  taskId: string
+  ticket: WaitingTicket
+  wall?: ApprovalWall | null
+}) {
   const decide = useDecideToolTicket()
   const [said, setSaid] = useState<string | null>(null)
 
@@ -175,6 +228,7 @@ function ParkedCall({ taskId, ticket }: { taskId: string; ticket: WaitingTicket 
         Билет <span className="font-semibold text-tx">{ticket.id}</span>
         {ticket.deadlineAt ? ` · без ответа до ${clockLabel(ticket.deadlineAt)} вызов будет ОТКАЗАН` : null}
       </div>
+      {wall ? <ApprovalWallNote wall={wall} /> : null}
       <div className="mt-2.5 flex items-center gap-2">
         <button
           type="button"
@@ -382,7 +436,10 @@ function proofItems(attempt: TaskAttempt | null): { items: ColumnItem[]; meta: s
   const checks = receiptChecks(attempt?.receipt)
   const proof = receiptProofLabel(attempt?.proof)
   const items: ColumnItem[] = checks.map((c) => ({ text: c.text, mark: c.ok ? 'ok' : 'fail' }))
-  if (proof) items.push({ text: proof, mark: 'ok' })
+  // «Не перепроверено» — НЕ галочка. Гейт, открывшийся без квитанции, оставляет доказательство
+  // с оговоркой, и рисовать его тем же знаком, что и перепроверенную ветку, значило бы вернуть
+  // ровно ту ложь, ради которой оговорка и доезжает до экрана: это ждёт человека.
+  if (proof) items.push({ text: proof, mark: attempt?.proof?.unverified ? 'ask' : 'ok' })
   if (checks.length > 0) {
     const passed = checks.filter((c) => c.ok).length
     return { items, meta: `${passed} из ${checks.length}`, metaTone: passed === checks.length ? 'text-ok-tx' : 'text-warn-tx' }
@@ -1011,7 +1068,7 @@ export function Screen() {
 
           {/* ЖДУТ ВАС — выше руля, потому что стоящий вызов срочнее любой поправки. */}
           {status === 'claimed' && taskId && newest?.ticket ? (
-            <ParkedCall taskId={taskId} ticket={newest.ticket} />
+            <ParkedCall taskId={taskId} ticket={newest.ticket} wall={newest.approvalWall} />
           ) : null}
 
           {status === 'claimed' && taskId ? <Steering taskId={taskId} /> : null}
@@ -1024,6 +1081,10 @@ export function Screen() {
                 returnedNotes={detail.data?.returnedNotes ?? []}
                 taskId={taskId}
                 memoryTrace={detail.data?.journal?.memoryTrace ?? null}
+                /* Коммит слияния приёмки — то, чем ПРИНЯТАЯ работа отменяется одной
+                   командой. Дверь проверила его по форме перед выдачей; здесь он только
+                   передаётся дальше и ни во что не собирается. */
+                merge={{ sha: task?.mergeSha ?? null, repo: task?.mergeRepo ?? null }}
               />
 
               {returning ? (

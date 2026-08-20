@@ -1,11 +1,11 @@
 /**
- * invariants.test.ts — the fleet's SEVEN invariants, attacked by seeded random sequences.
+ * invariants.test.ts — the fleet's EIGHT invariants, attacked by seeded random sequences.
  *
  * WHY THIS FILE EXISTS: `state-machine.test.ts` and `capability-envelope.test.ts` prove
  * that each module refuses the cases their authors thought of. Neither proves anything
- * about a SEQUENCE — and every one of the seven fleet invariants is a property of a
+ * about a SEQUENCE — and every one of the eight fleet invariants is a property of a
  * history, not of a call. This suite generates histories nobody wrote by hand and checks
- * all seven after every single step of every one of them.
+ * all eight after every single step of every one of them.
  *
  * ═════════ REPLAYABILITY IS THE POINT — A FAILURE YOU CANNOT REPRODUCE IS NOISE ═══════
  * Every random choice descends from `INVARIANT_SEED`, a module-level constant. There is no
@@ -18,10 +18,10 @@
  *
  * ═════════ THE MUTATION BATTERY — WHY THIS SUITE'S SILENCE MEANS SOMETHING ════════════
  * A property suite that always passes is indistinguishable from one that checks nothing.
- * So each of the seven checkers is ALSO run against a deliberately broken world — a
+ * So each of the eight checkers is ALSO run against a deliberately broken world — a
  * transition table with one contract loosened to permit an illegal jump, a forged double
  * lease, a ledger whose stamp was rewritten between rows — and asserted to REPORT the
- * violation. Seven mutations, seven detections. The battery is not decoration; it is the
+ * violation. Eight mutations, eight detections. The battery is not decoration; it is the
  * only reason a green run is evidence.
  *
  * ═════════ NO DATABASE, NO NETWORK, NO NEW DEPENDENCY ═════════════════════════════════
@@ -70,7 +70,7 @@ import {
   validateEnvelope,
   envelopeAllows,
 } from '../src/queue/capability-envelope.mjs'
-import { recordAttempt, readAttempts, memorySnapshotHash } from '../src/queue/attempt-ledger.mjs'
+import { recordAttempt, readAttempts, memorySnapshotHash, TERMINAL_OUTCOMES } from '../src/queue/attempt-ledger.mjs'
 
 // ── the seed, and the sizes of the search ─────────────────────────────────────
 
@@ -496,7 +496,7 @@ function land(
   t.state = to
 }
 
-// ═══════════════════ THE SEVEN CHECKERS — one function per invariant ══════════
+// ═══════════════════ THE EIGHT CHECKERS — one function per invariant ══════════
 //
 // Each returns `null` when the invariant holds, or a sentence naming what broke. They take
 // the transition TABLE as an argument so the mutation battery can hand them a loosened one.
@@ -652,7 +652,57 @@ function invariantSevenDeadLetterNeedsADisposition(world: World, table: any = TR
   return null
 }
 
-/** The seven, by name. A failure says WHICH invariant broke, never which line. */
+/**
+ * 8 — one attempt carries ONE number and ONE outcome.
+ *
+ * A DIFFERENT CLASS FROM INVARIANT 6, and that is why it is its own law rather than a wider
+ * reading of that one. Six is about a stamp rewritten after the fact; eight is about TWO
+ * WRITERS WHO DO NOT AGREE ABOUT WHICH ATTEMPT THEY ARE DESCRIBING — one takes the number when
+ * the work is claimed and carries it, the other recomputes it from a counter that can move
+ * underneath. Folding this into six would have hidden a new cause under an old name.
+ *
+ * Two halves, like invariant seven. The HISTORY: a row whose number names an attempt this task
+ * never opened is a number somebody invented. The DURABLE ROWS, read back through the real
+ * reader: no attempt number carries two different terminal outcomes — and a row bearing the
+ * write door's contradiction mark is itself the violation, said by the writer at the moment it
+ * happened.
+ */
+function invariantEightOneAttemptOneNumberOneOutcome(world: World): string | null {
+  for (const t of world.tasks) {
+    for (const b of t.breaches) {
+      if (b.invariant === 8) return `INVARIANT 8 (one attempt, one number, one outcome): ${b.detail}`
+    }
+    const opened = new Set(t.attempts.map((a) => a.attemptNo))
+    const rows = readAttempts(world.ledgerDir, t.taskId)
+    const outcomeOf = new Map<number, string>()
+    for (const row of rows) {
+      if (row.conflictsWith !== undefined) {
+        return (
+          `INVARIANT 8 (one attempt, one number, one outcome): task ${t.taskId} attempt ${row.attempt} ` +
+          `recorded "${String(row.outcome)}" against an already recorded "${String(row.conflictsWith)}"`
+        )
+      }
+      if (row.attempt !== undefined && opened.size > 0 && !opened.has(row.attempt)) {
+        return (
+          `INVARIANT 8 (one attempt, one number, one outcome): task ${t.taskId} has a ledger row for attempt ` +
+          `${row.attempt}, which this task never opened (opened: ${[...opened].join(', ')})`
+        )
+      }
+      if (!TERMINAL_OUTCOMES.includes(row.outcome)) continue
+      const prior = outcomeOf.get(row.attempt)
+      if (prior === undefined) outcomeOf.set(row.attempt, row.outcome)
+      else if (prior !== row.outcome) {
+        return (
+          `INVARIANT 8 (one attempt, one number, one outcome): task ${t.taskId} attempt ${row.attempt} ` +
+          `carries both "${prior}" and "${row.outcome}"`
+        )
+      }
+    }
+  }
+  return null
+}
+
+/** The eight, by name. A failure says WHICH invariant broke, never which line. */
 const INVARIANTS = Object.freeze([
   { n: 1, name: 'invariantOneAcceptedIsNeverSelfCertified', check: invariantOneAcceptedIsNeverSelfCertified },
   { n: 2, name: 'invariantTwoNoEnvelopeGrantsPushOrMerge', check: invariantTwoNoEnvelopeGrantsPushOrMerge },
@@ -661,6 +711,7 @@ const INVARIANTS = Object.freeze([
   { n: 5, name: 'invariantFiveOneEffectIsAppliedOnce', check: invariantFiveOneEffectIsAppliedOnce },
   { n: 6, name: 'invariantSixTheAttemptStampNeverMoves', check: invariantSixTheAttemptStampNeverMoves },
   { n: 7, name: 'invariantSevenDeadLetterNeedsADisposition', check: invariantSevenDeadLetterNeedsADisposition },
+  { n: 8, name: 'invariantEightOneAttemptOneNumberOneOutcome', check: invariantEightOneAttemptOneNumberOneOutcome },
 ])
 
 function checkAll(world: World, table: any = TRANSITIONS): string | null {
@@ -695,10 +746,15 @@ function runSequence(
 
 // ═════════════════════════════ the suite ══════════════════════════════════════
 
-describe('fleet invariants — the seven, named and callable', () => {
-  it('exposes exactly seven named invariant checkers, numbered 1..7', () => {
-    expect(INVARIANTS).toHaveLength(7)
-    expect(INVARIANTS.map((i) => i.n)).toEqual([1, 2, 3, 4, 5, 6, 7])
+describe('fleet invariants — the eight, named and callable', () => {
+  it('exposes exactly eight named invariant checkers, numbered 1..8', () => {
+    // THE COUNT IS RE-PINNED ON PURPOSE, and the reason is written here rather than left to a
+    // reader of the diff: the eighth invariant is a NEW CLASS — not «an outcome was recorded
+    // twice», but «two writers do not agree about the number of the attempt they are
+    // describing». Widening invariant six would have hidden that cause under an older name.
+    // The pinned number and this case exist precisely so the change is made deliberately.
+    expect(INVARIANTS).toHaveLength(8)
+    expect(INVARIANTS.map((i) => i.n)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
     for (const inv of INVARIANTS) {
       expect(typeof inv.check).toBe('function')
       expect(inv.check.name).toBe(inv.name)
@@ -711,7 +767,7 @@ describe('fleet invariants — the seven, named and callable', () => {
 })
 
 describe('fleet invariants — seeded random sequences (the property run)', () => {
-  it(`holds all seven after every step of ${SEQUENCES} sequences x ${STEPS_PER_SEQUENCE} steps`, () => {
+  it(`holds all eight after every step of ${SEQUENCES} sequences x ${STEPS_PER_SEQUENCE} steps`, () => {
     const ledgerDir = mkTmp('sma-inv-ledger-')
     let steps = 0
     for (let sequence = 0; sequence < SEQUENCES; sequence += 1) {
@@ -875,6 +931,44 @@ describe('fleet invariants — the mutation battery (each checker is proven able
     const { world, t } = oneTask(mkTmp('sma-inv-mut7b-'))
     t.history.push({ from: 'DEAD_LETTER', to: 'READY', step: 3, disposition: null })
     expect(invariantSevenDeadLetterNeedsADisposition(world)).toMatch(/INVARIANT 7/)
+  })
+
+  it('8 — a ledger where one attempt number carries two different terminal outcomes is reported as INVARIANT 8', () => {
+    const dir = mkTmp('sma-inv-mut8-')
+    const { world, t } = oneTask(dir)
+    openAttempt(t, 1)
+    // The mutant, and it is not invented: this is the exact shape of a record found on a live
+    // machine — one attempt number, one `failed` and one `completed`, written by two hands.
+    // The stamp is carried on both rows ON PURPOSE: the world must be broken in exactly ONE
+    // way, or `checkAll` would report an earlier invariant and this case would be proving that
+    // one instead of this one.
+    recordAttempt(dir, {
+      taskId: t.taskId,
+      attempt: 1,
+      outcome: 'failed',
+      failureReason: 'runtime_offline',
+      ...t.attempts[0].stamp,
+      recordedAt: stampedAt(1),
+    } as any)
+    recordAttempt(dir, {
+      taskId: t.taskId,
+      attempt: 1,
+      outcome: 'completed',
+      receiptRef: 'r',
+      ...t.attempts[0].stamp,
+      recordedAt: stampedAt(2),
+    } as any)
+    expect(invariantEightOneAttemptOneNumberOneOutcome(world)).toMatch(/INVARIANT 8/)
+    expect(checkAll(world)).toMatch(/INVARIANT 8/)
+  })
+
+  it('8b — a ledger row naming an attempt the task never opened is reported as INVARIANT 8', () => {
+    const dir = mkTmp('sma-inv-mut8b-')
+    const { world, t } = oneTask(dir)
+    openAttempt(t, 1)
+    // The number a second writer computed for itself while the first was carrying another one.
+    recordAttempt(dir, { taskId: t.taskId, attempt: 2, outcome: 'completed', receiptRef: 'r', recordedAt: stampedAt(1) } as any)
+    expect(invariantEightOneAttemptOneNumberOneOutcome(world)).toMatch(/INVARIANT 8/)
   })
 
   it('the real modules still refuse the mutant transition — the loosened table is a TEST fixture only', () => {

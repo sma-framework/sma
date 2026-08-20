@@ -84,6 +84,7 @@ import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mj
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
 import { runsDirOf, attemptRunDir } from '../queue/run-dir.mjs'
+import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
@@ -705,6 +706,29 @@ function readTaskJournal(id, deps) {
  * receipt summary per attempt, the branch, a capped commit log, and returned notes. The
  * 9.6 Task-card renders from this alone. Unknown id → 404.
  */
+/**
+ * attemptSpawnArgs(deps, runDir) → аргументы запуска ЭТОЙ попытки, как они записаны в её
+ * каталоге, или `null`.
+ *
+ * ПОЧЕМУ ЭТО И ЕСТЬ ПРАВДА О ЗАПРЕЩЁННОМ. Запись попытки хранит командную строку целиком —
+ * то, что процесс получил, а не то, что мы о нём думаем. Всё остальное здесь — пересказ.
+ *
+ * FAIL-OPEN И ЧЕСТНО О МОЛЧАНИИ: каталога нет, файла нет, файл не читается или не разбирается
+ * — `null`, то есть «эта попытка ничего об этом не говорит». Не пустой список: пустой список
+ * означал бы «спросили и узнали, что не запрещено ничего», а это другое утверждение. И
+ * никогда не ошибка двери: карточка не имеет права падать из-за нечитаемого артефакта.
+ */
+function attemptSpawnArgs(deps, runDir) {
+  if (typeof runDir !== 'string' || runDir === '') return null
+  try {
+    const readFile = (deps.fsImpl && deps.fsImpl.readFileSync) || fsReadFileSync
+    const record = JSON.parse(String(readFile(join(runDir, 'run.json'), 'utf8')))
+    return Array.isArray(record && record.args) ? record.args : null
+  } catch {
+    return null
+  }
+}
+
 async function handleTask({ res, params, config, deps }) {
   const id = params.id
   const adapter = deps.adapter
@@ -830,6 +854,34 @@ async function handleTask({ res, params, config, deps }) {
     // научилась нести вердикт, обязаны молчать, а не показывать пустую пятёрку.
     runDir: a.runDir ?? null,
     parity: a.parity ?? null,
+    // ═══ ЧТО ЭТА ПОПЫТКА ИЗМЕНИЛА — И ЧТО ПОСЛЕ НЕЁ ИСЧЕЗЛО ══════════════════════
+    //
+    // Список берётся не из наблюдения за инструментами, а из ответа git на диапазон
+    // «база..ветка»: правку, сделанную командой оболочки (`rm`, `sed -i`, `git rm`),
+    // наблюдение за инструментами не видит по конструкции, и именно это делало прежний
+    // список ложным. Тик пишет оба ключа в строку попытки на ОБОИХ исходах — и до этой
+    // строки их не видел никто: вычислено и записано не то же самое, что предъявлено.
+    //
+    // ИСЧЕЗНУВШЕЕ — ОТДЕЛЬНЫЙ КЛЮЧ, а не статус внутри списка. Человек читает это, чтобы
+    // откатить, и цена двух ошибок несимметрична: «изменён» вместо «удалён» отправляет его
+    // искать файл, которого нет. Старая сторона переименования лежит здесь по той же
+    // причине — с того места, где он стоит, этого пути больше нет.
+    //
+    // Оба счётчика перебора названы отдельно: молча урезанный список удалений — ровно та
+    // несимметричная ошибка, ради которой удаления и отделили. `null` (не пустой массив) —
+    // «попытка этого не знает»: пустой массив означает «спросили git, и ничего не менялось».
+    files: Array.isArray(a.files) ? a.files : null,
+    deletions: Array.isArray(a.deletions) ? a.deletions : null,
+    filesOverflow: Number.isFinite(a.filesOverflow) ? a.filesOverflow : null,
+    deletionsOverflow: Number.isFinite(a.deletionsOverflow) ? a.deletionsOverflow : null,
+    // ═══ АНОМАЛИЯ ПРЕДЪЯВЛЯЕТСЯ КАК АНОМАЛИЯ ════════════════════════════════════
+    //
+    // Свёртка выше складывает строки одной попытки, и на ДВУХ РАЗНЫХ терминальных исходах у
+    // неё нет ни правила, ни права выбирать победителя. `conflict` называет оба исхода в том
+    // порядке, в каком они были записаны, и сколько строк сложилось в запись. Он считается по
+    // самим строкам, а не по пометке писателя, — иначе запись, лежащая на диске с тех пор,
+    // как пометки ещё не было, так и осталась бы молчаливым «готово».
+    conflict: a.conflict && typeof a.conflict === 'object' ? a.conflict : null,
     // ЧТО СТОИТ И ЖДЁТ ЧЕЛОВЕКА. Билет бывает только у ИДУЩЕЙ попытки — законченная уже
     // ничего не ждёт. Назван нулём, а не опущен, по той же причине, что и поля выше:
     // карточка читает одну форму для каждой записи.
@@ -845,6 +897,38 @@ async function handleTask({ res, params, config, deps }) {
   // time. No `endedAt` and outcome `running` are what mark it unfinished — nothing
   // downstream has to guess which kind of row this is.
   if (row.status === 'claimed') {
+    // Каталог ЭТОЙ попытки — собран ОДИН раз и назван, потому что спрашивают его теперь
+    // двое: билет и то, что уехало в процесс вместе с ним. Выражение то же, каким каталог
+    // собрал спавн; второго написания этого пути в продукте нет.
+    const runDir = attemptRunDir({
+      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      attemptId: attemptIdFor(row.id, Number.isFinite(row.attempt) ? row.attempt : 1),
+    })
+    const ticket = readWaitingTicket({ runDir, fsImpl: deps.fsImpl })
+    // ═══ УПРЁТСЯ ЛИ ОДОБРЕНИЕ В СТЕНУ ═══════════════════════════════════════════
+    //
+    // ПОЧЕМУ СШИВКА ЖИВЁТ ЗДЕСЬ, А НЕ В ХУКЕ. Класс вызова пишет хук внутри копии
+    // работника, а про конверт разрешений знает демон. У хука конверта нет и права
+    // зависеть от него — тоже: он обязан работать в процессе, которому ничего, кроме
+    // своего каталога, не дано. Дверь карточки — единственное место, где уже есть ОБА
+    // конца, и потому сшивать их можно только тут. Новой двери для этого не заводится:
+    // ответ едет полем в том же ответе, который окно и так запрашивает.
+    //
+    // ПОЧЕМУ ИСТОЧНИКОМ СЧИТАЕТСЯ ТО, ЧТО УЕХАЛО В ПРОЦЕСС. Конверт полосы говорит,
+    // что мы НАМЕРЕВАЛИСЬ запретить; аргументы запуска этой попытки — что процесс
+    // ДЕЙСТВИТЕЛЬНО получил. Расходятся они не в теории: в этом дереве уже случалось,
+    // что вычисленный конверт не доезжал до запуска вовсе. Правду говорит запись.
+    //
+    // ПОЧЕМУ НЕИЗВЕСТНОСТЬ УЕЗЖАЕТ КАК ОТСУТСТВИЕ ПОЛЯ. «Не знаем» и «безопасно» — не
+    // одно и то же, и ложное успокоение хуже молчания. Наружу едет только ЗНАНИЕ; чего
+    // мы не знаем, о том экран не говорит ничего.
+    const wall = ticket
+      ? approvalWall({
+          ticketClass: ticket.class,
+          spawnArgs: attemptSpawnArgs(deps, runDir),
+          laneEnvelope: typeof row.lane === 'string' && row.lane !== '' ? defaultEnvelope(row.lane) : null,
+        })
+      : null
     attempts.push({
       attempt: Number.isFinite(row.attempt) ? row.attempt : attempts.length + 1,
       workerId: row.workerId ?? null,
@@ -876,6 +960,14 @@ async function handleTask({ res, params, config, deps }) {
       // опущены, по той же причине, что и шесть полей выше.
       runDir: null,
       parity: null,
+      // Список изменённого спрашивается у git, когда попытка ЗАКАНЧИВАЕТСЯ, — у идущей его
+      // ещё нет, и противоречия у неё быть не может: терминальный исход только один и он
+      // ещё не наступил. Названы нулями, а не опущены, по той же причине, что и поля выше.
+      files: null,
+      deletions: null,
+      filesOverflow: null,
+      deletionsOverflow: null,
+      conflict: null,
       // ═══ ЧТО СТОИТ ПРЯМО СЕЙЧАС И ЖДЁТ ЧЕЛОВЕКА ═══════════════════════════════
       //
       // Опасный вызов внутри живой попытки физически стоит на месте, пока человек не
@@ -886,13 +978,11 @@ async function handleTask({ res, params, config, deps }) {
       // Каталог собирается ТЕМ ЖЕ выражением, каким его собрал спавн: подключённый
       // проект плюс идентификатор попытки. Никакой новой двери для этого не заводится —
       // билет едет в ответе двери карточки, который окно и так запрашивает.
-      ticket: readWaitingTicket({
-        runDir: attemptRunDir({
-          runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
-          attemptId: attemptIdFor(row.id, Number.isFinite(row.attempt) ? row.attempt : 1),
-        }),
-        fsImpl: deps.fsImpl,
-      }),
+      ticket,
+      // Стена ПЕРЕД одобрением, названная словами до нажатия. `null` — «не знаем»: ни
+      // «упрётся», ни «не упрётся», и экран об этом молчит. Кнопку это поле не трогает —
+      // человек вправе одобрить и увидеть отказ; наша работа предупредить, а не решить.
+      approvalWall: wall && wall.state !== 'unknown' ? wall : null,
     })
   }
 
@@ -939,6 +1029,18 @@ async function handleTask({ res, params, config, deps }) {
       // the prompt builder does, so the person and the worker read the same sentences.
       description: row.description ?? null,
       acceptance: row.acceptance ?? null, // the DoR contract, «обещано»
+      // ═══ ЧЕМ ОТМЕНЯЕТСЯ ПРИНЯТАЯ РАБОТА ══════════════════════════════════════
+      //
+      // Приёмка сливает ветку работника в основную и кладёт квитанцию слияния в колонку
+      // рядом с решением. Отпечаток коммита слияния вычислялся, доезжал до колонки и там
+      // умирал: читателя у него не было ни одного. Между тем это ЕДИНСТВЕННОЕ, чего человеку
+      // не хватало, чтобы отменить приёмку одной командой.
+      //
+      // Оба значения проверены по форме ПЕРЕД тем, как попасть в ответ, из которого экран
+      // соберёт команду для копирования: квитанция — данные, написанные другим процессом, а
+      // данные, становящиеся командой, проверяются в тот момент, когда перестают быть
+      // данными. Не прошло проверку — поля нет вовсе, и карточка о нём молчит.
+      ...mergeRollbackFields(row.mergeReceipt),
     },
     attempts,
     branch,
@@ -953,8 +1055,48 @@ async function handleTask({ res, params, config, deps }) {
  * removal record leaves behind travel into an argv, so both are checked here first: a ledger
  * row is data written by another process, and data that becomes a command is checked at the
  * moment it stops being data.
+ *
+ * SEVEN TO FORTY, on purpose. Forty is what the merge receipt stores from now on; seven is
+ * what every receipt written before that stores, and those records are an audit log — they
+ * are not rewritten to look tidier than they were. Both must stay readable, so the range
+ * covers both and the screen says out loud when a name is the short, older kind.
  */
 const OBJECT_NAME_RE = /^[0-9a-f]{7,40}$/i
+
+/**
+ * mergeRollbackFields(raw) → {mergeSha, mergeRepo} — the two values an acceptance can be
+ * undone by, and NOTHING that could be read as an option.
+ *
+ * The receipt arrives as the column stores it (text) or as a reference backend hands it
+ * (object). A merge is made with no fast-forward, always: the merge commit therefore has two
+ * parents, the first is the trunk, and one commit name is enough to undo the whole acceptance.
+ *
+ * WHAT MAKES THIS A BOUNDARY. Whatever comes out of here is printed on a card for a person to
+ * copy and RUN. A path or a name beginning with `-` is an option to git, not an argument, so
+ * neither is allowed to leave this function; a name that is not a commit name does not leave
+ * it either. File names never travel into the command at all — they are for reading with the
+ * eyes, and a repository's file names are somebody else's data.
+ *
+ * Absent, malformed, unparseable — all answer the same way: null, and the card says nothing
+ * about a merge. A dash where a fact belongs lies exactly as much as an invented one.
+ */
+function mergeRollbackFields(raw) {
+  let receipt = raw
+  if (typeof raw === 'string') {
+    try {
+      receipt = JSON.parse(raw)
+    } catch {
+      return { mergeSha: null, mergeRepo: null }
+    }
+  }
+  if (!receipt || typeof receipt !== 'object') return { mergeSha: null, mergeRepo: null }
+  const sha = typeof receipt.resultSha === 'string' ? receipt.resultSha.trim() : ''
+  const repo = typeof receipt.repo === 'string' ? receipt.repo.trim() : ''
+  return {
+    mergeSha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
+    mergeRepo: repo && !repo.startsWith('-') ? repo : null,
+  }
+}
 
 /**
  * The last non-empty value of a field across an attempt's rows — the rows are folded the same

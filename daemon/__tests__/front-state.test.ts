@@ -164,13 +164,75 @@ describe('parseReceiptProof — the proof a finished attempt really left', () =>
     expect(parseReceiptProof('something-new:42')).toEqual({ kind: 'other', ref: 'something-new:42' })
     expect(parseReceiptProof('')).toBe(null)
     expect(parseReceiptProof(null)).toBe(null)
-    expect(parseReceiptProof({ testsPassed: 12 })).toBe(null) // an object is the OTHER reader's job
+    // an object with no gate reason is still nobody's proof — the four-number summary
+    // shape belongs to the OTHER reader and is not dressed up as a verdict here.
+    expect(parseReceiptProof({ testsPassed: 12 })).toBe(null)
   })
 
   it('a path containing @ still resolves — the commit is the LAST one', () => {
     const p = parseReceiptProof('artifact:docs/e@mail.md@deadbee')
     expect(p.path).toBe('docs/e@mail.md')
     expect(p.sha).toBe('deadbee')
+  })
+
+  /**
+   * ═══ «ГОТОВО» И «ГОТОВО, НО НИКТО НЕ ПЕРЕПРОВЕРЯЛ» — РАЗНЫЕ СЛОВА ═══════════════
+   *
+   * Тик пишет ссылку доказательства ДВУМЯ формами. Строкой — когда квитанция есть.
+   * ОБЪЕКТОМ — ровно тогда, когда её нет: дифференциальный гейт («красными были только те
+   * рецепты, что были красны и до работника») и гейт дерева без рецептов. В объекте лежит
+   * признак `unverified`, причина словом и числа красных.
+   *
+   * Читатель принимал ТОЛЬКО строку, поэтому у каждой такой попытки доказательство выходило
+   * пустым, и «готово без оговорки» было неотличимо от «никто не перепроверял». Слова «не
+   * перепроверено» человек не видел НИ РАЗУ, хотя признак считается с тех пор, как появился
+   * дифференциальный гейт. Это ложь по умолчанию, и она закрывается здесь.
+   */
+  it('объектная форма: «не перепроверено» с причиной и числами доезжает до доказательства', () => {
+    const p = parseReceiptProof({
+      unverified: true,
+      reason: 'preexisting_red_only',
+      branch: 'wt/BL-7',
+      base: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      commits: 3,
+      preexistingRed: 2,
+      newRed: 0,
+    })
+    expect(p).toEqual({
+      kind: 'gate',
+      ref: 'preexisting_red_only',
+      unverified: true,
+      reason: 'preexisting_red_only',
+      branch: 'wt/BL-7',
+      base: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      commits: 3,
+      preexistingRed: 2,
+      newRed: 0,
+    })
+  })
+
+  it('объектная форма без оговорки: гейт открылся, перепроверять было нечего заново', () => {
+    const p = parseReceiptProof({ unverified: false, reason: 'no_new_red', branch: 'wt/BL-8', commits: 1, preexistingRed: 0, newRed: 0 })
+    expect(p.kind).toBe('gate')
+    expect(p.unverified).toBe(false)
+    expect(p.reason).toBe('no_new_red')
+    // НИЧЕГО НЕ ВЫДУМЫВАЕТСЯ: чего в объекте нет — того нет и в доказательстве.
+    expect(Object.hasOwn(p, 'base')).toBe(false)
+  })
+
+  it('дерево без рецептов: та же форма, своя причина', () => {
+    const p = parseReceiptProof({ unverified: true, reason: 'no_recipes_in_tree', branch: 'wt/BL-9', base: 'deadbee', commits: 2 })
+    expect(p).toMatchObject({ kind: 'gate', unverified: true, reason: 'no_recipes_in_tree', commits: 2 })
+    expect(Object.hasOwn(p, 'preexistingRed')).toBe(false)
+  })
+
+  it('строковая форма НЕ изменилась ни на байт — старые попытки читаются как раньше', () => {
+    expect(parseReceiptProof('reverify:a1b2c3d4e5')).toEqual({
+      kind: 'reverify',
+      ref: 'reverify:a1b2c3d4e5',
+      sha: 'a1b2c3d4e5',
+    })
+    expect(parseReceiptProof([{ reason: 'preexisting_red_only' }])).toBe(null)
   })
 })
 

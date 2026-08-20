@@ -215,17 +215,49 @@ function maskError(err) {
 }
 
 /**
- * attemptNumberOf(data, retryCount) → the attempt now in flight, or NaN.
+ * attemptNumberOf(data, retryCount, {unclaimed}) → the attempt now in flight, or NaN.
  *
- * The SAME arithmetic `mapRow` and `claimNext` use, in one place so the three cannot
- * drift. NaN when the caller could not read the job's payload — an attempt number that
- * was not observed is left absent rather than defaulted to 1, because a wrong number on a
- * durable audit row is worse than a missing one.
+ * THE ONE PLACE THE NUMBER IS COMPUTED. `claimNext`, `mapRow` and `resolveActiveJob` all call
+ * it and none of them keeps an expression of its own — the promise this comment used to make
+ * and did not keep, which is how the three came to disagree in the first place.
+ *
+ * THE COUNT IT READS IS THE ONE TAKEN WHEN THE WORK WAS CLAIMED, not the one the queue holds
+ * while the work is being finished. The live retry count is the wrong source at the moment of
+ * a mutation, and the reason is a record that exists: between the claim and the finish a lease
+ * can lapse and the queue can hand the row out again, so the counter moves under an attempt
+ * that never noticed. The tick had taken its number at the claim and carried it unchanged;
+ * this backend recomputed from the moved counter — and one physical try landed in the audit
+ * trail as two, with one attempt number carrying both `failed` and `completed`. The claim
+ * count therefore rides in the job's own payload (`claimedAtRetry`, written by stampClaimedAt
+ * beside the claim time), and both writers read that one value.
+ *
+ * AN ABSENT MARK IS AN ABSENCE, NEVER A LICENCE TO INVENT A NUMBER. A job claimed before the
+ * mark existed — or one whose fail-open stamp did not land — falls back to the live count,
+ * which is exactly what such a row recorded before this existed: unchanged behaviour rather
+ * than a guess.
+ *
+ * `unclaimed` says «no attempt is in flight under this mark» and is the one case where the mark
+ * must be ignored, because there it belongs to the try that came BEFORE. Two callers mean it:
+ * the fetch itself, whose payload still carries the previous attempt's mark (stampClaimedAt
+ * writes the new one immediately after), and a row that lost its lease and is waiting to be
+ * handed out again — whose next try is the live count plus one, which is what «вернулась в
+ * очередь, попытка +1» means on a screen. Reading the mark in either place would report a
+ * re-issued job as attempt one forever.
+ *
+ * NaN when the caller could not read the job's payload — an attempt number that was not
+ * observed is left absent rather than defaulted to 1, because a wrong number on a durable
+ * audit row is worse than a missing one.
  */
-function attemptNumberOf(data, retryCount) {
+function attemptNumberOf(data, retryCount, { unclaimed = false } = {}) {
   if (!data || typeof data !== 'object') return NaN
-  return (Number(data.attempt) || 1) + (Number(retryCount) || 0)
+  const stamped = unclaimed ? undefined : data.claimedAtRetry
+  const retries = stamped === undefined || stamped === null ? retryCount : stamped
+  return (Number(data.attempt) || 1) + (Number(retries) || 0)
 }
+
+/** The pg-boss states in which NO attempt is in flight: the row is waiting to be handed out,
+ *  so the claim mark in its payload describes the try that already ended. */
+const WAITING_STATES = Object.freeze(['created', 'retry'])
 
 /**
  * transitionStamp({from, to, actor, taskId, attempt, log}) → `{idempotencyKey,
@@ -623,7 +655,10 @@ export function createPgBossQueue({
       if (job) {
         const data = job.data || {}
         const retries = job.retrycount ?? job.retryCount ?? job.retry_count ?? 0
-        const attempt = (data.attempt ?? 1) + retries
+        // THE ONE ARITHMETIC (attemptNumberOf), and this is the caller that reads the LIVE
+        // count: the fetch above IS the claim, so the count in hand is the claim count — while
+        // the mark still in the payload belongs to the attempt that just lost the row.
+        const attempt = attemptNumberOf(data, retries, { unclaimed: true })
         // The fetch above set the lease clock; this records the moment the work was taken, which
         // the renewal must never be allowed to move (see stampClaimedAt).
         await stampClaimedAt(job.id)
@@ -893,7 +928,11 @@ export function createPgBossQueue({
       // was never returned states nothing about a note rather than carrying a null one.
       ...(r.returned_note ? { returnedNote: r.returned_note } : {}),
       ...(r.merge_receipt ? { mergeReceipt: r.merge_receipt } : {}),
-      attempt: (data.attempt ?? 1) + retries,
+      // THE ONE ARITHMETIC (attemptNumberOf) — this is the number a board and a task card
+      // show, so an expression of its own here is a screen that argues with the audit trail.
+      // A row still waiting for a hand reports the try it is ABOUT to get (live count + 1);
+      // one already in a hand, or finished in one, reports the try the claim mark names.
+      attempt: attemptNumberOf(data, retries, { unclaimed: WAITING_STATES.includes(r.state) }),
       coalesceCount: coalesce.get(data.id) ?? 1,
       // Who holds this task, as written into the payload by claimNext — pg-boss itself
       // records nothing about the fetching worker. `null` here now means «nobody has

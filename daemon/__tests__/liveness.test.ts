@@ -265,3 +265,145 @@ describe('casTransition — lock-free compare-and-set', () => {
     ).rejects.toBeInstanceOf(TypeError)
   })
 })
+
+/**
+ * ═══ СТОРОЖ СМЕРТИ ГОВОРИТ ВСЛУХ ═══════════════════════════════════════════════════════════
+ *
+ * ПОВОД. Обход объявляет попытку мёртвой и возвращает задачу в очередь, не написав об этом ни
+ * одной строки. В день, когда он сработал и перевыдал задачу, в операторском логе о нём нет
+ * НИЧЕГО, кроме последствий: `grep -c "liveness"` по логу за целые сутки даёт ноль. Расследование
+ * того дня пришлось вести по косвенным уликам — а вопрос «почему оно перезапустилось» стоит
+ * ровно одной строки.
+ *
+ * ЧТО УТВЕРЖДАЕТСЯ. Не «функция умеет писать», а ЧТО ИМЕННО написано и КОГДА: одна строка на
+ * КАЖДУЮ объявленную мёртвой попытку, с полями, по которым читатель поймёт решение без чтения
+ * кода; ни одной строки на живую и на терминальную; и — отдельно — что журнал не стал условием
+ * работы сторожа: шва нет, обход работает как раньше.
+ */
+describe('сторож смерти пишет строку на каждую объявленную мёртвой попытку', () => {
+  it('строка сторожа: протухшая попытка даёт ровно одну запись с полями решения', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ attempt: 3, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'failed' })
+    ledger.recordAttempt({ taskId: 'BL-1', attempt: 2, outcome: 'failed' })
+    c.advance(500000)
+    const journal: any[] = []
+
+    const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
+
+    expect(res.requeued).toBe(1)
+    const lines = journal.filter((e) => e.type === 'liveness.attempt_dead')
+    expect(lines, 'смерть попытки снова осталась событием без записи').toHaveLength(1)
+    expect(lines[0]).toMatchObject({
+      type: 'liveness.attempt_dead',
+      taskId: 'BL-1',
+      attempt: 3,
+      silentMs: 500000, // сколько прошло с последнего продления аренды
+      expireMs: 120000, // объявленный срок
+      noProgressRuns: 3, // два безрезультатных прогона на записи плюс этот
+    })
+    expect(lines[0].cooldownMs).toBe(computeCooldownMs(3)) // назначенное остывание
+  })
+
+  it('строка сторожа говорит, что он ОБЪЯВИЛ и ПЕРЕВЫДАЛ, а не убил — читатель не ищет несуществующего убийства', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ leaseRenewedAt: 1000 }))
+    c.advance(500000)
+    const journal: any[] = []
+
+    await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
+
+    const line = journal.find((e) => e.type === 'liveness.attempt_dead')
+    expect(String(line.detail)).toContain('объявлена мёртвой')
+    expect(String(line.detail)).toContain('перевыдана')
+    expect(String(line.detail)).not.toContain('убит')
+  })
+
+  it('живая попытка и терминальная не дают ни одной строки', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-fresh', leaseRenewedAt: 1000 }))
+    adapter._seed(claimed({ id: 'BL-done', status: 'completed' }))
+    adapter._seed(claimed({ id: 'BL-failed', status: 'failed' }))
+    c.advance(60000) // < expireMs — свежая
+    const journal: any[] = []
+
+    await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
+
+    expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(0)
+  })
+
+  it('две протухшие попытки — две строки, по одной на каждую', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', leaseRenewedAt: 1000 }))
+    adapter._seed(claimed({ id: 'BL-2', leaseRenewedAt: 1000 }))
+    c.advance(500000)
+    const journal: any[] = []
+
+    await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
+
+    expect(journal.filter((e) => e.type === 'liveness.attempt_dead').map((e) => e.taskId).sort()).toEqual(['BL-1', 'BL-2'])
+  })
+
+  it('без журнала обход работает ровно как раньше — журнал НИКОГДА не становится условием работы сторожа', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ leaseRenewedAt: 1000 }))
+    c.advance(500000)
+
+    const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000 })
+
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0 })
+    const [row] = await adapter.list()
+    expect(row.status).toBe('queued')
+    expect(row.attempt).toBe(2)
+  })
+
+  it('сломанный журнал не ломает обход — повествование никогда не стоит задачи', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ leaseRenewedAt: 1000 }))
+    c.advance(500000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: () => {
+        throw new Error('сток журнала недоступен')
+      },
+    })
+
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0 })
+  })
+
+  it('строка пишется ДО объявления провала — иначе бросок объявления снова оставит лог пустым', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ leaseRenewedAt: 1000 }))
+    c.advance(500000)
+    const journal: any[] = []
+    const throwing = {
+      ...adapter,
+      fail: async () => {
+        throw new Error('объявление провала не удалось')
+      },
+    }
+
+    await expect(
+      livenessSweep({ adapter: throwing, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) }),
+    ).rejects.toThrow()
+    expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(1)
+  })
+})

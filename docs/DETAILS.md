@@ -79,7 +79,7 @@ This section is the map. The law lives in four documents and is not reprinted he
 [MEMORY-MODEL.md](MEMORY-MODEL.md) (what one record may claim and must carry),
 [MEMORY-LIFECYCLE.md](MEMORY-LIFECYCLE.md) (how it is written, approved and retired),
 [MEMORY-THREAT-MODEL.md](MEMORY-THREAT-MODEL.md) (who may see what, and what fails closed),
-[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) (the worker fleet's seven invariants). A map that
+[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) (the worker fleet's eight invariants). A map that
 reprints the territory goes stale first.
 
 ### The three storage classes, and the field they are derived from
@@ -169,7 +169,7 @@ code to:
   which plan, which memory snapshot, which harness, which state-machine version, plus an
   idempotency key so a redelivered effect is applied once.
 
-Seeded property tests attack all seven invariants — twelve independent histories, forty steps
+Seeded property tests attack all eight invariants — twelve independent histories, forty steps
 each, from one fixed seed, so a failure arrives as a replayable recipe rather than a mood — and
 crash, restart, dead-letter and redelivery drills take a task census before and after each blow.
 

@@ -48,6 +48,7 @@ import {
   ticketPathOf,
   decisionPathOf,
   readWaitingTicket,
+  closeWaitingTickets,
   hookResponseFor,
   decideOnEvent,
 } from '../lib/tool-gate.mjs'
@@ -195,7 +196,10 @@ describe('tool-gate — парковка и решение', () => {
     const sleep = async (ms: number) => {
       nowMs += ms
       ticks += 1
-      if (ticks <= 2) seenWhileWaiting.push(readWaitingTicket({ runDir }) as never)
+      // ЧИТАТЕЛЬ СМОТРИТ НА ТЕ ЖЕ ЧАСЫ, что и вызов, который стоит: билет несёт СВОЙ срок, и
+      // читатель его уважает, так что чтение по чужим часам ответило бы «этого никто не ждёт»
+      // про вызов, который в эту самую секунду стоит.
+      if (ticks <= 2) seenWhileWaiting.push(readWaitingTicket({ runDir, clock: () => nowMs }) as never)
       if (ticks === 3) writeFileSync(decisionPathOf(runDir, id), formatDecision({ ticketId: id, decision: 'approve' }), 'utf8')
     }
     const verdict = await decideOnEvent({
@@ -310,9 +314,146 @@ describe('tool-gate — ответ харнессу', () => {
       JSON.stringify({ id: 'tk-visible', status: 'waiting', command: 'npm publish', deadlineAt: '2026-08-19T00:00:00Z' }),
       'utf8',
     )
-    const waiting = readWaitingTicket({ runDir })
+    // Часы НАЗВАНЫ, а не взяты у календаря: билет несёт свой срок, и читатель его уважает —
+    // фикстура с прибитой датой иначе зеленела бы ровно до этой даты и краснела бы потом.
+    const waiting = readWaitingTicket({ runDir, clock: () => Date.parse('2026-08-18T12:00:00Z') })
     expect(waiting).not.toBe(null)
     expect(waiting!.id).toBe('tk-visible')
     expect(waiting!.command).toBe('npm publish')
+  })
+})
+
+/**
+ * ═══ ОСИРОТЕВШИЙ БИЛЕТ ПЕРЕСТАЁТ ГОВОРИТЬ «ЖДУТ ВАС» ═══════════════════════════════════════
+ *
+ * ПОВОД. Билет закрывают три пути — одобрение, отказ, собственный дедлайн, — и ВСЕ ТРИ пишет
+ * процесс хука. Умер процесс (убили сессию, упал демон, оборвался провайдер) — файл навсегда
+ * остаётся `waiting`, и карточка задачи честно показывает «ждут вас» там, где уже никто не
+ * ждёт. Читатель билета зовётся ровно у строки со статусом «захвачена», то есть ровно в том
+ * состоянии, в котором живёт умерший процесс.
+ *
+ * ЛЕЧИТСЯ С ОБОИХ КОНЦОВ, и это не перестраховка:
+ *   - ЧИТАТЕЛЬ перестаёт игнорировать срок, который записал сам писатель. Это не изобретённый
+ *     вердикт — это прочитанный факт. Лечит все билеты, УЖЕ лежащие на диске;
+ *   - ПИСАТЕЛЬ помечает оставшиеся ожидающие билеты при завершении попытки. Лечит будущие.
+ *
+ * Один конец без другого оставляет половину: без читателя лежащие сейчас файлы врут вечно, без
+ * писателя каждый новый билет врёт ровно до своего срока.
+ */
+describe('tool-gate — истёкший билет не «ждут вас»', () => {
+  const putTicket = (id: string, over: Record<string, unknown> = {}) => {
+    mkdirSync(ticketsDirOf(runDir), { recursive: true })
+    writeFileSync(
+      ticketPathOf(runDir, id),
+      JSON.stringify({
+        schema: 'sma-ticket/1',
+        id,
+        attemptId: 'R-1000_1',
+        status: 'waiting',
+        tool: 'Bash',
+        command: 'npm publish',
+        seenAt: '2026-08-20T10:00:00Z',
+        deadlineAt: '2026-08-20T10:10:00Z',
+        ...over,
+      }),
+      'utf8',
+    )
+  }
+  const at = (iso: string) => () => Date.parse(iso)
+
+  it('истёкший билет читателем не возвращается — срок записал сам писатель', () => {
+    putTicket('tk-old', { deadlineAt: '2026-08-20T10:10:00Z' })
+    expect(readWaitingTicket({ runDir, clock: at('2026-08-20T10:11:00Z') })).toBe(null)
+  })
+
+  it('свежий билет возвращается как раньше', () => {
+    putTicket('tk-fresh', { deadlineAt: '2026-08-20T10:10:00Z' })
+    const waiting = readWaitingTicket({ runDir, clock: at('2026-08-20T10:05:00Z') })
+    expect(waiting).not.toBe(null)
+    expect(waiting!.id).toBe('tk-fresh')
+  })
+
+  it('из двух ожидающих возвращается новейший — поведение не изменилось', () => {
+    putTicket('tk-a', { seenAt: '2026-08-20T10:00:00Z', deadlineAt: '2026-08-20T10:30:00Z' })
+    putTicket('tk-b', { seenAt: '2026-08-20T10:02:00Z', deadlineAt: '2026-08-20T10:30:00Z' })
+    expect(readWaitingTicket({ runDir, clock: at('2026-08-20T10:05:00Z') })!.id).toBe('tk-b')
+  })
+
+  it('билет БЕЗ записанного срока читается как раньше — фильтр судит только по прочитанному факту', () => {
+    putTicket('tk-no-deadline', { deadlineAt: undefined })
+    expect(readWaitingTicket({ runDir, clock: at('2030-01-01T00:00:00Z') })!.id).toBe('tk-no-deadline')
+  })
+
+  it('нечитаемый срок билета не выбрасывает его — непонятное не значит истёкшее', () => {
+    putTicket('tk-broken-deadline', { deadlineAt: 'завтра' })
+    expect(readWaitingTicket({ runDir, clock: at('2030-01-01T00:00:00Z') })!.id).toBe('tk-broken-deadline')
+  })
+
+  it('порванный билет пропускается, остальные читаются', () => {
+    mkdirSync(ticketsDirOf(runDir), { recursive: true })
+    writeFileSync(ticketPathOf(runDir, 'tk-torn'), '{не json', 'utf8')
+    putTicket('tk-ok', { deadlineAt: '2026-08-20T10:30:00Z' })
+    expect(readWaitingTicket({ runDir, clock: at('2026-08-20T10:05:00Z') })!.id).toBe('tk-ok')
+  })
+})
+
+describe('tool-gate — завершение попытки закрывает оставшиеся билеты', () => {
+  const putTicket = (id: string, over: Record<string, unknown> = {}) => {
+    mkdirSync(ticketsDirOf(runDir), { recursive: true })
+    writeFileSync(
+      ticketPathOf(runDir, id),
+      JSON.stringify({ schema: 'sma-ticket/1', id, status: 'waiting', tool: 'Bash', command: 'npm publish', seenAt: '2026-08-20T10:00:00Z', deadlineAt: '2026-08-20T10:10:00Z', ...over }),
+      'utf8',
+    )
+  }
+  const readTicket = (id: string) => JSON.parse(readFileSync(ticketPathOf(runDir, id), 'utf8'))
+
+  it('оставшиеся ожидающие билеты помечаются закрытыми вместе с попыткой, с причиной словами', () => {
+    putTicket('tk-1')
+    putTicket('tk-2')
+    const closed = closeWaitingTickets({ runDir, clock: () => Date.parse('2026-08-20T10:04:00Z') })
+
+    expect(closed).toBe(2)
+    for (const id of ['tk-1', 'tk-2']) {
+      const row = readTicket(id)
+      expect(row.status).not.toBe('waiting')
+      expect(row.decidedBy).toBe('attempt-end')
+      expect(String(row.reason ?? row.closedReason ?? '')).toContain('попытк')
+    }
+    expect(readWaitingTicket({ runDir, clock: () => Date.parse('2026-08-20T10:04:00Z') })).toBe(null)
+  })
+
+  it('уже решённый билет не переписывается — решение человека остаётся решением человека', () => {
+    putTicket('tk-approved', { status: 'approved', decidedBy: 'file', humanReason: 'да, можно' })
+    expect(closeWaitingTickets({ runDir })).toBe(0)
+    expect(readTicket('tk-approved')).toMatchObject({ status: 'approved', decidedBy: 'file', humanReason: 'да, можно' })
+  })
+
+  it('повторное завершение ничего не ломает и никого не закрывает дважды', () => {
+    putTicket('tk-1')
+    expect(closeWaitingTickets({ runDir })).toBe(1)
+    expect(closeWaitingTickets({ runDir })).toBe(0)
+  })
+
+  it('отсутствующий каталог, порванный билет и нечитаемый каталог — «нечего помечать», никогда не ошибка попытки', () => {
+    expect(closeWaitingTickets({ runDir: join(root, 'нет-такого') })).toBe(0)
+    expect(closeWaitingTickets({ runDir: '' })).toBe(0)
+
+    mkdirSync(ticketsDirOf(runDir), { recursive: true })
+    writeFileSync(ticketPathOf(runDir, 'tk-torn'), '{не json', 'utf8')
+    putTicket('tk-ok')
+    expect(closeWaitingTickets({ runDir })).toBe(1)
+
+    expect(
+      closeWaitingTickets({
+        runDir,
+        fsImpl: {
+          existsSync: () => true,
+          readdirSync: () => {
+            throw new Error('каталог не читается')
+          },
+        },
+      }),
+    ).toBe(0)
   })
 })

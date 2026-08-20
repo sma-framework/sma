@@ -1,10 +1,10 @@
-# SMA Fleet Invariants 1.0 — the seven, the states, and the promise the fleet does not make
+# SMA Fleet Invariants — the eight, the states, and the promise the fleet does not make
 
 | | |
 |---|---|
-| Status | **1.0 — landed.** Every invariant below names the module function that enforces it and the test case that proves it. An invariant with no named test is not in §3 — it is in §5, as an intention. |
-| Document version | 1.3 (see §6 for what each revision changed) |
-| Date | 2026-08-04, last revised 2026-08-17 |
+| Status | **1.4 — landed.** Every invariant below names the module function that enforces it and the test case that proves it. An invariant with no named test is not in §3 — it is in §5, as an intention. |
+| Document version | 1.4 (see §6 for what each revision changed) |
+| Date | 2026-08-04, last revised 2026-08-20 |
 | Applies to | the durable task queue of one installation: the fleet state machine, the capability envelope, the attempt ledger and the queue backend beneath them |
 | Companion documents | [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — the same treatment for the memory corpus · [`SPEC.md`](SPEC.md) — what the product is |
 
@@ -30,7 +30,7 @@ worker's death and the next sweep; work marked accepted by the process that did
 it; a dead-lettered task that quietly walks back into the queue because some code
 path had no reason not to let it.
 
-Seven sentences say what must never happen. They were written down before the
+Eight sentences say what must never happen. They were written down before the
 fleet was built, and until now they lived only as prose — the code implemented
 them in four different modules, and nothing anywhere stated them together or
 checked them as a set. This document states them, points each one at the code
@@ -77,12 +77,12 @@ resolution and can never contradict the queue about whether a job is checked out
 three genuinely different situations the four-value vocabulary collapses, and
 telling them apart is the whole reason the fine layer exists.
 
-## 3. The seven invariants
+## 3. The eight invariants
 
 Each subsection is the invariant in one sentence, the mechanism that enforces it
 named by module and function, and the test that attacks it named by file and
 case. The property suite (`daemon/__tests__/invariants.test.ts`) checks **all
-seven after every step of every generated sequence**, so each one below is
+eight after every step of every generated sequence**, so each one below is
 checked far more often than its own dedicated case suggests.
 
 ### 3.1 Invariant one — acceptance is never self-certified
@@ -235,6 +235,60 @@ reported"* and *"7b — a history containing a DEAD_LETTER exit is reported"*; a
 `fleet-drill.test.ts` → the dead-letter drill, which exhausts a task's retry
 budget and then asserts both halves of the gate: no ordinary path returns it, and
 an explicit disposition does.
+
+### 3.8 Invariant eight — one attempt carries one number and one outcome
+
+> One attempt of one task carries one attempt number, and that number never ends
+> up bearing two different terminal outcomes.
+
+**Why this is its own law and not a wider reading of invariant six.** Six is
+about a stamp being *rewritten* after the fact. This is a different cause: **two
+writers who do not agree about which attempt they are describing.** The tick took
+the attempt number at the moment the work was claimed and carried it unchanged;
+the queue backend recomputed it from the queue's live retry counter at the moment
+of the mutation — and if the lease lapsed in between, the counter moved under an
+attempt that never noticed. One physical try then lands in the ledger as two, and
+one of the numbers carries both `failed` and `completed`. That is not a
+hypothesis: a record on a live installation holds exactly those three rows.
+Widening invariant six would have filed a new cause under an old name, and the
+pinned count in §3 and the test that asserts it exist precisely so that adding a
+law is a deliberate act. It is re-pinned here, with the reason in words.
+
+**Enforced by** `attemptNumberOf` in `pgboss-backend.mjs`, now the single place
+the number is computed and reading the retry count **taken when the work was
+claimed** (`claimedAtRetry`, written into the job's own payload by
+`stampClaimedAt`) rather than the one the queue holds while the work is being
+finished — with the live count kept as the honest fallback for a job claimed
+before that mark existed, and for a row still waiting to be handed out, whose
+next try genuinely is the live count plus one; and by the contradiction lock in
+`recordAttempt` (`attempt-ledger.mjs`), which stamps a row contradicting a
+terminal outcome already recorded under the same number with `conflictsWith`,
+naming what it contradicts.
+
+**The lock MARKS, it never REFUSES, and that is a deliberate choice.** A ledger
+is an audit log: a row that is refused disappears without trace, and with it the
+evidence of the very failure the log exists to remember — and the row most likely
+to be refused is the tick's, the only one carrying `startedAt`, `sessionId`, the
+memory-corpus digest, the run directory and the receipt summary. A refusal would
+have cured the symptom by destroying the record. The reader was corrected in the
+same change: `foldAttemptRows` used to apply «last non-empty wins» to two
+contradicting outcomes — a rule designed for «two writers, one outcome», which on
+a disagreement has neither a right nor a way to choose — and it now marks the
+folded record `conflict: {outcomes, rows}`, naming both. A record already on disk
+is **never rewritten**; it is read as the anomaly it is.
+
+**Proven by** `invariants.test.ts` →
+`invariantEightOneAttemptOneNumberOneOutcome`, which checks two halves — that no
+row names an attempt the task never opened, and that the **durable rows read back
+from disk** carry no number with two different terminal outcomes; the mutation
+cases *"8 — a ledger where one attempt number carries two different terminal
+outcomes is reported as INVARIANT 8"* and *"8b — a ledger row naming an attempt
+the task never opened is reported as INVARIANT 8"*; `pgboss-backend.test.ts` →
+the wire cases *"один номер"* and *"доска и леджер"*, which read the number off
+the row on disk and off the board rather than out of the function; and
+`ledger-conflict.test.ts`, which runs on a **byte-for-byte copy of a real
+record** and asserts both that it reads as an anomaly and that not one of its
+three rows is lost.
 
 ## 4. At-least-once, and why exactly-once is not promised
 
@@ -484,4 +538,5 @@ transition it already performs.
 | 1.0 | 2026-08-04 | First edition. The seven invariants, the eleven states and the transition contract shape, the at-least-once promise, and seven non-goals — written when the property suite and the drills that prove them landed. |
 | 1.1 | 2026-08-05 | §5.8 added after review: the state machine and the attempt stamp are tested formal references with no production consumer yet — §3.1/§3.7's «Enforced by `applyTransition`» now reads through that lens, stated instead of implied. |
 | 1.3 | 2026-08-17 | §5.1 updated: the envelope's `allowedTools` is now delivered to the launched process as its permission grant, not merely consulted before the spawn — the gap that had made every worker unable to edit a file. The non-goal shrinks to the dimensions still not projected onto a running session (`writePaths`, `networkDestinations`, `secretScopes`), and a shell in the granted list is still a shell. No invariant text changed. |
+| 1.4 | 2026-08-20 | §3.8 added: an eighth invariant — one attempt carries one number and one outcome. Its cause is a class of its own and not a wider invariant six: two writers disagreed about the attempt NUMBER (one took it at the claim and carried it, the other recomputed it from a retry counter that moved in between), so one try was recorded as two and one number carried both `failed` and `completed` on a live installation. The number now has one source, and a row that contradicts an already recorded outcome is written MARKED rather than refused — an audit log that refuses a line loses the evidence of the failure it exists to remember. The pinned count in §3 and in the property suite is re-pinned deliberately, which is what that pin is for. |
 | 1.2 | 2026-08-05 | The wiring landed and three non-goals shrank to their true size. §5.8 rewritten: the queue adapter and the tick now route status changes through `applyTransition` and live rows carry the key, the machine version and the envelope digest — with three transitions exempt by name and three stamp fields absent because nothing in the product can compute them. §5.1: the envelope is consulted before a spawn and before a forge draft is accepted, fail-closed; the worker's own session surface remains unbounded and that is now the whole of the non-goal. §5.4: the reconciliation pass closed the missing-row gap, and a reconstructed row is documented as weaker than a live one. §3.1/§3.4/§3.7 re-pointed accordingly. |
