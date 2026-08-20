@@ -117,6 +117,18 @@ export const EMIT_BUDGETS = { claude: 8192, agents: 8192, cursorrules: 6144, gem
 // each segment ('9.10' > '9.2'), NEVER a float compare.
 export const RECEIPTS_ENFORCED_FROM = '9.2'
 
+// ── the closing gate for predictions ───────────────────────────────────────
+// The DATE from which a closed plan owes a verdict on every prediction of its
+// own that could actually be checked. A DATE and not a release number on
+// purpose: the rule is about when the gate started existing in this tree, and
+// the close date of a plan is a fact git already knows about its summary file.
+// Everything closed BEFORE this date is history, not debt: some of it points at
+// trees that no longer exist and cannot be re-scored at all. That backlog is
+// left VISIBLE and named as a number rather than quietly swept up — a rule that
+// is born red and then softened until it is green teaches only that gates can
+// be argued with. Compared as a plain ISO day string, never parsed into a date.
+export const PREDICTIONS_SCORED_FROM = '2026-08-20'
+
 // ── the git airbag gate ────────────────────────────────────────────────────
 // Recovery points are pinned under one hierarchical ref namespace so a single
 // `for-each-ref` enumerates snapshot GROUPS by the <id> segment. These live only
