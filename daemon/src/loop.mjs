@@ -3771,6 +3771,11 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
   // file exists — and the row is what the card reads. Asked in the other order, the verdict
   // would be perfectly computed, perfectly stored, and delivered to nobody.
   attachAttemptParity(deps, worktree)
+  // AND WHAT THE ATTEMPT CHANGED, asked in the same breath and for the same reason: the row
+  // below is written before anything else about the ending exists, and the row is what a card
+  // is built from. One question to git per attempt, cached on the copy — whichever door
+  // arrives here first.
+  attachChangedFiles(deps, worktree)
   await adapter.complete(task.id, {
     receiptRef,
     branch,
@@ -3852,6 +3857,29 @@ function worktreeFields(worktree) {
     // is present and null, which is «nobody has checked», not «checked and fine».
     runDir: (worktree.run && worktree.run.dir) || undefined,
     ...(worktree.run && worktree.run.dir ? { parity: worktree.run.parity ?? null } : {}),
+    // WHAT THE ATTEMPT CHANGED, and what it made disappear — handed out by the SAME expression
+    // that hands out the point of return, so the two halves of one answer can never travel
+    // apart: a base commit with no list is «откатить можно, а к чему — неизвестно», which is
+    // the half that was already true and the half that was not.
+    //
+    // WRITTEN ONLY WHEN GIT ACTUALLY ANSWERED. No copy, no base or a git that refused leaves
+    // NO keys at all — «попытка этого не знает». An empty array would say «ничего не
+    // менялось», a different and much more confident claim than the one we can make.
+    // A branch that genuinely changed nothing DOES get empty arrays: that answer was asked for
+    // and received, and it is a record.
+    ...changedFields(worktree.changed),
+  }
+}
+
+/** The changed-file half of a copy's row: present when git answered, absent when it did not,
+ *  and carrying the two overflow counters only when the ceiling actually cut something. */
+function changedFields(changed) {
+  if (!changed || changed.answered !== true) return {}
+  return {
+    files: changed.files,
+    deletions: changed.deletions,
+    ...(changed.filesOverflow ? { filesOverflow: changed.filesOverflow } : {}),
+    ...(changed.deletionsOverflow ? { deletionsOverflow: changed.deletionsOverflow } : {}),
   }
 }
 
@@ -3862,6 +3890,11 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
   // file exists — and the row is what the card reads. Asked in the other order, the verdict
   // would be perfectly computed, perfectly stored, and delivered to nobody.
   attachAttemptParity(deps, worktree)
+  // AND WHAT THE ATTEMPT CHANGED — here above all. This is the try somebody actually wants to
+  // undo, and a list that exists only on the finished path is missing exactly when it is
+  // needed. Asked even when this refusal came before a run directory was ever made: the answer
+  // is cached on the COPY, so an early exit owes and pays the same record as a late one.
+  attachChangedFiles(deps, worktree)
   await adapter.fail(task.id, reason)
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
