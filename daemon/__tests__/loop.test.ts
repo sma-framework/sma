@@ -43,6 +43,7 @@
 
 import { describe, it, expect, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -54,6 +55,7 @@ import {
   tick,
   runDaemon,
   classifyFailure,
+  changedFilesOnBranch,
   unregisteredMcpTools,
   DENIAL_LINES_CAP,
   DENIAL_COMMAND_MAX,
@@ -77,6 +79,7 @@ import {
   MEMORY_SNAPSHOT_ABSENT,
   createAttemptLogWriter,
   readAttemptLog,
+  ATTEMPT_FILES_CAP,
 } from '../src/queue/attempt-ledger.mjs'
 import { appendRedirect, readPendingRedirects, redirectFileOf } from '../src/runner/redirects.mjs'
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
@@ -2419,10 +2422,24 @@ const DIFF_RESPONSES = (reverify: any) => ({
 })
 
 /** Git, отвечающий на все четыре вопроса попытки; любой из них можно заставить упасть. */
+/**
+ * КАКОЙ ГЛАГОЛ У ЭТОГО ВЫЗОВА — вопрос к аргументам, а не к их ПОРЯДКУ.
+ *
+ * `git -c ключ=значение <глагол> …` — обычная форма вызова, и подделка, читавшая нулевой
+ * аргумент как глагол, отвечала пустотой на любой такой вызов. Это ровно тот класс, который в
+ * этом дереве уже стоил дня: подделка, которая умеет МЕНЬШЕ библиотеки, зелена ровно до того
+ * дня, когда настоящий вызов перестаёт совпадать с её представлением о нём.
+ */
+const gitVerbOf = (args: string[]) => {
+  const rest = [...args]
+  while (rest[0] === '-c') rest.splice(0, 2) // пара «настройка=значение» — не глагол
+  return rest[0]
+}
+
 const makeGateGit =
   ({ commits = '1', diff = 'M\tdaemon/src/loop.mjs', throwOn = '' } = {}) =>
   (args: string[]) => {
-    const verb = args[0]
+    const verb = gitVerbOf(args)
     if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
     if (verb === 'rev-parse') return 'base0000'
     if (verb === 'rev-list') return commits
@@ -2586,7 +2603,12 @@ describe('журнал попытки отвечает и «к чему отка
     expect(line, 'попытка закрылась, а что она тронула — неизвестно').toBeTruthy()
     expect(line.base).toBe('base0000')
     expect(line.branch).toBe('wt/BL-1')
-    expect(line.files).toEqual(['M\tdaemon/src/loop.mjs', 'A\tdaemon/__tests__/loop.test.ts'])
+    // Запись — статус и имя ОТДЕЛЬНО, а не одна склеенная строка: карточке нужно знать, что
+    // именно случилось с файлом, и склейка заставила бы её разбирать строку заново.
+    expect(line.files).toEqual([
+      { status: 'M', path: 'daemon/src/loop.mjs' },
+      { status: 'A', path: 'daemon/__tests__/loop.test.ts' },
+    ])
     // числа и имена живут в detail: форматтер оператора печатает только его
     expect(line.detail).toContain('base0000')
     expect(line.detail).toContain('daemon/src/loop.mjs')
@@ -2608,7 +2630,7 @@ describe('журнал попытки отвечает и «к чему отка
     const line = filesLine(journalled)
     expect(line, 'провалившаяся попытка — именно та, которую хотят откатить').toBeTruthy()
     expect(line.base).toBe('base0000')
-    expect(line.files).toEqual(['M\tdaemon/src/loop.mjs'])
+    expect(line.files).toEqual([{ status: 'M', path: 'daemon/src/loop.mjs' }])
   })
 
   it('git не ответил → запись честно называет причину и ничего не роняет', async () => {
@@ -4446,5 +4468,275 @@ describe('кнопка одобрения — один провод, один р
     const client = readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8')
     const decide = client.slice(client.indexOf('export function decideToolTicket'))
     expect(decide.slice(0, 900)).toContain('redirectTask(')
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────────────────────
+// ЧТО ПОПЫТКА ИЗМЕНИЛА — прочитанное из git так, как git на самом деле отвечает
+//
+// ПОЧЕМУ ЭТИ СЛУЧАИ ГОНЯЮТСЯ НА НАСТОЯЩЕМ git, А НЕ НА ПОДДЕЛКЕ. Подделка, которая отдаёт
+// ровно то, чего от неё ждут, зелена всегда — включая тот день, когда форму ответа «знают
+// неправильно». Форма здесь измерена побайтово ДО написания разбора, и каждый случай ниже
+// создаёт настоящий временный репозиторий, делает в нём настоящие правки настоящими
+// командами и спрашивает настоящий git. Цена подделки в этом месте уже известна по дереву:
+// имя файла с кириллицей приходит от git по умолчанию восьмеричными последовательностями в
+// кавычках, и никакая подделка об этом не расскажет.
+// ───────────────────────────────────────────────────────────────────────────────────────────
+
+describe('изменённые файлы попытки: список читается из git', () => {
+  const gitDirs: string[] = []
+  afterAll(() => {
+    for (const d of gitDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* уборка временного каталога никогда не роняет сьют */
+      }
+    }
+  })
+
+  /** Нулевой байт — разделитель записей в ответе git. В исходнике он собирается кодом, а не
+   *  пишется байтом: файл теста обязан остаться текстовым, иначе его не прочитает ни человек,
+   *  ни половина инструментов вокруг. */
+  const NUL = String.fromCharCode(0)
+
+  /** НАСТОЯЩИЙ шов git — тот же вызов, что собирает production в main.mjs. */
+  const realGit = (args: string[], opts: { cwd?: string } = {}) =>
+    execFileSync('git', args, { cwd: opts.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+
+  const newRepo = (prefix: string) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix))
+    gitDirs.push(dir)
+    realGit(['init', '-q', '.'], { cwd: dir })
+    realGit(['config', 'user.email', 'wire@test'], { cwd: dir })
+    realGit(['config', 'user.name', 'wire'], { cwd: dir })
+    realGit(['config', 'core.autocrlf', 'false'], { cwd: dir })
+    return dir
+  }
+
+  /** Репозиторий со ВСЕМИ формами сразу: изменение, добавление, удаление оболочкой,
+   *  удаление через git, переименование, русское имя, имя с пробелом. */
+  const worldRepo = () => {
+    const dir = newRepo('sma-changed-')
+    writeFileSync(join(dir, 'modify.txt'), 'a\n')
+    writeFileSync(join(dir, 'shell-delete.txt'), 'b\n')
+    writeFileSync(join(dir, 'git-delete.txt'), 'b2\n')
+    writeFileSync(join(dir, 'oldname.txt'), 'c\n')
+    writeFileSync(join(dir, 'русское имя.txt'), 'd\n')
+    writeFileSync(join(dir, 'with space.txt'), 'e\n')
+    // ПО ИМЕНАМ, никогда `-A` — тот же закон, что и в рабочем дереве.
+    realGit(
+      ['add', 'modify.txt', 'shell-delete.txt', 'git-delete.txt', 'oldname.txt', 'русское имя.txt', 'with space.txt'],
+      { cwd: dir },
+    )
+    realGit(['commit', '-qm', 'base'], { cwd: dir })
+    const base = realGit(['rev-parse', 'HEAD'], { cwd: dir }).trim()
+
+    writeFileSync(join(dir, 'modify.txt'), 'a2\n')
+    writeFileSync(join(dir, 'added.txt'), 'new\n')
+    writeFileSync(join(dir, 'русское имя.txt'), 'd2\n')
+    writeFileSync(join(dir, 'with space.txt'), 'e2\n')
+    rmSync(join(dir, 'shell-delete.txt')) // ОБОЛОЧКОЙ: ни один инструмент правки этого не видит
+    realGit(['rm', '-q', 'git-delete.txt'], { cwd: dir })
+    realGit(['mv', 'oldname.txt', 'newname.txt'], { cwd: dir })
+    realGit(['add', 'modify.txt', 'added.txt', 'русское имя.txt', 'with space.txt', 'shell-delete.txt'], { cwd: dir })
+    realGit(['commit', '-qm', 'work'], { cwd: dir })
+    return { dir, base }
+  }
+
+  const pathsOf = (r: { files: Array<{ path: string }> }) => r.files.map((f) => f.path).sort()
+  const statusOf = (r: { files: Array<{ status: string; path: string }> }, path: string) =>
+    (r.files.find((f) => f.path === path) || { status: null }).status
+
+  it('изменённые файлы: изменение, добавление и удаление, сделанное ОБОЛОЧКОЙ, приходят все', () => {
+    const { dir, base } = worldRepo()
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    expect(pathsOf(r)).toContain('modify.txt')
+    expect(pathsOf(r)).toContain('added.txt')
+    expect(pathsOf(r)).toContain('shell-delete.txt')
+    expect(statusOf(r, 'modify.txt')).toBe('M')
+    expect(statusOf(r, 'added.txt')).toBe('A')
+    expect(statusOf(r, 'shell-delete.txt')).toBe('D')
+    expect(r.answered).toBe(true)
+  })
+
+  it('изменённые файлы: исчезнувшие пути лежат ОТДЕЛЬНЫМ списком — «удалён» и «изменён» разные новости', () => {
+    const { dir, base } = worldRepo()
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    expect(r.deletions).toContain('shell-delete.txt')
+    expect(r.deletions).toContain('git-delete.txt')
+    expect(r.deletions).not.toContain('modify.txt')
+    expect(r.deletions).not.toContain('added.txt')
+  })
+
+  it('изменённые файлы: переименование приходит ТРЕМЯ записями, и старая сторона считается исчезнувшей', () => {
+    const { dir, base } = worldRepo()
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    const renamed = r.files.find((f) => f.path === 'newname.txt')
+    expect(renamed).toBeTruthy()
+    expect(String(renamed.status).startsWith('R')).toBe(true)
+    expect(renamed.from).toBe('oldname.txt')
+    // Человек, читающий откат, обязан увидеть, что oldname.txt исчез.
+    expect(r.deletions).toContain('oldname.txt')
+    // …и НЕ увидеть его среди путей, которые всё ещё существуют.
+    expect(pathsOf(r)).not.toContain('oldname.txt')
+  })
+
+  it('изменённые файлы: русское имя читаемо КАК ЕСТЬ, без восьмеричных последовательностей', () => {
+    const { dir, base } = worldRepo()
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    expect(pathsOf(r)).toContain('русское имя.txt')
+    const raw = JSON.stringify(r.files)
+    expect(/\\3[0-9]{2}/.test(raw)).toBe(false)
+  })
+
+  it('изменённые файлы: имя с пробелом внутри не разваливается на два', () => {
+    const { dir, base } = worldRepo()
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    expect(pathsOf(r)).toContain('with space.txt')
+    expect(pathsOf(r)).not.toContain('with')
+  })
+
+  it('изменённые файлы: копирование — та же трёхзаписная форма, что и переименование', () => {
+    const dir = newRepo('sma-changed-copy-')
+    writeFileSync(join(dir, 'source.txt'), 'x'.repeat(400) + '\n')
+    realGit(['add', 'source.txt'], { cwd: dir })
+    realGit(['commit', '-qm', 'base'], { cwd: dir })
+    const base = realGit(['rev-parse', 'HEAD'], { cwd: dir }).trim()
+    // Обнаружение копий включается настройкой ПОДКЛЮЧЁННОГО проекта — не нашей. Разбор
+    // обязан пережить её: иначе одна лишняя запись сдвинет разбор и имя файла станет статусом.
+    realGit(['config', 'diff.renames', 'copies'], { cwd: dir })
+    writeFileSync(join(dir, 'copy.txt'), 'x'.repeat(400) + '\n')
+    realGit(['add', 'copy.txt'], { cwd: dir })
+    realGit(['commit', '-qm', 'copied'], { cwd: dir })
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    const copied = r.files.find((f) => f.path === 'copy.txt')
+    expect(copied).toBeTruthy()
+    expect(/^[CA]/.test(String(copied.status))).toBe(true)
+    // Копирование НИЧЕГО не уносит: источник на месте, значит в исчезнувших его нет.
+    expect(r.deletions).not.toContain('source.txt')
+  })
+
+  it('изменённые файлы: список длиннее потолка обрезан ОДНОЙ константой, а перебор посчитан честно', () => {
+    const dir = newRepo('sma-changed-cap-')
+    writeFileSync(join(dir, 'seed.txt'), 's\n')
+    realGit(['add', 'seed.txt'], { cwd: dir })
+    realGit(['commit', '-qm', 'base'], { cwd: dir })
+    const base = realGit(['rev-parse', 'HEAD'], { cwd: dir }).trim()
+    const many = ATTEMPT_FILES_CAP + 7
+    const names: string[] = []
+    for (let i = 0; i < many; i += 1) {
+      const n = `f${String(i).padStart(4, '0')}.txt`
+      names.push(n)
+      writeFileSync(join(dir, n), `${i}\n`)
+    }
+    realGit(['add', ...names], { cwd: dir })
+    realGit(['commit', '-qm', 'many'], { cwd: dir })
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    expect(r.files.length).toBe(ATTEMPT_FILES_CAP)
+    expect(r.filesOverflow).toBe(7)
+  })
+
+  it('изменённые файлы: удаления считают свой перебор ОТДЕЛЬНО — молча урезанное удаление тут запрещено', () => {
+    const dir = newRepo('sma-changed-delcap-')
+    const many = ATTEMPT_FILES_CAP + 3
+    const names: string[] = []
+    for (let i = 0; i < many; i += 1) {
+      const n = `d${String(i).padStart(4, '0')}.txt`
+      names.push(n)
+      writeFileSync(join(dir, n), `${i}\n`)
+    }
+    realGit(['add', ...names], { cwd: dir })
+    realGit(['commit', '-qm', 'base'], { cwd: dir })
+    const base = realGit(['rev-parse', 'HEAD'], { cwd: dir }).trim()
+    for (const n of names) rmSync(join(dir, n))
+    realGit(['add', ...names], { cwd: dir })
+    realGit(['commit', '-qm', 'swept'], { cwd: dir })
+    const r = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', dir)
+    expect(r.deletions.length).toBe(ATTEMPT_FILES_CAP)
+    expect(r.deletionsOverflow).toBe(3)
+  })
+
+  it('изменённые файлы: fail-open — нет шва, нет базы, git отказал → причина словами, никогда исключение', () => {
+    const { dir, base } = worldRepo()
+    const noSeam = changedFilesOnBranch({}, base, 'HEAD', dir)
+    expect(noSeam.files).toEqual([])
+    expect(noSeam.answered).toBe(false)
+    expect(String(noSeam.reason)).toContain('git')
+
+    const noBase = changedFilesOnBranch({ execGit: realGit }, null, 'HEAD', dir)
+    expect(noBase.answered).toBe(false)
+    expect(noBase.deletions).toEqual([])
+
+    const noCopy = changedFilesOnBranch({ execGit: realGit }, base, 'HEAD', null)
+    expect(noCopy.answered).toBe(false)
+
+    const angry = changedFilesOnBranch(
+      {
+        execGit: () => {
+          throw new Error('fatal: ambiguous argument')
+        },
+      },
+      base,
+      'HEAD',
+      dir,
+    )
+    expect(angry.answered).toBe(false)
+    expect(String(angry.reason)).toContain('fatal')
+  })
+
+  it('изменённые файлы: усечённый ответ обрывает разбор и НЕ бросает; незнакомый статус кладётся как есть', () => {
+    // Запись без имени — ровно то, что приходит от оборванного чтения потока.
+    const truncated = changedFilesOnBranch(
+      { execGit: () => ['M', 'modify.txt', 'R100', 'oldname.txt'].join(NUL) + NUL },
+      'b',
+      'HEAD',
+      '/tmp/x',
+    )
+    expect(truncated.files.map((f) => f.path)).toEqual(['modify.txt'])
+    const weird = changedFilesOnBranch(
+      { execGit: () => ['T', 'typechange.txt', 'U', 'conflicted.txt', ''].join(NUL) },
+      'b',
+      'HEAD',
+      '/tmp/x',
+    )
+    expect(weird.files.map((f) => f.status)).toEqual(['T', 'U'])
+    expect(weird.deletions).toEqual([])
+  })
+
+  it('изменённые файлы: запасной путь — ответ БЕЗ нулевых байтов разбирается по строкам и табу', () => {
+    // На случай сборки git, где `-z` не применилось: имена всё равно читаемы, потому что
+    // в вызове стоит выключенное квотирование путей.
+    const legacy = changedFilesOnBranch(
+      { execGit: () => 'M\tmodify.txt\nD\tgone.txt\nR100\told.txt\tnew.txt\n' },
+      'b',
+      'HEAD',
+      '/tmp/x',
+    )
+    expect(legacy.files.map((f) => f.path)).toEqual(['modify.txt', 'gone.txt', 'new.txt'])
+    expect(legacy.deletions).toEqual(['gone.txt', 'old.txt'])
+  })
+
+  it('изменённые файлы: вызов идёт с нулевыми разделителями и выключенным квотированием путей', () => {
+    // Провод, а не намерение: аргументы, которыми на самом деле зовут git.
+    let seen: string[] = []
+    changedFilesOnBranch(
+      {
+        execGit: (args: string[]) => {
+          seen = args
+          return ''
+        },
+      },
+      'basecommit',
+      'wt/branch',
+      '/tmp/x',
+    )
+    expect(seen).toContain('-z')
+    expect(seen).toContain('core.quotepath=false')
+    expect(seen).toContain('--name-status')
+    expect(seen).toContain('basecommit..wt/branch')
+    // Содержимое дифа в строку попытки не попадает НИКОГДА: строка durable, содержимое может нести секрет.
+    expect(seen).not.toContain('-p')
+    expect(seen).not.toContain('--patch')
   })
 })

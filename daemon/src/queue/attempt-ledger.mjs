@@ -102,6 +102,27 @@ import {
 import { envelopeHash } from './capability-envelope.mjs'
 import { listNoteFiles } from '../../../scripts/sma/lib/generator.mjs'
 
+/**
+ * ATTEMPT_FILES_CAP — HOW MANY PATHS ONE ATTEMPT ROW MAY CARRY, declared ONCE.
+ *
+ * A refactor that touches a thousand files is ordinary, and a row carrying a thousand paths
+ * would be a durable record nobody can open and a log line that pushes everything else out of
+ * the window. So the list is bounded — and bounded HERE, in the module that owns the row's key
+ * list, because a ceiling written twice is two ceilings: they agree the day they are typed and
+ * drift the first time one of them is tuned. Every writer on this path imports this constant;
+ * there is no second number anywhere along it.
+ *
+ * WHAT A CEILING MUST NEVER DO IS BE SILENT. Cutting a list without saying so turns «эти
+ * файлы» into a claim that is quietly false, so the row carries `filesOverflow` and
+ * `deletionsOverflow` beside the lists — counted SEPARATELY, because a silently truncated
+ * deletion is exactly the asymmetric mistake the deletions were split out to prevent:
+ * «изменён» read where «удалён» was true costs a person the rollback they came for.
+ *
+ * 200 is the working answer, not a law of nature: large enough that an ordinary attempt is
+ * never cut at all, small enough that the row stays a thing a human opens.
+ */
+export const ATTEMPT_FILES_CAP = 200
+
 /** The ONLY keys an attempt row carries — explicit-pick allowlist. */
 export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'taskId',
@@ -160,6 +181,37 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   'materialized',
   'provisionMs',
   'cleanup',
+  // ── WHAT THE ATTEMPT ACTUALLY CHANGED, and what it made disappear ─────────────
+  // `files` is the list git answers for `base..branch`: one entry per path, each carrying the
+  // status letter and the name, and a rename carrying the name it had before. `deletions` is
+  // the paths that are GONE — the deleted ones plus the old side of every rename.
+  //
+  // WHY THE SOURCE IS GIT AND NOT A WATCH ON THE TOOLS. A worker that deletes a file with
+  // `rm`, rewrites one with a stream editor or drops one from the index with `git rm` did all
+  // of that through a shell, and a list assembled from the NAMES of editing tools cannot see
+  // any of it — not «usually misses it», cannot: no editing tool was called. Git compares two
+  // trees and answers what actually differs, which is the only source that survives however
+  // the change was made.
+  //
+  // WHY DELETIONS ARE A SEPARATE KEY rather than a status inside the list. The person reading
+  // this row is reading it to undo something, and the cost of the two mistakes is not
+  // symmetric: «изменён» misread where «удалён» was true sends them looking for a file that
+  // is not there. The old side of a rename counts as vanished for the same reason — from
+  // where that person stands, the path is gone.
+  //
+  // NAMES ONLY, NEVER CONTENT. This is a durable audit row and a diff body can carry a
+  // secret; nothing here is ever produced with a patch flag.
+  //
+  // `filesOverflow` / `deletionsOverflow` — how many paths the ceiling (ATTEMPT_FILES_CAP
+  // above) cut off, counted separately for the two lists and written only when non-zero. A
+  // cut that says nothing is a record that lies quietly.
+  //
+  // ABSENT, NOT EMPTY, when nothing could be asked: no copy, no base commit, or a git that
+  // refused. An empty array reads as «ничего не менялось», which is a different claim.
+  'files',
+  'deletions',
+  'filesOverflow',
+  'deletionsOverflow',
   // ── the session the worker was actually handed ────────────────────────────────
   // `personalLayer` is what the account held when this attempt ran, as the mirror reported
   // it: which directory it was taken from, a digest of the instructions file, how many hook

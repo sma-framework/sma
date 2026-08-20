@@ -103,7 +103,10 @@ import { pipelineEnabled } from './config.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
-import { memorySnapshotHash } from './queue/attempt-ledger.mjs'
+// ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
+// belongs to the module that owns the row's key list, and a second copy of the number here
+// would be a second ceiling waiting to drift away from the first.
+import { memorySnapshotHash, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
@@ -644,34 +647,187 @@ export function redRecordKeys(rv) {
   return out.sort()
 }
 
+/** The byte git separates the records of a `-z` answer with. Never written as a literal in
+ *  source: a NUL in a text file is a file half the tooling around it stops being able to read. */
+const NUL = String.fromCharCode(0)
+
+/** An answer with no name where a name must be — the shape of a read that was cut short. */
+const NO_ANSWER = (reason) => ({
+  files: [],
+  deletions: [],
+  filesOverflow: 0,
+  deletionsOverflow: 0,
+  answered: false,
+  reason,
+})
+
 /**
- * changedFilesOnBranch(deps, base, branch, cwd) → {files, reason}: the `name-status` lines of
- * everything the attempt's branch changed against the commit it was cut from.
+ * parseNameStatus(out) → {entries, vanished} — the records of a `--name-status` answer, in
+ * the shape git ACTUALLY produces. The form below was measured byte by byte on a real
+ * repository before a line of this was written, because a parser built to a remembered format
+ * is green against a fake and wrong against git.
+ *
+ * WHAT WAS MEASURED (git 2.53, `-z`): status and name are TWO separate NUL-terminated
+ * records — `A\0added.txt\0` — and a rename is THREE: `R100\0oldname.txt\0newname.txt\0`.
+ * Rename detection is on by DEFAULT, so the three-record form is not a rare case to handle
+ * later; copy detection is off by default but is one line of config in the CONNECTED
+ * project, and its record shape is the same three. So `R` and `C` are read by one branch —
+ * miss that and one extra record shifts everything after it, and a file NAME is read as a
+ * status.
+ *
+ * ANYTHING UNKNOWN IS KEPT AS IT CAME. A status letter this parser has never seen (`T`, `U`,
+ * a future one) is stored verbatim with its name: a record we do not understand is still
+ * evidence, and dropping it would make the row quietly incomplete.
+ *
+ * A TRUNCATED ANSWER STOPS THE PARSE AND THROWS NOTHING — a record with no name is what a
+ * cut-off read looks like, and losing the rest of a list is not a reason to lose the attempt.
+ */
+function parseNameStatus(out) {
+  const entries = []
+  const vanished = []
+  const push = (status, path, from) => {
+    entries.push(from === undefined ? { status, path } : { status, path, from })
+    // WHAT IS GONE, collected as we go. `D` is the plain case; the OLD side of a rename is
+    // the subtle one — from where a person stands that path no longer exists, and a rollback
+    // reader who is not told so goes looking for a file that is not there. A copy takes
+    // nothing away, so `C` adds nothing here.
+    if (status[0] === 'D') vanished.push(path)
+    else if (status[0] === 'R' && from !== undefined) vanished.push(from)
+  }
+
+  // THE PRIMARY PATH: records separated by the NUL byte. Never newlines and never whitespace —
+  // a path may legally contain a space, a quote and (on systems that allow it) a newline, and
+  // every one of those splits a line-based parser into pieces that look like real filenames.
+  if (out.includes(NUL)) {
+    const parts = out.split(NUL)
+    let i = 0
+    while (i < parts.length) {
+      const status = parts[i]
+      if (!status) {
+        i += 1 // the trailing empty record after the final NUL
+        continue
+      }
+      if (status[0] === 'R' || status[0] === 'C') {
+        const from = parts[i + 1]
+        const to = parts[i + 2]
+        if (!from || !to) break // truncated: stop reading, keep what was read
+        push(status, to, from)
+        i += 3
+      } else {
+        const path = parts[i + 1]
+        if (!path) break // truncated
+        push(status, path)
+        i += 2
+      }
+    }
+    return { entries, vanished }
+  }
+
+  // THE FALLBACK: an answer with no NUL in it at all. Some builds and some wrappers hand back
+  // a newline-separated body despite the flag, and this is the ONLY reason `core.quotepath` is
+  // switched off in the call as well — down here the names arrive raw and stay readable, where
+  // git's default would have handed a person `\321\200\321\203…` instead of a filename.
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const cols = line.split('\t')
+    const status = cols[0].trim()
+    if (!status || cols.length < 2) continue
+    if ((status[0] === 'R' || status[0] === 'C') && cols.length >= 3) push(status, cols[2], cols[1])
+    else push(status, cols[1])
+  }
+  return { entries, vanished }
+}
+
+/**
+ * changedFilesOnBranch(deps, base, branch, cwd) → what the attempt's branch changed against
+ * the commit it was cut from: `files` (status + name per entry, plus the previous name of a
+ * rename), `deletions` (the paths that are GONE), the two overflow counters, `answered`, and
+ * a reason in words when there is nothing to show.
  *
  * «Откатить можно» и «видно, ЧТО откатывается» — разные вещи, and only the first was true:
  * the attempt row carried the base commit, so a person knew the point to return to and
- * nothing about what would come back. The list is derived here and journalled for EVERY
- * outcome, because the attempt someone wants to undo is precisely the one that went wrong.
+ * nothing about what would come back. The list is derived here and carried on EVERY outcome,
+ * because the attempt someone wants to undo is precisely the one that went wrong.
  *
- * FAIL-OPEN, exactly like the commit count beside it: no git seam, no base, or a git that
- * refuses all answer «no data» with the reason in words. An honest blank is a record; a
- * thrown error in a narration path would cost the attempt its outcome.
+ * THE SOURCE IS GIT, DELIBERATELY. Not a watch on which tools the worker used: a change made
+ * with `rm`, with a stream editor or with `git rm` went through a shell, and a list built
+ * from the names of editing tools cannot contain it — no editing tool was called. Git
+ * compares two trees, so it answers correctly however the change was made.
+ *
+ * NAMES ONLY. No patch flag is ever passed: the row is durable and a diff body can carry a
+ * secret. A ceiling — ONE constant, owned by the module that owns the row's key list — bounds
+ * both lists, and what it cut is counted out loud rather than dropped in silence.
+ *
+ * FAIL-OPEN, exactly like the commit count beside it: no git seam, no base, no copy, or a git
+ * that refuses all answer `answered:false` with the reason in words. An honest blank is a
+ * record; a thrown error in a narration path would cost the attempt its outcome.
  */
-function changedFilesOnBranch(deps, base, branch, cwd) {
-  if (typeof deps.execGit !== 'function') return { files: [], reason: 'нет доступа к git' }
-  if (!cwd) return { files: [], reason: 'рабочей копии нет' }
-  if (!base) return { files: [], reason: 'базовый коммит неизвестен' }
+export function changedFilesOnBranch(deps, base, branch, cwd) {
+  if (!deps || typeof deps.execGit !== 'function') return NO_ANSWER('нет доступа к git')
+  if (!cwd) return NO_ANSWER('рабочей копии нет')
+  if (!base) return NO_ANSWER('базовый коммит неизвестен')
   let out = ''
   try {
-    out = String(deps.execGit(['diff', '--name-status', `${base}..${branch || 'HEAD'}`], { cwd }) || '')
+    out = String(
+      deps.execGit(
+        // `-c core.quotepath=false` AND `-z`, and both on purpose. `-z` is what makes the
+        // answer parseable at all — records separated by a byte that cannot occur in a path.
+        // `core.quotepath=false` is the belt for the day the records arrive newline-separated
+        // anyway: without it git renders every non-Latin byte as an octal escape inside
+        // quotes, and a person opening the row sees `"\321\200\321\203…"` where a filename
+        // should be. That line is not hypothetical — it is already in this daemon's own log.
+        ['-c', 'core.quotepath=false', 'diff', '--name-status', '-z', `${base}..${branch || 'HEAD'}`],
+        { cwd },
+      ) || '',
+    )
   } catch (err) {
-    return { files: [], reason: `git не ответил: ${String((err && err.message) || err)}` }
+    return NO_ANSWER(`git не ответил: ${String((err && err.message) || err)}`)
   }
-  const files = out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-  return { files, reason: files.length ? null : 'изменённых файлов нет' }
+  const { entries, vanished } = parseNameStatus(out)
+  const files = entries.slice(0, ATTEMPT_FILES_CAP)
+  const deletions = vanished.slice(0, ATTEMPT_FILES_CAP)
+  return {
+    files,
+    deletions,
+    filesOverflow: Math.max(0, entries.length - files.length),
+    deletionsOverflow: Math.max(0, vanished.length - deletions.length),
+    answered: true,
+    reason: entries.length ? null : 'изменённых файлов нет',
+  }
+}
+
+/**
+ * attachChangedFiles(deps, worktree) → the changed-file record of THIS attempt, computed once.
+ *
+ * IT SITS BESIDE THE PARITY VERDICT, AND FOR THE SAME REASON. Both doors that close an
+ * attempt — the one to «готово» and the one to «провал» — ask for it as their first line,
+ * before the ledger row is appended, because the ROW is what a card is built from and the row
+ * is written before anything else about the ending exists. Twenty-three exits reach those two
+ * doors; putting the question here rather than at each exit is why this is ONE edit and not
+ * twenty-three, and why an exit added tomorrow gets the list for free.
+ *
+ * IT IS ASKED WHILE THE BRANCH IS STILL ALIVE. After approval the copy is swept, its branch
+ * goes with it, and an unreachable commit is collected sooner or later; recomputing later from
+ * a remembered tip is a FALLBACK, never the main road.
+ *
+ * THE CACHE LIVES ON THE COPY, NOT ON THE RUN DIRECTORY. Either door may ask first, and git
+ * must be asked exactly once per attempt — but an exit that never made a run directory owes
+ * the same record as one that did, so the answer is kept beside the copy itself. Hang it on
+ * the run directory and every early refusal silently loses its list.
+ *
+ * FAIL-OPEN: no copy at all yields null, and the row then carries no such keys — «попытка
+ * этого не знает», which is not the same claim as «ничего не менялось».
+ */
+function attachChangedFiles(deps, worktree) {
+  if (!worktree || typeof worktree !== 'object') return null
+  if (worktree.changed) return worktree.changed // one attempt, one question to git
+  worktree.changed = changedFilesOnBranch(deps, worktree.base, worktree.branch, worktree.worktreePath)
+  return worktree.changed
+}
+
+/** One entry of the list as a person reads it: `M имя` — and a rename naming both sides. */
+function fileWord(f) {
+  return f && f.from ? `${f.status} ${f.from} → ${f.path}` : `${(f && f.status) || '?'} ${(f && f.path) || ''}`
 }
 
 /**
@@ -3172,10 +3328,13 @@ export async function tick(deps = {}) {
       //
       // It is taken here, once, ahead of complete/fail on purpose: BOTH outcomes must carry
       // the same record, and the attempt a person wants to undo is precisely the one that was
-      // refused. Journal line only — the ledger row's key list is a closed allowlist that
-      // belongs to another change; a line the operator's log already prints is the smaller
-      // honest step, and the SUMMARY carries the recommendation for the durable half.
-      const changed = changedFilesOnBranch(deps, worktreeBase, branch, workDir)
+      // refused.
+      //
+      // THE SAME VALUE, NOT A SECOND QUESTION. The line below and the DURABLE row written by
+      // the two closing doors read one cached answer: git is asked once per attempt, whoever
+      // asks first. The log line used to be the ONLY place this list ever reached — computed,
+      // printed, and gone with the next log rotation — and that is the half this stopped being.
+      const changed = attachChangedFiles(deps, worktreeRow) || changedFilesOnBranch(deps, worktreeBase, branch, workDir)
       writeLog(deps, {
         type: 'task.attempt_files',
         taskId: task.id,
@@ -3183,15 +3342,23 @@ export async function tick(deps = {}) {
         branch,
         base: worktreeBase,
         files: changed.files,
+        deletions: changed.deletions,
         // The values go into `detail`: the operator's formatter prints type/task/worker/
         // reason/detail and drops everything else, so a list filed under any other key is a
-        // record nobody can read. Capped — a giant attempt must not push the log out of the
-        // window; the full list stays on the entry above it.
+        // record nobody can read. Bounded by the SAME constant the row is bounded by — the
+        // line used to carry a second, smaller ceiling of its own, and two ceilings in two
+        // places are two numbers waiting to disagree about what «ещё N» counts from.
         detail:
           `база=${worktreeBase || 'нет'} ветка=${branch || 'нет'} файлов=${changed.files.length}` +
           (changed.files.length
-            ? `: ${changed.files.slice(0, 40).join(' · ')}${changed.files.length > 40 ? ` … ещё ${changed.files.length - 40}` : ''}`
-            : ` (${changed.reason})`),
+            ? `: ${changed.files.slice(0, ATTEMPT_FILES_CAP).map(fileWord).join(' · ')}` +
+              (changed.filesOverflow ? ` … ещё ${changed.filesOverflow}` : '')
+            : ` (${changed.reason})`) +
+          // Исчезнувшее называется ОТДЕЛЬНО и числом: «удалён» и «изменён» — разные новости,
+          // и человек, читающий откат, обязан увидеть разницу, не пересчитывая список.
+          (changed.deletions.length
+            ? ` | исчезло=${changed.deletions.length}${changed.deletionsOverflow ? ` (… ещё ${changed.deletionsOverflow})` : ''}`
+            : ''),
       })
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
