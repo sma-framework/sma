@@ -217,7 +217,7 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed FIFTY-SEVEN-route table', () => {
+describe('server.mjs — the closed SIXTY-TWO-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
   // change again, that change is a declared re-freeze revision, not a routine edit. FILLING
   // a declared slot does not change it — that is the entire point of declaring them all at
@@ -238,8 +238,12 @@ describe('server.mjs — the closed FIFTY-SEVEN-route table', () => {
   // RE-FREEZE REVISION (13.08.2026, the same day, fifth): + POST /api/wave/hold — «останови
   // волну 2». A stop is a WORD SOMEBODY SAID: nothing in the queue derives it, so it needs a
   // door to be said through and a register on disk to be remembered in.
-  it('the frozen table has EXACTLY sixty-one routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(61)
+  // RE-FREEZE REVISION (20.08.2026): + POST /api/task/cancel — a person stops a task with a
+  // finger. The queue could already close a row terminally, but only a command line could ask
+  // it to; and closing the row is only half — the live child under the task has to die FIRST,
+  // or the stopping leaves an orphan process working for nobody.
+  it('the frozen table has EXACTLY sixty-two routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(62)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
