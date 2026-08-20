@@ -1518,6 +1518,29 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(after).toBe(before)
     })
 
+    /**
+     * РАБОТУ, ВЕРНУВШУЮСЯ В ОЧЕРЕДЬ ПОСЛЕ СОРВАННОЙ ПОПЫТКИ, ОСТАНОВИТЬ ТОЖЕ МОЖНО.
+     *
+     * Это не редкий угол, а самый обычный день: задача, чей работник замолчал, возвращается
+     * в очередь сторожем живости и ждёт следующей попытки. Для человека у экрана она ничем
+     * не отличается от любой другой ждущей — так её и называет читающий путь. Значит и
+     * остановить её он вправе ровно так же; «нет такой задачи» в ответ на строку, которую он
+     * видит в очереди, — это отказ, замаскированный под пустоту.
+     */
+    it('a task handed back after a lost attempt can still be stopped — a person sees waiting work and may stop waiting work', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-97' }))
+      await q.claimNext('w1', {})
+      c.advance(5000) // аренда потеряна: строка вернулась в очередь на следующую попытку
+
+      const back = (await q.list({})).find((r) => r.id === 'BL-97')
+      expect(back.status).toBe('queued') // именно это человек и видит
+
+      expect(await q.cancelTask('BL-97')).toBe(true)
+      expect(await q.claimNext('w2', {})).toBeNull()
+    })
+
     it('a claimed task not touched within expireMs returns to queued with attempt+1', async () => {
       const c = clockOf(1000)
       const q = makeAdapter({ clock: c.fn, expireMs: 5000 })

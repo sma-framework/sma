@@ -162,8 +162,14 @@ function makeFakeBackend({
     async fetch(name: string, options: any = {}) {
       maintain()
       const batchSize = options.batchSize ?? 1
+      // BOTH WAITING STATES, because the library fetches both: its own plan selects
+      // `state < 'active'`, which is `created` AND `retry`. This fake modelled the first one
+      // alone — smaller than the library, and therefore allowed — right up until the live
+      // queue showed what that blindness hid: a row parked in the retry state after its
+      // worker went silent is ordinary waiting work, is handed out like any other, and a
+      // suite that could not put a row there could not notice anything about it.
       const avail = [...jobs.values()].filter(
-        (j) => j.name === name && j.state === 'created' && (j.start_after ?? 0) <= now(),
+        (j) => j.name === name && (j.state === 'created' || j.state === 'retry') && (j.start_after ?? 0) <= now(),
       )
       avail.sort((a, b) => b.priority - a.priority || a.created_on - b.created_on)
       const picked = avail.slice(0, batchSize)
@@ -334,6 +340,20 @@ function makeFakeBackend({
       if (j) j.output = { ...(j.output || {}), reason }
       return { rows: [] }
     }
+    if (sql.includes("state IN ('created','retry')") && sql.startsWith('SELECT id, name')) {
+      // resolveStoppableJob(): the job WAITING to be handed out, in EITHER state this queue
+      // waits in. Modelled as the statement is written, and the retry state is modelled with
+      // it: it is a real state of the library — a row the liveness sweep handed back, parked
+      // until its backoff runs out — and a fake that answered only about the first waiting
+      // state would be smaller than the statement in exactly the place the live queue proved
+      // it matters. Matched BEFORE the created-only resolution below, whose `SELECT id, name`
+      // prefix this statement shares.
+      const taskId = params[0]
+      const match = [...jobs.values()]
+        .filter((j) => (j.state === 'created' || j.state === 'retry') && j.data && j.data.id === taskId)
+        .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0))[0]
+      return { rows: match ? [{ id: match.id, name: match.name }] : [] }
+    }
     if (sql.includes("state = 'created'") && sql.startsWith('SELECT id, name')) {
       // resolveQueuedJob(): the waiting job carrying this task id (the mirror of the active
       // resolution below).
@@ -428,6 +448,40 @@ const backlog = (over: any = {}) => ({
   storyPoints: 3,
   acceptance: 'green targeted tests + reverify receipt',
   ...over,
+})
+
+/**
+ * THE SECOND WAITING STATE — the one only this backend has, and the one a person cannot tell
+ * apart from the first.
+ *
+ * The queue parks a row it handed back in its RETRY state until the backoff runs out, and that
+ * is what the liveness sweep produces every time a worker goes silent. Our read path already
+ * calls it «в очереди», so a board shows ordinary waiting work — but the stop resolved only the
+ * FIRST waiting state, answered «no such task», left the row live, and the very next hand-out
+ * gave that work to a worker. Measured on the live queue against the real library, not reasoned
+ * about here: this case is the suite's half of that finding.
+ */
+describe('pg-boss backend — stopping work that is waiting after a lost attempt', () => {
+  it('a row parked in the RETRY state is stopped like any other waiting row — and stops being handed out', async () => {
+    const c = mkClock()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+
+    // The state this fixture's own maintenance never produces and the real queue produces
+    // constantly: the row was handed back and waits for its next try.
+    const job = [...jobs.values()][0]
+    job.state = 'retry'
+    job.retry_count = 1
+
+    // What a person sees is ordinary waiting work — and what the queue does is hand it out.
+    expect((await adapter.list({})).find((r: any) => r.id === 'BL-196').status).toBe('queued')
+
+    expect(await adapter.cancelTask('BL-196')).toBe(true)
+
+    expect(job.state).toBe('cancelled')
+    expect(job.output.reason).toBe('manual')
+    expect(await adapter.claimNext('w1', {})).toBeNull()
+  })
 })
 
 describe('pg-boss backend — job-option contract', () => {
