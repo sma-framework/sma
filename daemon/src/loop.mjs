@@ -133,7 +133,7 @@ import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
-import { claudeUsageFromResult, codexUsageFromFinal } from './runner/usage.mjs'
+import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage } from './runner/usage.mjs'
 import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
@@ -2374,6 +2374,23 @@ function steeredSpawn(deps, taskId, spawnWorker) {
  * stream — the same lines the approach note and the failure marker are read from, so no second
  * source of truth about what happened.
  *
+ * AND WHEN THAT LINE NEVER CAME. A killed process does not deliver a final frame; neither does
+ * a provider that cut the connection mid-turn. This function used to walk the stream backwards,
+ * find nothing, and RETURN SILENTLY — no row at all. That silence is not neutral: a person
+ * reading the book finds no line for that attempt and reads it as «this one cost nothing», when
+ * it is precisely the attempt that burned a window and produced nothing to show for it. The
+ * live proof, taken off this machine: 89 usage rows in the whole history and every single one
+ * of them read off a final frame — not one estimate ever written, because there was nothing to
+ * write it with. So a stream with no final frame now books a TIME-BASED ESTIMATE, labelled
+ * `source: 'estimate'` — a coarse figure called an estimate is a record; the same figure called
+ * a measurement would be a lie, which is why the label is not optional.
+ *
+ * The estimate's own guard is untouched: without two believable ends the duration falls to its
+ * floor rather than inventing a length (the fifty-six-years incident lives in usage.mjs).
+ *
+ * WHICH ATTEMPT: the row names it, so «every attempt of mine has a line» is a join and not a
+ * belief. WHICH PROVIDER: taken from the route — the estimate no longer declares one of its own.
+ *
  * Never fatal. The price of an attempt is bookkeeping; an attempt that did its work must not be
  * failed because the book could not be written.
  */
@@ -2395,6 +2412,14 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
         ? apiAccountName
         : (worker && worker.account && worker.account.name) || (route && route.workerId) || null,
       taskId: task.id,
+      // WHICH ATTEMPT OF THAT TASK. Without it the book answers «this task spent something»,
+      // and the question a person actually has — «did the attempt I am looking at leave a
+      // line» — has no answer at all.
+      attempt: task.attempt,
+      // WHICH VENDOR, from the routing verdict rather than declared by the estimate itself: a
+      // killed session of the other provider used to have been booked under a name that was
+      // never its own.
+      provider: (route && route.provider) || undefined,
       model: (route && route.model) || undefined,
       channel: paid ? 'api' : 'subscription',
     }
@@ -2412,6 +2437,9 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
       deps.bookUsage(claudeUsageFromResult(event, ctx))
       return
     }
+    // NO FINAL FRAME IN THE STREAM — see the header. The attempt still ran and still spent; the
+    // book gets a line that says so and says, honestly, that it is an estimate.
+    deps.bookUsage(estimateUsage({ ...ctx, startedAt, endedAt: now }))
   } catch {
     /* the price of an attempt never fails the attempt */
   }
@@ -2596,6 +2624,18 @@ export async function tick(deps = {}) {
      * before a copy existed, and a null one simply writes none of the keys.
      */
     let worktreeRow = null
+
+    /**
+     * ЧЕМ ЗАПЛАТИЛА ПОПЫТКА, ЕСЛИ ТИК УМРЁТ РАНЬШЕ, ЧЕМ УСПЕЕТ ЭТО ЗАПИСАТЬ.
+     *
+     * The per-task catch below turns any throw into an honest `runtime_offline` — and used to
+     * walk straight past the book on the way there. A process had been spawned, a window had
+     * been spent, and the ledger said nothing about it, because the one call that books the
+     * cost sits AFTER the point most of those throws come from. So the debt is armed here, the
+     * moment a child exists, and disarmed the moment it is paid: the catch pays it if it is
+     * still outstanding, which is exactly once, never twice.
+     */
+    let unbookedSpend = null
 
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
@@ -3006,6 +3046,10 @@ export async function tick(deps = {}) {
       // timestamp as the end and zero as the start, so a session that ran two minutes booked
       // fifty-six years of tokens. One number, captured where the process really begins.
       const attemptStartedAt = now()
+      // FROM HERE THE ATTEMPT OWES THE BOOK A LINE (see `unbookedSpend` above): a child is
+      // about to exist, so everything after this point that throws must not take the cost of
+      // it with them.
+      unbookedSpend = () => bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
       let exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
 
       // ── THE CONTINUATION LOOP: a typed correction has a declared fate ──
@@ -3065,6 +3109,7 @@ export async function tick(deps = {}) {
       // fate. A refused attempt still spent the tokens, so the book is written for every
       // attempt and not only for the ones that end well.
       bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
+      unbookedSpend = null // paid — the catch below must not pay it a second time
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
@@ -3385,6 +3430,14 @@ export async function tick(deps = {}) {
     } catch (err) {
       // Per-task fail-open: a thrown error becomes an honest runtime_offline, never a wedge.
       if (typeof journal === 'function') journal({ type: 'task-error', taskId: task.id, error: String((err && err.message) || err) })
+      // WHAT IT COST, BEFORE THE FAILURE IS DECLARED. An attempt that died in an exception
+      // spent exactly as much as one that died politely; the book is written first, for the
+      // same reason it is written above any gate — money is not conditional on an outcome.
+      try {
+        if (unbookedSpend) unbookedSpend()
+      } catch {
+        /* the price of an attempt never fails the attempt — not even a failing one */
+      }
       try {
         await failTask(deps, task, { reason: 'runtime_offline', now: now(), envelope, from: fleetState, worktree: worktreeRow })
       } catch {
