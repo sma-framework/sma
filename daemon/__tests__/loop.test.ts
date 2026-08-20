@@ -83,7 +83,7 @@ import {
 } from '../src/queue/attempt-ledger.mjs'
 import { appendRedirect, readPendingRedirects, redirectFileOf } from '../src/runner/redirects.mjs'
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
-import { formatDecision, parseDecision, ticketIdFor } from '../../scripts/sma/lib/tool-gate.mjs'
+import { formatDecision, parseDecision, ticketIdFor, readWaitingTicket } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
 // The mirror and the argument builder are used AS THEMSELVES in the wiring cases at the
 // foot of this file: a fake of either could not be poorer than the library, and a fake of
@@ -4738,5 +4738,97 @@ describe('изменённые файлы попытки: список чита�
     // Содержимое дифа в строку попытки не попадает НИКОГДА: строка durable, содержимое может нести секрет.
     expect(seen).not.toContain('-p')
     expect(seen).not.toContain('--patch')
+  })
+})
+
+/**
+ * ═══ ОСТАВШИЕСЯ БИЛЕТЫ ЗАКРЫВАЮТСЯ ВМЕСТЕ С ПОПЫТКОЙ ══════════════════════════════════════
+ *
+ * ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ. Не то, что функция пометки умеет помечать (это утверждает сьют
+ * самого гейта), а ПРОВОД: тик, закрывая попытку, доходит до каталога её билетов. Дыра была
+ * ровно такой формы — билет закрывают три пути, и все три пишет процесс хука; умер процесс, и
+ * файл навсегда остаётся ожидающим, а карточка честно показывает «ждут вас» там, где уже
+ * никто не ждёт.
+ *
+ * ГОНЯЕТСЯ НАСТОЯЩИЙ ТИК ПО НАСТОЯЩЕМУ ВРЕМЕННОМУ КАТАЛОГУ: билет кладёт на диск сам
+ * порождённый процесс (как это делает хук), а утверждается файл НА ДИСКЕ после тика.
+ */
+describe('оставшиеся билеты попытки закрываются вместе с ней', () => {
+  const ticketTmp: string[] = []
+  const mkTicketDir = (prefix: string) => {
+    const d = mkdtempSync(join(tmpdir(), prefix))
+    ticketTmp.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of ticketTmp) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* каталог, который не уходит, — не провал теста */
+      }
+    }
+  })
+
+  const runTickLeavingTicket = async (over: any = {}) => {
+    const projectDir = mkTicketDir('sma-ticket-proj-')
+    const ledgerDir = mkTicketDir('sma-ticket-ledger-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const runDir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: 'BL-1_1' })!
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config: { repoDir: projectDir, pipeline: { enabled: true } },
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+        reverify: over.reverify ?? GREEN_REVERIFY,
+      },
+      // ХУК КЛАДЁТ БИЛЕТ И НЕ УСПЕВАЕТ ЕГО ЗАКРЫТЬ — процесс кончился раньше человека.
+      spawnWorker: (spec: any) => {
+        const dir = join(String((spec.env || {}).SMA_RUN_DIR || runDir), 'tickets')
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(
+          join(dir, 'tk-orphan.json'),
+          JSON.stringify({
+            schema: 'sma-ticket/1',
+            id: 'tk-orphan',
+            attemptId: 'BL-1_1',
+            status: 'waiting',
+            tool: 'Bash',
+            command: 'npm publish',
+            seenAt: new Date(c.clock()).toISOString(),
+            deadlineAt: new Date(c.clock() + 3600000).toISOString(),
+          }),
+          'utf8',
+        )
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 7, kill: () => {} }
+      },
+      deps: { projectDir: () => projectDir, ledger: { recordAttempt: (r: any) => recordAttempt(ledgerDir, r), readAttempts: (id: string) => readAttempts(ledgerDir, id) } },
+    })
+
+    const res = await tick(deps)
+    return { res, runDir, clock: c }
+  }
+
+  it('оставшиеся билеты: на успешном исходе билет умершего хука перестаёт быть ожидающим', async () => {
+    const { runDir, clock } = await runTickLeavingTicket()
+
+    const onDisk = JSON.parse(readFileSync(join(runDir, 'tickets', 'tk-orphan.json'), 'utf8'))
+    expect(onDisk.status, 'билет остался «ждут вас» после конца попытки').not.toBe('waiting')
+    expect(readWaitingTicket({ runDir, clock: clock.clock })).toBe(null)
+  })
+
+  it('оставшиеся билеты: на провальном исходе — то же самое, и по той же одной двери', async () => {
+    const { runDir, clock } = await runTickLeavingTicket({ reverify: { code: 1, stdout: JSON.stringify({ verdict: 'red' }) } })
+
+    const onDisk = JSON.parse(readFileSync(join(runDir, 'tickets', 'tk-orphan.json'), 'utf8'))
+    expect(onDisk.status).not.toBe('waiting')
+    expect(readWaitingTicket({ runDir, clock: clock.clock })).toBe(null)
   })
 })
