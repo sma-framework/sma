@@ -767,9 +767,15 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(29)
+    // THE COUNT IS RE-PINNED ON PURPOSE, and this is the reason in words: the write door gained
+    // `conflictsWith` — the mark a row carries when it contradicts a terminal outcome already
+    // recorded under the same attempt number. It is the last member, appended behind the two
+    // run-directory keys, so nothing older moved and every position below is the same position
+    // it was, one step further from the end.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(30)
+    expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(29) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(30) // no duplicate name
   })
 
   /**
@@ -781,7 +787,7 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
    * чисто». A row that left no directory carries neither key — absence, not an empty shape.
    */
   it('carries runDir and parity last — the evidence of the try and the verdict over it', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-2)).toEqual(['runDir', 'parity'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-3, -1)).toEqual(['runDir', 'parity'])
     const runDir = 'C:/work/project/.sma/runs/BL-RUN_1'
     recordAttempt(dir, { taskId: 'BL-RUN', attempt: 1, outcome: 'completed', runDir, parity: null })
     const [row] = readAttempts(dir, 'BL-RUN')
@@ -809,7 +815,7 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     expect(ALLOWED_ATTEMPT_KEYS).toContain('memoryHarvest')
     // It closes the part of the row written by the APPROVAL; the two run-directory keys were
     // appended behind it, so what the contract pins is that order, not «last member».
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-3)[0]).toBe('memoryHarvest')
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-4)[0]).toBe('memoryHarvest')
     const harvest = { at: '2026-08-19T10:00:00.000Z', by: 'approve', mode: 'untracked', copied: ['drafts/lesson-r-9-a.md'], applied: ['lesson-r-9-a'], drafted: ['approach-r-9-1'], refused: [], ok: true }
     recordAttempt(dir, { taskId: 'BL-HARVEST', attempt: 1, memoryHarvest: harvest })
     const [row] = readAttempts(dir, 'BL-HARVEST')
@@ -822,11 +828,11 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
   it('carries the six copy fields, then the two about the session the worker was given', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-11, -5)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-12, -6)).toEqual(COPY_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-5, -3)).toEqual(['personalLayer', 'mcpConfig'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-6, -4)).toEqual(['personalLayer', 'mcpConfig'])
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a
