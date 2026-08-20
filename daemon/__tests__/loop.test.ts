@@ -4417,14 +4417,19 @@ describe('кнопка одобрения — один провод, один р
   })
 
   it('провод: режим кнопки — queue, и interrupt на этом пути не существует', () => {
-    const client = readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8')
+    // ПЕРЕВОДЫ СТРОК НОРМАЛИЗУЮТСЯ, и это не косметика: этот замок режет тело функции по
+    // маркеру конца, а git отдаёт один и тот же файл с LF в одной рабочей копии и с CRLF в
+    // другой. Без нормализации замок находил пустоту и падал на дереве, где всё правильно, —
+    // то есть переставал быть замком ровно там, где его сработать и должно.
+    const lf = (s: string) => s.split('\r\n').join('\n')
+    const client = lf(readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8'))
     const decide = client.slice(client.indexOf('export function decideToolTicket'))
     const body = decide.slice(0, decide.indexOf('\n}\n') + 2)
     // Режим ЗАШИТ в теле, а не принят параметром: второго значения у этого пути быть не должно.
     expect(body).toContain("mode: 'queue'")
     expect(body).not.toContain('interrupt')
     // Прерывание убивает живого ребёнка — то есть уничтожило бы удерживаемую билетом сессию.
-    const card = readFileSync(new URL('../../spa/src/screens/task-card/index.tsx', import.meta.url), 'utf8')
+    const card = lf(readFileSync(new URL('../../spa/src/screens/task-card/index.tsx', import.meta.url), 'utf8'))
     const parked = card.slice(card.indexOf('function ParkedCall'), card.indexOf('«Карточка задачи»'))
     expect(parked).toContain('useDecideToolTicket')
     expect(parked).not.toContain('interrupt')
