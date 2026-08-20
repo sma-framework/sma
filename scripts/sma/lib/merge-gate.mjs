@@ -276,8 +276,11 @@ export async function runMerge(o = {}) {
 
     // (2) bring the branch into the WORKING TREE, WITHOUT committing it. NO push, NO deploy
     //     (slots.mjs header law). Nothing has entered history yet — that is the point.
-    execGit(['merge', '--no-ff', '--no-commit', branch], { cwd })
+    //     The flag goes up BEFORE the call, not after: a conflicting merge exits non-zero and
+    //     STILL leaves the tree half-merged, so a flag set on the success path would leave
+    //     exactly the conflict case — the likeliest one of all — without an undo.
     mergeInTree = true
+    execGit(['merge', '--no-ff', '--no-commit', branch], { cwd })
 
     // (3) was there anything to bring? An `--no-commit` merge of a branch that is already in
     //     the tree leaves NO MERGE_HEAD and nothing staged. That is not a run and not a
