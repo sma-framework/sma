@@ -173,7 +173,13 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 | **A merge receipt** | answers «not run» when the tests were never wired to it, instead of reporting a green it did not observe |
 | **Anything the engine cannot answer** | says «no data» in words. A zero that is wrong is worse than a blank, because it reads as an answer |
 
-**Accepting the work happens in the right tree, and a refusal says why.** The approve door merges in the tree that actually holds the branch — the connected project's, not the daemon's — and when it refuses, it names the reason in words and the card shows that reason instead of a dead button. Every attempt's journal now carries the **list of files it changed** beside the commit it started from, so «what would I be rolling back?» is answered by the record rather than by reconstruction.
+**Accepting the work happens in the right tree, and a refusal says why.** The approve door merges in the tree that actually holds the branch — the connected project's, not the daemon's — and when it refuses, it names the reason in words and the card shows that reason instead of a dead button.
+
+**«What would I be rolling back, and with which command?» — both answers are on the card.** Every attempt's record carries the **list of files it changed**, read from git rather than from watching tools, so a change made with a shell command is in it; **what VANISHED is a separate line**, because «modified» read where «deleted» was true sends a person looking for a file that is not there. Beside them stands **one command, whole and ready to copy**: accepted work is undone by reverting its merge commit, and work that was never accepted is undone by removing the copy it was done in — the main tree was never touched by it. Both commands were run, on both stories, not asserted.
+
+**«Done» and «done, but nobody re-checked» are now different words.** A gate that opened without a receipt says so on the card, with the reason in words and the numbers it decided on, and it is marked as waiting for a person rather than with a tick.
+
+**The full merge commit name applies going FORWARD.** Work accepted from this release on has all forty characters of it in the record; acceptances older than this release kept the seven they were written with, and that record is an audit log — it is not rewritten to look tidier. The card shows the short one for them, and says out loud that the record is older.
 
 ### Everything before it
 
