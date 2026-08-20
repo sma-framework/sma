@@ -141,6 +141,12 @@
  *                                   is not over yet; false on an unknown or finished task
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
+ *   cancelTask(taskId)            → A PERSON STOPPED THIS WORK. The row is closed TERMINALLY
+ *                                   with the reason `manual`, and no worker is ever handed it
+ *                                   again — not on the next tick, not on any later one. Returns
+ *                                   true when a live task was found and closed, false when
+ *                                   there is no such task or its work is already over (what is
+ *                                   closed stays closed, exactly as with setWords).
  *   list(filter)                  → rows expose enqueuedAt/claimedAt/leaseRenewedAt/completedAt
  *   stats()                       → per-status counts, one key per TASK_STATUSES entry
  *
@@ -1364,6 +1370,120 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const [r] = await q.list({})
       expect(r.status).toBe('failed')
       expect(r.failure_reason).toBe('missing_access')
+    })
+
+    /**
+     * ═══════ ОСТАНОВЛЕННОЕ ЧЕЛОВЕКОМ ОСТАНОВЛЕНО НАВСЕГДА ═══════
+     *
+     * ПОЧЕМУ ЭТО ДЕЛО ЖИВЁТ ЗДЕСЬ, А НЕ В ФАЙЛЕ ОДНОГО БЭКЕНДА. «Отмена терминальна» — это
+     * утверждение о ХРАНИЛИЩЕ, и хранилищ у контракта два. Два одинаковых дела, написанных в
+     * двух файлах, разъезжаются молча при первой же правке одного из них, и тогда «терминально»
+     * остаётся правдой в одном месте и надписью в другом. Одно дело в общем сьюте — единственная
+     * форма, в которой «терминально ВЕЗДЕ» держится конструкцией, а не надеждой.
+     *
+     * ПОЧЕМУ ОТМЕНА — НЕ ОТКАЗ, И ЭТО НЕ ВОПРОС ВКУСА. Отказ у долговременной очереди по
+     * конструкции возвращаемый: строка физически удаляется и вставляется обратно в состоянии
+     * повтора, с отложенным стартом. Значит отмена, написанная отказом, выглядела бы сделанной
+     * — карточка покраснела бы, счётчик упал бы, — а через задержку повтора остановленная
+     * человеком задача снова ушла бы работнику. Это худший из исходов, потому что он похож на
+     * успех. Поэтому главное дело ниже не спрашивает «как выглядит строка»; оно ПЫТАЕТСЯ ВЗЯТЬ
+     * СЛЕДУЮЩУЮ ЗАДАЧУ, несколько раз и после продвижения часов — то есть ровно там, где
+     * отложенный повтор успел бы созреть.
+     */
+    it('cancelTask is terminal: a task a person stopped is handed to nobody — not on the next tick, not on any later one', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-90' })) // остановят эту
+      c.advance(10)
+      await q.enqueue(backlog({ id: 'BL-91' })) // а эта обязана продолжать жить
+
+      expect(await q.cancelTask('BL-90')).toBe(true)
+
+      // Соседняя работа не пострадала: отмена — про одну строку, а не про очередь.
+      const first = await q.claimNext('w1', {})
+      expect(first.id).toBe('BL-91')
+      await q.complete('BL-91', { receiptRef: 'reverify:neighbour' })
+
+      // ТРИ ПОПЫТКИ ВЗЯТЬ СЛЕДУЮЩУЮ, с ходом часов между ними: отложенный повтор — это
+      // задержка, а не отмена, и на любой из этих трёх попыток он бы себя показал.
+      const handed = []
+      for (let i = 0; i < 3; i += 1) {
+        handed.push(await q.claimNext('w2', {}))
+        c.advance(120000)
+      }
+      expect(handed).toEqual([null, null, null])
+
+      // И строка читается закрытой, с человеческой причиной, а не пустотой.
+      const stopped = (await q.list({})).find((r) => r.id === 'BL-90')
+      expect(stopped.status).toBe('failed')
+      expect(stopped.status).not.toBe('queued')
+      expect(stopped.failure_reason).toBe('manual')
+      expect(REASON_LABELS[stopped.failure_reason].length).toBeGreaterThan(0)
+    })
+
+    it('отмена ЖДУЩЕЙ строки убирает её из очереди — счётчик «в очереди» падает, а не висит', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-92' }))
+      expect((await q.stats()).queued).toBe(1)
+
+      expect(await q.cancelTask('BL-92')).toBe(true)
+
+      expect(await q.list({ status: 'queued' })).toHaveLength(0)
+      expect((await q.stats()).queued).toBe(0)
+    })
+
+    it('отмена ИДУЩЕЙ строки снимает её с работника — «в работе» больше её не считает', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-93' }))
+      const taken = await q.claimNext('w1', {})
+      expect(taken.id).toBe('BL-93')
+      expect((await q.stats()).claimed).toBe(1)
+
+      expect(await q.cancelTask('BL-93')).toBe(true)
+
+      expect((await q.stats()).claimed).toBe(0)
+      const stopped = (await q.list({})).find((r) => r.id === 'BL-93')
+      expect(stopped.status).toBe('failed')
+      expect(stopped.failure_reason).toBe('manual')
+    })
+
+    it('отмена задачи, которой нет, отвечает честным «нет такой», а не тишиной', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      expect(await q.cancelTask('BL-does-not-exist')).toBe(false)
+    })
+
+    it('отмена уже закрытой задачи не переписывает закрытое — что закрыто, то закрыто', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-94' }))
+      await q.claimNext('w1', {})
+      await q.complete('BL-94', { receiptRef: 'reverify:done' }) // работа кончилась, ждёт человека
+
+      expect(await q.cancelTask('BL-94')).toBe(false)
+
+      const r = (await q.list({})).find((x) => x.id === 'BL-94')
+      expect(r.status).toBe('awaiting_approval') // отмена ничего не переписала
+    })
+
+    /**
+     * ОТЛИЧИЕ ОТ ОТКАЗА УТВЕРЖДАЕТСЯ ПРЯМО, а не подразумевается соседними делами: у отказа
+     * счёт попыток растёт, потому что за отказом стоит следующая попытка. За отменой не стоит
+     * ничего — значит и счёт не двигается. Если он вырос, отмена сделана отказом.
+     */
+    it('после отмены счёт попыток НЕ растёт — этим отмена и отличается от отказа', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-95' }))
+      await q.claimNext('w1', {})
+      const before = (await q.list({})).find((r) => r.id === 'BL-95').attempt
+
+      expect(await q.cancelTask('BL-95')).toBe(true)
+
+      const after = (await q.list({})).find((r) => r.id === 'BL-95').attempt
+      expect(after).toBe(before)
     })
 
     it('a claimed task not touched within expireMs returns to queued with attempt+1', async () => {
