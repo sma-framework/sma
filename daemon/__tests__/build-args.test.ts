@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { createBuildArgs, NoWorkerForRouteError, UnknownStageError, CLAUDE_BIN, CODEX_BIN } from '../src/runner/build-args.mjs'
-import { ProfileParityError, assertProfileParity } from '../src/runner/args.mjs'
+import { ProfileParityError, assertProfileParity, buildClaudeArgs } from '../src/runner/args.mjs'
 import { DEFAULT_PIPELINE_MAX_TURNS } from '../src/config.mjs'
 import { CHAT_MAX_TURNS } from '../src/front/chat.mjs'
 
@@ -177,6 +177,40 @@ describe('buildArgs — the spec the tick spawns', () => {
   it('другой CLI своего потолка не получает — флаг принадлежит одному строителю', () => {
     const spec = build()(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
     expect(spec.args).not.toContain('--max-turns')
+  })
+
+  /**
+   * ═══════ ВОЗВРАТ ПРОДОЛЖАЕТ СЕССИЮ, ТАЙМЕР ПОЛУЧАЕТ СВЕЖУЮ ═══════
+   *
+   * Человек вернул работу с замечанием — работник обязан помнить, что делал: контекст за эту
+   * сессию уже оплачен, и начинать с нуля значит платить второй раз за то же чтение. Таймер
+   * будит задачу спустя время — и старая сессия несёт старую картину мира, которая к моменту
+   * пробуждения уже неверна.
+   *
+   * И ПРОХОДИТ ЭТО ЧЕРЕЗ СТРОИТЕЛЬ, А НЕ МИМО НЕГО. Замок «свежая сессия» стоит на входе
+   * строителя аргументов, написан, покрыт делом и зелёный — а решение о продолжении дописывалось
+   * в хвост уже собранного массива, то есть замок не накрывал единственный путь задачи вообще.
+   * Классический случай «вычислено — не значит подключено»: второго замка здесь не заводится,
+   * этот путь просто наконец идёт через первый.
+   */
+  const RESUME_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+
+  it('возврат человека несёт продолжение прошлой сессии в аргументы запуска', () => {
+    const spec = build()(task(), route(), { wakeKind: 'return', resumeId: RESUME_UUID })
+    const at = spec.args.indexOf('--resume')
+    expect(at).toBeGreaterThan(-1)
+    expect(spec.args[at + 1]).toBe(RESUME_UUID)
+  })
+
+  it('таймерное пробуждение продолжения не несёт', () => {
+    const spec = build()(task(), route(), { wakeKind: 'timer' })
+    expect(spec.args).not.toContain('--resume')
+  })
+
+  it('вид пробуждения ДОЕЗЖАЕТ до строителя: подсунутое таймеру продолжение ловит уже написанный замок', () => {
+    expect(() => build()(task(), route(), { wakeKind: 'timer', resumeId: RESUME_UUID })).toThrow(/fresh session/i)
+    // и это тот же самый замок, а не его копия: строитель бросает ту же ошибку напрямую
+    expect(() => buildClaudeArgs({ wakeKind: 'timer', resumeId: RESUME_UUID })).toThrow(/fresh session/i)
   })
 
   /**

@@ -75,6 +75,7 @@ import {
   buildCodexArgs,
   buildAccountEnv,
   buildTaskPrompt,
+  isResumableSessionId,
   buildMcpConfigFile,
   codexConfigSeed,
   ForbiddenFlagError,
@@ -148,6 +149,21 @@ describe('buildClaudeArgs (hooks-enforced lane)', () => {
       '--max-turns',
       '4',
     ])
+  })
+
+  /**
+   * ОДНА ФОРМА ИДЕНТИФИКАТОРА СЕССИИ НА ОБЕ СТОРОНЫ ПРОВОДА. Тик выбирает, какую из записанных
+   * сессий предъявить к продолжению, а строитель решает, годится ли она. Пока форму знали двое,
+   * они знали её по-разному: у тика правило было шире, и он мог подать строителю то, что тот
+   * обязан отвергнуть броском — а бросок на этом пути стоит целой попытки. Правило здесь одно,
+   * и обе стороны спрашивают его, а не помнят.
+   */
+  it('форма идентификатора сессии — одно правило, и его можно спросить до сборки', () => {
+    expect(isResumableSessionId(UUID)).toBe(true)
+    expect(isResumableSessionId('11111111222233334444555555555555')).toBe(false) // 32 знака без дефисов
+    expect(isResumableSessionId('not-a-uuid')).toBe(false)
+    expect(isResumableSessionId(null)).toBe(false)
+    expect(isResumableSessionId(undefined)).toBe(false)
   })
 
   it('fresh-session discipline — a timer/new-task wake REFUSES a resumeId (PF-4)', () => {
