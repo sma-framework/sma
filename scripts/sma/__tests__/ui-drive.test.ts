@@ -28,6 +28,9 @@ import { describe, it, expect } from 'vitest'
 import {
   BLOCKER,
   DESTRUCTIVE_RE,
+  READY_CEILING_MS,
+  READY_SETTLE_MS,
+  STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   WARNING,
   classify,
@@ -35,9 +38,13 @@ import {
   isStreamClose,
   missingDriverMessage,
   parseSteps,
+  readiness,
   renderCoverage,
   renderReceipt,
+  resolveDriveViewport,
+  sweepSparseNote,
   verdict,
+  worstOverflow,
 } from '../lib/ui-drive.mjs'
 
 describe('parseSteps', () => {
@@ -188,6 +195,77 @@ describe('the sweep — pressing everything, safely', () => {
   })
 })
 
+/**
+ * The measurement used to look at the DOCUMENT only, and a window that carries its minimum
+ * width on a container inside the page therefore measured clean at phone width while most
+ * of the screen lay past the edge. A check that is green before the fix and green after it
+ * is not a gate: it manufactures confidence. These pin the fix.
+ */
+describe('worstOverflow — the offender is found where the content is, not where the document is', () => {
+  it('finds a container wider than its own visible width, even when the document is clean', () => {
+    const worst = worstOverflow(
+      [
+        { element: 'html', scrollWidth: 375, clientWidth: 375, scrollable: false },
+        { element: 'body', scrollWidth: 375, clientWidth: 375, scrollable: false },
+        { element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: true },
+      ],
+      { viewport: 'mobile' }
+    )
+    expect(worst).toMatchObject({ element: 'div#root', scrollWidth: 1360, clientWidth: 375, viewport: 'mobile' })
+  })
+
+  it('reports the widest offender once, not every box it drags along with it', () => {
+    const worst = worstOverflow(
+      [
+        { element: 'html', scrollWidth: 900, clientWidth: 375 },
+        { element: 'div#root', scrollWidth: 1360, clientWidth: 375 },
+        { element: 'div.table', scrollWidth: 500, clientWidth: 375 },
+      ],
+      { viewport: 'mobile' }
+    )
+    expect(worst?.element).toBe('div#root')
+  })
+
+  it('says nothing at all about a page where every box fits — no false alarm', () => {
+    expect(
+      worstOverflow(
+        [
+          { element: 'html', scrollWidth: 1440, clientWidth: 1440 },
+          { element: 'div#root', scrollWidth: 1440, clientWidth: 1440 },
+          // Sub-pixel rounding is not a defect: the threshold is a whole pixel.
+          { element: 'div.card', scrollWidth: 301, clientWidth: 300 },
+        ],
+        { viewport: 'desktop' }
+      )
+    ).toBeNull()
+  })
+
+  it('does not judge a box that has no visible width to be wider than', () => {
+    expect(worstOverflow([{ element: 'head', scrollWidth: 0, clientWidth: 0 }], { viewport: 'mobile' })).toBeNull()
+  })
+
+  it('names the element and how much lies past the edge, so the finding can be acted on', () => {
+    const f = classify({
+      overflows: [{ element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: true, viewport: 'mobile' }],
+    })
+    expect(f[0].severity).toBe(BLOCKER)
+    expect(f[0].detail).toContain('div#root')
+    expect(f[0].detail).toContain('985px')
+    expect(f[0].detail).toContain('mobile')
+  })
+
+  it('tells apart content reached by dragging and content that cannot be reached at all', () => {
+    const scrolls = classify({
+      overflows: [{ element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: true, viewport: 'mobile' }],
+    })
+    const clipped = classify({
+      overflows: [{ element: 'div#root', scrollWidth: 1360, clientWidth: 375, scrollable: false, viewport: 'mobile' }],
+    })
+    expect(scrolls[0].detail).toContain('dragging')
+    expect(clipped[0].detail).toContain('cannot be reached at all')
+  })
+})
+
 describe('renderCoverage — the denominator is never hidden', () => {
   it('names what it did not reach rather than reporting only what it touched', () => {
     const md = renderCoverage({ ran: true, touched: SWEEP_CAP, total: 60, skipped: 18, refused: ['Удалить'] })
@@ -207,11 +285,195 @@ describe('renderCoverage — the denominator is never hidden', () => {
     expect(renderCoverage({ ran: true, touched: 12, total: 12, skipped: 0, refused: [] })).toContain('Nothing was left untouched')
   })
 
+  it('records the width the path was walked at, when the operator declared one', () => {
+    const md = renderCoverage({
+      ran: true,
+      touched: 5,
+      total: 5,
+      skipped: 0,
+      refused: [],
+      pathViewport: { name: 'mobile', width: 375, height: 812 },
+    })
+    expect(md).toContain('walked at')
+    expect(md).toContain('mobile (375×812)')
+  })
+
+  it('says nothing about the path width when none was declared — the default receipt is unchanged', () => {
+    expect(renderCoverage({ ran: true, touched: 5, total: 5, skipped: 0, refused: [] })).not.toContain('walked at')
+    expect(renderCoverage({ ran: false })).not.toContain('walked at')
+  })
+
   it('names viewports skipped by a declared minimum width — a waiver is visible, never silent', () => {
     const md = renderCoverage({ ran: true, touched: 5, total: 5, skipped: 0, refused: [], viewportsSkipped: ['tablet (768px)', 'mobile (375px)'] })
     expect(md).toContain('declares a minimum width')
     expect(md).toContain('tablet (768px)')
     expect(md).toContain('nothing about narrower screens')
+  })
+})
+
+/**
+ * A claim about a narrow screen has to be walked on a narrow screen. The path and the sweep
+ * used to be nailed to the desktop, so a run could open the phone, measure it, and then walk
+ * the path somewhere else entirely — and the receipt said nothing about the difference.
+ */
+/**
+ * READINESS. A run used to open a page, wait for the first ink plus 400 ms, and measure. On
+ * a window whose first answer takes sixteen seconds that is an empty page: «no overflow»
+ * was then true because there was nothing to overflow, and the sweep collected its whole
+ * list of controls before the screen existed — one real run reported «1 of 1 · nothing was
+ * left untouched» on a screen holding about two dozen of them. Both numbers read like
+ * results. Neither was about the app.
+ */
+describe('readiness — a page is measured when it has stopped changing, not when it first blinks', () => {
+  const sample = (at: number, signature: string, ink = true) => ({ at, signature, ink })
+
+  it('calls a page ready once what it shows has held still long enough', () => {
+    const r = readiness([sample(0, 'a'), sample(250, 'a'), sample(500, 'a'), sample(1000, 'a')])
+    expect(r.ready).toBe(true)
+    expect(r.heldMs).toBeGreaterThanOrEqual(READY_SETTLE_MS)
+    expect(r.reason).toBe('')
+  })
+
+  it('refuses a page that is still growing, and says how briefly it held still', () => {
+    const r = readiness([sample(0, '10:20'), sample(250, '40:300'), sample(500, '210:1800')])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('held still for only')
+  })
+
+  it('refuses a painted-nothing page even when it has been unchanged for ages — an empty page changes least of all', () => {
+    const r = readiness([sample(0, '3:0', false), sample(2000, '3:0', false), sample(4000, '3:0', false)])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('nothing was painted')
+  })
+
+  it('is not ready when nothing was sampled at all, instead of assuming the best', () => {
+    const r = readiness([])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('never sampled')
+  })
+
+  it('a page that came alive late is ready — it is the stillness that counts, not the wait', () => {
+    const r = readiness([sample(0, '3:0', false), sample(8000, '900:4200'), sample(9000, '900:4200'), sample(9600, '900:4200')])
+    expect(r.ready).toBe(true)
+    expect(r.waitedMs).toBe(9600)
+  })
+
+  /**
+   * The case that made stillness alone insufficient, and it was measured rather than argued:
+   * on the window this was written for the shell paints one control and then holds perfectly
+   * still for thirty-one seconds while its first state call runs. Read as ready, that skeleton
+   * hands back «1 of 1, nothing left untouched» for a screen that turned out to carry sixteen
+   * controls. So a page still waiting on a call of its own is not ready, however still it is.
+   */
+  it('refuses a skeleton that holds still while it is still waiting on its own call', () => {
+    const r = readiness([
+      { at: 0, signature: '26:139', ink: true, pending: 1 },
+      { at: 4000, signature: '26:139', ink: true, pending: 1 },
+      { at: 8000, signature: '26:139', ink: true, pending: 1 },
+    ])
+    expect(r.ready).toBe(false)
+    expect(r.reason).toContain('still waiting on 1 call')
+  })
+
+  it('calls the same page ready the moment its answer arrives and the picture settles', () => {
+    const r = readiness([
+      { at: 0, signature: '26:139', ink: true, pending: 1 },
+      { at: 31000, signature: '76:872', ink: true, pending: 0 },
+      { at: 32250, signature: '76:872', ink: true, pending: 0 },
+    ])
+    expect(r.ready).toBe(true)
+  })
+
+  it('a channel is told apart by KIND, never by how long it has been open', () => {
+    expect(STREAM_RESOURCE_TYPES).toContain('eventsource')
+    expect(STREAM_RESOURCE_TYPES).toContain('websocket')
+    // Measured, not preferred: the door of the window this was written for grew from sixteen
+    // seconds to forty-six in one afternoon. Any fixed «open this long means it is a channel»
+    // number is eventually overtaken by an honest answer, and the sweep goes back to measuring
+    // a skeleton. The ceiling — the one number left — must be able to outlast such a door.
+    expect(READY_CEILING_MS).toBeGreaterThan(60000)
+  })
+
+  it('a page that never settled is a BLOCKING finding that names where and how long — never a quiet pass', () => {
+    const findings = classify({
+      notSettled: [{ where: 'mobile (375px)', waitedMs: 25000, reason: 'after 25000 ms what the page shows had held still for only 250 ms' }],
+    })
+    const f = findings.find((x: { kind: string }) => x.kind === 'page-not-settled')
+    expect(f?.severity).toBe(BLOCKER)
+    expect(f?.detail).toContain('mobile (375px)')
+    expect(f?.detail).toContain('25s')
+    expect(f?.detail).toContain('still loading')
+    expect(verdict(findings, { ran: true })).toMatchObject({ status: 'FAIL', exitCode: 1 })
+  })
+
+  it('a settled page adds nothing — the receipt of a healthy run is unchanged', () => {
+    expect(classify({ notSettled: [] })).toEqual([])
+  })
+})
+
+describe('the sweep denominator — thin coverage may not wear the shape of full coverage', () => {
+  it('names a page where a single control was found, instead of reporting 1 of 1', () => {
+    const note = sweepSparseNote(1)
+    expect(note).toContain('Only 1 interactive control')
+    expect(note).toContain('nearly none')
+  })
+
+  it('says plainly when nothing at all was found — an empty denominator is not a complete one', () => {
+    expect(sweepSparseNote(0)).toContain('says nothing about the surface')
+  })
+
+  it('stays silent on an ordinary page — this is a warning, not a running commentary', () => {
+    expect(sweepSparseNote(2)).toBe('')
+    expect(sweepSparseNote(26)).toBe('')
+  })
+
+  it('the coverage carrying a thin denominator prints it and drops the claim of completeness', () => {
+    const md = renderCoverage({ ran: true, touched: 1, total: 1, skipped: 0, refused: [], sparse: sweepSparseNote(1) })
+    expect(md).toContain('pressed: **1 of 1**')
+    expect(md).toContain('Only 1 interactive control')
+    expect(md).not.toContain('Nothing was left untouched')
+  })
+
+  it('a control that left the screen before its turn is counted and named, not called dead', () => {
+    const md = renderCoverage({
+      ran: true,
+      touched: 17,
+      total: 20,
+      skipped: 0,
+      refused: [],
+      vanished: ['(a control that was on the screen when the list was made)', '(another)'],
+    })
+    expect(md).toContain('2 were gone before their turn')
+    expect(md).toContain('says nothing about them')
+    expect(md).not.toContain('Nothing was left untouched')
+  })
+
+  it('a full sweep still says nothing was left untouched — the old receipt is not disturbed', () => {
+    const md = renderCoverage({ ran: true, touched: 26, total: 26, skipped: 0, refused: [] })
+    expect(md).toContain('Nothing was left untouched.')
+  })
+})
+
+describe('resolveDriveViewport — the path may be walked only where the run already measures', () => {
+  it('gives the phone its frozen size', () => {
+    expect(resolveDriveViewport('mobile')).toMatchObject({ ok: true, viewport: { name: 'mobile', width: 375, height: 812 } })
+    expect(resolveDriveViewport('desktop')).toMatchObject({ ok: true, viewport: { width: 1440, height: 900 } })
+  })
+
+  it('refuses an unknown name and NAMES what would have been accepted', () => {
+    const r = resolveDriveViewport('phone')
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('phone')
+    expect(r.reason).toContain('mobile (375px)')
+    expect(r.reason).toContain('desktop (1440px)')
+  })
+
+  it('refuses a missing value rather than quietly walking somewhere else', () => {
+    for (const bad of [undefined, '', '   ', '375']) {
+      const r = resolveDriveViewport(bad as string)
+      expect(r.ok, `${String(bad)} must be refused`).toBe(false)
+      expect(r.reason).toContain('mobile (375px)')
+    }
   })
 })
 
