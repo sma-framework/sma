@@ -226,8 +226,14 @@ function Digest({ digest }: { digest: AttemptDigest }) {
             {digest.toolsMore ? ` … и ещё ${digest.toolsMore}` : ''}
           </DigestRow>
         ) : null}
+        {/* НЕ ИСТИНА, А ДОПОЛНЕНИЕ. Этот список собран по ИМЕНАМ ИНСТРУМЕНТОВ, и правку,
+            сделанную командой оболочки (`rm`, `sed -i`, `git rm`), он не видит по
+            конструкции — измерено: восемь путей из git против нуля здесь на одной и той же
+            попытке. Истина про изменённые файлы стоит на карточке подхода и берётся из
+            ответа git; подпись здесь названа честно, чтобы список перестал выдавать себя
+            за неё. */}
         {digest.filesChanged.length ? (
-          <DigestRow label="изменил">
+          <DigestRow label={`инструментами правки: ${digest.filesChanged.length}`}>
             <span title={digest.filesChanged.join('\n')}>{files(digest.filesChanged, digest.filesChangedMore)}</span>
           </DigestRow>
         ) : null}

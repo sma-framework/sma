@@ -382,7 +382,10 @@ function proofItems(attempt: TaskAttempt | null): { items: ColumnItem[]; meta: s
   const checks = receiptChecks(attempt?.receipt)
   const proof = receiptProofLabel(attempt?.proof)
   const items: ColumnItem[] = checks.map((c) => ({ text: c.text, mark: c.ok ? 'ok' : 'fail' }))
-  if (proof) items.push({ text: proof, mark: 'ok' })
+  // «Не перепроверено» — НЕ галочка. Гейт, открывшийся без квитанции, оставляет доказательство
+  // с оговоркой, и рисовать его тем же знаком, что и перепроверенную ветку, значило бы вернуть
+  // ровно ту ложь, ради которой оговорка и доезжает до экрана: это ждёт человека.
+  if (proof) items.push({ text: proof, mark: attempt?.proof?.unverified ? 'ask' : 'ok' })
   if (checks.length > 0) {
     const passed = checks.filter((c) => c.ok).length
     return { items, meta: `${passed} из ${checks.length}`, metaTone: passed === checks.length ? 'text-ok-tx' : 'text-warn-tx' }
@@ -1024,6 +1027,10 @@ export function Screen() {
                 returnedNotes={detail.data?.returnedNotes ?? []}
                 taskId={taskId}
                 memoryTrace={detail.data?.journal?.memoryTrace ?? null}
+                /* Коммит слияния приёмки — то, чем ПРИНЯТАЯ работа отменяется одной
+                   командой. Дверь проверила его по форме перед выдачей; здесь он только
+                   передаётся дальше и ни во что не собирается. */
+                merge={{ sha: task?.mergeSha ?? null, repo: task?.mergeRepo ?? null }}
               />
 
               {returning ? (
