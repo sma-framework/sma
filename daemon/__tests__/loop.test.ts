@@ -5259,3 +5259,64 @@ describe('оставшиеся билеты попытки закрываютс�
     expect(readWaitingTicket({ runDir, clock: clock.clock })).toBe(null)
   })
 })
+
+/**
+ * ═══ ПРОВОД: ТИК ОТДАЁТ РЕЕСТР РУЧЕК СТОРОЖУ ЖИВОСТИ ════════════════════════════════════════
+ *
+ * ЗДЕСЬ И РВАЛАСЬ СВЯЗЬ. Сторож живости зовёт ровно один вызов во всём продукте — вот этот,
+ * шагом (1) тика. Сколько бы кода ни было написано в самом стороже, без реестра ручек В ЭТОМ
+ * ВЫЗОВЕ он остаётся вычисленным и никуда не подключённым: объявляет смерть, перевыдаёт задачу
+ * и не может тронуть живого ребёнка, потому что ручки ему не дали.
+ *
+ * ПОЭТОМУ ДЕЛО УТВЕРЖДАЕТ ПЕРЕДАЧУ, А НЕ НАЛИЧИЕ. Не «реестр где-то есть», а «в аргументы
+ * подметания приехал ТОТ САМЫЙ объект из зависимостей цикла» — и наблюдается это тем, что
+ * остановку дёрнули на нём самом.
+ */
+describe('тик отдаёт реестр ручек сторожу живости', () => {
+  it('hands the kill-handle registry to the liveness sweep — и это тот самый объект из зависимостей цикла', async () => {
+    const c = mkClock()
+    // Срок у самой очереди намеренно ДЛИННЫЙ, а у подметания короткий: у памятной очереди есть
+    // собственное истечение аренды, и с равными сроками она вернула бы строку в очередь сама —
+    // сторожу было бы нечего находить, и дело доказывало бы не провод, а её внутреннюю уборку.
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 10_000_000 })
+    await adapter.enqueue(backlogTask())
+    await adapter.claimNext('daemon', {}) // задача у работника, аренда взята
+
+    const seen: any[] = []
+    const attemptTurns = {
+      stop(taskId: string) {
+        seen.push({ taskId, self: this })
+        return true
+      },
+    }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      // ОДИН И ТОТ ЖЕ срок у аренды и у подметания: две величины на один вопрос не спорят
+      config: { expireMs: 300000 },
+      deps: { attemptTurns },
+    })
+    c.advance(500000) // работник замолчал — аренда протухла
+
+    await tick(deps)
+
+    expect(seen, 'реестр ручек не доехал до аргументов подметания живости').toHaveLength(1)
+    expect(seen[0].taskId).toBe('BL-1')
+    expect(seen[0].self, 'подметанию достался ДРУГОЙ реестр, а не тот, что лежит в зависимостях цикла').toBe(attemptTurns)
+  })
+
+  it('тик без реестра подметает как прежде — коллаборатор необязателен, как и журнал', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 10_000_000 }) // см. оговорку выше
+    await adapter.enqueue(backlogTask())
+    await adapter.claimNext('daemon', {})
+
+    const { deps, journalled } = makeDeps({ adapter, clockObj: c, config: { expireMs: 300000 } })
+    c.advance(500000)
+
+    const res = await tick(deps)
+
+    expect(res.sweep.requeued).toBe(1) // задача перевыдана и без всякой ручки
+    expect(journalled.some((e: any) => e.type === 'sweep-error')).toBe(false)
+  })
+})
