@@ -44,6 +44,7 @@ import {
   readManagedBlock,
   snapshotSchemaOk,
   writeBadgeToReadmes,
+  resolveWorkingTreeRoot,
 } from '../lib/passport.mjs'
 
 let calibrationDir: string
@@ -511,5 +512,34 @@ describe('Test 11 — the rebuilt badge reaches EVERY README, and the passport s
       expect(text).toContain('counts only what this repository can reproduce')
       expect(text).toContain('never copied here')
     }
+  })
+})
+
+describe('Test 12 — the passport documents are written into the working tree the command ran in', () => {
+  // Found by running the rebuild, not by reading it. The shared state root deliberately points
+  // at the MAIN checkout so every linked working tree coordinates through one set of claims and
+  // sessions — correct for state, wrong for documents: deriving the document root from it made
+  // a rebuild launched inside a linked working tree silently edit the main checkout's passport
+  // and readmes, and leave its own untouched. State is shared on purpose; documents belong to
+  // the tree you are standing in.
+  it('a linked working tree gets its OWN documents, never the main checkout files', () => {
+    expect(
+      resolveWorkingTreeRoot({
+        gitToplevelFn: () => 'C:/projects/product-green',
+        fallbackRoot: 'C:/projects/product',
+      }),
+    ).toBe('C:/projects/product-green')
+  })
+
+  it('falls back to the shared state root when git cannot answer — never throws, never guesses', () => {
+    const boom = () => {
+      throw new Error('not a git repository')
+    }
+    expect(resolveWorkingTreeRoot({ gitToplevelFn: boom, fallbackRoot: 'C:/projects/product' })).toBe(
+      'C:/projects/product',
+    )
+    expect(resolveWorkingTreeRoot({ gitToplevelFn: () => '   ', fallbackRoot: 'C:/projects/product' })).toBe(
+      'C:/projects/product',
+    )
   })
 })
