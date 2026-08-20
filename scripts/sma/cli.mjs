@@ -11075,19 +11075,17 @@ async function cmdMerge({ positionals, flags, dirs }) {
   } catch {
     mainRoot = dirname(dirs.smaRoot) || process.cwd()
   }
-  // targeted-test runner ON THE MERGE RESULT — the merge-gate suite as the smoke (never the full suite).
-  const runTests = () => {
-    try {
-      execFileSync('pnpm', ['vitest', 'run', 'scripts/sma/__tests__/merge-gate.test.ts'], { cwd: mainRoot, encoding: 'utf8', stdio: 'ignore' })
-      return { passed: true }
-    } catch {
-      return { passed: false }
-    }
-  }
+  // THE SMOKE — the SAME runner the daemon's approval door is wired with, not a second copy
+  // of one. It used to be a closure right here, which is why the door had none: a body that
+  // lives inside a verb cannot be reached from the composition root. It also used to launch
+  // the package manager by command name, which on this platform is a wrapper script no plain
+  // file launch can see — so it answered «red» without running a single test. Both are gone:
+  // one module, launched through the interpreter, three answers instead of two.
+  const { runMergeSmoke } = await import('./lib/merge-smoke.mjs')
   // AWAITED, and the cost of forgetting it is named where it would be forgotten: without the
   // await neither `ok` nor `merged` is readable on a promise, and this verb would print
   // «влит в main ЛОКАЛЬНО» and return ZERO — a quiet lie about a merge it never read.
-  const res = await mg.runMerge({ branch, by, execGit, runTests, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir, cwd: mainRoot })
+  const res = await mg.runMerge({ branch, by, execGit, runTests: runMergeSmoke, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir, cwd: mainRoot })
   if (wantsJson(flags)) {
     printJson(res)
     return res.merged && res.testsPassed !== false ? 0 : 1
