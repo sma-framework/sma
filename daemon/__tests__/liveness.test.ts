@@ -307,7 +307,7 @@ describe('сторож смерти пишет строку на каждую о
     expect(lines[0].cooldownMs).toBe(computeCooldownMs(3)) // назначенное остывание
   })
 
-  it('строка сторожа говорит, что он ОБЪЯВИЛ и ПЕРЕВЫДАЛ, а не убил — читатель не ищет несуществующего убийства', async () => {
+  it('строка объявления не утверждает убийства — что стало с процессом, говорит ОТДЕЛЬНАЯ строка', async () => {
     const c = mkClock(1000)
     const ledger = makeFakeLedger()
     const adapter = makeFakeAdapter({ clock: c.clock, ledger })
@@ -405,5 +405,177 @@ describe('сторож смерти пишет строку на каждую о
       livenessSweep({ adapter: throwing, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) }),
     ).rejects.toThrow()
     expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(1)
+  })
+})
+
+/**
+ * ═══ СТОРОЖ УБИВАЕТ, А НЕ ТОЛЬКО ОБЪЯВЛЯЕТ ══════════════════════════════════════════════════
+ *
+ * ПОВОД. «Мёртвая» попытка до сих пор означала только строку в базе: сторож объявлял смерть,
+ * возвращал задачу в очередь и НЕ ТРОГАЛ процесс. Живой ребёнок оставался за спиной закрытой
+ * строки, следующий тик заводил ещё одну попытку той же задачи — и параллельные процессы жгли
+ * подписку, каждый считая себя единственным.
+ *
+ * ЧТО УТВЕРЖДАЕТСЯ ЗДЕСЬ. Не «функция умеет звать остановку», а ПОРЯДОК и ЧЕСТНОСТЬ:
+ *   - остановка ребёнка случается РАНЬШЕ перевыдачи задачи (утверждается общей лентой вызовов,
+ *     а не двумя счётчиками: два счётчика доказали бы только то, что оба вызова были);
+ *   - «убили» и «убивать было нечем» — РАЗНЫЕ строки журнала, и вторая никогда не выдаёт себя
+ *     за первую;
+ *   - реестр ручек — коллаборатор, ровно как журнал: демон, собранный без него, подметает как
+ *     прежде, и сломанная остановка не стоит задаче ничего.
+ *
+ * Реестра живых процессов сам сторож не заводит — это его собственный закон из шапки, и куплен
+ * он тем, что демон обязан быть убиваем на любой строке.
+ */
+describe('сторож живости останавливает ребёнка чужой ручкой', () => {
+  /** Минимальная подделка реестра ручек: одна остановка, пишущая в общую ленту. */
+  const makeTurns = (answer: any, tape: string[]) => ({
+    stop(taskId: string) {
+      tape.push(`turns.stop(${taskId})`)
+      if (typeof answer === 'function') return answer(taskId)
+      return answer
+    },
+  })
+
+  /** Тот же адаптер, но его перевыдача пишет в ТУ ЖЕ ленту — порядок виден как порядок. */
+  const taping = (adapter: any, tape: string[]) => ({
+    ...adapter,
+    async fail(id: string, reason: string) {
+      tape.push(`adapter.fail(${id})`)
+      return adapter.fail(id, reason)
+    },
+  })
+
+  const staleSeed = (clock: () => number, ledger: any) => {
+    const adapter = makeFakeAdapter({ clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    return adapter
+  }
+
+  it('stops the child BEFORE the reissue — порядок утверждается общей лентой вызовов', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const tape: string[] = []
+    const adapter = taping(staleSeed(c.clock, ledger), tape)
+    c.advance(500000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      attemptTurns: makeTurns(true, tape),
+    })
+
+    expect(res.requeued).toBe(1)
+    // ЛЕНТА, А НЕ ДВА СЧЁТЧИКА: мина именно в последовательности. Строка, помеченная закрытой
+    // раньше, чем умер процесс, оставляет живого ребёнка без хозяина.
+    expect(tape).toEqual(['turns.stop(BL-1)', 'adapter.fail(BL-1)'])
+  })
+
+  it('ручка была — в журнале строка про убийство, и она стоит ДО перевыдачи', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleSeed(c.clock, ledger)
+    c.advance(500000)
+    const journal: any[] = []
+
+    await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: makeTurns(true, []),
+    })
+
+    const killed = journal.filter((e) => e.type === 'liveness.attempt_killed')
+    expect(killed, 'убийство снова осталось событием без записи').toHaveLength(1)
+    expect(killed[0]).toMatchObject({ taskId: 'BL-1', attempt: 1, killed: true })
+    expect(journal.filter((e) => e.type === 'liveness.attempt_orphaned')).toHaveLength(0)
+    // объявление смерти — раньше исхода остановки, исход — раньше перевыдачи
+    const types = journal.map((e) => e.type)
+    expect(types.indexOf('liveness.attempt_dead')).toBeLessThan(types.indexOf('liveness.attempt_killed'))
+  })
+
+  it('ручки нет — строка про orphaned, и строки про убийство НЕТ (вторая ветка не выдаёт себя за первую)', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleSeed(c.clock, ledger)
+    c.advance(500000)
+    const journal: any[] = []
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: makeTurns(false, []),
+    })
+
+    expect(res.requeued).toBe(1) // задача всё равно перевыдана
+    const orphaned = journal.filter((e) => e.type === 'liveness.attempt_orphaned')
+    expect(orphaned).toHaveLength(1)
+    expect(orphaned[0]).toMatchObject({ taskId: 'BL-1', killed: false })
+    expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(0)
+    expect(String(orphaned[0].detail)).not.toContain('убит')
+  })
+
+  it('реестр не подан вовсе — подметание работает как прежде, ни одной новой строки', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleSeed(c.clock, ledger)
+    c.advance(500000)
+    const journal: any[] = []
+
+    const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
+
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0 })
+    expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(0)
+    expect(journal.filter((e) => e.type === 'liveness.attempt_orphaned')).toHaveLength(0)
+    expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(1)
+  })
+
+  it('остановка бросила исключение — подметание не упало, задача всё равно перевыдана', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleSeed(c.clock, ledger)
+    c.advance(500000)
+    const journal: any[] = []
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: {
+        stop() {
+          throw new Error('реестр ручек недоступен')
+        },
+      },
+    })
+
+    expect(res.requeued).toBe(1)
+    const [row] = await adapter.list()
+    expect(row.status).toBe('queued')
+    // и НИ ОДНОГО утверждения об исходе: что стало с процессом — неизвестно, а выдумывать
+    // «убили» или «нечего убивать» значило бы соврать в обе стороны сразу.
+    expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(0)
+    expect(journal.filter((e) => e.type === 'liveness.attempt_orphaned')).toHaveLength(0)
+  })
+
+  it('живая попытка ручку не дёргает вовсе — сторож не трогает того, кто отвечает', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-fresh', leaseRenewedAt: 1000 }))
+    c.advance(60000) // < expireMs
+    const tape: string[] = []
+
+    await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, attemptTurns: makeTurns(true, tape) })
+
+    expect(tape).toEqual([])
   })
 })
