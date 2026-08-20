@@ -397,7 +397,7 @@ function answerReceipt(attemptId) {
 }
 
 /**
- * answerOnlyGate(deps, config, task, branch, workDir, noteWritten) → {receiptRef} when this
+ * answerOnlyGate(deps, task, branch, workDir, noteWritten, base) → {receiptRef} when this
  * attempt is an ANSWER — it changed nothing whatsoever and explained itself — or null when
  * it is not, and the caller's own gate decides.
  *
@@ -411,39 +411,59 @@ function answerReceipt(attemptId) {
  * that TOUCHED THE REPOSITORY. So this gate opens only when the attempt provably touched
  * nothing, and it asks git twice, never the worker:
  *
- *   1. ZERO COMMITS on the task branch beyond the base the worktree was cut from. The base
- *      is the main checkout's HEAD — the same anchor `worktree provision` captured as
- *      EXPECTED_BASE, and the daemon never commits there while a task runs.
+ *   1. ZERO COMMITS on the task branch beyond the base the worktree was cut from — the same
+ *      anchor `worktree provision` captured as EXPECTED_BASE, handed in by the caller that
+ *      already wrote it into the attempt's own journal line. Not the tip of anything else:
+ *      see below for what asking anything else cost.
  *   2. A CLEAN worktree. Files edited and left uncommitted are unfinished code work, not an
  *      answer; that attempt keeps failing exactly as it does today.
  *
- * Both questions fail SAFE: no git surface, a throw, a count that is not a plain zero, or a
- * single dirty line, and the answer is null — the attempt falls through to the code gate and
- * the old outcome stands. The only way through this door is a repository that cannot tell the
- * attempt ever happened.
+ * Both questions fail SAFE: no git surface, no base, a throw, a count that is not a plain
+ * zero, or a single dirty line, and the answer is null — the attempt falls through to the code
+ * gate and the old outcome stands. The only way through this door is a repository that cannot
+ * tell the attempt ever happened. A refusal for want of a base is SAID OUT LOUD in the
+ * operator's log, because a door that closes without a word is how the miss below spent hours
+ * looking like a worker who left no receipt.
  *
  * THE NOTE IS REQUIRED, exactly as everywhere else. An answer nobody wrote down is not an
  * answer, and the note IS the artefact here — the receipt names the attempt whose journal
  * holds it, so what the founder acknowledges on the card is the worker's own words.
  */
-function answerOnlyGate(deps, config, task, branch, workDir, noteWritten) {
+function answerOnlyGate(deps, task, branch, workDir, noteWritten, base) {
   if (!noteWritten) return null
   if (typeof deps.execGit !== 'function') return null
 
-  // WHICH TREE HOLDS THE TASK BRANCH. The count has to run where `wt/<taskId>` exists — the
-  // CONNECTED project, the same tree the worktree was cut from. `config.repoDir` is the
-  // daemon's launch directory, and on an install serving one repository while the founder
-  // works in another the branch is simply not there: git exits non-zero, the catch below
-  // answers null, and a task that correctly touched no code fell through to the CODE gate and
-  // went red with «нет квитанции» — the exact outcome this gate exists to remove.
-  const countDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
-  let commits
-  try {
-    commits = String(deps.execGit(['rev-list', '--count', branch, '^HEAD'], { cwd: countDir }) || '').trim()
-  } catch {
+  // WHERE THE COUNT STARTS, and this line is the whole defect this gate once carried. The
+  // question is «did this attempt put anything on the branch», and ONLY the point the copy was
+  // cut from can answer it. The count used to be taken against the tip of whatever project was
+  // connected instead — «commits this branch has that HEAD over there does not». On 19.08.2026
+  // the copy had been cut from one branch while the project stood on another, TEN commits
+  // apart: an attempt that touched nothing was told it had produced ten, the door shut, and a
+  // finished answer went out as «нет квитанции» and was re-run for nothing. On the next run the
+  // two points coincided and it «did not reproduce» — a hint about the cause, not a repair.
+  // The header above always named the right anchor; it was the code that disagreed with it.
+  //
+  // THE OLDER LESSON IS KEPT, because it cost a live run too. Before that the count ran in the
+  // daemon's LAUNCH directory, where `wt/<taskId>` is not a revision at all on an install that
+  // serves one repository while the founder works in another: git exited non-zero, the fail-
+  // safe answered null, and again a codeless task went red. Asking the COPY's own tree ends
+  // both stories at once — the branch is checked out there, and the work happened there.
+  if (!base) {
+    // NEVER SILENT. This is the refusal that looked like an absent receipt for hours, so it now
+    // says which of the two things happened: nobody could name the point to count from.
+    writeLog(deps, {
+      type: 'task.answer_gate_closed',
+      taskId: task.id,
+      reason: 'unknown_base',
+      detail:
+        `база копии неизвестна — считать не от чего, дверь ответа закрыта, попытку решает гейт кода ` +
+        `(ветка=${branch || 'нет'} дерево=${workDir || 'нет'})`,
+    })
     return null
   }
-  if (commits !== '0') return null
+  // The counter that already exists in this file, told to answer «I cannot say» rather than
+  // «zero» — for THIS door an unknown must never read as «the attempt is provably empty».
+  if (countCommitsOnBranch(deps, base, workDir, { unknownAs: null }) !== 0) return null
 
   let dirty
   try {
@@ -596,22 +616,32 @@ export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, 
 }
 
 /**
- * countCommitsOnBranch(deps, base, cwd) → how many commits the attempt put on top of the
- * base the worktree was cut from. The measurable answer to «did anything actually happen»,
- * used where a repository can hand back no receipt of its own.
+ * countCommitsOnBranch(deps, base, cwd, {unknownAs}) → how many commits the attempt put on top
+ * of the base the worktree was cut from, or `unknownAs` when that cannot be established at all.
+ * The measurable answer to «did anything actually happen», used by every door that has to
+ * decide without a receipt of the repository's own.
  *
- * FAIL-CLOSED, deliberately: no base, no git seam, an unparseable count or a throw all
- * answer 0. This number is the only thing standing between «finished work with no proof»
+ * FAIL-CLOSED BY DEFAULT, deliberately: no base, no git seam, an unparseable count or a throw
+ * all answer 0. This number is the only thing standing between «finished work with no proof»
  * and «nothing happened», so an unknown must read as nothing rather than as something.
+ *
+ * WHY THE UNKNOWN IS A PARAMETER AND NOT A CONSTANT. Two doors read this count and they fail in
+ * OPPOSITE directions, so one hard-wired answer would have to be unsafe for one of them. The
+ * receiptless door asks «is there work here to send to a person» — an unknown must read as 0,
+ * or an attempt that produced nothing gets carried through as work. The ANSWER door asks the
+ * mirror question, «is this attempt PROVABLY empty» — there a git that could not answer must
+ * never be heard as «yes, empty», because that is the door to completed. Each caller states
+ * its own reading, and neither has to keep a second counter of its own.
  */
-function countCommitsOnBranch(deps, base, cwd) {
-  if (!base || typeof deps.execGit !== 'function' || !cwd) return 0
+function countCommitsOnBranch(deps, base, cwd, { unknownAs = 0 } = {}) {
+  if (!base || typeof deps.execGit !== 'function' || !cwd) return unknownAs
   try {
     const out = String(deps.execGit(['rev-list', '--count', `${base}..HEAD`], { cwd }) || '').trim()
     const n = Number.parseInt(out, 10)
-    return Number.isFinite(n) && n > 0 ? n : 0
+    if (!Number.isFinite(n)) return unknownAs
+    return n > 0 ? n : 0
   } catch {
-    return 0
+    return unknownAs
   }
 }
 
@@ -3277,7 +3307,10 @@ export async function tick(deps = {}) {
       // кода завершается ответом моим что принято к сведению, в аппрувале». Completing on
       // the answer receipt parks the row in `awaiting_approval`, where the screen renders
       // the worker's note as a card to acknowledge — instead of the red row this used to be.
-      const answered = infraReason ? null : answerOnlyGate(deps, config, task, branch, workDir, noteWritten)
+      // The base travels in: the SAME value already written into this attempt's journal line
+      // and already read by the two gates below, so the three can never come to disagree about
+      // the point this attempt started from.
+      const answered = infraReason ? null : answerOnlyGate(deps, task, branch, workDir, noteWritten, worktreeBase)
       if (answered && worktreeRow && worktreeRow.run) worktreeRow.run.gate = 'answer'
       if (answered && !lessonOk) {
         // AN ANSWER OWES A LESSON TOO — and it is refused BY NAME here rather than left to

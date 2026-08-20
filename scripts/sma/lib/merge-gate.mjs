@@ -6,14 +6,41 @@
  *
  * A worktree branch enters `main` ONLY through `runMerge`, under a
  * merge-claim slot, IN ORDER:
- *   1. acquire the `merge-in-progress` slot  (a concurrent merge -> SOFT-deny + override)
- *   2. merge the branch into main LOCALLY    (mock/real execGit — NEVER a push, NEVER a deploy)
- *   3. run targeted tests on the MERGE RESULT (the injected runTests, not either branch alone)
- *   4. journal a receipt                      (branch, result-sha, tests pass OR fail — honestly)
- *   5. release the slot
+ *   1. acquire the `merge-in-progress` slot   (a concurrent merge -> SOFT-deny + override)
+ *   2. bring the branch into the WORKING TREE WITHOUT COMMITTING IT
+ *                                             (`merge --no-ff --no-commit`; mock/real execGit —
+ *                                              NEVER a push, NEVER a deploy)
+ *   3. ask whether there was anything to bring at all (`rev-parse -q --verify MERGE_HEAD`).
+ *      Nothing to bring is SAID, never dressed up as a run that happened.
+ *   4. run the injected tests ON THE MERGED WORKING TREE. There is no result sha at this
+ *      step BY DESIGN — no merge commit exists yet — so the runner is handed the TREE and
+ *      an explicit null, never yesterday's sha quietly passed along.
+ *   5. DECIDE, and only now touch history:
+ *        red run   -> `git merge --abort`, a REFUSAL receipt, {merged:false}. The branch tip
+ *                     never moved: there is nothing to revert, because nothing happened.
+ *        green run, or no run at all
+ *                  -> `git commit --no-edit`, and THAT is when the merge commit — and its
+ *                     sha — comes into existence.
+ *   6. journal the receipt (merged OR refused — honestly) and release the slot.
+ *
+ * THE ORDER IS THE WHOLE POINT. It used to be the other way round: the merge was committed
+ * first and the tests were run on it afterwards, and there was no undo branch anywhere in
+ * this file. A gate whose worst outcome is «merged anyway, and the tests were red» is not a
+ * gate, it is a report written after the fact.
+ *
+ * TWO PRICES OF THAT ORDER, said out loud because neither of them is free:
+ *   - THE HALF-MERGED WINDOW IS NOW LONG. On the command-line path the ritual runs in the
+ *     SHARED checkout root, and between step 2 and step 5 there now lies an entire test run.
+ *     For all of that time the shared tree stands with an UNCOMMITTED merge inside it while
+ *     neighbouring terminals work in that same tree. Narrowing the run down to a small target
+ *     is separate work; the cost is named here rather than left for whoever meets it.
+ *   - AN UNDO THAT ITSELF FAILED MUST SAY SO. When `merge --abort` throws, the answer states
+ *     that the tree was LEFT in an unfinished merge and gives the command out of it. Silence
+ *     here is exactly the case of «it can be rolled back, but nobody can see to what».
+ *
  * This kills «your push carried my half-built work»: integration is serialized, tested
- * on the merged tree, receipted, and LOCAL. `git push` is explicitly OUT of scope — push
- * stays founder-ordered via /sma-ship (slots.mjs header law, unchanged).
+ * on the merged tree BEFORE it is recorded, receipted, and LOCAL. `git push` is explicitly
+ * OUT of scope — push stays founder-ordered via /sma-ship (slots.mjs header law, unchanged).
  *
  * ═══════════════════════════ CONSUME-NEVER-REIMPLEMENT ══════════════════════════
  *
@@ -168,27 +195,56 @@ export function checkMergeClaim(o = {}) {
   }
 }
 
-// ── the `sma merge` ritual — claim -> tests-on-result -> receipt -> release (local) ──
+// ── the `sma merge` ritual — claim -> merge-uncommitted -> tests -> DECIDE -> receipt ──
+
+/**
+ * NO_RUNNER_NOTE / RUNNER_SAID_NOTHING_RAN — the two reasons a run can be absent, in words.
+ *
+ * `testsPassed: null` used to be nameless, and two very different worlds arrived at the
+ * reader wearing the same face: a build where nobody wired a test runner at all, and a build
+ * where the runner IS wired, did answer, and its answer was «there was nothing here to run».
+ * The first is a hole in the assembly; the second is a fact about the tree. Telling them
+ * apart is the whole reason this field exists, and it travels BOTH in the return value and
+ * in the journalled receipt — a distinction that only lives in memory is not a distinction.
+ */
+export const NO_RUNNER_NOTE = 'прогонятель тестов не подключён — прогона не было'
+export const RUNNER_SAID_NOTHING_RAN = 'прогонятель ответил, что запускать было нечего'
+
+/** The tree is left mid-merge only when the undo itself failed — and then it is NAMED. */
+function unfinishedMergeHint(cwd) {
+  return `рабочее дерево осталось в НЕЗАВЕРШЁННОМ слиянии — выйти из него: git -C ${cwd} merge --abort`
+}
 
 /**
  * runMerge({branch, execGit, runTests, claimsDir, journalDir, cwd, by, now}) — the
- * serialized merge ritual. IN ORDER: acquire the merge slot (a concurrent
- * hold -> SOFT-deny + override) -> merge the branch into main LOCALLY (no push) -> run
- * the injected tests on the MERGE RESULT -> journal a receipt (pass OR fail honestly) ->
- * release the slot. Wrapped fail-open (C9): any error releases the held slot and returns
- * an honest failure — NEVER a throw, NEVER a wedged slot, NEVER a false green.
+ * serialized merge ritual, ASYNC. IN ORDER: acquire the merge slot (a concurrent hold ->
+ * SOFT-deny + override) -> bring the branch into the working tree WITHOUT committing ->
+ * run the injected tests on that merged tree -> DECIDE (red -> `merge --abort` + a refusal
+ * receipt; green or no-run -> `commit --no-edit`) -> journal a receipt -> release the slot.
+ * Wrapped fail-open (C9): any error aborts the uncommitted merge, releases the held slot and
+ * returns an honest failure — NEVER a throw, NEVER a wedged slot, NEVER a false green.
+ *
+ * WHY THIS FUNCTION IS ASYNC AND WHY THE RUNNER IS AWAITED. The runner used to be called
+ * with no await at all. Any asynchronous runner would then hand back a promise, and
+ * `!!(promise && promise.passed)` is `false` — so EVERY merge would have been refused, by a
+ * gate that looked like it was working. A mine that goes off silently and reads as a feature.
+ * The await is here whether or not today's runner happens to be synchronous, and there is a
+ * test that goes red the moment it is removed.
  *
  * `testsPassed` is `true`/`false` ONLY when a runner was injected and actually ran; it is
  * `null` when no run happened, because «тесты не запускались» is a different fact from «тесты
  * прошли» and a receipt may state only what took place. Readers deciding an outcome must treat
- * null as «нечего утверждать» — a red run (false) blocks, an absent one does not.
+ * null as «нечего утверждать» — a red run (false) blocks, an absent one does not. When it is
+ * null, `testsNote` says in words WHICH of the two absences it was (see the pair above).
  *
  * @returns
  *   - concurrent hold: {merged:false, softDenied:true, override, holder}
- *   - success/tests:   {merged:true, testsPassed:boolean|null, branch, resultSha, receipt}
- *   - error:           {ok:false, message}
+ *   - nothing to merge: {merged:true, alreadyUpToDate:true, testsPassed:null, testsNote, branch, resultSha:null, receipt}
+ *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, unfinishedMerge, howToClear]}
+ *   - merged:          {merged:true, testsPassed:boolean|null, testsNote?, branch, resultSha, receipt}
+ *   - error:           {ok:false, message[, unfinishedMerge, howToClear]}
  */
-export function runMerge(o = {}) {
+export async function runMerge(o = {}) {
   const branch = o.branch
   const execGit = o.execGit ?? defaultExecGit
   const runTests = o.runTests
@@ -198,6 +254,10 @@ export function runMerge(o = {}) {
   const cwd = o.cwd ?? process.cwd()
 
   let claimed = false
+  // TRUE from the moment the branch is in the working tree until it is either committed or
+  // aborted. It is what the catch block below reads to know whether there is a half-merge to
+  // undo — «откатываемо» is not the same thing as «видно, к чему откатывать».
+  let mergeInTree = false
   try {
     if (!branch || typeof branch !== 'string') return { ok: false, message: 'no-branch' }
 
@@ -214,10 +274,124 @@ export function runMerge(o = {}) {
     }
     claimed = true
 
-    // (2) merge the branch into main LOCALLY. NO push, NO deploy (slots.mjs header law).
-    execGit(['merge', '--no-ff', branch], { cwd })
+    // (2) bring the branch into the WORKING TREE, WITHOUT committing it. NO push, NO deploy
+    //     (slots.mjs header law). Nothing has entered history yet — that is the point.
+    //     The flag goes up BEFORE the call, not after: a conflicting merge exits non-zero and
+    //     STILL leaves the tree half-merged, so a flag set on the success path would leave
+    //     exactly the conflict case — the likeliest one of all — without an undo.
+    mergeInTree = true
+    execGit(['merge', '--no-ff', '--no-commit', branch], { cwd })
 
-    // the MERGE RESULT sha (read-only).
+    // (3) was there anything to bring? An `--no-commit` merge of a branch that is already in
+    //     the tree leaves NO MERGE_HEAD and nothing staged. That is not a run and not a
+    //     refusal — it is «сводить было нечего», and it gets said in those words rather than
+    //     acted out as a merge that happened.
+    let mergeHead = ''
+    try {
+      mergeHead = String(execGit(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd })).trim()
+    } catch {
+      mergeHead = ''
+    }
+    if (!mergeHead) {
+      mergeInTree = false
+      const receipt = {
+        branch,
+        resultSha: null,
+        repo: cwd,
+        testsPassed: null,
+        testsNote: 'ветка уже в дереве — сводить было нечего, прогон не запускался',
+        alreadyUpToDate: true,
+      }
+      try {
+        appendEvent({ type: 'merge', scope: MERGE_SLOT_NAME, detail: receipt }, { terminalId, ...journalOpt(o) })
+      } catch {
+        /* fail-open — a journal failure never blocks the ritual */
+      }
+      releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
+      claimed = false
+      return {
+        merged: true,
+        alreadyUpToDate: true,
+        testsPassed: null,
+        testsNote: receipt.testsNote,
+        branch,
+        resultSha: null,
+        receipt,
+      }
+    }
+
+    // (4) run the tests ON THE MERGED WORKING TREE.
+    //
+    // `resultSha` IS NULL HERE ON PURPOSE, AND THAT IS PART OF THE CONTRACT. The merge commit
+    // does not exist yet; passing the previous HEAD instead would hand the runner a sha that
+    // names the tree BEFORE the branch arrived, which is the one thing the run must not be
+    // about. The runner gets the directory and an explicit null, and a runner that needs a sha
+    // is a runner that must be told there is none.
+    //
+    // NULL UNTIL SOMETHING ACTUALLY RUNS. This started as `true` and stayed `true` whenever no
+    // runner was injected, so a receipt asserted that tests had passed on a merge where not one
+    // test was executed — the one claim a receipt exists to prevent. Three answers, not two:
+    // true and false state an OUTCOME, null states that there was no run to have an outcome.
+    let testsPassed = null
+    let testsNote = NO_RUNNER_NOTE
+    if (runTests) {
+      const tr = await runTests({ branch, resultSha: null, cwd })
+      // A runner may say «I ran nothing» in its own voice: passed:null, or an explicit flag.
+      // Anything else is an OUTCOME and is read as one — a runner that answers nonsense is
+      // still a red answer, never a quiet null that would let the merge through.
+      const saidNothingRan = !!tr && (tr.passed === null || tr.ran === false || tr.nothingToRun === true)
+      if (saidNothingRan) {
+        testsPassed = null
+        testsNote = typeof tr.note === 'string' && tr.note.trim() ? tr.note.trim() : RUNNER_SAID_NOTHING_RAN
+      } else {
+        testsPassed = !!(tr && tr.passed)
+        testsNote = null
+      }
+    }
+
+    // (5a) RED -> UNDO. The branch does not enter: `merge --abort` puts the working tree back
+    //      where it was, the tip never moved, and the receipt records a REFUSAL rather than a
+    //      merge that went badly. If the undo ITSELF fails, that is said out loud with the
+    //      command out of it — a tree left mid-merge cannot be rolled back from a journal line.
+    if (testsPassed === false) {
+      let unfinished = false
+      try {
+        execGit(['merge', '--abort'], { cwd })
+        mergeInTree = false
+      } catch {
+        unfinished = true
+      }
+      const receipt = {
+        branch,
+        resultSha: null,
+        repo: cwd,
+        testsPassed: false,
+        refused: true,
+        reason: 'тесты на сведённом рабочем дереве красные — слияние не зафиксировано',
+        ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+      }
+      try {
+        appendEvent({ type: 'merge', scope: MERGE_SLOT_NAME, detail: receipt }, { terminalId, ...journalOpt(o) })
+      } catch {
+        /* fail-open — a journal failure never blocks the ritual */
+      }
+      releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
+      claimed = false
+      return {
+        merged: false,
+        testsPassed: false,
+        refused: true,
+        branch,
+        receipt,
+        ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+      }
+    }
+
+    // (5b) GREEN, or no run at all -> record it. THIS is where the merge commit is born.
+    execGit(['commit', '--no-edit'], { cwd })
+    mergeInTree = false
+
+    // the MERGE RESULT sha — read only now, because only now does it exist.
     let resultSha = ''
     try {
       resultSha = String(execGit(['rev-parse', 'HEAD'], { cwd })).trim()
@@ -225,19 +399,7 @@ export function runMerge(o = {}) {
       resultSha = ''
     }
 
-    // (3) run targeted tests on the MERGE RESULT (not on either branch alone).
-    //
-    // NULL UNTIL SOMETHING ACTUALLY RUNS. This started as `true` and stayed `true` whenever no
-    // runner was injected, so a receipt asserted that tests had passed on a merge where not one
-    // test was executed — the one claim a receipt exists to prevent. Three answers, not two:
-    // true and false state an OUTCOME, null states that there was no run to have an outcome.
-    let testsPassed = null
-    if (runTests) {
-      const tr = runTests({ branch, resultSha, cwd })
-      testsPassed = !!(tr && tr.passed)
-    }
-
-    // (4) journal a receipt — records the outcome HONESTLY (pass OR fail; never a false green).
+    // (6) journal a receipt — records the outcome HONESTLY (pass OR fail; never a false green).
     //
     // THE FULL COMMIT NAME, AND THE TREE IT NAMES SOMETHING IN.
     //
@@ -254,7 +416,13 @@ export function runMerge(o = {}) {
     // is never the thing that gets stored. `repo` travels beside it because a person reading
     // a card is not necessarily standing in the directory the project lives in, and a command
     // that assumes they are is a command that runs somewhere else.
-    const receipt = { branch, resultSha: resultSha || null, repo: cwd, testsPassed }
+    const receipt = {
+      branch,
+      resultSha: resultSha || null,
+      repo: cwd,
+      testsPassed,
+      ...(testsPassed === null ? { testsNote } : {}),
+    }
     try {
       appendEvent(
         { type: 'merge', scope: MERGE_SLOT_NAME, detail: receipt },
@@ -264,13 +432,31 @@ export function runMerge(o = {}) {
       /* fail-open — a journal failure never blocks the ritual */
     }
 
-    // (5) release the slot.
+    // (7) release the slot.
     releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
     claimed = false
 
-    return { merged: true, testsPassed, branch, resultSha: resultSha || null, receipt }
+    return {
+      merged: true,
+      testsPassed,
+      ...(testsPassed === null ? { testsNote } : {}),
+      branch,
+      resultSha: resultSha || null,
+      receipt,
+    }
   } catch (err) {
-    // C9 fail-open: release any held slot, return an honest failure, never throw.
+    // C9 fail-open: UNDO the uncommitted merge first, then release any held slot, then return
+    // an honest failure — never throw. The order matters: a conflict, a runner that threw and
+    // a journal that refused all leave the same half-merged tree behind, and leaving it there
+    // is the case the rollback law calls «откатить можно, но не видно, к чему».
+    let unfinished = false
+    if (mergeInTree) {
+      try {
+        execGit(['merge', '--abort'], { cwd })
+      } catch {
+        unfinished = true
+      }
+    }
     if (claimed) {
       try {
         releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
@@ -278,7 +464,11 @@ export function runMerge(o = {}) {
         /* best-effort */
       }
     }
-    return { ok: false, message: err && err.message ? String(err.message) : 'merge-failed' }
+    return {
+      ok: false,
+      message: err && err.message ? String(err.message) : 'merge-failed',
+      ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+    }
   }
 }
 

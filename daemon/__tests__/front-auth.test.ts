@@ -627,6 +627,41 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
   })
 
   /**
+   * ═══ КРАСНЫЙ ПРОГОН, КОТОРЫЙ ОЗНАЧАЕТ «СЛИЯНИЯ НЕ БЫЛО» ════════════════════════
+   *
+   * Ритуал слияния теперь решает ДО того, как записать: красный прогон отменяет сведение и
+   * возвращает `{merged:false, testsPassed:false}`. Случай выше остаётся рядом нетронутым —
+   * дверь обязана понимать ОБЕ формы, — а этот проверяет новую: одобрения не происходит,
+   * строка остаётся ждать, и обе формы приезжают человеку с одним и тем же смыслом.
+   */
+  it('отказ ритуала «слияния не было, тесты красные» тоже не одобряется', async () => {
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        casExec: makeCasExec('awaiting_approval'),
+        verbRunner: async (o: any) => ({
+          merged: false,
+          testsPassed: false,
+          refused: true,
+          branch: o.branch,
+          receipt: { branch: o.branch, testsPassed: false, refused: true },
+        }),
+        repoDir: '/repo',
+      },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/approve',
+      headers: { ...bearer(), 'content-type': 'application/json' },
+      body: { taskId: 'R-79b' },
+    })
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.merged).toBe(false)
+    expect(out.ok).toBe(false)
+  })
+
+  /**
    * ═══════ A REFUSAL OF THIS DOOR SAYS WHY, IN WORDS, OR IT IS NOT A REFUSAL ═══════
    *
    * Пресс на «Одобрить» отвечал `ok:false` и НИ ОДНОГО слова. Человек у окна не мог отличить
@@ -662,6 +697,22 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.ok).toBe(false)
       expect(out.reasonCode).toBe('tests_red')
       expect(out.reason).toMatch(/тест/i)
+    })
+
+    /**
+     * Та же причина, ДРУГАЯ форма ответа. Ритуал решает до записи, поэтому честный отказ
+     * приезжает как `{merged:false, testsPassed:false}`. Прошлый предикат требовал признака
+     * состоявшегося слияния и на этой форме не срабатывал — отказ проваливался мимо него в
+     * общую ветку и приезжал человеку безымянным. Оба случая стоят рядом, потому что дверь
+     * обязана понимать обе формы, а не менять одну на другую.
+     */
+    it('отказ «слияния не было, тесты красные» тоже назван тестами', async () => {
+      const out = await refuse('R-90b', (o: any) => ({ merged: false, testsPassed: false, refused: true, branch: o.branch }))
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toMatch(/тест/i)
+      // и слово описывает то, что произошло на самом деле: ветка НЕ слита.
+      expect(out.reason).toMatch(/не выполнено/i)
     })
 
     it('конфликт слияния назван конфликтом', async () => {

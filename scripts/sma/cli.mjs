@@ -10947,44 +10947,76 @@ async function cmdWorktree({ positionals, flags, dirs }) {
 /**
  * merge — the serialized merge ritual + the two numeric
  * self-tests. `merge <branch>` integrates a worktree branch into main LOCALLY under the
- * merge-claim slot (concurrent → soft-deny + override; targeted tests on the MERGE RESULT;
- * journaled receipt) — NEVER a push (push stays founder-ordered via /sma-ship). direct-CLI:
- * may exit 1, NOT hook-facing. `--selftest` / `--selftest-enforce` print a bare numeric last
- * line (predict.mjs scorer contract) over a mock — no real merge, no real deny.
+ * merge-claim slot (concurrent → soft-deny + override) — and the DECISION comes before the
+ * record: the branch is brought into the working tree uncommitted, the tests run on that
+ * tree, and only a green (or absent) run gets committed. A RED run is a refusal: the undo is
+ * issued, nothing is recorded, and this verb says «ОТКАЗАНО» and exits 1 rather than claiming
+ * a merge. NEVER a push (push stays founder-ordered via /sma-ship). direct-CLI: may exit 1,
+ * NOT hook-facing. `--selftest` / `--selftest-enforce` print a bare numeric last line
+ * (predict.mjs scorer contract) over a mock — no real merge, no real deny.
  */
 async function cmdMerge({ positionals, flags, dirs }) {
   const mg = await import('./lib/merge-gate.mjs')
 
-  // ── --selftest: mock-recorder ritual (claim → tests-on-result → receipt → release) + a
-  //    concurrent soft-deny — print 1 iff both hold. No real merge, no real deny.
+  // ── --selftest: mock-recorder ritual (claim → merge WITHOUT committing → tests on that
+  //    tree → DECIDE) + a refused red run + a concurrent soft-deny — print 1 iff all hold.
+  //    No real merge, no real deny.
   if (flags.selftest === true) {
     let ok = 1
     const os = await import('node:os')
     const fs = await import('node:fs')
     const path = await import('node:path')
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sma-merge-self-'))
-    try {
+    // `merge --abort` is a DIFFERENT act from bringing a branch in, and naming both of them
+    // «merge» is how an undo hides inside a merge.
+    const verbOf = (a) => (a[0] === 'merge' && a.includes('--abort') ? 'merge --abort' : a[0])
+    const recorder = () => {
       const calls = []
-      const execGit = (args) => {
+      const run = (args) => {
         calls.push(args)
+        if (args[0] === 'rev-parse' && args.includes('MERGE_HEAD')) return 'MERGE_HEAD_SHA\n'
         if (args[0] === 'rev-parse') return 'RESULT_SHA\n'
         return ''
       }
-      let testedSha = null
-      const runTests = ({ resultSha }) => {
-        testedSha = resultSha
+      run.calls = calls
+      return run
+    }
+    try {
+      const execGit = recorder()
+      const calls = execGit.calls
+      let handedTree = null
+      let handedSha = 'не спрашивали'
+      let issuedWhenAsked = []
+      const runTests = ({ resultSha, cwd }) => {
+        handedTree = cwd
+        handedSha = resultSha
+        issuedWhenAsked = calls.map(verbOf)
         return { passed: true }
       }
-      const res = mg.runMerge({ branch: 'sma-wt/self', by: 'selftest', execGit, runTests, claimsDir: tmp, journalDir: tmp, cwd: tmp })
+      const res = await mg.runMerge({ branch: 'sma-wt/self', by: 'selftest', execGit, runTests, claimsDir: tmp, journalDir: tmp, cwd: tmp })
       if (res.merged !== true || res.testsPassed !== true) ok = 0
-      const mi = calls.findIndex((a) => a[0] === 'merge')
-      const ri = calls.findIndex((a) => a[0] === 'rev-parse')
-      if (!(mi >= 0 && ri > mi)) ok = 0 // ritual order: merge → tests-on-result
-      if (testedSha !== 'RESULT_SHA') ok = 0 // tests ran on the MERGE RESULT
+      const verbs = calls.map(verbOf)
+      const bringIn = calls.findIndex((a) => a[0] === 'merge' && a.includes('--no-commit'))
+      const commitIdx = verbs.indexOf('commit')
+      // ritual order: bring the branch in WITHOUT committing → run → and only then record it.
+      if (!(bringIn >= 0 && commitIdx > bringIn)) ok = 0
+      // the run happened BEFORE anything was recorded — that is what makes a red run refusable.
+      if (issuedWhenAsked.includes('commit')) ok = 0
+      // the runner is handed the TREE; there is no result sha at that moment, by design.
+      if (handedTree !== tmp || handedSha !== null) ok = 0
       if (calls.some((a) => a.includes('push'))) ok = 0 // NEVER a push
+
+      // a RED run → refusal: the undo was issued and nothing was recorded.
+      const redGit = recorder()
+      const red = await mg.runMerge({ branch: 'sma-wt/self-red', by: 'selftest', execGit: redGit, runTests: () => ({ passed: false }), claimsDir: tmp, journalDir: tmp, cwd: tmp })
+      if (!(red.merged === false && red.testsPassed === false && red.refused === true)) ok = 0
+      const redVerbs = redGit.calls.map(verbOf)
+      if (!redVerbs.includes('merge --abort')) ok = 0
+      if (redVerbs.includes('commit')) ok = 0
+
       // a concurrent merge (slot held by a foreign holder) → soft-deny with an override.
       mg.acquireMergeClaim({ by: 'other', branch: 'sma-wt/held', claimsDir: tmp, journalDir: tmp })
-      const con = mg.runMerge({ branch: 'sma-wt/self2', by: 'selftest', execGit: () => '', runTests: () => ({ passed: true }), claimsDir: tmp, journalDir: tmp, cwd: tmp })
+      const con = await mg.runMerge({ branch: 'sma-wt/self2', by: 'selftest', execGit: () => '', runTests: () => ({ passed: true }), claimsDir: tmp, journalDir: tmp, cwd: tmp })
       if (!(con.merged === false && con.softDenied === true && typeof con.override === 'string')) ok = 0
     } catch {
       ok = 0
@@ -11043,16 +11075,17 @@ async function cmdMerge({ positionals, flags, dirs }) {
   } catch {
     mainRoot = dirname(dirs.smaRoot) || process.cwd()
   }
-  // targeted-test runner ON THE MERGE RESULT — the merge-gate suite as the smoke (never the full suite).
-  const runTests = () => {
-    try {
-      execFileSync('pnpm', ['vitest', 'run', 'scripts/sma/__tests__/merge-gate.test.ts'], { cwd: mainRoot, encoding: 'utf8', stdio: 'ignore' })
-      return { passed: true }
-    } catch {
-      return { passed: false }
-    }
-  }
-  const res = mg.runMerge({ branch, by, execGit, runTests, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir, cwd: mainRoot })
+  // THE SMOKE — the SAME runner the daemon's approval door is wired with, not a second copy
+  // of one. It used to be a closure right here, which is why the door had none: a body that
+  // lives inside a verb cannot be reached from the composition root. It also used to launch
+  // the package manager by command name, which on this platform is a wrapper script no plain
+  // file launch can see — so it answered «red» without running a single test. Both are gone:
+  // one module, launched through the interpreter, three answers instead of two.
+  const { runMergeSmoke } = await import('./lib/merge-smoke.mjs')
+  // AWAITED, and the cost of forgetting it is named where it would be forgotten: without the
+  // await neither `ok` nor `merged` is readable on a promise, and this verb would print
+  // «влит в main ЛОКАЛЬНО» and return ZERO — a quiet lie about a merge it never read.
+  const res = await mg.runMerge({ branch, by, execGit, runTests: runMergeSmoke, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir, cwd: mainRoot })
   if (wantsJson(flags)) {
     printJson(res)
     return res.merged && res.testsPassed !== false ? 0 : 1
@@ -11062,13 +11095,31 @@ async function cmdMerge({ positionals, flags, dirs }) {
     return 1
   }
   if (res.ok === false) {
-    process.stderr.write(`SMA merge: не удалось (${res.message}). Дерево не тронуто сверх git merge; слот освобождён.\n`)
+    process.stderr.write(`SMA merge: не удалось (${res.message}). Незафиксированное слияние отменено; слот освобождён.\n`)
+    if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
+    return 1
+  }
+  // ОТКАЗ — НЕ «ВЛИТ». Раньше эта печать безусловно говорила «влит в main ЛОКАЛЬНО», и на
+  // красном прогоне это была ложь о том, что ветка в дереве. Теперь красный прогон означает,
+  // что слияния НЕ БЫЛО: вершина не двинулась, откатывать нечего.
+  if (res.merged === false && res.testsPassed === false) {
+    process.stderr.write(
+      `SMA merge: слияние ОТКАЗАНО — тесты на сведённом дереве КРАСНЫЕ. Ветка ${branch} НЕ влита, вершина main не сдвинулась.\n`,
+    )
+    if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
+    else process.stderr.write('  сведение отменено, рабочее дерево вернулось в прежнее состояние.\n')
     return 1
   }
   // Три ответа, а не два: прошли, красные и «не запускались». Последний — не провал и не
   // зелёный: утверждать о прогоне, которого не было, нельзя ни в ту, ни в другую сторону.
+  // И «не запускались» больше не безымянно — ритуал говорит, ПОЧЕМУ прогона не было.
   const testsWord = res.testsPassed === null ? 'не запускались' : res.testsPassed ? 'зелёные' : 'КРАСНЫЕ'
-  process.stdout.write(`SMA merge: ${branch} влит в main ЛОКАЛЬНО${res.resultSha ? ` (${String(res.resultSha).slice(0, 7)})` : ''}; тесты на результате слияния: ${testsWord}.\n`)
+  if (res.alreadyUpToDate) {
+    process.stdout.write(`SMA merge: ${branch} уже в дереве — сводить было нечего, коммита слияния не появилось.\n`)
+    process.stdout.write('  push — по команде владельца в релизном ритуале (/sma-help ship); `sma merge` НЕ пушит и НЕ деплоит.\n')
+    return 0
+  }
+  process.stdout.write(`SMA merge: ${branch} влит в main ЛОКАЛЬНО${res.resultSha ? ` (${String(res.resultSha).slice(0, 7)})` : ''}; тесты на сведённом дереве: ${testsWord}${res.testsPassed === null && res.testsNote ? ` (${res.testsNote})` : ''}.\n`)
   process.stdout.write('  push — по команде владельца в релизном ритуале (/sma-help ship); `sma merge` НЕ пушит и НЕ деплоит.\n')
   return res.testsPassed === false ? 1 : 0
 }
