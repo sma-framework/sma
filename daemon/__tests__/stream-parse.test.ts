@@ -146,6 +146,35 @@ describe('parseClaudeEvent (pure, never throws)', () => {
     expect(ordinary.terminalReason).toBe(null)
     expect(ordinary.apiErrorStatus).toBe(null)
   })
+
+  /**
+   * КАК CLI НАЗВАЛ ИСХОД СВОИМ СЛОВОМ — и почему это читается именно с ЗАВЕРШАЮЩЕГО кадра.
+   *
+   * Схема завершающего кадра у CLI закрытая: успех либо одно из четырёх слов неуспеха, и одно
+   * из них называет упор в потолок ходов. У кадра системного типа это слово читалось всегда, у
+   * завершающего — не читалось вовсе, и попытка, срезанная потолком, приходила на экран
+   * неотличимой от любого другого провала работника: та же «нет квитанции», та же «ошибка
+   * работника». Поле новое, и до этой правки читателей у него не было.
+   *
+   * Слово читается и у успеха тоже: это НЕ поле «только для ошибок», а имя исхода. Обычный
+   * кадр, который своего слова не сказал, отдаёт null — придумывать за библиотеку нечего.
+   */
+  it('завершающий кадр отдаёт слово исхода: упор в потолок ходов, успех и молчание', () => {
+    const capped: any = parseClaudeEvent(
+      JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 80, session_id: 's-cap' }),
+    )
+    expect(capped.subtype).toBe('error_max_turns')
+    expect(capped.numTurns).toBe(80)
+    expect(capped.isError).toBe(true)
+
+    const ok: any = parseClaudeEvent(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 4 }))
+    expect(ok.subtype).toBe('success')
+    expect(ok.numTurns).toBe(4)
+
+    const silent: any = parseClaudeEvent(JSON.stringify({ type: 'result', is_error: false }))
+    expect(silent.subtype).toBe(null)
+    expect(silent.numTurns).toBe(null)
+  })
 })
 
 /**

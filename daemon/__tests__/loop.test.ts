@@ -55,6 +55,7 @@ import {
   tick,
   runDaemon,
   classifyFailure,
+  turnCapHitOf,
   changedFilesOnBranch,
   unregisteredMcpTools,
   DENIAL_LINES_CAP,
@@ -1248,6 +1249,61 @@ describe('старение: сказано один раз на переход, 
   })
 })
 
+/**
+ * ═══════ УПОР В ПОТОЛОК ХОДОВ — ЭТО НЕ «ОШИБКА РАБОТНИКА» ═══════
+ *
+ * Работник, которому мы сами задали потолок ходов, останавливается на нём МОЛЧА: он не пишет
+ * записки, не оставляет квитанции и выходит — ровно как оборванный провайдером, и ровно по той
+ * же причине. До этого распознавателя такая попытка приходила на экран как «нет квитанции» или
+ * «ошибка работника», то есть человека посылали чинить то, что мы ему сами и устроили.
+ *
+ * ПРИЗНАК БЕРЁТСЯ ИЗ ПОЛЯ КАДРА, НЕ ИЗ РЕЧИ. Работник, отлаживающий чужой потолок, произнесёт
+ * фразу про исчерпание ходов вслух в собственном выводе — диагноз подслушиванием здесь запрещён
+ * тем же законом, которым он запрещён у распознавателя обрыва провайдера.
+ *
+ * И ЗАПАСНОЙ ПРИЗНАК ОБЯЗАТЕЛЕН. Слово исхода — слово вендора, оно может смениться в следующей
+ * версии его двоичного файла. Число сделанных ходов и заданный потолок — наша собственная
+ * арифметика: потолок мы знаем потому, что сами его и передали запускаемому процессу.
+ */
+describe('turnCapHitOf — упор в потолок ходов, названный полем кадра', () => {
+  const result = (o: object) => JSON.stringify({ type: 'result', ...o })
+
+  it('слово исхода из закрытого перечисления CLI → упор, с числом сделанных ходов', () => {
+    expect(turnCapHitOf([result({ subtype: 'error_max_turns', is_error: true, num_turns: 80 })])).toEqual({ turns: 80 })
+  })
+
+  it('берётся ПОСЛЕДНИЙ завершающий кадр потока: прогон, доигранный до успеха, упором не считается', () => {
+    const lines = [
+      result({ subtype: 'error_max_turns', is_error: true, num_turns: 80 }),
+      result({ subtype: 'success', is_error: false, num_turns: 12 }),
+    ]
+    expect(turnCapHitOf(lines)).toBe(null)
+    expect(turnCapHitOf([...lines].reverse())).toEqual({ turns: 80 })
+  })
+
+  it('поток без завершающего кадра и мусор на входе — пусто, без единого броска', () => {
+    expect(turnCapHitOf(['не json вовсе', JSON.stringify({ type: 'assistant' })])).toBe(null)
+    expect(turnCapHitOf([])).toBe(null)
+    expect(turnCapHitOf(undefined as any)).toBe(null)
+  })
+
+  it('запасной признак: слово вендора незнакомо, но ходов не меньше ЗАДАННОГО НАМИ потолка', () => {
+    const lines = [result({ subtype: 'error_ran_out_of_moves', is_error: true, num_turns: 80 })]
+    expect(turnCapHitOf(lines, 80)).toEqual({ turns: 80 })
+    // и он не срабатывает там, где ходов меньше потолка — это обычная ошибка, а не упор
+    expect(turnCapHitOf([result({ subtype: 'error_during_execution', is_error: true, num_turns: 3 })], 80)).toBe(null)
+  })
+
+  it('без заданного потолка запасной признак молчит: сравнивать не с чем', () => {
+    expect(turnCapHitOf([result({ subtype: 'error_ran_out_of_moves', is_error: true, num_turns: 999 })])).toBe(null)
+  })
+
+  it('кадр обрыва провайдера упором в потолок НЕ считается, сколько бы ходов на нём ни стояло', () => {
+    const cut = result({ is_error: true, terminal_reason: 'api_error', api_error_status: 529, num_turns: 80 })
+    expect(turnCapHitOf([cut], 80)).toBe(null)
+  })
+})
+
 describe('classifyFailure — the taxonomy (pure)', () => {
   const cases: Array<[string, any, string]> = [
     ['spawn infra error → runtime_offline', { spawnError: new Error('offline'), exitCode: null }, 'runtime_offline'],
@@ -1292,6 +1348,43 @@ describe('classifyFailure — the taxonomy (pure)', () => {
 
   it('но несостоявшийся запуск остаётся сильнее: обрывать было нечего', () => {
     expect(classifyFailure({ spawnError: new Error('offline'), providerAbort: { status: 529 } })).toBe('runtime_offline')
+  })
+
+  /**
+   * ПОТОЛОК СТОИТ ТАМ ЖЕ, ГДЕ ОБРЫВ, И ПО ТОЙ ЖЕ ПРИЧИНЕ: попытка, срезанная на потолке, не
+   * написала записки и не оставила квитанции ровно потому, что её остановили, — обвинять её в
+   * этом нельзя. Выше — только то, чего мы не устраивали: несостоявшийся запуск и отказ вендора.
+   */
+  it('упор в потолок → turns_exhausted, а не «нет квитанции»', () => {
+    expect(classifyFailure({ turnCapHit: { turns: 80 }, exitCode: 0, receipt: null })).toBe('turns_exhausted')
+  })
+
+  it('упор в потолок сильнее суждений о том, что попытка оставила: ни записки, ни квитанции с неё не спрашивают', () => {
+    expect(
+      classifyFailure({
+        turnCapHit: { turns: 80 },
+        exitCode: 1,
+        receipt: { verdict: 'green', ref: 'r' },
+        journalComplete: false,
+      }),
+    ).toBe('turns_exhausted')
+  })
+
+  /**
+   * КОД ВЫХОДА В ПРИЗНАК НЕ ВХОДИТ. Чем именно завершается двоичный файл вендора при упоре в
+   * потолок, мы не проверяли ни разу; ветка обязана давать один и тот же ответ при нулевом и
+   * ненулевом коде, иначе непроверенное число тихо станет частью диагноза.
+   */
+  it('ответ один и тот же при нулевом и ненулевом коде выхода', () => {
+    const zero = classifyFailure({ turnCapHit: { turns: 80 }, exitCode: 0, receipt: null })
+    const nonzero = classifyFailure({ turnCapHit: { turns: 80 }, exitCode: 7, receipt: null })
+    expect(zero).toBe(nonzero)
+    expect(zero).toBe('turns_exhausted')
+  })
+
+  it('но обрыв провайдера остаётся сильнее потолка — порядок ветвей соблюдён', () => {
+    expect(classifyFailure({ providerAbort: { status: 529 }, turnCapHit: { turns: 80 }, exitCode: 1 })).toBe('provider_error')
+    expect(classifyFailure({ spawnError: new Error('offline'), turnCapHit: { turns: 80 } })).toBe('runtime_offline')
   })
 })
 
