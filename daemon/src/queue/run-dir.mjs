@@ -161,6 +161,21 @@ export function runsDirOf(projectDir) {
 }
 
 /**
+ * attemptRunDir({runsDir, attemptId}) → the directory of ONE attempt, or null.
+ *
+ * ONE EXPRESSION, TWO CALLERS, AND THAT IS THE POINT. The record at the END of an attempt
+ * writes here, and now the SPAWN at the beginning needs the same path — it hands it to the
+ * child so a gate running inside the worker's own process knows where its tickets live. Two
+ * places joining the same three pieces by hand is exactly how a path comes to be spelled two
+ * ways, and a gate writing tickets into a directory nobody reads is a gate that silently
+ * does nothing.
+ */
+export function attemptRunDir({ runsDir, attemptId } = {}) {
+  if (typeof runsDir !== 'string' || runsDir.trim() === '' || !attemptId) return null
+  return join(runsDir, safeName(attemptId))
+}
+
+/**
  * The values of `env` whose NAMES say they are secret — the needles `sanitizeRun` looks for.
  * The caller passes the spawn's own environment: nothing else knows which of its names the
  * account happens to use for a token on this host.
@@ -278,7 +293,10 @@ export function writeRunStart({ runsDir, attemptId, run, guards, ledgerPath, sec
     return { dir: null }
   }
   const fs = io(fsImpl)
-  const dir = join(runsDir, safeName(attemptId))
+  // THE SAME EXPRESSION THE SPAWN USED. It is not joined here a second time: the spawn
+  // created this directory before the process existed, and if the two ever spelled the path
+  // differently the record would land beside the tickets instead of among them.
+  const dir = attemptRunDir({ runsDir, attemptId })
   try {
     fs.mkdirSync(dir, { recursive: true })
     const record = sanitizeRun({ schema: RUN_SCHEMA, attemptId: String(attemptId), ...(run || {}) }, { secretValues })

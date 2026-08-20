@@ -19,7 +19,14 @@ import {
   evaluateParity,
   summarize,
   isFulfilled,
+  allowedToolsInArgs,
+  disallowedToolsInArgs,
 } from '../lib/parity-receipts.mjs'
+import { humanOnlyDenials } from '../../../daemon/src/queue/capability-envelope.mjs'
+
+// Шаблоны запрета берутся у САМОГО продукта: список, переписанный здесь руками, согласился
+// бы с ним в день написания и разошёлся бы в любой следующий, а сверять было бы нечего.
+const DENIALS = humanOnlyDenials({ humanOnlyActions: ['push', 'merge', 'tag', 'deploy'] }).patterns
 
 const STARTED = '2026-08-01T10:00:00.000Z'
 const ENDED = '2026-08-01T10:20:00.000Z'
@@ -32,8 +39,20 @@ const RUN = {
   workerId: 'max-1',
   startedAt: STARTED,
   endedAt: ENDED,
-  args: ['-p', '--output-format', 'stream-json', '--allowedTools', 'Read Write Bash'],
-  envelope: { allowedTools: ['Read', 'Write', 'Bash'], hash: 'e3b0c442' },
+  args: [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--allowedTools',
+    'Read Write Bash',
+    '--disallowedTools',
+    DENIALS.join(' '),
+  ],
+  envelope: {
+    allowedTools: ['Read', 'Write', 'Bash'],
+    humanOnlyActions: ['push', 'merge', 'tag', 'deploy'],
+    hash: 'e3b0c442',
+  },
   rules: { claudeMd: 'materialized' },
   skillsInCopy: { skills: 3, agents: 2 },
 }
@@ -90,21 +109,20 @@ describe('parity-receipts — the roster', () => {
 })
 
 describe('parity-receipts — a complete run', () => {
-  it('earns four OK and one WARN: the rights receipt never claims more than it proved', () => {
+  it('earns five OK — and the fifth is green only because BOTH halves of the envelope travelled', () => {
     const { of, sum } = evalWith()
     expect(of('hooks').status).toBe('ok')
     expect(of('memory').status).toBe('ok')
     expect(of('rules').status).toBe('ok')
     expect(of('skills').status).toBe('ok')
-    expect(of('rights').status).toBe('warn')
-    expect(sum).toMatchObject({ fulfilled: 5, total: 5, warn: 1, ok: 4, failed: [] })
+    expect(of('rights').status).toBe('ok')
+    expect(sum).toMatchObject({ fulfilled: 5, total: 5, warn: 0, ok: 5, failed: [] })
   })
 
-  it('the rights receipt says in words what does NOT travel with the envelope', () => {
+  it('the rights receipt names BOTH numbers it compared, so a green light is readable', () => {
     const rights = evalWith().of('rights')
-    expect(rights.detail).toContain('allowedTools')
-    expect(rights.detail).toMatch(/humanOnlyActions/)
-    expect(rights.detail).toMatch(/отдельная работа/)
+    expect(rights.detail).toContain('3 инструментов')
+    expect(rights.detail).toContain(`${DENIALS.length} запретов`)
   })
 })
 
@@ -251,14 +269,14 @@ describe('parity-receipts — (d) skills: a project with none says so honestly',
   })
 })
 
-describe('parity-receipts — (e) rights: only what actually travels', () => {
+describe('parity-receipts — (e) rights: both halves of the envelope, measured separately', () => {
   it('the same set in either order is a match — the flag is a set, not a sequence', () => {
-    const run = runWith({ args: ['--allowedTools', 'Bash Read Write'] })
-    expect(evalWith({ run }).of('rights').status).toBe('warn')
+    const run = runWith({ args: ['--allowedTools', 'Bash Read Write', '--disallowedTools', [...DENIALS].reverse().join(' ')] })
+    expect(evalWith({ run }).of('rights').status).toBe('ok')
   })
 
   it('a spawn narrower than the envelope is a FAILURE that names the difference', () => {
-    const run = runWith({ args: ['--allowedTools', 'Read'] })
+    const run = runWith({ args: ['--allowedTools', 'Read', '--disallowedTools', DENIALS.join(' ')] })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
     expect(r.detail).toContain('Write')
@@ -270,6 +288,60 @@ describe('parity-receipts — (e) rights: only what actually travels', () => {
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
     expect(r.detail).toMatch(/--allowedTools/)
+  })
+
+  // ЭТО СОСТОЯНИЕ КВИТАНЦИЯ УДОСТОВЕРЯЛА РАНЬШЕ — жёлтым с оговоркой. Оно провал: конверт
+  // называет действия, оставленные человеку, а до процесса от них не доехало ничего.
+  it('конверт запрещает, а в аргументах запрета нет — это ПРОВАЛ, а не предупреждение', () => {
+    const run = runWith({ args: ['--allowedTools', 'Read Write Bash'] })
+    const r = evalWith({ run }).of('rights')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toMatch(/--disallowedTools/)
+    expect(r.detail).toMatch(/в журнале/)
+  })
+
+  it('запрет доехал наполовину — провал с перечислением того, чего нет', () => {
+    const run = runWith({ args: ['--allowedTools', 'Read Write Bash', '--disallowedTools', 'Bash(git push:*)'] })
+    const r = evalWith({ run }).of('rights')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('Bash(git merge:*)')
+  })
+
+  it('в аргументах запрет, которого конверт не объявлял, — тоже расхождение', () => {
+    const run = runWith({
+      args: ['--allowedTools', 'Read Write Bash', '--disallowedTools', [...DENIALS, 'Bash(rm:*)'].join(' ')],
+    })
+    const r = evalWith({ run }).of('rights')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('Bash(rm:*)')
+  })
+
+  it('человеческое действие без единого шаблона запрета — провал: такой запрет не доехал никуда', () => {
+    const run = runWith({
+      envelope: { allowedTools: ['Read', 'Write', 'Bash'], humanOnlyActions: ['push', 'подписать-релиз'] },
+      args: ['--allowedTools', 'Read Write Bash', '--disallowedTools', humanOnlyDenials({ humanOnlyActions: ['push'] }).patterns.join(' ')],
+    })
+    const r = evalWith({ run }).of('rights')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('подписать-релиз')
+  })
+
+  // Шаблон запрета несёт пробел ВНУТРИ скобок. Читатель, который делит строку по пробелам,
+  // разорвёт его на два куска, не совпадающих ни с чем, и объявит расхождение, которого нет.
+  it('шаблон с пробелом внутри скобок читается целиком, а не разрывается на куски', () => {
+    expect(disallowedToolsInArgs(['--disallowedTools', 'Bash(git push:*) Bash(npm publish:*)'])).toEqual([
+      'Bash(git push:*)',
+      'Bash(npm publish:*)',
+    ])
+    expect(allowedToolsInArgs(['--allowedTools', 'Read Grep Bash'])).toEqual(['Read', 'Grep', 'Bash'])
+    expect(disallowedToolsInArgs(['-p'])).toBe(null)
+  })
+
+  it('конверт без человеческих действий вовсе — зелено, и это сказано словами', () => {
+    const run = runWith({ envelope: { allowedTools: ['Read', 'Write', 'Bash'] }, args: ['--allowedTools', 'Read Write Bash'] })
+    const r = evalWith({ run }).of('rights')
+    expect(r.status).toBe('ok')
+    expect(r.detail).toContain('не назвал ни одного человеческого действия')
   })
 
   it('an envelope that carries no tool list at all is missing data', () => {

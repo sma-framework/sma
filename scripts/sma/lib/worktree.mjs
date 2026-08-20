@@ -132,6 +132,205 @@ export function verifyWorktreeBase(opts = {}) {
 }
 
 /**
+ * THE COPY IS HANDED OVER WITHOUT AN ADDRESS TO PUSH TO — AND NOBODY'S REPOSITORY IS
+ * RECONFIGURED BEHIND THEIR BACK.
+ *
+ * A worker session runs in a linked copy. Closing `git push` for it by pointing the
+ * remote's PUSH address at a name that is not a repository (`no_push`) is the classic
+ * move, and on a linked copy it is a trap: measured on git 2.53, `git config
+ * remote.origin.pushurl no_push` executed INSIDE the copy lands in the SHARED config —
+ * the one the MAIN checkout reads — so the person loses push at the same instant the
+ * worker does. A defence that disarms the human is not a defence.
+ *
+ * Only ONE pair isolates it: the per-worktree config extension switched on in the main
+ * tree, plus the `--worktree` flag on the write. Both halves are required; either alone
+ * writes shared.
+ *
+ * AND THE EXTENSION IS NOT OURS TO SWITCH ON. Turning it on changes the meaning of
+ * settings the repository ALREADY has — `core.bare` and `core.worktree` start being read
+ * per-copy — so a product that flips it silently has edited the person's repository to
+ * suit itself. This lock is the SECOND line of defence (the first is the refusal that
+ * travels in the spawn arguments), and a second line has no right to gamble with the
+ * first tree. So: where the extension is already on, the lock goes in; where it is not,
+ * the copy is handed over WITHOUT the lock and the reason is said in words, in the
+ * attempt record and on the card. Never a silent reconfiguration, never a silent skip.
+ *
+ * THE WRITE IS VERIFIED IMMEDIATELY, BY THIS CODE, NOT BY A LATER AUDIT. A lock nobody
+ * checked is a lock on somebody else's door: right after writing, the shared config is
+ * read again, and if the address leaked through, the write is taken back on BOTH sides
+ * and the answer says the isolation did not hold. «Set it and hope» is the failure mode
+ * this whole function exists to refuse.
+ *
+ * IT IS NOT A PROOF OF IMPOSSIBILITY, AND IT MUST NOT BE SOLD AS ONE. A worker holding
+ * `Bash` can `git config --unset` it, or push to an explicit URL, or add a second remote.
+ * Push is closed by THREE locks and not one of them is self-sufficient: the refusal in
+ * the spawn arguments (the only one actually standing in the path), this address, and the
+ * blocking hook on the classifier. This module says so out loud so no reader mistakes
+ * depth for a guarantee.
+ *
+ * FAIL-OPEN like every neighbour here: no git error escapes, the copy is still handed
+ * over, and the reason travels in the answer instead of becoming an exception.
+ */
+
+/** The address the copy's `origin` is pushed to — deliberately not a repository. */
+export const PUSH_LOCK_URL = 'no_push'
+
+/** Said in words wherever the lock is skipped, so the card never shows a bare `false`. */
+export const PUSH_LOCK_NO_EXTENSION_REASON =
+  'per-worktree config extension is not enabled in this repository — the lock is NOT installed ' +
+  'and the repository is NOT reconfigured for it; push stays closed by the tool refusal in the spawn arguments'
+
+/**
+ * readGitConfig({execGit, cwd, args}) -> {value, missing, failed}. git answers exit 1 for
+ * a key that is simply absent, which is an ANSWER, and any other failure is a genuine
+ * fault — telling them apart is what keeps «no value» from being reported as «git broke».
+ * @param {{execGit:Function, cwd:string, args:string[]}} opts
+ * @returns {{value:string, missing:boolean, failed:boolean, error:string}}
+ */
+function readGitConfig({ execGit, cwd, args }) {
+  try {
+    return { value: String(execGit(args, { cwd })).trim(), missing: false, failed: false, error: '' }
+  } catch (err) {
+    const status = err && err.status
+    if (status === 1) return { value: '', missing: true, failed: false, error: '' }
+    return { value: '', missing: true, failed: true, error: String((err && err.message) || err) }
+  }
+}
+
+/**
+ * lockPushInCopy({execGit, mainRoot, copyPath}) — take the push address away from the
+ * worker's copy WITHOUT taking it away from the person. Strict order, and every step may
+ * refuse honestly:
+ *   1. read the push address the MAIN tree effectively has. Already set by someone —
+ *      leave it alone entirely (it is the person's setting, not ours to overwrite);
+ *   2. read whether the per-worktree config extension is on. NOT on -> stop here with
+ *      `applied:false` and the reason in words. We never switch it on ourselves;
+ *   3. write `remote.origin.pushurl = no_push` into the COPY's own config (`--worktree`);
+ *   4. re-read the shared config AT ONCE. Empty -> {applied:true, isolated:true}. Not
+ *      empty -> undo on both sides and answer {applied:false, isolated:false}.
+ * Every git call carries an EXPLICIT cwd (no `cd &&`), so a teleported shell cannot make
+ * this run against the wrong tree.
+ * @param {{execGit?:Function, mainRoot:string, copyPath:string}} opts
+ * @returns {{applied:boolean, isolated:boolean, worktreeConfigPreset:(boolean|null),
+ *            mainPushUrl:string, alreadyLocked?:boolean, reason:string}}
+ */
+export function lockPushInCopy(opts = {}) {
+  const execGit = opts.execGit ?? defaultExecGit
+  const { mainRoot, copyPath } = opts
+  const PUSH_KEY = 'remote.origin.pushurl'
+  try {
+    // 1. WHAT THE PERSON ALREADY HAS. A push address someone configured by hand is a
+    //    decision, and overwriting a decision to install a guard is the same sin as
+    //    flipping the extension.
+    const shared = readGitConfig({ execGit, cwd: mainRoot, args: ['config', '--get', PUSH_KEY] })
+    if (shared.failed) {
+      return {
+        applied: false,
+        isolated: false,
+        worktreeConfigPreset: null,
+        mainPushUrl: '',
+        reason: `could not read the main tree's push address (${shared.error}) — the lock is not installed`,
+      }
+    }
+    if (shared.value !== '') {
+      return {
+        applied: false,
+        isolated: false,
+        worktreeConfigPreset: null,
+        mainPushUrl: shared.value,
+        reason: 'a push address is already configured in this repository — left exactly as the person set it',
+      }
+    }
+
+    // 2. IS THE ISOLATION AVAILABLE — asked, never arranged. This is the branch decided
+    //    deliberately: no `git config extensions.worktreeConfig true` exists anywhere in
+    //    this product, and a test asserts the ABSENCE of that command, not just this result.
+    const ext = readGitConfig({ execGit, cwd: mainRoot, args: ['config', '--get', 'extensions.worktreeConfig'] })
+    if (ext.failed) {
+      return {
+        applied: false,
+        isolated: false,
+        worktreeConfigPreset: null,
+        mainPushUrl: '',
+        reason: `could not read the per-worktree config extension (${ext.error}) — the lock is not installed`,
+      }
+    }
+    if (ext.value.toLowerCase() !== 'true') {
+      return {
+        applied: false,
+        isolated: false,
+        worktreeConfigPreset: false,
+        mainPushUrl: '',
+        reason: PUSH_LOCK_NO_EXTENSION_REASON,
+      }
+    }
+
+    // 2b. ALREADY LOCKED — a re-provisioned copy must cost nothing and must not report a
+    //     write it did not make. Idempotence is checked by READING, so the second call
+    //     leaves the recorder empty.
+    const inCopy = readGitConfig({ execGit, cwd: copyPath, args: ['config', '--worktree', '--get', PUSH_KEY] })
+    if (!inCopy.failed && inCopy.value === PUSH_LOCK_URL) {
+      return {
+        applied: true,
+        isolated: true,
+        alreadyLocked: true,
+        worktreeConfigPreset: true,
+        mainPushUrl: '',
+        reason: 'the copy was already handed over without a push address — nothing rewritten',
+      }
+    }
+
+    // 3. THE WRITE — into the COPY's own config, from the COPY's own directory.
+    execGit(['config', '--worktree', PUSH_KEY, PUSH_LOCK_URL], { cwd: copyPath })
+
+    // 4. AND IMMEDIATELY: DID IT STAY INSIDE? This is the step the whole function is built
+    //    around. The measured failure mode is silent — the copy looks locked and the person
+    //    finds out at their next push.
+    const after = readGitConfig({ execGit, cwd: mainRoot, args: ['config', '--get', PUSH_KEY] })
+    if (after.value !== '') {
+      // Undo the person's side FIRST: their tree matters more than our guard.
+      try {
+        execGit(['config', '--unset', PUSH_KEY], { cwd: mainRoot })
+      } catch {
+        /* nothing left to unset is the outcome we wanted anyway */
+      }
+      try {
+        execGit(['config', '--worktree', '--unset', PUSH_KEY], { cwd: copyPath })
+      } catch {
+        /* same: an absent key is the desired end state */
+      }
+      return {
+        applied: false,
+        isolated: false,
+        worktreeConfigPreset: true,
+        mainPushUrl: after.value,
+        reason:
+          'the isolation did not hold — the address appeared in the shared config, so it was taken back ' +
+          'on both sides and the copy is handed over without the lock',
+      }
+    }
+
+    return {
+      applied: true,
+      isolated: true,
+      worktreeConfigPreset: true,
+      mainPushUrl: '',
+      reason: 'the copy has no address to push to; the main tree keeps its own',
+    }
+  } catch (err) {
+    // FAIL-OPEN (substrate law C9): a copy without this second lock is still a usable copy,
+    // and the first lock — the refusal in the spawn arguments — is untouched by this failure.
+    return {
+      applied: false,
+      isolated: false,
+      worktreeConfigPreset: null,
+      mainPushUrl: '',
+      reason: `push lock failed (${(err && err.message) || err}) — the copy is handed over without it`,
+    }
+  }
+}
+
+/**
  * provisionWorktree({branch, path, execGit, cwd}) — create a per-terminal worktree,
  * base-safe and teleport-safe. Sequence:
  *   1. capture EXPECTED_BASE = `git rev-parse HEAD` in the MAIN checkout (`cwd`);
@@ -161,7 +360,11 @@ export function provisionWorktree(opts = {}) {
       execGit(['reset', '--hard', expectedBase], { cwd: path })
       baseFixed = true
     }
-    return { ok: true, path, branch, expectedBase, baseFixed, actualBase: actual }
+    // 5. AND THE COPY LOSES ITS ADDRESS TO PUSH TO — where, and only where, the person has
+    //    already switched the per-worktree config extension on. See lockPushInCopy: the naive
+    //    write takes push away from the MAIN tree, and we never flip that extension ourselves.
+    const pushLock = lockPushInCopy({ execGit, mainRoot: cwd, copyPath: path })
+    return { ok: true, path, branch, expectedBase, baseFixed, actualBase: actual, pushLock }
   } catch (err) {
     return {
       ok: false,
@@ -229,7 +432,12 @@ export function reuseOrProvision(opts = {}) {
   const { branch, path, cwd } = opts
   const existing = listWorktrees({ execGit, cwd }).find((e) => matchesTree(e, { branch, path }))
   if (existing) {
-    return { ok: true, reused: true, path: existing.path, branch: existing.branch, head: existing.head }
+    // THE REUSED COPY GETS THE SAME LOCK. A copy provisioned before this existed, or one whose
+    // lock a session removed, would otherwise come back with push open — and the reuse path is
+    // the one a retry takes, which is exactly when nobody is looking. lockPushInCopy is
+    // idempotent by reading, so a copy already locked costs a read and no write.
+    const pushLock = lockPushInCopy({ execGit, mainRoot: cwd, copyPath: existing.path })
+    return { ok: true, reused: true, path: existing.path, branch: existing.branch, head: existing.head, pushLock }
   }
   return { ...provisionWorktree({ branch, path, execGit, cwd }), reused: false }
 }

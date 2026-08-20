@@ -42,7 +42,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -50,7 +50,15 @@ import { join } from 'node:path'
 // asserted to be this exact shape plus a position block, never a second schema
 import discussTemplate from '../../sma-core/workflows/discuss-phase/templates/checkpoint.json'
 
-import { tick, runDaemon, classifyFailure } from '../src/loop.mjs'
+import {
+  tick,
+  runDaemon,
+  classifyFailure,
+  unregisteredMcpTools,
+  DENIAL_LINES_CAP,
+  DENIAL_COMMAND_MAX,
+  DENIAL_TRUNCATION_MARK,
+} from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
@@ -60,7 +68,7 @@ import { deriveState } from '../src/front/state.mjs'
 import { windowState, isOpen } from '../src/policy/windows.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { workerReadiness, poolReadiness } from '../src/runner/readiness.mjs'
-import { defaultEnvelope, envelopeAllows, envelopeHash } from '../src/queue/capability-envelope.mjs'
+import { defaultEnvelope, envelopeAllows, envelopeHash, humanOnlyDenials } from '../src/queue/capability-envelope.mjs'
 import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
 import {
   recordAttempt,
@@ -70,13 +78,16 @@ import {
   createAttemptLogWriter,
   readAttemptLog,
 } from '../src/queue/attempt-ledger.mjs'
-import { appendRedirect, readPendingRedirects } from '../src/runner/redirects.mjs'
+import { appendRedirect, readPendingRedirects, redirectFileOf } from '../src/runner/redirects.mjs'
+import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
+import { formatDecision, parseDecision, ticketIdFor } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
 // The mirror and the argument builder are used AS THEMSELVES in the wiring cases at the
 // foot of this file: a fake of either could not be poorer than the library, and a fake of
 // the parity guard would be exactly the hole those cases exist to close.
 import { mirrorPersonalLayer, PersonalLayerError } from '../src/runner/personal-layer.mjs'
 import { createBuildArgs } from '../src/runner/build-args.mjs'
+import { buildClaudeArgs } from '../src/runner/args.mjs'
 
 const mkClock = (start = 1_700_000_000_000) => {
   const s = { now: start }
@@ -3453,6 +3464,451 @@ describe('личный слой и наши серверы доезжают до
     const log = readAttemptLog({ dir: ledgerDir2, attemptId: 'BL-7#1' })
     expect(log.entries[0].line.length).toBe(INIT_FRAME.length)
   })
+
+  // === THE ENVELOPE'S REFUSAL TRAVELS, AND BOTH SPAWN POINTS CARRY THE SAME ONE ===
+  //
+  // The four human-only actions were computed for every attempt this fleet ever ran, hashed
+  // into its row and written to the journal - and read by nobody downstream. "The worker
+  // cannot push" was a sentence in a prompt. These cases are about the WIRE and only the
+  // wire: what reached the argument array of a started process, and what the attempt's own
+  // record says it stood under. A test of the translation itself would have stayed green
+  // through every day the wire was cut, and one did.
+  //
+  // WHAT IS DELIBERATELY NOT ASSERTED HERE: the refusal in the session's opening frame. That
+  // frame lists the TOOLS a session holds, and we do not shorten that list - narrowing the
+  // grant under a clean config turns every command nobody remembered into a silent refusal
+  // inside the child. So the boundary is a denial rather than a shorter grant, and a denial
+  // is simply not one of the things the opening frame enumerates. It is proved where it
+  // actually passes: in the arguments, in the attempt record, and in a live refusal.
+
+  // Открывающий кадр сессии, в которой ЗАШЁЛ сервер, объявленный в корне подключённого
+  // проекта. Форма кадра — вендорская, поля взяты из живого прогона.
+  const FOREIGN_INIT_FRAME = {
+    type: 'system',
+    subtype: 'init',
+    session_id: '001afe17-d221-4736-adc8-35c3ec74e5c4',
+    claude_code_version: '2.1.235',
+    model: 'haiku',
+    permissionMode: 'default',
+    tools: ['Read', 'Bash', 'mcp__foreignproject__beacon'],
+    mcp_servers: [{ name: 'foreignproject', status: 'connected' }],
+    skills: [],
+    agents: [],
+    plugins: [],
+  }
+
+  it('запрет конверта доезжает до аргументов запущенного процесса И до записи попытки', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const spawns: string[][] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push(spec.args.slice())
+        spec.onLine?.(JSON.stringify(FOREIGN_INIT_FRAME))
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        // НАСТОЯЩИЙ сборщик аргументов - подделка здесь закрыла бы ровно тот стык,
+        // ради которого случай написан
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    // (1) значение доехало до АРГУМЕНТОВ ЗАПУСКА
+    expect(spawns).toHaveLength(1)
+    const args = spawns[0]
+    const at = args.indexOf('--disallowedTools')
+    expect(at, 'запрет конверта не доехал до аргументов - граница осталась в журнале').toBeGreaterThan(-1)
+    const expected = humanOnlyDenials(defaultEnvelope('prod')).patterns
+    expect(expected.length).toBeGreaterThan(0)
+    expect(args[at + 1]).toBe(expected.join(' '))
+    expect(args[at + 1], 'сам push не назван в запрете').toContain('git push')
+    // и разрешённое НЕ сузилось ради этого
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe([...defaultEnvelope('prod').allowedTools].join(' '))
+
+    // (2) ровно тот же массив лежит в записи попытки
+    const run = JSON.parse(readFileSync(join(projectDir, '.sma', 'runs', 'BL-1_1', 'run.json'), 'utf8'))
+    expect(run.args).toEqual(args)
+    expect(run.envelope.humanOnlyActions).toEqual([...defaultEnvelope('prod').humanOnlyActions])
+
+    // (3) И ЧЕСТНАЯ СТРОКА О ТОМ, ЧЕГО МЫ НЕ ПОСЫЛАЛИ. Сервер, объявленный в корне
+    // подключённого проекта, заходит в сессию, что бы ни стояло в настройках аккаунта
+    // (измерено прогоном). Раз дверь не закрывается, продукт записывает, что через неё
+    // прошло: инструменты сессии минус наши серверы.
+    expect(run.init.unregisteredMcpTools).toEqual(['mcp__foreignproject__beacon'])
+  })
+
+  it('провод: каталог попытки и файл переписки доезжают до ОКРУЖЕНИЯ процесса и до записи попытки', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const dataDir = mkDir('sma-data-')
+    // Что процесс УВИДЕЛ в момент запуска — а не то, что оказалось на диске потом.
+    const seen: Array<{ env: Record<string, string>; runDirExisted: boolean }> = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, dataDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        seen.push({
+          env: { ...(spec.env || {}) },
+          runDirExisted: existsSync(String((spec.env || {}).SMA_RUN_DIR || '')),
+        })
+        spec.onLine?.(JSON.stringify(FOREIGN_INIT_FRAME))
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        dataDir,
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    expect(seen).toHaveLength(1)
+    const expectedRunDir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: 'BL-1_1' })
+    // (1) ЗНАЧЕНИЕ доехало до окружения запущенного процесса — не «вычислено», а вручено.
+    expect(seen[0].env.SMA_RUN_DIR).toBe(expectedRunDir)
+    expect(seen[0].env.SMA_REDIRECTS_FILE).toBe(redirectFileOf({ dataDir, taskId: 'BL-1' }))
+    // (2) и каталог СУЩЕСТВОВАЛ уже в момент запуска: билету некуда лечь в каталог, которого нет
+    expect(seen[0].runDirExisted, 'каталог попытки создан ПОСЛЕ запуска — билету было некуда лечь').toBe(true)
+    // (3) имена видны в записи попытки, значения — нет (правило «только имена»)
+    const run = JSON.parse(readFileSync(join(expectedRunDir!, 'run.json'), 'utf8'))
+    expect(run.envNames).toContain('SMA_RUN_DIR')
+    expect(run.envNames).toContain('SMA_REDIRECTS_FILE')
+  })
+
+  it('провод: путь каталога попытки у спавна и у записи — ОДНО выражение', () => {
+    // Расход этих двух путей означал бы билеты в одном каталоге и запись в другом.
+    const runsDir = runsDirOf('/p')
+    expect(attemptRunDir({ runsDir, attemptId: 'BL-1_1' })).toBe(join('/p', '.sma', 'runs', 'BL-1_1'))
+    expect(attemptRunDir({ runsDir: null as never, attemptId: 'BL-1_1' })).toBe(null)
+    expect(attemptRunDir({ runsDir, attemptId: '' })).toBe(null)
+  })
+
+  it('строка о чужих MCP считается по кадру сессии, а не по нашему намерению', () => {
+    // наш сервер из реестра — не «чужой»
+    expect(
+      unregisteredMcpTools({ tools: ['Read', 'mcp__ours__do', 'mcp__foreign__beacon'] }, { servers: ['ours'] }),
+    ).toEqual(['mcp__foreign__beacon'])
+    // ни одного MCP-инструмента — пустой список, а не отсутствие поля
+    expect(unregisteredMcpTools({ tools: ['Read', 'Bash'] }, { servers: [] })).toEqual([])
+    // кадра нет вовсе — тоже пустой список, а не бросок
+    expect(unregisteredMcpTools(null, null)).toEqual([])
+    // повторов нет, порядок устойчив
+    expect(
+      unregisteredMcpTools({ tools: ['mcp__b__x', 'mcp__a__y', 'mcp__b__x'] }, null),
+    ).toEqual(['mcp__a__y', 'mcp__b__x'])
+  })
+
+  it('обе точки спавна берут конверт из ОДНОЙ функции - аргументы двух путей совпадают', async () => {
+    const sourceDir = founderHome()
+    const seen: any[] = []
+    const runOne = async (over: any) => {
+      const accountDir = mkDir('sma-account-')
+      const ledgerDir = mkDir('sma-ledger-')
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(over.task)
+      const { deps } = makeDeps({
+        adapter,
+        clockObj: c,
+        config: { workers: [worker(accountDir, over.workerOver ?? {})], pipeline: { enabled: true } },
+        spawnWorker: makeSpawnWorker(undefined, { lines: ['APPROACH_NOTE: прямой путь'] }),
+        responses: over.responses,
+        deps: {
+          ledger: ledgerSeam(ledgerDir),
+          execGit: () => '',
+          mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+          buildArgs: (_t: any, _r: any, opts: any) => {
+            seen.push(opts)
+            return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }
+          },
+        },
+      })
+      await tick(deps)
+    }
+
+    // путь кода/документа
+    await runOne({ task: backlogTask(), responses: codeResponses() })
+    // путь "Создателя"
+    await runOne({
+      task: {
+        id: 'F-1',
+        source: 'roster',
+        title: 'выкуй агента',
+        lane: 'forge',
+        priority: 0,
+        forge: { kind: 'agent', description: 'читает и суммирует' },
+      },
+      workerOver: { lane: 'forge' },
+      responses: { worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/F-1', branch: 'wt/x' }) } },
+    })
+
+    expect(seen, 'одна из двух точек спавна не позвала сборщик аргументов').toHaveLength(2)
+    const [codePath, forgePath] = seen
+
+    // обе точки несут ОБА измерения конверта...
+    for (const [name, opts] of [['путь кода', codePath], ['путь Создателя', forgePath]] as const) {
+      expect(opts.allowedTools, name).toEqual([...defaultEnvelope('prod').allowedTools])
+      expect(opts.disallowedTools, name).toEqual([...humanOnlyDenials(defaultEnvelope('prod')).patterns])
+    }
+    // ...и, что здесь и есть предмет случая, СОБРАННЫЕ АРГУМЕНТЫ двух путей совпадают.
+    // Два списка полей, которые сегодня говорят одно и то же, расходятся в тот день, когда
+    // правят один из них: у этих двух точек такая история уже была.
+    expect(buildClaudeArgs({ allowedTools: codePath.allowedTools, disallowedTools: codePath.disallowedTools })).toEqual(
+      buildClaudeArgs({ allowedTools: forgePath.allowedTools, disallowedTools: forgePath.disallowedTools }),
+    )
+  })
+
+
+  // === ОТКАЗ НАЗЫВАЕТСЯ КОМАНДОЙ, А НЕ СЧИТАЕТСЯ ===
+  //
+  // Вендор присылает на кадре результата ПОЛНЫЙ список отказанных вызовов — имя инструмента,
+  // идентификатор вызова и сами аргументы. Демон сохранял из него ровно одно число. Человек у
+  // окна видел «отказов: 1» и не знал, что именно работнику не дали сделать, — то есть ровно
+  // то, чем доказывается вся граница, выбрасывалось на входе. Ниже — про запись, и только
+  // про запись: что попало в `guards.jsonl` попытки.
+
+  /** Кадр результата вендора: форма взята с живого прогона. */
+  const denialFrame = (denials: any[]) => ({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    session_id: 'd82a347f-a54a-4a33-9c87-0b2efb517172',
+    permission_denials: denials,
+  })
+
+  const denial = (id: string, command: string, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_use_id: id,
+    tool_input: { command, description: 'что-то делает' },
+  })
+
+  /** Один тик с подставленными кадрами; отдаёт каталог проекта и разобранные файлы попытки. */
+  const runWithFrames = async (lines: string[], over: any = {}) => {
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        for (const line of lines) spec.onLine?.(line)
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: over.responses ?? codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        execGit: () => '',
+        // НАСТОЯЩИЙ сборщик аргументов, потому что от него зависит `spec.env` — а именно из
+        // него берётся список значений, которые чистильщик обязан вырезать из журнала.
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir: founderHome() }),
+      },
+    })
+    await tick(deps)
+    const runDir = join(projectDir, '.sma', 'runs', 'BL-1_1')
+    const guards = readFileSync(join(runDir, 'guards.jsonl'), 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l))
+    const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
+    return { guards, run, projectDir }
+  }
+
+  it('кадр с двумя отказами → две строки журнала, каждая с инструментом, командой и id вызова', async () => {
+    const { guards, run } = await runWithFrames([
+      JSON.stringify(
+        denialFrame([
+          denial('toolu_01AAA', 'git push origin HEAD'),
+          denial('toolu_01BBB', 'npm publish --access public'),
+        ]),
+      ),
+    ])
+    const vendor = guards.filter((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(vendor, 'вендорский список снова сведён к числу').toHaveLength(2)
+    expect(vendor.map((g) => g.command)).toEqual(['git push origin HEAD', 'npm publish --access public'])
+    expect(vendor.map((g) => g.tool)).toEqual(['Bash', 'Bash'])
+    expect(vendor.map((g) => g.toolUseId)).toEqual(['toolu_01AAA', 'toolu_01BBB'])
+    // КОЛИЧЕСТВО СОХРАНЕНО РЯДОМ, а не вместо: два факта, которые имеют право разойтись
+    expect(run.exit.permissionDenials).toBe(2)
+  })
+
+  it('тот же кадр дважды — отказ остаётся одним: строки не удваиваются', async () => {
+    const frame = JSON.stringify(denialFrame([denial('toolu_01AAA', 'git push origin HEAD')]))
+    const { guards } = await runWithFrames([frame, frame])
+    expect(guards.filter((g) => g.kind === 'denied' && g.source === 'vendor')).toHaveLength(1)
+  })
+
+  it('лавина отказов упирается в объявленный предел и закрывается строкой-остатком', async () => {
+    const many = Array.from({ length: DENIAL_LINES_CAP + 7 }, (_, i) => denial(`toolu_${i}`, `git push origin b${i}`))
+    const { guards, run } = await runWithFrames([JSON.stringify(denialFrame(many))])
+    const vendor = guards.filter((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(vendor).toHaveLength(DENIAL_LINES_CAP)
+    const tail = guards.find((g) => g.kind === 'denied_overflow')
+    expect(tail, 'потеря молча — запрещена').toBeTruthy()
+    expect(tail.notRecorded).toBe(7)
+    expect(String(tail.reason)).toContain('7')
+    // и число вендора по-прежнему полное
+    expect(run.exit.permissionDenials).toBe(DENIAL_LINES_CAP + 7)
+  })
+
+  it('длинная команда обрезана по константе и обрезка помечена явно', async () => {
+    const long = `git push ${'x'.repeat(DENIAL_COMMAND_MAX + 200)}`
+    const { guards } = await runWithFrames([JSON.stringify(denialFrame([denial('toolu_01L', long)]))])
+    const one = guards.find((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(one.command.length).toBeLessThan(long.length)
+    expect(one.command).toContain(DENIAL_TRUNCATION_MARK)
+    expect(one.command.startsWith('git push xxx')).toBe(true)
+  })
+
+  it('значение переменной окружения внутри отказанной команды не доезжает до файла', async () => {
+    const { guards } = await runWithFrames([
+      JSON.stringify(denialFrame([denial('toolu_01S', 'curl -H "Authorization: oauth-value" https://example.com')])),
+    ])
+    const one = guards.find((g) => g.kind === 'denied' && g.source === 'vendor')
+    expect(String(one.command)).not.toContain('oauth-value')
+  })
+
+  it('обе точки сборки копии несут pushLock в запись попытки — объекты копии равны', async () => {
+    const lock = {
+      applied: true,
+      isolated: true,
+      worktreeConfigPreset: true,
+      mainPushUrl: '',
+      reason: 'the copy has no address to push to; the main tree keeps its own',
+    }
+    /** Один и тот же ответ верба выдачи копии — обеим точкам. */
+    const answer = (path: string, branch: string) => ({
+      code: 0,
+      stdout: JSON.stringify({ ok: true, path, branch, expectedBase: 'BASE', materialized: [], pushLock: lock }),
+    })
+
+    const copyOf = async (over: any) => {
+      const accountDir = mkDir('sma-account-')
+      const projectDir = mkDir('sma-proj-')
+      const ledgerDir = mkDir('sma-ledger-')
+      const c = mkClock()
+      const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+      await adapter.enqueue(over.task)
+      const { deps } = makeDeps({
+        adapter,
+        clockObj: c,
+        config: {
+          workers: [worker(accountDir, over.workerOver ?? {})],
+          repoDir: projectDir,
+          pipeline: { enabled: true },
+        },
+        spawnWorker: makeSpawnWorker(undefined, { lines: ['APPROACH_NOTE: прямой путь'] }),
+        responses: over.responses,
+        deps: {
+          ledger: ledgerSeam(ledgerDir),
+          projectDir: () => projectDir,
+          execGit: () => '',
+          mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir: founderHome() }),
+        },
+      })
+      await tick(deps)
+      const dir = join(projectDir, '.sma', 'runs', over.runId)
+      return JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).copy
+    }
+
+    // путь кода
+    const codeCopy = await copyOf({
+      task: backlogTask(),
+      runId: 'BL-1_1',
+      responses: {
+        preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+        worktree: answer('/wt/BL-1', 'wt/BL-1'),
+        reverify: GREEN_REVERIFY,
+      },
+    })
+    // путь «Создателя»
+    const forgeCopy = await copyOf({
+      task: {
+        id: 'F-1',
+        source: 'roster',
+        title: 'выкуй агента',
+        lane: 'forge',
+        priority: 0,
+        forge: { kind: 'agent', description: 'читает и суммирует' },
+      },
+      workerOver: { lane: 'forge' },
+      runId: 'F-1_1',
+      responses: { worktree: answer('/wt/F-1', 'wt/F-1') },
+    })
+
+    // ОБЕ ТОЧКИ, и это здесь предмет случая: «доехало до одной из двух» — это не доехало.
+    expect(codeCopy.pushLock, 'путь кода потерял замок').toEqual(lock)
+    expect(forgeCopy.pushLock, 'путь Создателя потерял замок').toEqual(lock)
+    // Два списка полей, которые сегодня говорят одно и то же, расходятся в тот день, когда
+    // правят один из них: у этих двух точек такая история уже была.
+    expect(Object.keys(codeCopy).sort()).toEqual(Object.keys(forgeCopy).sort())
+    // и объекты копии РАВНЫ, если убрать то, что законно различается у двух задач
+    const same = (row: any) => ({ ...row, branch: 'X', worktreePath: 'X', provisionMs: 0 })
+    expect(same(codeCopy)).toEqual(same(forgeCopy))
+  })
+
+  it('старая установка не отвечает про замок — в записи `null`, а не выдуманное «замок стоит»', async () => {
+    const { run } = await runWithFrames([], { responses: codeResponses() })
+    expect(run.copy.pushLock).toBe(null)
+  })
+
+  it('замок на расход двух точек сборки копии: строка копии собирается одной функцией', () => {
+    const source = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
+    // ровно два вызова — по одному на точку сборки объекта копии
+    expect(source.match(/=\s*copyRow\(\{/g) ?? []).toHaveLength(2)
+    // и ни одной точки, которая собирает строку копии своим списком полей
+    expect(source).not.toMatch(/worktreeRow\s*=\s*\{\s*base:/)
+  })
+
+  it('замок на расход двух точек: опции конверта собирает одна функция и никто больше', () => {
+    const source = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
+    // ровно два вызова - по одному на точку спавна
+    expect(source.match(/envelopeSpawnOptions\(envelope\)/g) ?? []).toHaveLength(2)
+    // и ни одной точки, которая собирает поле конверта своим литералом
+    expect(source).not.toMatch(/allowedTools:\s*envelope\.allowedTools/)
+  })
 })
 
 /**
@@ -3943,5 +4399,47 @@ describe('дверь «работа уже сделана» спрашивает
     expect(res.completed).toBe('ST-1')
     expect(seen.filter((s) => s.verb === 'preflight')).toHaveLength(0)
     expect(journalled.some((e: any) => String(e.type).startsWith('preflight.'))).toBe(false)
+  })
+})
+
+// ── Кнопка «Одобрить вызов»: провод от окна к стоящему вызову ──────────────────
+describe('кнопка одобрения — один провод, один режим', () => {
+  it('провод: строка, собранная ПРОИЗВОДИТЕЛЕМ окна, разбирается ПОТРЕБИТЕЛЕМ хука', () => {
+    // Ровно тот вызов, который делает кнопка, и ровно тот разбор, который делает хук.
+    // Собрать строку руками в тесте значило бы доказать, что обе стороны согласны С ТЕСТОМ.
+    const ticketId = ticketIdFor({ attemptId: 'BL-1_1', tool: 'Bash', input: { command: 'npm publish' } })
+    const line = formatDecision({ ticketId, decision: 'approve', reason: 'посмотрел' })
+    const parsed = parseDecision(line)
+    expect(parsed?.ticketId).toBe(ticketId)
+    expect(parsed?.decision).toBe('approve')
+    // И чужая поправка того же человека решением НЕ становится — она едет работнику.
+    expect(parseDecision('нет, не так — правь шапку')).toBe(null)
+  })
+
+  it('провод: режим кнопки — queue, и interrupt на этом пути не существует', () => {
+    const client = readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8')
+    const decide = client.slice(client.indexOf('export function decideToolTicket'))
+    const body = decide.slice(0, decide.indexOf('\n}\n') + 2)
+    // Режим ЗАШИТ в теле, а не принят параметром: второго значения у этого пути быть не должно.
+    expect(body).toContain("mode: 'queue'")
+    expect(body).not.toContain('interrupt')
+    // Прерывание убивает живого ребёнка — то есть уничтожило бы удерживаемую билетом сессию.
+    const card = readFileSync(new URL('../../spa/src/screens/task-card/index.tsx', import.meta.url), 'utf8')
+    const parked = card.slice(card.indexOf('function ParkedCall'), card.indexOf('«Карточка задачи»'))
+    expect(parked).toContain('useDecideToolTicket')
+    expect(parked).not.toContain('interrupt')
+    // И строка кнопки НЕ склеивается в окне: она приходит из производителя продукта.
+    expect(client).toContain("from '../../../scripts/sma/lib/tool-decision.mjs'")
+  })
+
+  it('провод: дверь решения — та, что УЖЕ есть; новых маршрутов не заведено', () => {
+    const server = readFileSync(new URL('../src/front/server.mjs', import.meta.url), 'utf8')
+    const routes = server.slice(server.indexOf('const ROUTES'), server.indexOf('const ROUTES') + 12000)
+    // Решение едет дверью переписки, и никакой двери билета в таблице маршрутов нет.
+    expect(routes).toContain("'POST /api/redirect'")
+    expect(routes).not.toMatch(/ticket|approve-call|tool\/approve/i)
+    const client = readFileSync(new URL('../../spa/src/api/client.ts', import.meta.url), 'utf8')
+    const decide = client.slice(client.indexOf('export function decideToolTicket'))
+    expect(decide.slice(0, 900)).toContain('redirectTask(')
   })
 })

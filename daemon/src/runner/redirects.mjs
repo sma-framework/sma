@@ -21,7 +21,7 @@
  */
 
 import { appendFileSync as fsAppend, readFileSync as fsRead, mkdirSync as fsMkdir, existsSync as fsExists } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 /** The two fates a typed-while-busy text can have. A third value is refused at the door. */
 export const REDIRECT_MODES = Object.freeze(['interrupt', 'queue'])
@@ -42,6 +42,20 @@ function fileOf(dataDir, taskId) {
 }
 
 /**
+ * redirectFileOf({dataDir, taskId}) → the ONE path this task's corrections live at.
+ *
+ * Exported because a second reader now exists and it does not run inside the daemon: the
+ * parking gate runs in the WORKER's child process, where neither `dataDir` nor the task id
+ * is in hand — only a path handed to it in the environment. Minting that path is this
+ * module's business, so the daemon asks for it here instead of the far side guessing at a
+ * directory layout it does not own.
+ */
+export function redirectFileOf({ dataDir, taskId } = {}) {
+  if (!dataDir || !taskId) return null
+  return fileOf(dataDir, taskId)
+}
+
+/**
  * appendRedirect({dataDir, taskId, text, mode, clock, fsImpl}) → {ok, id?, error?}.
  * Validates mode and text (non-empty, capped) and appends ONE `ask` line. The id is
  * minted from the injected clock plus the file's own growing length — unique per task
@@ -56,19 +70,18 @@ export function appendRedirect({ dataDir, taskId, text, mode, clock = Date.now, 
   if (!body) return { ok: false, error: 'empty text' }
   if (body.length > REDIRECT_TEXT_CAP) return { ok: false, error: 'text too long' }
 
-  const existing = readAll({ dataDir, taskId, fsImpl })
+  const existing = readAllFrom(fileOf(dataDir, taskId), fsImpl)
   const id = `rd-${clock()}-${existing.length + 1}`
   mkdir(join(dataDir, 'redirects'), { recursive: true })
   append(fileOf(dataDir, taskId), `${JSON.stringify({ kind: 'ask', id, ts: new Date(clock()).toISOString(), mode, text: body })}\n`, 'utf8')
   return { ok: true, id }
 }
 
-/** Every parseable line of the task's redirect file, in order. Missing file → []. */
-function readAll({ dataDir, taskId, fsImpl } = {}) {
+/** Every parseable line of ONE redirect file, in order. Missing file → []. */
+function readAllFrom(file, fsImpl) {
   const read = fsImpl?.readFileSync ?? fsRead
   const exists = fsImpl?.existsSync ?? fsExists
-  const file = fileOf(dataDir, taskId)
-  if (!exists(file)) return []
+  if (!file || !exists(file)) return []
   let raw = ''
   try {
     raw = String(read(file, 'utf8'))
@@ -89,22 +102,42 @@ function readAll({ dataDir, taskId, fsImpl } = {}) {
 }
 
 /**
- * readPendingRedirects({dataDir, taskId, fsImpl}) → asks not yet marked done, in order.
+ * readPendingRedirectsFile({file, fsImpl}) → asks of ONE file not yet marked done.
+ * The PATH-shaped half of the contract: the gate in the worker's child process holds a
+ * path and nothing else, and «which lines are still pending» is a rule that must be
+ * answered by this module in both processes or it is two rules.
  */
-export function readPendingRedirects({ dataDir, taskId, fsImpl } = {}) {
-  const rows = readAll({ dataDir, taskId, fsImpl })
+export function readPendingRedirectsFile({ file, fsImpl } = {}) {
+  const rows = readAllFrom(file, fsImpl)
   const done = new Set(rows.filter((r) => r && r.kind === 'done').map((r) => r.id))
   return rows.filter((r) => r && r.kind === 'ask' && !done.has(r.id))
 }
 
-/** markConsumed({dataDir, taskId, ids, clock, fsImpl}) — append one `done` line per id. */
-export function markConsumed({ dataDir, taskId, ids = [], clock = Date.now, fsImpl } = {}) {
+/**
+ * markConsumedFile({file, ids, clock, fsImpl}) — append one `done` line per id to ONE
+ * file. Consumption is an APPENDED record, never an edit — the same posture the daemon
+ * side takes, and the reason two processes appending cannot corrupt each other.
+ */
+export function markConsumedFile({ file, ids = [], clock = Date.now, fsImpl } = {}) {
   const append = fsImpl?.appendFileSync ?? fsAppend
   const mkdir = fsImpl?.mkdirSync ?? fsMkdir
-  if (!dataDir || !taskId || !ids.length) return
-  mkdir(join(dataDir, 'redirects'), { recursive: true })
+  if (!file || !ids.length) return
+  mkdir(dirname(file), { recursive: true })
   const ts = new Date(clock()).toISOString()
   for (const id of ids) {
-    append(fileOf(dataDir, taskId), `${JSON.stringify({ kind: 'done', id, ts })}\n`, 'utf8')
+    append(file, `${JSON.stringify({ kind: 'done', id, ts })}\n`, 'utf8')
   }
+}
+
+/**
+ * readPendingRedirects({dataDir, taskId, fsImpl}) → asks not yet marked done, in order.
+ */
+export function readPendingRedirects({ dataDir, taskId, fsImpl } = {}) {
+  return readPendingRedirectsFile({ file: fileOf(dataDir, taskId), fsImpl })
+}
+
+/** markConsumed({dataDir, taskId, ids, clock, fsImpl}) — append one `done` line per id. */
+export function markConsumed({ dataDir, taskId, ids = [], clock = Date.now, fsImpl } = {}) {
+  if (!dataDir || !taskId || !ids.length) return
+  markConsumedFile({ file: fileOf(dataDir, taskId), ids, clock, fsImpl })
 }

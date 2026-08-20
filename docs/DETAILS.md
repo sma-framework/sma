@@ -449,7 +449,7 @@ what makes the command receipt-hashable and scorable.
 | `memory` | the corpus was actually READ: the index came back, or the search was called | that the session used what it read. The fact is counted by the daemon out of the live stream, where a request and its result are still paired — a read that FAILED looks exactly like a read that succeeded to anybody parsing requests alone, and it was scored as success for a year |
 | `rules` | the project's instruction file reached the working copy, materialized into it or tracked by it | that anyone opened it. `absent` is a failure and not a footnote: a worker that never saw the project's rules is not running under them |
 | `skills` | the copy carries skills or agents | anything about a project that has neither — that earns an honest **n/a** with the reason printed, never a pass. «Not applicable» is a fact about the project; «passed» would be a fact about the run that nobody established |
-| `rights` | never `ok`. A match between the envelope and the arguments is **`warn`**, with the limit named in the same breath | that the whole envelope reached the process. Only `allowedTools` rides the command line; the actions reserved for a human are enforced after the fact rather than before it, and a green light here would certify a guarantee this product does not yet give |
+| `rights` | **both** halves of the envelope reached the process: the granted tools equal the allow list on the command line, and the actions reserved for a human — push, merge, tag, deploy — equal the refusal list on the same line. An envelope that names human-only actions while the spawn carries no refusal list is a **failure** here, not a warning: that is exactly the state this receipt was pinned at `warn` for, back when only the grant travelled | that the boundary cannot be walked around from inside the session. The refusal list catches the obvious spellings of each action — it is one of three locks and never the only one, and the session's own MCP intake is a separate matter: a server declared in the root of the connected project loads anyway, so the attempt's record names the MCP tools that did not come from your registry |
 
 **Missing data is a failure that names what was missing** — never a default pass, and never a free
 n/a. That rule is the whole reason the check exists: the cheapest route to five out of five is to
@@ -893,10 +893,19 @@ counts, plugin list, connector state — beside what the session **actually load
 started, read off its own init frame. The gap between «what we put in» and «what came up» is
 the whole reason both halves are recorded.
 
-**Connections are ours only.** `disableClaudeAiConnectors: true` goes into the worker's
-settings (Claude Code 2.1.182 or later), so hosted claude.ai MCP connectors are neither fetched
-nor attached; servers handed over explicitly on `--mcp-config` are unaffected, and those are
-the only ones a worker gets. They come from the registry a human keeps on the machine
+**Connections: the hosted ones are off, the project's own still arrive.**
+`disableClaudeAiConnectors: true` goes into the worker's settings (Claude Code 2.1.182 or
+later), so hosted claude.ai MCP connectors are neither fetched nor attached, and the servers
+handed over explicitly on `--mcp-config` are unaffected. What this does NOT do — and the
+sentence here used to claim it did — is keep out a server declared by the project the worker
+was pointed at: an MCP file in that project's own root is loaded by the session regardless of
+how empty the worker's account is. Five measured runs settled it; neither switch that looks
+like it should close that door (turning off project servers wholesale, disabling them by name)
+closes it, and the one flag that would is refused by this product's own argument guard, because
+it belongs to the family of flags that quietly de-parity a session while the run still looks
+green. So the boundary here is visibility rather than prevention: every attempt records, beside
+the servers it was handed, the ones that arrived without being on the register — and a project
+whose connection file you have not read is a project whose servers your worker will load. They come from the registry a human keeps on the machine
 (`~/.sma-daemon/mcp.json`), switched on row by row on «Подключения» — the window can flip
 `enabled` and nothing else, so no text typed into it ever becomes a command.
 
