@@ -5555,10 +5555,18 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const drafts = predict.draftLessonsForRecords({ records, planId, dirs: { draftsDir } })
 
   const hasError = records.some((r) => r.verdict === 'error')
+  // The exit code is unchanged in substance: a refused command and an un-arrived
+  // horizon are NOT failures (locked decision); an 'error' still is.
   const exitCode = hasError ? 1 : 0
+  // The closing line is COMPUTED by one pure function, never counted on screen.
+  const tally = predict.scoringTally({ records, invalid, excluded, notDue, receiptsSkipped })
+  const tallyLine =
+    `Итог: вердиктов вынесено ${tally.verdicts}; без вердикта по дефекту самого предсказания ${tally.unscored}` +
+    (tally.reasons.length ? ` (${tally.reasons.map((r) => `${r.reason}: ${r.count}`).join('; ')})` : '') +
+    '.'
 
   if (wantsJson(flags)) {
-    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, exitCode })
+    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, tally, exitCode })
     return exitCode
   }
 
@@ -5605,6 +5613,7 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
     }
   }
   process.stdout.write(`Вердиктов записано в леджер: ${records.length}\n`)
+  process.stdout.write(`${tallyLine}\n`)
   return exitCode
 }
 
