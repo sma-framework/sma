@@ -749,6 +749,12 @@ const NEW_STAMP_KEYS = [
 // provenance flag, so nothing older moves.
 const COPY_KEYS = ['base', 'branch', 'worktreePath', 'materialized', 'provisionMs', 'cleanup']
 
+// What the attempt CHANGED inside that copy — the list, the vanished paths, and the two
+// counters that name what the ceiling cut. They live beside the copy block rather than at the
+// tail because they answer the second half of the same question the copy block opens: «к чему
+// откатывать» and «что при этом вернётся» belong together or they drift apart.
+const CHANGED_KEYS = ['files', 'deletions', 'filesOverflow', 'deletionsOverflow']
+
 describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the personal layer, every old one kept', () => {
   it('keeps every pre-existing member, in place', () => {
     const before = [
@@ -767,15 +773,21 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
 
   it('gains exactly the seven stamp fields and stays frozen', () => {
     for (const k of NEW_STAMP_KEYS) expect(ALLOWED_ATTEMPT_KEYS).toContain(k)
-    // THE COUNT IS RE-PINNED ON PURPOSE, and this is the reason in words: the write door gained
-    // `conflictsWith` — the mark a row carries when it contradicts a terminal outcome already
-    // recorded under the same attempt number. It is the last member, appended behind the two
-    // run-directory keys, so nothing older moved and every position below is the same position
-    // it was, one step further from the end.
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(30)
+    // THE COUNT IS RE-PINNED ON PURPOSE, and this is the reason in words: the row gained the
+    // four keys that say WHAT THE ATTEMPT CHANGED — `files` and `deletions`, plus the two
+    // counters naming what the ceiling cut. They sit immediately behind the copy block,
+    // because they describe the same copy and are handed out by the same expression as the
+    // point of return: a base commit with no list is «откатить можно, а к чему — неизвестно»,
+    // and the two halves of that answer must never travel apart.
+    //
+    // They were INSERTED, not appended, so the six keys at the tail (`personalLayer`,
+    // `mcpConfig`, `memoryHarvest`, `runDir`, `parity`, `conflictsWith`) keep their distance
+    // from the end and every tail-relative pin below is untouched. The one pin that reached
+    // back PAST the insertion point is re-pinned in the same commit, in the case that owns it.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(34)
     expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(30) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(34) // no duplicate name
   })
 
   /**
@@ -827,8 +839,14 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
 
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
-  it('carries the six copy fields, then the two about the session the worker was given', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-12, -6)).toEqual(COPY_KEYS)
+  it('carries the six copy fields, then what the attempt changed, then the two about the session', () => {
+    // RE-PINNED ON PURPOSE, reason in words: the four «what changed» keys were inserted
+    // immediately behind the copy block, so the block now sits four steps further from the
+    // end. The order is still the contract — the copy, then what happened inside it, then the
+    // session — and the four are asserted right here rather than somewhere else, so nobody can
+    // shift this block again without reading why it is where it is.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-16, -10)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-10, -6)).toEqual(CHANGED_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
