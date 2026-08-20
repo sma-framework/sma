@@ -186,6 +186,23 @@ const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
+ * isResumableSessionId(value) → can this be handed to `--resume` at all.
+ *
+ * THE SAME RULE, ASKED RATHER THAN REMEMBERED. Two sides need this shape: the caller choosing
+ * WHICH recorded session to offer, and the builder below deciding whether to accept it. While
+ * each held its own idea of what a session id looks like, the caller's was the wider one — so
+ * it could hand over something the builder is obliged to refuse by throwing, and a throw on
+ * that path costs a whole attempt. One predicate, exported, and neither side keeps a private
+ * copy of the pattern.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isResumableSessionId(value) {
+  return typeof value === 'string' && UUID_RE.test(value)
+}
+
+/**
  * Wakes that ALWAYS get a fresh session — a resumeId with these is refused (PF-4).
  * `chat` joins the family for the same reason a timer wake does: a conversation turn must
  * never inherit the session of a DIFFERENT conversation. Continuing the same talk is a

@@ -138,7 +138,7 @@ import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage } from './run
 import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
-import { buildMcpConfigFile } from './runner/args.mjs'
+import { buildMcpConfigFile, isResumableSessionId } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
@@ -255,6 +255,46 @@ function gateSpawnOptions(deps, config, task) {
     }
   }
   return runDir || redirectsFile ? { gate: { runDir: runDir ?? undefined, redirectsFile: redirectsFile ?? undefined } } : {}
+}
+
+/**
+ * wakeSpawnOptions(deps, task) → `{wakeKind}`, plus `{resumeId}` when THIS wake is allowed to
+ * continue the session the previous attempt held.
+ *
+ * WHAT THE SPLIT IS FOR. Two very different events arrive at the tick looking identical — a
+ * second attempt of a task whose ledger holds a session id. One is a PERSON handing work back
+ * with a remark: he has already paid for everything the worker read and thought, and starting
+ * from zero charges him for it twice, in a head that no longer remembers what he is objecting
+ * to. The other is a TIMER: the lease expired, time passed, and the picture of the world that
+ * session ended with is no longer the picture outside. Dragging it along drags a stale one.
+ * Until this function they were one condition — «attempt > 1» — and both continued.
+ *
+ * THE ONE WORD THAT SEPARATES THEM is on the row itself: a queue row records who put it back,
+ * and a return is the only origin a person's own hands produce.
+ *
+ * AND NO SECOND LOCK IS WRITTEN HERE. A wake that must start clean is refused a continuation
+ * by the argument builder, which has said so, thrown for it and been tested on it since long
+ * before this. All this does is NAME the wake and let the existing rule act — the road the
+ * conversation lane has always taken.
+ *
+ * FAIL-FRESH: an unreadable ledger, a missing row and a session id of the wrong shape all mean
+ * a fresh session, never a wedged attempt. The shape is asked of the builder's own predicate so
+ * this side cannot offer something the other side is obliged to throw on.
+ */
+function wakeSpawnOptions(deps, task) {
+  const repeat = Number(task && task.attempt) > 1
+  if (!repeat) return { wakeKind: 'new-task' }
+  if (String(task && task.source) !== 'return') return { wakeKind: 'timer' }
+  try {
+    const prior = (deps.ledger && typeof deps.ledger.readAttempts === 'function' && deps.ledger.readAttempts(task.id)) || []
+    for (let i = prior.length - 1; i >= 0; i -= 1) {
+      const sid = prior[i] && prior[i].sessionId
+      if (isResumableSessionId(sid)) return { wakeKind: 'return', resumeId: sid }
+    }
+  } catch {
+    /* an unreadable ledger means a fresh session — never a wedged attempt */
+  }
+  return { wakeKind: 'return' }
 }
 
 /** The `data` envelope a stage task carries, or an empty one for ordinary code work. */
@@ -3082,14 +3122,22 @@ export async function tick(deps = {}) {
       // this codebase once handed the grant to one lane and withheld it from the other; one
       // function makes that divergence impossible instead of unlikely, and the suite calls
       // both points with one envelope and compares the argument arrays they produce.
+      // WHAT WOKE THIS ATTEMPT, decided before the array is built rather than patched onto it
+      // afterwards — see wakeSpawnOptions: a person's return continues the session it is a
+      // remark about, a timer never does, and the refusal is the builder's own long-standing one.
+      const wake = wakeSpawnOptions(deps, task)
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
+        ...wake,
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...envelopeSpawnOptions(envelope),
         // The attempt directory and the correction file, created and named BEFORE the process
         // exists — the parking gate inside the child reads both out of its environment.
         ...gateSpawnOptions(deps, config, task),
       })
+      // THE LINE IS WRITTEN ONLY WHERE IT IS TRUE. A timer wake takes no session with it, so
+      // saying it resumed one would make the operator's log claim something that never happened.
+      if (wake.resumeId) writeLog(deps, { type: 'task.session_resumed', taskId: task.id, attempt: task.attempt })
       // WHAT THE ATTEMPT WAS GIVEN BEFORE IT SPOKE — the role file and the skills of the
       // routed worker. It is REMEMBERED here and written into the memory layer at the end,
       // together with what the session actually did: the declaration and the observation
@@ -3110,29 +3158,6 @@ export async function tick(deps = {}) {
           ]
         }
       }
-      // ── A RETURN CONTINUES THE SAME SESSION (phase «Двигатель», wave 4) ──
-      // A task sent back with a comment used to start attempt N+1 from zero: a fresh
-      // session that re-read the world and re-did the thinking the founder had already
-      // paid for. The prior attempt's session id is on its ledger row, so the new attempt
-      // RESUMES it — the correction lands in a head that still holds the context. Guarded
-      // to re-queues only (attempt > 1): a fresh task always gets a fresh session (PF-4),
-      // and a fresh session is also the safe default whenever the ledger cannot answer.
-      if (spec.bin === CLAUDE_BIN && Number(task.attempt) > 1 && deps.ledger && typeof deps.ledger.readAttempts === 'function') {
-        try {
-          const prior = deps.ledger.readAttempts(task.id) || []
-          for (let i = prior.length - 1; i >= 0; i -= 1) {
-            const sid = prior[i] && prior[i].sessionId
-            if (typeof sid === 'string' && /^[0-9a-f-]{32,40}$/i.test(sid)) {
-              spec.args = [...spec.args, '--resume', sid]
-              writeLog(deps, { type: 'task.session_resumed', taskId: task.id, attempt: task.attempt })
-              break
-            }
-          }
-        } catch {
-          /* an unreadable ledger means a fresh session — never a wedged attempt */
-        }
-      }
-
       const streamLines = []
       const { onLine, sessionOf, initOf, appendLine, memoryOf, guardsOf, runInitOf, permissionDenialsOf, logFileOf } = attemptStream(
         deps,

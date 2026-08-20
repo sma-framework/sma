@@ -43,9 +43,10 @@
  *     which is the only caller that knows where this attempt's copy lives. A tick that names
  *     no path spawns without MCP servers, exactly as before — an absent flag is a better
  *     answer than a directory invented here.
- *   - Session resume. `resumeId` / `resumeThreadId` are supported by the argument builders;
- *     wiring them needs the session id recovered from the previous attempt's stream, which is
- *     a second concern with its own failure modes.
+ *   - Codex session resume. `resumeThreadId` is supported by that lane's builder and nothing
+ *     here offers it yet. The Claude lane's `resumeId` IS wired (see the spawn options below):
+ *     the tick decides whether this wake may continue the previous session, and this file
+ *     carries the decision into the builder, where the fresh-session lock already lives.
  */
 
 import {
@@ -263,6 +264,17 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
         // set it and the process that has to obey it. The resolver refuses anything that is not
         // a whole positive number, so a malformed file cannot put junk on a command line.
         maxTurns: pipelineMaxTurns(config),
+        // WHAT WOKE THIS ATTEMPT, AND WHETHER IT MAY CONTINUE THE PREVIOUS SESSION — decided by
+        // the tick, which is the only place that knows, and DELIVERED HERE so the builder's own
+        // fresh-session lock finally stands on the path a task takes.
+        //
+        // It did not, until this line. The lock refuses a continuation to every wake that must
+        // start clean, and the tick used to append the continuation onto an ALREADY ASSEMBLED
+        // array — past the builder and therefore past the lock. Written, covered, green, and
+        // guarding nothing on this road. Nothing new is invented here: the wake kind travels,
+        // and the rule that was always there does the refusing.
+        ...(options.wakeKind ? { wakeKind: String(options.wakeKind) } : {}),
+        ...(options.resumeId ? { resumeId: String(options.resumeId) } : {}),
         // The per-spawn MCP config, when the tick wrote one. The path is all that travels: the
         // file itself is built by the arg module from the ENABLED registry entries only.
         ...(options.mcpConfigPath ? { mcpConfigPath: String(options.mcpConfigPath) } : {}),
