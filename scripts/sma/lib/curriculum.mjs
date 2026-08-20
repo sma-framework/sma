@@ -344,3 +344,55 @@ export function latestBrief({ dirs = {}, now } = {}) {
   const ageDays = (nowMs - mtimeMs) / DAY_MS
   return { path, ageDays, stale: nowMs - mtimeMs > STALE_MS }
 }
+
+/**
+ * The wall-clock budget one rebuild is given on the session-start path. A brief that
+ * cannot be assembled inside it is not worth a human's session start: the failure is
+ * reported in the returned result and the next session tries again.
+ */
+export const BUILD_BUDGET_MS = 15_000
+
+/**
+ * refreshIfStale({dirs, now, build, timeoutMs}) -> {stale, built, path, ageDays, clusters, error}
+ *
+ * The schedule, as ONE decision that makes ONE call. latestBrief already knew the
+ * horizon and could read the file's age; all that was ever done with the answer was
+ * printing a line that asked somebody to run the verb by hand. That reminder stood
+ * unexecuted for four weeks — which is enough to call it something other than a
+ * mechanism. Here the same answer moves a hand: stale (or never built) CALLS the
+ * injected builder, once.
+ *
+ * Fresh means nothing happens at all — no ledger read, no rewrite, no cost on the
+ * path every session opens. Fail-open in both directions: a builder that throws or
+ * overruns its budget is REPORTED in the result and never rethrown, because the brief
+ * is a convenience and the session start is not.
+ *
+ * @param {{dirs?:object, now?:number|string, build?:Function, timeoutMs?:number}} args
+ * @returns {Promise<{stale:boolean, built:boolean, path:(string|null), ageDays:(number|null), clusters:(number|null), error:(string|null)}>}
+ */
+export async function refreshIfStale({ dirs = {}, now, build, timeoutMs = BUILD_BUDGET_MS } = {}) {
+  const latest = latestBrief({ dirs, now })
+  const base = { stale: latest.stale, built: false, path: latest.path, ageDays: latest.ageDays, clusters: null, error: null }
+  if (!latest.stale) return base
+  if (typeof build !== 'function') return { ...base, error: 'no builder was given' }
+
+  let timer = null
+  try {
+    const budget = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`the rebuild overran its ${timeoutMs} ms budget`)), timeoutMs)
+      if (timer && typeof timer.unref === 'function') timer.unref() // never hold the process open
+    })
+    const out = await Promise.race([Promise.resolve().then(() => build()), budget])
+    return {
+      ...base,
+      built: true,
+      path: out && out.brief ? out.brief.path : base.path,
+      ageDays: 0,
+      clusters: out && Array.isArray(out.clusters) ? out.clusters.length : null,
+    }
+  } catch (err) {
+    return { ...base, error: err && err.message ? err.message : String(err) }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
