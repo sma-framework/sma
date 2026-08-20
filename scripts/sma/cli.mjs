@@ -589,16 +589,23 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the disarm guard never wedges session-start */
   }
 
-  // the weekly miss-curriculum staleness nudge. ONE bounded line
-  // at session-start (never the per-tool-call hot path) when the newest weak-spots brief
-  // is stale or missing. Try/catch, fail-open — a nudge bug never wedges session-start.
+  // the weekly miss-curriculum, REBUILT here when it has gone stale — at session-start
+  // only (never the per-tool-call hot path), and only on the staleness verdict: a fresh
+  // brief costs this path nothing at all. This used to print a line asking the agent to
+  // run the verb; the line stood unexecuted for four weeks, so the reminder was replaced
+  // by the deed. Bounded by a wall-clock budget and fail-open — a rebuild that fails is
+  // reported in words and never wedges or delays the session start.
   let curriculumLine = ''
   try {
     const curriculum = await import('./lib/curriculum.mjs')
-    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
-    if (latest.stale) curriculumLine = 'SMA: недельная miss-curriculum устарела — обновите: `node scripts/sma/cli.mjs curriculum`.'
+    const refreshed = await curriculum.refreshIfStale({ dirs, now: Date.now(), build: () => buildCurriculum(dirs) })
+    if (refreshed.built) {
+      curriculumLine = `SMA: недельная выжимка промахов устарела и собрана заново: ${refreshed.clusters ?? 0} кластер(ов), файл ${refreshed.path} (каталог состояния: ${dirs.smaRoot}).`
+    } else if (refreshed.stale) {
+      curriculumLine = `SMA: недельную выжимку промахов собрать не удалось (${refreshed.error}) — соберите вручную: \`node scripts/sma/cli.mjs curriculum\` (каталог состояния: ${dirs.smaRoot}).`
+    }
   } catch {
-    /* fail-open — the curriculum nudge never wedges session-start */
+    /* fail-open — the curriculum refresh never wedges session-start */
   }
 
   // prompt ONCE for a human window name when this window is still anonymous, so
@@ -8615,28 +8622,48 @@ async function cmdTune({ positionals, flags, dirs }) {
  * ISO week: cluster misses -> prediction templates -> weak-spots brief. --latest prints
  * the newest brief path. Fail-open; NOT hook-facing.
  */
-async function cmdCurriculum({ flags, dirs }) {
+/**
+ * buildCurriculum(dirs, {now}) -> {week, clusters, templates, brief}. The ONE assembly:
+ * cluster the misses -> emit the prediction templates -> render the weak-spots brief.
+ * The verb calls THIS and the stale-brief refresh at session-start calls THIS — a second
+ * copy of the input gathering would be a second answer to the question «which tree did
+ * this come from», and that question already cost four weeks once.
+ */
+async function buildCurriculum(dirs, { now } = {}) {
   const curriculum = await import('./lib/curriculum.mjs')
-  if (flags.latest) {
-    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
-    if (wantsJson(flags)) printJson(latest)
-    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `node scripts/sma/cli.mjs curriculum`.\n')
-    return 0
-  }
-
-  const inp = await ladderInputs(dirs)
-  const week = curriculum.isoWeek(Date.now())
+  const inp = await ladderInputs(dirs, { now })
+  const week = curriculum.isoWeek(inp.nowMs)
   const clusters = curriculum.clusterMisses({ ledgers: inp.ledgers, events: inp.events, classified: inp.classified, windowMs: inp.windowMs, now: inp.nowMs })
   const templates = curriculum.predictionTemplates({ clusters, week, dirs })
   const stpaFixture = () => null
   const proposals = inp.ladderLib.proposeTierChanges({ ladder: inp.ladder, stats: inp.stats, checkFixture: stpaFixture })
   const brief = curriculum.weakSpotsBrief({ clusters, proposals, templates, week, dirs })
+  return { week, clusters, templates, brief }
+}
+
+async function cmdCurriculum({ flags, dirs }) {
+  const curriculum = await import('./lib/curriculum.mjs')
+  if (flags.latest) {
+    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
+    // --latest is a MACHINE surface: a receipt pipes this line straight into a file
+    // test, so the state dir rides in --json and in the human verb output, never here.
+    if (wantsJson(flags)) printJson({ ...latest, stateDir: dirs.smaRoot })
+    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `node scripts/sma/cli.mjs curriculum`.\n')
+    return 0
+  }
+
+  const { week, clusters, templates, brief } = await buildCurriculum(dirs)
 
   if (wantsJson(flags)) {
-    printJson({ week, clusters, templates: templates.length, brief: brief.path })
+    printJson({ week, clusters, templates: templates.length, brief: brief.path, stateDir: dirs.smaRoot })
     return 0
   }
   process.stdout.write(`SMA curriculum ${week.year}W${String(week.week).padStart(2, '0')}: ${clusters.length} cluster(s), ${templates.length} template(s).\n`)
+  // WHICH TREE the journal and the ledger were read from. «Zero clusters in this tree»
+  // and «zero clusters anywhere» are different statements, and a verb run from a second
+  // working copy resolves its root through the shared git dir — so the reader must never
+  // have to guess which of the two he is looking at.
+  process.stdout.write(`  state dir: ${dirs.smaRoot}\n`)
   process.stdout.write(`  brief: ${brief.path}\n`)
   return 0
 }
