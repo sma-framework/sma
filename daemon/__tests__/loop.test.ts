@@ -1824,26 +1824,75 @@ describe('a task that needed no code completes on its answer — and nothing els
     reverify: { code: 0, stdout: '{}' }, // exits green, names NO receipt — the old red path
   }
 
-  /** A git that answers the gate's two questions, and can be told to fail at either. */
-  const makeAnswerGit = ({ commits = '0', dirty = '', throwOn = '' } = {}) =>
-    (args: string[]) => {
-      const verb = args[0]
-      if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
-      if (verb === 'rev-list') return commits
-      if (verb === 'status') return dirty
-      return ''
-    }
+  /**
+   * A git that ANSWERS THE QUESTION IT WAS ASKED — and refuses to answer one it does not model.
+   *
+   * Its predecessor looked at the VERB alone and handed the same number back for every
+   * `rev-list`, whichever two points the caller named. That is precisely why a gate counting
+   * from the wrong anchor stayed invisible to a green suite: the fake could not tell «commits
+   * this branch has that the tip of the connected project does not» from «commits this attempt
+   * put on top of the base the copy was cut from», so two opposite questions shared one answer
+   * and the defect had nowhere to show itself. A fake that knows more than the live library is
+   * the same class of lie that once hid a call to a method no real object had.
+   *
+   * Hence: the revision questions are matched by their ARGUMENTS and answer separately, and a
+   * question this fake never modelled is RECORDED and thrown on. The recording is what reaches
+   * the assertion — production catches throws on purpose (fail-safe), so a thrown error on its
+   * own would be swallowed and read as «nothing happened». Cases assert `unanswered` is empty,
+   * so an unmodelled question fails the case with the question printed instead of quietly
+   * answering zero.
+   */
+  const makeAnswerGit = ({
+    base = 'base0',
+    fromBase = '0',
+    fromProjectHead = '0',
+    dirty = '',
+    throwOn = '',
+  }: { base?: string; fromBase?: string; fromProjectHead?: string; dirty?: string; throwOn?: string } = {}) => {
+    const asked: { verb: string; args: string[]; cwd?: string }[] = []
+    const unanswered: string[] = []
+    return Object.assign(
+      (args: string[], opts?: any) => {
+        const verb = args[0]
+        asked.push({ verb, args, cwd: opts && opts.cwd })
+        if (verb === throwOn) throw new Error(`git ${verb} unavailable`)
+        // where the tree being asked stands right now — how a copy learns its own base when
+        // the provisioning verb declined to name one
+        if (verb === 'rev-parse') return base
+        if (verb === 'status') return dirty
+        // what the FAILED path asks to list the files an attempt touched — both shapes of it
+        if (verb === 'show') return ''
+        if (verb === '-c' && args.includes('diff')) return ''
+        if (verb === 'rev-list') {
+          const range = args.slice(2)
+          // «…beyond the tip of whatever tree is being asked» — the anchor that was wrong
+          if (range.length === 2 && range[1] === '^HEAD') return fromProjectHead
+          // «…on top of the base the copy was cut from» — the anchor the copy actually has
+          if (range.length === 1 && range[0] === `${base}..HEAD`) return fromBase
+          unanswered.push(`rev-list ${range.join(' ')}`)
+          throw new Error(`fake git: unmodelled revision question «rev-list ${range.join(' ')}»`)
+        }
+        unanswered.push(args.join(' '))
+        throw new Error(`fake git: unmodelled question «${args.join(' ')}»`)
+      },
+      { asked, unanswered },
+    )
+  }
 
   it('changed nothing and explained itself → completes on an answer receipt, and reverify is never asked', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const git = makeAnswerGit()
     const { deps, order, journalled } = makeDeps({
       adapter,
       responses: CODE_RESPONSES,
-      deps: { execGit: makeAnswerGit() },
+      deps: { execGit: git },
     })
 
     const res = await tick(deps)
 
+    // the fake was never asked something it had to guess at — otherwise the verdict below
+    // would be a verdict about the fixture
+    expect(git.unanswered, 'git was asked a question the fake does not model').toEqual([])
     expect(res.completed).toBe('BL-1')
     const [call] = adapter.calls
     expect(call.op).toBe('complete')
@@ -1861,7 +1910,8 @@ describe('a task that needed no code completes on its answer — and nothing els
     const { deps, order } = makeDeps({
       adapter,
       responses: CODE_RESPONSES,
-      deps: { execGit: makeAnswerGit({ commits: '1' }) },
+      // one commit on the branch — and a branch that carries one says so from either anchor
+      deps: { execGit: makeAnswerGit({ fromBase: '1', fromProjectHead: '1' }) },
     })
 
     const res = await tick(deps)
@@ -1919,6 +1969,53 @@ describe('a task that needed no code completes on its answer — and nothing els
     const res = await tick(deps)
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+  })
+
+  /**
+   * ── THE ANCHOR, AND THE LIVE MISS IT COST ──
+   *
+   * 19.08.2026, measured on a real run: the copy had been cut from one branch while the
+   * connected project stood on another, TEN commits apart. The attempt touched nothing — it
+   * read, understood and answered — but the gate asked «how many commits does this branch have
+   * that the project's tip does not», got ten, and closed. The finished answer was called «нет
+   * квитанции» and the task was re-run for nothing: ~57 seconds and ~0.17 dollar of the
+   * founder's subscription. On the next run the two points happened to coincide and the defect
+   * «did not reproduce» — which is a hint about the cause, not a repair.
+   *
+   * The question that was always meant is «did this attempt put anything on the branch», and
+   * only the base the COPY was cut from can answer it. So this case makes the two anchors
+   * disagree on purpose and pins the gate to the right one.
+   */
+  it('the count starts at the base of the copy, not at the tip of the connected project', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    // the copy names the point it was cut from, and the project has since moved on
+    const git = makeAnswerGit({ base: 'base-of-copy', fromBase: '0', fromProjectHead: '10' })
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: {
+        ...CODE_RESPONSES,
+        worktree: {
+          code: 0,
+          stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1', expectedBase: 'base-of-copy' }),
+        },
+      },
+      deps: { projectDir: () => '/connected', execGit: git },
+    })
+
+    const res = await tick(deps)
+
+    expect(git.unanswered, 'git was asked a question the fake does not model').toEqual([])
+    // an attempt that changed nothing finishes on its answer, whatever the project's tip did
+    expect(res.completed).toBe('BL-1')
+    const [call] = adapter.calls
+    expect(call.result.receiptRef).toBe('answer:BL-1#1')
+    expect(journalled.some((e: any) => e.type === 'task.answered' && e.taskId === 'BL-1')).toBe(true)
+    // and it is pinned to WHICH question was put, not merely to the outcome: the count runs in
+    // the copy's own tree and names the copy's base — the project's tip is never the anchor
+    const counts = git.asked.filter((a) => a.verb === 'rev-list')
+    expect(counts).toHaveLength(1)
+    expect(counts[0].args).toEqual(['rev-list', '--count', 'base-of-copy..HEAD'])
+    expect(counts[0].cwd).toBe('/wt/BL-1')
   })
 
   /**
