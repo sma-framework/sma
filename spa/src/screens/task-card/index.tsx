@@ -5,6 +5,7 @@ import {
   useAttemptQuery,
   useDecideToolTicket,
   useDiffQuery,
+  useCancelTask,
   useRedirectTask,
   useReturnTask,
   useStateQuery,
@@ -57,10 +58,49 @@ type SteeringMode = 'interrupt' | 'queue'
  * done work stays in context; «После хода» lets the run finish and the correction rides
  * the continuation. No third, silent fate exists — that was the whole finding.
  */
-function Steering({ taskId }: { taskId: string }) {
+function Steering({ taskId, onStopped }: { taskId: string; onStopped: (word: string) => void }) {
   const redirect = useRedirectTask()
+  const cancel = useCancelTask(taskId)
   const [text, setText] = useState('')
   const [fate, setFate] = useState<string | null>(null)
+  /**
+   * Отмена спрашивает ещё раз, и это единственная кнопка блока, которая спрашивает. Обе
+   * соседки ОБРАТИМЫ: перебитый ход продолжится той же сессией, поправка «после хода» просто
+   * встанет в очередь. Отмена — терминал: после неё работы не будет вовсе. Кнопка без вопроса
+   * рядом с двумя обратимыми — ловушка формы, а не экономия одного клика.
+   */
+  const [askCancel, setAskCancel] = useState(false)
+
+  const stopIt = () => {
+    if (cancel.isPending) return
+    setAskCancel(false)
+    cancel.mutate(
+      { taskId },
+      {
+        onSuccess: (r) => {
+          // ФРАЗА ОТВЕТА ЖИВЁТ СНАРУЖИ ЭТОГО БЛОКА, и это не украшение. Удавшаяся отмена
+          // ПЕРЕСТАЁТ быть «работник держит задачу» — руль исчезает с экрана тем же кадром,
+          // в котором приходит правда. Оставь фразу внутри, и человек прочтёт её только если
+          // успеет: живым прогоном видно, что через секунду её на экране уже нет. А фраза
+          // здесь ровно та, ради которой дверь отвечает честным признаком: убили ли процесс.
+          const word = !r.cancelled
+            ? 'Останавливать было нечего: задача уже закрыта или её больше нет.'
+            : r.killed
+              ? r.attemptClosed === false
+                ? 'Остановил работника и закрыл задачу — попытка закрывалась дольше отведённого срока, задача закрыта всё равно.'
+                : 'Остановил работника и закрыл задачу.'
+              : 'Процесса под рукой не было — задача закрыта как отменённая.'
+          setFate(word)
+          onStopped(word)
+        },
+        onError: (err) => {
+          const word = refusalWords(err)
+          setFate(word)
+          onStopped(word)
+        },
+      },
+    )
+  }
 
   const send = (mode: SteeringMode) => {
     const said = text.trim()
@@ -115,8 +155,38 @@ function Steering({ taskId }: { taskId: string }) {
         >
           После хода
         </button>
+        <button
+          type="button"
+          onClick={() => setAskCancel((was) => !was)}
+          disabled={cancel.isPending}
+          className="rounded-[9px] border border-err-bd px-3.5 py-2 text-[12px] text-err-tx hover:bg-err-s disabled:opacity-50"
+        >
+          Отменить задачу
+        </button>
         {fate ? <span className="min-w-0 text-[11.5px] leading-[1.4] text-tx2">{fate}</span> : null}
       </div>
+      {askCancel ? (
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-[9px] border border-err-bd bg-err-s px-3 py-2.5">
+          <span className="text-[11.5px] leading-[1.4] text-tx">
+            Точно остановить? Это насовсем: работа встанет и сама не вернётся.
+          </span>
+          <button
+            type="button"
+            onClick={stopIt}
+            disabled={cancel.isPending}
+            className="rounded-[9px] bg-err-tx px-3.5 py-2 text-[12px] font-semibold text-white disabled:opacity-50"
+          >
+            Да, отменить
+          </button>
+          <button
+            type="button"
+            onClick={() => setAskCancel(false)}
+            className="rounded-[9px] border border-bd2 px-3.5 py-2 text-[12px] text-tx2 hover:text-tx"
+          >
+            Нет
+          </button>
+        </div>
+      ) : null}
       <div className="mt-[7px] text-[11px] text-tx3">
         Сделанное не пропадёт: та же сессия продолжится с учётом поправки, без перезапуска с нуля.
       </div>
@@ -743,6 +813,8 @@ export function Screen() {
   const setWords = useTaskWords(taskId)
 
   const [returning, setReturning] = useState(false)
+  /** Слово об остановке — на уровне КАРТОЧКИ: руль исчезает вместе с состоянием «в работе». */
+  const [stopWord, setStopWord] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
   const [diffOpen, setDiffOpen] = useState(false)
@@ -1071,7 +1143,13 @@ export function Screen() {
             <ParkedCall taskId={taskId} ticket={newest.ticket} wall={newest.approvalWall} />
           ) : null}
 
-          {status === 'claimed' && taskId ? <Steering taskId={taskId} /> : null}
+          {status === 'claimed' && taskId ? <Steering taskId={taskId} onStopped={setStopWord} /> : null}
+
+          {stopWord ? (
+            <div className="rounded-[14px] border border-err-bd bg-err-s px-6 py-[14px] text-[12.5px] leading-[1.45] text-tx shadow-panel">
+              {stopWord}
+            </div>
+          ) : null}
 
           <div className="flex items-start gap-7">
             <div className="min-w-0 flex-1 rounded-[14px] border border-bd bg-card px-6 pt-[22px] pb-2 shadow-panel">
