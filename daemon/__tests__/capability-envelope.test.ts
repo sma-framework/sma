@@ -25,8 +25,13 @@ import {
   validateEnvelope,
   envelopeAllows,
   envelopeHash,
+  DANGER_CLASS_HUMAN_ACTIONS,
+  approvalWall,
 } from '../src/queue/capability-envelope.mjs'
 import { TASK_LANES } from '../src/queue/adapter.mjs'
+// НАСТОЯЩИЙ классификатор, а не список его имён, переписанный в тест: карта ниже обязана
+// быть отношением между ДВУМЯ существующими таблицами, а не третьей копией их содержимого.
+import { WORKER_DANGER_CLASSES } from '../../scripts/sma/lib/worker-danger.mjs'
 
 const src = readFileSync(new URL('../src/queue/capability-envelope.mjs', import.meta.url), 'utf8')
 
@@ -388,5 +393,124 @@ describe('envelopeSpawnOptions — the ONE place a spawn learns what the envelop
     const opts = envelopeSpawnOptions(defaultEnvelope('prod')) as any
     opts.allowedTools.push('WebFetch')
     expect(defaultEnvelope('prod').allowedTools).not.toContain('WebFetch')
+  })
+})
+
+/**
+ * ═══════ УПРЁТСЯ ЛИ ОДОБРЕНИЕ В СТЕНУ ═══════
+ *
+ * Человек видит билет, нажимает «Одобрить» — и получает отказ, потому что вызов упирается
+ * в ЖЁСТКИЙ запрет, уехавший в аргументы запуска. Мягкая граница отпустила, жёсткая не
+ * пустила. Поведение правильное; несказанным оно быть не должно.
+ *
+ * Ответ на этот вопрос — сопоставление КЛАССА билета с объявленными в конверте человеческими
+ * действиями, и ничего больше: ни разбора текста команды, ни второй копии чужого матчера
+ * разрешений. Поэтому здесь проверяются ДВА конца провода на настоящих модулях — список
+ * классов берётся у классификатора работника, список действий у конверта, — а не две копии
+ * имён, живущие в тесте.
+ */
+describe('DANGER_CLASS_HUMAN_ACTIONS — карта «класс билета → человеческое действие»', () => {
+  it('карта покрывает все классы, которые вообще могут упереться в стену', () => {
+    expect(Object.keys(DANGER_CLASS_HUMAN_ACTIONS).sort()).toEqual(
+      ['force-push', 'merge', 'publish', 'push', 'remote-config', 'tag'].sort(),
+    )
+    expect(Object.isFrozen(DANGER_CLASS_HUMAN_ACTIONS)).toBe(true)
+  })
+
+  it('карта покрывает ТОЛЬКО имена, которые классификатор работника действительно выдаёт', () => {
+    for (const cls of Object.keys(DANGER_CLASS_HUMAN_ACTIONS)) {
+      expect(WORKER_DANGER_CLASSES, `класса «${cls}» у классификатора нет`).toContain(cls)
+    }
+  })
+
+  it('карта ведёт ТОЛЬКО в человеческие действия конверта — одна таблица отказов, не вторая копия', () => {
+    for (const action of Object.values(DANGER_CLASS_HUMAN_ACTIONS)) {
+      expect(HUMAN_ONLY_ACTIONS, `действия «${action}» у конверта нет`).toContain(action)
+      expect(Object.keys(HUMAN_ONLY_DENIALS)).toContain(action)
+    }
+  })
+
+  it('замок на счёт классов: новый класс классификатора обязан быть отображён ОСОЗНАННО', () => {
+    // Пятнадцать — то, что классификатор объявляет сегодня. Число закреплено НАРОЧНО: класс,
+    // добавленный к классификатору и забытый здесь, — это стена, о которой человека не
+    // предупредили. Красный тест заставляет человека решить, отображается новый класс или
+    // сознательно остаётся вне карты; молча он не проедет.
+    expect(WORKER_DANGER_CLASSES).toHaveLength(15)
+  })
+})
+
+describe('approvalWall — три состояния ответа, а не два', () => {
+  const deniedArgs = (patterns: string[]) => ['--model', 'x', '--disallowedTools', patterns.join(' ')]
+  const allPush = ['Bash(git push:*)', 'Bash(git remote:*)', 'Bash(git config:*)']
+
+  it('билет класса отправки при запрещённой отправке → упрётся, и действие названо', () => {
+    const wall = approvalWall({ ticketClass: 'push', spawnArgs: deniedArgs(allPush) })
+    expect(wall.state).toBe('blocked')
+    expect(wall.action).toBe('push')
+    expect(wall.source).toBe('spawn-args')
+  })
+
+  it('перенастройка удалённого репозитория ведёт к тому же действию — три класса, одна стена', () => {
+    for (const cls of ['force-push', 'remote-config']) {
+      expect(approvalWall({ ticketClass: cls, spawnArgs: deniedArgs(allPush) }).state).toBe('blocked')
+    }
+  })
+
+  it('отображённый класс, чьё действие НЕ запрещено этой попытке → не упрётся', () => {
+    const wall = approvalWall({ ticketClass: 'tag', spawnArgs: deniedArgs(allPush) })
+    expect(wall.state).toBe('clear')
+    expect(wall.action).toBe('tag')
+  })
+
+  it('запуск вообще без списка отказов → не упрётся: процесс получил пустую стену', () => {
+    expect(approvalWall({ ticketClass: 'merge', spawnArgs: ['--model', 'x'] }).state).toBe('clear')
+  })
+
+  it('класс, которого нет в карте, → НЕИЗВЕСТНО, а не «не упрётся»', () => {
+    const wall = approvalWall({ ticketClass: 'reset-hard', spawnArgs: deniedArgs(allPush) })
+    expect(wall.state).toBe('unknown')
+    expect(wall.action).toBe(null)
+  })
+
+  it('ни аргументов, ни конверта → неизвестно: молчание честнее догадки', () => {
+    expect(approvalWall({ ticketClass: 'push' }).state).toBe('unknown')
+    expect(approvalWall({ ticketClass: 'push', spawnArgs: [] }).state).toBe('unknown')
+  })
+
+  it('часть шаблонов действия запрещена, часть нет → неизвестно, а не выдуманный вердикт', () => {
+    const wall = approvalWall({ ticketClass: 'push', spawnArgs: deniedArgs(['Bash(git push:*)']) })
+    expect(wall.state).toBe('unknown')
+  })
+
+  it('аргументов нет — отвечает конверт полосы, и он называет себя источником', () => {
+    const wall = approvalWall({ ticketClass: 'push', laneEnvelope: defaultEnvelope('prod') })
+    expect(wall.state).toBe('blocked')
+    expect(wall.source).toBe('lane-envelope')
+  })
+
+  it('аргументы и конверт РАСХОДЯТСЯ → выигрывают аргументы: они и есть то, что уехало', () => {
+    // Конверт полосы объявляет все четыре человеческих действия; аргументы этой попытки не
+    // запретили ни одного. Правда — у аргументов: конверт говорит о намерении, аргументы о
+    // том, что процесс на самом деле получил.
+    const wall = approvalWall({
+      ticketClass: 'push',
+      spawnArgs: ['--model', 'x'],
+      laneEnvelope: defaultEnvelope('prod'),
+    })
+    expect(wall.state).toBe('clear')
+    expect(wall.source).toBe('spawn-args')
+  })
+
+  it('ответ заморожен — читатель не переписывает его под себя', () => {
+    expect(Object.isFrozen(approvalWall({ ticketClass: 'push', spawnArgs: deniedArgs(allPush) }))).toBe(true)
+  })
+
+  it('текст команды не читается ВООБЩЕ: сопоставляются только наши собственные имена', () => {
+    // Мера смыслом, а не вкусом: модуль конверта не имеет права научиться разбирать команду.
+    // Появится здесь чтение `tool_input`, `.command` или разбор строки команды — это второй
+    // матчер разрешений, и план пошёл не туда.
+    expect(src).not.toMatch(/tool_input/)
+    expect(src).not.toMatch(/\btool_name\b/)
+    expect(approvalWall({ ticketClass: 'push', spawnArgs: deniedArgs(allPush), command: 'git push --force' } as any).state).toBe('blocked')
   })
 })

@@ -18,7 +18,7 @@
  * (no real socket), plus ONE real-listen smoke on an ephemeral port.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -2695,5 +2695,116 @@ describe('server.mjs — GET /api/diff/:id after the copy is removed: kept commi
     const res = await call(front, { url: '/api/diff/R-4', headers: bearer() })
     expect(res.statusCode).toBe(200)
     expect(res.body).toContain('# диф недоступен: копия убрана')
+  })
+})
+
+// ── УПРЁТСЯ ЛИ ОДОБРЕНИЕ В СТЕНУ: провод от билета до ответа двери карточки ──
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { runsDirOf, attemptRunDir } from '../src/queue/run-dir.mjs'
+import { attemptIdFor } from '../src/front/journal.mjs'
+
+/**
+ * ЧЕЛОВЕК УЗНАЁТ О СТЕНЕ ДО ТОГО, КАК В НЕЁ УПРЁТСЯ.
+ *
+ * Живой прогон прошлой фазы показал ловушку: карточка предлагает одобрить вызов, который
+ * физически не сможет выполниться — жёсткий запрет уехал в аргументы запуска, работник до
+ * него не дотягивается, и одобрение просто превращается в отказ.
+ *
+ * Это тест ПРОВОДА, а не вычисления: он кладёт настоящий билет и настоящий `run.json` в
+ * настоящий каталог попытки, спрашивает НАСТОЯЩУЮ дверь карточки и утверждает, что ответ
+ * доехал до её ответа. Сшивка живёт именно здесь — это единственное место, где есть и билет
+ * (его пишет хук внутри копии), и каталог попытки (его знает демон).
+ */
+describe('server.mjs — GET /api/task/:id говорит, упрётся ли одобрение в жёсткий запрет', () => {
+  const tmps: string[] = []
+  const mkProject = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sma-wall-'))
+    tmps.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmps) rmSync(d, { recursive: true, force: true })
+  })
+
+  const seed = (projectDir: string, { cls, args }: { cls: string; args?: string[] | null }) => {
+    const runDir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: attemptIdFor('R-9', 1) }) as string
+    mkdirSync(join(runDir, 'tickets'), { recursive: true })
+    writeFileSync(
+      join(runDir, 'tickets', 'tk-wall.json'),
+      JSON.stringify({
+        schema: 'sma-ticket/1',
+        id: 'tk-wall',
+        attemptId: 'R-9_1',
+        status: 'waiting',
+        tool: 'Bash',
+        command: 'git ' + 'push' + ' origin main',
+        class: cls,
+        reason: 'отправка в удалённый репозиторий — действие человека',
+        seenAt: new Date().toISOString(),
+        deadlineAt: new Date(Date.now() + 600_000).toISOString(),
+      }),
+    )
+    if (args) writeFileSync(join(runDir, 'run.json'), JSON.stringify({ schema: 'sma-run/1', taskId: 'R-9', attempt: 1, args }))
+    return runDir
+  }
+
+  const front = (projectDir: string, lane: string | null = 'prod') =>
+    createFrontServer({
+      config: { token: TOKEN, repoDir: projectDir },
+      deps: {
+        adapter: { list: async () => [{ id: 'R-9', title: 'ночная задача', lane, status: 'claimed', attempt: 1 }] },
+        ledger: { readAttempts: () => [] },
+        phaseCycleDir: () => projectDir,
+      },
+    })
+
+  const ALL_PUSH = ['Bash(git ' + 'push' + ':*)', 'Bash(git remote:*)', 'Bash(git config:*)']
+  const argsDenying = (patterns: string[]) => ['--model', 'opus', '--disallowedTools', patterns.join(' ')]
+
+  it('билет упирающегося класса: дверь называет стену и действие, рядом с самим билетом', async () => {
+    const dir = mkProject()
+    seed(dir, { cls: 'push', args: argsDenying(ALL_PUSH) })
+    const res = await call(front(dir), { url: '/api/task/R-9', headers: bearer() })
+    expect(res.statusCode).toBe(200)
+    const a = JSON.parse(res.body).attempts[0]
+    expect(a.ticket?.id).toBe('tk-wall')
+    expect(a.approvalWall).toEqual({ state: 'blocked', action: 'push', source: 'spawn-args' })
+  })
+
+  it('билет класса, чьё действие этой попытке НЕ запрещали, — стены нет, и это сказано', async () => {
+    const dir = mkProject()
+    seed(dir, { cls: 'tag', args: argsDenying(ALL_PUSH) })
+    const a = JSON.parse((await call(front(dir), { url: '/api/task/R-9', headers: bearer() })).body).attempts[0]
+    expect(a.approvalWall).toEqual({ state: 'clear', action: 'tag', source: 'spawn-args' })
+  })
+
+  it('класса нет в карте → поля нет: экран молчит, а не успокаивает', async () => {
+    const dir = mkProject()
+    seed(dir, { cls: 'reset-hard', args: argsDenying(ALL_PUSH) })
+    const a = JSON.parse((await call(front(dir), { url: '/api/task/R-9', headers: bearer() })).body).attempts[0]
+    expect(a.ticket?.id).toBe('tk-wall')
+    expect(a.approvalWall).toBe(null)
+  })
+
+  it('ни аргументов попытки, ни полосы → поля нет вовсе', async () => {
+    const dir = mkProject()
+    seed(dir, { cls: 'push', args: null })
+    const a = JSON.parse((await call(front(dir, null), { url: '/api/task/R-9', headers: bearer() })).body).attempts[0]
+    expect(a.approvalWall).toBe(null)
+  })
+
+  it('аргументов попытки нет — отвечает конверт полосы, и он назван источником', async () => {
+    const dir = mkProject()
+    seed(dir, { cls: 'merge', args: null })
+    const a = JSON.parse((await call(front(dir, 'prod'), { url: '/api/task/R-9', headers: bearer() })).body).attempts[0]
+    expect(a.approvalWall).toEqual({ state: 'blocked', action: 'merge', source: 'lane-envelope' })
+  })
+
+  it('билета нет — вопрос не задаётся вовсе', async () => {
+    const dir = mkProject()
+    const a = JSON.parse((await call(front(dir), { url: '/api/task/R-9', headers: bearer() })).body).attempts[0]
+    expect(a.ticket).toBe(null)
+    expect(a.approvalWall).toBe(null)
   })
 })
