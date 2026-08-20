@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.0-3B82F6" alt="version 5.6.0">
-  <img src="https://img.shields.io/badge/tests-3264%2F3264-3CC0A0" alt="tests 3264/3264">
+  <img src="https://img.shields.io/badge/tests-3324%2F3324-3CC0A0" alt="tests 3324/3324">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
   <img src="https://img.shields.io/badge/runtime-plain%20files%20%2B%20git-2E6FD9" alt="plain files + git">
@@ -172,6 +172,10 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 | **One task, one line** | every section of the list stands for the **last word** about a task, so a returned task appears once — under its own name, never as an identifier |
 | **A merge receipt** | answers «not run» when the tests were never wired to it, instead of reporting a green it did not observe |
 | **Anything the engine cannot answer** | says «no data» in words. A zero that is wrong is worse than a blank, because it reads as an answer |
+
+**The numbers this documentation uses about SMA itself are held by the suite.** How many doors the daemon's web front serves, how many verbs the CLI dispatches, how many tests and files the last measured run counted, which version the package stands at — each is read from the code or the receipt that owns it, and a document that disagrees turns `npm test` red. Check it yourself with `node scripts/sma/cli.mjs doc-audit --target numbers`; the same verb with `--write` rewrites the derived places from the code, so no number here is ever typed by a hand. The tests badge at the top is written by `scripts/sma/lib/badge.mjs` from the JSON report of an actual run, never edited.
+
+**The promise is exactly this wide, and no wider.** The gate holds two things: a number in the docs cannot disagree with the code, and the badge cannot disagree with the last measured run receipt. It does not hold the third — whether that receipt is still fresh — because a test run cannot measure itself without running itself again; freshness is checked at the release gate. So this page promises numbers that match the code and a badge that matches the last measurement, not a badge re-measured on every reading.
 
 **Accepting the work happens in the right tree, and a refusal says why.** The approve door merges in the tree that actually holds the branch — the connected project's, not the daemon's — and when it refuses, it names the reason in words and the card shows that reason instead of a dead button.
 

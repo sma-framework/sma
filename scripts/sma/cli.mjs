@@ -1360,30 +1360,57 @@ async function cmdExplain({ positionals, flags }) {
 }
 
 /**
- * doc-audit [--target manual|readme|all] [--count] [--json] —
- * the deterministic honesty audit over the manual (sma:v35 region) and README positioning
- * (sma:positioning region). Zero-LLM, read-only. `--count` prints the bare total violation
- * count as the LAST line and exits 0 (the scorer contract); `--json` prints
- * the violation records (exit 0); human mode prints them readably and exits 1 when count>0
- * (CI-friendly). NOT hook-facing.
+ * doc-audit [--target manual|readme|numbers|all] [--count] [--json] [--write] —
+ * the deterministic honesty audit over the manual (sma:v35 region), the README positioning
+ * (sma:positioning region) and, under `numbers`, every figure the docs use to describe the
+ * product itself (doors, verbs, tests/files, version) against the code and the measured
+ * receipt. Zero-LLM; read-only unless `--write` is passed. `--count` prints the bare total
+ * violation count as the LAST line and exits 0 (the scorer contract); `--json` prints the
+ * violation records (exit 0); human mode prints them readably and exits 1 when count>0
+ * (CI-friendly). `notes` say what was NOT measured — deliberately outside the count, because
+ * «not measured» and «wrong» are different words. `--write` belongs to the numbers target
+ * only: it rewrites the marked spans of the map and the install marker from those same
+ * sources, then re-audits and reports. NOT hook-facing.
  */
-async function cmdDocAudit({ flags, dirs }) {
+async function cmdDocAudit({ flags }) {
   const da = await import('./lib/doc-audit.mjs')
-  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  // The tree to audit is THE TREE THIS FILE LIVES IN, derived from its own location.
+  // It used to be derived from the coordination root instead — and that root is shared
+  // by every linked working copy of the repository ON PURPOSE, so that parallel terminals
+  // see one another's claims. In a linked copy that made the audit read the MAIN copy's
+  // files, and would have made `--write` edit a tree the reader is not even standing in.
+  // Its own location cannot lie: for an ordinary checkout it is the same answer.
+  const repoRoot = dirname(dirname(MODULE_DIR))
   const target = typeof flags.target === 'string' ? flags.target : 'all'
   const readFile = (p) => readFileSync(p, 'utf8')
-  const { violations, count } = da.audit({ target, readFile, rootDir: repoRoot })
+
+  let written = []
+  if (flags.write === true) {
+    if (target !== 'numbers') {
+      process.stderr.write('doc-audit: --write works with --target numbers only — it writes the numbers that are derived from code, and nothing else.\n')
+      return 1
+    }
+    const res = da.writeNumbers({ readFile, writeFile: (p, data) => writeFileSync(p, data, 'utf8'), rootDir: repoRoot })
+    written = res.written
+    for (const n of res.notes) process.stdout.write(`  note: ${n}\n`)
+    for (const w of written) process.stdout.write(`  written: ${w}\n`)
+    if (written.length === 0) process.stdout.write('  written: nothing (the derived numbers were already in place)\n')
+  }
+
+  const { violations, count, notes } = da.audit({ target, readFile, rootDir: repoRoot })
 
   if (wantsJson(flags)) {
-    printJson({ target, violations, count })
+    printJson({ target, violations, count, notes, written })
     return 0
   }
   if (flags.count === true) {
     for (const v of violations) process.stdout.write(`  [${v.rule}] ${v.file}${v.detail ? ': ' + v.detail : ''}\n`)
+    for (const n of notes) process.stdout.write(`  note: ${n}\n`)
     process.stdout.write(`${count}\n`) // numeric last line (scorer contract), exit 0 always
     return 0
   }
   // human mode
+  for (const n of notes) process.stdout.write(`  note: ${n}\n`)
   if (count === 0) {
     process.stdout.write('doc-audit: all checks pass (0 violations).\n')
     return 0
@@ -10985,7 +11012,7 @@ const HANDLERS = {
   worktree: cmdWorktree, // per-terminal worktree isolation (provision|list|remove|sibling; --selftest|--selftest-sibling)
   merge: cmdMerge, // serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
   explain: cmdExplain, // in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
-  'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|all|--count|--json)
+  'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|numbers|all|--count|--json; --write only with numbers)
   vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
   memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
   history: cmdHistory, // streaming read-only search across the journal, the plan-execution records, the session transcripts and the lesson bodies (search <слово…> [--limit|--source|--corpus|--json]); no derived index, every fragment credential-screened
@@ -10998,8 +11025,10 @@ const HANDLERS = {
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 88 other verbs keep
- * the existing behaviour untouched.
+ * document its own flags. Deliberately an opt-in allow-list: 90 other verbs keep
+ * the existing behaviour untouched. (That count is the dispatch table minus this
+ * allow-list, and the numbers audit now holds it to exactly that — so when two
+ * lines of work add verbs at once the count is their SUM, not either side's figure.)
  */
 const OWN_HELP = new Set(['memory', 'history'])
 
@@ -11008,9 +11037,12 @@ async function main() {
   const cmd = argv[0]
   const { positionals, flags } = parseArgs(argv.slice(1))
 
-  if (!cmd || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
+  // A bare `--help` / `-h` arrives as the COMMAND, not as a flag, so it used to fall
+  // through to «unknown command» and exit 1 — while both READMEs and the install guide
+  // teach exactly that call. A door the docs name has to open.
+  if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|exam|update>\n',
     )
     return 0
   }
