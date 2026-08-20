@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.6.0-3B82F6" alt="version 5.6.0">
+  <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
   <img src="https://img.shields.io/badge/tests-4043%2F4043-3CC0A0" alt="tests 4043/4043">
   <img src="https://img.shields.io/badge/calibration-collecting%20%C2%B7%20badge%20hidden%20until%20n%E2%89%A520-E5B567" alt="calibration: collecting — badge hidden until n≥20">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-source--available-3CC0A0" alt="source-available license"></a>
@@ -201,7 +201,7 @@ And it holds a number only where somebody wrote down the place that names it. Th
 
 The V5 line shipped as a release every few days. In one breath: V5 built the fleet and its engine; V5.1 put the window in front of it; V5.2 made the memory layer measurable; V5.3 made it governable and gave the fleet a state machine its running code consults; V5.4 turned the window into a place you can work from all day, and taught the system that **an answer is also work**; V5.5 built the wheel — steering a live session, with a correction written to disk before anything is killed. Each of those releases, with its fix list and what it deliberately did not claim, is in [docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release).
 
-**What this does not claim.** This release lives in the repository (tag v5.6.0); the npm listing is deliberately behind while the engine settles — installing from npm today gives you the last published version, not this page.
+**What this does not claim.** This release lives in the repository (tag v5.6.1); the npm listing is deliberately behind while the engine settles — installing from npm today gives you the last published version, not this page.
 
 ## The window — the app the daemon serves
 
