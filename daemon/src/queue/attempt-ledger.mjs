@@ -206,7 +206,28 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // «checked and clean» and must never be renderable as one.
   'runDir',
   'parity',
+  // ── what this row contradicts, if it contradicts anything ─────────────────────
+  // `conflictsWith` names the terminal outcome ALREADY recorded for this same attempt number
+  // when this row was appended — `'failed'` on a row saying `completed`, or the other way
+  // round. It is written by the door below, never by a caller: the door is the only place
+  // that can see both sides at once.
+  //
+  // ITS EXISTENCE IS THE WHOLE POINT OF NOT REFUSING. One physical try once landed in this
+  // ledger under two numbers, and one of those numbers ended up carrying both `failed` and
+  // `completed`; the cause is fixed at the source of the number now, but a ledger that
+  // answered such a case by REFUSING the second row would have thrown away the only evidence
+  // that the fault happened at all — and the row it refuses is, more often than not, the
+  // tick's rich one: the single place `startedAt`, `sessionId`, the corpus digest, the run
+  // directory and the receipt summary are written. So the row is written, and it is marked.
+  'conflictsWith',
 ])
+
+/**
+ * The outcomes that END a try. `running` is not one of them: a try that reported it is alive
+ * and then reported how it finished is one try speaking twice, which is ordinary and must
+ * never be marked as a contradiction.
+ */
+export const TERMINAL_OUTCOMES = Object.freeze(['completed', 'failed'])
 
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
  *  ('BL-…'/'R-…'/'F-…', or '<taskId>#<attempt>'); it is still sanitized (defense in depth —
@@ -267,6 +288,32 @@ export function recordAttempt(ledgerDir, attempt) {
       row.capabilityEnvelopeHash = envelopeHash(attempt.capabilityEnvelope)
     } catch {
       /* an unhashable envelope leaves no stamp (fail-open on the AUDIT field, never on the gate) */
+    }
+  }
+  // ── THE CONTRADICTION LOCK: it MARKS, it never refuses ──────────────────────────────
+  // Before a terminal row joins the file, the door looks at what this attempt number already
+  // says. A DIFFERENT terminal outcome under the SAME number means two writers are describing
+  // one try in two incompatible ways, and the row is stamped with what it contradicts.
+  //
+  // WHY A MARK AND NOT A REFUSAL. This file is an audit log. A row that was refused vanishes
+  // without a trace, and with it the evidence of the very failure the log exists to remember —
+  // and the refused row is typically the tick's, the only one carrying the start time, the
+  // session id, the corpus digest, the run directory and the receipt summary. So the lock
+  // costs a row nothing: it adds a word.
+  //
+  // FAIL-OPEN ON THE READ. A ledger file that cannot be read leaves the mark off and the write
+  // untouched — reading somebody else's file may never cost an attempt the record of its own.
+  // THE DOOR OWNS THIS KEY. A caller cannot declare what it contradicts — only the place that
+  // sees both sides can, and a caller-supplied value would be a claim nobody checked.
+  delete row.conflictsWith
+  if (Number.isFinite(row.attempt) && TERMINAL_OUTCOMES.includes(row.outcome)) {
+    try {
+      const prior = readAttempts(ledgerDir, attempt.taskId).find(
+        (r) => r && r.attempt === row.attempt && TERMINAL_OUTCOMES.includes(r.outcome) && r.outcome !== row.outcome,
+      )
+      if (prior) row.conflictsWith = prior.outcome
+    } catch {
+      /* unreadable history -> no mark, and the write goes on (fail-open on the AUDIT field) */
     }
   }
   row.recordedAt = attempt.recordedAt ?? new Date().toISOString()
@@ -341,16 +388,35 @@ function pickStamp(a, b, wantEarlier) {
  * would merge tries nobody said were the same; they stay separate records, in the order they
  * arrived.
  *
+ * AND IT NO LONGER PICKS A WINNER IN SILENCE. «Last non-empty wins» was designed for «two
+ * writers, ONE outcome», and on two DIFFERENT terminal outcomes it has neither a rule nor a
+ * right to choose — yet it chose, quietly, and a try that had been recorded as failed read as
+ * a clean success with a stray failure reason attached. A record whose rows disagree now
+ * carries `conflict: {outcomes:[…], rows:N}`, naming BOTH outcomes in the order they were
+ * recorded and how many rows were folded into it. Everything else about the merge is unchanged.
+ *
+ * THE FLAG IS COMPUTED FROM THE ROWS THEMSELVES, not from the writer's mark. The rows that
+ * matter most are the ones already on disk, written before the mark existed — and this ledger
+ * is never rewritten to make an old record look tidier than it was.
+ *
  * @param {object[]} rows — ledger rows as `readAttempts` returns them
  * @returns {object[]} one record per attempt number, first-appearance order
  */
 export function foldAttemptRows(rows) {
   if (!Array.isArray(rows)) return []
   const merged = new Map()
+  /** key -> {outcomes:string[], rows:number} — what each folded record was assembled from. */
+  const seen = new Map()
   let unnumbered = 0
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue
     const key = Number.isFinite(row.attempt) ? `attempt:${row.attempt}` : `unnumbered:${unnumbered++}`
+    const tally = seen.get(key) || { outcomes: [], rows: 0 }
+    tally.rows += 1
+    if (TERMINAL_OUTCOMES.includes(row.outcome) && !tally.outcomes.includes(row.outcome)) {
+      tally.outcomes.push(row.outcome)
+    }
+    seen.set(key, tally)
     const prev = merged.get(key)
     if (!prev) {
       merged.set(key, { ...row })
@@ -364,6 +430,14 @@ export function foldAttemptRows(rows) {
     if (prev.startedAt != null && row.startedAt != null) next.startedAt = pickStamp(prev.startedAt, row.startedAt, true)
     if (prev.endedAt != null && row.endedAt != null) next.endedAt = pickStamp(prev.endedAt, row.endedAt, false)
     merged.set(key, next)
+  }
+  // The anomaly, said out loud on the record it belongs to — after the merge, because it is a
+  // property of the ROWS and not of any one of them.
+  for (const [key, record] of merged) {
+    const tally = seen.get(key)
+    if (tally && tally.outcomes.length > 1) {
+      record.conflict = { outcomes: [...tally.outcomes], rows: tally.rows }
+    }
   }
   return [...merged.values()]
 }
