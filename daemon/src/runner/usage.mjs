@@ -22,8 +22,13 @@
  *
  * COST HONESTY: a Claude `result` event carries `total_cost_usd` verbatim
  * (source 'stream-result'). A Codex `turn.completed` event carries token counts (source
- * 'codex-final'). When the Codex final event LACKS tokens (A4 unverified), we book a
- * time-based estimate (source 'estimate') — a non-zero row, never a blind $0.
+ * 'codex-final'). When the final event LACKS tokens — or never arrives at all, because the
+ * process was killed or the provider cut the connection — we book a time-based estimate
+ * (source 'estimate') — a non-zero row, never a blind $0, and never a silence. A line that is
+ * absent reads to a person as «that attempt cost nothing», and it did not.
+ *
+ * WHICH ATTEMPT: every row names the attempt it belongs to, not only the task. That is what
+ * makes «did every attempt of mine leave a line» a query instead of an argument.
  *
  * SECURITY: a usage row carries ids + token counts + optional cost ONLY — never an OAuth
  * token, never task content, never an env-var name.
@@ -62,15 +67,33 @@ function num(v) {
 }
 
 /**
+ * WHICH ATTEMPT SPENT THIS — a positive whole number, or an honest null.
+ *
+ * A row used to name only the task, and a task may hold many attempts. That made the one
+ * question worth asking of this book — «did every attempt of mine leave a line» — impossible to
+ * ANSWER: the best available check was «rows are not fewer than attempts», which is a guess
+ * dressed as a check and passes just as well when two attempts share one row. With the number
+ * on the row the check is a join, and a missing line becomes visible instead of arguable.
+ *
+ * Null rather than 1 when nobody said: the conversation books rows that belong to no attempt at
+ * all, and inventing a first attempt for them would put a fact into an audit book that nothing
+ * in the world corresponds to.
+ */
+function attemptNumber(v) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null
+}
+
+/**
  * claudeUsageFromResult(resultEvent, ctx) → a canonical usage row from a parsed Claude
  * `result` event (parseClaudeEvent output). Sums the modelUsage token counts and carries
  * the event's total_cost_usd verbatim. source: 'stream-result'.
  *
  * @param {{totalCostUsd?:number|null, modelUsage?:object|null}} resultEvent
- * @param {{accountName?:string, taskId?:string, model?:string}} [ctx]
+ * @param {{accountName?:string, taskId?:string, attempt?:number, model?:string}} [ctx]
  * @returns {object}
  */
-export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, model, channel } = {}) {
+export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, attempt, model, channel } = {}) {
   const modelUsage = resultEvent && typeof resultEvent.modelUsage === 'object' ? resultEvent.modelUsage : {}
   const modelKeys = Object.keys(modelUsage || {})
   const modelName = model ?? modelKeys[0] ?? null
@@ -87,6 +110,7 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, m
     accountName: accountName ?? null,
     provider: 'claude',
     taskId: taskId ?? null,
+    attempt: attemptNumber(attempt),
     model: modelName,
     inputTokens,
     outputTokens,
@@ -114,13 +138,17 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
   const outputTokens = num(usage.output_tokens ?? usage.outputTokens)
 
   if (inputTokens === 0 && outputTokens === 0) {
-    return estimateUsage(ctx) // A4 gap — book a time-based estimate, never blind $0
+    // A4 gap — book a time-based estimate, never blind $0. The provider is NAMED on the way in:
+    // the estimate no longer declares one of its own (see estimateUsage), because it is now
+    // written for any provider, not only for the one case it was born in.
+    return estimateUsage({ ...ctx, provider: ctx.provider ?? 'codex' })
   }
 
   return {
     accountName: ctx.accountName ?? null,
     provider: 'codex',
     taskId: ctx.taskId ?? null,
+    attempt: attemptNumber(ctx.attempt),
     model: ctx.model ?? null,
     inputTokens,
     outputTokens,
@@ -132,12 +160,20 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
 /**
  * estimateUsage(ctx) → a time-based usage row (source 'estimate') when no token counts
  * are available. Books a NON-ZERO output-token estimate from the session duration so
- * subscription work is never silently $0. Coarse by design; labeled honestly.
+ * subscription work is never silently $0. Coarse by design; LABELED honestly — a coarse
+ * estimate called an estimate is a record, and the same figure called a measurement is a lie,
+ * which is why `source` is not negotiable and no caller may overwrite it.
  *
- * @param {{accountName?:string, taskId?:string, model?:string, startedAt?:number, endedAt?:number}} [ctx]
+ * THE PROVIDER COMES FROM THE CALLER. It used to be declared here as one fixed name, because
+ * this row was born for one case: the vendor whose final frame sometimes arrives without token
+ * counts. Now the same row is written for ANY attempt whose stream simply ended — a killed
+ * process, a cut connection — and a row that names the wrong vendor is worse than a row that
+ * admits it does not know. Unknown stays null.
+ *
+ * @param {{accountName?:string, taskId?:string, attempt?:number, provider?:string, model?:string, startedAt?:number, endedAt?:number}} [ctx]
  * @returns {object}
  */
-export function estimateUsage({ accountName, taskId, model, startedAt, endedAt, channel } = {}) {
+export function estimateUsage({ accountName, taskId, attempt, provider, model, startedAt, endedAt, channel } = {}) {
   // A DURATION IS ONLY A DURATION WHEN BOTH ENDS ARE REAL.
   //
   // This subtracted a missing start from an epoch-millisecond end and called the result a
@@ -153,8 +189,9 @@ export function estimateUsage({ accountName, taskId, model, startedAt, endedAt, 
   const estOutputTokens = Math.max(1, Math.round((durationMs / 1000) * EST_OUTPUT_TOKENS_PER_SEC))
   return {
     accountName: accountName ?? null,
-    provider: 'codex',
+    provider: provider ?? null,
     taskId: taskId ?? null,
+    attempt: attemptNumber(attempt),
     model: model ?? null,
     inputTokens: 0,
     outputTokens: estOutputTokens,
@@ -183,6 +220,9 @@ export function bookUsage({ dataDir, event = {}, clock = Date.now, fsImpl } = {}
     accountName: event.accountName ?? null,
     provider: event.provider ?? null,
     taskId: event.taskId ?? null,
+    // WHICH ATTEMPT — see attemptNumber above. This is the field that turns «на задачу строк не
+    // меньше, чем попыток» into a join a person can run.
+    attempt: attemptNumber(event.attempt),
     model: event.model ?? null,
     inputTokens: num(event.inputTokens),
     outputTokens: num(event.outputTokens),
