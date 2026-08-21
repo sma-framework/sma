@@ -26,9 +26,10 @@
  *
  * POSTURE LOCKS (carried forward from V1/V2):
  *   - Enforcement is fail-open WARN / soft-deny. The rule the dispatcher actually
- *     applies, stated the way the code applies it: every stream that registers
- *     mayDeny: true may surface a soft-deny; a deny from a mayDeny: false stream is
- *     DOWNGRADED to a warn line — a merge bug can never escalate WARN posture to a
+ *     applies, stated the way the code applies it:
+ *     every stream that registers mayDeny: true may surface a soft-deny;
+ *     a deny from a mayDeny: false stream is DOWNGRADED to a warn line
+ *     — a merge bug can never escalate WARN posture to a
  *     real deny. A HARD deny remains the security guard's alone, and NO stream
  *     registered here can produce one. What keeps the soft tier soft is that a
  *     soft-deny ALWAYS names its own way out inside its own text — an override token,
