@@ -871,6 +871,9 @@ export async function buildCtx(opts = {}) {
  *   - soft budget (SMA_PRE_BUDGET_MS, default 1500): once cumulative time is
  *     exceeded, remaining applicable streams are SKIPPED and recorded — late is
  *     skipped, never blocking;
+ *   - records, per stream, BOTH halves of its per-turn cost: ms (time) and bytes
+ *     (the UTF-8 size of what it put on stdout) — time protects the session, bytes
+ *     protect the prompt, and neither is knowable from the other;
  *   - collects warns IN ORDER; accepts a deny ONLY from a mayDeny stream (first
  *     wins); downgrades any other stream's deny to a warn line (posture protection);
  *   - saves ctx.seen ONCE at the end.
@@ -897,7 +900,7 @@ export async function runPre(ctx) {
 
     // soft time-budget: once blown, remaining applicable streams are skipped.
     if (budgetBlown) {
-      checks.push({ id: stream.id, ms: 0, warns: 0, skipped: true })
+      checks.push({ id: stream.id, ms: 0, warns: 0, bytes: 0, skipped: true })
       continue
     }
 
@@ -925,7 +928,18 @@ export async function runPre(ctx) {
       }
     }
 
-    const sample = { id: stream.id, ms, warns: streamWarns.length }
+    // bytes of the stream's contribution to the hook's per-turn stdout — the warn
+    // lines it emitted plus its deny text (which lands in stdout either as the deny
+    // reason or, downgraded, as one more warn line). Counted in UTF-8 BYTES, the same
+    // unit every layer budget in constants.mjs uses. This is the per-turn half of the
+    // prompt-size question the self-cost meter names as its own hole: the static
+    // surfaces are countable from disk, the variable per-turn stdout is only
+    // countable HERE, at the moment the streams produce it. A skipped stream records
+    // 0, exactly as it does for ms.
+    const denyText = result.deny && result.deny.text ? String(result.deny.text) : ''
+    const bytes = Buffer.byteLength([...streamWarns, denyText].filter(Boolean).join('\n'), 'utf8')
+
+    const sample = { id: stream.id, ms, warns: streamWarns.length, bytes }
     if (errored) sample.error = true
     checks.push(sample)
 

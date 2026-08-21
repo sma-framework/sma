@@ -241,6 +241,47 @@ describe('Task 1 — dispatch core', () => {
     expect(computePercentile([], 95)).toBe(0)
   })
 
+  it('sample shape: every per-stream sample carries numeric bytes; a warning stream is > 0', async () => {
+    const loud = { id: 'loud', tools: ['Edit'], killSwitchEnv: null, mayDeny: false, run: () => ({ warns: ['семь байт и ещё немного'] }) }
+    const mute = { id: 'mute', tools: ['Edit'], killSwitchEnv: null, mayDeny: false, run: () => ({ warns: [] }) }
+    PRE_CHECKS.push(loud, mute)
+    const ctx = await silentCtx({ tool_name: 'Edit', tool_input: {} })
+    const res = await runPre(ctx)
+
+    // EVERY sample carries the field — the per-turn stdout meter has no holes.
+    for (const c of res.sample.checks as any[]) expect(typeof c.bytes).toBe('number')
+
+    const loudSample = (res.sample.checks as any[]).find((c) => c.id === 'loud')
+    const muteSample = (res.sample.checks as any[]).find((c) => c.id === 'mute')
+    // UTF-8 BYTES, not characters — the cyrillic warn is longer in bytes than in chars.
+    expect(loudSample.bytes).toBe(Buffer.byteLength('семь байт и ещё немного', 'utf8'))
+    expect(loudSample.bytes).toBeGreaterThan('семь байт и ещё немного'.length)
+    expect(muteSample.bytes).toBe(0) // silence costs nothing
+  })
+
+  it('sample shape: a downgraded deny still counts its bytes; a budget-skipped stream records 0', async () => {
+    // (a) a mayDeny:false deny lands in stdout as a warn line — its bytes are counted.
+    const rogue = { id: 'rogue-bytes', tools: ['Edit'], killSwitchEnv: null, mayDeny: false, run: () => ({ warns: [], deny: { text: 'downgraded text' } }) }
+    PRE_CHECKS.push(rogue)
+    let ctx = await silentCtx({ tool_name: 'Edit', tool_input: {} })
+    let res = await runPre(ctx)
+    const rogueSample = (res.sample.checks as any[]).find((c) => c.id === 'rogue-bytes')
+    expect(rogueSample.bytes).toBe(Buffer.byteLength('downgraded text', 'utf8'))
+    PRE_CHECKS.length = BASE_LEN
+
+    // (b) a stream skipped by the soft time budget records 0 bytes, exactly as it does 0 ms.
+    const clock = { t: 0 }
+    const now = () => clock.t
+    const slow = { id: 'slow-bytes', tools: ['Edit'], killSwitchEnv: null, mayDeny: false, run: () => { clock.t += 5000; return { warns: ['slow'] } } }
+    const late = { id: 'late-bytes', tools: ['Edit'], killSwitchEnv: null, mayDeny: false, run: () => ({ warns: ['never emitted'] }) }
+    PRE_CHECKS.push(slow, late)
+    ctx = await silentCtx({ tool_name: 'Edit', tool_input: {} }, { env: { SMA_PRE_BUDGET_MS: '100' }, now })
+    res = await runPre(ctx)
+    const lateSample = (res.sample.checks as any[]).find((c) => c.id === 'late-bytes')
+    expect(lateSample.skipped).toBe(true)
+    expect(lateSample.bytes).toBe(0)
+  })
+
   it('appendPerfSample writes one JSONL line via injected fs (no real disk)', () => {
     const writes: string[] = []
     appendPerfSample(
