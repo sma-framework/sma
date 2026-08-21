@@ -13,10 +13,13 @@
  *     'needs-human', not removed (P3).
  *   - Test 6: a HOT_FILES path with >=2 fresh sessions + NO claim ->
  *     an informational (tier:'info') warn; 1 session -> none; info never counted.
+ *   - Test 7: the claims-dir NAME derived from a scope description is distinct per
+ *     description (a shared name lets one terminal clear another's reservation),
+ *     readable, and compatible with directories left by the previous rule.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,8 +30,10 @@ import {
   relativizePath,
   buildWarnText,
   recordCollisions,
+  scopeClaimSlug,
   HOT_FILES,
 } from '../lib/collision.mjs'
+import { claimSlot, readClaims, releaseSlot } from '../lib/claims.mjs'
 import { SESSION_TTL_MS, GRACE_MS } from '../lib/constants.mjs'
 
 const iso = (ms: number) => new Date(ms).toISOString()
@@ -281,5 +286,87 @@ describe('buildWarnText (B25 completeness, Terraform style)', () => {
   it('passes an info hot-file warn through as its text', () => {
     const info = { tier: 'info', reason: 'hot-file', text: '2 сессии активны; файл высококонтентный; перечитайте перед записью' }
     expect(buildWarnText(info)).toBe(info.text)
+  })
+})
+
+// ── the claims-dir name is a SAFETY surface, not cosmetics ────────────────────────
+//
+// The clearing command takes a NAME. When two DIFFERENT pieces of work are given the
+// same name, clearing your own reservation quietly removes somebody else's — their
+// files lose their guard while they are still being edited, and nothing says so. That
+// is why this block asserts DISTINCTNESS (plus that the name stays readable to a
+// human), NOT «the name became latin»: latin is the means, distinguishability is the
+// property being bought.
+//
+// The last two cases prove the WIRE, not the computation: a real filesystem in a temp
+// dir, the real claim primitives, one directory per description, and a clearing call
+// that must land on exactly one of them. A name that is merely computed correctly and
+// never reaches the disk buys nothing.
+describe('claims-dir naming — two different descriptions never share one claim dir', () => {
+  let claimsDir: string
+  let tmpRoot: string
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'sma-claim-slug-'))
+    claimsDir = join(tmpRoot, 'claims')
+  })
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true })
+  })
+
+  // The four strings below are the ones that actually collided in a live registry:
+  // two whole-sentence descriptions collapsed to the bare word, and two different
+  // pieces of work on the same numbered stretch collapsed to the number alone.
+  const QUEUE = 'очередь без двойной выдачи'
+  const BUDGET = 'подушка расхода бюджета'
+  const STRETCH_A = 'выпуск 4.2 очередь'
+  const STRETCH_B = 'выпуск 4.2 запуск'
+
+  it('the four descriptions that collided in a live registry now give four different names', () => {
+    const a = scopeClaimSlug(QUEUE)
+    const b = scopeClaimSlug(BUDGET)
+    const c = scopeClaimSlug(STRETCH_A)
+    const d = scopeClaimSlug(STRETCH_B)
+    expect(new Set([a, b, c, d]).size).toBe(4)
+    // …and they are still READABLE: an operator has to recognise the work in the name
+    // the clearing command prints, otherwise a distinct name is just a distinct riddle.
+    expect(a).toContain('ochered')
+    expect(b).toContain('podushka')
+    expect(c).toContain('vypusk-4-2')
+    expect(d).toContain('vypusk-4-2')
+  })
+
+  it('two descriptions in a script no latin name can carry are still told apart', () => {
+    // Nothing survives the cleanup here, so the name cannot be built from the words.
+    // The fallback appends a digest of the description — the one thing that is always
+    // different when the descriptions are different.
+    const a = scopeClaimSlug('队列不重复发放')
+    const b = scopeClaimSlug('预算消耗缓冲')
+    expect(a).not.toBe(b)
+    expect(a).toMatch(/^claim-[0-9a-f]{8}$/)
+    expect(b).toMatch(/^claim-[0-9a-f]{8}$/)
+  })
+
+  it('clearing one reservation leaves the other reservation on disk', () => {
+    const slugA = scopeClaimSlug(QUEUE)
+    const slugB = scopeClaimSlug(BUDGET)
+
+    expect(claimSlot(slugA, { by: 'терминал А' }, { claimsDir }).won).toBe(true)
+    expect(claimSlot(slugB, { by: 'терминал Б' }, { claimsDir }).won).toBe(true)
+    expect(readdirSync(claimsDir).sort()).toEqual([slugA, slugB].sort())
+
+    const cleared = releaseSlot(slugA, { by: 'терминал А', force: true, claimsDir })
+    expect(cleared.released).toBe(true)
+    expect(existsSync(join(claimsDir, slugA))).toBe(false)
+    expect(existsSync(join(claimsDir, slugB))).toBe(true) // the neighbour keeps its guard
+  })
+
+  it('a directory left by the previous naming rule is still listed and still clearable by its literal name', () => {
+    // No migration is performed — nothing on disk is renamed or removed behind anyone's
+    // back. Compatibility is bought by READING: whatever name a directory carries, the
+    // listing shows it and the clearing command takes it verbatim.
+    mkdirSync(join(claimsDir, 'claim'), { recursive: true })
+    expect(readClaims({ claimsDir }).map((c) => c.name)).toContain('claim')
+    expect(releaseSlot('claim', { by: 'любой терминал', force: true, claimsDir }).released).toBe(true)
+    expect(existsSync(join(claimsDir, 'claim'))).toBe(false)
   })
 })
