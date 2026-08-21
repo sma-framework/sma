@@ -506,8 +506,9 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
     await adapter.enqueue(backlog())
 
-    // The state this fixture's own maintenance never produces and the real queue produces
-    // constantly: the row was handed back and waits for its next try.
+    // The state the real queue produces constantly: the row was handed back and waits for its
+    // next try. Written here by hand rather than through the fixture's own maintenance, so the
+    // case says exactly which state it is about — and keeps saying it if the maintenance changes.
     const job = [...jobs.values()][0]
     job.state = 'retry'
     job.retry_count = 1
@@ -520,6 +521,34 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     expect(job.state).toBe('cancelled')
     expect(job.output.reason).toBe('manual')
     expect(await adapter.claimNext('w1', {})).toBeNull()
+  })
+
+  /**
+   * И ДВЕРЬ СЛОВ ДОСТАЁТ ДО ТОЙ ЖЕ СТРОКИ — своим решением, а не заодно с остановкой.
+   *
+   * Остановка научилась видеть оба состояния ожидания раньше, и тогда же было сказано вслух:
+   * дотягиваются ли до такой строки ОСТАЛЬНЫЕ обещания — вопрос отдельный, которому положено
+   * своё решение и своё дело. Вот оно. Строка стоит именно во ВТОРОМ состоянии ожидания —
+   * состоянии, которого у памятного бэкенда нет и быть не может, — и дверь слов обязана её
+   * найти: иначе она отвечает «нет такой задачи» о работе, которую доска показывает в очереди.
+   */
+  it('дверь слов находит строку во ВТОРОМ состоянии ожидания — и следующая выдача несёт новые слова', async () => {
+    const c = mkClock()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog({ description: 'первая редакция' }))
+
+    const job = [...jobs.values()][0]
+    job.state = 'retry'
+    job.retry_count = 1
+
+    expect((await adapter.list({})).find((r: any) => r.id === 'BL-196').status).toBe('queued')
+
+    expect(await adapter.setWords('BL-196', { description: 'вторая редакция' })).toBe(true)
+    expect(job.data.description).toBe('вторая редакция')
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('BL-196')
+    expect(claimed.description).toBe('вторая редакция')
   })
 })
 
