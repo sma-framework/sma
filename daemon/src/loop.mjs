@@ -3127,6 +3127,24 @@ export async function tick(deps = {}) {
         // number the gate needs and threw away a commit that was sitting right there. When the
         // verb declines to say, ask the project's own tree where it stands — that is exactly
         // what `expectedBase` means on the first pass, so a retry reads the same point.
+        // ASK WHERE THE BRANCH WAS CUT, NOT WHERE THE PROJECT STANDS NOW. The tip is the right
+        // answer only on a FIRST attempt, when the copy was just cut from it. On a RETRY the
+        // project has usually moved on, and then the tip names a point the task branch never
+        // sat on: the count walks somebody else's history and certifies work this attempt did
+        // not do. Measured 12.08.2026 — an attempt that touched no file at all came back with
+        // a receipt for three commits and one deleted file.
+        //
+        // The merge point answers both cases with one question: on a first attempt it IS the
+        // tip (nothing has diverged yet), and on a retry it is still the place the branch was
+        // cut. The tip stays as the last resort, because a missing base cannot certify at all
+        // and an unanswerable git must never crash the tick.
+        if (!worktreeBase && typeof deps.execGit === 'function' && branch) {
+          try {
+            worktreeBase = String(deps.execGit(['merge-base', 'HEAD', branch], { cwd: provisionDir }) || '').trim() || null
+          } catch {
+            /* the branch may be unknown to this tree — fall through to the tip */
+          }
+        }
         if (!worktreeBase && typeof deps.execGit === 'function') {
           try {
             worktreeBase = String(deps.execGit(['rev-parse', 'HEAD'], { cwd: provisionDir }) || '').trim() || null
