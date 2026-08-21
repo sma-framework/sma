@@ -241,7 +241,7 @@
     <div class="heromea">
       <!-- sma:num-hero:start -->
       <span class="pill">v5.6.1</span>
-      <span class="stat">4181 tests · 185 files</span>
+      <span class="stat">4190 tests · 188 files</span>
       <!-- sma:num-hero:end -->
       <span class="stat">p95 hook 155 ms</span>
       <span class="stat">zero LLM in the hot path</span>
@@ -256,7 +256,7 @@
   <section class="block" id="map" aria-label="The map">
     <h2>The map</h2>
     <p class="sub">Seven version layers, newest on top. Click any node for its plain-language card — commands, files, honest numbers. One panel at a time; <kbd>Esc</kbd> or click-away closes; the URL remembers where you were.
-    <br><span class="legend"><b class="lg-amber">amber</b> = opt-in, default off · <b class="lg-red">red</b> = blocking · everything else observes and warns</span></p>
+    <br><span class="legend"><b class="lg-amber">amber</b> = ships disabled, an owner turns it on · <b class="lg-red">red</b> = blocking · everything else observes and warns</span></p>
 
     <section class="band b5" aria-labelledby="bt5">
       <div class="rail">
@@ -799,11 +799,11 @@
       files: ["scripts/sma/lib/worktree.mjs"],
       nums: [] },
     merge: { v: "v3.5", title: "Serialized merge gate + enforcing scopes", tag: "one integration lane",
-      body: "Worktree branches enter the main branch only through a serialized merge gate — one integration at a time, locally, never pushing on its own. Enforcing scopes can additionally turn advisory claims into hard boundaries; they are opt-in and off by default.",
+      body: "Worktree branches enter the main branch only through a serialized merge gate — one integration at a time, locally, never pushing on its own. Enforcing scopes can additionally turn advisory claims into hard boundaries; that stream runs by default and stays silent in a single window, speaking only against a foreign claim it has verified as live. Kill-switch: SMA_ENFORCE_SCOPES_DISABLE.",
       cmds: ["sma merge <branch>"],
       files: ["scripts/sma/lib/merge-gate.mjs"],
       nums: [],
-      badge: { cls: "amber", text: "enforcing scopes: opt-in · default off" } },
+      badge: { cls: "info", text: "enforcing scopes: on by default · kill-switch" } },
 
     receipts: { v: "v3", title: "Structural receipts", tag: "assertion + command + sha256",
       body: "A claim of done-ness stops being prose. Each receipt is an assertion, the exact command that re-checks it, and the sha256 of what it checked — a statement anyone can re-run without asking the agent to vouch for itself.",
@@ -832,11 +832,11 @@
       files: ["scripts/sma/lib/goodhart.mjs", "scripts/sma/lib/canary.mjs", "scripts/sma/lib/stpa.mjs"],
       nums: ["canary catch-rate required: ≥90%", "seeded deep audit: 5% of receipts"] },
     airbag: { v: "v3", title: "Git airbag", tag: "millisecond undo",
-      body: "A crash bag for the working tree: built on update-ref plus stash, it snapshots in milliseconds before risky edits so an undo is one command, not an archaeology session. Opt-in.",
+      body: "A crash bag for the working tree: built on update-ref plus stash, it snapshots in milliseconds before risky edits so an undo is one command, not an archaeology session. On by default — the snapshot always runs; refusing the risky command is a second door behind SMA_AIRBAG_DENY, which ships unset. Kill-switch: SMA_AIRBAG_DISABLE.",
       cmds: ["sma airbag", "sma undo", "sma airbag-check"],
       files: ["scripts/sma/lib/airbag.mjs"],
       nums: ["millisecond-level, update-ref + stash"],
-      badge: { cls: "amber", text: "opt-in · default off" } },
+      badge: { cls: "info", text: "on by default · refusal tier is not" } },
     capsule: { v: "v3", title: "Pre-compaction capsule", tag: "intent survives compaction",
       body: "Before the conversation context is compacted, the current intent is written to a capsule file with zero LLM tokens spent. The next session resumes from the capsule, not from vibes.",
       cmds: ["sma precompact-capsule", "sma resume", "sma flight"],
@@ -844,11 +844,11 @@
       nums: ["zero LLM tokens"],
       hook: "PreCompact" },
     spend: { v: "v3", title: "Spend ledger", tag: "versioned cost adapter",
-      body: "A per-phase cost ledger behind a versioned adapter — transcript formats change, so the adapter versions with them instead of silently misparsing. Opt-in.",
+      body: "A per-phase cost ledger behind a versioned adapter — transcript formats change, so the adapter versions with them instead of silently misparsing. On by default, and silent until you set a budget yourself. Kill-switch: SMA_SPEND_DISABLE.",
       cmds: ["sma spend", "sma spend-check", "sma breaker"],
       files: ["scripts/sma/lib/spend.mjs", "scripts/sma/lib/spend-adapter.mjs"],
       nums: [],
-      badge: { cls: "amber", text: "opt-in · default off" } },
+      badge: { cls: "info", text: "on by default · silent without a budget" } },
     pretask: { v: "v3", title: "Pretask-pack + subagent write-receipts", tag: "phantom-write catcher",
       body: "Subagents start from a pretask pack capped at 8 KB — enough context to work, small enough to audit — and must return write-receipts for the files they claim to have written. Phantom writes are caught deterministically, not by re-reading and hoping.",
       cmds: ["sma pretask-pack", "sma subagent-verify", "sma subagent-receipts"],

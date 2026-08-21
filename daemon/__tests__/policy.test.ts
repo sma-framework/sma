@@ -156,13 +156,42 @@ describe('policy/routing — the paid channel is asked for permission, not assum
     expect(r.reasonCode).toBe('api_fallback')
   })
 
-  it('every window shut + money refused → the task waits, exactly as before', () => {
+  /**
+   * THE WAIT IS NAMED BY WHAT CAUSED IT, NOT BY WHAT PRECEDED IT.
+   *
+   * This case used to assert `window_exhausted` here, and that assertion was the defect
+   * written down as a requirement: the shut windows are why the money rule was ASKED, its
+   * refusal is why nothing is running, and only the second is actionable. The task still
+   * waits — nothing about the outcome changed — but it now waits under its own word.
+   */
+  it('every window shut + money refused → the task waits under the MONEY word, not the window word', () => {
     const r = resolveRoute(
       { lane: 'prod' },
       { workers: pool(), windows: allShut, clock: nightClock, budget: () => ({ fallback: false, reason: 'budget_stop' }) },
     )
     expect(r.useApiFallback).toBe(false)
+    expect(r.reasonCode).toBe('budget_stop')
+    // The human string keeps BOTH facts: the roster reader still learns the pool was empty.
+    expect(r.reason).toContain('all windows closed')
+    expect(r.reason).toContain('cap is spent')
+  })
+
+  it('every window shut + no money rule at all → the old word stands, letter for letter', () => {
+    const r = resolveRoute({ lane: 'prod' }, { workers: pool(), windows: allShut, clock: nightClock })
+    expect(r.useApiFallback).toBe(false)
     expect(r.reasonCode).toBe('window_exhausted')
+    expect(r.reason).toBe('window_exhausted')
+  })
+
+  it('the protected account emptied the pool → the money verdict never overwrites that fact', () => {
+    // Day hours, only the founder's own account has an open window: the rule is not even
+    // asked, because holding work for his subscription must never become spending.
+    const r = resolveRoute(
+      { lane: 'prod' },
+      { workers: pool(), windows: only('max-1'), clock: dayClock, budget: () => ({ fallback: false, reason: 'budget_stop' }) },
+    )
+    expect(r.reasonCode).toBe('day_priority_protected')
+    expect(r.reason).toBe('window_exhausted')
   })
 
   it('a budget rule that throws never takes the dispatcher down — no answer leaves the old path', () => {
@@ -384,10 +413,22 @@ describe('policy/budget — sub→API switch + monthly budget stop', () => {
     expect(r.reason).toBe('budget_stop')
   })
 
-  it('no monthly cap configured (0) → no fallback budget (config default)', () => {
+  /**
+   * NO CAP IS NOT AN EMPTY WALLET, AND THE DIFFERENCE IS NOT COSMETIC.
+   *
+   * 0 is the SHIPPED DEFAULT, so this branch is what a fresh install answers on its very
+   * first busy night. It used to answer «budget_stop» — the money ran out — while the queue
+   * plaque, on the same facts, said the paid channel was never configured. Both sentences
+   * were shown to a person, and «raise your limit» is unactionable advice about a limit he
+   * never set. The word is now the state's own.
+   */
+  it('no monthly cap configured (0) → api_cap_unset, NOT «the money ran out»', () => {
     const r = shouldApiFallback({ task: { lane: 'prod' }, windows: { allClosed: true }, budget: { monthlyApiCapEur: 0 }, usageReader: reader(0), clock })
     expect(r.fallback).toBe(false)
-    expect(r.reason).toBe('budget_stop')
+    expect(r.reason).toBe('api_cap_unset')
+    // …and it is emphatically NOT the word that means a ceiling was reached: the two send a
+    // person to do different things, which is the entire point of splitting them.
+    expect(r.reason).not.toBe('budget_stop')
   })
 
   it('accepts a bare boolean for the windows-closed signal', () => {

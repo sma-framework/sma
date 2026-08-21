@@ -303,7 +303,7 @@ describe('project — an additive task field with an injected default', () => {
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 14-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 18-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -325,6 +325,15 @@ describe('constants — taxonomy', () => {
       'timeout',
       'runtime_offline',
       'window_exhausted',
+      // THE FOUR THE DISPATCHER DECIDES BEFORE ANY PROCESS EXISTS. They are named apart from
+      // window_exhausted because that one word used to be written over all of them: a person
+      // whose own spending ceiling stopped the task was told to wait for a window, and waiting
+      // would never have helped him. Each asks for something different — wait, raise the cap,
+      // configure the paid channel at all, or nothing (his own working hours are protected)
+      'wait_for_window',
+      'budget_stop',
+      'api_cap_unset',
+      'day_priority_protected',
       // the layer the founder works under could not be put into the account before the spawn.
       // Named apart from every infra cause because it is a REFUSAL and not a breakage: the
       // machine was fine, and the session was simply not allowed to start under rules nobody

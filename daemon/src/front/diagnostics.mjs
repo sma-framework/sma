@@ -1,16 +1,28 @@
 /**
- * diagnostics.mjs — the four facts a bug report is allowed to carry, and NOTHING else.
+ * diagnostics.mjs — the five facts a bug report is allowed to carry, and NOTHING else.
  *
  * ═══════════════════════ WHY THIS IS ITS OWN MODULE ══════════════════════════════
  * The feedback window's channel is a PUBLIC GitHub issue: whatever this function returns
  * is read by a person who then presses «create issue», and from that moment it is on the
  * open internet forever. So the shape is not «a helpful dump minus the sensitive bits» —
- * it is an EXPLICIT PICK of four values, assembled here by name:
+ * it is an EXPLICIT PICK of five values, assembled here by name:
  *
  *   version   — which SMA is installed (from capability.json, the single version source)
  *   platform  — which operating system family (os.platform())
  *   release   — which release of it (os.release())
  *   node      — which Node runtime (process.version)
+ *   unknownDispatchCodes — the routing reason codes this daemon could not sign
+ *
+ * ═══════════════ THE FIFTH FIELD, ARGUED FOR RATHER THAN ASSUMED ═════════════════
+ * The header below demands a SENTENCE from anyone who widens this list, so here is one.
+ * The field carries reason CODES — string literals written in the product's own sources —
+ * which the router handed to the decision journal and the closed vocabulary refused. It is
+ * bounded in how many it may carry and in how long each may be, and by construction nothing
+ * else can reach it: no path, no project name or id, no task title, no queue or memory
+ * content — only a word a programmer typed into this repository. Against that cost stands
+ * the exact bug report this module exists to serve — «окно не показывает, почему задача не
+ * пошла» — whose one useful fact IS which word went unsigned. A person filing that report
+ * cannot be sent to read the daemon's log first; the window has to carry it.
  *
  * WHAT MAY NEVER APPEAR HERE, stated so a later reader has to argue with a sentence
  * rather than with a habit: no filesystem path (not the config's, not the repository's,
@@ -44,7 +56,11 @@ import { fileURLToPath } from 'node:url'
  * agrees with himself. The ORDER is also the order of the returned object, so a serialized
  * diagnostic reads the same way every time.
  */
-export const DIAGNOSTIC_KEYS = Object.freeze(['version', 'platform', 'release', 'node'])
+export const DIAGNOSTIC_KEYS = Object.freeze(['version', 'platform', 'release', 'node', 'unknownDispatchCodes'])
+
+/** How many unsigned codes may ride a public issue, and how long each may be. */
+export const UNKNOWN_CODES_IN_DIAGNOSTIC_CAP = 20
+export const UNKNOWN_CODE_LENGTH_CAP = 64
 
 /**
  * Where the product states its own version — `sma-core/capabilities/sma/capability.json`,
@@ -56,12 +72,39 @@ export const DIAGNOSTIC_KEYS = Object.freeze(['version', 'platform', 'release', 
 const CAPABILITY_PATH = fileURLToPath(new URL('../../../sma-core/capabilities/sma/capability.json', import.meta.url))
 
 /**
- * collectDiagnostics(opts) → {version, platform, release, node} — EXACTLY those four keys.
- *
- * @param {{capabilityPath?:string, osImpl?:object, processImpl?:object, fsImpl?:object}} [opts]
- * @returns {{version:(string|null), platform:string, release:string, node:string}}
+ * The unsigned codes, made safe to quote a SECOND time — the register already caps itself,
+ * and this caps it again on the way out. Not belt-and-braces for its own sake: the register
+ * lives in another module, and a bound that only exists at the source is a bound that leaves
+ * with the next refactor of the source. Anything that is not a non-empty string is dropped.
  */
-export function collectDiagnostics({ capabilityPath = CAPABILITY_PATH, osImpl, processImpl, fsImpl } = {}) {
+function safeUnknownCodes(read) {
+  if (typeof read !== 'function') return []
+  let raw
+  try {
+    raw = read()
+  } catch {
+    // A reader that throws costs the person nothing: the other four facts still travel, and
+    // a window that cannot be opened cannot report the bug that broke it.
+    return []
+  }
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (typeof item !== 'string' || item === '') continue
+    out.push(item.slice(0, UNKNOWN_CODE_LENGTH_CAP))
+    if (out.length >= UNKNOWN_CODES_IN_DIAGNOSTIC_CAP) break
+  }
+  return out
+}
+
+/**
+ * collectDiagnostics(opts) → {version, platform, release, node, unknownDispatchCodes} —
+ * EXACTLY those five keys.
+ *
+ * @param {{capabilityPath?:string, osImpl?:object, processImpl?:object, fsImpl?:object, unknownDispatchCodesImpl?:()=>string[]}} [opts]
+ * @returns {{version:(string|null), platform:string, release:string, node:string, unknownDispatchCodes:string[]}}
+ */
+export function collectDiagnostics({ capabilityPath = CAPABILITY_PATH, osImpl, processImpl, fsImpl, unknownDispatchCodesImpl } = {}) {
   const readFileSync = (fsImpl && fsImpl.readFileSync) || fsReadFileSync
   const platform = (osImpl && osImpl.platform) || osPlatform
   const release = (osImpl && osImpl.release) || osRelease
@@ -88,5 +131,8 @@ export function collectDiagnostics({ capabilityPath = CAPABILITY_PATH, osImpl, p
     platform: String(platform()),
     release: String(release()),
     node: String(proc.version ?? ''),
+    // Empty when nothing went unsigned — which is the state a healthy install stays in, and
+    // an empty array says so more plainly than an absent key.
+    unknownDispatchCodes: safeUnknownCodes(unknownDispatchCodesImpl),
   }
 }

@@ -1,0 +1,7 @@
+{
+  "session_id": "pre-fixture-window-4",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git branch -D sma-pre-bench-probe"
+  }
+}

@@ -99,16 +99,79 @@ const leakyProcess = {
 const collectLeaky = () => collectDiagnostics({ capabilityPath: '/ignored', fsImpl: leakyFs, osImpl: leakyOs, processImpl: leakyProcess })
 
 describe('collectDiagnostics — a whitelist compared for EQUALITY, because the reader is the internet', () => {
-  it('returns EXACTLY {version, platform, release, node} — no more, no less', () => {
+  it('returns EXACTLY {version, platform, release, node, unknownDispatchCodes} — no more, no less', () => {
     const d = collectLeaky()
     // the exact set, both ways: nothing missing (the report would be useless) and nothing
     // extra (the report would be a leak). Sorted so key ORDER is not what is under test.
     expect(Object.keys(d).sort()).toEqual([...DIAGNOSTIC_KEYS].sort())
-    expect(Object.keys(d)).toHaveLength(4)
+    expect(Object.keys(d)).toHaveLength(5)
   })
 
-  it('carries the four values it was given, from their four separate sources', () => {
-    expect(collectLeaky()).toEqual({ version: '5.3.0', platform: 'win32', release: '10.0.26200', node: 'v24.14.1' })
+  it('carries the values it was given, from their separate sources', () => {
+    expect(collectLeaky()).toEqual({ version: '5.3.0', platform: 'win32', release: '10.0.26200', node: 'v24.14.1', unknownDispatchCodes: [] })
+  })
+
+  /**
+   * THE FIFTH FIELD: A DEFECT MADE VISIBLE, AND STILL BOUNDED TWICE.
+   *
+   * It carries reason codes the router wrote and the closed vocabulary refused — literals
+   * from this repository's own sources, nothing a user or a task ever typed. It is here
+   * because the bug report it serves («окно не показывает, почему задача не пошла») has
+   * exactly one useful fact in it, and that fact is which word went unsigned.
+   */
+  it('an absent reader is an empty list, not an absent key', () => {
+    expect(collectLeaky().unknownDispatchCodes).toEqual([])
+  })
+
+  it('reports what the injected reader returned', () => {
+    const d = collectDiagnostics({
+      capabilityPath: '/ignored',
+      fsImpl: leakyFs,
+      osImpl: leakyOs,
+      processImpl: leakyProcess,
+      unknownDispatchCodesImpl: () => ['budget_stopp', 'wait_for_windwo'],
+    })
+    expect(d.unknownDispatchCodes).toEqual(['budget_stopp', 'wait_for_windwo'])
+  })
+
+  it('caps the list and the length of each entry on the way OUT, not only at the source', () => {
+    const many = Array.from({ length: 50 }, (_, i) => `orphan_${i}`)
+    const long = 'x'.repeat(500)
+    const d = collectDiagnostics({
+      capabilityPath: '/ignored',
+      fsImpl: leakyFs,
+      osImpl: leakyOs,
+      processImpl: leakyProcess,
+      unknownDispatchCodesImpl: () => [long, ...many],
+    })
+    expect(d.unknownDispatchCodes.length).toBeLessThanOrEqual(20)
+    for (const code of d.unknownDispatchCodes) expect(code.length).toBeLessThanOrEqual(64)
+  })
+
+  it('a reader that throws costs the report nothing — the other facts still travel', () => {
+    const d = collectDiagnostics({
+      capabilityPath: '/ignored',
+      fsImpl: leakyFs,
+      osImpl: leakyOs,
+      processImpl: leakyProcess,
+      unknownDispatchCodesImpl: () => {
+        throw new Error('C:/Users/founder/.sma-daemon/register exploded')
+      },
+    })
+    expect(d.unknownDispatchCodes).toEqual([])
+    expect(d.version).toBe('5.3.0')
+    expect(JSON.stringify(d)).not.toContain('.sma-daemon')
+  })
+
+  it('drops anything that is not a non-empty string, whatever the register hands over', () => {
+    const d = collectDiagnostics({
+      capabilityPath: '/ignored',
+      fsImpl: leakyFs,
+      osImpl: leakyOs,
+      processImpl: leakyProcess,
+      unknownDispatchCodesImpl: () => ['ok_code', '', null, 42, { code: 'nope' }] as any,
+    })
+    expect(d.unknownDispatchCodes).toEqual(['ok_code'])
   })
 
   it('the whole serialization holds no path, no project name, no host, no token', () => {
@@ -161,19 +224,34 @@ describe('collectDiagnostics — a whitelist compared for EQUALITY, because the 
   })
 })
 
-describe('GET /api/diagnostics — the door picks the four keys a SECOND time', () => {
+describe('GET /api/diagnostics — the door picks the five keys a SECOND time', () => {
   const front = () =>
     createFrontServer({
       config: { token: TOKEN },
       deps: { capabilityPath: '/x', fsImpl: leakyFs, osImpl: leakyOs, processImpl: leakyProcess },
     })
 
-  it('answers the four keys and nothing else', async () => {
+  it('answers the five keys and nothing else', async () => {
     const res = await call(front(), mkReq({ url: '/api/diagnostics', headers: bearer() }))
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
     expect(Object.keys(body).sort()).toEqual([...DIAGNOSTIC_KEYS].sort())
-    expect(body).toEqual({ version: '5.3.0', platform: 'win32', release: '10.0.26200', node: 'v24.14.1' })
+    expect(body).toEqual({ version: '5.3.0', platform: 'win32', release: '10.0.26200', node: 'v24.14.1', unknownDispatchCodes: [] })
+  })
+
+  it('hands the register reader through, so the window quotes what the daemon could not sign', async () => {
+    const wired = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        capabilityPath: '/x',
+        fsImpl: leakyFs,
+        osImpl: leakyOs,
+        processImpl: leakyProcess,
+        unknownDispatchCodes: () => ['budget_stopp'],
+      },
+    })
+    const res = await call(wired, mkReq({ url: '/api/diagnostics', headers: bearer() }))
+    expect(JSON.parse(res.body).unknownDispatchCodes).toEqual(['budget_stopp'])
   })
 
   it('is auth-gated like every other route, and its 401 says nothing', async () => {

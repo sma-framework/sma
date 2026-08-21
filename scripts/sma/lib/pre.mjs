@@ -25,10 +25,16 @@
  *   }
  *
  * POSTURE LOCKS (carried forward from V1/V2):
- *   - Enforcement is fail-open WARN / soft-deny; hard-deny stays the security
- *     guard's alone. Only the gates stream carries mayDeny:true, and only at the
- *     soft-deny tier. A `deny` returned by ANY other stream is DOWNGRADED to a warn
- *     line — a merge bug can never escalate WARN posture to a real deny.
+ *   - Enforcement is fail-open WARN / soft-deny. The rule the dispatcher actually
+ *     applies, stated the way the code applies it:
+ *     every stream that registers mayDeny: true may surface a soft-deny;
+ *     a deny from a mayDeny: false stream is DOWNGRADED to a warn line
+ *     — a merge bug can never escalate WARN posture to a
+ *     real deny. A HARD deny remains the security guard's alone, and NO stream
+ *     registered here can produce one. What keeps the soft tier soft is that a
+ *     soft-deny ALWAYS names its own way out inside its own text — an override token,
+ *     a cap a human configured, or an arm switch a human turned on. That named exit
+ *     is the difference between the soft tier and a block.
  *   - Four independent fail-open layers protect every tool call: the HOOK_FACING
  *     exit-0 wrapper in cli.mjs, per-stream try/catch here, the SMA_PRE_DISABLE
  *     global kill-switch, and the soft time-budget that skips late streams rather
@@ -279,16 +285,16 @@ async function runGates(ctx) {
  * mayDeny:true — an armed (SMA_AIRBAG_DENY) soft-deny on a dirty tree / foreign claim
  * surfaces permissionDecision 'deny' unless a GATE-AIRBAG override token is present.
  *
- * OPT-IN: the stream is a NO-OP unless SMA_AIRBAG_ENABLE is set —
- * the measured hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until the
- * multiplexer re-measures under SLO. Protection stays UNCONDITIONAL once enabled
- * (the snapshot is not posture-gated; only the deny tier is). Kill: SMA_AIRBAG_DISABLE.
+ * ON BY DEFAULT: the stream runs on every Bash tool call, with nothing to switch on
+ * first. The PROTECTION is unconditional — the recovery point and the receipt are
+ * written whether or not anything is armed. DENYING is the separate second door and it
+ * stays shut: a soft-deny is possible only after a human arms SMA_AIRBAG_DENY, which is
+ * NOT set by default. Turning the stream off entirely: SMA_AIRBAG_DISABLE — the visible
+ * way out a person keeps.
  */
 async function runAirbag(ctx) {
   const warns = []
   try {
-    // opt-in default-off until the multiplexer meets its SLO.
-    if (!envOn(ctx.env.SMA_AIRBAG_ENABLE)) return { warns }
     if (ctx.toolName !== 'Bash') return { warns }
     const { airbag, slots } = ctx.deps
     if (!airbag) return { warns }
@@ -325,17 +331,17 @@ async function runAirbag(ctx) {
  * (detectAndTrip). mayDeny:true — but checkSpend only ever denies the Task tool at
  * >=100% of a FOUNDER-CONFIGURED cap; every other tool is WARN-only forever.
  *
- * OPT-IN: the stream is a NO-OP unless SMA_SPEND_OPTIN
- * is set — the measured hook p95 MISSED the 300 ms SLO, so V3 streams stay opt-in until
- * the multiplexer re-measures under SLO (a scorer holds the warm spend-check <=50 ms).
- * The mechanism ships complete + inert. Kill-switch: SMA_SPEND_DISABLE. Native probe true
- * → silent (bridge stood down). Fully fail-open — a spend/breaker bug never wedges a session.
+ * ON BY DEFAULT: the stream runs on every dispatch, with nothing to switch on first —
+ * and it stays SILENT for a person who never set a limit by hand. checkSpend leaves on
+ * its fourth line when no human-configured cap exists, so with no cap there is not one
+ * warn and not one deny: a soft-deny must never fire off an assumed number. The mechanism
+ * ships complete and inert until a person names a limit. Kill-switch: SMA_SPEND_DISABLE.
+ * Native probe true → silent (bridge stood down). Fully fail-open — a spend/breaker bug
+ * never wedges a session.
  */
 async function runSpend(ctx) {
   const warns = []
   try {
-    // opt-in default-off until the multiplexer meets its SLO.
-    if (!envOn(ctx.env.SMA_SPEND_OPTIN)) return { warns }
     const { spend, breaker } = ctx.deps
     if (!spend) return { warns }
     const terminalId = ctx.identity && ctx.identity.terminalId ? ctx.identity.terminalId : 'unknown'
@@ -435,10 +441,10 @@ async function runFingerprint(ctx) {
  * (mayDeny:false), kill-switch SMA_CONTEXT_DISABLE, registered LAST so the dispatcher's soft
  * time-budget sacrifices delivery/refresh before any enforcement stream — knowledge is
  * never bought with enforcement latency. STRICT NO-OP when no catalog, no fragments, and
- * no active pack exist, so installing SMA changes nothing until the user opts in by
- * building a catalog (this is what keeps the pre-bench parity metric at 0). Four parts,
+ * no active pack exist, so installing SMA changes nothing until the user has built a
+ * catalog of his own (this is what keeps the pre-bench parity metric at 0). Four parts,
  * each individually try/caught (fail-open at every layer — substrate law):
- *   (a) opt-in guard first;
+ *   (a) the empty-corpus guard first;
  *   (b) fragment delivery at the act (trigger-matched, capped, session-fatigued, cited 'fire');
  *   (c) refresh on commit (HEAD moved past the catalog commit → incrementally re-card the
  *       changed files if <= CATALOG_REFRESH_CAP, else defer to an explicit `catalog refresh`);
@@ -452,7 +458,7 @@ async function runContext(ctx) {
     if (!catalog || !fragments) return { warns }
     const corpusDir = join(ctx.repoRoot, '.claude', 'memory')
 
-    // (a) OPT-IN GUARD — a strict no-op until the user builds a catalog / adds fragments /
+    // (a) EMPTY-CORPUS GUARD — a strict no-op until the user builds a catalog / adds fragments /
     // compiles a pack. This is what keeps installation behavior-neutral (pre-bench parity 0).
     let stored = null
     try {
@@ -590,8 +596,10 @@ async function runContext(ctx) {
 
 /**
  * enforce stream — enforcing scopes. SOFT-deny-with-override
- * (mayDeny:true), OPT-IN default-off behind SMA_ENFORCE_SCOPES (strict no-op until the
- * operator opts in — installation changes nothing), kill-switch SMA_ENFORCE_SCOPES_DISABLE.
+ * (mayDeny:true), ON BY DEFAULT with nothing to switch on first, kill-switch
+ * SMA_ENFORCE_SCOPES_DISABLE. It stays SILENT for a person working alone: with no
+ * VERIFIED-LIVE foreign overlap the stream emits not a single line, so a one-window user
+ * sees nothing change.
  * It soft-denies an Edit/Write ONLY when it overlaps a VERIFIED-LIVE foreign claim (fresh
  * touches via the fingerprint stream's overlap = the live signal; the evidence decision is
  * mergeGate.enforceScope over collision.verifyClaimEvidence — ONE evidence source). A
@@ -602,8 +610,6 @@ async function runContext(ctx) {
 async function runEnforce(ctx) {
   const warns = []
   try {
-    // OPT-IN default-off — strict no-op until the operator sets SMA_ENFORCE_SCOPES (Test 8).
-    if (!envOn(ctx.env.SMA_ENFORCE_SCOPES)) return { warns }
     if (!(ctx.toolName === 'Edit' || ctx.toolName === 'Write')) return { warns }
     if (typeof ctx.toolInput.file_path !== 'string' || !ctx.toolInput.file_path.trim()) return { warns }
 
@@ -670,9 +676,20 @@ function safeDeriveTags(reflex, toolInput, repoRoot) {
  * PRE_CHECKS — the ordered internal dispatch pipeline. THE registration point the
  * airbag, spend, fingerprint and context streams extend:
  * each appends one stream object literal here. Order is emit order for warns. collision +
- * fingerprint + context are WARN-only; gates + airbag + spend are the deny-capable streams
- * (airbag + spend are opt-in until the SLO is met). `context` sits LAST so the soft
- * time-budget sacrifices delivery/refresh before any enforcement stream.
+ * fingerprint + context are WARN-only; gates + airbag + spend + enforce are the
+ * deny-capable streams. EVERY stream in this array runs by default — a stream is silenced
+ * only by its own kill-switch, by the global SMA_PRE_DISABLE, or by the soft time-budget.
+ * `context` sits LAST so the soft time-budget sacrifices delivery/refresh before any
+ * enforcement stream.
+ *
+ * WHAT A STREAM COSTS, AND HOW THAT IS MEASURED. The honest price of a stream is its OWN
+ * time, read from the per-stream telemetry this dispatcher already records: every dispatch
+ * writes sample.checks — one entry per stream, with the milliseconds that stream spent.
+ * A whole-spawn stopwatch cannot answer the question: booting a fresh node process on
+ * Windows costs hundreds of milliseconds all by itself, and any stream's own time drowns
+ * in that startup. So the whole-spawn measurement stays what it honestly is — an
+ * instrument for the SHAPE of the installation (one spawn per tool call, not five) — and
+ * never a price tag for a stream. Per-stream numbers come from sample.checks.
  */
 export const PRE_CHECKS = [
   { id: 'collision', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: null, mayDeny: false, run: runCollision },
@@ -681,8 +698,8 @@ export const PRE_CHECKS = [
   { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
   { id: 'spend', tools: ['Edit', 'Write', 'Bash', 'Task'], killSwitchEnv: 'SMA_SPEND_DISABLE', mayDeny: true, run: runSpend },
   { id: 'fingerprint', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_FINGERPRINT_DISABLE', mayDeny: false, run: runFingerprint },
-  // enforcing scopes: SOFT-deny-with-override, opt-in default-off
-  // (SMA_ENFORCE_SCOPES), verified-live-only, fail-open. mayDeny:true = soft-deny tier ONLY,
+  // enforcing scopes: SOFT-deny-with-override, on by default, silent without a
+  // verified-live foreign overlap, fail-open. mayDeny:true = soft-deny tier ONLY,
   // never a hard block. Positioned after fingerprint (whose overlap it consumes), before context.
   { id: 'enforce', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_ENFORCE_SCOPES_DISABLE', mayDeny: true, run: runEnforce },
   { id: 'context', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_CONTEXT_DISABLE', mayDeny: false, run: runContext },
@@ -854,6 +871,9 @@ export async function buildCtx(opts = {}) {
  *   - soft budget (SMA_PRE_BUDGET_MS, default 1500): once cumulative time is
  *     exceeded, remaining applicable streams are SKIPPED and recorded — late is
  *     skipped, never blocking;
+ *   - records, per stream, BOTH halves of its per-turn cost: ms (time) and bytes
+ *     (the UTF-8 size of what it put on stdout) — time protects the session, bytes
+ *     protect the prompt, and neither is knowable from the other;
  *   - collects warns IN ORDER; accepts a deny ONLY from a mayDeny stream (first
  *     wins); downgrades any other stream's deny to a warn line (posture protection);
  *   - saves ctx.seen ONCE at the end.
@@ -880,7 +900,7 @@ export async function runPre(ctx) {
 
     // soft time-budget: once blown, remaining applicable streams are skipped.
     if (budgetBlown) {
-      checks.push({ id: stream.id, ms: 0, warns: 0, skipped: true })
+      checks.push({ id: stream.id, ms: 0, warns: 0, bytes: 0, skipped: true })
       continue
     }
 
@@ -903,12 +923,23 @@ export async function runPre(ctx) {
       if (stream.mayDeny) {
         if (!deny) deny = { text: String(result.deny.text) }
       } else {
-        // DOWNGRADE a non-gates deny to a warn line — never a real deny (test 2).
+        // DOWNGRADE a deny from a mayDeny:false stream to a warn line — never a real deny (test 2).
         warns.push(String(result.deny.text))
       }
     }
 
-    const sample = { id: stream.id, ms, warns: streamWarns.length }
+    // bytes of the stream's contribution to the hook's per-turn stdout — the warn
+    // lines it emitted plus its deny text (which lands in stdout either as the deny
+    // reason or, downgraded, as one more warn line). Counted in UTF-8 BYTES, the same
+    // unit every layer budget in constants.mjs uses. This is the per-turn half of the
+    // prompt-size question the self-cost meter names as its own hole: the static
+    // surfaces are countable from disk, the variable per-turn stdout is only
+    // countable HERE, at the moment the streams produce it. A skipped stream records
+    // 0, exactly as it does for ms.
+    const denyText = result.deny && result.deny.text ? String(result.deny.text) : ''
+    const bytes = Buffer.byteLength([...streamWarns, denyText].filter(Boolean).join('\n'), 'utf8')
+
+    const sample = { id: stream.id, ms, warns: streamWarns.length, bytes }
     if (errored) sample.error = true
     checks.push(sample)
 
