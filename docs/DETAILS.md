@@ -223,9 +223,9 @@ The coordination + accountability CLI runs underneath — 93 verbs, and the sect
 | `pretask-pack` · `subagent-verify` · `subagent-receipts` | Context inheritance for subagents by construction; every claimed write verified against the real tree |
 | `bench` | The 8-metric scorecard harness (baseline frozen before the spine was built) |
 | `integrity` · `skeptic` · `canary` · `nearmiss` | The Goodhart/STPA guards that keep the published numbers honest |
-| `airbag` · `airbag-check` · `undo` | Bridge (opt-in): millisecond git snapshots before destructive ops; one-action restore |
-| `precompact-capsule` · `resume` · `handoff` · `flight` | Bridge (opt-in): the pre-compaction flight capsule and continuation/handoff briefs |
-| `spend` · `spend-check` · `breaker` | Bridge (opt-in): the deterministic spend ledger, budget reflexes, and the runaway-rule loop-breaker |
+| `airbag` · `airbag-check` · `undo` | Bridge (on by default): millisecond git snapshots before destructive ops; one-action restore. The snapshot always runs; *refusing* the command is a second door behind `SMA_AIRBAG_DENY`, which ships unset. Kill-switch: `SMA_AIRBAG_DISABLE` |
+| `precompact-capsule` · `resume` · `handoff` · `flight` | Bridge (on by default): the pre-compaction flight capsule and continuation/handoff briefs. Kill-switch: `SMA_FLIGHT_DISABLE` |
+| `spend` · `spend-check` · `breaker` | Bridge (on by default): the deterministic spend ledger, budget reflexes, and the runaway-rule loop-breaker. It stays silent until you set a budget yourself. Kill-switch: `SMA_SPEND_DISABLE` |
 
 ### NEW in V3.5 — adoption & trust telemetry
 
@@ -348,17 +348,17 @@ Every command is a terminal conversation. Expand any to watch what it does — e
 </details>
 
 <details>
-<summary><b><code>sma undo</code></b> — the git airbag: one action back to safety <sub>(bridge · opt-in)</sub></summary>
+<summary><b><code>sma undo</code></b> — the git airbag: one action back to safety <sub>(bridge · on by default)</sub></summary>
 <br><img src="../assets/demos/sma-undo.svg" alt="sma undo terminal demo" width="760">
 </details>
 
 <details>
-<summary><b><code>sma resume</code></b> — rebuild the brief from the flight recorder after a compaction <sub>(bridge · opt-in)</sub></summary>
+<summary><b><code>sma resume</code></b> — rebuild the brief from the flight recorder after a compaction <sub>(bridge · on by default)</sub></summary>
 <br><img src="../assets/demos/sma-resume.svg" alt="sma resume terminal demo" width="760">
 </details>
 
 <details>
-<summary><b><code>sma spend</code></b> — the deterministic spend ledger + budget reflexes <sub>(bridge · opt-in)</sub></summary>
+<summary><b><code>sma spend</code></b> — the deterministic spend ledger + budget reflexes <sub>(bridge · on by default)</sub></summary>
 <br><img src="../assets/demos/sma-spend.svg" alt="sma spend terminal demo" width="760">
 </details>
 
@@ -1190,13 +1190,13 @@ The founding act: **the measurement harness shipped before the spine was built.*
 
 > **We never claim a multiplier for S3 or S5.** Under the founder's 2026-07-08 force-freeze the measurement window was shortened; those two bases are recorded `insufficient-data`, on the record, rather than dressed up. That honesty *is* the product.
 
-#### The bridges (opt-in, never headlined)
+#### The bridges (on by default, never headlined)
 
-Three conveniences ship behind capability probes, each with a **registered self-removal prediction** — they stand down the day a native equivalent suffices. They are deliberately not part of the headline; the accountability core above is what SMA *is*, and these are scaffolding it expects to remove.
+Three conveniences ship **on by default**, each behind a capability probe and each with a **registered self-removal prediction** — they stand down the day a native equivalent suffices. On by default means the *protection* runs without being switched on; it does not mean a *refusal* runs. The airbag takes its snapshot every time and only refuses a destructive command once `SMA_AIRBAG_DENY` is armed, which ships unset; the spend ledger does nothing until you set a budget yourself. Every stream keeps a named kill-switch (`SMA_AIRBAG_DISABLE`, `SMA_SPEND_DISABLE`, `SMA_FLIGHT_DISABLE`). They are deliberately not part of the headline; the accountability core above is what SMA *is*, and these are scaffolding it expects to remove.
 
 ```mermaid
 flowchart LR
-    B["Three opt-in bridges<br>demolition clause registered"] --> A1["git airbag + sma undo"]
+    B["Three bridges, on by default<br>demolition clause registered"] --> A1["git airbag + sma undo"]
     B --> A2["flight capsule + sma resume / handoff"]
     B --> A3["spend ledger + budget reflexes"]
     A1 & A2 & A3 --> DC["each ships behind a capability probe<br>+ a falsifiable self-removal prediction"]
