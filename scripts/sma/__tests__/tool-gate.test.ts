@@ -30,9 +30,15 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// ЖИВОЙ модуль поправок, а не подделка: слово кладёт настоящая дверная функция, читает
+// настоящий читатель, а шапку строит настоящий производитель. Подделка здесь доказывала бы
+// согласие теста с самим собой — ровно тот класс, которым зелёный сьют однажды скрыл вызов
+// несуществующего метода.
+import { appendRedirect, redirectFileOf, readPendingRedirectsFile, correctionsPreamble } from '../../../daemon/src/runner/redirects.mjs'
 
 import {
   TICKET_HOOK_TIMEOUT_S,
@@ -455,5 +461,249 @@ describe('tool-gate — завершение попытки закрывает �
         },
       }),
     ).toBe(0)
+  })
+})
+
+/**
+ * ═══ СЛОВО ЖИВОМУ ХОДУ: ПРОВОД ОТ ДВЕРИ ДО STDOUT ХУКА ════════════════════════════════════
+ *
+ * ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ, И ПОЧЕМУ ИМЕННО ЭТО. Не «жатва вычислила массив», а «слово,
+ * положенное дверью, доехало до того самого поля, которое читает CLI». Класс дефекта, ради
+ * которого тесты написаны так: конверт разрешений считался, хэшировался и писался в журнал —
+ * и не передавался запускаемому процессу, поэтому работник физически не мог тронуть ни одного
+ * файла. Каждый кусок был зелёным, и ни один не был присоединён к соседнему. Поэтому здесь
+ * утверждения идут ДО КОНЦА провода: `appendRedirect` (дверная функция) → файл → жатва →
+ * `hookResponseFor` → поле `additionalContext` ответа.
+ *
+ * ЖИВОЙ МОДУЛЬ ПОПРАВОК. Подделок ровно две — часы и сон, ради мгновенного дедлайна; всё, что
+ * касается хранилища, настоящее и лежит во временном каталоге ВНЕ рабочего дерева.
+ *
+ * ГРАНИЦА КАНАЛА НАЗВАНА, А НЕ СПРЯТАНА: доставка живёт только на границе вызова инструмента,
+ * и только на разрешающем ответе. Отказ почтой не является, и это заперто отдельным тестом.
+ */
+describe('tool-gate — слово живому ходу', () => {
+  const TASK = 'live-word-1'
+  const WORD = 'сначала прогони сьют, потом коммить'
+  let dataDir: string
+  let file: string
+
+  beforeEach(() => {
+    dataDir = join(root, 'daemon-data')
+    file = redirectFileOf({ dataDir, taskId: TASK }) as string
+  })
+
+  /** Кладёт строку ТОЙ ЖЕ функцией, какой её кладёт дверь окна. */
+  const put = (text: string, mode: string, atMs: number) => {
+    const res = appendRedirect({ dataDir, taskId: TASK, text, mode, clock: () => atMs })
+    expect(res.ok).toBe(true)
+    return res.id as string
+  }
+
+  const linesOf = () =>
+    readFileSync(file, 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .map((l) => JSON.parse(l))
+
+  it('(а) слово, положенное дверью, доезжает до additionalContext ответа хука', async () => {
+    const t = fakeClockAndSleep()
+    put(WORD, 'steer', 1)
+
+    const verdict = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('allow')
+    expect(verdict.steerTexts).toEqual([WORD])
+
+    const res = hookResponseFor(verdict)
+    expect(res.hookSpecificOutput.additionalContext).toContain(WORD)
+    // И ФОРМА СЛОВ — ОБЩАЯ С ЦИКЛОМ ПРОДОЛЖЕНИЯ, а не вторая склейка в хуке: сверяется с
+    // ПРОИЗВОДИТЕЛЕМ, поэтому правка шапки в одном месте не разведёт две дороги одного слова.
+    expect(res.hookSpecificOutput.additionalContext).toBe(correctionsPreamble([{ text: WORD }]))
+  })
+
+  it('(б) слово потребляется РОВНО ОДИН РАЗ — второй вызов приезжает пустым', async () => {
+    const t = fakeClockAndSleep()
+    const id = put(WORD, 'steer', 1)
+
+    const first = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+    expect(first.steerTexts).toEqual([WORD])
+    expect(linesOf().some((l) => l.kind === 'done' && l.id === id)).toBe(true)
+
+    const second = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+    expect(second.decision).toBe('allow')
+    expect(second.steerTexts).toEqual([])
+    expect(hookResponseFor(second).hookSpecificOutput).not.toHaveProperty('additionalContext')
+  })
+
+  it('(в) чужого не ест: «после хода», «перебить» и решение по билету остаются нетронутыми', async () => {
+    const t = fakeClockAndSleep()
+    const ticketId = ticketIdFor({ attemptId: 'R-1000_1', tool: 'Bash', input: { command: 'npm publish' } })
+    put('поправка на следующий заход', 'queue', 1)
+    put('брось всё и вернись', 'interrupt', 2)
+    // РЕШЕНИЕ, ПОЛОЖЕННОЕ ТРЕТЬИМ РЕЖИМОМ ПО ОШИБКЕ. Судит разборщик, а не поле режима:
+    // строка адресована стоящему вызову, и съесть её значило бы оставить человека нажимать
+    // «Одобрить» в пустоту.
+    put(formatDecision({ ticketId, decision: 'approve', reason: 'да' }), 'steer', 3)
+
+    const verdict = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('allow')
+    expect(verdict.steerTexts).toEqual([])
+    expect(linesOf().some((l) => l.kind === 'done')).toBe(false)
+    expect(readPendingRedirectsFile({ file }).length).toBe(3)
+  })
+
+  it('(г) решение по-прежнему отпускает билет, и слово из того же файла едет вместе с ним', async () => {
+    const t = fakeClockAndSleep()
+    const ticketId = ticketIdFor({ attemptId: 'R-1000_1', tool: 'Bash', input: { command: 'npm publish' } })
+    const decisionId = put(formatDecision({ ticketId, decision: 'approve', reason: 'посмотрел' }), 'queue', 1)
+    put(WORD, 'steer', 2)
+
+    const verdict = await decideOnEvent({
+      event: bashEvent('npm publish'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('allow')
+    expect(verdict.decidedBy).toBe('redirect')
+    expect(verdict.ticketId).toBe(ticketId)
+    expect(verdict.steerTexts).toEqual([WORD])
+    expect(hookResponseFor(verdict).hookSpecificOutput.additionalContext).toContain(WORD)
+    // Строка решения потреблена как решение — она не имеет права доехать до работника словом.
+    expect(linesOf().some((l) => l.kind === 'done' && l.id === decisionId)).toBe(true)
+  })
+
+  it('(д) без файла поправок — НИ ОДНОГО обращения к нему, и ответ прежней формы байт в байт', async () => {
+    const t = fakeClockAndSleep()
+    put(WORD, 'steer', 1) // слово ЕСТЬ на диске, но путь этой сессии не передан
+    const touched: string[] = []
+    const spy = {
+      existsSync: (p: string) => {
+        touched.push(String(p))
+        return existsSync(p)
+      },
+      readFileSync: (p: string, e: string) => {
+        touched.push(String(p))
+        return readFileSync(p, e as never)
+      },
+      writeFileSync: (p: string, d: string, e: string) => writeFileSync(p, d, e as never),
+      mkdirSync: (p: string, o: never) => mkdirSync(p, o),
+      readdirSync: (p: string) => readdirSync(p),
+      appendFileSync: (p: string, d: string, e: string) => {
+        touched.push(String(p))
+        return appendFileSync(p, d, e as never)
+      },
+    }
+
+    const verdict = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+      fsImpl: spy,
+    })
+
+    expect(verdict.decision).toBe('allow')
+    expect(verdict.steerTexts).toEqual([])
+    // Хук живёт в файле настроек, общем для всей машины: чужая сессия не платит за чтение,
+    // которое ей никогда не понадобится.
+    expect(touched.filter((p) => p.includes('redirects')).length).toBe(0)
+    // ФОРМА ОТВЕТА БЕЗ СЛОВА — ровно три прежних ключа, ни одного нового.
+    expect(Object.keys(hookResponseFor(verdict).hookSpecificOutput).sort()).toEqual([
+      'hookEventName',
+      'permissionDecision',
+      'permissionDecisionReason',
+    ])
+  })
+
+  it('(е) на ОТКАЗЕ слово не едет и остаётся ждущим — отложено, а не потеряно', async () => {
+    const t = fakeClockAndSleep()
+    const ticketId = ticketIdFor({ attemptId: 'R-1000_1', tool: 'Bash', input: { command: 'rm -rf ./dist' } })
+    mkdirSync(ticketsDirOf(runDir), { recursive: true })
+    writeFileSync(decisionPathOf(runDir, ticketId), formatDecision({ ticketId, decision: 'deny', reason: 'не трогай сборку' }), 'utf8')
+    const wordId = put(WORD, 'steer', 1)
+
+    const verdict = await decideOnEvent({
+      event: bashEvent('rm -rf ./dist'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.steerTexts).toEqual([])
+    expect(hookResponseFor(verdict).hookSpecificOutput).not.toHaveProperty('additionalContext')
+    // Строка ЖДЁТ: её подберёт следующая граница вызова либо цикл продолжения после выхода.
+    expect(linesOf().some((l) => l.kind === 'done' && l.id === wordId)).toBe(false)
+    expect(readPendingRedirectsFile({ file }).map((r: { id: string }) => r.id)).toContain(wordId)
+  })
+
+  it('(ж) сломанная почта не меняет вердикт: непрочитанное — молчит, непомеченное — доезжает', async () => {
+    const t = fakeClockAndSleep()
+    put(WORD, 'steer', 1)
+    const wrap = (over: Record<string, unknown>) => ({
+      existsSync: (p: string) => existsSync(p),
+      readFileSync: (p: string, e: string) => readFileSync(p, e as never),
+      writeFileSync: (p: string, d: string, e: string) => writeFileSync(p, d, e as never),
+      mkdirSync: (p: string, o: never) => mkdirSync(p, o),
+      readdirSync: (p: string) => readdirSync(p),
+      appendFileSync: (p: string, d: string, e: string) => appendFileSync(p, d, e as never),
+      ...over,
+    })
+
+    // ХРАНИЛИЩЕ НЕ ЧИТАЕТСЯ. Слова нет — и вызов всё равно разрешён: почтальон сломался, а не
+    // страж. Отказ здесь останавливал бы безобидную работу из-за чужого файла.
+    const unreadable = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+      fsImpl: wrap({
+        existsSync: (p: string) => {
+          if (String(p).includes('redirects')) throw new Error('хранилище поправок не читается')
+          return existsSync(p)
+        },
+      }),
+    })
+    expect(unreadable.decision).toBe('allow')
+    expect(unreadable.steerTexts).toEqual([])
+
+    // ОТМЕТКА НЕ ПИШЕТСЯ. Слово всё равно отдано: приехать дважды — неудобство, не приехать
+    // ни разу — сорванное обещание, ради которого хранилище и заведено.
+    const unmarkable = await decideOnEvent({
+      event: bashEvent('git status --porcelain'),
+      env: { SMA_RUN_DIR: runDir, SMA_REDIRECTS_FILE: file },
+      clock: t.clock,
+      sleep: t.sleep,
+      fsImpl: wrap({
+        appendFileSync: () => {
+          throw new Error('отметку записать не удалось')
+        },
+      }),
+    })
+    expect(unmarkable.decision).toBe('allow')
+    expect(unmarkable.steerTexts).toEqual([WORD])
   })
 })

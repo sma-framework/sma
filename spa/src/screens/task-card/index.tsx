@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { ApiError } from '../../api/client'
 import {
   useApprove,
   useAttemptQuery,
@@ -38,28 +39,45 @@ import {
 } from '../../shell/format'
 import { openSystemConsole, useTellConsoleContext } from '../../shell/console-context'
 import { openScreen, useOpenedWith } from '../../shell/navigation'
+import { useComposerDraft } from '../../shell/useComposerDraft'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
 
 /**
- * Две судьбы, которые может иметь поправка, набранная поверх живой работы. Названы типом, а не
+ * Три судьбы, которые может иметь поправка, набранная поверх живой работы. Названы типом, а не
  * написаны на месте: путь БИЛЕТА обязан ходить только в режиме `queue`, и проверка «нигде на
  * этом экране нет режима прерывания» должна означать ровно это, а не спотыкаться о подпись
- * функции, которая ни в какой режим ничего не посылает.
+ * функции, которая ни в какой режим ничего не посылает. Судеб стало три, а разрешённых
+ * билету не прибавилось ни одной: у того пути по-прежнему ровно один законный режим.
  */
-type SteeringMode = 'interrupt' | 'queue'
+type SteeringMode = 'interrupt' | 'queue' | 'steer'
 
 /**
  * Steering — the composer that exists WHILE a worker holds the task (phase «Двигатель»,
  * the Hermes trio brought to the card). Text typed against live work has a DECLARED fate:
+ * «Сказать сейчас» hands the word to the turn that is running and kills NOTHING;
  * «Перебить сейчас» kills the run and the SAME session resumes with the correction —
  * done work stays in context; «После хода» lets the run finish and the correction rides
- * the continuation. No third, silent fate exists — that was the whole finding.
+ * the continuation. No fourth, silent fate exists — that was the whole finding.
+ *
+ * ══ THE THIRD BUTTON PROMISES EXACTLY WHAT THE CHANNEL DELIVERS, AND NOT A WORD MORE ══
+ *
+ * A running turn takes an outside word at ONE moment: the boundary of its next tool call.
+ * So «Сказать сейчас» is honest in two directions at once, and says both out loud — the
+ * word enters the running turn at that boundary, and a turn that makes no further tool call
+ * finishes without it and the word stands as a continuation after the turn instead. Same
+ * session either way; nothing killed either way; the word lost in neither.
+ *
+ * Rounding that into a plain «доедет» was the cheaper sentence to write, and it would have
+ * made this button a quieter «Перебить сейчас» — the exact substitution the third fate
+ * exists to remove. A boundary named out loud is the whole difference between the two.
  */
 function Steering({ taskId }: { taskId: string }) {
   const redirect = useRedirectTask()
-  const [text, setText] = useState('')
+  // Черновик набора привязан К ЭТОЙ задаче: поправка, написанная одной работе и всплывшая в
+  // поле другой, — способ отправить не туда, и руль тем и живёт, что в него пишут отвлекаясь.
+  const [text, setText] = useComposerDraft(`steer.${taskId}`)
   const [fate, setFate] = useState<string | null>(null)
 
   const send = (mode: SteeringMode) => {
@@ -71,14 +89,38 @@ function Steering({ taskId }: { taskId: string }) {
         onSuccess: (r) => {
           setText('')
           setFate(
-            mode === 'interrupt'
-              ? r.live
-                ? 'Перебиваю ход — сессия продолжится с вашей поправкой.'
-                : 'Поправка записана — ход уже не бежал, она встанет в ближайшее продолжение.'
-              : 'Поправка встанет сразу после текущего хода, той же сессией.',
+            mode === 'steer'
+              ? 'Слово ушло в идущий ход — войдёт на ближайшем вызове инструмента. Если вызовов больше не будет, встанет продолжением после хода. Сессия та же, никого не убили.'
+              : mode === 'interrupt'
+                ? r.live
+                  ? 'Перебиваю ход — сессия продолжится с вашей поправкой.'
+                  : 'Поправка записана — ход уже не бежал, она встанет в ближайшее продолжение.'
+                : 'Поправка встанет сразу после текущего хода, той же сессией.',
           )
         },
-        onError: (err) => setFate(refusalWords(err)),
+        /**
+         * СЛОВА ОТКАЗА — ДВЕРИ, А НЕ ОКНА, и это не украшение.
+         *
+         * У «Сказать сейчас» есть законный отказ, который несёт ЕДИНСТВЕННОЕ объяснение
+         * происходящего: исполнитель этой задачи бежит без той калитки, на которой слово
+         * входит в живой ход, — и дверь называет обе формы, которые до него ДОЕДУТ. Показать
+         * вместо этого «Не получилось отправить. Попробуйте ещё раз.» значит предложить
+         * человеку бить в ту же стену второй раз, спрятав от него ровно то, ради честности
+         * чего третья судьба и заводилась.
+         *
+         * ПОЧЕМУ ТЕЛО ОТВЕТА ПОКАЗЫВАЕТСЯ ЗДЕСЬ, ХОТЯ `refusalWords` ЕГО ПРЯЧЕТ. Тот помощник
+         * прав для всего окна: почти всякий отказ 400 — это проверка ФОРМЫ запроса, писанная
+         * тому, кто запрос собирал, то есть самому окну, и вываливать её человеку нечестно.
+         * Но на ЭТОМ пути форму запроса собирает не человек, а этот файл, и его отказы 400
+         * перечислимы: идентификатор задачи взят с самой карточки, режим — литерал из типа
+         * выше, пустой текст отсечён строкой раньше, лишних полей не посылается. Остаётся
+         * отказ по существу — про канал, — и предел длины, который дверь тоже называет сама.
+         * Своей фразы окно не сочиняет ни для того, ни для другого: второй автор одного и
+         * того же предложения — это и есть способ, которым слова двери и слова окна однажды
+         * разойдутся, а человек прочтёт то, что неправда.
+         */
+        onError: (err) =>
+          setFate(err instanceof ApiError && err.status === 400 && err.detail ? err.detail : refusalWords(err)),
       },
     )
   }
@@ -98,7 +140,15 @@ function Steering({ taskId }: { taskId: string }) {
         rows={2}
         className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12.5px] text-tx outline-none focus:border-blue"
       />
-      <div className="mt-2.5 flex items-center gap-2">
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => send('steer')}
+          disabled={redirect.isPending || text.trim() === ''}
+          className="rounded-[9px] bg-blue px-3.5 py-2 text-[12px] font-semibold text-white disabled:opacity-50"
+        >
+          Сказать сейчас
+        </button>
         <button
           type="button"
           onClick={() => send('interrupt')}
@@ -117,8 +167,13 @@ function Steering({ taskId }: { taskId: string }) {
         </button>
         {fate ? <span className="min-w-0 text-[11.5px] leading-[1.4] text-tx2">{fate}</span> : null}
       </div>
-      <div className="mt-[7px] text-[11px] text-tx3">
+      {/* Граница канала названа ДО нажатия, а не только в ответе на него: человек выбирает
+          между тремя кнопками до того, как что-то произошло, и выбирать он должен зная, чем
+          они отличаются. Строка ниже — единственное место, где это можно прочесть заранее. */}
+      <div className="mt-[7px] text-[11px] leading-[1.45] text-tx3">
         Сделанное не пропадёт: та же сессия продолжится с учётом поправки, без перезапуска с нуля.
+        «Сказать сейчас» входит в идущий ход на ближайшем вызове инструмента и никого не убивает;
+        если вызовов больше не будет — слово встанет продолжением после хода.
       </div>
     </div>
   )

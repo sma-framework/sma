@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-4073%2F4073-3CC0A0" alt="tests 4073/4073">
+  <img src="https://img.shields.io/badge/tests-4181%2F4181-3CC0A0" alt="tests 4181/4181">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -251,6 +251,43 @@ Every door in it is live: there is no «coming soon» handler left in the table.
   into a mush: each screen made for a wide desk says so plainly on a phone and points at the
   computer — a decision, stated, rather than a layout that broke. Walked live at 375 px from the
   task through to the approval, with the sideways-scroll measurement on that width in the receipt.
+
+### The wheel: a word for a session that is already running
+
+A running task is not a locked box. The sentence you type at a busy task has **three fates**, and
+the third one kills nobody.
+
+- **Say it now — the word reaches the turn mid-run.** The gate that already stands in front of
+  every tool call a worker makes hands your sentence over at the next such call, inside the same
+  turn. Nothing is killed, nothing restarts, and the session keeps everything it was holding in
+  its head. Measured on a live run of the real CLI, not read off a design: the word entered the
+  turn forty frames before that turn's final answer, the model quoted it back verbatim, all 98
+  frames of the attempt carried **one** session identifier, and the attempt spawned **one**
+  process from beginning to end.
+- **And the boundary of that channel is stated rather than hidden.** Delivery happens at a
+  tool-call boundary and nowhere else. A turn that will make no further tool calls does not see
+  the word before it ends — measured the same way: in a live probe the word was stored right
+  after the last tool call, the turn finished saying no correction had arrived, and the line
+  stayed **waiting** instead of being consumed. It is not lost: a waiting correction rides the
+  task's next run into the same session. The window says both halves of this before you press
+  anything, because the useful half alone would be an advertisement.
+- **Interrupt now** — the live child is told to die, and your correction is written to disk
+  *first*, so a restart cannot lose it; the continuation comes back into the same session with it.
+- **After the turn** — the word waits and is delivered on the way out. Neither of these two
+  changed in name or in behaviour; the third fate was added beside them.
+- **Where an executor has no such channel, the door says so instead of quietly killing.** Not
+  every CLI runs our gate inside its own process. Asking for the mid-run word on one that does
+  not is refused **in words**, naming the two shapes that do reach it — and that refusal now
+  reaches your eyes rather than dying in the browser: the same door does honest work as «kill and
+  continue», and it is labelled that way. Dressing a kill up as a mid-run word would be a forgery.
+- **The worker may ask, and the answer continues the same session.** A dangerous call parks
+  itself and waits for a person rather than being refused; a judgment the task did not settle is
+  **returned as a question** instead of guessed; your reply resumes the session that asked it, so
+  nothing is re-read and nothing is paid for twice. The brief the worker receives says all three
+  out loud — a mechanism its user does not know about does not exist for them.
+- **What you typed does not vanish.** A half-written correction, chat message or console line
+  survives leaving the screen and survives a page reload — walked live in a browser: typed,
+  navigated away, came back, reloaded, still there.
 
 ### Opening the window — what a first run actually needs
 
