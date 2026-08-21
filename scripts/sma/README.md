@@ -164,6 +164,7 @@ them in plain language, in English or Russian.
 | `eval` | The measurement namespace: the gold-set benchmark of the memory layer with floors that make the exit code a verdict, the cost of one verified correct result, and the five-element admission gate for a new feature |
 | `arena` | The comparative benchmark arena scorer and its static graphs page, negative results included |
 | `preflight` | The already-built gate: check a plan's claims against the real tree before an executor is spawned |
+| `wires` | Check that the links your plans DECLARE still exist in the code: it looks only inside the tree you give it, names what it cannot see, and says out loud that a trace is not a working wire |
 
 ### Lanes and sizing
 
@@ -646,6 +647,40 @@ esac
 
 `preflight` is a direct CLI command — **not** hook-facing (it may exit nonzero), never
 rides `sma pre`, so it cannot touch the V3 self-cost envelope.
+
+### Declared wires: `sma wires`
+
+Plans declare their own plumbing — which file feeds which, through what, and by what
+trace in the code. Nobody reads those declarations back, so a wire can be cut, renamed
+or never built while the declaration goes on stating it. `wires` reads the whole
+inventory and renders a **deterministic** verdict against a real tree.
+
+```bash
+sma wires --plans <dir> --tree <dir>          # the report; exit code IS the verdict
+sma wires … --count                           # the red count as the LAST stdout line
+sma wires … --json                            # every category, machine-readable
+sma wires … --rewrite ../old-root=.           # repeatable: one rule per foreign root
+sma wires … --roots scripts,docs              # override the declared walk-root set
+sma wires … --broad-limit 20                  # how wide a trace may be and still count
+sma wires … --verdicts journal.jsonl          # human verdicts; the only thing that puts red out
+sma wires --selftest                          # synthetic fixtures, twice → prints 1
+```
+
+Exit codes: **0** nothing red · **1** red without a written verdict · **2** the inventory
+does not read at all (including an inventory that parsed nothing — a walker that stopped
+finding things must go red, never quietly clean).
+
+**It looks only inside the tree you give it.** A declared path that leads outside is
+neither green nor red; it gets its own named category, counted and listed. Anything else
+would make the verdict depend on which directories happen to sit beside your checkout —
+the same answer would change on a clean clone. `--rewrite` brings foreign roots home, and
+every rule applied is printed in the report header along with the walk roots, the width
+limit and the tree's commit.
+
+**What it does not prove.** A trace found in a file proves a *string* is there — not a
+call, not a delivery, and not a receiver that reads what was delivered. Only a test
+watching the receiver proves a wire. Historic declarations written in shapes nobody
+agreed on are for a human to sort out; this command names them and repairs nothing.
 
 ### Benchmark arena: `sma arena`
 
