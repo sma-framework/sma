@@ -1002,10 +1002,23 @@ outside the allowlist is stripped defensively before send.
 
 | Env var | Purpose |
 |---|---|
-| `SMA_TERMINAL_NAME` | the stable per-window human name (e.g. «Мозг»); falls back to `T-<pid>` |
+| `SMA_TERMINAL_NAME` | the stable per-window human name (e.g. «Мозг»). Unset, the window is not left nameless: see below |
 | `SMA_SNAPSHOT_TOKEN` | auth token for the CRM receiver route (operator-provisioned) |
 | `SMA_SNAPSHOT_URL` | receiver URL; REQUIRED alongside the token — there is no built-in default (without it the sender no-ops with reason `no-url`) |
 | `SMA_DISABLE_SNAPSHOT_SPAWN` | kill-switch: never launch the detached reporter child |
+
+**A window nobody named still has a name.** A name you have to export by hand, in every
+window, every time, is a name most windows never get — and the trail of an unnamed window
+used to be filed under a machine token, which is a trail nobody reads. So the first session
+start of a nameless window is handed a readable default, «Окно-1», «Окно-2», …, recorded in
+`.sma/terminal-names.json` against the window's token and picked up again by every later
+one-shot hook process of that same window. It reaches both places a reader looks: the actors
+of a journal event and the NAME OF THE FILE the event landed in (`okno-1-<token>.jsonl`).
+Precedence, highest first: the name you set by hand, then the recorded one, then the machine
+fallback. Nothing is ever renamed — existing files keep the names they were born with, and a
+missing or unreadable names file simply means «no name», exactly as before. The start summary
+keeps offering you the chance to name the window yourself for as long as the name is still an
+automatic one, and goes quiet the moment you do.
 
 **No receiver, no child.** A heartbeat spawns the detached one-shot reporter ONLY when
 BOTH `SMA_SNAPSHOT_TOKEN` and `SMA_SNAPSHOT_URL` are set — on an unprovisioned checkout
