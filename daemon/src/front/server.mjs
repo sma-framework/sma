@@ -88,7 +88,7 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
-import { runsDirOf, attemptRunDir } from '../queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, readContinuation } from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
@@ -790,7 +790,36 @@ async function handleTask({ res, params, config, deps }) {
   rawAttempts = foldAttemptRows(rawAttempts)
 
   const parseReceipt = typeof deps.parseReceiptSummary === 'function' ? deps.parseReceiptSummary : () => null
-  const attempts = rawAttempts.map((a) => ({
+
+  /**
+   * КОНСПЕКТ ПЕРЕДАЧИ ОДНОЙ ПОПЫТКИ — прочитанный из ТОГО ЖЕ файла, который положила она сама.
+   *
+   * ПУТЬ СОБИРАЕТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, что и у писателя, и у спавна, и у билета ниже. Второе
+   * написание того же пути читало бы каталог, в который никто не пишет, — и молчало бы при этом
+   * совершенно честно на вид: экран сказал бы «конспекта нет» о задаче, у которой он есть.
+   *
+   * АДРЕСУЕТСЯ ТОЛЬКО ЗАПРОШЕННАЯ ЗАДАЧА И ЕЁ СОБСТВЕННЫЙ ПОДХОД: идентификатор каталога
+   * минтится из `id` этой двери и номера попытки её же строки, и никакого другого способа
+   * назвать каталог здесь не заводится — иначе дверь стала бы читалкой чужих файлов.
+   *
+   * `null` СНИМАЕТ КЛЮЧ ЦЕЛИКОМ, а не подставляет пустую строку: «нечего показать» и «не
+   * знаем» — разные предложения, и карточка обязана молчать только о первом.
+   */
+  const handoverOf = (attempt) => {
+    const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
+    if (n === null || n < 1) return null
+    const dir = attemptRunDir({
+      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      attemptId: attemptIdFor(id, n),
+    })
+    return readContinuation({ dir, fsImpl: deps.fsImpl })
+  }
+
+  const attempts = rawAttempts.map((a) => {
+    // Спрошено ОДИН раз на попытку и названо здесь, а не внутри тела: тело ниже — перечисление
+    // явных выборов, и чтение диска посреди него читалось бы как ещё одно поле.
+    const handover = handoverOf(a.attempt)
+    return {
     attempt: a.attempt ?? null,
     workerId: a.workerId ?? null,
     provider: a.provider ?? null,
@@ -898,7 +927,18 @@ async function handleTask({ res, params, config, deps }) {
     // ничего не ждёт. Назван нулём, а не опущен, по той же причине, что и поля выше:
     // карточка читает одну форму для каждой записи.
     ticket: null,
-  }))
+    // ═══ ЧТО ЭТА ПОПЫТКА ПЕРЕДАЛА СЛЕДУЮЩЕЙ ═════════════════════════════════════
+    //
+    // Тот же файл, слово в слово, который поедет в промпт следующего подхода. Двое читателей
+    // одного файла — весь смысл того, что конспект лежит файлом, а не считается на каждой
+    // стороне: человек видит РОВНО то, что получит работник, а не пересказ.
+    //
+    // Ключа нет вовсе, когда файла нет: первая попытка предшественника не имеет, и задача
+    // старше этого файла — тоже. Пустая строка на этом месте была бы утверждением, что
+    // передавать было нечего, а это совсем другой факт, и он пишется в сам конспект словами.
+    ...(handover ? { continuationSummary: handover } : {}),
+    }
+  })
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
   // appended when one ends — so a task with a worker inside it read as «подходов ещё не

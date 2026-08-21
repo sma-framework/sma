@@ -663,6 +663,29 @@ function Row({
             <div className="text-[12.5px] leading-[1.5] text-tx">{note}</div>
           </div>
         ) : null}
+
+        {/*
+          КОНСПЕКТ ПЕРЕДАЧИ — рядом с моментом возврата, потому что он и есть то, с чем задача
+          возвращается в работу: ровно этот текст уедет в промпт следующего подхода. Показан
+          как есть, без сокращений на нашей стороне: обрезка случилась ОДИН раз, при записи, и
+          если бы окно резало ещё раз, человек читал бы не то, что получит работник.
+
+          ПУСТОГО СЛУЧАЯ НА ЭКРАНЕ НЕТ. Нет файла — нет панели; ни прочерка, ни «неизвестно».
+          «Передавать было нечего» — это сведение, и оно приезжает словами ВНУТРИ конспекта.
+        */}
+        {attempt.continuationSummary ? (
+          <div className="mt-2.5 max-w-[440px] rounded-[10px] border border-bd bg-surf px-3.5 py-2.5">
+            <div className="mb-1 text-[10.5px] text-tx3">Конспект передачи</div>
+            <div className="whitespace-pre-wrap text-[12.5px] leading-[1.5] text-tx">
+              {attempt.continuationSummary.text}
+            </div>
+            {attempt.continuationSummary.truncated ? (
+              <div className="mt-1.5 text-[10.5px] text-tx3">
+                Конспект обрезан по потолку — работник получит ровно этот же текст.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   )
