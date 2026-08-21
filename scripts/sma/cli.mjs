@@ -10061,6 +10061,302 @@ async function cmdPreflight({ positionals, flags, dirs }) {
 }
 
 /**
+ * Every `--rewrite` occurrence, in order. The shared argument parser keeps ONE value per
+ * flag — which is correct for the other verbs and wrong here, because a mature inventory
+ * points at several foreign roots at once and a single rule would silently fix one pack
+ * and leave the rest unmeasured. Read from argv directly rather than widening the parser:
+ * changing the parser would change the behaviour of every other verb for one caller's sake.
+ */
+function collectRewriteRules(argv) {
+  const out = []
+  const add = (raw) => {
+    const s = String(raw ?? '')
+    const eq = s.indexOf('=') // split on the FIRST equals: a target path may contain more
+    if (eq <= 0) return
+    out.push({ prefix: s.slice(0, eq), target: s.slice(eq + 1) })
+  }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--rewrite') {
+      const next = argv[i + 1]
+      if (next != null && !next.startsWith('--')) {
+        add(next)
+        i++
+      }
+    } else if (a.startsWith('--rewrite=')) {
+      add(a.slice('--rewrite='.length))
+    }
+  }
+  return out
+}
+
+/**
+ * `sma wires` — check that the wires your plans DECLARE still exist in the code.
+ *
+ * Plans in this house have declared their own wiring for years: which file feeds which,
+ * through what, and by what trace in the code. Nobody ever read those declarations back,
+ * so a wire could be cut and the declaration would go on stating it. This verb reads the
+ * inventory and renders a deterministic verdict against a real tree.
+ *
+ * THE HONEST BOUNDARY, and it is printed at the foot of every report: a trace found in a
+ * file proves that a STRING is there. It does not prove a call, a delivery, or a receiver
+ * that reads it. Only a test watching the RECEIVER proves a wire. This verb is the
+ * bookkeeping that forces such a test to exist — reading its output as proof would repeat,
+ * on the instrument itself, the very failure it was built to catch.
+ *
+ * CONTAINMENT, and it is the reason the numbers travel. The run looks ONLY inside the tree
+ * it was given. A declared path that leads outside is neither green nor red: it is its own
+ * named answer, counted and listed, because an existence check against a directory that
+ * merely happens to sit beside this checkout would make the verdict a fact about the
+ * machine instead of about the product.
+ *
+ *   wires [--plans <dir>] [--tree <dir>] [--rewrite <prefix>=<target>]… [--verdicts <file>]
+ *         [--roots a,b,c] [--broad-limit N] [--json] [--count]
+ *   wires --selftest    → run every bundled fixture TWICE and print 1 iff every verdict is
+ *                         correct AND both runs agree byte for byte
+ *
+ * Exit code IS the verdict: 0 nothing red · 1 red without a written verdict · 2 the
+ * inventory does not read at all. Direct-CLI, read-only, spends zero model tokens.
+ */
+async function cmdWires({ positionals, flags }) {
+  const wires = await import('./lib/wires.mjs')
+  const repoRoot = join(MODULE_DIR, '..', '..') // scripts/sma → repo root (cwd-independent)
+
+  if (flags.selftest === true) return wiresSelftest(wires, repoRoot)
+
+  const treeDir = resolve(String(flags.tree && flags.tree !== true ? flags.tree : process.cwd()))
+
+  // Default plans directory: the house layout when it is there, an explicit refusal when
+  // it is not. Absence is a degradation, not a crash — the neighbouring linter's posture.
+  let plansDir = flags.plans && flags.plans !== true ? resolve(String(flags.plans)) : null
+  if (!plansDir) {
+    const guess = join(process.cwd(), '.planning', 'phases')
+    if (existsSync(guess)) plansDir = guess
+  }
+  if (!plansDir) {
+    process.stderr.write(
+      'usage: node scripts/sma/cli.mjs wires [--plans <dir>] [--tree <dir>] [--rewrite <prefix>=<target>]… [--verdicts <file>] [--roots a,b,c] [--broad-limit N] [--json] [--count] | wires --selftest\n' +
+        'no plans directory: pass --plans <dir> (nothing named .planning/phases here)\n',
+    )
+    return 2
+  }
+
+  const roots =
+    flags.roots && flags.roots !== true
+      ? String(flags.roots)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined
+  // The rewrite TARGET is a directory the caller typed, so it resolves against the working
+  // directory exactly as --tree and --plans do. Left relative it would be joined onto each
+  // candidate root in turn and land nowhere, which reads as «the path is missing» when the
+  // truth is «the rule was written in a different frame of reference».
+  const rewrites = collectRewriteRules(process.argv.slice(2)).map((r) => ({
+    prefix: r.prefix,
+    target: r.target ? resolve(String(r.target)) : '',
+  }))
+  const limitRaw = Number(flags['broad-limit'])
+  const broadLimit = Number.isFinite(limitRaw) && limitRaw >= 0 ? limitRaw : undefined
+
+  let verdicts
+  if (flags.verdicts && flags.verdicts !== true) {
+    try {
+      verdicts = readFileSync(String(flags.verdicts), 'utf8')
+    } catch (err) {
+      process.stderr.write(`wires: the verdict journal could not be read — ${err && err.message}\n`)
+      return 2
+    }
+  }
+
+  // The commit is READ HERE and passed in: the library never shells out. An unstated
+  // commit is printed as unstated rather than skipped, because a report whose tree cannot
+  // be identified is a number about nothing.
+  let commit = null
+  try {
+    const { execFileSync } = await import('node:child_process')
+    commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: treeDir, encoding: 'utf8' }).trim() || null
+  } catch {
+    commit = null // not a repository, or no git — say so, do not fail
+  }
+
+  const inventory = wires.collectInventory({ plansDir, treeDir, roots, rewrites })
+  const evaluation = wires.evaluateInventory({ inventory, treeDir, roots, broadLimit, verdicts })
+
+  if (flags.count === true) {
+    // Scorer contract of the neighbouring verbs: ONE number as the LAST stdout line.
+    process.stdout.write(`${wires.countRedWithoutVerdict(evaluation)}\n`)
+    return evaluation.exitCode
+  }
+  if (wantsJson(flags)) {
+    printJson(wires.toJson(evaluation))
+    return evaluation.exitCode
+  }
+
+  process.stdout.write(
+    wires.renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit, rewrites }),
+  )
+  return evaluation.exitCode
+}
+
+/**
+ * The selftest: EVERY bundled fixture, run TWICE.
+ *
+ * Twice, because the two halves of an instrument fail differently. Once proves the verdict
+ * is right; twice proves it is the SAME verdict — and an inventory walker is exactly the
+ * shape of code that reports a different total on every run without anybody noticing. Both
+ * halves are checked here: the codes must match the expectation AND each other, and the two
+ * rendered reports must agree byte for byte.
+ *
+ * Dead wires must go red BY NAME, not merely in a total: a count that moves is not evidence
+ * that the right record moved. Live wires must go green — an instrument that can only ever
+ * find fault is as useless as one that never does.
+ *
+ * All fixtures are synthetic. No real plan of any user is ever part of this run.
+ */
+async function wiresSelftest(wires, repoRoot) {
+  const base = join(repoRoot, 'scripts', 'sma', 'fixtures', 'wires')
+  const caseDir = (name) => join(base, name)
+
+  const run = (name, opts = {}) => {
+    const treeDir = caseDir(name)
+    const plansDir = join(treeDir, 'plans')
+    const roots = ['.']
+    const inventory = wires.collectInventory({ plansDir, treeDir, roots, rewrites: opts.rewrites })
+    const evaluation = wires.evaluateInventory({
+      inventory,
+      treeDir,
+      roots,
+      broadLimit: opts.broadLimit,
+      verdicts: opts.verdicts,
+    })
+    const report = wires.renderReport({
+      treeDir,
+      commit: 'selftest',
+      plansDir,
+      evaluation,
+      inventory,
+      roots,
+      broadLimit: opts.broadLimit,
+      rewrites: opts.rewrites,
+    })
+    return { evaluation, report }
+  }
+
+  const oneNamedRedLink = (ev) => {
+    const links = ev.red.filter((r) => r.kind === 'link')
+    return links.length === 1 && typeof links[0].pattern === 'string' && links[0].pattern.length > 0
+  }
+
+  const cases = [
+    // live: everything checkable is green; the one foreign path is outside the tree, which
+    // is neither colour — and with the rewrite rule it comes back inside and goes green.
+    { name: 'live', expect: 0, also: (ev) => ev.counts.green === 2 && ev.counts.outsideTree === 1 },
+    {
+      name: 'live',
+      label: 'live+rewrite',
+      opts: () => ({ rewrites: [{ prefix: '../synthetic-elsewhere', target: caseDir('live') }] }),
+      expect: 0,
+      also: (ev) => ev.counts.green === 3 && ev.counts.outsideTree === 0,
+    },
+    // dead / closed-dead: red, and the failing wire is named rather than only counted.
+    { name: 'dead', expect: 1, also: oneNamedRedLink },
+    { name: 'closed-dead', expect: 1, also: oneNamedRedLink },
+    // self-declared: a trace that exists only in its own declaration must NOT be evidence.
+    { name: 'self-declared', expect: 1, also: (ev) => ev.counts.red > 0 },
+    // not-built: no summary beside the plan — silence, and silence is not green.
+    { name: 'not-built', expect: 0, also: (ev) => ev.counts.green === 0 && ev.counts.ahead > 0 },
+    // broad: a trace found everywhere is yellow at a threshold of two, never green.
+    { name: 'broad', opts: () => ({ broadLimit: 2 }), expect: 0, also: (ev) => ev.counts.broad > 0 },
+    // verdicts: a written human verdict, and only that, puts a red out.
+    {
+      name: 'verdicts',
+      opts: () => ({ verdicts: readFileSync(join(caseDir('verdicts'), 'verdicts.jsonl'), 'utf8') }),
+      expect: 0,
+      also: (ev) => ev.counts.reviewed > 0,
+    },
+    // two-roots: the rewrite rule is REPEATABLE. Two foreign roots, one command: with no
+    // rule both paths are outside the tree, with one rule one is, with two rules none.
+    { name: 'two-roots', label: 'two-roots+0', expect: 0, also: (ev) => ev.counts.outsideTree === 2 },
+    {
+      name: 'two-roots',
+      label: 'two-roots+1',
+      opts: () => ({ rewrites: [{ prefix: '../elsewhere-one', target: caseDir('two-roots') }] }),
+      expect: 0,
+      also: (ev) => ev.counts.outsideTree === 1 && ev.counts.green === 2,
+    },
+    {
+      name: 'two-roots',
+      label: 'two-roots+2',
+      opts: () => ({
+        rewrites: [
+          { prefix: '../elsewhere-one', target: caseDir('two-roots') },
+          { prefix: '../elsewhere-two', target: caseDir('two-roots') },
+        ],
+      }),
+      expect: 0,
+      also: (ev) => ev.counts.outsideTree === 0 && ev.counts.green === 3,
+    },
+  ]
+
+  // THE CONTAINMENT OBSERVATION, and it ships with the code rather than living in a note.
+  // Every filesystem question the run asks is recorded, and every one must land inside the
+  // tree under measurement. Without this the instrument could quietly go back to statting
+  // whatever working copies lie beside this checkout, and the verdict would once again be
+  // a fact about the machine — with the report looking exactly as clean as it does now.
+  const asked = []
+  const recordingFs = {
+    existsSync: (p) => (asked.push(p), existsSync(p)),
+    readFileSync: (p, e) => (asked.push(p), readFileSync(p, e)),
+    readdirSync: (p, o) => (asked.push(p), readdirSync(p, o)),
+    statSync: (p) => (asked.push(p), statSync(p)),
+  }
+
+  let ok = 1
+  const failures = []
+  try {
+    const treeDir = caseDir('two-roots')
+    const inventory = wires.collectInventory({
+      plansDir: join(treeDir, 'plans'),
+      treeDir,
+      roots: ['.'],
+      fsImpl: recordingFs,
+    })
+    wires.evaluateInventory({ inventory, treeDir, roots: ['.'], fsImpl: recordingFs })
+    const escaped = asked.filter((p) => !wires.isWithinTree(p, treeDir))
+    // The control first: a run that asked NOTHING would pass «asked nothing outside» for
+    // the emptiest of reasons, and the check would be guarding a hole.
+    if (!asked.length) failures.push('containment: the run asked the filesystem nothing at all — the check would be vacuous')
+    if (escaped.length) {
+      failures.push(`containment: ${escaped.length} filesystem question(s) landed OUTSIDE the tree under measurement`)
+      for (const p of escaped.slice(0, 5)) failures.push(`  outside: ${p}`)
+    }
+  } catch (err) {
+    failures.push(`containment: threw — ${err && err.message}`)
+  }
+
+  for (const c of cases) {
+    const label = c.label ?? c.name
+    try {
+      const a = run(c.name, c.opts ? c.opts() : {})
+      const b = run(c.name, c.opts ? c.opts() : {})
+      if (a.evaluation.exitCode !== c.expect) failures.push(`${label}: code ${a.evaluation.exitCode}, expected ${c.expect}`)
+      if (a.evaluation.exitCode !== b.evaluation.exitCode) failures.push(`${label}: the two runs disagree on the code`)
+      if (a.report !== b.report) failures.push(`${label}: the two reports are not byte-identical`)
+      if (c.also && !c.also(a.evaluation)) failures.push(`${label}: the case-specific expectation does not hold`)
+    } catch (err) {
+      failures.push(`${label}: threw — ${err && err.message}`)
+    }
+  }
+  if (failures.length) {
+    ok = 0
+    for (const f of failures) process.stderr.write(`wires selftest: ${f}\n`)
+  }
+  process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
+  return ok === 1 ? 0 : 1
+}
+
+/**
  * `sma arena` — the comparative benchmark arena scorer + static graphs page.
  * Direct-CLI, NOT hook-facing; the score path spends zero LLM tokens
  * and reads the spend-adapter's version tags as its SOLE cost source.
@@ -11634,6 +11930,7 @@ const HANDLERS = {
   tune: cmdTune, // the tuner (propose|apply|benefit|fix|incident) — never commits, never pushes
   curriculum: cmdCurriculum, // weekly miss-curriculum: clusters -> templates -> weak-spots brief
   preflight: cmdPreflight, // already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
+  wires: cmdWires, // check that the wires your plans DECLARE still exist in the code (--plans|--tree|--rewrite…|--verdicts|--roots|--broad-limit|--json|--count|--selftest); looks ONLY inside the tree it was given
   arena: cmdArena, // benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
   batch: cmdBatch, // /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
   deleteme: cmdDeleteme, // 9.4 (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
@@ -11677,7 +11974,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
     )
     return 0
   }
