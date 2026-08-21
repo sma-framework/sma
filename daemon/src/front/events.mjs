@@ -304,8 +304,16 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
       }
       return ok
     },
-    async touch(taskId) {
-      const ok = await adapter.touch(taskId)
+    // THE FENCING TOKEN TRAVELS THROUGH THIS DECORATOR, and that is why the options object is
+    // named here instead of being dropped. This wrapper is what the daemon actually holds: the
+    // composition root hands the tick THIS object, not the backend. A wrapper that forwarded
+    // only the arguments it happened to care about would compute a token, carry it through the
+    // whole attempt, and lose it one call short of the seam that judges it — the refusal would
+    // still work in every test of the backend and never once in the running daemon. That class
+    // of fault has already cost this product a day, and it is cheapest to close in the wrapper
+    // rather than to discover later on a live queue.
+    async touch(taskId, opts) {
+      const ok = await adapter.touch(taskId, opts)
       if (ok) {
         const now = clock()
         const prev = lastRunning.get(taskId)
@@ -327,8 +335,8 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
       lastRunning.delete(taskId)
       return r
     },
-    async fail(taskId, reason) {
-      const r = await adapter.fail(taskId, reason)
+    async fail(taskId, reason, opts) {
+      const r = await adapter.fail(taskId, reason, opts)
       // `status` is the QUEUE status and nothing else. It carried the failure REASON here
       // until now — a word from a different vocabulary («no_receipt») that a client would
       // have written into the row as though it were a state. The reason is on the read
