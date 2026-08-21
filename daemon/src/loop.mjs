@@ -2273,7 +2273,12 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
       // two facts disagreed. Still fail-open — a broken renewal must never fail an attempt
       // that is doing its work — but it now leaves ONE line in the attempt's own log, where
       // the transcript and any later post-mortem will both find it.
-      Promise.resolve(deps.adapter.touch(task.id)).catch((err) => {
+      // WHOSE LEASE IS BEING RENEWED. Renewing by NAME alone means a worker whose own attempt
+      // is long over keeps a STRANGER's lease alive — and the stranger, still working, looks
+      // to every watcher like a task nobody is renewing. The token names the attempt that is
+      // asking; the queue refuses a foreign one and answers false, which this fail-open catch
+      // treats exactly as it treats any other unrenewed lease.
+      Promise.resolve(deps.adapter.touch(task.id, { attemptToken: task.attemptToken })).catch((err) => {
         if (touchBroken) return
         touchBroken = true
         log.append({
@@ -4071,6 +4076,16 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
     diffStat,
     workerId: route && route.workerId,
     provider: route && route.provider,
+    // WHOSE ATTEMPT IS BEING CLOSED — the fencing token this attempt was handed AT THE CLAIM,
+    // travelling on the task object from there to here. Closing by NAME alone is the hole
+    // measured on the live pilot: between the claim and this line the lease can expire, the
+    // queue hands the row to a second worker, and the first — still alive, still finishing —
+    // certifies work that is no longer his. The queue has been able to refuse a foreign token
+    // since the previous wave; until this line it was never shown one, and a refusal nobody
+    // can trigger is a comment, not a guard.
+    // Absent (a row claimed before this product knew about tokens) stays absent: the contract
+    // reads absence as absence and never as a licence to invent one.
+    attemptToken: task.attemptToken,
   })
   if (ledger && typeof ledger.recordAttempt === 'function') {
     ledger.recordAttempt({
@@ -4184,7 +4199,11 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
   // needed. Asked even when this refusal came before a run directory was ever made: the answer
   // is cached on the COPY, so an early exit owes and pays the same record as a late one.
   attachChangedFiles(deps, worktree)
-  await adapter.fail(task.id, reason)
+  // THE SAME TOKEN, AND THIS HALF MATTERS AS MUCH AS THE OTHER ONE. A failure is the
+  // RETRYABLE outcome, so a stale worker failing by name alone would hand a RUNNING attempt's
+  // work to yet a third worker while the second is still doing it. The token names the
+  // attempt that is really ending; the queue refuses a foreign one out loud.
+  await adapter.fail(task.id, reason, { attemptToken: task.attemptToken })
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
     // down with it: the row is attempted, and a refusing ledger says so out loud instead
