@@ -869,13 +869,18 @@ export function createPgBossQueue({
     if (typeof taskId !== 'string' || taskId === '') return false
     const words = validateWords(patch)
     if (Object.keys(words).length === 0) return false
-    const job = (await resolveActiveJob(taskId)) || (await resolveQueuedJob(taskId))
+    const job = (await resolveActiveJob(taskId)) || (await resolveWaitingJob(taskId))
     if (!job) return false
     await runSql(`UPDATE pgboss.job SET data = data || $2::jsonb WHERE id = $1`, [job.id, JSON.stringify(words)])
     return true
   }
 
-  /** READ-ONLY resolution of a piece that is still WAITING — the mirror of resolveActiveJob. */
+  /**
+   * READ-ONLY resolution of a piece that is still WAITING in the FIRST state — the mirror of
+   * resolveActiveJob, and the resolution the owner's word about an abandoned assembly still
+   * uses. It is deliberately left as it is: which doors reach a row waiting after a lost
+   * attempt is decided one door at a time (see below), and the assembly's decision is its own.
+   */
   async function resolveQueuedJob(taskId) {
     try {
       const res = await runSql(
@@ -886,6 +891,40 @@ export function createPgBossQueue({
       return rows[0] || null
     } catch (err) {
       log(`queued job for ${taskId} not resolved: ${maskError(err)}`)
+      return null
+    }
+  }
+
+  /**
+   * READ-ONLY resolution of a job that is WAITING — in EITHER of the two states this queue
+   * waits in — for the promises that are NOT the stop.
+   *
+   * WHY IT IS A RESOLUTION OF ITS OWN, and not the stop's one borrowed or the created-only one
+   * widened. When the stop learned to see both waiting states it was said in the same breath
+   * that whether the OTHER doors should reach a row waiting after a lost attempt is a separate
+   * promise, owed its own decision and its own case — because widening the shared resolution
+   * would have changed two promises at once, in silence, and nothing would have said which.
+   * Those decisions have now been taken, one at a time, each with a case: the words door and
+   * the owner's word about an abandoned assembly. This is where they are taken, so the reason
+   * is readable here rather than inferred from a call site.
+   *
+   * WHAT IT CHANGES, in words rather than in states: a task whose worker went silent is parked
+   * by the queue until its backoff runs out. Every reader of ours already calls that «в
+   * очереди», so a person sees ordinary waiting work — and it is precisely the moment editing
+   * the words matters most, because the next try should go out with a corrected brief rather
+   * than the one that just failed. A door answering «no such task» about a row the board shows
+   * in the queue is a refusal wearing the clothes of an absence.
+   */
+  async function resolveWaitingJob(taskId) {
+    try {
+      const res = await runSql(
+        `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state IN ('created','retry') ORDER BY created_on DESC LIMIT 1`,
+        [taskId],
+      )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      return rows[0] || null
+    } catch (err) {
+      log(`waiting job for ${taskId} not resolved: ${maskError(err)}`)
       return null
     }
   }
