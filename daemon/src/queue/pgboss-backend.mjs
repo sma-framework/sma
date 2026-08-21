@@ -104,6 +104,12 @@ import {
   NoReceiptError,
   InvalidFailReasonError,
   UnknownTaskError,
+  // The fencing token of an attempt: minted, judged and named in ONE place for both backends
+  // — a second expression here would be a second promise, and the two would disagree in
+  // silence the first time either was touched.
+  mintAttemptToken,
+  attemptTokenIsStale,
+  refuseStaleAttempt,
 } from './adapter.mjs'
 import {
   QueueEncodingError,
@@ -253,6 +259,21 @@ function attemptNumberOf(data, retryCount, { unclaimed = false } = {}) {
   const stamped = unclaimed ? undefined : data.claimedAtRetry
   const retries = stamped === undefined || stamped === null ? retryCount : stamped
   return (Number(data.attempt) || 1) + (Number(retries) || 0)
+}
+
+/**
+ * tokenOfJob(job) → THE FENCING TOKEN THE ROW ITSELF CARRIES, or null.
+ *
+ * The one reader of that field, so «where the token is kept» is stated once. Null covers two
+ * different absences on purpose, because both mean the same thing to a caller: a row claimed
+ * before this mark existed, and a row whose stamp did not land. Neither is a licence to invent
+ * a token, and neither may be a reason to refuse the worker holding the attempt — an absence is
+ * an absence, exactly as it is for the attempt number beside it.
+ */
+function tokenOfJob(job) {
+  const data = job && job.data && typeof job.data === 'object' ? job.data : null
+  const token = data && typeof data.attemptToken === 'string' ? data.attemptToken : ''
+  return token === '' ? null : token
 }
 
 /** The pg-boss states in which NO attempt is in flight: the row is waiting to be handed out,
@@ -516,18 +537,41 @@ export function createPgBossQueue({
    * FAIL-OPEN: a database that refuses this write costs the row its exact claim time, never the
    * claim — mapRow then falls back to the lease clock, which is what every row recorded before
    * this existed carries.
+   *
+   * ═══ THE FENCING TOKEN RIDES THE SAME STAMP, AND FOR THE SAME REASONS ═══
+   *
+   * IT LIVES IN THE PAYLOAD, not in a Map of this process. A register of live tokens in memory
+   * would be the backend's own version of the daemon state this product has already outlawed:
+   * a restart would forget every token, and every worker alive at that moment would be refused
+   * the right to close work it really did. The payload survives a restart, and it survives the
+   * queue's own re-issue (which DELETEs the row and INSERTs it back with the data copied).
+   *
+   * IT IS RESTAMPED BY THE SAME GUARD, so «a new token per hand-out» costs no second statement
+   * and cannot drift from «a new claim time per hand-out»: the guard fires exactly when the
+   * queue's own try counter says this is a different attempt from the one the mark describes.
+   *
+   * IT RETURNS THE TOKEN THE ROW NOW CARRIES, not the one this process minted — and that is the
+   * fail-open half. If the write did not land, the row still carries what it carried (nothing,
+   * or the previous attempt's token), and handing the claimer a token no row knows about would
+   * refuse the very worker that holds the attempt: a database hiccup would then cost the WORK,
+   * not just its mark. Null says «this row has no token of mine to give».
    */
-  async function stampClaimedAt(jobId) {
+  async function stampClaimedAt(jobId, attemptToken) {
     try {
-      await runSql(
+      const res = await runSql(
         `UPDATE pgboss.job
-            SET data = data || jsonb_build_object('claimedAt', $2::bigint, 'claimedAtRetry', retry_count)
+            SET data = data || jsonb_build_object('claimedAt', $2::bigint, 'claimedAtRetry', retry_count, 'attemptToken', $3::text)
           WHERE id = $1 AND state = 'active'
-            AND (NOT (data ? 'claimedAt') OR (data->>'claimedAtRetry') IS DISTINCT FROM retry_count::text)`,
-        [jobId, now()],
+            AND (NOT (data ? 'claimedAt') OR (data->>'claimedAtRetry') IS DISTINCT FROM retry_count::text)
+        RETURNING data->>'attemptToken' AS attempt_token`,
+        [jobId, now(), attemptToken],
       )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      const written = rows[0] ? rows[0].attempt_token : null
+      return typeof written === 'string' && written !== '' ? written : null
     } catch (err) {
       log(`claim time not recorded for job ${jobId}: ${maskError(err)}`)
+      return null
     }
   }
 
@@ -660,8 +704,10 @@ export function createPgBossQueue({
         // the mark still in the payload belongs to the attempt that just lost the row.
         const attempt = attemptNumberOf(data, retries, { unclaimed: true })
         // The fetch above set the lease clock; this records the moment the work was taken, which
-        // the renewal must never be allowed to move (see stampClaimedAt).
-        await stampClaimedAt(job.id)
+        // the renewal must never be allowed to move (see stampClaimedAt) — AND the fencing token
+        // of this hand-out, under the same guard, so a re-issued row gets a new one by
+        // construction rather than by a second promise.
+        const attemptToken = await stampClaimedAt(job.id, mintAttemptToken())
         // READY -> CLAIMED. The fetch above IS the claim (atomic in the queue), so this
         // cannot gate it — it is minted AFTER the fact, and a refusal is logged rather
         // than acted on: nothing here can un-fetch a job, and dropping a task the queue
@@ -670,7 +716,18 @@ export function createPgBossQueue({
         // NOTE ON `workerId`: the caller claims as the daemon itself — WHICH worker will run
         // this task is decided by routing, one step later. So nothing is stamped here; the
         // executing worker is written by assignWorker() below, once it is actually known.
-        return { ...data, attempt }
+        //
+        // THE TOKEN IS WRITTEN OVER THE PAYLOAD'S OWN, DELIBERATELY. `data` is what the fetch
+        // returned — the payload as it was BEFORE this claim was stamped — so it still carries
+        // the token of the attempt that just lost the row (the queue copies the payload through
+        // its own re-issue; measured on the live queue, and the claim time beside it behaves the
+        // same way). Handing that one out would hand the new worker the dead worker's key.
+        // Nothing is carried when the stamp did not land: an absent token is an absence, and
+        // every method treats it as today's behaviour rather than as a refusal.
+        const claimed = { ...data, attempt }
+        delete claimed.attemptToken
+        if (attemptToken) claimed.attemptToken = attemptToken
+        return claimed
       }
     }
     return null
@@ -834,9 +891,15 @@ export function createPgBossQueue({
    * cannot move it. A renewal that also reset «how long has this been running» is what made
    * every live task report about zero.
    */
-  async function touch(taskId) {
+  async function touch(taskId, { attemptToken } = {}) {
     const job = await resolveActiveJob(taskId)
     if (!job) return false
+    // WHOSE LEASE IS BEING HELD OPEN. The resolution above finds the row that is running under
+    // THIS task id, which is not the same question as «is the caller the one running it». A
+    // stale worker that went on renewing would keep the lease of somebody else's attempt alive
+    // for ever, and the liveness sweep — whose whole job is to take a row away from a worker
+    // that has gone quiet — would never fire. `false` is this method's own way of saying no.
+    if (attemptTokenIsStale(tokenOfJob(job), attemptToken)) return false
     await runSql(`UPDATE pgboss.job SET started_on = now() WHERE id = $1 AND state = 'active'`, [job.id])
     return true
   }
@@ -851,6 +914,10 @@ export function createPgBossQueue({
     }
     const job = await resolveActiveJob(taskId)
     if (!job) throw new UnknownTaskError(`complete: no active task "${taskId}"`)
+    // WHOSE ATTEMPT IS BEING CLOSED — asked BEFORE any mutation, like the missing receipt above.
+    // The resolution finds the ACTIVE row of this task, whichever attempt that is; this is the
+    // one question it cannot answer, and the one the live queue proved has to be asked.
+    refuseStaleAttempt('complete', taskId, tokenOfJob(job), result.attemptToken)
     await bossInstance.complete(job.name, job.id, { receiptRef: result.receiptRef })
     coalesce.delete(taskId)
     // Finished work is not finished business: the task now owes a human a word, and the
@@ -871,12 +938,17 @@ export function createPgBossQueue({
     return true
   }
 
-  async function fail(taskId, reason) {
+  async function fail(taskId, reason, { attemptToken } = {}) {
     if (!FAIL_REASONS.includes(reason)) {
       throw new InvalidFailReasonError(`fail: "${reason}" is not one of ${FAIL_REASONS.join('|')}`)
     }
     const job = await resolveActiveJob(taskId)
     if (!job) throw new UnknownTaskError(`fail: no active task "${taskId}"`)
+    // A STALE WORKER MAY NOT BREAK SOMEBODY ELSE'S ATTEMPT EITHER, and here it matters twice
+    // over: a failure in this queue is the RETRYABLE outcome — the row is deleted and inserted
+    // back for another try — so a stranger's failure would take the work away from the worker
+    // doing it right now and hand it to a third.
+    refuseStaleAttempt('fail', taskId, tokenOfJob(job), attemptToken)
     await bossInstance.fail(job.name, job.id, { reason })
     coalesce.delete(taskId)
     if (ledgerDir) {

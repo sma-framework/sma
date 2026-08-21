@@ -86,6 +86,15 @@ function makeFakeBackend({
 
   // pg-boss maintenance, simulated: an active job past its expiry returns to 'created'
   // (retry) with retry_count+1, or moves to the dead-letter (failed) once exhausted.
+  //
+  // THE PAYLOAD SURVIVES THE RE-ISSUE UNTOUCHED, and that is modelled rather than assumed: the
+  // library's own re-issue DELETES the row and INSERTS it back with the data copied, so every
+  // mark of the try that just ended — the claim time, its try counter, and now the fencing
+  // token — lives on until the next claim stamps a new one. Seen on the live queue, where the
+  // second worker's claim came back carrying the FIRST worker's marks. A fake that cleared the
+  // payload here would be tidier than the library and would certify a fence whose live version
+  // has a hole in it: «the old token is gone by itself» is exactly the belief that must not
+  // become a test.
   function maintain() {
     const t = now()
     for (const j of jobs.values()) {
@@ -276,14 +285,28 @@ function makeFakeBackend({
       // move a value that already belongs to the attempt in flight (the queue's own retry_count
       // is what tells the two apart). A fake looser than its statement would let a renewal move
       // the clock here and stay green.
-      const [jobId, claimedAt] = params
+      //
+      // THE FENCING TOKEN RIDES THE SAME STATEMENT, and is modelled with the same guard rather
+      // than with a convenience of its own: it is written when — and only when — the claim time
+      // beside it is written, which is what makes «a new token per hand-out» a property of one
+      // statement instead of a second promise. The RETURNING clause is modelled too, because
+      // the backend READS IT BACK: a fake that answered with no rows would send the backend
+      // down its «the write did not land» path on every claim, and the suite would certify a
+      // token nobody ever hands out.
+      const [jobId, claimedAt, attemptToken] = params
       const j = jobs.get(String(jobId))
       if (j && j.state === 'active') {
         const d = j.data || {}
         const retry = j.retry_count ?? 0
         const sameAttempt = d.claimedAt != null && String(d.claimedAtRetry) === String(retry)
-        if (!sameAttempt) j.data = { ...d, claimedAt, claimedAtRetry: retry }
+        if (!sameAttempt) {
+          j.data = { ...d, claimedAt, claimedAtRetry: retry, attemptToken }
+          // RETURNING sees the row AS UPDATED — the value just written, not the one before it.
+          return { rows: [{ attempt_token: j.data.attemptToken }] }
+        }
       }
+      // The guard matched nothing: no row was updated, so the statement returns none. A fake
+      // that answered here anyway would be more generous than the UPDATE it stands for.
       return { rows: [] }
     }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('start_after = $2')) {
@@ -599,6 +622,87 @@ describe('the claim time and the lease clock are two different writes', () => {
     expect(row.claimedAt).toBe(job.started_on)
     expect(row.claimedAt).not.toBeNull()
     expect(row.leaseRenewedAt).toBe(job.started_on)
+  })
+})
+
+// ═══ ГДЕ ЖИВЁТ ЖЕТОН ПОПЫТКИ, И ЧТО С НИМ ДЕЛАЕТ САМА ОЧЕРЕДЬ ═══════════════════════════
+//
+// Отказ чужому жетону утверждён общим контрактным сьютом — он один на оба бэкенда. Здесь —
+// то, чего у памятного бэкенда нет и быть не может: ГРУЗ СТРОКИ и обращение очереди с ним.
+//
+// Эти дела утверждают ПРОВОД, а не вычисление: что жетон, выданный захватом, — это тот самый
+// жетон, который лежит в строке, а не значение, посчитанное рядом с ней. Вычисленный и никуда
+// не доехавший жетон — ровно тот класс, которым эта работа уже платила: посчитали, положили в
+// журнал и не передали тому, кто им пользуется.
+describe('the fencing token lives in the row, and the queue keeps it there', () => {
+  it('the token the claim handed out IS the token in the payload, and a new one is stamped only at the next claim', async () => {
+    const c = mkClock(1000)
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    await adapter.enqueue(backlog())
+
+    const first = await adapter.claimNext('daemon', {})
+    const job = [...jobs.values()][0]
+    // ПРОВОД: одно значение, а не два похожих.
+    expect(typeof first.attemptToken).toBe('string')
+    expect(job.data.attemptToken).toBe(first.attemptToken)
+
+    // Аренда потеряна: очередь перевыдаёт строку СВОИМ планом, и груз она копирует.
+    c.advance(6000)
+    await adapter.list({})
+    expect(job.state).toBe('created')
+    // ЖЕТОН УМЕРШЕЙ ПОПЫТКИ ЕЩЁ ЛЕЖИТ В ГРУЗЕ — и это не оплошность, а поведение библиотеки,
+    // снятое с живой очереди. Починка, понадеявшаяся на «при перевыдаче стёрлось», разошлась
+    // бы с ней молча.
+    expect(job.data.attemptToken).toBe(first.attemptToken)
+
+    c.advance(1000)
+    const second = await adapter.claimNext('daemon', {})
+    // Новая выдача — новый жетон, и захват вернул НОВЫЙ, а не тот, что лежал в грузе до штампа.
+    expect(second.attemptToken).not.toBe(first.attemptToken)
+    expect(job.data.attemptToken).toBe(second.attemptToken)
+  })
+
+  it('the token is written by the SAME statement as the claim time — no second write, no seam of its own', async () => {
+    const c = mkClock(1000)
+    const statements: string[] = []
+    const { boss, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 60000 })
+    const adapter = createPgBossQueue({
+      boss,
+      execSql: async (sql: string, params: any[]) => {
+        statements.push(sql)
+        return execSql(sql, params)
+      },
+      clock: c.clock,
+      expireMs: 60000,
+    })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('daemon', {})
+
+    const writes = statements.filter((s) => s.includes('attemptToken'))
+    // ОДИН оператор, и это тот же, что пишет время захвата: «новый жетон на каждой выдаче»
+    // держится охраной ОДНОГО оператора, а не вторым обещанием, которое можно забыть сдержать.
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toContain('claimedAt')
+    expect(writes[0].startsWith('UPDATE pgboss.job')).toBe(true)
+  })
+
+  it('a row claimed BEFORE the token existed closes as it always did — an absence is an absence', async () => {
+    const c = mkClock(1000)
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    const claimed = await adapter.claimNext('daemon', {})
+
+    // Строка, захваченная версией, у которой жетона не было вовсе.
+    const job = [...jobs.values()][0]
+    delete job.data.attemptToken
+
+    // Звонящий предъявляет жетон, а строке предъявить нечего: отказывать ему не за что.
+    expect(await adapter.touch('BL-196', { attemptToken: claimed.attemptToken })).toBe(true)
+    expect(
+      await adapter.complete('BL-196', { receiptRef: 'reverify:old-row', attemptToken: claimed.attemptToken }),
+    ).toBe(true)
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('awaiting_approval')
   })
 })
 
