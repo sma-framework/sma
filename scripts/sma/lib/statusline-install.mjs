@@ -28,8 +28,22 @@ import { join, dirname } from 'node:path'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { isSmaStatuslineCmd } from './statusline.mjs'
 
-/** The canonical statusLine command this repo installs, and its wrap variant. */
-export const SMA_STATUSLINE_CMD = 'node scripts/sma/cli.mjs statusline'
+/** The canonical statusLine command this repo installs, and its wrap variant.
+ *
+ * ANCHORED to the project root — `${CLAUDE_PROJECT_DIR:-.}` — for the same reason every
+ * hook command is: the harness runs this string as a one-shot process whose working
+ * directory it inherits from the session, so a path written relative to the project makes
+ * node fail to resolve the module before any of this code runs, and the segment simply
+ * disappears. Where the variable is unset the fallback `.` is byte-for-byte the spelling
+ * this constant used to hold, so nothing is ever worse than it was. The path is quoted so
+ * a project directory with spaces in it stays one argument.
+ *
+ * Changing this string means teaching isSmaStatuslineCmd (both copies of it — the render
+ * one and the off-ramp's deliberate standalone) to still recognise the previous spelling:
+ * an install that reads its OWN yesterday's line as a stranger's PRESERVES and WRAPS it,
+ * which spawns this CLI twice on every repaint and then hands our own copy back at
+ * uninstall as though it were the adopter's. */
+export const SMA_STATUSLINE_CMD = 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline'
 export const SMA_STATUSLINE_WRAP_CMD = SMA_STATUSLINE_CMD + ' --wrap'
 
 /**
