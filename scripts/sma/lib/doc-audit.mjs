@@ -13,8 +13,11 @@
  *
  * THE NUMBERS TARGET (`--target numbers`) extends the same idea to every NUMBER the docs
  * use to describe the product itself. Nothing else in this repo cross-checks prose against
- * code, so a header that promises fifty-six doors while the table holds sixty-one stays
- * green forever. Four sources of truth, and only four:
+ * code, so a header that promises fewer doors than the table actually holds stays green
+ * forever. (The illustration deliberately names no figure of its own: an example carrying
+ * today's count becomes a second, unwatched claim about the product the moment the count
+ * moves — which is precisely the flaw this target exists to catch.)
+ * Four sources of truth, and only four:
  *   - doors       → the ROUTES literal of the daemon front, PARSED from the text and never
  *                   imported: this audit is synchronous and must not drag in a daemon.
  *   - verbs       → the HANDLERS literal of this CLI, parsed for the same reason plus a
