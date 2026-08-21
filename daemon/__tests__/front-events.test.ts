@@ -362,6 +362,52 @@ describe('wrapAdapterWithEvents — ordering: zero emits before the durable call
   })
 
   /**
+   * ЭТО ДЕЛО ПРО ПРОВОД, А НЕ ПРО ВЫЧИСЛЕНИЕ.
+   *
+   * Жетон попытки, который очередь выдаёт при захвате, обязан ДОЕХАТЬ до того шва, который его
+   * судит. Но между тиком и бэкендом стоит эта обёртка — и именно её держит демон: корень
+   * сборки отдаёт циклу ЕЁ, а не бэкенд. Обёртка, пересылающая только те аргументы, которые ей
+   * самой интересны, потеряла бы жетон за один вызов до проверки: отказ работал бы во всех
+   * делах бэкенда и не работал бы ни разу в живом демоне.
+   *
+   * Поэтому дело утверждает не «жетон где-то есть», а РОВНО ТО ЗНАЧЕНИЕ в аргументах вызова,
+   * дошедшего до бэкенда.
+   */
+  it('the attempt token reaches the durable adapter through this wrapper — every closing seam', async () => {
+    const calls: any[] = []
+    const durable: any = {
+      enqueue: async () => ({ id: 'T', coalesced: false }),
+      claimNext: async () => ({ id: 'T', attemptToken: 'tok-from-claim' }),
+      touch: async (...args: any[]) => {
+        calls.push(['touch', ...args])
+        return true
+      },
+      complete: async (...args: any[]) => {
+        calls.push(['complete', ...args])
+        return true
+      },
+      fail: async (...args: any[]) => {
+        calls.push(['fail', ...args])
+        return true
+      },
+    }
+    const wrapped = wrapAdapterWithEvents(durable, { emit: () => {} }, { clock: () => 0 })
+
+    const claimed = await wrapped.claimNext('w1', {})
+    expect(claimed.attemptToken).toBe('tok-from-claim') // обёртка не съела его и на выдаче
+
+    await wrapped.touch('T', { attemptToken: claimed.attemptToken })
+    await wrapped.complete('T', { receiptRef: 'x', attemptToken: claimed.attemptToken })
+    await wrapped.fail('T', 'tests_red', { attemptToken: claimed.attemptToken })
+
+    expect(calls).toEqual([
+      ['touch', 'T', { attemptToken: 'tok-from-claim' }],
+      ['complete', 'T', { receiptRef: 'x', attemptToken: 'tok-from-claim' }],
+      ['fail', 'T', 'tests_red', { attemptToken: 'tok-from-claim' }],
+    ])
+  })
+
+  /**
    * THE CLASS LOCK. `hub.emit` drops an unlisted type SILENTLY — by design, so a hostile emit
    * cannot invent a frame shape. The cost of that design is that a TYPO or an undeclared new
    * type is invisible: the code emits, the hub swallows, and the screen waiting for it simply
