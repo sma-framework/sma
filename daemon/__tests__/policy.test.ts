@@ -384,10 +384,22 @@ describe('policy/budget — sub→API switch + monthly budget stop', () => {
     expect(r.reason).toBe('budget_stop')
   })
 
-  it('no monthly cap configured (0) → no fallback budget (config default)', () => {
+  /**
+   * NO CAP IS NOT AN EMPTY WALLET, AND THE DIFFERENCE IS NOT COSMETIC.
+   *
+   * 0 is the SHIPPED DEFAULT, so this branch is what a fresh install answers on its very
+   * first busy night. It used to answer «budget_stop» — the money ran out — while the queue
+   * plaque, on the same facts, said the paid channel was never configured. Both sentences
+   * were shown to a person, and «raise your limit» is unactionable advice about a limit he
+   * never set. The word is now the state's own.
+   */
+  it('no monthly cap configured (0) → api_cap_unset, NOT «the money ran out»', () => {
     const r = shouldApiFallback({ task: { lane: 'prod' }, windows: { allClosed: true }, budget: { monthlyApiCapEur: 0 }, usageReader: reader(0), clock })
     expect(r.fallback).toBe(false)
-    expect(r.reason).toBe('budget_stop')
+    expect(r.reason).toBe('api_cap_unset')
+    // …and it is emphatically NOT the word that means a ceiling was reached: the two send a
+    // person to do different things, which is the entire point of splitting them.
+    expect(r.reason).not.toBe('budget_stop')
   })
 
   it('accepts a bare boolean for the windows-closed signal', () => {
