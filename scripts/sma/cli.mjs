@@ -4390,6 +4390,11 @@ function spawnCountFromSettings(settingsPath) {
  *                                    .claude/settings.json (or --settings <path>)
  *   pre-bench --metric parity        in-process: mismatch count between the merged
  *                                    runPre output and the union of single-stream runs
+ *   pre-bench --per-check [--runs N] N (default 20) IN-PROCESS turns over the golden
+ *                                    fixtures; prints per-stream p50/p95 ms + p95 bytes
+ *                                    then the bare sum of the p95 ms. This is the mode
+ *                                    a per-stream budget is judged by — the default
+ *                                    mode's node boot dwarfs the streams it measures.
  */
 async function cmdPreBench({ flags }) {
   const pre = await import('./lib/pre.mjs')
@@ -4460,6 +4465,112 @@ async function cmdPreBench({ flags }) {
       }
     }
     process.stdout.write(`${mismatches}\n`)
+    return 0
+  }
+
+  // ── --per-check [--runs N] : per-stream IN-PROCESS cost ───────────────────
+  //
+  // WHY THIS MODE EXISTS. The default mode above times a FULL child spawn, and on a
+  // developer machine the node boot inside that spawn costs hundreds of milliseconds
+  // — several times more than everything the streams do. Two identical runs of the
+  // default mode differ by more than switching every stream OFF does, so it cannot
+  // answer "what do the streams cost": it answers "what does starting this install
+  // cost", which is a real but DIFFERENT question. The number that belongs to a
+  // per-stream budget comes from the per-stream telemetry runPre already records:
+  // ms and bytes for each stream, measured with the process already warm.
+  //
+  // Same rig as --metric parity (that is deliberate — one way to run fixtures
+  // in-process, not two): a FRESH throwaway repository plus a fresh throwaway .sma
+  // per fixture, so each fixture is an independent tool call and the destructive
+  // fixture drives the REAL expensive airbag path inside a disposable .git rather
+  // than the shared working tree.
+  if (flags['per-check']) {
+    const perRuns = Number(flags.runs) > 0 ? Math.floor(Number(flags.runs)) : 20
+    if (!fixtures.length) {
+      process.stderr.write('SMA pre-bench: no golden fixtures found\n')
+      return 1
+    }
+    const { rmSync } = await import('node:fs')
+    const noSha = async () => null
+    /** id -> {ms:[], bytes:[], skipped:n} */
+    const byStream = new Map()
+    let samples = 0
+    for (let i = 0; i < perRuns; i++) {
+      for (const fx of fixtures) {
+        const tmpRoot = await makeThrowawayRepo('sma-pre-percheck-')
+        const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
+        try {
+          const ctx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
+          const res = await pre.runPre(ctx)
+          samples += 1
+          for (const c of res.sample.checks || []) {
+            if (!byStream.has(c.id)) byStream.set(c.id, { ms: [], bytes: [], skipped: 0 })
+            const acc = byStream.get(c.id)
+            // A budget-skipped stream never ran — folding its 0 into the percentiles
+            // would report a cost that was not paid. Counted separately instead.
+            if (c.skipped) acc.skipped += 1
+            else {
+              acc.ms.push(c.ms)
+              acc.bytes.push(c.bytes ?? 0)
+            }
+          }
+        } catch {
+          /* a failed fixture run contributes nothing — never a fabricated sample */
+        } finally {
+          try {
+            rmSync(tmpRoot, { recursive: true, force: true })
+          } catch {
+            /* best-effort cleanup */
+          }
+        }
+      }
+    }
+
+    const streams = [...byStream.entries()].map(([id, acc]) => ({
+      id,
+      n: acc.ms.length,
+      skipped: acc.skipped,
+      p50Ms: Math.round(pre.computePercentile(acc.ms, 50)),
+      p95Ms: Math.round(pre.computePercentile(acc.ms, 95)),
+      p95Bytes: Math.round(pre.computePercentile(acc.bytes, 95)),
+    }))
+    // The budget belongs to the WHOLE hook turn, so the streams are summed: a per-turn
+    // ceiling is spent by all of them together, not by the worst one alone.
+    const sumP95Ms = streams.reduce((n, s) => n + s.p95Ms, 0)
+    const sumP95Bytes = streams.reduce((n, s) => n + s.p95Bytes, 0)
+
+    if (wantsJson(flags)) {
+      printJson({
+        metric: 'pre_per_check_p95_ms',
+        runs: perRuns,
+        fixtures: fixtures.length,
+        samples,
+        streams,
+        sumP95Ms,
+        sumP95Bytes,
+        threshold: 300,
+        pass: sumP95Ms <= 300,
+      })
+      return 0
+    }
+
+    process.stdout.write(
+      `SMA pre-bench — per-stream IN-PROCESS cost, ${perRuns} runs × ${fixtures.length} fixtures = ${samples} turns\n` +
+        `  a full process spawn measures the shape of the INSTALL (node boot, module load);\n` +
+        `  the cost of the STREAMS is the table below — that is what a per-turn budget buys.\n` +
+        `  ${'stream'.padEnd(18)}${'p50 ms'.padStart(8)}${'p95 ms'.padStart(8)}${'p95 bytes'.padStart(11)}${'n'.padStart(7)}\n`,
+    )
+    for (const s of streams) {
+      process.stdout.write(
+        `  ${String(s.id).padEnd(18)}${String(s.p50Ms).padStart(8)}${String(s.p95Ms).padStart(8)}` +
+          `${String(s.p95Bytes).padStart(11)}${String(s.n).padStart(7)}${s.skipped ? ` (пропущено по бюджету: ${s.skipped})` : ''}\n`,
+      )
+    }
+    process.stdout.write(
+      `  сумма p95 по потокам: ${sumP95Ms} ms · ${sumP95Bytes} bytes · SLO p95 <= 300 ms → ${sumP95Ms <= 300 ? 'PASS' : 'FAIL'}\n`,
+    )
+    // the bare numeric LAST line — what the V2 scorer parses.
+    process.stdout.write(`${sumP95Ms}\n`)
     return 0
   }
 
