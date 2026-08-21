@@ -878,6 +878,18 @@ export function createDaemon(o = {}) {
   // request path is how a browser gets to name a program.
   const mergeTestRunner = o.runTests ?? runMergeSmoke
 
+  // ═══ КОД, КОТОРЫЙ НИКТО НЕ СМОГ ПОДПИСАТЬ ═══
+  //
+  // The daemon's own event log, resolved HERE rather than at the tick, because two things
+  // now write to it and the one built later must not get a second copy of the default.
+  const daemonJournal = o.journal ?? ((entry) => console.log(tickJournalLine(entry, clock)))
+  // The bounded register of dispatcher codes the closed vocabulary could not sign. It lives
+  // at the root, beside the decision journal it is the counterpart of: the journal records
+  // what WAS explained, this records what could not be. Built once, held in memory for the
+  // life of the daemon, and read by the feedback window — a defect nobody can see is a defect
+  // that gets rediscovered by the next person to lose an afternoon to it.
+  const unknownDispatchCodes = o.unknownDispatchCodes ?? createUnknownDispatchRegistry({ journal: daemonJournal, clock })
+
   // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
@@ -887,6 +899,9 @@ export function createDaemon(o = {}) {
         clock,
         adapter,
         hub,
+        // WHAT THE DISPATCHER COULD NOT EXPLAIN, for the feedback window's diagnostics —
+        // a READER, so the door owns none of the state and cannot add to it.
+        unknownDispatchCodes: () => unknownDispatchCodes.codes(),
         ledger, // the attempt ledger AND the decision journal ride the same seam
         ledgerDir,
         // …and the read model that counts a worker's concluded attempts over the last 30 days
@@ -1243,7 +1258,7 @@ export function createDaemon(o = {}) {
     report: o.report ?? ((event) => reportTaskEvent({ config, event, clock, journal: o.journal })),
     // The daemon's own event log. It is wired UNCONDITIONALLY: an unwired sink is how a
     // refused task became a silence — every reason the tick names has to reach a log.
-    journal: o.journal ?? ((entry) => console.log(tickJournalLine(entry, clock))),
+    journal: daemonJournal,
     // ПАМЯТЬ ДЕДУПА СТАРЕНИЯ — построена ЗДЕСЬ, один раз, рядом с deps, и живёт столько же,
     // сколько демон. Без этой строки дедуп был бы «вычислен, но не подключён»: функция есть,
     // тесты зелёные, а в жизни сигнал по-прежнему кричит каждые пять секунд.
@@ -1255,6 +1270,9 @@ export function createDaemon(o = {}) {
     // which is the daemon's own event log
     decisionJournal:
       o.decisionJournal ?? ((entry) => (typeof ledger.appendJournal === 'function' ? ledger.appendJournal(entry) : undefined)),
+    // …and its counterpart: told when the decision journal could NOT take a code, so the
+    // silent drop stops being invisible. Same register the feedback window reads.
+    unknownReasonSink: o.unknownReasonSink ?? ((code) => unknownDispatchCodes.record(code)),
   }
   const daemon = runDaemon({ tickMs: config.tickMs ?? 5000, onTick: () => tick(tickDeps) })
 
@@ -1343,6 +1361,66 @@ function maskSecrets(text) {
 export function tickJournalLine(entry, clock) {
   const now = typeof clock === 'function' ? clock() : Date.now()
   return `[SmaDaemon] ${new Date(now).toISOString()} ${describeTickEvent(entry)}`
+}
+
+/**
+ * ═══════════ THE REGISTER OF CODES NOBODY COULD SIGN ═══════════
+ *
+ * The router explains every decision with a code from a CLOSED vocabulary, and the journal
+ * drops any code that vocabulary does not carry. That drop is silent on purpose — a
+ * dispatcher that dies of a typo is worse than one that cannot explain itself — and the
+ * silence cost an entire class of defect its visibility: the one decision that spends real
+ * money went unrecorded for as long as it existed, and the card politely reported that the
+ * route had never been decided.
+ *
+ * So the drop is COUNTED. Not fixed, not thrown, not retried: counted, and shown to whoever
+ * opens the feedback window. Bounded twice over, because this is memory a running daemon
+ * holds and a value a public issue may quote: at most CODES_CAP distinct codes, each cut to
+ * CODE_CAP characters. The total keeps counting past the cap — losing the twenty-first NAME
+ * is acceptable, losing the knowledge that it happened is not.
+ *
+ * ONE OPERATOR LINE PER NEW CODE, never per occurrence: a code written in a hot loop would
+ * otherwise turn a log into a wall, and the second sighting teaches nobody anything the
+ * first did not.
+ */
+export const UNKNOWN_DISPATCH_CODES_CAP = 20
+export const UNKNOWN_DISPATCH_CODE_CAP = 64
+
+export function createUnknownDispatchRegistry({ journal, clock = Date.now } = {}) {
+  let total = 0
+  const seen = new Map()
+
+  return {
+    /** Told by the router. Never throws — it is a counter, and a counter owes nobody a stack. */
+    record(rawCode) {
+      const code = String(rawCode ?? '').slice(0, UNKNOWN_DISPATCH_CODE_CAP)
+      if (code === '') return
+      total += 1
+      const now = typeof clock === 'function' ? clock() : Date.now()
+      const known = seen.get(code)
+      if (known) {
+        known.lastAt = now
+        known.count += 1
+        return
+      }
+      // The cap bites on NAMES only: `total` above already counted this sighting.
+      if (seen.size >= UNKNOWN_DISPATCH_CODES_CAP) return
+      seen.set(code, { code, firstAt: now, lastAt: now, count: 1 })
+      try {
+        if (typeof journal === 'function') journal({ type: 'dispatch.unknown_reason', reason: code })
+      } catch {
+        /* a log that refuses does not get to stop the counting */
+      }
+    },
+    /** The names, for the diagnostic. Copied out, so a reader can never edit the register. */
+    codes() {
+      return [...seen.keys()]
+    },
+    /** The whole picture, for a test and for whatever later screen wants the counts. */
+    read() {
+      return { total, codes: [...seen.values()].map((e) => ({ ...e })) }
+    },
+  }
 }
 
 /** One tick-journal entry as ONE operator line: ids + reasons, never a task payload. */

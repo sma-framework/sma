@@ -36,6 +36,7 @@ import { describe, it, expect } from 'vitest'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { tick } from '../src/loop.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
+import { createUnknownDispatchRegistry } from '../src/main.mjs'
 
 const T0 = 1_700_000_000_000
 
@@ -145,5 +146,161 @@ describe('the money verdict reaches the attempt row', () => {
     expect(row, 'the stopped attempt left no row at all').toBeTruthy()
     expect(row.outcome).toBe('failed')
     expect(row.failureReason).toBe('budget_stop')
+  })
+})
+
+/**
+ * ═══════ THE ONE THING THIS WORK WAS FORBIDDEN TO DO, ASSERTED SO IT CANNOT BE DONE ═══════
+ *
+ * Widening the vocabulary invites an obvious follow-up: make the guard LOUD — throw on a code
+ * nobody signed, and the next orphan announces itself. That trade is refused, and the refusal
+ * is the point of this block. The router's guard is the last thing standing between a typo in
+ * one reason string and a dispatcher that stops dispatching. A decision the daemon can ACT on
+ * is worth more than a decision it can EXPLAIN, so an unexplainable decision is still made,
+ * still returned, and still acted on.
+ *
+ * The break is not swallowed either — it is counted. Which adds a second way to fail closed
+ * (a counter that throws), so that is asserted too: the sink is called INSIDE the router's own
+ * guard, and a sink that explodes changes nothing about the answer.
+ */
+describe('a code the vocabulary cannot sign is counted, never thrown', () => {
+  /** A money rule answering a word no vocabulary carries — the typo, staged. */
+  const ORPHAN = 'budget_stopp'
+
+  it('returns the route, writes NO journal line, and tells the counter exactly once', () => {
+    const entries: any[] = []
+    const seen: string[] = []
+    const { seam } = fixedVerdict({ fallback: false, reason: ORPHAN })
+
+    const route = resolveRoute(PAID_TASK, {
+      workers: [],
+      windows: () => false,
+      clock: () => T0,
+      config: {},
+      decisionJournal: (entry: any) => entries.push(entry),
+      unknownReasonSink: (code: string) => seen.push(code),
+      budget: seam,
+    })
+
+    // (а) the decision still exists and still carries the word it was given
+    expect(route).toBeTruthy()
+    expect(route.reasonCode).toBe(ORPHAN)
+    // (б) the closed vocabulary stayed closed — nothing unsignable reached the store
+    expect(entries.length, 'an unsignable code was written into the journal anyway').toBe(0)
+    // (в) …and the drop is no longer silent
+    expect(seen).toEqual([ORPHAN])
+  })
+
+  it('survives a counter that throws — the route is returned all the same', () => {
+    const { seam } = fixedVerdict({ fallback: false, reason: ORPHAN })
+
+    const call = () =>
+      resolveRoute(PAID_TASK, {
+        workers: [],
+        windows: () => false,
+        clock: () => T0,
+        config: {},
+        decisionJournal: () => {},
+        unknownReasonSink: () => {
+          throw new Error('the counter itself is broken')
+        },
+        budget: seam,
+      })
+
+    expect(call).not.toThrow()
+    expect(call().reasonCode).toBe(ORPHAN)
+  })
+
+  it('with no counter wired at all, behaves exactly as it always did', () => {
+    const entries: any[] = []
+    const { seam } = fixedVerdict({ fallback: false, reason: ORPHAN })
+
+    const route = resolveRoute(PAID_TASK, {
+      workers: [],
+      windows: () => false,
+      clock: () => T0,
+      config: {},
+      decisionJournal: (entry: any) => entries.push(entry),
+      budget: seam,
+    })
+
+    expect(route.reasonCode).toBe(ORPHAN)
+    expect(entries.length).toBe(0)
+  })
+
+  it('a KNOWN code never disturbs the counter — it is not a tap on every decision', () => {
+    const seen: string[] = []
+    const { seam } = fixedVerdict({ fallback: false, reason: 'budget_stop' })
+
+    resolveRoute(PAID_TASK, {
+      workers: [],
+      windows: () => false,
+      clock: () => T0,
+      config: {},
+      decisionJournal: () => {},
+      unknownReasonSink: (code: string) => seen.push(code),
+      budget: seam,
+    })
+
+    expect(seen).toEqual([])
+  })
+})
+
+/**
+ * THE REGISTER ITSELF — bounded in both directions, and loud exactly once per NEW word.
+ * It lives at the composition root because it is state the daemon holds for its whole life,
+ * and it is exported so this can assert the real thing rather than a copy of its idea.
+ */
+describe('the register of unsigned codes', () => {
+  it('counts every sighting, remembers each name once, and logs only the first', () => {
+    const logged: any[] = []
+    let t = T0
+    const reg = createUnknownDispatchRegistry({ journal: (e: any) => logged.push(e), clock: () => t })
+
+    reg.record('orphan_a')
+    t += 1000
+    reg.record('orphan_a')
+    reg.record('orphan_b')
+
+    const read = reg.read()
+    expect(read.total).toBe(3)
+    expect(reg.codes()).toEqual(['orphan_a', 'orphan_b'])
+    // one line per NEW code — a word written in a hot loop must not become a wall of log
+    expect(logged.map((e) => e.reason)).toEqual(['orphan_a', 'orphan_b'])
+    expect(logged[0].type).toBe('dispatch.unknown_reason')
+
+    const a = read.codes.find((c: any) => c.code === 'orphan_a')
+    expect(a.count).toBe(2)
+    expect(a.firstAt).toBe(T0)
+    expect(a.lastAt).toBe(T0 + 1000)
+  })
+
+  it('caps the NAMES it holds, never the count of what happened', () => {
+    const reg = createUnknownDispatchRegistry({ clock: () => T0 })
+    for (let i = 0; i < 50; i += 1) reg.record(`orphan_${i}`)
+    expect(reg.codes().length).toBe(20)
+    expect(reg.read().total).toBe(50) // losing the 21st name is acceptable; losing the fact is not
+  })
+
+  it('cuts an absurdly long code down before it is ever held', () => {
+    const reg = createUnknownDispatchRegistry({ clock: () => T0 })
+    reg.record('y'.repeat(5000))
+    expect(reg.codes()[0].length).toBe(64)
+  })
+
+  it('a log that refuses does not stop the counting, and nothing at all is not a code', () => {
+    const reg = createUnknownDispatchRegistry({
+      clock: () => T0,
+      journal: () => {
+        throw new Error('the log is broken')
+      },
+    })
+    expect(() => reg.record('orphan_x')).not.toThrow()
+    expect(reg.read().total).toBe(1)
+
+    reg.record('')
+    reg.record(null)
+    reg.record(undefined)
+    expect(reg.read().total).toBe(1)
   })
 })
