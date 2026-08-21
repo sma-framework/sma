@@ -5483,7 +5483,19 @@ async function cmdForceClear({ positionals, flags, dirs }) {
 
   const list = claims.readClaims(dirs)
   const entry = list.find((c) => c.name === name)
-  if (!entry) return refuse(`SMA: claim «${name}» не найден — очищать нечего\n`, { toStderr: true })
+  if (!entry) {
+    // Name the reservations that DO exist. Entries created before descriptions were
+    // transliterated sit on disk under their old stub names, and the remediation a
+    // collision warning prints is recomputed by the CURRENT rule — so it can never name
+    // them. Nothing here renames or removes anything to paper over that: rewriting what
+    // somebody else created, leaving no trace, is not this command’s to do. The operator
+    // is simply shown the real names instead of being left to guess at them.
+    const existing = list.map((c) => c.name).slice(0, 10)
+    const tail = existing.length
+      ? `существуют: ${existing.join(', ')}${list.length > existing.length ? ` … (всего ${list.length})` : ''}\n`
+      : 'претензий нет вовсе\n'
+    return refuse(`SMA: claim «${name}» не найден — очищать нечего\n${tail}`, { toStderr: true })
+  }
   const prov = entry.provenance || {}
   const who = prov.by || 'неизвестный терминал'
   const operation = prov.reason || '—'
