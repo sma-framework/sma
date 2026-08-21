@@ -44,7 +44,7 @@ import {
   readdirSync as fsReaddirSync,
   statSync as fsStatSync,
 } from 'node:fs'
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { parseFrontmatterEntries } from './predict.mjs'
 
@@ -468,6 +468,657 @@ export function collectInventory({ plansDir, treeDir, roots, rewrites, fsImpl } 
       artifactsUnresolved: artifacts.filter((a) => a.resolution.status === 'unresolved').length,
       prose: prose.length,
       patternless: patternless.length,
+      scanFiles: scanFiles.length,
+    },
+  }
+}
+
+/* ==========================================================================
+ * THE SCORING HALF — the verdict engine.
+ *
+ * Everything above paints nothing. This half does, and it is built against ONE
+ * measured danger: on a mature tree «zero failures» is reachable in an evening
+ * and worth nothing, because a third of all declared traces occur in more than
+ * twenty files — the worst of them is three letters long and occurs in 643. An
+ * instrument that only knows how to go green is worse than no instrument at
+ * all: it manufactures confidence.
+ *
+ * FOUR TIERS, in descending strength:
+ *   1. THE NAMED FILE. When `from` (or, failing that, `to`) resolves to a real
+ *      file, the trace is looked for IN THAT FILE. A trace alive somewhere else
+ *      in the tree does NOT save the record — that difference is exactly what
+ *      separates a working wire from one that moved out from under its own
+ *      declaration.
+ *   2. ARTIFACT `path` + `contains` — a needle pinned to a named file, and the
+ *      stronger of the two declared forms.
+ *   3. WIDTH. A trace occurring in more files than the broad limit is neither
+ *      green nor red: it is YELLOW — «too wide to be evidence». The declaration
+ *      is unfit, and only a human can say what it should have been.
+ *   4. THE TEST TRACE — counted only, never a verdict. Repairing those wires is
+ *      its own body of work; the instrument NAMES it instead of doing it.
+ *
+ * Red is extinguished by exactly one thing: a written verdict carrying an author
+ * and a reason. And an inventory from which nothing parsed at all is a BREAKAGE
+ * (exit 2) — never a report of «zero failures».
+ * ========================================================================== */
+
+/**
+ * How many files a trace may occur in and still be evidence of anything.
+ *
+ * Twenty is a judgement call, so it is a DECLARED one: exported, overridable and
+ * printed in every report. An unwritten threshold is how three runs of the same
+ * probe produced three different totals.
+ */
+export const DEFAULT_BROAD_LIMIT = 20
+
+/**
+ * The closed vocabulary of human verdicts. Closed on purpose: a free-text verdict
+ * field would within a month hold thirty spellings of «fine as is», and «fine as
+ * is» is precisely the answer this instrument exists to stop being possible for
+ * free. Each entry carries its machine name and the word the report prints.
+ */
+export const VERDICT_KINDS = Object.freeze({
+  renamed: Object.freeze({
+    id: 'renamed',
+    en: 'renamed — the declaration lagged behind the code',
+    ru: 'переименовано',
+  }),
+  misdeclared: Object.freeze({
+    id: 'misdeclared',
+    en: 'misdeclared — this record never belonged in the inventory in this shape',
+    ru: 'кривое объявление',
+  }),
+  'regression-filed': Object.freeze({
+    id: 'regression-filed',
+    en: 'regression — the repair is filed as its own work',
+    ru: 'регресс — работа заведена',
+  }),
+  deferred: Object.freeze({
+    id: 'deferred',
+    en: 'deferred — decided, with the reason stated in the rationale',
+    ru: 'отложено',
+  }),
+})
+
+/** Why a record is red. Grouping by reason is what lets a human CONFIRM rather than investigate. */
+export const RED_REASONS = Object.freeze({
+  'trace-missing-everywhere': Object.freeze({
+    id: 'trace-missing-everywhere',
+    en: 'the trace is nowhere in the search zone',
+    ru: 'след не найден нигде',
+  }),
+  'trace-missing-in-named-file': Object.freeze({
+    id: 'trace-missing-in-named-file',
+    en: 'the trace is absent from the file the declaration itself names (it is alive elsewhere — a move or a bad declaration)',
+    ru: 'следа нет в названном файле',
+  }),
+  'needle-missing-in-file': Object.freeze({
+    id: 'needle-missing-in-file',
+    en: 'the artifact file exists with none of the declared work in it',
+    ru: 'игла отсутствует в существующем файле',
+  }),
+  'path-unresolved': Object.freeze({
+    id: 'path-unresolved',
+    en: 'the declared path resolves in no candidate tree',
+    ru: 'путь не резолвится ни в одном дереве',
+  }),
+})
+
+/** Not proof, and not an accusation either. Visible by count AND by name — never swallowed. */
+export const YELLOW_REASONS = Object.freeze({
+  broad: Object.freeze({
+    id: 'broad',
+    en: 'the trace is too wide to be evidence',
+    ru: 'след слишком широк — доказательством не является',
+  }),
+  prose: Object.freeze({
+    id: 'prose',
+    en: 'the wire is written in words — no machine can check a sentence',
+    ru: 'проза — машиной не проверяется',
+  }),
+  'no-test-trace': Object.freeze({
+    id: 'no-test-trace',
+    en: 'the trace occurs in no test file anywhere in the tree',
+    ru: 'след не встречается ни в одном тестовом файле',
+  }),
+  'pattern-unparseable': Object.freeze({
+    id: 'pattern-unparseable',
+    en: 'the declared trace does not compile — there is nothing to check with',
+    ru: 'след не компилируется — проверять нечем',
+  }),
+  patternless: Object.freeze({
+    id: 'patternless',
+    en: 'the record declares no trace at all — there is nothing to check',
+    ru: 'объявление без следа — проверять нечего',
+  }),
+  'artifact-no-needle': Object.freeze({
+    id: 'artifact-no-needle',
+    en: 'the artifact record names a path and no needle — only existence was checked',
+    ru: 'запись artifacts без иглы — проверено только существование файла',
+  }),
+})
+
+/** 0 — clean; 1 — red without a verdict; 2 — the inventory does not read at all. */
+export const EXIT_CODES = Object.freeze({ clean: 0, red: 1, unreadable: 2 })
+
+/**
+ * The ceiling, printed in EVERY report rather than buried in a research note. An
+ * instrument that lets its own output be read as proof of a working wire repeats,
+ * on itself, the failure it was built to catch.
+ */
+export const HONEST_BOUNDARY =
+  'What this proves: the declared trace is where the declaration says it is. What it does NOT prove: that the wire works. A string is not a call, a call is not a delivery, and a delivery is not the receiver reading it. Only a test that watches the RECEIVER proves a wire.'
+
+/** A test file: a `__tests__` path segment, or `.test.` in the filename. */
+export function isTestFile(p) {
+  const s = String(p ?? '')
+  if (/(^|[\\/])__tests__[\\/]/.test(s)) return true
+  return /\.test\.[^\\/]+$/.test(basename(s))
+}
+
+/** Read a file as text, or null. A file that cannot be read is an absence, not an exception. */
+function readText(fs, p) {
+  try {
+    return String(fs.readFileSync(p, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** Plain string comparison — never localeCompare, whose order depends on the machine's locale. */
+function cmp(a, b) {
+  const x = String(a ?? '')
+  const y = String(b ?? '')
+  return x < y ? -1 : x > y ? 1 : 0
+}
+
+function byKey(keyOf) {
+  return (a, b) => cmp(keyOf(a), keyOf(b))
+}
+
+/** A path shown relative to the tree under test, so the report does not move with the checkout. */
+function display(treeDir, p) {
+  if (!p) return null
+  if (!treeDir) return String(p)
+  const rel = relative(treeDir, String(p))
+  return !rel || rel.startsWith('..') ? String(p) : rel.split(sep).join('/')
+}
+
+/**
+ * validateVerdictRecord(rec, line) -> {record|null, errors}
+ *
+ * THE most dangerous surface of the whole instrument: a verdict is what turns red
+ * into silence. So a verdict without an AUTHOR or without a REASON is not a lenient
+ * verdict — it is malformed input, and the instrument STOPS rather than quietly
+ * extinguishing a finding on nobody's authority.
+ */
+export function validateVerdictRecord(rec, line = null) {
+  const errors = []
+  const at = (msg) => errors.push({ line, error: msg })
+
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+    at('the verdict is not an object')
+    return { record: null, errors }
+  }
+
+  const kind = rec.kind === 'link' || rec.kind === 'artifact' ? rec.kind : null
+  if (!kind) at(`the record kind is not named: expected "link" or "artifact", got ${JSON.stringify(rec.kind ?? null)}`)
+
+  const plan = rec.plan == null ? '' : String(rec.plan).trim()
+  if (!plan) at('the verdict names no plan')
+
+  const pattern = rec.pattern == null ? '' : String(rec.pattern)
+  const path = rec.path == null ? '' : String(rec.path)
+  if (kind === 'link' && !pattern) at('a link verdict carries no trace (pattern)')
+  if (kind === 'artifact' && !path) at('an artifact verdict carries no path')
+
+  const verdictId = rec.verdict == null ? '' : String(rec.verdict).trim()
+  if (!VERDICT_KINDS[verdictId]) {
+    at(
+      `the verdict is outside the closed vocabulary (${Object.keys(VERDICT_KINDS).join(', ')}), got ${JSON.stringify(
+        rec.verdict ?? null,
+      )}`,
+    )
+  }
+
+  const author = rec.author == null ? '' : String(rec.author).trim()
+  if (!author) at('a verdict with no author is malformed — red is never extinguished on nobody’s authority')
+
+  const rationale = rec.rationale == null ? '' : String(rec.rationale).trim()
+  if (!rationale) at('a verdict with no rationale is malformed — «fine as is» is not a reason')
+
+  if (errors.length) return { record: null, errors }
+
+  return {
+    record: {
+      line,
+      kind,
+      plan,
+      pattern: pattern || null,
+      path: path || null,
+      contains: rec.contains == null || rec.contains === '' ? null : String(rec.contains),
+      verdict: verdictId,
+      author,
+      date: rec.date == null ? null : String(rec.date),
+      rationale,
+    },
+    errors: [],
+  }
+}
+
+/**
+ * parseVerdicts(text) -> {records, errors}. One JSON object per line; blank lines and
+ * `#` comments are skipped. The line number travels with every complaint, because
+ * «your verdicts file is malformed» without a line number is a dead end.
+ *
+ * Parsing only. Reading the file off disk belongs to the caller — this module has no
+ * business knowing where a workshop keeps its journal.
+ */
+export function parseVerdicts(text) {
+  const records = []
+  const errors = []
+  const lines = String(text ?? '').split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = i + 1
+    const t = lines[i].trim()
+    if (!t || t.startsWith('#')) continue
+    let raw
+    try {
+      raw = JSON.parse(t)
+    } catch (err) {
+      errors.push({ line, error: `the line does not parse as JSON: ${err && err.message}` })
+      continue
+    }
+    const { record, errors: bad } = validateVerdictRecord(raw, line)
+    if (bad.length) errors.push(...bad)
+    else records.push(record)
+  }
+  return { records, errors }
+}
+
+/** Verdicts may arrive as raw JSONL text, as an array of records, or already parsed. */
+function normalizeVerdicts(verdicts) {
+  if (verdicts == null) return { records: [], errors: [] }
+  if (typeof verdicts === 'string') return parseVerdicts(verdicts)
+  if (Array.isArray(verdicts)) {
+    const records = []
+    const errors = []
+    verdicts.forEach((rec, i) => {
+      const { record, errors: bad } = validateVerdictRecord(rec, rec && rec.line != null ? rec.line : i + 1)
+      if (bad.length) errors.push(...bad)
+      else records.push(record)
+    })
+    return { records, errors }
+  }
+  if (Array.isArray(verdicts.records)) {
+    return { records: [...verdicts.records], errors: [...(verdicts.errors ?? [])] }
+  }
+  return { records: [], errors: [{ line: null, error: 'the verdicts argument is of no recognised shape' }] }
+}
+
+/**
+ * The files a declaration NAMES. A named file is searched directly; a named directory
+ * is narrowed to the files of the search zone underneath it — still narrowing, just
+ * coarser. Neither resolving means there is no named place and the tree-wide tier
+ * applies.
+ */
+function namedTargets(resolution, scanFiles, fs) {
+  if (!resolution || resolution.status !== 'resolved' || !resolution.resolved) return null
+  let st
+  try {
+    st = fs.statSync(resolution.resolved)
+  } catch {
+    return null
+  }
+  if (st.isFile()) return [resolution.resolved]
+  if (st.isDirectory()) {
+    const under = scanFiles.filter((f) => isUnder(f, resolution.resolved))
+    return under.length ? under : null
+  }
+  return null
+}
+
+/**
+ * evaluateInventory({inventory, treeDir, roots, broadLimit, verdicts, fsImpl}) -> evaluation.
+ *
+ * The verdict engine. Reads the search zone once, scores every structural link and every
+ * artifact record, applies the human verdicts, and returns categories, counts and an exit
+ * code. Writes nothing, prints nothing, shells nothing.
+ *
+ * Green is deliberately EXPENSIVE and costs two things at once: the trace must be in the
+ * named place (when the declaration names one), AND the trace must be specific enough to
+ * mean anything (tree width at or under the limit). Miss either and the record is not
+ * green — it is red where the evidence is absent, yellow where the evidence is worthless.
+ */
+export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdicts, fsImpl } = {}) {
+  const fs = makeFs(fsImpl)
+  const inv = inventory ?? {}
+  const tree = treeDir ?? inv.treeDir ?? null
+  const plansDir = inv.plansDir ?? null
+  const declaredRoots =
+    Array.isArray(roots) && roots.length ? [...roots] : [...(inv.roots ?? DEFAULT_SCAN_ROOTS)]
+  const parsedLimit = Number(broadLimit)
+  const limit = Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : DEFAULT_BROAD_LIMIT
+
+  // Which declared roots are actually there. A root that silently was not walked is how
+  // a report about nothing looks exactly like a report about everything.
+  const rootsPresent = []
+  const rootsMissing = []
+  for (const r of declaredRoots) {
+    const p = isAbsolute(String(r)) ? String(r) : join(tree ?? '.', String(r))
+    let ok = false
+    try {
+      ok = !!fs.existsSync(p)
+    } catch {
+      ok = false
+    }
+    ;(ok ? rootsPresent : rootsMissing).push(String(r))
+  }
+
+  const { records: verdictRecords, errors: verdictErrors } = normalizeVerdicts(verdicts)
+
+  const links = Array.isArray(inv.links) ? inv.links : []
+  const artifactRecords = Array.isArray(inv.artifacts) ? inv.artifacts : []
+  const scanFiles = Array.isArray(inv.scanFiles) ? inv.scanFiles : []
+
+  // ---- one pass over the search zone, counting every distinct trace -------------
+  const index = new Map()
+  for (const l of links) {
+    if (l.patternError) continue
+    if (index.has(l.pattern)) continue
+    const compiled = compilePattern(l.pattern)
+    if (!compiled.regex) continue
+    index.set(l.pattern, { regex: compiled.regex, count: 0, capped: false, files: [], testHit: false })
+  }
+  for (const f of scanFiles) {
+    if (!index.size) break
+    const inTest = isTestFile(f)
+    let text
+    let read = false
+    for (const rec of index.values()) {
+      const needWidth = rec.count <= limit // once past the limit the exact number stops mattering
+      const needTest = inTest && !rec.testHit
+      if (!needWidth && !needTest) continue
+      if (!read) {
+        text = readText(fs, f)
+        read = true
+      }
+      if (text == null) break
+      if (rec.regex.test(text)) {
+        rec.count += 1
+        if (rec.files.length <= limit) rec.files.push(f)
+        if (inTest) rec.testHit = true
+      }
+    }
+  }
+  for (const rec of index.values()) rec.capped = rec.count > limit
+
+  const green = []
+  const red = []
+  const ahead = []
+  const yellow = {
+    broad: [],
+    prose: [],
+    noTestTrace: [],
+    patternUnparseable: [],
+    patternless: [],
+    artifactNoNeedle: [],
+  }
+
+  // ---- structural links ---------------------------------------------------------
+  for (const link of links) {
+    const base = {
+      kind: 'link',
+      plan: link.plan,
+      planId: link.planId,
+      pattern: link.pattern,
+      from: link.from,
+      to: link.to,
+      via: link.via,
+    }
+
+    if (link.planStatus !== PLAN_STATUS.closed) {
+      // No summary beside the plan: the work is still ahead. SILENCE — not green, and
+      // certainly not red. Judging unfinished work is how an instrument earns a
+      // reputation for crying wolf; calling it green is how it earns a worse one.
+      ahead.push({ ...base, category: 'ahead' })
+      continue
+    }
+
+    if (link.patternError) {
+      yellow.patternUnparseable.push({ ...base, category: 'yellow', reason: 'pattern-unparseable', detail: link.patternError })
+      continue
+    }
+
+    const idx = index.get(link.pattern)
+    const treeCount = idx ? idx.count : 0
+    const tooWide = treeCount > limit
+
+    let targets = namedTargets(link.fromPath, scanFiles, fs)
+    let namedSide = targets ? 'from' : null
+    if (!targets) {
+      targets = namedTargets(link.toPath, scanFiles, fs)
+      namedSide = targets ? 'to' : null
+    }
+
+    const record = {
+      ...base,
+      namedSide,
+      namedFile: targets && targets.length === 1 ? targets[0] : null,
+      namedScope: targets && targets.length > 1 ? targets.length : null,
+      treeFiles: treeCount,
+      treeFilesCapped: !!(idx && idx.capped),
+      sampleFiles: idx ? [...idx.files].sort(cmp).slice(0, 5) : [],
+      testTrace: !!(idx && idx.testHit),
+    }
+
+    if (targets) {
+      const found = targets.some((t) => {
+        const text = readText(fs, t)
+        return text != null && idx.regex.test(text)
+      })
+      if (found) {
+        // Present where it was promised — but a trace occurring all over the tree
+        // proves nothing about anything, no matter which file it was found in.
+        if (tooWide) yellow.broad.push({ ...record, category: 'yellow', reason: 'broad' })
+        else green.push({ ...record, category: 'green', evidence: 'named-file' })
+      } else if (treeCount === 0) {
+        red.push({ ...record, category: 'red', reason: 'trace-missing-everywhere' })
+      } else {
+        // THE NARROWING. Alive elsewhere does not save the record: the declaration
+        // named a file, and that file does not carry the work.
+        red.push({ ...record, category: 'red', reason: 'trace-missing-in-named-file' })
+      }
+    } else if (treeCount === 0) {
+      red.push({ ...record, category: 'red', reason: 'trace-missing-everywhere' })
+    } else if (tooWide) {
+      yellow.broad.push({ ...record, category: 'yellow', reason: 'broad' })
+    } else {
+      green.push({ ...record, category: 'green', evidence: 'tree-narrow' })
+    }
+
+    // The fourth tier. Counted and named — never a verdict, because repairing these
+    // wires is a body of work of its own and the instrument is not doing it here.
+    if (!record.testTrace) yellow.noTestTrace.push({ ...record, category: 'yellow', reason: 'no-test-trace' })
+  }
+
+  // ---- artifact records (path + contains) ---------------------------------------
+  for (const art of artifactRecords) {
+    const base = {
+      kind: 'artifact',
+      plan: art.plan,
+      planId: art.planId,
+      declaredPath: art.declaredPath,
+      contains: art.contains,
+      resolved: art.resolution ? art.resolution.resolved : null,
+    }
+
+    if (art.planStatus !== PLAN_STATUS.closed) {
+      ahead.push({ ...base, category: 'ahead' })
+      continue
+    }
+    if (!art.resolution || art.resolution.status !== 'resolved') {
+      red.push({ ...base, category: 'red', reason: 'path-unresolved' })
+      continue
+    }
+    if (!art.contains) {
+      yellow.artifactNoNeedle.push({ ...base, category: 'yellow', reason: 'artifact-no-needle' })
+      continue
+    }
+
+    let st
+    try {
+      st = fs.statSync(art.resolution.resolved)
+    } catch {
+      st = null
+    }
+    const needle = String(art.contains)
+    let found = false
+    if (st && st.isDirectory()) {
+      found = scanFiles
+        .filter((f) => isUnder(f, art.resolution.resolved))
+        .some((f) => {
+          const text = readText(fs, f)
+          return text != null && text.includes(needle)
+        })
+    } else {
+      const text = readText(fs, art.resolution.resolved)
+      found = text != null && text.includes(needle)
+    }
+
+    if (found) green.push({ ...base, category: 'green', evidence: 'artifact-needle' })
+    else red.push({ ...base, category: 'red', reason: 'needle-missing-in-file' })
+  }
+
+  // ---- prose and traceless records: counted, named, never scored ------------------
+  for (const p of Array.isArray(inv.prose) ? inv.prose : []) {
+    if (p.planStatus !== PLAN_STATUS.closed) {
+      ahead.push({ kind: 'prose', plan: p.plan, planId: p.planId, text: p.text, category: 'ahead' })
+      continue
+    }
+    yellow.prose.push({ kind: 'prose', plan: p.plan, planId: p.planId, text: p.text, category: 'yellow', reason: 'prose' })
+  }
+  for (const p of Array.isArray(inv.patternless) ? inv.patternless : []) {
+    yellow.patternless.push({
+      kind: 'patternless',
+      plan: p.plan,
+      planId: p.planId,
+      entry: p.entry,
+      category: 'yellow',
+      reason: 'patternless',
+    })
+  }
+
+  // ---- human verdicts: the only thing that puts a red out -------------------------
+  const keyOfRed = (r) =>
+    r.kind === 'link'
+      ? `link|${r.planId}|${r.pattern}`
+      : `artifact|${r.planId}|${r.declaredPath}|${r.contains ?? ''}`
+  const keyOfVerdict = (v) =>
+    v.kind === 'link' ? `link|${v.plan}|${v.pattern}` : `artifact|${v.plan}|${v.path}|${v.contains ?? ''}`
+  const loose = (v) => `artifact|${v.plan}|${v.path}`
+  const looseRed = (r) => `artifact|${r.planId}|${r.declaredPath}`
+
+  const byExact = new Map()
+  const byLoose = new Map()
+  for (const r of red) {
+    const k = keyOfRed(r)
+    if (!byExact.has(k)) byExact.set(k, [])
+    byExact.get(k).push(r)
+    if (r.kind === 'artifact') {
+      const lk = looseRed(r)
+      if (!byLoose.has(lk)) byLoose.set(lk, [])
+      byLoose.get(lk).push(r)
+    }
+  }
+
+  const reviewed = []
+  const stale = []
+  const claimed = new Set()
+  for (const v of verdictRecords) {
+    let matches = byExact.get(keyOfVerdict(v))
+    if ((!matches || !matches.length) && v.kind === 'artifact' && !v.contains) matches = byLoose.get(loose(v))
+    const fresh = (matches ?? []).filter((m) => !claimed.has(m))
+    if (!fresh.length) {
+      // A verdict matching no current red. It is NOT silently dropped: either the red it
+      // spoke about is genuinely gone (good news, and the journal should be pruned) or the
+      // verdict names something that never existed (bad news, and it is hiding nothing).
+      stale.push({ ...v, category: 'stale' })
+      continue
+    }
+    for (const m of fresh) {
+      claimed.add(m)
+      reviewed.push({
+        ...m,
+        category: 'reviewed',
+        verdict: v.verdict,
+        verdictLabel: VERDICT_KINDS[v.verdict] ? VERDICT_KINDS[v.verdict].ru : v.verdict,
+        author: v.author,
+        date: v.date,
+        rationale: v.rationale,
+        verdictLine: v.line,
+      })
+    }
+  }
+  const redRemaining = red.filter((r) => !claimed.has(r))
+
+  // ---- determinism: every list ordered by plan, then by trace ---------------------
+  const linkKey = (r) => `${r.planId ?? ''}|${r.pattern ?? r.declaredPath ?? r.text ?? ''}|${r.contains ?? ''}`
+  green.sort(byKey(linkKey))
+  redRemaining.sort(byKey((r) => `${r.reason}|${linkKey(r)}`))
+  reviewed.sort(byKey(linkKey))
+  ahead.sort(byKey(linkKey))
+  stale.sort(byKey((v) => `${v.plan}|${v.pattern ?? v.path ?? ''}`))
+  for (const k of Object.keys(yellow)) yellow[k].sort(byKey(linkKey))
+
+  const redByReason = {}
+  for (const id of Object.keys(RED_REASONS)) {
+    const bucket = redRemaining.filter((r) => r.reason === id)
+    if (bucket.length) redByReason[id] = bucket.length
+  }
+
+  // ---- THE LOCK AGAINST EMPTINESS -------------------------------------------------
+  // An inventory that parsed nothing is a BREAKAGE, not a clean bill of health. This is
+  // the single line standing between this instrument and the failure it was built to
+  // catch: a guard whose pattern stopped matching goes green in perfect silence.
+  const parsedNothing = links.length + artifactRecords.length === 0
+  const exitCode = parsedNothing || verdictErrors.length
+    ? EXIT_CODES.unreadable
+    : redRemaining.length
+      ? EXIT_CODES.red
+      : EXIT_CODES.clean
+
+  return {
+    treeDir: tree,
+    plansDir,
+    roots: { declared: declaredRoots, present: rootsPresent, missing: rootsMissing },
+    broadLimit: limit,
+    green,
+    red: redRemaining,
+    reviewed,
+    ahead,
+    yellow,
+    staleVerdicts: stale,
+    verdictErrors,
+    parsedNothing,
+    exitCode,
+    counts: {
+      green: green.length,
+      red: redRemaining.length,
+      redByReason,
+      reviewed: reviewed.length,
+      ahead: ahead.length,
+      broad: yellow.broad.length,
+      prose: yellow.prose.length,
+      noTestTrace: yellow.noTestTrace.length,
+      patternUnparseable: yellow.patternUnparseable.length,
+      patternless: yellow.patternless.length,
+      artifactNoNeedle: yellow.artifactNoNeedle.length,
+      verdicts: verdictRecords.length,
+      staleVerdicts: stale.length,
+      verdictErrors: verdictErrors.length,
+      links: links.length,
+      artifacts: artifactRecords.length,
       scanFiles: scanFiles.length,
     },
   }
