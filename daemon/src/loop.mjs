@@ -2713,6 +2713,10 @@ export async function tick(deps = {}) {
         clock,
         config,
         decisionJournal: deps.decisionJournal,
+        // …and the counter that hears about a decision the journal could NOT sign. It travels
+        // beside the sink for the same reason: the tick does not narrate on the router's
+        // behalf, it only hands it the places to speak.
+        unknownReasonSink: deps.unknownReasonSink,
         // The money rule travels with the route decision — the dispatcher is the only place
         // that knows both «no seat anywhere» and «this task asked for the paid channel».
         budget: deps.budget,
