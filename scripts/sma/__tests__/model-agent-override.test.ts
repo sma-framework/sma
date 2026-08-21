@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url'
 const require_ = createRequire(import.meta.url)
 const modelResolver = require_('../../../sma-core/bin/lib/model-resolver.cjs')
 const configSchema = require_('../../../sma-core/bin/lib/config-schema.cjs')
+const { MODEL_PROFILES } = require_('../../../sma-core/bin/lib/model-profiles.cjs')
 
 const SMA_TOOLS = fileURLToPath(new URL('../../../sma-core/bin/sma-tools.cjs', import.meta.url))
 
@@ -260,5 +261,44 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
       tier: 'opus',
       overrides: { gemini: { opus: { model: 'null', note: 'keep' } } },
     })).toEqual({ model: 'gemini-3.1-pro-preview', note: 'keep' })
+  })
+})
+
+/**
+ * The default the spawn path actually travels.
+ *
+ * `model_profile` is optional, so most projects never set one: the resolver
+ * falls through to the `balanced` tier and reads the agent's row out of the
+ * SHIPPED catalog. That row — not anybody's config file — is where the model an
+ * orchestrator spawns an agent with is born. It is also where a stale tier can
+ * hide indefinitely: the executor was handed the weakest model at every single
+ * spawn across two milestones of work here, and each time a human noticed and
+ * patched the model by hand at the call site. Nothing in the suite objected,
+ * because nothing in the suite asked the catalog what it hands out by default.
+ *
+ * So this lock stands on the REAL catalog through the REAL resolver: no
+ * `SMA_MODEL_CATALOG`, no substituted catalog file, no mocked loader. Feeding
+ * this test a catalog of its own would make it pass forever while the shipped
+ * default rotted — a stand-in cannot testify about the thing it stands in for.
+ * (The temp configs the tests above write are a different matter: the project
+ * config IS the variable half, and substituting it is the point of those tests.)
+ *
+ * The directory handed to the resolver below is deliberately EMPTY — no
+ * `.planning/config.json` at all. That is the state the defect lived in.
+ */
+describe('shipped catalog defaults', () => {
+  it('default balanced tier hands the strong model to the executor and the plan checker', () => {
+    // No config written in this test: `model_profile` is absent, the resolver
+    // takes its `balanced` branch, and the answer comes straight off the row in
+    // sma-core/bin/shared/model-catalog.json — the spawn-time path, end to end.
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    expect(resolveModelInternal(cwd, 'sma-plan-checker')).toBe('opus')
+
+    // And the quality profile may never hand a role a WEAKER model than balanced
+    // does. The plan checker sat on the weakest tier under both profiles at once;
+    // that inversion — "pay for quality, get less than average" — is the second
+    // half of the same defect and is locked here rather than left to the eye.
+    expect(MODEL_PROFILES['sma-plan-checker'].quality).toBe('opus')
+    expect(MODEL_PROFILES['sma-plan-checker'].balanced).toBe('opus')
   })
 })
