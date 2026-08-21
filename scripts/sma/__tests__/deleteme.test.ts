@@ -112,9 +112,12 @@ describe('deleteme — removeSmaHooks (Test 3)', () => {
     expect(settings.model).toBe('opus')
   })
 
-  it('recognizes both path separators', () => {
+  it('recognizes both path separators, and the project-dir-anchored spelling', () => {
     expect(isSmaHookCommand('node scripts/sma/cli.mjs pre')).toBe(true)
     expect(isSmaHookCommand('node scripts\\sma\\cli.mjs pre')).toBe(true)
+    // the spelling the installer writes now — an off-ramp blind to it would leave every
+    // hook it was told to remove sitting in the file
+    expect(isSmaHookCommand('node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" pre')).toBe(true)
     expect(isSmaHookCommand('node other/cli.mjs')).toBe(false)
   })
 })
@@ -138,6 +141,11 @@ describe('deleteme — restoreStatusline (Test 4)', () => {
     expect(restoreStatusline(foreign, null)).toBe('noop')
     expect(foreign.statusLine.command).toBe('node their-line.mjs')
     expect(isSmaStatuslineCmd('node scripts/sma/cli.mjs statusline')).toBe(true)
+    // the ANCHORED spelling the installer writes now: an off-ramp that does not recognise
+    // it would leave our own segment behind in a project it was told to leave
+    const anchored: any = { statusLine: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline' } }
+    expect(isSmaStatuslineCmd(anchored.statusLine.command)).toBe(true)
+    expect(restoreStatusline(anchored, null)).toBe('removed')
   })
 })
 
