@@ -5808,11 +5808,18 @@ async function cmdReverify({ flags, dirs }) {
   }
 
   // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract).
+  // THE SAME CEILING, AND THE SAME SECOND DOOR. Re-verification ran the identical two-minute
+  // kill and mapped it to `exit:1`, so a receipt bound to a long, honest suite came back
+  // «divergent» on a tree where nothing had changed. A kill is not an observation in either
+  // direction: the throw is turned into «error» by the verifier, never into a red result.
+  const timeoutMs = receipts.receiptTimeoutMs(flags)
   const runCommand = (cmd, o = {}) => {
     try {
-      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd })
+      const stdout = execSync(cmd, { encoding: 'utf8', timeout: timeoutMs, cwd: o.cwd ?? cwd })
       return { stdout, exitCode: 0 }
     } catch (err) {
+      const ceiling = receipts.ceilingKill(err, timeoutMs)
+      if (ceiling) throw ceiling
       return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
     }
   }
@@ -5892,7 +5899,9 @@ async function cmdReverify({ flags, dirs }) {
 async function cmdReceiptHash({ positionals, flags, dirs }) {
   const command = positionals[0]
   if (!command) {
-    process.stderr.write('usage: node scripts/sma/cli.mjs receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>]\n')
+    process.stderr.write(
+      'usage: node scripts/sma/cli.mjs receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>] [--timeout <секунды>]\n',
+    )
     return 1
   }
   const predict = await import('./lib/predict.mjs')
@@ -5909,10 +5918,16 @@ async function cmdReceiptHash({ positionals, flags, dirs }) {
   const cwd = typeof flags.cwd === 'string' ? flags.cwd : dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   // stdout is bound by default; --exit-only opts out (--hash-stdout stays accepted as the legacy no-op).
   const hashStdout = flags['exit-only'] !== true
+  // THE CEILING IS SETTABLE, AND A KILL BY IT IS NOT A VERDICT. Two minutes, hard-coded, is
+  // shorter than this product's own suite: the one command a receipt most wants to bind could
+  // not be bound, and the kill came back as `exit:1` — a green run recorded as evidence of red.
+  const timeoutMs = receipts.receiptTimeoutMs(flags)
   const runCommand = (cmd, o = {}) => {
     try {
-      return { stdout: execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd }), exitCode: 0 }
+      return { stdout: execSync(cmd, { encoding: 'utf8', timeout: timeoutMs, cwd: o.cwd ?? cwd }), exitCode: 0 }
     } catch (err) {
+      const ceiling = receipts.ceilingKill(err, timeoutMs)
+      if (ceiling) throw ceiling // a throwing runner becomes a NAMED error, never a red receipt
       return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
     }
   }
