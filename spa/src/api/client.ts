@@ -485,15 +485,34 @@ export function stopChat(input: { turnId: string }): Promise<{ stopped: boolean 
 }
 
 /**
- * The steering wheel for a running task: a typed correction with a DECLARED fate —
+ * The steering wheel for a running task: a typed correction with a DECLARED fate.
+ *
  * 'interrupt' kills the live child and the same session resumes with the correction;
- * 'queue' lets the current run finish and the correction rides the continuation.
- * `live` in the answer says whether anything was actually killed right now.
+ * 'queue' lets the current run finish and the correction rides the continuation;
+ * 'steer' hands the word to the RUNNING turn and kills nothing at all.
+ *
+ * WHAT THE THIRD FATE HONESTLY DELIVERS, AND WHERE IT STOPS. The word reaches a live turn
+ * on the next TOOL-CALL BOUNDARY — that is the one moment the running session takes an
+ * outside word, and there is no other. So: a turn that goes on to call a tool gets the word
+ * mid-flight, in the same session, with everything it already holds in mind; a turn that
+ * makes no further tool call finishes without it, and the word stays waiting and rides the
+ * continuation instead. Both endings are the same session and neither loses the word.
+ *
+ * That boundary is stated wherever this fate is offered to a person, and it is stated as a
+ * boundary rather than softened into «доедет». Promising more than the channel delivers
+ * would make the third fate a quieter version of the first — which is the exact substitution
+ * this door was extended to avoid.
+ *
+ * `live` in the answer says whether anything was actually killed right now — for the third
+ * fate it is honestly false, because nothing was.
+ *
+ * A worker whose lane has no tool-call boundary of ours gets a 400 from the door with the
+ * two fates that DO reach it. Those words are the door's own; the window shows them as-is.
  */
 export function redirectTask(input: {
   taskId: string
   text: string
-  mode: 'interrupt' | 'queue'
+  mode: 'interrupt' | 'queue' | 'steer'
 }): Promise<{ accepted: boolean; id: string; mode: string; live: boolean }> {
   return postJson('/api/redirect', { taskId: input.taskId, text: input.text, mode: input.mode })
 }

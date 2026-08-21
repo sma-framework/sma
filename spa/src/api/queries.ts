@@ -418,12 +418,18 @@ export function useStopChat() {
   })
 }
 
-/** Руль бегущей задачи: поправка с объявленной судьбой (перебить сейчас / после хода). */
+/**
+ * Руль бегущей задачи: поправка с объявленной судьбой — сказать сейчас / перебить сейчас /
+ * после хода. Третья судьба не убивает никого: слово входит в идущий ход на ближайшей
+ * границе вызова инструмента, а если инструментов больше не будет — остаётся ждать и едет
+ * продолжением, той же сессией. Граница названа у самой двери (`client.ts`), и окно
+ * повторяет её человеку словами, а не обещает больше, чем канал доставляет.
+ */
 export function useRedirectTask() {
   return useMutation<
     Awaited<ReturnType<typeof api.redirectTask>>,
     Error,
-    { taskId: string; text: string; mode: 'interrupt' | 'queue' }
+    { taskId: string; text: string; mode: 'interrupt' | 'queue' | 'steer' }
   >({
     mutationFn: (input) => api.redirectTask(input),
   })
