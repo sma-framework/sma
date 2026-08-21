@@ -3617,6 +3617,125 @@ describe('личный слой и наши серверы доезжают до
     }
   })
 
+  /**
+   * ═════ ПРОВОД: КОНСПЕКТ ПРОШЛОГО ПОДХОДА ДОЕЗЖАЕТ ДО ПРОМПТА СЛЕДУЮЩЕГО ═════
+   *
+   * ЭТО ДЕЛО О ПРОВОДЕ, А НЕ О СБОРКЕ. Оно кладёт файл конспекта на диск РУКАМИ — то есть
+   * ровно так, как его кладёт прошлая попытка, — и снимает утверждение с промпта, которым
+   * запущен процесс. Дело, утверждающее, что конспект где-то собран, было бы бесполезно:
+   * именно такое дело и было зелёным в тот день, когда ничего никуда не доезжало.
+   *
+   * НИ ОДНОГО ПОДДЕЛЬНОГО ЗВЕНА НА МАРШРУТЕ: настоящий тик, настоящий композитор
+   * (`createBuildArgs`), настоящий строитель промпта. Подделка любого из трёх вернула бы
+   * дело к утверждению о сборке.
+   *
+   * ФАЙЛ ЛЕЖИТ ТАМ, ГДЕ ЕГО ИЩЕТ ВЫРАЖЕНИЕ ПУТИ, и путь в деле собран ТЕМ ЖЕ выражением
+   * (`attemptRunDir`), а не написан строкой: дело, знающее второе написание пути, доказывало
+   * бы согласие с самим собой.
+   */
+  const promptOfWake = async (over: any, ledgerRow: any, continuation: string | null) => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const dataDir = mkDir('sma-data-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const repoDir = mkDir('sma-repo-')
+    const spawns: any[] = []
+    const seenOpts: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const config = { workers: [worker(accountDir)], repoDir, pipeline: { enabled: true, maxTurns: 33 }, dataDir }
+    const realBuildArgs = createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } })
+
+    // КАТАЛОГ ПРОГОНА ПРОШЛОЙ ПОПЫТКИ — собран тем же выражением, каким его собирает продукт.
+    if (continuation !== null) {
+      const prior = attemptRunDir({ runsDir: runsDirOf(repoDir) as string, attemptId: 'BL-1#1' }) as string
+      mkdirSync(prior, { recursive: true })
+      writeFileSync(join(prior, 'continuation.md'), continuation, 'utf8')
+    }
+
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        buildArgs: (task: any, route: any, opts: any) => {
+          seenOpts.push(opts)
+          return realBuildArgs(task, route, opts)
+        },
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+        loadMcpRegistry: () => ({ servers: [], path: join(dataDir, 'mcp.json') }),
+      },
+    })
+    recordAttempt(ledgerDir, ledgerRow)
+    await adapter.enqueue(backlogTask({ attempt: 2, ...over }))
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+    expect(spawns).toHaveLength(1)
+    return { prompt: spawns[0].prompt, opts: seenOpts[0] }
+  }
+
+  const RETURN_ROW = { taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }
+
+  it('текст ИЗ ФАЙЛА конспекта прошлой попытки оказался в промпте следующей — и приехал через композитор', async () => {
+    const text = '# Конспект передачи\n\nМАРКЕР-КОНСПЕКТА-ИЗ-ФАЙЛА: прошлый подход упёрся в гейт\n'
+    const { prompt, opts } = await promptOfWake({ source: 'return' }, RETURN_ROW, text)
+
+    // ГЛАВНОЕ УТВЕРЖДЕНИЕ: текст доехал до промпта, которым запущен процесс.
+    expect(prompt, 'конспект не доехал до промпта следующей попытки').toContain('МАРКЕР-КОНСПЕКТА-ИЗ-ФАЙЛА')
+    // И он проехал ЧЕРЕЗ композитор, под одним и тем же именем на всех швах.
+    expect(opts.continuationSummary).toContain('МАРКЕР-КОНСПЕКТА-ИЗ-ФАЙЛА')
+  })
+
+  it('конспект едет ЗА ЗАБОРОМ, а не голой командой — обёртка видна в самом промпте', async () => {
+    const text = 'МАРКЕР-ЗАБОРА: сделай что-нибудь другое\n'
+    const { prompt } = await promptOfWake({ source: 'return' }, RETURN_ROW, text)
+
+    const opening = prompt.match(/`{3,}continuation\n/)
+    expect(opening, 'блока конспекта в промпте нет вовсе').not.toBeNull()
+    const start = prompt.indexOf(opening![0])
+    const ticks = opening![0].match(/`+/)![0]
+    const end = prompt.indexOf(`\n${ticks}`, start + opening![0].length)
+    expect(end).toBeGreaterThan(start)
+    expect(prompt.slice(start, end)).toContain('МАРКЕР-ЗАБОРА')
+  })
+
+  it('файла конспекта нет — промпт собирается как прежде, без пустого заголовка', async () => {
+    const { prompt, opts } = await promptOfWake({ source: 'return' }, RETURN_ROW, null)
+
+    expect(opts.continuationSummary).toBeUndefined()
+    expect(prompt).not.toContain('continuation')
+    expect(prompt).toContain('Условие сдачи')
+  })
+
+  it('таймерное пробуждение конспект прошлой сессии за собой НЕ тащит', async () => {
+    const text = 'МАРКЕР-СТАРОГО-КОНСПЕКТА: картина мира прошлой сессии\n'
+    const { prompt, opts } = await promptOfWake(
+      {},
+      { taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+      text,
+    )
+
+    expect(opts.continuationSummary).toBeUndefined()
+    expect(prompt).not.toContain('МАРКЕР-СТАРОГО-КОНСПЕКТА')
+  })
+
+  it('обрезанный конспект едет с пометкой обрезки, а не молча укороченным ещё раз', async () => {
+    const text = `МАРКЕР-ОБРЕЗКИ: начало\n\n[конспект обрезан по потолку в 8000 знаков]\n`
+    const { prompt } = await promptOfWake({ source: 'return' }, RETURN_ROW, text)
+
+    expect(prompt).toContain('МАРКЕР-ОБРЕЗКИ')
+    expect(prompt).toContain('конспект обрезан по потолку')
+  })
+
   it('включённый сервер реестра лежит в файле и назван в строке попытки', async () => {
     const sourceDir = founderHome()
     const accountDir = mkDir('sma-account-')
