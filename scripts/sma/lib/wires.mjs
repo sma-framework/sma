@@ -894,18 +894,24 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
     const treeCount = idx ? idx.count : 0
     const tooWide = treeCount > limit
 
-    let targets = namedTargets(link.fromPath, scanFiles, fs)
-    let namedSide = targets ? 'from' : null
-    if (!targets) {
-      targets = namedTargets(link.toPath, scanFiles, fs)
-      namedSide = targets ? 'to' : null
-    }
+    // BOTH named ends, not the first one that happens to resolve. A wire's trace is the
+    // marker of a JOINT: it is what the caller writes and what the receiver answers to,
+    // so a trace present at one end and absent at the other is a half-connected wire and
+    // is reported as such. Taking the first resolving end instead was measured against
+    // this tree and let eighteen records through — which is exactly how strictness gets
+    // lowered by accident and «zero failures» gets cheap.
+    const fromTargets = namedTargets(link.fromPath, scanFiles, fs)
+    const toTargets = namedTargets(link.toPath, scanFiles, fs)
+    const namedSides = []
+    if (fromTargets) namedSides.push('from')
+    if (toTargets) namedSides.push('to')
+    const targets = namedSides.length ? [...new Set([...(fromTargets ?? []), ...(toTargets ?? [])])].sort(cmp) : null
 
     const record = {
       ...base,
-      namedSide,
-      namedFile: targets && targets.length === 1 ? targets[0] : null,
-      namedScope: targets && targets.length > 1 ? targets.length : null,
+      namedSides,
+      namedFiles: targets ?? [],
+      missingIn: [],
       treeFiles: treeCount,
       treeFilesCapped: !!(idx && idx.capped),
       sampleFiles: idx ? [...idx.files].sort(cmp).slice(0, 5) : [],
@@ -913,13 +919,15 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
     }
 
     if (targets) {
-      const found = targets.some((t) => {
+      // Named by the human, missing the trace — listed by name, because «somewhere among
+      // the files you named» is a research assignment, not a finding.
+      record.missingIn = targets.filter((t) => {
         const text = readText(fs, t)
-        return text != null && idx.regex.test(text)
+        return !(text != null && idx.regex.test(text))
       })
-      if (found) {
-        // Present where it was promised — but a trace occurring all over the tree
-        // proves nothing about anything, no matter which file it was found in.
+      if (!record.missingIn.length) {
+        // Present at every end it was promised at — but a trace occurring all over the
+        // tree proves nothing about anything, no matter which file it was found in.
         if (tooWide) yellow.broad.push({ ...record, category: 'yellow', reason: 'broad' })
         else green.push({ ...record, category: 'green', evidence: 'named-file' })
       } else if (treeCount === 0) {
@@ -1223,12 +1231,19 @@ export function renderReport({ treeDir, commit, plansDir, evaluation, inventory,
     out.push(`  ${reason.en} — ${reason.ru} (${bucket.length}):`)
     for (const r of bucket) {
       if (r.kind === 'link') {
-        const named = r.namedFile ? show(r.namedFile) : r.namedScope ? `${r.namedScope} files under the named directory` : 'no file named'
+        const missing = Array.isArray(r.missingIn) ? r.missingIn : []
+        const named = missing.length
+          ? missing.slice(0, 3).map((f) => show(f)).join(', ') + (missing.length > 3 ? ` (+${missing.length - 3} more)` : '')
+          : 'no file named — the declaration names neither end as a path'
         const suggestion =
           id === 'trace-missing-in-named-file'
-            ? `alive in ${r.treeFiles}${r.treeFilesCapped ? '+' : ''} other file(s) — suggested: renamed / misdeclared`
+            ? `alive in ${r.treeFiles}${r.treeFilesCapped ? '+' : ''} file(s) elsewhere — suggested: renamed / misdeclared`
             : 'suggested: regression, or a declaration that was never true'
-        out.push(`    ${r.planId} | trace ${JSON.stringify(r.pattern)} | named (${r.namedSide ?? '—'}): ${named} | ${suggestion}`)
+        out.push(
+          `    ${r.planId} | trace ${JSON.stringify(r.pattern)} | absent from (${
+            (r.namedSides ?? []).join('+') || '—'
+          }): ${named} | ${suggestion}`,
+        )
       } else {
         out.push(
           `    ${r.planId} | path ${show(r.declaredPath) ?? r.declaredPath} | needle ${JSON.stringify(r.contains)} | suggested: ${
