@@ -2,7 +2,7 @@
  * daemon/src/queue/run-dir.mjs — THE RUN DIRECTORY OF ONE ATTEMPT.
  *
  * WHAT IT IS. Every attempt leaves a small directory in the connected project —
- * `<projectDir>/.sma/runs/<attemptId>/` — holding four files:
+ * `<projectDir>/.sma/runs/<attemptId>/` — holding five files:
  *
  *   run.json        what the attempt was GIVEN: the command line, the names of the
  *                   environment variables, the envelope, the copy it ran in, the personal
@@ -12,7 +12,22 @@
  *   transcript.jsonl a REFERENCE to the attempt's transcript in the ledger, with its digest,
  *                   its line count and its size — never a second copy of it;
  *   receipt.json    how the try ENDED: the outcome, the gate that decided it, the verdict,
- *                   the lesson, and the memory layer as the stream observed it.
+ *                   the lesson, and the memory layer as the stream observed it;
+ *   continuation.md THE HANDOVER SUMMARY — what the next try at this task needs to know about
+ *                   this one, in prose: the approach that was taken, how it ended and why,
+ *                   what the person said when they handed the work back, and which files
+ *                   were touched.
+ *
+ * WHY THE FIFTH FILE IS PROSE AND NOT A FIELD. It has TWO readers that must never disagree —
+ * the prompt of the next attempt and the window a person looks at. A field would be rendered
+ * twice, shortened twice and would drift twice; a file is read by both, byte for byte. That is
+ * also why the ceiling below is applied AT THE WRITE and nowhere else: two readers cutting the
+ * same text at lengths of their own is a difference nobody would ever notice.
+ *
+ * AND NO MODEL IS ASKED TO WRITE IT. Everything in it was already recorded by the attempt —
+ * the approach note it printed, the outcome the gate decided, the remark the person left, the
+ * answer git gave about the branch. Asking a model to summarise would cost money on every
+ * attempt and give a different text each time for the very same facts.
  *
  * WHY A DIRECTORY AND NOT A LOG LINE. The claim a person actually wants checked is «the
  * worker really ran under my rules, with my memory, behind my guards». That claim is made of
@@ -62,8 +77,35 @@ export const RUN_SCHEMA = 'sma-run/1'
 export const RECEIPT_SCHEMA = 'sma-receipt/1'
 /** How many attempt directories the project keeps before the oldest are swept. */
 export const RUN_DIRS_KEEP = 200
-/** The four names, in one place: the writer and any reader agree by construction. */
-export const RUN_FILES = Object.freeze(['run.json', 'guards.jsonl', 'transcript.jsonl', 'receipt.json'])
+/** The name of the handover summary — spelled ONCE, by the writer and by both readers. */
+export const CONTINUATION_FILE = 'continuation.md'
+
+/**
+ * HOW LONG A HANDOVER SUMMARY MAY EVER BE ON DISK — eight thousand characters, applied AT THE
+ * WRITE and exactly once.
+ *
+ * The number is a contract, not a detail. Both readers of this file take the text as it lies;
+ * if either of them cut it to a length of its own, a person would be reading one summary on the
+ * screen while the worker was handed another, and nothing would say so. A bounded write is also
+ * the only thing standing between a pathological attempt and a prompt swollen by its own history.
+ */
+export const CONTINUATION_CAP = 8000
+
+/**
+ * The mark a shortened summary carries INSIDE ITS OWN TEXT. It travels with the words, so a
+ * reader that never heard of this module still learns it is holding a part rather than a whole —
+ * silence there is how «the attempt said nothing more» gets confused with «the rest did not fit».
+ */
+export const CONTINUATION_TRUNCATED_MARK = '\n\n[конспект обрезан по потолку в 8000 знаков]\n'
+
+/** The five names, in one place: the writer and any reader agree by construction. */
+export const RUN_FILES = Object.freeze([
+  'run.json',
+  'guards.jsonl',
+  'transcript.jsonl',
+  'receipt.json',
+  CONTINUATION_FILE,
+])
 
 /**
  * The shape of an environment variable name whose VALUE must never be written anywhere.
@@ -330,6 +372,137 @@ export function writeRunReceipt({ dir, receipt, fsImpl, log } = {}) {
     say(log, { type: 'run_dir.error', dir, error: String((err && err.message) || err) })
     return false
   }
+}
+
+/**
+ * One entry of the changed-file list as a person reads it, a rename naming both its sides.
+ * EXPORTED because it is now asked for by TWO writers — the attempt's own log line and the
+ * handover summary below — and two spellings of one format is how one of them starts lying.
+ */
+export function fileWord(f) {
+  return f && f.from ? `${f.status} ${f.from} → ${f.path}` : `${(f && f.status) || '?'} ${(f && f.path) || ''}`
+}
+
+/**
+ * buildContinuationSummary({...}) → the text of `continuation.md`, assembled from facts the
+ * attempt ALREADY recorded. Nothing here is computed, asked or inferred: the approach note the
+ * worker printed, the outcome the closing door decided, the remark the person left when they
+ * handed the work back, and git's own answer about the branch.
+ *
+ * A SUMMARY WITH NOTHING IN IT SAYS SO. An attempt that left no note, changed no file and was
+ * returned without a word still gets a file — one that states in words that there is nothing to
+ * hand over. An absent file would say «this product does not write summaries»; an empty one
+ * would say nothing at all. Both are worse than a short honest sentence, because the next
+ * attempt reads this to decide whether it is starting over or carrying on.
+ *
+ * @returns {string}
+ */
+export function buildContinuationSummary({
+  taskId,
+  attempt,
+  outcome,
+  failureReason,
+  verdict,
+  approach,
+  rejected,
+  returnNote,
+  files,
+  deletions,
+} = {}) {
+  const nth = Number.isFinite(Number(attempt)) ? Number(attempt) : '?'
+  const head = [
+    `# Конспект передачи — задача ${String(taskId ?? '?')}, подход ${nth}`,
+    '',
+    '## Чем кончился прошлый подход',
+    `исход: ${String(outcome ?? 'неизвестен')}`,
+  ]
+  if (failureReason) head.push(`причина: ${String(failureReason)}`)
+  if (verdict) head.push(`вердикт: ${String(verdict)}`)
+
+  // ЧТО ПОПЫТКА ДЕЙСТВИТЕЛЬНО ОСТАВИЛА ПОСЛЕ СЕБЯ. Исход есть всегда — его пишет дверь;
+  // всё остальное бывает и не бывает, а пустой заголовок над отсутствующим содержимым читается
+  // как утверждение, которого никто не делал.
+  const said = []
+  if (approach) said.push('', '## Какой подход был выбран', String(approach))
+  const turnedDown = (Array.isArray(rejected) ? rejected : []).filter(Boolean)
+  if (turnedDown.length > 0) said.push('', '## Что было отвергнуто', ...turnedDown.map((r) => `- ${String(r)}`))
+  // ЗАГОЛОВОК НАЗЫВАЕТ ТО, ЧТО ПРАВДА. Конспект пишется в КОНЦЕ подхода, и замечание,
+  // которое лежит на строке задачи в этот момент, — это то, с которым задачу отдали В ЭТОТ
+  // подход, а не то, с которым её вернут из него: второго ещё не существует. Назвать его
+  // «замечанием при возврате» значило бы приписать человеку слова на один подход вперёд.
+  if (returnNote) said.push('', '## С чем человек отдал задачу в этот подход', String(returnNote))
+  const touched = (Array.isArray(files) ? files : []).filter(Boolean)
+  if (touched.length > 0) said.push('', '## Какие файлы были тронуты', ...touched.map((f) => `- ${fileWord(f)}`))
+  const gone = (Array.isArray(deletions) ? deletions : []).filter(Boolean)
+  if (gone.length > 0) said.push('', '## Что после подхода исчезло', ...gone.map((x) => `- ${String(x)}`))
+
+  if (said.length === 0) {
+    head.push(
+      '',
+      'Прошлому подходу нечего передать: ни записки о подходе, ни изменённых файлов, и человек при возврате ничего не сказал.',
+    )
+  } else {
+    head.push(...said)
+  }
+  return `${head.join('\n')}\n`
+}
+
+/**
+ * writeContinuation({dir, text, secretValues, fsImpl, log}) → did the summary reach the disk?
+ *
+ * TWO BELTS, IN THIS ORDER AND NOT THE OTHER. Secrets are cut FIRST, line by line, through the
+ * very same walker every other file of this directory goes through — a needle sliced in half by
+ * the ceiling would match nothing and would leave one half of a token lying in a file. Only then
+ * is the text shortened, once, and the mark is appended AFTER the cut so the mark itself can
+ * never be the thing that gets truncated.
+ *
+ * @returns {boolean}
+ */
+export function writeContinuation({ dir, text, secretValues, fsImpl, log } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return false
+  const fs = io(fsImpl)
+  try {
+    // THE SAME SECOND BELT, applied per LINE. Handed the whole document, the walker would
+    // redact all of it over one bad line; handed a line, it redacts a line — which is the
+    // behaviour the rest of this directory already has, every other record being a tree of
+    // short strings rather than one long one.
+    const safe = sanitizeRun({ lines: String(text ?? '').split('\n') }, { secretValues }).lines.join('\n')
+    const capped =
+      safe.length > CONTINUATION_CAP
+        ? `${safe.slice(0, CONTINUATION_CAP - CONTINUATION_TRUNCATED_MARK.length)}${CONTINUATION_TRUNCATED_MARK}`
+        : safe
+    writeAtomic(fs, join(dir, CONTINUATION_FILE), capped)
+    return true
+  } catch (err) {
+    say(log, { type: 'run_dir.error', dir, error: String((err && err.message) || err) })
+    return false
+  }
+}
+
+/**
+ * readContinuation({dir, fsImpl}) → `{text, truncated}`, or null when this attempt left none.
+ *
+ * NULL IS A STATEMENT. A first attempt has no predecessor, and a task older than this file has
+ * none either; both are ordinary and neither is an error. The callers turn that null into an
+ * ABSENCE — no block in the prompt, no panel on the screen — rather than into an empty string,
+ * because «нечего показать» and «не знаем» are different sentences and only one of them is true.
+ *
+ * WHETHER IT WAS SHORTENED IS READ OFF THE TEXT, never off a neighbouring field: the mark lives
+ * in the words, so there is one source and no second opinion to drift from it.
+ *
+ * @returns {{text:string, truncated:boolean}|null}
+ */
+export function readContinuation({ dir, fsImpl } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return null
+  const fs = io(fsImpl)
+  let raw
+  try {
+    raw = String(fs.readFileSync(join(dir, CONTINUATION_FILE), 'utf8'))
+  } catch {
+    return null
+  }
+  if (raw.trim() === '') return null
+  return { text: raw, truncated: raw.includes(CONTINUATION_TRUNCATED_MARK.trim()) }
 }
 
 /**
