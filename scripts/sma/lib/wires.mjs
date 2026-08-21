@@ -1123,3 +1123,174 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
     },
   }
 }
+
+/**
+ * countRedWithoutVerdict(evaluation) -> number. The scoring contract of the neighbouring
+ * verbs: ONE number, printed by the caller as the last line, so a script can read the
+ * state of the tree without parsing prose.
+ */
+export function countRedWithoutVerdict(evaluation) {
+  return evaluation && Array.isArray(evaluation.red) ? evaluation.red.length : 0
+}
+
+/** The machine view: every category in full, including the yellow ones the text only counts. */
+export function toJson(evaluation) {
+  if (!evaluation) return null
+  return {
+    treeDir: evaluation.treeDir,
+    plansDir: evaluation.plansDir,
+    roots: evaluation.roots,
+    broadLimit: evaluation.broadLimit,
+    exitCode: evaluation.exitCode,
+    counts: evaluation.counts,
+    red: evaluation.red,
+    reviewed: evaluation.reviewed,
+    staleVerdicts: evaluation.staleVerdicts,
+    verdictErrors: evaluation.verdictErrors,
+    yellow: evaluation.yellow,
+    ahead: evaluation.ahead,
+    green: evaluation.green,
+    honestBoundary: HONEST_BOUNDARY,
+  }
+}
+
+/**
+ * renderReport({treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit}) -> string.
+ *
+ * Reproducible by construction: no clock, no unordered walk, no ambient state. Two calls
+ * on the same data return the same bytes — which is the whole reason the header carries
+ * the tree, its commit, the walk roots, the width threshold and the parse counts. «Zero
+ * failures» without those five numbers is a number about nothing; this session watched a
+ * base move by fifty commits inside twenty minutes.
+ *
+ * The commit is passed IN. This module does not shell out to a version-control tool, and
+ * an unstated commit is printed as unstated rather than skipped.
+ */
+export function renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit } = {}) {
+  const ev = evaluation ?? {}
+  const inv = inventory ?? {}
+  const tree = treeDir ?? ev.treeDir ?? inv.treeDir ?? null
+  const plans = plansDir ?? ev.plansDir ?? inv.plansDir ?? null
+  const limit = broadLimit ?? ev.broadLimit ?? DEFAULT_BROAD_LIMIT
+  const declared = Array.isArray(roots) && roots.length ? roots : (ev.roots && ev.roots.declared) || inv.roots || []
+  const missing = new Set((ev.roots && ev.roots.missing) || [])
+  const counts = ev.counts ?? {}
+  const invCounts = inv.counts ?? {}
+  const out = []
+  const show = (p) => display(tree, p)
+
+  // ---- header: the five numbers without which the body is unreproducible ----------
+  out.push(`wires — tree ${tree ? resolve(tree) : '(tree not stated)'} @ ${commit ? String(commit) : 'commit not established'}`)
+  out.push(`plans: ${plans ? resolve(plans) : '(plans directory not stated)'}`)
+  out.push(
+    `walk roots (${declared.length} declared, ${declared.length - missing.size} present): ` +
+      declared.map((r) => (missing.has(r) ? `${r} [absent — not walked]` : String(r))).join(', '),
+  )
+  out.push(`broad-trace limit: ${limit} files — a trace found in more files is NOT evidence`)
+  out.push(
+    `parsed: ${invCounts.links ?? counts.links ?? 0} structural links, ` +
+      `${invCounts.artifacts ?? counts.artifacts ?? 0} artifact records, ` +
+      `${invCounts.prose ?? 0} prose lines, ${invCounts.patternless ?? 0} records without a trace`,
+  )
+  out.push(
+    `plans: ${invCounts.plans ?? 0} total, ${invCounts.plansClosed ?? 0} with a summary (judged), ` +
+      `${invCounts.plansAhead ?? 0} without one (not judged)`,
+  )
+  out.push(`plans carrying a prohibitions block: ${invCounts.prohibitionsPlans ?? 0} — NOT checked by this command`)
+  out.push(`summaries with no plan beside them: ${invCounts.orphanSummaries ?? 0}`)
+  out.push(`files in the search zone: ${counts.scanFiles ?? invCounts.scanFiles ?? 0}`)
+  out.push('')
+
+  // ---- body, in order of seriousness ---------------------------------------------
+  if (ev.parsedNothing) {
+    out.push('THE INVENTORY DOES NOT READ: not one structural link and not one artifact record parsed.')
+    out.push('This is a breakage of the instrument or of the arguments it was given — never a clean tree.')
+    out.push('')
+  }
+  if (Array.isArray(ev.verdictErrors) && ev.verdictErrors.length) {
+    out.push(`MALFORMED VERDICTS (${ev.verdictErrors.length}) — the run stops; red is never put out on nobody's authority:`)
+    for (const e of ev.verdictErrors) out.push(`  line ${e.line ?? '?'}: ${e.error}`)
+    out.push('')
+  }
+
+  const redList = Array.isArray(ev.red) ? ev.red : []
+  out.push(`RED — declared, closed, and not there (${redList.length}):`)
+  if (!redList.length) out.push('  none')
+  for (const id of Object.keys(RED_REASONS)) {
+    const bucket = redList.filter((r) => r.reason === id)
+    if (!bucket.length) continue
+    const reason = RED_REASONS[id]
+    out.push(`  ${reason.en} — ${reason.ru} (${bucket.length}):`)
+    for (const r of bucket) {
+      if (r.kind === 'link') {
+        const named = r.namedFile ? show(r.namedFile) : r.namedScope ? `${r.namedScope} files under the named directory` : 'no file named'
+        const suggestion =
+          id === 'trace-missing-in-named-file'
+            ? `alive in ${r.treeFiles}${r.treeFilesCapped ? '+' : ''} other file(s) — suggested: renamed / misdeclared`
+            : 'suggested: regression, or a declaration that was never true'
+        out.push(`    ${r.planId} | trace ${JSON.stringify(r.pattern)} | named (${r.namedSide ?? '—'}): ${named} | ${suggestion}`)
+      } else {
+        out.push(
+          `    ${r.planId} | path ${show(r.declaredPath) ?? r.declaredPath} | needle ${JSON.stringify(r.contains)} | suggested: ${
+            id === 'path-unresolved' ? 'renamed or written against another tree' : 'regression, or the work never landed'
+          }`,
+        )
+      }
+    }
+  }
+  out.push('')
+
+  const reviewed = Array.isArray(ev.reviewed) ? ev.reviewed : []
+  out.push(`REVIEWED BY A HUMAN — red put out by a written verdict (${reviewed.length}):`)
+  if (!reviewed.length) out.push('  none')
+  for (const r of reviewed) {
+    const kind = VERDICT_KINDS[r.verdict]
+    out.push(
+      `  ${r.planId} | ${r.kind === 'link' ? `trace ${JSON.stringify(r.pattern)}` : `path ${show(r.declaredPath) ?? r.declaredPath}`} | ` +
+        `${kind ? `${kind.en} — ${kind.ru}` : r.verdict} | ${r.author}${r.date ? `, ${r.date}` : ''}: ${r.rationale}`,
+    )
+  }
+  out.push('')
+
+  const staleList = Array.isArray(ev.staleVerdicts) ? ev.staleVerdicts : []
+  out.push(`STALE VERDICTS — written about a finding this run does not have (${staleList.length}):`)
+  if (!staleList.length) out.push('  none')
+  for (const v of staleList) {
+    out.push(`  line ${v.line ?? '?'} | ${v.plan} | ${v.kind === 'link' ? JSON.stringify(v.pattern) : v.path} | ${v.author}`)
+  }
+  out.push('')
+
+  const aheadList = Array.isArray(ev.ahead) ? ev.ahead : []
+  const aheadPlans = [...new Set(aheadList.map((a) => a.planId))].sort(cmp)
+  out.push(`WORK STILL AHEAD — no summary beside the plan, so NOT judged (${aheadList.length} records in ${aheadPlans.length} plans):`)
+  if (!aheadPlans.length) out.push('  none')
+  else for (const p of aheadPlans) out.push(`  ${p}`)
+  out.push('')
+
+  const y = ev.yellow ?? {}
+  const broadList = Array.isArray(y.broad) ? y.broad : []
+  out.push(`YELLOW — visible, and NOT counted as evidence:`)
+  out.push(`  ${YELLOW_REASONS.broad.en} — ${YELLOW_REASONS.broad.ru} (${broadList.length}):`)
+  if (!broadList.length) out.push('    none')
+  for (const r of broadList) {
+    out.push(`    ${r.planId} | trace ${JSON.stringify(r.pattern)} | found in ${r.treeFiles}${r.treeFilesCapped ? '+' : ''} files (limit ${limit})`)
+  }
+  const prose = Array.isArray(y.prose) ? y.prose : []
+  const prosePlans = [...new Set(prose.map((p) => p.planId))].sort(cmp)
+  out.push(`  ${YELLOW_REASONS.prose.en} — ${YELLOW_REASONS.prose.ru}: ${prose.length} lines in ${prosePlans.length} plans`)
+  out.push(
+    `  ${YELLOW_REASONS['no-test-trace'].en} — ${YELLOW_REASONS['no-test-trace'].ru}: ${
+      (y.noTestTrace ?? []).length
+    } (counted only — this tier never changes a verdict)`,
+  )
+  out.push(`  ${YELLOW_REASONS['pattern-unparseable'].en} — ${YELLOW_REASONS['pattern-unparseable'].ru}: ${(y.patternUnparseable ?? []).length}`)
+  out.push(`  ${YELLOW_REASONS.patternless.en} — ${YELLOW_REASONS.patternless.ru}: ${(y.patternless ?? []).length}`)
+  out.push(`  ${YELLOW_REASONS['artifact-no-needle'].en} — ${YELLOW_REASONS['artifact-no-needle'].ru}: ${(y.artifactNoNeedle ?? []).length}`)
+  out.push('')
+
+  out.push(`GREEN — the trace is where the declaration says it is: ${(ev.green ?? []).length}`)
+  out.push('')
+  out.push(HONEST_BOUNDARY)
+
+  return out.join('\n') + '\n'
+}
