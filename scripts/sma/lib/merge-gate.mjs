@@ -484,8 +484,8 @@ export async function runMerge(o = {}) {
 //   - Any error degrades to ALLOW (C9 fail-open) — a gate bug can NEVER wedge a session.
 //   - A cooling-down / force-cleared scope is NEVER enforced — the founder word
 //     always wins.
-// The OPT-IN gate (SMA_ENFORCE_SCOPES, default off) lives in the pre.mjs `enforce` stream,
-// NOT here — so this predicate stays a pure evidence->action function.
+// The stream GATE (default ON; kill-switch SMA_ENFORCE_SCOPES_DISABLE) lives in the pre.mjs
+// `enforce` stream, NOT here — so this predicate stays a pure evidence->action function.
 
 /**
  * enforceScope({ownTouch, foreignClaim, evidence, env, verifyClaimEvidence, coolingDown})

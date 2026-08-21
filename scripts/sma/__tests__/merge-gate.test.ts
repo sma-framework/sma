@@ -24,9 +24,10 @@
  *   - a branch already in the tree is SAID to be already in the tree; no commit is made and
  *     no run is claimed.
  *
- * Task 2 — enforcing scopes (verified-live-only soft-deny + the opt-in PRE_CHECKS stream):
+ * Task 2 — enforcing scopes (verified-live-only soft-deny + the default-on PRE_CHECKS stream):
  *   - Test 7: enforceScope soft-denies ONLY a verified-LIVE claim; stale -> warn; none -> allow
- *   - Test 8: the enforce stream is opt-in default-off (no-op) — soft-denies only with SMA_ENFORCE_SCOPES set
+ *   - Test 8: the stream runs by default — a clean env soft-denies a live overlap and stays
+ *     silent without one (nothing to switch on; silence for a single-window user) set
  *   - Test 9: a soft-deny carries an override token; the stream is mayDeny:true (never a hard block)
  *   - Test 10: fail-open — an injected error -> allow; SMA_ENFORCE_SCOPES_DISABLE short-circuits before evidence
  *   - Test 11: founder word wins — a cooling-down / force-cleared scope is NEVER enforced
@@ -514,7 +515,7 @@ function makeCtx(opts: { env?: Record<string, string>; overlaps?: any[]; overlap
   } as any
 }
 
-describe('enforcing scopes (verified-live-only soft-deny + opt-in stream)', () => {
+describe('enforcing scopes (verified-live-only soft-deny + default-on stream)', () => {
   it('Test 7: enforceScope soft-denies ONLY a verified-LIVE claim; stale -> warn; none -> allow', () => {
     // dirty scope (no post-renew commit) -> verifyClaimEvidence LIVE -> soft-deny + override.
     const live = enforceScope({ foreignClaim: { by: 'T-x' }, evidence: { scopeDirtyVsHead: true }, env: {}, verifyClaimEvidence })
@@ -536,20 +537,22 @@ describe('enforcing scopes (verified-live-only soft-deny + opt-in stream)', () =
     expect(none.action).toBe('allow')
   })
 
-  it('Test 8: the enforce stream is opt-in default-off (no-op) — soft-denies only with SMA_ENFORCE_SCOPES', async () => {
+  it('Test 8: the enforce stream runs by default — a clean env soft-denies a verified-live overlap', async () => {
     const stream = PRE_CHECKS.find((s: any) => s.id === 'enforce') as any
     expect(stream).toBeTruthy()
     expect(stream.mayDeny).toBe(true)
     expect(stream.killSwitchEnv).toBe('SMA_ENFORCE_SCOPES_DISABLE')
 
-    // opt-in OFF -> strict no-op even WITH a live overlap.
-    const off = await stream.run(makeCtx({ env: {}, overlaps: [{ terminalId: 'T-x' }] }))
-    expect(off.deny).toBeFalsy()
-    expect(off.warns).toEqual([])
+    // Nothing set in the environment — a person's shell the day after he installed —
+    // plus a verified-live foreign overlap: the stream answers. No door to open first.
+    const clean = await stream.run(makeCtx({ env: {}, overlaps: [{ terminalId: 'T-x' }] }))
+    expect(clean.deny).toBeTruthy()
 
-    // opt-in ON + a verified-live overlap -> soft-deny.
-    const on = await stream.run(makeCtx({ env: { SMA_ENFORCE_SCOPES: '1' }, overlaps: [{ terminalId: 'T-x' }] }))
-    expect(on.deny).toBeTruthy()
+    // The other half of the promise, and the one a single-window user lives in: the same
+    // clean environment with NO foreign overlap produces not one line — silence, not noise.
+    const alone = await stream.run(makeCtx({ env: {}, overlaps: [] }))
+    expect(alone.deny).toBeFalsy()
+    expect(alone.warns).toEqual([])
   })
 
   it('Test 9: a soft-deny carries an override token; the stream is mayDeny:true (never a hard block)', async () => {

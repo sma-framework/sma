@@ -4775,12 +4775,12 @@ async function handleAccountAdd({ req, res, config, deps }) {
 // the one that is not a read cannot happen without a word from a human in its body.
 
 /**
- * GET /api/diagnostics — the four facts the feedback window is allowed to quote.
+ * GET /api/diagnostics — the five facts the feedback window is allowed to quote.
  *
  * The window's channel is a PUBLIC GitHub issue (the founder's decision; e-mail was
  * refused), so this is the one response of this file whose reader is the open internet.
  * The picking is therefore done TWICE — once inside collectDiagnostics, which assembles the
- * four keys by name, and once here, which names them again on the way out. That is not
+ * five keys by name, and once here, which names them again on the way out. That is not
  * belt-and-braces for its own sake: the two lists are in different modules, so a field added
  * to one of them cannot ride out through the other, and the equality test on the key set
  * turns red the moment they disagree.
@@ -4795,8 +4795,17 @@ function handleDiagnostics({ res, deps }) {
     ...(deps.osImpl ? { osImpl: deps.osImpl } : {}),
     ...(deps.processImpl ? { processImpl: deps.processImpl } : {}),
     ...(deps.fsImpl ? { fsImpl: deps.fsImpl } : {}),
+    // THE REGISTER IS READ, NEVER HELD. The door gets a function that returns the names the
+    // dispatcher could not sign; it owns none of that state and cannot add to it.
+    ...(deps.unknownDispatchCodes ? { unknownDispatchCodesImpl: deps.unknownDispatchCodes } : {}),
   })
-  sendJson(res, 200, { version: d.version, platform: d.platform, release: d.release, node: d.node })
+  sendJson(res, 200, {
+    version: d.version,
+    platform: d.platform,
+    release: d.release,
+    node: d.node,
+    unknownDispatchCodes: d.unknownDispatchCodes,
+  })
 }
 
 /**

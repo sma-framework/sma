@@ -2241,8 +2241,8 @@ async function cmdGatesCheck({ dirs }) {
  * airbag-check — the git airbag hook. The pre-less FALLBACK for
  * an install that has not adopted the `sma pre` multiplexer; the canonical wiring is
  * `pre` (the airbag rides inside it). Delegates to the SAME airbag stream in PRE_CHECKS
- * (the only extra deny-capable stream) — honoring its kill-switch (SMA_AIRBAG_DISABLE)
- * and its opt-in gate (SMA_AIRBAG_ENABLE). HOOK_FACING: exit 0 always, wrapped fail-open.
+ * (the only extra deny-capable stream) — which runs by default, honoring its kill-switch
+ * (SMA_AIRBAG_DISABLE). HOOK_FACING: exit 0 always, wrapped fail-open.
  */
 async function cmdAirbagCheck({ dirs }) {
   return runSingleStream(dirs, 'airbag')
@@ -2299,7 +2299,8 @@ async function cmdToolGate() {
  * separate spawn — the Task-cap spend stream rides inside `pretask-pack` (one Task
  * spawn) and inside the `pre` multiplexer. Delegates to the SAME spend stream in PRE_CHECKS
  * (a deny-capable stream that denies ONLY the Task tool past a configured cap) — honoring
- * its opt-in gate (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE). HOOK_FACING: exit 0.
+ * its kill-switch (SMA_SPEND_DISABLE); the stream runs by default and stays silent until a
+ * human configures a cap. HOOK_FACING: exit 0.
  */
 async function cmdSpendCheck({ dirs }) {
   return runSingleStream(dirs, 'spend')
@@ -2455,6 +2456,9 @@ async function resolveRepoRootForSpend() {
 /**
  * spend [--json] [--by session|model|agent|day] [--window <h>] [--stat <name>]
  *   | spend set-cap <usd> [--window-hours <h>]
+ *   | spend lane <open|close|report|derive>
+ *   | spend self-cost   — the STATIC per-session injection overhead
+ *   | spend prompt-size — that plus every variable injection channel, measured
  *
  * The `sma spend` report — "where did the window go" from local files alone, in
  * O(appended bytes) via the incremental cache. NOT hook-facing (the hot path is
@@ -2488,6 +2492,8 @@ async function cmdSpend({ positionals, flags, dirs }) {
   if (sub === 'lane') return cmdSpendLane({ positionals, flags, dirs })
   // self-cost — SMA's own static per-session injection overhead.
   if (sub === 'self-cost') return cmdSpendSelfCost({ flags, dirs })
+  // prompt-size — the full injection breakdown (static surfaces + measured channels).
+  if (sub === 'prompt-size') return cmdSpendPromptSize({ flags, dirs })
 
   const repoRoot = await resolveRepoRootForSpend()
   const now = Date.now()
@@ -2782,6 +2788,74 @@ async function cmdSpendSelfCost({ flags, dirs }) {
   process.stdout.write(`SMA self-cost: статическая инъекция ~${report.total} токенов (оценщик ${report.estimatorVersion})\n`)
   for (const s of report.surfaces) process.stdout.write(`  ${s.surface}: ~${s.tokens}\n`)
   if (!report.surfaces.length) process.stdout.write('  ни одной управляемой поверхности не найдено (нет SMA:RULES / emitted / MEMORY.md)\n')
+  process.stdout.write(`  ${report.notCounted}\n`)
+  process.stdout.write(`  ${report.caveat}\n`)
+  return 0
+}
+
+/**
+ * spend prompt-size [--json] | spend prompt-size --stat prompt-size-bytes — the FULL
+ * injection breakdown: the three static surfaces self-cost already prices PLUS the
+ * variable channels, each priced from history the framework already records (the
+ * subagent-pack journal bytes, the capsule on disk, the per-turn hook telemetry) and
+ * each printed with its declared ceiling beside the fact. A SUBCOMMAND of the existing
+ * meter, deliberately: the framework already owns this question, and a new top-level
+ * verb would be a new entry in the command table nobody asked for.
+ * Bytes are the count, tokens are the estimate — said in the output, every run.
+ * Read-only, fail-open.
+ */
+async function cmdSpendPromptSize({ flags, dirs }) {
+  const economy = await import('./lib/economy.mjs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  // measured history: the subagent-pack events already carry their injected size.
+  let journalEvents = []
+  try {
+    const journal = await import('./lib/journal.mjs')
+    journalEvents = journal.readJournal({ journalDir: dirs.journalDir }).events
+  } catch {
+    /* fail-open — no journal simply leaves that channel honestly unmeasured */
+  }
+
+  // the capsule the restore reflex would re-inject: the shared intent.md is the one
+  // file that exists regardless of which terminal wrote it.
+  const paths = {
+    claudeMd: join(repoRoot, 'CLAUDE.md'),
+    memoryMd: join(repoRoot, '.claude', 'memory', 'MEMORY.md'),
+    capsule: join(dirs.flightDir, 'intent.md'),
+    perf: join(dirs.perfDir, 'pre.jsonl'),
+  }
+  const report = economy.promptSize({ paths, journalEvents })
+
+  if (flags.stat) {
+    const value = String(flags.stat) === 'prompt-size-bytes' ? report.total : 0
+    process.stdout.write(`${value}\n`) // numeric LAST line (scorer)
+    return 0
+  }
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+
+  const kb = (n) => `${(n / 1024).toFixed(1)} КБ`
+  process.stdout.write(
+    `SMA prompt-size: измерено ${report.total} байт (${kb(report.total)}) ~${report.totalTokens} токенов · ` +
+      `оценщик ${report.estimatorVersion}\n`,
+  )
+  // heaviest first — the report exists to answer "what is the fattest thing we inject".
+  const sorted = [...report.channels].sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1))
+  for (const c of sorted) {
+    if (c.measured) {
+      const cap = c.cap ? `~${c.bytes} из ${c.cap} байт (${Math.round((c.bytes / c.cap) * 100)}%)` : `~${c.bytes} байт (потолка не объявлено)`
+      const extra = c.n ? ` · замеров: ${c.n}${c.avgBytes ? `, средний ${c.avgBytes}` : ''}` : ''
+      process.stdout.write(`  ${c.channel} [${c.clock}]: ${cap}${extra}\n`)
+    } else {
+      const cap = c.cap ? ` (потолок ${c.cap} байт)` : ''
+      process.stdout.write(`  ${c.channel} [${c.clock}]: не измерено${cap}: ${c.note}\n`)
+    }
+  }
+  process.stdout.write(`  ${report.clockNote}\n`)
+  process.stdout.write(`  ${report.unitNote}\n`)
   process.stdout.write(`  ${report.notCounted}\n`)
   process.stdout.write(`  ${report.caveat}\n`)
   return 0
@@ -4301,11 +4375,18 @@ async function cmdFlight({ positionals, flags, dirs }) {
   return sub ? 1 : 0
 }
 
-/** Load the three committed golden hook-event fixtures (parity + bench corpus). */
+/**
+ * Load the committed golden hook-event fixtures (parity + bench corpus).
+ * bash-git-danger.json carries a DESTRUCTIVE command (a branch delete): without it the
+ * corpus only ever exercised commands the airbag does not look at, so the instrument
+ * measured a path where the airbag does no work at all. The destructive fixture is what
+ * makes the snapshot cost visible. It is also why bench runs are pinned to a throwaway
+ * repository — see makeThrowawayRepo below.
+ */
 function loadPreFixtures() {
   const dir = join(MODULE_DIR, 'fixtures', 'pre')
   const out = []
-  for (const name of ['edit-collision.json', 'bash-git.json', 'write-plain.json']) {
+  for (const name of ['edit-collision.json', 'bash-git.json', 'bash-git-danger.json', 'write-plain.json']) {
     try {
       out.push({ name, evt: JSON.parse(readFileSync(join(dir, name), 'utf8')) })
     } catch {
@@ -4313,6 +4394,42 @@ function loadPreFixtures() {
     }
   }
   return out
+}
+
+/**
+ * A DISPOSABLE git repository for fixture runs, created outside any working tree.
+ *
+ * A measurement run has no right to leave a trace in the tree it is measured from. The
+ * corpus now carries a destructive command, so an armed airbag would take its snapshot
+ * (a ref write, a stash object) in the REAL .git — and that checkout is shared with the
+ * neighbouring windows. Pointing every fixture run at a throwaway repository is what keeps
+ * the instrument out of the working tree.
+ *
+ * One commit plus the branch the destructive fixture names, so the snapshot path is
+ * exercised for real instead of erroring out on an empty directory. Fails open to a plain
+ * temp dir when git is unavailable: the bench still runs, it just cannot walk that path.
+ * The caller removes the directory (best-effort) when done.
+ *
+ * @param {string} prefix mkdtemp prefix
+ * @returns {Promise<string>} the repo root — also the parent of the throwaway .sma root,
+ *   which is how buildCtx derives repoRoot.
+ */
+async function makeThrowawayRepo(prefix) {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const root = mkdtempSync(join(tmpdir(), prefix))
+  try {
+    const { execFileSync } = await import('node:child_process')
+    // fixed literal argv — no user input reaches these calls.
+    const git = (args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+    git(['init', '-q'])
+    git(['-c', 'user.email=bench@localhost', '-c', 'user.name=bench', 'commit', '--allow-empty', '-q', '-m', 'bench base'])
+    // the branch the destructive fixture aims at, so the snapshot has something to snapshot.
+    git(['branch', 'sma-pre-bench-probe'])
+  } catch {
+    /* no git here → the dir is still a valid throwaway root for everything else */
+  }
+  return root
 }
 
 /** Count the MAX scripts/sma command entries across PreToolUse matcher groups. */
@@ -4346,6 +4463,11 @@ function spawnCountFromSettings(settingsPath) {
  *                                    .claude/settings.json (or --settings <path>)
  *   pre-bench --metric parity        in-process: mismatch count between the merged
  *                                    runPre output and the union of single-stream runs
+ *   pre-bench --per-check [--runs N] N (default 20) IN-PROCESS turns over the golden
+ *                                    fixtures; prints per-stream p50/p95 ms + p95 bytes
+ *                                    then the bare sum of the p95 ms. This is the mode
+ *                                    a per-stream budget is judged by — the default
+ *                                    mode's node boot dwarfs the streams it measures.
  */
 async function cmdPreBench({ flags }) {
   const pre = await import('./lib/pre.mjs')
@@ -4374,8 +4496,7 @@ async function cmdPreBench({ flags }) {
   if (flags.metric === 'parity') {
     // in-process over the golden fixtures, in a throwaway SMA root so live .sma is
     // untouched and no git shells out (headShaProbe → null).
-    const { mkdtempSync, rmSync } = await import('node:fs')
-    const { tmpdir } = await import('node:os')
+    const { rmSync } = await import('node:fs')
     const noSha = async () => null
     let mismatches = 0
     for (const fx of fixtures) {
@@ -4384,7 +4505,9 @@ async function cmdPreBench({ flags }) {
       // N-1's session lease, which never happens in a real tool call and would spuriously
       // trip the always-on fingerprint stream's ambient digest. Per-fixture
       // isolation is the faithful model of the consolidation the parity metric verifies.
-      const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-parity-'))
+      // a disposable REPOSITORY, not just a directory: buildCtx derives repoRoot from the
+      // parent of the .sma root, and that is the cwd every git call of every stream inherits.
+      const tmpRoot = await makeThrowawayRepo('sma-pre-parity-')
       const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
       try {
         const mergedCtx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
@@ -4418,6 +4541,112 @@ async function cmdPreBench({ flags }) {
     return 0
   }
 
+  // ── --per-check [--runs N] : per-stream IN-PROCESS cost ───────────────────
+  //
+  // WHY THIS MODE EXISTS. The default mode above times a FULL child spawn, and on a
+  // developer machine the node boot inside that spawn costs hundreds of milliseconds
+  // — several times more than everything the streams do. Two identical runs of the
+  // default mode differ by more than switching every stream OFF does, so it cannot
+  // answer "what do the streams cost": it answers "what does starting this install
+  // cost", which is a real but DIFFERENT question. The number that belongs to a
+  // per-stream budget comes from the per-stream telemetry runPre already records:
+  // ms and bytes for each stream, measured with the process already warm.
+  //
+  // Same rig as --metric parity (that is deliberate — one way to run fixtures
+  // in-process, not two): a FRESH throwaway repository plus a fresh throwaway .sma
+  // per fixture, so each fixture is an independent tool call and the destructive
+  // fixture drives the REAL expensive airbag path inside a disposable .git rather
+  // than the shared working tree.
+  if (flags['per-check']) {
+    const perRuns = Number(flags.runs) > 0 ? Math.floor(Number(flags.runs)) : 20
+    if (!fixtures.length) {
+      process.stderr.write('SMA pre-bench: no golden fixtures found\n')
+      return 1
+    }
+    const { rmSync } = await import('node:fs')
+    const noSha = async () => null
+    /** id -> {ms:[], bytes:[], skipped:n} */
+    const byStream = new Map()
+    let samples = 0
+    for (let i = 0; i < perRuns; i++) {
+      for (const fx of fixtures) {
+        const tmpRoot = await makeThrowawayRepo('sma-pre-percheck-')
+        const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
+        try {
+          const ctx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
+          const res = await pre.runPre(ctx)
+          samples += 1
+          for (const c of res.sample.checks || []) {
+            if (!byStream.has(c.id)) byStream.set(c.id, { ms: [], bytes: [], skipped: 0 })
+            const acc = byStream.get(c.id)
+            // A budget-skipped stream never ran — folding its 0 into the percentiles
+            // would report a cost that was not paid. Counted separately instead.
+            if (c.skipped) acc.skipped += 1
+            else {
+              acc.ms.push(c.ms)
+              acc.bytes.push(c.bytes ?? 0)
+            }
+          }
+        } catch {
+          /* a failed fixture run contributes nothing — never a fabricated sample */
+        } finally {
+          try {
+            rmSync(tmpRoot, { recursive: true, force: true })
+          } catch {
+            /* best-effort cleanup */
+          }
+        }
+      }
+    }
+
+    const streams = [...byStream.entries()].map(([id, acc]) => ({
+      id,
+      n: acc.ms.length,
+      skipped: acc.skipped,
+      p50Ms: Math.round(pre.computePercentile(acc.ms, 50)),
+      p95Ms: Math.round(pre.computePercentile(acc.ms, 95)),
+      p95Bytes: Math.round(pre.computePercentile(acc.bytes, 95)),
+    }))
+    // The budget belongs to the WHOLE hook turn, so the streams are summed: a per-turn
+    // ceiling is spent by all of them together, not by the worst one alone.
+    const sumP95Ms = streams.reduce((n, s) => n + s.p95Ms, 0)
+    const sumP95Bytes = streams.reduce((n, s) => n + s.p95Bytes, 0)
+
+    if (wantsJson(flags)) {
+      printJson({
+        metric: 'pre_per_check_p95_ms',
+        runs: perRuns,
+        fixtures: fixtures.length,
+        samples,
+        streams,
+        sumP95Ms,
+        sumP95Bytes,
+        threshold: 300,
+        pass: sumP95Ms <= 300,
+      })
+      return 0
+    }
+
+    process.stdout.write(
+      `SMA pre-bench — per-stream IN-PROCESS cost, ${perRuns} runs × ${fixtures.length} fixtures = ${samples} turns\n` +
+        `  a full process spawn measures the shape of the INSTALL (node boot, module load);\n` +
+        `  the cost of the STREAMS is the table below — that is what a per-turn budget buys.\n` +
+        `  ${'stream'.padEnd(18)}${'p50 ms'.padStart(8)}${'p95 ms'.padStart(8)}${'p95 bytes'.padStart(11)}${'n'.padStart(7)}\n`,
+    )
+    for (const s of streams) {
+      process.stdout.write(
+        `  ${String(s.id).padEnd(18)}${String(s.p50Ms).padStart(8)}${String(s.p95Ms).padStart(8)}` +
+          `${String(s.p95Bytes).padStart(11)}${String(s.n).padStart(7)}${s.skipped ? ` (пропущено по бюджету: ${s.skipped})` : ''}\n`,
+      )
+    }
+    process.stdout.write(
+      `  сумма p95 по потокам: ${sumP95Ms} ms · ${sumP95Bytes} bytes · SLO p95 <= 300 ms → ${sumP95Ms <= 300 ? 'PASS' : 'FAIL'}\n`,
+    )
+    // the bare numeric LAST line — what the V2 scorer parses.
+    process.stdout.write(`${sumP95Ms}\n`)
+    return 0
+  }
+
   // ── default / --runs N : FULL child-spawn wall-clock ──────────────────────
   const runs = Number(flags.runs) > 0 ? Math.floor(Number(flags.runs)) : 50
   if (!fixtures.length) {
@@ -4425,10 +4654,9 @@ async function cmdPreBench({ flags }) {
     return 1
   }
   const { execFileSync } = await import('node:child_process')
-  const { mkdtempSync, rmSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
+  const { rmSync } = await import('node:fs')
   const cliPath = join(MODULE_DIR, 'cli.mjs')
-  const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-bench-'))
+  const tmpRoot = await makeThrowawayRepo('sma-pre-bench-')
   const durations = []
   try {
     for (let i = 0; i < runs; i++) {
@@ -4438,9 +4666,12 @@ async function cmdPreBench({ flags }) {
       try {
         // fixed literal argv — no user-input interpolation; fresh temp
         // .sma so bench runs never pollute the live journal/seen/perf stores.
+        // cwd is the disposable repository too: the corpus carries a destructive command,
+        // and a snapshot taken from the working tree would write into a shared .git.
         execFileSync(process.execPath, [cliPath, 'pre'], {
           input,
           encoding: 'utf8',
+          cwd: tmpRoot,
           env: { ...process.env, SMA_ROOT_OVERRIDE: join(tmpRoot, '.sma') },
         })
       } catch {
@@ -8486,8 +8717,9 @@ const SUBAGENT_SPAWN_TOOLS = new Set(['Task', 'Agent'])
  * Task matcher — the Task-cap spend soft-deny stream rides INSIDE it (runStreamCollect
  * over the one 'spend' PRE_CHECK), so there is never a second node process per Task PreToolUse.
  * A spend soft-deny short-circuits (deny wins, no pack injection); spend warns merge into the
- * pack output's additionalContext. Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE)
- * are the stream's own and unchanged. HOOK_FACING: exit 0 always; every source fail-open.
+ * pack output's additionalContext. The stream runs by default; its kill-switch
+ * (SMA_SPEND_DISABLE) is the stream's own and unchanged. HOOK_FACING: exit 0 always; every
+ * source fail-open.
  */
 async function cmdPretaskPack({ dirs }) {
   const evt = readStdinJson()
@@ -8496,8 +8728,8 @@ async function cmdPretaskPack({ dirs }) {
   // ONE SPAWN: the Task-cap spend soft-deny stream rides
   // INSIDE this single Task PreToolUse spawn — never a second scripts/sma process. Same
   // consolidation seam as plan 02's `pre` multiplexer (runStreamCollect over the ONE stream).
-  // Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE) are unchanged — the stream owns
-  // them. Fail-open: a spend error never blocks the spawn. Runs FIRST so a soft-deny short-
+  // The kill-switch (SMA_SPEND_DISABLE) is unchanged — the stream owns it, and it runs by
+  // default. Fail-open: a spend error never blocks the spawn. Runs FIRST so a soft-deny short-
   // circuits before any pack work (and so it still fires when SMA_PACK_DISABLE is set).
   let spendWarns = []
   let spendDeny = null
