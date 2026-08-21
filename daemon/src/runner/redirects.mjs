@@ -17,14 +17,34 @@
  * state — the queue owns that. Losing this file loses only unconsumed corrections, and
  * the founder can see that and repeat themselves; nothing else in the system leans on it.
  *
+ * ═══════════════════ THE THIRD FATE, AND WHY IT NEEDS NO NEW MACHINERY ═══════════
+ * A word can also be meant for the turn running RIGHT NOW: not «die and come back carrying
+ * this», but «hear this and keep going». It is written here as one more `ask` line — same
+ * shape, same file, same pending rule — because the gate that runs inside the WORKER's own
+ * child process already reads this store live and marks the lines it used. So the third fate
+ * is a VALUE, not a mechanism: it rides a wire that is already standing, which is the whole
+ * reason it costs one entry in a list instead of a new channel. The fates add up rather than
+ * compete — a word nobody managed to hand over mid-turn is still pending when the turn ends,
+ * and the continuation loop collects it on the way out.
+ *
  * Node built-ins only; fs and clock injectable; zero deps.
  */
 
 import { appendFileSync as fsAppend, readFileSync as fsRead, mkdirSync as fsMkdir, existsSync as fsExists } from 'node:fs'
 import { join, dirname } from 'node:path'
 
-/** The two fates a typed-while-busy text can have. A third value is refused at the door. */
-export const REDIRECT_MODES = Object.freeze(['interrupt', 'queue'])
+/**
+ * The three fates a typed-while-busy text can have. A fourth value is refused at the door.
+ *
+ *   interrupt — the live child is told to die, and the same session resumes with the note.
+ *   queue     — the turn is left alone; the note travels on the next exit.
+ *   steer     — a word for the LIVE turn: the gate inside the worker's child process hands it
+ *               over at the next tool-call boundary and NOTHING is killed, so what the model
+ *               was holding in its head mid-turn survives. Undelivered, the line stays pending
+ *               and the continuation loop picks it up after the exit — the three fates
+ *               compose rather than conflict.
+ */
+export const REDIRECT_MODES = Object.freeze(['interrupt', 'queue', 'steer'])
 
 /** A correction is a paragraph, not a document. The cap is the door's, stated once. */
 export const REDIRECT_TEXT_CAP = 4000
@@ -140,4 +160,26 @@ export function readPendingRedirects({ dataDir, taskId, fsImpl } = {}) {
 export function markConsumed({ dataDir, taskId, ids = [], clock = Date.now, fsImpl } = {}) {
   if (!dataDir || !taskId || !ids.length) return
   markConsumedFile({ file: fileOf(dataDir, taskId), ids, clock, fsImpl })
+}
+
+/** The heading itself, one literal: it is the sentence a correction has always arrived under. */
+const CORRECTION_HEADING = 'Поправка от основателя к текущей работе (учти и продолжай ту же задачу):'
+
+/**
+ * correctionsPreamble(rows) → the ONE sentence a founder's correction arrives under.
+ *
+ * Here for the same reason `redirectFileOf` is here: the words now have TWO carriers — the
+ * gate inside the worker's child process, which hands them to a turn already in flight, and
+ * the continuation loop, which hands them to a resumed session. An agreement written down in
+ * two places is two agreements, and they drift on the first edit that touches only one of
+ * them; the founder would then be quoted differently depending on which road his sentence
+ * took. So the wording is minted once, by the module that owns what a correction IS.
+ * Pure: no fs, no clock, nothing read.
+ */
+export function correctionsPreamble(rows = []) {
+  const body = (Array.isArray(rows) ? rows : [])
+    .map((r) => String((r && r.text) ?? '').trim())
+    .filter((t) => t !== '')
+    .join('\n\n')
+  return `${CORRECTION_HEADING}\n\n${body}`
 }

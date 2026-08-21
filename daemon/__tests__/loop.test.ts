@@ -83,7 +83,10 @@ import {
   readAttemptLog,
   ATTEMPT_FILES_CAP,
 } from '../src/queue/attempt-ledger.mjs'
-import { appendRedirect, readPendingRedirects, redirectFileOf } from '../src/runner/redirects.mjs'
+// `correctionsPreamble` is used AS ITSELF below: the cases about a correction's wording ask
+// the module that owns what a correction IS, never a sentence retyped into a test. A hand
+// written expectation would go on passing after the two forms drifted apart.
+import { appendRedirect, readPendingRedirects, redirectFileOf, correctionsPreamble } from '../src/runner/redirects.mjs'
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
 import { formatDecision, parseDecision, ticketIdFor, readWaitingTicket } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
@@ -1785,6 +1788,270 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     const log = readAttemptLog({ dir: ledgerDir, attemptId: 'F-1#1' })
     expect(log.total).toBe(DELEGATING_STREAM.length)
     expect(log.entries.filter((e: any) => e.subagent === true)).toHaveLength(1)
+  })
+})
+
+/**
+ * ═══════ ПОТРЕБЛЕНИЕ ПОПРАВКИ — В МОМЕНТ ДОСТАВКИ, И НИКОГДА РАНЬШЕ ═══════
+ *
+ * Обещание хранилища поправок сформулировано словами: «поправка пишется на диск ПЕРВОЙ,
+ * чтобы перезапуск её не потерял». Цикл продолжения это обещание нарушал ровно наоборот —
+ * помечал строки употреблёнными, а ПОТОМ выяснял, есть ли чем их доставить. Для попытки
+ * исполнителя без канала возобновления и на пределе прыжков слово основателя съедалось
+ * молча: записали на диск, а потом сами же и уничтожили.
+ *
+ * Случаи ниже утверждают ПОРЯДОК, а не сумму. Каждый из них КРАСНЕЕТ, если порядок вернуть
+ * обратно, — тест, зелёный при обоих порядках, не утверждает ничего. И каждый смотрит на
+ * то, что доехало до АРГУМЕНТОВ ЗАПУСКА, а не на промежуточную строку: доставка, доказанная
+ * вычислением, — ровно класс «вычислено, но не подключено».
+ */
+describe('поправка потребляется только тогда, когда её есть чем доставить', () => {
+  const tmpDirs: string[] = []
+  const mkDir = (prefix = 'sma-loop-order-') => {
+    const d = mkdtempSync(join(tmpdir(), prefix))
+    tmpDirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of tmpDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  })
+
+  const RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+    reverify: GREEN_REVERIFY,
+  }
+
+  const TASK_PROMPT = 'сделай дело'
+  const SESSION = '11111111-2222-4333-8444-555555555555'
+  const INIT_FRAME = JSON.stringify({ type: 'system', subtype: 'init', session_id: SESSION })
+
+  /**
+   * ДВА ЛЕЙНА, ОДНО РАЗЛИЧИЕ — БИНАРЬ. Живой сборщик аргументов различает ровно это: сторонний
+   * вендор идёт своим CLI, всё остальное — нашим (`runner/build-args.mjs`, выбор по провайдеру).
+   * Подделке сборщика больше знать неоткуда и незачем: цикл смотрит на `spec.bin` и ни на что
+   * ещё, поэтому богаче живой библиотеки она здесь быть не может.
+   */
+  const lane = (bin: string) => () => ({ bin, args: bin === 'codex' ? ['exec', '--json'] : ['--print', '-'], env: {}, prompt: TASK_PROMPT })
+
+  /** Запись `done` в файле поправок — единственный след потребления; её отсутствие проверяемо. */
+  const doneMarks = (dataDir: string, taskId: string) =>
+    readFileSync(redirectFileOf({ dataDir, taskId }) as string, 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l))
+      .filter((r: any) => r && r.kind === 'done')
+
+  it('(а) слово исполнителю без канала НЕ СЪЕДЕНО: доставить нечем — значит и потреблять нечего', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    // Слово прилетает в ОКНО МЕЖДУ запуском и выходом — процесс ещё жив, задание уже прочитано.
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      appendRedirect({ dataDir, taskId: 'BL-1', text: 'стой, не трогай подвал', mode: 'steer', clock: c.clock })
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('codex') },
+    })
+
+    await tick(deps)
+
+    // СТРОКА ЖДЁТ. Её никто не доставил — значит никто не имел права её съесть.
+    const pending = readPendingRedirects({ dataDir, taskId: 'BL-1' })
+    expect(pending).toHaveLength(1)
+    expect(pending[0].text).toContain('не трогай подвал')
+    expect(doneMarks(dataDir, 'BL-1')).toEqual([])
+    // И потеря не молчалива: пропуск записан с причиной ПО ИМЕНИ.
+    const skipped = journalled.filter((e: any) => e.type === 'task.redirect_skipped')
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].reason).toBe('provider')
+    expect(spawns).toHaveLength(1) // возобновлять нечем — второго запуска не было
+  })
+
+  it('(б) предел прыжков НЕ ЕСТ: последняя поправка остаётся ждать, а не гибнет на пороге', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    // Основатель правит без остановки: каждый запуск застаёт новое слово, и цикл упирается в предел.
+    let n = 0
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      n += 1
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      appendRedirect({ dataDir, taskId: 'BL-1', text: `поправка ${n}`, mode: 'queue', clock: c.clock })
+      c.advance(1)
+      spec.onLine?.(INIT_FRAME)
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('claude') },
+    })
+
+    await tick(deps)
+
+    const skipped = journalled.filter((e: any) => e.type === 'task.redirect_skipped')
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].reason).toBe('hop_cap')
+    // Слово, до которого прыжков не хватило, ЖДЁТ следующего захода задачи.
+    const pending = readPendingRedirects({ dataDir, taskId: 'BL-1' })
+    expect(pending).toHaveLength(1)
+    expect(pending[0].text).toBe(`поправка ${n}`)
+  })
+
+  it('(в) слово для исполнителя без канала ДОЕЗЖАЕТ В САМОМ ЗАДАНИИ следующего захода', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    // ОБЕ судьбы, посланные задаче ДО первой попытки: «после хода» и слово живому ходу. Вторая —
+    // единственный замок на судьбу steer-строки, адресованной работнику на чужом лейне: калитки
+    // у него нет, поэтому подобрать её может только задание следующего захода.
+    appendRedirect({ dataDir, taskId: 'BL-1', text: 'правь шапку, не подвал', mode: 'queue', clock: c.clock })
+    c.advance(1)
+    appendRedirect({ dataDir, taskId: 'BL-1', text: 'и сборку не трогай', mode: 'steer', clock: c.clock })
+
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('codex') },
+    })
+
+    await tick(deps)
+
+    expect(spawns).toHaveLength(1)
+    // ГРАНТ ДОЕХАЛ ДО АРГУМЕНТОВ ЗАПУСКА — до того самого текста, который получил запускатель.
+    expect(spawns[0].prompt).toContain(TASK_PROMPT) // задание не подменено, слово ДОПИСАНО
+    expect(spawns[0].prompt).toContain(
+      correctionsPreamble([{ text: 'правь шапку, не подвал' }, { text: 'и сборку не трогай' }]),
+    )
+    // И только теперь строки употреблены — ровно один раз, обе.
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([])
+    expect(doneMarks(dataDir, 'BL-1')).toHaveLength(2)
+    // Журнал называет КАНАЛ, которым слово доехало.
+    const delivered = journalled.filter((e: any) => e.type === 'task.redirected')
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].delivery).toBe('prompt')
+    // Пропуска нет: слово доставлено, жаловаться не на что.
+    expect(journalled.filter((e: any) => e.type === 'task.redirect_skipped')).toEqual([])
+  })
+
+  it('(в2) СТАРТ-ПРОВАЛ не ест: задание собрано, но процесс не поднялся — слово осталось ждать', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    appendRedirect({ dataDir, taskId: 'BL-1', text: 'правь шапку, не подвал', mode: 'queue', clock: c.clock })
+    c.advance(1)
+    appendRedirect({ dataDir, taskId: 'BL-1', text: 'и сборку не трогай', mode: 'steer', clock: c.clock })
+
+    // «Программу не удалось запустить» — вторая дорога провала: не бросок, а onError.
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ prompt: String(spec.prompt ?? '') })
+      spec.onError?.(new Error('spawn ENOENT'))
+      return { pid: null, kill: () => {} }
+    }
+
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('codex') },
+    })
+
+    const res = await tick(deps)
+    expect(res.failed?.reason).toBe('runtime_offline') // процесса не было — это его судьба
+
+    // Строку СОБРАЛИ, но никто её не прочитал: потребление привязано к прочитанному заданию.
+    expect(spawns[0].prompt).toContain('правь шапку, не подвал')
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toHaveLength(2)
+    expect(doneMarks(dataDir, 'BL-1')).toEqual([])
+  })
+
+  it('(д) слово ЖИВОМУ ходу, которого ход не подобрал, подбирает продолжение — та же сессия', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    // Ход не сделал ни одного вызова инструмента — калитка внутри работника слова не увидела.
+    appendRedirect({ dataDir, taskId: 'BL-1', text: 'вернись к шапке', mode: 'steer', clock: c.clock })
+
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      spec.onLine?.(INIT_FRAME)
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('claude') },
+    })
+
+    await tick(deps)
+
+    expect(spawns).toHaveLength(2)
+    const resumeAt = spawns[1].args.indexOf('--resume')
+    expect(resumeAt).toBeGreaterThan(-1)
+    expect(spawns[1].args[resumeAt + 1]).toBe(SESSION) // ТА ЖЕ сессия, ничего не начато с нуля
+    // ОДНА ФОРМА СЛОВ: записка собрана производителем из модуля поправок, а не второй склейкой.
+    expect(spawns[1].prompt).toBe(correctionsPreamble([{ text: 'вернись к шапке' }]))
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([])
   })
 })
 
@@ -3992,6 +4259,68 @@ describe('личный слой и наши серверы доезжают до
     const run = JSON.parse(readFileSync(join(expectedRunDir!, 'run.json'), 'utf8'))
     expect(run.envNames).toContain('SMA_RUN_DIR')
     expect(run.envNames).toContain('SMA_REDIRECTS_FILE')
+  })
+
+  /**
+   * ПРОВОД ПРАВА СПРОСИТЬ — ДО РТА РАБОТНИКА, А НЕ ДО СБОРЩИКА.
+   *
+   * Раздел «Вопрос по ходу» проверен в сьюте промпта — но там утверждается ВОЗВРАТ СБОРЩИКА,
+   * то есть промежуточная строка. Работник читает не её: задание идёт через композицию
+   * аргументов в поле `prompt` и оттуда — в stdin ребёнка. Сегодня преобразований между этими
+   * точками нет, и ровно такие «сегодня нет» рвались в живых прогонах: вычисленное значение
+   * жило в журнале и не доезжало до запуска. Поэтому здесь — НАСТОЯЩИЙ сборщик аргументов
+   * (подделка закрыла бы тот самый стык) и утверждение о том, ЧТО ПОЛУЧИЛ ЗАПУСКАТЕЛЬ.
+   *
+   * Подделка запускателя здесь не умеет больше живого: она читает `spec.prompt`, `spec.onLine`
+   * и `spec.onExit` — ровно те поля, которые читает `spawnWorker` (сверено с его телом; сьют
+   * промпта отдельно доказывает, что живой запускатель пишет `prompt` в stdin ребёнка).
+   */
+  it('провод: раздел «Вопрос по ходу» доезжает до ЗАДАНИЯ, переданного запускателю', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const prompts: string[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        prompts.push(String(spec.prompt ?? ''))
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        // НАСТОЯЩИЙ сборщик: подделка здесь закрыла бы ровно тот стык, ради которого кейс написан
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    expect(prompts).toHaveLength(1)
+    const handedOver = prompts[0]
+    // (1) право спросить доехало до задания, которое получил запускатель
+    expect(handedOver, 'раздел о вопросе по ходу остался у сборщика и до работника не доехал').toContain(
+      '## Вопрос по ходу',
+    )
+    // (2) и доехало ЦЕЛИКОМ: все три вещи, а не один заголовок
+    const section = handedOver.slice(handedOver.indexOf('## Вопрос по ходу')).replace(/\s+/g, ' ')
+    expect(section).toContain('вызов поставлен на паузу')
+    expect(section).toContain('В ЭТУ ЖЕ сессию')
+    expect(section).toContain('ГЛАВНЕЕ ранее данных указаний')
+    // (3) и это ОБЫЧНАЯ задача — та самая, у которой права спросить не было вовсе
+    expect(handedOver).toContain('BL-1')
   })
 
   it('провод: путь каталога попытки у спавна и у записи — ОДНО выражение', () => {

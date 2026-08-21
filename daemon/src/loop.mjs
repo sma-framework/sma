@@ -135,7 +135,14 @@ import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/st
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage } from './runner/usage.mjs'
-import { readPendingRedirects, markConsumed, appendRedirect, redirectFileOf, REDIRECT_HOP_CAP } from './runner/redirects.mjs'
+import {
+  readPendingRedirects,
+  markConsumed,
+  appendRedirect,
+  redirectFileOf,
+  correctionsPreamble,
+  REDIRECT_HOP_CAP,
+} from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
 import { buildMcpConfigFile } from './runner/args.mjs'
@@ -3114,22 +3121,75 @@ export async function tick(deps = {}) {
       // about to exist, so everything after this point that throws must not take the cost of
       // it with them.
       unbookedSpend = () => bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
+
+      // ── A WORKER WITH NO LIVE CHANNEL HEARS THE WORD IN THE TASK ITSELF ──
+      // The third-party lane has neither of the two roads a correction normally takes. Our
+      // gate does not run inside its child, so nothing can hand it a word mid-turn; and the
+      // continuation below cannot resume it either — the stream parser DOES read that lane's
+      // thread id off the wire, and the wire ENDS there: nothing carries it back into the
+      // argument builder's resume option, so there is no session to return to. (Closing that
+      // loop is a road recorded in the approach note, not this work.) Which leaves exactly one
+      // truthful delivery for such a worker: the TEXT OF THE NEXT RUN. That is what makes
+      // «убить и продолжить» a behaviour rather than a polite formula — the door kills now,
+      // and the word rides the attempt that follows.
+      //
+      // ПОТРЕБЛЕНИЕ — В МОМЕНТ ДОСТАВКИ: задание прочитано СТАРТОВАВШИМ ПРОЦЕССОМ, а не в
+      // момент сборки строки. Eating the lines while the text is being assembled and then
+      // failing to start is the very defect the continuation loop below was rewritten to stop
+      // committing, and making it here instead would be no better. `runSpawn` tells the two
+      // fates apart BY CONSTRUCTION — `spawnError` is null for a child that ran and carries
+      // the error for one that never existed — so the mark is set on the line right after it
+      // returns and nowhere earlier. Whoever reads this next: do not move it up.
+      //
+      // The Claude lane is deliberately NOT fed this way: it already has a resume channel that
+      // a live ledger proves works, and two channels on one lane deliver one word twice.
+      let promptCarried = []
+      if (config.dataDir && spec.bin !== CLAUDE_BIN) {
+        promptCarried = readPendingRedirects({ dataDir: config.dataDir, taskId: task.id, fsImpl: deps.fsImpl })
+        if (promptCarried.length) spec.prompt = `${spec.prompt ?? ''}\n\n${correctionsPreamble(promptCarried)}`
+      }
       let exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
+      if (promptCarried.length && exit.spawnError === null) {
+        markConsumed({ dataDir: config.dataDir, taskId: task.id, ids: promptCarried.map((p) => p.id), clock: now, fsImpl: deps.fsImpl })
+        // WHICH ROAD THE WORD TOOK, said in the journal rather than inferred from silence.
+        writeLog(deps, {
+          type: 'task.redirected',
+          taskId: task.id,
+          mode: promptCarried[promptCarried.length - 1].mode,
+          delivery: 'prompt',
+        })
+      }
 
       // ── THE CONTINUATION LOOP: a typed correction has a declared fate ──
-      // «Перебить сейчас» killed the child (the door did); «После хода» let it finish.
-      // Either way the correction is HERE, durable, and the same session continues with it
-      // (`--resume <sessionId>`) — what was done stays in context, nothing restarts from
-      // zero. The loop is ENDABLE by construction: each pass consumes its corrections
-      // first, and REDIRECT_HOP_CAP bounds the night. Claude-only: the Codex resume
-      // protocol differs, and a correction it cannot honour is SKIPPED on the record
-      // rather than silently dropped.
+      // «Перебить сейчас» killed the child (the door did); «После хода» let it finish; a word
+      // meant for the LIVE turn that the turn never picked up (no tool call came after it) is
+      // still pending and is collected here too — the three fates compose. Either way the
+      // correction is HERE, durable, and the same session continues with it
+      // (`--resume <sessionId>`) — what was done stays in context, nothing restarts from zero.
+      //
+      // ПОТРЕБЛЕНИЕ — В МОМЕНТ ДОСТАВКИ, И НИКОГДА РАНЬШЕ. This loop used to mark the lines
+      // consumed and only then work out whether it had anything to deliver them WITH, so a
+      // word for a lane with no resume channel, and a word that arrived past the hop cap, were
+      // eaten in silence: written to disk first «чтобы перезапуск её не потерял», then
+      // destroyed by the very code that promise was made about. The order is now: read →
+      // is there a channel → deliver → and only after a delivery that happened, mark. An
+      // undelivered line stays on disk, the skip is recorded WITH ITS REASON, and the word
+      // rides the task's next run. Whoever reads this next: the mark cannot move back above
+      // the check without restoring that defect.
+      //
+      // ENDABLE ALL THE SAME. Termination never rested on consumption — it rests on
+      // REDIRECT_HOP_CAP, which counts every pass that spawned, delivered or not; the cap is
+      // reached and the loop breaks even if a resume refuses to start five times running.
+      //
+      // ONE WORDING, THREE CARRIERS. The note is built by `correctionsPreamble` in the
+      // corrections module, the same producer the gate inside the worker's child and the next
+      // run's task text use. An agreement written down in three places is three agreements,
+      // and the founder would be quoted differently depending on which road his sentence took.
       if (config.dataDir) {
         let hops = 0
         for (;;) {
           const pending = readPendingRedirects({ dataDir: config.dataDir, taskId: task.id, fsImpl: deps.fsImpl })
           if (!pending.length) break
-          markConsumed({ dataDir: config.dataDir, taskId: task.id, ids: pending.map((p) => p.id), clock: now, fsImpl: deps.fsImpl })
           const sessionId = sessionOf()
           const resumable = spec.bin === CLAUDE_BIN && typeof sessionId === 'string' && /^[0-9a-f-]{32,40}$/i.test(sessionId)
           if (!resumable || hops >= REDIRECT_HOP_CAP) {
@@ -3142,13 +3202,20 @@ export async function tick(deps = {}) {
           }
           hops += 1
           writeLog(deps, { type: 'task.redirected', taskId: task.id, mode: pending[pending.length - 1].mode, hop: hops })
-          const correction = pending.map((p) => p.text).join('\n\n')
-          const contPrompt = `Поправка от основателя к текущей работе (учти и продолжай ту же задачу):\n\n${correction}`
           exit = await runSpawn(
             spawnSteered,
-            { bin: spec.bin, args: [...spec.args, '--resume', sessionId], cwd: workDir, env: spec.env, prompt: contPrompt },
+            {
+              bin: spec.bin,
+              args: [...spec.args, '--resume', sessionId],
+              cwd: workDir,
+              env: spec.env,
+              prompt: correctionsPreamble(pending),
+            },
             onLine,
           )
+          if (exit.spawnError === null) {
+            markConsumed({ dataDir: config.dataDir, taskId: task.id, ids: pending.map((p) => p.id), clock: now, fsImpl: deps.fsImpl })
+          }
         }
       }
       if (deps.attemptTurns) deps.attemptTurns.done(task.id)

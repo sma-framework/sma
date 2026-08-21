@@ -5,6 +5,7 @@ import type { ChatTurn } from '../../api/types'
 import { refusalWords } from '../../shell/format'
 import { openScreen } from '../../shell/navigation'
 import { TaskPanel } from '../../shell/TaskPanel'
+import { useComposerDraft } from '../../shell/useComposerDraft'
 import type { ScreenId } from '../registry'
 import { AttachmentViewer } from './AttachmentViewer'
 import { Awaiting } from './Awaiting'
@@ -86,8 +87,11 @@ export function Screen() {
   const startStage = usePhaseStage()
 
   const [entries, setEntries] = useState<ChatEntry[]>([])
-  const [text, setText] = useState('')
+  // Разговор назван РАНЬШЕ поля ввода, потому что черновик набора привязан к разговору: пока
+  // разговора нет, набирают «в новый», а после первого ответа у него появляется собственное
+  // имя, и поверхность набора вместе с ним. Смену имени хук улаживает сам.
   const [conversationId, setConversationId] = useState<string | undefined>(undefined)
+  const [text, setText] = useComposerDraft(`chat.${conversationId ?? 'new'}`)
   const [openTaskId, setOpenTaskId] = useState<string | null>(null)
   const [reading, setReading] = useState<string | null>(null)
   const [createdTasks, setCreatedTasks] = useState<Record<string, string>>({})

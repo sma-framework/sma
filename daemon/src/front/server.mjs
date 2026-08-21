@@ -2424,12 +2424,59 @@ async function handleChat({ req, res, config, deps }) {
 const TURN_ID_RE = /^ct-[A-Za-z0-9][A-Za-z0-9-]{3,47}$/
 
 /**
- * POST /api/redirect — body {taskId, text, mode: 'interrupt'|'queue'}. The steering wheel
- * for a RUNNING task: the correction is written DURABLY first (a restart must not lose a
- * founder's «нет, не так»), and only then, for 'interrupt', the live child is told to die —
+ * Providers whose spawn runs behind the parking gate — the hook boundary that can hand a word
+ * to a turn ALREADY IN FLIGHT. The api fallback belongs on this list deliberately: it is the
+ * same CLI with a different way of paying, so it carries the same gate. The other vendor's CLI
+ * has no such boundary at all, and that is a fact about the vendor rather than a gap to paper
+ * over. An allow-list, not a deny-list: a provider nobody has taught this door about must be
+ * treated as channel-less until someone proves otherwise, never assumed to be reachable.
+ */
+const LIVE_CHANNEL_PROVIDERS = Object.freeze(['claude', 'api'])
+
+/**
+ * Did this task's LAST attempt run on an executor that has a live channel? Read through the
+ * SAME ledger seam as the task card (fn / {readAttempts} / ledgerDir) and folded by the same
+ * rule, so the card and this door can never come to disagree about who ran last.
+ *
+ * SILENCE MEANS YES, deliberately. No attempts yet, an unreadable ledger, a row carrying no
+ * provider — none of those is EVIDENCE of a missing channel, and the store is durable: the
+ * line simply waits for the first turn that has a gate. An unreadable ledger has no right to
+ * fail this door, which is the posture every other reader in this file already takes.
+ */
+function hasLiveChannel(taskId, deps) {
+  let rows = []
+  try {
+    if (typeof deps.ledger === 'function') rows = deps.ledger(taskId) || []
+    else if (deps.ledger && typeof deps.ledger.readAttempts === 'function') rows = deps.ledger.readAttempts(taskId) || []
+    else if (deps.ledgerDir) rows = readAttempts(deps.ledgerDir, taskId)
+  } catch {
+    rows = []
+  }
+  const provider = lastValue(foldAttemptRows(Array.isArray(rows) ? rows : []), (a) => a && a.provider)
+  return provider === null || LIVE_CHANNEL_PROVIDERS.includes(provider)
+}
+
+/**
+ * POST /api/redirect — body {taskId, text, mode: 'interrupt'|'queue'|'steer'}. The steering
+ * wheel for a RUNNING task: the correction is written DURABLY first (a restart must not lose
+ * a founder's «нет, не так»), and only then, for 'interrupt', the live child is told to die —
  * the runner's continuation loop picks the note up and resumes the SAME session with it.
  * `live` in the answer says whether anything was actually killed; a task between attempts
  * still gets its correction on the next exit, which is what 'queue' means.
+ *
+ * THE THIRD FATE is 'steer': a word for the turn that is running right now. Nothing is killed —
+ * the gate inside the worker's own child process hands the word over at the next tool-call
+ * boundary, so what the model was holding in its head mid-turn survives. `live` is honestly
+ * `false` for it: no one was shot, and the field keeps meaning exactly what it always meant.
+ *
+ * AND WHERE THERE IS NO SUCH CHANNEL, THIS DOOR SAYS SO. Not every executor runs behind that
+ * gate. Taking a mid-turn word for one that does not, and quietly delivering a kill instead,
+ * would be a forgery — the same door does honest work as «kill and continue», and it is
+ * LABELLED that way. So when the last attempt of this task ran on an executor with no live
+ * channel, 'steer' is refused in words naming the two shapes that DO reach it. The refusal
+ * comes before the write: a line nobody will ever deliver should not be lying in the store
+ * looking delivered-any-moment. A task with no attempts yet is accepted — the line is durable
+ * and waits for the first gated turn.
  */
 async function handleRedirect({ req, res, config, deps }) {
   if (!config.dataDir) return send501(res)
@@ -2438,7 +2485,15 @@ async function handleRedirect({ req, res, config, deps }) {
   const b = body.value || {}
   if (rejectUnknownKeys(res, b, new Set(['taskId', 'text', 'mode']))) return undefined
   if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
-  if (b.mode !== 'interrupt' && b.mode !== 'queue') return send400(res, 'mode must be interrupt or queue')
+  if (b.mode !== 'interrupt' && b.mode !== 'queue' && b.mode !== 'steer') {
+    return send400(res, 'mode must be interrupt, queue or steer')
+  }
+  if (b.mode === 'steer' && !hasLiveChannel(b.taskId, deps)) {
+    return send400(
+      res,
+      'у этого исполнителя нет живого впрыска: слово доедет как «перебить сейчас» (убить и продолжить) или «после хода» — обе формы доставят его со следующим заходом задачи',
+    )
+  }
   const wrote = appendRedirect({
     dataDir: config.dataDir,
     taskId: b.taskId,

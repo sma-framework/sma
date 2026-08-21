@@ -51,6 +51,32 @@
  * daemon's own data directory) is not the worker's to write, and a decision that came
  * from the ticket's own directory says so in the record.
  *
+ * ═══════════════ AND NOW ALSO THE POSTMAN: A WORD FOR THE TURN IN FLIGHT ════════
+ * The same hook stands before EVERY tool call of the worker's session, which makes it the
+ * only place in this product that can reach a turn already running. So it carries a second
+ * errand beside the parking ticket: a person typing «нет, не так» into a busy task can now
+ * choose a fate that kills nobody. That word is stored as one more line in the task's
+ * correction file — the file this hook already holds a path to — and this module hands it
+ * over as `additionalContext` in the very same answer that lets the call through. The turn
+ * keeps everything it was holding in its head; nothing restarts.
+ *
+ * THE LIMIT IS NAMED, NOT HIDDEN: delivery happens ONLY at a tool-call boundary. A turn that
+ * makes no further tool calls will not see the word before it ends — the continuation loop
+ * then collects it on the way out, because an unconsumed line stays pending. The three fates
+ * add up rather than compete, which is the whole reason this costs one field and not a channel.
+ *
+ * ON A REFUSAL THE WORD DOES NOT TRAVEL. It rides `allow` and only `allow`: a call the person
+ * refused, or one whose deadline expired, is not a delivery boundary, and a word handed over
+ * beside a refusal would arrive attached to the wrong sentence. Left unconsumed it is DELAYED,
+ * never lost — the next boundary or the continuation loop takes it.
+ *
+ * THE HARVEST IS A POSTMAN, NOT A GUARD, AND ITS BREAKAGE DOES NOT CHANGE A VERDICT. The
+ * corrections module declares its own posture — «an unreadable store loses only unconsumed
+ * corrections, never wedges a tick» — and this module mirrors that rule rather than inventing
+ * a second one: a correction file that cannot be read or marked leaves the word pending and
+ * the call's decision exactly as the classifier and the person made it. Fail-closed still
+ * governs the TICKET, which is what safety hangs on.
+ *
  * Node built-ins only. Clock, sleep and filesystem are injectable so the suite proves
  * the expired deadline in milliseconds and never touches a real attempt.
  */
@@ -70,7 +96,7 @@ import { classifyForWorker } from './worker-danger.mjs'
 // this hook. Re-exported here so a caller that already holds the gate needs no second import,
 // and so `TICKET_DECISION_FORM` names the same string in both processes by construction.
 import { parseDecision } from './tool-decision.mjs'
-import { readPendingRedirectsFile, markConsumedFile } from '../../../daemon/src/runner/redirects.mjs'
+import { readPendingRedirectsFile, markConsumedFile, correctionsPreamble } from '../../../daemon/src/runner/redirects.mjs'
 
 export { formatDecision, parseDecision, TICKET_DECISION_FORM, TICKET_DECISION_PREFIX } from './tool-decision.mjs'
 
@@ -281,21 +307,41 @@ export function closeWaitingTickets({ runDir, reason = TICKET_CLOSED_WITH_ATTEMP
 }
 
 /**
- * hookResponseFor({decision, reason}) → the object the harness reads.
+ * hookResponseFor({decision, reason, steerTexts}) → the object the harness reads.
  *
  * The shape is not guessed: a live probe of this vendor version answered a `deny` in
  * this shape with `is_error=true` on the tool result AND put the call into
  * `result.permission_denials` with its tool name and command — which is exactly the
  * evidence a person needs afterwards to see what the worker was not allowed to do.
+ *
+ * `additionalContext` was proved by a live probe too, and the same way — a real session of
+ * this CLI, one tool call, one stub hook. The stream answered `hook_response … outcome
+ * success`, the model's own reasoning said it had received additional context from a hook,
+ * and its final message quoted the word back verbatim, all under ONE session id. So the
+ * carrier below is a measured fact rather than a reading of the vendor's documentation.
+ *
+ * THE SHAPE WITHOUT A WORD IS BYTE FOR BYTE THE OLD ONE. The key appears only when there is
+ * something to say: a hook that always emitted an empty extra field would change the answer
+ * every existing reader parses, in exchange for nothing.
+ *
+ * The WORDING is not built here. `correctionsPreamble` belongs to the module that owns what a
+ * correction IS, and it is the same sentence the continuation loop puts a resumed session
+ * under — one sentence minted once, so the founder is not quoted differently depending on
+ * which road his word took.
  */
-export function hookResponseFor({ decision, reason } = {}) {
-  return {
+export function hookResponseFor({ decision, reason, steerTexts } = {}) {
+  const out = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: decision === 'allow' ? 'allow' : 'deny',
       permissionDecisionReason: String(reason ?? ''),
     },
   }
+  const words = (Array.isArray(steerTexts) ? steerTexts : []).filter((t) => String(t ?? '').trim() !== '')
+  if (words.length > 0) {
+    out.hookSpecificOutput.additionalContext = correctionsPreamble(words.map((text) => ({ text })))
+  }
+  return out
 }
 
 /** Команда — одна строка на карточке, обрезанная в одном месте. */
@@ -337,11 +383,66 @@ function decisionFromRedirects(file, ticketId, fsImpl, clock) {
 }
 
 /**
+ * harvestSteerTexts(file, fsImpl, clock) → the words meant for the turn running RIGHT NOW,
+ * marked consumed on the way out. Never throws.
+ *
+ * WHAT IT TAKES, AND WHAT IT REFUSES TO TAKE:
+ *   - only lines of the THIRD fate (`steer`). «Перебить» and «в очередь» are somebody else's
+ *     errand — the loop kills or resumes on them — and a postman that ate them would make the
+ *     founder's word vanish between two mechanisms that each thought the other had it;
+ *   - and only lines that are NOT a ticket decision. A decision string belongs to the ticket
+ *     and to nothing else, even when a wrong fate was picked for it in the window: it is read
+ *     by the parked call above, and eating it here would leave a person pressing «Одобрить»
+ *     into nothing. So the parser judges, not the mode field alone.
+ *
+ * NO PATH, NO DISK. An empty file name returns immediately — the hook rides in a settings file
+ * shared by the whole machine, and a session that has no correction file must not pay for a
+ * read it can never need. Same discipline as `decisionFromRedirects` above.
+ *
+ * ITS OWN BREAKAGE IS NOT A REFUSAL. The corrections module declares that an unreadable store
+ * «loses only unconsumed corrections, never wedges a tick»; this mirrors that rule instead of
+ * inventing a second one. A read that throws yields no word and no change of verdict; a mark
+ * that throws still hands the word over — arriving twice is a nuisance, arriving never is the
+ * broken promise this whole store was built to keep.
+ */
+function harvestSteerTexts(file, fsImpl, clock) {
+  if (!file) return []
+  let pending = []
+  try {
+    pending = readPendingRedirectsFile({ file, fsImpl })
+  } catch {
+    return [] // непрочитанное хранилище — это «слова нет», и никогда не отказ по вызову
+  }
+  const picked = []
+  for (const row of pending) {
+    if (!row || row.mode !== 'steer') continue
+    if (parseDecision(row.text)) continue // это решение по билету — оно чужое, не трогаем
+    const text = String(row.text ?? '').trim()
+    if (text === '') continue
+    picked.push({ id: row.id, text })
+  }
+  if (picked.length === 0) return []
+  try {
+    markConsumedFile({ file, ids: picked.map((r) => r.id), clock, fsImpl })
+  } catch {
+    /* непомеченное слово доедет ещё раз — это лучше, чем не доехать ни разу */
+  }
+  return picked.map((r) => r.text)
+}
+
+/**
  * decideOnEvent({event, env, clock, sleep, fsImpl}) → the verdict, as data.
+ *
+ * `steerTexts` is ALWAYS present and empty by default — the words this boundary picked up for
+ * the turn in flight. It is filled on the two paths that let a call through INSIDE a
+ * configured attempt, and on those only: the classifier's «not dangerous» and the person's
+ * «одобрено». The early allow of a session that has no attempt directory of ours never looks
+ * (there is nothing of ours to read there, and it is somebody else's work), and a refusal
+ * never harvests — see the header: on a refusal the word waits rather than travels.
  *
  * @returns {Promise<{decision:'allow'|'deny', reason:string, configured:boolean,
  *                    dangerous:boolean, ticketId:(string|null),
- *                    decidedBy:(string|null), waitedMs:number}>}
+ *                    decidedBy:(string|null), waitedMs:number, steerTexts:string[]}>}
  */
 export async function decideOnEvent({
   event,
@@ -352,7 +453,7 @@ export async function decideOnEvent({
 } = {}) {
   const io = resolveIo(fsImpl)
   const runDir = typeof (env && env.SMA_RUN_DIR) === 'string' ? env.SMA_RUN_DIR.trim() : ''
-  const base = { configured: false, dangerous: false, ticketId: null, decidedBy: null, waitedMs: 0 }
+  const base = { configured: false, dangerous: false, ticketId: null, decidedBy: null, waitedMs: 0, steerTexts: [] }
 
   // ── ЕДИНСТВЕННОЕ исключение из отказа-по-умолчанию, и оно намеренное ──
   // Каталога попытки нет — значит это не наша попытка: чужое окно, работник продакшна,
@@ -367,9 +468,20 @@ export async function decideOnEvent({
     const tool = (event && event.tool_name) || ''
     const input = (event && event.tool_input) || {}
     const cwd = (event && typeof event.cwd === 'string' && event.cwd) || (env && env.CLAUDE_PROJECT_DIR) || ''
+    // ПУТЬ К ПЕРЕПИСКЕ читается здесь, а не у самого билета: с этой волны он нужен обеим
+    // разрешающим дорогам, а не только парковке.
+    const redirectsFile = typeof (env && env.SMA_REDIRECTS_FILE) === 'string' ? env.SMA_REDIRECTS_FILE.trim() : ''
     const verdict = classifyForWorker(tool, input, { copyRoot: cwd })
     if (!verdict.dangerous) {
-      return { ...base, configured: true, decision: 'allow', reason: 'не опасно по классификатору работника' }
+      // ГРАНИЦА ВЫЗОВА — ЭТО И ЕСТЬ ПОЧТА. Обычный безобидный вызов и есть тот момент, когда
+      // идущий ход можно догнать словом, никого не убивая; других моментов у нас нет.
+      return {
+        ...base,
+        configured: true,
+        decision: 'allow',
+        reason: 'не опасно по классификатору работника',
+        steerTexts: harvestSteerTexts(redirectsFile, fsImpl, clock),
+      }
     }
 
     const ticketId = ticketIdFor({ attemptId, tool, input })
@@ -393,7 +505,6 @@ export async function decideOnEvent({
     }
     writeTicket(io, ticketPath, ticket)
 
-    const redirectsFile = typeof (env && env.SMA_REDIRECTS_FILE) === 'string' ? env.SMA_REDIRECTS_FILE.trim() : ''
     for (;;) {
       const fromFile = decisionFromFile(io, runDir, ticketId)
       const found = fromFile || decisionFromRedirects(redirectsFile, ticketId, fsImpl, clock)
@@ -415,6 +526,11 @@ export async function decideOnEvent({
           decidedBy,
           waitedMs,
           decision: found.decision === 'approve' ? 'allow' : 'deny',
+          // ЖНЁМ ТОЛЬКО НА «ОДОБРЕНО». Отпущенный вызов — такая же граница, как безобидный, и
+          // слово, лежавшее в той же переписке, едет вместе с ним. На отказе человека слово
+          // НЕ трогаем: строка остаётся ждущей и доедет на следующей границе либо
+          // продолжением после выхода — непотреблённое слово отложено, а не потеряно.
+          steerTexts: found.decision === 'approve' ? harvestSteerTexts(redirectsFile, fsImpl, clock) : [],
           reason:
             found.decision === 'approve'
               ? `билет ${ticketId} одобрен человеком${found.reason ? `: ${found.reason}` : ''}`
@@ -438,6 +554,7 @@ export async function decideOnEvent({
           decidedBy: 'deadline',
           waitedMs,
           decision: 'deny',
+          steerTexts: [], // истёкший срок — отказ, а отказ не почта: слово ждёт следующей границы
           reason:
             `билет ${ticketId}: ${verdict.reason}. Человек не ответил за отведённое время — ` +
             'вызов отклонён. Продолжайте другими средствами или попросите человека в окне.',
