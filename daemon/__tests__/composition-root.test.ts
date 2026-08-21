@@ -397,6 +397,28 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * THE COUNTER OF UNSIGNABLE CODES MUST REACH BOTH ENDS, OR IT IS FURNITURE.
+   *
+   * It has two joints and each fails silently on its own: unwired at the tick, nothing is
+   * ever counted; unwired at the door, the count exists and no person can reach it. Neither
+   * end can see that the other is missing — this asserts the WIRE, not the counting, and
+   * asserts it on the real root with no overrides.
+   */
+  it('joins the ORPHAN counter to the tick AND to the feedback window', () => {
+    expect(
+      typeof park.tickDeps.unknownReasonSink,
+      'tickDeps.unknownReasonSink must be wired or an unsignable code is dropped and forgotten',
+    ).toBe('function')
+    // The sink is a counter, not a gate: it may be called with anything and answers nothing.
+    expect(() => park.tickDeps.unknownReasonSink('orphan_from_the_root')).not.toThrow()
+
+    const read = park.front?.deps?.unknownDispatchCodes
+    expect(typeof read, 'the front must be given a READER or the window can never quote the defect').toBe('function')
+    // …and it is the SAME register the tick just wrote into — the whole point of the wire.
+    expect(read()).toContain('orphan_from_the_root')
+  })
+
+  /**
    * THE WINDOW GATE IS ASKED WITH A WORKER AND THE WINDOW MODULE ANSWERS ABOUT AN ACCOUNT.
    *
    * Two callers, two nouns: the front asks about an account because that is what its screen
