@@ -97,7 +97,7 @@
 
 import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.mjs'
@@ -106,7 +106,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
-import { memorySnapshotHash, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
+import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, fileWord, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
@@ -129,7 +129,8 @@ import {
 // gate would be certifying files no corpus would ever accept.
 import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
-import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { smaRoot, tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
@@ -2346,6 +2347,50 @@ export function parseVerbResult(stdout) {
   return {}
 }
 
+/**
+ * taskWorktreePath({taskId, projectDir, execGit}) → где стоит копия ИМЕННО ЭТОЙ задачи.
+ *
+ * ОДНО ВЫРАЖЕНИЕ НА ОБЕ ДВЕРИ ПРОВИЗИИ, и вот почему оно вообще понадобилось. Верб, если
+ * ему не сказать пути, строит его сам — из identity того, кто зовёт. У человека за
+ * терминалом identity своя на сессию, и всё сходится; у ДЕМОНА она одна на весь процесс и
+ * на все задачи сразу, поэтому каталог копии выходил один, а ветки — по одной на задачу.
+ * Пока копия жива и зарегистрирована, соседняя задача переиспользовала её молча; стоило
+ * копии осиротеть (демон убит посреди попытки, регистрация потеряна) — каждая следующая
+ * провизия отвечала «уже существует», попытка умирала ДО запуска, и в журнале это выглядело
+ * как «среда исполнения недоступна». Замерено прошлой фазой: одна брошенная копия держала
+ * конвейер мёртвым почти два часа, и сам он из этого не вышел.
+ *
+ * ОСНОВАНИЕ — ТО ЖЕ, ЧТО У ВЕРБА, и спрашивается тем же вопросом к git: каталог копий лежит
+ * СОСЕДОМ основного дерева, а не внутри него (вложенная копия делает удаление способным
+ * опустошить дерево, в котором она стоит). Меняется ровно последний сегмент: он теперь от
+ * задачи. Git отвечает через переданный раннер — модуль не заводит собственной руки к git;
+ * git молчит или его нет — остаётся каталог проекта, ровно как fail-open у верба.
+ *
+ * Имя задачи проходит через ту же санитизацию, которой названы каталог прогона попытки и
+ * файл её леджера: строка из очереди становится именем на диске, и путь не собирается из
+ * сырых знаков.
+ *
+ * @param {{taskId:string, projectDir:string, execGit?:Function}} opts
+ * @returns {string|null} путь копии либо null — тогда вербу не говорят ничего и он решает сам
+ */
+function taskWorktreePath({ taskId, projectDir, execGit } = {}) {
+  if (typeof taskId !== 'string' || taskId.trim() === '') return null
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
+  let mainRoot = projectDir
+  if (typeof execGit === 'function') {
+    try {
+      mainRoot =
+        smaRoot({
+          cwd: projectDir,
+          gitCommonDirFn: () => String(execGit(['rev-parse', '--git-common-dir'], { cwd: projectDir }) || '').trim(),
+        }) || projectDir
+    } catch {
+      /* git отказал — основанием остаётся каталог проекта, как и у верба */
+    }
+  }
+  return join(dirname(mainRoot), WORKTREE_COPIES_DIR, `wt-${safeName(taskId)}`)
+}
+
 /** Invoke one CLI verb through the injected runner; returns {code, ...parsedStdout}. */
 async function invokeVerb(verbRunner, verb, args, cwd) {
   try {
@@ -3038,7 +3083,18 @@ export async function tick(deps = {}) {
         // task actually paid — process start, argument parsing and all. It is also the only
         // number available when an older install answers without one at all.
         const provisionStartedAt = Date.now()
-        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
+        // WHERE THE COPY GOES — SAID OUT LOUD, and by the one expression the other door uses
+        // too. Left unsaid, the verb names the directory after the CALLER, and this caller is
+        // one daemon for every task it will ever run: N branches claiming one directory.
+        // Null (a task with no name, which cannot happen through the queue's own gate) simply
+        // says nothing and lets the verb decide, exactly as before.
+        const copyPath = taskWorktreePath({ taskId: task.id, projectDir: provisionDir, execGit: deps.execGit })
+        const wt = await invokeVerb(
+          verbRunner,
+          'worktree',
+          ['provision', '--branch', branch, ...(copyPath ? ['--path', copyPath] : []), '--json'],
+          provisionDir,
+        )
         const provisionMs = Date.now() - provisionStartedAt
         // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
         // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
@@ -3776,7 +3832,17 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // for the same reason the code path measures it: the verb only knows its own inside time,
   // and an install whose CLI is older answers with no number at all.
   const provisionStartedAt = Date.now()
-  const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
+  // THE THIRD MISTAKE THIS DOOR WOULD OTHERWISE HAVE MADE TWICE. Where the copy goes is said
+  // here by the SAME expression the code path uses — the two doors have already been fixed
+  // separately once, and the one left behind is the one that keeps costing. Unsaid, the verb
+  // names the directory after the daemon, identical for every task.
+  const copyPath = taskWorktreePath({ taskId: task.id, projectDir: provisionDir, execGit: deps.execGit })
+  const wt = await invokeVerb(
+    verbRunner,
+    'worktree',
+    ['provision', '--branch', branch, ...(copyPath ? ['--path', copyPath] : []), '--json'],
+    provisionDir,
+  )
   const provisionMs = Date.now() - provisionStartedAt
   if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
     // This refusal carries NO copy fields on purpose: no copy was made, and naming a path
