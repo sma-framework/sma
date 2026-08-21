@@ -4301,11 +4301,18 @@ async function cmdFlight({ positionals, flags, dirs }) {
   return sub ? 1 : 0
 }
 
-/** Load the three committed golden hook-event fixtures (parity + bench corpus). */
+/**
+ * Load the committed golden hook-event fixtures (parity + bench corpus).
+ * bash-git-danger.json carries a DESTRUCTIVE command (a branch delete): without it the
+ * corpus only ever exercised commands the airbag does not look at, so the instrument
+ * measured a path where the airbag does no work at all. The destructive fixture is what
+ * makes the snapshot cost visible. It is also why bench runs are pinned to a throwaway
+ * repository — see makeThrowawayRepo below.
+ */
 function loadPreFixtures() {
   const dir = join(MODULE_DIR, 'fixtures', 'pre')
   const out = []
-  for (const name of ['edit-collision.json', 'bash-git.json', 'write-plain.json']) {
+  for (const name of ['edit-collision.json', 'bash-git.json', 'bash-git-danger.json', 'write-plain.json']) {
     try {
       out.push({ name, evt: JSON.parse(readFileSync(join(dir, name), 'utf8')) })
     } catch {
@@ -4313,6 +4320,42 @@ function loadPreFixtures() {
     }
   }
   return out
+}
+
+/**
+ * A DISPOSABLE git repository for fixture runs, created outside any working tree.
+ *
+ * A measurement run has no right to leave a trace in the tree it is measured from. The
+ * corpus now carries a destructive command, so an armed airbag would take its snapshot
+ * (a ref write, a stash object) in the REAL .git — and that checkout is shared with the
+ * neighbouring windows. Pointing every fixture run at a throwaway repository is what keeps
+ * the instrument out of the working tree.
+ *
+ * One commit plus the branch the destructive fixture names, so the snapshot path is
+ * exercised for real instead of erroring out on an empty directory. Fails open to a plain
+ * temp dir when git is unavailable: the bench still runs, it just cannot walk that path.
+ * The caller removes the directory (best-effort) when done.
+ *
+ * @param {string} prefix mkdtemp prefix
+ * @returns {Promise<string>} the repo root — also the parent of the throwaway .sma root,
+ *   which is how buildCtx derives repoRoot.
+ */
+async function makeThrowawayRepo(prefix) {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const root = mkdtempSync(join(tmpdir(), prefix))
+  try {
+    const { execFileSync } = await import('node:child_process')
+    // fixed literal argv — no user input reaches these calls.
+    const git = (args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+    git(['init', '-q'])
+    git(['-c', 'user.email=bench@localhost', '-c', 'user.name=bench', 'commit', '--allow-empty', '-q', '-m', 'bench base'])
+    // the branch the destructive fixture aims at, so the snapshot has something to snapshot.
+    git(['branch', 'sma-pre-bench-probe'])
+  } catch {
+    /* no git here → the dir is still a valid throwaway root for everything else */
+  }
+  return root
 }
 
 /** Count the MAX scripts/sma command entries across PreToolUse matcher groups. */
@@ -4374,8 +4417,7 @@ async function cmdPreBench({ flags }) {
   if (flags.metric === 'parity') {
     // in-process over the golden fixtures, in a throwaway SMA root so live .sma is
     // untouched and no git shells out (headShaProbe → null).
-    const { mkdtempSync, rmSync } = await import('node:fs')
-    const { tmpdir } = await import('node:os')
+    const { rmSync } = await import('node:fs')
     const noSha = async () => null
     let mismatches = 0
     for (const fx of fixtures) {
@@ -4384,7 +4426,9 @@ async function cmdPreBench({ flags }) {
       // N-1's session lease, which never happens in a real tool call and would spuriously
       // trip the always-on fingerprint stream's ambient digest. Per-fixture
       // isolation is the faithful model of the consolidation the parity metric verifies.
-      const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-parity-'))
+      // a disposable REPOSITORY, not just a directory: buildCtx derives repoRoot from the
+      // parent of the .sma root, and that is the cwd every git call of every stream inherits.
+      const tmpRoot = await makeThrowawayRepo('sma-pre-parity-')
       const benchDirs = dirsFrom(join(tmpRoot, '.sma'))
       try {
         const mergedCtx = await pre.buildCtx({ evt: fx.evt, dirs: benchDirs, env: {}, headShaProbe: noSha })
@@ -4425,10 +4469,9 @@ async function cmdPreBench({ flags }) {
     return 1
   }
   const { execFileSync } = await import('node:child_process')
-  const { mkdtempSync, rmSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
+  const { rmSync } = await import('node:fs')
   const cliPath = join(MODULE_DIR, 'cli.mjs')
-  const tmpRoot = mkdtempSync(join(tmpdir(), 'sma-pre-bench-'))
+  const tmpRoot = await makeThrowawayRepo('sma-pre-bench-')
   const durations = []
   try {
     for (let i = 0; i < runs; i++) {
@@ -4438,9 +4481,12 @@ async function cmdPreBench({ flags }) {
       try {
         // fixed literal argv — no user-input interpolation; fresh temp
         // .sma so bench runs never pollute the live journal/seen/perf stores.
+        // cwd is the disposable repository too: the corpus carries a destructive command,
+        // and a snapshot taken from the working tree would write into a shared .git.
         execFileSync(process.execPath, [cliPath, 'pre'], {
           input,
           encoding: 'utf8',
+          cwd: tmpRoot,
           env: { ...process.env, SMA_ROOT_OVERRIDE: join(tmpRoot, '.sma') },
         })
       } catch {
