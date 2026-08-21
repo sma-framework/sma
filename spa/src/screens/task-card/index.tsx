@@ -39,6 +39,7 @@ import {
 } from '../../shell/format'
 import { openSystemConsole, useTellConsoleContext } from '../../shell/console-context'
 import { openScreen, useOpenedWith } from '../../shell/navigation'
+import { useComposerDraft } from '../../shell/useComposerDraft'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
@@ -74,7 +75,9 @@ type SteeringMode = 'interrupt' | 'queue' | 'steer'
  */
 function Steering({ taskId }: { taskId: string }) {
   const redirect = useRedirectTask()
-  const [text, setText] = useState('')
+  // Черновик набора привязан К ЭТОЙ задаче: поправка, написанная одной работе и всплывшая в
+  // поле другой, — способ отправить не туда, и руль тем и живёт, что в него пишут отвлекаясь.
+  const [text, setText] = useComposerDraft(`steer.${taskId}`)
   const [fate, setFate] = useState<string | null>(null)
 
   const send = (mode: SteeringMode) => {
