@@ -418,18 +418,22 @@ and what to write by hand if you wire SMA into a harness it does not install int
 ```json
 "PreToolUse": [
   { "matcher": "Task|Agent",
-    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pretask-pack", "timeout": 10 } ] }
+    "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" pretask-pack", "timeout": 10 } ] }
 ],
 "SubagentStop": [
-  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs subagent-verify", "timeout": 15 } ] }
+  { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" subagent-verify", "timeout": 15 } ] }
 ]
 ```
 
-Two details worth copying exactly. The matcher names the spawn tool under **both** names it
-has carried across agent versions: one that knows a single name installs cleanly, fires, and
-does nothing at all. And the budgets are 10 and 15 seconds rather than the 5 the editing-path
-hooks get, because both of these walk git and the working tree; a run cut short by the budget
-is a lost pack or a lost receipt.
+Three details worth copying exactly. The path is **anchored** to the project root rather
+than written relative to it: a hook inherits the session's working directory, so a relative
+path makes node fail to resolve the module before any of this code runs — and the fallback
+`:-.` keeps the command identical to the relative spelling wherever the harness does not set
+that variable. The matcher names the spawn tool under **both** names it has carried across
+agent versions: one that knows a single name installs cleanly, fires, and does nothing at
+all. And the budgets are 10 and 15 seconds rather than the 5 the editing-path hooks get,
+because both of these walk git and the working tree; a run cut short by the budget is a lost
+pack or a lost receipt.
 
 ### Measurement — `bench`
 
@@ -1194,7 +1198,7 @@ immediately when you touch a file/scope inside B's fingerprint.
 Claims auto-release on **exactly two triggers** — never an idle timer (a timer would reap a
 terminal that thinks/researches long before editing):
 
-1. **SessionEnd** — a NEW `SessionEnd` hook (`node scripts/sma/cli.mjs session-end`) releases
+1. **SessionEnd** — a NEW `SessionEnd` hook (`node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-end`) releases
    all of the window's own claims («сессия завершена»). It does NOT touch the `Stop` hook
    (Stop fires per turn — releasing every claim per turn would destroy the system).
 2. **Commit-evidence** — when the claimed scope is clean vs HEAD AND a commit landed in scope
@@ -1255,7 +1259,7 @@ which reads the hook event once and dispatches the ordered internal stream pipel
 ```json
 "PreToolUse": [
   { "matcher": "Edit|Write|Bash",
-    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pre", "timeout": 5 } ] }
+    "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" pre", "timeout": 5 } ] }
 ]
 ```
 
@@ -1305,7 +1309,7 @@ spend tokens). It generalizes the V2 per-executor exec-journal to ALL sessions.
 
 ```json
 "PreCompact": [
-  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs precompact-capsule", "timeout": 10 } ] }
+  { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" precompact-capsule", "timeout": 10 } ] }
 ]
 ```
 

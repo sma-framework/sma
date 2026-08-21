@@ -91,16 +91,27 @@ tree get a longer one, still short enough that a person does not feel the pause.
 
 | Agent event | Matched on | Command | Timeout |
 |---|---|---|---|
-| `SessionStart` | every start | `node scripts/sma/cli.mjs session-start` | 10 |
-| `PreToolUse` | `Edit\|Write\|Bash` | `node scripts/sma/cli.mjs pre` | 5 |
-| `PreToolUse` | `Task\|Agent` | `node scripts/sma/cli.mjs pretask-pack` | 10 |
-| `PostToolUse` | `Edit\|Write\|Bash` | `node scripts/sma/cli.mjs stall-check` | 5 |
-| `SessionEnd` | every end reason | `node scripts/sma/cli.mjs session-end` | 10 |
-| `PreCompact` | every compaction trigger | `node scripts/sma/cli.mjs precompact-capsule` | 15 |
-| `SubagentStop` | every subagent type | `node scripts/sma/cli.mjs subagent-verify` | 15 |
+| `SessionStart` | every start | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-start` | 10 |
+| `PreToolUse` | `Edit\|Write\|Bash` | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" pre` | 5 |
+| `PreToolUse` | `Task\|Agent` | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" pretask-pack` | 10 |
+| `PostToolUse` | `Edit\|Write\|Bash` | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" stall-check` | 5 |
+| `SessionEnd` | every end reason | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-end` | 10 |
+| `PreCompact` | every compaction trigger | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" precompact-capsule` | 15 |
+| `SubagentStop` | every subagent type | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" subagent-verify` | 15 |
 
-Four of the rows want a word of explanation:
+Five of the rows want a word of explanation:
 
+- **Every command is anchored to the project root, not written relative to it.**
+  A hook is a one-shot process, and it inherits the working directory of the session
+  rather than starting at the project root. Written relative, the command makes node
+  fail to resolve the module before a single line of engine code runs — so nothing
+  inside the engine can fail open around it, and it is not one entry that breaks but
+  the whole table at once, status line included, because they all shared the one
+  spelling. `${CLAUDE_PROJECT_DIR}` is set by the agent harness when it runs hooks;
+  where it is not set, the `:-.` fallback resolves to `.`, which is exactly the
+  relative spelling these commands had before. The command is therefore never worse
+  off than it used to be, anywhere. The path is quoted so a project directory with
+  spaces in its name stays one argument.
 - **`Task|Agent` is one tool under two names.** The tool that spawns a subagent was
   renamed between agent versions. A matcher that knows only one of the names still
   installs and still fires — and does nothing at all, silently. Matching both names
@@ -129,7 +140,7 @@ segment in the terminal status bar — and it writes it **by default**, not on r
 ```json
 "statusLine": {
   "type": "command",
-  "command": "node scripts/sma/cli.mjs statusline",
+  "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" statusline",
   "padding": 0,
   "refreshInterval": 60
 }
@@ -138,7 +149,7 @@ segment in the terminal status bar — and it writes it **by default**, not on r
 Three properties of that entry, each a decision rather than an accident.
 
 **Always the project settings file, even for a global install.** The command is
-project-relative (`node scripts/sma/cli.mjs statusline`), and a project-level
+resolved against the project you have open (`node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline`), and a project-level
 `statusLine` takes precedence over the user-level one. An entry in
 `~/.claude/settings.json` would therefore run in every project you open — including all
 the ones that do not have this runtime, where it finds nothing to run, prints nothing,
@@ -180,12 +191,21 @@ run those as `node scripts/sma/cli.mjs <verb>`.
 The hooks merge is **additive and idempotent**: your own hook entries are
 never removed, reordered, or rewritten, and re-running `init` never duplicates
 an SMA entry (entries are matched by their command string). The one exception
-is SMA's own legacy wiring: installs that predate the `pre` multiplexer carried
-per-stream PreToolUse entries (`collision-check` / `reflex-check` /
-`gates-check`), and re-running the installer replaces those with the single
-`node scripts/sma/cli.mjs pre` entry so the pre-checks run in one spawn instead
-of three. If your `settings.json` is not valid JSON, the installer refuses to
-touch it and exits.
+is SMA's own superseded wiring, and it is a replacement rather than an addition:
+
+- installs that predate the `pre` multiplexer carried per-stream PreToolUse entries
+  (`collision-check` / `reflex-check` / `gates-check`), and re-running the installer
+  replaces those with the single
+  `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" pre` entry so the pre-checks
+  run in one spawn instead of three;
+- installs made before the commands were anchored to the project root carry the
+  project-relative spelling (`node scripts/sma/cli.mjs <verb>`) of every one of the
+  seven, and re-running the installer replaces each with its anchored form. Both
+  spellings are ours by construction — those exact strings only ever came out of
+  this installer — so replacing them touches nothing you wrote, and one update
+  leaves exactly one entry per event, never two.
+
+If your `settings.json` is not valid JSON, the installer refuses to touch it and exits.
 
 ## The /gsd-* alias flag
 
