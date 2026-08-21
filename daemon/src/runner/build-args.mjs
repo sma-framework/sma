@@ -43,9 +43,10 @@
  *     which is the only caller that knows where this attempt's copy lives. A tick that names
  *     no path spawns without MCP servers, exactly as before — an absent flag is a better
  *     answer than a directory invented here.
- *   - Session resume. `resumeId` / `resumeThreadId` are supported by the argument builders;
- *     wiring them needs the session id recovered from the previous attempt's stream, which is
- *     a second concern with its own failure modes.
+ *   - Codex session resume. `resumeThreadId` is supported by that lane's builder and nothing
+ *     here offers it yet. The Claude lane's `resumeId` IS wired (see the spawn options below):
+ *     the tick decides whether this wake may continue the previous session, and this file
+ *     carries the decision into the builder, where the fresh-session lock already lives.
  */
 
 import {
@@ -59,6 +60,7 @@ import {
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { pipelineMaxTurns } from '../config.mjs'
 import { stageCommand } from '../policy/phase-cycle.mjs'
 
 /** The route named no worker this spawn could run as. */
@@ -250,6 +252,29 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
       // «no receipt», and no screen could name the cause (12.08.2026).
       args = buildClaudeArgs({
         ...argOpts,
+        // HOW FAR THIS ATTEMPT MAY WALK, carried to the process rather than kept as a setting.
+        //
+        // A headless worker has nobody to stop it: handed work it cannot finish, it re-reads,
+        // re-tries and re-reasons until the money runs out, and every one of those turns is a
+        // subscription minute burnt in a circle at three in the morning. The ceiling is the one
+        // number that turns that into a stop — and a stop only exists if the number is HERE, in
+        // the argument array of the spawn, rather than in a field somebody means to read later.
+        //
+        // It comes from config, and this line is the last stretch of road between the person who
+        // set it and the process that has to obey it. The resolver refuses anything that is not
+        // a whole positive number, so a malformed file cannot put junk on a command line.
+        maxTurns: pipelineMaxTurns(config),
+        // WHAT WOKE THIS ATTEMPT, AND WHETHER IT MAY CONTINUE THE PREVIOUS SESSION — decided by
+        // the tick, which is the only place that knows, and DELIVERED HERE so the builder's own
+        // fresh-session lock finally stands on the path a task takes.
+        //
+        // It did not, until this line. The lock refuses a continuation to every wake that must
+        // start clean, and the tick used to append the continuation onto an ALREADY ASSEMBLED
+        // array — past the builder and therefore past the lock. Written, covered, green, and
+        // guarding nothing on this road. Nothing new is invented here: the wake kind travels,
+        // and the rule that was always there does the refusing.
+        ...(options.wakeKind ? { wakeKind: String(options.wakeKind) } : {}),
+        ...(options.resumeId ? { resumeId: String(options.resumeId) } : {}),
         // The per-spawn MCP config, when the tick wrote one. The path is all that travels: the
         // file itself is built by the arg module from the ENABLED registry entries only.
         ...(options.mcpConfigPath ? { mcpConfigPath: String(options.mcpConfigPath) } : {}),
@@ -313,7 +338,15 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
     // be one of those. `stageCommand` rebuilds it from the frozen four, so the only text that
     // can ever reach a worker unfenced is one of them. The suite pins this equal to what the
     // door wrote, so the two cannot drift.
-    const prompt = stagePromptOf(task) ?? buildTaskPrompt({ task })
+    //
+    // И КОНСПЕКТ ПРОШЛОГО ПОДХОДА ЕДЕТ ТЕМ ЖЕ ПУТЁМ — через строителя, а не мимо него. Тик
+    // читает файл (только он знает, где лежит каталог прогона прошлой попытки), а забор
+    // кладёт строитель, потому что забор живёт там. Текст, приклеенный к промпту в тике,
+    // поехал бы голым: это тот же класс ошибки, что и продолжение сессии, дописанное мимо
+    // строителя аргументов, — написанное, покрытое делом, зелёное и не охраняющее ничего.
+    // Стадия конспекта не получает: её промпт — замороженная команда, а не данные задачи.
+    const prompt =
+      stagePromptOf(task) ?? buildTaskPrompt({ task, continuationSummary: options.continuationSummary })
 
     // `accountName` rides out because the SUBSCRIPTION, not the worker, is what a rate-limit
     // reading on the coming stream describes — and the caller reading that stream would

@@ -25,6 +25,20 @@
  * never burn a night window in a wake storm. The formula is exported and unit-tested;
  * the real delay is realized by pg-boss retryBackoff at requeue time.
  *
+ * IT KILLS NOW, AND IT STILL KEEPS NO STATE. Declaring an attempt dead used to be the whole
+ * job: the row went back to the queue and the CHILD KEPT RUNNING. A closed row with a live
+ * process behind it is the worst shape this machine can take — the next tick starts another
+ * attempt at the same task, and two children burn one subscription each believing it is alone.
+ * So the sweep stops the child FIRST and reissues the task after. It does that WITHOUT a
+ * registry of its own: the kill-handle registry arrives as a COLLABORATOR, exactly the way the
+ * journal does, and is never imported, constructed or cached here. The law above is untouched —
+ * nothing remembered between ticks, and a daemon assembled without the collaborator sweeps
+ * exactly as it always did.
+ *
+ * THE HONEST BOUNDARY. A handle exists only inside the daemon that spawned the attempt. After a
+ * restart there is nothing to kill, and that is NOT a killing — it is a different outcome with a
+ * different line in the log, so a reader is never told a process died when it was merely orphaned.
+ *
  * Node built-ins only; `clock` is dependency-injected so the sweep is deterministic in
  * tests. No live Postgres — the adapter + ledger are injected fakes in the suite.
  */
@@ -57,7 +71,7 @@ function countNoProgress(attempts) {
 }
 
 /**
- * livenessSweep({adapter, ledger, clock, expireMs, journal}) — audit every non-terminal task
+ * livenessSweep({adapter, ledger, clock, expireMs, journal, attemptTurns}) — audit every non-terminal task
  * for a durable live path; requeue the ones that lost it. Returns a summary.
  *
  * A task is:
@@ -84,10 +98,15 @@ function countNoProgress(attempts) {
  * does its work unchanged and silently. Narration is an observation of the audit, never a part
  * of it: a task must not survive or die on whether a log could be written.
  *
- * @param {{adapter:object, ledger?:object, clock?:Function|number, expireMs?:number, journal?:Function}} opts
+ * THE ORDER IS THE POINT: stop the child, SAY what came of stopping it, then reissue the task.
+ * Reversed, it is the exact loop that once ran three processes against one row — the row is
+ * closed while the child lives on, so the next tick sees a task with no live path and starts
+ * yet another attempt.
+ *
+ * @param {{adapter:object, ledger?:object, clock?:Function|number, expireMs?:number, journal?:Function, attemptTurns?:object}} opts
  * @returns {Promise<{audited:number, requeued:number, throttled:number}>}
  */
-export async function livenessSweep({ adapter, ledger, clock = Date.now, expireMs = DEFAULT_EXPIRE_MS, journal } = {}) {
+export async function livenessSweep({ adapter, ledger, clock = Date.now, expireMs = DEFAULT_EXPIRE_MS, journal, attemptTurns } = {}) {
   if (!adapter || typeof adapter.list !== 'function' || typeof adapter.fail !== 'function') {
     throw new TypeError('livenessSweep requires an adapter with list() and fail()')
   }
@@ -118,9 +137,9 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
     const noProgress = countNoProgress(prior) + 1 // this failure
     const silentMs = now() - lastTouch
     const cooldownMs = computeCooldownMs(noProgress)
-    // THE ONE LINE (see the header) — written BEFORE the declaration, fail-open, and worded so
-    // a reader does not go looking for a killing that never happened: this sweep declares and
-    // reissues; it touches no process.
+    // THE ONE LINE (see the header) — written BEFORE the declaration and fail-open. It states the
+    // DECISION only: what became of the process is a different fact, it gets its own line below,
+    // and at this point the answer is not known yet.
     if (typeof journal === 'function') {
       try {
         journal({
@@ -135,12 +154,60 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
             `попытка ${r.attempt ?? '?'} задачи ${r.id} объявлена мёртвой: молчит ${Math.round(silentMs / 1000)} с ` +
             `при сроке ${Math.round(expireMs / 1000)} с; задача перевыдана в очередь` +
             (cooldownMs > 0 ? `, остывание ${Math.round(cooldownMs / 1000)} с` : '') +
-            '. Процесс не трогали — сторож только объявляет и перевыдаёт.',
+            '. Что стало с процессом — отдельной строкой ниже.',
         })
       } catch {
         /* повествование никогда не стоит задачи */
       }
     }
+    // ── (а) УБИТЬ. Чужой ручкой: реестр приходит коллаборатором, как и журнал, и своего
+    // состояния сторож не заводит — иначе перезапуск демона перестанет быть бесплатным, а весь
+    // этот файл написан ровно ради того, чтобы демон был убиваем на любой строке. Ручка
+    // адресуется идентификатором ЗАДАЧИ: второго способа дотянуться до процесса здесь нет, и
+    // заводить его значило бы открыть путь к убийству не того ребёнка.
+    // `null` — это «не спрашивали или ответ неизвестен», и это НЕ ветка исхода.
+    let killed = null
+    if (attemptTurns && typeof attemptTurns.stop === 'function') {
+      try {
+        killed = attemptTurns.stop(r.id) === true
+      } catch {
+        // Реестр сломался — что стало с ребёнком, неизвестно. Ни одной строки об исходе: и
+        // «убили», и «убивать было нечем» здесь были бы выдумкой, каждая в свою сторону.
+        killed = null
+      }
+    }
+    // ── (б) СКАЗАТЬ. Две РАЗНЫЕ строки, различимые поиском по журналу. Перевыдача работала и
+    // раньше, поэтому строка про осиротевший процесс ничего нового не доказывает — и не смеет
+    // выглядеть так, будто доказывает убийство.
+    if (killed !== null && typeof journal === 'function') {
+      try {
+        journal(
+          killed
+            ? {
+                type: 'liveness.attempt_killed',
+                taskId: r.id,
+                attempt: r.attempt ?? null,
+                killed: true,
+                detail:
+                  `попытка ${r.attempt ?? '?'} задачи ${r.id}: ручка была у этого демона — ` +
+                  'дочерний процесс остановлен ДО того, как задача перевыдана в очередь.',
+              }
+            : {
+                type: 'liveness.attempt_orphaned',
+                taskId: r.id,
+                attempt: r.attempt ?? null,
+                killed: false,
+                detail:
+                  `попытка ${r.attempt ?? '?'} задачи ${r.id}: ручки под рукой нет — процесс ` +
+                  'осиротел (его породил другой демон, либо демон был перезапущен). Останавливать ' +
+                  'нечем; задача перевыдана в очередь.',
+              },
+        )
+      } catch {
+        /* повествование никогда не стоит задачи */
+      }
+    }
+    // ── (в) ПЕРЕВЫДАТЬ. Только теперь: обратный порядок закрывает строку при живом ребёнке.
     await adapter.fail(r.id, 'runtime_offline') // → attempt row (adapter) + pg-boss auto-retry
     requeued += 1
     if (cooldownMs > 0) throttled += 1

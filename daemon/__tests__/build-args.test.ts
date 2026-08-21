@@ -20,7 +20,9 @@
 import { describe, it, expect } from 'vitest'
 
 import { createBuildArgs, NoWorkerForRouteError, UnknownStageError, CLAUDE_BIN, CODEX_BIN } from '../src/runner/build-args.mjs'
-import { ProfileParityError, assertProfileParity } from '../src/runner/args.mjs'
+import { ProfileParityError, assertProfileParity, buildClaudeArgs } from '../src/runner/args.mjs'
+import { DEFAULT_PIPELINE_MAX_TURNS } from '../src/config.mjs'
+import { CHAT_MAX_TURNS } from '../src/front/chat.mjs'
 
 const claudeWorker = {
   id: 'max-1',
@@ -123,6 +125,92 @@ describe('buildArgs — the spec the tick spawns', () => {
 
     expect(withFlag.args).toContain('--forward-subagent-text')
     expect(without.args).not.toContain('--forward-subagent-text')
+  })
+
+  /**
+   * ═══════ ПРОВОД ПОТОЛКА ХОДОВ: ЧИСЛО ИЗ НАСТРОЕК ДОЕХАЛО ДО КОМАНДНОЙ СТРОКИ ═══════
+   *
+   * Утверждается ИМЕННО провод, а не вычисление. Работник без потолка способен ходить кругами,
+   * пока не кончатся деньги, — и ровно поэтому потолок обязан оказаться в массиве аргументов
+   * запускаемого процесса, а не в каком-нибудь поле, которое кто-то потом прочитает. Половина
+   * дня однажды ушла на конверт разрешений, который считался, хэшировался и писался в журнал —
+   * и не доезжал до запуска; проверялось вычисление, а сломан был провод.
+   *
+   * Соседство флага и числа проверяется подряд, а не по вхождению: аргумент, отставший от
+   * своего флага на один шаг, — это уже другая командная строка.
+   */
+  const capAt = (args: string[]) => {
+    const at = args.indexOf('--max-turns')
+    return at < 0 ? null : args[at + 1]
+  }
+
+  it('конфиг назвал число — оно стоит в аргументах запуска сразу за своим флагом', () => {
+    const spec = build({ workers: [claudeWorker], pipeline: { enabled: true, maxTurns: 25 } })(task(), route())
+    expect(capAt(spec.args)).toBe('25')
+  })
+
+  it('ключа в конфиге нет — едет умолчание, названное константой, и задача без потолка не остаётся', () => {
+    const spec = build()(task(), route())
+    expect(capAt(spec.args)).toBe(String(DEFAULT_PIPELINE_MAX_TURNS))
+  })
+
+  it('мусорное значение отбрасывается в пользу умолчания, а не едет в командную строку', () => {
+    for (const junk of ['восемьдесят', 0, -5, null, {}, Number.NaN, 12.5]) {
+      const spec = build({ workers: [claudeWorker], pipeline: { maxTurns: junk } })(task(), route())
+      expect(capAt(spec.args), String(junk)).toBe(String(DEFAULT_PIPELINE_MAX_TURNS))
+      expect(spec.args.join(' ')).not.toContain('восемьдесят')
+    }
+  })
+
+  /**
+   * У РАЗГОВОРА СВОЙ ПОТОЛОК, И ОН НАШ НЕ НАСЛЕДУЕТ. Ход разговора — четыре хода, задача —
+   * рабочий день работника; одно число на двоих означало бы, что поднятый ради задачи потолок
+   * молча удлиняет и каждую реплику в окне. Собственное значение разговора утверждается его
+   * же сьютом; здесь утверждается, что путь задачи не берёт его константу.
+   */
+  it('путь задачи не наследует потолок разговора', () => {
+    const spec = build()(task(), route())
+    expect(capAt(spec.args)).not.toBe(String(CHAT_MAX_TURNS))
+    expect(DEFAULT_PIPELINE_MAX_TURNS).toBeGreaterThan(CHAT_MAX_TURNS)
+  })
+
+  it('другой CLI своего потолка не получает — флаг принадлежит одному строителю', () => {
+    const spec = build()(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
+    expect(spec.args).not.toContain('--max-turns')
+  })
+
+  /**
+   * ═══════ ВОЗВРАТ ПРОДОЛЖАЕТ СЕССИЮ, ТАЙМЕР ПОЛУЧАЕТ СВЕЖУЮ ═══════
+   *
+   * Человек вернул работу с замечанием — работник обязан помнить, что делал: контекст за эту
+   * сессию уже оплачен, и начинать с нуля значит платить второй раз за то же чтение. Таймер
+   * будит задачу спустя время — и старая сессия несёт старую картину мира, которая к моменту
+   * пробуждения уже неверна.
+   *
+   * И ПРОХОДИТ ЭТО ЧЕРЕЗ СТРОИТЕЛЬ, А НЕ МИМО НЕГО. Замок «свежая сессия» стоит на входе
+   * строителя аргументов, написан, покрыт делом и зелёный — а решение о продолжении дописывалось
+   * в хвост уже собранного массива, то есть замок не накрывал единственный путь задачи вообще.
+   * Классический случай «вычислено — не значит подключено»: второго замка здесь не заводится,
+   * этот путь просто наконец идёт через первый.
+   */
+  const RESUME_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+
+  it('возврат человека несёт продолжение прошлой сессии в аргументы запуска', () => {
+    const spec = build()(task(), route(), { wakeKind: 'return', resumeId: RESUME_UUID })
+    const at = spec.args.indexOf('--resume')
+    expect(at).toBeGreaterThan(-1)
+    expect(spec.args[at + 1]).toBe(RESUME_UUID)
+  })
+
+  it('таймерное пробуждение продолжения не несёт', () => {
+    const spec = build()(task(), route(), { wakeKind: 'timer' })
+    expect(spec.args).not.toContain('--resume')
+  })
+
+  it('вид пробуждения ДОЕЗЖАЕТ до строителя: подсунутое таймеру продолжение ловит уже написанный замок', () => {
+    expect(() => build()(task(), route(), { wakeKind: 'timer', resumeId: RESUME_UUID })).toThrow(/fresh session/i)
+    // и это тот же самый замок, а не его копия: строитель бросает ту же ошибку напрямую
+    expect(() => buildClaudeArgs({ wakeKind: 'timer', resumeId: RESUME_UUID })).toThrow(/fresh session/i)
   })
 
   /**

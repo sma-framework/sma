@@ -12,6 +12,7 @@ import type {
   Backlog,
   BacklogPromoteResult,
   BudgetSetResult,
+  CancelTaskResult,
   ChatHistory,
   ChatReply,
   ClaimClearResult,
@@ -515,6 +516,21 @@ export function redirectTask(input: {
   mode: 'interrupt' | 'queue' | 'steer'
 }): Promise<{ accepted: boolean; id: string; mode: string; live: boolean }> {
   return postJson('/api/redirect', { taskId: input.taskId, text: input.text, mode: input.mode })
+}
+
+/**
+ * «Отменить задачу» — терминальная остановка работы человеком.
+ *
+ * СВОЙ ВЫЗОВ, А НЕ РЕЖИМ РУЛЯ. Повесить отмену на дверь поправки было нельзя: та требует
+ * НЕПУСТОГО текста, то есть заставляла бы человека что-нибудь напечатать, чтобы остановить
+ * пожар. Остановка — это не поправка курса: после неё курса не будет вовсе.
+ *
+ * ОТВЕТ ЧИТАЕТСЯ ТРЕМЯ ФАКТАМИ, а не одним. Дверь сначала убивает живого ребёнка и лишь
+ * потом закрывает строку, поэтому «убили» и «закрыли» — разные вещи, и окно обязано уметь
+ * сказать обе.
+ */
+export function cancelTask(input: { taskId: string }): Promise<CancelTaskResult> {
+  return postJson<CancelTaskResult>('/api/task/cancel', { taskId: input.taskId })
 }
 
 /**

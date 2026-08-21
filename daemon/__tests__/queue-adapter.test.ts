@@ -217,6 +217,25 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
     expect(row.status).toBe('failed')
     expect(row.failure_reason).toBe('tests_red')
   })
+
+  /**
+   * УПОР В ПОТОЛОК ХОДОВ ПРИНЯТ СЛОВАРЁМ — и это единственное, чем причина становится правдой
+   * для ОБОИХ хранилищ сразу: словарь закрыт и проверяется на входе `fail` в каждом из них,
+   * поэтому одной записи хватает на всю очередь. Подпись берётся из того же модуля, а не
+   * переписывается сюда руками: словарь и его русские подписи обязаны расходиться шумно.
+   */
+  it('новая причина «упёрся в потолок ходов» принята словарём и имеет русскую подпись', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(backlog())
+    await q.claimNext('w1', {})
+    await q.fail('BL-96', 'turns_exhausted')
+    const [row] = await q.list({})
+    expect(row.status).toBe('failed')
+    expect(row.failure_reason).toBe('turns_exhausted')
+    expect(FAIL_REASONS).toContain('turns_exhausted')
+    expect(REASON_LABELS.turns_exhausted).toContain('потолок ходов')
+  })
 })
 
 // ── V5.1: the project field on a task + the read-time backfill ──
@@ -303,7 +322,7 @@ describe('project — an additive task field with an injected default', () => {
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 18-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 19-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -319,6 +338,12 @@ describe('constants — taxonomy', () => {
       // Named apart from agent_error because the window used to blame the worker for the
       // vendor's outage, and the two ask a person for opposite things — wait, or fix
       'provider_error',
+      // the run the worker did not end EITHER — but this time it was WE who ended it: the
+      // attempt walked into the turn ceiling this daemon itself put on the command line. It
+      // sits beside provider_error because it asks a person for the same thing an outage does
+      // — nothing to fix in the work — and apart from it because the cause is ours, not the
+      // vendor's, and the answer is a bigger ceiling or a smaller task
+      'turns_exhausted',
       'tests_red',
       'needs_decision',
       'missing_access',

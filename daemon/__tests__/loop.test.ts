@@ -55,6 +55,7 @@ import {
   tick,
   runDaemon,
   classifyFailure,
+  turnCapHitOf,
   changedFilesOnBranch,
   unregisteredMcpTools,
   DENIAL_LINES_CAP,
@@ -1251,6 +1252,61 @@ describe('старение: сказано один раз на переход, 
   })
 })
 
+/**
+ * ═══════ УПОР В ПОТОЛОК ХОДОВ — ЭТО НЕ «ОШИБКА РАБОТНИКА» ═══════
+ *
+ * Работник, которому мы сами задали потолок ходов, останавливается на нём МОЛЧА: он не пишет
+ * записки, не оставляет квитанции и выходит — ровно как оборванный провайдером, и ровно по той
+ * же причине. До этого распознавателя такая попытка приходила на экран как «нет квитанции» или
+ * «ошибка работника», то есть человека посылали чинить то, что мы ему сами и устроили.
+ *
+ * ПРИЗНАК БЕРЁТСЯ ИЗ ПОЛЯ КАДРА, НЕ ИЗ РЕЧИ. Работник, отлаживающий чужой потолок, произнесёт
+ * фразу про исчерпание ходов вслух в собственном выводе — диагноз подслушиванием здесь запрещён
+ * тем же законом, которым он запрещён у распознавателя обрыва провайдера.
+ *
+ * И ЗАПАСНОЙ ПРИЗНАК ОБЯЗАТЕЛЕН. Слово исхода — слово вендора, оно может смениться в следующей
+ * версии его двоичного файла. Число сделанных ходов и заданный потолок — наша собственная
+ * арифметика: потолок мы знаем потому, что сами его и передали запускаемому процессу.
+ */
+describe('turnCapHitOf — упор в потолок ходов, названный полем кадра', () => {
+  const result = (o: object) => JSON.stringify({ type: 'result', ...o })
+
+  it('слово исхода из закрытого перечисления CLI → упор, с числом сделанных ходов', () => {
+    expect(turnCapHitOf([result({ subtype: 'error_max_turns', is_error: true, num_turns: 80 })])).toEqual({ turns: 80 })
+  })
+
+  it('берётся ПОСЛЕДНИЙ завершающий кадр потока: прогон, доигранный до успеха, упором не считается', () => {
+    const lines = [
+      result({ subtype: 'error_max_turns', is_error: true, num_turns: 80 }),
+      result({ subtype: 'success', is_error: false, num_turns: 12 }),
+    ]
+    expect(turnCapHitOf(lines)).toBe(null)
+    expect(turnCapHitOf([...lines].reverse())).toEqual({ turns: 80 })
+  })
+
+  it('поток без завершающего кадра и мусор на входе — пусто, без единого броска', () => {
+    expect(turnCapHitOf(['не json вовсе', JSON.stringify({ type: 'assistant' })])).toBe(null)
+    expect(turnCapHitOf([])).toBe(null)
+    expect(turnCapHitOf(undefined as any)).toBe(null)
+  })
+
+  it('запасной признак: слово вендора незнакомо, но ходов не меньше ЗАДАННОГО НАМИ потолка', () => {
+    const lines = [result({ subtype: 'error_ran_out_of_moves', is_error: true, num_turns: 80 })]
+    expect(turnCapHitOf(lines, 80)).toEqual({ turns: 80 })
+    // и он не срабатывает там, где ходов меньше потолка — это обычная ошибка, а не упор
+    expect(turnCapHitOf([result({ subtype: 'error_during_execution', is_error: true, num_turns: 3 })], 80)).toBe(null)
+  })
+
+  it('без заданного потолка запасной признак молчит: сравнивать не с чем', () => {
+    expect(turnCapHitOf([result({ subtype: 'error_ran_out_of_moves', is_error: true, num_turns: 999 })])).toBe(null)
+  })
+
+  it('кадр обрыва провайдера упором в потолок НЕ считается, сколько бы ходов на нём ни стояло', () => {
+    const cut = result({ is_error: true, terminal_reason: 'api_error', api_error_status: 529, num_turns: 80 })
+    expect(turnCapHitOf([cut], 80)).toBe(null)
+  })
+})
+
 describe('classifyFailure — the taxonomy (pure)', () => {
   const cases: Array<[string, any, string]> = [
     ['spawn infra error → runtime_offline', { spawnError: new Error('offline'), exitCode: null }, 'runtime_offline'],
@@ -1295,6 +1351,43 @@ describe('classifyFailure — the taxonomy (pure)', () => {
 
   it('но несостоявшийся запуск остаётся сильнее: обрывать было нечего', () => {
     expect(classifyFailure({ spawnError: new Error('offline'), providerAbort: { status: 529 } })).toBe('runtime_offline')
+  })
+
+  /**
+   * ПОТОЛОК СТОИТ ТАМ ЖЕ, ГДЕ ОБРЫВ, И ПО ТОЙ ЖЕ ПРИЧИНЕ: попытка, срезанная на потолке, не
+   * написала записки и не оставила квитанции ровно потому, что её остановили, — обвинять её в
+   * этом нельзя. Выше — только то, чего мы не устраивали: несостоявшийся запуск и отказ вендора.
+   */
+  it('упор в потолок → turns_exhausted, а не «нет квитанции»', () => {
+    expect(classifyFailure({ turnCapHit: { turns: 80 }, exitCode: 0, receipt: null })).toBe('turns_exhausted')
+  })
+
+  it('упор в потолок сильнее суждений о том, что попытка оставила: ни записки, ни квитанции с неё не спрашивают', () => {
+    expect(
+      classifyFailure({
+        turnCapHit: { turns: 80 },
+        exitCode: 1,
+        receipt: { verdict: 'green', ref: 'r' },
+        journalComplete: false,
+      }),
+    ).toBe('turns_exhausted')
+  })
+
+  /**
+   * КОД ВЫХОДА В ПРИЗНАК НЕ ВХОДИТ. Чем именно завершается двоичный файл вендора при упоре в
+   * потолок, мы не проверяли ни разу; ветка обязана давать один и тот же ответ при нулевом и
+   * ненулевом коде, иначе непроверенное число тихо станет частью диагноза.
+   */
+  it('ответ один и тот же при нулевом и ненулевом коде выхода', () => {
+    const zero = classifyFailure({ turnCapHit: { turns: 80 }, exitCode: 0, receipt: null })
+    const nonzero = classifyFailure({ turnCapHit: { turns: 80 }, exitCode: 7, receipt: null })
+    expect(zero).toBe(nonzero)
+    expect(zero).toBe('turns_exhausted')
+  })
+
+  it('но обрыв провайдера остаётся сильнее потолка — порядок ветвей соблюдён', () => {
+    expect(classifyFailure({ providerAbort: { status: 529 }, turnCapHit: { turns: 80 }, exitCode: 1 })).toBe('provider_error')
+    expect(classifyFailure({ spawnError: new Error('offline'), turnCapHit: { turns: 80 } })).toBe('runtime_offline')
   })
 })
 
@@ -1483,39 +1576,79 @@ describe('the tick keeps a live log of the attempt, and never dies of it', () =>
     expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([])
   })
 
-  it('a RETURNED task’s next attempt resumes the prior session — the paid-for context survives', async () => {
-    const ledgerDir = mkDir('sma-loop-res-')
+  /**
+   * ═══════ ЧТО ИМЕННО ТИК РЕШАЕТ ПРО ПРОБУЖДЕНИЕ ═══════
+   *
+   * Возврат человека и пробуждение по времени приходят на тик НЕОТЛИЧИМЫМИ на первый взгляд:
+   * вторая попытка той же задачи, и в леджере записана сессия первой. До этой пары дел обе шли
+   * одним и тем же путём продолжения — условие смотрело только на номер попытки. Между тем
+   * разница смысловая: человек вернул работу с замечанием, и работник обязан помнить, что
+   * делал, — контекст уже оплачен, а поправка должна лечь в голову, которая ещё помнит, о чём
+   * речь; таймер же будит задачу спустя время, и старая сессия несёт картину мира, которая к
+   * этому моменту уже неверна.
+   *
+   * ЗДЕСЬ ПРОВЕРЯЕТСЯ РЕШЕНИЕ ТИКА, А НЕ КОМАНДНАЯ СТРОКА, и это сказано прямо, чтобы никто не
+   * принял эти два дела за сквозной прогон. Провод состоит из двух звеньев, и у каждого своё
+   * место: тик → опции спавна (здесь, настоящим тиком) и опции → массив аргументов (сьют
+   * композитора, настоящим композитором и настоящим строителем). Подделки нет ни в одном из
+   * двух звеньев; настоящий запуск с настоящим массивом аргументов читается уже с диска, живым
+   * прогоном, а не сьютом.
+   *
+   * Свежесть таймера обеспечена НЕ вторым условием, а тем, что вид пробуждения доезжает до
+   * строителя, где замок на этот случай написан, брошен явной ошибкой и проверен давно.
+   */
+  const wakeDecisionOf = async (over: any, ledgerRow: any) => {
+    const ledgerDir = mkDir('sma-loop-wake-')
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    const spawns: any[] = []
-    const spawnWorker = (spec: any) => {
-      spawns.push({ args: spec.args.slice() })
-      spec.onLine?.('APPROACH_NOTE: продолжил')
-      spec.onLine?.('LESSON_NONE: тестовый работник')
-      spec.onExit?.({ code: 0, signal: null })
-      return { pid: 1, kill: () => {} }
-    }
+    const seen: any[] = []
     const { deps } = makeDeps({
       adapter,
       clockObj: c,
-      spawnWorker,
+      spawnWorker: (spec: any) => {
+        spec.onLine?.('APPROACH_NOTE: продолжил')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
       responses: {
         preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
         worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
         reverify: GREEN_REVERIFY,
       },
-      deps: { ledger: realLedger(ledgerDir) },
+      deps: {
+        ledger: realLedger(ledgerDir),
+        buildArgs: (_task: any, _route: any, opts: any) => {
+          seen.push(opts)
+          return { bin: 'claude', args: ['--print', '-'], env: {}, prompt: 'do it' }
+        },
+      },
     })
-
-    // The prior run's row carries the session — exactly what the return left behind.
-    deps.ledger.recordAttempt({ taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
-    await adapter.enqueue(backlogTask({ attempt: 2 }))
-
+    deps.ledger.recordAttempt(ledgerRow)
+    await adapter.enqueue(backlogTask({ attempt: 2, ...over }))
     const res = await tick(deps)
     expect(res.completed).toBe('BL-1')
-    const at = spawns[0].args.indexOf('--resume')
-    expect(at).toBeGreaterThan(-1)
-    expect(spawns[0].args[at + 1]).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+    return seen[0]
+  }
+
+  it('a RETURNED task’s next attempt resumes the prior session — the paid-for context survives', async () => {
+    const opts = await wakeDecisionOf(
+      { source: 'return' },
+      { taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+    )
+    expect(opts.wakeKind).toBe('return')
+    expect(opts.resumeId).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+  })
+
+  it('а задача, разбуженная по времени, продолжения не получает — даже когда сессия в леджере есть', async () => {
+    // Та же запись прошлой сессии, та же вторая попытка. Отличается ровно одно слово: строку
+    // вернул в очередь не человек, а истёкшая аренда.
+    const opts = await wakeDecisionOf(
+      {},
+      { taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+    )
+    expect(opts.wakeKind).toBe('timer')
+    expect(opts.resumeId).toBeUndefined()
   })
 
   it('every line reaches the attempt’s own file, and the delegated one is marked as delegated', async () => {
@@ -3821,6 +3954,193 @@ describe('личный слой и наши серверы доезжают до
     expect(row.mcpConfig).toEqual({ path: mcpPath, servers: [] })
   })
 
+  /**
+   * ═══════ СКВОЗНОЙ ПРОВОД ПРОБУЖДЕНИЯ: НАСТОЯЩИЙ ТИК, НАСТОЯЩИЙ КОМПОЗИТОР, НАСТОЯЩИЙ ARGV ═══════
+   *
+   * Дела выше проверяют половины: тик решает вид пробуждения, композитор кладёт решение во флаги.
+   * Здесь обе половины соединены и НИ ОДНА не подделана — тот же настоящий сборщик аргументов,
+   * что и в деле про mcp-конфиг выше, и утверждение снимается с массива, которым запускается
+   * процесс. Это ровно та форма, которой требует закон о связности: каждый кусок по отдельности
+   * был написан, покрыт делом и зелён — и однажды ни один не оказался присоединён к соседнему.
+   *
+   * И ЗДЕСЬ ЖЕ ВИДНО, ЧТО ПОТОЛОК ХОДОВ ДОЕЗЖАЕТ ТЕМ ЖЕ ПУТЁМ — один прогон предъявляет оба
+   * провода этой работы, потому что оба кончаются в одном и том же массиве.
+   */
+  const argvOfWake = async (over: any, ledgerRow: any) => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const dataDir = mkDir('sma-data-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const spawns: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const config = { workers: [worker(accountDir)], repoDir: '/repo', pipeline: { enabled: true, maxTurns: 33 }, dataDir }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push(spec.args.slice())
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+        loadMcpRegistry: () => ({ servers: [], path: join(dataDir, 'mcp.json') }),
+      },
+    })
+    recordAttempt(ledgerDir, ledgerRow)
+    await adapter.enqueue(backlogTask({ attempt: 2, ...over }))
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+    expect(spawns).toHaveLength(1)
+    return spawns[0]
+  }
+
+  it('возврат человека доезжает до argv продолжением сессии, а таймер — без него, и потолок едет в обоих', async () => {
+    const SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+
+    const returned = await argvOfWake({ source: 'return' }, { taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: SID })
+    const at = returned.indexOf('--resume')
+    expect(at, 'продолжение сессии не доехало до argv возврата').toBeGreaterThan(-1)
+    expect(returned[at + 1]).toBe(SID)
+
+    const woken = await argvOfWake({}, { taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: SID })
+    expect(woken).not.toContain('--resume')
+    expect(woken.join(' '), 'старая сессия не смеет ехать в свежее пробуждение').not.toContain(SID)
+
+    // и потолок ходов из настроек — в обоих массивах, подряд со своим флагом
+    for (const argv of [returned, woken]) {
+      const cap = argv.indexOf('--max-turns')
+      expect(cap, 'потолок ходов не доехал до argv').toBeGreaterThan(-1)
+      expect(argv[cap + 1]).toBe('33')
+    }
+  })
+
+  /**
+   * ═════ ПРОВОД: КОНСПЕКТ ПРОШЛОГО ПОДХОДА ДОЕЗЖАЕТ ДО ПРОМПТА СЛЕДУЮЩЕГО ═════
+   *
+   * ЭТО ДЕЛО О ПРОВОДЕ, А НЕ О СБОРКЕ. Оно кладёт файл конспекта на диск РУКАМИ — то есть
+   * ровно так, как его кладёт прошлая попытка, — и снимает утверждение с промпта, которым
+   * запущен процесс. Дело, утверждающее, что конспект где-то собран, было бы бесполезно:
+   * именно такое дело и было зелёным в тот день, когда ничего никуда не доезжало.
+   *
+   * НИ ОДНОГО ПОДДЕЛЬНОГО ЗВЕНА НА МАРШРУТЕ: настоящий тик, настоящий композитор
+   * (`createBuildArgs`), настоящий строитель промпта. Подделка любого из трёх вернула бы
+   * дело к утверждению о сборке.
+   *
+   * ФАЙЛ ЛЕЖИТ ТАМ, ГДЕ ЕГО ИЩЕТ ВЫРАЖЕНИЕ ПУТИ, и путь в деле собран ТЕМ ЖЕ выражением
+   * (`attemptRunDir`), а не написан строкой: дело, знающее второе написание пути, доказывало
+   * бы согласие с самим собой.
+   */
+  const promptOfWake = async (over: any, ledgerRow: any, continuation: string | null) => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const dataDir = mkDir('sma-data-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const repoDir = mkDir('sma-repo-')
+    const spawns: any[] = []
+    const seenOpts: any[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const config = { workers: [worker(accountDir)], repoDir, pipeline: { enabled: true, maxTurns: 33 }, dataDir }
+    const realBuildArgs = createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } })
+
+    // КАТАЛОГ ПРОГОНА ПРОШЛОЙ ПОПЫТКИ — собран тем же выражением, каким его собирает продукт.
+    if (continuation !== null) {
+      const prior = attemptRunDir({ runsDir: runsDirOf(repoDir) as string, attemptId: 'BL-1#1' }) as string
+      mkdirSync(prior, { recursive: true })
+      writeFileSync(join(prior, 'continuation.md'), continuation, 'utf8')
+    }
+
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        buildArgs: (task: any, route: any, opts: any) => {
+          seenOpts.push(opts)
+          return realBuildArgs(task, route, opts)
+        },
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+        loadMcpRegistry: () => ({ servers: [], path: join(dataDir, 'mcp.json') }),
+      },
+    })
+    recordAttempt(ledgerDir, ledgerRow)
+    await adapter.enqueue(backlogTask({ attempt: 2, ...over }))
+    const res = await tick(deps)
+    expect(res.completed).toBe('BL-1')
+    expect(spawns).toHaveLength(1)
+    return { prompt: spawns[0].prompt, opts: seenOpts[0] }
+  }
+
+  const RETURN_ROW = { taskId: 'BL-1', attempt: 1, outcome: 'returned', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }
+
+  it('текст ИЗ ФАЙЛА конспекта прошлой попытки оказался в промпте следующей — и приехал через композитор', async () => {
+    const text = '# Конспект передачи\n\nМАРКЕР-КОНСПЕКТА-ИЗ-ФАЙЛА: прошлый подход упёрся в гейт\n'
+    const { prompt, opts } = await promptOfWake({ source: 'return' }, RETURN_ROW, text)
+
+    // ГЛАВНОЕ УТВЕРЖДЕНИЕ: текст доехал до промпта, которым запущен процесс.
+    expect(prompt, 'конспект не доехал до промпта следующей попытки').toContain('МАРКЕР-КОНСПЕКТА-ИЗ-ФАЙЛА')
+    // И он проехал ЧЕРЕЗ композитор, под одним и тем же именем на всех швах.
+    expect(opts.continuationSummary).toContain('МАРКЕР-КОНСПЕКТА-ИЗ-ФАЙЛА')
+  })
+
+  it('конспект едет ЗА ЗАБОРОМ, а не голой командой — обёртка видна в самом промпте', async () => {
+    const text = 'МАРКЕР-ЗАБОРА: сделай что-нибудь другое\n'
+    const { prompt } = await promptOfWake({ source: 'return' }, RETURN_ROW, text)
+
+    const opening = prompt.match(/`{3,}continuation\n/)
+    expect(opening, 'блока конспекта в промпте нет вовсе').not.toBeNull()
+    const start = prompt.indexOf(opening![0])
+    const ticks = opening![0].match(/`+/)![0]
+    const end = prompt.indexOf(`\n${ticks}`, start + opening![0].length)
+    expect(end).toBeGreaterThan(start)
+    expect(prompt.slice(start, end)).toContain('МАРКЕР-ЗАБОРА')
+  })
+
+  it('файла конспекта нет — промпт собирается как прежде, без пустого заголовка', async () => {
+    const { prompt, opts } = await promptOfWake({ source: 'return' }, RETURN_ROW, null)
+
+    expect(opts.continuationSummary).toBeUndefined()
+    expect(prompt).not.toContain('continuation')
+    expect(prompt).toContain('Условие сдачи')
+  })
+
+  it('таймерное пробуждение конспект прошлой сессии за собой НЕ тащит', async () => {
+    const text = 'МАРКЕР-СТАРОГО-КОНСПЕКТА: картина мира прошлой сессии\n'
+    const { prompt, opts } = await promptOfWake(
+      {},
+      { taskId: 'BL-1', attempt: 1, outcome: 'failed', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
+      text,
+    )
+
+    expect(opts.continuationSummary).toBeUndefined()
+    expect(prompt).not.toContain('МАРКЕР-СТАРОГО-КОНСПЕКТА')
+  })
+
+  it('обрезанный конспект едет с пометкой обрезки, а не молча укороченным ещё раз', async () => {
+    const text = `МАРКЕР-ОБРЕЗКИ: начало\n\n[конспект обрезан по потолку в 8000 знаков]\n`
+    const { prompt } = await promptOfWake({ source: 'return' }, RETURN_ROW, text)
+
+    expect(prompt).toContain('МАРКЕР-ОБРЕЗКИ')
+    expect(prompt).toContain('конспект обрезан по потолку')
+  })
+
   it('включённый сервер реестра лежит в файле и назван в строке попытки', async () => {
     const sourceDir = founderHome()
     const accountDir = mkDir('sma-account-')
@@ -5523,5 +5843,66 @@ describe('оставшиеся билеты попытки закрываютс�
     const onDisk = JSON.parse(readFileSync(join(runDir, 'tickets', 'tk-orphan.json'), 'utf8'))
     expect(onDisk.status).not.toBe('waiting')
     expect(readWaitingTicket({ runDir, clock: clock.clock })).toBe(null)
+  })
+})
+
+/**
+ * ═══ ПРОВОД: ТИК ОТДАЁТ РЕЕСТР РУЧЕК СТОРОЖУ ЖИВОСТИ ════════════════════════════════════════
+ *
+ * ЗДЕСЬ И РВАЛАСЬ СВЯЗЬ. Сторож живости зовёт ровно один вызов во всём продукте — вот этот,
+ * шагом (1) тика. Сколько бы кода ни было написано в самом стороже, без реестра ручек В ЭТОМ
+ * ВЫЗОВЕ он остаётся вычисленным и никуда не подключённым: объявляет смерть, перевыдаёт задачу
+ * и не может тронуть живого ребёнка, потому что ручки ему не дали.
+ *
+ * ПОЭТОМУ ДЕЛО УТВЕРЖДАЕТ ПЕРЕДАЧУ, А НЕ НАЛИЧИЕ. Не «реестр где-то есть», а «в аргументы
+ * подметания приехал ТОТ САМЫЙ объект из зависимостей цикла» — и наблюдается это тем, что
+ * остановку дёрнули на нём самом.
+ */
+describe('тик отдаёт реестр ручек сторожу живости', () => {
+  it('hands the kill-handle registry to the liveness sweep — и это тот самый объект из зависимостей цикла', async () => {
+    const c = mkClock()
+    // Срок у самой очереди намеренно ДЛИННЫЙ, а у подметания короткий: у памятной очереди есть
+    // собственное истечение аренды, и с равными сроками она вернула бы строку в очередь сама —
+    // сторожу было бы нечего находить, и дело доказывало бы не провод, а её внутреннюю уборку.
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 10_000_000 })
+    await adapter.enqueue(backlogTask())
+    await adapter.claimNext('daemon', {}) // задача у работника, аренда взята
+
+    const seen: any[] = []
+    const attemptTurns = {
+      stop(taskId: string) {
+        seen.push({ taskId, self: this })
+        return true
+      },
+    }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      // ОДИН И ТОТ ЖЕ срок у аренды и у подметания: две величины на один вопрос не спорят
+      config: { expireMs: 300000 },
+      deps: { attemptTurns },
+    })
+    c.advance(500000) // работник замолчал — аренда протухла
+
+    await tick(deps)
+
+    expect(seen, 'реестр ручек не доехал до аргументов подметания живости').toHaveLength(1)
+    expect(seen[0].taskId).toBe('BL-1')
+    expect(seen[0].self, 'подметанию достался ДРУГОЙ реестр, а не тот, что лежит в зависимостях цикла').toBe(attemptTurns)
+  })
+
+  it('тик без реестра подметает как прежде — коллаборатор необязателен, как и журнал', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 10_000_000 }) // см. оговорку выше
+    await adapter.enqueue(backlogTask())
+    await adapter.claimNext('daemon', {})
+
+    const { deps, journalled } = makeDeps({ adapter, clockObj: c, config: { expireMs: 300000 } })
+    c.advance(500000)
+
+    const res = await tick(deps)
+
+    expect(res.sweep.requeued).toBe(1) // задача перевыдана и без всякой ручки
+    expect(journalled.some((e: any) => e.type === 'sweep-error')).toBe(false)
   })
 })

@@ -141,6 +141,12 @@
  *                                   is not over yet; false on an unknown or finished task
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
+ *   cancelTask(taskId)            → A PERSON STOPPED THIS WORK. The row is closed TERMINALLY
+ *                                   with the reason `manual`, and no worker is ever handed it
+ *                                   again — not on the next tick, not on any later one. Returns
+ *                                   true when a live task was found and closed, false when
+ *                                   there is no such task or its work is already over (what is
+ *                                   closed stays closed, exactly as with setWords).
  *   list(filter)                  → rows expose enqueuedAt/claimedAt/leaseRenewedAt/completedAt
  *   stats()                       → per-status counts, one key per TASK_STATUSES entry
  *
@@ -216,6 +222,10 @@ export const TASK_STATUSES = Object.freeze([
  *                     window as «нет записки о подходе» — the note could not exist, the
  *                     worker was cut off writing it — and the two ask a person for opposite
  *                     things: wait and press again, or go and fix something
+ *   turns_exhausted — the run WE ended: the attempt reached the turn ceiling this daemon put
+ *                     on its own command line and stopped there, leaving neither note nor
+ *                     receipt because it was stopped. Apart from provider_error because the
+ *                     decision was ours, and the remedy is a bigger ceiling or a smaller task
  *   tests_red       — a red reverify receipt (targeted tests failed)
  *   needs_decision  — the worker surfaced a call only a human can make
  *   missing_access  — credentials / permissions absent
@@ -254,6 +264,14 @@ export const FAIL_REASONS = Object.freeze([
   'no_artifact',
   'agent_error',
   'provider_error',
+  // THE RUN THE WORKER DID NOT END EITHER — but this one WE ended. The attempt walked into the
+  // turn ceiling this daemon itself put on its command line and stopped there in silence: no
+  // note, no receipt, nothing to judge. Kept apart from provider_error because the cause is
+  // ours rather than the vendor's, and the two ask a person for different things — «wait and
+  // press again» against «raise the ceiling or cut the task in half». Kept apart from
+  // agent_error because nothing is wrong with the work: a card saying «ошибка работника» here
+  // sends somebody to fix a number he set himself.
+  'turns_exhausted',
   'tests_red',
   'needs_decision',
   'missing_access',
@@ -279,6 +297,7 @@ export const REASON_LABELS = Object.freeze({
   no_artifact: 'нет документа — стадия не оставила своего файла',
   agent_error: 'ошибка работника',
   provider_error: 'оборвал провайдер — работник тут ни при чём, попробуйте ещё раз',
+  turns_exhausted: 'упёрся в потолок ходов — работа не доделана, поднимите потолок или разбейте задачу',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
   missing_access: 'нужен человек: не хватает доступа',
@@ -1218,6 +1237,38 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
+  /**
+   * cancelTask(taskId) — A PERSON STOPPED THIS WORK, and stopped means stopped.
+   *
+   * The body says exactly what the owner's word about an abandoned assembly already says
+   * about each of its pieces: the row is closed, and the reason is the true one — a human
+   * stopped this. Nothing else needs clearing, and this is deliberate: the liveness sweep
+   * asks for `claimed` rows only, so a closed row is already out of its reach, while the
+   * clock of the attempt that WAS under way stays on the row where a person can still read
+   * how long it ran before being stopped.
+   *
+   * IT IS NOT `fail`, AND THAT DISTINCTION IS THE WHOLE POINT. A failure is a RETRYABLE
+   * outcome — the durable queue hands the very same row back for another try, after a
+   * backoff. So a stop written as a failure would close the card, drop the counter, look
+   * done — and then give the stopped work to a worker minutes later. A stop that looks
+   * successful and is not is worse than no stop at all, which is why this is a path of its
+   * own rather than a reason inside the other one.
+   *
+   * ONLY LIVE WORK CAN BE STOPPED. Work that already produced, already failed or already
+   * waits for a person is not stopped but finished, and `false` says so rather than
+   * rewriting it — the same «what is closed stays closed» the words door keeps.
+   */
+  async function cancelTask(taskId) {
+    const rec = records.get(taskId)
+    if (!rec) return false
+    if (rec.status !== 'queued' && rec.status !== 'claimed') return false
+    rec.status = 'failed'
+    rec.failure_reason = 'manual'
+    // THE TRY COUNT IS NOT TOUCHED, and its stillness is an assertion: a failure raises it
+    // because a next try stands behind it. Behind a stop stands nothing.
+    return true
+  }
+
   async function list(filter = {}) {
     sweep()
     let rows = [...records.values()]
@@ -1261,7 +1312,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -1370,6 +1421,143 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const [r] = await q.list({})
       expect(r.status).toBe('failed')
       expect(r.failure_reason).toBe('missing_access')
+    })
+
+    /**
+     * ═══════ ОСТАНОВЛЕННОЕ ЧЕЛОВЕКОМ ОСТАНОВЛЕНО НАВСЕГДА ═══════
+     *
+     * ПОЧЕМУ ЭТО ДЕЛО ЖИВЁТ ЗДЕСЬ, А НЕ В ФАЙЛЕ ОДНОГО БЭКЕНДА. «Отмена терминальна» — это
+     * утверждение о ХРАНИЛИЩЕ, и хранилищ у контракта два. Два одинаковых дела, написанных в
+     * двух файлах, разъезжаются молча при первой же правке одного из них, и тогда «терминально»
+     * остаётся правдой в одном месте и надписью в другом. Одно дело в общем сьюте — единственная
+     * форма, в которой «терминально ВЕЗДЕ» держится конструкцией, а не надеждой.
+     *
+     * ПОЧЕМУ ОТМЕНА — НЕ ОТКАЗ, И ЭТО НЕ ВОПРОС ВКУСА. Отказ у долговременной очереди по
+     * конструкции возвращаемый: строка физически удаляется и вставляется обратно в состоянии
+     * повтора, с отложенным стартом. Значит отмена, написанная отказом, выглядела бы сделанной
+     * — карточка покраснела бы, счётчик упал бы, — а через задержку повтора остановленная
+     * человеком задача снова ушла бы работнику. Это худший из исходов, потому что он похож на
+     * успех. Поэтому главное дело ниже не спрашивает «как выглядит строка»; оно ПЫТАЕТСЯ ВЗЯТЬ
+     * СЛЕДУЮЩУЮ ЗАДАЧУ, несколько раз и после продвижения часов — то есть ровно там, где
+     * отложенный повтор успел бы созреть.
+     */
+    it('cancelTask is terminal: a task a person stopped is handed to nobody — not on the next tick, not on any later one', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-90' })) // остановят эту
+      c.advance(10)
+      await q.enqueue(backlog({ id: 'BL-91' })) // а эта обязана продолжать жить
+
+      expect(await q.cancelTask('BL-90')).toBe(true)
+
+      // Соседняя работа не пострадала: отмена — про одну строку, а не про очередь.
+      const first = await q.claimNext('w1', {})
+      expect(first.id).toBe('BL-91')
+      await q.complete('BL-91', { receiptRef: 'reverify:neighbour' })
+
+      // ТРИ ПОПЫТКИ ВЗЯТЬ СЛЕДУЮЩУЮ, с ходом часов между ними: отложенный повтор — это
+      // задержка, а не отмена, и на любой из этих трёх попыток он бы себя показал.
+      const handed = []
+      for (let i = 0; i < 3; i += 1) {
+        handed.push(await q.claimNext('w2', {}))
+        c.advance(120000)
+      }
+      expect(handed).toEqual([null, null, null])
+
+      // И строка читается закрытой, с человеческой причиной, а не пустотой.
+      const stopped = (await q.list({})).find((r) => r.id === 'BL-90')
+      expect(stopped.status).toBe('failed')
+      expect(stopped.status).not.toBe('queued')
+      expect(stopped.failure_reason).toBe('manual')
+      expect(REASON_LABELS[stopped.failure_reason].length).toBeGreaterThan(0)
+    })
+
+    it('отмена ЖДУЩЕЙ строки убирает её из очереди — счётчик «в очереди» падает, а не висит', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-92' }))
+      expect((await q.stats()).queued).toBe(1)
+
+      expect(await q.cancelTask('BL-92')).toBe(true)
+
+      expect(await q.list({ status: 'queued' })).toHaveLength(0)
+      expect((await q.stats()).queued).toBe(0)
+    })
+
+    it('отмена ИДУЩЕЙ строки снимает её с работника — «в работе» больше её не считает', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-93' }))
+      const taken = await q.claimNext('w1', {})
+      expect(taken.id).toBe('BL-93')
+      expect((await q.stats()).claimed).toBe(1)
+
+      expect(await q.cancelTask('BL-93')).toBe(true)
+
+      expect((await q.stats()).claimed).toBe(0)
+      const stopped = (await q.list({})).find((r) => r.id === 'BL-93')
+      expect(stopped.status).toBe('failed')
+      expect(stopped.failure_reason).toBe('manual')
+    })
+
+    it('отмена задачи, которой нет, отвечает честным «нет такой», а не тишиной', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      expect(await q.cancelTask('BL-does-not-exist')).toBe(false)
+    })
+
+    it('отмена уже закрытой задачи не переписывает закрытое — что закрыто, то закрыто', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-94' }))
+      await q.claimNext('w1', {})
+      await q.complete('BL-94', { receiptRef: 'reverify:done' }) // работа кончилась, ждёт человека
+
+      expect(await q.cancelTask('BL-94')).toBe(false)
+
+      const r = (await q.list({})).find((x) => x.id === 'BL-94')
+      expect(r.status).toBe('awaiting_approval') // отмена ничего не переписала
+    })
+
+    /**
+     * ОТЛИЧИЕ ОТ ОТКАЗА УТВЕРЖДАЕТСЯ ПРЯМО, а не подразумевается соседними делами: у отказа
+     * счёт попыток растёт, потому что за отказом стоит следующая попытка. За отменой не стоит
+     * ничего — значит и счёт не двигается. Если он вырос, отмена сделана отказом.
+     */
+    it('после отмены счёт попыток НЕ растёт — этим отмена и отличается от отказа', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-95' }))
+      await q.claimNext('w1', {})
+      const before = (await q.list({})).find((r) => r.id === 'BL-95').attempt
+
+      expect(await q.cancelTask('BL-95')).toBe(true)
+
+      const after = (await q.list({})).find((r) => r.id === 'BL-95').attempt
+      expect(after).toBe(before)
+    })
+
+    /**
+     * РАБОТУ, ВЕРНУВШУЮСЯ В ОЧЕРЕДЬ ПОСЛЕ СОРВАННОЙ ПОПЫТКИ, ОСТАНОВИТЬ ТОЖЕ МОЖНО.
+     *
+     * Это не редкий угол, а самый обычный день: задача, чей работник замолчал, возвращается
+     * в очередь сторожем живости и ждёт следующей попытки. Для человека у экрана она ничем
+     * не отличается от любой другой ждущей — так её и называет читающий путь. Значит и
+     * остановить её он вправе ровно так же; «нет такой задачи» в ответ на строку, которую он
+     * видит в очереди, — это отказ, замаскированный под пустоту.
+     */
+    it('a task handed back after a lost attempt can still be stopped — a person sees waiting work and may stop waiting work', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-97' }))
+      await q.claimNext('w1', {})
+      c.advance(5000) // аренда потеряна: строка вернулась в очередь на следующую попытку
+
+      const back = (await q.list({})).find((r) => r.id === 'BL-97')
+      expect(back.status).toBe('queued') // именно это человек и видит
+
+      expect(await q.cancelTask('BL-97')).toBe(true)
+      expect(await q.claimNext('w2', {})).toBeNull()
     })
 
     it('a claimed task not touched within expireMs returns to queued with attempt+1', async () => {
