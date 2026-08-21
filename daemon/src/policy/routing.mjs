@@ -27,7 +27,10 @@
  *
  * DEGRADATION IS SAFE. No eligible worker (all windows closed / only the protected account
  * open) → {workerId:null, reason:'window_exhausted'}. The task is never FAILED by routing;
- * it waits for a window or the loop composes the API fallback (budget.mjs).
+ * it waits for a window or the loop composes the API fallback (budget.mjs). WITH ONE
+ * CORRECTION: when everything is shut AND the money rule refused, the decision's code is the
+ * MONEY VERDICT, not the word about windows — the shut windows are the reason the rule was
+ * asked, and its answer is the reason the task is not running.
  *
  * THE ROUTER EXPLAINS ITSELF AT THE DECISION. Every outcome carries a
  * `reasonCode` from the CLOSED DISPATCH_REASONS vocabulary (the human `reason` string stays
@@ -61,6 +64,18 @@ function withinActiveHours(nowMs, activeHours) {
   const h = new Date(nowMs).getHours()
   return h >= start && h < end
 }
+
+/**
+ * The money rule's refusals, said in the roster's own English. The CODE is what the journal
+ * and the attempt row carry; this only turns it into the half-sentence that follows «all
+ * windows closed, and …». An unknown refusal still gets a sentence naming itself rather than
+ * a blank — a rule that grows a fourth answer must not silently lose its word here.
+ */
+const MONEY_REFUSAL_WORDS = Object.freeze({
+  budget_stop: 'the monthly paid-channel cap is spent',
+  wait_for_window: 'the money rule chose not to spend',
+  api_cap_unset: 'the paid channel is not configured',
+})
 
 /** First defined value among the arguments (undefined/null are skipped). */
 function firstDefined(...vals) {
@@ -158,7 +173,12 @@ export function resolveRoute(task = {}, deps = {}) {
         model: null,
         effort: null,
         useApiFallback: false,
-        reason: verdict.reason === 'budget_stop' ? 'budget stop: the paid channel is closed' : 'waiting for a window',
+        reason:
+          verdict.reason === 'budget_stop'
+            ? 'budget stop: the paid channel is closed'
+            : verdict.reason === 'api_cap_unset'
+              ? 'the paid channel is not configured: waiting for a window'
+              : 'waiting for a window',
         reasonCode: verdict.reason,
       }
     }
@@ -198,8 +218,9 @@ export function resolveRoute(task = {}, deps = {}) {
     // never asked. The protected account is NOT a closed window: holding work for the
     // founder's own subscription must never be turned into spending, so the switch is offered
     // only when the pool emptied because every window is genuinely spent.
+    let verdict = null
     if (!heldByDayPriority) {
-      const verdict = askBudget(deps.budget, task, true)
+      verdict = askBudget(deps.budget, task, true)
       if (verdict && verdict.fallback === true) {
         journalDecision(sink, task, 'api_fallback', { lane, provider: 'api' })
         return {
@@ -215,7 +236,17 @@ export function resolveRoute(task = {}, deps = {}) {
     }
     // The task WAITS — routing never fails it. By review: no only-open-window
     // carve-out for the protected account.
-    const code = heldByDayPriority ? 'day_priority_protected' : 'window_exhausted'
+    //
+    // WHOSE WORD NAMES THE WAIT. Two facts are true here and only one of them is useful to
+    // the person reading the row: the windows are shut (which is WHY the money rule was
+    // asked at all) and the money rule refused (which is why nothing is running now). This
+    // branch used to publish the first and discard the second, so a task stopped by a
+    // ceiling its owner set himself told him to wait for a window that could never help.
+    // The refusal, when there is one, is the answer. Absent a rule, or when the pool emptied
+    // because the founder's own account is protected, the previous words stand exactly.
+    const moneyRefusal =
+      verdict && verdict.fallback === false && typeof verdict.reason === 'string' && verdict.reason !== '' ? verdict.reason : null
+    const code = heldByDayPriority ? 'day_priority_protected' : (moneyRefusal ?? 'window_exhausted')
     journalDecision(sink, task, code, { lane, provider: targetProvider ?? undefined })
     return {
       workerId: null,
@@ -223,7 +254,8 @@ export function resolveRoute(task = {}, deps = {}) {
       model: null,
       effort: null,
       useApiFallback: false,
-      reason: 'window_exhausted',
+      // Both facts, in words, for the roster — the code above is the machine-readable half.
+      reason: moneyRefusal ? `all windows closed, and ${MONEY_REFUSAL_WORDS[moneyRefusal] ?? `the money rule answered ${moneyRefusal}`}` : 'window_exhausted',
       reasonCode: code,
     }
   }

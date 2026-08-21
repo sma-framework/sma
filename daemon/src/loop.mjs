@@ -100,7 +100,7 @@ import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync 
 import { join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS } from './queue/adapter.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
@@ -2718,9 +2718,21 @@ export async function tick(deps = {}) {
         budget: deps.budget,
       })
       if (!route || (!route.workerId && !route.useApiFallback)) {
-        // Claimed but no runnable target after the real route (rare race) — degrade honestly.
-        await failTask(deps, task, { reason: 'window_exhausted', now: now(), envelope, from: fleetState })
-        result.failed = { taskId: task.id, reason: 'window_exhausted' }
+        // Claimed but no runnable target after the real route — degrade honestly, AND IN THE
+        // ROUTER'S OWN WORD. This line used to write «window_exhausted» over every such
+        // decision no matter what actually stopped the task, while `route.reasonCode` lay
+        // right here carrying the truth: a person stopped by a spending ceiling he set was
+        // sent to wait for a window that would never open for him.
+        //
+        // THE WORD IS CHECKED AGAINST THE CLOSED TAXONOMY BEFORE IT IS USED. `fail()` throws
+        // on a reason it does not carry, so an unvetted code would turn a routing decision
+        // into a dead tick — the exact fail-closed trade this work exists to refuse. The
+        // fallback below is not defensive habit either: `!route` is the rare race that has NO
+        // reasonCode at all, and it still has to be failed by some honest name.
+        const routeReason =
+          route && typeof route.reasonCode === 'string' && FAIL_REASONS.includes(route.reasonCode) ? route.reasonCode : 'window_exhausted'
+        await failTask(deps, task, { reason: routeReason, now: now(), envelope, from: fleetState })
+        result.failed = { taskId: task.id, reason: routeReason }
         return result
       }
 

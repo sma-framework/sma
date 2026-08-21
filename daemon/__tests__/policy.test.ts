@@ -156,13 +156,42 @@ describe('policy/routing — the paid channel is asked for permission, not assum
     expect(r.reasonCode).toBe('api_fallback')
   })
 
-  it('every window shut + money refused → the task waits, exactly as before', () => {
+  /**
+   * THE WAIT IS NAMED BY WHAT CAUSED IT, NOT BY WHAT PRECEDED IT.
+   *
+   * This case used to assert `window_exhausted` here, and that assertion was the defect
+   * written down as a requirement: the shut windows are why the money rule was ASKED, its
+   * refusal is why nothing is running, and only the second is actionable. The task still
+   * waits — nothing about the outcome changed — but it now waits under its own word.
+   */
+  it('every window shut + money refused → the task waits under the MONEY word, not the window word', () => {
     const r = resolveRoute(
       { lane: 'prod' },
       { workers: pool(), windows: allShut, clock: nightClock, budget: () => ({ fallback: false, reason: 'budget_stop' }) },
     )
     expect(r.useApiFallback).toBe(false)
+    expect(r.reasonCode).toBe('budget_stop')
+    // The human string keeps BOTH facts: the roster reader still learns the pool was empty.
+    expect(r.reason).toContain('all windows closed')
+    expect(r.reason).toContain('cap is spent')
+  })
+
+  it('every window shut + no money rule at all → the old word stands, letter for letter', () => {
+    const r = resolveRoute({ lane: 'prod' }, { workers: pool(), windows: allShut, clock: nightClock })
+    expect(r.useApiFallback).toBe(false)
     expect(r.reasonCode).toBe('window_exhausted')
+    expect(r.reason).toBe('window_exhausted')
+  })
+
+  it('the protected account emptied the pool → the money verdict never overwrites that fact', () => {
+    // Day hours, only the founder's own account has an open window: the rule is not even
+    // asked, because holding work for his subscription must never become spending.
+    const r = resolveRoute(
+      { lane: 'prod' },
+      { workers: pool(), windows: only('max-1'), clock: dayClock, budget: () => ({ fallback: false, reason: 'budget_stop' }) },
+    )
+    expect(r.reasonCode).toBe('day_priority_protected')
+    expect(r.reason).toBe('window_exhausted')
   })
 
   it('a budget rule that throws never takes the dispatcher down — no answer leaves the old path', () => {
