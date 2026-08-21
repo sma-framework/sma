@@ -23,10 +23,13 @@
  * repository exists so the airbag has something real to take a snapshot in — measured from a
  * working tree, that snapshot would write into the tree's own git store.
  *
- * THIS FILE IS RED ON ARRIVAL. The airbag stream sits behind an opt-in door that the shipped
- * default leaves shut, so the hook returns cleanly and writes no receipt: protection a person
- * believes he has and does not have. The red run is kept as a receipt of its own, and the
- * work that opens the door turns this green.
+ * THIS FILE ARRIVED RED AND IS NOW GREEN, and the reason is the whole point of it. The airbag
+ * stream used to sit behind a switch-on door that the shipped default left shut: the hook
+ * returned cleanly and wrote no receipt — protection a person believes he has and does not
+ * have. That red run is kept as a receipt of its own. The door was then removed, and this file
+ * is what proves it from the far end of the wire: it goes red again the day anything —
+ * a door, a matcher, a settings entry, a budget, an order change — puts a person's destructive
+ * command in front of git with no restore point behind it.
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
