@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 93, grouped by what they are for. The sections after this table go deeper
+All 94, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 

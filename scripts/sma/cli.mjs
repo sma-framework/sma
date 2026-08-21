@@ -11957,7 +11957,7 @@ const HANDLERS = {
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 91 other verbs keep
+ * document its own flags. Deliberately an opt-in allow-list: 92 other verbs keep
  * the existing behaviour untouched. (That count is the dispatch table minus this
  * allow-list, and the numbers audit now holds it to exactly that — so when two
  * lines of work add verbs at once the count is their SUM, not either side's figure.)
