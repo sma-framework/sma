@@ -38,6 +38,8 @@ import {
   sessionActivityTier,
   isSessionLive,
   tokenHash,
+  allocateDefaultWindowName,
+  readTerminalNames,
 } from '../lib/registry.mjs'
 import { appendEvent, journalTail } from '../lib/journal.mjs'
 import {
@@ -828,5 +830,118 @@ describe('tokenHash — one spelling of the terminal identity for every reader',
     const sessionToken = 'd82a347f-a54a-4a33-9c87-0b2efb517172'
     const { terminalId } = resolveTerminalIdentity({ env: {}, pid: 4242, sessionToken })
     expect(terminalId).toContain(tokenHash(sessionToken))
+  })
+})
+
+/**
+ * The whole point of naming a window is that a person can READ the trail it left. So the
+ * assertion is not «a name was computed» — it is that the name arrives at BOTH places a
+ * reader actually looks: the actors of the event, and the NAME OF THE FILE the event
+ * landed in. A name that is minted and never reaches the file name is the defect, not the
+ * fix. Everything below runs against a real temp filesystem for that reason: allocation
+ * writes a real file, identity re-reads that real file, and the journal really appends.
+ */
+describe('default window name reads human in the journal', () => {
+  let projectDir: string
+  let journalDir: string
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'sma-window-name-'))
+    journalDir = mkdtempSync(join(tmpdir(), 'sma-window-journal-'))
+  })
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true })
+    rmSync(journalDir, { recursive: true, force: true })
+  })
+
+  it('allocation -> persist -> identity -> the journal FILE NAME carries the readable name', () => {
+    const token = 'b9d0f2c1-5f2e-4d3a-8c11-77a0e4b21c99'
+    const env = { CLAUDE_PROJECT_DIR: projectDir }
+
+    const name = allocateDefaultWindowName({ tokenHash: tokenHash(token), env })
+    expect(name).toBe('Окно-1')
+
+    // the persisted record is marked auto, so the start prompt can keep offering a real name
+    const persisted = readTerminalNames({ env })
+    expect(persisted[tokenHash(token)].name).toBe('Окно-1')
+    expect(persisted[tokenHash(token)].auto).toBe(true)
+
+    // the wire: a LATER, separate process resolving the same token picks the name up
+    const id = resolveTerminalIdentity({ env, pid: 4242, sessionToken: token })
+    expect(id.holderIdentity).toBe('Окно-1')
+    expect(id.terminalId).toBe(`okno-1-${tokenHash(token)}`)
+
+    appendEvent(
+      { type: 'claim', actors: [id.holderIdentity], scope: 'src/api/router.ts' },
+      { terminalId: id.terminalId, journalDir },
+    )
+    const files = readdirSync(journalDir)
+    expect(files).toHaveLength(1)
+    expect(files[0]).toContain('okno-1') // the FILE the reader opens is readable…
+    expect(files[0]).not.toMatch(/^t-[0-9a-f]{8}\.jsonl$/) // …and no longer a machine token
+    const [evt] = journalTail(id.terminalId, 1, { journalDir })
+    expect(evt.actors).toEqual(['Окно-1']) // and so is the event inside it
+  })
+
+  it('a second window gets the next number and never shares the first one journal file', () => {
+    const env = { CLAUDE_PROJECT_DIR: projectDir }
+    const first = 'window-one-token'
+    const second = 'window-two-token'
+
+    expect(allocateDefaultWindowName({ tokenHash: tokenHash(first), env })).toBe('Окно-1')
+    expect(allocateDefaultWindowName({ tokenHash: tokenHash(second), env })).toBe('Окно-2')
+
+    const a = resolveTerminalIdentity({ env, pid: 1, sessionToken: first })
+    const b = resolveTerminalIdentity({ env, pid: 2, sessionToken: second })
+    expect(a.holderIdentity).toBe('Окно-1')
+    expect(b.holderIdentity).toBe('Окно-2')
+    expect(a.terminalId).not.toBe(b.terminalId)
+
+    appendEvent({ type: 'claim' }, { terminalId: a.terminalId, journalDir })
+    appendEvent({ type: 'claim' }, { terminalId: b.terminalId, journalDir })
+    const files = readdirSync(journalDir).sort()
+    expect(files).toHaveLength(2) // two windows, two files — never one shared trail
+    expect(files.some((f) => f.startsWith('okno-1-'))).toBe(true)
+    expect(files.some((f) => f.startsWith('okno-2-'))).toBe(true)
+  })
+
+  it('re-allocating for a token already on file returns the SAME name, mints nothing new', () => {
+    const env = { CLAUDE_PROJECT_DIR: projectDir }
+    const token = 'the-same-window-twice'
+    const first = allocateDefaultWindowName({ tokenHash: tokenHash(token), env })
+    const again = allocateDefaultWindowName({ tokenHash: tokenHash(token), env })
+    expect(again).toBe(first)
+    expect(Object.keys(readTerminalNames({ env }))).toHaveLength(1)
+  })
+
+  it('a name set by hand still beats the persisted one', () => {
+    const token = 'named-by-hand'
+    allocateDefaultWindowName({ tokenHash: tokenHash(token), env: { CLAUDE_PROJECT_DIR: projectDir } })
+    const id = resolveTerminalIdentity({
+      env: { CLAUDE_PROJECT_DIR: projectDir, SMA_TERMINAL_NAME: 'Tom' },
+      pid: 7,
+      sessionToken: token,
+    })
+    expect(id.holderIdentity).toBe('Tom') // the human wins, always
+    expect(id.terminalId).toBe(`tom-${tokenHash(token)}`)
+  })
+
+  it('no persisted name and no env name -> the previous machine fallback, unchanged', () => {
+    // Compatibility clause: an existing installation with no names file behaves today
+    // exactly as it behaved yesterday.
+    const token = 'nothing-on-file'
+    const id = resolveTerminalIdentity({ env: { CLAUDE_PROJECT_DIR: projectDir }, pid: 9, sessionToken: token })
+    expect(id.holderIdentity).toBe(`T-${tokenHash(token)}`)
+    expect(id.terminalId).toBe(`t-${tokenHash(token)}`)
+  })
+
+  it('an unreadable names file degrades to the machine fallback instead of throwing', () => {
+    // A hook must never die over a name. Corrupt persist == no persist.
+    mkdirSync(join(projectDir, '.sma'), { recursive: true })
+    writeFileSync(join(projectDir, '.sma', 'terminal-names.json'), '{ this is not json')
+    const token = 'broken-persist'
+    expect(() => resolveTerminalIdentity({ env: { CLAUDE_PROJECT_DIR: projectDir }, sessionToken: token })).not.toThrow()
+    const id = resolveTerminalIdentity({ env: { CLAUDE_PROJECT_DIR: projectDir }, pid: 11, sessionToken: token })
+    expect(id.holderIdentity).toBe(`T-${tokenHash(token)}`)
+    expect(readTerminalNames({ env: { CLAUDE_PROJECT_DIR: projectDir } })).toEqual({})
   })
 })
