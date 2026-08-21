@@ -5439,3 +5439,128 @@ describe('тик отдаёт реестр ручек сторожу живос�
     expect(journalled.some((e: any) => e.type === 'sweep-error')).toBe(false)
   })
 })
+
+// ══════════ ЖЕТОН ЗАХВАТА ДОЕЗЖАЕТ ДО ТРЁХ ШВОВ ЗАВЕРШЕНИЯ ═══════════════════
+//
+// Очередь научилась отвергать чужой жетон раньше — и это не меняло НИЧЕГО, пока цикл
+// жетона не носил. Между захватом и завершением аренда может истечь, очередь перевыдаёт
+// строку, а работник первой попытки в конце зовёт завершение по одному лишь имени задачи
+// и закрывает ЧУЖУЮ, вторую попытку. Дыра закрывается не умением очереди отказывать, а
+// ПРОВОДОМ: значение, которое вернул захват, обязано оказаться в аргументах вызова.
+//
+// Поэтому дела ниже НЕ спрашивают «есть ли где-то жетон». Они сверяют РОВНО то значение,
+// которое очередь выдала ЭТОМУ захвату, с тем, что доехало до шва. Дело вида «жетон
+// какой-то есть» было бы зелёным и в тот день, когда никуда ничего не доезжало, — а
+// именно такой день и стоил суток разбора.
+//
+// Очередь здесь НАСТОЯЩАЯ (памятная, эталонная), а не подделка: жетон чеканит она сама, и
+// сверяемое значение приходит из живого объекта. Подделка, чеканящая жетон по-своему,
+// удостоверяла бы собственное отличие вместо поведения продукта.
+
+/**
+ * Записывающая обёртка НАД настоящей очередью: каждый вызов уходит внутрь без изменений,
+ * а его аргументы запоминаются. Ничего не подменяется — иначе доказывался бы не провод
+ * цикла, а сообразительность обёртки.
+ */
+function recordingQueue(inner: any) {
+  const seen = { claimed: [] as any[], calls: [] as any[] }
+  return {
+    ...inner,
+    seen,
+    async claimNext(workerId: string, opts: any) {
+      const t = await inner.claimNext(workerId, opts)
+      if (t) seen.claimed.push(t)
+      return t
+    },
+    async touch(id: string, opts?: any) {
+      seen.calls.push({ op: 'touch', id, opts })
+      return inner.touch(id, opts)
+    },
+    async complete(id: string, result: any) {
+      seen.calls.push({ op: 'complete', id, result })
+      return inner.complete(id, result)
+    },
+    async fail(id: string, reason: string, opts?: any) {
+      seen.calls.push({ op: 'fail', id, reason, opts })
+      return inner.fail(id, reason, opts)
+    },
+  }
+}
+
+const TOKEN_RESPONSES = () => ({
+  preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+  worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+  reverify: GREEN_REVERIFY,
+})
+
+describe('жетон, выданный захватом, доезжает до всех трёх швов завершения', () => {
+  it('ЗАВЕРШЕНИЕ предъявляет ровно тот жетон, который вернул захват', async () => {
+    const c = mkClock()
+    const inner = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await inner.enqueue(backlogTask())
+    const adapter = recordingQueue(inner)
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: TOKEN_RESPONSES() })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const claimed = adapter.seen.claimed[0]
+    expect(typeof claimed.attemptToken, 'захват не выдал жетона вовсе').toBe('string')
+    expect(claimed.attemptToken.length).toBeGreaterThan(15)
+    const done = adapter.seen.calls.find((x: any) => x.op === 'complete')
+    expect(done, 'цикл не звал завершения').toBeTruthy()
+    expect(done.result.attemptToken, 'жетон захвата не доехал до завершения').toBe(claimed.attemptToken)
+  })
+
+  it('ПРОВАЛ предъявляет тот же жетон — иначе чужой работник рвёт живую попытку', async () => {
+    const c = mkClock()
+    const inner = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await inner.enqueue(backlogTask())
+    const adapter = recordingQueue(inner)
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: TOKEN_RESPONSES(),
+      // работник отработал и не оставил записки — попытка закрывается провалом
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line'] }),
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed && res.failed.taskId).toBe('BL-1')
+    const claimed = adapter.seen.claimed[0]
+    const failed = adapter.seen.calls.find((x: any) => x.op === 'fail')
+    expect(failed, 'цикл не звал провала').toBeTruthy()
+    expect(failed.opts && failed.opts.attemptToken, 'жетон захвата не доехал до провала').toBe(claimed.attemptToken)
+  })
+
+  it('ПРОДЛЕНИЕ предъявляет тот же жетон — продлевать чужую аренду не за что', async () => {
+    const c = mkClock()
+    const inner = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await inner.enqueue(backlogTask())
+    const adapter = recordingQueue(inner)
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: TOKEN_RESPONSES() })
+
+    await tick(deps)
+
+    const claimed = adapter.seen.claimed[0]
+    const touched = adapter.seen.calls.find((x: any) => x.op === 'touch')
+    expect(touched, 'цикл не продлевал аренду вовсе').toBeTruthy()
+    expect(touched.opts && touched.opts.attemptToken, 'жетон захвата не доехал до продления').toBe(claimed.attemptToken)
+  })
+
+  it('строка БЕЗ жетона (посеяна до этого обновления) — цикл зовёт швы как раньше и не падает', async () => {
+    // `oneTaskAdapter` выдаёт задачу, собранную руками: жетона у неё нет, как у строки,
+    // захваченной прошлой версией продукта. Отсутствие есть отсутствие — не повод падать
+    // на живой очереди и не лицензия жетон выдумать.
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({ adapter, responses: TOKEN_RESPONSES() })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const [call] = adapter.calls
+    expect(call.op).toBe('complete')
+    expect(call.result.attemptToken).toBeUndefined()
+  })
+})
