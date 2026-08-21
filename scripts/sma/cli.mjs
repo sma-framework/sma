@@ -589,16 +589,23 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the disarm guard never wedges session-start */
   }
 
-  // the weekly miss-curriculum staleness nudge. ONE bounded line
-  // at session-start (never the per-tool-call hot path) when the newest weak-spots brief
-  // is stale or missing. Try/catch, fail-open — a nudge bug never wedges session-start.
+  // the weekly miss-curriculum, REBUILT here when it has gone stale — at session-start
+  // only (never the per-tool-call hot path), and only on the staleness verdict: a fresh
+  // brief costs this path nothing at all. This used to print a line asking the agent to
+  // run the verb; the line stood unexecuted for four weeks, so the reminder was replaced
+  // by the deed. Bounded by a wall-clock budget and fail-open — a rebuild that fails is
+  // reported in words and never wedges or delays the session start.
   let curriculumLine = ''
   try {
     const curriculum = await import('./lib/curriculum.mjs')
-    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
-    if (latest.stale) curriculumLine = 'SMA: недельная miss-curriculum устарела — обновите: `node scripts/sma/cli.mjs curriculum`.'
+    const refreshed = await curriculum.refreshIfStale({ dirs, now: Date.now(), build: () => buildCurriculum(dirs) })
+    if (refreshed.built) {
+      curriculumLine = `SMA: недельная выжимка промахов устарела и собрана заново: ${refreshed.clusters ?? 0} кластер(ов), файл ${refreshed.path} (каталог состояния: ${dirs.smaRoot}).`
+    } else if (refreshed.stale) {
+      curriculumLine = `SMA: недельную выжимку промахов собрать не удалось (${refreshed.error}) — соберите вручную: \`node scripts/sma/cli.mjs curriculum\` (каталог состояния: ${dirs.smaRoot}).`
+    }
   } catch {
-    /* fail-open — the curriculum nudge never wedges session-start */
+    /* fail-open — the curriculum refresh never wedges session-start */
   }
 
   // prompt ONCE for a human window name when this window is still anonymous, so
@@ -1063,7 +1070,7 @@ async function cmdConsume({ positionals, flags, dirs }) {
  * (the commit-hook tier). corpusDir/tagsPath/indexPath default to the
  * real memory dir but read-only — no write path here.
  */
-async function cmdLint({ flags }) {
+async function cmdLint({ flags, dirs }) {
   const lint = await import('./lib/lint.mjs')
   const generator = await import('./lib/generator.mjs')
   const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join('.claude', 'memory')
@@ -1128,6 +1135,16 @@ async function cmdLint({ flags }) {
     ...(statePath ? { statePath } : {}),
     ...(profilePath ? { profilePath } : {}),
     ...(plansDir ? { plansDir } : {}),
+    // PRED-UNSCORED needs to know where the verdicts are written; the verb has
+    // already resolved that directory, so it is handed over rather than
+    // re-derived. Absent, the rule reports a degradation and judges nobody.
+    ...(dirs && dirs.calibrationDir ? { calibrationDir: dirs.calibrationDir } : {}),
+    // MEM-OFFPIPELINE needs the write pipeline's own journal — the ONE machine
+    // record of which notes actually walked it. The verb has already resolved
+    // that directory (the same one `memory write` appends to), so it is handed
+    // over rather than re-derived. Absent, the rule reports a degradation and
+    // judges nobody: a corpus whose evidence is missing is not a guilty corpus.
+    ...(dirs && dirs.journalDir ? { journalDir: dirs.journalDir } : {}),
     // The git runner is passed UNCONDITIONALLY: the fingerprint-drift check needs
     // it to recompute a file-bound stamp even in a project that carries no plans
     // tree. Without it every fingerprinted claim would report "unverified" —
@@ -4790,9 +4807,18 @@ async function statuslineSetWebhook({ positionals, flags, dirs }) {
  * finite number as its LAST stdout line (parser). bench-render-p95-ms measures 20
  * warm renders; selftest-webhook-dedup / selftest-wrap-preserve run against throwaway temp
  * dirs (the real .sma/ and settings are NEVER touched — preship selftest posture).
+ * unscored-predictions makes the axis figure MACHINE-READABLE: it delegates to the SAME
+ * loader the axis itself uses, so a gate downstream checks the number instead of retelling
+ * it, and the tool can never disagree with the segment it quotes.
  */
 async function statuslineStat(name, { dirs }) {
   try {
+    if (name === 'unscored-predictions') {
+      const statusline = await import('./lib/statusline.mjs')
+      const n = await statusline.defaultLoadUnscored(dirs)
+      process.stdout.write(`${Number.isFinite(n) ? n : 0}\n`)
+      return 0
+    }
     if (name === 'bench-render-p95-ms') {
       const p95 = await benchRenderP95(dirs)
       process.stdout.write(`${p95}\n`)
@@ -5555,7 +5581,27 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   // The allowlist (SAFE_COMMAND_PATTERNS) has already gated BEFORE this
   // runner is ever invoked — scorePlan never calls it for a
   // non-matching command.
-  const runCommand = (cmd) => execSync(cmd, { encoding: 'utf8', timeout: 120_000 })
+  //
+  // A nonzero exit is an OBSERVATION, not a crash — the posture the receipts
+  // runner below has always had, adopted here verbatim. Before this, the runner
+  // threw on a nonzero exit, so «this suite is green» could only ever score
+  // 'error': error when it failed, error when it passed. A prediction that
+  // cannot be wrong is not a prediction, and the whole learning loop was
+  // starved of the one thing that feeds it — a miss.
+  //
+  // The working directory arrives as a run PARAMETER (o.cwd, from the entry's
+  // own field). It is never spliced into the command string: the allowlist
+  // refuses connectors, and rightly so.
+  //
+  // And the second half of «an observation, not a crash»: a run that NEVER
+  // FINISHED is not an observation either. The first real verdict this
+  // workspace ever recorded was a miss produced by the runner's own two-minute
+  // budget while the checked suite needed 134 seconds — a killed process has
+  // no exit code at all, and the old line substituted 1, so «I could not
+  // measure» was written down as «you were wrong», and a lesson was drafted
+  // from a failure that never happened. makeExecRunner keeps the two apart and
+  // gives the command a budget that fits what it is asked to measure.
+  const runCommand = predict.makeExecRunner({ execSync, cwd: process.cwd() })
 
   const currentVersion = resolveCurrentVersion(flags, dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
   const scored = predict.scorePlan({ planPath, runCommand, currentVersion })
@@ -5588,22 +5634,24 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const draftsDir = join(repoRoot, '.claude', 'memory', 'drafts')
   const planId = baseOf(planPath).replace(/-PLAN\.md$/i, '').replace(/\.md$/i, '')
-  const drafts = []
-  for (const r of records) {
-    if (r.verdict !== 'miss') continue
-    try {
-      const d = predict.draftLessonFromMiss({ verdict: r, planId, dirs: { draftsDir } })
-      if (d.path) drafts.push({ id: r.id, path: d.path, drafted: d.drafted })
-    } catch {
-      /* drafting is best-effort — a failed draft never blocks scoring */
-    }
-  }
+  // One gate decides who deserves a draft (draftLessonsForRecords): ONLY a
+  // miss. A run that never finished lands on verdict 'error' with
+  // `not_measured`, and drafting a lesson from it would teach a falsehood.
+  const drafts = predict.draftLessonsForRecords({ records, planId, dirs: { draftsDir } })
 
   const hasError = records.some((r) => r.verdict === 'error')
+  // The exit code is unchanged in substance: a refused command and an un-arrived
+  // horizon are NOT failures (locked decision); an 'error' still is.
   const exitCode = hasError ? 1 : 0
+  // The closing line is COMPUTED by one pure function, never counted on screen.
+  const tally = predict.scoringTally({ records, invalid, excluded, notDue, receiptsSkipped })
+  const tallyLine =
+    `Итог: вердиктов вынесено ${tally.verdicts}; без вердикта по дефекту самого предсказания ${tally.unscored}` +
+    (tally.reasons.length ? ` (${tally.reasons.map((r) => `${r.reason}: ${r.count}`).join('; ')})` : '') +
+    '.'
 
   if (wantsJson(flags)) {
-    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, exitCode })
+    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, tally, exitCode })
     return exitCode
   }
 
@@ -5650,6 +5698,7 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
     }
   }
   process.stdout.write(`Вердиктов записано в леджер: ${records.length}\n`)
+  process.stdout.write(`${tallyLine}\n`)
   return exitCode
 }
 
@@ -5708,6 +5757,7 @@ function walkSummaries(dir) {
 async function cmdReverify({ flags, dirs }) {
   const receipts = await import('./lib/receipts.mjs')
   const calibration = await import('./lib/calibration.mjs')
+  const predictLib = await import('./lib/predict.mjs')
   const { execSync, execFileSync } = await import('node:child_process')
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -5807,15 +5857,11 @@ async function cmdReverify({ flags, dirs }) {
     cwd = cloneRoot
   }
 
-  // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract).
-  const runCommand = (cmd, o = {}) => {
-    try {
-      const stdout = execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd })
-      return { stdout, exitCode: 0 }
-    } catch (err) {
-      return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
-    }
-  }
+  // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract);
+  // a run that never finished is NOT an observation and says so. Built from
+  // the same factory the scorer uses, so one kill by one budget can never be
+  // read as a fact here and as a non-fact there.
+  const runCommand = predictLib.makeExecRunner({ execSync, cwd })
 
   const remap = (p) => {
     if (!wantClone) return p
@@ -5824,23 +5870,46 @@ async function cmdReverify({ flags, dirs }) {
   }
 
   const allRecords = []
+  let draftedLessons = []
   try {
     for (const sp of summaryPaths) {
       const { records } = receipts.verifyReceipts({ summaryPath: remap(sp), runCommand, cwd })
-      for (const r of records) {
+      // planId travels WITH the record: the drafter names its file by it, and the
+      // summary→plan mapping already lives in one place in this file.
+      for (const r of records) allRecords.push({ ...r, summary: sp, planId: planIdFromPath(sp) })
+    }
+
+    // Read the previous verdicts, write the new ones, draft a lesson for a
+    // divergence that is NEW — in that order, which is why it is ONE step and not
+    // three lines here. A receipt that just started diverging is the commonest real
+    // miss this system makes and used to draft nothing; a receipt that was ALREADY
+    // diverging drafts nothing still, or the first general walk would spray a draft
+    // for every pair that ever diverged and bury the human promotion gate.
+    const run = predictLib.recordReceiptRun({
+      records: allRecords,
+      repoRoot,
+      readPrevious: () =>
+        calibration.readLedger({ calibrationDir: dirs.calibrationDir, domain: 'sma.receipts' }).records,
+      append: (r) => {
         const mapped = r.verdict === 'verified' ? 'hit' : r.verdict === 'divergent' ? 'miss' : r.verdict
         calibration.appendVerdict(
-          { ...r, verdict: mapped, receipt_verdict: r.verdict, domain: 'sma.receipts', summary: sp },
+          { ...r, verdict: mapped, receipt_verdict: r.verdict, domain: 'sma.receipts' },
           { calibrationDir: dirs.calibrationDir },
         )
-        allRecords.push({ ...r, summary: sp })
-      }
-    }
+      },
+      // Drafts belong to the tree under measurement, exactly like the footprint branch.
+      dirs: { draftsDir: join(repoRoot, '.claude', 'memory', 'drafts') },
+    })
+    draftedLessons = run.drafted
   } finally {
     if (cloneParent) rmSync(cloneParent, { recursive: true, force: true, maxRetries: 3 })
   }
 
-  // --count <verdict>: numeric last line, ALWAYS exit 0.
+  // --count <verdict>: numeric last line, ALWAYS exit 0. Draft paths are NOT
+  // printed here on purpose: this is the scorer's measurement surface, and a line
+  // that appears only on the run that happened to draft would make its observation
+  // hash unstable — a receipt of this very command would then diverge for no reason
+  // of its own.
   if (typeof flags.count === 'string') {
     const n = allRecords.filter((r) => r.verdict === flags.count).length
     if (wantsJson(flags)) printJson({ verdict: flags.count, count: n })
@@ -5851,7 +5920,7 @@ async function cmdReverify({ flags, dirs }) {
   const bad = allRecords.some((r) => r.verdict === 'divergent' || r.verdict === 'error')
 
   if (wantsJson(flags)) {
-    printJson({ records: allRecords, appended: allRecords.length })
+    printJson({ records: allRecords, appended: allRecords.length, drafts: draftedLessons })
     return bad ? 1 : 0
   }
 
@@ -5869,6 +5938,15 @@ async function cmdReverify({ flags, dirs }) {
     process.stdout.write('\nРасхождения (ожидалось / получено):\n')
     for (const r of diverged) {
       process.stdout.write(`  ${r.id}: expected ${String(r.expected_sha256).slice(0, 12)}… / observed ${String(r.observed_sha256).slice(0, 12)}…\n`)
+    }
+  }
+  // The paths are printed so a draft lands in receipts and summaries instead of
+  // quietly accruing in a directory nobody looks at. A draft is NOT the corpus:
+  // promotion is a human decision against the three conditions in its own header.
+  if (draftedLessons.length) {
+    process.stdout.write('\nЧерновики уроков (новое расхождение; в корпус НЕ переносятся автоматически):\n')
+    for (const d of draftedLessons) {
+      process.stdout.write(`  черновик: ${d.path}${d.drafted ? '' : ' (уже был)'}\n`)
     }
   }
   return bad ? 1 : 0
@@ -6530,8 +6608,10 @@ function normEol(s) {
  * passport [--build | --verify | --check-badge | --json] —
  * the calibration-passport surface. NOT hook-facing.
  *   --build       : buildSnapshot(live dirs) -> renderPassport -> PASSPORT.md,
- *                   renderBadgeBlock -> README managed block. Exit 0 always
- *                   (an honest hidden badge is a success, not an error).
+ *                   renderBadgeBlock -> the managed block of EVERY readme in
+ *                   passport.README_BADGE_FILES (a readme that is not there is
+ *                   NAMED as skipped, never created). Exit 0 always (an honest
+ *                   hidden badge is a success, not an error).
  *   --verify      : fresh clone (committed evidence only) -> re-render from the
  *                   embedded snapshot -> byte-compare PASSPORT.md + README badge.
  *                   Prints 1/0 as the LAST line, ALWAYS exit 0.
@@ -6544,22 +6624,45 @@ function normEol(s) {
  */
 async function cmdPassport({ flags, dirs }) {
   const passport = await import('./lib/passport.mjs')
-  const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  // The DOCUMENTS this verb writes belong to the working tree the command was run in. The
+  // shared state root points at the main checkout on purpose, and using it here made a rebuild
+  // launched inside a linked working tree edit another tree's files while leaving its own alone.
+  const { execFileSync: execFileSyncTop } = await import('node:child_process')
+  const repoRoot = passport.resolveWorkingTreeRoot({
+    gitToplevelFn: () =>
+      execFileSyncTop('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    fallbackRoot: dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd(),
+  })
   const passportPath = join(repoRoot, 'PASSPORT.md')
-  const readmePath = join(repoRoot, 'README.md')
+  // Every readme the badge belongs in, named ONCE by the module that renders it.
+  const readmeFiles = passport.README_BADGE_FILES
 
   // ── --build ────────────────────────────────────────────────────────────────
   if (flags.build === true) {
     const { atomicWriteRaw } = await import('./lib/fs-atomics.mjs')
     const snap = passport.buildSnapshot({ dirs })
     atomicWriteRaw(passportPath, passport.renderPassport(snap))
-    passport.writeManagedBlock({ filePath: readmePath, content: passport.renderBadgeBlock(snap) })
+    const { written, skipped } = passport.writeBadgeToReadmes({
+      repoRoot,
+      content: passport.renderBadgeBlock(snap),
+      files: readmeFiles,
+    })
     if (wantsJson(flags)) {
-      printJson({ built: true, passport: passportPath, readme: readmePath, guard: snap.guard })
+      printJson({
+        built: true,
+        passport: passportPath,
+        readmes: written.map((w) => w.file),
+        skipped,
+        guard: snap.guard,
+      })
       return 0
     }
+    const updated = written.length ? written.map((w) => w.file).join(', ') : 'ни одного README'
+    // A skipped file is SAID OUT LOUD: a rebuild that silently reaches one locale out of two
+    // is exactly how the two drift apart while the command still reports success.
+    const missed = skipped.length ? ` Пропущены (файла нет): ${skipped.map((x) => x.file).join(', ')}.` : ''
     process.stdout.write(
-      `SMA passport: собран — состояние бейджа «${snap.guard.status}» (fresh n=${snap.guard.freshN}/${passport.BADGE_MIN_N}). Обновлены ${passportPath} и README-блок.\n`,
+      `SMA passport: собран — состояние бейджа «${snap.guard.status}» (fresh n=${snap.guard.freshN}/${passport.BADGE_MIN_N}). Обновлены ${passportPath} и блок бейджа в: ${updated}.${missed}\n`,
     )
     return 0
   }
@@ -6581,13 +6684,21 @@ async function cmdPassport({ flags, dirs }) {
       const snap = passport.parseSnapshot(committedPassport)
       if (snap) {
         passportMatch = normEol(passport.renderPassport(snap)) === committedPassport
-        let liveBadge = null
-        try {
-          liveBadge = passport.readManagedBlock(normEol(readFileSync(join(cloneRoot, 'README.md'), 'utf8')))
-        } catch {
-          liveBadge = null
-        }
-        badgeMatch = liveBadge != null && liveBadge === normEol(passport.renderBadgeBlock(snap))
+        // EVERY readme of the clone, not just the English one: a badge that reproduces in one
+        // locale and rots in the other is a reproduction failure, and it must read as one.
+        const expectedBadge = normEol(passport.renderBadgeBlock(snap))
+        const present = readmeFiles
+          .map((file) => join(cloneRoot, file))
+          .filter((filePath) => existsSync(filePath))
+        badgeMatch =
+          present.length > 0 &&
+          present.every((filePath) => {
+            try {
+              return passport.readManagedBlock(normEol(readFileSync(filePath, 'utf8'))) === expectedBadge
+            } catch {
+              return false
+            }
+          })
       }
     } catch {
       /* a clone/read failure is a non-reproduction -> 0, never a throw */
@@ -6603,19 +6714,29 @@ async function cmdPassport({ flags, dirs }) {
   // ── --check-badge (no clone; live README vs committed snapshot) ──────────────
   if (flags['check-badge'] === true) {
     let ok = 0
-    let expected = null
-    let live = null
+    const per = []
     try {
       const snap = passport.parseSnapshot(normEol(readFileSync(passportPath, 'utf8')))
       if (snap) {
-        expected = normEol(passport.renderBadgeBlock(snap))
-        live = passport.readManagedBlock(normEol(readFileSync(readmePath, 'utf8')))
-        ok = live != null && live === expected ? 1 : 0
+        const expected = normEol(passport.renderBadgeBlock(snap))
+        for (const file of readmeFiles) {
+          const filePath = join(repoRoot, file)
+          // A readme this project does not have is NOT a stale badge: a consumer repository
+          // carrying one readme must not be told its badge rotted. It is named and skipped.
+          if (!existsSync(filePath)) {
+            per.push({ file, state: 'missing' })
+            continue
+          }
+          const live = passport.readManagedBlock(normEol(readFileSync(filePath, 'utf8')))
+          per.push({ file, state: live != null && live === expected ? 'match' : 'stale' })
+        }
+        const present = per.filter((x) => x.state !== 'missing')
+        ok = present.length > 0 && present.every((x) => x.state === 'match') ? 1 : 0
       }
     } catch {
       ok = 0
     }
-    if (wantsJson(flags)) printJson({ consistent: ok })
+    if (wantsJson(flags)) printJson({ consistent: ok, readmes: per })
     process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
     return 0
   }
@@ -8833,28 +8954,48 @@ async function cmdTune({ positionals, flags, dirs }) {
  * ISO week: cluster misses -> prediction templates -> weak-spots brief. --latest prints
  * the newest brief path. Fail-open; NOT hook-facing.
  */
-async function cmdCurriculum({ flags, dirs }) {
+/**
+ * buildCurriculum(dirs, {now}) -> {week, clusters, templates, brief}. The ONE assembly:
+ * cluster the misses -> emit the prediction templates -> render the weak-spots brief.
+ * The verb calls THIS and the stale-brief refresh at session-start calls THIS — a second
+ * copy of the input gathering would be a second answer to the question «which tree did
+ * this come from», and that question already cost four weeks once.
+ */
+async function buildCurriculum(dirs, { now } = {}) {
   const curriculum = await import('./lib/curriculum.mjs')
-  if (flags.latest) {
-    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
-    if (wantsJson(flags)) printJson(latest)
-    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `node scripts/sma/cli.mjs curriculum`.\n')
-    return 0
-  }
-
-  const inp = await ladderInputs(dirs)
-  const week = curriculum.isoWeek(Date.now())
+  const inp = await ladderInputs(dirs, { now })
+  const week = curriculum.isoWeek(inp.nowMs)
   const clusters = curriculum.clusterMisses({ ledgers: inp.ledgers, events: inp.events, classified: inp.classified, windowMs: inp.windowMs, now: inp.nowMs })
   const templates = curriculum.predictionTemplates({ clusters, week, dirs })
   const stpaFixture = () => null
   const proposals = inp.ladderLib.proposeTierChanges({ ladder: inp.ladder, stats: inp.stats, checkFixture: stpaFixture })
   const brief = curriculum.weakSpotsBrief({ clusters, proposals, templates, week, dirs })
+  return { week, clusters, templates, brief }
+}
+
+async function cmdCurriculum({ flags, dirs }) {
+  const curriculum = await import('./lib/curriculum.mjs')
+  if (flags.latest) {
+    const latest = curriculum.latestBrief({ dirs, now: Date.now() })
+    // --latest is a MACHINE surface: a receipt pipes this line straight into a file
+    // test, so the state dir rides in --json and in the human verb output, never here.
+    if (wantsJson(flags)) printJson({ ...latest, stateDir: dirs.smaRoot })
+    else process.stdout.write(latest.path ? `${latest.path}${latest.stale ? ' (STALE)' : ''}\n` : 'SMA curriculum: no brief yet — run `node scripts/sma/cli.mjs curriculum`.\n')
+    return 0
+  }
+
+  const { week, clusters, templates, brief } = await buildCurriculum(dirs)
 
   if (wantsJson(flags)) {
-    printJson({ week, clusters, templates: templates.length, brief: brief.path })
+    printJson({ week, clusters, templates: templates.length, brief: brief.path, stateDir: dirs.smaRoot })
     return 0
   }
   process.stdout.write(`SMA curriculum ${week.year}W${String(week.week).padStart(2, '0')}: ${clusters.length} cluster(s), ${templates.length} template(s).\n`)
+  // WHICH TREE the journal and the ledger were read from. «Zero clusters in this tree»
+  // and «zero clusters anywhere» are different statements, and a verb run from a second
+  // working copy resolves its root through the shared git dir — so the reader must never
+  // have to guess which of the two he is looking at.
+  process.stdout.write(`  state dir: ${dirs.smaRoot}\n`)
   process.stdout.write(`  brief: ${brief.path}\n`)
   return 0
 }
@@ -9269,13 +9410,12 @@ async function cmdBlindVerify({ positionals, flags, dirs }) {
   }
   const repoRoot = dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   const { execSync } = await import('node:child_process')
-  const runCommand = (cmd) => {
-    try {
-      return execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: repoRoot })
-    } catch (err) {
-      return (err && err.stdout) || ''
-    }
-  }
+  const predictLib = await import('./lib/predict.mjs')
+  // The SAME runner as the scorer — literally the same factory — so both sides
+  // of the ledger read a nonzero exit the same way instead of one calling it a
+  // fact and the other an error, AND both call an unfinished run unmeasured
+  // instead of one of them inventing a failure out of a timeout.
+  const runCommand = predictLib.makeExecRunner({ execSync, cwd: repoRoot })
   const readFn = (p, enc) => readFileSync(p, enc ?? 'utf8')
 
   // 1. FREEZE the blind verdicts — before the claimed side is ever parsed.

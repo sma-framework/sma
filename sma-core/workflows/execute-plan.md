@@ -409,22 +409,41 @@ fi
 </step>
 
 <step name="score_predictions">
-**Plan close (B18/B19):** after the final task commit, score the plan's
-pre-registered predictions deterministically:
+**Plan close — this is a GATE, not a reminder.** After the final task commit,
+score the plan's pre-registered predictions. Skipping this step is not a lapse
+you can make up for later: `sma lint` reads the state of the tree and raises
+**PRED-UNSCORED**, a CRITICAL finding, on any plan that carries a closing
+summary while a prediction of its own — one whose command runs and whose
+horizon has arrived — still has no verdict in the calibration ledger.
 
 ```bash
 node scripts/sma/cli.mjs predict-score .planning/phases/XX-name/{phase}-{plan}-PLAN.md
 ```
 
+Run it exactly as written. Do **not** append a suffix that swallows the exit
+code: this call is allowed to fail, and a swallowed failure here is the whole
+disease the gate exists to cure. (The `|| true` on the journal-append step
+further down is a DIFFERENT thing and must stay: writing to a journal must never
+block a SUMMARY. Do not "fix" it to match this one.)
+
 - No `predictions:` block → honest no-op ("нет блока predictions"), continue.
 - Every verdict is appended to the per-domain calibration ledger automatically.
+- The run closes with one computed line: how many verdicts were reached, and how
+  many entries walked away without one because of a defect in the prediction
+  itself — each cause named in words. A command the safety boundary refuses and
+  a horizon that has not arrived are exactly that: defects of the claim, not
+  failures of the work. They are named at close and never block it, and
+  PRED-UNSCORED ignores them by construction.
 - **Every MISS auto-drafts a bug-lesson candidate** into `.claude/memory/drafts/`
   (draft only — NEVER auto-committed to the corpus; promotion needs the reviewed
   3-condition gate documented in the draft header). The command prints each
   drafted path — copy those paths into SUMMARY.md under a `## Prediction Misses`
   section so the surprise is WRITTEN, not lost.
-- Exit 1 = an `error` verdict (broken check_command) — fix the check or record
-  the failure in the SUMMARY; a miss is a valid outcome and exits 0.
+- Exit 1 = an `error` verdict — either a broken check_command, or a run that
+  never finished (killed by its time budget or by a signal). The second case is
+  recorded as "could not measure" and drafts nothing: an unfinished run is not
+  evidence that the claim was wrong. Fix the check, or record the situation in
+  the SUMMARY. A miss is a valid outcome and exits 0 — a miss is the point.
 </step>
 
 <step name="generate_user_setup">

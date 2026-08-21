@@ -206,6 +206,113 @@ describe('statusline.mjs — Task 1 (pure render + cache + adapters)', () => {
   })
 })
 
+// ── The axis counts by the SAME key the verdict side counts by ────────────────
+
+/**
+ * Both sides of the count must speak one language. If the ledger side keys on the plan and
+ * the plan side keys on the bare id (or the other way round), the passport and the axis
+ * disagree silently — the same defect as before, only mirrored.
+ */
+describe('unscored math — the key is the plan file plus the id', () => {
+  it('a verdict for one plan leaves the other plan carrying the same id unscored', async () => {
+    const phasesDir = join(dir, 'key-phases')
+    const calibrationDir = join(dir, 'key-calibration')
+    mkdirSync(join(phasesDir, 'alpha'), { recursive: true })
+    mkdirSync(join(phasesDir, 'beta'), { recursive: true })
+    mkdirSync(calibrationDir, { recursive: true })
+
+    // two plans, the SAME prediction id in both — the everyday shape of the registry
+    writeFileSync(
+      join(phasesDir, 'alpha', 'alpha-01-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-1', '    claim: a', '---', '', 'body'].join('\n'),
+    )
+    writeFileSync(
+      join(phasesDir, 'beta', 'beta-02-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-1', '    claim: b', '---', '', 'body'].join('\n'),
+    )
+    // exactly one of them has been scored; the ledger stores a repo-relative plan path
+    writeFileSync(
+      join(calibrationDir, 'sma.perf.jsonl'),
+      JSON.stringify({
+        id: 'PX-1',
+        domain: 'sma.perf',
+        plan: '.planning/phases/alpha/alpha-01-PLAN.md',
+        verdict: 'hit',
+      }) + '\n',
+    )
+
+    expect(await countUnscoredPredictions({ phasesDir, calibrationDir })).toBe(1)
+  })
+
+  it('a legacy record with no plan field still counts its bare id as scored', async () => {
+    const phasesDir = join(dir, 'legacy-phases')
+    const calibrationDir = join(dir, 'legacy-calibration')
+    mkdirSync(join(phasesDir, 'alpha'), { recursive: true })
+    mkdirSync(calibrationDir, { recursive: true })
+    writeFileSync(
+      join(phasesDir, 'alpha', 'alpha-01-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-9', '    claim: a', '  - id: PX-8', '    claim: b', '---', '', 'body'].join('\n'),
+    )
+    writeFileSync(
+      join(calibrationDir, 'sma.perf.jsonl'),
+      JSON.stringify({ id: 'PX-9', domain: 'sma.perf', verdict: 'hit' }) + '\n',
+    )
+    // the old history keeps its meaning: PX-9 is scored, only PX-8 is left
+    expect(await countUnscoredPredictions({ phasesDir, calibrationDir })).toBe(1)
+  })
+})
+
+// ── The unscored axis as a NUMBER: `statusline --stat unscored-predictions` ────
+
+/**
+ * The axis figure is the central number of the calibration work, and «I read it off the
+ * segment» is not a measurement anybody downstream can check. The `--stat` tool exists so a
+ * gate can COMPARE the number instead of retelling it — therefore the tool must delegate to
+ * the very loader the segment uses. A tool that counts on its own is a second source of
+ * truth, and two sources of truth drift silently.
+ *
+ * Plan fixtures deliberately carry neutral names: the accounting key is built FROM the plan
+ * file name, so the fixtures are the shape a name would leak through.
+ */
+describe('statusline --stat unscored-predictions — the axis as a machine-readable number', () => {
+  it('prints exactly what the unscored count returns for the same dirs (it never counts on its own)', async () => {
+    const repo = join(dir, 'stat-repo')
+    const phasesDir = join(repo, '.planning', 'phases')
+    const calibrationDir = join(repo, '.sma', 'calibration')
+    mkdirSync(join(phasesDir, 'alpha'), { recursive: true })
+    mkdirSync(join(phasesDir, 'beta'), { recursive: true })
+    mkdirSync(calibrationDir, { recursive: true })
+
+    writeFileSync(
+      join(phasesDir, 'alpha', 'alpha-01-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-1', '    claim: a', '  - id: PX-2', '    claim: b', '---', '', 'body'].join('\n'),
+    )
+    writeFileSync(
+      join(phasesDir, 'beta', 'beta-02-PLAN.md'),
+      ['---', 'predictions:', '  - id: PX-3', '    claim: c', '---', '', 'body'].join('\n'),
+    )
+    writeFileSync(
+      join(calibrationDir, 'sma.perf.jsonl'),
+      JSON.stringify({ id: 'PX-2', domain: 'sma.perf', plan: 'alpha-01-PLAN.md', verdict: 'hit' }) + '\n',
+    )
+
+    const expected = await countUnscoredPredictions({ phasesDir, calibrationDir })
+    const out = runStatusline(join(repo, '.sma'), ['--stat', 'unscored-predictions'])
+    const last = out.trim().split('\n').pop()
+    expect(last).toBe(String(expected))
+    expect(Number(last)).toBe(2) // three prediction ids, one of them carries a verdict
+  })
+
+  it('an unreadable phases tree prints the honest zero, and the exit code stays 0', () => {
+    const repo = join(dir, 'stat-bare')
+    mkdirSync(join(repo, '.sma'), { recursive: true }) // no .planning tree at all
+    const out = runStatusline(join(repo, '.sma'), ['--stat', 'unscored-predictions'])
+    expect(out.trim().split('\n').pop()).toBe('0')
+    // and an unknown name keeps the neighbours' contract: an honest zero, never a throw
+    expect(runStatusline(join(repo, '.sma'), ['--stat', 'no-such-stat']).trim().split('\n').pop()).toBe('0')
+  })
+})
+
 // ── The window axis: the subscription reading must REACH the state ────────────
 
 /**

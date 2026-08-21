@@ -19,10 +19,16 @@
  *     totals/domains/perModel count UNIQUE prediction ids (latest verdict
  *     wins), in agreement with modelGuard's freshN; receipts counts and the
  *     ledger line count stay per-record (2026-07-10 dogfood lesson).
+ *   - Test 10: THE WIRE — a verdict written into the ledger actually reaches
+ *     the public badge, and the bar is read from BOTH sides: at the bar the
+ *     claim shows, one short of it it does not, a model change hides it
+ *     again, and re-scoring one prediction of one plan never walks up to it.
+ *   - Test 11: the badge is rebuilt into EVERY README of the repository, and
+ *     the passport says out loud what it is able to count and what it is not.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -37,6 +43,8 @@ import {
   spliceManagedBlock,
   readManagedBlock,
   snapshotSchemaOk,
+  writeBadgeToReadmes,
+  resolveWorkingTreeRoot,
 } from '../lib/passport.mjs'
 
 let calibrationDir: string
@@ -336,5 +344,202 @@ describe('Test 9 — snapshotSchemaOk: the --schema-check contract', () => {
     expect(snapshotSchemaOk({ ...snap, calibration: { ...snap.calibration, domains: 'x' } })).toBe(false)
     expect(snapshotSchemaOk({ ...snap, ledger: { lines: NaN, corrupt: 0 } })).toBe(false)
     expect(snapshotSchemaOk('not an object')).toBe(false)
+  })
+})
+
+describe('Test 10 — THE WIRE: a verdict written into the ledger reaches the public badge', () => {
+  // This block is an assertion about a WIRE, not about arithmetic. Until the accounting key
+  // became «plan file + id», the very same input below produced ONE observation instead of
+  // twenty: every plan reusing the same short id collapsed into a single data point, so the
+  // bar was unreachable by construction and the badge could never show — no matter how many
+  // real verdicts a project earned. The first case proves the collapse is gone; the last one
+  // proves the anti-inflation guard that the collapse used to impersonate is still there.
+  // They belong side by side: either one alone can be satisfied by a wrong fix.
+  const CURRENT = 'claude-x-1'
+
+  /** n verdicts sharing ONE short id, each belonging to a DIFFERENT plan; `hits` of them hits. */
+  function acrossPlans(n: number, hits: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: 'P1',
+      plan: `.planning/phases/demo/demo-${String(i + 1).padStart(2, '0')}-PLAN.md`,
+      verdict: i < hits ? 'hit' : 'miss',
+      model: CURRENT,
+      scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
+    }))
+  }
+
+  it('twenty verdicts of one id from twenty DIFFERENT plans are twenty observations — and the claim shows', () => {
+    writeSightings([{ model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger('tech.wire', acrossPlans(BADGE_MIN_N, 17))
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    // twenty, not one: the ledger side and the guard side agree on what a prediction IS
+    expect(snap.guard.freshN).toBe(BADGE_MIN_N)
+    expect(snap.guard.status).toBe('ok')
+    expect(snap.calibration.totals).toMatchObject({ n: BADGE_MIN_N, hits: 17, misses: 3 })
+
+    // and the number travels all the way out to the public surface
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`85% hits, n=${BADGE_MIN_N}`)
+    expect(badge).toContain('img.shields.io/badge/')
+    expect(renderPassport(snap)).toContain(`SMA-calibrated: 85% hits, n=${BADGE_MIN_N}`)
+  })
+
+  it('one verdict short of the bar the claim is withheld, and the line says the number out loud', () => {
+    writeSightings([{ model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger('tech.wire', acrossPlans(BADGE_MIN_N - 1, BADGE_MIN_N - 1))
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.guard.freshN).toBe(BADGE_MIN_N - 1)
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`collecting calibration data (n=${BADGE_MIN_N - 1}/${BADGE_MIN_N})`)
+    expect(badge).not.toMatch(/\d+% hits/) // a 100%-hits claim over 19 points is exactly the lie the bar exists to stop
+    expect(renderPassport(snap)).toContain(`collecting calibration data (n=${BADGE_MIN_N - 1}/${BADGE_MIN_N})`)
+  })
+
+  it('the same twenty verdicts stop counting the moment the model underneath them changes', () => {
+    writeSightings([
+      { model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' },
+      { model: 'claude-x-2', source: 'env', at: '2026-08-01T00:00:00Z' },
+    ])
+    writeLedger('tech.wire', acrossPlans(BADGE_MIN_N, 17))
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.guard.status).toBe('stale-priors')
+    expect(snap.guard.freshN).toBe(0)
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`recalibrating after model change (n=0/${BADGE_MIN_N})`)
+    expect(badge).not.toMatch(/\d+% hits/)
+    // the all-time table still remembers them — hidden is not deleted
+    expect(snap.calibration.totals).toMatchObject({ n: BADGE_MIN_N })
+  })
+
+  it('twenty re-scores of ONE prediction of ONE plan stay one observation — the bar cannot be walked up to', () => {
+    writeSightings([{ model: CURRENT, source: 'env', at: '2026-06-01T00:00:00Z' }])
+    writeLedger(
+      'tech.wire',
+      Array.from({ length: BADGE_MIN_N }, (_, i) => ({
+        id: 'P1',
+        plan: '.planning/phases/demo/demo-01-PLAN.md',
+        verdict: 'hit',
+        model: CURRENT,
+        scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
+      })),
+    )
+
+    const snap = buildSnapshot({ dirs: dirsFor(), chainTipFn: () => 'tip', now: 't' })
+
+    expect(snap.guard.freshN).toBe(1)
+    expect(snap.calibration.totals).toMatchObject({ n: 1 })
+    const badge = renderBadgeBlock(snap)
+    expect(badge).toContain(`collecting calibration data (n=1/${BADGE_MIN_N})`)
+    expect(badge).not.toMatch(/\d+% hits/)
+  })
+})
+
+describe('Test 11 — the rebuilt badge reaches EVERY README, and the passport says what it can count', () => {
+  // Until now the rebuild wrote the recalculated badge into ONE readme. The other language
+  // carried a badge typed by hand, so the two could drift apart and nothing would say so —
+  // and a promise stated in one language and not the other is the oldest way to break the
+  // rule that both languages change in the same edit.
+  function snapWith(guard: object) {
+    return {
+      schema: 1,
+      capturedAt: 't',
+      model: { id: 'claude-x-1', since: null, source: 'env' },
+      guard,
+      calibration: { domains: [], totals: { hits: 0, misses: 0, n: 0, rate: null }, perModel: [] },
+      receipts: { verified: 0, divergent: 0, skippedUnsafe: 0, errors: 0, n: 0 },
+      chainTip: 'tip',
+      ledger: { lines: 0, corrupt: 0 },
+    }
+  }
+
+  it('the rebuild writes the block into BOTH readmes, and the two carry the same content', () => {
+    writeFileSync(join(workDir, 'README.md'), '# Readme\n\nintro\n')
+    writeFileSync(join(workDir, 'README.ru.md'), '# Читайте\n\nвступление\n')
+
+    const content = renderBadgeBlock(snapWith({ status: 'ok', freshN: 42, freshRate: 0.9, requiredN: BADGE_MIN_N }))
+    const res = writeBadgeToReadmes({ repoRoot: workDir, content })
+
+    expect(res.written.map((w) => w.file).sort()).toEqual(['README.md', 'README.ru.md'])
+    expect(res.skipped).toEqual([])
+
+    const en = readManagedBlock(readFileSync(join(workDir, 'README.md'), 'utf8'))
+    const ru = readManagedBlock(readFileSync(join(workDir, 'README.ru.md'), 'utf8'))
+    expect(en).toBe(content)
+    expect(ru).toBe(en) // one source, two files — they cannot drift apart any more
+  })
+
+  it('the block is shaped like the badges it stands among: one line of a centred badge row', () => {
+    const shown = renderBadgeBlock(snapWith({ status: 'ok', freshN: 42, freshRate: 0.9, requiredN: BADGE_MIN_N }))
+    const hidden = renderBadgeBlock(snapWith({ status: 'no-model-data', freshN: 0, freshRate: null, requiredN: 20 }))
+    for (const block of [shown, hidden]) {
+      expect(block.split('\n').filter((l) => l.trim())).toHaveLength(1)
+      expect(block).toContain('<img src="https://img.shields.io/badge/')
+      expect(block).toContain('<a href="PASSPORT.md">')
+      expect(block).not.toContain('![') // markdown image syntax would render as literal text inside the html row
+    }
+  })
+
+  it('a readme that already carries the markers is replaced IN PLACE, never appended to', () => {
+    const file = join(workDir, 'README.md')
+    writeFileSync(file, '# Readme\n\n<!-- sma:passport:begin -->\nOLD BADGE\n<!-- sma:passport:end -->\n\ntail\n')
+    writeBadgeToReadmes({ repoRoot: workDir, content: 'NEW BADGE', files: ['README.md'] })
+    const after = readFileSync(file, 'utf8')
+    expect(after).toContain('NEW BADGE')
+    expect(after).not.toContain('OLD BADGE')
+    expect(after).toContain('tail')
+    expect(after.match(/sma:passport:begin/g)).toHaveLength(1) // no second badge appeared at the end
+  })
+
+  it('a missing second readme never breaks the rebuild — it is NAMED as skipped, not passed over in silence', () => {
+    writeFileSync(join(workDir, 'README.md'), '# Readme\n')
+    const res = writeBadgeToReadmes({ repoRoot: workDir, content: 'BADGE' })
+    expect(res.written.map((w) => w.file)).toEqual(['README.md'])
+    expect(res.skipped).toEqual([{ file: 'README.ru.md', reason: 'missing' }])
+    // and the absent file is not conjured into existence by the rebuild
+    expect(existsSync(join(workDir, 'README.ru.md'))).toBe(false)
+  })
+
+  it('the passport states the boundary of its own count in BOTH badge states', () => {
+    const shown = renderPassport(snapWith({ status: 'ok', freshN: 42, freshRate: 0.9, requiredN: BADGE_MIN_N }))
+    const hidden = renderPassport(snapWith({ status: 'no-model-data', freshN: 0, freshRate: null, requiredN: 20 }))
+    for (const text of [shown, hidden]) {
+      expect(text).toContain('counts only what this repository can reproduce')
+      expect(text).toContain('never copied here')
+    }
+  })
+})
+
+describe('Test 12 — the passport documents are written into the working tree the command ran in', () => {
+  // Found by running the rebuild, not by reading it. The shared state root deliberately points
+  // at the MAIN checkout so every linked working tree coordinates through one set of claims and
+  // sessions — correct for state, wrong for documents: deriving the document root from it made
+  // a rebuild launched inside a linked working tree silently edit the main checkout's passport
+  // and readmes, and leave its own untouched. State is shared on purpose; documents belong to
+  // the tree you are standing in.
+  it('a linked working tree gets its OWN documents, never the main checkout files', () => {
+    expect(
+      resolveWorkingTreeRoot({
+        gitToplevelFn: () => 'C:/projects/product-green',
+        fallbackRoot: 'C:/projects/product',
+      }),
+    ).toBe('C:/projects/product-green')
+  })
+
+  it('falls back to the shared state root when git cannot answer — never throws, never guesses', () => {
+    const boom = () => {
+      throw new Error('not a git repository')
+    }
+    expect(resolveWorkingTreeRoot({ gitToplevelFn: boom, fallbackRoot: 'C:/projects/product' })).toBe(
+      'C:/projects/product',
+    )
+    expect(resolveWorkingTreeRoot({ gitToplevelFn: () => '   ', fallbackRoot: 'C:/projects/product' })).toBe(
+      'C:/projects/product',
+    )
   })
 })

@@ -48,9 +48,12 @@ export function renderRulesBlock({ version = '' } = {}) {
     '- **Memory.** The project\'s learned lessons live in `.claude/memory/` as plain',
     '  markdown notes. Read `.claude/memory/MEMORY.md` (the generated index: an',
     '  always-relevant CORE plus a one-line-per-note index) at session start. Pull',
-    '  topic notes on demand: `node scripts/sma/cli.mjs load --tags <a,b>`. Write a',
-    '  new lesson as ONE flat `.md` file with frontmatter, then regenerate the index:',
-    '  `node scripts/sma/cli.mjs build-index --write`.',
+    '  topic notes on demand: `node scripts/sma/cli.mjs load --tags <a,b>`. A new',
+    '  lesson enters the corpus through the write pipeline — the ONLY way in:',
+    '  `node scripts/sma/cli.mjs memory write --type <t> --truth <m> --claim "<one claim>"`',
+    '  (`--help` prints the allowed values). It scrubs secrets before anything is',
+    '  saved, decides where the note lands, and keeps the index in step. Never place',
+    '  a note file by hand: a fact that skips the pipeline is a fact nobody screened.',
     '- **Coordination.** Other terminals may work on this checkout in parallel.',
     '  Before risky or broad edits run `node scripts/sma/cli.mjs status` (active',
     '  sessions, claims, collisions). Claim a scope you are about to change:',
@@ -87,13 +90,17 @@ export const REAL_IO = {
  * reports `{action:'error'}` so the installer can warn and continue (an embed
  * failure must never fail an install).
  *
+ * `render` is injectable for ONE reason: the selftest below has to be able to
+ * prove that its own conditions bite. A condition nobody has ever seen fail is
+ * a decoration, and this block is exactly the text that must never drift back.
+ *
  * @returns {{action:'created'|'appended'|'replaced'|'unchanged'|'skipped-corrupt'|'error', path:string, detail?:string}}
  */
-export function embedRules({ projectDir, version = '', io = REAL_IO } = {}) {
+export function embedRules({ projectDir, version = '', io = REAL_IO, render = renderRulesBlock } = {}) {
   const path = join(projectDir, 'CLAUDE.md')
   try {
     const existingText = io.exists(path) ? String(io.readFile(path)) : ''
-    const block = renderRulesBlock({ version })
+    const block = render({ version })
     const { text, action } = spliceBlock({ existingText, block, style: 'md', markers: RULES_MARKERS })
     if (action === 'created' || action === 'appended' || action === 'replaced') io.writeFile(path, text)
     return { action, path }
@@ -110,33 +117,43 @@ export function embedRules({ projectDir, version = '', io = REAL_IO } = {}) {
  *   4. version bump            -> replaced; user bytes still intact
  *   5. torn anchor pair        -> skipped-corrupt; file byte-identical
  * Returns 1 on full pass, else 0. Never throws.
+ *
+ * `render` is injected by the suite's mutation cases only; the installer and the
+ * direct-run selftest always score the REAL block.
  */
-export function embedSelftest({ tmpRoot }) {
+export function embedSelftest({ tmpRoot, render = renderRulesBlock }) {
   try {
     // 1. fresh
     const fresh = join(tmpRoot, 'fresh')
     mkdirSync(fresh, { recursive: true })
-    if (embedRules({ projectDir: fresh, version: '9.9.9' }).action !== 'created') return 0
+    if (embedRules({ projectDir: fresh, version: '9.9.9', render }).action !== 'created') return 0
     const created = readFileSync(join(fresh, 'CLAUDE.md'), 'utf8')
     if (!created.includes('SMA:RULES:BEGIN') || !created.includes('.claude/memory/MEMORY.md')) return 0
     // the economy ladder ships WITH its safety carveout welded on — a ladder
     // line without the "never on the chopping block" floor scores 0.
     if (!created.includes('Economy ladder') || !created.includes('never on the chopping block')) return 0
+    // The block must lead THROUGH the write pipeline. It is the one text every
+    // agent in every install reads, so a wording that stops naming the write verb
+    // — or that teaches the hand-placed file and an index rebuild again — quietly
+    // repeals the promise that no fact enters memory unscreened. Both directions
+    // are pinned: the verb must be there, the bypass must not.
+    if (!created.includes('cli.mjs memory write')) return 0
+    if (/build-index/.test(created)) return 0
 
     // 2. idempotent
-    if (embedRules({ projectDir: fresh, version: '9.9.9' }).action !== 'unchanged') return 0
+    if (embedRules({ projectDir: fresh, version: '9.9.9', render }).action !== 'unchanged') return 0
 
     // 3. append preserves user bytes as a prefix
     const owned = join(tmpRoot, 'owned')
     mkdirSync(owned, { recursive: true })
     const userText = '# My rules\n\nDo not touch my prose.\n'
     writeFileSync(join(owned, 'CLAUDE.md'), userText, 'utf8')
-    if (embedRules({ projectDir: owned, version: '9.9.9' }).action !== 'appended') return 0
+    if (embedRules({ projectDir: owned, version: '9.9.9', render }).action !== 'appended') return 0
     const appended = readFileSync(join(owned, 'CLAUDE.md'), 'utf8')
     if (!appended.startsWith(userText)) return 0
 
     // 4. version bump replaces ONLY the span
-    if (embedRules({ projectDir: owned, version: '10.0.0' }).action !== 'replaced') return 0
+    if (embedRules({ projectDir: owned, version: '10.0.0', render }).action !== 'replaced') return 0
     const replaced = readFileSync(join(owned, 'CLAUDE.md'), 'utf8')
     if (!replaced.startsWith(userText) || !replaced.includes('v10.0.0')) return 0
 
@@ -145,7 +162,7 @@ export function embedSelftest({ tmpRoot }) {
     mkdirSync(corrupt, { recursive: true })
     const torn = '<!-- SMA:RULES:BEGIN v1 -->\nno end line\n'
     writeFileSync(join(corrupt, 'CLAUDE.md'), torn, 'utf8')
-    if (embedRules({ projectDir: corrupt, version: '9.9.9' }).action !== 'skipped-corrupt') return 0
+    if (embedRules({ projectDir: corrupt, version: '9.9.9', render }).action !== 'skipped-corrupt') return 0
     if (readFileSync(join(corrupt, 'CLAUDE.md'), 'utf8') !== torn) return 0
 
     return 1

@@ -34,6 +34,14 @@ import {
   SAFE_COMMAND_PATTERNS,
   isSafeCommand,
   horizonReached,
+  makeExecRunner,
+  draftLessonsForRecords,
+  RUN_BUDGET_MS,
+  scoringTally,
+  isNewDivergence,
+  receiptPairKey,
+  lastReceiptVerdicts,
+  recordReceiptRun,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
 
@@ -545,5 +553,472 @@ describe('horizon gate — a claim that is not due yet is not scored', () => {
     const scored = scorePlan({ planPath, runCommand: () => '0\n' })
     expect(scored.notDue).toHaveLength(0)
     expect(scored.records).toHaveLength(1)
+  })
+})
+
+// ── The exit code as a first-class unit of measurement ──────────────────────
+//
+// A prediction that says «the suite is green» used to be unable to be WRONG:
+// the scorer's runner threw on a nonzero exit, so a failing suite produced
+// 'error' and a passing one produced 'error' too (no numeric last line).
+// The mechanism built to catch our mistakes could not catch them. These cases
+// pin the fix AND pin that the safety boundary did not move a single character.
+
+/** A runner in the contract the scorer now asks for: both halves of the run. */
+function ranWith(stdout: string, exitCode: number) {
+  return { stdout, exitCode }
+}
+
+describe('exit code as a unit of measurement', () => {
+  it('a command exiting 1 under measure exit-code with «== 0» is a MISS, not an error', () => {
+    const runner = () => ranWith('some log line\n', 1)
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].hit).toBe(false)
+    expect(records[0].actual).toBe(1)
+  })
+
+  it('the same entry exiting 0 is a HIT', () => {
+    const runner = () => ranWith('all tests passed\n', 0)
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('hit')
+    expect(records[0].actual).toBe(0)
+  })
+
+  it('a runner reporting output ONLY cannot answer an exit-code claim — error, never a silent hit', () => {
+    const runner = () => 'plenty of words, no exit code\n'
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('error')
+  })
+
+  it('an unknown measure fails validation instead of quietly falling back', () => {
+    const p = writePlan(entryYaml({ measure: '"stderr"' }))
+    const { records, invalid } = scorePlan({ planPath: p, runCommand: () => ranWith('', 0) })
+    expect(records).toEqual([])
+    expect(invalid[0].errors.join(' ')).toContain('measure')
+  })
+})
+
+describe('the safety boundary did NOT move (reverse checks)', () => {
+  it('a connector with a substitution is still skipped-unsafe and the runner is NEVER invoked', () => {
+    let called = 0
+    const runner = () => {
+      called += 1
+      return ranWith('', 0)
+    }
+    const p = writePlan(entryYaml({ measure: '"exit-code"', check_command: '"npm test && echo $(whoami)"' }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('skipped-unsafe')
+    expect(called).toBe(0)
+  })
+
+  it('«change directory, then run» written as a STRING is still skipped-unsafe', () => {
+    let called = 0
+    const runner = () => {
+      called += 1
+      return ranWith('', 0)
+    }
+    const p = writePlan(entryYaml({ measure: '"exit-code"', check_command: '"cd ../elsewhere && npm test"' }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('skipped-unsafe')
+    expect(called).toBe(0)
+  })
+})
+
+describe('the working directory is a FIELD, never joined into the command string', () => {
+  it('the cwd field reaches the runner as a parameter and leaves the command untouched', () => {
+    const seen: Array<{ cmd: string; opts: { cwd?: string } }> = []
+    const runner = (cmd: string, opts: { cwd?: string } = {}) => {
+      seen.push({ cmd, opts })
+      return ranWith('', 3)
+    }
+    const p = writePlan(entryYaml({ measure: '"exit-code"', cwd: `'${dir}'`, comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].cmd).toBe('node scripts/sma/check.mjs') // no connector, no path glued on
+    expect(seen[0].opts.cwd).toBe(dir)
+    // A directory where the command fails is a MISS or an error — never «skipped as unsafe».
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].verdict).not.toBe('skipped-unsafe')
+  })
+})
+
+describe('backward compatibility: the default measure is unchanged', () => {
+  it('an entry with NO measure keeps the numeric-last-line behaviour, byte for byte', () => {
+    const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }))
+    const hit = scorePlan({ planPath: p, runCommand: () => 'noise\n42\n' })
+    expect(hit.records[0].verdict).toBe('hit')
+    expect(hit.records[0].actual).toBe(42)
+
+    const p2 = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }), 'PLAN2.md')
+    const miss = scorePlan({ planPath: p2, runCommand: () => 'noise\n7\n' })
+    expect(miss.records[0].verdict).toBe('miss')
+
+    const p3 = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }), 'PLAN3.md')
+    const err = scorePlan({ planPath: p3, runCommand: () => 'no numbers here\n' })
+    expect(err.records[0].verdict).toBe('error')
+  })
+
+  it('an entry with NO measure ignores the exit code a new-contract runner reports', () => {
+    const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }))
+    const { records } = scorePlan({ planPath: p, runCommand: () => ranWith('noise\n42\n', 1) })
+    expect(records[0].verdict).toBe('hit') // the last line is the fact; the exit code is not
+  })
+})
+
+// ── «Не смог измерить» is NOT «you were wrong» ──────────────────────────────
+// Found by a run, not by reasoning: the first real verdict this workspace's
+// ledgers ever carried was a MISS produced by the runner's own two-minute
+// budget, not by the checked thing failing. A killed process reports no exit
+// code at all (status null, signal SIGTERM, code ETIMEDOUT), and the runner
+// substituted 1 — so «I could not measure» was written down as a claim about
+// the world. These cases pin the difference machine-readably.
+
+/** The real runner, driven against real child processes — no fake in sight. */
+function tmpScript(body: string, name: string): string {
+  const p = join(dir, name)
+  writeFileSync(p, body)
+  return `node "${p}"`
+}
+
+describe('a run that never finished is not a verdict about the world', () => {
+  it('a command killed by its own time budget reports «not measured», never exit code 1', async () => {
+    const { execSync } = await import('node:child_process')
+    // cwd stays OUT of the temp dir on purpose: a child killed by the budget
+    // may outlive the assertion for a moment, and a live process holding the
+    // temp dir as its cwd would make the cleanup fail on Windows.
+    const run = makeExecRunner({ execSync, cwd: process.cwd(), timeoutMs: 400 })
+    const res = run(tmpScript('setTimeout(() => {}, 8000)\n', 'sleeper.mjs'))
+    expect(res.notMeasured).toBe('timeout')
+    expect(res.exitCode).toBe(null)
+  }, 30_000)
+
+  it('a command that RAN and exited nonzero reports that code and claims nothing about measurement', async () => {
+    const { execSync } = await import('node:child_process')
+    const run = makeExecRunner({ execSync, cwd: process.cwd(), timeoutMs: 30_000 })
+    const res = run(tmpScript('process.exit(3)\n', 'exit3.mjs'))
+    expect(res.exitCode).toBe(3)
+    expect(res.notMeasured).toBe(null)
+  }, 30_000)
+
+  it('the working directory still travels as a PARAMETER — the real runner never splices it in', async () => {
+    const { execSync } = await import('node:child_process')
+    const run = makeExecRunner({ execSync, cwd: process.cwd(), timeoutMs: 30_000 })
+    const cmd = tmpScript('process.stdout.write(process.cwd())\n', 'pwd.mjs')
+    const res = run(cmd, { cwd: dir })
+    expect(res.exitCode).toBe(0)
+    expect(String(res.stdout).toLowerCase()).toContain('sma-predict-')
+    expect(cmd).not.toContain('&&')
+  }, 30_000)
+})
+
+describe('the unfinished run travels all the way into the record', () => {
+  // The shape handed to scorePlan below is the shape the REAL runner produces
+  // for a timeout — pinned by the first case of the previous block.
+  const timedOut = () => ({ stdout: '', exitCode: null, notMeasured: 'timeout' })
+
+  it('a timed-out run is NOT a miss, and the record says why', () => {
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: timedOut })
+    expect(records[0].verdict).not.toBe('miss')
+    expect(records[0].verdict).toBe('error')
+    expect(records[0].not_measured).toBe('timeout')
+  })
+
+  it('a command that RAN and exited nonzero is STILL a MISS — the fix does not launder misses away', () => {
+    const p = writePlan(entryYaml({ measure: '"exit-code"', comparator: '"=="', threshold: 0 }), 'PLAN-MISS.md')
+    const { records } = scorePlan({ planPath: p, runCommand: () => ({ stdout: '', exitCode: 3, notMeasured: null }) })
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].actual).toBe(3)
+    expect(records[0].not_measured).toBeUndefined()
+  })
+
+  it('the default measure is judged the same way: an unfinished run is not a wrong number', () => {
+    const p = writePlan(entryYaml({ comparator: '"=="', threshold: 42 }), 'PLAN-LASTLINE.md')
+    const { records } = scorePlan({ planPath: p, runCommand: timedOut })
+    expect(records[0].verdict).toBe('error')
+    expect(records[0].not_measured).toBe('timeout')
+  })
+})
+
+describe('an unfinished run drafts NO lesson — the wire, not a reading', () => {
+  it('the drafter is invoked for the miss and NOT for the unfinished run', () => {
+    let called = 0
+    const seen: string[] = []
+    const draft = ({ verdict }: { verdict: { id: string } }) => {
+      called += 1
+      seen.push(verdict.id)
+      return { drafted: true, path: join(dir, `draft-${verdict.id}.md`) }
+    }
+    const records = [
+      { id: 'PA', verdict: 'error', not_measured: 'timeout' },
+      { id: 'PB', verdict: 'miss', claim: 'c', metric: 'm', comparator: '==', expected: 0, check_command: 'x' },
+      { id: 'PC', verdict: 'hit' },
+      { id: 'PD', verdict: 'skipped-unsafe' },
+    ]
+    const out = draftLessonsForRecords({ records, planId: 'alpha', dirs: { draftsDir: dir }, draft })
+    expect(called).toBe(1)
+    expect(seen).toEqual(['PB'])
+    expect(out.map((d: { id: string }) => d.id)).toEqual(['PB'])
+  })
+
+  it('the scoring verb drafts through that one helper — there is no second drafting loop in the tree', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('draftLessonsForRecords(')
+  })
+})
+
+describe('the time budget fits the thing the runner is asked to measure', () => {
+  it('the budget clears this product own suite measured under load (715 s), not just idle (134 s)', () => {
+    expect(RUN_BUDGET_MS).toBeGreaterThan(715_000)
+  })
+
+  it('the verdict-producing verbs all build their runner from that one factory', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    const uses = src.match(/makeExecRunner\(/g) || []
+    expect(uses.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+// ── the closing line of a scoring run is COMPUTED, not narrated ──────────────
+
+describe('scoringTally — how many verdicts, and what walked away without one', () => {
+  it('counts verdicts about the world apart from entries that could not produce one', () => {
+    const t = scoringTally({
+      records: [
+        { id: 'PA', verdict: 'hit' },
+        { id: 'PB', verdict: 'miss' },
+        { id: 'PC', verdict: 'skipped-unsafe' },
+        { id: 'PD', verdict: 'error', not_measured: 'timeout' },
+        { id: 'PE', verdict: 'error' },
+      ],
+      invalid: [{ id: 'PF' }],
+      excluded: [{ id: 'PG' }],
+      notDue: [{ id: 'PH' }],
+      receiptsSkipped: 2,
+    })
+    expect(t.verdicts).toBe(2)
+    expect(t.unscored).toBe(8)
+    const byReason = Object.fromEntries(t.reasons.map((r) => [r.reason, r.count]))
+    expect(byReason['не прошла границу безопасных команд']).toBe(1)
+    expect(byReason['срок не наступил']).toBe(1)
+    expect(byReason['поля не заполнены']).toBe(1)
+    expect(byReason['территория перепроверки']).toBe(3)
+    expect(byReason['измерить не удалось — запуск не завершился']).toBe(1)
+    expect(byReason['запуск не дал факта']).toBe(1)
+  })
+
+  it('a refused command and an un-arrived horizon land in the SECOND number, never the first', () => {
+    const t = scoringTally({
+      records: [{ id: 'PA', verdict: 'skipped-unsafe' }],
+      notDue: [{ id: 'PB', horizon: '2099-01-01' }],
+    })
+    expect(t.verdicts).toBe(0)
+    expect(t.unscored).toBe(2)
+    expect(t.reasons.map((r) => r.reason)).toEqual([
+      'не прошла границу безопасных команд',
+      'срок не наступил',
+    ])
+    // A clean run says so with an empty reason list, not with a missing line.
+    const clean = scoringTally({ records: [{ id: 'PA', verdict: 'hit' }] })
+    expect(clean.verdicts).toBe(1)
+    expect(clean.unscored).toBe(0)
+    expect(clean.reasons).toEqual([])
+  })
+
+  it('the scoring verb prints that computed line instead of counting on screen', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('scoringTally(')
+  })
+})
+
+/**
+ * Расхождение структурной перепроверки рождает черновик урока — но ТОЛЬКО новое.
+ *
+ * Почему эти кейсы существуют. Сочинитель черновика был готов и идемпотентен, его звали
+ * четверо; главная ветка перепроверки — та, что ходит по структурным квитанциям, — не
+ * звала его никогда: цикл клал запись в леджер и на этом останавливался. Самый частый
+ * настоящий промах системы не рождал ничего.
+ *
+ * Врезать вызов «на каждое расхождение» было нельзя: в леджере этого воркспейса три
+ * тысячи записей, из них тысяча семьсот промахов, а различных пар «сводка + id»,
+ * когда-либо расходившихся, — почти две сотни. Один общий прогон высыпал бы до двух
+ * сотен файлов, каталог черновиков стал бы нечитаемым, а человеческий гейт повышения
+ * умер бы от объёма. Поэтому черновик рождается у расхождения, которое ЕЩЁ НЕ БЫЛО
+ * расхождением.
+ *
+ * Кейсы утверждают ПРОВОД, а не вычисление: считается число обращений к подделке
+ * сочинителя. «Черновик вычислен» и «черновик рождён обходом» — разные утверждения.
+ */
+describe('перепроверка квитанций: черновик рождается только у НОВОГО расхождения', () => {
+  const SUMMARY = '.planning/phases/01-fixture/01-01-SUMMARY.md'
+
+  /** Одна запись структурной перепроверки — та форма, что отдаёт verifyReceipt. */
+  function receiptRecord(over: Record<string, unknown> = {}) {
+    return {
+      id: 'R1',
+      summary: SUMMARY,
+      planId: '01-01',
+      assertion: 'квитанция воспроизводится',
+      check_command: 'node scripts/sma/cli.mjs status',
+      expected_sha256: 'a'.repeat(64),
+      observed_sha256: 'b'.repeat(64),
+      exitCode: 0,
+      scoredAt: '2026-08-20T00:00:00.000Z',
+      domain: 'sma.receipts',
+      verdict: 'divergent',
+      ...over,
+    }
+  }
+
+  /** Одна строка леджера — та форма, что кладёт туда верб перепроверки. */
+  function ledgerRow(over: Record<string, unknown> = {}) {
+    return {
+      id: 'R1',
+      summary: SUMMARY,
+      domain: 'sma.receipts',
+      verdict: 'hit',
+      receipt_verdict: 'verified',
+      scoredAt: '2026-08-19T00:00:00.000Z',
+      ...over,
+    }
+  }
+
+  /** Подделка сочинителя, которая ТОЛЬКО считает обращения. */
+  function counter() {
+    const calls: any[] = []
+    const draft = (args: any) => {
+      calls.push(args)
+      return { drafted: true, path: join('drafts', `bug-lesson-${args.planId}-${args.verdict.id}.md`) }
+    }
+    return { calls, draft }
+  }
+
+  it('Тест 1: расхождение у пары, чей предыдущий вердикт успешен, зовёт сочинителя РОВНО ОДИН раз — и именно этой парой', () => {
+    const { calls, draft } = counter()
+    const res = recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => [ledgerRow()],
+      append: () => {},
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls, 'обход не позвал сочинителя — провод оборван').toHaveLength(1)
+    expect(calls[0].verdict.id).toBe('R1')
+    expect(calls[0].verdict.verdict).toBe('miss')
+    expect(calls[0].verdict.check_command).toBe('node scripts/sma/cli.mjs status')
+    expect(calls[0].planId).toBe('01-01')
+    expect(res.drafted).toHaveLength(1)
+  })
+
+  it('Тест 2: та же пара, чей предыдущий вердикт УЖЕ был расхождением, не зовёт сочинителя ни разу', () => {
+    const { calls, draft } = counter()
+    const res = recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => [ledgerRow({ verdict: 'miss', receipt_verdict: 'divergent' })],
+      append: () => {},
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls, 'повторное расхождение позвало сочинителя — общий прогон высыпет сотни файлов').toHaveLength(0)
+    expect(res.drafted).toHaveLength(0)
+  })
+
+  it('Тест 3: пары в леджере нет вовсе — расхождение новое по определению, сочинитель позван', () => {
+    const { calls, draft } = counter()
+    recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => [],
+      append: () => {},
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('Тест 4: предыдущий вердикт прочитан ДО того, как в леджер дописан новый', () => {
+    const order: string[] = []
+    const ledger: any[] = [ledgerRow()] // пара сегодня подтверждается
+    const { calls, draft } = counter()
+    recordReceiptRun({
+      records: [receiptRecord()],
+      readPrevious: () => {
+        order.push('read')
+        return ledger.slice()
+      },
+      append: (r: any) => {
+        order.push('append')
+        ledger.push({ ...r, verdict: 'miss', receipt_verdict: r.verdict })
+      },
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(order[0], 'леджер прочитан после дописывания — новизна считается по вердикту этого же прогона').toBe('read')
+    expect(order.filter((o) => o === 'read'), 'леджер перечитывается на каждой записи').toHaveLength(1)
+    // Обратный порядок увидел бы в леджере уже дописанное расхождение и не сочинил бы ничего.
+    expect(calls).toHaveLength(1)
+  })
+
+  it('Тест 5: подтверждённая квитанция сочинителя не зовёт, но в леджер попадает', () => {
+    const { calls, draft } = counter()
+    const appended: any[] = []
+    recordReceiptRun({
+      records: [receiptRecord({ verdict: 'verified', observed_sha256: 'a'.repeat(64) })],
+      readPrevious: () => [],
+      append: (r: any) => appended.push(r),
+      draft,
+      dirs: { draftsDir: 'drafts' },
+    })
+    expect(calls).toHaveLength(0)
+    expect(appended).toHaveLength(1)
+  })
+
+  it('срыв сочинителя не роняет перепроверку — сочинение остаётся best-effort', () => {
+    const appended: any[] = []
+    expect(() =>
+      recordReceiptRun({
+        records: [receiptRecord()],
+        readPrevious: () => [],
+        append: (r: any) => appended.push(r),
+        draft: () => {
+          throw new Error('диск полон')
+        },
+        dirs: { draftsDir: 'drafts' },
+      }),
+    ).not.toThrow()
+    expect(appended).toHaveLength(1)
+  })
+
+  it('предикат новизны — чистая функция, и у неё свои кейсы', () => {
+    expect(isNewDivergence({ previous: 'verified', current: 'divergent' })).toBe(true)
+    expect(isNewDivergence({ previous: 'hit', current: 'divergent' })).toBe(true)
+    expect(isNewDivergence({ previous: null, current: 'divergent' })).toBe(true)
+    expect(isNewDivergence({ previous: 'divergent', current: 'divergent' })).toBe(false)
+    expect(isNewDivergence({ previous: 'verified', current: 'verified' })).toBe(false)
+    // Ни пропуск по границе команд, ни несостоявшийся запуск не были подтверждением,
+    // что квитанция работала: расхождение после них — не свежий слом.
+    expect(isNewDivergence({ previous: 'skipped-unsafe', current: 'divergent' })).toBe(false)
+    expect(isNewDivergence({ previous: 'error', current: 'divergent' })).toBe(false)
+  })
+
+  it('пара «сводка + id» — одна и та же, как бы путь ни был написан', () => {
+    const root = join(tmpdir(), 'sma-pair-key-root')
+    const relKey = receiptPairKey({ summary: SUMMARY, id: 'R1' }, { repoRoot: root })
+    const absKey = receiptPairKey({ summary: join(root, SUMMARY), id: 'R1' }, { repoRoot: root })
+    expect(absKey, 'один рецепт под двумя написаниями пути = две истории, и залп повторится').toBe(relKey)
+    expect(receiptPairKey({ summary: SUMMARY, id: 'R2' }, { repoRoot: root })).not.toBe(relKey)
+  })
+
+  it('карта последних вердиктов держит ПОСЛЕДНИЙ, а не первый', () => {
+    const map = lastReceiptVerdicts([ledgerRow(), ledgerRow({ verdict: 'miss', receipt_verdict: 'divergent' })])
+    expect(map.get(receiptPairKey({ summary: SUMMARY, id: 'R1' }))).toBe('divergent')
+  })
+
+  it('структурный обход перепроверки зовёт именно этот шаг, а не повторяет условие у себя', () => {
+    const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('recordReceiptRun(')
   })
 })

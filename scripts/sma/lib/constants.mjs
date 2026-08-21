@@ -117,6 +117,18 @@ export const EMIT_BUDGETS = { claude: 8192, agents: 8192, cursorrules: 6144, gem
 // each segment ('9.10' > '9.2'), NEVER a float compare.
 export const RECEIPTS_ENFORCED_FROM = '9.2'
 
+// ── the closing gate for predictions ───────────────────────────────────────
+// The DATE from which a closed plan owes a verdict on every prediction of its
+// own that could actually be checked. A DATE and not a release number on
+// purpose: the rule is about when the gate started existing in this tree, and
+// the close date of a plan is a fact git already knows about its summary file.
+// Everything closed BEFORE this date is history, not debt: some of it points at
+// trees that no longer exist and cannot be re-scored at all. That backlog is
+// left VISIBLE and named as a number rather than quietly swept up — a rule that
+// is born red and then softened until it is green teaches only that gates can
+// be argued with. Compared as a plain ISO day string, never parsed into a date.
+export const PREDICTIONS_SCORED_FROM = '2026-08-20'
+
 // ── the git airbag gate ────────────────────────────────────────────────────
 // Recovery points are pinned under one hierarchical ref namespace so a single
 // `for-each-ref` enumerates snapshot GROUPS by the <id> segment. These live only
@@ -139,3 +151,17 @@ export const AIRBAG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 // auto-deploy checkout — «your push carried my half-built work» becomes impossible.
 // A slash-namespaced ref (valid in git) keeps these branches grouped + easy to sweep.
 export const WORKTREE_BRANCH_PREFIX = 'sma-wt/'
+
+// ── the write-pipeline provenance rule ─────────────────────────────────────
+// The DATE from which a note found in the corpus owes machine evidence that it
+// walked the write pipeline. A DATE for the same reason as the closing gate
+// above: the rule is about when it started existing in a tree, and git already
+// knows when a note file was first added.
+//
+// THE TIER IS A DECISION, NOT A DEFAULT. A note filed BEFORE this day is a WARN:
+// an inherited corpus is a debt to be seen, not a pile of accidents to be
+// prosecuted, and a rule born red and then argued down teaches only that rules
+// can be argued with. A note filed AFTER it is CRITICAL: from that day the
+// pipeline was there to be used, and walking around it was a choice.
+// Compared as a plain ISO day string, never parsed into a date.
+export const MEMORY_PIPELINE_REQUIRED_FROM = '2026-08-20'

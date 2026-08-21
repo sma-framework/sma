@@ -155,8 +155,20 @@ const EPOCH_COMMIT = '0000000'
 /** The default terminal identity of a pipeline journal file. */
 const DEFAULT_TERMINAL = 'write-pipeline'
 
-/** The journal event type every pipeline stage appends under. */
-const JOURNAL_EVENT_TYPE = 'memory-write'
+/**
+ * The journal event type every pipeline stage appends under. EXPORTED because
+ * it is the one machine trace that a note walked this pipeline: the corpus lint
+ * reads the journal for exactly these events, and a second copy of the string on
+ * the reading side would be a second opinion about what the proof looks like.
+ */
+export const JOURNAL_EVENT_TYPE = 'memory-write'
+
+/**
+ * The outcomes that mean the record REACHED the corpus (as opposed to being
+ * observed, staged as a draft or refused). Same reason for living here: the
+ * writer names them, the reader never re-guesses them.
+ */
+export const CORPUS_LANDED_OUTCOMES = Object.freeze(['persisted-active', 'applied'])
 
 /** Structural corpus files that are never records (mirrors loader.mjs/consolidate.mjs). */
 const STRUCTURAL_FILES = new Set(['MEMORY.md', 'ARCHIVE.md', 'TAGS.md'])

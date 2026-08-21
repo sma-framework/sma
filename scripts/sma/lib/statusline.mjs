@@ -514,10 +514,16 @@ export function composeStatusline(wrappedLine, segment) {
 
 /**
  * countUnscoredPredictions({phasesDir, calibrationDir}) — the unscored math, exported
- * for direct testing. Scans every `*-PLAN.md` under phasesDir for prediction ids, reads
- * the calibration ledger for ids that already carry a verdict, and returns the count of
- * plan ids WITHOUT a verdict. A plan with malformed frontmatter is skipped-and-counted
+ * for direct testing. Scans every `*-PLAN.md` under phasesDir for predictions, reads the
+ * calibration ledger for the ones that already carry a verdict, and returns the count of
+ * predictions WITHOUT one. A plan with malformed frontmatter is skipped-and-counted
  * (never fatal). Returns null when the phases tree cannot be read at all (renders '—').
+ *
+ * ACCOUNTING KEY: plan file + id, via the SAME predictionKey the verdict side dedupes by
+ * (model-version.mjs). Counted on the bare id, one verdict silenced every other plan
+ * reusing that short id, and this axis showed a fraction of the real backlog. A ledger
+ * record written before the plan field existed keys on its bare id, so the old history
+ * keeps its meaning instead of being declared spoiled.
  * @param {{phasesDir?:string, calibrationDir?:string}} opts
  * @returns {Promise<number|null>}
  */
@@ -525,6 +531,7 @@ export async function countUnscoredPredictions(opts = {}) {
   try {
     const predict = await import('./predict.mjs')
     const calibration = await import('./calibration.mjs')
+    const { predictionKey } = await import('./model-version.mjs')
     const phasesDir = opts.phasesDir
     if (!phasesDir) return null
 
@@ -535,18 +542,20 @@ export async function countUnscoredPredictions(opts = {}) {
       return null // no phases tree here (e.g. the sma repo itself) -> honest '—'
     }
 
-    // scored ids: any ledger record carrying an id AND a verdict.
+    // scored: any ledger record carrying an id AND a verdict, under its accounting key.
     const scored = new Set()
     try {
       const { records } = calibration.readLedger({ calibrationDir: opts.calibrationDir })
       for (const r of records || []) {
-        if (r && typeof r.id === 'string' && r.verdict != null && r.verdict !== '') scored.add(r.id)
+        if (r && typeof r.id === 'string' && r.verdict != null && r.verdict !== '') scored.add(predictionKey(r))
       }
     } catch {
       /* fail-open — an unreadable ledger just means nothing is scored yet */
     }
 
-    const ids = new Set()
+    // every prediction in the tree under its accounting key -> its bare id, kept for the
+    // legacy fallback below.
+    const found = new Map()
     for (const pd of phaseDirs) {
       let planFiles
       try {
@@ -558,7 +567,10 @@ export async function countUnscoredPredictions(opts = {}) {
         try {
           const { predictions } = predict.parsePredictions(join(phasesDir, pd, pf))
           for (const p of predictions || []) {
-            if (p && typeof p.id === 'string' && p.id.trim()) ids.add(p.id.trim())
+            if (p && typeof p.id === 'string' && p.id.trim()) {
+              const id = p.id.trim()
+              found.set(predictionKey({ plan: pf, id }), id)
+            }
           }
         } catch {
           /* malformed frontmatter -> skipped-and-counted, never fatal */
@@ -567,7 +579,12 @@ export async function countUnscoredPredictions(opts = {}) {
     }
 
     let unscored = 0
-    for (const id of ids) if (!scored.has(id)) unscored += 1
+    for (const [key, id] of found) {
+      // scored under the pair — or under the bare id, which is how a record written before
+      // the plan field existed still speaks for the prediction it was written about.
+      if (scored.has(key) || scored.has(predictionKey({ id }))) continue
+      unscored += 1
+    }
     return unscored
   } catch {
     return null
@@ -616,8 +633,10 @@ async function defaultLoadGates(dirs = {}) {
   return any ? count : null
 }
 
-/** unscored-predictions count over the repo's .planning/phases tree; null when absent. */
-async function defaultLoadUnscored(dirs = {}) {
+/** unscored-predictions count over the repo's .planning/phases tree; null when absent.
+ * EXPORTED so the `statusline --stat unscored-predictions` tool prints the very number the
+ * axis renders: one count, one directory resolution, and no second implementation to drift. */
+export async function defaultLoadUnscored(dirs = {}) {
   const repoRoot = dirs.repoRoot || (dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
   return countUnscoredPredictions({
     phasesDir: join(repoRoot, '.planning', 'phases'),

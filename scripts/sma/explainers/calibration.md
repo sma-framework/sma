@@ -5,6 +5,8 @@ The ledger of promise-versus-fact, per area, that decides where oversight tighte
 ## en
 Calibration is the running record of how often SMA's predictions matched fact, broken down by area (domain). A prediction settles as a hit or a miss and lands in the ledger. Over many predictions, each area gets a hit rate.
 
+There is a third outcome, and it is deliberately not a miss: a check that never completed — killed by the runner's time budget, for instance — is recorded as **could not measure**, with the reason attached. A failure to measure you is not a statement that you were wrong, and turning one into the other would poison the ledger with misses nobody made.
+
 Why this matters: an area where the system is often wrong earns stricter oversight; an area with a long clean record earns lighter touch. The number is honest because it is computed from settled predictions, not asserted.
 
 When a prediction misses, a founder can record a disposition in the ledger, so a known and accepted miss does not silently block work forever.
@@ -17,6 +19,8 @@ Example: after twenty predictions in the domain sma.docs, the ledger shows 18 hi
 
 ## ru
 Калибровка это текущая запись того, как часто предсказания SMA совпадали с фактом, в разбивке по областям (доменам). Предсказание сводится как попадание или промах и попадает в журнал. На многих предсказаниях у каждой области появляется процент попаданий.
+
+Есть и третий исход, и он сознательно не является промахом: проверка, которая не завершилась (например, срезана бюджетом времени раннера), записывается как **не измерено**, с причиной рядом. «Я не смог тебя измерить» не является утверждением «ты был неправ», и превращение одного в другое отравило бы журнал промахами, которых никто не делал.
 
 Почему это важно: область, где система часто ошибается, получает более строгий надзор; область с длинной чистой историей получает более лёгкое касание. Число честное, потому что оно вычислено из сведённых предсказаний, а не заявлено.
 

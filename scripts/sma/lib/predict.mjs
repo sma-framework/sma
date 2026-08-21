@@ -31,7 +31,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 
 import { serializeNote } from './frontmatter.mjs'
 
@@ -190,6 +190,14 @@ export function validatePrediction(entry) {
   if (!missing.includes('threshold') && !Number.isFinite(Number(e.threshold))) {
     errors.push(`threshold "${e.threshold}" is not numeric`)
   }
+  // `measure` is OPTIONAL — absent means the historical last-line reading, so
+  // every entry written before the field existed stays valid. When present it
+  // must name one of the two known ways: a typo falling back silently would
+  // turn an exit-code claim into a guaranteed non-verdict, which is the very
+  // failure this field was added to end.
+  if (e.measure != null && e.measure !== '' && !MEASURES.includes(String(e.measure))) {
+    errors.push(`measure "${e.measure}" not in [${MEASURES.join(', ')}]`)
+  }
   return { valid: missing.length === 0 && errors.length === 0, missing, errors }
 }
 
@@ -216,6 +224,179 @@ function compare(actual, comparator, threshold) {
     case '<': return actual < threshold
     default: return false
   }
+}
+
+/**
+ * The two ways a check_command can state a FACT.
+ *
+ * `last-line` (the default, and the ONLY behaviour before this) reads the
+ * numeric last line of the output. `exit-code` reads the process exit code.
+ * Omitting the field means `last-line`, so every prediction written before the
+ * field existed behaves byte for byte as it did.
+ *
+ * Why the second one exists: the scorer's runner used to throw on a nonzero
+ * exit, so «the suite is green» produced 'error' when the suite failed and
+ * 'error' when it passed (no numeric last line). A claim that cannot be WRONG
+ * is not a claim — the mechanism built to catch our mistakes could not catch
+ * one. The exit code is DATA, and reading it costs the command allowlist
+ * nothing: not one character of SAFE_COMMAND_CHARSET or SAFE_COMMAND_PATTERNS
+ * moves for it.
+ */
+export const MEASURE_LAST_LINE = 'last-line'
+export const MEASURE_EXIT_CODE = 'exit-code'
+export const MEASURES = [MEASURE_LAST_LINE, MEASURE_EXIT_CODE]
+
+/**
+ * RUN_BUDGET_MS — the wall-clock budget one check_command is given.
+ *
+ * THIRTY MINUTES, and the number is named here rather than buried at every
+ * call site, because the previous budget was TWO minutes and that is smaller
+ * than the thing this runner is most often asked to measure. This product's
+ * own suite (170 files, ~3665 cases) was measured TWICE: 134 seconds on an
+ * idle machine and 715 seconds with other work running beside it. A budget
+ * below the measured thing does not measure — it manufactures a failure and
+ * files it as an observation about the world; a budget that merely clears the
+ * idle case does the same thing on a busy day. Thirty minutes clears the
+ * loaded measurement with room, and a genuinely hung command is still cut off
+ * rather than waited on forever.
+ */
+export const RUN_BUDGET_MS = 1_800_000
+
+/**
+ * runResultFromExecError(err) -> {stdout, exitCode, notMeasured}.
+ *
+ * The one place a failed child process is read, and the whole point of it is
+ * the distinction the old inline `err.status ?? 1` erased:
+ *
+ *   - the command RAN and exited nonzero -> that code is DATA. A claim about
+ *     it can be right or wrong, and a wrong one is a MISS. Nothing here
+ *     softens that.
+ *   - the command NEVER FINISHED (killed by the time budget, killed by a
+ *     signal, never started at all) -> there is no exit code in existence.
+ *     `status` is null and `signal`/`code` say why. Substituting 1 turns «I
+ *     could not measure» into «you were wrong» — a sentence about the world
+ *     that nobody observed.
+ *
+ * The discriminator is taken from the RUN ITSELF (signal / missing status /
+ * the ETIMEDOUT code), never guessed from the text of the output. The command
+ * allowlist is untouched by any of this: a budget and a kill signal are data
+ * about a process, not characters in a string handed to a shell.
+ */
+export function runResultFromExecError(err) {
+  const e = err ?? {}
+  const status = e.status
+  const signal = e.signal
+  const code = e.code
+  let notMeasured = null
+  if (code === 'ETIMEDOUT') notMeasured = 'timeout'
+  else if (signal) notMeasured = `signal:${String(signal)}`
+  else if (status == null) notMeasured = 'did-not-start'
+  return {
+    stdout: String(e.stdout == null ? '' : e.stdout),
+    exitCode: notMeasured ? null : Number(status),
+    notMeasured,
+  }
+}
+
+/**
+ * makeExecRunner({execSync, cwd, timeoutMs}) -> runCommand(cmd, {cwd}).
+ *
+ * The ONE runner every verdict-producing verb builds from, so that the same
+ * kill by the same budget can never be read one way by the scorer and another
+ * way by the mirror or by re-verification. The working directory arrives as a
+ * PARAMETER, exactly as before; it is never spliced into the command string.
+ */
+export function makeExecRunner({ execSync, cwd, timeoutMs } = {}) {
+  const budget = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : RUN_BUDGET_MS
+  return (cmd, o = {}) => {
+    try {
+      const stdout = execSync(cmd, { encoding: 'utf8', timeout: budget, cwd: o.cwd ?? cwd ?? process.cwd() })
+      return { stdout, exitCode: 0, notMeasured: null }
+    } catch (err) {
+      return runResultFromExecError(err)
+    }
+  }
+}
+
+/** The declared measure of an entry, defaulting to the historical one. */
+export function measureOf(entry) {
+  const m = String((entry && entry.measure) != null ? entry.measure : '').trim()
+  return m === '' ? MEASURE_LAST_LINE : m
+}
+
+/**
+ * Run options for an entry — the ONLY channel the working directory travels.
+ *
+ * `cwd` is a FIELD of the record and is handed to the runner as a parameter.
+ * It is NEVER concatenated into the command string: a joined `cd X && cmd`
+ * would put a shell metacharacter inside the trust boundary, which is exactly
+ * what the allowlist exists to refuse — and still refuses (the reverse tests
+ * pin it). Precedent: the receipt-hash verb already takes a --cwd of its own,
+ * so this is the existing semantics, not a new concept.
+ */
+export function runOptions(entry) {
+  const cwd = entry && entry.cwd
+  return cwd == null || String(cwd).trim() === '' ? {} : { cwd: String(cwd) }
+}
+
+/**
+ * normalizeRunResult(res) -> {stdout, exitCode}.
+ *
+ * A runner may report both halves of a run ({stdout, exitCode} — the posture
+ * the receipts runner has always had) or output only (a plain string, the
+ * historical shape). Output-only reporting yields exitCode `null`: «not
+ * observed», which is honestly different from zero.
+ */
+export function normalizeRunResult(res) {
+  if (res && typeof res === 'object' && 'stdout' in res) {
+    const code = Number(res.exitCode)
+    // «The run never finished» outranks any exit code the shape may carry:
+    // there is nothing to report, and reporting anything would be an
+    // observation nobody made. Note that WITHOUT this branch a null exitCode
+    // coerces to 0 — a killed process would read as a clean success.
+    const notMeasured =
+      res.notMeasured == null || String(res.notMeasured).trim() === '' ? null : String(res.notMeasured)
+    return {
+      stdout: String(res.stdout == null ? '' : res.stdout),
+      exitCode: notMeasured ? null : Number.isFinite(code) ? code : null,
+      notMeasured,
+    }
+  }
+  return { stdout: String(res == null ? '' : res), exitCode: null, notMeasured: null }
+}
+
+/**
+ * factFromRun(entry, res) -> {actual, error}.
+ *
+ * The single place a run becomes a number, shared by the scorer and the blind
+ * mirror so the two sides can never measure the same claim differently. A
+ * runner that reports output only cannot answer an exit-code claim: that is an
+ * ERROR and says so, rather than quietly passing zero off as an observation.
+ */
+export function factFromRun(entry, res) {
+  const { stdout, exitCode, notMeasured } = normalizeRunResult(res)
+  // A run that never finished yields no fact under EITHER measure: neither a
+  // wrong exit code nor a wrong number on the last line. It is «could not
+  // measure», and it says so with the reason attached.
+  if (notMeasured) {
+    return {
+      actual: null,
+      error: `the run did not complete (${notMeasured}) — the check was not measured, so this is no observation about the world`,
+      notMeasured,
+    }
+  }
+  if (measureOf(entry) === MEASURE_EXIT_CODE) {
+    if (exitCode == null) {
+      return {
+        actual: null,
+        error: 'measure exit-code needs a runner reporting {stdout, exitCode}; got output only',
+      }
+    }
+    return { actual: exitCode, error: null }
+  }
+  const n = parseNumericLastLine(stdout)
+  if (n == null) return { actual: null, error: 'check_command output has no numeric last line' }
+  return { actual: n, error: null }
 }
 
 /**
@@ -316,8 +497,10 @@ export function horizonReached(horizon, { now, currentVersion } = {}) {
  * `predictions:` (see isReceiptEntry) lands in `excluded` with NO verdict and
  * the runner never invoked.
  *
- * For each VALID predictions entry: allowlist check -> run (injected runner)
- * -> numeric last-line parse -> comparator compare. Deterministic; zero LLM;
+ * For each VALID predictions entry: allowlist check -> run (injected runner,
+ * given the entry's optional `cwd` as a run PARAMETER) -> fact (the numeric
+ * last line by default, the process exit code when `measure: exit-code`) ->
+ * comparator compare. Deterministic; zero LLM;
  * confidence copied into the record verbatim, never read for the verdict.
  * scorePlan itself NEVER throws — a throwing runner or non-numeric output
  * becomes verdict 'error' on that record (fail-open C9).
@@ -368,6 +551,8 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       expected: Number(entry.threshold),
       comparator: entry.comparator,
       confidence: entry.confidence ?? null, // recorded verbatim — NEVER gates
+      measure: measureOf(entry),
+      cwd: entry.cwd ?? null,
       scoredAt: now ?? new Date().toISOString(),
       plan: planPath,
     }
@@ -392,9 +577,11 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       continue
     }
 
-    let output
+    let ran
     try {
-      output = runCommand(entry.check_command)
+      // The working directory travels as a PARAMETER (runOptions) — never as
+      // a connector glued into the command string.
+      ran = runCommand(entry.check_command, runOptions(entry))
     } catch (err) {
       records.push({
         ...base,
@@ -406,18 +593,25 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
       continue
     }
 
-    const actual = parseNumericLastLine(output)
-    if (actual == null) {
+    // A nonzero exit is an OBSERVATION, not a crash: the runner hands back both
+    // halves of the run, so a failing check can finally be a MISS with a number
+    // instead of an error that says nothing.
+    const fact = factFromRun(entry, ran)
+    if (fact.error) {
       records.push({
         ...base,
         actual: null,
         hit: false,
         verdict: 'error',
-        error: 'check_command output has no numeric last line',
+        error: fact.error,
+        // Present ONLY when the run itself never finished, so the ledger can
+        // be read apart later: «could not measure» is not «was wrong».
+        ...(fact.notMeasured ? { not_measured: fact.notMeasured } : {}),
       })
       continue
     }
 
+    const actual = fact.actual
     const hit = compare(actual, entry.comparator, base.expected)
     records.push({ ...base, actual, hit, verdict: hit ? 'hit' : 'miss' })
   }
@@ -498,4 +692,269 @@ export function draftLessonFromMiss({ verdict, planId, dirs = {} }) {
   mkdirSync(draftsDir, { recursive: true })
   writeFileSync(path, serializeNote({ frontmatter, body }), 'utf8')
   return { drafted: true, path }
+}
+
+/**
+ * scoringTally(result) -> {verdicts, unscored, reasons: [{reason, count}]}.
+ *
+ * The closing line of a scoring run, computed rather than narrated: how many
+ * verdicts about the world were actually reached, and how many entries walked
+ * away without one BECAUSE OF A DEFECT IN THE PREDICTION ITSELF — each cause
+ * named in words instead of left as a silence the reader has to reconstruct
+ * from the lines above.
+ *
+ * The split is the honest one and matches the locked decision: an entry the
+ * command boundary refuses and an entry whose horizon has not arrived are NOT
+ * failures of the work. They are things the prediction cannot make good on, and
+ * saying so out loud at close is what keeps the gate from becoming a brake.
+ *
+ * Pure — the verb calls it and prints what it returns, so the arithmetic is
+ * checkable by a test rather than by looking at a screen.
+ *
+ * @param {{records?:object[], invalid?:object[], excluded?:object[], notDue?:object[], receiptsSkipped?:number}} result
+ * @returns {{verdicts:number, unscored:number, reasons:{reason:string,count:number}[]}}
+ */
+export function scoringTally(result = {}) {
+  const records = Array.isArray(result.records) ? result.records : []
+  const invalid = Array.isArray(result.invalid) ? result.invalid : []
+  const excluded = Array.isArray(result.excluded) ? result.excluded : []
+  const notDue = Array.isArray(result.notDue) ? result.notDue : []
+  const receiptsSkipped = Number(result.receiptsSkipped) || 0
+
+  let verdicts = 0
+  let unsafe = 0
+  let notMeasured = 0
+  let noFact = 0
+  for (const r of records) {
+    if (!r) continue
+    if (r.verdict === 'hit' || r.verdict === 'miss') verdicts += 1
+    else if (r.verdict === 'skipped-unsafe') unsafe += 1
+    else if (r.not_measured) notMeasured += 1
+    else noFact += 1
+  }
+
+  const reasons = []
+  const add = (reason, count) => {
+    if (count > 0) reasons.push({ reason, count })
+  }
+  add('не прошла границу безопасных команд', unsafe)
+  add('срок не наступил', notDue.length)
+  add('поля не заполнены', invalid.length)
+  add('территория перепроверки', excluded.length + receiptsSkipped)
+  add('измерить не удалось — запуск не завершился', notMeasured)
+  add('запуск не дал факта', noFact)
+
+  const unscored = reasons.reduce((n, r) => n + r.count, 0)
+  return { verdicts, unscored, reasons }
+}
+
+
+/**
+ * draftLessonsForRecords({records, planId, dirs, draft}) -> [{id, path, drafted}].
+ *
+ * The ONE place that decides which verdicts deserve a lesson draft, so the
+ * decision can be tested by counting calls instead of by reading a loop.
+ * ONLY a `miss` drafts. A hit is not a surprise; a skipped command is not a
+ * verdict; and a run that never finished (verdict 'error' carrying
+ * `not_measured`) is the case this gate exists for — a lesson drafted from a
+ * failure that never happened would be a lesson that should not exist, and
+ * the flywheel would start by teaching a falsehood.
+ *
+ * Drafting stays best-effort: a failing drafter never blocks scoring.
+ *
+ * @param {{records?: object[], planId?: string, dirs?: object, draft?: Function}} args
+ * @returns {{id: string, path: string, drafted: boolean}[]}
+ */
+export function draftLessonsForRecords({ records = [], planId, dirs = {}, draft = draftLessonFromMiss } = {}) {
+  const out = []
+  for (const r of records) {
+    if (!r || r.verdict !== 'miss') continue
+    try {
+      const d = draft({ verdict: r, planId, dirs })
+      if (d && d.path) out.push({ id: r.id, path: d.path, drafted: d.drafted })
+    } catch {
+      /* drafting is best-effort — a failed draft never blocks scoring */
+    }
+  }
+  return out
+}
+
+/**
+ * ── the structural re-verification side of the flywheel ───────────────────────
+ *
+ * A receipt that just started diverging is the commonest REAL miss this system
+ * makes, and until now it drafted nothing: the walk wrote its record into the
+ * ledger and stopped there.
+ *
+ * Wiring it up naively — «draft on every divergence» — was never an option. The
+ * ledger of a working tree holds thousands of records, and the number of DISTINCT
+ * (summary, id) pairs that have ever diverged runs into the hundreds. One general
+ * walk would spray that many files at once: idempotence keeps them from
+ * multiplying on re-runs, but the drafts directory becomes unreadable and the
+ * human promotion gate dies of volume. So a draft is born of a divergence that
+ * was NOT a divergence last time.
+ */
+
+/**
+ * receiptPairKey(record, {repoRoot}) -> the ONE identity of a receipt across runs.
+ *
+ * The pair is «which summary + which receipt id». The summary arrives as whatever
+ * path string the caller typed: a general walk builds absolute paths, a targeted
+ * `--summary` run carries whatever the operator wrote. Left unnormalized the same
+ * receipt keeps TWO histories under two spellings, and the second spelling reads
+ * as «never seen before» — which is exactly the salvo the novelty condition
+ * exists to prevent. With a repoRoot the key is the tree-relative path in forward
+ * slashes, so the two spellings collapse into one.
+ *
+ * @param {{summary?:string, id?:string}} record
+ * @param {{repoRoot?:string}} [opts]
+ * @returns {string}
+ */
+export function receiptPairKey(record = {}, { repoRoot } = {}) {
+  const raw = String((record && record.summary) ?? '')
+  let rel = raw
+  if (repoRoot && raw) {
+    try {
+      rel = relative(String(repoRoot), resolve(String(repoRoot), raw))
+    } catch {
+      rel = raw
+    }
+  }
+  return `${rel.split(sep).join('/')}\u0000${String((record && record.id) ?? '')}`
+}
+
+/**
+ * The receipt vocabulary of one ledger row. The walk writes the V2 verdict
+ * ('hit'/'miss') and preserves `receipt_verdict` verbatim; older rows may carry
+ * only the mapped one. Both are read back into the receipt words so the novelty
+ * predicate has a single vocabulary to reason in.
+ */
+function receiptVerdictOf(row) {
+  if (!row) return null
+  if (row.receipt_verdict) return String(row.receipt_verdict)
+  const v = String(row.verdict ?? '')
+  if (v === 'hit') return 'verified'
+  if (v === 'miss') return 'divergent'
+  return v
+}
+
+/**
+ * lastReceiptVerdicts(records, {repoRoot}) -> Map(pairKey -> receipt verdict).
+ *
+ * The ledger IS the single source of truth about the previous verdict — no second
+ * store is introduced. Rows are read in file order, so the last one wins.
+ *
+ * @param {object[]} records ledger rows of domain 'sma.receipts'
+ * @param {{repoRoot?:string}} [opts]
+ * @returns {Map<string,string>}
+ */
+export function lastReceiptVerdicts(records = [], { repoRoot } = {}) {
+  const map = new Map()
+  for (const r of records) {
+    if (!r || !r.id) continue
+    map.set(receiptPairKey(r, { repoRoot }), receiptVerdictOf(r))
+  }
+  return map
+}
+
+/**
+ * isNewDivergence({previous, current}) -> boolean. The whole decision, as a pure
+ * function, so it can be judged on its own instead of being re-read out of a loop.
+ *
+ * NEW = this run diverged AND the previous verdict of the same pair was a success
+ * or is absent. A pair that was already diverging is old news. A previous
+ * 'skipped-unsafe' or 'error' is deliberately NOT news either: neither was ever
+ * evidence that the receipt reproduced, so a divergence after one of them is not
+ * a fresh break — and erring towards silence is what keeps the first salvo bounded.
+ *
+ * @param {{previous?: string|null, current?: string}} args
+ * @returns {boolean}
+ */
+export function isNewDivergence({ previous, current } = {}) {
+  if (current !== 'divergent') return false
+  if (previous == null || previous === '') return true
+  return previous === 'verified' || previous === 'hit'
+}
+
+/** A divergence, shaped EXACTLY as a scorePlan miss, so the existing drafter works unmodified. */
+function receiptMissRow(r) {
+  return {
+    verdict: 'miss',
+    domain: 'sma.receipts',
+    metric: 'receipt_divergence',
+    id: r.id,
+    claim: r.assertion || `квитанция ${r.id} воспроизводится`,
+    check_command: r.check_command,
+    comparator: '==',
+    expected: r.expected_sha256,
+    actual: r.observed_sha256,
+    scoredAt: r.scoredAt,
+  }
+}
+
+/**
+ * recordReceiptRun({records, readPrevious, append, draft, dirs, repoRoot})
+ *   -> {drafted: [{id, summary, path, drafted}]}
+ *
+ * ONE step owns three things that must happen IN THIS ORDER:
+ *   1. read the previous verdict of every pair — ONCE, and before anything is written;
+ *   2. write this run's records into the ledger;
+ *   3. draft a lesson for every divergence that is NEW.
+ *
+ * The order is the load-bearing part and it lives here rather than in the verb, so
+ * a test can assert it instead of a reader having to trust a loop: read AFTER the
+ * append and every pair's «previous» verdict becomes the verdict this very run just
+ * wrote — «new» stops meaning anything at all.
+ *
+ * Drafting is best-effort: a drafter that throws never fails a re-verification.
+ * No second drafter and no second template — the existing idempotent one is called,
+ * and it carries the three-condition human promotion gate in its own header.
+ *
+ * @param {{records?:object[], readPrevious?:Function, append?:Function,
+ *          draft?:Function, dirs?:object, repoRoot?:string}} args
+ * @returns {{drafted:{id:string, summary:string|null, path:string, drafted:boolean}[]}}
+ */
+export function recordReceiptRun({
+  records = [],
+  readPrevious,
+  append,
+  draft = draftLessonFromMiss,
+  dirs = {},
+  repoRoot,
+} = {}) {
+  // (1) FIRST, and exactly once. A ledger that cannot be read is an honest empty
+  // history — every divergence is then new, which is the safe direction: it never
+  // hides a fresh break, it only risks one extra draft.
+  let previousRows = []
+  try {
+    previousRows = typeof readPrevious === 'function' ? readPrevious() : []
+  } catch {
+    previousRows = []
+  }
+  const previous = lastReceiptVerdicts(Array.isArray(previousRows) ? previousRows : [], { repoRoot })
+
+  const drafted = []
+  for (const r of records) {
+    if (!r) continue
+    // The verdict is judged against the PRE-RUN ledger, captured above.
+    const fresh = isNewDivergence({
+      previous: previous.get(receiptPairKey(r, { repoRoot })) ?? null,
+      current: r.verdict,
+    })
+
+    // (2) the ledger write keeps its old posture: a failure here is not swallowed.
+    if (typeof append === 'function') append(r)
+
+    if (!fresh) continue
+
+    // (3) best-effort drafting.
+    try {
+      const d = draft({ verdict: receiptMissRow(r), planId: r.planId ?? 'receipt', dirs })
+      if (d && d.path) drafted.push({ id: r.id, summary: r.summary ?? null, path: d.path, drafted: d.drafted })
+    } catch {
+      /* a failing drafter never blocks a re-verification */
+    }
+  }
+
+  return { drafted }
 }
