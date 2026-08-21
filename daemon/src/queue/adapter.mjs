@@ -1633,6 +1633,188 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(r.leaseRenewedAt).toBe(8000)
     })
 
+    /**
+     * ═══════ ОГРАЖДАЮЩИЙ ЖЕТОН ПОПЫТКИ ═══════
+     *
+     * ЧТО ИЗМЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО. Живой прогон на настоящей очереди: работник захватил
+     * задачу, его аренда истекла, очередь ПЕРЕВЫДАЛА строку второму работнику — и тогда
+     * первый, живой и ничего не знающий об отъёме, позвал завершение. Оно было ПРИНЯТО:
+     * строка ушла в «закрыто» со счётом выдач второй попытки. Мало того — второй работник,
+     * который работу действительно делал, свою же попытку закрыть НЕ СМОГ: активной строки
+     * для него уже не было. Дыра отнимает не только чужую работу, но и право закрыть свою.
+     *
+     * ПОЧЕМУ ДЕЛА ЖИВУТ В ОБЩЕМ СЬЮТЕ, А НЕ В ФАЙЛЕ ОДНОГО БЭКЕНДА. Жетон — обещание
+     * КОНТРАКТА, а не деталь хранилища: цикл зовёт завершение через шов адаптера и не знает,
+     * какой бэкенд под ним. Два одинаковых дела в двух файлах разъезжаются молча при первой
+     * правке одного из них, и «чужой не закроет» остаётся правдой в одном месте и надписью
+     * в другом. Одно дело здесь держит оба бэкенда конструкцией.
+     *
+     * ЧЕГО ЭТИ ДЕЛА НЕ ДОКАЗЫВАЮТ И НЕ МОГУТ. Одновременность двух захватов — свойство
+     * настоящей базы (её оператор выдачи блокирует строку), и подделка, «правильно» отдающая
+     * одну строку двум, доказывала бы подделку. Гонка меряется живой пробой, эти дела — про
+     * КОНТРАКТ жетона: форму возврата, отказ чужому, новый жетон на каждой выдаче.
+     */
+    it('claimNext hands out an attempt token, and two claims never carry the same one', async () => {
+      const c = clockOf()
+      // аренда намеренно длинная: истечение здесь НЕ предмет дела, а памятная очередь
+      // истекает арендой сама, внутри claimNext/list/stats
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-80' }))
+      await q.enqueue(backlog({ id: 'BL-81' }))
+
+      const first = await q.claimNext('w1', {})
+      const second = await q.claimNext('w2', {})
+
+      expect(typeof first.attemptToken).toBe('string')
+      expect(first.attemptToken.length).toBeGreaterThan(15)
+      expect(typeof second.attemptToken).toBe('string')
+      expect(second.attemptToken).not.toBe(first.attemptToken)
+      // ЖЕТОН — НЕ НОМЕР ПОПЫТКИ, и это утверждается, а не подразумевается: номер уже
+      // однажды плавал под попыткой, которая этого не заметила, и жетон, выведенный из
+      // счётчика, унаследовал бы ту же болезнь.
+      expect(first.attemptToken).not.toBe(String(first.attempt))
+      expect(first.attemptToken).not.toBe(String(first.id))
+    })
+
+    it('a stale worker cannot close the FRESH attempt of another — and the worker who holds it still can', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-82' }))
+
+      const stale = await q.claimNext('w1', {}) // первая попытка
+      c.advance(6000) // аренда потеряна — очередь перевыдаёт строку
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {}) // вторая попытка, у неё свой жетон
+      expect(fresh.id).toBe('BL-82')
+      expect(fresh.attemptToken).not.toBe(stale.attemptToken)
+
+      // устаревший работник предъявляет то, что вернул ЕГО захват
+      await expect(
+        q.complete('BL-82', { receiptRef: 'reverify:stale', attemptToken: stale.attemptToken }),
+      ).rejects.toThrow(/stale_attempt_token/)
+
+      // строка НЕ ТРОНУТА: свежая попытка идёт дальше, как шла
+      const [mid] = await q.list({})
+      expect(mid.status).toBe('claimed')
+      expect(mid.status).not.toBe('awaiting_approval')
+
+      // ВТОРАЯ ПОЛОВИНА, БЕЗ КОТОРОЙ ЧИНИТЬ МОЖНО БЫЛО БЫ «ОТВЕРГАТЬ ВСЁ»: тот, кто держит
+      // попытку, закрывает её своим жетоном.
+      expect(await q.complete('BL-82', { receiptRef: 'reverify:fresh', attemptToken: fresh.attemptToken })).toBe(true)
+      const [after] = await q.list({})
+      expect(after.status).toBe('awaiting_approval')
+    })
+
+    it('fail with a foreign token is refused and leaves the row where it was; the token in flight is accepted', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-83' }))
+
+      const stale = await q.claimNext('w1', {})
+      c.advance(6000)
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {})
+
+      await expect(q.fail('BL-83', 'missing_access', { attemptToken: stale.attemptToken })).rejects.toThrow(
+        /stale_attempt_token/,
+      )
+      const [mid] = await q.list({})
+      expect(mid.status).toBe('claimed') // чужой провал не уронил чужую попытку
+      expect(mid.failure_reason).toBeNull()
+
+      expect(await q.fail('BL-83', 'missing_access', { attemptToken: fresh.attemptToken })).toBe(true)
+      const [after] = await q.list({})
+      expect(after.status).toBe('failed')
+      expect(after.failure_reason).toBe('missing_access')
+    })
+
+    /**
+     * ПРОДЛЕНИЕ ЧУЖИМ ЖЕТОНОМ — САМЫЙ ТИХИЙ ИЗ ТРЁХ СЛУЧАЕВ. Устаревший работник, который
+     * продолжает стучать «я жив», держал бы ЧУЖУЮ аренду вечно: сторож живости никогда не
+     * отобрал бы строку у работника, который на самом деле давно молчит. Поэтому дело не
+     * довольствуется ответом «false» — оно доводит часы до точки, где продлённая аренда была
+     * бы ещё жива, и смотрит, вернулась ли строка в очередь.
+     */
+    it('touch with a foreign token does not renew the lease — a stale worker cannot hold somebody else’s attempt alive', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-84' }))
+
+      const stale = await q.claimNext('w1', {})
+      c.advance(6000)
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {}) // часы: 8000
+
+      // жетон попытки в полёте продлевает, как продлевал: отказ не сплошной
+      c.advance(4000) // 12000
+      expect(await q.touch('BL-84', { attemptToken: fresh.attemptToken })).toBe(true)
+      c.advance(4000) // 16000 — от продления прошло 4000 из 5000
+      expect((await q.list({}))[0].status).toBe('claimed')
+
+      // а чужой жетон не продлевает — и это видно не по ответу, а по судьбе строки
+      expect(await q.touch('BL-84', { attemptToken: stale.attemptToken })).toBe(false)
+      c.advance(2000) // 18000 — от ПОСЛЕДНЕГО законного продления прошло 6000 из 5000
+      const [r] = await q.list({})
+      expect(r.status).toBe('queued')
+    })
+
+    /**
+     * КАЖДАЯ ПЕРЕВЫДАЧА РОЖДАЕТ НОВЫЙ ЖЕТОН, А ПРЕЖНИЙ МЁРТВ НАВСЕГДА, а не до следующей
+     * выдачи: работник первой попытки может проснуться на третьей и позвать завершение —
+     * и обязан получить отказ так же, как получил бы его на второй.
+     */
+    it('every re-issue mints a NEW token, and every older one stays dead', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-86' }))
+
+      const one = await q.claimNext('w1', {})
+      c.advance(7000)
+      const two = await q.claimNext('w2', {})
+      c.advance(7000)
+      const three = await q.claimNext('w3', {})
+
+      expect(new Set([one.attemptToken, two.attemptToken, three.attemptToken]).size).toBe(3)
+
+      await expect(
+        q.complete('BL-86', { receiptRef: 'reverify:one', attemptToken: one.attemptToken }),
+      ).rejects.toThrow(/stale_attempt_token/)
+      await expect(
+        q.complete('BL-86', { receiptRef: 'reverify:two', attemptToken: two.attemptToken }),
+      ).rejects.toThrow(/stale_attempt_token/)
+      expect(await q.complete('BL-86', { receiptRef: 'reverify:three', attemptToken: three.attemptToken })).toBe(true)
+    })
+
+    /**
+     * ЗВОНЯЩИЙ БЕЗ ЖЕТОНА — ЭТО ПЕРЕХОДНОЕ РЕШЕНИЕ, НАЗВАННОЕ ВСЛУХ, А НЕ НЕДОСМОТР.
+     *
+     * Жетона нет у двух звонящих, и по разным причинам. Сторож живости закрывает попытку
+     * молчащего работника по праву ВЛАСТИ, а не работника: жетона у него нет и быть не
+     * должно. А строка, посеянная или захваченная до этого обновления, жетона не носит
+     * вовсе — отсутствие есть отсутствие, и падать на ней нельзя.
+     *
+     * ЧЕМ ЭТО ОБЯЗАНО КОНЧИТЬСЯ. Наш цикл понесёт жетон ВСЕГДА — этот провод кладётся
+     * следующей работой, и до тех пор дверь, через которую устаревший работник ещё может
+     * пройти, остаётся открытой ровно здесь. Дело стоит именно для того, чтобы переход был
+     * виден и имел конец, а не растворился в умолчании.
+     */
+    it('a caller that presents NO token gets today’s behaviour — a named transitional decision, not an oversight', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-85' }))
+
+      await q.claimNext('w1', {})
+      c.advance(6000)
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {})
+      expect(typeof fresh.attemptToken).toBe('string')
+
+      expect(await q.touch('BL-85')).toBe(true)
+      expect(await q.complete('BL-85', { receiptRef: 'reverify:no-token' })).toBe(true)
+      const [r] = await q.list({})
+      expect(r.status).toBe('awaiting_approval')
+    })
+
     it('assignWorker records the executing worker, and list() reports it', async () => {
       // WHY THIS IS A CONTRACT TEST AND NOT A BACKEND DETAIL: the claim is made by the
       // daemon, and routing picks the actual worker one step later. Every «who is busy»
