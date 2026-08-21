@@ -34,6 +34,7 @@ import { execFileSync, spawn as childSpawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
+import { translitToLatin } from './translit.mjs'
 import { compileGlob, normalizePath } from './collision.mjs'
 import { appendEvent } from './journal.mjs'
 import {
@@ -75,13 +76,124 @@ function firstToken(...candidates) {
   return null
 }
 
+// ── the persisted window name: «token hash → human name» ─────────────────────────────
+//
+// A window name has to SURVIVE the process that chose it. Every SMA hook is a one-shot
+// `node cli.mjs`, so a name computed at session start and held in memory is gone by the
+// next tool call; only a file on disk lets the second, third and hundredth invocation of
+// the SAME window keep the name the first one picked. Without it the only way to have a
+// readable window was to export an environment variable by hand, in every window, every
+// time — and a name nobody sets is a journal nobody reads.
+
+/** File name of the persisted map, under the state root. */
+export const TERMINAL_NAMES_FILE = 'terminal-names.json'
+
+/** The readable default a nameless window is given: «Окно-1», «Окно-2», … */
+export const DEFAULT_WINDOW_NAME_PREFIX = 'Окно-'
+
+/** Matches exactly the auto-minted form, so a hand-written name is never counted as one. */
+const DEFAULT_WINDOW_NAME_RE = /^Окно-(\d+)$/
+
+/**
+ * terminalNamesPath({env, namesFile}) — where the map lives.
+ *
+ * ANCHORED to the project root, never relative to the working directory: a hook process
+ * inherits its cwd from the session and may be standing somewhere else entirely. A relative
+ * path here would repeat the hook-loading defect, only quieter — the file would be looked
+ * for beside whatever directory happened to be current, silently found missing, and the
+ * window would fall back to a machine token while its name sat on disk one directory over.
+ * The same anchor the tool gate already reads.
+ *
+ * @param {{env?:Object, namesFile?:string}} [o]
+ * @returns {string}
+ */
+export function terminalNamesPath(o = {}) {
+  if (o.namesFile) return o.namesFile
+  const env = o.env ?? process.env
+  const anchor = (env && typeof env.CLAUDE_PROJECT_DIR === 'string' && env.CLAUDE_PROJECT_DIR.trim()) || '.'
+  return join(anchor, SMA_ROOT, TERMINAL_NAMES_FILE)
+}
+
+/**
+ * readTerminalNames({env, namesFile}) -> the flat map
+ * `{ "<token hash>": { name, auto, at } }`, or `{}` when the file is absent, unreadable or
+ * not an object. Fail-open by law (C9, P4): a hook must NEVER die over a name.
+ *
+ * @param {{env?:Object, namesFile?:string}} [o]
+ * @returns {Object}
+ */
+export function readTerminalNames(o = {}) {
+  const data = readJsonSafe(terminalNamesPath(o))
+  return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+}
+
+/**
+ * allocateDefaultWindowName({tokenHash, env, namesFile, now}) -> the readable name this
+ * window is recorded under: «Окно-N» minted the FIRST time this token is seen, and the very
+ * same name returned on every later call for that token (so a second session start is a
+ * lookup, not a new number).
+ *
+ * N is «one more than the highest Окно-N already on file» — deliberately not a count of
+ * entries, so removing a line from the map by hand never hands a live window a name that is
+ * already taken.
+ *
+ * Two windows starting in the same instant both read the same file and both write it back
+ * whole, and the second write can drop the first one's entry; so we re-read after writing
+ * and merge ourselves back in when we are missing. Even a genuine tie is survivable rather
+ * than fatal: the terminal id ALWAYS carries the token disambiguator, so two windows sharing
+ * a display name still keep separate lease files and separate journals.
+ *
+ * @param {{tokenHash?:string, env?:Object, namesFile?:string, now?:string}} [o]
+ * @returns {string|null} the name, or null when there is no token to record it against
+ */
+export function allocateDefaultWindowName(o = {}) {
+  const hash = o.tokenHash != null ? String(o.tokenHash).trim() : ''
+  if (!hash) return null // no window token -> nothing stable to key a name on
+  const namesFile = terminalNamesPath(o)
+
+  const names = readTerminalNames({ namesFile })
+  const existing = names[hash]
+  if (existing && typeof existing.name === 'string' && existing.name.trim()) return existing.name.trim()
+
+  let max = 0
+  for (const rec of Object.values(names)) {
+    const m = DEFAULT_WINDOW_NAME_RE.exec(rec && typeof rec.name === 'string' ? rec.name.trim() : '')
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  const name = `${DEFAULT_WINDOW_NAME_PREFIX}${max + 1}`
+  const record = { name, auto: true, at: o.now ?? new Date().toISOString() }
+  names[hash] = record
+  atomicWriteJson(namesFile, names)
+
+  const after = readTerminalNames({ namesFile })
+  if (!after[hash] || after[hash].name !== name) {
+    after[hash] = record
+    try {
+      atomicWriteJson(namesFile, after)
+    } catch {
+      /* fail-open — we still return the name we chose; the next start re-mints it */
+    }
+  }
+  return name
+}
+
 /**
  * resolveTerminalIdentity({env, pid, sessionToken}) — window-stable identity.
  *
- * holderIdentity = env.SMA_TERMINAL_NAME (the human window name, «Мозг» / «Фабрика») if
- * set; else a fallback derived from the WINDOW TOKEN when one is available (`T-<hash>`),
- * else the volatile `T-<pid>`. terminalId = slugified holderIdentity SUFFIXED WITH a
- * disambiguator so two windows sharing a name never collapse into one id.
+ * NAME PRECEDENCE, in words, highest first:
+ *   (1) env.SMA_TERMINAL_NAME — the name a PERSON set by hand («Мозг» / «Фабрика»). A
+ *       human choice outranks anything the system chose for itself, always.
+ *   (2) the name PERSISTED for this window token in `.sma/terminal-names.json` — the
+ *       readable «Окно-N» handed out once at session start and read back by every later
+ *       one-shot hook process of the same window.
+ *   (3) the machine fallback that has always been here: `T-<token hash>`, or the volatile
+ *       `T-<pid>` when there is no window token at all.
+ * terminalId = slugified holderIdentity SUFFIXED WITH a disambiguator so two windows
+ * sharing a name never collapse into one id.
+ *
+ * Reading the persist costs one small JSON read per hook process and is fail-open: an
+ * absent or corrupt file simply means «no name», which lands on (3) — exactly the
+ * behaviour of every installation that has no names file at all.
  *
  * THE FIX (R7): every SMA hook is a one-shot `node cli.mjs` process, so a
  * pid-based disambiguator changed on EVERY tool call — terminalId fragmented into
@@ -128,24 +240,56 @@ export function resolveTerminalIdentity(opts = {}) {
   // Disambiguator: the STABLE window-token hash when present (renewal-safe), else the pid
   // (last-resort tiebreaker, now only for the tokenless manual case).
   const disambig = sessionToken ? tokenHash(sessionToken) : String(pid)
+
+  // Step (2) of the precedence above — consulted ONLY when nobody set a name by hand and
+  // there is a token to key the lookup on.
+  let persisted = null
+  if (!named && sessionToken) {
+    const rec = readTerminalNames({ env, namesFile: opts.namesFile })[disambig]
+    if (rec && typeof rec.name === 'string' && rec.name.trim()) persisted = rec
+  }
+
   const holderIdentity = named
     ? env.SMA_TERMINAL_NAME.trim()
-    : sessionToken
-      ? `T-${disambig}` // stable per-window fallback name (no more per-invocation churn)
-      : `T-${pid}`
-  return { holderIdentity, terminalId: slugify(holderIdentity, disambig), pid, sessionToken }
+    : persisted
+      ? persisted.name.trim()
+      : sessionToken
+        ? `T-${disambig}` // stable per-window fallback name (no more per-invocation churn)
+        : `T-${pid}`
+  const nameSource = named ? 'env' : persisted ? 'persist' : 'fallback'
+  // nameAuto — «is this still a name the SYSTEM chose?». The session-start prompt reads it
+  // to decide whether to keep offering a real one: «Окно-3» is readable but not CHOSEN, and
+  // the offer should stop the moment a person names the window themselves.
+  const nameAuto = nameSource === 'env' ? false : nameSource === 'persist' ? persisted.auto === true : true
+  return {
+    holderIdentity,
+    terminalId: slugify(holderIdentity, disambig),
+    pid,
+    sessionToken,
+    nameSource,
+    nameAuto,
+  }
 }
 
 /**
- * Lowercase, keep [a-z0-9-]; collapse runs of other chars to a single dash; ALWAYS
- * suffix the disambiguator so same-named windows are distinct. An empty slug
- * (non-latin name) degrades to the disambiguator-only `t-<disambig>` form. When the slug
- * already carries the disambiguator (the auto `T-<disambig>` fallback identity), it is
- * NOT appended twice.
+ * TRANSLITERATE FIRST, then keep [a-z0-9-] and collapse runs of other chars to a single
+ * dash; ALWAYS suffix the disambiguator so same-named windows are distinct.
+ *
+ * Transliteration is what makes the journal readable at all. Cleaning a name character by
+ * character throws away every letter the file name cannot carry, so «Окно-3» used to leave
+ * nothing behind and the trail was filed under a machine token — the very thing naming a
+ * window was meant to end. It uses the SAME shared spelling of «a human name becomes a
+ * machine name» the claim directories use: one table of letters for the whole tree, because
+ * a naming convention written down twice drifts, and the day the two disagree one half of
+ * the system stops finding what the other half created.
+ *
+ * An empty slug (a name that leaves nothing even after transliteration) still degrades to
+ * the disambiguator-only `t-<disambig>` form. When the slug already carries the
+ * disambiguator (the auto `T-<disambig>` fallback identity), it is NOT appended twice.
  */
 function slugify(name, disambig) {
   const suffix = String(disambig)
-  const slug = String(name)
+  const slug = translitToLatin(String(name))
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')

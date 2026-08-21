@@ -98,12 +98,22 @@ describe('resolveTerminalIdentity', () => {
     expect(a.terminalId).not.toBe(b.terminalId) // no lease/journal-file collision
   })
 
-  it('two windows sharing a non-latin name get DISTINCT terminalIds too', () => {
+  it('two windows sharing a non-latin name get DISTINCT terminalIds too — and READABLE ones', () => {
+    // The distinctness clause is the old one and still the point: two windows must never
+    // collapse into one lease or one journal file. What changed is the readability of the
+    // id: a name in a script the file name cannot carry used to be thrown away character by
+    // character and land on the disambiguator alone (`t-100`), so the trail of a window
+    // called «Мозг» was filed under a number. It is transliterated now.
     const a = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'Мозг' }, pid: 100 })
     const b = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: 'Мозг' }, pid: 200 })
-    expect(a.terminalId).toBe('t-100')
-    expect(b.terminalId).toBe('t-200')
+    expect(a.terminalId).toBe('mozg-100')
+    expect(b.terminalId).toBe('mozg-200')
     expect(a.terminalId).not.toBe(b.terminalId)
+  })
+
+  it('a name that leaves nothing even after transliteration still degrades to the disambiguator', () => {
+    const only = resolveTerminalIdentity({ env: { SMA_TERMINAL_NAME: '★ ☆ ★' }, pid: 300 })
+    expect(only.terminalId).toBe('t-300')
   })
 })
 
