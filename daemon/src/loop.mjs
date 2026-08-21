@@ -108,7 +108,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 // would be a second ceiling waiting to drift away from the first.
 import { memorySnapshotHash, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
-import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, fileWord, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
 // opinion about whether the hooks fired or the memory came back: it imports the same evaluation
@@ -946,11 +946,6 @@ function attachChangedFiles(deps, worktree) {
   return worktree.changed
 }
 
-/** One entry of the list as a person reads it: `M имя` — and a rename naming both sides. */
-function fileWord(f) {
-  return f && f.from ? `${f.status} ${f.from} → ${f.path}` : `${(f && f.status) || '?'} ${(f && f.path) || ''}`
-}
-
 /**
  * writeLog(deps, entry) — one line into the daemon's OWN event log (deps.journal), the
  * sink an operator reads. Fail-open like every other narration path.
@@ -1681,6 +1676,7 @@ function writeAttemptRunDir(deps, task, {
   exit,
   gate,
   lesson,
+  approach,
 } = {}) {
   const config = deps.config || {}
   // THE SAME TREE THE COPY WAS CUT FROM — one source for both, so a run directory can never
@@ -1774,6 +1770,16 @@ function writeAttemptRunDir(deps, task, {
     // The word the attempt left about what it learned — carried to the receipt so the outcome
     // and the lesson are one record rather than two that have to be joined by an id.
     lesson: lesson ?? null,
+    // WHAT THE WORKER SAID IT WAS DOING, kept beside the outcome for the handover summary the
+    // closing door writes. It is parsed once, off the stream, at the one point every lane
+    // passes through; re-parsing it at the door would be a second reading of the same frames
+    // and the two would drift the first time either changed.
+    approach: approach ?? null,
+    // THE NEEDLES THIS ATTEMPT'S SECOND BELT LOOKS FOR — taken from the spawn's own environment
+    // HERE, where that environment is known, and carried to the closing door for the fifth
+    // file. They live in memory for the length of one tick and are written into no record: the
+    // row this object feeds names `runDir` and `parity` and nothing else of it.
+    secretValues: secretValuesOf(env),
     // The same observation the journal's layer carries, kept beside the outcome so a reader
     // of one directory never has to open a ledger to learn whether the memory was read.
     memoryLayer: {
@@ -1913,7 +1919,7 @@ function attachAttemptParity(deps, worktree) {
  * deadline filter heals the files already lying on disk; this heals the ones written from now
  * on, at the moment the truth about them changes.
  */
-function writeAttemptOutcome(deps, worktree, receipt) {
+function writeAttemptOutcome(deps, worktree, receipt, task) {
   const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
   if (!run || typeof run.dir !== 'string' || run.dir === '') return false
   // Уборка за попыткой — не условие попытки: билет, который не пометился, не имеет права
@@ -1935,6 +1941,42 @@ function writeAttemptOutcome(deps, worktree, receipt) {
   // opinion. A verdict that could not be computed stays null: «nobody has checked», never
   // «checked and fine».
   const parity = attachAttemptParity(deps, worktree)
+  // ═══ И ПЯТЫЙ ФАЙЛ — КОНСПЕКТ ПЕРЕДАЧИ ═══════════════════════════════════════════════
+  //
+  // ПИШЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ ВПЕРВЫЕ ИЗВЕСТНО ВСЁ СРАЗУ. Подход попытка объявила
+  // потоком, исход только что решила дверь, список тронутых файлов уже спрошен у git обеими
+  // дверями, а замечание человека лежит на строке задачи. Собирать это где-то ещё значило бы
+  // спрашивать те же вопросы второй раз и получать на них другие ответы.
+  //
+  // МОДЕЛЬ ДЛЯ ЭТОГО НЕ ЗОВЁТСЯ. Всё перечисленное уже записано; обращение к модели стоило бы
+  // денег на КАЖДОЙ попытке и давало бы каждый раз другой текст об одних и тех же фактах.
+  //
+  // ПУТЬ НЕ СКЛЕИВАЕТСЯ ЗАНОВО: берётся каталог, который эта же попытка получила выражением
+  // пути в начале, — иначе конспект лёг бы рядом с квитанцией, а не среди неё.
+  const changed = (worktree && worktree.changed) || null
+  writeContinuation({
+    dir: run.dir,
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+    // ТОТ ЖЕ ПОЯС, ЧТО У ОСТАЛЬНЫХ ФАЙЛОВ КАТАЛОГА: значения переменных, чьи ИМЕНА говорят
+    // «секрет», вырезаются из текста. Записку о подходе пишет работник, и она может унести
+    // в себе ключ ровно так же, как его уносила бы любая другая строка потока. Иглы сняты со
+    // среды спавна ОДИН раз, там же, где она известна, — спрашивать её здесь второй раз было
+    // бы вторым мнением о том, что в этой попытке считалось секретом.
+    secretValues: run.secretValues || [],
+    text: buildContinuationSummary({
+      taskId: task && task.id,
+      attempt: task && task.attempt,
+      outcome: receipt && receipt.outcome,
+      failureReason: receipt && receipt.failureReason,
+      verdict: receipt && receipt.verdict,
+      approach: run.approach && run.approach.approach,
+      rejected: (run.approach && run.approach.rejected) || [],
+      returnNote: task && task.note,
+      files: (changed && changed.files) || [],
+      deletions: (changed && changed.deletions) || [],
+    }),
+  })
   return writeRunReceipt({
     dir: run.dir,
     fsImpl: deps.fsImpl,
@@ -3331,6 +3373,7 @@ export async function tick(deps = {}) {
         exit,
         gate: isDocument ? 'document' : 'reverify',
         lesson: lessonLayerOf(lessonEval),
+        approach: note,
       })
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
@@ -3838,7 +3881,8 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // THE STREAM IS NOT TEXT: the markers live inside JSON frames, so the raw lines are
   // unwrapped first (`approachLinesFrom`) exactly as the code path does. Reading the frames
   // raw meant the note was never found and a green draft still failed «нет записки».
-  const noteWritten = recordApproachNote(deps, task, parseApproachNote(approachLinesFrom(streamLines)))
+  const forgeNote = parseApproachNote(approachLinesFrom(streamLines))
+  const noteWritten = recordApproachNote(deps, task, forgeNote)
 
   // The forge lane creates an attempt, so the forge lane owes a MEMORY layer like any other —
   // and it owes it here, above every exit below, for the same reason the code lane writes it
@@ -3882,6 +3926,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     exit,
     gate: 'forge',
     lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
+    approach: forgeNote,
   })
 
   if (exit.spawnError) {
@@ -4014,7 +4059,7 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
     verdict: (worktree && worktree.run && worktree.run.verdict) || 'green',
     ref: receiptRef ?? null,
     lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
-  })
+  }, task)
   if (typeof report === 'function') {
     await report({ event: 'task.completed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: 'green', branch, attempt: task.attempt })
   }
@@ -4147,7 +4192,7 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
     verdict: (worktree && worktree.run && worktree.run.verdict) || (receiptRef ? 'red' : 'none'),
     ref: receiptRef ?? null,
     lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
-  })
+  }, task)
   if (typeof report === 'function') {
     await report({ event: 'task.failed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: receiptRef ? 'red' : undefined, branch, attempt: task.attempt })
   }
