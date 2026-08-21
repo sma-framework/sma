@@ -26,6 +26,9 @@
  *            exactly one multiplexer entry
  *   Test 4 — a foreign (non-SMA) hook entry survives byte-identically, both
  *            beside the multiplexer and inside a matcher-less group we join
+ *   Test 4b — update over the PRE-ANCHOR spelling (every command written
+ *            relative to the project root): every entry is healed to the
+ *            anchored one, none is doubled, foreign siblings survive
  *   Test 5 — end-to-end: the REAL installer (fresh + update run) writes the
  *            healed settings.json in an install-shaped temp project
  *   Test 6 — the statusline segment: the REAL installer writes the canonical
@@ -349,6 +352,86 @@ describe('init hooks — a matcher that moved leaves no second live copy', () =>
     expect(kept.hooks).toEqual([foreign])
   })
 })
+/**
+ * The spelling every hook command carried before it was anchored to the project root:
+ * `node scripts/sma/cli.mjs <verb>`, resolved against whatever directory the session
+ * happened to be standing in. A session that had changed directory made node fail to
+ * find the module BEFORE any engine code ran, so the fail-open wrappers inside the CLI
+ * could not help — and the whole table went down at once, not one entry of it.
+ *
+ * DERIVED from the shipped list rather than retyped: seven literals here would be a
+ * second copy of the template that starts lying to it the next time a verb moves.
+ */
+function legacyRelativeCommand(def: HookDef) {
+  const verb = def.command.trim().split(/\s+/).pop()
+  return `node scripts/sma/cli.mjs ${verb}`
+}
+
+/** A settings object shaped like an install made before the anchor existed. */
+function legacyRelativeSettings() {
+  const hooks: any = {}
+  for (const def of SMA_HOOKS as HookDef[]) {
+    const groups = (hooks[def.event] ??= [])
+    const entry = { type: 'command', command: legacyRelativeCommand(def), timeout: def.timeout }
+    const group = groups.find((g: any) => (def.matcher === null ? !g.matcher : g.matcher === def.matcher))
+    if (group) group.hooks.push(entry)
+    else groups.push(def.matcher === null ? { hooks: [entry] } : { matcher: def.matcher, hooks: [entry] })
+  }
+  return { hooks }
+}
+
+describe('init hooks — relative-command entries are healed, not doubled (Test 4b)', () => {
+  // The trap this case exists for: the installer recognises ITS OWN entries by the command
+  // STRING. Change the strings without teaching it the ones it used to write, and every
+  // existing install gets the new entry ADDED BESIDE the old one on the next update — two
+  // processes on every event, on every machine that ever ran this installer.
+  it('an install carrying the pre-anchor spelling ends with exactly one anchored entry per matcher', () => {
+    const settings: any = legacyRelativeSettings()
+    const foreign = { type: 'command', command: 'node my-guard.mjs --strict', timeout: 30 }
+    settings.hooks.SessionStart[0].hooks.push(foreign)
+    const foreignBytes = JSON.stringify(foreign)
+
+    const { added, removedStale } = mergeHooks(settings)
+
+    // every pre-anchor entry is ours BY CONSTRUCTION — those exact strings only ever came
+    // from this template — so dropping them touches nobody else's file
+    expect(removedStale).toBe(SMA_HOOKS.length)
+    expect(added).toBe(SMA_HOOKS.length)
+    for (const def of SMA_HOOKS as HookDef[]) {
+      expect(smaEntriesIn(groupFor(settings, def.event, def.matcher))).toEqual([entryOf(def)])
+    }
+    expect(smaEntries(settings), 'one entry per shipped definition, not two').toHaveLength(SMA_HOOKS.length)
+    // not one relative spelling survives anywhere in the file
+    expect(JSON.stringify(settings)).not.toMatch(/node scripts\/sma\/cli\.mjs/)
+    // the foreign sibling of a dropped entry is untouched
+    const sessionStart = groupFor(settings, 'SessionStart', null)
+    expect(JSON.stringify(sessionStart.hooks.find((h: any) => h.command === foreign.command))).toBe(foreignBytes)
+  })
+
+  it('every shipped command is anchored, with a fallback that keeps the old behaviour where the variable is absent', () => {
+    for (const def of SMA_HOOKS as HookDef[]) {
+      // the wire: the anchor has to reach the COMMAND STRING, which is the only part of a
+      // hook that exists before node is asked to load anything
+      expect(def.command, `${def.event}/${def.matcher ?? '(no matcher)'} is not anchored`).toContain(
+        '${CLAUDE_PROJECT_DIR:-.}',
+      )
+      // and the fallback keeps the command from ever being WORSE than the relative form:
+      // with no variable set it resolves to `.`, which is exactly what it used to be
+      expect(def.command).toContain('/scripts/sma/cli.mjs')
+    }
+  })
+
+  it('a merge over already-anchored entries adds nothing and removes nothing', () => {
+    const settings: any = {}
+    mergeHooks(settings)
+    const before = JSON.stringify(settings)
+    const again = mergeHooks(settings)
+    expect(again.added).toBe(0)
+    expect(again.removedStale).toBe(0)
+    expect(JSON.stringify(settings)).toBe(before)
+  })
+})
+
 describe('init hooks — the REAL installer heals settings.json (Test 5)', () => {
   it('fresh install writes ONE PreToolUse chain; a re-run over stale chains + a foreign hook heals it', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-init-hooks-'))

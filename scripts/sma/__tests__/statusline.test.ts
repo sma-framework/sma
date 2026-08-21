@@ -462,6 +462,11 @@ describe('statusline composition — user line first, SMA segment appended', () 
     )
     expect(isSmaStatuslineCmd('node scripts/sma/cli.mjs statusline')).toBe(true)
     expect(isSmaStatuslineCmd('node scripts\\sma\\cli.mjs statusline --wrap')).toBe(true)
+    // the ANCHORED spelling — the one the installer writes now. Failing to recognise it
+    // would make an install read its OWN line as a stranger's and wrap it: this CLI spawned
+    // twice on every repaint, and an uninstall handing our own copy back as theirs.
+    expect(isSmaStatuslineCmd('node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline')).toBe(true)
+    expect(isSmaStatuslineCmd('node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline --wrap')).toBe(true)
     expect(isSmaStatuslineCmd('node "C:/Users/x/.claude/statusline.js"')).toBe(false)
     expect(resolveWrappedCommand({ dirs: {}, homedirFn: () => home })).toBe(null)
     // an absent/missing home settings is also a clean null (fail-open)
