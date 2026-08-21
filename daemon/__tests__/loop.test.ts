@@ -91,6 +91,10 @@ import { appendRedirect, readPendingRedirects, redirectFileOf, correctionsPreamb
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
 import { formatDecision, parseDecision, ticketIdFor, readWaitingTicket } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
+// Уборка копий — КАК ОНА ЕСТЬ, а не подделкой: дело внизу утверждает провод «уборка снимает
+// ровно тот каталог, который положила провизия», и подделка уборки была бы в нём той самой
+// сообразительностью, которая шесть раз за две фазы удостоверяла собственное отличие.
+import { cleanupTaskWorktree, insideCopiesDir } from '../src/queue/worktree-cleanup.mjs'
 // The mirror and the argument builder are used AS THEMSELVES in the wiring cases at the
 // foot of this file: a fake of either could not be poorer than the library, and a fake of
 // the parity guard would be exactly the hole those cases exist to close.
@@ -5904,5 +5908,287 @@ describe('тик отдаёт реестр ручек сторожу живос�
 
     expect(res.sweep.requeued).toBe(1) // задача перевыдана и без всякой ручки
     expect(journalled.some((e: any) => e.type === 'sweep-error')).toBe(false)
+  })
+})
+
+// ══════════ ЖЕТОН ЗАХВАТА ДОЕЗЖАЕТ ДО ТРЁХ ШВОВ ЗАВЕРШЕНИЯ ═══════════════════
+//
+// Очередь научилась отвергать чужой жетон раньше — и это не меняло НИЧЕГО, пока цикл
+// жетона не носил. Между захватом и завершением аренда может истечь, очередь перевыдаёт
+// строку, а работник первой попытки в конце зовёт завершение по одному лишь имени задачи
+// и закрывает ЧУЖУЮ, вторую попытку. Дыра закрывается не умением очереди отказывать, а
+// ПРОВОДОМ: значение, которое вернул захват, обязано оказаться в аргументах вызова.
+//
+// Поэтому дела ниже НЕ спрашивают «есть ли где-то жетон». Они сверяют РОВНО то значение,
+// которое очередь выдала ЭТОМУ захвату, с тем, что доехало до шва. Дело вида «жетон
+// какой-то есть» было бы зелёным и в тот день, когда никуда ничего не доезжало, — а
+// именно такой день и стоил суток разбора.
+//
+// Очередь здесь НАСТОЯЩАЯ (памятная, эталонная), а не подделка: жетон чеканит она сама, и
+// сверяемое значение приходит из живого объекта. Подделка, чеканящая жетон по-своему,
+// удостоверяла бы собственное отличие вместо поведения продукта.
+
+/**
+ * Записывающая обёртка НАД настоящей очередью: каждый вызов уходит внутрь без изменений,
+ * а его аргументы запоминаются. Ничего не подменяется — иначе доказывался бы не провод
+ * цикла, а сообразительность обёртки.
+ */
+function recordingQueue(inner: any) {
+  const seen = { claimed: [] as any[], calls: [] as any[] }
+  return {
+    ...inner,
+    seen,
+    async claimNext(workerId: string, opts: any) {
+      const t = await inner.claimNext(workerId, opts)
+      if (t) seen.claimed.push(t)
+      return t
+    },
+    async touch(id: string, opts?: any) {
+      seen.calls.push({ op: 'touch', id, opts })
+      return inner.touch(id, opts)
+    },
+    async complete(id: string, result: any) {
+      seen.calls.push({ op: 'complete', id, result })
+      return inner.complete(id, result)
+    },
+    async fail(id: string, reason: string, opts?: any) {
+      seen.calls.push({ op: 'fail', id, reason, opts })
+      return inner.fail(id, reason, opts)
+    },
+  }
+}
+
+const TOKEN_RESPONSES = () => ({
+  preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+  worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+  reverify: GREEN_REVERIFY,
+})
+
+describe('жетон, выданный захватом, доезжает до всех трёх швов завершения', () => {
+  it('ЗАВЕРШЕНИЕ предъявляет ровно тот жетон, который вернул захват', async () => {
+    const c = mkClock()
+    const inner = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await inner.enqueue(backlogTask())
+    const adapter = recordingQueue(inner)
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: TOKEN_RESPONSES() })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const claimed = adapter.seen.claimed[0]
+    expect(typeof claimed.attemptToken, 'захват не выдал жетона вовсе').toBe('string')
+    expect(claimed.attemptToken.length).toBeGreaterThan(15)
+    const done = adapter.seen.calls.find((x: any) => x.op === 'complete')
+    expect(done, 'цикл не звал завершения').toBeTruthy()
+    expect(done.result.attemptToken, 'жетон захвата не доехал до завершения').toBe(claimed.attemptToken)
+  })
+
+  it('ПРОВАЛ предъявляет тот же жетон — иначе чужой работник рвёт живую попытку', async () => {
+    const c = mkClock()
+    const inner = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await inner.enqueue(backlogTask())
+    const adapter = recordingQueue(inner)
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      responses: TOKEN_RESPONSES(),
+      // работник отработал и не оставил записки — попытка закрывается провалом
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line'] }),
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed && res.failed.taskId).toBe('BL-1')
+    const claimed = adapter.seen.claimed[0]
+    const failed = adapter.seen.calls.find((x: any) => x.op === 'fail')
+    expect(failed, 'цикл не звал провала').toBeTruthy()
+    expect(failed.opts && failed.opts.attemptToken, 'жетон захвата не доехал до провала').toBe(claimed.attemptToken)
+  })
+
+  it('ПРОДЛЕНИЕ предъявляет тот же жетон — продлевать чужую аренду не за что', async () => {
+    const c = mkClock()
+    const inner = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await inner.enqueue(backlogTask())
+    const adapter = recordingQueue(inner)
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: TOKEN_RESPONSES() })
+
+    await tick(deps)
+
+    const claimed = adapter.seen.claimed[0]
+    const touched = adapter.seen.calls.find((x: any) => x.op === 'touch')
+    expect(touched, 'цикл не продлевал аренду вовсе').toBeTruthy()
+    expect(touched.opts && touched.opts.attemptToken, 'жетон захвата не доехал до продления').toBe(claimed.attemptToken)
+  })
+
+  it('строка БЕЗ жетона (посеяна до этого обновления) — цикл зовёт швы как раньше и не падает', async () => {
+    // `oneTaskAdapter` выдаёт задачу, собранную руками: жетона у неё нет, как у строки,
+    // захваченной прошлой версией продукта. Отсутствие есть отсутствие — не повод падать
+    // на живой очереди и не лицензия жетон выдумать.
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({ adapter, responses: TOKEN_RESPONSES() })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const [call] = adapter.calls
+    expect(call.op).toBe('complete')
+    expect(call.result.attemptToken).toBeUndefined()
+  })
+})
+
+// ══════ КОПИЯ ПОПЫТКИ СТОИТ В КАТАЛОГЕ ОТ ЗАДАЧИ — В ОБЕИХ ДВЕРЯХ ПРОВИЗИИ ═════
+//
+// Ветка копии всегда была своя у каждой задачи, а КАТАЛОГ — один: верб, если ему не сказать
+// пути, строит его из identity того, кто зовёт, а у демона она одна на всё время жизни
+// процесса и на все задачи сразу. N веток претендовали на один каталог. Пока копия жива и
+// зарегистрирована, соседняя задача переиспользовала её молча; стоило копии осиротеть
+// (демон убит, регистрация потеряна) — каждая следующая провизия отвечала «уже существует»,
+// попытка умирала ДО запуска, и в журнал это ложилось как «среда исполнения недоступна».
+// Замерено прошлой фазой: одна брошенная копия держала конвейер мёртвым почти два часа, и
+// сам он из этого не вышел — каждая задача сжигала отпущенные повторы об один и тот же
+// каталог и закрывалась навсегда.
+//
+// Дверей провизии ДВЕ — путь кода-работы и путь Творца, — и правка одной оставляет мину во
+// второй: этот класс уже дважды стоил тому же файлу отдельного разбора. Поэтому дело есть
+// на КАЖДУЮ дверь, а не одно «на провизию».
+//
+// ПОДДЕЛКА ВЕРБА ВЕДЁТ СЕБЯ КАК ВЕРБ: сказали путь — отвечает им, не сказали — строит свой
+// от identity, одинаковой на все задачи. Подделка, всегда отвечающая путём от задачи,
+// удостоверяла бы собственную сообразительность вместо поведения продукта.
+
+/** Identity зовущего — одна на все задачи, как у живого демона. */
+const FAKE_CALLER_IDENTITY = 'c-один-на-всех'
+
+function fakeWorktreeAnswer(argsArray: string[]) {
+  const p = argsArray.indexOf('--path')
+  const b = argsArray.indexOf('--branch')
+  return {
+    ok: true,
+    path: p >= 0 ? argsArray[p + 1] : join('/', '.sma-worktrees', FAKE_CALLER_IDENTITY),
+    branch: b >= 0 ? argsArray[b + 1] : null,
+    expectedBase: 'a'.repeat(40),
+  }
+}
+
+/** Раннер, записывающий ПОЛНЫЕ аргументы каждого верба: провод проверяется по ним. */
+function copyPathRunner() {
+  const provisions: string[][] = []
+  const removals: string[][] = []
+  const runner = async (_bin: string, argsArray: string[]) => {
+    const verb = argsArray[1]
+    const sub = argsArray[2]
+    if (verb === 'worktree' && sub === 'provision') {
+      provisions.push(argsArray)
+      return { code: 0, stdout: JSON.stringify(fakeWorktreeAnswer(argsArray)) }
+    }
+    if (verb === 'worktree' && sub === 'remove') {
+      removals.push(argsArray)
+      return { code: 0, stdout: JSON.stringify({ ok: true, path: argsArray[3], branch: 'wt/x', branchTip: 'c'.repeat(40) }) }
+    }
+    if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ worktrees: [] }) }
+    if (verb === 'reverify') return GREEN_REVERIFY
+    if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
+    return { code: 0, stdout: '{}' }
+  }
+  return { runner, provisions, removals }
+}
+
+/** Значение флага пути в записанном вызове верба, либо null — флага не было вовсе. */
+function pathFlagOf(argsArray: string[]) {
+  const i = argsArray.indexOf('--path')
+  return i >= 0 ? argsArray[i + 1] : null
+}
+
+/** Последний сегмент пути в обоих начертаниях разделителя — на Windows приходят оба. */
+function lastSegmentOf(p: string) {
+  const parts = String(p).split(/[\\/]+/)
+  return parts[parts.length - 1]
+}
+
+// Настоящий git отвечать не обязан: важно, что вопрос об основании задаётся ЧЕРЕЗ него, и
+// ответ детерминирован. Ровно так же отвечает верб, когда git молчит.
+const fakeExecGit = (args: string[]) => (args[0] === 'rev-parse' && args[1] === '--git-common-dir' ? '/repo/.git' : '')
+
+describe('копия попытки провизионируется в каталог ОТ ЗАДАЧИ — в обеих дверях', () => {
+  it('ОСНОВНАЯ дверь (код-работа) зовёт верб с явным путём, выведенным из имени задачи', async () => {
+    const rec = copyPathRunner()
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 }))
+    const { deps } = makeDeps({ adapter, verbRunner: rec.runner, deps: { execGit: fakeExecGit } })
+
+    await tick(deps)
+
+    expect(rec.provisions, 'основная дверь не провизионировала копию вовсе').toHaveLength(1)
+    const p = pathFlagOf(rec.provisions[0])
+    expect(p, 'основная дверь не передала вербу пути — каталог остаётся один на все задачи').toBeTruthy()
+    expect(lastSegmentOf(String(p))).toBe('wt-BL-1')
+    // Уборка трогает ТОЛЬКО каталог копий: путь, который она не признает своим, она удалять
+    // откажется — значит провизия обязана класть копию именно туда.
+    expect(insideCopiesDir(String(p)), 'провизия положила копию туда, где уборке трогать нечего').toBe(true)
+  })
+
+  it('дверь ТВОРЦА зовёт верб с явным путём той же формы — забытая вторая дверь и есть мина', async () => {
+    const rec = copyPathRunner()
+    const adapter = oneTaskAdapter({
+      id: 'F-1',
+      source: 'roster',
+      title: 'сделай агента, который парсит ленту',
+      lane: 'forge',
+      forge: { kind: 'agent', description: 'парсит ленту по метке и пишет сводку' },
+    })
+    const { deps } = makeDeps({
+      adapter,
+      verbRunner: rec.runner,
+      config: { workers: [{ id: 'creator', lane: 'forge', provider: 'claude', account: { configDir: '/creator' }, enabled: true }] },
+      deps: { execGit: fakeExecGit },
+    })
+
+    await tick(deps)
+
+    expect(rec.provisions, 'дверь Творца не провизионировала копию вовсе').toHaveLength(1)
+    const p = pathFlagOf(rec.provisions[0])
+    expect(p, 'дверь Творца не передала вербу пути — мина осталась во второй двери').toBeTruthy()
+    expect(lastSegmentOf(String(p))).toBe('wt-F-1')
+    expect(insideCopiesDir(String(p))).toBe(true)
+  })
+
+  it('две разные задачи — два разных каталога; та же задача — тот же каталог', async () => {
+    const one = copyPathRunner()
+    await tick(makeDeps({ adapter: oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 })), verbRunner: one.runner, deps: { execGit: fakeExecGit } }).deps)
+    const two = copyPathRunner()
+    await tick(makeDeps({ adapter: oneTaskAdapter(backlogTask({ id: 'BL-2', attempt: 1 })), verbRunner: two.runner, deps: { execGit: fakeExecGit } }).deps)
+    // Повтор ТОЙ ЖЕ задачи — отдельный тик с тем же именем: готовая среда повтору не
+    // отнимается, путь и ветка совпадают, и верб переиспользует копию честно.
+    const again = copyPathRunner()
+    await tick(makeDeps({ adapter: oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 2 })), verbRunner: again.runner, deps: { execGit: fakeExecGit } }).deps)
+
+    const a = pathFlagOf(one.provisions[0])
+    const b = pathFlagOf(two.provisions[0])
+    const a2 = pathFlagOf(again.provisions[0])
+    expect(a, 'путь не передан — сравнивать нечего').toBeTruthy()
+    expect(a).not.toBe(b)
+    expect(a2).toBe(a)
+  })
+
+  it('УБОРКА снимает РОВНО тот каталог, который положила провизия — по путям, не по намерениям', async () => {
+    const rec = copyPathRunner()
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 }))
+    const { deps, attempts } = makeDeps({ adapter, verbRunner: rec.runner, deps: { execGit: fakeExecGit } })
+
+    await tick(deps)
+    const provisioned = pathFlagOf(rec.provisions[0])
+
+    const res = await cleanupTaskWorktree({
+      taskId: 'BL-1',
+      by: 'approve',
+      projectDir: '/repo',
+      ledger: deps.ledger,
+      verbRunner: rec.runner,
+    })
+
+    // Строка попытки несёт путь, который ОТВЕТИЛ верб, а уборка удаляет то, что в строке.
+    expect(attempts.find((a: any) => a.worktreePath)?.worktreePath).toBe(provisioned)
+    expect(res.removed, `уборка отказалась: ${res.reason ?? ''}`).toBe(true)
+    expect(rec.removals, 'уборка не звала верба удаления').toHaveLength(1)
+    expect(rec.removals[0][3], 'уборка целилась не в тот каталог, который положила провизия').toBe(provisioned)
   })
 })

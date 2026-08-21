@@ -165,3 +165,11 @@ export const WORKTREE_BRANCH_PREFIX = 'sma-wt/'
 // pipeline was there to be used, and walking around it was a choice.
 // Compared as a plain ISO day string, never parsed into a date.
 export const MEMORY_PIPELINE_REQUIRED_FROM = '2026-08-20'
+
+// WHERE EVERY WORKING COPY LIVES — a SIBLING of the main checkout, never a directory inside
+// it (a nested copy makes `git worktree remove` capable of emptying the tree it sits in).
+// Named here rather than spelled at each call site because three different modules act on
+// this directory: the verb that creates a copy, the daemon that asks for one per task, and
+// the cleanup that refuses to delete anything outside it. Three spellings of one directory
+// is how provisioning comes to put a copy where cleanup is not allowed to look.
+export const WORKTREE_COPIES_DIR = '.sma-worktrees'

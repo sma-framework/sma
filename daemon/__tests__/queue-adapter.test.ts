@@ -236,6 +236,64 @@ describe('memory backend — receipt refusal, coalescing, timestamps', () => {
     expect(FAIL_REASONS).toContain('turns_exhausted')
     expect(REASON_LABELS.turns_exhausted).toContain('потолок ходов')
   })
+
+  /**
+   * ГРАНИЦА ПОПЫТОК ЖИВЁТ В САМОМ SWEEP, А НЕ В ВЫДАЧЕ — и это свойство именно этого бэкенда.
+   *
+   * Аренду здесь истекает не библиотека по расписанию, а собственный sweep, и зовут его ТРИ
+   * входа: выдача, чтение списка и счётчики. Значит строка, чья граница исчерпана, обязана
+   * закрыться и тогда, когда никто больше ничего не просит выдать: человек, просто открывший
+   * доску, увидит закрытую строку, а не вечного зомби, ждущего следующей выдачи.
+   */
+  it('граница попыток исчерпана — строку закрывает сам sweep, даже когда её никто не пытается выдать', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(backlog({ retryLimit: 0 }))
+    await q.claimNext('w1', {})
+    c.advance(5000) // аренда потеряна, а повторов этой строке не отпущено
+
+    const [row] = await q.list({}) // ни одной выдачи между потерей аренды и этим чтением
+    expect(row.status).toBe('failed')
+    expect(row.failure_reason).toBe('attempts_exhausted')
+    expect(REASON_LABELS.attempts_exhausted).toContain('попытки исчерпаны')
+  })
+
+  /**
+   * КУСКУ СБОРКИ ГРАНИЦА — НОЛЬ, И ЭТО НЕ НАСТРОЙКА. Кусок, который сломался, обязан
+   * ОСТАНОВИТЬ свою сборку и спросить владельца; очередь, тихо запускающая его ещё дважды, —
+   * это ровно тот цикл, что стоил дня. У долговременного бэкенда так с того самого дня; здесь
+   * то же обещание держит эталон, чтобы оно было свойством контракта, а не одного хранилища.
+   */
+  it('граница попыток куска сборки — ноль: после первой потерянной аренды он закрыт, а не перевыдан', async () => {
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(backlog({ id: 'BL-B1', batchId: 'batch-7' })) // границы никто не называл
+    await q.claimNext('w1', {})
+    c.advance(5000)
+
+    const [row] = await q.list({})
+    expect(row.status).toBe('failed')
+    expect(row.failure_reason).toBe('attempts_exhausted')
+    expect(await q.claimNext('w2', {})).toBeNull()
+  })
+
+  /**
+   * ГРАНИЦА — ЧИСЛО ИЛИ НИЧЕГО. Она уезжает в предел повторов настоящей очереди, поэтому
+   * «две» строкой или отрицательное число сделали бы из опечатки границу, которой никто не
+   * писал: у pg-boss `retry_limit` — колонка типа int, и NaN там становится молчаливым нулём
+   * или отказом драйвера. Отказ на входе стоит одной понятной ошибки, а пропуск — работы,
+   * которая либо не повторится ни разу, либо не остановится никогда.
+   */
+  it('граница попыток принимается только целым числом от нуля — опечатка отвергается на входе', () => {
+    expect(validateTask(backlog({ retryLimit: 0 })).retryLimit).toBe(0)
+    expect(validateTask(backlog({ retryLimit: 5 })).retryLimit).toBe(5)
+    expect(validateTask(backlog({})).retryLimit).toBeUndefined() // не назвал — не выдумываем
+    for (const bad of ['2', -1, 1.5, Number.NaN, null, {}]) {
+      expect(() => validateTask(backlog({ retryLimit: bad as any })), `retryLimit=${String(bad)}`).toThrow(
+        InvalidTaskError,
+      )
+    }
+  })
 })
 
 // ── V5.1: the project field on a task + the read-time backfill ──
@@ -322,7 +380,7 @@ describe('project — an additive task field with an injected default', () => {
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 19-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 20-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -359,6 +417,11 @@ describe('constants — taxonomy', () => {
       'budget_stop',
       'api_cap_unset',
       'day_priority_protected',
+      // the re-issues ran out: the row was handed back as many times as it was allowed to be,
+      // and the queue closed it rather than spending another paid attempt on the same work.
+      // Named apart from timeout — a lease timing out is what STARTS a re-issue and is
+      // survivable — and apart from every worker reason, because nothing is wrong with the work
+      'attempts_exhausted',
       // the layer the founder works under could not be put into the account before the spawn.
       // Named apart from every infra cause because it is a REFUSAL and not a breakage: the
       // machine was fine, and the session was simply not allowed to start under rules nobody

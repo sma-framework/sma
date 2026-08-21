@@ -170,11 +170,17 @@
  * null while nothing holds the task. The contract suite asserts the difference on every backend
  * — a backend that keeps answering both from one clock is not a conforming adapter.
  *
- * Node built-ins only (in fact none needed). `clock` is dependency-injected so the
- * liveness/expiry path is deterministic in tests. The contract suite reads the vitest
- * API from globalThis (test.globals) — NO top-level vitest import, so the production
- * daemon can import this module without dev dependencies.
+ * Node built-ins only — ONE of them, and it is named here because this file used to need
+ * none: the randomness the attempt token is minted from. A token derived from anything this
+ * module could compute (a counter, a clock, an id) would be guessable by the very caller it
+ * fences out. `clock` is dependency-injected so the liveness/expiry path is deterministic in
+ * tests; the randomness is NOT injected, because a test that could predict a token would be
+ * certifying a fence with a hole in it. The contract suite reads the vitest API from
+ * globalThis (test.globals) — NO top-level vitest import, so the production daemon can
+ * import this module without dev dependencies.
  */
+
+import { randomBytes } from 'node:crypto'
 
 // ── constants (the closed vocabularies) ──
 
@@ -252,6 +258,19 @@ export const TASK_STATUSES = Object.freeze([
  *                     or simply nothing at all because his own working hours are protected
  *   manual          — a human stopped it
  */
+/**
+ * THE QUEUE'S OWN LAST WORD ABOUT A ROW IT WILL NOT HAND OUT AGAIN.
+ *
+ * Named apart from every worker's reason because nothing is wrong with the WORK here and
+ * nobody did anything wrong: the row simply used up the re-issues it was given, and the queue
+ * stopped. A person reading `tests_red` goes and looks at tests; a person reading this one
+ * either raises the ceiling or cuts the task in half — the same distinction `turns_exhausted`
+ * already draws for a ceiling of a different kind. Kept apart from `timeout` too: a lease
+ * timing out is what STARTS a re-issue and is survivable, and using one name for both would
+ * make «it timed out again» and «it will never be tried again» indistinguishable on a card.
+ */
+export const ATTEMPTS_EXHAUSTED = 'attempts_exhausted'
+
 export const FAIL_REASONS = Object.freeze([
   'no_receipt',
   'no_journal',
@@ -285,6 +304,10 @@ export const FAIL_REASONS = Object.freeze([
   'budget_stop',
   'api_cap_unset',
   'day_priority_protected',
+  // THE RE-ISSUES RAN OUT. Not the worker's failure and not an outage: the row was handed
+  // back as many times as it was allowed to be, and the queue closed it rather than spending
+  // another paid attempt on the same work. See ATTEMPTS_EXHAUSTED above.
+  ATTEMPTS_EXHAUSTED,
   'personal_layer_error',
   'manual',
 ])
@@ -308,6 +331,7 @@ export const REASON_LABELS = Object.freeze({
   budget_stop: 'остановлено бюджетом: месячный лимит платного канала выбран',
   api_cap_unset: 'нет окна, платный канал не настроен — задача ждёт окна подписки',
   day_priority_protected: 'активные часы основателя — его счёт защищён, задача ждёт',
+  [ATTEMPTS_EXHAUSTED]: 'попытки исчерпаны — очередь больше не перевыдаёт эту работу',
   personal_layer_error: 'личный слой не перенесён в аккаунт работника — запускать было нельзя',
   manual: 'остановлено вручную',
 })
@@ -323,6 +347,29 @@ export const REASON_LABELS = Object.freeze({
  * owns a private copy of the number.
  */
 export const DEFAULT_EXPIRE_MS = 120000
+
+/**
+ * THE ONE ATTEMPT BORDER. How many times a row may be handed back after a lost lease —
+ * the ceiling `fail`/expiry is measured against, in ONE place for every backend.
+ *
+ * It lives here, beside the lease duration, for the same reason that one does: two mechanisms
+ * answer «may this be tried again» — the durable queue's own re-issue plan and the reference
+ * backend's sweep — and until this constant existed they answered DIFFERENTLY. The durable one
+ * has always refused past its limit; the reference one, which is the executable spec every
+ * other backend is written against, had no limit at all and re-issued for ever. Nothing said
+ * so: the suite asked neither backend the question.
+ *
+ * The number is the one the durable seeding already used, so nothing about live behaviour
+ * moves — it is lifted out of a literal at the send call, not invented here.
+ *
+ * A PIECE OF A BATCH GETS ZERO, and that is a decision, not a tuning: the library's own retry
+ * is exactly the silent repetition the owner forbade — a piece that broke must STOP its
+ * assembly and ask him, and a queue quietly running it again two more times is the loop that
+ * cost a day. It has been true of the durable backend since that day; it is stated here so it
+ * is true of every backend.
+ */
+export const DEFAULT_RETRY_LIMIT = 2
+export const BATCH_ITEM_RETRY_LIMIT = 0
 
 /**
  * resolveExpireMs(config) → the liveness/lease duration in ms for THIS config.
@@ -401,6 +448,12 @@ const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'wave', 'batc
 const ALLOWED_TASK_KEYS = Object.freeze([
   'id', 'source', 'title', 'lane', 'provider', 'model', 'effort',
   'priority', 'attempt', 'storyPoints', 'description', 'acceptance', 'note', 'project', 'batchId', 'forge', 'data',
+  // HOW MANY RE-ISSUES THIS WORK IS OWED, travelling on the task itself rather than as an
+  // argument of one backend's enqueue: the durable queue stores it ON THE ROW (its own
+  // `retry_limit` column, written at send), so a border kept anywhere else would be a second
+  // copy of a number the queue already holds — and the two would part company the first time
+  // either moved. Optional: a source that names none gets the default (see retryLimitOf).
+  'retryLimit',
 ])
 
 /**
@@ -485,6 +538,28 @@ export function acceptanceItems(acceptance) {
 export function isBatchParent(taskOrRow) {
   const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
   return !!env && typeof env === 'object' && env.batch === BATCH_PARENT
+}
+
+/**
+ * retryLimitOf(task) → HOW MANY TIMES THIS WORK MAY BE HANDED BACK after a lost lease.
+ *
+ * The one place the border is decided, for every backend: the durable one maps the answer onto
+ * its library's `retry_limit` at send, the reference one measures its own sweep against it.
+ * Written as a function rather than as a constant read at two call sites because the answer
+ * depends on WHAT THE WORK IS — a piece of a batch is never repeated by itself — and that rule
+ * had lived as a literal inside one backend's enqueue, where the other backend could not see it.
+ *
+ * A task that names its own border gets it (the gate has already refused anything that is not
+ * a whole number of retries). PURE.
+ *
+ * @param {object|null} task
+ * @returns {number}
+ */
+export function retryLimitOf(task) {
+  const named = task && typeof task === 'object' ? task.retryLimit : undefined
+  if (typeof named === 'number' && Number.isInteger(named) && named >= 0) return named
+  const piece = !!task && !isBatchParent(task) && typeof task.batchId === 'string'
+  return piece ? BATCH_ITEM_RETRY_LIMIT : DEFAULT_RETRY_LIMIT
 }
 
 /** Epoch ms out of a timestamp that may arrive as a number or as an ISO string; NaN otherwise. */
@@ -787,6 +862,85 @@ export class UnknownTaskError extends Error {
   constructor(message) { super(message); this.name = 'UnknownTaskError' }
 }
 
+// ── the fencing token of an attempt ──
+
+/**
+ * ═══════ ОГРАЖДАЮЩИЙ ЖЕТОН ПОПЫТКИ — ОДНО ИМЯ НА ВСЕ ШВЫ ═══════
+ *
+ * ЧТО ОН ОГРАЖДАЕТ. Завершение, провал и продление адресуют работу ПО НОМЕРУ ЗАДАЧИ и находят
+ * ту её строку, которая сейчас идёт, — какой бы попытки та строка ни была. Между захватом и
+ * завершением аренда может истечь, очередь перевыдаёт строку другому работнику, а первый —
+ * живой и ничего не знающий об отъёме — в конце зовёт завершение и закрывает ЧУЖУЮ, свежую
+ * попытку. Это не рассуждение: сценарий снят живым прогоном на настоящей очереди, и в нём
+ * закрылась вторая попытка по слову первого, а сам второй работник свою же работу закрыть НЕ
+ * СМОГ — активной строки для него уже не было. Дыра отнимает не только чужую работу, но и
+ * право закрыть свою.
+ *
+ * ЖЕТОН СЛУЧАЕН, А НЕ НОМЕР ПОПЫТКИ. Номер уже однажды плавал: счётчик выдач двигался под
+ * попыткой, которая этого не заметила, и одна физическая попытка легла в аудит как две (см.
+ * attemptNumberOf в долговременном бэкенде). Жетон, выведенный из номера, унаследовал бы ту же
+ * болезнь — и «свой» жетон совпал бы с «чужим» ровно там, где различить их и надо.
+ *
+ * ЖЕТОН НЕ ЕДЕТ В ЧИТАЮЩИЙ ПУТЬ. list() отдаёт строки в окно, а жетон — не описание работы, а
+ * право её закрыть: он выдаётся тому, кто захватил, и больше никому. Поэтому его нет ни в
+ * одной сборке строки для читателя, и это решение, а не забывчивость.
+ */
+export const STALE_ATTEMPT_TOKEN = 'stale_attempt_token'
+
+/**
+ * ОТКАЗ РАЗЛИЧИМ ОТ УСПЕХА, И ПО ПРЕЦЕДЕНТУ САМИХ МЕТОДОВ: завершение и провал отвечают
+ * успехом или БРОСАЮТ названную ошибку, продление отвечает true/false. Поэтому отказ по жетону
+ * — именованная ошибка там, где методы бросают, и false там, где метод отвечает. Имя причины
+ * одно на всех швах и лежит полем, чтобы звонящему не приходилось разбирать прозу.
+ */
+export class StaleAttemptError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'StaleAttemptError'
+    this.reason = STALE_ATTEMPT_TOKEN
+  }
+}
+
+/**
+ * mintAttemptToken() → свежий случайный жетон одной выдачи.
+ *
+ * ОДНА ЧЕКАНКА НА ОБА БЭКЕНДА: два выражения в двух файлах разъезжаются молча, и тогда «жетон
+ * случаен» остаётся правдой в одном месте и надписью в другом.
+ */
+export function mintAttemptToken() {
+  return randomBytes(16).toString('hex')
+}
+
+/**
+ * attemptTokenIsStale(heldToken, presentedToken) → предъявлен ли ЧУЖОЙ жетон.
+ *
+ * ДВА «НЕТ» ЗДЕСЬ — РЕШЕНИЯ, НАЗВАННЫЕ ВСЛУХ, А НЕ ДЫРЫ:
+ *   • звонящий НЕ предъявил жетона — поведение сегодняшнее. Наш цикл понесёт жетон всегда, но
+ *     сторож живости закрывает попытку молчащего работника по праву ВЛАСТИ, а не работника, и
+ *     жетона у него нет и быть не должно. Переход обязан кончиться: провод цикла кладётся
+ *     следующей работой, и до тех пор это место — единственная дверь, через которую устаревший
+ *     работник ещё может пройти;
+ *   • у строки НЕТ жетона (она посеяна или захвачена до этого обновления) — отсутствие есть
+ *     отсутствие, а не лицензия выдумывать и не повод падать на живой очереди.
+ */
+export function attemptTokenIsStale(heldToken, presentedToken) {
+  if (typeof presentedToken !== 'string' || presentedToken === '') return false
+  if (typeof heldToken !== 'string' || heldToken === '') return false
+  return heldToken !== presentedToken
+}
+
+/**
+ * refuseStaleAttempt(method, taskId, heldToken, presentedToken) — бросить названный отказ,
+ * если предъявлен чужой жетон; ничего не делать, если жетон свой или его нет.
+ */
+export function refuseStaleAttempt(method, taskId, heldToken, presentedToken) {
+  if (!attemptTokenIsStale(heldToken, presentedToken)) return
+  throw new StaleAttemptError(
+    `${method}("${taskId}") refused: ${STALE_ATTEMPT_TOKEN} — the attempt this token belongs to ` +
+      `is over; the row carries another one now, and closing it would close somebody else's work`,
+  )
+}
+
 // ── validateTask (the enqueue gate — field allowlist + caps + DoR + forge) ──
 
 /**
@@ -835,6 +989,15 @@ export function validateTask(task) {
   }
   if (task.priority !== undefined && typeof task.priority !== 'number') {
     throw new InvalidTaskError(`task "${task.id}" priority must be a number`)
+  }
+  // THE ATTEMPT BORDER IS AN INTEGER OR NOTHING. It travels into the durable queue's own
+  // `retry_limit`, an integer column: a border written as text or as a fraction would arrive
+  // there as a silent zero or as a driver error months later, and either way the work would
+  // be repeated a number of times nobody chose. Refused at the gate, like every other field.
+  if (task.retryLimit !== undefined) {
+    if (typeof task.retryLimit !== 'number' || !Number.isInteger(task.retryLimit) || task.retryLimit < 0) {
+      throw new InvalidTaskError(`task "${task.id}" retryLimit must be a whole number of retries, zero or more`)
+    }
   }
   // project: STRUCTURAL only. Whether the slug names a REGISTERED project is
   // the door's question (it owns the config); the adapter never learns the registry.
@@ -1003,12 +1166,37 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     const t = now()
     for (const rec of records.values()) {
       if (rec.status === 'claimed' && t - rec.lastTouch > expireMs) {
+        // HOW MANY TIMES THIS ROW HAS ALREADY BEEN HANDED BACK, against the border it was given.
+        // `attempt` is 1-based, so the re-issues spent so far are `attempt - 1` and the one about
+        // to happen would be the `attempt`-th.
+        //
+        // WITHOUT THIS THE SWEEP RE-ISSUED FOR EVER, and «for ever» is not a figure of speech: a
+        // task no worker can finish was claimed, went silent, came back, was claimed again — and
+        // every turn of that wheel spends a paid attempt on work that already failed the same way.
+        // The durable queue has refused past its own limit since the day it was written; this
+        // backend is the executable spec, and a spec more generous than every real backend
+        // certifies a promise nobody keeps.
+        if (rec.attempt > retryLimitOf(rec.task)) {
+          rec.status = 'failed'
+          // THE QUEUE'S OWN WORD, not a worker's: nothing is wrong with the work, and a row
+          // closed with no reason at all reaches a card as «причина не записана».
+          rec.failure_reason = ATTEMPTS_EXHAUSTED
+          rec.workerId = null
+          rec.claimedAt = null
+          rec.lastTouch = null
+          continue
+        }
         rec.status = 'queued'
         rec.workerId = null
         rec.claimedAt = null
         rec.lastTouch = null
         rec.attempt += 1
         rec.task = { ...rec.task, attempt: rec.attempt }
+        // THE ATTEMPT TOKEN IS NOT CLEARED HERE, and that is a deliberate copy of what a
+        // durable queue does rather than a tidier version of it: its re-issue DELETES the row
+        // and INSERTS it back with the payload copied, so the mark of the try that just ended
+        // lives on until the next claim overwrites it (measured on the live queue). A
+        // reference backend tidier than every real one would certify a promise nobody keeps.
       }
     }
   }
@@ -1078,6 +1266,8 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       claimedAt: null,
       completedAt: null,
       lastTouch: null,
+      /** The fencing token of the attempt in flight; null while nobody holds the row. */
+      attemptToken: null,
       result: null,
       failure_reason: null,
     })
@@ -1123,12 +1313,23 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     best.workerId = workerId
     best.claimedAt = t
     best.lastTouch = t
-    return withStatedProject({ ...best.task })
+    // A FRESH TOKEN PER HAND-OUT, minted here and nowhere else: this is the only moment an
+    // attempt begins, so it is the only moment a token may be born. The previous attempt's
+    // token dies by being overwritten — the worker still holding it can no longer close the
+    // row, which is the entire promise.
+    best.attemptToken = mintAttemptToken()
+    // The token travels ON THE CLAIM and only on the claim: it is what this worker will have
+    // to present to close its own work. It is not part of the row every reader sees (see the
+    // read shape above, which does not carry it).
+    return withStatedProject({ ...best.task, attemptToken: best.attemptToken })
   }
 
-  async function touch(taskId) {
+  async function touch(taskId, { attemptToken } = {}) {
     const rec = records.get(taskId)
     if (!rec || rec.status !== 'claimed') return false
+    // A STALE WORKER MAY NOT HOLD SOMEBODY ELSE'S ATTEMPT ALIVE. `false` is this method's own
+    // way of saying no — the same answer it already gives about a row nobody holds.
+    if (attemptTokenIsStale(rec.attemptToken, attemptToken)) return false
     rec.lastTouch = now()
     return true
   }
@@ -1216,6 +1417,9 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
           `certified done on the runner's own word`,
       )
     }
+    // WHOSE ATTEMPT IS BEING CLOSED. Refused BEFORE any mutation, like the missing receipt
+    // above: a row half-closed by a stranger is worse than one not closed at all.
+    refuseStaleAttempt('complete', taskId, rec.attemptToken, result.attemptToken)
     // NOT 'completed': the receipt certifies the WORK, and the work now owes a person a
     // word. The durable backend records exactly this state in its own approval row; the
     // reference backend has to say the same thing or the contract suite would certify two
@@ -1226,12 +1430,16 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
-  async function fail(taskId, reason) {
+  async function fail(taskId, reason, { attemptToken } = {}) {
     if (!FAIL_REASONS.includes(reason)) {
       throw new InvalidFailReasonError(`fail: "${reason}" is not one of ${FAIL_REASONS.join('|')}`)
     }
     const rec = records.get(taskId)
     if (!rec) throw new UnknownTaskError(`fail: unknown task "${taskId}"`)
+    // A STALE WORKER MAY NOT BREAK SOMEBODY ELSE'S ATTEMPT EITHER, and this half matters as
+    // much as the other one: a failure is the RETRYABLE outcome, so a stranger's failure would
+    // hand a running attempt's work to yet another worker while the first is still doing it.
+    refuseStaleAttempt('fail', taskId, rec.attemptToken, attemptToken)
     rec.status = 'failed'
     rec.failure_reason = reason
     return true
@@ -1571,6 +1779,89 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(r.attempt).toBe(2)
     })
 
+    /**
+     * A RE-ISSUE HAS A CEILING, AND THE CEILING IS PART OF THE CONTRACT.
+     *
+     * A lost lease hands the row back for another try — and without a limit it hands it back
+     * for ever: a task nobody can finish is claimed, expires, is claimed again, and every one
+     * of those turns spends a paid attempt on work that has already failed the same way twice.
+     * The durable queue has always had the ceiling (its library refuses to re-issue past
+     * `retry_limit`); the reference backend had none at all, so the two backends kept
+     * DIFFERENT promises about the same call — and the reference one is the executable spec
+     * every future backend is written against. These cases are what makes the ceiling one
+     * promise instead of two.
+     */
+    it('строка с границей в ноль повторов после первой потерянной аренды закрывается — и больше не выдаётся', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-90', retryLimit: 0 }))
+      expect(await q.claimNext('w1', {})).not.toBeNull()
+      c.advance(6000) // аренда потеряна, и повторов этой строке не отпущено
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('failed')
+      expect(await q.claimNext('w2', {})).toBeNull() // никакой перевыдачи
+    })
+
+    it('строка с границей в два повтора переживает две потерянные аренды и закрывается на третьей', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-91', retryLimit: 2 }))
+
+      // первая попытка + два повтора: три выдачи, и все три состоялись
+      for (const worker of ['w1', 'w2', 'w3']) {
+        expect(await q.claimNext(worker, {})).not.toBeNull()
+        c.advance(6000)
+      }
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('failed')
+      expect(await q.claimNext('w4', {})).toBeNull()
+    })
+
+    /**
+     * ЧЕМ ЗАКРЫТА ИСЧЕРПАННАЯ СТРОКА — ВОПРОС К ОЧЕРЕДИ, А НЕ К РАБОТНИКУ.
+     *
+     * Причина провала едет на карточку словами, и «попытки кончились» — это другой разговор с
+     * человеком, чем «тесты красные»: во втором случае есть что чинить, в первом — работу надо
+     * пересобрать или поднять границу. Строка, закрытая очередью без своей причины, приходит на
+     * экран как «причина не записана» — ровно тот красный без объяснения, который отмена сборки
+     * уже однажды закрывала.
+     */
+    it('причина закрытия по исчерпанной границе — своя, а не та, что записал бы работник', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-92', retryLimit: 0 }))
+      await q.claimNext('w1', {})
+      c.advance(6000)
+
+      const exhausted = (await q.list({})).find((r) => r.id === 'BL-92')
+      expect(exhausted.failure_reason).toBe(ATTEMPTS_EXHAUSTED)
+
+      // а рядом — строка, которую закрыл работник: её причина осталась её собственной
+      await q.enqueue(backlog({ id: 'BL-93' }))
+      await q.claimNext('w2', {})
+      await q.fail('BL-93', 'tests_red')
+      const byWorker = (await q.list({})).find((r) => r.id === 'BL-93')
+      expect(byWorker.failure_reason).toBe('tests_red')
+    })
+
+    it('без явной границы работа держит ровно столько повторов, сколько даёт умолчание — расхождения умолчаний нет', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-89' })) // границы не назвал никто
+
+      // первая выдача + DEFAULT_RETRY_LIMIT перевыдач — все состоялись
+      for (let i = 0; i <= DEFAULT_RETRY_LIMIT; i += 1) {
+        expect(await q.claimNext(`w${i}`, {})).not.toBeNull()
+        c.advance(6000)
+      }
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('failed')
+      expect(await q.claimNext('wN', {})).toBeNull()
+    })
+
     it('touch keeps a claimed task alive past what would otherwise expire it', async () => {
       const c = clockOf(1000)
       const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
@@ -1650,6 +1941,188 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(r.status).toBe('claimed')
       expect(r.claimedAt).toBe(8000)
       expect(r.leaseRenewedAt).toBe(8000)
+    })
+
+    /**
+     * ═══════ ОГРАЖДАЮЩИЙ ЖЕТОН ПОПЫТКИ ═══════
+     *
+     * ЧТО ИЗМЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО. Живой прогон на настоящей очереди: работник захватил
+     * задачу, его аренда истекла, очередь ПЕРЕВЫДАЛА строку второму работнику — и тогда
+     * первый, живой и ничего не знающий об отъёме, позвал завершение. Оно было ПРИНЯТО:
+     * строка ушла в «закрыто» со счётом выдач второй попытки. Мало того — второй работник,
+     * который работу действительно делал, свою же попытку закрыть НЕ СМОГ: активной строки
+     * для него уже не было. Дыра отнимает не только чужую работу, но и право закрыть свою.
+     *
+     * ПОЧЕМУ ДЕЛА ЖИВУТ В ОБЩЕМ СЬЮТЕ, А НЕ В ФАЙЛЕ ОДНОГО БЭКЕНДА. Жетон — обещание
+     * КОНТРАКТА, а не деталь хранилища: цикл зовёт завершение через шов адаптера и не знает,
+     * какой бэкенд под ним. Два одинаковых дела в двух файлах разъезжаются молча при первой
+     * правке одного из них, и «чужой не закроет» остаётся правдой в одном месте и надписью
+     * в другом. Одно дело здесь держит оба бэкенда конструкцией.
+     *
+     * ЧЕГО ЭТИ ДЕЛА НЕ ДОКАЗЫВАЮТ И НЕ МОГУТ. Одновременность двух захватов — свойство
+     * настоящей базы (её оператор выдачи блокирует строку), и подделка, «правильно» отдающая
+     * одну строку двум, доказывала бы подделку. Гонка меряется живой пробой, эти дела — про
+     * КОНТРАКТ жетона: форму возврата, отказ чужому, новый жетон на каждой выдаче.
+     */
+    it('claimNext hands out an attempt token, and two claims never carry the same one', async () => {
+      const c = clockOf()
+      // аренда намеренно длинная: истечение здесь НЕ предмет дела, а памятная очередь
+      // истекает арендой сама, внутри claimNext/list/stats
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-80' }))
+      await q.enqueue(backlog({ id: 'BL-81' }))
+
+      const first = await q.claimNext('w1', {})
+      const second = await q.claimNext('w2', {})
+
+      expect(typeof first.attemptToken).toBe('string')
+      expect(first.attemptToken.length).toBeGreaterThan(15)
+      expect(typeof second.attemptToken).toBe('string')
+      expect(second.attemptToken).not.toBe(first.attemptToken)
+      // ЖЕТОН — НЕ НОМЕР ПОПЫТКИ, и это утверждается, а не подразумевается: номер уже
+      // однажды плавал под попыткой, которая этого не заметила, и жетон, выведенный из
+      // счётчика, унаследовал бы ту же болезнь.
+      expect(first.attemptToken).not.toBe(String(first.attempt))
+      expect(first.attemptToken).not.toBe(String(first.id))
+    })
+
+    it('a stale worker cannot close the FRESH attempt of another — and the worker who holds it still can', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-82' }))
+
+      const stale = await q.claimNext('w1', {}) // первая попытка
+      c.advance(6000) // аренда потеряна — очередь перевыдаёт строку
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {}) // вторая попытка, у неё свой жетон
+      expect(fresh.id).toBe('BL-82')
+      expect(fresh.attemptToken).not.toBe(stale.attemptToken)
+
+      // устаревший работник предъявляет то, что вернул ЕГО захват
+      await expect(
+        q.complete('BL-82', { receiptRef: 'reverify:stale', attemptToken: stale.attemptToken }),
+      ).rejects.toThrow(/stale_attempt_token/)
+
+      // строка НЕ ТРОНУТА: свежая попытка идёт дальше, как шла
+      const [mid] = await q.list({})
+      expect(mid.status).toBe('claimed')
+      expect(mid.status).not.toBe('awaiting_approval')
+
+      // ВТОРАЯ ПОЛОВИНА, БЕЗ КОТОРОЙ ЧИНИТЬ МОЖНО БЫЛО БЫ «ОТВЕРГАТЬ ВСЁ»: тот, кто держит
+      // попытку, закрывает её своим жетоном.
+      expect(await q.complete('BL-82', { receiptRef: 'reverify:fresh', attemptToken: fresh.attemptToken })).toBe(true)
+      const [after] = await q.list({})
+      expect(after.status).toBe('awaiting_approval')
+    })
+
+    it('fail with a foreign token is refused and leaves the row where it was; the token in flight is accepted', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-83' }))
+
+      const stale = await q.claimNext('w1', {})
+      c.advance(6000)
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {})
+
+      await expect(q.fail('BL-83', 'missing_access', { attemptToken: stale.attemptToken })).rejects.toThrow(
+        /stale_attempt_token/,
+      )
+      const [mid] = await q.list({})
+      expect(mid.status).toBe('claimed') // чужой провал не уронил чужую попытку
+      expect(mid.failure_reason).toBeNull()
+
+      expect(await q.fail('BL-83', 'missing_access', { attemptToken: fresh.attemptToken })).toBe(true)
+      const [after] = await q.list({})
+      expect(after.status).toBe('failed')
+      expect(after.failure_reason).toBe('missing_access')
+    })
+
+    /**
+     * ПРОДЛЕНИЕ ЧУЖИМ ЖЕТОНОМ — САМЫЙ ТИХИЙ ИЗ ТРЁХ СЛУЧАЕВ. Устаревший работник, который
+     * продолжает стучать «я жив», держал бы ЧУЖУЮ аренду вечно: сторож живости никогда не
+     * отобрал бы строку у работника, который на самом деле давно молчит. Поэтому дело не
+     * довольствуется ответом «false» — оно доводит часы до точки, где продлённая аренда была
+     * бы ещё жива, и смотрит, вернулась ли строка в очередь.
+     */
+    it('touch with a foreign token does not renew the lease — a stale worker cannot hold somebody else’s attempt alive', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-84' }))
+
+      const stale = await q.claimNext('w1', {})
+      c.advance(6000)
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {}) // часы: 8000
+
+      // жетон попытки в полёте продлевает, как продлевал: отказ не сплошной
+      c.advance(4000) // 12000
+      expect(await q.touch('BL-84', { attemptToken: fresh.attemptToken })).toBe(true)
+      c.advance(4000) // 16000 — от продления прошло 4000 из 5000
+      expect((await q.list({}))[0].status).toBe('claimed')
+
+      // а чужой жетон не продлевает — и это видно не по ответу, а по судьбе строки
+      expect(await q.touch('BL-84', { attemptToken: stale.attemptToken })).toBe(false)
+      c.advance(2000) // 18000 — от ПОСЛЕДНЕГО законного продления прошло 6000 из 5000
+      const [r] = await q.list({})
+      expect(r.status).toBe('queued')
+    })
+
+    /**
+     * КАЖДАЯ ПЕРЕВЫДАЧА РОЖДАЕТ НОВЫЙ ЖЕТОН, А ПРЕЖНИЙ МЁРТВ НАВСЕГДА, а не до следующей
+     * выдачи: работник первой попытки может проснуться на третьей и позвать завершение —
+     * и обязан получить отказ так же, как получил бы его на второй.
+     */
+    it('every re-issue mints a NEW token, and every older one stays dead', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-86' }))
+
+      const one = await q.claimNext('w1', {})
+      c.advance(7000)
+      const two = await q.claimNext('w2', {})
+      c.advance(7000)
+      const three = await q.claimNext('w3', {})
+
+      expect(new Set([one.attemptToken, two.attemptToken, three.attemptToken]).size).toBe(3)
+
+      await expect(
+        q.complete('BL-86', { receiptRef: 'reverify:one', attemptToken: one.attemptToken }),
+      ).rejects.toThrow(/stale_attempt_token/)
+      await expect(
+        q.complete('BL-86', { receiptRef: 'reverify:two', attemptToken: two.attemptToken }),
+      ).rejects.toThrow(/stale_attempt_token/)
+      expect(await q.complete('BL-86', { receiptRef: 'reverify:three', attemptToken: three.attemptToken })).toBe(true)
+    })
+
+    /**
+     * ЗВОНЯЩИЙ БЕЗ ЖЕТОНА — ЭТО ПЕРЕХОДНОЕ РЕШЕНИЕ, НАЗВАННОЕ ВСЛУХ, А НЕ НЕДОСМОТР.
+     *
+     * Жетона нет у двух звонящих, и по разным причинам. Сторож живости закрывает попытку
+     * молчащего работника по праву ВЛАСТИ, а не работника: жетона у него нет и быть не
+     * должно. А строка, посеянная или захваченная до этого обновления, жетона не носит
+     * вовсе — отсутствие есть отсутствие, и падать на ней нельзя.
+     *
+     * ЧЕМ ЭТО ОБЯЗАНО КОНЧИТЬСЯ. Наш цикл понесёт жетон ВСЕГДА — этот провод кладётся
+     * следующей работой, и до тех пор дверь, через которую устаревший работник ещё может
+     * пройти, остаётся открытой ровно здесь. Дело стоит именно для того, чтобы переход был
+     * виден и имел конец, а не растворился в умолчании.
+     */
+    it('a caller that presents NO token gets today’s behaviour — a named transitional decision, not an oversight', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-85' }))
+
+      await q.claimNext('w1', {})
+      c.advance(6000)
+      c.advance(1000)
+      const fresh = await q.claimNext('w2', {})
+      expect(typeof fresh.attemptToken).toBe('string')
+
+      expect(await q.touch('BL-85')).toBe(true)
+      expect(await q.complete('BL-85', { receiptRef: 'reverify:no-token' })).toBe(true)
+      const [r] = await q.list({})
+      expect(r.status).toBe('awaiting_approval')
     })
 
     it('assignWorker records the executing worker, and list() reports it', async () => {
@@ -1784,6 +2257,32 @@ export function queueAdapterContractSuite(name, makeAdapter) {
 
       // and a task nobody ever put in is answered, never thrown at
       expect(await q.setWords('R-nobody', { description: 'x' })).toBe(false)
+    })
+
+    /**
+     * РАБОТУ, ВЕРНУВШУЮСЯ В ОЧЕРЕДЬ ПОСЛЕ СОРВАННОЙ ПОПЫТКИ, МОЖНО И ПЕРЕПИСАТЬ.
+     *
+     * Она ничем не отличается от любой другой ждущей: читающий путь называет её «в очереди», и
+     * человек у доски видит ровно это. Больше того — это как раз тот момент, когда переписать
+     * слова хочется сильнее всего: попытка сорвалась, и следующей стоит уйти с исправленным
+     * заданием, а не с тем же самым. Дверь, отвечающая «нет такой задачи» на строку, которую
+     * доска показывает в очереди, — это отказ, переодетый в пустоту.
+     */
+    it('задаче, вернувшейся в очередь после сорванной попытки, слова переписать можно — и новые слова видит следующая выдача', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-98', description: 'первая редакция' }))
+      await q.claimNext('w1', {})
+      c.advance(5000) // аренда потеряна: строка вернулась в очередь на следующую попытку
+
+      const back = (await q.list({})).find((r) => r.id === 'BL-98')
+      expect(back.status).toBe('queued') // именно это человек и видит
+
+      expect(await q.setWords('BL-98', { description: 'вторая редакция' })).toBe(true)
+
+      const next = await q.claimNext('w2', {})
+      expect(next.id).toBe('BL-98')
+      expect(next.description).toBe('вторая редакция')
     })
 
     it('the words door is bounded by the SAME caps the enqueue is', async () => {
@@ -2054,6 +2553,36 @@ export function queueAdapterContractSuite(name, makeAdapter) {
 
       const s = await q.stats()
       expect(s.claimed).toBe(0) // счётчик «в работе» отменённая сборка больше не завышает
+    })
+
+    /**
+     * ОСТАНОВЛЕННАЯ СБОРКА ЗАБИРАЕТ И ТОТ КУСОК, КОТОРЫЙ ЖДЁТ ПОСЛЕ СОРВАННОЙ ПОПЫТКИ.
+     *
+     * Кусок, чей работник замолчал, возвращается в очередь — и для каждого читателя это
+     * обыкновенная ждущая работа, ровно как любая другая. Отмена, которая забирает соседей и
+     * молча проходит мимо него, оставляет брошенной сборке живой хвост: задержка повтора
+     * кончится, и очередь выдаст этот кусок работнику сборки, которую человек остановил. Это
+     * второе — и последнее — обещание, которому положено своё решение о втором состоянии
+     * ожидания, и вот его дело.
+     */
+    it('отмена остановленной сборки забирает и кусок, вернувшийся в очередь после сорванной попытки', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(parent('B-16'))
+      // граница повторов названа куску ЯВНО: по умолчанию сборка не повторяет своего куска
+      // вовсе, и без этой строки во второе состояние ожидания он попасть просто не может
+      await q.enqueue(piece('B-16', 1, { retryLimit: 2 }))
+
+      expect((await q.claimNext('w1', {})).id).toBe('B-16-1')
+      c.advance(5000) // работник замолчал: кусок вернулся в очередь на следующую попытку
+
+      expect((await q.list({})).find((r) => r.id === 'B-16-1').status).toBe('queued')
+
+      expect(await q.resolveBatch('B-16', { cancel: true })).toBe(true)
+
+      const after = (await q.list({})).find((r) => r.id === 'B-16-1')
+      expect(after.status).toBe('failed') // изъят, а не оставлен ждать своей задержки
+      expect(await q.claimNext('w2', {})).toBeNull() // и никому больше не выдаётся
     })
 
     it('отмена не трогает ни произведённое, ни ждущее человека — им есть чем закрыться', async () => {

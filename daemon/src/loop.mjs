@@ -97,7 +97,7 @@
 
 import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS } from './queue/adapter.mjs'
@@ -106,7 +106,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
-import { memorySnapshotHash, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
+import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, fileWord, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
@@ -129,7 +129,8 @@ import {
 // gate would be certifying files no corpus would ever accept.
 import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
-import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { smaRoot, tokenHash } from '../../scripts/sma/lib/registry.mjs'
+import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
@@ -2310,7 +2311,12 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
       // two facts disagreed. Still fail-open — a broken renewal must never fail an attempt
       // that is doing its work — but it now leaves ONE line in the attempt's own log, where
       // the transcript and any later post-mortem will both find it.
-      Promise.resolve(deps.adapter.touch(task.id)).catch((err) => {
+      // WHOSE LEASE IS BEING RENEWED. Renewing by NAME alone means a worker whose own attempt
+      // is long over keeps a STRANGER's lease alive — and the stranger, still working, looks
+      // to every watcher like a task nobody is renewing. The token names the attempt that is
+      // asking; the queue refuses a foreign one and answers false, which this fail-open catch
+      // treats exactly as it treats any other unrenewed lease.
+      Promise.resolve(deps.adapter.touch(task.id, { attemptToken: task.attemptToken })).catch((err) => {
         if (touchBroken) return
         touchBroken = true
         log.append({
@@ -2376,6 +2382,50 @@ export function parseVerbResult(stdout) {
     }
   }
   return {}
+}
+
+/**
+ * taskWorktreePath({taskId, projectDir, execGit}) → где стоит копия ИМЕННО ЭТОЙ задачи.
+ *
+ * ОДНО ВЫРАЖЕНИЕ НА ОБЕ ДВЕРИ ПРОВИЗИИ, и вот почему оно вообще понадобилось. Верб, если
+ * ему не сказать пути, строит его сам — из identity того, кто зовёт. У человека за
+ * терминалом identity своя на сессию, и всё сходится; у ДЕМОНА она одна на весь процесс и
+ * на все задачи сразу, поэтому каталог копии выходил один, а ветки — по одной на задачу.
+ * Пока копия жива и зарегистрирована, соседняя задача переиспользовала её молча; стоило
+ * копии осиротеть (демон убит посреди попытки, регистрация потеряна) — каждая следующая
+ * провизия отвечала «уже существует», попытка умирала ДО запуска, и в журнале это выглядело
+ * как «среда исполнения недоступна». Замерено прошлой фазой: одна брошенная копия держала
+ * конвейер мёртвым почти два часа, и сам он из этого не вышел.
+ *
+ * ОСНОВАНИЕ — ТО ЖЕ, ЧТО У ВЕРБА, и спрашивается тем же вопросом к git: каталог копий лежит
+ * СОСЕДОМ основного дерева, а не внутри него (вложенная копия делает удаление способным
+ * опустошить дерево, в котором она стоит). Меняется ровно последний сегмент: он теперь от
+ * задачи. Git отвечает через переданный раннер — модуль не заводит собственной руки к git;
+ * git молчит или его нет — остаётся каталог проекта, ровно как fail-open у верба.
+ *
+ * Имя задачи проходит через ту же санитизацию, которой названы каталог прогона попытки и
+ * файл её леджера: строка из очереди становится именем на диске, и путь не собирается из
+ * сырых знаков.
+ *
+ * @param {{taskId:string, projectDir:string, execGit?:Function}} opts
+ * @returns {string|null} путь копии либо null — тогда вербу не говорят ничего и он решает сам
+ */
+function taskWorktreePath({ taskId, projectDir, execGit } = {}) {
+  if (typeof taskId !== 'string' || taskId.trim() === '') return null
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
+  let mainRoot = projectDir
+  if (typeof execGit === 'function') {
+    try {
+      mainRoot =
+        smaRoot({
+          cwd: projectDir,
+          gitCommonDirFn: () => String(execGit(['rev-parse', '--git-common-dir'], { cwd: projectDir }) || '').trim(),
+        }) || projectDir
+    } catch {
+      /* git отказал — основанием остаётся каталог проекта, как и у верба */
+    }
+  }
+  return join(dirname(mainRoot), WORKTREE_COPIES_DIR, `wt-${safeName(taskId)}`)
 }
 
 /** Invoke one CLI verb through the injected runner; returns {code, ...parsedStdout}. */
@@ -3086,7 +3136,18 @@ export async function tick(deps = {}) {
         // task actually paid — process start, argument parsing and all. It is also the only
         // number available when an older install answers without one at all.
         const provisionStartedAt = Date.now()
-        const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
+        // WHERE THE COPY GOES — SAID OUT LOUD, and by the one expression the other door uses
+        // too. Left unsaid, the verb names the directory after the CALLER, and this caller is
+        // one daemon for every task it will ever run: N branches claiming one directory.
+        // Null (a task with no name, which cannot happen through the queue's own gate) simply
+        // says nothing and lets the verb decide, exactly as before.
+        const copyPath = taskWorktreePath({ taskId: task.id, projectDir: provisionDir, execGit: deps.execGit })
+        const wt = await invokeVerb(
+          verbRunner,
+          'worktree',
+          ['provision', '--branch', branch, ...(copyPath ? ['--path', copyPath] : []), '--json'],
+          provisionDir,
+        )
         const provisionMs = Date.now() - provisionStartedAt
         // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
         // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
@@ -3887,7 +3948,17 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // for the same reason the code path measures it: the verb only knows its own inside time,
   // and an install whose CLI is older answers with no number at all.
   const provisionStartedAt = Date.now()
-  const wt = await invokeVerb(verbRunner, 'worktree', ['provision', '--branch', branch, '--json'], provisionDir)
+  // THE THIRD MISTAKE THIS DOOR WOULD OTHERWISE HAVE MADE TWICE. Where the copy goes is said
+  // here by the SAME expression the code path uses — the two doors have already been fixed
+  // separately once, and the one left behind is the one that keeps costing. Unsaid, the verb
+  // names the directory after the daemon, identical for every task.
+  const copyPath = taskWorktreePath({ taskId: task.id, projectDir: provisionDir, execGit: deps.execGit })
+  const wt = await invokeVerb(
+    verbRunner,
+    'worktree',
+    ['provision', '--branch', branch, ...(copyPath ? ['--path', copyPath] : []), '--json'],
+    provisionDir,
+  )
   const provisionMs = Date.now() - provisionStartedAt
   if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
     // This refusal carries NO copy fields on purpose: no copy was made, and naming a path
@@ -4187,6 +4258,16 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
     diffStat,
     workerId: route && route.workerId,
     provider: route && route.provider,
+    // WHOSE ATTEMPT IS BEING CLOSED — the fencing token this attempt was handed AT THE CLAIM,
+    // travelling on the task object from there to here. Closing by NAME alone is the hole
+    // measured on the live pilot: between the claim and this line the lease can expire, the
+    // queue hands the row to a second worker, and the first — still alive, still finishing —
+    // certifies work that is no longer his. The queue has been able to refuse a foreign token
+    // since the previous wave; until this line it was never shown one, and a refusal nobody
+    // can trigger is a comment, not a guard.
+    // Absent (a row claimed before this product knew about tokens) stays absent: the contract
+    // reads absence as absence and never as a licence to invent one.
+    attemptToken: task.attemptToken,
   })
   if (ledger && typeof ledger.recordAttempt === 'function') {
     ledger.recordAttempt({
@@ -4300,7 +4381,11 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
   // needed. Asked even when this refusal came before a run directory was ever made: the answer
   // is cached on the COPY, so an early exit owes and pays the same record as a late one.
   attachChangedFiles(deps, worktree)
-  await adapter.fail(task.id, reason)
+  // THE SAME TOKEN, AND THIS HALF MATTERS AS MUCH AS THE OTHER ONE. A failure is the
+  // RETRYABLE outcome, so a stale worker failing by name alone would hand a RUNNING attempt's
+  // work to yet a third worker while the second is still doing it. The token names the
+  // attempt that is really ending; the queue refuses a foreign one out loud.
+  await adapter.fail(task.id, reason, { attemptToken: task.attemptToken })
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
     // down with it: the row is attempted, and a refusing ledger says so out loud instead
