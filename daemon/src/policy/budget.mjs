@@ -11,7 +11,15 @@
  *      a short moment for — otherwise the honest answer is «wait_for_window», not spend), AND
  *   2. month-to-date API spend + this task's cost-ceiling estimate stays UNDER
  *      monthlyApiCapEur.
- * Otherwise: {fallback:false, reason:'wait_for_window' | 'budget_stop'}.
+ * Otherwise: {fallback:false, reason:'wait_for_window' | 'budget_stop' | 'api_cap_unset'}.
+ *
+ * THREE REFUSALS, NOT TWO — and the third exists because two of them used to be one word
+ * carrying two incompatible meanings. When no cap was ever configured (and 0 is the SHIPPED
+ * DEFAULT, so this is the ordinary state of a fresh install) this rule answered
+ * «budget_stop»: the money ran out. The queue's own plaque, reading the very same facts,
+ * said «платный канал не настроен». Both sentences reached a person and only one was true.
+ * So the state gets its own name — `api_cap_unset`: the paid channel is not set up, nothing
+ * was spent, nothing ran out, and the task waits for a subscription window like any other.
  *
  * WARN BEFORE THE STOP: at ≥70% and ≥90% of the cap the decision carries `warn: 70|90` so
  * the roster shows the founder the budget filling BEFORE the hard stop at 100%
@@ -65,7 +73,10 @@ export function shouldApiFallback({ task = {}, windows, budget = {}, usageReader
   const ceiling = Number(task.apiCostCeilingEur ?? budget.perTaskCeilingEur ?? 0) || 0
 
   // No budget configured (config default is 0) → the API lane has no money → cannot fall back.
-  if (!(cap > 0)) return { fallback: false, reason: 'budget_stop' }
+  // NOT «budget_stop»: nothing was spent and no ceiling was reached — the channel was never
+  // set up. See the header: one word for two states is how a screen tells a person to raise
+  // a limit he never set.
+  if (!(cap > 0)) return { fallback: false, reason: 'api_cap_unset' }
 
   // A subscription seat may free up shortly — only spend when there is genuinely none open.
   if (!allClosedSignal(windows)) return { fallback: false, reason: 'wait_for_window' }

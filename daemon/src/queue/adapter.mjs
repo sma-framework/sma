@@ -232,6 +232,14 @@ export const TASK_STATUSES = Object.freeze([
  *                     by name costs one attempt; spawning anyway spends the subscription on
  *                     work done under the wrong profile, and no card could ever say so
  *   timeout / runtime_offline / window_exhausted — infra causes
+ *   wait_for_window / budget_stop / api_cap_unset / day_priority_protected — ROUTE AND MONEY
+ *                     causes: the dispatcher decided, before any process existed, that this
+ *                     attempt may not run right now. They are here because the tick stopped
+ *                     writing one hardcoded infra word over every such decision: a person
+ *                     told to «wait for a window» when a ceiling HE set did the stopping is
+ *                     being sent to fix the wrong thing. Each of the four asks him for
+ *                     something different — wait, raise the cap, configure the paid channel,
+ *                     or simply nothing at all because his own working hours are protected
  *   manual          — a human stopped it
  */
 export const FAIL_REASONS = Object.freeze([
@@ -252,6 +260,13 @@ export const FAIL_REASONS = Object.freeze([
   'timeout',
   'runtime_offline',
   'window_exhausted',
+  // THE FOUR THE DISPATCHER DECIDES BEFORE A PROCESS EXISTS. `fail()` throws on a word it
+  // does not carry, so a tick that finally tells the truth about a route would take the
+  // whole tick down with it unless the truth is admitted here first.
+  'wait_for_window',
+  'budget_stop',
+  'api_cap_unset',
+  'day_priority_protected',
   'personal_layer_error',
   'manual',
 ])
@@ -270,6 +285,10 @@ export const REASON_LABELS = Object.freeze({
   timeout: 'истекло время',
   runtime_offline: 'среда исполнения недоступна',
   window_exhausted: 'окно подписки исчерпано',
+  wait_for_window: 'нет свободного окна — ждёт окна подписки, платный канал не задействован',
+  budget_stop: 'остановлено бюджетом: месячный лимит платного канала выбран',
+  api_cap_unset: 'нет окна, платный канал не настроен — задача ждёт окна подписки',
+  day_priority_protected: 'активные часы основателя — его счёт защищён, задача ждёт',
   personal_layer_error: 'личный слой не перенесён в аккаунт работника — запускать было нельзя',
   manual: 'остановлено вручную',
 })

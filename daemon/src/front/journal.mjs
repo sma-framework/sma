@@ -46,18 +46,33 @@ export const JOURNAL_LAYERS = Object.freeze(['dispatcher', 'approach', 'memory']
  *   per_task_override / per_worker_override / lane_default — a worker WAS selected, and
  *     this names the precedence level that decided it;
  *   api_fallback_requested — the task itself asked for the API window;
+ *   api_fallback — nobody asked, but no seat existed anywhere and the money rule permitted
+ *     the spend: the work CONTINUES, on the paid channel. A different fact from
+ *     api_fallback_requested (nobody asked) and not a refusal at all, so it can be folded
+ *     into neither — it is its own word;
  *   window_exhausted / day_priority_protected — nobody was selected and the task WAITS
  *     (routing never fails a task);
- *   budget_declined — reserved for the budget gate, which declines a route after routing
- *     has already named a target.
+ *   wait_for_window — the money rule refused to spend while a subscription seat may still
+ *     free up shortly: the task waits and the paid channel was never touched;
+ *   budget_stop — the month's paid-channel ceiling is spent. Kept apart from
+ *     wait_for_window because the two ask a person for OPPOSITE things: wait, or raise the
+ *     cap. Collapsing them would destroy exactly the information this vocabulary exists for;
+ *   api_cap_unset — no ceiling was ever configured, so the paid channel is not set up at
+ *     all. The honest third word: neither «the money ran out» nor «wait a moment»;
+ *   budget_declined — nobody writes this code today. It stays in the set as the NAME for a
+ *     refusal issued after routing has already named a target, should such a refusal appear.
  */
 export const DISPATCH_REASONS = Object.freeze({
   per_task_override: 'маршрут задан на самой задаче',
   per_worker_override: 'маршрут задан на работнике',
   lane_default: 'маршрут по умолчанию для полосы',
   api_fallback_requested: 'передано в окно API по требованию задачи',
+  api_fallback: 'окон нет — передано в платное окно API (в пределах лимита)',
   window_exhausted: 'отложено: нет открытого окна',
   day_priority_protected: 'отложено: активные часы основателя, его счёт защищён',
+  wait_for_window: 'отложено: ждёт окна подписки — платный канал не задействован',
+  budget_stop: 'остановлено: месячный лимит платного канала выбран',
+  api_cap_unset: 'отложено: платный канал не настроен — ждёт окна подписки',
   budget_declined: 'отказано по бюджету',
 })
 
