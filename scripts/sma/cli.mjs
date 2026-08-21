@@ -2456,6 +2456,9 @@ async function resolveRepoRootForSpend() {
 /**
  * spend [--json] [--by session|model|agent|day] [--window <h>] [--stat <name>]
  *   | spend set-cap <usd> [--window-hours <h>]
+ *   | spend lane <open|close|report|derive>
+ *   | spend self-cost   — the STATIC per-session injection overhead
+ *   | spend prompt-size — that plus every variable injection channel, measured
  *
  * The `sma spend` report — "where did the window go" from local files alone, in
  * O(appended bytes) via the incremental cache. NOT hook-facing (the hot path is
@@ -2489,6 +2492,8 @@ async function cmdSpend({ positionals, flags, dirs }) {
   if (sub === 'lane') return cmdSpendLane({ positionals, flags, dirs })
   // self-cost — SMA's own static per-session injection overhead.
   if (sub === 'self-cost') return cmdSpendSelfCost({ flags, dirs })
+  // prompt-size — the full injection breakdown (static surfaces + measured channels).
+  if (sub === 'prompt-size') return cmdSpendPromptSize({ flags, dirs })
 
   const repoRoot = await resolveRepoRootForSpend()
   const now = Date.now()
@@ -2783,6 +2788,74 @@ async function cmdSpendSelfCost({ flags, dirs }) {
   process.stdout.write(`SMA self-cost: статическая инъекция ~${report.total} токенов (оценщик ${report.estimatorVersion})\n`)
   for (const s of report.surfaces) process.stdout.write(`  ${s.surface}: ~${s.tokens}\n`)
   if (!report.surfaces.length) process.stdout.write('  ни одной управляемой поверхности не найдено (нет SMA:RULES / emitted / MEMORY.md)\n')
+  process.stdout.write(`  ${report.notCounted}\n`)
+  process.stdout.write(`  ${report.caveat}\n`)
+  return 0
+}
+
+/**
+ * spend prompt-size [--json] | spend prompt-size --stat prompt-size-bytes — the FULL
+ * injection breakdown: the three static surfaces self-cost already prices PLUS the
+ * variable channels, each priced from history the framework already records (the
+ * subagent-pack journal bytes, the capsule on disk, the per-turn hook telemetry) and
+ * each printed with its declared ceiling beside the fact. A SUBCOMMAND of the existing
+ * meter, deliberately: the framework already owns this question, and a new top-level
+ * verb would be a new entry in the command table nobody asked for.
+ * Bytes are the count, tokens are the estimate — said in the output, every run.
+ * Read-only, fail-open.
+ */
+async function cmdSpendPromptSize({ flags, dirs }) {
+  const economy = await import('./lib/economy.mjs')
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+
+  // measured history: the subagent-pack events already carry their injected size.
+  let journalEvents = []
+  try {
+    const journal = await import('./lib/journal.mjs')
+    journalEvents = journal.readJournal({ journalDir: dirs.journalDir }).events
+  } catch {
+    /* fail-open — no journal simply leaves that channel honestly unmeasured */
+  }
+
+  // the capsule the restore reflex would re-inject: the shared intent.md is the one
+  // file that exists regardless of which terminal wrote it.
+  const paths = {
+    claudeMd: join(repoRoot, 'CLAUDE.md'),
+    memoryMd: join(repoRoot, '.claude', 'memory', 'MEMORY.md'),
+    capsule: join(dirs.flightDir, 'intent.md'),
+    perf: join(dirs.perfDir, 'pre.jsonl'),
+  }
+  const report = economy.promptSize({ paths, journalEvents })
+
+  if (flags.stat) {
+    const value = String(flags.stat) === 'prompt-size-bytes' ? report.total : 0
+    process.stdout.write(`${value}\n`) // numeric LAST line (scorer)
+    return 0
+  }
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+
+  const kb = (n) => `${(n / 1024).toFixed(1)} КБ`
+  process.stdout.write(
+    `SMA prompt-size: измерено ${report.total} байт (${kb(report.total)}) ~${report.totalTokens} токенов · ` +
+      `оценщик ${report.estimatorVersion}\n`,
+  )
+  // heaviest first — the report exists to answer "what is the fattest thing we inject".
+  const sorted = [...report.channels].sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1))
+  for (const c of sorted) {
+    if (c.measured) {
+      const cap = c.cap ? `~${c.bytes} из ${c.cap} байт (${Math.round((c.bytes / c.cap) * 100)}%)` : `~${c.bytes} байт (потолка не объявлено)`
+      const extra = c.n ? ` · замеров: ${c.n}${c.avgBytes ? `, средний ${c.avgBytes}` : ''}` : ''
+      process.stdout.write(`  ${c.channel} [${c.clock}]: ${cap}${extra}\n`)
+    } else {
+      const cap = c.cap ? ` (потолок ${c.cap} байт)` : ''
+      process.stdout.write(`  ${c.channel} [${c.clock}]: не измерено${cap}: ${c.note}\n`)
+    }
+  }
+  process.stdout.write(`  ${report.clockNote}\n`)
+  process.stdout.write(`  ${report.unitNote}\n`)
   process.stdout.write(`  ${report.notCounted}\n`)
   process.stdout.write(`  ${report.caveat}\n`)
   return 0
