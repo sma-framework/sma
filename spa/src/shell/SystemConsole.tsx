@@ -20,6 +20,7 @@ import { CONSOLE_CONTEXT_EVENT, CONSOLE_OPEN_EVENT, readConsoleContext } from '.
 import type { ConsoleContext } from './console-context'
 import { refusalWords } from './format'
 import { openScreen } from './navigation'
+import { useComposerDraft } from './useComposerDraft'
 
 /**
  * SystemConsole — «Разговор с системой»: окно, из которого владелец правит парком, не уходя
@@ -241,7 +242,9 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
   const [open, setOpen] = useState(false)
   const [told, setTold] = useState<ConsoleContext | null>(null)
   const [lines, setLines] = useState<Line[]>([])
-  const [text, setText] = useState('')
+  // Консоль — ОДНА на всю оболочку и переживает смену экрана свёрнутой, поэтому её черновик
+  // набора и ключ имеет один, без уточнения: набранное здесь всегда про одно и то же место.
+  const [text, setText] = useComposerDraft('console')
   const [conversationId, setConversationId] = useState<string | undefined>(undefined)
   const [problem, setProblem] = useState<string | null>(null)
   const [created, setCreated] = useState<Record<string, string>>({})
