@@ -70,6 +70,9 @@ import {
 import { previewProjectMigration, applyProjectMigration, readProjectMemory } from '../src/front/project-sync.mjs'
 import { createFrontServer, ROUTES, PROJECT_MIGRATION_TARGET_PREFIX } from '../src/front/server.mjs'
 import { readWaveHolds } from '../src/queue/wave-holds.mjs'
+// Выражение пути каталога прогона — то самое, которым его собирают писатель и спавн.
+// Дело, знающее второе написание этого пути, доказывало бы согласие с самим собой.
+import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
 import { REASON_LABELS, createMemoryQueue } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
@@ -622,6 +625,87 @@ describe('deriveState — the one-poll payload', () => {
     expect(out.attempts[0].outcome).toBe('completed') // строка сбора не переписала исход
     expect(out.attempts[0].memoryHarvest).toEqual(harvest)
   })
+  /**
+   * ═══ КОНСПЕКТ ПЕРЕДАЧИ: ОКНО ЧИТАЕТ ТОТ ЖЕ ФАЙЛ, ЧТО ПОЛОЖИЛА ПОПЫТКА ═══
+   *
+   * ВТОРОЙ ПРОВОД ОДНОЙ СВЯЗИ. Первый — конспект доезжает до промпта следующей попытки;
+   * второй — человек видит РОВНО ТОТ ЖЕ текст, а не пересказ. Поэтому дело не подсовывает
+   * двери готовую строку: оно кладёт ответ файловой системы на КОНКРЕТНЫЙ путь и требует,
+   * чтобы дверь спросила именно его — тот, который собирает выражение пути. Дверь, собравшая
+   * путь вторым способом, не нашла бы ничего и молчала бы совершенно честно на вид.
+   *
+   * НОВОЙ ДВЕРИ ЗДЕСЬ НЕТ: поле едет в теле уже запрашиваемого ответа карточки задачи.
+   */
+  const contFront = (rows: any[], files: Record<string, string>, asked: string[] = []) =>
+    createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [], repoDir: '/projects/app' },
+      deps: {
+        adapter: { list: async () => [{ id: 'BL-cont', title: 'вернули на доработку', lane: 'prod', status: 'queued', attempt: 2 }] },
+        ledger: () => rows,
+        parseReceiptSummary,
+        fsImpl: {
+          readFileSync: (path: string) => {
+            asked.push(String(path))
+            if (Object.prototype.hasOwnProperty.call(files, String(path))) return files[String(path)]
+            throw new Error(`ENOENT: ${path}`)
+          },
+        },
+      },
+    })
+
+  const contPath = (attempt: number) =>
+    join(attemptRunDir({ runsDir: runsDirOf('/projects/app') as string, attemptId: `BL-cont#${attempt}` }) as string, 'continuation.md')
+
+  const CONT_ROWS = [
+    { taskId: 'BL-cont', attempt: 1, provider: 'claude', endedAt: NOW - HOUR, outcome: 'returned' },
+    { taskId: 'BL-cont', attempt: 2, provider: 'claude', endedAt: NOW, outcome: 'failed' },
+  ]
+
+  it('у законченной попытки есть файл конспекта → дверь отдаёт его текст, и путь спрошен ТОТ ЖЕ', async () => {
+    const text = '# Конспект передачи\n\nМАРКЕР-ОКНА: подход был прямой\n'
+    const asked: string[] = []
+    const front = contFront(CONT_ROWS, { [contPath(1)]: text }, asked)
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].continuationSummary).toEqual({ text, truncated: false })
+    // дверь спросила ИМЕННО тот файл, который положил бы писатель
+    expect(asked).toContain(contPath(1))
+  })
+
+  it('файла нет → поля нет ВОВСЕ: «нечего показать» и «не знаем» — разные предложения', async () => {
+    const front = contFront(CONT_ROWS, {})
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[0], 'continuationSummary')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[1], 'continuationSummary')).toBe(false)
+  })
+
+  it('конспект принадлежит СВОЕЙ попытке: второй подход не показывает конспект первого', async () => {
+    const front = contFront(CONT_ROWS, { [contPath(1)]: 'ПЕРВЫЙ\n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].continuationSummary.text).toBe('ПЕРВЫЙ\n')
+    expect(out.attempts[1].continuationSummary).toBeUndefined()
+  })
+
+  it('обрезанный конспект доезжает до окна ВМЕСТЕ с пометкой обрезки', async () => {
+    const text = 'начало\n\n[конспект обрезан по потолку в 8000 знаков]\n'
+    const front = contFront(CONT_ROWS, { [contPath(1)]: text })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].continuationSummary.truncated).toBe(true)
+    expect(out.attempts[0].continuationSummary.text).toContain('конспект обрезан по потолку')
+  })
+
   it('идущая прямо сейчас попытка несёт те же шесть полей пустыми — карточке нечего показывать', async () => {
     const front = createFrontServer({
       config: { token: MIGRATION_TOKEN, workers: [] },
