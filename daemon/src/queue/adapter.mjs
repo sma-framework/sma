@@ -170,11 +170,17 @@
  * null while nothing holds the task. The contract suite asserts the difference on every backend
  * — a backend that keeps answering both from one clock is not a conforming adapter.
  *
- * Node built-ins only (in fact none needed). `clock` is dependency-injected so the
- * liveness/expiry path is deterministic in tests. The contract suite reads the vitest
- * API from globalThis (test.globals) — NO top-level vitest import, so the production
- * daemon can import this module without dev dependencies.
+ * Node built-ins only — ONE of them, and it is named here because this file used to need
+ * none: the randomness the attempt token is minted from. A token derived from anything this
+ * module could compute (a counter, a clock, an id) would be guessable by the very caller it
+ * fences out. `clock` is dependency-injected so the liveness/expiry path is deterministic in
+ * tests; the randomness is NOT injected, because a test that could predict a token would be
+ * certifying a fence with a hole in it. The contract suite reads the vitest API from
+ * globalThis (test.globals) — NO top-level vitest import, so the production daemon can
+ * import this module without dev dependencies.
  */
+
+import { randomBytes } from 'node:crypto'
 
 // ── constants (the closed vocabularies) ──
 
@@ -768,6 +774,85 @@ export class UnknownTaskError extends Error {
   constructor(message) { super(message); this.name = 'UnknownTaskError' }
 }
 
+// ── the fencing token of an attempt ──
+
+/**
+ * ═══════ ОГРАЖДАЮЩИЙ ЖЕТОН ПОПЫТКИ — ОДНО ИМЯ НА ВСЕ ШВЫ ═══════
+ *
+ * ЧТО ОН ОГРАЖДАЕТ. Завершение, провал и продление адресуют работу ПО НОМЕРУ ЗАДАЧИ и находят
+ * ту её строку, которая сейчас идёт, — какой бы попытки та строка ни была. Между захватом и
+ * завершением аренда может истечь, очередь перевыдаёт строку другому работнику, а первый —
+ * живой и ничего не знающий об отъёме — в конце зовёт завершение и закрывает ЧУЖУЮ, свежую
+ * попытку. Это не рассуждение: сценарий снят живым прогоном на настоящей очереди, и в нём
+ * закрылась вторая попытка по слову первого, а сам второй работник свою же работу закрыть НЕ
+ * СМОГ — активной строки для него уже не было. Дыра отнимает не только чужую работу, но и
+ * право закрыть свою.
+ *
+ * ЖЕТОН СЛУЧАЕН, А НЕ НОМЕР ПОПЫТКИ. Номер уже однажды плавал: счётчик выдач двигался под
+ * попыткой, которая этого не заметила, и одна физическая попытка легла в аудит как две (см.
+ * attemptNumberOf в долговременном бэкенде). Жетон, выведенный из номера, унаследовал бы ту же
+ * болезнь — и «свой» жетон совпал бы с «чужим» ровно там, где различить их и надо.
+ *
+ * ЖЕТОН НЕ ЕДЕТ В ЧИТАЮЩИЙ ПУТЬ. list() отдаёт строки в окно, а жетон — не описание работы, а
+ * право её закрыть: он выдаётся тому, кто захватил, и больше никому. Поэтому его нет ни в
+ * одной сборке строки для читателя, и это решение, а не забывчивость.
+ */
+export const STALE_ATTEMPT_TOKEN = 'stale_attempt_token'
+
+/**
+ * ОТКАЗ РАЗЛИЧИМ ОТ УСПЕХА, И ПО ПРЕЦЕДЕНТУ САМИХ МЕТОДОВ: завершение и провал отвечают
+ * успехом или БРОСАЮТ названную ошибку, продление отвечает true/false. Поэтому отказ по жетону
+ * — именованная ошибка там, где методы бросают, и false там, где метод отвечает. Имя причины
+ * одно на всех швах и лежит полем, чтобы звонящему не приходилось разбирать прозу.
+ */
+export class StaleAttemptError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'StaleAttemptError'
+    this.reason = STALE_ATTEMPT_TOKEN
+  }
+}
+
+/**
+ * mintAttemptToken() → свежий случайный жетон одной выдачи.
+ *
+ * ОДНА ЧЕКАНКА НА ОБА БЭКЕНДА: два выражения в двух файлах разъезжаются молча, и тогда «жетон
+ * случаен» остаётся правдой в одном месте и надписью в другом.
+ */
+export function mintAttemptToken() {
+  return randomBytes(16).toString('hex')
+}
+
+/**
+ * attemptTokenIsStale(heldToken, presentedToken) → предъявлен ли ЧУЖОЙ жетон.
+ *
+ * ДВА «НЕТ» ЗДЕСЬ — РЕШЕНИЯ, НАЗВАННЫЕ ВСЛУХ, А НЕ ДЫРЫ:
+ *   • звонящий НЕ предъявил жетона — поведение сегодняшнее. Наш цикл понесёт жетон всегда, но
+ *     сторож живости закрывает попытку молчащего работника по праву ВЛАСТИ, а не работника, и
+ *     жетона у него нет и быть не должно. Переход обязан кончиться: провод цикла кладётся
+ *     следующей работой, и до тех пор это место — единственная дверь, через которую устаревший
+ *     работник ещё может пройти;
+ *   • у строки НЕТ жетона (она посеяна или захвачена до этого обновления) — отсутствие есть
+ *     отсутствие, а не лицензия выдумывать и не повод падать на живой очереди.
+ */
+export function attemptTokenIsStale(heldToken, presentedToken) {
+  if (typeof presentedToken !== 'string' || presentedToken === '') return false
+  if (typeof heldToken !== 'string' || heldToken === '') return false
+  return heldToken !== presentedToken
+}
+
+/**
+ * refuseStaleAttempt(method, taskId, heldToken, presentedToken) — бросить названный отказ,
+ * если предъявлен чужой жетон; ничего не делать, если жетон свой или его нет.
+ */
+export function refuseStaleAttempt(method, taskId, heldToken, presentedToken) {
+  if (!attemptTokenIsStale(heldToken, presentedToken)) return
+  throw new StaleAttemptError(
+    `${method}("${taskId}") refused: ${STALE_ATTEMPT_TOKEN} — the attempt this token belongs to ` +
+      `is over; the row carries another one now, and closing it would close somebody else's work`,
+  )
+}
+
 // ── validateTask (the enqueue gate — field allowlist + caps + DoR + forge) ──
 
 /**
@@ -990,6 +1075,11 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
         rec.lastTouch = null
         rec.attempt += 1
         rec.task = { ...rec.task, attempt: rec.attempt }
+        // THE ATTEMPT TOKEN IS NOT CLEARED HERE, and that is a deliberate copy of what a
+        // durable queue does rather than a tidier version of it: its re-issue DELETES the row
+        // and INSERTS it back with the payload copied, so the mark of the try that just ended
+        // lives on until the next claim overwrites it (measured on the live queue). A
+        // reference backend tidier than every real one would certify a promise nobody keeps.
       }
     }
   }
@@ -1059,6 +1149,8 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       claimedAt: null,
       completedAt: null,
       lastTouch: null,
+      /** The fencing token of the attempt in flight; null while nobody holds the row. */
+      attemptToken: null,
       result: null,
       failure_reason: null,
     })
@@ -1104,12 +1196,23 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     best.workerId = workerId
     best.claimedAt = t
     best.lastTouch = t
-    return withStatedProject({ ...best.task })
+    // A FRESH TOKEN PER HAND-OUT, minted here and nowhere else: this is the only moment an
+    // attempt begins, so it is the only moment a token may be born. The previous attempt's
+    // token dies by being overwritten — the worker still holding it can no longer close the
+    // row, which is the entire promise.
+    best.attemptToken = mintAttemptToken()
+    // The token travels ON THE CLAIM and only on the claim: it is what this worker will have
+    // to present to close its own work. It is not part of the row every reader sees (see the
+    // read shape above, which does not carry it).
+    return withStatedProject({ ...best.task, attemptToken: best.attemptToken })
   }
 
-  async function touch(taskId) {
+  async function touch(taskId, { attemptToken } = {}) {
     const rec = records.get(taskId)
     if (!rec || rec.status !== 'claimed') return false
+    // A STALE WORKER MAY NOT HOLD SOMEBODY ELSE'S ATTEMPT ALIVE. `false` is this method's own
+    // way of saying no — the same answer it already gives about a row nobody holds.
+    if (attemptTokenIsStale(rec.attemptToken, attemptToken)) return false
     rec.lastTouch = now()
     return true
   }
@@ -1197,6 +1300,9 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
           `certified done on the runner's own word`,
       )
     }
+    // WHOSE ATTEMPT IS BEING CLOSED. Refused BEFORE any mutation, like the missing receipt
+    // above: a row half-closed by a stranger is worse than one not closed at all.
+    refuseStaleAttempt('complete', taskId, rec.attemptToken, result.attemptToken)
     // NOT 'completed': the receipt certifies the WORK, and the work now owes a person a
     // word. The durable backend records exactly this state in its own approval row; the
     // reference backend has to say the same thing or the contract suite would certify two
@@ -1207,12 +1313,16 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
-  async function fail(taskId, reason) {
+  async function fail(taskId, reason, { attemptToken } = {}) {
     if (!FAIL_REASONS.includes(reason)) {
       throw new InvalidFailReasonError(`fail: "${reason}" is not one of ${FAIL_REASONS.join('|')}`)
     }
     const rec = records.get(taskId)
     if (!rec) throw new UnknownTaskError(`fail: unknown task "${taskId}"`)
+    // A STALE WORKER MAY NOT BREAK SOMEBODY ELSE'S ATTEMPT EITHER, and this half matters as
+    // much as the other one: a failure is the RETRYABLE outcome, so a stranger's failure would
+    // hand a running attempt's work to yet another worker while the first is still doing it.
+    refuseStaleAttempt('fail', taskId, rec.attemptToken, attemptToken)
     rec.status = 'failed'
     rec.failure_reason = reason
     return true
