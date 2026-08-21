@@ -375,6 +375,37 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * THE BACKLOG INTAKE MUST REACH THE TICK.
+   *
+   * `runIntake` asks for `deps.intake` on its FIRST line and returns when it is absent. The
+   * scanner module was written, ported faithfully from the origin parser, covered by tests and
+   * asked for by the tick on every pass — and the root never built it. So `backlogScanMinutes`
+   * was a setting that changed nothing, and a ready backlog line never became a task while the
+   * product described automatic intake.
+   *
+   * The second half matters as much as the first: a scan that does not RECORD itself leaves
+   * `lastScanAt` at zero, the cadence check passes on every pass, and the daemon fetches git
+   * every five seconds. Both halves are asserted here, on the production factory.
+   */
+  it('joins the BACKLOG intake to the tick — a scanner nobody hands over is a setting that lies', async () => {
+    const intake: any = park.tickDeps.intake
+    expect(
+      intake && typeof intake.scan,
+      'tickDeps.intake.scan must be wired or runIntake returns on its first line, every tick, forever',
+    ).toBe('function')
+    expect(
+      typeof intake.lastScanAt,
+      'tickDeps.intake.lastScanAt must be a number or the cadence has no starting point',
+    ).toBe('number')
+    const before = intake.lastScanAt
+    await intake.scan()
+    expect(
+      intake.lastScanAt,
+      'a scan must record itself or the cadence never advances and git is fetched every tick',
+    ).toBeGreaterThan(before)
+  })
+
+  /**
    * THE MONEY RULE MUST REACH THE DISPATCHER.
    *
    * `shouldApiFallback` decides two things nothing else decides: whether a task that names
